@@ -10,12 +10,20 @@
 //! every subsequent call. The cache above this layer is the real defence;
 //! this layer's job is to ask for as little as possible and to report
 //! throttling clearly rather than retrying into a wall.
+//!
+//! Nothing here waits. How far apart requests must be kept, how long to stay
+//! away after a 429 and whether a failure is worth another try are rules
+//! this module states through [`Provider`]; the queue that owns the requests
+//! applies them, because it is the only thing that knows what else is
+//! waiting. A sleep in here would overrule that queue from inside a call it
+//! knows nothing about — which is exactly how a chart somebody had just
+//! clicked came to wait two seconds for a warm-up nobody asked for.
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use crate::bars::{Bar, Timeframe, Unit};
-use crate::provider::{Capability, Provider, ProviderError};
+use crate::provider::{Capability, Pacing, Provider, ProviderError};
 use crate::symbols::{Instrument, InstrumentKind};
 
 const ENDPOINT: &str = "https://query1.finance.yahoo.com/v8/finance/chart";
@@ -72,6 +80,9 @@ const MIN_GAP: Duration = Duration::from_millis(350);
 /// reason to spend the request budget quickly, and every reason not to.
 const MIN_GAP_SPECULATIVE: Duration = Duration::from_millis(2_000);
 
+/// The two gaps as the queue reads them. See [`Provider::pacing`].
+const PACING: Pacing = Pacing { min_gap: MIN_GAP, min_gap_speculative: MIN_GAP_SPECULATIVE };
+
 /// How long to stop asking entirely after a 429, and the ceiling that repeated
 /// throttling climbs to.
 const COOLDOWN_START: Duration = Duration::from_secs(60);
@@ -81,57 +92,43 @@ const COOLDOWN_MAX: Duration = Duration::from_secs(900);
 /// paints from cache has nothing to gain from a third attempt.
 const RETRIES: u32 = 2;
 
-/// Request pacing, shared across every call.
-struct Throttle {
-    last_request: Option<Instant>,
-    /// Set after a 429; until it passes we do not touch the network at all.
-    cooldown_until: Option<Instant>,
-    cooldown: Duration,
+/// How long to leave a failed request before trying it again, doubling.
+const BACKOFF: Duration = Duration::from_millis(400);
+
+/// Whether Yahoo has told us to go away, and for how long it would next time.
+///
+/// State, not timing. This remembers what Yahoo said and reports until when
+/// it stands; sitting it out is the queue's job, and the queue refuses
+/// everything — speculative or not — until then. Letting the chart somebody
+/// is looking at through would mean asking again inside the window Yahoo
+/// just told us to stay out of, which is how a minute's cooldown becomes a
+/// quarter of an hour's.
+struct Cooldown {
+    until: Option<Instant>,
+    /// What the next 429 would cost. Doubles each time, relaxes on success.
+    length: Duration,
 }
 
-impl Throttle {
-    fn new() -> Throttle {
-        Throttle { last_request: None, cooldown_until: None, cooldown: COOLDOWN_START }
+impl Cooldown {
+    fn new() -> Cooldown {
+        Cooldown { until: None, length: COOLDOWN_START }
     }
 
-    /// `Err` when we must not ask at all right now.
-    ///
-    /// Speculative work is refused for the whole cooldown *and* paced further
-    /// apart the rest of the time. When Yahoo is unhappy, the thing to stop is
-    /// the work nobody asked for — not the chart someone is looking at.
-    fn admit(&mut self, now: Instant, speculative: bool) -> Result<Option<Duration>, ()> {
-        if let Some(until) = self.cooldown_until {
-            if now < until {
-                return Err(());
-            }
-            self.cooldown_until = None;
-        }
-        let gap = if speculative { MIN_GAP_SPECULATIVE } else { MIN_GAP };
-        let wait = self.last_request.and_then(|last| {
-            let since = now.saturating_duration_since(last);
-            (since < gap).then(|| gap - since)
-        });
-        Ok(wait)
+    /// Back off harder each time Yahoo says no.
+    fn throttled(&mut self, now: Instant) {
+        self.until = Some(now + self.length);
+        self.length = (self.length * 2).min(COOLDOWN_MAX);
     }
 
-    fn record_request(&mut self, now: Instant) {
-        self.last_request = Some(now);
-    }
-
-    /// Back off harder each time Yahoo says no, and relax once it says yes.
-    fn record_throttled(&mut self, now: Instant) {
-        self.cooldown_until = Some(now + self.cooldown);
-        self.cooldown = (self.cooldown * 2).min(COOLDOWN_MAX);
-    }
-
-    fn record_success(&mut self) {
-        self.cooldown = COOLDOWN_START;
+    /// And relax once it says yes.
+    fn succeeded(&mut self) {
+        self.length = COOLDOWN_START;
     }
 }
 
 pub struct Yahoo {
     timeout: Option<Duration>,
-    throttle: Mutex<Throttle>,
+    cooldown: Mutex<Cooldown>,
 }
 
 impl Default for Yahoo {
@@ -144,7 +141,7 @@ impl Yahoo {
     pub fn new() -> Yahoo {
         Yahoo {
             timeout: Some(Duration::from_secs(20)),
-            throttle: Mutex::new(Throttle::new()),
+            cooldown: Mutex::new(Cooldown::new()),
         }
     }
 
@@ -319,83 +316,49 @@ impl Provider for Yahoo {
         CAPABILITIES
     }
 
-    /// Bars for `symbol`, paced and retried.
+    /// One request for bars, made now.
     ///
-    /// Blocks: it sleeps to keep requests apart and between retries, so it
-    /// must be called from a worker thread, never the UI thread.
+    /// Blocks only for the network: the pacing before a request and the
+    /// backoff after a failed one are rules stated below and applied by the
+    /// caller's queue, never slept out here. What this does keep is the
+    /// cooldown's state, because the 429 that starts one and the success
+    /// that relaxes it both arrive here.
     fn bars(
         &self,
         symbol: &str,
         timeframe: Timeframe,
         since: Option<i64>,
     ) -> Result<Vec<Bar>, ProviderError> {
-        self.bars_paced(symbol, timeframe, since, false)
-    }
-
-    fn bars_speculative(
-        &self,
-        symbol: &str,
-        timeframe: Timeframe,
-        since: Option<i64>,
-    ) -> Result<Vec<Bar>, ProviderError> {
-        self.bars_paced(symbol, timeframe, since, true)
-    }
-}
-
-impl Yahoo {
-    fn bars_paced(
-        &self,
-        symbol: &str,
-        timeframe: Timeframe,
-        since: Option<i64>,
-        speculative: bool,
-    ) -> Result<Vec<Bar>, ProviderError> {
         let url = Self::url(symbol, timeframe, since)?;
-
-        // Sitting out a cooldown is not a failure worth retrying — the caller
-        // shows what it already has.
-        let wait = {
-            let mut throttle = self.throttle.lock().unwrap_or_else(|e| e.into_inner());
-            throttle
-                .admit(Instant::now(), speculative)
-                .map_err(|()| ProviderError::RateLimited)?
-        };
-        if let Some(wait) = wait {
-            std::thread::sleep(wait);
-        }
-
-        let mut attempt = 0;
-        loop {
-            {
-                let mut throttle = self.throttle.lock().unwrap_or_else(|e| e.into_inner());
-                throttle.record_request(Instant::now());
+        match self.fetch(&url) {
+            Ok(body) => {
+                self.cooldown.lock().unwrap_or_else(|e| e.into_inner()).succeeded();
+                parse_chart(&body).map(|bars| collapse_days(bars, timeframe))
             }
-
-            match self.fetch(&url) {
-                Ok(body) => {
-                    let mut throttle = self.throttle.lock().unwrap_or_else(|e| e.into_inner());
-                    throttle.record_success();
-                    drop(throttle);
-                    return parse_chart(&body).map(|bars| collapse_days(bars, timeframe));
-                }
-                Err(ProviderError::RateLimited) => {
-                    let mut throttle = self.throttle.lock().unwrap_or_else(|e| e.into_inner());
-                    throttle.record_throttled(Instant::now());
-                    return Err(ProviderError::RateLimited);
-                }
-                // A dropped connection or a 503 on the way through Yahoo's
-                // edge is common enough to be worth one more try.
-                Err(error @ (ProviderError::Network(_) | ProviderError::Malformed(_)))
-                    if attempt < RETRIES =>
-                {
-                    let backoff = Duration::from_millis(400 << attempt);
-                    attempt += 1;
-                    let _ = error;
-                    std::thread::sleep(backoff);
-                }
-                Err(error) => return Err(error),
+            Err(ProviderError::RateLimited) => {
+                self.cooldown.lock().unwrap_or_else(|e| e.into_inner()).throttled(Instant::now());
+                Err(ProviderError::RateLimited)
             }
+            Err(error) => Err(error),
         }
+    }
+
+    fn pacing(&self) -> Pacing {
+        PACING
+    }
+
+    fn cooldown_until(&self) -> Option<Instant> {
+        self.cooldown.lock().unwrap_or_else(|e| e.into_inner()).until
+    }
+
+    /// A dropped connection or a 503 on the way through Yahoo's edge is
+    /// common enough to be worth one more try, a little later each time. A
+    /// 429 is not: trying again is what makes the cooldown longer. And an
+    /// unknown symbol or a resolution Yahoo does not serve will not have
+    /// changed in half a second.
+    fn retry_after(&self, error: &ProviderError, attempt: u32) -> Option<Duration> {
+        let transient = matches!(error, ProviderError::Network(_) | ProviderError::Malformed(_));
+        (transient && attempt < RETRIES).then(|| BACKOFF * (1 << attempt))
     }
 }
 
@@ -720,72 +683,80 @@ mod tests {
         assert!(matches!(parse_chart(&body), Err(ProviderError::NotFound)));
     }
 
-    #[test]
-    fn requests_are_kept_apart() {
-        let mut throttle = Throttle::new();
-        let t0 = Instant::now();
-
-        assert_eq!(throttle.admit(t0, false), Ok(None), "first request waits for nothing");
-        throttle.record_request(t0);
-
-        // Straight away: told to wait out the rest of the gap.
-        let wait = throttle.admit(t0, false).unwrap().expect("should wait");
-        assert!(wait <= MIN_GAP && wait > Duration::ZERO, "{wait:?}");
-
-        // Once the gap has passed: no wait.
-        assert_eq!(throttle.admit(t0 + MIN_GAP, false).unwrap(), None);
-    }
-
+    /// The gaps are rules the queue reads, not waits this module performs.
+    /// What matters here is only that the work nobody asked for is held
+    /// further apart than the chart somebody is looking at.
     #[test]
     fn speculative_work_is_paced_far_further_apart() {
-        let mut throttle = Throttle::new();
-        let t0 = Instant::now();
-        throttle.record_request(t0);
-
-        // The chart someone is waiting on may go again after the short gap.
-        assert_eq!(throttle.admit(t0 + MIN_GAP, false).unwrap(), None);
-        // Work nobody asked for waits much longer.
-        let wait = throttle.admit(t0 + MIN_GAP, true).unwrap().expect("should wait");
-        assert!(wait > Duration::from_millis(500), "{wait:?}");
-        assert_eq!(throttle.admit(t0 + MIN_GAP_SPECULATIVE, true).unwrap(), None);
+        let pacing = Yahoo::new().pacing();
+        assert_eq!(pacing.gap(false), MIN_GAP);
+        assert_eq!(pacing.gap(true), MIN_GAP_SPECULATIVE);
+        assert!(pacing.min_gap_speculative > pacing.min_gap * 4, "{pacing:?}");
     }
 
     #[test]
-    fn a_429_stops_us_asking_at_all() {
-        let mut throttle = Throttle::new();
-        let t0 = Instant::now();
-        throttle.record_throttled(t0);
+    fn a_429_sets_a_cooldown_the_queue_can_read() {
+        let y = Yahoo::new();
+        assert_eq!(y.cooldown_until(), None, "nothing has gone wrong yet");
 
-        assert_eq!(throttle.admit(t0, false), Err(()), "inside the cooldown");
-        assert_eq!(
-            throttle.admit(t0 + COOLDOWN_START + Duration::from_secs(1), false),
-            Ok(None),
-            "cooldown expired"
-        );
+        let t0 = Instant::now();
+        y.cooldown.lock().unwrap().throttled(t0);
+        let until = y.cooldown_until().expect("a cooldown is set");
+        assert!(until > t0, "inside the cooldown");
+        assert_eq!(until, t0 + COOLDOWN_START, "and it ends");
     }
 
     #[test]
     fn repeated_throttling_backs_off_and_success_relaxes_it() {
-        let mut throttle = Throttle::new();
+        let mut cooldown = Cooldown::new();
         let t0 = Instant::now();
 
-        throttle.record_throttled(t0);
-        assert_eq!(throttle.cooldown, COOLDOWN_START * 2);
-        throttle.record_throttled(t0);
-        assert_eq!(throttle.cooldown, COOLDOWN_START * 4);
+        cooldown.throttled(t0);
+        assert_eq!(cooldown.length, COOLDOWN_START * 2);
+        cooldown.throttled(t0);
+        assert_eq!(cooldown.length, COOLDOWN_START * 4);
 
-        throttle.record_success();
-        assert_eq!(throttle.cooldown, COOLDOWN_START);
+        cooldown.succeeded();
+        assert_eq!(cooldown.length, COOLDOWN_START);
     }
 
     #[test]
     fn the_backoff_has_a_ceiling() {
-        let mut throttle = Throttle::new();
+        let mut cooldown = Cooldown::new();
         let t0 = Instant::now();
         for _ in 0..20 {
-            throttle.record_throttled(t0);
+            cooldown.throttled(t0);
         }
-        assert_eq!(throttle.cooldown, COOLDOWN_MAX);
+        assert_eq!(cooldown.length, COOLDOWN_MAX);
+    }
+
+    /// Two more tries, each twice as far out as the last, and then a final
+    /// answer. The queue does the waiting; this only has to say how long.
+    #[test]
+    fn a_transient_failure_is_worth_two_more_tries_with_a_doubling_backoff() {
+        let y = Yahoo::new();
+        let dropped = ProviderError::Network("connection reset".into());
+        assert_eq!(y.retry_after(&dropped, 0), Some(Duration::from_millis(400)));
+        assert_eq!(y.retry_after(&dropped, 1), Some(Duration::from_millis(800)));
+        assert_eq!(y.retry_after(&dropped, 2), None, "the third failure is final");
+
+        let garbled = ProviderError::Malformed("not json".into());
+        assert_eq!(y.retry_after(&garbled, 0), Some(Duration::from_millis(400)));
+    }
+
+    /// Asking again is the one thing that makes a 429 worse, and an answer
+    /// Yahoo gave on purpose will not change in half a second.
+    #[test]
+    fn a_refusal_is_never_retried() {
+        let y = Yahoo::new();
+        for error in [
+            ProviderError::RateLimited,
+            ProviderError::NotFound,
+            ProviderError::Unsupported("4h".into()),
+            ProviderError::Offline("no route".into()),
+        ] {
+            assert_eq!(y.retry_after(&error, 0), None, "{error}");
+        }
     }
 
     #[test]

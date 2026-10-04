@@ -4358,7 +4358,7 @@ impl Window {
     /// This is what makes arrowing through the rail feel instant: by the time
     /// you press the key the next one is already cached, and moving shifts the
     /// window so the symbols now a keypress away are the ones being fetched.
-    /// Everything here is speculative, so the provider paces it apart and
+    /// Everything here is speculative, so the loader paces it apart and
     /// drops it entirely if Yahoo starts refusing.
     fn prefetch_neighbours(self: &Rc<Self>, current: &Instrument, timeframe: Timeframe) {
         let Some(watchlist) = self.watchlist.borrow().as_ref().cloned() else {
@@ -4467,10 +4467,10 @@ impl Window {
     /// have nothing at all.
     ///
     /// Three things keep it from costing anybody their rate limit. Every
-    /// request is speculative, so the provider holds them [two seconds
-    /// apart](crate::loader) and refuses them outright while throttled — the
-    /// same pacing that already fills the neighbourhood, not a second
-    /// mechanism. Only rows with nothing cached are asked for, so this drains
+    /// request is speculative, so the loader holds them [two seconds
+    /// apart](crate::loader) and refuses them outright while the provider is
+    /// throttling — the same pacing that already fills the neighbourhood,
+    /// not a second mechanism. Only rows with nothing cached are asked for, so this drains
     /// and goes quiet instead of re-asking for what it just fetched. And only
     /// visible rows: a collapsed section's symbols are not showing a dash to
     /// anybody, and get picked up when the section opens.
@@ -4579,9 +4579,9 @@ impl Window {
                 continue;
             }
             // Speculative, which is the whole of how this stays polite: the
-            // provider holds it two seconds behind anything somebody is
-            // waiting for and refuses it outright while it is being
-            // throttled. A chart keeping itself current must never be the
+            // loader holds it two seconds behind anything somebody is
+            // waiting for and refuses it outright while the provider is
+            // throttling. A chart keeping itself current must never be the
             // reason another one loads slowly.
             self.loader.fetch(Request { key, symbol, timeframe, speculative: true }, REFRESH);
         }

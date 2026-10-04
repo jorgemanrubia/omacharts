@@ -11,13 +11,24 @@
 //! repaint rather than a wait. One request at a time, each earned by the last
 //! one landing — see [`Loader::warm_strip`].
 //!
+//! Every wait in the fetch path happens here, and in one place: the worker,
+//! blocked on the queue's condvar until something may go. The provider states
+//! its rules — how far apart requests must be kept, when it must not be asked
+//! at all, whether a failure is worth another try — and never sleeps on
+//! anybody's behalf. That is what lets the queue's order mean something. A
+//! provider that slept would be a second scheduler, overruling this one from
+//! inside a call it knows nothing about, which is precisely how a resolution
+//! somebody had just clicked came to wait two seconds for a warm-up nobody
+//! asked for. Why is this request waiting? The answer is in [`schedule`].
+//!
 //! The worker opens its own [`Store`]: a rusqlite connection is `Send` but not
 //! `Sync`, and WAL means a writer here never blocks the reader there.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
 
-use omacharts_engine::{Bar, FetchFailure, Provider, Timeframe};
+use omacharts_engine::{Bar, FetchFailure, Pacing, Provider, ProviderError, Timeframe};
 
 use crate::store::Store;
 
@@ -35,9 +46,10 @@ const TOLERANCE: f64 = 0.0005;
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct Request {
-    /// True when nobody asked for this yet. Providers pace speculative work
-    /// further apart and refuse it outright while being throttled, so filling
-    /// the rail can never cost someone the chart they are looking at.
+    /// True when nobody asked for this yet. Speculative work is paced further
+    /// apart and never goes out while something somebody is waiting on is
+    /// queued, so filling the rail can never cost someone the chart they are
+    /// looking at.
     pub speculative: bool,
     /// Cache key: `provider:symbol`.
     pub key: String,
@@ -132,6 +144,13 @@ pub const REFRESH: u32 = 1_500_000;
 /// inside the throttle anyway. And a queue can be reordered: when you arrow
 /// onto a different symbol, the chart you are now looking at must overtake
 /// the twenty prefetches queued behind it, not wait for them.
+///
+/// The queue is a scheduler holding timed intentions, not a line of threads
+/// taking turns to sleep. A job waiting out a pacing gap or a retry's backoff
+/// stays queued, as data with a time before which it may not go, and the
+/// worker is free to send anything else that may. Only when nothing may go
+/// does the worker block — on the condvar, for exactly as long as the nearest
+/// of those times, and any arrival wakes it at once.
 pub struct Loader {
     inner: Arc<Inner>,
 }
@@ -153,6 +172,10 @@ struct Queue {
     /// somebody asking for that very series joins it instead of starting a
     /// second fetch for it. A warm-up or a refresh — see [`on_a_charts_behalf`].
     warming_now: Option<Claim>,
+    /// When the last request went out, whatever it was for. Every gap the
+    /// provider asks for is measured from here, so this is the one piece of
+    /// timing state in the system.
+    last_sent: Option<Instant>,
 }
 
 /// A request made on a chart's behalf, in flight, and whether anybody has
@@ -167,10 +190,19 @@ struct Claim {
     claimed: bool,
 }
 
+#[derive(Debug)]
 struct Job {
     request: Request,
     priority: u32,
     seq: u64,
+    /// How many times this has been sent and come back a failure, so the
+    /// provider can say when enough is enough.
+    attempt: u32,
+    /// Not to be sent before this, whatever else is true. A request that
+    /// failed is held back for the backoff the provider asked for — here,
+    /// queued, where everything more wanted overtakes it and any arrival can
+    /// interrupt the wait, rather than slept out inside a call.
+    not_before: Option<Instant>,
 }
 
 impl Loader {
@@ -184,6 +216,7 @@ impl Loader {
                 next_seq: 0,
                 shutdown: false,
                 warming_now: None,
+                last_sent: None,
             }),
             wake: Condvar::new(),
             warming: Mutex::new(Warming::default()),
@@ -191,8 +224,35 @@ impl Loader {
 
         let worker = inner.clone();
         std::thread::spawn(move || {
-            while let Some(job) = worker.take() {
-                let mut response = run(&job.request, &provider);
+            let rules = || (provider.pacing(), provider.cooldown_until());
+            while let Some(dispatch) = worker.take(rules) {
+                let (job, outcome) = match dispatch {
+                    Dispatch::Send(job) => {
+                        let outcome = attempt(&job.request, &provider);
+                        (job, outcome)
+                    }
+                    Dispatch::Refuse(job) => {
+                        let outcome = refused(&job.request);
+                        (job, outcome)
+                    }
+                };
+                let mut response = match outcome {
+                    Outcome::Done(response) => response,
+                    Outcome::StartOver => {
+                        worker.again(Job { attempt: 0, not_before: None, ..job });
+                        continue;
+                    }
+                    Outcome::Failed { error, bars } => {
+                        match provider.retry_after(&error, job.attempt) {
+                            Some(backoff) => {
+                                let not_before = Some(Instant::now() + backoff);
+                                worker.again(Job { attempt: job.attempt + 1, not_before, ..job });
+                                continue;
+                            }
+                            None => failed(&job.request, bars, FetchFailure::from(&error)),
+                        }
+                    }
+                };
                 if !worker.finished(job.priority, &mut response) {
                     continue;
                 }
@@ -446,24 +506,84 @@ impl Drop for Loader {
     }
 }
 
+/// A job handed to the worker, and whether it may actually ask.
+#[derive(Debug)]
+enum Dispatch {
+    /// Send it now. The gap it had to keep has passed.
+    Send(Job),
+    /// Do not. The provider is in a cooldown, and the reply is a refusal
+    /// without the network being touched.
+    Refuse(Job),
+}
+
 impl Inner {
-    /// Block until there is a job, then hand back the most wanted one.
-    fn take(&self) -> Option<Job> {
+    /// Block until a job may go, then hand it over.
+    ///
+    /// The one wait in the fetch path. The lock is held only to decide — see
+    /// [`schedule`] — and never across the wait or a request: the condvar
+    /// gives it up while the worker is blocked, so the window can keep
+    /// queueing and reprioritising, and whatever it queues wakes the worker
+    /// at once. A job that may not go yet stays queued as data, holding
+    /// nothing up: a warm-up waiting out its two-second gap is overtaken by
+    /// the chart somebody clicks, which pays only its own gap and goes.
+    ///
+    /// `rules` is the provider's say: how far apart to keep requests, and
+    /// until when it must not be asked at all. Asked fresh each time round,
+    /// because a 429 that arrived while the worker was waiting changes the
+    /// answer.
+    fn take(&self, rules: impl Fn() -> (Pacing, Option<Instant>)) -> Option<Dispatch> {
         let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
         loop {
             if queue.shutdown {
                 return None;
             }
-            if let Some(at) = best(&queue.jobs) {
-                let job = queue.jobs.remove(at);
-                queue.warming_now = on_a_charts_behalf(job.priority).then(|| Claim {
-                    key: job.request.key.clone(),
-                    native: job.request.timeframe.native(),
-                    claimed: false,
-                });
-                return Some(job);
+            let (pacing, cooldown_until) = rules();
+            let timing =
+                Timing { now: Instant::now(), last_sent: queue.last_sent, cooldown_until, pacing };
+            match schedule(&queue.jobs, &timing) {
+                Next::Send(at) => {
+                    queue.last_sent = Some(timing.now);
+                    return Some(Dispatch::Send(queue.dispatch(at)));
+                }
+                Next::Refuse(at) => return Some(Dispatch::Refuse(queue.dispatch(at))),
+                Next::Wait(wait) => {
+                    let (woken, _) =
+                        self.wake.wait_timeout(queue, wait).unwrap_or_else(|e| e.into_inner());
+                    queue = woken;
+                }
+                Next::Idle => {
+                    queue = self.wake.wait(queue).unwrap_or_else(|e| e.into_inner());
+                }
             }
-            queue = self.wake.wait(queue).unwrap_or_else(|e| e.into_inner());
+        }
+    }
+
+    /// Put a job back for another go: a retry the provider asked for, or a
+    /// fresh start after the cache was found to be stale.
+    ///
+    /// Back into the queue rather than straight back out, so that everything
+    /// more wanted overtakes it and its backoff is waited out where any
+    /// arrival can interrupt the wait. It keeps the place in line it had.
+    fn again(&self, mut job: Job) {
+        let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+        // Somebody asked for this series while the attempt was out. It is
+        // their request now, and the next attempt is made as theirs: ahead
+        // of everything, and paced like a click rather than a guess.
+        if queue.warming_now.take().is_some_and(|claim| claim.claimed) {
+            job.priority = FOREGROUND;
+            job.request.speculative = false;
+        }
+        // A duplicate may have been queued while this was in flight — a
+        // neighbour re-offered as the selection moved, say. One job, with
+        // the better standing of the two and this one's history.
+        if let Some(existing) = queue.jobs.iter_mut().find(|j| same_series(j, &job.request)) {
+            existing.priority = existing.priority.min(job.priority);
+            existing.request.speculative &= job.request.speculative;
+            existing.seq = existing.seq.min(job.seq);
+            existing.attempt = job.attempt;
+            existing.not_before = job.not_before;
+        } else {
+            queue.jobs.push(job);
         }
     }
 
@@ -493,6 +613,118 @@ impl Inner {
             *unasked = on_a_charts_behalf(priority) && !claimed;
         }
         !warm || warm_up_is_worth_reporting(failed, claimed)
+    }
+}
+
+impl Queue {
+    /// Take the job at `at` off the queue for the worker, remembering it as
+    /// the request in flight if a chart could come to want it.
+    fn dispatch(&mut self, at: usize) -> Job {
+        let job = self.jobs.remove(at);
+        self.warming_now = on_a_charts_behalf(job.priority).then(|| Claim {
+            key: job.request.key.clone(),
+            native: job.request.timeframe.native(),
+            claimed: false,
+        });
+        job
+    }
+}
+
+/// What the queue decides against besides its own contents: the clock, the
+/// provider's rules, and the provider's state. Plain values, so the decision
+/// is a pure function of them and the tests can set the clock to whatever
+/// moment they mean.
+#[derive(Clone, Copy, Debug)]
+struct Timing {
+    now: Instant,
+    /// When the last request went out, whatever kind it was.
+    last_sent: Option<Instant>,
+    /// Until when the provider must not be asked for anything, if it is.
+    cooldown_until: Option<Instant>,
+    pacing: Pacing,
+}
+
+impl Timing {
+    /// The earliest `job` may be sent: after its own backoff, if it has one,
+    /// and after the gap a request of its kind must keep from the last.
+    fn ready_at(&self, job: &Job) -> Instant {
+        let paced = self.last_sent.map(|sent| sent + self.pacing.gap(job.request.speculative));
+        match (job.not_before, paced) {
+            (Some(backoff), Some(paced)) => backoff.max(paced),
+            (backoff, paced) => backoff.or(paced).unwrap_or(self.now),
+        }
+    }
+}
+
+/// What the worker should do with the queue as it stands.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Next {
+    /// Send the job at this index now.
+    Send(usize),
+    /// Refuse the job at this index without asking: the provider is in a
+    /// cooldown, and the reply is "rate limited" on the spot.
+    Refuse(usize),
+    /// Nothing may go yet. This is how long until something may — the whole
+    /// of it, so the worker blocks once rather than polling — unless a new
+    /// arrival changes the answer first.
+    Wait(Duration),
+    /// Nothing is queued.
+    Idle,
+}
+
+/// Why is this request waiting? Every answer is here.
+///
+/// Three rules, in order. During a cooldown nothing is asked and everything
+/// is refused, most wanted first, the same as the provider used to do from
+/// inside each call — asking again inside the window it told us to stay out
+/// of is how a minute's cooldown becomes a quarter of an hour's.
+///
+/// Then: nothing nobody asked for goes while something somebody is waiting
+/// on is queued. Not even while that something is held back for a backoff,
+/// because a speculative request sent in the meantime would push the retry
+/// out by its own in-flight time and then a gap, and the whole point of this
+/// module is that the chart on screen never queues behind a guess.
+///
+/// Then, of what remains: the most wanted job whose time has come — its own
+/// backoff passed, and the gap its kind must keep from the last request kept
+/// — goes now. If none has, the wait is until the nearest of them does. The
+/// pacing is therefore honoured as the provider stated it: no two requests
+/// closer than its short gap, nothing speculative closer than its long one,
+/// both measured from the last request of any kind.
+///
+/// A job whose time has not come costs nothing by waiting: it is data in a
+/// queue, not a thread asleep, and a job behind it in priority but ahead of
+/// it in time — the other pane's chart, while this one's first try backs off
+/// — goes instead.
+fn schedule(jobs: &[Job], timing: &Timing) -> Next {
+    let Some(most_wanted) = best(jobs) else {
+        return Next::Idle;
+    };
+    if timing.cooldown_until.is_some_and(|until| timing.now < until) {
+        return Next::Refuse(most_wanted);
+    }
+
+    let somebody_waiting = jobs.iter().any(|job| !job.request.speculative);
+    let mut send: Option<((u32, u64), usize)> = None;
+    let mut soonest: Option<Instant> = None;
+    for (at, job) in jobs.iter().enumerate() {
+        if somebody_waiting && job.request.speculative {
+            continue;
+        }
+        let ready_at = timing.ready_at(job);
+        if ready_at > timing.now {
+            soonest = Some(soonest.map_or(ready_at, |s| s.min(ready_at)));
+            continue;
+        }
+        let rank = (job.priority, job.seq);
+        if send.is_none_or(|(best, _)| rank < best) {
+            send = Some((rank, at));
+        }
+    }
+    match (send, soonest) {
+        (Some((_, at)), _) => Next::Send(at),
+        (None, Some(ready_at)) => Next::Wait(ready_at - timing.now),
+        (None, None) => Next::Idle,
     }
 }
 
@@ -542,24 +774,29 @@ fn enqueue(queue: &mut Queue, request: Request, priority: u32) -> bool {
         claim.claimed = true;
         return false;
     }
-    if let Some(existing) = queue
-        .jobs
-        .iter_mut()
-        .find(|j| j.request.key == request.key && j.request.timeframe == request.timeframe)
-    {
+    if let Some(existing) = queue.jobs.iter_mut().find(|j| same_series(j, &request)) {
+        let was = (existing.priority, existing.request.speculative);
         existing.priority = existing.priority.min(priority);
-        // The flag decides whether the provider holds this two seconds apart
-        // and refuses it outright while throttled, so a request somebody is
-        // now waiting on must stop being speculative. Keeping the flag it was
+        // The flag decides whether this is held two seconds apart and
+        // refused outright while throttled, so a request somebody is now
+        // waiting on must stop being speculative. Keeping the flag it was
         // queued with is how warming 15m, and then clicking 15m, turned the
         // click into a refusal.
         existing.request.speculative &= request.speculative;
-        return false;
+        // An improvement is news the worker has to hear: it may be waiting
+        // out this very job's two-second gap, and the job it is waiting on
+        // has just become the chart somebody is looking at.
+        return (existing.priority, existing.request.speculative) != was;
     }
     let seq = queue.next_seq;
     queue.next_seq += 1;
-    queue.jobs.push(Job { request, priority, seq });
+    queue.jobs.push(Job { request, priority, seq, attempt: 0, not_before: None });
     true
+}
+
+/// Is this queued job a fetch of the same series `request` asks for?
+fn same_series(job: &Job, request: &Request) -> bool {
+    job.request.key == request.key && job.request.timeframe == request.timeframe
 }
 
 /// Is this job still worth having once the selection has moved?
@@ -579,28 +816,29 @@ fn best(jobs: &[Job]) -> Option<usize> {
         .map(|(at, _)| at)
 }
 
-/// Fetch one request and say what came back.
+/// What came of sending a request once.
+enum Outcome {
+    /// An answer for the window.
+    Done(Response),
+    /// The provider said no. `bars` is what the cache holds, for the window
+    /// if this turns out to be the final answer.
+    Failed { error: ProviderError, bars: Vec<Bar> },
+    /// The cached history had been adjusted out from under us and has been
+    /// dropped. The same request, sent again, now asks for everything — and
+    /// is sent again by the queue, which keeps it the provider's gap away
+    /// from this one like any other request.
+    StartOver,
+}
+
+/// Send one request and say what came of it.
 ///
 /// Leaves `unasked` false on a failure: whether anybody is waiting for this
 /// depends on what has happened to the queue since it went out, which only
 /// [`Inner::finished`] is in a position to know.
-fn run<P: Provider>(request: &Request, provider: &P) -> Response {
-    let fetch = |symbol: &str, timeframe, since| {
-        if request.speculative {
-            provider.bars_speculative(symbol, timeframe, since)
-        } else {
-            provider.bars(symbol, timeframe, since)
-        }
-    };
+fn attempt<P: Provider>(request: &Request, provider: &P) -> Outcome {
     let native = request.timeframe.native();
     let Ok(store) = Store::open() else {
-        return Response::Failed {
-            key: request.key.clone(),
-            timeframe: native,
-            bars: Vec::new(),
-            failure: FetchFailure::LocalCache,
-            unasked: false,
-        };
+        return Outcome::Done(failed(request, Vec::new(), FetchFailure::LocalCache));
     };
 
     let cached = store.load_bars(&request.key, native);
@@ -610,47 +848,46 @@ fn run<P: Provider>(request: &Request, provider: &P) -> Response {
     // one asks from a few bars before where it ends.
     let since = coverage.map(|c| c.last_ts - OVERLAP * native.seconds());
 
-    match fetch(&request.symbol, native, since) {
+    match provider.bars(&request.symbol, native, since) {
         Ok(fresh) if fresh.is_empty() => {
             // Nothing new, which is still an answer. Recording that we asked
             // is what stops a chart on a timer asking again on every tick for
             // as long as the provider has nothing to add.
             store.mark_fetched(&request.key, native);
-            Response::Bars { key: request.key.clone(), timeframe: native, bars: cached }
+            let key = request.key.clone();
+            Outcome::Done(Response::Bars { key, timeframe: native, bars: cached })
         }
         Ok(fresh) => {
             // If the overlap disagrees, the cached history was adjusted out
             // from under us and cannot be trusted. Start over.
             if !cached.is_empty() && !overlap_agrees(&cached, &fresh) {
                 store.drop_series(&request.key, native);
-                let full = match fetch(&request.symbol, native, None) {
-                    Ok(full) => full,
-                    // We dropped the cache and could not refill it; report
-                    // honestly rather than showing a series we know is stale.
-                    Err(error) => {
-                        return Response::Failed {
-                            key: request.key.clone(),
-                            timeframe: native,
-                            bars: Vec::new(),
-                            failure: FetchFailure::from(&error),
-                            unasked: false,
-                        }
-                    }
-                };
-                store.write_bars(&request.key, native, &full);
-                return Response::Bars { key: request.key.clone(), timeframe: native, bars: full };
+                return Outcome::StartOver;
             }
-
             let merged = store.merge_bars(&request.key, native, &fresh);
-            Response::Bars { key: request.key.clone(), timeframe: native, bars: merged }
+            let key = request.key.clone();
+            Outcome::Done(Response::Bars { key, timeframe: native, bars: merged })
         }
-        Err(error) => Response::Failed {
-            key: request.key.clone(),
-            timeframe: native,
-            bars: cached,
-            failure: FetchFailure::from(&error),
-            unasked: false,
-        },
+        Err(error) => Outcome::Failed { error, bars: cached },
+    }
+}
+
+/// The reply for a request the queue refused on the provider's behalf: what
+/// the cache holds, and why nothing joined it. Final by construction — the
+/// provider is not asked whether to retry a request it never saw.
+fn refused(request: &Request) -> Outcome {
+    let native = request.timeframe.native();
+    let bars = Store::open().map(|store| store.load_bars(&request.key, native)).unwrap_or_default();
+    Outcome::Done(failed(request, bars, FetchFailure::RateLimited))
+}
+
+fn failed(request: &Request, bars: Vec<Bar>, failure: FetchFailure) -> Response {
+    Response::Failed {
+        key: request.key.clone(),
+        timeframe: request.timeframe.native(),
+        bars,
+        failure,
+        unasked: false,
     }
 }
 
@@ -685,6 +922,9 @@ fn close(a: f64, b: f64) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::thread::JoinHandle;
+
     use super::*;
 
     fn bar(ts: i64, close: f64) -> Bar {
@@ -732,6 +972,8 @@ mod tests {
             },
             priority,
             seq,
+            attempt: 0,
+            not_before: None,
         }
     }
 
@@ -961,11 +1203,11 @@ mod tests {
     }
 
     /// The bug this prevents: 15m is queued as a warm-up, the user clicks 15m,
-    /// and the click is served by a request still flagged speculative — so the
-    /// provider paces it two seconds out, or refuses it outright while it is
-    /// being throttled. The thing somebody is waiting for is never speculative.
+    /// and the click is served by a request still flagged speculative — so it
+    /// is paced two seconds out, or refused outright while the provider is
+    /// throttling. The thing somebody is waiting for is never speculative.
     fn empty_queue() -> Queue {
-        Queue { jobs: Vec::new(), next_seq: 0, shutdown: false, warming_now: None }
+        Queue { jobs: Vec::new(), next_seq: 0, shutdown: false, warming_now: None, last_sent: None }
     }
 
     /// A warm-up still waiting its turn, clicked: the job is already there, so
@@ -981,11 +1223,16 @@ mod tests {
         };
 
         assert!(enqueue(&mut queue, request(true), WARM), "queued, so wake the worker");
-        assert!(!enqueue(&mut queue, request(false), FOREGROUND), "the same job, improved");
+        assert!(
+            enqueue(&mut queue, request(false), FOREGROUND),
+            "the same job, improved — and the worker, which may be waiting out its gap, must hear"
+        );
 
         assert_eq!(queue.jobs.len(), 1, "asked for twice, fetched once");
         assert_eq!(queue.jobs[0].priority, FOREGROUND);
         assert!(!queue.jobs[0].request.speculative);
+
+        assert!(!enqueue(&mut queue, request(true), WARM), "offered again as it was: nothing new");
     }
 
     #[test]
@@ -1184,5 +1431,341 @@ mod tests {
         let mut response = a_refusal();
         assert!(inner.finished(REFRESH, &mut response));
         assert!(!unasked_of(&response));
+    }
+
+    // -- one scheduler -----------------------------------------------------
+
+    fn ms(n: u64) -> Duration {
+        Duration::from_millis(n)
+    }
+
+    /// Yahoo's own rules, so that what these pin is the gap the user waits.
+    fn yahoo_pacing() -> Pacing {
+        omacharts_engine::providers::Yahoo::new().pacing()
+    }
+
+    fn at(now: Instant, last_sent: Option<Instant>) -> Timing {
+        Timing { now, last_sent, cooldown_until: None, pacing: yahoo_pacing() }
+    }
+
+    fn speculative(key: &str, priority: u32, seq: u64) -> Job {
+        let mut job = job(key, priority, seq);
+        job.request.speculative = true;
+        job
+    }
+
+    /// The bug this whole arrangement exists to prevent, as a property. A
+    /// warm-up is queued and the last request went out a moment ago, so it
+    /// may not go for most of two seconds. The user clicks a resolution. The
+    /// click goes first and waits no longer than its own short gap; the
+    /// warm-up is neither lost nor doubled, and still keeps the long gap
+    /// when its turn comes.
+    #[test]
+    fn a_click_during_a_speculative_gap_goes_first_and_waits_only_its_own_gap() {
+        let pacing = yahoo_pacing();
+        let t0 = Instant::now();
+        let mut jobs = vec![speculative("warm-up", WARM, 0)];
+
+        assert_eq!(
+            schedule(&jobs, &at(t0 + ms(100), Some(t0))),
+            Next::Wait(pacing.min_gap_speculative - ms(100)),
+            "alone, the warm-up is held for the rest of its gap"
+        );
+
+        jobs.push(job("clicked", FOREGROUND, 1));
+        assert_eq!(
+            schedule(&jobs, &at(t0 + ms(100), Some(t0))),
+            Next::Wait(pacing.min_gap - ms(100)),
+            "the click waits out only the short gap"
+        );
+        assert_eq!(
+            schedule(&jobs, &at(t0 + pacing.min_gap, Some(t0))),
+            Next::Send(1),
+            "and then goes, ahead of the warm-up"
+        );
+
+        // The click went out. The warm-up is still here, once, and measures
+        // its gap from that request like any other.
+        let sent = t0 + pacing.min_gap;
+        jobs.remove(1);
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(
+            schedule(&jobs, &at(sent + ms(50), Some(sent))),
+            Next::Wait(pacing.min_gap_speculative - ms(50))
+        );
+        let gap_passed = at(sent + pacing.min_gap_speculative, Some(sent));
+        assert_eq!(schedule(&jobs, &gap_passed), Next::Send(0));
+    }
+
+    #[test]
+    fn two_speculative_requests_are_never_closer_than_the_long_gap() {
+        let pacing = yahoo_pacing();
+        let t0 = Instant::now();
+        let jobs = vec![speculative("neighbour", BACKGROUND + 1, 0)];
+        let just_short = t0 + pacing.min_gap_speculative - ms(1);
+        assert_eq!(schedule(&jobs, &at(just_short, Some(t0))), Next::Wait(ms(1)));
+        assert_eq!(schedule(&jobs, &at(t0 + pacing.min_gap_speculative, Some(t0))), Next::Send(0));
+    }
+
+    #[test]
+    fn no_two_requests_are_ever_closer_than_the_short_gap() {
+        let pacing = yahoo_pacing();
+        let t0 = Instant::now();
+        let jobs = vec![job("clicked", FOREGROUND, 0)];
+        assert_eq!(schedule(&jobs, &at(t0 + pacing.min_gap - ms(1), Some(t0))), Next::Wait(ms(1)));
+        assert_eq!(schedule(&jobs, &at(t0 + pacing.min_gap, Some(t0))), Next::Send(0));
+    }
+
+    #[test]
+    fn the_first_request_goes_at_once() {
+        let t0 = Instant::now();
+        assert_eq!(schedule(&[speculative("anything", BACKFILL, 0)], &at(t0, None)), Next::Send(0));
+    }
+
+    #[test]
+    fn an_empty_queue_is_idle_rather_than_waiting() {
+        assert_eq!(schedule(&[], &at(Instant::now(), None)), Next::Idle);
+    }
+
+    /// Nothing is asked during a cooldown and nothing waits for it either:
+    /// everything queued is refused on the spot, most wanted first, which is
+    /// the refusal the window acts on. The chart somebody is looking at is
+    /// refused too — asking again inside the window Yahoo told us to stay
+    /// out of is how a minute's cooldown becomes a quarter of an hour's.
+    #[test]
+    fn a_cooldown_refuses_everything_on_the_spot_and_then_lifts() {
+        let t0 = Instant::now();
+        let jobs = vec![speculative("warm-up", WARM, 0), job("clicked", FOREGROUND, 1)];
+        let throttled = Timing {
+            cooldown_until: Some(t0 + Duration::from_secs(60)),
+            ..at(t0 + ms(500), Some(t0))
+        };
+        assert_eq!(
+            schedule(&jobs, &throttled),
+            Next::Refuse(1),
+            "the click first, so its chart hears why"
+        );
+        assert_eq!(schedule(&jobs[..1], &throttled), Next::Refuse(0), "then the rest");
+
+        let lifted = Timing { now: t0 + Duration::from_secs(60), ..throttled };
+        assert_eq!(schedule(&jobs, &lifted), Next::Send(1));
+    }
+
+    /// A retry is a queued job with a time before which it may not go, not a
+    /// thread asleep. Its backoff is honoured exactly, and so is the gap.
+    #[test]
+    fn a_retry_is_held_for_its_backoff_and_then_sent() {
+        let pacing = yahoo_pacing();
+        let t0 = Instant::now();
+        let mut retry = job("clicked", FOREGROUND, 0);
+        retry.attempt = 1;
+        retry.not_before = Some(t0 + ms(400));
+        let jobs = vec![retry];
+
+        assert_eq!(
+            schedule(&jobs, &at(t0 + ms(10), Some(t0))),
+            Next::Wait(ms(390)),
+            "the backoff, which outlasts the gap"
+        );
+        assert_eq!(schedule(&jobs, &at(t0 + ms(400), Some(t0))), Next::Send(0));
+
+        // A backoff shorter than the gap: the gap wins. Pacing is never bent.
+        let mut quick = job("clicked", FOREGROUND, 0);
+        quick.not_before = Some(t0 + ms(100));
+        assert_eq!(
+            schedule(&[quick], &at(t0 + ms(100), Some(t0))),
+            Next::Wait(pacing.min_gap - ms(100))
+        );
+    }
+
+    /// The other pane's chart does not wait for this pane's retry: a job
+    /// whose time has not come is overtaken by one whose time has.
+    #[test]
+    fn a_job_backing_off_does_not_hold_up_one_that_may_go() {
+        let t0 = Instant::now();
+        let mut first = job("pane-one", FOREGROUND, 0);
+        first.not_before = Some(t0 + ms(800));
+        let jobs = vec![first, job("pane-two", FOREGROUND, 1)];
+        assert_eq!(schedule(&jobs, &at(t0, None)), Next::Send(1));
+    }
+
+    /// But nothing speculative slips into that gap. A warm-up sent while the
+    /// chart's retry backs off would push the retry out by its own time on
+    /// the wire and then a whole short gap, and the chart on screen never
+    /// queues behind a guess.
+    #[test]
+    fn speculative_work_never_goes_while_something_somebody_wants_is_queued() {
+        let t0 = Instant::now();
+        let mut retry = job("clicked", FOREGROUND, 0);
+        retry.not_before = Some(t0 + ms(400));
+        let jobs = vec![retry, speculative("warm-up", WARM, 1)];
+        assert_eq!(
+            schedule(&jobs, &at(t0, None)),
+            Next::Wait(ms(400)),
+            "the warm-up could go now, and does not"
+        );
+    }
+
+    /// A failed attempt goes back into the queue with its backoff, in the
+    /// place it had.
+    #[test]
+    fn a_failed_attempt_goes_back_in_the_queue_to_wait_out_its_backoff() {
+        let inner = with_queue(empty_queue());
+        let t0 = Instant::now();
+        let mut retry = job("yahoo:AAPL", BACKGROUND + 2, 7);
+        retry.attempt = 1;
+        retry.not_before = Some(t0 + ms(400));
+        inner.again(retry);
+
+        let queue = inner.queue.lock().unwrap();
+        assert_eq!(queue.jobs.len(), 1);
+        assert_eq!(queue.jobs[0].attempt, 1);
+        assert_eq!(queue.jobs[0].not_before, Some(t0 + ms(400)));
+        assert_eq!(queue.jobs[0].seq, 7, "its place in line is the one it had");
+    }
+
+    /// Somebody clicked the series while its warm-up was out and failed. The
+    /// next attempt is theirs: ahead of everything, and paced like a click.
+    #[test]
+    fn a_retried_warm_up_somebody_clicked_meanwhile_is_retried_as_their_request() {
+        let mut queue = warming_now(tf("15m"));
+        queue.warming_now.as_mut().expect("in flight").claimed = true;
+        let inner = with_queue(queue);
+        inner.again(Job {
+            request: Request { speculative: true, ..wanted(tf("15m")) },
+            priority: WARM,
+            seq: 0,
+            attempt: 1,
+            not_before: None,
+        });
+
+        let queue = inner.queue.lock().unwrap();
+        assert_eq!(queue.jobs[0].priority, FOREGROUND);
+        assert!(!queue.jobs[0].request.speculative);
+        assert!(queue.warming_now.is_none(), "nothing is in flight now");
+    }
+
+    /// A duplicate queued while the attempt was out — the neighbour
+    /// re-offered as the selection moved — is folded into the retry rather
+    /// than fetched twice.
+    #[test]
+    fn a_retry_folds_into_a_duplicate_queued_while_it_was_out() {
+        let mut queue = empty_queue();
+        enqueue(&mut queue, Request { speculative: true, ..wanted(tf("15m")) }, BACKGROUND + 1);
+        let inner = with_queue(queue);
+        inner.again(Job {
+            request: Request { speculative: true, ..wanted(tf("15m")) },
+            priority: BACKGROUND + 3,
+            seq: 0,
+            attempt: 1,
+            not_before: Some(Instant::now() + ms(400)),
+        });
+
+        let queue = inner.queue.lock().unwrap();
+        assert_eq!(queue.jobs.len(), 1, "asked for twice, fetched once");
+        assert_eq!(queue.jobs[0].priority, BACKGROUND + 1, "the better standing of the two");
+        assert_eq!(queue.jobs[0].attempt, 1, "and the history of the one that was out");
+    }
+
+    fn offer(inner: &Inner, request: Request, priority: u32) {
+        let mut queue = inner.queue.lock().unwrap();
+        let queued = enqueue(&mut queue, request, priority);
+        drop(queue);
+        if queued {
+            inner.wake.notify_one();
+        }
+    }
+
+    fn shutdown(inner: &Inner) {
+        inner.queue.lock().unwrap().shutdown = true;
+        inner.wake.notify_all();
+    }
+
+    /// A worker blocked waiting out a warm-up's long gap, measured from
+    /// `last_sent`, and a count of how many times it has looked at the queue.
+    /// Returns once it has looked, which with the lock held from deciding to
+    /// waiting means it is on the condvar by the time anything else gets in.
+    fn parked_on_a_warm_up(
+        last_sent: Instant,
+    ) -> (Arc<Inner>, Arc<AtomicUsize>, JoinHandle<Option<Dispatch>>) {
+        let mut queue = empty_queue();
+        queue.last_sent = Some(last_sent);
+        enqueue(&mut queue, Request { speculative: true, ..wanted(tf("15m")) }, WARM);
+        let inner = Arc::new(with_queue(queue));
+        let looked = Arc::new(AtomicUsize::new(0));
+        let worker = std::thread::spawn({
+            let inner = inner.clone();
+            let looked = looked.clone();
+            move || {
+                inner.take(|| {
+                    looked.fetch_add(1, Ordering::SeqCst);
+                    (yahoo_pacing(), None)
+                })
+            }
+        });
+        while looked.load(Ordering::SeqCst) == 0 {
+            std::thread::yield_now();
+        }
+        (inner, looked, worker)
+    }
+
+    /// The same property on the real condvar: the worker is blocked waiting
+    /// out a warm-up's gap, a click arrives, and the click is what comes out
+    /// — now, not two seconds from now.
+    #[test]
+    fn a_click_wakes_a_worker_waiting_out_a_speculative_gap() {
+        // A second ago: the short gap has passed and the long one has not.
+        let (inner, _, worker) = parked_on_a_warm_up(Instant::now() - Duration::from_secs(1));
+        offer(&inner, wanted(tf("5m")), FOREGROUND);
+
+        match worker.join().unwrap() {
+            Some(Dispatch::Send(job)) => {
+                assert_eq!(job.priority, FOREGROUND);
+                assert_eq!(job.request.timeframe, tf("5m"));
+            }
+            other => panic!("expected the click, got {other:?}"),
+        }
+        let queue = inner.queue.lock().unwrap();
+        assert_eq!(queue.jobs.len(), 1, "the warm-up is still queued, once");
+        assert!(queue.jobs[0].request.speculative);
+    }
+
+    /// Clicking the very resolution being warmed: the job the worker is
+    /// waiting on changes underneath it, and the worker has to be told.
+    #[test]
+    fn clicking_the_resolution_a_waiting_worker_holds_wakes_it_as_a_click() {
+        let (inner, _, worker) = parked_on_a_warm_up(Instant::now() - Duration::from_secs(1));
+        offer(&inner, wanted(tf("15m")), FOREGROUND);
+
+        match worker.join().unwrap() {
+            Some(Dispatch::Send(job)) => {
+                assert_eq!(job.priority, FOREGROUND);
+                assert!(!job.request.speculative);
+            }
+            other => panic!("expected the click, got {other:?}"),
+        }
+        assert!(inner.queue.lock().unwrap().jobs.is_empty(), "one job, promoted, not two");
+    }
+
+    /// Blocked on the condvar, not spinning on the clock: left alone, a
+    /// parked worker looks at the queue once. A short real wait is the only
+    /// way to tell a block from a spin, so this is the one test here that
+    /// takes any time at all, and it measures nothing by it.
+    #[test]
+    fn a_waiting_worker_does_not_poll() {
+        let (inner, looked, worker) = parked_on_a_warm_up(Instant::now());
+        std::thread::sleep(ms(30));
+        let times = looked.load(Ordering::SeqCst);
+        assert!(times < 5, "looked {times} times in 30ms");
+        shutdown(&inner);
+        assert!(worker.join().unwrap().is_none());
+    }
+
+    /// Closing the window interrupts the wait like any other arrival.
+    #[test]
+    fn shutting_down_wakes_a_waiting_worker() {
+        let (inner, _, worker) = parked_on_a_warm_up(Instant::now());
+        shutdown(&inner);
+        assert!(worker.join().unwrap().is_none());
     }
 }

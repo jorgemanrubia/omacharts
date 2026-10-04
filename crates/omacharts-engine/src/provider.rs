@@ -6,6 +6,7 @@
 //! whole reason the boundary exists.
 
 use std::fmt;
+use std::time::{Duration, Instant};
 
 use crate::bars::{Bar, Timeframe};
 use crate::symbols::{Instrument, InstrumentKind};
@@ -152,6 +153,36 @@ pub struct Capability {
     pub max_request_days: Option<u32>,
 }
 
+/// How far apart a provider needs its requests kept.
+///
+/// Rules, not timing. A provider says what it will tolerate, and whoever
+/// holds the queue of requests does the waiting — on something it can be
+/// woken from, so that the chart somebody has just asked for is never stuck
+/// behind a gap being sat out on behalf of a request nobody wanted. A
+/// provider that slept here instead would be a second scheduler, one that
+/// knows nothing about the queue and overrules it from inside a call.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Pacing {
+    /// The least time after any request before the next one somebody is
+    /// waiting on may go.
+    pub min_gap: Duration,
+    /// The same, before the next one nobody asked for. Expected to be the
+    /// longer of the two: work done on a guess has no reason to spend the
+    /// request budget quickly.
+    pub min_gap_speculative: Duration,
+}
+
+impl Pacing {
+    /// No pacing at all: every request may go the moment it is wanted.
+    pub const NONE: Pacing =
+        Pacing { min_gap: Duration::ZERO, min_gap_speculative: Duration::ZERO };
+
+    /// The gap that applies before a request of this kind.
+    pub fn gap(self, speculative: bool) -> Duration {
+        if speculative { self.min_gap_speculative } else { self.min_gap }
+    }
+}
+
 pub trait Provider: Send + Sync {
     /// Stable id, used as the `adapter` key in stored symbol mappings.
     fn id(&self) -> &'static str;
@@ -175,6 +206,13 @@ pub trait Provider: Send + Sync {
     /// `since` is an inclusive lower bound in unix seconds; `None` asks for as
     /// much history as the provider will give. Implementations must not return
     /// bars they had to invent, and the final bar may still be forming.
+    ///
+    /// One request, made now. An implementation never waits before it and
+    /// never tries again after it: how far apart requests must be kept, when
+    /// none may be made at all, and whether a failure is worth another go
+    /// are rules it *states* — [`Self::pacing`], [`Self::cooldown_until`],
+    /// [`Self::retry_after`] — and the caller's queue applies. One place
+    /// waits, and it is the place that knows what else is waiting.
     fn bars(
         &self,
         symbol: &str,
@@ -182,20 +220,38 @@ pub trait Provider: Send + Sync {
         since: Option<i64>,
     ) -> Result<Vec<Bar>, ProviderError>;
 
-    /// Bars for something nobody asked for yet.
+    /// How far apart this provider's requests must be kept.
     ///
-    /// Same data, lower claim on the provider: implementations are expected to
-    /// pace this further apart and to refuse it outright while they are being
-    /// throttled, so filling a watchlist in the background can never cost
-    /// someone the chart they are actually looking at. Defaults to a normal
-    /// fetch for providers with no rate limit worth respecting.
-    fn bars_speculative(
-        &self,
-        symbol: &str,
-        timeframe: Timeframe,
-        since: Option<i64>,
-    ) -> Result<Vec<Bar>, ProviderError> {
-        self.bars(symbol, timeframe, since)
+    /// Rules only, and constant: the provider is never the one that holds a
+    /// request back. Defaults to none, for a provider with no rate limit
+    /// worth respecting.
+    fn pacing(&self) -> Pacing {
+        Pacing::NONE
+    }
+
+    /// Until when nothing at all may be asked of the provider, if such a
+    /// time is set — after it has said it is being asked too much, say.
+    ///
+    /// A request wanted before then is refused by the caller without
+    /// reaching the network, as [`ProviderError::RateLimited`]. The state is
+    /// the provider's because only it sees the answers that set and clear
+    /// it; sitting the cooldown out is not, and an implementation must
+    /// never block a caller on it. Defaults to never.
+    fn cooldown_until(&self) -> Option<Instant> {
+        None
+    }
+
+    /// Is a request that failed with `error` on its `attempt`th try, counted
+    /// from zero, worth another — and how long after?
+    ///
+    /// Policy only. The caller holds the request back for that long and
+    /// makes the next attempt itself, so a request being retried is still a
+    /// queued request and everything more wanted overtakes it. `None` is a
+    /// final answer, and the default: a provider that has no transient
+    /// failures worth a second look says nothing here.
+    fn retry_after(&self, error: &ProviderError, attempt: u32) -> Option<Duration> {
+        let _ = (error, attempt);
+        None
     }
 
     /// Does this provider serve the timeframe natively?

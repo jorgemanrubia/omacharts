@@ -24,6 +24,7 @@ use std::rc::Rc;
 use omacharts_engine::providers::Yahoo;
 use omacharts_engine::{Instrument, Provider, SearchIndex, Timeframe};
 
+use crate::loader::{Loader, Request, BACKFILL};
 use crate::store::{Store, ROOT_SECTION};
 
 pub mod charts;
@@ -237,8 +238,8 @@ const STALE_AFTER_SECONDS: i64 = omacharts_engine::refresh::CEILING_SECONDS;
 /// Most symbols one invocation will fetch.
 ///
 /// The bar calls this on a timer, and a run that tries to refresh forty
-/// symbols would spend minutes inside the provider's pacing and overlap the
-/// next run. Whatever is stalest goes first, so a few runs cover everything.
+/// symbols would spend minutes being paced apart and overlap the next run.
+/// Whatever is stalest goes first, so a few runs cover everything.
 const MAX_REFRESH: usize = 6;
 
 pub struct Quote {
@@ -293,18 +294,27 @@ fn stale_daily(store: &Store, provider: &Yahoo, instruments: &[Instrument]) -> V
 /// that exists to answer one question and has nothing to block. Inside the
 /// window this would run on the GTK main loop — see [`Live::warm`].
 ///
-/// Speculative, so the provider paces it apart and refuses outright while it
-/// is being throttled: a bar widget must never cost the app its rate limit.
+/// Through the loader rather than the provider directly, because the loader
+/// is the one place that paces requests. Speculative, so they go two seconds
+/// apart and are refused outright while the provider is throttling: a bar
+/// widget must never cost the app its rate limit.
 fn refresh(store: &Store, provider: &Yahoo, instruments: &[Instrument]) {
-    let daily = Timeframe::days(1);
-    for instrument in stale_daily(store, provider, instruments).iter().take(MAX_REFRESH) {
+    let (sender, receiver) = async_channel::unbounded();
+    let loader = Loader::new(Yahoo::new(), sender);
+    let mut outstanding = 0;
+    let stale = stale_daily(store, provider, instruments);
+    for (rank, instrument) in stale.iter().take(MAX_REFRESH).enumerate() {
         let Some(symbol) = provider.symbol_for(instrument) else { continue };
         let Some(key) = cache_key(provider, instrument) else { continue };
-        let since = store.coverage(&key, daily).map(|c| c.last_ts - 5 * daily.seconds());
-        if let Ok(bars) = provider.bars_speculative(&symbol, daily, since)
-            && !bars.is_empty()
-        {
-            store.merge_bars(&key, daily, &bars);
+        let request = Request { key, symbol, timeframe: Timeframe::days(1), speculative: true };
+        loader.fetch(request, BACKFILL.saturating_add(rank as u32));
+        outstanding += 1;
+    }
+    // The loader writes whatever arrives to the cache itself. All that is
+    // left is to wait until it has.
+    for _ in 0..outstanding {
+        if receiver.recv_blocking().is_err() {
+            break;
         }
     }
 }
