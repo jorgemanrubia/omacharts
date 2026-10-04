@@ -669,6 +669,16 @@ pub const SURFACE: &[Noun] = &[
                 writes: true,
                 workspace: false,
             },
+            Verb {
+                name: "refresh",
+                about: "Whether charts left open fetch new bars for themselves",
+                args: &[Arg::opt("STATE", "omit to read it").of(SWITCHES)],
+                flags: &[],
+                example: "omacharts config refresh off",
+                json: true,
+                writes: true,
+                workspace: false,
+            },
         ],
     },
     Noun {

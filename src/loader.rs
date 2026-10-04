@@ -59,7 +59,20 @@ pub enum Response {
     /// are not the same sentence. This used to be a string nobody read and a
     /// `rate_limited` bool, which is how every failure ended up looking like
     /// a symbol with no data.
-    Failed { key: String, timeframe: Timeframe, bars: Vec<Bar>, failure: FetchFailure },
+    ///
+    /// `unasked` is true when nobody was waiting for this — the window went
+    /// and asked on a timer, to keep a chart from going stale. Such a failure
+    /// still travels, because a refusal is the one thing that must stop the
+    /// timer offering more, but it must not put words on a chart whose user
+    /// asked for nothing: "rate limited" on a chart somebody is reading
+    /// happily is a sentence they then have to have explained to them.
+    Failed {
+        key: String,
+        timeframe: Timeframe,
+        bars: Vec<Bar>,
+        failure: FetchFailure,
+        unasked: bool,
+    },
 }
 
 /// The chart you are looking at. Jumps every queued prefetch.
@@ -93,6 +106,25 @@ pub const BACKFILL: u32 = 2_000_000;
 /// they have just stopped looking at it.
 pub const WARM: u32 = 1_000_000;
 
+/// A chart on screen whose bars have gone stale, fetched again on a timer.
+///
+/// Behind [`WARM`], because warming is a bounded first-visit cost — three
+/// requests for a symbol and then silence for ever — while a refresh comes
+/// back every few minutes for as long as the chart stays open. A strip still
+/// filling in belongs to somebody about to click a resolution; a chart a
+/// quarter of an hour old can wait the couple of seconds that takes.
+///
+/// Ahead of [`BACKFILL`], because this is the chart the user is actually
+/// looking at, and the backfill is a standing list that is never forgotten
+/// and can therefore afford to go last.
+///
+/// Dropped when the selection moves, like a warm-up and for the same reason:
+/// it was a statement about the chart that was on screen, and that is the
+/// thing which just changed. Nothing has to resume it — the timer offers it
+/// again on its next tick if it still matters, which is also what lets it
+/// come back after the provider has refused one.
+pub const REFRESH: u32 = 1_500_000;
+
 /// Fetches bars on one worker thread, nearest-wanted first.
 ///
 /// One thread, not one per request, for two reasons. The provider is paced —
@@ -117,19 +149,21 @@ struct Queue {
     /// Breaks ties so equal priorities keep the order they were asked in.
     next_seq: u64,
     shutdown: bool,
-    /// The warm-up being fetched right now, so that somebody asking for that
-    /// very resolution joins it instead of starting a second fetch for it.
+    /// The request nobody asked for that is being fetched right now, so that
+    /// somebody asking for that very series joins it instead of starting a
+    /// second fetch for it. A warm-up or a refresh — see [`on_a_charts_behalf`].
     warming_now: Option<Claim>,
 }
 
-/// A warm-up in flight, and whether anybody has come to want it.
+/// A request made on a chart's behalf, in flight, and whether anybody has
+/// come to want it.
 struct Claim {
     key: String,
     /// The series being fetched, which is what a derived resolution folds
     /// from: clicking 4h joins the hourly already on its way.
     native: Timeframe,
-    /// Set when somebody asks for this resolution for real while it is being
-    /// warmed. Its reply is their reply from then on.
+    /// Set when somebody asks for this series for real while it is in flight.
+    /// Its reply is their reply from then on — bars or failure.
     claimed: bool,
 }
 
@@ -158,8 +192,8 @@ impl Loader {
         let worker = inner.clone();
         std::thread::spawn(move || {
             while let Some(job) = worker.take() {
-                let response = run(&job.request, &provider);
-                if !worker.finished(job.priority == WARM, &response) {
+                let mut response = run(&job.request, &provider);
+                if !worker.finished(job.priority, &mut response) {
                     continue;
                 }
                 // The window closing before we finish is normal, not an error.
@@ -422,7 +456,7 @@ impl Inner {
             }
             if let Some(at) = best(&queue.jobs) {
                 let job = queue.jobs.remove(at);
-                queue.warming_now = (job.priority == WARM).then(|| Claim {
+                queue.warming_now = on_a_charts_behalf(job.priority).then(|| Claim {
                     key: job.request.key.clone(),
                     native: job.request.timeframe.native(),
                     claimed: false,
@@ -441,17 +475,42 @@ impl Inner {
     /// because the window is never told: whatever refused one speculative
     /// request will refuse the next five, and a chart nobody is waiting on
     /// has nothing to say about it.
-    fn finished(&self, warm: bool, response: &Response) -> bool {
+    fn finished(&self, priority: u32, response: &mut Response) -> bool {
         let claimed = {
             let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
             queue.warming_now.take().is_some_and(|claim| claim.claimed)
         };
+        let warm = priority == WARM;
         let failed = matches!(response, Response::Failed { .. });
         if warm && failed && !claimed {
             *self.warming.lock().unwrap_or_else(|e| e.into_inner()) = Warming::default();
         }
+        // Say whether anybody was waiting for this, which is not the same
+        // question as which band it was queued in: a resolution somebody
+        // clicked while it was being fetched for them is their request now,
+        // and its answer is theirs to be told.
+        if let Response::Failed { unasked, .. } = response {
+            *unasked = on_a_charts_behalf(priority) && !claimed;
+        }
         !warm || warm_up_is_worth_reporting(failed, claimed)
     }
+}
+
+/// Was this fetched for a chart already on screen, without anybody asking?
+///
+/// [`WARM`] and [`REFRESH`] both were, and the distinction earns its keep
+/// because they share two pieces of behaviour. A request somebody makes for
+/// the same series joins the one already in flight rather than racing it. And
+/// a failure reaches the window marked as nobody's news, because the chart in
+/// question is on screen, looks perfectly fine, and its user asked for
+/// nothing — so a marker in its corner would be a sentence somebody then has
+/// to have explained to them.
+///
+/// [`BACKFILL`] is deliberately not one of these, though nobody asked for
+/// that either. It fetches for the *rail*, on behalf of rows showing a dash,
+/// and the rail does say when it cannot fill them in.
+fn on_a_charts_behalf(priority: u32) -> bool {
+    matches!(priority, WARM | REFRESH)
 }
 
 /// Is a finished warm-up's reply worth delivering to the window?
@@ -520,6 +579,11 @@ fn best(jobs: &[Job]) -> Option<usize> {
         .map(|(at, _)| at)
 }
 
+/// Fetch one request and say what came back.
+///
+/// Leaves `unasked` false on a failure: whether anybody is waiting for this
+/// depends on what has happened to the queue since it went out, which only
+/// [`Inner::finished`] is in a position to know.
 fn run<P: Provider>(request: &Request, provider: &P) -> Response {
     let fetch = |symbol: &str, timeframe, since| {
         if request.speculative {
@@ -535,6 +599,7 @@ fn run<P: Provider>(request: &Request, provider: &P) -> Response {
             timeframe: native,
             bars: Vec::new(),
             failure: FetchFailure::LocalCache,
+            unasked: false,
         };
     };
 
@@ -546,11 +611,13 @@ fn run<P: Provider>(request: &Request, provider: &P) -> Response {
     let since = coverage.map(|c| c.last_ts - OVERLAP * native.seconds());
 
     match fetch(&request.symbol, native, since) {
-        Ok(fresh) if fresh.is_empty() => Response::Bars {
-            key: request.key.clone(),
-            timeframe: native,
-            bars: cached,
-        },
+        Ok(fresh) if fresh.is_empty() => {
+            // Nothing new, which is still an answer. Recording that we asked
+            // is what stops a chart on a timer asking again on every tick for
+            // as long as the provider has nothing to add.
+            store.mark_fetched(&request.key, native);
+            Response::Bars { key: request.key.clone(), timeframe: native, bars: cached }
+        }
         Ok(fresh) => {
             // If the overlap disagrees, the cached history was adjusted out
             // from under us and cannot be trusted. Start over.
@@ -566,6 +633,7 @@ fn run<P: Provider>(request: &Request, provider: &P) -> Response {
                             timeframe: native,
                             bars: Vec::new(),
                             failure: FetchFailure::from(&error),
+                            unasked: false,
                         }
                     }
                 };
@@ -581,6 +649,7 @@ fn run<P: Provider>(request: &Request, provider: &P) -> Response {
             timeframe: native,
             bars: cached,
             failure: FetchFailure::from(&error),
+            unasked: false,
         },
     }
 }
@@ -1007,5 +1076,113 @@ mod tests {
     #[test]
     fn a_warm_up_that_worked_is_always_delivered() {
         assert!(warm_up_is_worth_reporting(false, false));
+    }
+
+    // -- refreshing a chart on screen --------------------------------------
+
+    /// Where [`REFRESH`] sits decides what a stale chart is allowed to wait
+    /// for, and the answer is: a strip still filling in, and nothing else.
+    #[test]
+    fn a_refresh_waits_for_a_warm_up_and_is_still_ahead_of_the_backfill() {
+        let jobs = vec![job("stale-chart", REFRESH, 0), job("warming", WARM, 1)];
+        assert_eq!(best(&jobs), Some(1), "a strip about to be clicked goes first");
+
+        let jobs = vec![job("standing-backfill", BACKFILL, 0), job("stale-chart", REFRESH, 1)];
+        assert_eq!(best(&jobs), Some(1), "but the chart on screen beats a list that can wait");
+    }
+
+    /// The thing a refresh must never do: hold up a chart somebody has only
+    /// just asked for.
+    #[test]
+    fn a_refresh_never_delays_the_chart_somebody_asked_for() {
+        let jobs = vec![job("stale-chart", REFRESH, 0), job("asked-for", FOREGROUND, 1)];
+        assert_eq!(best(&jobs), Some(1));
+    }
+
+    /// A refresh is a statement about the chart that was on screen, so
+    /// leaving it stops it being true — exactly like a warm-up. Nothing has
+    /// to resume it: the timer offers it again on its next tick.
+    #[test]
+    fn moving_on_forgets_a_refresh() {
+        assert!(!survives_a_move(&job("stale-chart", REFRESH, 0)));
+    }
+
+    #[test]
+    fn the_bands_fetched_on_a_charts_behalf_are_the_warm_up_and_the_refresh() {
+        assert!(on_a_charts_behalf(WARM));
+        assert!(on_a_charts_behalf(REFRESH));
+        assert!(!on_a_charts_behalf(FOREGROUND), "somebody is waiting for this one");
+        assert!(!on_a_charts_behalf(BACKGROUND + 3), "a guess about where they are going");
+        assert!(!on_a_charts_behalf(BACKFILL), "the rail's, and the rail does say");
+    }
+
+    fn with_queue(queue: Queue) -> Inner {
+        Inner {
+            queue: Mutex::new(queue),
+            wake: Condvar::new(),
+            warming: Mutex::new(Warming::default()),
+        }
+    }
+
+    fn a_refusal() -> Response {
+        Response::Failed {
+            key: "yahoo:AAPL".into(),
+            timeframe: tf("1D"),
+            bars: Vec::new(),
+            failure: FetchFailure::RateLimited,
+            unasked: false,
+        }
+    }
+
+    fn unasked_of(response: &Response) -> bool {
+        match response {
+            Response::Failed { unasked, .. } => *unasked,
+            Response::Bars { .. } => panic!("expected a failure"),
+        }
+    }
+
+    /// Both halves matter, and they pull in opposite directions. The window
+    /// has to *hear* that a refresh was refused, because that refusal is the
+    /// only thing which stops the timer offering the same request again in
+    /// thirty seconds. And it must not *show* it, because the chart is fine
+    /// and its user asked for nothing.
+    #[test]
+    fn a_refused_refresh_is_delivered_and_marked_as_nobodys_news() {
+        let inner = with_queue(empty_queue());
+        let mut response = a_refusal();
+        assert!(inner.finished(REFRESH, &mut response), "the timer has to be told");
+        assert!(unasked_of(&response), "but the chart must not say so");
+    }
+
+    /// Unlike a warm-up, which is dropped on the floor — there is no timer
+    /// behind one to stop, because the worker abandons the rest of the strip
+    /// itself.
+    #[test]
+    fn a_refused_warm_up_nobody_wanted_is_not_delivered_at_all() {
+        let inner = with_queue(empty_queue());
+        let mut response = a_refusal();
+        assert!(!inner.finished(WARM, &mut response));
+    }
+
+    #[test]
+    fn a_failure_somebody_was_waiting_for_is_never_marked_unasked() {
+        let inner = with_queue(empty_queue());
+        let mut response = a_refusal();
+        assert!(inner.finished(FOREGROUND, &mut response));
+        assert!(!unasked_of(&response), "their request, their answer");
+    }
+
+    /// Somebody asked for the very series being refreshed while the fetch was
+    /// still in flight. It is their request from then on, so its failure is
+    /// theirs to be told about, in the words any other failed fetch uses.
+    #[test]
+    fn a_refresh_somebody_asked_for_midway_reports_to_them_like_any_other_fetch() {
+        let mut queue = warming_now(tf("1D"));
+        queue.warming_now.as_mut().expect("in flight").claimed = true;
+        let inner = with_queue(queue);
+
+        let mut response = a_refusal();
+        assert!(inner.finished(REFRESH, &mut response));
+        assert!(!unasked_of(&response));
     }
 }

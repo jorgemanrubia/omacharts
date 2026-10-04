@@ -625,6 +625,17 @@ impl ChartView {
         self.state.borrow().price_auto
     }
 
+    /// Is the chart showing the newest bars it has?
+    ///
+    /// False once the view has been panned back into history, and the
+    /// question a background refresh has to ask before fetching anything:
+    /// somebody reading last March is the person least served by new bars
+    /// arriving, and a chart that is not showing the live edge does not
+    /// change when the live edge does.
+    pub fn at_latest(&self) -> bool {
+        self.state.borrow().anchored
+    }
+
     pub fn set_price_auto(&self, auto: bool) {
         {
             let mut state = self.state.borrow_mut();

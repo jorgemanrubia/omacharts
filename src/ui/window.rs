@@ -15,11 +15,12 @@ use std::rc::Rc;
 use adw::prelude::*;
 use gtk::glib;
 use omacharts_engine::providers::Yahoo;
+use omacharts_engine::refresh;
 use omacharts_engine::{
     resample, BarStyle, FetchFailure, Indicator, Instrument, Provider, Session, Timeframe,
 };
 
-use crate::loader::{Loader, Request, Response, BACKFILL, BACKGROUND, FOREGROUND};
+use crate::loader::{Loader, Request, Response, BACKFILL, BACKGROUND, FOREGROUND, REFRESH};
 use crate::store::{Store, DEFAULT_WATCHLIST};
 use crate::theming::Theming;
 use crate::ui::chart::{Drawn, Echo};
@@ -42,6 +43,16 @@ use gtk::gio;
 /// A minute is below anyone's patience for a dash filling in and far above the
 /// cost of the `coverage` queries it takes to find out there is nothing to do.
 const BACKFILL_POLL_SECONDS: u32 = 60;
+
+/// How often we ask which charts on screen have gone stale.
+///
+/// Not the refresh period — that belongs to each chart and comes from its
+/// resolution, see [`omacharts_engine::refresh::period`]. This is only how
+/// finely the question is asked, and it is half the shortest period any chart
+/// can have so that a one-minute chart is not held to two minutes by the
+/// timer's own phase. A tick with nothing to do is a handful of `coverage`
+/// queries against a local, indexed, write-ahead-logged table.
+const REFRESH_TICK_SECONDS: u32 = 30;
 
 /// How often we look for a desktop theme change. Cheap enough to be invisible,
 /// often enough to feel immediate.
@@ -988,6 +999,22 @@ const SETTING_TIMEFRAMES: &str = "timeframes";
 const SETTING_WORKSPACE: &str = "workspace";
 /// Whether a pointer on one chart draws a line on the linked ones.
 pub const SETTING_SYNC_CROSSHAIR: &str = "sync_crosshair";
+/// Whether charts left open fetch new bars for themselves.
+pub const SETTING_AUTO_REFRESH: &str = "auto_refresh";
+
+/// Whether charts left open fetch themselves again.
+///
+/// On unless somebody has said otherwise, because the other default is the
+/// worse failure: a chart that has quietly stopped being true looks exactly
+/// like one that is, and somebody reads this morning's price as though it
+/// were now. Being wrong the other way costs a small tail request every few
+/// minutes for the handful of charts actually on screen.
+///
+/// The default lives here and only here, so that the dialog, the command and
+/// the timer cannot come to disagree about what it is.
+pub fn auto_refresh(store: &Store) -> bool {
+    store.setting_bool(SETTING_AUTO_REFRESH, true)
+}
 
 /// One chart, as it is written down.
 ///
@@ -1286,6 +1313,11 @@ pub struct Window {
     /// passes, the backfill does not offer anything — the provider would only
     /// turn it down, and asking is how a cooldown becomes a longer one.
     backfill_quiet_until: Cell<Option<std::time::Instant>>,
+    /// The same, for refreshing charts, and separate from it on purpose. The
+    /// two ask for different things and one being refused says nothing about
+    /// the other: a backfill paused for five minutes must not also stop the
+    /// chart somebody is watching from keeping itself current.
+    refresh_quiet_until: Cell<Option<std::time::Instant>>,
 }
 
 impl Window {
@@ -1350,6 +1382,7 @@ impl Window {
                 store.setting(SETTING_TIMEFRAMES).as_deref(),
             )),
             backfill_quiet_until: Cell::new(None),
+            refresh_quiet_until: Cell::new(None),
         });
 
         let watchlist = this.build_watchlist();
@@ -1464,6 +1497,7 @@ impl Window {
         this.wire_responses(receiver);
         this.wire_theme_polling();
         this.wire_backfill();
+        this.wire_refresh();
 
         // The widget is part of the app, so it arrives with it rather than
         // waiting to be discovered in the settings.
@@ -3754,14 +3788,26 @@ impl Window {
                             this.store.coverage(&key, tf).is_some()
                         });
                     }
-                    Response::Failed { key, timeframe, bars, failure } => {
+                    Response::Failed { key, timeframe, bars, failure, unasked } => {
                         // A failure shows the same chart and says what went
                         // wrong. Never an empty pane, and never a pane that
                         // blames the symbol for a request that never arrived.
-                        this.present(&key, timeframe, bars, Some(failure));
+                        //
+                        // Unless nobody asked. A refresh that was refused
+                        // leaves the chart exactly as it was, because the one
+                        // thing this feature must never do is put "rate
+                        // limited" in the corner of a chart somebody is
+                        // reading happily, about a request they did not make
+                        // and cannot act on.
+                        if !unasked {
+                            this.present(&key, timeframe, bars, Some(failure));
+                        }
                         // Three more requests is the worst possible answer to
                         // a provider that has just refused one.
                         this.loader.stop_warming(&key);
+                        if unasked {
+                            this.pause_refresh();
+                        }
                         // Being throttled is the one failure worth acting on
                         // rather than just showing: carrying on would spend a
                         // queue of speculative requests on certain refusals
@@ -4464,6 +4510,120 @@ impl Window {
     fn pause_backfill(self: &Rc<Self>) {
         self.loader.drop_backfill();
         self.backfill_quiet_until
+            .set(Some(std::time::Instant::now() + std::time::Duration::from_secs(300)));
+    }
+
+    /// Keep the charts on screen from quietly going stale.
+    ///
+    /// There is nothing to subscribe to. Yahoo has no stream, and its quote
+    /// path is the very same chart endpoint the bars come from — the older
+    /// `v7/finance/quote` wants a cookie and crumb handshake and is not used
+    /// at all — so there is nothing cheaper to poll than the series itself,
+    /// and no fresher number hiding behind a different URL. Refreshing a
+    /// chart therefore means refetching its tail, which the loader already
+    /// does in one small request from a few bars before where the cache ends.
+    ///
+    /// Which leaves the only question worth engineering: how rarely this can
+    /// get away with asking. That answer belongs to
+    /// [`omacharts_engine::refresh`], one chart at a time, and most ticks of
+    /// this timer queue nothing at all.
+    fn wire_refresh(self: &Rc<Self>) {
+        // No first pass on idle, unlike the backfill: every chart on screen
+        // has just been fetched by the thing that put it there, so there is
+        // nothing a tick at startup could usefully do.
+        let this = self.clone();
+        glib::timeout_add_seconds_local(REFRESH_TICK_SECONDS, move || {
+            this.refresh_charts();
+            glib::ControlFlow::Continue
+        });
+    }
+
+    /// Offer a tail fetch for each chart on screen that has gone stale.
+    ///
+    /// Deliberately asks [`refresh::due`] about every chart rather than
+    /// second-guessing any of it here, so that there is exactly one place
+    /// where the decision lives and exactly one place to read to find out
+    /// what this will and will not do.
+    fn refresh_charts(self: &Rc<Self>) {
+        if self.refresh_quiet_until.get().is_some_and(|until| until > std::time::Instant::now()) {
+            return;
+        }
+        self.refresh_quiet_until.set(None);
+
+        let enabled = auto_refresh(&self.store);
+        let visible = self.on_screen();
+        let now = chrono::Utc::now().timestamp();
+
+        // Only the charts actually mounted. `panes` keeps the ones hidden
+        // behind a maximized chart so that they are right when they come
+        // back, and until they do, nobody is looking at them.
+        for id in self.mounted().leaves() {
+            let Some(pane) = self.pane(id) else { continue };
+            let instrument = pane.instrument.borrow().clone();
+            let Some(instrument) = instrument else { continue };
+            let Some(symbol) = self.provider.symbol_for(&instrument) else { continue };
+            let key = format!("{}:{symbol}", self.provider.id());
+            let timeframe = pane.timeframe.get();
+            let candidate = refresh::Candidate {
+                enabled,
+                visible,
+                at_latest: pane.view.at_latest(),
+                timeframe,
+                instrument: &instrument,
+                fetched_at: self
+                    .store
+                    .coverage(&key, timeframe.native())
+                    .map(|coverage| coverage.fetched_at),
+            };
+            if refresh::due(&candidate, now).is_err() {
+                continue;
+            }
+            // Speculative, which is the whole of how this stays polite: the
+            // provider holds it two seconds behind anything somebody is
+            // waiting for and refuses it outright while it is being
+            // throttled. A chart keeping itself current must never be the
+            // reason another one loads slowly.
+            self.loader.fetch(Request { key, symbol, timeframe, speculative: true }, REFRESH);
+        }
+    }
+
+    /// Is the window on screen at all?
+    ///
+    /// Mapped, which is GTK's own answer and catches a window that has been
+    /// closed to nothing or never shown. Deliberately **not** focus: a chart
+    /// is a thing you glance at while working in another window, and one that
+    /// stopped keeping itself current the moment it lost the keyboard would be
+    /// stale at precisely the instant somebody looked at it.
+    ///
+    /// This is the weakest of the refusals, and honestly so. The signal that
+    /// would really answer the question is `GtkWindow:suspended` — the
+    /// compositor saying the surface is not being displayed, which is what a
+    /// window on another workspace is — and it needs GTK 4.12, while this
+    /// builds against 4.10. Turning that on surfaces deprecations across
+    /// unrelated code, so it is left for whoever raises the floor; the day
+    /// they do, this is the one line that changes. Until then a window on
+    /// another workspace counts as on screen, which is no worse than the
+    /// behaviour this replaced, and the refusals that do the real work here
+    /// are the market being shut and the period not having elapsed.
+    fn on_screen(&self) -> bool {
+        self.window.is_mapped()
+    }
+
+    /// Stop refreshing charts for a while, because a refresh was just refused.
+    ///
+    /// The refusal stops this rather than being retried, which is the rule
+    /// that matters: a failed fetch writes no bars, so the chart stays due,
+    /// and without a pause the timer would offer the same request every
+    /// thirty seconds for as long as whatever went wrong lasted. Any failure
+    /// counts, not only a 429 — the provider and the network are shared by
+    /// every chart, so one refusal really is news about all of them.
+    ///
+    /// Five minutes, as for the backfill: comfortably past the provider's
+    /// first cooldown, so the window is never the thing that walks into one,
+    /// and invisible against a cadence whose slowest setting is a quarter of
+    /// an hour.
+    fn pause_refresh(self: &Rc<Self>) {
+        self.refresh_quiet_until
             .set(Some(std::time::Instant::now() + std::time::Duration::from_secs(300)));
     }
 

@@ -235,6 +235,25 @@ impl Store {
             .flatten()
     }
 
+    /// Note that we asked and the provider had nothing new to add.
+    ///
+    /// `fetched_at` means what its name says — when this series was last
+    /// fetched — and a reply with no new bars in it is still a reply. Without
+    /// this a chart refreshing itself on a timer would ask again on every
+    /// tick for as long as the provider had nothing to give it, which is
+    /// precisely the position a public holiday or a thin overnight session
+    /// puts it in.
+    ///
+    /// It also sharpens the proxy for use that [`crate::cache::evict`] orders
+    /// by, in the one place that comment admits it is blunt: a series being
+    /// polled is a series somebody has on screen.
+    pub fn mark_fetched(&self, key: &str, timeframe: Timeframe) {
+        let _ = self.conn.execute(
+            "UPDATE bar_series SET fetched_at = ?3 WHERE key = ?1 AND interval = ?2",
+            params![key, timeframe.key(), chrono::Utc::now().timestamp()],
+        );
+    }
+
     pub fn load_bars(&self, key: &str, timeframe: Timeframe) -> Vec<Bar> {
         let row: Option<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)> = self
             .conn

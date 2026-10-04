@@ -226,7 +226,13 @@ pub fn run(args: &[String], store: &Store, live: Option<&dyn Live>) -> Outcome {
 const SPARK_POINTS: usize = 30;
 
 /// How stale a quote may be before a `--refresh` run goes and gets it.
-const STALE_AFTER_SECONDS: i64 = 15 * 60;
+///
+/// The very number a chart in the window holds itself to at its slowest, and
+/// for the same reason — it is the worst delay the provider admits to. Taken
+/// from there rather than respelled here, because the bar widget and the
+/// window answering "how old is too old" differently would be a disagreement
+/// nobody could see and everybody would feel.
+const STALE_AFTER_SECONDS: i64 = omacharts_engine::refresh::CEILING_SECONDS;
 
 /// Most symbols one invocation will fetch.
 ///

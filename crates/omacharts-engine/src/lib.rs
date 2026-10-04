@@ -12,6 +12,7 @@ pub mod link;
 pub mod omarchy;
 pub mod palette;
 pub mod provider;
+pub mod refresh;
 pub mod session;
 pub mod providers;
 pub mod symbols;
