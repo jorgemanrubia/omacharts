@@ -24,7 +24,28 @@ pub use window::Window;
 /// GTK claims it and `gtk::init` from the next one panics with "attempted to
 /// initialize GTK from two different threads". Asking first turns that into a
 /// skip, which is what the display-less case already does.
+///
+/// And GTK is asked exactly once. On a runner with no display `gtk::init`
+/// fails and leaves GTK uninitialised, so a second test asking again would
+/// call it again — and the second attempt segfaults inside GTK, which ends
+/// the whole test binary rather than failing an assertion. One GTK test
+/// never hit it; the second did, on CI and anywhere else without a display.
+/// So the first attempt's answer is kept, and every later test on any other
+/// thread gets a plain no.
 #[cfg(test)]
 pub fn gtk_ready() -> bool {
-    gtk::is_initialized_main_thread() || (!gtk::is_initialized() && gtk::init().is_ok())
+    if gtk::is_initialized_main_thread() {
+        return true;
+    }
+    static ASKED: std::sync::Mutex<Option<bool>> = std::sync::Mutex::new(None);
+    let mut asked = ASKED.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    match *asked {
+        // Either it failed, or it succeeded on a thread that is not this one.
+        Some(_) => false,
+        None => {
+            let ok = gtk::init().is_ok();
+            *asked = Some(ok);
+            ok
+        }
+    }
 }
