@@ -178,6 +178,7 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
         &[
             ("Alt+L", "Draw a line: click where it starts, then where it ends"),
             ("Alt+R", "Draw a rectangle over a run of bars"),
+            ("Alt+1 … 9", "Configuration N, for the selected drawing or the one about to be drawn"),
             ("Click a drawing", "Select it; drag an end, or the whole thing"),
             ("Right-click a drawing", "Its colour and thickness, or delete it"),
             ("Delete", "Delete the selected drawing"),

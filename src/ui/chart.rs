@@ -27,7 +27,9 @@ use std::rc::Rc;
 
 use gtk::cairo;
 use gtk::prelude::*;
-use omacharts_engine::drawings::{self, Anchor, Drawing, Grip, Kind as DrawingKind, Projected};
+use omacharts_engine::drawings::{
+    self, Anchor, Drawing, Grip, Kind as DrawingKind, Preset, Projected,
+};
 use omacharts_engine::indicators::{self as indicators, vwap, Output, Profile};
 use omacharts_engine::{
     Bar, BarScheme, BarStyle, Direction, FetchFailure, Indicator, Instrument, Theme, Timeframe,
@@ -150,6 +152,11 @@ struct State {
     /// pointer. Drawn on the pointer layer, since it moves with the hand;
     /// committed to `drawings` on the second press or at the end of a drag.
     placing: Option<Drawing>,
+    /// The configuration the next drawing gets: Alt+N while a tool is armed
+    /// chooses it, so Alt+R, Alt+2, click, click draws a rectangle in the
+    /// second configuration. Kept between drawings, since the next one is
+    /// usually like the last.
+    next_preset: Preset,
 }
 
 /// Something that happened to a drawing, for whoever keeps them.
@@ -637,6 +644,7 @@ impl State {
             selected: None,
             tool: None,
             placing: None,
+            next_preset: Preset::Blue,
         }
     }
 
@@ -974,7 +982,7 @@ impl ChartView {
     fn wire_keys(self: &Rc<Self>) {
         let keys = gtk::EventControllerKey::new();
         let view = Rc::downgrade(self);
-        keys.connect_key_pressed(move |_, key, _, _| {
+        keys.connect_key_pressed(move |_, key, _, modifiers| {
             let Some(view) = view.upgrade() else { return glib::Propagation::Proceed };
             use gtk::gdk::Key;
             match key {
@@ -997,10 +1005,49 @@ impl ChartView {
                     view.delete_selected();
                     glib::Propagation::Stop
                 }
+                // Alt+N: configuration N for the selected drawing, or for
+                // the one about to be drawn while a tool is in hand.
+                _ if modifiers.contains(gtk::gdk::ModifierType::ALT_MASK) => {
+                    let Some(number) = preset_number(key) else {
+                        return glib::Propagation::Proceed;
+                    };
+                    match view.apply_preset_number(number) {
+                        true => glib::Propagation::Stop,
+                        false => glib::Propagation::Proceed,
+                    }
+                }
                 _ => glib::Propagation::Proceed,
             }
         });
         self.area.add_controller(keys);
+    }
+
+    /// Configuration `number` (1 to 9) for the selected drawing, or, while a
+    /// tool is in hand, for the drawing it is about to make. `false` when
+    /// neither is the case, so the key goes on to whoever else wants it.
+    fn apply_preset_number(&self, number: usize) -> bool {
+        let Some(preset) = Preset::ALL.get(number.wrapping_sub(1)).copied() else {
+            return false;
+        };
+        let (armed, selected) = {
+            let s = self.state.borrow();
+            (s.tool.is_some() || s.placing.is_some(), s.selected.is_some())
+        };
+        if armed {
+            let mut s = self.state.borrow_mut();
+            s.next_preset = preset;
+            if let Some(placing) = s.placing.as_mut() {
+                placing.preset = preset;
+            }
+            drop(s);
+            self.pointer.queue_draw();
+            return true;
+        }
+        if selected {
+            self.edit_selected(|d| d.preset = preset);
+            return true;
+        }
+        false
     }
 
     /// A drawing is finished: it joins the list, takes the grips, and is
@@ -1441,7 +1488,9 @@ impl ChartView {
                 // An armed tool: this press is the first anchor.
                 if let Some(kind) = s.tool {
                     if let Some(anchor) = s.locate(width, height, x, y) {
-                        s.placing = Some(Drawing::new(kind, anchor, anchor));
+                        let mut drawing = Drawing::new(kind, anchor, anchor);
+                        drawing.preset = s.next_preset;
+                        s.placing = Some(drawing);
                         s.drag = Some(Drag::Place { moved: false });
                     }
                     return;
@@ -2577,6 +2626,24 @@ fn draw_echo(
     cr.line_to(plot_x + plot_w, y);
     let _ = cr.stroke();
     cr.restore().ok();
+}
+
+/// The configuration a number key names, 1 to 9, from the main row or the
+/// keypad. Zero names nothing: there are nine.
+fn preset_number(key: gtk::gdk::Key) -> Option<usize> {
+    use gtk::gdk::Key;
+    Some(match key {
+        Key::_1 | Key::KP_1 => 1,
+        Key::_2 | Key::KP_2 => 2,
+        Key::_3 | Key::KP_3 => 3,
+        Key::_4 | Key::KP_4 => 4,
+        Key::_5 | Key::KP_5 => 5,
+        Key::_6 | Key::KP_6 => 6,
+        Key::_7 | Key::KP_7 => 7,
+        Key::_8 | Key::KP_8 => 8,
+        Key::_9 | Key::KP_9 => 9,
+        _ => return None,
+    })
 }
 
 /// Half the side of a grip, the small square at a selected drawing's anchor.
