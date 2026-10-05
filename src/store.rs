@@ -12,7 +12,10 @@
 
 use std::path::{Path, PathBuf};
 
-use omacharts_engine::{Bar, BarScheme, Drawing, Indicator, Theme, Timeframe};
+use omacharts_engine::{Bar, BarScheme, Configurations, Drawing, Indicator, Theme, Timeframe};
+
+/// Where the drawing configurations live, as one JSON value.
+pub const SETTING_DRAWING_CONFIGURATIONS: &str = "drawing_configurations";
 
 use crate::migrations;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -832,7 +835,8 @@ impl Store {
         }) else {
             return Vec::new();
         };
-        rows.filter_map(Result::ok)
+        let mut drawings = rows
+            .filter_map(Result::ok)
             .filter_map(|(id, json)| {
                 let mut drawing: Drawing = serde_json::from_str(&json).ok()?;
                 // The row is the id. What is inside the JSON is whatever the
@@ -841,7 +845,9 @@ impl Store {
                 drawing.id = id;
                 Some(drawing)
             })
-            .collect()
+            .collect::<Vec<Drawing>>();
+        omacharts_engine::drawings::sort_for_painting(&mut drawings);
+        drawings
     }
 
     /// Write a drawing down for the first time. Hands back its id, which the
@@ -874,12 +880,42 @@ impl Store {
         let _ = self.conn.execute("DELETE FROM drawings WHERE id = ?1", params![id]);
     }
 
+    /// A drawing back under the id it had: what undo needs after a deletion,
+    /// so the row a redo would remove again is the same row.
+    pub fn put_drawing(&self, symbol: &str, suffix: Option<&str>, drawing: &Drawing) {
+        if drawing.id <= 0 {
+            return;
+        }
+        if let Ok(json) = serde_json::to_string(drawing) {
+            let _ = self.conn.execute(
+                "INSERT INTO drawings (id, symbol, suffix, json) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(id) DO UPDATE SET json = excluded.json",
+                params![drawing.id, symbol, suffix.unwrap_or(""), json],
+            );
+        }
+    }
+
     /// Everything drawn on a symbol, gone.
     pub fn clear_drawings(&self, symbol: &str, suffix: Option<&str>) {
         let _ = self.conn.execute(
             "DELETE FROM drawings WHERE symbol = ?1 AND suffix = ?2",
             params![symbol, suffix.unwrap_or("")],
         );
+    }
+
+    /// The nine configurations of each kind of drawing, as edited; the
+    /// shipped nine until somebody edits one. A stored value this build
+    /// cannot read is the defaults rather than a crash.
+    pub fn drawing_configurations(&self) -> Configurations {
+        self.setting(SETTING_DRAWING_CONFIGURATIONS)
+            .and_then(|json| serde_json::from_str(&json).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn set_drawing_configurations(&self, configs: &Configurations) {
+        if let Ok(json) = serde_json::to_string(configs) {
+            self.set_setting(SETTING_DRAWING_CONFIGURATIONS, &json);
+        }
     }
 
     // -- saved themes ------------------------------------------------------
@@ -1623,14 +1659,14 @@ mod tests {
 
     #[test]
     fn drawings_belong_to_a_symbol_and_survive_a_round_trip() {
-        use omacharts_engine::{Anchor, DrawingKind, Preset};
+        use omacharts_engine::{Anchor, DrawingKind};
         let store = Store::memory().unwrap();
         assert!(store.drawings("AAPL", None).is_empty(), "a fresh symbol came with drawings");
 
         let mut line = Drawing::new(DrawingKind::Line, Anchor::new(100, 1.0), Anchor::new(200, 2.0));
         line.id = store.add_drawing("AAPL", None, &line).unwrap();
         let mut rect = Drawing::new(DrawingKind::Rect, Anchor::new(300, 3.0), Anchor::new(400, 4.0));
-        rect.preset = Preset::Amber;
+        rect.follow(4);
         rect.id = store.add_drawing("AAPL", None, &rect).unwrap();
         assert_ne!(line.id, rect.id);
         assert_eq!(store.drawings("AAPL", None), vec![line.clone(), rect.clone()]);

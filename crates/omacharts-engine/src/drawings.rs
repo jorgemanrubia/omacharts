@@ -284,34 +284,448 @@ pub enum Kind {
 }
 
 impl Kind {
+    pub const ALL: [Kind; 2] = [Kind::Line, Kind::Rect];
+
     pub fn label(self) -> &'static str {
         match self {
             Kind::Line => "Line",
             Kind::Rect => "Rectangle",
         }
     }
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Kind::Line => "line",
+            Kind::Rect => "rect",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Kind> {
+        Kind::ALL.into_iter().find(|k| k.key().eq_ignore_ascii_case(key))
+    }
+}
+
+/// What a drawing is painted with: one of the nine roles the theme fills, or
+/// a colour of the user's own that the theme never touches.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum Paint {
+    Preset { preset: Preset },
+    Fixed { hex: String },
+}
+
+impl Paint {
+    pub fn preset(preset: Preset) -> Paint {
+        Paint::Preset { preset }
+    }
+
+    pub fn fixed(hex: &str) -> Paint {
+        Paint::Fixed { hex: hex.to_string() }
+    }
+
+    /// The colour on this theme.
+    pub fn hex(&self, theme: &Theme) -> String {
+        match self {
+            Paint::Preset { preset } => colour(theme, *preset),
+            Paint::Fixed { hex } => hex.clone(),
+        }
+    }
+
+    /// How it is written on a command line and said back: a preset's name
+    /// in lower case, or the hex.
+    pub fn spell(&self) -> String {
+        match self {
+            Paint::Preset { preset } => preset.name().to_lowercase(),
+            Paint::Fixed { hex } => hex.clone(),
+        }
+    }
+
+    /// The reverse: a preset's name, or `#rrggbb`.
+    pub fn parse(text: &str) -> Option<Paint> {
+        if let Some(hex) = text.strip_prefix('#') {
+            let valid = hex.len() == 6 && hex.chars().all(|c| c.is_ascii_hexdigit());
+            return valid.then(|| Paint::fixed(&format!("#{}", hex.to_lowercase())));
+        }
+        Preset::ALL
+            .into_iter()
+            .find(|p| p.name().eq_ignore_ascii_case(text))
+            .map(Paint::preset)
+    }
+}
+
+/// Which end of a line wears an arrowhead.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Arrow {
+    #[default]
+    None,
+    End,
+    Start,
+    Both,
+}
+
+impl Arrow {
+    pub const ALL: [Arrow; 4] = [Arrow::None, Arrow::End, Arrow::Start, Arrow::Both];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Arrow::None => "None",
+            Arrow::End => "At the end",
+            Arrow::Start => "At the start",
+            Arrow::Both => "Both ends",
+        }
+    }
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Arrow::None => "none",
+            Arrow::End => "end",
+            Arrow::Start => "start",
+            Arrow::Both => "both",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Arrow> {
+        Arrow::ALL.into_iter().find(|a| a.key().eq_ignore_ascii_case(key))
+    }
+
+    pub fn at_end(self) -> bool {
+        matches!(self, Arrow::End | Arrow::Both)
+    }
+
+    pub fn at_start(self) -> bool {
+        matches!(self, Arrow::Start | Arrow::Both)
+    }
+}
+
+/// Everything about how a drawing looks.
+///
+/// One struct for both kinds, so a configuration and a drawing's own
+/// properties are the same thing and a dialog edits one of them with one
+/// set of rows. A line reads `colour`, `width` and `arrow`; a rectangle
+/// reads `border`, `width` and `colour` for its edge, and `fill` and `alpha`
+/// for what is inside it.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub struct Style {
+    /// A line's colour; a rectangle's edge.
+    pub colour: Paint,
+    /// A line's thickness; a rectangle's edge, when it has one.
+    pub width: f64,
+    #[serde(default)]
+    pub arrow: Arrow,
+    /// Whether a rectangle has an edge at all.
+    #[serde(default = "Style::default_border")]
+    pub border: bool,
+    /// What a rectangle is filled with.
+    #[serde(default = "Style::default_fill")]
+    pub fill: Paint,
+    /// How much of the fill shows: 0 is nothing, 1 is solid. The
+    /// transparency level, the other way up.
+    #[serde(default = "Style::default_alpha")]
+    pub alpha: f64,
+}
+
+impl Style {
+    /// The configuration a line starts from: a preset's colour at the
+    /// chart's default stroke, no arrow.
+    pub fn line(preset: Preset) -> Style {
+        Style {
+            colour: Paint::preset(preset),
+            width: DEFAULT_WIDTH,
+            arrow: Arrow::None,
+            border: true,
+            fill: Paint::preset(preset),
+            alpha: FILL_ALPHA,
+        }
+    }
+
+    /// The configuration a rectangle starts from: a preset's colour as a
+    /// translucent fill under a hairline edge of the same colour, the pair
+    /// measured over every theme.
+    pub fn rect(preset: Preset) -> Style {
+        Style {
+            colour: Paint::preset(preset),
+            width: BORDER_WIDTH,
+            arrow: Arrow::None,
+            border: true,
+            fill: Paint::preset(preset),
+            alpha: FILL_ALPHA,
+        }
+    }
+
+    fn default_border() -> bool {
+        true
+    }
+
+    fn default_fill() -> Paint {
+        Paint::preset(Preset::Blue)
+    }
+
+    fn default_alpha() -> f64 {
+        FILL_ALPHA
+    }
+}
+
+/// The nine configurations of each kind.
+///
+/// Editable, stored as one setting, and every drawing that follows
+/// configuration N looks like N as it is now — change N and they all change,
+/// which is the point of a configuration over a copy. The defaults are the
+/// nine presets in order, so configuration 1 is Up and 2 is Down, as the
+/// brief asks.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub struct Configurations {
+    pub line: Vec<Style>,
+    pub rect: Vec<Style>,
+}
+
+/// How many configurations each kind has.
+pub const CONFIGURATIONS: u8 = 9;
+
+impl Default for Configurations {
+    fn default() -> Configurations {
+        Configurations {
+            line: Preset::ALL.into_iter().map(Style::line).collect(),
+            rect: Preset::ALL.into_iter().map(Style::rect).collect(),
+        }
+    }
+}
+
+impl Configurations {
+    /// Configuration `n`, 1 to 9, of a kind. Out of range falls back to the
+    /// first, because a number nobody can reach from the keyboard is not a
+    /// configuration.
+    pub fn of(&self, kind: Kind, n: u8) -> &Style {
+        let list = self.list(kind);
+        list.get(n.clamp(1, CONFIGURATIONS) as usize - 1).unwrap_or(&list[0])
+    }
+
+    pub fn set(&mut self, kind: Kind, n: u8, style: Style) {
+        let at = n.clamp(1, CONFIGURATIONS) as usize - 1;
+        let list = match kind {
+            Kind::Line => &mut self.line,
+            Kind::Rect => &mut self.rect,
+        };
+        if let Some(slot) = list.get_mut(at) {
+            *slot = style;
+        }
+    }
+
+    /// Put one kind's nine back to what shipped.
+    pub fn reset(&mut self, kind: Kind) {
+        let fresh = Configurations::default();
+        match kind {
+            Kind::Line => self.line = fresh.line,
+            Kind::Rect => self.rect = fresh.rect,
+        }
+    }
+
+    pub fn list(&self, kind: Kind) -> &[Style] {
+        let list = match kind {
+            Kind::Line => &self.line,
+            Kind::Rect => &self.rect,
+        };
+        // A stored list that is short — written by a build with fewer — is
+        // read as if it were the defaults for the rest.
+        if list.len() >= CONFIGURATIONS as usize { list } else { &DEFAULTS.get_or_init(Configurations::default).list_or_default(kind) }
+    }
+
+    fn list_or_default(&self, kind: Kind) -> &[Style] {
+        match kind {
+            Kind::Line => &self.line,
+            Kind::Rect => &self.rect,
+        }
+    }
+
+    /// Whether configuration `n` of a kind is as shipped.
+    pub fn is_default(&self, kind: Kind, n: u8) -> bool {
+        DEFAULTS.get_or_init(Configurations::default).of(kind, n) == self.of(kind, n)
+    }
+}
+
+static DEFAULTS: std::sync::OnceLock<Configurations> = std::sync::OnceLock::new();
+
+/// Who a drawing is shared with.
+///
+/// Every chart showing the symbol sees a global drawing; the charts in group
+/// N see group N's; a local drawing belongs to the chart it was drawn on and
+/// to nothing else. Which of these a new drawing gets is the chart's own
+/// setting, so a chart in group 3 draws into group 3 without being asked.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Scope {
+    Local,
+    #[default]
+    Global,
+    Group(u8),
+}
+
+impl Scope {
+    pub fn key(self) -> String {
+        match self {
+            Scope::Local => "local".to_string(),
+            Scope::Global => "global".to_string(),
+            Scope::Group(n) => format!("group-{n}"),
+        }
+    }
+
+    pub fn label(self) -> String {
+        match self {
+            Scope::Local => "This chart only".to_string(),
+            Scope::Global => "Every chart".to_string(),
+            Scope::Group(n) => format!("Drawing group {n}"),
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Scope> {
+        match key.to_lowercase().as_str() {
+            "local" => Some(Scope::Local),
+            "global" => Some(Scope::Global),
+            other => other
+                .strip_prefix("group-")
+                .and_then(|n| n.parse::<u8>().ok())
+                .filter(|n| (1..=9).contains(n))
+                .map(Scope::Group),
+        }
+    }
+
+    /// Every scope a drawing can have, in the order a menu lists them.
+    pub fn all() -> Vec<Scope> {
+        let mut all = vec![Scope::Local, Scope::Global];
+        all.extend((1..=9).map(Scope::Group));
+        all
+    }
+}
+
+impl Serialize for Scope {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.key())
+    }
+}
+
+impl<'de> Deserialize<'de> for Scope {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Scope, D::Error> {
+        let key = String::deserialize(d)?;
+        Scope::from_key(&key).ok_or_else(|| serde::de::Error::custom(format!("{key:?} is not a drawing scope")))
+    }
+}
+
+/// What a chart shares its drawings with: the global group, one of the nine,
+/// or nothing, in which case what is drawn on it stays on it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Sharing {
+    #[default]
+    Global,
+    Group(u8),
+    Off,
+}
+
+impl Sharing {
+    pub fn key(self) -> String {
+        match self {
+            Sharing::Global => "global".to_string(),
+            Sharing::Group(n) => format!("group-{n}"),
+            Sharing::Off => "off".to_string(),
+        }
+    }
+
+    pub fn label(self) -> String {
+        match self {
+            Sharing::Global => "Global drawing group".to_string(),
+            Sharing::Group(n) => format!("Drawing group {n}"),
+            Sharing::Off => "Not shared".to_string(),
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Sharing> {
+        match key.to_lowercase().as_str() {
+            "global" => Some(Sharing::Global),
+            "off" | "none" => Some(Sharing::Off),
+            other => other
+                .strip_prefix("group-")
+                .and_then(|n| n.parse::<u8>().ok())
+                .filter(|n| (1..=9).contains(n))
+                .map(Sharing::Group),
+        }
+    }
+
+    pub fn all() -> Vec<Sharing> {
+        let mut all = vec![Sharing::Global];
+        all.extend((1..=9).map(Sharing::Group));
+        all.push(Sharing::Off);
+        all
+    }
+
+    /// The scope a drawing made on a chart with this sharing gets.
+    pub fn scope_for_new(self) -> Scope {
+        match self {
+            Sharing::Global => Scope::Global,
+            Sharing::Group(n) => Scope::Group(n),
+            Sharing::Off => Scope::Local,
+        }
+    }
+
+    /// Whether a chart with this sharing shows a shared drawing of its
+    /// symbol. Local drawings are not shared and are not asked.
+    pub fn shows(self, scope: Scope) -> bool {
+        match (self, scope) {
+            (_, Scope::Local) => false,
+            (Sharing::Off, _) => false,
+            (Sharing::Global, Scope::Global) => true,
+            (Sharing::Global, Scope::Group(_)) => false,
+            (Sharing::Group(_), Scope::Global) => true,
+            (Sharing::Group(mine), Scope::Group(theirs)) => mine == theirs,
+        }
+    }
+}
+
+impl Serialize for Sharing {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.key())
+    }
+}
+
+impl<'de> Deserialize<'de> for Sharing {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Sharing, D::Error> {
+        let key = String::deserialize(d)?;
+        Sharing::from_key(&key).ok_or_else(|| serde::de::Error::custom(format!("{key:?} is not a sharing setting")))
+    }
 }
 
 /// Something a person drew on a symbol's chart.
 ///
-/// Stored by symbol, not by pane: a trend line on AAPL is a fact about AAPL,
-/// and it belongs on every chart of AAPL in every chartbook, at every
-/// resolution. The colour is a [`Preset`] — a role the theme fills — so the
-/// drawing follows the desktop theme the way the candles do.
+/// Its look is either a configuration it follows — change the configuration
+/// and the drawing changes — or, once a property has been set by hand, its
+/// own. Its scope says who else sees it.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct Drawing {
-    /// The store's row id. Zero until it has been written down.
+    /// The row id in the store for a shared drawing; a negative number for
+    /// a drawing local to a chart, which lives with the chart; zero until it
+    /// has been written down anywhere.
     #[serde(default)]
     pub id: i64,
     pub kind: Kind,
     pub from: Anchor,
     pub to: Anchor,
-    #[serde(default = "Drawing::default_preset")]
-    pub preset: Preset,
-    /// A line's stroke width. The chart's default when absent; a rectangle
-    /// ignores it, since its border is a hairline by design.
-    #[serde(default = "Drawing::default_width")]
-    pub width: f64,
+    /// The configuration, 1 to 9, this follows. `None` once a property was
+    /// set by hand, at which point `style` is the look.
+    #[serde(default = "Drawing::default_config")]
+    pub config: Option<u8>,
+    /// The look set by hand. Ignored while `config` is some.
+    #[serde(default)]
+    pub style: Option<Style>,
+    #[serde(default)]
+    pub scope: Scope,
+    /// Where it sits among the others: higher is nearer the front. All of
+    /// them sit over the candles; this only orders drawings among
+    /// themselves, for "bring to front" and "send to back".
+    #[serde(default)]
+    pub order: i64,
+}
+
+/// Put drawings in the order they are painted: back to front, and the older
+/// first among equals.
+pub fn sort_for_painting(drawings: &mut [Drawing]) {
+    drawings.sort_by(|a, b| a.order.cmp(&b.order).then(a.id.abs().cmp(&b.id.abs())));
 }
 
 /// The width a line is drawn at when nobody chose one: the chart's own
@@ -320,25 +734,67 @@ pub const DEFAULT_WIDTH: f64 = 1.5;
 
 impl Drawing {
     pub fn new(kind: Kind, from: Anchor, to: Anchor) -> Drawing {
-        Drawing { id: 0, kind, from, to, preset: Preset::Blue, width: DEFAULT_WIDTH }
+        Drawing { id: 0, kind, from, to, config: Some(1), style: None, scope: Scope::Global, order: 0 }
     }
 
-    /// The preset a new drawing gets. Blue is the first colour the app hands
-    /// out to anything, and it is nobody's candle.
-    fn default_preset() -> Preset {
-        Preset::Blue
+    fn default_config() -> Option<u8> {
+        Some(1)
     }
 
-    fn default_width() -> f64 {
-        DEFAULT_WIDTH
+    /// How it looks: the configuration it follows, or its own look.
+    pub fn style<'a>(&'a self, configs: &'a Configurations) -> &'a Style {
+        match (self.config, &self.style) {
+            (None, Some(own)) => own,
+            (Some(n), _) => configs.of(self.kind, n),
+            (None, None) => configs.of(self.kind, 1),
+        }
     }
 
-    /// The anchor a grip stands for, to move it.
+    /// Change a property by hand: the drawing stops following its
+    /// configuration and keeps its own look from here on.
+    pub fn edit_style(&mut self, configs: &Configurations, edit: impl FnOnce(&mut Style)) {
+        let mut own = self.style(configs).clone();
+        edit(&mut own);
+        self.config = None;
+        self.style = Some(own);
+    }
+
+    /// Follow configuration `n` again.
+    pub fn follow(&mut self, n: u8) {
+        self.config = Some(n.clamp(1, CONFIGURATIONS));
+        self.style = None;
+    }
+
+    /// Whether this drawing lives in the store (shared) rather than with a
+    /// chart (local).
+    pub fn is_local(&self) -> bool {
+        self.scope == Scope::Local
+    }
+
+    /// The anchor a grip stands for, to move it, for the grips that are an
+    /// anchor. A rectangle's other two corners are half of each.
     pub fn anchor_mut(&mut self, grip: Grip) -> Option<&mut Anchor> {
         match grip {
             Grip::From => Some(&mut self.from),
             Grip::To => Some(&mut self.to),
-            Grip::Body => None,
+            Grip::FromTo | Grip::ToFrom | Grip::Body => None,
+        }
+    }
+
+    /// Put the grip where the hand is.
+    pub fn move_grip(&mut self, grip: Grip, at: Anchor) {
+        match grip {
+            Grip::From => self.from = at,
+            Grip::To => self.to = at,
+            Grip::FromTo => {
+                self.from.ts = at.ts;
+                self.to.price = at.price;
+            }
+            Grip::ToFrom => {
+                self.to.ts = at.ts;
+                self.from.price = at.price;
+            }
+            Grip::Body => {}
         }
     }
 
@@ -349,6 +805,14 @@ impl Drawing {
             anchor.price += by_price;
         }
     }
+
+    /// The grips this kind of drawing wears when selected.
+    pub fn grips(&self) -> &'static [Grip] {
+        match self.kind {
+            Kind::Line => &[Grip::From, Grip::To],
+            Kind::Rect => &[Grip::From, Grip::To, Grip::FromTo, Grip::ToFrom],
+        }
+    }
 }
 
 /// What part of a drawing the pointer is on.
@@ -356,6 +820,10 @@ impl Drawing {
 pub enum Grip {
     From,
     To,
+    /// A rectangle's corner at `from`'s moment and `to`'s price.
+    FromTo,
+    /// And the one at `to`'s moment and `from`'s price.
+    ToFrom,
     /// The line itself, or the inside of the box: drag to move the whole
     /// thing.
     Body,
@@ -363,7 +831,7 @@ pub enum Grip {
 
 /// How near the pointer has to be, in pixels, to pick a line or an edge.
 pub const PICK_REACH: f64 = 6.0;
-/// And to pick an anchor, which is a smaller target and worth more.
+/// And to pick a grip, which is a smaller target and worth more.
 pub const GRIP_REACH: f64 = 8.0;
 
 /// A drawing projected onto the screen: its two anchors as pixels.
@@ -379,14 +847,26 @@ pub struct Projected {
 }
 
 impl Projected {
-    /// What the pointer at (`x`, `y`) is on, if anything. Grips win over the
-    /// body, because an anchor sits on the body and is the harder target.
-    pub fn hit(&self, x: f64, y: f64) -> Option<Grip> {
-        if distance(self.from, (x, y)) <= GRIP_REACH {
-            return Some(Grip::From);
+    /// Where a grip is on screen.
+    pub fn grip(&self, grip: Grip) -> Option<(f64, f64)> {
+        match (self.kind, grip) {
+            (_, Grip::From) => Some(self.from),
+            (_, Grip::To) => Some(self.to),
+            (Kind::Rect, Grip::FromTo) => Some((self.from.0, self.to.1)),
+            (Kind::Rect, Grip::ToFrom) => Some((self.to.0, self.from.1)),
+            _ => None,
         }
-        if distance(self.to, (x, y)) <= GRIP_REACH {
-            return Some(Grip::To);
+    }
+
+    /// What the pointer at (`x`, `y`) is on, if anything. Grips win over the
+    /// body, because a grip sits on the body and is the harder target.
+    pub fn hit(&self, x: f64, y: f64) -> Option<Grip> {
+        for grip in [Grip::From, Grip::To, Grip::FromTo, Grip::ToFrom] {
+            if let Some(at) = self.grip(grip)
+                && distance(at, (x, y)) <= GRIP_REACH
+            {
+                return Some(grip);
+            }
         }
         let on_body = match self.kind {
             Kind::Line => distance_to_segment((x, y), self.from, self.to) <= PICK_REACH,
@@ -446,6 +926,20 @@ mod shape_tests {
         assert_eq!(rect().hit(101.0, 101.0), Some(Grip::To));
     }
 
+    /// A rectangle has four corners to take hold of, and a line only its
+    /// two ends.
+    #[test]
+    fn a_box_has_four_corners_and_a_line_two_ends() {
+        assert_eq!(rect().hit(300.0, 100.0), Some(Grip::FromTo));
+        assert_eq!(rect().hit(100.0, 200.0), Some(Grip::ToFrom));
+        assert_eq!(line().grip(Grip::FromTo), None);
+        let mut drawing = Drawing::new(Kind::Rect, Anchor::new(10, 5.0), Anchor::new(20, 1.0));
+        drawing.move_grip(Grip::FromTo, Anchor::new(12, 0.5));
+        assert_eq!((drawing.from, drawing.to), (Anchor::new(12, 5.0), Anchor::new(20, 0.5)));
+        drawing.move_grip(Grip::ToFrom, Anchor::new(25, 6.0));
+        assert_eq!((drawing.from, drawing.to), (Anchor::new(12, 6.0), Anchor::new(25, 0.5)));
+    }
+
     #[test]
     fn a_line_is_picked_near_it_and_not_away_from_it() {
         // The midpoint, and a few pixels off it.
@@ -467,14 +961,17 @@ mod shape_tests {
     #[test]
     fn a_drawing_round_trips_through_json_and_fills_in_what_an_old_one_lacks() {
         let mut drawing = Drawing::new(Kind::Rect, Anchor::new(1_700_000_000, 101.5), Anchor::new(1_700_086_400, 99.0));
-        drawing.preset = Preset::Amber;
+        drawing.follow(4);
+        drawing.scope = Scope::Group(3);
         let json = serde_json::to_string(&drawing).unwrap();
+        assert!(json.contains("\"scope\":\"group-3\""), "{json}");
         assert_eq!(serde_json::from_str::<Drawing>(&json).unwrap(), drawing);
 
         let bare = r#"{"kind":"line","from":{"ts":1,"price":2.0},"to":{"ts":3,"price":4.0}}"#;
         let old: Drawing = serde_json::from_str(bare).unwrap();
-        assert_eq!(old.preset, Preset::Blue);
-        assert_eq!(old.width, DEFAULT_WIDTH);
+        assert_eq!(old.config, Some(1));
+        assert_eq!(old.style, None);
+        assert_eq!(old.scope, Scope::Global);
         assert_eq!(old.id, 0);
     }
 
@@ -486,6 +983,75 @@ mod shape_tests {
         *drawing.anchor_mut(Grip::To).unwrap() = Anchor::new(30, 3.0);
         assert_eq!(drawing.to, Anchor::new(30, 3.0));
         assert!(drawing.anchor_mut(Grip::Body).is_none());
+    }
+
+    /// A drawing follows its configuration until a property is set by
+    /// hand, and then keeps its own look whatever the configuration does.
+    #[test]
+    fn a_drawing_follows_its_configuration_until_edited() {
+        let mut configs = Configurations::default();
+        let mut drawing = Drawing::new(Kind::Line, Anchor::new(1, 1.0), Anchor::new(2, 2.0));
+        drawing.follow(4);
+        assert_eq!(drawing.style(&configs).colour, Paint::preset(Preset::Amber));
+
+        configs.set(Kind::Line, 4, Style { width: 4.0, ..Style::line(Preset::Teal) });
+        assert_eq!(drawing.style(&configs).colour, Paint::preset(Preset::Teal));
+        assert_eq!(drawing.style(&configs).width, 4.0);
+        assert!(!configs.is_default(Kind::Line, 4));
+
+        drawing.edit_style(&configs, |s| s.arrow = Arrow::End);
+        assert_eq!(drawing.config, None);
+        configs.reset(Kind::Line);
+        assert!(configs.is_default(Kind::Line, 4));
+        let own = drawing.style(&configs);
+        assert_eq!((own.colour.clone(), own.width, own.arrow), (Paint::preset(Preset::Teal), 4.0, Arrow::End));
+    }
+
+    #[test]
+    fn the_default_configurations_are_the_nine_presets_in_order() {
+        let configs = Configurations::default();
+        for (n, preset) in Preset::ALL.into_iter().enumerate() {
+            let n = n as u8 + 1;
+            assert_eq!(configs.of(Kind::Line, n).colour, Paint::preset(preset));
+            assert_eq!(configs.of(Kind::Rect, n).fill, Paint::preset(preset));
+            assert_eq!(configs.of(Kind::Rect, n).alpha, FILL_ALPHA);
+            assert_eq!(configs.of(Kind::Line, n).arrow, Arrow::None);
+            assert_eq!(configs.of(Kind::Line, n).width, DEFAULT_WIDTH);
+        }
+        assert_eq!(configs.of(Kind::Line, 1).colour, Paint::preset(Preset::Up));
+        assert_eq!(configs.of(Kind::Rect, 2).fill, Paint::preset(Preset::Down));
+        // Out of range is the first, never a panic.
+        assert_eq!(configs.of(Kind::Rect, 0), configs.of(Kind::Rect, 1));
+        assert_eq!(configs.of(Kind::Rect, 40), configs.of(Kind::Rect, 9));
+    }
+
+    #[test]
+    fn sharing_decides_what_a_chart_shows_and_what_it_draws_into() {
+        assert!(Sharing::Global.shows(Scope::Global));
+        assert!(!Sharing::Global.shows(Scope::Group(2)));
+        assert!(Sharing::Group(2).shows(Scope::Global));
+        assert!(Sharing::Group(2).shows(Scope::Group(2)));
+        assert!(!Sharing::Group(2).shows(Scope::Group(3)));
+        assert!(!Sharing::Off.shows(Scope::Global));
+        assert!(!Sharing::Group(1).shows(Scope::Local), "local is never shared");
+        assert_eq!(Sharing::Off.scope_for_new(), Scope::Local);
+        assert_eq!(Sharing::Group(5).scope_for_new(), Scope::Group(5));
+        for scope in Scope::all() {
+            assert_eq!(Scope::from_key(&scope.key()), Some(scope));
+        }
+        for sharing in Sharing::all() {
+            assert_eq!(Sharing::from_key(&sharing.key()), Some(sharing));
+        }
+        assert_eq!(Scope::from_key("group-0"), None);
+    }
+
+    #[test]
+    fn paint_is_spelled_the_way_it_is_typed() {
+        assert_eq!(Paint::parse("amber"), Some(Paint::preset(Preset::Amber)));
+        assert_eq!(Paint::parse("#FFaa00"), Some(Paint::fixed("#ffaa00")));
+        assert_eq!(Paint::parse("#fa0"), None);
+        assert_eq!(Paint::parse("red"), None);
+        assert_eq!(Paint::preset(Preset::Ink).spell(), "ink");
     }
 }
 
