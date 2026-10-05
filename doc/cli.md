@@ -403,6 +403,41 @@ otherwise.
 A `chart set` with one bad value changes nothing at all — everything is
 checked before anything is written, so you never get a half-applied chart.
 
+## Drawing on a chart
+
+A drawing is a line between two anchors, or a box with them at opposite
+corners. An anchor is a moment and a price — `2026-09-01,180.5`, or with the
+minute, `2026-09-01T14:30,180.5`, or unix seconds — which is how the chart
+keeps them too, so a line through two daily closes still passes through the
+same two moments on the hourly chart.
+
+```
+omacharts chart drawing add line --from 2026-09-01,180.5 --to 2026-09-19,192 --preset amber
+omacharts chart drawing add rect --from 2026-09-08,178 --to 2026-09-12,186
+omacharts chart drawing list
+omacharts chart drawing set --id 1 --preset ink --width 2.5
+omacharts chart drawing remove --id 2
+omacharts chart drawing clear
+```
+
+**Drawings belong to the symbol, not the chart.** The chart named — or the
+focused one — only says which symbol: a line added through a chart showing
+AAPL is on every chart of AAPL, in every chartbook, at every resolution, the
+same as one drawn by hand. `list` says so by naming the symbol, and `clear`
+removes everything drawn on it.
+
+**The colour is one of nine presets, never a hex.** `up` and `down` are the
+theme's candle colours; `blue`, `amber`, `violet`, `teal`, `orange` and `cyan`
+are the theme's own swatches; `ink` is the text colour. Each is resolved
+against whatever desktop theme is active, so a scripted drawing goes on
+looking like it belongs when the theme changes. The line's `--width` is in
+pixels; a box's edge is always a hairline.
+
+By hand: Alt+L and Alt+B arm the tools, two clicks (or one press-and-drag)
+place a drawing, a click selects one, a drag moves an end or the whole thing,
+Delete removes it, and right-clicking a drawing opens its colour and
+thickness.
+
 ## Taking a picture of a chart
 
 ```

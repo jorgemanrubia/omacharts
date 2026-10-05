@@ -1158,6 +1158,7 @@ fn chart_verb(
         }
         "set" => return chart_set(store, m, as_json, workspace, at, pane),
         "indicator" => return chart_indicator(store, m, as_json, workspace, at, pane),
+        "drawing" => return chart_drawing(store, m, as_json, workspace, at, pane),
         _ => return Err(Fault::usage(format!("no such command: chart {verb}"))),
     };
 
@@ -1449,6 +1450,229 @@ fn chart_indicator(
         workspace.name_of(at)
     );
     said(as_json, json!({"chart": pane, "message": where_at}), where_at)
+}
+
+/// What is drawn on a chart's symbol, from a terminal.
+///
+/// Drawings belong to the symbol rather than the chart, so the chart named
+/// here is only the way to say which symbol: a line added through `pos:0`
+/// showing AAPL is on every chart of AAPL, as one drawn by hand would be.
+/// Anchors are a moment and a price, the way the chart stores them, and
+/// colours are the nine presets — a scripted drawing follows the theme like
+/// a hand-drawn one, which is why no hex is taken.
+fn chart_drawing(
+    store: &Store,
+    m: &clap::ArgMatches,
+    as_json: bool,
+    workspace: &mut Workspace,
+    at: usize,
+    pane: u32,
+) -> Result<String, Fault> {
+    use omacharts_engine::drawings::{Drawing, Kind, Preset};
+
+    let action = required(m, "ACTION")?.as_str();
+    let book = workspace.book(at)?.clone();
+    let chart = charts::panes(&book)
+        .iter()
+        .find(|p| p["id"].as_u64() == Some(pane as u64))
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let symbol = chart["symbol"].as_str().unwrap_or("").to_string();
+    let suffix = chart["suffix"].as_str().filter(|s| !s.is_empty()).map(str::to_string);
+    if symbol.is_empty() {
+        return Err(Fault::refused("that chart has no symbol to draw on".into()));
+    }
+
+    let drawing_json = |d: &Drawing| {
+        json!({
+            "id": d.id,
+            "kind": d.kind,
+            "from": {"ts": d.from.ts, "when": spell_moment(d.from.ts), "price": d.from.price},
+            "to": {"ts": d.to.ts, "when": spell_moment(d.to.ts), "price": d.to.price},
+            "preset": d.preset,
+            "width": d.width,
+        })
+    };
+
+    if action == "list" {
+        let listed = store.drawings(&symbol, suffix.as_deref());
+        return match as_json {
+            true => Ok(format!(
+                "{{\"chart\":{pane},\"symbol\":{},\"drawings\":[{}]}}\n",
+                json!(spell(&symbol, suffix.as_deref())),
+                listed.iter().map(|d| drawing_json(d).to_string()).collect::<Vec<_>>().join(",")
+            )),
+            false if listed.is_empty() => Ok(format!(
+                "nothing drawn on {}\n",
+                spell(&symbol, suffix.as_deref())
+            )),
+            false => Ok(listed.iter().map(describe_drawing).collect::<Vec<_>>().join("\n") + "\n"),
+        };
+    }
+
+    // Every flag is read and checked before anything is written, so one bad
+    // anchor leaves the symbol's drawings exactly as they were.
+    let from = anchor(m, "from")?;
+    let to = anchor(m, "to")?;
+    let preset = match arg(m, "preset") {
+        None => None,
+        Some(text) => Some(
+            Preset::ALL
+                .into_iter()
+                .find(|p| p.name().eq_ignore_ascii_case(text))
+                .ok_or_else(|| {
+                    Fault::usage(format!(
+                        "{text:?} is not a drawing colour; try {}",
+                        Preset::ALL.iter().map(|p| p.name().to_lowercase()).collect::<Vec<_>>().join(", ")
+                    ))
+                })?,
+        ),
+    };
+    let width = match number(m, "width")? {
+        None => None,
+        Some(w) if (0.5..=12.0).contains(&w) => Some(w),
+        Some(w) => return Err(Fault::usage(format!("--width is {w}, which is outside 0.5 to 12"))),
+    };
+    let id = match arg(m, "id") {
+        None => None,
+        Some(text) => Some(
+            text.parse::<i64>()
+                .map_err(|_| Fault::usage(format!("--id takes a number from `drawing list`, not {text:?}")))?,
+        ),
+    };
+
+    let text = match action {
+        "add" => {
+            let kind = match arg(m, "KIND").map(|k| k.to_lowercase()).as_deref() {
+                Some("line") => Kind::Line,
+                Some("rect") => Kind::Rect,
+                Some(other) => return Err(Fault::usage(format!("{other:?} is not line or rect"))),
+                None => return Err(Fault::usage("`drawing add` needs a kind: line or rect".into())),
+            };
+            let (Some(from), Some(to)) = (from, to) else {
+                return Err(Fault::usage("`drawing add` needs --from and --to, each WHEN,PRICE".into()));
+            };
+            let mut drawing = Drawing::new(kind, from, to);
+            if let Some(preset) = preset {
+                drawing.preset = preset;
+            }
+            if let Some(width) = width {
+                drawing.width = width;
+            }
+            let Some(id) = store.add_drawing(&symbol, suffix.as_deref(), &drawing) else {
+                return Err(Fault::new(super::EXIT_ERROR, "could not write the drawing down".into()));
+            };
+            drawing.id = id;
+            format!("drew {}", describe_drawing(&drawing))
+        }
+        "set" => {
+            let Some(id) = id else {
+                return Err(Fault::usage("`drawing set` needs --id, from `drawing list`".into()));
+            };
+            if from.is_none() && to.is_none() && preset.is_none() && width.is_none() {
+                return Err(Fault::usage(
+                    "nothing to set: give --from, --to, --preset or --width".into(),
+                ));
+            }
+            let mut drawing = store
+                .drawings(&symbol, suffix.as_deref())
+                .into_iter()
+                .find(|d| d.id == id)
+                .ok_or_else(|| Fault::not_found(format!("no drawing {id} on {}", spell(&symbol, suffix.as_deref()))))?;
+            if let Some(from) = from {
+                drawing.from = from;
+            }
+            if let Some(to) = to {
+                drawing.to = to;
+            }
+            if let Some(preset) = preset {
+                drawing.preset = preset;
+            }
+            if let Some(width) = width {
+                drawing.width = width;
+            }
+            store.update_drawing(&drawing);
+            format!("set {}", describe_drawing(&drawing))
+        }
+        "remove" => {
+            let Some(id) = id else {
+                return Err(Fault::usage("`drawing remove` needs --id, from `drawing list`".into()));
+            };
+            let found = store.drawings(&symbol, suffix.as_deref()).into_iter().find(|d| d.id == id);
+            let Some(found) = found else {
+                return Err(Fault::not_found(format!("no drawing {id} on {}", spell(&symbol, suffix.as_deref()))));
+            };
+            store.remove_drawing(id);
+            format!("removed {}", describe_drawing(&found))
+        }
+        "clear" => {
+            let count = store.drawings(&symbol, suffix.as_deref()).len();
+            store.clear_drawings(&symbol, suffix.as_deref());
+            format!("removed {count} drawing{}", if count == 1 { "" } else { "s" })
+        }
+        other => return Err(Fault::usage(format!("{other:?} is not list, add, set, remove or clear"))),
+    };
+
+    let where_at = format!(
+        "{text} on {} in {:?}",
+        chart_label(workspace.book(at)?, pane),
+        workspace.name_of(at)
+    );
+    said(as_json, json!({"chart": pane, "message": where_at}), where_at)
+}
+
+/// A drawing, said back in one line: `#3 line  2026-09-01 180.50 → 2026-09-19 192.00  amber`.
+fn describe_drawing(drawing: &omacharts_engine::Drawing) -> String {
+    let kind = match drawing.kind {
+        omacharts_engine::DrawingKind::Line => "line",
+        omacharts_engine::DrawingKind::Rect => "rect",
+    };
+    let width = match drawing.kind {
+        omacharts_engine::DrawingKind::Line => format!("  {}px", drawing.width),
+        omacharts_engine::DrawingKind::Rect => String::new(),
+    };
+    format!(
+        "#{} {kind}  {} {:.2} → {} {:.2}  {}{width}",
+        drawing.id,
+        spell_moment(drawing.from.ts),
+        drawing.from.price,
+        spell_moment(drawing.to.ts),
+        drawing.to.price,
+        drawing.preset.name().to_lowercase()
+    )
+}
+
+/// A moment as a person would write it: the date alone when it is midnight
+/// local time, the minute otherwise.
+fn spell_moment(ts: i64) -> String {
+    use chrono::{Local, TimeZone};
+    match Local.timestamp_opt(ts, 0).single() {
+        Some(at) if at.format("%H:%M").to_string() == "00:00" => at.format("%Y-%m-%d").to_string(),
+        Some(at) => at.format("%Y-%m-%dT%H:%M").to_string(),
+        None => ts.to_string(),
+    }
+}
+
+/// `WHEN,PRICE` as an anchor. The moment is a local date, a local date and
+/// time, or unix seconds; the price is a number.
+fn anchor(m: &clap::ArgMatches, id: &str) -> Result<Option<omacharts_engine::Anchor>, Fault> {
+    use chrono::{Local, NaiveDate, NaiveDateTime, TimeZone};
+    let Some(text) = arg(m, id) else { return Ok(None) };
+    let bad = || Fault::usage(format!("--{id} takes WHEN,PRICE — like 2026-09-01,180.5 or 2026-09-01T14:30,180.5 — not {text:?}"));
+    let (when, price) = text.rsplit_once(',').ok_or_else(bad)?;
+    let price: f64 = price.trim().parse().map_err(|_| bad())?;
+    let when = when.trim();
+    let ts = if let Ok(seconds) = when.parse::<i64>() {
+        seconds
+    } else if let Ok(at) = NaiveDateTime::parse_from_str(when, "%Y-%m-%dT%H:%M") {
+        Local.from_local_datetime(&at).single().ok_or_else(bad)?.timestamp()
+    } else if let Ok(day) = NaiveDate::parse_from_str(when, "%Y-%m-%d") {
+        let at = day.and_hms_opt(0, 0, 0).ok_or_else(bad)?;
+        Local.from_local_datetime(&at).single().ok_or_else(bad)?.timestamp()
+    } else {
+        return Err(bad());
+    };
+    Ok(Some(omacharts_engine::Anchor::new(ts, price)))
 }
 
 /// Does this stored indicator have that kind?
@@ -3172,7 +3396,9 @@ mod tests {
                 // because what this test is for — an argument the table
                 // describes and the arm never reads — is exactly as worth
                 // catching there as anywhere else.
-                if verb.flags.iter().any(|flag| flag.long == "to") {
+                // Only `skill`'s `--to` is a place on disk; a drawing's
+                // `--to` is the other end of a line.
+                if noun.name == "skill" && verb.flags.iter().any(|flag| flag.long == "to") {
                     let scratch = std::env::temp_dir()
                         .join(format!("omacharts-example-{}", std::process::id()))
                         .join(verb.name);
@@ -3190,6 +3416,89 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A drawing belongs to the symbol: added through one chart, it is listed
+    /// through any chart showing that symbol and absent from a chart that
+    /// shows another.
+    #[test]
+    fn a_drawing_is_on_the_symbol_not_the_chart() {
+        let store = Store::memory().unwrap();
+        run("chartbook create Macro --symbol AAPL --switch", &store);
+        run("chart split vertical --book Macro", &store);
+        run("chart set --book Macro --chart pos:1 --symbol NVDA", &store);
+
+        let out = run(
+            "chart drawing add line --book Macro --chart pos:0 --from 2026-09-01,180.5 --to 2026-09-19,192 --preset amber",
+            &store,
+        );
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert!(out.out.contains("drew #1 line"), "{}", out.out);
+        assert!(out.out.contains("amber"), "{}", out.out);
+        assert!(out.out.contains("pos:0 AAPL"), "{}", out.out);
+
+        let on_aapl = run("chart drawing list --book Macro --chart pos:0 --json", &store);
+        let parsed: serde_json::Value = serde_json::from_str(&on_aapl.out).unwrap();
+        assert_eq!(parsed["drawings"].as_array().unwrap().len(), 1);
+        assert_eq!(parsed["drawings"][0]["kind"], "line");
+        assert_eq!(parsed["drawings"][0]["preset"], "amber");
+        assert_eq!(parsed["drawings"][0]["from"]["price"], 180.5);
+        assert_eq!(parsed["drawings"][0]["from"]["when"], "2026-09-01");
+
+        let on_nvda = run("chart drawing list --book Macro --chart pos:1 --json", &store);
+        let parsed: serde_json::Value = serde_json::from_str(&on_nvda.out).unwrap();
+        assert!(parsed["drawings"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_drawing_can_be_moved_recoloured_and_removed() {
+        let store = Store::memory().unwrap();
+        run("chartbook create Macro --symbol AAPL --switch", &store);
+        run("chart drawing add rect --book Macro --from 2026-09-01,180 --to 2026-09-19,192", &store);
+        run("chart drawing add line --book Macro --from 2026-09-01,100 --to 2026-09-19,110", &store);
+
+        let out = run("chart drawing set --book Macro --id 1 --preset ink --to 2026-09-30T14:30,195", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        let listed = run("chart drawing list --book Macro --json", &store);
+        let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+        assert_eq!(parsed["drawings"][0]["preset"], "ink");
+        assert_eq!(parsed["drawings"][0]["to"]["price"], 195.0);
+        assert_eq!(parsed["drawings"][0]["to"]["when"], "2026-09-30T14:30");
+
+        let out = run("chart drawing remove --book Macro --id 1", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        let listed = run("chart drawing list --book Macro --json", &store);
+        let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+        assert_eq!(parsed["drawings"].as_array().unwrap().len(), 1);
+        assert_eq!(parsed["drawings"][0]["id"], 2);
+
+        let out = run("chart drawing clear --book Macro", &store);
+        assert!(out.out.contains("removed 1 drawing"), "{}", out.out);
+        let listed = run("chart drawing list --book Macro", &store);
+        assert!(listed.out.starts_with("nothing drawn on AAPL"), "{}", listed.out);
+    }
+
+    /// One bad value refuses the whole command, and names what was wrong.
+    #[test]
+    fn a_bad_anchor_or_colour_leaves_the_drawings_as_they_were() {
+        let store = Store::memory().unwrap();
+        run("chartbook create Macro --symbol AAPL --switch", &store);
+        for bad in [
+            "chart drawing add line --book Macro --from yesterday,180 --to 2026-09-19,192",
+            "chart drawing add line --book Macro --from 2026-09-01,180 --to 2026-09-19,192 --preset red",
+            "chart drawing add line --book Macro --from 2026-09-01,180",
+            "chart drawing add --book Macro --from 2026-09-01,180 --to 2026-09-19,192",
+            "chart drawing set --book Macro --id 1",
+            "chart drawing remove --book Macro",
+        ] {
+            let out = run(bad, &store);
+            assert_eq!(out.code, super::super::EXIT_USAGE, "{bad}: {}", out.err);
+        }
+        let out = run("chart drawing remove --book Macro --id 9", &store);
+        assert_eq!(out.code, super::super::EXIT_NOT_FOUND, "{}", out.err);
+        let listed = run("chart drawing list --book Macro --json", &store);
+        let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+        assert!(parsed["drawings"].as_array().unwrap().is_empty());
     }
 
     /// A store holding what the examples name.

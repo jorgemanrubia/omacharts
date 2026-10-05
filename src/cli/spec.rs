@@ -118,6 +118,13 @@ const SWITCHES: &[&str] = &["on", "off"];
 const LINKS: &[&str] =
     &["none", "1", "2", "3", "4", "5", "6", "7", "8", "9"];
 const COLOURING: &[&str] = &["coloured", "red-up", "monochrome"];
+const DRAWING_KINDS: &[&str] = &["line", "rect"];
+/// The nine colours a drawing can wear: roles the theme fills, never a hex,
+/// so a scripted drawing follows the desktop theme like a hand-drawn one.
+const PRESETS: &[&str] =
+    &["up", "down", "blue", "amber", "violet", "teal", "orange", "cyan", "ink"];
+/// How a drawing's anchor is written: a moment and a price.
+const ANCHOR: &str = "WHEN,PRICE — a date `2026-09-01`, a moment `2026-09-01T14:30`, or unix seconds; then the price";
 
 /// How a colour is written on the command line.
 ///
@@ -629,6 +636,29 @@ pub const SURFACE: &[Noun] = &[
                 json: true,
                 writes: false,
                 workspace: false,
+            },
+            Verb {
+                name: "drawing",
+                about: "Draw a line or a box on the chart's symbol; list, move, recolour or remove what is drawn",
+                args: &[
+                    Arg::req("ACTION", "what to do").of(&["list", "add", "set", "remove", "clear"]),
+                    Arg::opt("KIND", "a line between two anchors, or a box with them at opposite corners; for add")
+                        .of(DRAWING_KINDS),
+                ],
+                flags: &[
+                    Flag::valued("book", "BOOK", "which chartbook (default: the open one)"),
+                    Flag::valued("chart", "CHART", CHART_SELECTOR),
+                    Flag::valued("id", "N", "which drawing, from `drawing list`; for set and remove"),
+                    Flag::valued("from", "ANCHOR", ANCHOR),
+                    Flag::valued("to", "ANCHOR", ANCHOR),
+                    Flag::valued("preset", "COLOUR", "which of the nine theme colours it wears")
+                        .of(PRESETS),
+                    Flag::valued("width", "F", "a line's thickness in pixels; a box's edge is always a hairline"),
+                ],
+                example: "omacharts chart drawing add line --from 2026-09-01,180.5 --to 2026-09-19,192 --preset amber",
+                json: true,
+                writes: true,
+                workspace: true,
             },
             Verb {
                 name: "crosshair",
