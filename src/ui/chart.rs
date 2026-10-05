@@ -2926,6 +2926,57 @@ mod tests {
         assert_eq!((at.x(), at.y()), (0.0, 0.0), "the layer is offset from the chart");
     }
 
+    /// The chart wears one tooltip — the trouble dot's — and GTK opens it by
+    /// asking which widget is under the pointer. There is a second drawing
+    /// area over the chart now, and everything the chart is driven by, the
+    /// tooltip included, depends on that layer never being the answer to that
+    /// question.
+    #[test]
+    fn the_pointer_layer_lets_every_event_through_to_the_chart() {
+        if !crate::ui::gtk_ready() {
+            return;
+        }
+        let theme = omacharts_engine::theme::builtin_themes()
+            .into_iter()
+            .next()
+            .expect("a built-in theme");
+        let scheme = omacharts_engine::theme::theme_bars(&theme);
+        let view = ChartView::new(theme, scheme);
+        view.root.allocate(800, 600, -1, None);
+
+        // What GTK's own pick consults, and the whole of why a layer over the
+        // chart changes nothing about what the chart receives. A widget that
+        // could be targeted would be picked instead of the chart under it,
+        // and the tooltip would be asked of a widget that has none.
+        assert!(!view.pointer.can_target(), "the layer over the chart would take events");
+
+        // And the dot is where the tooltip goes looking for it, so the handler
+        // the chart carries answers when the pointer gets there.
+        view.set_series(
+            Instrument {
+                symbol: "ES".into(),
+                name: "S&P 500 futures".into(),
+                kind: omacharts_engine::symbols::InstrumentKind::FutureRoot,
+                suffix: None,
+                currency: None,
+                tier: 0,
+                session_origin: 0,
+                overrides: Vec::new(),
+                exchange: None,
+                popularity: 0,
+                local_name: None,
+            },
+            Timeframe::days(1),
+            ramp(200),
+        );
+        view.set_trouble(Some(FetchFailure::Unreachable));
+        let (dot_x, dot_y) = trouble_dot_centre(800.0);
+        assert!(
+            over_trouble_dot(&view.state.borrow(), 800.0, dot_x, dot_y),
+            "the dot is not where the tooltip looks for it"
+        );
+    }
+
     #[test]
     fn steps_are_round_numbers() {
         assert_eq!(nice_step(100.0, 5), 20.0);
