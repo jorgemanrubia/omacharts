@@ -12,7 +12,7 @@
 
 use std::path::{Path, PathBuf};
 
-use omacharts_engine::{Bar, BarScheme, Indicator, Theme, Timeframe};
+use omacharts_engine::{Bar, BarScheme, Drawing, Indicator, Theme, Timeframe};
 
 use crate::migrations;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -815,6 +815,73 @@ impl Store {
         }
     }
 
+    // -- drawings ----------------------------------------------------------
+
+    /// What has been drawn on a symbol, oldest first. The suffix is part of
+    /// the key, as it is for a watchlist entry: BHP in Sydney and BHP in
+    /// London are two charts.
+    pub fn drawings(&self, symbol: &str, suffix: Option<&str>) -> Vec<Drawing> {
+        let Ok(mut stmt) = self
+            .conn
+            .prepare("SELECT id, json FROM drawings WHERE symbol = ?1 AND suffix = ?2 ORDER BY id")
+        else {
+            return Vec::new();
+        };
+        let Ok(rows) = stmt.query_map(params![symbol, suffix.unwrap_or("")], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+        }) else {
+            return Vec::new();
+        };
+        rows.filter_map(Result::ok)
+            .filter_map(|(id, json)| {
+                let mut drawing: Drawing = serde_json::from_str(&json).ok()?;
+                // The row is the id. What is inside the JSON is whatever the
+                // drawing had when it was written, which for a new one is
+                // nothing.
+                drawing.id = id;
+                Some(drawing)
+            })
+            .collect()
+    }
+
+    /// Write a drawing down for the first time. Hands back its id, which the
+    /// caller keeps on the drawing so later writes find the same row.
+    pub fn add_drawing(&self, symbol: &str, suffix: Option<&str>, drawing: &Drawing) -> Option<i64> {
+        let json = serde_json::to_string(drawing).ok()?;
+        self.conn
+            .execute(
+                "INSERT INTO drawings (symbol, suffix, json) VALUES (?1, ?2, ?3)",
+                params![symbol, suffix.unwrap_or(""), json],
+            )
+            .ok()?;
+        Some(self.conn.last_insert_rowid())
+    }
+
+    /// A drawing that moved, or changed colour. One that was never added is
+    /// not written: there is no row for it to go in.
+    pub fn update_drawing(&self, drawing: &Drawing) {
+        if drawing.id == 0 {
+            return;
+        }
+        if let Ok(json) = serde_json::to_string(drawing) {
+            let _ = self
+                .conn
+                .execute("UPDATE drawings SET json = ?1 WHERE id = ?2", params![json, drawing.id]);
+        }
+    }
+
+    pub fn remove_drawing(&self, id: i64) {
+        let _ = self.conn.execute("DELETE FROM drawings WHERE id = ?1", params![id]);
+    }
+
+    /// Everything drawn on a symbol, gone.
+    pub fn clear_drawings(&self, symbol: &str, suffix: Option<&str>) {
+        let _ = self.conn.execute(
+            "DELETE FROM drawings WHERE symbol = ?1 AND suffix = ?2",
+            params![symbol, suffix.unwrap_or("")],
+        );
+    }
+
     // -- saved themes ------------------------------------------------------
 
     pub fn custom_themes(&self) -> Vec<Theme> {
@@ -1552,6 +1619,44 @@ mod tests {
 
         store.set_indicators(&[]);
         assert!(store.indicators().is_empty());
+    }
+
+    #[test]
+    fn drawings_belong_to_a_symbol_and_survive_a_round_trip() {
+        use omacharts_engine::{Anchor, DrawingKind, Preset};
+        let store = Store::memory().unwrap();
+        assert!(store.drawings("AAPL", None).is_empty(), "a fresh symbol came with drawings");
+
+        let mut line = Drawing::new(DrawingKind::Line, Anchor::new(100, 1.0), Anchor::new(200, 2.0));
+        line.id = store.add_drawing("AAPL", None, &line).unwrap();
+        let mut rect = Drawing::new(DrawingKind::Rect, Anchor::new(300, 3.0), Anchor::new(400, 4.0));
+        rect.preset = Preset::Amber;
+        rect.id = store.add_drawing("AAPL", None, &rect).unwrap();
+        assert_ne!(line.id, rect.id);
+        assert_eq!(store.drawings("AAPL", None), vec![line.clone(), rect.clone()]);
+
+        // Another symbol, and the same symbol on another exchange, are other
+        // charts.
+        assert!(store.drawings("NVDA", None).is_empty());
+        assert!(store.drawings("AAPL", Some("L")).is_empty());
+
+        line.to = Anchor::new(250, 2.5);
+        store.update_drawing(&line);
+        assert_eq!(store.drawings("AAPL", None)[0].to, Anchor::new(250, 2.5));
+
+        store.remove_drawing(line.id);
+        assert_eq!(store.drawings("AAPL", None), vec![rect]);
+        store.clear_drawings("AAPL", None);
+        assert!(store.drawings("AAPL", None).is_empty());
+    }
+
+    #[test]
+    fn a_drawing_that_was_never_added_is_not_written_by_an_update() {
+        use omacharts_engine::{Anchor, DrawingKind};
+        let store = Store::memory().unwrap();
+        let unsaved = Drawing::new(DrawingKind::Line, Anchor::new(1, 1.0), Anchor::new(2, 2.0));
+        store.update_drawing(&unsaved);
+        assert!(store.drawings("AAPL", None).is_empty());
     }
 
     #[test]

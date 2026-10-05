@@ -248,6 +248,247 @@ fn walk(origin: &str, reach: f64, ok: impl Fn(&str) -> bool) -> Option<String> {
     None
 }
 
+// ---------------------------------------------------------------------------
+// What a drawing is
+// ---------------------------------------------------------------------------
+
+/// A point on the chart a drawing is pinned to: a moment and a price.
+///
+/// Time and price rather than a bar index and a pixel, because a drawing
+/// has to survive everything the chart does around it. Scroll, and it stays
+/// on the bars it was drawn on; zoom, and it stretches with them; switch
+/// the resolution, and a line through two daily closes still passes through
+/// the same two moments on the hourly chart. The moment is the bar's own
+/// timestamp, so a drawing dropped on a candle lands exactly on it.
+#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
+pub struct Anchor {
+    pub ts: i64,
+    pub price: f64,
+}
+
+impl Anchor {
+    pub fn new(ts: i64, price: f64) -> Anchor {
+        Anchor { ts, price }
+    }
+}
+
+/// The two kinds of drawing. Both are two anchors; what differs is what is
+/// drawn between them.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Kind {
+    /// A straight line from one anchor to the other.
+    Line,
+    /// A box with the two anchors at opposite corners.
+    Rect,
+}
+
+impl Kind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Kind::Line => "Line",
+            Kind::Rect => "Rectangle",
+        }
+    }
+}
+
+/// Something a person drew on a symbol's chart.
+///
+/// Stored by symbol, not by pane: a trend line on AAPL is a fact about AAPL,
+/// and it belongs on every chart of AAPL in every chartbook, at every
+/// resolution. The colour is a [`Preset`] — a role the theme fills — so the
+/// drawing follows the desktop theme the way the candles do.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub struct Drawing {
+    /// The store's row id. Zero until it has been written down.
+    #[serde(default)]
+    pub id: i64,
+    pub kind: Kind,
+    pub from: Anchor,
+    pub to: Anchor,
+    #[serde(default = "Drawing::default_preset")]
+    pub preset: Preset,
+    /// A line's stroke width. The chart's default when absent; a rectangle
+    /// ignores it, since its border is a hairline by design.
+    #[serde(default = "Drawing::default_width")]
+    pub width: f64,
+}
+
+/// The width a line is drawn at when nobody chose one: the chart's own
+/// default stroke.
+pub const DEFAULT_WIDTH: f64 = 1.5;
+
+impl Drawing {
+    pub fn new(kind: Kind, from: Anchor, to: Anchor) -> Drawing {
+        Drawing { id: 0, kind, from, to, preset: Preset::Blue, width: DEFAULT_WIDTH }
+    }
+
+    /// The preset a new drawing gets. Blue is the first colour the app hands
+    /// out to anything, and it is nobody's candle.
+    fn default_preset() -> Preset {
+        Preset::Blue
+    }
+
+    fn default_width() -> f64 {
+        DEFAULT_WIDTH
+    }
+
+    /// The anchor a grip stands for, to move it.
+    pub fn anchor_mut(&mut self, grip: Grip) -> Option<&mut Anchor> {
+        match grip {
+            Grip::From => Some(&mut self.from),
+            Grip::To => Some(&mut self.to),
+            Grip::Body => None,
+        }
+    }
+
+    /// Shift the whole drawing by a span of time and a difference in price.
+    pub fn shift(&mut self, by_ts: i64, by_price: f64) {
+        for anchor in [&mut self.from, &mut self.to] {
+            anchor.ts += by_ts;
+            anchor.price += by_price;
+        }
+    }
+}
+
+/// What part of a drawing the pointer is on.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Grip {
+    From,
+    To,
+    /// The line itself, or the inside of the box: drag to move the whole
+    /// thing.
+    Body,
+}
+
+/// How near the pointer has to be, in pixels, to pick a line or an edge.
+pub const PICK_REACH: f64 = 6.0;
+/// And to pick an anchor, which is a smaller target and worth more.
+pub const GRIP_REACH: f64 = 8.0;
+
+/// A drawing projected onto the screen: its two anchors as pixels.
+///
+/// The chart does the projecting, since only it knows where a moment and a
+/// price are on screen; everything about hitting the result is geometry and
+/// lives here, where it can be tested without a window.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Projected {
+    pub kind: Kind,
+    pub from: (f64, f64),
+    pub to: (f64, f64),
+}
+
+impl Projected {
+    /// What the pointer at (`x`, `y`) is on, if anything. Grips win over the
+    /// body, because an anchor sits on the body and is the harder target.
+    pub fn hit(&self, x: f64, y: f64) -> Option<Grip> {
+        if distance(self.from, (x, y)) <= GRIP_REACH {
+            return Some(Grip::From);
+        }
+        if distance(self.to, (x, y)) <= GRIP_REACH {
+            return Some(Grip::To);
+        }
+        let on_body = match self.kind {
+            Kind::Line => distance_to_segment((x, y), self.from, self.to) <= PICK_REACH,
+            Kind::Rect => {
+                let (left, right) = ordered(self.from.0, self.to.0);
+                let (top, bottom) = ordered(self.from.1, self.to.1);
+                let reach = PICK_REACH;
+                (left - reach..=right + reach).contains(&x) && (top - reach..=bottom + reach).contains(&y)
+            }
+        };
+        on_body.then_some(Grip::Body)
+    }
+
+    /// The box's corners as (left, top, width, height), for drawing it.
+    pub fn bounds(&self) -> (f64, f64, f64, f64) {
+        let (left, right) = ordered(self.from.0, self.to.0);
+        let (top, bottom) = ordered(self.from.1, self.to.1);
+        (left, top, right - left, bottom - top)
+    }
+}
+
+fn ordered(a: f64, b: f64) -> (f64, f64) {
+    if a <= b { (a, b) } else { (b, a) }
+}
+
+fn distance(a: (f64, f64), b: (f64, f64)) -> f64 {
+    (a.0 - b.0).hypot(a.1 - b.1)
+}
+
+/// How far `p` is from the segment `a`–`b`.
+pub fn distance_to_segment(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let length2 = dx * dx + dy * dy;
+    if length2 == 0.0 {
+        return distance(p, a);
+    }
+    let t = (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / length2).clamp(0.0, 1.0);
+    distance(p, (a.0 + t * dx, a.1 + t * dy))
+}
+
+#[cfg(test)]
+mod shape_tests {
+    use super::*;
+
+    fn line() -> Projected {
+        Projected { kind: Kind::Line, from: (100.0, 100.0), to: (300.0, 200.0) }
+    }
+
+    fn rect() -> Projected {
+        Projected { kind: Kind::Rect, from: (300.0, 200.0), to: (100.0, 100.0) }
+    }
+
+    #[test]
+    fn an_anchor_is_picked_before_the_body_under_it() {
+        assert_eq!(line().hit(102.0, 101.0), Some(Grip::From));
+        assert_eq!(line().hit(297.0, 203.0), Some(Grip::To));
+        assert_eq!(rect().hit(101.0, 101.0), Some(Grip::To));
+    }
+
+    #[test]
+    fn a_line_is_picked_near_it_and_not_away_from_it() {
+        // The midpoint, and a few pixels off it.
+        assert_eq!(line().hit(200.0, 150.0), Some(Grip::Body));
+        assert_eq!(line().hit(200.0, 154.0), Some(Grip::Body));
+        assert_eq!(line().hit(200.0, 170.0), None);
+        // Beyond either end is not on the line.
+        assert_eq!(line().hit(60.0, 80.0), None);
+    }
+
+    #[test]
+    fn a_box_is_picked_anywhere_inside_it_whichever_way_it_was_drawn() {
+        assert_eq!(rect().hit(200.0, 150.0), Some(Grip::Body));
+        assert_eq!(rect().hit(150.0, 120.0), Some(Grip::Body));
+        assert_eq!(rect().hit(50.0, 150.0), None);
+        assert_eq!(rect().bounds(), (100.0, 100.0, 200.0, 100.0));
+    }
+
+    #[test]
+    fn a_drawing_round_trips_through_json_and_fills_in_what_an_old_one_lacks() {
+        let mut drawing = Drawing::new(Kind::Rect, Anchor::new(1_700_000_000, 101.5), Anchor::new(1_700_086_400, 99.0));
+        drawing.preset = Preset::Amber;
+        let json = serde_json::to_string(&drawing).unwrap();
+        assert_eq!(serde_json::from_str::<Drawing>(&json).unwrap(), drawing);
+
+        let bare = r#"{"kind":"line","from":{"ts":1,"price":2.0},"to":{"ts":3,"price":4.0}}"#;
+        let old: Drawing = serde_json::from_str(bare).unwrap();
+        assert_eq!(old.preset, Preset::Blue);
+        assert_eq!(old.width, DEFAULT_WIDTH);
+        assert_eq!(old.id, 0);
+    }
+
+    #[test]
+    fn shifting_moves_both_anchors_together() {
+        let mut drawing = Drawing::new(Kind::Line, Anchor::new(10, 1.0), Anchor::new(20, 2.0));
+        drawing.shift(5, 0.5);
+        assert_eq!((drawing.from, drawing.to), (Anchor::new(15, 1.5), Anchor::new(25, 2.5)));
+        *drawing.anchor_mut(Grip::To).unwrap() = Anchor::new(30, 3.0);
+        assert_eq!(drawing.to, Anchor::new(30, 3.0));
+        assert!(drawing.anchor_mut(Grip::Body).is_none());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

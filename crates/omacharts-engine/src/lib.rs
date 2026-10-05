@@ -27,6 +27,7 @@ pub use link::LinkGroup;
 pub use provider::{Capability, FetchFailure, Pacing, Provider, ProviderError};
 pub use session::Session;
 pub use symbols::{Instrument, InstrumentKind, SearchHit, SearchIndex};
+pub use drawings::{Anchor, Drawing, Grip, Kind as DrawingKind, Preset, Projected};
 pub use frame::Frame;
 pub use theme::{
     theme_bars, BarScheme, BarSlot, ColorChoice, Direction, Mode, Source, Swatch, Theme,
