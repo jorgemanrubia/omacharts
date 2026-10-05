@@ -62,7 +62,10 @@ jobs:
           # And the crate itself, or `omacharts --version` keeps answering with
           # whatever it was built at when the version last moved by hand.
           sed -i -E "0,/^version = \"[0-9]+\.[0-9]+\.[0-9]+\"/s||version = \"${version}\"|" Cargo.toml
-          cargo update --workspace --offline 2>/dev/null || cargo update -p omacharts --offline 2>/dev/null || true
+          # Must not be allowed to fail quietly: a lock file left behind its
+          # own Cargo.toml makes every later `--locked` build refuse, which is
+          # how CI came to be red on main after a release.
+          cargo update -p omacharts --offline
 
           git diff --stat
       - name: Commit it back
