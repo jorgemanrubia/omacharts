@@ -19,6 +19,7 @@ use omacharts_engine::{FetchFailure, Instrument, LinkGroup};
 
 use crate::store::{Entry, Section, Store, DEFAULT_WATCHLIST};
 use crate::ui::search::SymbolSearch;
+use crate::ui::shortcuts;
 
 /// What a new install starts with, so the rail is never an empty column.
 ///
@@ -241,25 +242,6 @@ pub struct Watchlist {
     using: RefCell<Option<Rc<dyn Fn(i64) -> Option<String>>>>,
 }
 
-/// The rail's own New keys, for saying so where somebody is looking for them.
-///
-/// Neither is in the shortcuts table, and for different reasons. Ctrl+N is
-/// there as the window's new-chartbook and means a symbol only while the
-/// keyboard is in the rail. Ctrl+Shift+N is not there at all, because an
-/// application accelerator is owned everywhere, and taking a key from the
-/// whole app to serve one list is not a trade worth making.
-const NEW_SYMBOL_ACCEL: &str = "<Ctrl>n";
-const NEW_SECTION_ACCEL: &str = "<Ctrl><Shift>n";
-
-/// An accelerator in the desktop's own words — "Ctrl+N" here, something else
-/// on a machine set up differently. `shortcuts::label` does this from the
-/// table; these two keys are not in it.
-fn key_label(accel: &str) -> Option<String> {
-    let (key, mods) = gtk::accelerator_parse(accel)?;
-    let label = gtk::accelerator_get_label(key, mods);
-    (!label.is_empty()).then(|| label.to_string())
-}
-
 const SETTING_COLUMNS: &str = "watchlist_columns";
 const SETTING_ACTIVE: &str = "active_watchlist";
 
@@ -381,14 +363,16 @@ impl Watchlist {
         actions.set_margin_bottom(4);
 
         let add_symbol = gtk::Button::from_icon_name("list-add-symbolic");
-        add_symbol.set_tooltip_text(Some("Add a symbol"));
+        let tip = shortcuts::tooltip_with_key("Add a symbol", shortcuts::ADD_SYMBOL);
+        add_symbol.set_tooltip_text(Some(&tip));
         add_symbol.add_css_class("flat");
         let this = watchlist.clone();
         add_symbol.connect_clicked(move |_| this.add_symbol());
         actions.append(&add_symbol);
 
         let add_section = gtk::Button::from_icon_name("folder-new-symbolic");
-        add_section.set_tooltip_text(Some("Add a section"));
+        let tip = shortcuts::tooltip_with_key("Add a section", shortcuts::ADD_SECTION);
+        add_section.set_tooltip_text(Some(&tip));
         add_section.add_css_class("flat");
         let this = watchlist.clone();
         add_section.connect_clicked(move |button| this.prompt_new_section(button));
@@ -443,13 +427,13 @@ impl Watchlist {
         sentence.set_margin_bottom(6);
         state.append(&sentence);
 
-        let symbol = self.empty_action("Add a symbol", NEW_SYMBOL_ACCEL);
+        let symbol = self.empty_action("Add a symbol", shortcuts::ADD_SYMBOL);
         let this = self.clone();
         symbol.connect_clicked(move |_| this.add_symbol());
         state.append(&symbol);
         *self.empty_focus.borrow_mut() = Some(symbol.clone());
 
-        let section = self.empty_action("Add a section", NEW_SECTION_ACCEL);
+        let section = self.empty_action("Add a section", shortcuts::ADD_SECTION);
         let this = self.clone();
         section.connect_clicked(move |button| this.prompt_new_section(button));
         state.append(&section);
@@ -474,7 +458,7 @@ impl Watchlist {
         label.set_ellipsize(gtk::pango::EllipsizeMode::End);
         row.append(&label);
 
-        if let Some(key) = key_label(accel) {
+        if let Some(key) = shortcuts::accel_label(accel) {
             let key = gtk::Label::new(Some(&key));
             key.add_css_class("keycap");
             row.append(&key);
@@ -1197,7 +1181,12 @@ impl Watchlist {
         // Only named sections are given a header at all, so the root — which
         // has no name to lend a watchlist — never reaches this menu.
         let model = gio::Menu::new();
-        model.append(Some("Add symbol…"), Some("section.add"));
+        // The key beside the row is the rail's own Ctrl+N, which adds beside
+        // the highlight rather than under this header: the same command,
+        // arrived at without the menu. Promoting and removing are left bare,
+        // because they have no key — a row advertising a shortcut nothing
+        // listens for is worse than a row that says nothing.
+        shortcuts::append_with_key(&model, "Add symbol…", "section.add", shortcuts::ADD_SYMBOL);
         model.append(Some("Turn into a watchlist"), Some("section.promote"));
         let destructive = gio::Menu::new();
         destructive.append(Some("Remove section…"), Some("section.remove"));
@@ -1322,7 +1311,9 @@ impl Watchlist {
             row.insert_action_group("symbol", Some(&actions));
 
             let model = gio::Menu::new();
-            model.append(Some("Remove"), Some("symbol.remove"));
+            // Delete does the same to whatever the rail has highlighted.
+            let accel = shortcuts::REMOVE_SYMBOL;
+            shortcuts::append_with_key(&model, "Remove", "symbol.remove", accel);
             popup_menu(&model, &row, x, y);
         });
         row.add_controller(click);

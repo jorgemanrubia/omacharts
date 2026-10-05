@@ -97,7 +97,7 @@ impl ChartPane {
         // chart, it just happens to be clickable.
         symbol_button.add_css_class("readout-symbol");
         symbol_button.set_valign(gtk::Align::Center);
-        symbol_button.set_tooltip_text(Some("Find a symbol (Ctrl+K)"));
+        symbol_button.set_tooltip_text(Some(&shortcuts::tooltip("Find a symbol", "win.find")));
 
         let strip = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         strip.add_css_class("linked");
@@ -131,7 +131,7 @@ impl ChartPane {
         let gear = gtk::Button::from_icon_name("emblem-system-symbolic");
         gear.add_css_class("flat");
         gear.add_css_class("legend-gear");
-        gear.set_tooltip_text(Some("Chart settings"));
+        gear.set_tooltip_text(Some(&shortcuts::tooltip("Chart settings", "chart.settings")));
         gear.set_valign(gtk::Align::Center);
 
         // The link sits with the symbol, because that is what it is about:

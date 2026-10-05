@@ -3246,7 +3246,8 @@ impl Window {
         let menu_button = gtk::MenuButton::new();
         menu_button.set_icon_name("open-menu-symbolic");
         menu_button.set_menu_model(Some(&menu));
-        menu_button.set_tooltip_text(Some("Main Menu"));
+        let tip = shortcuts::tooltip_with_key("Main Menu", shortcuts::MAIN_MENU);
+        menu_button.set_tooltip_text(Some(&tip));
         // F10 opens the primary menu, and the header bar used to be the only
         // thing saying this menu was the primary one.
         menu_button.set_primary(true);

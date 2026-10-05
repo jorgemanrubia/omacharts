@@ -6,11 +6,12 @@
 //! something else on a machine set up differently — which is what
 //! `gtk::accelerator_get_label` is for.
 //!
-//! So the table is the one place a binding is written down. The
-//! application registers what it can from it, the menu items carry it
-//! as the `accel` attribute GTK draws on the right of a row, the
-//! tooltips append it, and the shortcuts window reads it rather than
-//! repeating it.
+//! So the table is the one place a binding is written down, and the
+//! constants under it are the one place for the keys no action owns.
+//! The application registers what it can from the table, the menu
+//! items carry a key as the `accel` attribute GTK draws on the right
+//! of a row, the tooltips append it in brackets, and the shortcuts
+//! window reads it rather than repeating it.
 
 use adw::prelude::*;
 use gtk::gio;
@@ -81,6 +82,24 @@ pub const BINDINGS: &[Binding] = &[
     careful("win.shortcuts", &["question"]),
 ];
 
+/// The keys no action owns, for saying so where somebody is looking.
+///
+/// The table above is addressed by action, which these have nothing to be
+/// addressed by: a key controller reads them, or GTK does, and no `GAction` is
+/// ever activated. Ctrl+N is the window's new-chartbook until the keyboard is
+/// in the rail, where it means a symbol instead. Ctrl+Shift+N and Ctrl+Shift+I
+/// each serve one list, and an application accelerator is owned everywhere —
+/// taking a key from the whole app to serve one list is not a trade worth
+/// making. Delete and F10 are what GTK and the desktop already call them.
+///
+/// They are written down here all the same, because a button that spells its
+/// own key is a button that goes on spelling the old one.
+pub const ADD_SYMBOL: &str = "<Ctrl>n";
+pub const ADD_SECTION: &str = "<Ctrl><Shift>n";
+pub const REMOVE_SYMBOL: &str = "Delete";
+pub const ADD_INDICATOR: &str = "<Ctrl><Shift>i";
+pub const MAIN_MENU: &str = "F10";
+
 /// Hand the application everything it is safe to own.
 pub fn install(app: &adw::Application) {
     for binding in BINDINGS.iter().filter(|binding| binding.global) {
@@ -97,11 +116,20 @@ pub fn accel(action: &str) -> Option<&'static str> {
     binding(action).and_then(|binding| binding.accels.first().copied())
 }
 
-/// The same, written the way this desktop writes it: "Ctrl+K".
-pub fn label(action: &str) -> Option<String> {
-    let (key, mods) = gtk::accelerator_parse(accel(action)?)?;
+/// An accelerator written the way this desktop writes it: "Ctrl+K".
+///
+/// One place does this, so that every row and every button says a key in the
+/// same words — and in the words of the machine it is running on rather than
+/// the ones somebody typed into a format string.
+pub fn accel_label(accel: &str) -> Option<String> {
+    let (key, mods) = gtk::accelerator_parse(accel)?;
     let label = gtk::accelerator_get_label(key, mods);
     (!label.is_empty()).then(|| label.to_string())
+}
+
+/// The same, for an action the table names.
+pub fn label(action: &str) -> Option<String> {
+    accel_label(accel(action)?)
 }
 
 /// A menu row that says what it does and what key does it.
@@ -111,10 +139,18 @@ pub fn label(action: &str) -> Option<String> {
 /// registered the key — which is the only way to show a shortcut that
 /// has to be handled more carefully than an accelerator can be.
 pub fn item(label: &str, action: &str) -> gio::MenuItem {
-    let item = gio::MenuItem::new(Some(label), Some(action));
-    if let Some(accel) = accel(action) {
-        item.set_attribute_value("accel", Some(&accel.to_variant()));
+    match accel(action) {
+        Some(accel) => item_with_key(label, action, accel),
+        None => gio::MenuItem::new(Some(label), Some(action)),
     }
+}
+
+/// The same, for a row whose key the table has no name to give — one of the
+/// constants above, on an action that lives only as long as the menu it was
+/// built for.
+pub fn item_with_key(label: &str, action: &str, accel: &str) -> gio::MenuItem {
+    let item = gio::MenuItem::new(Some(label), Some(action));
+    item.set_attribute_value("accel", Some(&accel.to_variant()));
     item
 }
 
@@ -123,9 +159,22 @@ pub fn append(menu: &gio::Menu, label: &str, action: &str) {
     menu.append_item(&item(label, action));
 }
 
+/// Add one that brings its own key.
+pub fn append_with_key(menu: &gio::Menu, label: &str, action: &str, accel: &str) {
+    menu.append_item(&item_with_key(label, action, accel));
+}
+
 /// "Watchlist (Ctrl+B)", for a button that has no room to say more.
 pub fn tooltip(text: &str, action: &str) -> String {
-    match label(action) {
+    match accel(action) {
+        Some(accel) => tooltip_with_key(text, accel),
+        None => text.to_string(),
+    }
+}
+
+/// The same, for a key no action owns.
+pub fn tooltip_with_key(text: &str, accel: &str) -> String {
+    match accel_label(accel) {
         Some(key) => format!("{text} ({key})"),
         None => text.to_string(),
     }
@@ -156,6 +205,32 @@ mod tests {
             assert!(!binding.accels.is_empty(), "{} has no key", binding.action);
             assert!(binding.action.contains('.'), "{} has no action group", binding.action);
         }
+    }
+
+    /// The same typo, in the keys the table cannot check for it. A constant
+    /// GTK cannot parse spells nothing, and the tooltip then quietly drops the
+    /// half somebody hovered for.
+    #[test]
+    fn the_keys_no_action_owns_are_accelerators_too() {
+        if !crate::ui::gtk_ready() {
+            return;
+        }
+        for accel in [ADD_SYMBOL, ADD_SECTION, REMOVE_SYMBOL, ADD_INDICATOR, MAIN_MENU] {
+            assert!(accel_label(accel).is_some(), "{accel} spells nothing");
+        }
+    }
+
+    /// A tooltip says the key after what the button does, whether the key came
+    /// from the table or from one of the constants beside it — and says nothing
+    /// extra when there is no key, rather than inventing one.
+    #[test]
+    fn a_tooltip_carries_the_key_it_was_given() {
+        if !crate::ui::gtk_ready() {
+            return;
+        }
+        assert_eq!(tooltip("Watchlist", "win.watchlist"), "Watchlist (Ctrl+B)");
+        assert_eq!(tooltip_with_key("Add a symbol", ADD_SYMBOL), "Add a symbol (Ctrl+N)");
+        assert_eq!(tooltip("Turn into a watchlist", "section.promote"), "Turn into a watchlist");
     }
 
     #[test]

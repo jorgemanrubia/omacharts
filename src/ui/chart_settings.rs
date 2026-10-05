@@ -277,7 +277,8 @@ impl IndicatorList {
 
         let add = gtk::Button::from_icon_name("list-add-symbolic");
         add.add_css_class("flat");
-        add.set_tooltip_text(Some("Add an indicator (Ctrl+Shift+I)"));
+        let tip = shortcuts::tooltip_with_key("Add an indicator", shortcuts::ADD_INDICATOR);
+        add.set_tooltip_text(Some(&tip));
         add.set_valign(gtk::Align::Center);
         group.set_header_suffix(Some(&add));
 
