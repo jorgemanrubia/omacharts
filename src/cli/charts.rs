@@ -297,6 +297,7 @@ pub fn new_pane(id: u32, symbol: &str, suffix: Option<&str>) -> Value {
         "linked": 0,
         "drawing_sharing": "global",
         "drawings": [],
+        "auto_scale": true,
     })
 }
 

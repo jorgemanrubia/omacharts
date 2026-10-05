@@ -450,10 +450,12 @@ mod tests {
                 linked: LinkGroup::None,
                 drawing_sharing: Default::default(),
                 drawings: Vec::new(),
+                auto_scale: false,
             }],
             watchlist: Some(4),
             sidebar_shown: Some(false),
             sidebar_width: Some(330),
+            maximized: None,
         };
         let json =
             serde_json::to_string(&Workspace { books: vec![one, two], active: 1 }).unwrap();
@@ -464,6 +466,32 @@ mod tests {
         assert_eq!(back.books[0].panes.len(), 2, "the first book kept its split");
         assert_eq!(back.books[1].name, "Energy");
         assert_eq!(back.books[1].layout.leaves(), vec![7]);
+        assert!(!back.books[1].panes[0].auto_scale, "a held price scale is still held");
+    }
+
+    /// Every chart written before the price scale was remembered was fitting
+    /// itself — the only way off automatic was a drag that nothing stored —
+    /// so that is what each of them comes back doing.
+    #[test]
+    fn a_chart_written_before_the_price_scale_was_remembered_fits_itself() {
+        let workspace = parse_workspace(ONE_ARRANGEMENT).expect("the old shape should parse");
+        assert!(workspace.books[0].panes.iter().all(|pane| pane.auto_scale));
+    }
+
+    /// Through the store rather than through serde alone: the setting is one
+    /// string in one row, and the row is what a restart reads.
+    #[test]
+    fn a_held_price_scale_survives_a_restart() {
+        let store = Store::memory().expect("an in-memory store");
+        let mut held = stored_pane(1, "SPY", LinkGroup::None);
+        held.auto_scale = false;
+        let book = book_of("Macro", vec![held, stored_pane(2, "QQQ", LinkGroup::None)]);
+        let json = serde_json::to_string(&Workspace { books: vec![book], active: 0 }).unwrap();
+        store.set_setting(SETTING_WORKSPACE, &json);
+
+        let back = parse_workspace(&store.setting(SETTING_WORKSPACE).unwrap()).unwrap();
+        let scales: Vec<bool> = back.books[0].panes.iter().map(|p| p.auto_scale).collect();
+        assert_eq!(scales, vec![false, true], "each chart keeps its own answer");
     }
 
     /// A chart, as a book that is not on screen holds one.
@@ -480,6 +508,7 @@ mod tests {
             linked,
             drawing_sharing: Default::default(),
             drawings: Vec::new(),
+            auto_scale: true,
         }
     }
 
@@ -493,7 +522,36 @@ mod tests {
             watchlist: None,
             sidebar_shown: None,
             sidebar_width: None,
+            maximized: None,
         }
+    }
+
+    /// Something may well have been filling the window when one of these was
+    /// written, but nothing wrote it down, so nothing is.
+    #[test]
+    fn a_book_written_before_the_fill_was_remembered_comes_back_showing_everything() {
+        let workspace = parse_workspace(ONE_ARRANGEMENT).expect("the old shape should parse");
+        assert_eq!(workspace.books[0].maximized, None);
+    }
+
+    /// Which chart fills the window belongs to the book it is in, so two
+    /// books each keep their own answer and a restart finds both.
+    #[test]
+    fn the_chart_filling_the_window_survives_a_restart_with_its_book() {
+        let store = Store::memory().expect("an in-memory store");
+        let mut macro_book = book_of(
+            "Macro",
+            vec![stored_pane(1, "SPY", LinkGroup::None), stored_pane(2, "QQQ", LinkGroup::None)],
+        );
+        macro_book.layout = Node::leaf(1).split(1, 2, true);
+        macro_book.maximized = Some(2);
+        let energy = book_of("Energy", vec![stored_pane(3, "CL", LinkGroup::None)]);
+        let workspace = Workspace { books: vec![macro_book, energy], active: 0 };
+        store.set_setting(SETTING_WORKSPACE, &serde_json::to_string(&workspace).unwrap());
+
+        let back = parse_workspace(&store.setting(SETTING_WORKSPACE).unwrap()).unwrap();
+        assert_eq!(back.books[0].maximized, Some(2));
+        assert_eq!(back.books[1].maximized, None, "the other book is left as it was");
     }
 
     /// Whatever a test wants to spread. Only the ticker and the suffix are read
@@ -786,6 +844,7 @@ mod tests {
             watchlist,
             sidebar_shown: None,
             sidebar_width: None,
+            maximized: None,
         }
     }
 
@@ -1110,6 +1169,11 @@ struct StoredPane {
     session: String,
     show_grid: bool,
     linked: LinkGroup,
+    /// Whether the price axis fits itself to the visible bars, or has been
+    /// taken off automatic to be dragged. Missing from a chart written before
+    /// this was remembered, and every one of those was fitting itself.
+    #[serde(default = "fits_itself")]
+    auto_scale: bool,
     /// What the chart shares its drawings with. A book written before
     /// drawings existed shares globally, which is what a new chart does.
     #[serde(default)]
@@ -1117,6 +1181,11 @@ struct StoredPane {
     /// The drawings that are this chart's alone.
     #[serde(default)]
     drawings: Vec<omacharts_engine::Drawing>,
+}
+
+/// What a chart's price scale does until somebody takes hold of it.
+fn fits_itself() -> bool {
+    true
 }
 
 /// One arrangement of charts, saved under a name.
@@ -1150,6 +1219,11 @@ struct Chartbook {
     sidebar_shown: Option<bool>,
     #[serde(default)]
     sidebar_width: Option<i32>,
+    /// The chart that had the window to itself, by the same id `focused`
+    /// uses. `None` when none did — and in every book written before this
+    /// was remembered, which come back showing the whole arrangement.
+    #[serde(default)]
+    maximized: Option<u32>,
 }
 
 /// Everything the window had open, as one stored value.
@@ -1352,9 +1426,10 @@ pub struct Window {
     ///
     /// Kept beside the tree rather than in it: maximizing is a way of looking
     /// at an arrangement, not a change to it, so the arrangement it came from
-    /// is still there to go back to exactly. It is also why this is not
-    /// written down — a window that came back maximized would look like a
-    /// window that had lost its other charts.
+    /// is still there to go back to exactly. It is written down with the
+    /// chartbook all the same, because a chart you left filling the window
+    /// is the chart you expect to find filling it — and the corner it is put
+    /// back from says there is more behind it.
     maximized: Cell<Option<u32>>,
     /// Every chartbook, as it is written down, including the one on screen.
     ///
@@ -1784,6 +1859,12 @@ impl Window {
             opener.open_drawing_settings();
         });
 
+        // A drag or a wheel on the price axis takes the scale off automatic
+        // inside the chart, where nothing is written down. It is a setting
+        // like the gridlines, so it is stored the way they are.
+        let scaler = self.clone();
+        pane.view.set_price_auto_handler(move |auto| scaler.price_auto_changed(id, auto));
+
         // Dragging a pane's edge changes the indicator, not just the drawing,
         // so the new height is stored the way any other setting of its would be.
         let resizer = self.clone();
@@ -1917,6 +1998,24 @@ impl Window {
         if let Some(action) = self.grid_action.borrow().as_ref() {
             action.set_state(&pane.show_grid.get().to_variant());
         }
+        if let Some(action) = self.auto_scale_action.borrow().as_ref() {
+            action.set_state(&pane.view.price_auto().to_variant());
+        }
+    }
+
+    /// A gesture on chart `id` just changed whether its price scale is
+    /// automatic.
+    ///
+    /// Written down on the same delay as a divider drag, because that is
+    /// usually what it is: the hand has just closed on the axis and is about
+    /// to pull it.
+    fn price_auto_changed(self: &Rc<Self>, id: u32, auto: bool) {
+        if self.focused.get() == id
+            && let Some(action) = self.auto_scale_action.borrow().as_ref()
+        {
+            action.set_state(&auto.to_variant());
+        }
+        self.save_soon();
     }
 
     /// Point the header and the rail at the focused chart.
@@ -1949,6 +2048,7 @@ impl Window {
             from.show_grid.get(),
             from.linked.get(),
         );
+        added.view.set_price_auto(from.view.price_auto());
         let next = self.layout.borrow().split(from.id, added.id, horizontal);
         *self.layout.borrow_mut() = next;
         self.rebuild_layout();
@@ -2077,12 +2177,20 @@ impl Window {
     /// What is actually mounted: the whole tree, or the one chart that has
     /// been given the window.
     fn mounted(&self) -> Node {
-        match self.maximized.get() {
-            Some(id) if self.pane(id).is_some() && self.layout.borrow().leaves().len() > 1 => {
-                Node::Leaf(id)
-            }
-            _ => self.layout.borrow().clone(),
+        match self.filled() {
+            Some(id) => Node::Leaf(id),
+            None => self.layout.borrow().clone(),
         }
+    }
+
+    /// The chart filling the window, if one is and still can: a chart that
+    /// has been closed cannot, and one chart alone has nothing to fill the
+    /// window away from. What is mounted and what is written down both ask
+    /// this, so they cannot disagree.
+    fn filled(&self) -> Option<u32> {
+        self.maximized
+            .get()
+            .filter(|id| self.pane(*id).is_some() && self.layout.borrow().leaves().len() > 1)
     }
 
     /// Mount the tree. Rebuilt whole rather than patched: a handful of panes,
@@ -2467,6 +2575,7 @@ impl Window {
                     linked: pane.linked.get(),
                     drawing_sharing: pane.drawing_sharing.get(),
                     drawings: pane.local_drawings.borrow().clone(),
+                    auto_scale: pane.view.price_auto(),
                 }
             })
             .collect();
@@ -2478,6 +2587,7 @@ impl Window {
             watchlist: self.watchlist.borrow().as_ref().map(|rail| rail.active_watchlist()),
             sidebar_shown: Some(self.shows_sidebar()),
             sidebar_width: Some(self.sidebar_width.get()),
+            maximized: self.filled(),
         }
     }
 
@@ -2528,15 +2638,11 @@ impl Window {
     /// Read the arrangement back and rebuild from it, after something outside
     /// the window changed it — a command typed in a terminal.
     ///
-    /// Anything the window holds that is not written down has to be carried
-    /// across by hand, and there is one such thing: which chart had the window
-    /// to itself. It is carried by position rather than by id, because
-    /// `materialise_book` hands out fresh pane ids every time it runs.
+    /// Everything the window holds comes back from what was written down,
+    /// which chart had the window to itself included: the command ran after
+    /// `save_workspace` put that into the book, and `materialise_book` reads
+    /// it back out by the chart's new id. Nothing is carried across by hand.
     pub fn reload_workspace(self: &Rc<Self>) {
-        let filled = self
-            .maximized
-            .get()
-            .and_then(|id| self.layout.borrow().leaves().iter().position(|leaf| *leaf == id));
         let books = self.books.borrow().clone();
         let active = self.active.get();
 
@@ -2550,12 +2656,6 @@ impl Window {
             return;
         }
 
-        let leaves = self.layout.borrow().leaves();
-        let refilled = filled.filter(|_| leaves.len() > 1).and_then(|at| leaves.get(at).copied());
-        if let Some(id) = refilled {
-            self.maximized.set(Some(id));
-            self.rebuild_layout();
-        }
         // A command can add or remove a whole chartbook, which is the one
         // change that shows outside the charts themselves.
         self.rebuild_book_strip();
@@ -2623,9 +2723,6 @@ impl Window {
         }
 
         self.panes.borrow_mut().clear();
-        // Filling the window is a way of looking at one arrangement, so it
-        // does not survive being shown a different one.
-        self.maximized.set(None);
         let mut restored: Vec<(Rc<ChartPane>, StoredPane)> = Vec::new();
         for stored in book.panes {
             if !wanted.contains(&stored.id) {
@@ -2642,6 +2739,7 @@ impl Window {
             pane.drawing_sharing.set(stored.drawing_sharing);
             pane.view.set_sharing(stored.drawing_sharing);
             *pane.local_drawings.borrow_mut() = stored.drawings.clone();
+            pane.view.set_price_auto(stored.auto_scale);
             restored.push((pane, stored));
         }
 
@@ -2662,6 +2760,12 @@ impl Window {
         }
         *self.layout.borrow_mut() = book_layout.relabel(&ids);
         self.focused.set(focused);
+        // Which chart fills the window is the book's to remember, so it comes
+        // back with the book — by its new id, the way the focus does. Each
+        // book keeps its own answer, which is what makes switching away and
+        // back find the window as it was left. A chart that is no longer in
+        // the tree cannot fill it, and `filled` says so when it is asked.
+        self.maximized.set(book.maximized.and_then(|old| ids.get(&old).copied()));
         self.rebuild_layout();
 
         for (pane, stored) in &restored {
@@ -3019,6 +3123,7 @@ impl Window {
             watchlist,
             sidebar_shown: None,
             sidebar_width: None,
+            maximized: None,
         });
         self.active.set(at);
         self.mount_single_chart(instrument);
@@ -5186,6 +5291,21 @@ impl Window {
         self.save_workspace();
     }
 
+    pub fn auto_scale(&self) -> bool {
+        self.focused_pane().view.price_auto()
+    }
+
+    /// The one way the price scale is put on or off automatic from outside
+    /// the chart — the axis menu, the settings dialog — so they cannot come
+    /// to different conclusions. A drag on the axis itself arrives through
+    /// `price_auto_changed` instead.
+    pub fn set_auto_scale(self: &Rc<Self>, auto: bool) {
+        let pane = self.focused_pane();
+        pane.view.set_price_auto(auto);
+        self.sync_chart_actions(&pane);
+        self.save_workspace();
+    }
+
     /// How many rows the profile with this id is drawing right now.
     pub fn profile_rows(&self, id: u32) -> Option<usize> {
         self.focused_pane().view.profile_rows(id)
@@ -5637,23 +5757,23 @@ impl Window {
         actions.add_action(&linked);
         *self.linked_action.borrow_mut() = Some(linked);
 
-        let auto_scale = gio::SimpleAction::new_stateful(
-            "auto-scale",
-            None,
-            &self.focused_pane().view.price_auto().to_variant(),
-        );
+        let auto_scale =
+            gio::SimpleAction::new_stateful("auto-scale", None, &self.auto_scale().to_variant());
         let this = self.clone();
-        auto_scale.connect_activate(move |action, _| {
-            let next = !this.focused_pane().view.price_auto();
-            action.set_state(&next.to_variant());
-            this.focused_pane().view.set_price_auto(next);
-        });
+        auto_scale.connect_activate(move |_, _| this.set_auto_scale(!this.auto_scale()));
         actions.add_action(&auto_scale);
         *self.auto_scale_action.borrow_mut() = Some(auto_scale);
 
         let reset_view = gio::SimpleAction::new("reset-view", None);
         let this = self.clone();
-        reset_view.connect_activate(move |_, _| this.focused_pane().view.reset_view());
+        reset_view.connect_activate(move |_, _| {
+            let pane = this.focused_pane();
+            pane.view.reset_view();
+            // Resetting puts the price scale back on automatic, and that much
+            // of it is written down with the chart.
+            this.sync_chart_actions(&pane);
+            this.save_workspace();
+        });
         actions.add_action(&reset_view);
 
         let settings = gio::SimpleAction::new("settings", None);

@@ -861,6 +861,12 @@ pub struct ChartView {
     on_drawing_menu: Handler<dyn Fn(f64, f64)>,
     /// Enter on a selected drawing: its properties.
     on_drawing_properties: Handler<dyn Fn()>,
+    /// Told when a gesture on the chart takes the price scale off automatic
+    /// or puts it back — a drag or a wheel on the axis, a double-click to
+    /// reset it. Whether the scale is automatic is written down with the
+    /// chart, and these are the only ways it changes that nothing outside
+    /// the chart can see.
+    on_price_auto: Handler<dyn Fn(bool)>,
 }
 
 impl ChartView {
@@ -902,6 +908,7 @@ impl ChartView {
             on_drawing: Rc::new(RefCell::new(None)),
             on_drawing_menu: Rc::new(RefCell::new(None)),
             on_drawing_properties: Rc::new(RefCell::new(None)),
+            on_price_auto: Rc::new(RefCell::new(None)),
         });
         view.wire_drawing();
         view.wire_pointer();
@@ -1393,6 +1400,13 @@ impl ChartView {
         self.redraw();
     }
 
+    /// Be told when a gesture on the chart changes whether the price scale
+    /// is automatic. Not called for [`set_price_auto`](Self::set_price_auto)
+    /// or the resets: whoever called those already knows.
+    pub fn set_price_auto_handler(&self, handler: impl Fn(bool) + 'static) {
+        *self.on_price_auto.borrow_mut() = Some(Box::new(handler));
+    }
+
     pub fn set_context_menu_handler(&self, handler: impl Fn(f64, f64) + 'static) {
         *self.on_context_menu.borrow_mut() = Some(Box::new(handler));
     }
@@ -1582,6 +1596,7 @@ impl ChartView {
         let state = self.state.clone();
         let area = self.area.clone();
         let pointer = self.pointer.clone();
+        let on_price_auto = self.on_price_auto.clone();
         scroll.connect_scroll(move |controller, dx, dy| {
             if dx == 0.0 && dy == 0.0 {
                 return glib::Propagation::Proceed;
@@ -1592,6 +1607,7 @@ impl ChartView {
 
             let (width, height) = (area.width() as f64, area.height() as f64);
             let mut s = state.borrow_mut();
+            let was_auto = s.price_auto;
             let region = s
                 .pointer
                 .map(|(x, y)| region_at(x, y, width, height))
@@ -1625,6 +1641,7 @@ impl ChartView {
             }
             drop(s);
             redraw(&area, &pointer);
+            notify_price_auto(&state, &on_price_auto, was_auto);
             glib::Propagation::Stop
         });
         self.area.add_controller(scroll);
@@ -1672,104 +1689,108 @@ impl ChartView {
         let state = self.state.clone();
         let area = self.area.clone();
         let view = Rc::downgrade(self);
+        let on_price_auto = self.on_price_auto.clone();
         drag.connect_drag_begin(move |_, x, y| {
-            let (width, height) = (area.width() as f64, area.height() as f64);
-            // A drawing being laid down takes the press before anything
-            // else: the second press is the drawing's second anchor.
-            let finishing = {
-                let mut s = state.borrow_mut();
-                if s.placing.is_some() {
-                    if let Some(anchor) = s.locate(width, height, x, y)
-                        && let Some(placing) = s.placing.as_mut()
-                    {
-                        placing.to = anchor;
-                    }
-                    s.drag = None;
-                    true
-                } else {
-                    false
-                }
-            };
-            if finishing {
-                if let Some(view) = view.upgrade() {
-                    view.commit_placing();
-                }
-                return;
-            }
+        let (width, height) = (area.width() as f64, area.height() as f64);
+        // A drawing being laid down takes the press before anything
+        // else: the second press is the drawing's second anchor.
+        let finishing = {
             let mut s = state.borrow_mut();
-            let (first, visible) = s.slice();
-            // The edge wins over whatever region it crosses, because that is
-            // what the cursor was already promising.
-            let plan = layout(&s, width, height);
-            if let Some(edge) = plan.edge_at(y) {
-                let share = s
-                    .indicators
-                    .iter()
-                    .find(|d| d.indicator.id == edge.id)
-                    .and_then(|d| d.output.pane_height())
-                    .unwrap_or(0.18);
-                s.drag = Some(Drag::PaneEdge {
-                    id: edge.id,
-                    share,
-                    total_h: plan.total_h,
-                    grows_downward: edge.grows_downward,
-                });
+            if s.placing.is_some() {
+                if let Some(anchor) = s.locate(width, height, x, y)
+                    && let Some(placing) = s.placing.as_mut()
+                {
+                    placing.to = anchor;
+                }
+                s.drag = None;
+                true
+            } else {
+                false
+            }
+        };
+        if finishing {
+            if let Some(view) = view.upgrade() {
+                view.commit_placing();
+            }
+            return;
+        }
+        let mut s = state.borrow_mut();
+        let was_auto = s.price_auto;
+        let (first, visible) = s.slice();
+        // The edge wins over whatever region it crosses, because that is
+        // what the cursor was already promising.
+        let plan = layout(&s, width, height);
+        if let Some(edge) = plan.edge_at(y) {
+            let share = s
+                .indicators
+                .iter()
+                .find(|d| d.indicator.id == edge.id)
+                .and_then(|d| d.output.pane_height())
+                .unwrap_or(0.18);
+            s.drag = Some(Drag::PaneEdge {
+                id: edge.id,
+                share,
+                total_h: plan.total_h,
+                grows_downward: edge.grows_downward,
+            });
+            return;
+        }
+        let region = region_at(x, y, width, height);
+        if region == Region::Plot {
+            // An armed tool: this press is the first anchor.
+            if let Some(kind) = s.tool {
+                if let Some(anchor) = s.locate(width, height, x, y) {
+                    let mut drawing = Drawing::new(kind, anchor, anchor);
+                    drawing.follow(s.next_config);
+                    drawing.scope = s.sharing.scope_for_new();
+                    s.placing = Some(drawing);
+                    s.drag = Some(Drag::Place { moved: false });
+                }
                 return;
             }
-            let region = region_at(x, y, width, height);
-            if region == Region::Plot {
-                // An armed tool: this press is the first anchor.
-                if let Some(kind) = s.tool {
-                    if let Some(anchor) = s.locate(width, height, x, y) {
-                        let mut drawing = Drawing::new(kind, anchor, anchor);
-                        drawing.follow(s.next_config);
-                        drawing.scope = s.sharing.scope_for_new();
-                        s.placing = Some(drawing);
-                        s.drag = Some(Drag::Place { moved: false });
+            // A drawing under the hand: take hold of it. Otherwise a
+            // press on the chart lets go of whatever was selected, and
+            // pans as it always did.
+            match s.drawing_at(width, height, x, y) {
+                Some((index, grip)) => {
+                    s.selected = Some(index);
+                    if let Some(origin) = s.locate(width, height, x, y) {
+                        // Before the first motion, so a drag is one step
+                        // back however far it went. A press that never
+                        // moves is forgotten at the end.
+                        s.remember();
+                        s.drag = Some(Drag::Grip { index, grip, origin });
                     }
+                    drop(s);
+                    area.queue_draw();
                     return;
                 }
-                // A drawing under the hand: take hold of it. Otherwise a
-                // press on the chart lets go of whatever was selected, and
-                // pans as it always did.
-                match s.drawing_at(width, height, x, y) {
-                    Some((index, grip)) => {
-                        s.selected = Some(index);
-                        if let Some(origin) = s.locate(width, height, x, y) {
-                            // Before the first motion, so a drag is one step
-                            // back however far it went. A press that never
-                            // moves is forgotten at the end.
-                            s.remember();
-                            s.drag = Some(Drag::Grip { index, grip, origin });
-                        }
-                        drop(s);
+                None => {
+                    if s.selected.take().is_some() {
                         area.queue_draw();
-                        return;
-                    }
-                    None => {
-                        if s.selected.take().is_some() {
-                            area.queue_draw();
-                        }
                     }
                 }
             }
-            s.drag = Some(
-                match region {
-                    Region::PriceAxis => {
-                        // Touching the axis takes the scale off automatic, from
-                        // exactly where it was, so nothing jumps.
-                        if s.price_auto {
-                            s.price_auto = false;
-                            s.price_zoom = 1.0;
-                            s.price_offset = 0.0;
-                        }
-                        Drag::PriceScale { zoom: s.price_zoom }
+        }
+        s.drag = Some(
+            match region {
+                Region::PriceAxis => {
+                    // Touching the axis takes the scale off automatic, from
+                    // exactly where it was, so nothing jumps.
+                    if s.price_auto {
+                        s.price_auto = false;
+                        s.price_zoom = 1.0;
+                        s.price_offset = 0.0;
                     }
-                    Region::TimeAxis => Drag::TimeScale { visible },
-                    Region::Plot => Drag::Pan { first, offset: s.price_offset },
-                },
-            );
-        });
+                    Drag::PriceScale { zoom: s.price_zoom }
+                }
+                Region::TimeAxis => Drag::TimeScale { visible },
+                Region::Plot => Drag::Pan { first, offset: s.price_offset },
+            },
+        );
+        drop(s);
+        notify_price_auto(&state, &on_price_auto, was_auto);
+    });
 
         let state = self.state.clone();
         let area = self.area.clone();
@@ -1929,12 +1950,14 @@ impl ChartView {
         let state = self.state.clone();
         let area = self.area.clone();
         let pointer = self.pointer.clone();
+        let on_price_auto = self.on_price_auto.clone();
         click.connect_pressed(move |_, presses, x, y| {
             if presses < 2 {
                 return;
             }
             let region = region_at(x, y, area.width() as f64, area.height() as f64);
             let mut s = state.borrow_mut();
+            let was_auto = s.price_auto;
             match region {
                 Region::PriceAxis => {
                     s.price_auto = true;
@@ -1951,6 +1974,7 @@ impl ChartView {
             }
             drop(s);
             redraw(&area, &pointer);
+            notify_price_auto(&state, &on_price_auto, was_auto);
         });
         self.area.add_controller(click);
     }
@@ -2021,6 +2045,24 @@ impl ChartView {
 fn redraw(body: &gtk::DrawingArea, pointer: &gtk::DrawingArea) {
     body.queue_draw();
     pointer.queue_draw();
+}
+
+/// Tell the window if a gesture just changed whether the price scale is
+/// automatic.
+///
+/// Compared against what it `was` rather than reported outright, because
+/// every notch of the wheel over the axis passes through here and only the
+/// first one changes anything. Called with the state no longer borrowed: the
+/// handler is the window's, and the window reads the chart back.
+fn notify_price_auto(
+    state: &Rc<RefCell<State>>,
+    on_price_auto: &Handler<dyn Fn(bool)>,
+    was: bool,
+) {
+    let now = state.borrow().price_auto;
+    if now != was && let Some(handler) = on_price_auto.borrow().as_ref() {
+        handler(now);
+    }
 }
 
 fn notify_hover(

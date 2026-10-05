@@ -585,6 +585,8 @@ pub const SURFACE: &[Noun] = &[
                     Flag::valued("grid", "BOOL", "draw the grid").of(&["on", "off"]),
                     Flag::valued("drawing-sharing", "GROUP", "which drawings of its symbol the chart shows and draws into")
                         .of(SHARINGS),
+                    Flag::valued("auto-scale", "BOOL", "fit the price axis to the visible bars, or hold it still")
+                        .of(&["on", "off"]),
                 ],
                 example: "omacharts chart set --symbol NVDA --resolution 1h --style candles",
                 json: true,
@@ -895,6 +897,7 @@ const STORED_FIELDS: &[(&str, &str, &str)] = &[
     ("linked", "chart set", "--link"),
     ("drawing_sharing", "chart set", "--drawing-sharing"),
     ("drawings", "chart drawing", ""),
+    ("auto_scale", "chart set", "--auto-scale"),
     ("name", "chartbook rename", ""),
     ("layout", "chart split", ""),
     ("focused", "chart focus", ""),
@@ -902,6 +905,7 @@ const STORED_FIELDS: &[(&str, &str, &str)] = &[
     ("watchlist", "chartbook watchlist", ""),
     ("sidebar_shown", "", "presentational: the rail is shown with a mouse or a key"),
     ("sidebar_width", "", "presentational: a width is dragged, never scripted"),
+    ("maximized", "", "presentational: remembered so a restart finds it, but filled with a key or the corner"),
 ];
 
 #[cfg(test)]
