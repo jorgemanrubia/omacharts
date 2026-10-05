@@ -1145,6 +1145,12 @@ fn chart_verb(
             charts::panes_mut(target)?
                 .retain(|p| p["id"].as_u64().is_some_and(|id| kept.contains(&(id as u32))));
             target["focused"] = json!(kept.first().copied().unwrap_or(0));
+            // A chart that is gone cannot be filling the window. The window
+            // would ignore a stale one, but what is stored should not need
+            // ignoring.
+            if target["maximized"].as_u64() == Some(u64::from(pane)) {
+                target["maximized"] = Value::Null;
+            }
             format!("closed chart {pane}")
         }
         "focus" => {
@@ -2648,6 +2654,28 @@ mod tests {
         let listed = run("chart list --book Old --json", &store);
         let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
         assert_eq!(parsed["charts"][0]["auto_scale"], true);
+    }
+
+    /// The window writes down which chart fills it. Closing that chart from
+    /// a terminal takes the note with it; closing any other leaves it alone.
+    #[test]
+    fn closing_the_chart_that_filled_the_window_forgets_the_fill() {
+        let store = Store::memory().unwrap();
+        run("chartbook create Macro --symbol SPY --switch", &store);
+        run("chart split horizontal --book Macro", &store);
+        run("chart split horizontal --book Macro", &store);
+        let stored = |store: &Store| -> serde_json::Value {
+            serde_json::from_str(&store.setting("workspace").unwrap()).unwrap()
+        };
+        let mut workspace = stored(&store);
+        workspace["books"][0]["maximized"] = serde_json::json!(2);
+        store.set_setting("workspace", &workspace.to_string());
+
+        run("chart close --book Macro --chart 3", &store);
+        assert_eq!(stored(&store)["books"][0]["maximized"], 2, "another chart went, not this one");
+
+        run("chart close --book Macro --chart 2", &store);
+        assert!(stored(&store)["books"][0]["maximized"].is_null());
     }
 
     /// The widget on somebody's bar is running the old spelling right now,

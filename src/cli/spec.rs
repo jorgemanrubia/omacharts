@@ -862,6 +862,7 @@ const STORED_FIELDS: &[(&str, &str, &str)] = &[
     ("watchlist", "chartbook watchlist", ""),
     ("sidebar_shown", "", "presentational: the rail is shown with a mouse or a key"),
     ("sidebar_width", "", "presentational: a width is dragged, never scripted"),
+    ("maximized", "", "presentational: remembered so a restart finds it, but filled with a key or the corner"),
 ];
 
 #[cfg(test)]

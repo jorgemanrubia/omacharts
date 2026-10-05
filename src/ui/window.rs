@@ -437,6 +437,7 @@ mod tests {
             watchlist: Some(4),
             sidebar_shown: Some(false),
             sidebar_width: Some(330),
+            maximized: None,
         };
         let json =
             serde_json::to_string(&Workspace { books: vec![one, two], active: 1 }).unwrap();
@@ -501,7 +502,36 @@ mod tests {
             watchlist: None,
             sidebar_shown: None,
             sidebar_width: None,
+            maximized: None,
         }
+    }
+
+    /// Something may well have been filling the window when one of these was
+    /// written, but nothing wrote it down, so nothing is.
+    #[test]
+    fn a_book_written_before_the_fill_was_remembered_comes_back_showing_everything() {
+        let workspace = parse_workspace(ONE_ARRANGEMENT).expect("the old shape should parse");
+        assert_eq!(workspace.books[0].maximized, None);
+    }
+
+    /// Which chart fills the window belongs to the book it is in, so two
+    /// books each keep their own answer and a restart finds both.
+    #[test]
+    fn the_chart_filling_the_window_survives_a_restart_with_its_book() {
+        let store = Store::memory().expect("an in-memory store");
+        let mut macro_book = book_of(
+            "Macro",
+            vec![stored_pane(1, "SPY", LinkGroup::None), stored_pane(2, "QQQ", LinkGroup::None)],
+        );
+        macro_book.layout = Node::leaf(1).split(1, 2, true);
+        macro_book.maximized = Some(2);
+        let energy = book_of("Energy", vec![stored_pane(3, "CL", LinkGroup::None)]);
+        let workspace = Workspace { books: vec![macro_book, energy], active: 0 };
+        store.set_setting(SETTING_WORKSPACE, &serde_json::to_string(&workspace).unwrap());
+
+        let back = parse_workspace(&store.setting(SETTING_WORKSPACE).unwrap()).unwrap();
+        assert_eq!(back.books[0].maximized, Some(2));
+        assert_eq!(back.books[1].maximized, None, "the other book is left as it was");
     }
 
     /// Whatever a test wants to spread. Only the ticker and the suffix are read
@@ -794,6 +824,7 @@ mod tests {
             watchlist,
             sidebar_shown: None,
             sidebar_width: None,
+            maximized: None,
         }
     }
 
@@ -1159,6 +1190,11 @@ struct Chartbook {
     sidebar_shown: Option<bool>,
     #[serde(default)]
     sidebar_width: Option<i32>,
+    /// The chart that had the window to itself, by the same id `focused`
+    /// uses. `None` when none did — and in every book written before this
+    /// was remembered, which come back showing the whole arrangement.
+    #[serde(default)]
+    maximized: Option<u32>,
 }
 
 /// Everything the window had open, as one stored value.
@@ -1355,9 +1391,10 @@ pub struct Window {
     ///
     /// Kept beside the tree rather than in it: maximizing is a way of looking
     /// at an arrangement, not a change to it, so the arrangement it came from
-    /// is still there to go back to exactly. It is also why this is not
-    /// written down — a window that came back maximized would look like a
-    /// window that had lost its other charts.
+    /// is still there to go back to exactly. It is written down with the
+    /// chartbook all the same, because a chart you left filling the window
+    /// is the chart you expect to find filling it — and the corner it is put
+    /// back from says there is more behind it.
     maximized: Cell<Option<u32>>,
     /// Every chartbook, as it is written down, including the one on screen.
     ///
@@ -2057,12 +2094,20 @@ impl Window {
     /// What is actually mounted: the whole tree, or the one chart that has
     /// been given the window.
     fn mounted(&self) -> Node {
-        match self.maximized.get() {
-            Some(id) if self.pane(id).is_some() && self.layout.borrow().leaves().len() > 1 => {
-                Node::Leaf(id)
-            }
-            _ => self.layout.borrow().clone(),
+        match self.filled() {
+            Some(id) => Node::Leaf(id),
+            None => self.layout.borrow().clone(),
         }
+    }
+
+    /// The chart filling the window, if one is and still can: a chart that
+    /// has been closed cannot, and one chart alone has nothing to fill the
+    /// window away from. What is mounted and what is written down both ask
+    /// this, so they cannot disagree.
+    fn filled(&self) -> Option<u32> {
+        self.maximized
+            .get()
+            .filter(|id| self.pane(*id).is_some() && self.layout.borrow().leaves().len() > 1)
     }
 
     /// Mount the tree. Rebuilt whole rather than patched: a handful of panes,
@@ -2457,6 +2502,7 @@ impl Window {
             watchlist: self.watchlist.borrow().as_ref().map(|rail| rail.active_watchlist()),
             sidebar_shown: Some(self.shows_sidebar()),
             sidebar_width: Some(self.sidebar_width.get()),
+            maximized: self.filled(),
         }
     }
 
@@ -2507,15 +2553,11 @@ impl Window {
     /// Read the arrangement back and rebuild from it, after something outside
     /// the window changed it — a command typed in a terminal.
     ///
-    /// Anything the window holds that is not written down has to be carried
-    /// across by hand, and there is one such thing: which chart had the window
-    /// to itself. It is carried by position rather than by id, because
-    /// `materialise_book` hands out fresh pane ids every time it runs.
+    /// Everything the window holds comes back from what was written down,
+    /// which chart had the window to itself included: the command ran after
+    /// `save_workspace` put that into the book, and `materialise_book` reads
+    /// it back out by the chart's new id. Nothing is carried across by hand.
     pub fn reload_workspace(self: &Rc<Self>) {
-        let filled = self
-            .maximized
-            .get()
-            .and_then(|id| self.layout.borrow().leaves().iter().position(|leaf| *leaf == id));
         let books = self.books.borrow().clone();
         let active = self.active.get();
 
@@ -2529,12 +2571,6 @@ impl Window {
             return;
         }
 
-        let leaves = self.layout.borrow().leaves();
-        let refilled = filled.filter(|_| leaves.len() > 1).and_then(|at| leaves.get(at).copied());
-        if let Some(id) = refilled {
-            self.maximized.set(Some(id));
-            self.rebuild_layout();
-        }
         // A command can add or remove a whole chartbook, which is the one
         // change that shows outside the charts themselves.
         self.rebuild_book_strip();
@@ -2602,9 +2638,6 @@ impl Window {
         }
 
         self.panes.borrow_mut().clear();
-        // Filling the window is a way of looking at one arrangement, so it
-        // does not survive being shown a different one.
-        self.maximized.set(None);
         let mut restored: Vec<(Rc<ChartPane>, StoredPane)> = Vec::new();
         for stored in book.panes {
             if !wanted.contains(&stored.id) {
@@ -2639,6 +2672,12 @@ impl Window {
         }
         *self.layout.borrow_mut() = book_layout.relabel(&ids);
         self.focused.set(focused);
+        // Which chart fills the window is the book's to remember, so it comes
+        // back with the book — by its new id, the way the focus does. Each
+        // book keeps its own answer, which is what makes switching away and
+        // back find the window as it was left. A chart that is no longer in
+        // the tree cannot fill it, and `filled` says so when it is asked.
+        self.maximized.set(book.maximized.and_then(|old| ids.get(&old).copied()));
         self.rebuild_layout();
 
         for (pane, stored) in &restored {
@@ -2996,6 +3035,7 @@ impl Window {
             watchlist,
             sidebar_shown: None,
             sidebar_width: None,
+            maximized: None,
         });
         self.active.set(at);
         self.mount_single_chart(instrument);

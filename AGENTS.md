@@ -28,7 +28,8 @@ Out of scope — **presentational geometry**, which only means anything while a
 window is on screen:
 
 - sidebar width, split ratios, divider positions, indicator pane heights
-- which pane is maximized
+- which pane is maximized — remembered with the chartbook so that a restart
+  finds it, but filled with a key or the corner, not a command
 - scroll and zoom position
 
 Those exist to be dragged with a mouse. A command to set one to 289 pixels is
@@ -227,9 +228,9 @@ fail rather than leaving it to somebody remembering to read the list.
 Say plainly what they cannot reach, because a test that looks like it proves
 parity and does not is worse than none:
 
-- **A capability that changes nothing stored.** Scrolling, zooming and
-  maximizing a chart are out of scope by design, and the field test cannot
-  tell them apart from something that should have been in.
+- **A capability that changes nothing stored.** Scrolling and zooming a chart
+  are out of scope by design, and the field test cannot tell them apart from
+  something that should have been in.
 - **Settings reached only through `config set`.** `timeframes` and
   `watchlist_columns` are real preferences with no command of their own, and
   nothing fails because of it.
