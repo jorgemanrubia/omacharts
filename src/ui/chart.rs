@@ -10,6 +10,8 @@
 //! screen of bars rather than four calls per candle, which is what keeps a
 //! drag at the frame rate.
 
+pub mod bench;
+
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -396,6 +398,35 @@ fn region_at(x: f64, y: f64, width: f64, height: f64) -> Region {
 }
 
 impl State {
+    /// A chart with nothing on it yet.
+    ///
+    /// Named rather than written out where it is used, because the benchmark
+    /// needs the same starting point the widget has: a frame measured from a
+    /// state assembled by hand is a frame of something else.
+    fn blank(theme: Theme, scheme: BarScheme) -> State {
+        State {
+            bars: Vec::new(),
+            echo: None,
+            theme,
+            scheme,
+            instrument: None,
+            timeframe: Timeframe::days(1),
+            first: 0,
+            visible: 160,
+            pointer: None,
+            anchored: true,
+            indicators: Vec::new(),
+            bar_style: BarStyle::default(),
+            show_grid: true,
+            drag: None,
+            trouble: None,
+            loading: false,
+            price_zoom: 1.0,
+            price_offset: 0.0,
+            price_auto: true,
+        }
+    }
+
     /// The price range to draw, after the user's scaling.
     ///
     /// The auto fit is always the starting point, so taking manual control
@@ -501,27 +532,7 @@ impl ChartView {
         area.set_vexpand(true);
         area.set_focusable(true);
 
-        let state = Rc::new(RefCell::new(State {
-            bars: Vec::new(),
-            echo: None,
-            theme,
-            scheme,
-            instrument: None,
-            timeframe: Timeframe::days(1),
-            first: 0,
-            visible: 160,
-            pointer: None,
-            anchored: true,
-            indicators: Vec::new(),
-            bar_style: BarStyle::default(),
-            show_grid: true,
-            drag: None,
-            trouble: None,
-            loading: false,
-            price_zoom: 1.0,
-            price_offset: 0.0,
-            price_auto: true,
-        }));
+        let state = Rc::new(RefCell::new(State::blank(theme, scheme)));
         let on_hover: Handler<dyn Fn(Option<Hover>)> = Rc::new(RefCell::new(None));
 
         let view = Rc::new(ChartView {
