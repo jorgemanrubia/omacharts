@@ -254,15 +254,19 @@ impl Yahoo {
 /// that person the provider is having trouble sends them looking in the wrong
 /// place. Anything else is Yahoo's end, and worth a retry; being offline is
 /// not, which is why [`ProviderError::Offline`] is absent from the retry arm.
+///
+/// A connection that could not be made is Yahoo's end, not ours: the name
+/// resolved, so the machine is on a network, and what refused or dropped the
+/// handshake sits on the other side of it. Filing it as offline told a
+/// person with working wifi that they had none.
 fn could_not_reach(error: ureq::Error) -> ProviderError {
     let offline = match &error {
-        ureq::Error::HostNotFound | ureq::Error::ConnectionFailed => true,
+        ureq::Error::HostNotFound => true,
         ureq::Error::Io(io) => matches!(
             io.kind(),
             std::io::ErrorKind::NetworkUnreachable
                 | std::io::ErrorKind::HostUnreachable
                 | std::io::ErrorKind::NetworkDown
-                | std::io::ErrorKind::ConnectionRefused
                 | std::io::ErrorKind::AddrNotAvailable
         ),
         _ => false,
@@ -459,6 +463,21 @@ mod tests {
         assert!(matches!(
             could_not_reach(ureq::Error::Io(unreachable)),
             ProviderError::Offline(_)
+        ));
+    }
+
+    /// The name resolved, so there is a network; whatever would not take the
+    /// handshake is on Yahoo's side of it.
+    #[test]
+    fn a_connection_that_could_not_be_made_is_reported_against_the_provider() {
+        assert!(matches!(
+            could_not_reach(ureq::Error::ConnectionFailed),
+            ProviderError::Network(_)
+        ));
+        let refused = std::io::Error::from(std::io::ErrorKind::ConnectionRefused);
+        assert!(matches!(
+            could_not_reach(ureq::Error::Io(refused)),
+            ProviderError::Network(_)
         ));
     }
 

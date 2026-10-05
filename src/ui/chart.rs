@@ -769,6 +769,19 @@ impl ChartView {
             area.queue_draw();
         });
         self.area.add_controller(motion);
+
+        // The trouble dot's words. The chart has no other tooltip, so that
+        // nothing opens over the crosshair readout.
+        self.area.set_has_tooltip(true);
+        let state = self.state.clone();
+        self.area.connect_query_tooltip(move |area, x, y, _keyboard, tooltip| {
+            let s = state.borrow();
+            if !over_trouble_dot(&s, area.width() as f64, x as f64, y as f64) {
+                return false;
+            }
+            tooltip.set_text(s.trouble.map(FetchFailure::message));
+            true
+        });
     }
 
     /// The wheel, with the conventions every charting tool shares.
@@ -1206,8 +1219,8 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
         );
     }
 
-    if let Some(trouble) = state.trouble {
-        draw_trouble_marker(cr, state, width, trouble.tag());
+    if state.trouble.is_some() {
+        draw_trouble_dot(cr, state, width);
     }
 }
 
@@ -1898,20 +1911,52 @@ fn nearest_bar(bars: &[Bar], ts: i64) -> Option<usize> {
     (gap <= step * 2).then_some(best)
 }
 
-/// The marker in the top corner of a chart that has bars but could not get
-/// newer ones. What is drawn is real and out of date, and this says why.
-fn draw_trouble_marker(cr: &cairo::Context, state: &State, width: f64, text: &str) {
-    cr.select_font_face("sans-serif", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
-    cr.set_font_size(10.0);
-    let Ok(extents) = cr.text_extents(text) else { return };
-    let w = extents.width() + 12.0;
-    let x = width - PRICE_AXIS_W - w - PAD;
-    colors::set_source_alpha(cr, &state.theme.ui.text_muted, 0.22);
-    cr.rectangle(x, PAD, w, 16.0);
+/// Half the width of the trouble dot. Six pixels across: four reads as a
+/// stray wick, eight as a button.
+const TROUBLE_DOT_RADIUS: f64 = 3.0;
+
+/// How near the pointer has to be to the dot for its tooltip to open. Wider
+/// than the dot, since nobody aims at six pixels.
+const TROUBLE_DOT_REACH: f64 = 9.0;
+
+/// Where the trouble dot sits: the top-right of the plot, inside it and
+/// clear of the price axis, so it never lands on a label.
+fn trouble_dot_centre(width: f64) -> (f64, f64) {
+    (width - PRICE_AXIS_W - PAD - TROUBLE_DOT_RADIUS, PAD + TROUBLE_DOT_RADIUS + 2.0)
+}
+
+/// The dot in the top corner of a chart that has bars but could not get
+/// newer ones. What is drawn is real and out of date; the dot says so and
+/// its tooltip says why. Nothing is drawn while all is well, since a chart
+/// that is up to date has nothing to flag. Solid rather than pulsing: a
+/// layout of eight panes and a provider having a bad minute would otherwise
+/// blink at the user.
+///
+/// The colour is the theme's Rose — the red its down candles wear, so the
+/// alarm belongs to the theme rather than being a traffic light pasted on —
+/// and not the bar scheme's down colour, which the monochrome scheme makes
+/// a grey and no alarm at all. A ring of the chart background keeps it a dot
+/// over a red candle or the crosshair.
+fn draw_trouble_dot(cr: &cairo::Context, state: &State, width: f64) {
+    let (x, y) = trouble_dot_centre(width);
+    let rose = state.theme.swatch("Rose").map(|s| s.hex.as_str()).unwrap_or(&state.scheme.down);
+    colors::set_source(cr, &state.theme.ui.background);
+    cr.arc(x, y, TROUBLE_DOT_RADIUS + 1.0, 0.0, std::f64::consts::TAU);
     let _ = cr.fill();
-    colors::set_source_alpha(cr, &state.theme.ui.text_muted, 0.95);
-    cr.move_to(x + 6.0, PAD + 11.5);
-    let _ = cr.show_text(text);
+    colors::set_source(cr, rose);
+    cr.arc(x, y, TROUBLE_DOT_RADIUS, 0.0, std::f64::consts::TAU);
+    let _ = cr.fill();
+}
+
+/// Is the pointer on the trouble dot? Only while there is one: a chart that
+/// is up to date, or one with no bars whose placeholder already says what is
+/// wrong, has no dot and no tooltip.
+fn over_trouble_dot(state: &State, width: f64, x: f64, y: f64) -> bool {
+    if state.trouble.is_none() || state.slice().1 == 0 {
+        return false;
+    }
+    let (cx, cy) = trouble_dot_centre(width);
+    (x - cx).hypot(y - cy) <= TROUBLE_DOT_REACH
 }
 
 /// Band shading and volume profiles, beneath the bars.

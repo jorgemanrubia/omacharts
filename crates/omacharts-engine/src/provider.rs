@@ -84,11 +84,16 @@ pub enum FetchFailure {
 }
 
 impl FetchFailure {
-    /// The line a chart with no bars at all puts where the bars would be.
+    /// The line a chart with no bars at all puts where the bars would be, and
+    /// the tooltip on the dot a chart that does have bars shows in its corner.
     ///
     /// One sentence for what happened, and — only where it is true — a second
     /// for the fact that it fixes itself. Never an instruction, because there
-    /// is nothing for the user to do about any of these.
+    /// is nothing for the user to do about any of these. On a chart with bars
+    /// what is drawn is real and older than it should be, and this says why
+    /// nothing newer arrived; it replaced a marker that only ever said
+    /// "stale", which left the user to guess between a dead symbol, a broken
+    /// app and a provider having a bad minute.
     pub fn message(self) -> &'static str {
         match self {
             FetchFailure::RateLimited => {
@@ -105,23 +110,6 @@ impl FetchFailure {
         }
     }
 
-    /// The same thing in the corner of a chart that does have bars.
-    ///
-    /// What is drawn there is real, and older than it should be; this says why
-    /// nothing newer arrived. It replaced a marker that only ever said
-    /// "stale", which left the user to guess between a dead symbol, a broken
-    /// app and a provider having a bad minute.
-    pub fn tag(self) -> &'static str {
-        match self {
-            FetchFailure::RateLimited => "rate limited",
-            FetchFailure::Offline => "offline",
-            FetchFailure::Unreachable => "no answer",
-            FetchFailure::Garbled => "bad reply",
-            FetchFailure::Unsupported => "unsupported",
-            FetchFailure::NoSuchSymbol => "no symbol",
-            FetchFailure::LocalCache => "no cache",
-        }
-    }
 }
 
 impl From<&ProviderError> for FetchFailure {
@@ -319,25 +307,6 @@ mod tests {
         ];
         for (error, expected) in &cases {
             assert_eq!(FetchFailure::from(error), *expected, "{error}");
-        }
-    }
-
-    /// The corner of a chart that has bars is about sixty pixels wide, and a
-    /// marker that does not fit is a marker nobody reads.
-    #[test]
-    fn every_tag_is_short_enough_for_the_corner_of_a_chart() {
-        for failure in [
-            FetchFailure::RateLimited,
-            FetchFailure::Offline,
-            FetchFailure::Unreachable,
-            FetchFailure::Garbled,
-            FetchFailure::Unsupported,
-            FetchFailure::NoSuchSymbol,
-            FetchFailure::LocalCache,
-        ] {
-            let tag = failure.tag();
-            assert!(tag.len() <= 12, "{tag} is too long for the marker");
-            assert_eq!(tag, tag.to_lowercase(), "the marker is lowercase: {tag}");
         }
     }
 
