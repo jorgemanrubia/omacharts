@@ -17,7 +17,8 @@ use gtk::glib;
 use omacharts_engine::providers::Yahoo;
 use omacharts_engine::refresh;
 use omacharts_engine::{
-    resample, BarStyle, FetchFailure, Indicator, Instrument, Provider, Session, Timeframe,
+    resample, BarStyle, FetchFailure, Indicator, Instrument, Provider, SearchIndex, Session,
+    Timeframe,
 };
 
 use crate::loader::{Loader, Request, Response, BACKFILL, BACKGROUND, FOREGROUND, REFRESH};
@@ -5390,6 +5391,21 @@ impl Window {
 
     pub fn search(&self) -> Rc<SymbolSearch> {
         self.search.clone()
+    }
+
+    /// The window's own symbol index, once it names everything.
+    ///
+    /// Lent out so a command running on the main loop can resolve a stored
+    /// symbol against the whole catalogue without building a second index of
+    /// eleven thousand rows to do it — the window has one already, and
+    /// rebuilding it is milliseconds the frame cannot spare.
+    ///
+    /// `None` until the long tail has been swapped in, because the curated
+    /// half would answer the same question with a different and much shorter
+    /// truth, and a caller silently resolving against it is the bug this
+    /// exists to avoid.
+    pub fn symbols(&self) -> Option<Rc<SearchIndex>> {
+        self.index.complete().then(|| self.index.get())
     }
 
     /// Re-fold and repaint, after something that changes how the bars are read.

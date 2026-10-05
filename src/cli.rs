@@ -178,6 +178,16 @@ pub trait Live {
     /// nearest-wanted-first and shares one throttle across every request it
     /// has ever made, which is strictly the better place to do it.
     fn warm(&self, instruments: &[Instrument]);
+    /// The window's symbol index, if it already names every listing.
+    ///
+    /// Same bargain as `warm`: the window has spent the milliseconds once, so
+    /// a command on its main loop borrows the result instead of spending them
+    /// again on every tick of a bar widget's timer.
+    ///
+    /// `None` while the window is still showing the curated half, a few
+    /// hundred milliseconds after it opens. A caller that needs the whole
+    /// catalogue has to build one then, and had better say so.
+    fn symbols(&self) -> Option<Rc<SearchIndex>>;
 }
 
 /// Is this argument list a command rather than a symbol to open?
@@ -322,11 +332,8 @@ fn refresh(store: &Store, provider: &Yahoo, instruments: &[Instrument]) {
 }
 
 /// The watchlist as JSON, for the bar widget.
-pub fn watchlist_json(refresh_first: bool, live: Option<&dyn Live>) -> String {
-    let Ok(store) = Store::open() else {
-        return r#"{"sections":[],"error":"could not open the database"}"#.to_string();
-    };
-    let index = Rc::new(SearchIndex::new(omacharts_engine::symbols::seed()));
+pub fn watchlist_json(store: &Store, refresh_first: bool, live: Option<&dyn Live>) -> String {
+    let index = resolver(live);
     let provider = Yahoo::new();
 
     let sections = store.watchlist();
@@ -341,9 +348,9 @@ pub fn watchlist_json(refresh_first: bool, live: Option<&dyn Live>) -> String {
             // loader thread and answer from the cache, which is all the
             // widget draws anyway: a quote that arrives on the next tick is
             // not worth six seconds of frozen application.
-            Some(live) => live.warm(&stale_daily(&store, &provider, &instruments)),
+            Some(live) => live.warm(&stale_daily(store, &provider, &instruments)),
             // A process of its own, with no window and nothing to block.
-            None => refresh(&store, &provider, &instruments),
+            None => refresh(store, &provider, &instruments),
         }
     }
 
@@ -357,23 +364,51 @@ pub fn watchlist_json(refresh_first: bool, live: Option<&dyn Live>) -> String {
             json_string(&section.name),
             section.id == ROOT_SECTION
         ));
-        for (e, entry) in section.entries.iter().enumerate() {
-            let Some(instrument) = index.find(&entry.symbol, entry.suffix.as_deref()) else {
-                continue;
-            };
+        // Resolve first, then count. The separator has to be decided over the
+        // entries that made it into the array, not over the stored rows: a row
+        // that resolves to nothing and is skipped anyway used to spend its turn
+        // on a comma, which put one before the first entry or two between a
+        // pair — and a bar widget parsing the answer got nothing at all.
+        let resolved = section
+            .entries
+            .iter()
+            .filter_map(|entry| index.find(&entry.symbol, entry.suffix.as_deref()));
+        for (e, instrument) in resolved.enumerate() {
             if e > 0 {
                 out.push(',');
             }
-            out.push_str(&entry_json(&store, &provider, instrument));
+            out.push_str(&entry_json(store, &provider, instrument));
         }
         out.push_str("]}");
     }
     out.push_str(&format!(
         "],\"colors\":{},\"updatedAt\":{}}}",
-        colors_json(&store),
+        colors_json(store),
         chrono::Utc::now().timestamp()
     ));
     out
+}
+
+/// The index the feed resolves stored entries against.
+///
+/// It has to be the whole catalogue, because `watchlist add` admits the whole
+/// catalogue: resolving against the curated few hundred left most of what the
+/// app lets somebody watchlist out of the feed entirely.
+///
+/// Where it comes from is the only question. Inside the window there is one
+/// already, so borrow it — building eleven thousand rows on the main loop
+/// every time a bar widget ticks is milliseconds the frame has no business
+/// paying. Outside, in the short-lived process that has no window and no
+/// index, build it: that is exactly what `everything` is for.
+///
+/// The window's first few hundred milliseconds are the one case where
+/// borrowing is not on offer, and there the cost gets paid. It is a bad moment
+/// for it and still the right call: the alternative is a feed that quietly
+/// drops half a watchlist, and the widget asks again only every two minutes by
+/// default, so a short answer would sit on the bar until it did.
+fn resolver(live: Option<&dyn Live>) -> Rc<SearchIndex> {
+    live.and_then(|live| live.symbols())
+        .unwrap_or_else(|| Rc::new(crate::inventory::everything()))
 }
 
 /// The direction colours, derived exactly as the app derives them.
@@ -499,6 +534,10 @@ impl Live for Rc<crate::ui::Window> {
     fn warm(&self, instruments: &[Instrument]) {
         crate::ui::Window::warm(self, instruments);
     }
+
+    fn symbols(&self) -> Option<Rc<SearchIndex>> {
+        crate::ui::Window::symbols(self)
+    }
 }
 
 /// The window as something a command can refresh.
@@ -527,6 +566,9 @@ mod tests {
         fn reload_watchlists(&self) {}
         fn adopt_theming(&self) {}
         fn warm(&self, _instruments: &[Instrument]) {}
+        fn symbols(&self) -> Option<Rc<SearchIndex>> {
+            None
+        }
         fn screenshot(
             &self,
             _whole_book: bool,
@@ -601,6 +643,27 @@ mod tests {
         assert!(parsed["last"].is_null(), "a missing price must not read as 0");
         assert_eq!(parsed["symbol"], "ES");
         assert_eq!(parsed["kind"], "Futures");
+    }
+
+    /// `watchlist add` takes anything in the catalogue, so the feed has to be
+    /// able to name anything in the catalogue. It used to resolve against the
+    /// curated few hundred instead, which dropped every mid-cap somebody had
+    /// put on their bar — and dropped it mid-array, so the comma that row had
+    /// already been counted for went out with nothing in front of it. FOXF
+    /// first, because that is the position that makes the JSON unparseable.
+    #[test]
+    fn the_feed_names_every_symbol_a_watchlist_can_hold() {
+        let store = Store::memory().unwrap();
+        store.add_to_section(ROOT_SECTION, "FOXF", None);
+        store.add_to_section(ROOT_SECTION, "AAPL", None);
+
+        let json = watchlist_json(&store, false, None);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&json).unwrap_or_else(|e| panic!("{e}: {json}"));
+
+        let entries = parsed["sections"][0]["entries"].as_array().expect("entries");
+        let symbols: Vec<&str> = entries.iter().filter_map(|e| e["symbol"].as_str()).collect();
+        assert_eq!(symbols, ["FOXF", "AAPL"], "a long-tail listing belongs on the bar");
     }
 
     /// The widget hands these three fields straight back as `omacharts SAP DE`

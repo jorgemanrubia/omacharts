@@ -17,7 +17,7 @@
 //! A file in the data directory beats the compiled copy when it exists, which
 //! is how the inventory can be refreshed without a new binary.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -48,18 +48,35 @@ fn generated(us: &str) -> String {
 /// cheap clone and holds no borrow while it searches — a borrow held across a
 /// GTK callback is a panic waiting for the moment the index is swapped.
 #[derive(Clone)]
-pub struct Inventory(Rc<RefCell<Rc<SearchIndex>>>);
+pub struct Inventory {
+    index: Rc<RefCell<Rc<SearchIndex>>>,
+    /// Whether the index is the whole catalogue yet or still the curated half.
+    ///
+    /// Nobody outside can tell the two apart by looking, and the difference
+    /// matters to anything that has to resolve a symbol somebody stored
+    /// earlier: the curated half cannot name most of what they could have
+    /// stored.
+    complete: Rc<Cell<bool>>,
+}
 
 impl Inventory {
     /// The curated half, ready immediately.
     pub fn curated() -> Inventory {
-        Inventory(Rc::new(RefCell::new(Rc::new(SearchIndex::new(
-            omacharts_engine::symbols::seed(),
-        )))))
+        Inventory {
+            index: Rc::new(RefCell::new(Rc::new(SearchIndex::new(
+                omacharts_engine::symbols::seed(),
+            )))),
+            complete: Rc::new(Cell::new(false)),
+        }
     }
 
     pub fn get(&self) -> Rc<SearchIndex> {
-        self.0.borrow().clone()
+        self.index.borrow().clone()
+    }
+
+    /// The long tail has landed, so this index can name any listing.
+    pub fn complete(&self) -> bool {
+        self.complete.get()
     }
 
     pub fn len(&self) -> usize {
@@ -76,7 +93,8 @@ impl Inventory {
     }
 
     fn replace(&self, index: SearchIndex) {
-        *self.0.borrow_mut() = Rc::new(index);
+        *self.index.borrow_mut() = Rc::new(index);
+        self.complete.set(true);
     }
 }
 

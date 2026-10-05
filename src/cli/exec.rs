@@ -35,7 +35,7 @@ pub fn dispatch(args: &[String], store: &Store, live: Option<&dyn Live>) -> Outc
     {
         return Outcome::ok(format!(
             "{}\n",
-            super::watchlist_json(args.iter().any(|arg| arg == "--refresh"), live)
+            super::watchlist_json(store, args.iter().any(|arg| arg == "--refresh"), live)
         ));
     }
 
@@ -105,7 +105,7 @@ pub fn dispatch(args: &[String], store: &Store, live: Option<&dyn Live>) -> Outc
         ("watchlist", "remove") => watchlist_add(store, m, json, false),
         ("watchlist", "move") => watchlist_move(store, m, json),
         ("watchlist", "link") => watchlist_link(store, m, json),
-        ("watchlist", "feed") => Ok(super::watchlist_json(flag(m, "refresh"), live)),
+        ("watchlist", "feed") => Ok(super::watchlist_json(store, flag(m, "refresh"), live)),
 
         ("section", "list") => section_list(store, m, json),
         ("section", "create") => section_create(store, m, json),
@@ -3122,6 +3122,11 @@ mod tests {
         fn reload_watchlists(&self) {}
         fn adopt_theming(&self) {}
         fn warm(&self, _instruments: &[omacharts_engine::Instrument]) {}
+
+        /// No window means no index to borrow, so whoever needs one builds it.
+        fn symbols(&self) -> Option<std::rc::Rc<omacharts_engine::SearchIndex>> {
+            None
+        }
 
         /// A test has no pixels. The other methods stand in for a window; this
         /// one stands in for there being nothing on screen to photograph,
