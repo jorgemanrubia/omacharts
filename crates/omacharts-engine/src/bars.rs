@@ -90,7 +90,8 @@ impl Timeframe {
     }
 
     /// What the header strip offers. Everything else is typed.
-    pub const PRESETS: [Timeframe; 6] = [
+    pub const PRESETS: [Timeframe; 7] = [
+        Timeframe::minutes(1),
         Timeframe::minutes(5),
         Timeframe::minutes(15),
         Timeframe::hours(1),

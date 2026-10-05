@@ -1039,26 +1039,26 @@ mod tests {
         listed.iter().map(|t| t.key()).collect()
     }
 
-    /// The reason warming the default strip is three requests and not six: 1W
+    /// The reason warming the default strip is four requests and not seven: 1W
     /// folds from the daily series the chart is already holding, and 4h folds
     /// from the hourly that 1h asks for.
     #[test]
     fn the_weekly_comes_free_from_the_daily_the_chart_already_has() {
         let order = warming_order(&Timeframe::PRESETS, tf("1D"));
-        assert_eq!(keys(&order), ["1h", "15m", "5m"]);
+        assert_eq!(keys(&order), ["1h", "15m", "5m", "1m"]);
     }
 
     #[test]
     fn the_resolutions_nearest_what_is_on_screen_are_warmed_first() {
         let order = warming_order(&Timeframe::PRESETS, tf("15m"));
-        assert_eq!(keys(&order), ["1h", "5m", "1D"], "one step out, then two, then three");
+        assert_eq!(keys(&order), ["1h", "5m", "1m", "1D"], "one step out, then two, then three");
     }
 
     /// Both ends of the strip are reachable from a button in the middle of it.
     #[test]
     fn warming_works_outwards_in_both_directions() {
         let order = warming_order(&Timeframe::PRESETS, tf("1h"));
-        assert_eq!(keys(&order), ["15m", "1D", "5m"], "4h and 1W fold from 1h and 1D");
+        assert_eq!(keys(&order), ["15m", "1D", "5m", "1m"], "4h and 1W fold from 1h and 1D");
     }
 
     /// Nothing says a resolution has to be on the strip — "3m" is typed, folds
@@ -1126,7 +1126,7 @@ mod tests {
             asked.push(next);
             arrived = next;
         }
-        assert_eq!(keys(&asked), ["1h", "15m", "5m"]);
+        assert_eq!(keys(&asked), ["1h", "15m", "5m", "1m"]);
         assert_eq!(
             warming.advance("yahoo:AAPL", arrived, &nothing_cached),
             None,
