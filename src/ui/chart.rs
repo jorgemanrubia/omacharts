@@ -2897,6 +2897,35 @@ mod tests {
         assert!(painted(&crosshair) > 500, "the crosshair drew {} pixels", painted(&crosshair));
     }
 
+    /// The two layers have to be exactly the same size and in exactly the same
+    /// place, because the crosshair is drawn in the coordinates the pointer
+    /// arrives in and those are the chart's. An overlay child that came out a
+    /// few pixels adrift would put the crosshair where the mouse is not, and a
+    /// zero-sized one would draw nothing at all — which looks exactly like a
+    /// screenshot leaving it out.
+    #[test]
+    fn the_pointer_layer_covers_the_chart_exactly() {
+        if !crate::ui::gtk_ready() {
+            return;
+        }
+        let theme = omacharts_engine::theme::builtin_themes()
+            .into_iter()
+            .next()
+            .expect("a built-in theme");
+        let scheme = omacharts_engine::theme::theme_bars(&theme);
+        let view = ChartView::new(theme, scheme);
+
+        view.root.allocate(800, 600, -1, None);
+
+        assert_eq!((view.area.width(), view.area.height()), (800, 600), "the chart");
+        assert_eq!((view.pointer.width(), view.pointer.height()), (800, 600), "the layer over it");
+        let at = view
+            .pointer
+            .compute_point(&view.area, &gtk::graphene::Point::new(0.0, 0.0))
+            .expect("the two layers are in the same window");
+        assert_eq!((at.x(), at.y()), (0.0, 0.0), "the layer is offset from the chart");
+    }
+
     #[test]
     fn steps_are_round_numbers() {
         assert_eq!(nice_step(100.0, 5), 20.0);
