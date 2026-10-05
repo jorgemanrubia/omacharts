@@ -178,7 +178,11 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
         &[
             ("Alt+L", "Draw a line: click where it starts, then where it ends"),
             ("Alt+R", "Draw a rectangle over a run of bars"),
+            ("Alt+D", "Show or hide the drawing tools"),
             ("Alt+1 … 9", "Configuration N, for the selected drawing or the one about to be drawn"),
+            ("Enter", "The selected drawing's properties"),
+            ("← → ↑ ↓", "Nudge the selected drawing a pixel; ten with Shift"),
+            ("Ctrl+Z · Ctrl+Y", "Undo and redo, on this chart's drawings"),
             ("Click a drawing", "Select it; drag an end, or the whole thing"),
             ("Right-click a drawing", "Its colour and thickness, or delete it"),
             ("Delete", "Delete the selected drawing"),
@@ -444,6 +448,8 @@ mod tests {
                 session: "extended".to_string(),
                 show_grid: true,
                 linked: LinkGroup::None,
+                drawing_sharing: Default::default(),
+                drawings: Vec::new(),
             }],
             watchlist: Some(4),
             sidebar_shown: Some(false),
@@ -472,6 +478,8 @@ mod tests {
             session: "extended".to_string(),
             show_grid: true,
             linked,
+            drawing_sharing: Default::default(),
+            drawings: Vec::new(),
         }
     }
 
@@ -1064,6 +1072,8 @@ pub const SETTING_SHOW_GRID: &str = "show_grid";
 const SETTING_TIMEFRAMES: &str = "timeframes";
 /// The whole arrangement of charts, as one stored value.
 const SETTING_WORKSPACE: &str = "workspace";
+/// Whether the drawing tools are on screen.
+const SHOW_DRAWING_TOOLS: &str = "show_drawing_tools";
 /// Whether a pointer on one chart draws a line on the linked ones.
 pub const SETTING_SYNC_CROSSHAIR: &str = "sync_crosshair";
 /// Whether charts left open fetch new bars for themselves.
@@ -1100,6 +1110,13 @@ struct StoredPane {
     session: String,
     show_grid: bool,
     linked: LinkGroup,
+    /// What the chart shares its drawings with. A book written before
+    /// drawings existed shares globally, which is what a new chart does.
+    #[serde(default)]
+    drawing_sharing: omacharts_engine::Sharing,
+    /// The drawings that are this chart's alone.
+    #[serde(default)]
+    drawings: Vec<omacharts_engine::Drawing>,
 }
 
 /// One arrangement of charts, saved under a name.
@@ -1143,6 +1160,12 @@ struct Chartbook {
 struct Workspace {
     books: Vec<Chartbook>,
     active: usize,
+}
+
+/// A chart's local drawings get negative ids, below everything the store
+/// hands out, so one number names a drawing wherever it lives.
+fn next_local_id(locals: &[omacharts_engine::Drawing]) -> i64 {
+    locals.iter().map(|d| d.id).min().unwrap_or(0).min(0) - 1
 }
 
 /// What a chartbook nobody has renamed is called.
@@ -1352,6 +1375,9 @@ pub struct Window {
     session_action: RefCell<Option<gio::SimpleAction>>,
     grid_action: RefCell<Option<gio::SimpleAction>>,
     auto_scale_action: RefCell<Option<gio::SimpleAction>>,
+    drawing_config_action: RefCell<Option<gio::SimpleAction>>,
+    /// The drawing tools, on the left.
+    drawing_bar: RefCell<Option<Rc<crate::ui::drawing_bar::DrawingBar>>>,
     /// Where the tree of charts is mounted, rebuilt whenever it changes.
     chart_host: gtk::Box,
     /// The row of chartbook tabs under the charts, empty and hidden until
@@ -1365,6 +1391,7 @@ pub struct Window {
     /// and the button is what does it: showing the rail through the button is
     /// what keeps its pressed state honest and the corner clearance correct.
     watchlist_toggle: RefCell<Option<gtk::ToggleButton>>,
+    drawing_tools_toggle: RefCell<Option<gtk::ToggleButton>>,
     /// How wide the rail should be.
     ///
     /// Kept here rather than measured off the handle when it is wanted,
@@ -1451,10 +1478,13 @@ impl Window {
             session_action: RefCell::new(None),
             grid_action: RefCell::new(None),
             auto_scale_action: RefCell::new(None),
+            drawing_config_action: RefCell::new(None),
+            drawing_bar: RefCell::new(None),
             chart_host: chart_host.clone(),
             book_strip: book_strip.clone(),
             corner: RefCell::new(None),
             watchlist_toggle: RefCell::new(None),
+            drawing_tools_toggle: RefCell::new(None),
             sidebar_width: Cell::new(DEFAULT_SIDEBAR_WIDTH),
             sidebar_placed: Cell::new(false),
             store: store.clone(),
@@ -1535,7 +1565,31 @@ impl Window {
         split.set_shrink_end_child(false);
         watchlist.widget.set_visible(store.setting_bool(SHOW_WATCHLIST, true));
 
-        split.set_start_child(Some(&chart_host));
+        // The tools slide in on the left of the charts, the way the rail
+        // slides in on the right; they are not part of the split, so the
+        // divider between charts and rail is still the only divider.
+        let bar = crate::ui::drawing_bar::DrawingBar::new(
+            this.theming.borrow().theme(),
+            {
+                let this = this.clone();
+                move |kind| {
+                    let pane = this.focused_pane();
+                    pane.view.arm(kind);
+                    pane.view.area.grab_focus();
+                    this.sync_drawing_bar();
+                }
+            },
+            {
+                let this = this.clone();
+                move |kind| this.open_drawing_configurations(kind)
+            },
+        );
+        let with_tools = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        with_tools.append(&bar.root);
+        with_tools.append(&chart_host);
+        bar.set_shown(store.setting_bool(SHOW_DRAWING_TOOLS, false));
+        *this.drawing_bar.borrow_mut() = Some(bar);
+        split.set_start_child(Some(&with_tools));
 
         // No header bar: the window's controls float over its top-right
         // corner, and the chart gets the row the bar used to take.
@@ -1719,6 +1773,17 @@ impl Window {
         let keeper = self.clone();
         pane.view.set_drawing_handler(move |event| keeper.record_drawing(id, event));
 
+        let menu_owner = self.clone();
+        pane.view.set_drawing_menu_handler(move |x, y| {
+            menu_owner.focus(id);
+            menu_owner.drawing_menu(x, y);
+        });
+        let opener = self.clone();
+        pane.view.set_drawing_properties_handler(move || {
+            opener.focus(id);
+            opener.open_drawing_settings();
+        });
+
         // Dragging a pane's edge changes the indicator, not just the drawing,
         // so the new height is stored the way any other setting of its would be.
         let resizer = self.clone();
@@ -1859,6 +1924,7 @@ impl Window {
         let pane = self.focused_pane();
         self.sync_timeframe_buttons();
         self.sync_chart_actions(&pane);
+        self.sync_drawing_bar();
         if let (Some(watchlist), Some(instrument)) =
             (self.watchlist.borrow().as_ref(), pane.instrument.borrow().as_ref())
         {
@@ -2399,6 +2465,8 @@ impl Window {
                     session: pane.session.get().key().to_string(),
                     show_grid: pane.show_grid.get(),
                     linked: pane.linked.get(),
+                    drawing_sharing: pane.drawing_sharing.get(),
+                    drawings: pane.local_drawings.borrow().clone(),
                 }
             })
             .collect();
@@ -2571,6 +2639,9 @@ impl Window {
                 stored.show_grid,
                 stored.linked,
             );
+            pane.drawing_sharing.set(stored.drawing_sharing);
+            pane.view.set_sharing(stored.drawing_sharing);
+            *pane.local_drawings.borrow_mut() = stored.drawings.clone();
             restored.push((pane, stored));
         }
 
@@ -3421,6 +3492,26 @@ impl Window {
 
         *self.watchlist_toggle.borrow_mut() = Some(toggle.clone());
 
+        // The drawing tools, on the other side. Its own icon, since the
+        // theme's "sidebar" glyphs both mean the rail.
+        let tools = gtk::ToggleButton::new();
+        tools.set_child(Some(&crate::ui::drawing_bar::tools_icon()));
+        tools.set_tooltip_text(Some(&shortcuts::tooltip("Drawing tools", "win.drawing-tools")));
+        tools.add_css_class("flat");
+        tools.set_active(self.store.setting_bool(SHOW_DRAWING_TOOLS, false));
+        let this = self.clone();
+        tools.connect_toggled(move |toggle| {
+            let Some(bar) = this.drawing_bar.borrow().clone() else { return };
+            if bar.is_shown() != toggle.is_active() {
+                this.toggle_drawing_tools();
+            }
+        });
+        *self.drawing_tools_toggle.borrow_mut() = Some(tools.clone());
+        let action = gio::SimpleAction::new("drawing-tools", None);
+        let this = self.clone();
+        action.connect_activate(move |_, _| this.toggle_drawing_tools());
+        self.window.add_action(&action);
+
         // Ctrl+B is not a toggle. A rail you can see but cannot drive with the
         // arrow keys is a rail you still have to reach for the mouse to use, so
         // the first press puts the keyboard in it and only the second puts it
@@ -3432,6 +3523,7 @@ impl Window {
 
         let cluster = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         cluster.add_css_class("window-corner");
+        cluster.append(&tools);
         cluster.append(&toggle);
         cluster.append(&menu_button);
 
@@ -4006,6 +4098,9 @@ impl Window {
             theming.apply();
             (theming.theme(), theming.bar_scheme())
         };
+        if let Some(bar) = self.drawing_bar.borrow().as_ref() {
+            bar.restyle(theme.clone());
+        }
         for pane in self.panes.borrow().iter() {
             pane.view.restyle(theme.clone(), scheme.clone());
             // The group is the number and the colour is the theme's answer
@@ -4479,8 +4574,9 @@ impl Window {
         };
         pane.view.set_trouble(None);
         pane.view.set_loading(cached_was_empty);
-        pane.view
-            .set_drawings(self.store.drawings(&instrument.symbol, instrument.suffix.as_deref()));
+        pane.view.set_configurations(self.store.drawing_configurations());
+        let shared = self.store.drawings(&instrument.symbol, instrument.suffix.as_deref());
+        pane.view.set_drawings(self.drawings_for(pane, &shared));
 
         // Only the focused chart drives the rail and the prefetch window: the
         // others are not where the next keystroke is going.
@@ -5152,7 +5248,8 @@ impl Window {
 
     /// Write a drawing's change down, and hand every chart of the symbol
     /// what is drawn on it now — the one it came from included, which is
-    /// how a new drawing learns its id.
+    /// how a new drawing learns its id. A local drawing lives with its
+    /// chart; a shared one lives in the store under the symbol.
     fn record_drawing(self: &Rc<Self>, pane_id: u32, event: crate::ui::chart::DrawingEvent) {
         use crate::ui::chart::DrawingEvent;
         let Some(pane) = self.pane(pane_id) else { return };
@@ -5160,18 +5257,71 @@ impl Window {
         let Some(instrument) = instrument else { return };
         let suffix = instrument.suffix.as_deref();
         match event {
-            DrawingEvent::Added(drawing) => {
-                self.store.add_drawing(&instrument.symbol, suffix, &drawing);
+            DrawingEvent::Added(mut drawing) => {
+                if drawing.is_local() {
+                    drawing.id = next_local_id(&pane.local_drawings.borrow());
+                    pane.local_drawings.borrow_mut().push(drawing);
+                } else {
+                    self.store.add_drawing(&instrument.symbol, suffix, &drawing);
+                }
             }
-            DrawingEvent::Changed(drawing) => self.store.update_drawing(&drawing),
-            DrawingEvent::Removed(id) => self.store.remove_drawing(id),
+            DrawingEvent::Changed(drawing) => {
+                // A drawing that changed scope moves house.
+                let was_local = drawing.id < 0;
+                match (was_local, drawing.is_local()) {
+                    (true, true) => {
+                        let mut locals = pane.local_drawings.borrow_mut();
+                        if let Some(slot) = locals.iter_mut().find(|d| d.id == drawing.id) {
+                            *slot = drawing;
+                        }
+                    }
+                    (false, false) => self.store.update_drawing(&drawing),
+                    (true, false) => {
+                        pane.local_drawings.borrow_mut().retain(|d| d.id != drawing.id);
+                        let mut moved = drawing;
+                        moved.id = 0;
+                        self.store.add_drawing(&instrument.symbol, suffix, &moved);
+                    }
+                    (false, true) => {
+                        self.store.remove_drawing(drawing.id);
+                        let mut moved = drawing;
+                        moved.id = next_local_id(&pane.local_drawings.borrow());
+                        pane.local_drawings.borrow_mut().push(moved);
+                    }
+                }
+            }
+            DrawingEvent::Removed(id) => {
+                if id < 0 {
+                    pane.local_drawings.borrow_mut().retain(|d| d.id != id);
+                } else {
+                    self.store.remove_drawing(id);
+                }
+            }
+            DrawingEvent::Replaced(list) => {
+                // Whatever this chart could see that is not in the list is
+                // gone; whatever is in the list is back, under its own id.
+                let (locals, shared): (Vec<_>, Vec<_>) = list.into_iter().partition(|d| d.id < 0);
+                *pane.local_drawings.borrow_mut() = locals;
+                let sharing = pane.drawing_sharing.get();
+                let keep: std::collections::HashSet<i64> = shared.iter().map(|d| d.id).collect();
+                for d in self.store.drawings(&instrument.symbol, suffix) {
+                    if sharing.shows(d.scope) && !keep.contains(&d.id) {
+                        self.store.remove_drawing(d.id);
+                    }
+                }
+                for d in &shared {
+                    self.store.put_drawing(&instrument.symbol, suffix, d);
+                }
+            }
         }
+        self.save_soon();
         self.reload_drawings(&instrument.symbol, suffix);
     }
 
-    /// Show every chart of `symbol` what the store has drawn on it.
+    /// Show every chart of `symbol` what it should see drawn on it: the
+    /// shared drawings its sharing lets through, and its own.
     pub fn reload_drawings(&self, symbol: &str, suffix: Option<&str>) {
-        let drawings = self.store.drawings(symbol, suffix);
+        let shared = self.store.drawings(symbol, suffix);
         for pane in self.panes.borrow().iter() {
             let same = pane
                 .instrument
@@ -5180,9 +5330,71 @@ impl Window {
                 .map(|i| i.symbol == symbol && i.suffix.as_deref() == suffix)
                 .unwrap_or(false);
             if same {
-                pane.view.set_drawings(drawings.clone());
+                pane.view.set_drawings(self.drawings_for(pane, &shared));
             }
         }
+    }
+
+    /// What one chart sees, out of what is drawn on its symbol.
+    fn drawings_for(&self, pane: &ChartPane, shared: &[omacharts_engine::Drawing]) -> Vec<omacharts_engine::Drawing> {
+        let sharing = pane.drawing_sharing.get();
+        let mut all: Vec<omacharts_engine::Drawing> =
+            shared.iter().filter(|d| sharing.shows(d.scope)).cloned().collect();
+        all.extend(pane.local_drawings.borrow().iter().cloned());
+        omacharts_engine::drawings::sort_for_painting(&mut all);
+        all
+    }
+
+    /// The nine configurations of each kind, as stored.
+    pub fn drawing_configurations(&self) -> omacharts_engine::Configurations {
+        self.store.drawing_configurations()
+    }
+
+    /// Write the configurations down and show every chart the new ones, so
+    /// a drawing that follows configuration N changes with it, on every
+    /// chart, as it is edited.
+    pub fn set_drawing_configurations(&self, store: &Store, configs: omacharts_engine::Configurations) {
+        store.set_drawing_configurations(&configs);
+        for pane in self.panes.borrow().iter() {
+            pane.view.set_configurations(configs.clone());
+        }
+    }
+
+    /// What the focused chart shares its drawings with, from the settings
+    /// dialog or a command. The chart is shown its drawings again, since
+    /// the answer to "which do I see" just changed.
+    pub fn set_drawing_sharing(self: &Rc<Self>, sharing: omacharts_engine::Sharing) {
+        let pane = self.focused_pane();
+        pane.drawing_sharing.set(sharing);
+        pane.view.set_sharing(sharing);
+        let instrument = pane.instrument.borrow().clone();
+        if let Some(instrument) = instrument {
+            self.reload_drawings(&instrument.symbol, instrument.suffix.as_deref());
+        }
+        self.save_workspace();
+    }
+
+    /// Show or hide the drawing tools. Alt+D, and the corner button.
+    pub fn toggle_drawing_tools(self: &Rc<Self>) {
+        let Some(bar) = self.drawing_bar.borrow().clone() else { return };
+        let shown = !bar.is_shown();
+        bar.set_shown(shown);
+        self.store.set_setting_bool(SHOW_DRAWING_TOOLS, shown);
+        if let Some(toggle) = self.drawing_tools_toggle.borrow().as_ref() {
+            toggle.set_active(shown);
+        }
+    }
+
+    /// Light the tool in hand on the bar, after the chart was told by a key
+    /// or a menu rather than by the bar itself.
+    fn sync_drawing_bar(&self) {
+        if let Some(bar) = self.drawing_bar.borrow().as_ref() {
+            bar.show_armed(self.focused_pane().view.armed());
+        }
+    }
+
+    fn open_drawing_configurations(self: &Rc<Self>, kind: omacharts_engine::DrawingKind) {
+        crate::ui::drawing_settings::present_configurations(self, &self.store, kind);
     }
 
     /// Arm a drawing tool on the focused chart, or put it down if it is the
@@ -5193,22 +5405,55 @@ impl Window {
         let next = if pane.view.armed() == Some(kind) { None } else { Some(kind) };
         pane.view.arm(next);
         pane.view.area.grab_focus();
+        self.sync_drawing_bar();
     }
 
     fn open_drawing_settings(self: &Rc<Self>) {
-        crate::ui::drawing_settings::present(self, &self.focused_pane());
+        crate::ui::drawing_settings::present(self, &self.store, &self.focused_pane());
+    }
+
+    /// The menu a drawing gets when it is right-clicked: about the drawing
+    /// and nothing else. The chart's own menu is a right-click on the chart.
+    fn drawing_menu(self: &Rc<Self>, x: f64, y: f64) {
+        let pane = self.focused_pane();
+        let Some(drawing) = pane.view.selected_drawing() else { return };
+        if let Some(action) = self.drawing_config_action.borrow().as_ref() {
+            action.set_state(&(drawing.config.unwrap_or(0) as i32).to_variant());
+        }
+
+        let menu = gio::Menu::new();
+        let edit = gio::Menu::new();
+        shortcuts::append_with_key(&edit, "Properties…", "chart.drawing-settings", "Return");
+        // The nine configurations, as a radio: the one in use is marked, and
+        // a drawing whose properties were changed by hand marks none.
+        let configs = gio::Menu::new();
+        for n in 1..=9u8 {
+            let item = gio::MenuItem::new(Some(&format!("Configuration {n}")), None);
+            item.set_action_and_target_value(
+                Some("chart.drawing-config"),
+                Some(&(n as i32).to_variant()),
+            );
+            item.set_attribute_value("accel", Some(&format!("<Alt>{n}").to_variant()));
+            configs.append_item(&item);
+        }
+        edit.append_submenu(Some("Configuration"), &configs);
+        menu.append_section(None, &edit);
+
+        let remove = gio::Menu::new();
+        shortcuts::append_with_key(&remove, "Remove drawing", "chart.drawing-delete", "Delete");
+        menu.append_section(None, &remove);
+
+        let area = pane.view.area.clone();
+        let (wx, wy) = area.translate_coordinates(&self.window, x, y).unwrap_or((x, y));
+        popup_menu(&menu, &self.window, wx, wy);
     }
 
     fn chart_menu(self: &Rc<Self>, x: f64, y: f64) {
         let menu = gio::Menu::new();
 
-        // Drawing first, because the menu opened on a drawing is about that
-        // drawing: its colour and its deletion are what the hand came for.
+        // The tools first: what somebody right-clicking the chart with
+        // nothing under the pointer most often came for.
         let draw = gio::Menu::new();
-        if self.focused_pane().view.selected_drawing().is_some() {
-            shortcuts::append(&draw, "Drawing settings…", "chart.drawing-settings");
-            shortcuts::append(&draw, "Delete drawing", "chart.drawing-delete");
-        }
         shortcuts::append(&draw, "Draw a line", "chart.draw-line");
         shortcuts::append(&draw, "Draw a rectangle", "chart.draw-rect");
         menu.append_section(None, &draw);
@@ -5461,6 +5706,20 @@ impl Window {
         let this = self.clone();
         drawing_delete.connect_activate(move |_, _| this.focused_pane().view.delete_selected());
         actions.add_action(&drawing_delete);
+
+        // Stateful over the number, so the menu marks the configuration the
+        // drawing follows; zero is a drawing with a look of its own.
+        let drawing_config =
+            gio::SimpleAction::new_stateful("drawing-config", Some(glib::VariantTy::INT32), &0i32.to_variant());
+        let this = self.clone();
+        drawing_config.connect_activate(move |action, target| {
+            let Some(number) = target.and_then(|t| t.get::<i32>()) else { return };
+            if this.focused_pane().view.apply_configuration(number.clamp(0, 9) as u8) {
+                action.set_state(&number.to_variant());
+            }
+        });
+        actions.add_action(&drawing_config);
+        *self.drawing_config_action.borrow_mut() = Some(drawing_config);
 
         self.window.insert_action_group("chart", Some(&actions));
     }

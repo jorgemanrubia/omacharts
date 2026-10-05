@@ -423,6 +423,15 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
 }
 .window-corner:hover button { opacity: 1; }
 
+/* The drawing tools, down the left edge: a column of two, quiet until one is
+   in hand, which lights it in the accent the way a pressed tool should. */
+.drawing-bar { padding: 0; }
+.drawing-tool { padding: 2px; border-radius: 8px; opacity: 0.8; }
+.drawing-tool:hover { opacity: 1; }
+.drawing-tool:checked { opacity: 1; background: alpha(@accent_bg_color, 0.25); box-shadow: inset 0 0 0 1px @accent_bg_color; }
+.drawing-preview { border-radius: 6px; }
+.drawing-preview-current { box-shadow: 0 0 0 2px @accent_bg_color; }
+
 /* The corner sits over the rail when the rail is open, which is where the
    HIG puts a sidebar's menu (above the sidebar list), so the rail's column
    header steps down out from under it. The step is the corner's height: three

@@ -60,6 +60,7 @@ impl ChartSettings {
         chart_page.add(&bars_group(window, &store));
         chart_page.add(&scales_group(window));
         chart_page.add(&session_group(window, &store));
+        chart_page.add(&drawings_group(window));
         dialog.add(&chart_page);
 
         let indicators_page = adw::PreferencesPage::new();
@@ -249,6 +250,33 @@ fn session_group(window: &Rc<Window>, store: &Rc<Store>) -> adw::PreferencesGrou
         window.refresh();
     });
 
+    group.add(&row);
+    group
+}
+
+/// What this chart shares its drawings with.
+fn drawings_group(window: &Rc<Window>) -> adw::PreferencesGroup {
+    use omacharts_engine::Sharing;
+    let group = adw::PreferencesGroup::new();
+    group.set_title("Drawings");
+    group.set_description(Some(
+        "A drawing is on every chart of its symbol in the same drawing group. The global \
+         group is every chart; a numbered group is a few; not sharing keeps what is drawn \
+         here on this chart.",
+    ));
+    let all = Sharing::all();
+    let names: Vec<String> = all.iter().map(|s| s.label()).collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    let row = adw::ComboRow::new();
+    row.set_title("Drawing group");
+    row.set_model(Some(&gtk::StringList::new(&names)));
+    let current = window.focused_pane().drawing_sharing.get();
+    row.set_selected(all.iter().position(|s| *s == current).unwrap_or(0) as u32);
+    let window = window.clone();
+    row.connect_selected_notify(move |row| {
+        let Some(chosen) = all.get(row.selected() as usize).copied() else { return };
+        window.set_drawing_sharing(chosen);
+    });
     group.add(&row);
     group
 }

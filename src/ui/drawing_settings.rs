@@ -1,120 +1,123 @@
-//! The settings of one drawing: its colour, and for a line its thickness.
+//! The properties of one drawing, and the nine configurations of each kind.
 //!
-//! One small dialog rather than a page in the chart's settings, because a
-//! drawing is a thing on the chart and not a setting of it: it is reached by
-//! right-clicking the drawing, and the dialog is about that drawing alone.
-//! Everything in it applies as it is chosen — the chart is right there behind
-//! the dialog, and seeing the line turn amber is the whole of the feedback —
-//! so there is nothing to confirm. Done, and Ctrl+Enter, just close it;
-//! Escape closes it the way it closes every `AdwDialog`.
+//! Two dialogs that share one editor. A drawing's properties are reached by
+//! right-clicking it or pressing Enter on it, and are about that drawing
+//! alone; a kind's configurations are reached by right-clicking its tool,
+//! and are about every drawing that follows them. Both apply as they are
+//! chosen — the chart is right there behind the dialog, and seeing the line
+//! turn amber is the whole of the feedback — so there is nothing to confirm.
+//! Done and Ctrl+Enter close; Escape closes the way it closes every dialog.
 //!
-//! The colours are the nine presets, roles the theme fills, and never a hex:
-//! a drawing that followed the theme into every other colour and then wore
-//! one fixed red would be the one thing on the chart that did not belong.
+//! A drawing follows a configuration until a property of its own is set, at
+//! which point it keeps its own look; the dialog then offers to save that
+//! look as a configuration, which moves every drawing following that number
+//! with it. Colours are the nine presets, roles the theme fills, with a hex
+//! as the way out for somebody who wants exactly one colour and knows the
+//! theme will not follow it.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use adw::prelude::*;
-use gtk::glib;
-use omacharts_engine::drawings::{self, Kind as DrawingKind, Preset};
+use gtk::{gio, glib};
+use omacharts_engine::drawings::{
+    self, Arrow, Configurations, Kind, Paint, Preset, Scope, Style, CONFIGURATIONS,
+};
+use omacharts_engine::Theme;
 
+use crate::store::Store;
+use crate::ui::colors;
 use crate::ui::dialogs;
 use crate::ui::palette;
 use crate::ui::pane::ChartPane;
 use crate::ui::window::Window;
 
-/// The widths a line can have. The chart's default is in the middle.
-const WIDTHS: [f64; 4] = [1.0, 1.5, 2.5, 4.0];
+/// The size of a configuration's preview tile.
+const PREVIEW_W: i32 = 84;
+const PREVIEW_H: i32 = 44;
 
-/// Open the dialog for the drawing selected on `pane`. Nothing selected,
+/// Something that shows a row a value: the editor keeps one per row so a
+/// style chosen elsewhere can be put in front of the hand.
+type Shower<T> = Rc<dyn Fn(&T)>;
+
+// ---------------------------------------------------------------------------
+// A drawing's properties
+// ---------------------------------------------------------------------------
+
+/// Open the properties of the drawing selected on `pane`. Nothing selected,
 /// nothing opens.
-pub fn present(window: &Rc<Window>, pane: &Rc<ChartPane>) {
+pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
     let view = pane.view.clone();
     let Some(drawing) = view.selected_drawing() else { return };
     let theme = window.theme();
+    let kind = drawing.kind;
 
     let page = adw::PreferencesPage::new();
 
-    // Colour: the nine presets as tiles, the one in use ringed. Repainted
-    // on every pick rather than rebuilt, so the grid never moves under the
-    // hand.
-    let colour = adw::PreferencesGroup::new();
-    colour.set_title("Colour");
-    let grid = gtk::Grid::new();
-    grid.set_row_spacing(6);
-    grid.set_column_spacing(6);
-    grid.set_halign(gtk::Align::Start);
-    let tiles: Rc<Vec<(Preset, String, gtk::DrawingArea)>> = Rc::new(
-        drawings::palette(&theme)
-            .into_iter()
-            .map(|(preset, hex)| {
-                let area = palette::swatch_area(&hex, preset == drawing.preset);
-                (preset, hex, area)
-            })
-            .collect(),
-    );
-    for (n, (preset, _, area)) in tiles.iter().enumerate() {
-        let cell = gtk::Button::new();
-        cell.add_css_class("flat");
-        cell.set_tooltip_text(Some(preset.name()));
-        cell.set_child(Some(area));
-        let view = view.clone();
-        let tiles = tiles.clone();
-        let chosen = *preset;
-        cell.connect_clicked(move |_| {
-            view.edit_selected(|d| d.preset = chosen);
-            for (preset, hex, area) in tiles.iter() {
-                palette::paint(area, hex, *preset == chosen);
-            }
+    // Which configuration it follows, or that it follows none.
+    let following = adw::PreferencesGroup::new();
+    following.set_title("Configuration");
+    let config_row = adw::ActionRow::new();
+    config_row.set_title("Follows");
+    config_row.set_subtitle("Change the configuration and every drawing that follows it changes too.");
+    let config_label = gtk::Label::new(None);
+    let picker = gtk::MenuButton::new();
+    picker.set_child(Some(&config_label));
+    picker.set_valign(gtk::Align::Center);
+    picker.set_tooltip_text(Some("Choose a configuration, shown as it will look"));
+    config_row.add_suffix(&picker);
+    following.add(&config_row);
+
+    // The way back from a look of its own: write it over configuration N.
+    let save_row = adw::ActionRow::new();
+    save_row.set_title("Save this look");
+    save_row.set_subtitle("As one of the nine, so other drawings can follow it.");
+    let save = gtk::MenuButton::new();
+    save.set_label("Save as…");
+    save.set_valign(gtk::Align::Center);
+    save_row.add_suffix(&save);
+    following.add(&save_row);
+    page.add(&following);
+
+    // The look itself. Edits here are the drawing's own from then on.
+    let configs_for_edit = window.drawing_configurations();
+    let view_for_edit = view.clone();
+    let on_style: Rc<dyn Fn(Style)> = Rc::new(move |style: Style| {
+        let configs = configs_for_edit.clone();
+        view_for_edit.edit_selected(move |d| {
+            d.edit_style(&configs, |own| *own = style);
         });
-        grid.attach(&cell, n as i32 % 5, n as i32 / 5, 1, 1);
-    }
-    let row = adw::ActionRow::new();
-    row.set_activatable(false);
-    row.set_child(Some(&grid));
-    colour.add(&row);
-    page.add(&colour);
+    });
+    let editor = style_editor(window, kind, drawing.style(&window.drawing_configurations()).clone(), on_style.clone());
+    page.add(&editor.group);
 
-    // Thickness, for a line. A box has a hairline edge by design, so it is
-    // not asked.
-    if drawing.kind == DrawingKind::Line {
-        let line = adw::PreferencesGroup::new();
-        line.set_title("Line");
-        let row = adw::ActionRow::new();
-        row.set_title("Thickness");
-        let choices = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        choices.add_css_class("linked");
-        choices.set_valign(gtk::Align::Center);
-        let mut first: Option<gtk::ToggleButton> = None;
-        for width in WIDTHS {
-            let button = gtk::ToggleButton::with_label(&format!("{width}"));
-            button.set_tooltip_text(Some(&format!("{width} pixels")));
-            if let Some(first) = &first {
-                button.set_group(Some(first));
-            }
-            button.set_active((drawing.width - width).abs() < 0.01);
-            let view = view.clone();
-            button.connect_toggled(move |button| {
-                if button.is_active() {
-                    view.edit_selected(|d| d.width = width);
-                }
-            });
-            choices.append(&button);
-            first.get_or_insert(button);
-        }
-        row.add_suffix(&choices);
-        line.add(&row);
-        page.add(&line);
-    }
-
-    let dialog = adw::Dialog::new();
-    dialog.set_title(drawing.kind.label());
-    dialog.set_content_width(380);
+    // Who else sees it.
+    let sharing = adw::PreferencesGroup::new();
+    sharing.set_title("Sharing");
+    let scope_row = adw::ComboRow::new();
+    scope_row.set_title("Shown on");
+    scope_row.set_subtitle("Other charts of this symbol, by drawing group.");
+    let scopes = Scope::all();
+    let names: Vec<String> = scopes.iter().map(|s| s.label()).collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    scope_row.set_model(Some(&gtk::StringList::new(&names)));
+    scope_row.set_selected(scopes.iter().position(|s| *s == drawing.scope).unwrap_or(1) as u32);
+    let view_for_scope = view.clone();
+    let scopes_for_row = scopes.clone();
+    scope_row.connect_selected_notify(move |row| {
+        let Some(scope) = scopes_for_row.get(row.selected() as usize).copied() else { return };
+        view_for_scope.edit_selected(move |d| d.scope = scope);
+    });
+    sharing.add(&scope_row);
+    page.add(&sharing);
 
     // Deleting is the one thing here that cannot be undone by choosing
     // again, so it sits apart and looks like what it is.
+    let dialog = adw::Dialog::new();
+    dialog.set_title(&format!("{} properties", kind.label()));
+    dialog.set_content_width(440);
     let remove = adw::PreferencesGroup::new();
-    let delete = gtk::Button::with_label("Delete drawing");
+    let delete = gtk::Button::with_label("Remove drawing");
     delete.add_css_class("destructive-action");
     delete.set_halign(gtk::Align::Start);
     let view_for_delete = view.clone();
@@ -126,6 +129,680 @@ pub fn present(window: &Rc<Window>, pane: &Rc<ChartPane>) {
     remove.add(&delete);
     page.add(&remove);
 
+    // The configuration picker and the save menu, built once the rest is in
+    // place so they can refresh the editor's rows when a configuration is
+    // chosen.
+    let refresh_following = {
+        let view = view.clone();
+        let label = config_label.clone();
+        let save_row = save_row.clone();
+        let editor = editor.clone();
+        let window = window.clone();
+        Rc::new(move || {
+            let Some(d) = view.selected_drawing() else { return };
+            match d.config {
+                Some(n) => {
+                    label.set_text(&format!("Configuration {n}"));
+                    save_row.set_visible(false);
+                }
+                None => {
+                    label.set_text("Its own");
+                    save_row.set_visible(true);
+                }
+            }
+            editor.show(d.style(&window.drawing_configurations()));
+        })
+    };
+    refresh_following();
+
+    let popover = gtk::Popover::new();
+    popover.set_child(Some(&configuration_grid(
+        &theme,
+        kind,
+        &window.drawing_configurations(),
+        drawing.config,
+        {
+            let view = view.clone();
+            let popover = popover.clone();
+            let refresh = refresh_following.clone();
+            move |n| {
+                view.apply_configuration(n);
+                popover.popdown();
+                refresh();
+            }
+        },
+    )));
+    picker.set_popover(Some(&popover));
+
+    let save_menu = gio::Menu::new();
+    for n in 1..=CONFIGURATIONS {
+        let item = gio::MenuItem::new(Some(&format!("Configuration {n}")), None);
+        item.set_action_and_target_value(Some("drawing.save-as"), Some(&(n as i32).to_variant()));
+        save_menu.append_item(&item);
+    }
+    save.set_menu_model(Some(&save_menu));
+    let actions = gio::SimpleActionGroup::new();
+    let save_as = gio::SimpleAction::new("save-as", Some(glib::VariantTy::INT32));
+    {
+        let window = window.clone();
+        let store = store.clone();
+        let view = view.clone();
+        let refresh = refresh_following.clone();
+        save_as.connect_activate(move |_, target| {
+            let Some(n) = target.and_then(|t| t.get::<i32>()) else { return };
+            let Some(d) = view.selected_drawing() else { return };
+            let mut configs = window.drawing_configurations();
+            let own = d.style(&configs).clone();
+            configs.set(d.kind, n as u8, own);
+            window.set_drawing_configurations(&store, configs);
+            view.apply_configuration(n as u8);
+            refresh();
+        });
+    }
+    actions.add_action(&save_as);
+    dialog.insert_action_group("drawing", Some(&actions));
+
+    // A change made with the keys on the chart while this is open — Alt+N —
+    // is reflected here too.
+    let tick = {
+        let refresh = refresh_following.clone();
+        let view = view.clone();
+        let last = RefCell::new(view.selected_drawing());
+        glib::timeout_add_local(std::time::Duration::from_millis(250), move || {
+            let now = view.selected_drawing();
+            if now != *last.borrow() {
+                *last.borrow_mut() = now;
+                refresh();
+            }
+            glib::ControlFlow::Continue
+        })
+    };
+
+    finish(&dialog, &page, &view.area, Some(tick));
+    dialog.present(Some(&window.window));
+}
+
+// ---------------------------------------------------------------------------
+// A kind's configurations
+// ---------------------------------------------------------------------------
+
+/// The nine configurations of a kind: each shown as it looks, each editable,
+/// and a way back to the defaults.
+pub fn present_configurations(window: &Rc<Window>, store: &Rc<Store>, kind: Kind) {
+    let theme = window.theme();
+    let dialog = adw::Dialog::new();
+    dialog.set_title(&format!("{} configurations", kind.label()));
+    dialog.set_content_width(480);
+    dialog.set_content_height(620);
+
+    let navigation = adw::NavigationView::new();
+
+    let page = adw::PreferencesPage::new();
+    let group = adw::PreferencesGroup::new();
+    group.set_description(Some(
+        "Every drawing that follows a configuration looks like it, and changes with it. Alt+1 to Alt+9 on a selected drawing, or while a tool is in hand.",
+    ));
+    let rows: Rc<RefCell<Vec<(adw::ActionRow, gtk::DrawingArea)>>> = Rc::new(RefCell::new(Vec::new()));
+    for n in 1..=CONFIGURATIONS {
+        let configs = window.drawing_configurations();
+        let style = configs.of(kind, n).clone();
+        let row = adw::ActionRow::new();
+        row.set_title(&format!("Configuration {n}"));
+        row.set_subtitle(&describe(kind, &style, &configs, n));
+        row.set_activatable(true);
+        let preview = preview_tile(&theme, kind, &style);
+        row.add_prefix(&preview);
+        row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
+        {
+            let window = window.clone();
+            let store = store.clone();
+            let navigation = navigation.clone();
+            let rows = rows.clone();
+            let theme = theme.clone();
+            row.connect_activated(move |_| {
+                let configs = window.drawing_configurations();
+                let current = configs.of(kind, n).clone();
+                let on_style: Rc<dyn Fn(Style)> = {
+                    let window = window.clone();
+                    let store = store.clone();
+                    let rows = rows.clone();
+                    let theme = theme.clone();
+                    Rc::new(move |style: Style| {
+                        let mut configs = window.drawing_configurations();
+                        configs.set(kind, n, style.clone());
+                        window.set_drawing_configurations(&store, configs.clone());
+                        if let Some((row, preview)) = rows.borrow().get(n as usize - 1) {
+                            row.set_subtitle(&describe(kind, &style, &configs, n));
+                            paint_preview(preview, &theme, kind, &style);
+                        }
+                    })
+                };
+                let editor = style_editor(&window, kind, current, on_style);
+                let sub = adw::PreferencesPage::new();
+                sub.add(&editor.group);
+                let toolbar = adw::ToolbarView::new();
+                toolbar.add_top_bar(&adw::HeaderBar::new());
+                toolbar.set_content(Some(&sub));
+                let page = adw::NavigationPage::new(&toolbar, &format!("Configuration {n}"));
+                navigation.push(&page);
+            });
+        }
+        rows.borrow_mut().push((row.clone(), preview));
+        group.add(&row);
+    }
+    page.add(&group);
+
+    let restore_group = adw::PreferencesGroup::new();
+    let restore = gtk::Button::with_label("Restore defaults");
+    restore.set_halign(gtk::Align::Start);
+    restore.set_tooltip_text(Some("The nine as they shipped: the presets, in order"));
+    {
+        let window = window.clone();
+        let store = store.clone();
+        let rows = rows.clone();
+        let theme = theme.clone();
+        restore.connect_clicked(move |_| {
+            let mut configs = window.drawing_configurations();
+            configs.reset(kind);
+            window.set_drawing_configurations(&store, configs.clone());
+            for (n, (row, preview)) in rows.borrow().iter().enumerate() {
+                let n = n as u8 + 1;
+                let style = configs.of(kind, n);
+                row.set_subtitle(&describe(kind, style, &configs, n));
+                paint_preview(preview, &theme, kind, style);
+            }
+        });
+    }
+    restore_group.add(&restore);
+    page.add(&restore_group);
+
+    let header = adw::HeaderBar::new();
+    header.set_show_start_title_buttons(false);
+    header.set_show_end_title_buttons(false);
+    let done = gtk::Button::with_label("Done");
+    done.add_css_class("suggested-action");
+    done.set_tooltip_text(Some(&format!("Done ({})", dialogs::commit_label())));
+    let dialog_for_done = dialog.clone();
+    done.connect_clicked(move |_| {
+        let _ = dialog_for_done.close();
+    });
+    header.pack_end(&done);
+    let root = adw::ToolbarView::new();
+    root.add_top_bar(&header);
+    root.set_content(Some(&page));
+    navigation.add(&adw::NavigationPage::new(&root, &format!("{} configurations", kind.label())));
+    dialog.set_child(Some(&navigation));
+
+    let done_on_key = done.clone();
+    dialogs::commit_on_ctrl_enter(&dialog, move || done_on_key.emit_clicked());
+    dialog.present(Some(&window.window));
+}
+
+/// A configuration in words, for the row under its number.
+fn describe(kind: Kind, style: &Style, configs: &Configurations, n: u8) -> String {
+    let edited = if configs.is_default(kind, n) { "" } else { " · edited" };
+    let look = match kind {
+        Kind::Line => {
+            let arrow = match style.arrow {
+                Arrow::None => String::new(),
+                arrow => format!(", arrow {}", arrow.label().to_lowercase()),
+            };
+            format!("{}, {}px{arrow}", name_of(&style.colour), style.width)
+        }
+        Kind::Rect => {
+            let edge = match style.border {
+                true => format!(", edge {} {}px", name_of(&style.colour), style.width),
+                false => ", no edge".to_string(),
+            };
+            format!("{} at {:.0}%{edge}", name_of(&style.fill), style.alpha * 100.0)
+        }
+    };
+    format!("{look}{edited}")
+}
+
+fn name_of(paint: &Paint) -> String {
+    match paint {
+        Paint::Preset { preset } => preset.name().to_string(),
+        Paint::Fixed { hex } => hex.clone(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The editor the two dialogs share
+// ---------------------------------------------------------------------------
+
+/// The rows that edit a [`Style`], and a way to show a new one in them.
+#[derive(Clone)]
+struct Editor {
+    group: adw::PreferencesGroup,
+    show: Rc<dyn Fn(&Style)>,
+}
+
+impl Editor {
+    fn show(&self, style: &Style) {
+        (self.show)(style);
+    }
+}
+
+/// The rows for a kind's properties. Every change calls `on_style` with the
+/// whole style as it now is.
+fn style_editor(window: &Rc<Window>, kind: Kind, current: Style, on_style: Rc<dyn Fn(Style)>) -> Editor {
+    let theme = window.theme();
+    let style: Rc<RefCell<Style>> = Rc::new(RefCell::new(current));
+    // Set while the rows are being shown a style, so a row's own signal does
+    // not call back as if the hand had changed it.
+    let showing = Rc::new(std::cell::Cell::new(false));
+    let group = adw::PreferencesGroup::new();
+    group.set_title(match kind {
+        Kind::Line => "Line",
+        Kind::Rect => "Rectangle",
+    });
+
+    let emit = {
+        let style = style.clone();
+        let on_style = on_style.clone();
+        let showing = showing.clone();
+        Rc::new(move || {
+            if !showing.get() {
+                on_style(style.borrow().clone());
+            }
+        })
+    };
+
+    let mut shows: Vec<Shower<Style>> = Vec::new();
+
+    match kind {
+        Kind::Line => {
+            // Colour.
+            let (row, show) = paint_row(&theme, "Colour", &style.borrow().colour, {
+                let style = style.clone();
+                let emit = emit.clone();
+                move |paint| {
+                    style.borrow_mut().colour = paint;
+                    emit();
+                }
+            });
+            group.add(&row);
+            shows.push(Rc::new(move |s: &Style| show(&s.colour)));
+
+            // Thickness.
+            let (row, show) = width_row("Thickness", style.borrow().width, {
+                let style = style.clone();
+                let emit = emit.clone();
+                move |width| {
+                    style.borrow_mut().width = width;
+                    emit();
+                }
+            });
+            group.add(&row);
+            shows.push(Rc::new(move |s: &Style| show(s.width)));
+
+            // Arrow.
+            let row = adw::ComboRow::new();
+            row.set_title("Arrow");
+            let names: Vec<&str> = Arrow::ALL.iter().map(|a| a.label()).collect();
+            row.set_model(Some(&gtk::StringList::new(&names)));
+            row.set_selected(Arrow::ALL.iter().position(|a| *a == style.borrow().arrow).unwrap_or(0) as u32);
+            {
+                let style = style.clone();
+                let emit = emit.clone();
+                row.connect_selected_notify(move |row| {
+                    let Some(arrow) = Arrow::ALL.get(row.selected() as usize).copied() else { return };
+                    style.borrow_mut().arrow = arrow;
+                    emit();
+                });
+            }
+            group.add(&row);
+            let row_for_show = row.clone();
+            shows.push(Rc::new(move |s: &Style| {
+                row_for_show.set_selected(Arrow::ALL.iter().position(|a| *a == s.arrow).unwrap_or(0) as u32)
+            }));
+        }
+        Kind::Rect => {
+            // Background and how much of it shows.
+            let (row, show) = paint_row(&theme, "Background", &style.borrow().fill, {
+                let style = style.clone();
+                let emit = emit.clone();
+                move |paint| {
+                    style.borrow_mut().fill = paint;
+                    emit();
+                }
+            });
+            group.add(&row);
+            shows.push(Rc::new(move |s: &Style| show(&s.fill)));
+
+            let alpha_row = adw::ActionRow::new();
+            alpha_row.set_title("Transparency");
+            alpha_row.set_subtitle("How much of the candles shows through.");
+            let scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, 100.0, 1.0);
+            scale.set_size_request(160, -1);
+            scale.set_valign(gtk::Align::Center);
+            scale.set_draw_value(true);
+            scale.set_value_pos(gtk::PositionType::Left);
+            scale.set_format_value_func(|_, v| format!("{v:.0}%"));
+            scale.set_value((1.0 - style.borrow().alpha) * 100.0);
+            {
+                let style = style.clone();
+                let emit = emit.clone();
+                scale.connect_value_changed(move |scale| {
+                    style.borrow_mut().alpha = (1.0 - scale.value() / 100.0).clamp(0.0, 1.0);
+                    emit();
+                });
+            }
+            alpha_row.add_suffix(&scale);
+            group.add(&alpha_row);
+            let scale_for_show = scale.clone();
+            shows.push(Rc::new(move |s: &Style| scale_for_show.set_value((1.0 - s.alpha) * 100.0)));
+
+            // The edge: whether, how thick, what colour.
+            let border_row = adw::SwitchRow::new();
+            border_row.set_title("Border");
+            border_row.set_active(style.borrow().border);
+            {
+                let style = style.clone();
+                let emit = emit.clone();
+                border_row.connect_active_notify(move |row| {
+                    style.borrow_mut().border = row.is_active();
+                    emit();
+                });
+            }
+            group.add(&border_row);
+            let (width_row, show_width) = width_row("Border thickness", style.borrow().width, {
+                let style = style.clone();
+                let emit = emit.clone();
+                move |width| {
+                    style.borrow_mut().width = width;
+                    emit();
+                }
+            });
+            group.add(&width_row);
+            let (colour_row, show_colour) = paint_row(&theme, "Border colour", &style.borrow().colour, {
+                let style = style.clone();
+                let emit = emit.clone();
+                move |paint| {
+                    style.borrow_mut().colour = paint;
+                    emit();
+                }
+            });
+            group.add(&colour_row);
+            // The edge's rows only mean something while there is an edge.
+            let follow = {
+                let width_row = width_row.clone();
+                let colour_row = colour_row.clone();
+                move |on: bool| {
+                    width_row.set_sensitive(on);
+                    colour_row.set_sensitive(on);
+                }
+            };
+            follow(style.borrow().border);
+            {
+                let follow = follow.clone();
+                border_row.connect_active_notify(move |row| follow(row.is_active()));
+            }
+            let border_for_show = border_row.clone();
+            shows.push(Rc::new(move |s: &Style| {
+                border_for_show.set_active(s.border);
+                show_width(s.width);
+                show_colour(&s.colour);
+                follow(s.border);
+            }));
+        }
+    }
+
+    let show: Rc<dyn Fn(&Style)> = {
+        let style = style.clone();
+        let showing = showing.clone();
+        Rc::new(move |next: &Style| {
+            *style.borrow_mut() = next.clone();
+            showing.set(true);
+            for show in &shows {
+                show(next);
+            }
+            showing.set(false);
+        })
+    };
+    Editor { group, show }
+}
+
+/// A row that picks a width, in pixels, by number.
+fn width_row(title: &str, current: f64, on_pick: impl Fn(f64) + 'static) -> (adw::ActionRow, Rc<dyn Fn(f64)>) {
+    let row = adw::ActionRow::new();
+    row.set_title(title);
+    let spin = gtk::SpinButton::with_range(0.5, 12.0, 0.5);
+    spin.set_digits(1);
+    spin.set_valign(gtk::Align::Center);
+    spin.set_value(current);
+    spin.connect_value_changed(move |spin| on_pick(spin.value()));
+    row.add_suffix(&spin);
+    let spin_for_show = spin.clone();
+    (row, Rc::new(move |width| spin_for_show.set_value(width)))
+}
+
+/// A row that picks a colour: the nine presets as tiles, and a wheel for a
+/// colour of one's own.
+fn paint_row(
+    theme: &Theme,
+    title: &str,
+    current: &Paint,
+    on_pick: impl Fn(Paint) + Clone + 'static,
+) -> (adw::ActionRow, Shower<Paint>) {
+    let row = adw::ActionRow::new();
+    row.set_title(title);
+    let shown = palette::swatch_area(&current.hex(theme), false);
+    let button = gtk::MenuButton::new();
+    button.set_child(Some(&shown));
+    button.set_valign(gtk::Align::Center);
+    button.add_css_class("flat");
+    let popover = gtk::Popover::new();
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    content.set_margin_top(8);
+    content.set_margin_bottom(8);
+    content.set_margin_start(8);
+    content.set_margin_end(8);
+    let grid = gtk::Grid::new();
+    grid.set_row_spacing(4);
+    grid.set_column_spacing(4);
+    let palette = drawings::palette(theme);
+    let current_preset = match current {
+        Paint::Preset { preset } => Some(*preset),
+        _ => None,
+    };
+    for (n, (preset, hex)) in palette.iter().enumerate() {
+        let cell = gtk::Button::new();
+        cell.add_css_class("flat");
+        cell.set_tooltip_text(Some(preset.name()));
+        cell.set_child(Some(&palette::swatch_area(hex, current_preset == Some(*preset))));
+        let on_pick = on_pick.clone();
+        let popover = popover.downgrade();
+        let shown = shown.downgrade();
+        let (preset, hex) = (*preset, hex.clone());
+        cell.connect_clicked(move |_| {
+            if let Some(shown) = shown.upgrade() {
+                palette::paint(&shown, &hex, false);
+            }
+            on_pick(Paint::preset(preset));
+            if let Some(popover) = popover.upgrade() {
+                popover.popdown();
+            }
+        });
+        grid.attach(&cell, n as i32 % 5, n as i32 / 5, 1, 1);
+    }
+    content.append(&grid);
+    content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+    let custom = gtk::Button::with_label("Custom…");
+    custom.add_css_class("flat");
+    custom.set_tooltip_text(Some("Pick an exact colour, which the theme will not change"));
+    let start = colors::parse(&current.hex(theme));
+    {
+        let on_pick = on_pick.clone();
+        let popover = popover.downgrade();
+        let shown = shown.downgrade();
+        custom.connect_clicked(move |button| {
+            if let Some(popover) = popover.upgrade() {
+                popover.popdown();
+            }
+            let dialog = gtk::ColorDialog::new();
+            let window = button.root().and_downcast::<gtk::Window>();
+            let on_pick = on_pick.clone();
+            let shown = shown.clone();
+            dialog.choose_rgba(window.as_ref(), Some(&start), None::<&gio::Cancellable>, move |answer| {
+                let Ok(rgba) = answer else { return };
+                let hex = colors::to_hex(&rgba);
+                if let Some(shown) = shown.upgrade() {
+                    palette::paint(&shown, &hex, false);
+                }
+                on_pick(Paint::fixed(&hex));
+            });
+        });
+    }
+    content.append(&custom);
+    popover.set_child(Some(&content));
+    button.set_popover(Some(&popover));
+    row.add_suffix(&button);
+
+    let theme = theme.clone();
+    let shown_for_show = shown.clone();
+    (row, Rc::new(move |paint: &Paint| palette::paint(&shown_for_show, &paint.hex(&theme), false)))
+}
+
+// ---------------------------------------------------------------------------
+// Previews
+// ---------------------------------------------------------------------------
+
+/// The nine configurations as tiles, each drawn as it will look, the one in
+/// use ringed. For the picker in a drawing's properties.
+fn configuration_grid(
+    theme: &Theme,
+    kind: Kind,
+    configs: &Configurations,
+    current: Option<u8>,
+    on_pick: impl Fn(u8) + Clone + 'static,
+) -> gtk::Box {
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    content.set_margin_top(8);
+    content.set_margin_bottom(8);
+    content.set_margin_start(8);
+    content.set_margin_end(8);
+    let grid = gtk::Grid::new();
+    grid.set_row_spacing(6);
+    grid.set_column_spacing(6);
+    for n in 1..=CONFIGURATIONS {
+        let tile = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        let preview = preview_tile(theme, kind, configs.of(kind, n));
+        if current == Some(n) {
+            preview.add_css_class("drawing-preview-current");
+        }
+        let number = gtk::Label::new(Some(&format!("{n}")));
+        number.add_css_class("dim-label");
+        number.add_css_class("caption");
+        tile.append(&preview);
+        tile.append(&number);
+        let cell = gtk::Button::new();
+        cell.add_css_class("flat");
+        cell.set_tooltip_text(Some(&format!("Configuration {n} (Alt+{n})")));
+        cell.set_child(Some(&tile));
+        let on_pick = on_pick.clone();
+        cell.connect_clicked(move |_| on_pick(n));
+        grid.attach(&cell, (n as i32 - 1) % 3, (n as i32 - 1) / 3, 1, 1);
+    }
+    content.append(&grid);
+    content
+}
+
+/// A small chart with the drawing on it: three candles in the theme's own
+/// colours, and the drawing as the style says, so a picker shows the look
+/// rather than naming it.
+fn preview_tile(theme: &Theme, kind: Kind, style: &Style) -> gtk::DrawingArea {
+    let area = gtk::DrawingArea::new();
+    area.set_size_request(PREVIEW_W, PREVIEW_H);
+    area.add_css_class("drawing-preview");
+    paint_preview(&area, theme, kind, style);
+    area
+}
+
+fn paint_preview(area: &gtk::DrawingArea, theme: &Theme, kind: Kind, style: &Style) {
+    let theme = theme.clone();
+    let style = style.clone();
+    area.set_draw_func(move |_, cr, w, h| {
+        let (w, h) = (w as f64, h as f64);
+        let bars = omacharts_engine::theme::theme_bars(&theme);
+        colors::set_source(cr, &theme.ui.background);
+        rounded(cr, 0.5, 0.5, w - 1.0, h - 1.0, 5.0);
+        let _ = cr.fill();
+        // Four candles, up and down, across the middle.
+        let candles = [(0.25, 0.65, true), (0.4, 0.5, false), (0.55, 0.35, true), (0.7, 0.45, false)];
+        for (fx, fy, up) in candles {
+            let (x, y) = (w * fx, h * fy);
+            let colour = if up { &bars.up } else { &bars.down };
+            colors::set_source(cr, colour);
+            cr.rectangle(x.round() + 0.5, y - 10.0, 1.0, 20.0);
+            let _ = cr.fill();
+            cr.rectangle(x.round() - 2.0, y - 5.0, 5.0, 10.0);
+            let _ = cr.fill();
+        }
+        let colour = style.colour.hex(&theme);
+        match kind {
+            Kind::Line => {
+                let (a, b) = ((w * 0.15, h * 0.75), (w * 0.85, h * 0.25));
+                colors::set_source(cr, &colour);
+                cr.set_line_width(style.width.min(4.0));
+                cr.set_line_cap(gtk::cairo::LineCap::Round);
+                cr.move_to(a.0, a.1);
+                cr.line_to(b.0, b.1);
+                let _ = cr.stroke();
+                if style.arrow.at_end() {
+                    head(cr, a, b, style.width.min(4.0));
+                }
+                if style.arrow.at_start() {
+                    head(cr, b, a, style.width.min(4.0));
+                }
+            }
+            Kind::Rect => {
+                let (x, y, rw, rh) = (w * 0.3, h * 0.2, w * 0.5, h * 0.6);
+                colors::set_source_alpha(cr, &style.fill.hex(&theme), style.alpha);
+                cr.rectangle(x, y, rw, rh);
+                let _ = cr.fill();
+                if style.border {
+                    colors::set_source_alpha(cr, &colour, drawings::BORDER_ALPHA);
+                    cr.set_line_width(style.width.clamp(1.0, 3.0));
+                    cr.rectangle(x.round() + 0.5, y.round() + 0.5, rw.round(), rh.round());
+                    let _ = cr.stroke();
+                }
+            }
+        }
+    });
+    area.queue_draw();
+}
+
+fn head(cr: &gtk::cairo::Context, tail: (f64, f64), tip: (f64, f64), width: f64) {
+    let (dx, dy) = (tip.0 - tail.0, tip.1 - tail.1);
+    let length = dx.hypot(dy).max(1.0);
+    let (ux, uy) = (dx / length, dy / length);
+    let size = 5.0 + 2.0 * width;
+    let (bx, by) = (tip.0 - ux * size, tip.1 - uy * size);
+    let (px, py) = (-uy * size * 0.45, ux * size * 0.45);
+    cr.move_to(tip.0, tip.1);
+    cr.line_to(bx + px, by + py);
+    cr.line_to(bx - px, by - py);
+    cr.close_path();
+    let _ = cr.fill();
+}
+
+fn rounded(cr: &gtk::cairo::Context, x: f64, y: f64, w: f64, h: f64, r: f64) {
+    let r = r.min(w / 2.0).min(h / 2.0);
+    cr.new_sub_path();
+    cr.arc(x + w - r, y + r, r, -std::f64::consts::FRAC_PI_2, 0.0);
+    cr.arc(x + w - r, y + h - r, r, 0.0, std::f64::consts::FRAC_PI_2);
+    cr.arc(x + r, y + h - r, r, std::f64::consts::FRAC_PI_2, std::f64::consts::PI);
+    cr.arc(x + r, y + r, r, std::f64::consts::PI, 1.5 * std::f64::consts::PI);
+    cr.close_path();
+}
+
+/// The header with its Done button, Ctrl+Enter through it, and the keyboard
+/// back on the chart afterwards: Delete and Escape on it mean the drawing
+/// that is still selected.
+fn finish(dialog: &adw::Dialog, page: &adw::PreferencesPage, area: &gtk::DrawingArea, tick: Option<glib::SourceId>) {
     let header = adw::HeaderBar::new();
     header.set_show_start_title_buttons(false);
     header.set_show_end_title_buttons(false);
@@ -140,23 +817,27 @@ pub fn present(window: &Rc<Window>, pane: &Rc<ChartPane>) {
 
     let content = adw::ToolbarView::new();
     content.add_top_bar(&header);
-    content.set_content(Some(&page));
+    content.set_content(Some(page));
     dialog.set_child(Some(&content));
 
-    // The key goes through the button rather than around it, so there is
-    // one way to finish and it is the one the tooltip names.
     let done_on_key = done.clone();
-    dialogs::commit_on_ctrl_enter(&dialog, move || done_on_key.emit_clicked());
+    dialogs::commit_on_ctrl_enter(dialog, move || done_on_key.emit_clicked());
 
-    // The chart keeps the keyboard afterwards: Delete and Escape on it mean
-    // the drawing that is still selected.
-    let area = view.area.clone();
+    let area = area.clone();
+    let tick = RefCell::new(tick);
     dialog.connect_closed(move |_| {
+        if let Some(tick) = tick.borrow_mut().take() {
+            tick.remove();
+        }
         let area = area.clone();
         glib::idle_add_local_once(move || {
             area.grab_focus();
         });
     });
+}
 
-    dialog.present(Some(&window.window));
+/// Which preset a configuration starts from, for anything that wants to name
+/// it: the nth, so configuration 1 is Up and 2 is Down.
+pub fn preset_of(n: u8) -> Preset {
+    Preset::ALL[(n.clamp(1, CONFIGURATIONS) - 1) as usize]
 }

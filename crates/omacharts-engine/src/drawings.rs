@@ -527,7 +527,11 @@ impl Configurations {
         };
         // A stored list that is short — written by a build with fewer — is
         // read as if it were the defaults for the rest.
-        if list.len() >= CONFIGURATIONS as usize { list } else { &DEFAULTS.get_or_init(Configurations::default).list_or_default(kind) }
+        if list.len() >= CONFIGURATIONS as usize {
+            list
+        } else {
+            DEFAULTS.get_or_init(Configurations::default).list_or_default(kind)
+        }
     }
 
     fn list_or_default(&self, kind: Kind) -> &[Style] {

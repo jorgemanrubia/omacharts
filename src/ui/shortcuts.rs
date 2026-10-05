@@ -73,6 +73,7 @@ pub const BINDINGS: &[Binding] = &[
     // back, to how the chart opens.
     global("chart.draw-line", &["<Alt>l"]),
     global("chart.draw-rect", &["<Alt>r"]),
+    global("win.drawing-tools", &["<Alt>d"]),
     global("chart.reset-view", &["<Ctrl>Escape"]),
     global("chart.split-h", &["<Ctrl>h"]),
     global("chart.maximize", &["<Ctrl>m"]),

@@ -80,6 +80,12 @@ pub struct ChartPane {
     pub session: Cell<Session>,
     pub show_grid: Cell<bool>,
     pub linked: Cell<LinkGroup>,
+    /// What this chart shares its drawings with: the global group, one of
+    /// the nine, or nothing.
+    pub drawing_sharing: Cell<omacharts_engine::Sharing>,
+    /// The drawings that are this chart's alone, kept with it rather than
+    /// in the store, since they belong to no symbol but to this pane.
+    pub local_drawings: RefCell<Vec<omacharts_engine::Drawing>>,
     /// What the chain is painted in, so the group can be read off four charts
     /// at a glance rather than by opening four popovers. Held here because the
     /// drawing happens on every frame and the theme it comes from does not.
@@ -232,6 +238,8 @@ impl ChartPane {
             session: Cell::new(session),
             show_grid: Cell::new(show_grid),
             linked: Cell::new(linked),
+            drawing_sharing: Cell::new(omacharts_engine::Sharing::default()),
+            local_drawings: RefCell::new(Vec::new()),
             link_colour,
         })
     }
