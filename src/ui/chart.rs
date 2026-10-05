@@ -2828,6 +2828,75 @@ mod tests {
         }
     }
 
+    /// A chart with a volume strip under it, which is the arrangement that
+    /// has corner controls as well as a crosshair.
+    fn charted(bars: usize) -> State {
+        let theme = omacharts_engine::theme::builtin_themes()
+            .into_iter()
+            .next()
+            .expect("a built-in theme");
+        let scheme = omacharts_engine::theme::theme_bars(&theme);
+        let series = ramp(bars);
+        let indicator = Indicator::new(1, indicators::Kind::Volume);
+        let mut state = State::blank(theme, scheme);
+        state.indicators = vec![Drawn {
+            color: "#5588ff".to_string(),
+            output: indicators::compute(&indicator, &series, 0, state.timeframe, None),
+            indicator,
+        }];
+        state.bars = series;
+        state.visible = bars;
+        state
+    }
+
+    /// Draw something onto a surface of this size and hand back its pixels.
+    fn frame(width: f64, height: f64, paint: impl FnOnce(&cairo::Context)) -> Vec<u8> {
+        let mut surface =
+            cairo::ImageSurface::create(cairo::Format::ARgb32, width as i32, height as i32)
+                .expect("a surface to draw on");
+        {
+            let cr = cairo::Context::new(&surface).expect("a context");
+            paint(&cr);
+        }
+        surface.data().expect("the pixels").to_vec()
+    }
+
+    fn painted(pixels: &[u8]) -> usize {
+        pixels.chunks(4).filter(|pixel| pixel[3] != 0).count()
+    }
+
+    /// The whole point of the split, and the one thing a screenshot cannot
+    /// check — pictures leave the pointer layer out, so a layer that drew
+    /// nothing would look exactly like one that worked.
+    ///
+    /// If anything left in the body still reads `pointer`, moving the mouse
+    /// goes on invalidating every candle on screen and the change has bought
+    /// nothing. So: the body is the same picture wherever the pointer is, and
+    /// the layer over it is not.
+    #[test]
+    fn the_chart_is_the_same_picture_wherever_the_pointer_is() {
+        let (w, h) = (600.0, 400.0);
+        let mut state = charted(300);
+
+        let away = frame(w, h, |cr| draw(cr, w, h, &state));
+        // In the price plot, and then in the volume strip, which is where the
+        // corner controls appear.
+        for at in [(300.0, 150.0), (300.0, 360.0)] {
+            state.pointer = Some(at);
+            let over = frame(w, h, |cr| draw(cr, w, h, &state));
+            assert!(over == away, "the body redrew for a pointer at {at:?}");
+        }
+
+        state.pointer = None;
+        let quiet = frame(w, h, |cr| draw_pointer(cr, w, h, &state));
+        assert_eq!(painted(&quiet), 0, "nothing is drawn over a chart nobody is pointing at");
+
+        state.pointer = Some((300.0, 150.0));
+        let crosshair = frame(w, h, |cr| draw_pointer(cr, w, h, &state));
+        // Two lines across a 600x400 chart, and the chips at the ends of them.
+        assert!(painted(&crosshair) > 500, "the crosshair drew {} pixels", painted(&crosshair));
+    }
+
     #[test]
     fn steps_are_round_numbers() {
         assert_eq!(nice_step(100.0, 5), 20.0);
