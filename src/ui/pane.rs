@@ -195,7 +195,9 @@ impl ChartPane {
         corner.append(&expand);
 
         let overlay = gtk::Overlay::new();
-        overlay.set_child(Some(&view.area));
+        // The chart's own two layers, stacked, rather than the drawing area
+        // alone: the crosshair is a widget over the bars now.
+        overlay.set_child(Some(&view.root));
         overlay.add_overlay(&legend);
         overlay.add_overlay(&top);
         overlay.add_overlay(&corner);

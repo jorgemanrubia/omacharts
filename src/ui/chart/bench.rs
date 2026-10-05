@@ -18,7 +18,7 @@ use gtk::cairo;
 use omacharts_engine::indicators::{self, Kind};
 use omacharts_engine::{theme, Bar, Indicator, Timeframe};
 
-use super::{draw, Drawn, State};
+use super::{draw, draw_pointer, Drawn, State};
 
 /// A chart set up to be drawn, with no window under it.
 pub struct Scene {
@@ -69,12 +69,10 @@ impl Scene {
         draw(cr, width, height, &self.state);
     }
 
-    /// What moving the pointer repaints.
-    ///
-    /// The whole body, because a motion event invalidates the whole widget and
-    /// GTK4 has no way to invalidate less of one.
+    /// What moving the pointer repaints: the layer the crosshair is on, and
+    /// nothing under it.
     pub fn pointer_frame(&self, cr: &cairo::Context, width: f64, height: f64) {
-        draw(cr, width, height, &self.state);
+        draw_pointer(cr, width, height, &self.state);
     }
 }
 

@@ -14,15 +14,32 @@
 //!
 //! So nothing is touched. [`gtk::prelude::WidgetExt::snapshot_child`] asks a
 //! widget to draw one of its children into a snapshot of our own, which is a
-//! read: it allocates nothing, invalidates nothing and queues no redraw. The
-//! controls are left out by walking the tree ourselves and simply not asking
-//! for them. The image is then the pixels that are on screen minus the ones we
+//! read: it allocates nothing, invalidates nothing and queues no redraw. What
+//! is left out is left out by walking the tree ourselves and simply not asking
+//! for it. The image is then the pixels that are on screen minus the ones we
 //! never requested — which is also why it needs no second drawing of the
 //! legend in a different font from the real one.
 //!
-//! The one thing deliberately dropped that is not a control is the focus ring,
-//! which is the window's answer to "where is the keyboard" and is not part of
-//! what the chart shows. It goes with the rest of the furniture.
+//! Two things are deliberately dropped that are not controls, for the same
+//! reason as each other: neither is part of what the chart shows.
+//!
+//! The focus ring is the window's answer to "where is the keyboard", and it
+//! goes with the rest of the furniture.
+//!
+//! The crosshair goes too, with the pointer's own labels and the corner boxes
+//! a strip wears while the pointer is in it. They say where the mouse is, and
+//! a saved picture has no mouse — a dashed cross frozen wherever the hand
+//! happened to be is a fact about the moment the key was pressed rather than
+//! about the market. It also makes a chart's picture the same picture whether
+//! or not somebody was pointing at it when they asked, and it takes the strip
+//! controls out of an image they only ever reached by accident. Reading a
+//! price off the crosshair is what the chart is for; reading it off a
+//! screenshot of the crosshair is not. The axes and the last-price chip stay,
+//! and those are what carry the scale.
+//!
+//! All of it comes out by class, because the crosshair is now a widget of its
+//! own over the chart — which is why that layer exists at all, and what makes
+//! leaving it out a matter of not asking for one child.
 //!
 //! Where it goes is the clipboard, always. That is what somebody pressing the
 //! key wants nine times out of ten — the picture lands in the chat, the note,
@@ -37,6 +54,7 @@ use gtk::{gdk, gio, graphene, gsk};
 use omacharts_engine::Theme;
 
 use crate::store::Store;
+use crate::ui::chart::POINTER_LAYER;
 use crate::ui::colors;
 use crate::ui::pane::ChartPane;
 
@@ -55,9 +73,9 @@ pub const FOLDER: &str = "Omacharts";
 /// The widgets a screenshot leaves out, by the CSS class they already carry.
 ///
 /// By class rather than by identity because that is the one description that
-/// is already true: each of these is styled as a control precisely because it
-/// is one, so a new one added to the legend inherits being left out rather
-/// than having to be remembered here.
+/// is already true: each of these is styled as what it is, so a new control
+/// added to the legend inherits being left out rather than having to be
+/// remembered here.
 ///
 /// - `timeframe-strip` — the segmented resolution buttons. The resolution
 ///   itself still appears: it is written beside the symbol as plain text, and
@@ -65,12 +83,16 @@ pub const FOLDER: &str = "Omacharts";
 /// - `legend-gear`, `legend-link` — chart settings, and the link group.
 /// - `legend-button` — a row's hide, settings and remove buttons.
 /// - `pane-expand` — the maximize corner.
-const CONTROLS: &[&str] = &[
+/// - [`POINTER_LAYER`] — the crosshair, its axis labels, and the boxes
+///   a strip wears under the pointer. Not a control, and the only thing here
+///   that is not: it is where the mouse is, and a picture has no mouse.
+const LEFT_OUT: &[&str] = &[
     "timeframe-strip",
     "legend-gear",
     "legend-link",
     "legend-button",
     "pane-expand",
+    POINTER_LAYER,
 ];
 
 /// A rendered screenshot, not yet anywhere.
@@ -314,9 +336,10 @@ fn render(root: &gtk::Widget, theme: &Theme) -> Result<gdk::Texture, String> {
 
 /// Ask `parent` for each child that belongs in the picture.
 ///
-/// A child with no control anywhere under it is handed straight to GTK, which
-/// draws the whole subtree with its own transform. One that holds a control is
-/// descended into instead, and then placing it is ours to do.
+/// A child with nothing left out anywhere under it is handed straight to GTK,
+/// which draws the whole subtree with its own transform. One that holds
+/// something left out is descended into instead, and then placing it is ours
+/// to do.
 ///
 /// Placed by moving to where its origin sits in the parent, rather than by
 /// applying the transform `compute_transform` hands back. That transform is a
@@ -328,10 +351,10 @@ fn draw_children(parent: &gtk::Widget, snapshot: &gtk::Snapshot) {
     let mut next = parent.first_child();
     while let Some(child) = next {
         next = child.next_sibling();
-        if !child.is_visible() || is_control(&child) {
+        if !child.is_visible() || left_out(&child) {
             continue;
         }
-        if holds_control(&child) {
+        if holds_left_out(&child) {
             snapshot.save();
             if let Some(at) = child.compute_point(parent, &graphene::Point::new(0.0, 0.0)) {
                 snapshot.translate(&at);
@@ -344,14 +367,14 @@ fn draw_children(parent: &gtk::Widget, snapshot: &gtk::Snapshot) {
     }
 }
 
-fn is_control(widget: &gtk::Widget) -> bool {
-    CONTROLS.iter().any(|class| widget.has_css_class(class))
+fn left_out(widget: &gtk::Widget) -> bool {
+    LEFT_OUT.iter().any(|class| widget.has_css_class(class))
 }
 
-fn holds_control(widget: &gtk::Widget) -> bool {
+fn holds_left_out(widget: &gtk::Widget) -> bool {
     let mut child = widget.first_child();
     while let Some(found) = child {
-        if is_control(&found) || holds_control(&found) {
+        if left_out(&found) || holds_left_out(&found) {
             return true;
         }
         child = found.next_sibling();
@@ -654,14 +677,20 @@ mod tests {
         std::fs::remove_dir_all(folder.parent().expect("a parent")).ok();
     }
 
-    /// Every one of these is styled as a control in the stylesheet, which is
-    /// how the capture knows to leave it out — so the two lists have to agree.
+    /// Every control left out is styled as a control in the stylesheet, which
+    /// is how the capture knows to find it — so the two lists have to agree.
+    ///
+    /// The pointer layer is the one entry that is not a control, and it has no
+    /// style of its own: it is a drawing area over the chart, and its class is
+    /// there to be matched rather than to paint anything. It takes its name
+    /// from the chart's own constant, so there is no second spelling of it to
+    /// drift.
     #[test]
     fn every_control_left_out_of_a_screenshot_is_one_the_stylesheet_knows_about() {
         let themes = omacharts_engine::theme::builtin_themes();
         let schemes = omacharts_engine::theme::builtin_bar_schemes();
         let css = crate::theming::stylesheet(&themes[0], &schemes[0]);
-        for class in CONTROLS {
+        for class in LEFT_OUT.iter().filter(|class| **class != POINTER_LAYER) {
             assert!(css.contains(&format!(".{class}")), "{class} is not styled anywhere");
         }
     }

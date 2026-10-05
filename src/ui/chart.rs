@@ -1,9 +1,18 @@
 //! The candlestick chart.
 //!
-//! One `DrawingArea` and a cairo draw function. The view is two numbers — the
-//! index of the leftmost visible bar and how many are visible — so panning and
-//! zooming are arithmetic, not a re-layout, and a repaint touches only what is
-//! on screen.
+//! Two `DrawingArea`s, one over the other, and a cairo draw function each. The
+//! view is two numbers — the index of the leftmost visible bar and how many
+//! are visible — so panning and zooming are arithmetic, not a re-layout, and a
+//! repaint touches only what is on screen.
+//!
+//! The lower widget is the chart: the bars, the scales, the strips and
+//! everything else that changes only when the chart does. The upper one is
+//! whatever follows the pointer. They are separate widgets because GTK4
+//! invalidates a whole widget or none of it, and a crosshair that moved a
+//! pixel would otherwise re-rasterise every candle on screen to redraw two
+//! dashed lines. The upper one takes no events — the lower is still the chart
+//! you drag, scroll and focus — so the split is a drawing arrangement and
+//! nothing else.
 //!
 //! Candles are drawn in two passes, up and down, each accumulating one cairo
 //! path for the wicks and one for the bodies. Two strokes and two fills for a
@@ -507,8 +516,20 @@ impl State {
 /// because the chart is constructed before there is a window to tell.
 type Handler<F> = Rc<RefCell<Option<Box<F>>>>;
 
+/// The CSS class the pointer layer carries, so the one other module that has
+/// an opinion about it — the screenshot, which leaves it out — can say so by
+/// name rather than by walking to the second child of an overlay.
+pub const POINTER_LAYER: &str = "chart-pointer-layer";
+
 pub struct ChartView {
+    /// The chart itself, and the chart's event target: the drags, the wheel
+    /// and the keyboard all land here, which is why this is the widget the
+    /// window reaches for when it wants to focus a chart.
     pub area: gtk::DrawingArea,
+    /// The crosshair and the rest of what follows the pointer, over the top.
+    pointer: gtk::DrawingArea,
+    /// The two of them stacked. This is what goes in the layout.
+    pub root: gtk::Overlay,
     state: Rc<RefCell<State>>,
     on_hover: Handler<dyn Fn(Option<Hover>)>,
     on_context_menu: Handler<dyn Fn(f64, f64)>,
@@ -532,11 +553,28 @@ impl ChartView {
         area.set_vexpand(true);
         area.set_focusable(true);
 
+        // Exactly the chart's own size, so a point on one layer is the same
+        // point on the other and the crosshair needs no coordinates of its
+        // own. It answers to no events: the chart underneath is still what
+        // you drag and scroll, and a layer that could take a click would
+        // swallow every one of them.
+        let pointer = gtk::DrawingArea::new();
+        pointer.add_css_class(POINTER_LAYER);
+        pointer.set_can_target(false);
+        pointer.set_hexpand(true);
+        pointer.set_vexpand(true);
+
+        let root = gtk::Overlay::new();
+        root.set_child(Some(&area));
+        root.add_overlay(&pointer);
+
         let state = Rc::new(RefCell::new(State::blank(theme, scheme)));
         let on_hover: Handler<dyn Fn(Option<Hover>)> = Rc::new(RefCell::new(None));
 
         let view = Rc::new(ChartView {
             area,
+            pointer,
+            root,
             state,
             on_hover,
             on_context_menu: Rc::new(RefCell::new(None)),
@@ -568,7 +606,9 @@ impl ChartView {
             changed
         };
         if changed {
-            self.area.queue_draw();
+            // Somebody else's crosshair, which is drawn on the same layer as
+            // our own and changes nothing underneath it.
+            self.pointer.queue_draw();
         }
     }
 
@@ -594,19 +634,19 @@ impl ChartView {
             state.visible = 160;
         }
         drop(state);
-        self.area.queue_draw();
+        self.redraw();
     }
 
     /// Show or hide the gridlines. The axes and their labels stay: without
     /// them a chart is a shape with no scale.
     pub fn set_show_grid(&self, show: bool) {
         self.state.borrow_mut().show_grid = show;
-        self.area.queue_draw();
+        self.redraw();
     }
 
     pub fn set_bar_style(&self, style: BarStyle) {
         self.state.borrow_mut().bar_style = style;
-        self.area.queue_draw();
+        self.redraw();
     }
 
     /// What to do when the chart itself is right-clicked. The axis keeps its
@@ -656,7 +696,7 @@ impl ChartView {
                 state.price_offset = 0.0;
             }
         }
-        self.area.queue_draw();
+        self.redraw();
     }
 
     pub fn set_context_menu_handler(&self, handler: impl Fn(f64, f64) + 'static) {
@@ -665,7 +705,7 @@ impl ChartView {
 
     pub fn set_indicators(&self, indicators: Vec<Drawn>) {
         self.state.borrow_mut().indicators = indicators;
-        self.area.queue_draw();
+        self.redraw();
     }
 
     /// Say why the last fetch brought nothing back, or `None` once one works.
@@ -676,7 +716,7 @@ impl ChartView {
     /// as the app not having the S&P 500.
     pub fn set_trouble(&self, trouble: Option<FetchFailure>) {
         self.state.borrow_mut().trouble = trouble;
-        self.area.queue_draw();
+        self.redraw();
     }
 
     /// Whether a fetch is outstanding for what is on screen.
@@ -686,7 +726,7 @@ impl ChartView {
     /// how "no data" ends up meaning nothing.
     pub fn set_loading(&self, loading: bool) {
         self.state.borrow_mut().loading = loading;
-        self.area.queue_draw();
+        self.redraw();
     }
 
     pub fn restyle(&self, theme: Theme, scheme: BarScheme) {
@@ -695,7 +735,7 @@ impl ChartView {
             state.theme = theme;
             state.scheme = scheme;
         }
-        self.area.queue_draw();
+        self.redraw();
     }
 
     pub fn timeframe(&self) -> Timeframe {
@@ -723,17 +763,27 @@ impl ChartView {
     /// Jump back to the right edge and follow new bars again.
     pub fn go_to_latest(&self) {
         self.state.borrow_mut().anchored = true;
-        self.area.queue_draw();
+        self.redraw();
     }
 
     pub fn zoom(&self, factor: f64) {
         self.state.borrow_mut().zoom_time(factor, 0.5);
-        self.area.queue_draw();
+        self.redraw();
     }
 
     pub fn pan_bars(&self, delta: i64) {
         self.state.borrow_mut().pan_by(delta as f64);
-        self.area.queue_draw();
+        self.redraw();
+    }
+
+    /// Everything: the chart and the layer over it.
+    ///
+    /// Anything that changes the chart has to invalidate both, because what
+    /// the pointer layer draws is read off the scales the chart is drawn on —
+    /// a crosshair over a zoom it has not been told about would be labelling a
+    /// price the axis no longer shows.
+    fn redraw(&self) {
+        redraw(&self.area, &self.pointer);
     }
 
     fn wire_drawing(&self) {
@@ -741,12 +791,18 @@ impl ChartView {
         self.area.set_draw_func(move |_, cr, width, height| {
             draw(cr, width as f64, height as f64, &state.borrow());
         });
+
+        let state = self.state.clone();
+        self.pointer.set_draw_func(move |_, cr, width, height| {
+            draw_pointer(cr, width as f64, height as f64, &state.borrow());
+        });
     }
 
     fn wire_pointer(&self) {
         let motion = gtk::EventControllerMotion::new();
         let state = self.state.clone();
         let area = self.area.clone();
+        let pointer = self.pointer.clone();
         let on_hover = self.on_hover.clone();
         motion.connect_motion(move |_, x, y| {
             state.borrow_mut().pointer = Some((x, y));
@@ -766,18 +822,21 @@ impl ChartView {
                 _ => "default",
             }));
             notify_hover(&state, &on_hover, &area);
-            area.queue_draw();
+            // The chart itself is untouched: nothing under the crosshair has
+            // changed, and this is the whole of why the crosshair has a widget
+            // of its own.
+            pointer.queue_draw();
         });
 
         let state = self.state.clone();
-        let area = self.area.clone();
+        let pointer = self.pointer.clone();
         let on_hover = self.on_hover.clone();
         motion.connect_leave(move |_| {
             state.borrow_mut().pointer = None;
             if let Some(handler) = on_hover.borrow().as_ref() {
                 handler(None);
             }
-            area.queue_draw();
+            pointer.queue_draw();
         });
         self.area.add_controller(motion);
 
@@ -804,6 +863,7 @@ impl ChartView {
         let scroll = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::BOTH_AXES);
         let state = self.state.clone();
         let area = self.area.clone();
+        let pointer = self.pointer.clone();
         scroll.connect_scroll(move |controller, dx, dy| {
             if dx == 0.0 && dy == 0.0 {
                 return glib::Propagation::Proceed;
@@ -823,7 +883,7 @@ impl ChartView {
             if dx != 0.0 && dy == 0.0 {
                 s.pan_by(dx * 2.0);
                 drop(s);
-                area.queue_draw();
+                redraw(&area, &pointer);
                 return glib::Propagation::Stop;
             }
 
@@ -846,7 +906,7 @@ impl ChartView {
                 }
             }
             drop(s);
-            area.queue_draw();
+            redraw(&area, &pointer);
             glib::Propagation::Stop
         });
         self.area.add_controller(scroll);
@@ -934,6 +994,7 @@ impl ChartView {
 
         let state = self.state.clone();
         let area = self.area.clone();
+        let pointer = self.pointer.clone();
         drag.connect_drag_update(move |_, offset_x, offset_y| {
             let mut s = state.borrow_mut();
             let Some(drag) = s.drag else { return };
@@ -987,7 +1048,7 @@ impl ChartView {
                 }
             }
             drop(s);
-            area.queue_draw();
+            redraw(&area, &pointer);
         });
 
         let state = self.state.clone();
@@ -1015,6 +1076,7 @@ impl ChartView {
         let click = gtk::GestureClick::new();
         let state = self.state.clone();
         let area = self.area.clone();
+        let pointer = self.pointer.clone();
         click.connect_pressed(move |_, presses, x, y| {
             if presses < 2 {
                 return;
@@ -1036,7 +1098,7 @@ impl ChartView {
                 Region::Plot => return,
             }
             drop(s);
-            area.queue_draw();
+            redraw(&area, &pointer);
         });
         self.area.add_controller(click);
     }
@@ -1048,13 +1110,13 @@ impl ChartView {
         state.price_zoom = 1.0;
         state.price_offset = 0.0;
         drop(state);
-        self.area.queue_draw();
+        self.redraw();
     }
 
     /// Everything back to how the chart opens. Alt+R, and the axis menu.
     pub fn reset_view(&self) {
         self.state.borrow_mut().reset_view();
-        self.area.queue_draw();
+        self.redraw();
     }
 
     /// Offer the reset where people right-click for it.
@@ -1081,6 +1143,16 @@ impl ChartView {
         });
         self.area.add_controller(click);
     }
+}
+
+/// Invalidate both of a chart's layers.
+///
+/// A free function because the pointer handlers hold the two widgets and not
+/// the view they belong to, and because leaving them to call `queue_draw`
+/// twice each is how one of them eventually calls it once.
+fn redraw(body: &gtk::DrawingArea, pointer: &gtk::DrawingArea) {
+    body.queue_draw();
+    pointer.queue_draw();
 }
 
 fn notify_hover(
@@ -1174,12 +1246,6 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
         let Some(drawn) = state.indicators.iter().find(|d| d.indicator.id == id) else {
             continue;
         };
-        // The way around and out of a strip, offered only while the pointer is
-        // in it: four panes each wearing permanent buttons is a dozen things
-        // competing with the chart.
-        if state.pointer.map(|(_, y)| row.covers(y)).unwrap_or(false) {
-            draw_pane_controls(cr, state, &plan, row, at);
-        }
         match &drawn.output {
             Output::Volume { .. } => {
                 if max_volume > 0.0 {
@@ -1211,10 +1277,47 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
 
     draw_last_price(cr, state, plot_x, plot_w, price_y, width, decimals, &to_y);
 
+    if state.trouble.is_some() {
+        draw_trouble_dot(cr, state, width);
+    }
+}
+
+/// The layer over the chart: the crosshair and its labels, another chart's
+/// crosshair, and the boxes a strip wears while the pointer is in it.
+///
+/// Everything here is decided by where the pointer is, which is why it is a
+/// widget of its own. A pointer motion invalidates this and nothing else, so
+/// the candles underneath are composited from the frame they were already
+/// drawn in rather than rasterised again — which at a screenful of bars is the
+/// difference between a crosshair costing microseconds and costing a frame.
+///
+/// It works the scales out again rather than being handed them. They are two
+/// passes over the visible bars and a layout, which is nothing beside drawing
+/// them, and reading them off a cache would be one more thing to invalidate.
+fn draw_pointer(cr: &cairo::Context, width: f64, height: f64, state: &State) {
+    let (first, visible) = state.slice();
+    if visible == 0 {
+        return;
+    }
+    let bars = &state.bars[first..first + visible];
+    let plan = layout(state, width, height);
+    let Some((low, high)) = price_range(state, bars) else { return };
+    let to_y = |price: f64| plan.price_y + plan.price_h * (high - price) / (high - low);
+    let bar_w = plan.plot_w / visible as f64;
+
+    // The way around and out of a strip, offered only while the pointer is in
+    // it: four panes each wearing permanent buttons is a dozen things
+    // competing with the chart.
+    for (at, row) in plan.rows.iter().enumerate() {
+        if row.pane.is_some() && state.pointer.map(|(_, y)| row.covers(y)).unwrap_or(false) {
+            draw_pane_controls(cr, state, &plan, row, at);
+        }
+    }
+
     if let Some((px, py)) = state.pointer {
         draw_crosshair(
-            cr, state, px, py, plot_x, plot_w, plan.top, price_y, price_h, width, height, bar_w,
-            first, low, high, &to_y,
+            cr, state, px, py, plan.plot_x, plan.plot_w, plan.top, plan.price_y, plan.price_h,
+            width, height, bar_w, first, low, high,
         );
     }
 
@@ -1225,13 +1328,9 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
         && let Some(echo) = state.echo
     {
         draw_echo(
-            cr, state, bars, plot_x, plot_w, bar_w, plan.top, price_y, price_h, height, echo,
-            &to_y,
+            cr, state, bars, plan.plot_x, plan.plot_w, bar_w, plan.top, plan.price_y,
+            plan.price_h, height, echo, &to_y,
         );
-    }
-
-    if state.trouble.is_some() {
-        draw_trouble_dot(cr, state, width);
     }
 }
 
@@ -1767,7 +1866,6 @@ fn draw_crosshair(
     first: usize,
     low: f64,
     high: f64,
-    to_y: &impl Fn(f64) -> f64,
 ) {
     if px < plot_x || px > plot_x + plot_w || py < top || py > height - TIME_AXIS_H {
         return;
@@ -1808,7 +1906,6 @@ fn draw_crosshair(
             crosshair,
         );
     }
-    let _ = to_y;
 
     // Time under the pointer.
     if let Some(bar) = state.bars.get(first + index_in_view.max(0.0) as usize) {
