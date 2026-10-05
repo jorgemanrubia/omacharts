@@ -168,7 +168,7 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("← →", "Pan"),
             ("+ −", "Zoom"),
             ("End", "Jump to the latest bar"),
-            ("Alt+R", "Reset the view"),
+            ("Ctrl+Esc", "Reset the view"),
             ("Ctrl+Shift+G", "Show or hide the gridlines"),
             ("Esc", "Back to the chart"),
         ],
@@ -177,7 +177,7 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
         "Drawing",
         &[
             ("Alt+L", "Draw a line: click where it starts, then where it ends"),
-            ("Alt+B", "Draw a box over a run of bars"),
+            ("Alt+R", "Draw a rectangle over a run of bars"),
             ("Click a drawing", "Select it; drag an end, or the whole thing"),
             ("Right-click a drawing", "Its colour and thickness, or delete it"),
             ("Delete", "Delete the selected drawing"),

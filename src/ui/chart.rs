@@ -1649,7 +1649,7 @@ impl ChartView {
                     s.anchored = true;
                 }
                 // Double-clicking the chart itself does nothing, the same as
-                // everywhere else. Resetting is Alt+R or the axis menu.
+                // everywhere else. Resetting is Ctrl+Esc or the axis menu.
                 Region::Plot => return,
             }
             drop(s);
@@ -1668,7 +1668,7 @@ impl ChartView {
         self.redraw();
     }
 
-    /// Everything back to how the chart opens. Alt+R, and the axis menu.
+    /// Everything back to how the chart opens. Ctrl+Esc, and the axis menu.
     pub fn reset_view(&self) {
         self.state.borrow_mut().reset_view();
         self.redraw();

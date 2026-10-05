@@ -66,11 +66,14 @@ pub const BINDINGS: &[Binding] = &[
     // closing one already is.
     global("chart.screenshot", &["<Ctrl>o"]),
     global("win.screenshot", &["<Ctrl><Shift>o"]),
-    global("chart.reset-view", &["<Alt>r"]),
-    // Alt with a letter, like the reset: a line and a box. Ctrl+L is taken
-    // by linking a chart to the rail, and Ctrl+B by the rail itself.
+    // Alt with a letter is the drawing tools' register: a line and a
+    // rectangle. Resetting the view used to be Alt+R and gave the key up:
+    // a tool is reached for many times an hour and a reset once. Escape
+    // already means "back to the chart", and Ctrl with it means all the way
+    // back, to how the chart opens.
     global("chart.draw-line", &["<Alt>l"]),
-    global("chart.draw-rect", &["<Alt>b"]),
+    global("chart.draw-rect", &["<Alt>r"]),
+    global("chart.reset-view", &["<Ctrl>Escape"]),
     global("chart.split-h", &["<Ctrl>h"]),
     global("chart.maximize", &["<Ctrl>m"]),
     global("win.new-chartbook", &["<Ctrl>n"]),

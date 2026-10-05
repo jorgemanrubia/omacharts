@@ -433,7 +433,7 @@ against whatever desktop theme is active, so a scripted drawing goes on
 looking like it belongs when the theme changes. The line's `--width` is in
 pixels; a box's edge is always a hairline.
 
-By hand: Alt+L and Alt+B arm the tools, two clicks (or one press-and-drag)
+By hand: Alt+L and Alt+R arm the tools, two clicks (or one press-and-drag)
 place a drawing, a click selects one, a drag moves an end or the whole thing,
 Delete removes it, and right-clicking a drawing opens its colour and
 thickness.
