@@ -227,9 +227,9 @@ fail rather than leaving it to somebody remembering to read the list.
 Say plainly what they cannot reach, because a test that looks like it proves
 parity and does not is worse than none:
 
-- **A capability that changes nothing stored.** Scrolling, zooming, maximizing
-  and auto-scaling a chart are out of scope by design, and the field test
-  cannot tell them apart from something that should have been in.
+- **A capability that changes nothing stored.** Scrolling, zooming and
+  maximizing a chart are out of scope by design, and the field test cannot
+  tell them apart from something that should have been in.
 - **Settings reached only through `config set`.** `timeframes` and
   `watchlist_columns` are real preferences with no command of their own, and
   nothing fails because of it.

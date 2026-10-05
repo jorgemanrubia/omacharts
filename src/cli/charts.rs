@@ -295,6 +295,7 @@ pub fn new_pane(id: u32, symbol: &str, suffix: Option<&str>) -> Value {
         "session": "extended",
         "show_grid": true,
         "linked": 0,
+        "auto_scale": true,
     })
 }
 

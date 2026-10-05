@@ -664,6 +664,12 @@ pub struct ChartView {
     on_pane_move: Handler<dyn Fn(u32, indicators::Move)>,
     /// Right-clicking the price axis, which has its own short menu.
     on_axis_menu: Handler<dyn Fn(f64, f64)>,
+    /// Told when a gesture on the chart takes the price scale off automatic
+    /// or puts it back — a drag or a wheel on the axis, a double-click to
+    /// reset it. Whether the scale is automatic is written down with the
+    /// chart, and these are the only ways it changes that nothing outside
+    /// the chart can see.
+    on_price_auto: Handler<dyn Fn(bool)>,
 }
 
 impl ChartView {
@@ -702,6 +708,7 @@ impl ChartView {
             on_pane_close: Rc::new(RefCell::new(None)),
             on_pane_move: Rc::new(RefCell::new(None)),
             on_axis_menu: Rc::new(RefCell::new(None)),
+            on_price_auto: Rc::new(RefCell::new(None)),
         });
         view.wire_drawing();
         view.wire_pointer();
@@ -817,6 +824,13 @@ impl ChartView {
             }
         }
         self.redraw();
+    }
+
+    /// Be told when a gesture on the chart changes whether the price scale
+    /// is automatic. Not called for [`set_price_auto`](Self::set_price_auto)
+    /// or the resets: whoever called those already knows.
+    pub fn set_price_auto_handler(&self, handler: impl Fn(bool) + 'static) {
+        *self.on_price_auto.borrow_mut() = Some(Box::new(handler));
     }
 
     pub fn set_context_menu_handler(&self, handler: impl Fn(f64, f64) + 'static) {
@@ -984,6 +998,7 @@ impl ChartView {
         let state = self.state.clone();
         let area = self.area.clone();
         let pointer = self.pointer.clone();
+        let on_price_auto = self.on_price_auto.clone();
         scroll.connect_scroll(move |controller, dx, dy| {
             if dx == 0.0 && dy == 0.0 {
                 return glib::Propagation::Proceed;
@@ -994,6 +1009,7 @@ impl ChartView {
 
             let (width, height) = (area.width() as f64, area.height() as f64);
             let mut s = state.borrow_mut();
+            let was_auto = s.price_auto;
             let region = s
                 .pointer
                 .map(|(x, y)| region_at(x, y, width, height))
@@ -1027,6 +1043,7 @@ impl ChartView {
             }
             drop(s);
             redraw(&area, &pointer);
+            notify_price_auto(&state, &on_price_auto, was_auto);
             glib::Propagation::Stop
         });
         self.area.add_controller(scroll);
@@ -1073,8 +1090,10 @@ impl ChartView {
 
         let state = self.state.clone();
         let area = self.area.clone();
+        let on_price_auto = self.on_price_auto.clone();
         drag.connect_drag_begin(move |_, x, y| {
             let mut s = state.borrow_mut();
+            let was_auto = s.price_auto;
             let (first, visible) = s.slice();
             // The edge wins over whatever region it crosses, because that is
             // what the cursor was already promising.
@@ -1110,6 +1129,8 @@ impl ChartView {
                     Region::Plot => Drag::Pan { first, offset: s.price_offset },
                 },
             );
+            drop(s);
+            notify_price_auto(&state, &on_price_auto, was_auto);
         });
 
         let state = self.state.clone();
@@ -1197,12 +1218,14 @@ impl ChartView {
         let state = self.state.clone();
         let area = self.area.clone();
         let pointer = self.pointer.clone();
+        let on_price_auto = self.on_price_auto.clone();
         click.connect_pressed(move |_, presses, x, y| {
             if presses < 2 {
                 return;
             }
             let region = region_at(x, y, area.width() as f64, area.height() as f64);
             let mut s = state.borrow_mut();
+            let was_auto = s.price_auto;
             match region {
                 Region::PriceAxis => {
                     s.price_auto = true;
@@ -1219,6 +1242,7 @@ impl ChartView {
             }
             drop(s);
             redraw(&area, &pointer);
+            notify_price_auto(&state, &on_price_auto, was_auto);
         });
         self.area.add_controller(click);
     }
@@ -1273,6 +1297,24 @@ impl ChartView {
 fn redraw(body: &gtk::DrawingArea, pointer: &gtk::DrawingArea) {
     body.queue_draw();
     pointer.queue_draw();
+}
+
+/// Tell the window if a gesture just changed whether the price scale is
+/// automatic.
+///
+/// Compared against what it `was` rather than reported outright, because
+/// every notch of the wheel over the axis passes through here and only the
+/// first one changes anything. Called with the state no longer borrowed: the
+/// handler is the window's, and the window reads the chart back.
+fn notify_price_auto(
+    state: &Rc<RefCell<State>>,
+    on_price_auto: &Handler<dyn Fn(bool)>,
+    was: bool,
+) {
+    let now = state.borrow().price_auto;
+    if now != was && let Some(handler) = on_price_auto.borrow().as_ref() {
+        handler(now);
+    }
 }
 
 fn notify_hover(

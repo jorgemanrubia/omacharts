@@ -574,6 +574,8 @@ pub const SURFACE: &[Noun] = &[
                     Flag::valued("link", "GROUP", "the link group it joins and then leads, or `none` to leave one")
                         .of(LINKS),
                     Flag::valued("grid", "BOOL", "draw the grid").of(&["on", "off"]),
+                    Flag::valued("auto-scale", "BOOL", "fit the price axis to the visible bars, or hold it still")
+                        .of(&["on", "off"]),
                 ],
                 example: "omacharts chart set --symbol NVDA --resolution 1h --style candles",
                 json: true,
@@ -852,6 +854,7 @@ const STORED_FIELDS: &[(&str, &str, &str)] = &[
     ("session", "chart set", "--session"),
     ("show_grid", "chart set", "--grid"),
     ("linked", "chart set", "--link"),
+    ("auto_scale", "chart set", "--auto-scale"),
     ("name", "chartbook rename", ""),
     ("layout", "chart split", ""),
     ("focused", "chart focus", ""),

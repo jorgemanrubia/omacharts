@@ -432,6 +432,7 @@ mod tests {
                 session: "extended".to_string(),
                 show_grid: true,
                 linked: LinkGroup::None,
+                auto_scale: false,
             }],
             watchlist: Some(4),
             sidebar_shown: Some(false),
@@ -446,6 +447,32 @@ mod tests {
         assert_eq!(back.books[0].panes.len(), 2, "the first book kept its split");
         assert_eq!(back.books[1].name, "Energy");
         assert_eq!(back.books[1].layout.leaves(), vec![7]);
+        assert!(!back.books[1].panes[0].auto_scale, "a held price scale is still held");
+    }
+
+    /// Every chart written before the price scale was remembered was fitting
+    /// itself — the only way off automatic was a drag that nothing stored —
+    /// so that is what each of them comes back doing.
+    #[test]
+    fn a_chart_written_before_the_price_scale_was_remembered_fits_itself() {
+        let workspace = parse_workspace(ONE_ARRANGEMENT).expect("the old shape should parse");
+        assert!(workspace.books[0].panes.iter().all(|pane| pane.auto_scale));
+    }
+
+    /// Through the store rather than through serde alone: the setting is one
+    /// string in one row, and the row is what a restart reads.
+    #[test]
+    fn a_held_price_scale_survives_a_restart() {
+        let store = Store::memory().expect("an in-memory store");
+        let mut held = stored_pane(1, "SPY", LinkGroup::None);
+        held.auto_scale = false;
+        let book = book_of("Macro", vec![held, stored_pane(2, "QQQ", LinkGroup::None)]);
+        let json = serde_json::to_string(&Workspace { books: vec![book], active: 0 }).unwrap();
+        store.set_setting(SETTING_WORKSPACE, &json);
+
+        let back = parse_workspace(&store.setting(SETTING_WORKSPACE).unwrap()).unwrap();
+        let scales: Vec<bool> = back.books[0].panes.iter().map(|p| p.auto_scale).collect();
+        assert_eq!(scales, vec![false, true], "each chart keeps its own answer");
     }
 
     /// A chart, as a book that is not on screen holds one.
@@ -460,6 +487,7 @@ mod tests {
             session: "extended".to_string(),
             show_grid: true,
             linked,
+            auto_scale: true,
         }
     }
 
@@ -1088,6 +1116,16 @@ struct StoredPane {
     session: String,
     show_grid: bool,
     linked: LinkGroup,
+    /// Whether the price axis fits itself to the visible bars, or has been
+    /// taken off automatic to be dragged. Missing from a chart written before
+    /// this was remembered, and every one of those was fitting itself.
+    #[serde(default = "fits_itself")]
+    auto_scale: bool,
+}
+
+/// What a chart's price scale does until somebody takes hold of it.
+fn fits_itself() -> bool {
+    true
 }
 
 /// One arrangement of charts, saved under a name.
@@ -1702,6 +1740,12 @@ impl Window {
             menu_owner.chart_menu(x, y);
         });
 
+        // A drag or a wheel on the price axis takes the scale off automatic
+        // inside the chart, where nothing is written down. It is a setting
+        // like the gridlines, so it is stored the way they are.
+        let scaler = self.clone();
+        pane.view.set_price_auto_handler(move |auto| scaler.price_auto_changed(id, auto));
+
         // Dragging a pane's edge changes the indicator, not just the drawing,
         // so the new height is stored the way any other setting of its would be.
         let resizer = self.clone();
@@ -1835,6 +1879,24 @@ impl Window {
         if let Some(action) = self.grid_action.borrow().as_ref() {
             action.set_state(&pane.show_grid.get().to_variant());
         }
+        if let Some(action) = self.auto_scale_action.borrow().as_ref() {
+            action.set_state(&pane.view.price_auto().to_variant());
+        }
+    }
+
+    /// A gesture on chart `id` just changed whether its price scale is
+    /// automatic.
+    ///
+    /// Written down on the same delay as a divider drag, because that is
+    /// usually what it is: the hand has just closed on the axis and is about
+    /// to pull it.
+    fn price_auto_changed(self: &Rc<Self>, id: u32, auto: bool) {
+        if self.focused.get() == id
+            && let Some(action) = self.auto_scale_action.borrow().as_ref()
+        {
+            action.set_state(&auto.to_variant());
+        }
+        self.save_soon();
     }
 
     /// Point the header and the rail at the focused chart.
@@ -1866,6 +1928,7 @@ impl Window {
             from.show_grid.get(),
             from.linked.get(),
         );
+        added.view.set_price_auto(from.view.price_auto());
         let next = self.layout.borrow().split(from.id, added.id, horizontal);
         *self.layout.borrow_mut() = next;
         self.rebuild_layout();
@@ -2382,6 +2445,7 @@ impl Window {
                     session: pane.session.get().key().to_string(),
                     show_grid: pane.show_grid.get(),
                     linked: pane.linked.get(),
+                    auto_scale: pane.view.price_auto(),
                 }
             })
             .collect();
@@ -2554,6 +2618,7 @@ impl Window {
                 stored.show_grid,
                 stored.linked,
             );
+            pane.view.set_price_auto(stored.auto_scale);
             restored.push((pane, stored));
         }
 
@@ -5071,6 +5136,21 @@ impl Window {
         self.save_workspace();
     }
 
+    pub fn auto_scale(&self) -> bool {
+        self.focused_pane().view.price_auto()
+    }
+
+    /// The one way the price scale is put on or off automatic from outside
+    /// the chart — the axis menu, the settings dialog — so they cannot come
+    /// to different conclusions. A drag on the axis itself arrives through
+    /// `price_auto_changed` instead.
+    pub fn set_auto_scale(self: &Rc<Self>, auto: bool) {
+        let pane = self.focused_pane();
+        pane.view.set_price_auto(auto);
+        self.sync_chart_actions(&pane);
+        self.save_workspace();
+    }
+
     /// How many rows the profile with this id is drawing right now.
     pub fn profile_rows(&self, id: u32) -> Option<usize> {
         self.focused_pane().view.profile_rows(id)
@@ -5313,23 +5393,23 @@ impl Window {
         actions.add_action(&linked);
         *self.linked_action.borrow_mut() = Some(linked);
 
-        let auto_scale = gio::SimpleAction::new_stateful(
-            "auto-scale",
-            None,
-            &self.focused_pane().view.price_auto().to_variant(),
-        );
+        let auto_scale =
+            gio::SimpleAction::new_stateful("auto-scale", None, &self.auto_scale().to_variant());
         let this = self.clone();
-        auto_scale.connect_activate(move |action, _| {
-            let next = !this.focused_pane().view.price_auto();
-            action.set_state(&next.to_variant());
-            this.focused_pane().view.set_price_auto(next);
-        });
+        auto_scale.connect_activate(move |_, _| this.set_auto_scale(!this.auto_scale()));
         actions.add_action(&auto_scale);
         *self.auto_scale_action.borrow_mut() = Some(auto_scale);
 
         let reset_view = gio::SimpleAction::new("reset-view", None);
         let this = self.clone();
-        reset_view.connect_activate(move |_, _| this.focused_pane().view.reset_view());
+        reset_view.connect_activate(move |_, _| {
+            let pane = this.focused_pane();
+            pane.view.reset_view();
+            // Resetting puts the price scale back on automatic, and that much
+            // of it is written down with the chart.
+            this.sync_chart_actions(&pane);
+            this.save_workspace();
+        });
         actions.add_action(&reset_view);
 
         let settings = gio::SimpleAction::new("settings", None);
