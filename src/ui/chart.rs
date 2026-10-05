@@ -21,6 +21,7 @@
 
 pub mod bench;
 
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -54,7 +55,12 @@ const PANE_CONTROL: f64 = 13.0;
 /// Left edge to left edge of two neighbouring corner controls.
 const CONTROL_PITCH: f64 = PANE_CONTROL + 2.0;
 
-/// Fewest bars we will zoom into, and the most we will draw at once.
+/// Fewest bars we will zoom into, and the most we will put on screen at once.
+///
+/// The ceiling is about how much history a chart will read, not about how much
+/// work a frame is: past a bar a pixel the bars are aggregated into columns, so
+/// what a frame draws is bounded by the width of the plot however far out the
+/// view is zoomed.
 const MIN_VISIBLE: usize = 12;
 const MAX_VISIBLE: usize = 3000;
 
@@ -283,6 +289,120 @@ impl Layout {
             .filter_map(|at| self.edge(at))
             .find(|(line, _)| (y - line).abs() <= EDGE_GRAB)
             .map(|(_, edge)| edge)
+    }
+}
+
+/// The bars as they will be drawn: one per pixel column across the plot.
+///
+/// A plot 1500 pixels wide showing 3000 bars gives each candle half a pixel,
+/// so two of them round to the same column and the second paints over the
+/// first. Half the drawing went into pixels that were immediately overwritten,
+/// and which of the two candles survived was decided by the order the up and
+/// down passes happen to run in rather than by anything about the market.
+///
+/// So each column is aggregated first: first open, last close, lowest low,
+/// highest high, summed volume. Nothing is sampled and nothing is averaged,
+/// which is what makes this safe to do to a price chart — a column's wick is
+/// exactly the union of the wicks it stands for, so no high and no low can go
+/// missing at any zoom. It is the picture the old code was trying to draw, for
+/// a bounded amount of work.
+///
+/// At a bar a pixel or wider there is nothing to aggregate and the visible
+/// slice is borrowed as it is, untouched, which is the case every chart at a
+/// normal zoom is in — including the 160 bars one opens at.
+///
+/// Everything that draws goes through this, because an indicator line is
+/// indexed by bar and the candles are indexed by column: two places deciding
+/// for themselves where bar 2000 is would put the moving average off the
+/// candles it describes. The crosshair is the exception, and deliberately —
+/// it is on another widget, it answers about a real bar rather than a column,
+/// and the two differ by less than the pixel it is drawn on.
+struct Columns<'a> {
+    /// One bar per column, in column order.
+    bars: Cow<'a, [Bar]>,
+    /// The first visible bar, which is what series indexed by bar are read
+    /// through.
+    first: usize,
+    /// How many real bars the columns stand for.
+    visible: usize,
+    plot_x: f64,
+    /// One column's width, never less than a pixel.
+    bar_w: f64,
+}
+
+impl<'a> Columns<'a> {
+    /// Divide `plot_w` pixels among `visible` bars, aggregating if there is
+    /// more than one bar to a pixel.
+    fn of(bars: &'a [Bar], first: usize, visible: usize, plot_x: f64, plot_w: f64) -> Columns<'a> {
+        let visible = visible.max(1);
+        let columns = (plot_w.floor().max(1.0) as usize).min(visible);
+        let bar_w = plot_w / columns as f64;
+        if columns >= visible || bars.len() < visible {
+            return Columns { bars: Cow::Borrowed(bars), first, visible, plot_x, bar_w };
+        }
+        let mut aggregated = Vec::with_capacity(columns);
+        for at in 0..columns {
+            // Integer division, so the columns tile the slice exactly and
+            // every one of them gets at least one bar.
+            let from = at * visible / columns;
+            let to = (at + 1) * visible / columns;
+            let group = &bars[from..to];
+            let (Some(opening), Some(closing)) = (group.first(), group.last()) else {
+                continue;
+            };
+            let mut column = Bar {
+                ts: opening.ts,
+                open: opening.open,
+                high: opening.high,
+                low: opening.low,
+                close: closing.close,
+                volume: 0.0,
+            };
+            for bar in group {
+                column.high = column.high.max(bar.high);
+                column.low = column.low.min(bar.low);
+                column.volume += bar.volume;
+            }
+            aggregated.push(column);
+        }
+        Columns { bars: Cow::Owned(aggregated), first, visible, plot_x, bar_w }
+    }
+
+    fn len(&self) -> usize {
+        self.bars.len()
+    }
+
+    /// The middle of a column, which is where a candle is centred.
+    fn x(&self, at: usize) -> f64 {
+        self.plot_x + (at as f64 + 0.5) * self.bar_w
+    }
+
+    /// The bar a column is read from when a series is indexed by bar: the last
+    /// one in it, which is the bar whose close the column carries.
+    fn source(&self, at: usize) -> usize {
+        self.first + self.offset(at)
+    }
+
+    /// The same, counted from the first visible bar.
+    fn offset(&self, at: usize) -> usize {
+        ((at + 1) * self.visible / self.len()).saturating_sub(1)
+    }
+
+    /// Where a bar's own column begins, in pixels. For the things drawn across
+    /// a span of bars rather than at one.
+    fn left_of(&self, index: usize) -> f64 {
+        self.plot_x + self.column_of(index) * self.bar_w
+    }
+
+    /// How wide the bars from `from` up to but not including `to` are.
+    fn width_of(&self, from: usize, to: usize) -> f64 {
+        (self.column_of(to) - self.column_of(from)) * self.bar_w
+    }
+
+    /// Which column a bar falls in, kept fractional: rounding here and again
+    /// at the pixel would move a span by a column.
+    fn column_of(&self, index: usize) -> f64 {
+        index.saturating_sub(self.first) as f64 * self.len() as f64 / self.visible as f64
     }
 }
 
@@ -1213,17 +1333,25 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
     let plan = layout(state, width, height);
     let (plot_x, plot_w, price_y, price_h) = (plan.plot_x, plan.plot_w, plan.price_y, plan.price_h);
 
+    // What will actually be drawn: the visible bars themselves at any normal
+    // zoom, and one aggregate per pixel column past that.
+    let columns = Columns::of(bars, first, visible, plot_x, plot_w);
+
     let mut max_volume: f64 = 0.0;
-    for b in bars {
+    for b in columns.bars.iter() {
         max_volume = max_volume.max(b.volume);
     }
+    // Off the real bars rather than the columns. The two agree, because a
+    // column keeps the highest high and the lowest low of what it stands for —
+    // and the crosshair works the same range out from the same bars on its own
+    // layer, where going through the columns would be work for nothing.
     let Some((low, high)) = price_range(state, bars) else {
         draw_placeholder(cr, width, height, state);
         return;
     };
 
     let to_y = |price: f64| price_y + price_h * (high - price) / (high - low);
-    let bar_w = plot_w / visible as f64;
+    let bar_w = columns.bar_w;
 
     // One answer for how precisely prices are written, used by the gridlines,
     // the last-price chip and the crosshair alike — a chart saying 1.1257 on
@@ -1233,12 +1361,12 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
     let decimals = omacharts_engine::price_decimals(step, (low + high) / 2.0, kind);
 
     draw_price_grid(cr, state, plot_x, plot_w, price_y, price_h, low, high, &to_y);
-    draw_time_axis(cr, state, bars, plot_x, plot_w, height, bar_w, first);
+    draw_time_axis(cr, state, &columns.bars, plot_x, plot_w, height, bar_w, first);
     // Shaded things go under the candles; lines go over. A band drawn on top
     // of the bars hides the thing it is describing.
-    draw_indicator_fills(cr, state, first, visible, plot_x, bar_w, &to_y);
-    draw_candles(cr, state, bars, plot_x, bar_w, &to_y);
-    draw_indicator_lines(cr, state, first, visible, plot_x, bar_w, &to_y);
+    draw_indicator_fills(cr, state, &columns, &to_y);
+    draw_candles(cr, state, &columns.bars, plot_x, bar_w, &to_y);
+    draw_indicator_lines(cr, state, &columns, &to_y);
 
     for (at, row) in plan.rows.iter().enumerate() {
         draw_row_edge(cr, state, &plan, at);
@@ -1250,27 +1378,23 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
             Output::Volume { .. } => {
                 if max_volume > 0.0 {
                     draw_volume(
-                        cr, state, bars, plot_x, bar_w, row.top, row.height, max_volume,
+                        cr,
+                        state,
+                        &columns.bars,
+                        plot_x,
+                        bar_w,
+                        row.top,
+                        row.height,
+                        max_volume,
                     );
                 }
                 // Named like the others now that it is one strip among several.
                 // Three unlabelled boxes under a chart is a puzzle.
                 draw_pane_name(cr, state, drawn, plot_x, row.top);
             }
-            Output::Pane(pane) => draw_pane(
-                cr,
-                state,
-                pane,
-                drawn,
-                plot_x,
-                plot_w,
-                bar_w,
-                row.top,
-                row.height,
-                width,
-                first,
-                visible,
-            ),
+            Output::Pane(pane) => {
+                draw_pane(cr, state, pane, drawn, &columns, plot_w, row.top, row.height)
+            }
             _ => {}
         }
     }
@@ -1705,15 +1829,16 @@ fn draw_pane(
     state: &State,
     pane: &omacharts_engine::indicators::Pane,
     drawn: &Drawn,
-    plot_x: f64,
+    columns: &Columns,
     plot_w: f64,
-    bar_w: f64,
     top: f64,
     height: f64,
-    width: f64,
-    first: usize,
-    visible: usize,
 ) {
+    let plot_x = columns.plot_x;
+    let (first, visible) = (columns.first, columns.visible);
+    // Every visible value, not one per column: what the strip is scaled to has
+    // to be the range the line actually covers, or a peak that falls between
+    // two columns would push the line off the top of its own strip.
     let values = &pane.values[first.min(pane.values.len())..(first + visible).min(pane.values.len())];
     let (low, high) = match pane.bounds {
         Some(bounds) => bounds,
@@ -1778,7 +1903,6 @@ fn draw_pane(
         cr.move_to(plot_x + plot_w + 6.0, (y + 3.0).min(top + height));
         let _ = cr.show_text(&text);
     }
-    let _ = width;
 
     draw_pane_name(cr, state, drawn, plot_x, top);
 
@@ -1792,12 +1916,12 @@ fn draw_pane(
     cr.set_dash(&stroke.style.dashes(stroke.width), 0.0);
     colors::set_source(cr, &drawn.color);
     let mut pen_down = false;
-    for (i, value) in values.iter().enumerate() {
-        let Some(value) = value else {
+    for at in 0..columns.len() {
+        let Some(Some(value)) = values.get(columns.offset(at)) else {
             pen_down = false;
             continue;
         };
-        let x = plot_x + (i as f64 + 0.5) * bar_w;
+        let x = columns.x(at);
         let y = to_y(*value).clamp(top, top + height);
         if pen_down {
             cr.line_to(x, y);
@@ -2071,10 +2195,7 @@ fn over_trouble_dot(state: &State, width: f64, x: f64, y: f64) -> bool {
 fn draw_indicator_fills(
     cr: &cairo::Context,
     state: &State,
-    first: usize,
-    visible: usize,
-    plot_x: f64,
-    bar_w: f64,
+    columns: &Columns,
     to_y: &impl Fn(f64) -> f64,
 ) {
     for drawn in state.indicators.iter().filter(|d| d.indicator.visible) {
@@ -2089,13 +2210,11 @@ fn draw_indicator_fills(
                     }
                     let colour = band_colour(band, drawn, &state.theme);
                     colors::set_source_alpha(cr, &colour, band.fill_alpha);
-                    fill_between(
-                        cr, &band.upper, &band.lower, first, visible, plot_x, bar_w, to_y,
-                    );
+                    fill_between(cr, &band.upper, &band.lower, columns, to_y);
                 }
             }
             Output::Profiles(profiles) => {
-                draw_profiles(cr, state, drawn, profiles, first, visible, plot_x, bar_w, to_y);
+                draw_profiles(cr, state, drawn, profiles, columns, to_y);
             }
             // These draw in a strip of their own, where the price scale does
             // not reach, so there is nothing to do over the candles.
@@ -2108,10 +2227,7 @@ fn draw_indicator_fills(
 fn draw_indicator_lines(
     cr: &cairo::Context,
     state: &State,
-    first: usize,
-    visible: usize,
-    plot_x: f64,
-    bar_w: f64,
+    columns: &Columns,
     to_y: &impl Fn(f64) -> f64,
 ) {
     for drawn in state.indicators.iter().filter(|d| d.indicator.visible) {
@@ -2125,7 +2241,7 @@ fn draw_indicator_lines(
                 cr.set_dash(&stroke.style.dashes(stroke.width), 0.0);
                 colors::set_source(cr, &drawn.color);
                 cr.set_line_width(stroke.width);
-                stroke_series(cr, values, first, visible, plot_x, bar_w, to_y);
+                stroke_series(cr, values, columns, to_y);
                 cr.restore().ok();
             }
             Output::Bands(bands) => {
@@ -2140,8 +2256,8 @@ fn draw_indicator_lines(
                     cr.set_dash(&band.stroke.style.dashes(band.stroke.width), 0.0);
                     cr.set_line_width(band.stroke.width);
                     colors::set_source(cr, &band_colour(band, drawn, &state.theme));
-                    stroke_series(cr, &band.upper, first, visible, plot_x, bar_w, to_y);
-                    stroke_series(cr, &band.lower, first, visible, plot_x, bar_w, to_y);
+                    stroke_series(cr, &band.upper, columns, to_y);
+                    stroke_series(cr, &band.lower, columns, to_y);
                 }
                 cr.restore().ok();
 
@@ -2151,7 +2267,7 @@ fn draw_indicator_lines(
                     cr.set_dash(&stroke.style.dashes(stroke.width), 0.0);
                     colors::set_source(cr, &drawn.color);
                     cr.set_line_width(stroke.width);
-                    stroke_series(cr, &bands.vwap, first, visible, plot_x, bar_w, to_y);
+                    stroke_series(cr, &bands.vwap, columns, to_y);
                     cr.restore().ok();
                 }
             }
@@ -2169,16 +2285,12 @@ fn band_colour(band: &vwap::BandSeries, drawn: &Drawn, theme: &Theme) -> String 
 }
 
 /// One histogram per period, anchored where its period begins.
-#[allow(clippy::too_many_arguments)]
 fn draw_profiles(
     cr: &cairo::Context,
     state: &State,
     drawn: &Drawn,
     profiles: &[Profile],
-    first: usize,
-    visible: usize,
-    plot_x: f64,
-    bar_w: f64,
+    columns: &Columns,
     to_y: &impl Fn(f64) -> f64,
 ) {
     let poc = match &drawn.indicator.params {
@@ -2188,18 +2300,17 @@ fn draw_profiles(
         _ => state.theme.companion(&drawn.color),
     };
 
-    let last = first + visible;
+    let (first, last) = (columns.first, columns.first + columns.visible);
     for profile in profiles {
         if profile.last_bar < first || profile.first_bar >= last {
             continue;
         }
-        let left = plot_x + (profile.first_bar.max(first) - first) as f64 * bar_w;
+        let from = profile.first_bar.max(first);
+        let to = profile.last_bar.min(last - 1) + 1;
+        let left = columns.left_of(from);
         // A profile may use at most this much of its own period's width, so it
         // describes the bars rather than burying them.
-        let span = ((profile.last_bar.min(last - 1) + 1 - profile.first_bar.max(first)) as f64
-            * bar_w)
-            .max(bar_w)
-            * 0.4;
+        let span = columns.width_of(from, to).max(columns.bar_w) * 0.4;
 
         let (area_low, area_high) = profile.value_area_bounds();
         for row in &profile.rows {
@@ -2228,20 +2339,16 @@ fn draw_profiles(
 }
 
 /// Stroke a series, breaking the path wherever it has no value.
-#[allow(clippy::too_many_arguments)]
 fn stroke_series(
     cr: &cairo::Context,
     values: &[Option<f64>],
-    first: usize,
-    visible: usize,
-    plot_x: f64,
-    bar_w: f64,
+    columns: &Columns,
     to_y: &impl Fn(f64) -> f64,
 ) {
     let mut drawing = false;
-    for i in 0..visible {
-        let x = plot_x + (i as f64 + 0.5) * bar_w;
-        match values.get(first + i).copied().flatten() {
+    for at in 0..columns.len() {
+        let x = columns.x(at);
+        match values.get(columns.source(at)).copied().flatten() {
             Some(value) => {
                 let y = to_y(value);
                 if drawing {
@@ -2260,15 +2367,11 @@ fn stroke_series(
 }
 
 /// Fill the region between two series.
-#[allow(clippy::too_many_arguments)]
 fn fill_between(
     cr: &cairo::Context,
     upper: &[Option<f64>],
     lower: &[Option<f64>],
-    first: usize,
-    visible: usize,
-    plot_x: f64,
-    bar_w: f64,
+    columns: &Columns,
     to_y: &impl Fn(f64) -> f64,
 ) {
     let mut run: Vec<(f64, f64, f64)> = Vec::new();
@@ -2289,11 +2392,11 @@ fn fill_between(
         run.clear();
     };
 
-    for i in 0..visible {
-        let x = plot_x + (i as f64 + 0.5) * bar_w;
+    for at in 0..columns.len() {
+        let x = columns.x(at);
         match (
-            upper.get(first + i).copied().flatten(),
-            lower.get(first + i).copied().flatten(),
+            upper.get(columns.source(at)).copied().flatten(),
+            lower.get(columns.source(at)).copied().flatten(),
         ) {
             (Some(a), Some(b)) => run.push((x, to_y(a), to_y(b))),
             _ => flush(&mut run),
@@ -2583,6 +2686,146 @@ mod tests {
         assert_eq!(plan.edge_at(line - EDGE_GRAB + 0.5), Some(edge));
         assert_eq!(plan.edge_at(line + EDGE_GRAB - 0.5), Some(edge));
         assert_eq!(plan.edge_at(line + EDGE_GRAB * 4.0), None);
+    }
+
+    /// A series with a different high and low in every bar, so a column that
+    /// dropped one can be told from a column that kept it.
+    fn ramp(count: usize) -> Vec<Bar> {
+        (0..count)
+            .map(|i| {
+                let base = 100.0 + i as f64;
+                Bar {
+                    ts: 1_600_000_000 + i as i64 * 60,
+                    open: base,
+                    high: base + (i % 7) as f64 + 1.0,
+                    low: base - (i % 5) as f64 - 1.0,
+                    close: base + 0.5,
+                    volume: (i + 1) as f64,
+                }
+            })
+            .collect()
+    }
+
+    fn highest(bars: &[Bar]) -> f64 {
+        bars.iter().map(|bar| bar.high).fold(f64::MIN, f64::max)
+    }
+
+    fn lowest(bars: &[Bar]) -> f64 {
+        bars.iter().map(|bar| bar.low).fold(f64::MAX, f64::min)
+    }
+
+    /// The case every chart at a normal zoom is in, and the one that has to
+    /// stay exactly as it was: a pixel each, nothing aggregated, the bars
+    /// drawn as they came.
+    #[test]
+    fn a_plot_with_room_for_every_bar_draws_every_bar() {
+        let bars = ramp(160);
+        let columns = Columns::of(&bars, 40, 160, PAD, 1500.0);
+        assert_eq!(columns.len(), 160, "nothing to aggregate at a pixel each");
+        assert_eq!(&*columns.bars, &bars[..], "and the bars are the bars");
+        assert!((columns.bar_w - 1500.0 / 160.0).abs() < 1e-9);
+        for at in 0..columns.len() {
+            assert_eq!(columns.source(at), 40 + at, "column {at}");
+            assert!((columns.x(at) - (PAD + (at as f64 + 0.5) * columns.bar_w)).abs() < 1e-9);
+        }
+    }
+
+    /// The whole claim the aggregation rests on: a column is the union of what
+    /// it stands for, so no high and no low can go missing however far out the
+    /// chart is zoomed.
+    #[test]
+    fn a_column_keeps_the_extremes_of_every_bar_it_stands_for() {
+        let bars = ramp(3000);
+        let columns = Columns::of(&bars, 0, 3000, PAD, 1500.0);
+        assert_eq!(columns.len(), 1500, "a column a pixel");
+        for (at, column) in columns.bars.iter().enumerate() {
+            let group = &bars[at * 2..at * 2 + 2];
+            assert_eq!(column.ts, group[0].ts, "a column starts when its first bar does");
+            assert_eq!(column.open, group[0].open, "first open");
+            assert_eq!(column.close, group[1].close, "last close");
+            assert_eq!(column.high, highest(group), "highest high");
+            assert_eq!(column.low, lowest(group), "lowest low");
+            assert_eq!(column.volume, group[0].volume + group[1].volume, "summed volume");
+        }
+        // Which is also what keeps the price axis the same axis: the scale is
+        // worked out from the highest high and the lowest low on screen.
+        assert_eq!(highest(&columns.bars), highest(&bars));
+        assert_eq!(lowest(&columns.bars), lowest(&bars));
+    }
+
+    /// Bars rarely divide evenly into pixels. The columns still have to tile
+    /// the slice — no bar in two of them, none in none of them.
+    #[test]
+    fn columns_tile_the_bars_even_when_the_two_do_not_divide() {
+        let bars = ramp(1000);
+        let columns = Columns::of(&bars, 13, 1000, PAD, 299.0);
+        assert_eq!(columns.len(), 299);
+        assert_eq!(highest(&columns.bars), highest(&bars), "a high went missing");
+        assert_eq!(lowest(&columns.bars), lowest(&bars), "a low went missing");
+        let drawn: f64 = columns.bars.iter().map(|bar| bar.volume).sum();
+        let real: f64 = bars.iter().map(|bar| bar.volume).sum();
+        assert!((drawn - real).abs() < 1e-6, "{drawn} of {real}");
+        assert_eq!(columns.bars[0].open, bars[0].open, "the screen still opens where it did");
+        assert_eq!(
+            columns.bars.last().expect("a column").close,
+            bars.last().expect("a bar").close,
+            "and still closes where it did"
+        );
+    }
+
+    /// An indicator is one value per bar and the candles are one per column,
+    /// so every column has to name a bar of its own — inside itself, in order,
+    /// and ending on the last bar on screen. Anything else draws a moving
+    /// average that has slid off the candles it describes.
+    #[test]
+    fn every_column_reads_its_series_from_a_bar_inside_it() {
+        let (first, visible, wide) = (25usize, 1000usize, 300.0);
+        let bars = ramp(first + visible);
+        let columns = Columns::of(&bars[first..], first, visible, PAD, wide);
+        assert_eq!(columns.len(), 300);
+
+        let mut previous: Option<usize> = None;
+        for at in 0..columns.len() {
+            let from = first + at * visible / columns.len();
+            let to = first + (at + 1) * visible / columns.len();
+            let source = columns.source(at);
+            assert!(
+                (from..to).contains(&source),
+                "column {at} reads bar {source}, which is not in {from}..{to}"
+            );
+            if let Some(previous) = previous {
+                assert!(source > previous, "column {at} went backwards");
+            }
+            previous = Some(source);
+        }
+        assert_eq!(
+            columns.source(columns.len() - 1),
+            first + visible - 1,
+            "the last column carries the last bar's value"
+        );
+    }
+
+    /// The other half of the mapping: the things drawn across a span of bars
+    /// rather than at one — a volume profile's width, say — have to land on
+    /// the same columns the candles did.
+    #[test]
+    fn a_span_of_bars_covers_the_columns_those_bars_are_drawn_in() {
+        let (first, visible, wide) = (10usize, 600usize, 300.0);
+        let bars = ramp(first + visible);
+        let columns = Columns::of(&bars[first..], first, visible, PAD, wide);
+        assert!(
+            (columns.width_of(first, first + visible) - wide).abs() < 1e-9,
+            "the visible bars are the whole plot"
+        );
+        for at in 0..columns.len() {
+            let from = first + at * visible / columns.len();
+            let left = PAD + at as f64 * columns.bar_w;
+            assert!(
+                (columns.left_of(from) - left).abs() < 1e-9,
+                "bar {from} starts at {} rather than {left}",
+                columns.left_of(from)
+            );
+        }
     }
 
     #[test]
