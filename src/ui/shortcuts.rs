@@ -67,6 +67,10 @@ pub const BINDINGS: &[Binding] = &[
     global("chart.screenshot", &["<Ctrl>o"]),
     global("win.screenshot", &["<Ctrl><Shift>o"]),
     global("chart.reset-view", &["<Alt>r"]),
+    // Alt with a letter, like the reset: a line and a box. Ctrl+L is taken
+    // by linking a chart to the rail, and Ctrl+B by the rail itself.
+    global("chart.draw-line", &["<Alt>l"]),
+    global("chart.draw-rect", &["<Alt>b"]),
     global("chart.split-h", &["<Ctrl>h"]),
     global("chart.maximize", &["<Ctrl>m"]),
     global("win.new-chartbook", &["<Ctrl>n"]),

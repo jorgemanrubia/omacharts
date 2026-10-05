@@ -256,7 +256,7 @@ fn rects_at(
                 .min_by(|a, b| a.1.total_cmp(&b.1))
                 .unwrap();
             RectRow {
-                name: *pname,
+                name: pname,
                 border: border.clone(),
                 border_contrast: contrast_ratio(border, bg),
                 border_from_tint: delta_e(border, tint),

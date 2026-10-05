@@ -173,6 +173,17 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Esc", "Back to the chart"),
         ],
     ),
+    (
+        "Drawing",
+        &[
+            ("Alt+L", "Draw a line: click where it starts, then where it ends"),
+            ("Alt+B", "Draw a box over a run of bars"),
+            ("Click a drawing", "Select it; drag an end, or the whole thing"),
+            ("Right-click a drawing", "Its colour and thickness, or delete it"),
+            ("Delete", "Delete the selected drawing"),
+            ("Esc", "Put the tool down, or let go of the selection"),
+        ],
+    ),
 ];
 
 /// Whether one shortcut row answers what was typed into the sheet's box.
@@ -1701,6 +1712,11 @@ impl Window {
             menu_owner.focus(id);
             menu_owner.chart_menu(x, y);
         });
+
+        // What the hand drew is written down by the symbol it was drawn on,
+        // and every chart showing that symbol is told.
+        let keeper = self.clone();
+        pane.view.set_drawing_handler(move |event| keeper.record_drawing(id, event));
 
         // Dragging a pane's edge changes the indicator, not just the drawing,
         // so the new height is stored the way any other setting of its would be.
@@ -4462,6 +4478,8 @@ impl Window {
         };
         pane.view.set_trouble(None);
         pane.view.set_loading(cached_was_empty);
+        pane.view
+            .set_drawings(self.store.drawings(&instrument.symbol, instrument.suffix.as_deref()));
 
         // Only the focused chart drives the rail and the prefetch window: the
         // others are not where the next keystroke is going.
@@ -5131,8 +5149,68 @@ impl Window {
         Ok((what, path))
     }
 
+    /// Write a drawing's change down, and hand every chart of the symbol
+    /// what is drawn on it now — the one it came from included, which is
+    /// how a new drawing learns its id.
+    fn record_drawing(self: &Rc<Self>, pane_id: u32, event: crate::ui::chart::DrawingEvent) {
+        use crate::ui::chart::DrawingEvent;
+        let Some(pane) = self.pane(pane_id) else { return };
+        let instrument = pane.instrument.borrow().clone();
+        let Some(instrument) = instrument else { return };
+        let suffix = instrument.suffix.as_deref();
+        match event {
+            DrawingEvent::Added(drawing) => {
+                self.store.add_drawing(&instrument.symbol, suffix, &drawing);
+            }
+            DrawingEvent::Changed(drawing) => self.store.update_drawing(&drawing),
+            DrawingEvent::Removed(id) => self.store.remove_drawing(id),
+        }
+        self.reload_drawings(&instrument.symbol, suffix);
+    }
+
+    /// Show every chart of `symbol` what the store has drawn on it.
+    pub fn reload_drawings(&self, symbol: &str, suffix: Option<&str>) {
+        let drawings = self.store.drawings(symbol, suffix);
+        for pane in self.panes.borrow().iter() {
+            let same = pane
+                .instrument
+                .borrow()
+                .as_ref()
+                .map(|i| i.symbol == symbol && i.suffix.as_deref() == suffix)
+                .unwrap_or(false);
+            if same {
+                pane.view.set_drawings(drawings.clone());
+            }
+        }
+    }
+
+    /// Arm a drawing tool on the focused chart, or put it down if it is the
+    /// one already in hand: the key is a toggle, so there is a way back from
+    /// it that is the same key.
+    fn arm_drawing(&self, kind: omacharts_engine::DrawingKind) {
+        let pane = self.focused_pane();
+        let next = if pane.view.armed() == Some(kind) { None } else { Some(kind) };
+        pane.view.arm(next);
+        pane.view.area.grab_focus();
+    }
+
+    fn open_drawing_settings(self: &Rc<Self>) {
+        crate::ui::drawing_settings::present(self, &self.focused_pane());
+    }
+
     fn chart_menu(self: &Rc<Self>, x: f64, y: f64) {
         let menu = gio::Menu::new();
+
+        // Drawing first, because the menu opened on a drawing is about that
+        // drawing: its colour and its deletion are what the hand came for.
+        let draw = gio::Menu::new();
+        if self.focused_pane().view.selected_drawing().is_some() {
+            shortcuts::append(&draw, "Drawing settings…", "chart.drawing-settings");
+            shortcuts::append(&draw, "Delete drawing", "chart.drawing-delete");
+        }
+        shortcuts::append(&draw, "Draw a line", "chart.draw-line");
+        shortcuts::append(&draw, "Draw a rectangle", "chart.draw-rect");
+        menu.append_section(None, &draw);
 
         // Choices live behind a named item rather than loose in the menu: a
         // flat list of radio buttons makes you read every option to find out
@@ -5358,6 +5436,30 @@ impl Window {
         let this = self.clone();
         resolutions.connect_activate(move |_, _| this.edit_timeframes());
         actions.add_action(&resolutions);
+
+        let draw_line = gio::SimpleAction::new("draw-line", None);
+        let this = self.clone();
+        draw_line.connect_activate(move |_, _| {
+            this.arm_drawing(omacharts_engine::DrawingKind::Line)
+        });
+        actions.add_action(&draw_line);
+
+        let draw_rect = gio::SimpleAction::new("draw-rect", None);
+        let this = self.clone();
+        draw_rect.connect_activate(move |_, _| {
+            this.arm_drawing(omacharts_engine::DrawingKind::Rect)
+        });
+        actions.add_action(&draw_rect);
+
+        let drawing_settings = gio::SimpleAction::new("drawing-settings", None);
+        let this = self.clone();
+        drawing_settings.connect_activate(move |_, _| this.open_drawing_settings());
+        actions.add_action(&drawing_settings);
+
+        let drawing_delete = gio::SimpleAction::new("drawing-delete", None);
+        let this = self.clone();
+        drawing_delete.connect_activate(move |_, _| this.focused_pane().view.delete_selected());
+        actions.add_action(&drawing_delete);
 
         self.window.insert_action_group("chart", Some(&actions));
     }

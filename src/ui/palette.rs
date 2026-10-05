@@ -148,14 +148,14 @@ fn repaint(area: &glib::WeakRef<gtk::DrawingArea>, hex: &str) {
 }
 
 /// One colour, drawn as a rounded tile. `ringed` marks the one in use.
-fn swatch_area(hex: &str, ringed: bool) -> gtk::DrawingArea {
+pub(crate) fn swatch_area(hex: &str, ringed: bool) -> gtk::DrawingArea {
     let area = gtk::DrawingArea::new();
     area.set_size_request(SWATCH, SWATCH);
     paint(&area, hex, ringed);
     area
 }
 
-fn paint(area: &gtk::DrawingArea, hex: &str, ringed: bool) {
+pub(crate) fn paint(area: &gtk::DrawingArea, hex: &str, ringed: bool) {
     let hex = hex.to_string();
     area.set_draw_func(move |area, cr, w, h| {
         let (w, h) = (w as f64, h as f64);
