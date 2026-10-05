@@ -63,6 +63,17 @@ pub struct ChartPane {
     /// Which way the expand glyph points, and which word its tooltip uses.
     expand_state: Rc<Cell<bool>>,
     pub instrument: RefCell<Option<Instrument>>,
+    /// The symbol and venue this chart was asked for and the index could not
+    /// name yet.
+    ///
+    /// A chart restored from a saved arrangement can name a listing the
+    /// curated half of the inventory does not carry, and the long tail only
+    /// arrives once the window is up. Remembering what was asked for is what
+    /// lets the chart be written back down under that symbol rather than under
+    /// nothing, and filled in once the catalogue lands. It is cleared the
+    /// moment an instrument is set, so a chart the user has since changed is
+    /// no longer waiting for anything.
+    pub pending: RefCell<Option<(String, Option<String>)>>,
     pub timeframe: Cell<Timeframe>,
     pub indicators: RefCell<Vec<Indicator>>,
     pub bar_style: Cell<BarStyle>,
@@ -212,6 +223,7 @@ impl ChartPane {
             expand_icon,
             expand_state,
             instrument: RefCell::new(None),
+            pending: RefCell::new(None),
             timeframe: Cell::new(timeframe),
             indicators: RefCell::new(indicators),
             bar_style: Cell::new(bar_style),

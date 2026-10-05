@@ -554,6 +554,59 @@ mod tests {
         assert_eq!(books[1].panes[0].symbol, "MSFT");
     }
 
+    /// A stored chart naming a listing outside the curated half, saved again
+    /// before the long tail has loaded, has to come back out as itself.
+    ///
+    /// This is the data loss: the window is built on the curated half, putting
+    /// the saved charts back is the first thing it does, and the catalogue
+    /// cannot arrive until the constructor has returned — so restoration never
+    /// resolves one of these. Writing it down as nothing then replaced
+    /// somebody's chart with an empty symbol on the next save, and `chart list`
+    /// flushes before it reads, so asking what was on screen was enough.
+    #[test]
+    fn a_symbol_the_curated_half_cannot_name_survives_being_saved() {
+        let stored = stored_pane(1, "FOXF", LinkGroup::Group(1));
+        let curated = crate::inventory::Inventory::curated();
+        assert!(
+            curated.find(&stored.symbol, stored.suffix.as_deref()).is_none(),
+            "FOXF is in the generated listings, which is the premise of this test"
+        );
+
+        // What the chart is left holding when the index cannot name it.
+        let pending = Some((stored.symbol.clone(), stored.suffix.clone()));
+
+        assert_eq!(
+            stored_symbol(None, pending.as_ref()),
+            ("FOXF".to_string(), None),
+            "the saved symbol was written over with an empty one"
+        );
+    }
+
+    /// The venue travels with the ticker, or a listing abroad comes back as
+    /// the one in New York that shares its name.
+    #[test]
+    fn the_venue_is_remembered_with_the_symbol() {
+        let pending = Some(("SAP".to_string(), Some("DE".to_string())));
+        assert_eq!(
+            stored_symbol(None, pending.as_ref()),
+            ("SAP".to_string(), Some("DE".to_string()))
+        );
+    }
+
+    /// Showing a chart something clears what it was waiting for, so a chart
+    /// somebody pointed elsewhere while the listings were loading is stored as
+    /// what it shows. A chart that never had a symbol at all still stores as
+    /// none — that is the one case an empty symbol is the truth.
+    #[test]
+    fn what_a_chart_shows_beats_what_it_was_waiting_for() {
+        let pending = Some(("FOXF".to_string(), None));
+        assert_eq!(
+            stored_symbol(Some(&any_instrument("NVDA", None)), pending.as_ref()),
+            ("NVDA".to_string(), None)
+        );
+        assert_eq!(stored_symbol(None, None), (String::new(), None));
+    }
+
     /// The first thing anybody ever sees. It used to be a hardcoded index that
     /// was not in the watchlist beside it, so a brand new install opened on a
     /// symbol its own rail never mentioned.
@@ -1180,6 +1233,27 @@ fn write_group_into_books(
     }
 }
 
+/// The symbol and venue a chart is written down under.
+///
+/// The instrument on screen is the answer whenever there is one. Failing that
+/// it is whatever the chart was asked for and the inventory could not name
+/// yet — because the alternative is an empty symbol, and an empty symbol saved
+/// over a stored one is somebody's chart gone. Only a chart that genuinely
+/// never had a symbol stores as empty.
+///
+/// Free-standing so that the choice can be tested without a window, which is
+/// where the loss happened: the save runs long before anybody looks.
+fn stored_symbol(
+    instrument: Option<&Instrument>,
+    pending: Option<&(String, Option<String>)>,
+) -> (String, Option<String>) {
+    match (instrument, pending) {
+        (Some(instrument), _) => (instrument.symbol.clone(), instrument.suffix.clone()),
+        (None, Some((symbol, suffix))) => (symbol.clone(), suffix.clone()),
+        (None, None) => (String::new(), None),
+    }
+}
+
 /// What a chart opens on when there is nothing else at all: no symbol stored,
 /// and a watchlist whose every row has been deleted or no longer names anything
 /// the inventory knows.
@@ -1508,7 +1582,15 @@ impl Window {
 
         // The long tail of listings arrives on a thread once the window is up:
         // the names you are most likely to type are already in the curated half.
-        crate::inventory::load_in_background(this.index.clone(), |_| {});
+        //
+        // Which means the restoration below runs against the curated half and
+        // cannot name a listing outside it — the swap happens on the main loop,
+        // and the main loop is waiting for this constructor to return. So the
+        // charts that could not be resolved are filled in from here, once.
+        let waiting = this.clone();
+        crate::inventory::load_in_background(this.index.clone(), move |_| {
+            waiting.resolve_pending();
+        });
 
         if !this.restore_workspace() {
             this.restore_last_symbol();
@@ -2288,10 +2370,12 @@ impl Window {
             .iter()
             .map(|pane| {
                 let instrument = pane.instrument.borrow();
+                let pending = pane.pending.borrow();
+                let (symbol, suffix) = stored_symbol(instrument.as_ref(), pending.as_ref());
                 StoredPane {
                     id: pane.id,
-                    symbol: instrument.as_ref().map(|i| i.symbol.clone()).unwrap_or_default(),
-                    suffix: instrument.as_ref().and_then(|i| i.suffix.clone()),
+                    symbol,
+                    suffix,
                     timeframe: pane.timeframe.get().key(),
                     indicators: pane.indicators.borrow().clone(),
                     bar_style: pane.bar_style.get().key().to_string(),
@@ -2495,12 +2579,56 @@ impl Window {
         for (pane, stored) in &restored {
             if let Some(instrument) = self.index.find(&stored.symbol, stored.suffix.as_deref()) {
                 self.show_in(pane, instrument.clone());
+            } else if !stored.symbol.is_empty() {
+                // The window opens on the curated half of the inventory, so a
+                // chart showing anything from the long tail cannot be resolved
+                // yet. The chart keeps what it was asked for: a save before the
+                // catalogue lands writes that symbol rather than an empty one,
+                // and the chart fills itself in when the rest arrives.
+                *pane.pending.borrow_mut() = Some((stored.symbol.clone(), stored.suffix.clone()));
             }
         }
         self.sync_header();
         self.rebuild_indicator_legend();
         self.apply_sidebar(rail.0, rail.1, rail.2);
         true
+    }
+
+    /// Chart whatever was asked for before the catalogue could name it.
+    ///
+    /// The window is built on the curated half and the long tail lands a
+    /// moment later, so this is the second and last look: a chart restored
+    /// from a saved arrangement gets its symbol here or not at all.
+    ///
+    /// Only charts still holding what they were asked for and still showing
+    /// nothing. That is the whole of the cancellation — [`Window::show_in`]
+    /// clears the pending symbol, so a chart somebody pointed somewhere else
+    /// while the listings were loading is skipped, and the books that are not
+    /// on screen have no charts at all for this to reach.
+    fn resolve_pending(self: &Rc<Self>) {
+        // Collected first: charting one reaches back into the window, and a
+        // borrow on the charts held across that is a panic.
+        let waiting: Vec<(Rc<ChartPane>, String, Option<String>)> = self
+            .panes
+            .borrow()
+            .iter()
+            .filter(|pane| pane.instrument.borrow().is_none())
+            .filter_map(|pane| {
+                let (symbol, suffix) = pane.pending.borrow().clone()?;
+                Some((pane.clone(), symbol, suffix))
+            })
+            .collect();
+        let mut charted = false;
+        for (pane, symbol, suffix) in waiting {
+            if let Some(instrument) = self.index.find(&symbol, suffix.as_deref()) {
+                self.show_in(&pane, instrument);
+                charted = true;
+            }
+        }
+        if charted {
+            self.sync_header();
+            self.rebuild_indicator_legend();
+        }
     }
 
     /// Put the rail back the way a chartbook left it.
@@ -4301,6 +4429,10 @@ impl Window {
         let native = timeframe.native();
 
         *pane.instrument.borrow_mut() = Some(instrument.clone());
+        // Whatever this chart was waiting for, it is not waiting any more. A
+        // chart somebody has since pointed somewhere else must not be moved
+        // back when the catalogue lands.
+        *pane.pending.borrow_mut() = None;
         pane.write_readout();
         if pane.id == self.focused.get() {
             self.store.set_setting(LAST_SYMBOL, &instrument.symbol);
