@@ -22,10 +22,19 @@
 //! into a render node, the texture upload, the compositor's own work. Those
 //! are real and they are not here. What is here is the part that grows with
 //! the number of bars.
+//!
+//!     cargo run --release -p omacharts --example frame_bench -- --png <dir>
+//!
+//! writes each screenful out as a picture instead of timing it. That is how a
+//! change to the drawing is shown not to have changed the drawing: run it on
+//! both sides of the change and compare the files. No pointer is set, so what
+//! comes out is the chart itself.
 
+use std::path::Path;
 use std::time::{Duration, Instant};
 
-use gtk::cairo;
+use gtk::prelude::*;
+use gtk::{cairo, gdk, glib};
 use omacharts::ui::chart::bench::Scene;
 
 /// A window's worth of chart.
@@ -42,6 +51,53 @@ const MEASURE: Duration = Duration::from_millis(500);
 const SCREENFULS: [usize; 4] = [160, 500, 1500, 3000];
 
 fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(dir) = args.iter().position(|arg| arg == "--png").map(|at| args.get(at + 1)) {
+        let Some(dir) = dir else {
+            eprintln!("--png wants a directory to write into");
+            std::process::exit(2);
+        };
+        return pictures(Path::new(dir));
+    }
+    table();
+}
+
+/// One picture per screenful, for comparing a change to the drawing against
+/// what the drawing looked like before it.
+fn pictures(dir: &Path) {
+    if let Err(error) = std::fs::create_dir_all(dir) {
+        eprintln!("{} could not be made: {error}", dir.display());
+        std::process::exit(1);
+    }
+    for bars in SCREENFULS {
+        let scene = Scene::new(bars * 2, bars);
+        let surface =
+            cairo::ImageSurface::create(cairo::Format::ARgb32, WIDTH as i32, HEIGHT as i32)
+                .expect("an image surface the size of a window");
+        let cr = cairo::Context::new(&surface).expect("a cairo context");
+        scene.view_frame(&cr, WIDTH, HEIGHT);
+        drop(cr);
+
+        // Through a texture, which is the encoder the app's own screenshots
+        // go out of — and the one `cairo-rs` has without the `png` feature
+        // nothing else here wants.
+        let stride = surface.stride();
+        let mut surface = surface;
+        let pixels = glib::Bytes::from(&*surface.data().expect("the frame's pixels"));
+        let texture = gdk::MemoryTexture::new(
+            WIDTH as i32,
+            HEIGHT as i32,
+            gdk::MemoryFormat::B8g8r8a8Premultiplied,
+            &pixels,
+            stride as usize,
+        );
+        let path = dir.join(format!("{bars:04}-bars.png"));
+        texture.save_to_png(&path).expect("the frame written as a png");
+        eprintln!("wrote {}", path.display());
+    }
+}
+
+fn table() {
     println!("{WIDTH:.0}x{HEIGHT:.0}, release\n");
     println!(
         "{:>6}  {:>6}  {:>22}  {:>22}",
