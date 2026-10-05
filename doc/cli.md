@@ -412,31 +412,52 @@ keeps them too, so a line through two daily closes still passes through the
 same two moments on the hourly chart.
 
 ```
-omacharts chart drawing add line --from 2026-09-01,180.5 --to 2026-09-19,192 --preset amber
-omacharts chart drawing add rect --from 2026-09-08,178 --to 2026-09-12,186
+omacharts chart drawing add line --from 2026-09-01,180.5 --to 2026-09-19,192 --config 4
+omacharts chart drawing add rect --from 2026-09-08,178 --to 2026-09-12,186 --fill down --alpha 0.25
 omacharts chart drawing list
-omacharts chart drawing set --id 1 --preset ink --width 2.5
+omacharts chart drawing set --id 1 --color ink --width 2.5 --arrow end
+omacharts chart drawing set --id 1 --order front
 omacharts chart drawing remove --id 2
 omacharts chart drawing clear
 ```
 
-**Drawings belong to the symbol, not the chart.** The chart named — or the
-focused one — only says which symbol: a line added through a chart showing
-AAPL is on every chart of AAPL, in every chartbook, at every resolution, the
-same as one drawn by hand. `list` says so by naming the symbol, and `clear`
-removes everything drawn on it.
+**A drawing follows a configuration, or has a look of its own.** Each kind
+has nine configurations, 1 to 9; a drawing that follows one looks like it and
+changes with it. `--config N` puts a drawing on configuration N. Any property
+given by hand — `--color`, `--width`, `--arrow` for a line; `--fill`,
+`--alpha`, `--border`, `--width`, `--color` for a box's edge — takes the
+drawing off its configuration and gives it that look, which no later change
+to the configuration touches. The configurations themselves:
 
-**The colour is one of nine presets, never a hex.** `up` and `down` are the
-theme's candle colours; `blue`, `amber`, `violet`, `teal`, `orange` and `cyan`
-are the theme's own swatches; `ink` is the text colour. Each is resolved
-against whatever desktop theme is active, so a scripted drawing goes on
-looking like it belongs when the theme changes. The line's `--width` is in
-pixels; a box's edge is always a hairline.
+```
+omacharts chart drawing configs
+omacharts chart drawing configure line --config 3 --color teal --arrow end
+omacharts chart drawing reset-configs rect
+```
 
-By hand: Alt+L and Alt+R arm the tools, two clicks (or one press-and-drag)
-place a drawing, a click selects one, a drag moves an end or the whole thing,
-Delete removes it, and right-clicking a drawing opens its colour and
-thickness.
+**Colours are the nine presets, or a hex.** `up` and `down` are the theme's
+candle colours; `blue`, `amber`, `violet`, `teal`, `orange` and `cyan` are the
+theme's own swatches; `ink` is the text colour. A preset is resolved against
+whatever desktop theme is active, so a drawing goes on looking like it belongs
+when the theme changes; `#rrggbb` is exactly that colour, and the theme leaves
+it alone. The shipped configurations are the nine presets in order, so
+configuration 1 is the up colour and 2 the down colour.
+
+**Drawings belong to the symbol, and a chart's drawing group says which it
+shows.** A chart shares globally by default: every chart of the symbol sees
+what it draws. `chart set --drawing-sharing group-3` puts a chart in group 3,
+where it sees the global drawings and group 3's; `--drawing-sharing off`
+keeps what is drawn on it to itself. A drawing's own `--scope` — `global`,
+`group-N` or `local` — defaults to the chart's sharing; a local drawing lives
+with its chart rather than with the symbol, and is numbered below zero so one
+id names a drawing wherever it lives. `list` names the symbol and the sharing;
+`clear` removes everything the chart can see.
+
+By hand: Alt+D shows the tools, Alt+L and Alt+R arm them, a press and a second
+press (or one press-and-drag) place a drawing, a click selects one, a drag
+moves a corner or the whole thing, the arrow keys nudge it, Delete removes it,
+Enter or a right-click opens its properties, Alt+1 to Alt+9 is configuration
+N, and Ctrl+Z and Ctrl+Y undo and redo on that chart.
 
 ## Taking a picture of a chart
 

@@ -101,7 +101,9 @@ fn build_verb(verb: &'static spec::Verb) -> Command {
         let mut a = Arg::new(flag.long).long(flag.long).help(flag.help);
         match flag.value {
             None => a = a.action(ArgAction::SetTrue),
-            Some(name) => a = a.value_name(name).num_args(1),
+            // A number may be negative: a chart's own drawings are numbered
+            // below zero, and `--id -1` has to reach the arm as a value.
+            Some(name) => a = a.value_name(name).num_args(1).allow_negative_numbers(true),
         }
         if !flag.values.is_empty() {
             a = a.value_parser(flag.values.to_vec());

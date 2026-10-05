@@ -119,15 +119,19 @@ omacharts status show --json
 
 **Draw on the symbol, not the chart.** "Mark the breakout" is a line or a box
 on what the user is looking at; the chart named only says which symbol, and
-the drawing is then on every chart of it. Anchors are a moment and a price,
-colours are the nine theme presets (`up`, `down`, `blue`, `amber`, `violet`,
-`teal`, `orange`, `cyan`, `ink`) and never a hex, so the drawing keeps
-following the desktop theme:
+the drawing is then on every chart of it that shares drawings (the default).
+Anchors are a moment and a price. A drawing follows one of nine
+configurations — `--config N`, shipped as the nine theme presets in order, 1
+being the up colour and 2 the down colour — or gets a look of its own from
+`--color`, `--width`, `--arrow`, `--fill`, `--alpha`, `--border`. Prefer a
+configuration or a preset name to a hex, so the drawing keeps following the
+desktop theme:
 
 ```
-omacharts chart drawing add line --from 2026-09-01,180.5 --to 2026-09-19,192 --preset amber
-omacharts chart drawing add rect --from 2026-09-08,178 --to 2026-09-12,186 --preset down
+omacharts chart drawing add line --from 2026-09-01,180.5 --to 2026-09-19,192 --config 4
+omacharts chart drawing add rect --from 2026-09-08,178 --to 2026-09-12,186 --config 2
 omacharts chart drawing list --json
-omacharts chart drawing set --id 1 --preset ink
+omacharts chart drawing set --id 1 --color ink --arrow end
+omacharts chart drawing configs line --json
 omacharts chart drawing remove --id 2
 ```

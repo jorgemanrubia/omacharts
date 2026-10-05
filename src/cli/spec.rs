@@ -119,10 +119,12 @@ const LINKS: &[&str] =
     &["none", "1", "2", "3", "4", "5", "6", "7", "8", "9"];
 const COLOURING: &[&str] = &["coloured", "red-up", "monochrome"];
 const DRAWING_KINDS: &[&str] = &["line", "rect"];
-/// The nine colours a drawing can wear: roles the theme fills, never a hex,
-/// so a scripted drawing follows the desktop theme like a hand-drawn one.
-const PRESETS: &[&str] =
-    &["up", "down", "blue", "amber", "violet", "teal", "orange", "cyan", "ink"];
+const ARROWS: &[&str] = &["none", "end", "start", "both"];
+/// What a chart shares its drawings with.
+const SHARINGS: &[&str] = &[
+    "global", "group-1", "group-2", "group-3", "group-4", "group-5", "group-6", "group-7",
+    "group-8", "group-9", "off",
+];
 /// How a drawing's anchor is written: a moment and a price.
 const ANCHOR: &str = "WHEN,PRICE — a date `2026-09-01`, a moment `2026-09-01T14:30`, or unix seconds; then the price";
 
@@ -581,6 +583,8 @@ pub const SURFACE: &[Noun] = &[
                     Flag::valued("link", "GROUP", "the link group it joins and then leads, or `none` to leave one")
                         .of(LINKS),
                     Flag::valued("grid", "BOOL", "draw the grid").of(&["on", "off"]),
+                    Flag::valued("drawing-sharing", "GROUP", "which drawings of its symbol the chart shows and draws into")
+                        .of(SHARINGS),
                 ],
                 example: "omacharts chart set --symbol NVDA --resolution 1h --style candles",
                 json: true,
@@ -639,10 +643,11 @@ pub const SURFACE: &[Noun] = &[
             },
             Verb {
                 name: "drawing",
-                about: "Draw a line or a box on the chart's symbol; list, move, recolour or remove what is drawn",
+                about: "Draw a line or a box on the chart's symbol; list, move, restyle or remove what is drawn; edit the nine configurations",
                 args: &[
-                    Arg::req("ACTION", "what to do").of(&["list", "add", "set", "remove", "clear"]),
-                    Arg::opt("KIND", "a line between two anchors, or a box with them at opposite corners; for add")
+                    Arg::req("ACTION", "what to do")
+                        .of(&["list", "add", "set", "remove", "clear", "configs", "configure", "reset-configs"]),
+                    Arg::opt("KIND", "a line between two anchors, or a box with them at opposite corners")
                         .of(DRAWING_KINDS),
                 ],
                 flags: &[
@@ -651,11 +656,17 @@ pub const SURFACE: &[Noun] = &[
                     Flag::valued("id", "N", "which drawing, from `drawing list`; for set and remove"),
                     Flag::valued("from", "ANCHOR", ANCHOR),
                     Flag::valued("to", "ANCHOR", ANCHOR),
-                    Flag::valued("preset", "COLOUR", "which of the nine theme colours it wears")
-                        .of(PRESETS),
-                    Flag::valued("width", "F", "a line's thickness in pixels; a box's edge is always a hairline"),
+                    Flag::valued("config", "N", "the configuration, 1-9, a drawing follows, or the one to configure"),
+                    Flag::valued("color", "COLOUR", "a line's colour, or a box's edge: a preset name or #rrggbb"),
+                    Flag::valued("width", "F", "a line's thickness in pixels, or a box's edge"),
+                    Flag::valued("arrow", "WHERE", "which ends of a line wear an arrowhead").of(ARROWS),
+                    Flag::valued("border", "BOOL", "whether a box has an edge").of(SWITCHES),
+                    Flag::valued("fill", "COLOUR", "what a box is filled with: a preset name or #rrggbb"),
+                    Flag::valued("alpha", "F", "how much of a box's fill shows, 0-1"),
+                    Flag::valued("scope", "SCOPE", "who else sees it: local, global, or group-1 to group-9 (default: the chart's own sharing)"),
+                    Flag::valued("order", "WHERE", "bring it to the front or send it to the back").of(&["front", "back"]),
                 ],
-                example: "omacharts chart drawing add line --from 2026-09-01,180.5 --to 2026-09-19,192 --preset amber",
+                example: "omacharts chart drawing add line --from 2026-09-01,180.5 --to 2026-09-19,192 --config 4",
                 json: true,
                 writes: true,
                 workspace: true,
@@ -882,6 +893,8 @@ const STORED_FIELDS: &[(&str, &str, &str)] = &[
     ("session", "chart set", "--session"),
     ("show_grid", "chart set", "--grid"),
     ("linked", "chart set", "--link"),
+    ("drawing_sharing", "chart set", "--drawing-sharing"),
+    ("drawings", "chart drawing", ""),
     ("name", "chartbook rename", ""),
     ("layout", "chart split", ""),
     ("focused", "chart focus", ""),
