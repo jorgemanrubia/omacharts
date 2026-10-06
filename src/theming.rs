@@ -465,10 +465,15 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
 .drawing-preview-current { box-shadow: 0 0 0 2px @accent_bg_color; }
 
 /* The corner sits over the rail when the rail is open, which is where the
-   HIG puts a sidebar's menu (above the sidebar list), so the rail's column
-   header steps down out from under it. The step is the corner's height: three
-   pixels of padding either side of a 24px button. */
-.rail-header { margin-top: 30px; }
+   HIG puts a sidebar's menu (above the sidebar list), so the rail's band
+   steps down out from under it. The step is the corner's height: three
+   pixels of padding either side of a 24px button.
+
+   Under the step, a few pixels more, so the separator under the band clears
+   the corner's hover pill and the name's descenders rather than touching
+   them. The column headings used to fill this band; they are gone, and the
+   band is as short as it can be without the line crowding what is above. */
+.rail-header { margin-top: 30px; min-height: 6px; }
 
 /* The watchlist's name, in the band the corner controls already reserved.
    Text with a chevron rather than a button: it names what you are looking at,
