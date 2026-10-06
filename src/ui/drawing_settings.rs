@@ -72,14 +72,22 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
     shown_label.set_valign(gtk::Align::Start);
     shown_label.set_margin_start(8);
     shown_label.set_margin_top(8);
+    // A sheet over the picture that is nothing until the pointer is on the
+    // button, and then a tint and a ring: the picture paints its own ground
+    // over the button's, so the button's own hover would never show.
+    let hover = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    hover.add_css_class("drawing-preview-hover");
+    hover.set_can_target(false);
     let shown = gtk::Overlay::new();
     shown.set_child(Some(&shown_preview));
+    shown.add_overlay(&hover);
     shown.add_overlay(&shown_label);
     let picker = gtk::MenuButton::new();
     picker.set_child(Some(&shown));
     picker.set_hexpand(true);
     picker.add_css_class("flat");
     picker.add_css_class("drawing-config-picker");
+    picker.set_cursor_from_name(Some("pointer"));
     picker.set_tooltip_text(Some("Choose a configuration, shown as it will look"));
     following.add(&picker);
 
