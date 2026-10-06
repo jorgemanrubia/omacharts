@@ -47,7 +47,7 @@ pub fn for_this_launch() -> Option<&'static Listed> {
     FOR_THIS_LAUNCH.get().copied()
 }
 
-/// How this feed is offered — its name, its summary, whether it needs
+/// How this feed is offered — its name, what it serves, whether it needs
 /// signing in to. The flag for this launch, otherwise the stored setting,
 /// otherwise the default.
 pub fn in_use(store: &Store) -> &'static Listed {

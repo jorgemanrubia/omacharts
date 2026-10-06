@@ -132,7 +132,7 @@ impl Cooldown {
 pub const LISTED: crate::providers::Listed = crate::providers::Listed {
     id: "yahoo",
     label: "Yahoo Finance",
-    summary: "Delayed 10 min for futures, 15 for indexes",
+    serves: "Every listing the symbol search covers",
     setup: None,
 };
 

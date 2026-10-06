@@ -536,8 +536,8 @@ differ when a launch was given the flag:
 
 ```
 $ omacharts provider list
-yahoo    Yahoo Finance · Delayed 10 min for futures, 15 for indexes   (stored, from the next launch)
-tos      thinkorswim · Real time, from your own Schwab paperMoney session   (in use for this launch · not signed in)
+yahoo    Yahoo Finance · Every listing the symbol search covers · delayed 15 min for indexes, 10 for futures   (stored, from the next launch)
+tos      thinkorswim · Your own Schwab paperMoney account, US listings · refetched on a timer, not a live stream   (in use for this launch · not signed in)
   [exit 0]
 ```
 
@@ -548,7 +548,7 @@ signed in to once, and `provider status` is how you find out where you stand:
 
 ```
 $ omacharts provider status
-thinkorswim · Real time, from your own Schwab paperMoney session
+thinkorswim · Your own Schwab paperMoney account, US listings · refetched on a timer, not a live stream
 Not signed in
 charts will be empty until you sign in: omacharts provider login
 session: /home/you/.config/omacharts/tos.env

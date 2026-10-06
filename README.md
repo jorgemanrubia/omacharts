@@ -80,7 +80,9 @@ system.
 
 Omacharts works with more than one data feed. Yahoo Finance is the default
 and needs nothing set up. The other is thinkorswim, the trading platform of
-Charles Schwab, which charts your own account's data in real time.
+Charles Schwab, which charts your own account's data — nothing held back the
+way a delayed vendor feed holds it back, though a chart is still a snapshot
+refetched on a timer rather than a live stream.
 
 Pick one in Preferences → Market data → Provider, or from a terminal:
 

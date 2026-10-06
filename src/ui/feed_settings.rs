@@ -7,8 +7,9 @@
 //! choice and would have nowhere to say any of that.
 //!
 //! What the page is built from comes from the feeds themselves — the list,
-//! each one's summary, and for a feed that needs an account, its own
-//! instructions. Nothing about brokerages or browsers is written here, so
+//! what each one serves, how fresh it is (asked of the provider, so it stops
+//! saying "real time" the moment that stops being true), and for a feed that
+//! needs an account, its own instructions. Nothing about brokerages or browsers is written here, so
 //! the third feed arrives as a folder in the engine and this file does not
 //! change.
 //!
@@ -105,7 +106,7 @@ fn feeds_group(panel: &Rc<Panel>) -> adw::PreferencesGroup {
     for feed in providers::LISTED {
         let row = adw::ActionRow::new();
         row.set_title(feed.label);
-        row.set_subtitle(feed.summary);
+        row.set_subtitle(&providers::described(feed));
 
         let tick = gtk::CheckButton::new();
         tick.set_valign(gtk::Align::Center);
@@ -382,7 +383,7 @@ mod tests {
     #[test]
     fn every_feed_has_something_to_say_for_itself() {
         for feed in providers::LISTED {
-            assert!(!feed.summary.is_empty(), "{} has no summary", feed.id);
+            assert!(!feed.serves.is_empty(), "{} has nothing to say", feed.id);
             match feed.setup {
                 None => assert!(providers::access(feed.id).is_none(), "{}", feed.id),
                 Some(setup) => {

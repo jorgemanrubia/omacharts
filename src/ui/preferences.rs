@@ -616,7 +616,7 @@ fn home_relative(path: &std::path::Path) -> String {
 /// changed setting that somebody then changes back.
 fn feed_line(store: &Store) -> String {
     let feed = crate::feeds::stored(store);
-    format!("{} · {}", feed.label, feed.summary)
+    format!("{} · {}", feed.label, omacharts_engine::providers::described(feed))
 }
 
 fn build_market_data(context: &Rc<Context>) {

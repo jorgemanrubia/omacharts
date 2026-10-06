@@ -28,7 +28,8 @@
 pub mod tos;
 pub mod yahoo;
 
-use crate::provider::Provider;
+use crate::provider::{Delivery, Provider};
+use crate::symbols::InstrumentKind;
 
 pub use tos::Tos;
 pub use yahoo::Yahoo;
@@ -48,8 +49,9 @@ pub struct Listed {
     pub id: &'static str,
     /// What to call it in front of somebody.
     pub label: &'static str,
-    /// The line under the name: what it serves, and how fresh it is.
-    pub summary: &'static str,
+    /// The line under the name: what it serves. How *fresh* it is does not
+    /// belong here — see [`freshness`], which asks the provider instead.
+    pub serves: &'static str,
     /// What signing in to it involves, for a feed that charts an account's
     /// own data. `None` for a feed anybody can use the moment they pick it,
     /// which is both the better kind and, so far, the default one.
@@ -192,6 +194,88 @@ pub const LISTED: &[Listed] = &[yahoo::LISTED, tos::LISTED];
 /// What runs when nothing has been chosen.
 pub const DEFAULT: &str = LISTED[0].id;
 
+/// How fresh a chart from this feed is, in one phrase.
+///
+/// Asked of the provider rather than written down beside it. A feed's
+/// freshness is a fact about how it delivers bars and how far behind the
+/// vendor keeps them — both of which the provider already states — and a
+/// sentence kept beside those is a sentence that goes on claiming whatever
+/// it claimed when somebody last edited it. thinkorswim said "real time"
+/// while its charts were snapshots refetched on the same timer as Yahoo's,
+/// which is how this rule got written down.
+///
+/// It is also what makes the label correct the day a feed starts streaming
+/// for real: the provider reports [`Delivery::Streamed`], and this changes
+/// with it rather than waiting to be noticed.
+pub fn freshness(id: &str) -> String {
+    let provider = selected(Some(id));
+    if provider.delivery() == Delivery::Streamed {
+        return "live, as each print arrives".into();
+    }
+    match delays(provider.as_ref()) {
+        // Nothing the vendor holds back, which is not the same as live: a
+        // polled chart is a photograph, and the one on screen is as old as
+        // the last time something fetched it.
+        None => "refetched on a timer, not a live stream".into(),
+        Some(delay) => format!("delayed {delay}"),
+    }
+}
+
+/// "15 min for indexes, 10 for futures", or `None` where the provider holds
+/// nothing back. Grouped by how long, longest first, so the worst case is
+/// the first thing read.
+fn delays(provider: &dyn Provider) -> Option<String> {
+    const KINDS: [InstrumentKind; 6] = [
+        InstrumentKind::Index,
+        InstrumentKind::FutureRoot,
+        InstrumentKind::Equity,
+        InstrumentKind::Etf,
+        InstrumentKind::Fx,
+        InstrumentKind::Crypto,
+    ];
+
+    let mut by_delay: Vec<(u32, Vec<&'static str>)> = Vec::new();
+    for kind in KINDS {
+        let minutes = provider.delay_minutes(kind);
+        if minutes == 0 {
+            continue;
+        }
+        match by_delay.iter_mut().find(|(d, _)| *d == minutes) {
+            Some((_, kinds)) => kinds.push(plural(kind)),
+            None => by_delay.push((minutes, vec![plural(kind)])),
+        }
+    }
+    by_delay.sort_by_key(|(minutes, _)| std::cmp::Reverse(*minutes));
+
+    // Only the first carries the unit: "15 min for indexes, 10 for futures".
+    let parts: Vec<String> = by_delay
+        .iter()
+        .enumerate()
+        .map(|(i, (minutes, kinds))| {
+            let unit = if i == 0 { " min" } else { "" };
+            format!("{minutes}{unit} for {}", kinds.join(" and "))
+        })
+        .collect();
+    (!parts.is_empty()).then(|| parts.join(", "))
+}
+
+/// A kind as it is said in a sentence about several of them.
+fn plural(kind: InstrumentKind) -> &'static str {
+    match kind {
+        InstrumentKind::Index => "indexes",
+        InstrumentKind::FutureRoot => "futures",
+        InstrumentKind::Equity => "stocks",
+        InstrumentKind::Etf => "ETFs",
+        InstrumentKind::Fx => "currencies",
+        InstrumentKind::Crypto => "crypto",
+    }
+}
+
+/// What a feed is offered as, in full: what it serves and how fresh it is.
+pub fn described(feed: &Listed) -> String {
+    format!("{} · {}", feed.serves, freshness(feed.id))
+}
+
 /// The feed with this id, if it is one of ours. Case-insensitive, because a
 /// setting is typed by hand as often as it is clicked.
 pub fn listed(id: &str) -> Option<&'static Listed> {
@@ -255,6 +339,28 @@ mod tests {
         assert!(listed("tosx").is_none());
     }
 
+    /// The label a feed is offered with has to come from what the provider
+    /// does, or it goes on saying whatever it said when it was written.
+    /// thinkorswim claimed "real time" while it was being refetched on the
+    /// same timer as Yahoo.
+    #[test]
+    fn how_fresh_a_feed_is_comes_from_the_provider() {
+        // Yahoo holds some kinds back, and says so, in its own numbers.
+        let yahoo = freshness("yahoo");
+        assert_eq!(yahoo, "delayed 15 min for indexes, 10 for futures", "{yahoo}");
+
+        // thinkorswim holds nothing back and does not stream either, so it
+        // must not claim to be live.
+        let tos = freshness("tos");
+        assert!(tos.contains("not a live stream"), "{tos}");
+        assert!(!tos.contains("real time"), "{tos}");
+        assert!(!tos.contains("delayed"), "{tos}");
+
+        for feed in LISTED {
+            assert!(!described(feed).is_empty());
+        }
+    }
+
     /// Two feeds sharing an id would share a cache namespace, and the stored
     /// setting would stop naming one thing.
     #[test]
@@ -268,7 +374,7 @@ mod tests {
             let built = selected(Some(feed.id));
             assert_eq!(built.id(), feed.id);
             assert_eq!(built.label(), feed.label);
-            assert!(!feed.summary.is_empty(), "{} has nothing to say", feed.id);
+            assert!(!feed.serves.is_empty(), "{} says nothing about what it serves", feed.id);
         }
     }
 }

@@ -1924,7 +1924,8 @@ fn provider_list(store: &Store, as_json: bool) -> Result<String, Fault> {
                 json!({
                     "id": feed.id,
                     "label": feed.label,
-                    "summary": feed.summary,
+                    "serves": feed.serves,
+                    "freshness": providers::freshness(feed.id),
                     "stored": feed.id == stored,
                     "inUse": feed.id == in_use,
                     "needsSignIn": feed.needs_sign_in(),
@@ -1950,7 +1951,13 @@ fn provider_list(store: &Store, as_json: bool) -> Result<String, Fault> {
                 }
                 note.push_str(&access.line().to_lowercase());
             }
-            format!("{:<8} {} · {}{}", feed.id, feed.label, feed.summary, suffixed(&note))
+            format!(
+                "{:<8} {} · {}{}",
+                feed.id,
+                feed.label,
+                providers::described(feed),
+                suffixed(&note)
+            )
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -1982,7 +1989,8 @@ fn provider_status(store: &Store, as_json: bool) -> Result<String, Fault> {
             json!({
                 "id": in_use.id,
                 "label": in_use.label,
-                "summary": in_use.summary,
+                "serves": in_use.serves,
+                "freshness": providers::freshness(in_use.id),
                 "stored": stored.id,
                 "forThisLaunch": crate::feeds::for_this_launch().map(|feed| feed.id),
                 "needsSignIn": in_use.needs_sign_in(),
@@ -1998,7 +2006,7 @@ fn provider_status(store: &Store, as_json: bool) -> Result<String, Fault> {
         ));
     }
 
-    let mut out = format!("{} · {}\n", in_use.label, in_use.summary);
+    let mut out = format!("{} · {}\n", in_use.label, providers::described(in_use));
     if stored.id != in_use.id {
         out.push_str(&format!(
             "in use for this launch only; {} is stored\n",

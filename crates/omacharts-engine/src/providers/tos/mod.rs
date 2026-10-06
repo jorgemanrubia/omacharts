@@ -65,12 +65,15 @@ struct Requested {
 
 /// How thinkorswim is offered.
 ///
-/// "Your own" is the point of the summary: these are the account's own
-/// charts, which is why they are real time and why there is a sign-in to do.
+/// "Your own" is the point of it: these are the account's own charts, which
+/// is why there is a sign-in to do. What it does *not* say is how fresh they
+/// are — that is [`crate::providers::freshness`]'s to answer, from what this
+/// provider reports, because the answer changes the day a chart is fed by
+/// the gateway's subscription instead of a snapshot on a timer.
 pub const LISTED: crate::providers::Listed = crate::providers::Listed {
     id: "tos",
     label: "thinkorswim",
-    summary: "Real time, from your own Schwab paperMoney session",
+    serves: "Your own Schwab paperMoney account, US listings",
     setup: Some(&session::SETUP),
 };
 
