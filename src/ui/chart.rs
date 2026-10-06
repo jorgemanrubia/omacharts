@@ -2000,10 +2000,10 @@ fn pane_plot(top: f64, height: f64) -> (f64, f64) {
 /// How many places a strip's values are written to. A fixed scale gets two,
 /// as TradingView gives an oscillator; a fitted one gets the precision its own
 /// ticks would, as the price does.
-fn pane_decimals(pane: &omacharts_engine::indicators::Pane, low: f64, high: f64, height: f64) -> usize {
+fn pane_decimals(pane: &omacharts_engine::indicators::Pane, low: f64, high: f64) -> usize {
     match pane.bounds {
         Some(_) => 2,
-        None => decimals_for(nice_step(high - low, (height / 52.0).max(2.0) as usize)),
+        None => decimals_for(nice_step(high - low, 3)),
     }
 }
 
@@ -2075,7 +2075,7 @@ fn draw_pane(
     let marks: Vec<(f64, String)> = if pane.bounds.is_some() {
         pane.guides.iter().map(|g| (*g, format!("{g:.0}"))).collect()
     } else {
-        let decimals = decimals_for(nice_step(high - low, 3));
+        let decimals = pane_decimals(pane, low, high);
         vec![(low, format!("{low:.decimals$}")), (high, format!("{high:.decimals$}"))]
     };
     for (value, text) in marks {
@@ -2103,7 +2103,7 @@ fn draw_pane(
 
     // Each line's latest value on the axis, in the line's own colour, as the
     // last price is.
-    let decimals = pane_decimals(pane, low, high, height);
+    let decimals = pane_decimals(pane, low, high);
     let lines = [(&pane.values, drawn.color.as_str())]
         .into_iter()
         .chain(signal.iter().map(|(series, colour)| (*series, colour.as_str())));
@@ -2374,7 +2374,7 @@ fn draw_pane_value(
     };
     let (inner_top, inner_h) = pane_plot(row.top, row.height);
     let value = high - (py - inner_top) / inner_h * (high - low);
-    let decimals = pane_decimals(pane, low, high, row.height);
+    let decimals = pane_decimals(pane, low, high);
     label_on_axis(
         cr,
         state,
