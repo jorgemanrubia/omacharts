@@ -33,8 +33,20 @@ use omacharts_engine::drawings::Kind;
 /// The width of a tool button, which is also the bar's.
 const TOOL: i32 = 36;
 
-/// The side of the handle's glyph.
-const HANDLE: i32 = 18;
+/// A rounded rectangle as a path, corner radius `r`.
+fn rounded(cr: &gtk::cairo::Context, x: f64, y: f64, w: f64, h: f64, r: f64) {
+    use std::f64::consts::{FRAC_PI_2, PI};
+    cr.new_sub_path();
+    cr.arc(x + w - r, y + r, r, -FRAC_PI_2, 0.0);
+    cr.arc(x + w - r, y + h - r, r, 0.0, FRAC_PI_2);
+    cr.arc(x + r, y + h - r, r, FRAC_PI_2, PI);
+    cr.arc(x + r, y + r, r, PI, 3.0 * FRAC_PI_2);
+    cr.close_path();
+}
+
+/// The tab on the edge: its width out from the edge, and its height.
+const HANDLE_W: i32 = 22;
+const HANDLE_H: i32 = 26;
 
 pub struct DrawingBar {
     /// What goes in the layout: the revealer, so the bar can slide.
@@ -197,12 +209,14 @@ impl DrawingBar {
         self.root.reveals_child()
     }
 
-    /// A handle that opens and shuts this bar: the pen glyph, dim until
-    /// the pointer is near or the bar is out. Made as often as the window
-    /// has a corner to put one in.
+    /// A handle that opens and shuts this bar: a small tab stuck to the
+    /// window's left edge, rounded on the side that faces in, with the
+    /// left-panel glyph on it — the mirror of the rail's own toggle on
+    /// the right. Dim until the pointer is near or the bar is out. Made as
+    /// often as the window has a corner to put one in.
     pub fn handle(&self) -> gtk::DrawingArea {
         let handle = gtk::DrawingArea::new();
-        handle.set_size_request(HANDLE, HANDLE);
+        handle.set_size_request(HANDLE_W, HANDLE_H);
         handle.set_halign(gtk::Align::Start);
         handle.set_valign(gtk::Align::End);
         handle.add_css_class("drawing-handle");
@@ -216,21 +230,38 @@ impl DrawingBar {
         click.connect_released(move |_, _, _, _| on_toggle());
         handle.add_controller(click);
         handle.set_draw_func(|area, cr, w, h| {
-            // A pen stroke with a grip at each end, in the handle's own
-            // colour, so the stylesheet decides how loud it is.
+            // Everything in the handle's own colour, so the stylesheet
+            // decides how loud it is: the tab is that colour at a whisper,
+            // its edge a little more, the glyph at full strength.
             let (w, h) = (w as f64, h as f64);
             let fg = area.color();
-            cr.set_source_rgba(fg.red() as f64, fg.green() as f64, fg.blue() as f64, fg.alpha() as f64);
-            cr.set_line_width(1.6);
-            cr.set_line_cap(gtk::cairo::LineCap::Round);
-            let (a, b) = ((3.5, h - 3.5), (w - 3.5, 3.5));
-            cr.move_to(a.0, a.1);
-            cr.line_to(b.0, b.1);
+            let (r, g, b, a) = (fg.red() as f64, fg.green() as f64, fg.blue() as f64, fg.alpha() as f64);
+            // The tab: flat against the left edge, rounded on the right.
+            let radius = 7.0;
+            cr.new_sub_path();
+            cr.move_to(0.0, 0.5);
+            cr.line_to(w - radius - 0.5, 0.5);
+            cr.arc(w - radius - 0.5, radius + 0.5, radius, -std::f64::consts::FRAC_PI_2, 0.0);
+            cr.line_to(w - 0.5, h - radius - 0.5);
+            cr.arc(w - radius - 0.5, h - radius - 0.5, radius, 0.0, std::f64::consts::FRAC_PI_2);
+            cr.line_to(0.0, h - 0.5);
+            cr.close_path();
+            cr.set_source_rgba(r, g, b, a * 0.10);
+            let _ = cr.fill_preserve();
+            cr.set_source_rgba(r, g, b, a * 0.28);
+            cr.set_line_width(1.0);
             let _ = cr.stroke();
-            for (x, y) in [a, b] {
-                cr.rectangle(x - 2.0, y - 2.0, 4.0, 4.0);
-                let _ = cr.fill();
-            }
+            // The glyph: a panel with its left third filled, the mirror of
+            // the rail's toggle on the other side of the window.
+            let (gw, gh) = (13.0, 10.0);
+            let (gx, gy) = (((w - gw) / 2.0).round() + 0.5, ((h - gh) / 2.0).round() + 0.5);
+            cr.set_source_rgba(r, g, b, a);
+            cr.set_line_width(1.2);
+            cr.set_line_join(gtk::cairo::LineJoin::Round);
+            rounded(cr, gx, gy, gw, gh, 2.0);
+            let _ = cr.stroke();
+            cr.rectangle(gx + 0.5, gy + 0.5, 4.0, gh - 1.0);
+            let _ = cr.fill();
         });
         self.handles.borrow_mut().push(handle.clone());
         handle

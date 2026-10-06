@@ -1724,8 +1724,8 @@ impl Window {
         // same corner.
         if let Some(bar) = this.drawing_bar.borrow().as_ref() {
             let handle = bar.handle();
-            handle.set_margin_start(7);
-            handle.set_margin_bottom(6);
+            handle.set_margin_start(0);
+            handle.set_margin_bottom(8);
             handle.set_visible(!this.book_strip.is_visible());
             overlay.add_overlay(&handle);
             *this.corner_handle.borrow_mut() = Some(handle);
@@ -3333,7 +3333,7 @@ impl Window {
         if let Some(bar) = self.drawing_bar.borrow().as_ref() {
             let handle = bar.handle();
             handle.set_valign(gtk::Align::Center);
-            handle.set_margin_start(3);
+            handle.set_margin_start(0);
             handle.set_margin_end(6);
             self.book_strip.append(&handle);
         }

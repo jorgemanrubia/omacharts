@@ -429,8 +429,8 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
 /* The tools' handle in the bottom-left corner: faint enough to be
    furniture until the pointer is on it or the bar is out, the accent
    under the pointer, so it reads as a thing that does something. */
-.drawing-handle { color: @window_fg_color; opacity: 0.3; transition: opacity 120ms ease-out, color 120ms ease-out; }
-.drawing-handle.open { opacity: 0.85; }
+.drawing-handle { color: @window_fg_color; opacity: 0.45; transition: opacity 120ms ease-out, color 120ms ease-out; }
+.drawing-handle.open { opacity: 0.9; }
 .drawing-handle:hover { color: @accent_bg_color; opacity: 1; }
 .drawing-tool { padding: 2px; border-radius: 8px; opacity: 0.8; }
 .drawing-tool:hover { opacity: 1; }
@@ -561,7 +561,9 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
    pulled off the prices to find it. One hairline above it, and nothing else:
    at this height a border on every side is a box, and a box is furniture. */
 .chartbook-strip {
-  padding: 1px 4px;
+  /* No padding on the left: the drawing tools' tab sits flush with the
+     window's edge, the way a tab on a drawer does. */
+  padding: 1px 4px 1px 0;
   border-top: 1px solid alpha(currentColor, 0.08);
 }
 .chartbook-tab {
