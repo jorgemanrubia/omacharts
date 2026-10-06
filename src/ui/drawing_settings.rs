@@ -60,6 +60,7 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
     // as a tag in the middle of it. The whole picture is the button that
     // opens the choice, and it repaints as a property below changes.
     let following = adw::PreferencesGroup::new();
+    following.set_title(kind.label());
     let shown_preview = gtk::DrawingArea::new();
     shown_preview.set_hexpand(true);
     shown_preview.set_size_request(-1, 112);
