@@ -306,16 +306,25 @@ pub fn present_configurations(window: &Rc<Window>, store: &Rc<Store>, kind: Kind
     group.set_description(Some(
         "Every drawing that follows a configuration looks like it, and changes with it. Alt+1 to Alt+9 on a selected drawing, or while a tool is in hand.",
     ));
-    let rows: Rc<RefCell<Vec<(adw::ActionRow, gtk::DrawingArea)>>> = Rc::new(RefCell::new(Vec::new()));
+    let rows: Rc<RefCell<Vec<(adw::ActionRow, gtk::DrawingArea, gtk::Label)>>> =
+        Rc::new(RefCell::new(Vec::new()));
     for n in 1..=CONFIGURATIONS {
         let configs = window.drawing_configurations();
         let style = configs.of(kind, n).clone();
         let row = adw::ActionRow::new();
         row.set_title(&format!("Configuration {n}"));
-        row.set_subtitle(&describe(kind, &style, &configs, n));
+        row.set_subtitle(&describe(kind, &style));
         row.set_activatable(true);
         let preview = preview_tile(&theme, kind, &style);
         row.add_prefix(&preview);
+        // A tag rather than a word in the subtitle: the eye finds a tag
+        // down a list of nine, and reads a word in nine subtitles.
+        let edited = gtk::Label::new(Some("Edited"));
+        edited.add_css_class("drawing-config-edited");
+        edited.set_valign(gtk::Align::Center);
+        edited.set_visible(!configs.is_default(kind, n));
+        mark_edited(&row, !configs.is_default(kind, n));
+        row.add_suffix(&edited);
         row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
         {
             let window = window.clone();
@@ -335,9 +344,12 @@ pub fn present_configurations(window: &Rc<Window>, store: &Rc<Store>, kind: Kind
                         let mut configs = window.drawing_configurations();
                         configs.set(kind, n, style.clone());
                         window.set_drawing_configurations(&store, configs.clone());
-                        if let Some((row, preview)) = rows.borrow().get(n as usize - 1) {
-                            row.set_subtitle(&describe(kind, &style, &configs, n));
+                        if let Some((row, preview, edited)) = rows.borrow().get(n as usize - 1) {
+                            row.set_subtitle(&describe(kind, &style));
                             paint_preview(preview, &theme, kind, &style);
+                            let changed = !configs.is_default(kind, n);
+                            edited.set_visible(changed);
+                            mark_edited(row, changed);
                         }
                     })
                 };
@@ -351,7 +363,7 @@ pub fn present_configurations(window: &Rc<Window>, store: &Rc<Store>, kind: Kind
                 navigation.push(&page);
             });
         }
-        rows.borrow_mut().push((row.clone(), preview));
+        rows.borrow_mut().push((row.clone(), preview, edited));
         group.add(&row);
     }
     page.add(&group);
@@ -369,11 +381,13 @@ pub fn present_configurations(window: &Rc<Window>, store: &Rc<Store>, kind: Kind
             let mut configs = window.drawing_configurations();
             configs.reset(kind);
             window.set_drawing_configurations(&store, configs.clone());
-            for (n, (row, preview)) in rows.borrow().iter().enumerate() {
+            for (n, (row, preview, edited)) in rows.borrow().iter().enumerate() {
                 let n = n as u8 + 1;
                 let style = configs.of(kind, n);
-                row.set_subtitle(&describe(kind, style, &configs, n));
+                row.set_subtitle(&describe(kind, style));
                 paint_preview(preview, &theme, kind, style);
+                edited.set_visible(false);
+                mark_edited(row, false);
             }
         });
     }
@@ -402,10 +416,19 @@ pub fn present_configurations(window: &Rc<Window>, store: &Rc<Store>, kind: Kind
     dialog.present(Some(&window.window));
 }
 
+/// A row that is not as shipped wears a stripe of the accent down its
+/// edge, as well as its tag, so the changed ones stand out at a glance.
+fn mark_edited(row: &adw::ActionRow, edited: bool) {
+    if edited {
+        row.add_css_class("drawing-config-row-edited");
+    } else {
+        row.remove_css_class("drawing-config-row-edited");
+    }
+}
+
 /// A configuration in words, for the row under its number.
-fn describe(kind: Kind, style: &Style, configs: &Configurations, n: u8) -> String {
-    let edited = if configs.is_default(kind, n) { "" } else { " · edited" };
-    let look = match kind {
+fn describe(kind: Kind, style: &Style) -> String {
+    match kind {
         Kind::Line => {
             let arrow = match style.arrow {
                 Arrow::None => String::new(),
@@ -420,8 +443,7 @@ fn describe(kind: Kind, style: &Style, configs: &Configurations, n: u8) -> Strin
             };
             format!("{} at {:.0}%{edge}", name_of(&style.fill), style.alpha * 100.0)
         }
-    };
-    format!("{look}{edited}")
+    }
 }
 
 fn name_of(paint: &Paint) -> String {
