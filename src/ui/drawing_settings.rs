@@ -67,8 +67,10 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
     paint_preview(&shown_preview, &theme, kind, drawing.style(&configs_now));
     let shown_label = gtk::Label::new(None);
     shown_label.add_css_class("drawing-config-tag");
-    shown_label.set_halign(gtk::Align::Center);
-    shown_label.set_valign(gtk::Align::Center);
+    shown_label.set_halign(gtk::Align::Start);
+    shown_label.set_valign(gtk::Align::Start);
+    shown_label.set_margin_start(8);
+    shown_label.set_margin_top(8);
     let shown = gtk::Overlay::new();
     shown.set_child(Some(&shown_preview));
     shown.add_overlay(&shown_label);
@@ -807,16 +809,22 @@ fn paint_preview(area: &gtk::DrawingArea, theme: &Theme, kind: Kind, style: &Sty
         let pitch = 14.0 * scale;
         let count = ((w * 0.7) / pitch).floor().max(4.0) as usize;
         let left = (w - (count as f64 - 1.0) * pitch) / 2.0;
-        let (body_w, wick_h, body_h) = (5.0 * scale, 20.0 * scale, 10.0 * scale);
+        let body_w = (5.0 * scale).round();
+        let body_w = if body_w % 2.0 == 0.0 { body_w + 1.0 } else { body_w };
+        let (wick_h, body_h) = ((20.0 * scale).round(), (10.0 * scale).round());
         for i in 0..count {
             let t = i as f64 / (count as f64 - 1.0).max(1.0);
             let wave = ((t * 6.0).sin() * 0.18) + ((t * 2.0).cos() * 0.1);
-            let (x, y) = (left + i as f64 * pitch, h * (0.5 - wave));
+            let (x, y) = (left + i as f64 * pitch, (h * (0.5 - wave)).round());
+            // Wick and body share one pixel column: a wick drawn a pixel to
+            // the right of its body is the first thing the eye catches.
+            let column = x.floor() + 0.5;
+            let wick_w = scale.round().max(1.0);
             let up = i % 3 != 1;
             colors::set_source(cr, if up { &bars.up } else { &bars.down });
-            cr.rectangle(x.round() + 0.5, y - wick_h / 2.0, scale.round().max(1.0), wick_h);
+            cr.rectangle(column - wick_w / 2.0, y - wick_h / 2.0, wick_w, wick_h);
             let _ = cr.fill();
-            cr.rectangle(x.round() - body_w / 2.0, y - body_h / 2.0, body_w, body_h);
+            cr.rectangle(column - body_w / 2.0, y - body_h / 2.0, body_w, body_h);
             let _ = cr.fill();
         }
         let colour = style.colour.hex(&theme);

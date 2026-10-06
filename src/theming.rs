@@ -435,7 +435,10 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
 .drawing-save-as { font-size: 12px; opacity: 0.7; padding: 2px 6px; min-height: 0; }
 .drawing-save-as:hover { opacity: 1; }
 .drawing-config-picker > * { padding: 0; }
-.drawing-config-tag { padding: 3px 12px; border-radius: 12px; font-weight: 700; background: alpha(@window_bg_color, 0.88); color: @window_fg_color; }
+/* The tag on the picture is the chart's own palette turned inside out: the
+   text colour as its ground and the chart colour as its ink, so it reads on
+   the picture whatever the picture is. */
+.drawing-config-tag { padding: 2px 10px; border-radius: 10px; font-weight: 700; font-size: 12px; background: @window_fg_color; color: @view_bg_color; }
 .drawing-preview-current { box-shadow: 0 0 0 2px @accent_bg_color; }
 
 /* The corner sits over the rail when the rail is open, which is where the
