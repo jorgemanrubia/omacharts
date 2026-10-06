@@ -61,22 +61,18 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
     // here as it changes.
     let following = adw::PreferencesGroup::new();
     following.set_title("Configuration");
-    let config_row = adw::ActionRow::new();
-    config_row.set_title("Follows");
-    config_row.set_subtitle("Change the configuration and every drawing that follows it changes too.");
     let shown_preview = preview_tile(&theme, kind, drawing.style(&configs_now));
     let shown_label = gtk::Label::new(None);
     shown_label.add_css_class("heading");
-    let shown = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    let shown = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     shown.append(&shown_label);
     shown.append(&shown_preview);
     let picker = gtk::MenuButton::new();
     picker.set_child(Some(&shown));
-    picker.set_valign(gtk::Align::Center);
+    picker.set_halign(gtk::Align::Center);
     picker.add_css_class("flat");
     picker.set_tooltip_text(Some("Choose a configuration, shown as it will look"));
-    config_row.add_suffix(&picker);
-    following.add(&config_row);
+    following.add(&picker);
 
     // The way back from a look of its own: write it over configuration N.
     let save_row = adw::ActionRow::new();
@@ -173,11 +169,11 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
             let configs = window.drawing_configurations();
             match d.config {
                 Some(n) => {
-                    label.set_text(&format!("{n}"));
+                    label.set_text(&format!("Config {n}"));
                     save_row.set_visible(false);
                 }
                 None => {
-                    label.set_text("Custom");
+                    label.set_text("Custom config");
                     save_row.set_visible(true);
                 }
             }
@@ -446,9 +442,15 @@ fn style_editor(window: &Rc<Window>, kind: Kind, current: Style, on_style: Rc<dy
         let on_style = on_style.clone();
         let showing = showing.clone();
         Rc::new(move || {
-            if !showing.get() {
-                on_style(style.borrow().clone());
+            if showing.get() {
+                return;
             }
+            // Cloned out before the call, not inside it: a temporary borrow
+            // in an argument lives to the end of the statement, and the
+            // handler repaints the preview, which shows the editor the style
+            // again and needs the cell for itself.
+            let current = style.borrow().clone();
+            on_style(current);
         })
     };
 
