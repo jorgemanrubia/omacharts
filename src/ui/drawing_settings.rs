@@ -51,19 +51,29 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
     let Some(drawing) = view.selected_drawing() else { return };
     let theme = window.theme();
     let kind = drawing.kind;
+    let configs_now = window.drawing_configurations();
 
     let page = adw::PreferencesPage::new();
 
-    // Which configuration it follows, or that it follows none.
+    // Which configuration it follows — the number and a picture of it, as
+    // one button — or "Custom" and a picture of its own look. The picture
+    // is always there and always current, so a property changed below shows
+    // here as it changes.
     let following = adw::PreferencesGroup::new();
     following.set_title("Configuration");
     let config_row = adw::ActionRow::new();
     config_row.set_title("Follows");
     config_row.set_subtitle("Change the configuration and every drawing that follows it changes too.");
-    let config_label = gtk::Label::new(None);
+    let shown_preview = preview_tile(&theme, kind, drawing.style(&configs_now));
+    let shown_label = gtk::Label::new(None);
+    shown_label.add_css_class("heading");
+    let shown = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    shown.append(&shown_label);
+    shown.append(&shown_preview);
     let picker = gtk::MenuButton::new();
-    picker.set_child(Some(&config_label));
+    picker.set_child(Some(&shown));
     picker.set_valign(gtk::Align::Center);
+    picker.add_css_class("flat");
     picker.set_tooltip_text(Some("Choose a configuration, shown as it will look"));
     config_row.add_suffix(&picker);
     following.add(&config_row);
@@ -79,16 +89,33 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
     following.add(&save_row);
     page.add(&following);
 
+    // What the row above shows, from the drawing as it is now. Bound late,
+    // since the editor below calls it and is built before it.
+    type Refresh = Rc<RefCell<Option<Rc<dyn Fn()>>>>;
+    let refresh: Refresh = Rc::new(RefCell::new(None));
+    let call_refresh = {
+        let refresh = refresh.clone();
+        Rc::new(move || {
+            if let Some(f) = refresh.borrow().as_ref() {
+                f();
+            }
+        })
+    };
+
     // The look itself. Edits here are the drawing's own from then on.
-    let configs_for_edit = window.drawing_configurations();
-    let view_for_edit = view.clone();
-    let on_style: Rc<dyn Fn(Style)> = Rc::new(move |style: Style| {
-        let configs = configs_for_edit.clone();
-        view_for_edit.edit_selected(move |d| {
-            d.edit_style(&configs, |own| *own = style);
-        });
-    });
-    let editor = style_editor(window, kind, drawing.style(&window.drawing_configurations()).clone(), on_style.clone());
+    let on_style: Rc<dyn Fn(Style)> = {
+        let view = view.clone();
+        let window = window.clone();
+        let call_refresh = call_refresh.clone();
+        Rc::new(move |style: Style| {
+            let configs = window.drawing_configurations();
+            view.edit_selected(move |d| {
+                d.edit_style(&configs, |own| *own = style);
+            });
+            call_refresh();
+        })
+    };
+    let editor = style_editor(window, kind, drawing.style(&configs_now).clone(), on_style);
     page.add(&editor.group);
 
     // Who else sees it.
@@ -102,12 +129,14 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
     scope_row.set_model(Some(&gtk::StringList::new(&names)));
     scope_row.set_selected(scopes.iter().position(|s| *s == drawing.scope).unwrap_or(1) as u32);
-    let view_for_scope = view.clone();
-    let scopes_for_row = scopes.clone();
-    scope_row.connect_selected_notify(move |row| {
-        let Some(scope) = scopes_for_row.get(row.selected() as usize).copied() else { return };
-        view_for_scope.edit_selected(move |d| d.scope = scope);
-    });
+    {
+        let view = view.clone();
+        let scopes = scopes.clone();
+        scope_row.connect_selected_notify(move |row| {
+            let Some(scope) = scopes.get(row.selected() as usize).copied() else { return };
+            view.edit_selected(move |d| d.scope = scope);
+        });
+    }
     sharing.add(&scope_row);
     page.add(&sharing);
 
@@ -120,58 +149,72 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
     let delete = gtk::Button::with_label("Remove drawing");
     delete.add_css_class("destructive-action");
     delete.set_halign(gtk::Align::Start);
-    let view_for_delete = view.clone();
-    let dialog_for_delete = dialog.clone();
-    delete.connect_clicked(move |_| {
-        view_for_delete.delete_selected();
-        let _ = dialog_for_delete.close();
-    });
+    {
+        let view = view.clone();
+        let dialog = dialog.clone();
+        delete.connect_clicked(move |_| {
+            view.delete_selected();
+            let _ = dialog.close();
+        });
+    }
     remove.add(&delete);
     page.add(&remove);
 
-    // The configuration picker and the save menu, built once the rest is in
-    // place so they can refresh the editor's rows when a configuration is
-    // chosen.
-    let refresh_following = {
+    *refresh.borrow_mut() = Some({
         let view = view.clone();
-        let label = config_label.clone();
+        let label = shown_label.clone();
+        let preview = shown_preview.clone();
         let save_row = save_row.clone();
         let editor = editor.clone();
         let window = window.clone();
+        let theme = theme.clone();
         Rc::new(move || {
             let Some(d) = view.selected_drawing() else { return };
+            let configs = window.drawing_configurations();
             match d.config {
                 Some(n) => {
-                    label.set_text(&format!("Configuration {n}"));
+                    label.set_text(&format!("{n}"));
                     save_row.set_visible(false);
                 }
                 None => {
-                    label.set_text("Its own");
+                    label.set_text("Custom");
                     save_row.set_visible(true);
                 }
             }
-            editor.show(d.style(&window.drawing_configurations()));
+            let style = d.style(&configs);
+            paint_preview(&preview, &theme, kind, style);
+            editor.show(style);
         })
-    };
-    refresh_following();
+    });
+    call_refresh();
 
+    // The nine as pictures, and this drawing's own look beside them while it
+    // has one. Built each time the menu opens, so it shows the
+    // configurations as they are now and the custom tile only while there
+    // is something custom to show.
     let popover = gtk::Popover::new();
-    popover.set_child(Some(&configuration_grid(
-        &theme,
-        kind,
-        &window.drawing_configurations(),
-        drawing.config,
-        {
-            let view = view.clone();
-            let popover = popover.clone();
-            let refresh = refresh_following.clone();
-            move |n| {
-                view.apply_configuration(n);
-                popover.popdown();
-                refresh();
-            }
-        },
-    )));
+    {
+        let view = view.clone();
+        let window = window.clone();
+        let theme = theme.clone();
+        let call_refresh = call_refresh.clone();
+        popover.connect_show(move |popover| {
+            let Some(d) = view.selected_drawing() else { return };
+            let configs = window.drawing_configurations();
+            let custom = d.style.clone().filter(|_| d.config.is_none());
+            let grid = configuration_grid(&theme, kind, &configs, d.config, custom.as_ref(), {
+                let view = view.clone();
+                let popover = popover.clone();
+                let call_refresh = call_refresh.clone();
+                move |n| {
+                    view.apply_configuration(n);
+                    popover.popdown();
+                    call_refresh();
+                }
+            });
+            popover.set_child(Some(&grid));
+        });
+    }
     picker.set_popover(Some(&popover));
 
     let save_menu = gio::Menu::new();
@@ -187,7 +230,7 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
         let window = window.clone();
         let store = store.clone();
         let view = view.clone();
-        let refresh = refresh_following.clone();
+        let call_refresh = call_refresh.clone();
         save_as.connect_activate(move |_, target| {
             let Some(n) = target.and_then(|t| t.get::<i32>()) else { return };
             let Some(d) = view.selected_drawing() else { return };
@@ -196,23 +239,23 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
             configs.set(d.kind, n as u8, own);
             window.set_drawing_configurations(&store, configs);
             view.apply_configuration(n as u8);
-            refresh();
+            call_refresh();
         });
     }
     actions.add_action(&save_as);
     dialog.insert_action_group("drawing", Some(&actions));
 
-    // A change made with the keys on the chart while this is open — Alt+N —
-    // is reflected here too.
+    // A change made with the keys on the chart while this is open — Alt+N,
+    // Ctrl+Z — is reflected here too.
     let tick = {
-        let refresh = refresh_following.clone();
+        let call_refresh = call_refresh.clone();
         let view = view.clone();
         let last = RefCell::new(view.selected_drawing());
         glib::timeout_add_local(std::time::Duration::from_millis(250), move || {
             let now = view.selected_drawing();
             if now != *last.borrow() {
                 *last.borrow_mut() = now;
-                refresh();
+                call_refresh();
             }
             glib::ControlFlow::Continue
         })
@@ -677,6 +720,7 @@ fn configuration_grid(
     kind: Kind,
     configs: &Configurations,
     current: Option<u8>,
+    custom: Option<&Style>,
     on_pick: impl Fn(u8) + Clone + 'static,
 ) -> gtk::Box {
     let content = gtk::Box::new(gtk::Orientation::Vertical, 6);
@@ -687,24 +731,37 @@ fn configuration_grid(
     let grid = gtk::Grid::new();
     grid.set_row_spacing(6);
     grid.set_column_spacing(6);
+    let tile = |preview: gtk::DrawingArea, name: &str, tip: &str| {
+        let stack = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        let label = gtk::Label::new(Some(name));
+        label.add_css_class("dim-label");
+        label.add_css_class("caption");
+        stack.append(&preview);
+        stack.append(&label);
+        let cell = gtk::Button::new();
+        cell.add_css_class("flat");
+        cell.set_tooltip_text(Some(tip));
+        cell.set_child(Some(&stack));
+        cell
+    };
     for n in 1..=CONFIGURATIONS {
-        let tile = gtk::Box::new(gtk::Orientation::Vertical, 2);
         let preview = preview_tile(theme, kind, configs.of(kind, n));
         if current == Some(n) {
             preview.add_css_class("drawing-preview-current");
         }
-        let number = gtk::Label::new(Some(&format!("{n}")));
-        number.add_css_class("dim-label");
-        number.add_css_class("caption");
-        tile.append(&preview);
-        tile.append(&number);
-        let cell = gtk::Button::new();
-        cell.add_css_class("flat");
-        cell.set_tooltip_text(Some(&format!("Configuration {n} (Alt+{n})")));
-        cell.set_child(Some(&tile));
+        let cell = tile(preview, &format!("{n}"), &format!("Configuration {n} (Alt+{n})"));
         let on_pick = on_pick.clone();
         cell.connect_clicked(move |_| on_pick(n));
         grid.attach(&cell, (n as i32 - 1) % 3, (n as i32 - 1) / 3, 1, 1);
+    }
+    // This drawing's own look, while it has one: the one in use, and not a
+    // choice so much as a reminder of what choosing a number gives up.
+    if let Some(custom) = custom {
+        let preview = preview_tile(theme, kind, custom);
+        preview.add_css_class("drawing-preview-current");
+        let cell = tile(preview, "Custom", "This drawing's own look, as it is now");
+        cell.set_sensitive(false);
+        grid.attach(&cell, 0, 3, 1, 1);
     }
     content.append(&grid);
     content
