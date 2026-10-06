@@ -49,7 +49,10 @@ pub struct ChartPane {
     /// press. The others say their resolution in a word instead.
     pub strip: gtk::Box,
     pub buttons: RefCell<Vec<(Timeframe, gtk::ToggleButton)>>,
-    pub timeframe_label: gtk::Label,
+    /// The resolution beside the symbol, which opens every resolution: the
+    /// one way to change it that fits on any chart, however narrow.
+    pub timeframe_menu: gtk::MenuButton,
+    timeframe_label: gtk::Label,
     /// One row per indicator, under the readout.
     pub indicator_legend: gtk::Box,
     pub gear: gtk::Button,
@@ -122,10 +125,20 @@ impl ChartPane {
         strip.set_valign(gtk::Align::Center);
         strip.set_visible(false);
 
+        let timeframe_menu = gtk::MenuButton::new();
+        timeframe_menu.add_css_class("flat");
+        timeframe_menu.add_css_class("readout-symbol");
+        timeframe_menu.set_valign(gtk::Align::Center);
+        timeframe_menu.set_tooltip_text(Some("Resolution: click for the list"));
+        // No chevron: a screenshot keeps this label because it is information,
+        // and a chevron would put a control into every picture of a chart. The
+        // flat button's hover is affordance enough, as it is for the symbol.
+        // A label of our own rather than the button's, because a MenuButton
+        // draws the arrow after a plain label whatever it is told, and only
+        // listens when given a child.
         let timeframe_label = gtk::Label::new(None);
-        timeframe_label.add_css_class("readout-symbol");
-        timeframe_label.set_valign(gtk::Align::Center);
-        timeframe_label.set_can_target(false);
+        timeframe_menu.set_child(Some(&timeframe_label));
+        timeframe_menu.set_always_show_arrow(false);
 
         // Drawn rather than named. Adwaita's "insert-link" is a chain with a
         // downward arrow under it — it means *insert* a link, and the arrow
@@ -156,7 +169,7 @@ impl ChartPane {
         let bar = gtk::Box::new(gtk::Orientation::Horizontal, 2);
         bar.append(&symbol_button);
         bar.append(&link);
-        bar.append(&timeframe_label);
+        bar.append(&timeframe_menu);
         bar.append(&gear);
 
         let indicator_legend = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -208,6 +221,28 @@ impl ChartPane {
         overlay.add_overlay(&top);
         overlay.add_overlay(&corner);
 
+        // The three are laid over the chart independently, so on a narrow
+        // chart the centred strip lands on the symbol. It steps aside rather
+        // than overlap, and the resolution beside the symbol offers the same
+        // list. Decided where the overlay places it, the one moment every
+        // width involved is known.
+        let legend_margin = legend.margin_start();
+        let (legend_row, strip_row, corner_box) = (bar.clone(), top.clone(), corner.clone());
+        overlay.connect_get_child_position(move |overlay, child| {
+            if child == strip_row.upcast_ref::<gtk::Widget>() {
+                let natural = |w: &gtk::Widget| w.preferred_size().1.width();
+                let left = legend_margin + natural(legend_row.upcast_ref());
+                let right = natural(corner_box.upcast_ref()) + corner_box.margin_end();
+                strip_row.set_child_visible(strip_fits(
+                    overlay.width(),
+                    left,
+                    natural(strip_row.upcast_ref()),
+                    right,
+                ));
+            }
+            None
+        });
+
         // A box rather than the overlay itself, so the focus ring is drawn on
         // something that is not also the drawing surface.
         let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -223,6 +258,7 @@ impl ChartPane {
             symbol_button,
             strip,
             buttons: RefCell::new(Vec::new()),
+            timeframe_menu,
             timeframe_label,
             indicator_legend,
             gear,
@@ -358,13 +394,21 @@ impl ChartPane {
     /// becomes conditional the label would go on naming whichever resolution
     /// the chart was on when its symbol last arrived.
     fn write_timeframe(&self) {
-        self.timeframe_label.set_text(&format!("·  {}", self.timeframe.get().label()));
+        self.timeframe_label.set_text(&self.timeframe.get().label());
     }
 }
 
 /// How far the maximize corner sits in from the chart's right edge. The same
 /// gap the legend keeps on the left, so the two corners are a pair.
 const CORNER_MARGIN: i32 = 12;
+
+/// Whether a strip `strip` wide, centred in `width`, clears what sits at
+/// either edge — `left` and `right` of it — with a little air on each side.
+fn strip_fits(width: i32, left: i32, strip: i32, right: i32) -> bool {
+    const GAP: i32 = 8;
+    let start = (width - strip) / 2;
+    start >= left + GAP && start + strip <= width - right - GAP
+}
 
 /// Two arrows on a diagonal, pointing away from each other — and, once the
 /// chart has the window to itself, back towards each other.
@@ -766,6 +810,16 @@ impl Node {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_strip_shows_only_where_it_clears_both_corners() {
+        // A wide chart: room on either side.
+        assert!(strip_fits(1200, 160, 300, 40));
+        // Narrow: centred, it would start on top of the symbol.
+        assert!(!strip_fits(500, 160, 300, 40));
+        // Or end under the maximize corner, when that is the wider of the two.
+        assert!(!strip_fits(600, 40, 300, 160));
+    }
 
     #[test]
     fn splitting_replaces_the_leaf_with_a_pair() {

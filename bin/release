@@ -37,7 +37,7 @@ fi
 say "Writing $version into the four places a tag cannot float"
 sed -i -E "0,/^version = \"[0-9]+\.[0-9]+\.[0-9]+\"/s||version = \"$version\"|" Cargo.toml
 sed -i -E "s|^pkgver=.*|pkgver=$version|" packaging/aur/PKGBUILD
-sed -i -E "s|omacharts-[0-9]+\.[0-9]+\.[0-9]+-1-x86_64\.pkg\.tar\.zst|omacharts-$version-1-x86_64.pkg.tar.zst|g" README.md
+sed -i -E "s|omacharts-[0-9]+\.[0-9]+\.[0-9]+-1-|omacharts-$version-1-|g" README.md
 cargo update -p omacharts
 
 say "Checking the tree agrees with itself"
@@ -45,7 +45,7 @@ cargo build --workspace --locked
 cargo test --workspace --locked
 grep -q "^version = \"$version\"" Cargo.toml || die "Cargo.toml did not take"
 grep -q "^pkgver=$version$" packaging/aur/PKGBUILD || die "PKGBUILD did not take"
-grep -q "omacharts-$version-1-x86_64.pkg.tar.zst" README.md || die "README did not take"
+grep -qF "omacharts-$version-1-\$(uname -m).pkg.tar.zst" README.md || die "README did not take"
 grep -A1 '^name = "omacharts"' Cargo.lock | grep -q "^version = \"$version\"" \
   || die "Cargo.lock did not take — every --locked build would refuse"
 

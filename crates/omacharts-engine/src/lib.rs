@@ -24,7 +24,7 @@ pub use bars::{
 };
 pub use indicators::{palette_colors, Indicator, Kind as IndicatorKind, Output, Params, Reset};
 pub use link::LinkGroup;
-pub use provider::{Capability, FetchFailure, Pacing, Provider, ProviderError};
+pub use provider::{Capability, Delivery, FetchFailure, Pacing, Provider, ProviderError};
 pub use session::Session;
 pub use symbols::{Instrument, InstrumentKind, SearchHit, SearchIndex};
 pub use drawings::{

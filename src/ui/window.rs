@@ -17,7 +17,8 @@ use gtk::glib;
 use omacharts_engine::providers::Yahoo;
 use omacharts_engine::refresh;
 use omacharts_engine::{
-    resample, BarStyle, FetchFailure, Indicator, Instrument, Provider, SearchIndex, Session,
+    resample, BarStyle, Delivery, FetchFailure, Indicator, Instrument, Provider, SearchIndex,
+    Session,
     Timeframe,
 };
 
@@ -54,6 +55,19 @@ const BACKFILL_POLL_SECONDS: u32 = 60;
 /// timer's own phase. A tick with nothing to do is a handful of `coverage`
 /// queries against a local, indexed, write-ahead-logged table.
 const REFRESH_TICK_SECONDS: u32 = 30;
+
+/// Does a provider that delivers bars this way need the refresh timer at all?
+///
+/// A provider that streams has nothing to poll, so there is nothing to time:
+/// not a tick every thirty seconds, not the `coverage` queries a tick makes
+/// to find out it has nothing to do. Asked once, when the window is built,
+/// because how a provider delivers bars does not change while it is open.
+/// [`omacharts_engine::refresh::due`] refuses a streamed chart too, so a
+/// caller that reaches it anyway still gets the right answer; this is the
+/// line that keeps the question from being asked in the first place.
+fn wants_refresh_timer(delivery: Delivery) -> bool {
+    delivery == Delivery::Polled
+}
 
 /// How often we look for a desktop theme change. Cheap enough to be invisible,
 /// often enough to feel immediate.
@@ -282,6 +296,16 @@ fn key_synonyms(part: &str) -> &'static [&'static str] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The timer is GTK's and cannot be watched from here, so the decision
+    /// that installs it is a function of its own and this holds that. A
+    /// provider that streams gets no timer at all — nothing to poll, nothing
+    /// to time — and the one that is polled gets it without anybody asking.
+    #[test]
+    fn a_streamed_provider_gets_no_refresh_timer() {
+        assert!(!wants_refresh_timer(Delivery::Streamed));
+        assert!(wants_refresh_timer(Delivery::Polled));
+    }
 
     #[test]
     fn the_resolution_strip_is_ordered_by_length() {
@@ -1137,22 +1161,6 @@ const SETTING_WORKSPACE: &str = "workspace";
 const SHOW_DRAWING_TOOLS: &str = "show_drawing_tools";
 /// Whether a pointer on one chart draws a line on the linked ones.
 pub const SETTING_SYNC_CROSSHAIR: &str = "sync_crosshair";
-/// Whether charts left open fetch new bars for themselves.
-pub const SETTING_AUTO_REFRESH: &str = "auto_refresh";
-
-/// Whether charts left open fetch themselves again.
-///
-/// On unless somebody has said otherwise, because the other default is the
-/// worse failure: a chart that has quietly stopped being true looks exactly
-/// like one that is, and somebody reads this morning's price as though it
-/// were now. Being wrong the other way costs a small tail request every few
-/// minutes for the handful of charts actually on screen.
-///
-/// The default lives here and only here, so that the dialog, the command and
-/// the timer cannot come to disagree about what it is.
-pub fn auto_refresh(store: &Store) -> bool {
-    store.setting_bool(SETTING_AUTO_REFRESH, true)
-}
 
 /// One chart, as it is written down.
 ///
@@ -3710,6 +3718,30 @@ impl Window {
             buttons.push((timeframe, button));
         }
         *pane.buttons.borrow_mut() = buttons;
+
+        // The same list behind the resolution beside the symbol, which stays
+        // when the strip has no room — the way a narrow TradingView chart
+        // folds its intervals into one dropdown.
+        let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let popover = gtk::Popover::new();
+        popover.add_css_class("menu");
+        for timeframe in self.timeframes.borrow().iter().copied() {
+            let item = gtk::Button::with_label(&timeframe.description());
+            item.add_css_class("flat");
+            let this = self.clone();
+            let owner = pane.id;
+            let closing = popover.downgrade();
+            item.connect_clicked(move |_| {
+                if let Some(popover) = closing.upgrade() {
+                    popover.popdown();
+                }
+                this.focus(owner);
+                this.set_timeframe(timeframe);
+            });
+            list.append(&item);
+        }
+        popover.set_child(Some(&list));
+        pane.timeframe_menu.set_popover(Some(&popover));
     }
 
     /// Put a resolution on the strip, in the place its length earns it.
@@ -4336,7 +4368,15 @@ impl Window {
         // window would put it over whichever chart happened to be underneath.
         let popover = gtk::Popover::new();
         popover.set_child(Some(&content));
-        popover.set_parent(&self.focused_pane().strip);
+        // Or, on a chart too narrow to show the strip, to the resolution
+        // beside the symbol that stands in for it. Mapped rather than
+        // visible: the strip is hidden by its row stepping aside, and only
+        // the map state reaches down through the row to the strip itself.
+        let pane = self.focused_pane();
+        match pane.strip.is_mapped() {
+            true => popover.set_parent(&pane.strip),
+            false => popover.set_parent(&pane.timeframe_menu),
+        }
         // Every number typed builds a fresh one, so each has to let go of the
         // strip when it closes or they pile up on it.
         popover.connect_closed(|popover| {
@@ -4912,19 +4952,26 @@ impl Window {
 
     /// Keep the charts on screen from quietly going stale.
     ///
-    /// There is nothing to subscribe to. Yahoo has no stream, and its quote
-    /// path is the very same chart endpoint the bars come from — the older
-    /// `v7/finance/quote` wants a cookie and crumb handshake and is not used
-    /// at all — so there is nothing cheaper to poll than the series itself,
-    /// and no fresher number hiding behind a different URL. Refreshing a
-    /// chart therefore means refetching its tail, which the loader already
-    /// does in one small request from a few bars before where the cache ends.
+    /// Whether a chart needs this at all is the provider's to say, through
+    /// [`Provider::delivery`]: one that streams has nothing to be asked for,
+    /// and one that does not — Yahoo, which has no stream and nothing cheaper
+    /// to poll than the series itself — has to be asked again or the chart
+    /// stops being true with nothing on screen to say so. Refreshing a chart
+    /// means refetching its tail, which the loader already does in one small
+    /// request from a few bars before where the cache ends.
+    ///
+    /// There is no setting beside the provider's answer, and deliberately
+    /// not: the off position was a chart that looked current and was not. An
+    /// `auto_refresh` row left in an older settings table is simply ignored.
     ///
     /// Which leaves the only question worth engineering: how rarely this can
     /// get away with asking. That answer belongs to
     /// [`omacharts_engine::refresh`], one chart at a time, and most ticks of
     /// this timer queue nothing at all.
     fn wire_refresh(self: &Rc<Self>) {
+        if !wants_refresh_timer(self.provider.delivery()) {
+            return;
+        }
         // No first pass on idle, unlike the backfill: every chart on screen
         // has just been fetched by the thing that put it there, so there is
         // nothing a tick at startup could usefully do.
@@ -4947,7 +4994,7 @@ impl Window {
         }
         self.refresh_quiet_until.set(None);
 
-        let enabled = auto_refresh(&self.store);
+        let delivery = self.provider.delivery();
         let visible = self.on_screen();
         let now = chrono::Utc::now().timestamp();
 
@@ -4962,7 +5009,7 @@ impl Window {
             let key = format!("{}:{symbol}", self.provider.id());
             let timeframe = pane.timeframe.get();
             let candidate = refresh::Candidate {
-                enabled,
+                delivery,
                 visible,
                 at_latest: pane.view.at_latest(),
                 timeframe,

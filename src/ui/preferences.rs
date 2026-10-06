@@ -618,31 +618,6 @@ fn build_market_data(context: &Rc<Context>) {
     provider.set_subtitle("Yahoo Finance · delayed 10 min for futures, 15 for indexes");
     group.add(&provider);
 
-    // Directly beneath the row that admits how delayed the feed is, because
-    // the two facts belong together: this is what keeps a chart as current as
-    // that delay allows, and no more current than it.
-    //
-    // The subtitle names the condition rather than a period, because the
-    // period is not one number — it follows each chart's resolution. What
-    // somebody needs to know before touching the switch is that nothing is
-    // fetched for a market that is shut.
-    let refresh = adw::ActionRow::new();
-    refresh.set_title("Keep charts up to date");
-    refresh.set_subtitle("Charts left open fetch new bars while their market is trading");
-
-    let switch = gtk::Switch::new();
-    switch.set_valign(gtk::Align::Center);
-    switch.set_active(crate::ui::window::auto_refresh(&context.store));
-    let store = context.store.clone();
-    switch.connect_state_set(move |_, on| {
-        store.set_setting_bool(crate::ui::window::SETTING_AUTO_REFRESH, on);
-        // Nothing to tell the window. Its timer reads the setting on every
-        // tick, so the next one finds this and acts on it.
-        glib::Propagation::Proceed
-    });
-    refresh.add_suffix(&switch);
-    group.add(&refresh);
-
     let cache = adw::ActionRow::new();
     cache.set_title("Cached data");
 

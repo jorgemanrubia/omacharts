@@ -23,7 +23,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use crate::bars::{Bar, Timeframe, Unit};
-use crate::provider::{Capability, Pacing, Provider, ProviderError};
+use crate::provider::{Capability, Delivery, Pacing, Provider, ProviderError};
 use crate::symbols::{Instrument, InstrumentKind};
 
 const ENDPOINT: &str = "https://query1.finance.yahoo.com/v8/finance/chart";
@@ -351,6 +351,17 @@ impl Provider for Yahoo {
         PACING
     }
 
+    /// There is nothing to subscribe to. Yahoo has no stream, and its quote
+    /// path is the very same chart endpoint the bars come from — the older
+    /// `v7/finance/quote` wants a cookie and crumb handshake and is not used
+    /// at all — so there is nothing cheaper to poll than the series itself,
+    /// and no fresher number hiding behind a different URL. Keeping a chart
+    /// current therefore means refetching its tail, as rarely as it can be
+    /// got away with; the cadence is the caller's, see [`crate::refresh`].
+    fn delivery(&self) -> Delivery {
+        Delivery::Polled
+    }
+
     fn cooldown_until(&self) -> Option<Instant> {
         self.cooldown.lock().unwrap_or_else(|e| e.into_inner()).until
     }
@@ -449,6 +460,14 @@ fn collapse_days(bars: Vec<Bar>, timeframe: Timeframe) -> Vec<Bar> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Yahoo has no stream, so a chart drawn from it has to be asked again or
+    /// it quietly stops being true. The window polls because this says to,
+    /// not because a setting does.
+    #[test]
+    fn yahoo_has_to_be_polled_to_keep_a_chart_current() {
+        assert_eq!(Yahoo::new().delivery(), Delivery::Polled);
+    }
 
     /// A laptop with the wifi off must not be told the data provider is
     /// having trouble: the provider is fine and the user would go looking in

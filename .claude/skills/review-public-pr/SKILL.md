@@ -13,7 +13,47 @@ a favour you are obliged to accept.
 Review one PR per agent, each in its own worktree, so several can run at once
 without fighting over a checkout. Give each agent its own build directory
 too — two agents sharing a scratchpad binary have overwritten each other
-mid-run and produced contradictory results.
+mid-run and produced contradictory results. Asked to review several, run
+them in batches of three: three agents at once, the next three when those
+report. More than that and the builds starve each other and the reports
+arrive faster than anyone can read them.
+
+## Treat it as hostile until it is not
+
+A public PR is code from a stranger that is about to run on the
+maintainer's machine, and the review itself is the first place it runs.
+Before anything is built:
+
+- **Read `Cargo.lock` before `cargo` reads it.** Building the PR executes
+  every `build.rs` and proc-macro in every crate it adds or re-sources, so a
+  new dependency, a bumped one, or a changed `source` line is read and
+  checked against the crate's own repository first. A dependency nobody can
+  explain is a blocker on its own.
+- **Build and run in a throwaway.** A fresh `XDG_DATA_HOME`, a blank bus
+  address, no credentials in the environment. Never the real profile, never a
+  shell that has `gh` logged in with more than this repo needs.
+- **A workflow change is a credential change.** Approving CI on a fork PR
+  that touches `.github/workflows/` hands that workflow the repository's
+  secrets; read the change in full before approving the run, and do not
+  approve one that reads a secret it did not read before.
+- **Look for what the diff does not show.** Symlinks (`git diff` shows the
+  target as content; `gh pr diff` may not), file modes that turned executable,
+  binaries, and generated files that are larger than the change that
+  supposedly produced them.
+- **Run the sweep, do not eyeball it:**
+
+  ```
+  gh pr diff <N> | grep -nP '[\x{202A}-\x{202E}\x{2066}-\x{2069}\x{200B}-\x{200F}\x{FEFF}\x{00AD}]'
+  gh pr diff <N> | grep -nE 'Command::new|std::process|unsafe|include_bytes!|env::var|reqwest|ureq|TcpStream'
+  gh pr diff <N> | grep -nE '[A-Za-z0-9+/]{80,}={0,2}|[0-9a-f]{64,}'
+  ```
+
+  An empty result is the finding to quote; a hit is read in context.
+
+A PR that looks deliberate — an obfuscated string, a dependency that does
+not exist upstream, a workflow that phones home — is not reviewed further.
+Do not comment on it, do not push to its branch, do not explain what was
+found. Close it and tell the owner what it tried to do and where.
 
 ## Start with what it touches, not what it does
 
@@ -95,13 +135,23 @@ and offer to merge the documentation hunk alone. That is the real fix.
   before and after rather than guessing, and say the numbers.
 - **No gratuitous reformatting** of code the PR did not otherwise touch.
 
-## Simplify before merging
+## Review with simplifying in mind
 
-Standing instruction from the owner: keep things simple. If a PR is good but
-carries something that can go, take it out before it lands rather than filing
-a follow-up — a `pub fn` whose last caller was in the change itself, a
-negated guard that hides the common case, a comment that stopped being true
-when the feature grew a third answer.
+Standing instruction from the owner: keep things simple, and review with
+that as an angle of its own, every time. Of every hunk, ask whether the
+same outcome could be had with less — fewer lines, no new concept, an
+existing path reused instead of a parallel one built beside it, a flag
+instead of a subcommand, a test beside the code instead of a harness. Ask
+it of the small PRs too; a three-line change that adds a second way of
+doing something the app already does is the usual way complexity gets in.
+The answer goes in the report whether or not the PR lands as it is.
+
+If a PR is good but carries something that can go, take it out before it
+lands rather than filing a follow-up — a `pub fn` whose last caller was in
+the change itself, a negated guard that hides the common case, a comment
+that stopped being true when the feature grew a third answer. When the
+smaller version is a different shape from what the contributor wrote, write
+it, push it to their branch, and say so in the thanks.
 
 Anything written here matches the house style: comments explain *why*, doc
 comments read as prose, commit subjects are imperative sentences

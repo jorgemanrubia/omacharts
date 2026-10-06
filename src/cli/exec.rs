@@ -138,7 +138,6 @@ pub fn dispatch(args: &[String], store: &Store, live: Option<&dyn Live>) -> Outc
         ("config", "get") => config_get(store, m, json),
         ("config", "set") => config_set(store, m, json),
         ("config", "bars") => config_bars(store, m, json, live),
-        ("config", "refresh") => config_refresh(store, m, json),
 
         ("plugin", "status") => plugin_status(json),
         ("plugin", "install") => plugin_install(json),
@@ -2495,30 +2494,6 @@ fn config_set(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<Stri
 /// them on the default when they changed their mind.
 const COLOURED_BARS: &str = "coloured_bar_scheme";
 
-/// Whether charts left open fetch new bars for themselves.
-///
-/// One setting for the whole application rather than one per chart, which is
-/// why it reads and writes a setting rather than a pane. The key and the
-/// default are the window's own, imported rather than respelled here, so that
-/// the dialog, the timer and this command cannot come to disagree about
-/// either — the mistake the bar colouring above has to pin with a test.
-///
-/// Turning it off does not need the window told. The timer reads the setting
-/// on every tick, so the next one to come round finds it and stops.
-fn config_refresh(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<String, Fault> {
-    use crate::ui::window::{auto_refresh, SETTING_AUTO_REFRESH};
-    let Some(state) = arg(m, "STATE") else {
-        let on = auto_refresh(store);
-        return match as_json {
-            true => Ok(format!("{}\n", json!({"autoRefresh": on}))),
-            false => Ok(format!("{}\n", if on { "on" } else { "off" })),
-        };
-    };
-    let on = state == "on";
-    store.set_setting_bool(SETTING_AUTO_REFRESH, on);
-    said(as_json, json!({"autoRefresh": on}), format!("automatic chart refreshing is {state}"))
-}
-
 /// Colour or no colour, and which way round, asked the way people arrive at
 /// it.
 ///
@@ -3477,30 +3452,6 @@ mod tests {
     /// its own constant is private to it, so a rename there would leave the two
     /// quietly disagreeing: the dialog would put back a scheme the terminal
     /// never wrote.
-    #[test]
-    fn automatic_refreshing_can_be_read_and_set() {
-        let store = Store::memory().unwrap();
-        assert_eq!(
-            run("config refresh", &store).out.trim(),
-            "on",
-            "charts keep themselves current unless somebody says otherwise"
-        );
-        assert_eq!(run("config refresh off", &store).code, 0);
-        assert_eq!(run("config refresh", &store).out.trim(), "off");
-        assert_eq!(run("config refresh on", &store).code, 0);
-        assert_eq!(run("config refresh", &store).out.trim(), "on");
-    }
-
-    /// Reading a setting nobody has written must still answer, because the
-    /// default is the answer. `config get` cannot do this — an unwritten key
-    /// is "never been set" there — which is most of why the verb exists.
-    #[test]
-    fn refreshing_reports_its_default_before_anybody_has_chosen() {
-        let store = Store::memory().unwrap();
-        assert!(crate::ui::window::auto_refresh(&store), "on by default");
-        assert_eq!(run("config refresh --json", &store).out.trim(), r#"{"autoRefresh":true}"#);
-    }
-
     #[test]
     fn the_scheme_this_remembers_is_the_one_the_dialog_remembers() {
         let dialog = include_str!("../ui/preferences.rs");

@@ -289,10 +289,15 @@ impl Watchlist {
         link.set_always_show_arrow(false);
         link.set_valign(gtk::Align::Center);
 
+        // Flush with the column heading under it: the header starts 12px in,
+        // and the name sits directly above the word "Symbol", so the two
+        // read as one left edge. The switcher wears no horizontal padding
+        // (see `.rail-switcher`), so this margin alone decides where the
+        // name's first letter lands.
         let named = gtk::Box::new(gtk::Orientation::Horizontal, 2);
         named.set_halign(gtk::Align::Start);
         named.set_valign(gtk::Align::Start);
-        named.set_margin_start(8);
+        named.set_margin_start(12);
         named.set_margin_top(1);
         named.append(&switcher);
         named.append(&link);
