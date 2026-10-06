@@ -107,15 +107,6 @@ impl Column {
     /// moved on without overriding a choice somebody actually made.
     const PREVIOUS_DEFAULT: [Column; 3] = [Column::Symbol, Column::Change, Column::ChangePct];
 
-    pub fn label(self) -> &'static str {
-        match self {
-            Column::Symbol => "Symbol",
-            Column::Last => "Last",
-            Column::Change => "Chg",
-            Column::ChangePct => "Chg%",
-        }
-    }
-
     pub fn key(self) -> &'static str {
         match self {
             Column::Symbol => "symbol",
@@ -205,7 +196,6 @@ fn section_for_new_symbol(sections: &[i64], selected: Option<usize>, root: i64) 
 pub struct Watchlist {
     pub widget: gtk::Box,
     list: gtk::ListBox,
-    header: gtk::Box,
     /// Why the prices are dashes, shown only while they are.
     trouble: gtk::Label,
     store: Rc<Store>,
@@ -262,12 +252,12 @@ impl Watchlist {
         scroller.set_vexpand(true);
         scroller.set_hscrollbar_policy(gtk::PolicyType::Never);
 
-        let header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        header.set_margin_start(12);
-        header.set_margin_end(10);
-        header.set_margin_top(6);
-        header.set_margin_bottom(4);
-        // Stepped down from under the window's corner controls: see `.rail-header`.
+        // The band across the top of the rail: nothing in it but its height,
+        // which `.rail-header` sets. It used to hold the column headings —
+        // "Symbol", "Last", "Chg%" — which said nothing a row did not already
+        // say for itself, so now it only steps down from under the window's
+        // corner controls and stops a few pixels later.
+        let header = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         header.add_css_class("rail-header");
 
         // The step `.rail-header` takes is thirty pixels of nothing, and the
@@ -289,11 +279,9 @@ impl Watchlist {
         link.set_always_show_arrow(false);
         link.set_valign(gtk::Align::Center);
 
-        // Flush with the column heading under it: the header starts 12px in,
-        // and the name sits directly above the word "Symbol", so the two
-        // read as one left edge. The switcher wears no horizontal padding
-        // (see `.rail-switcher`), so this margin alone decides where the
-        // name's first letter lands.
+        // Twelve pixels in, where a row's margin starts. The switcher wears no
+        // horizontal padding (see `.rail-switcher`), so this margin alone
+        // decides where the name's first letter lands.
         let named = gtk::Box::new(gtk::Orientation::Horizontal, 2);
         named.set_halign(gtk::Align::Start);
         named.set_valign(gtk::Align::Start);
@@ -342,7 +330,6 @@ impl Watchlist {
         let watchlist = Rc::new(Watchlist {
             widget,
             list,
-            header,
             trouble,
             store,
             index,
@@ -978,21 +965,6 @@ impl Watchlist {
 
         self.quiet.set(true);
         clear_rows(&self.list);
-        clear_children(&self.header);
-
-        for column in self.columns.borrow().iter() {
-            let label = gtk::Label::new(Some(column.label()));
-            label.add_css_class("dim-label");
-            label.add_css_class("caption");
-            if *column == Column::Symbol {
-                label.set_xalign(0.0);
-                label.set_hexpand(true);
-            } else {
-                label.set_xalign(1.0);
-                label.set_width_chars(column.width_chars());
-            }
-            self.header.append(&label);
-        }
 
         self.write_switcher();
 
@@ -1998,17 +1970,6 @@ fn clear_rows(list: &gtk::ListBox) {
         if let Some(row) = widget.downcast_ref::<gtk::ListBoxRow>() {
             list.remove(row);
         }
-    }
-}
-
-/// The same for the column headings. A box takes any child off, popovers
-/// included, so this cannot stick the way a list can — it walks the siblings
-/// to say so once rather than leave two shapes of the same loop side by side.
-fn clear_children(box_: &gtk::Box) {
-    let mut child = box_.first_child();
-    while let Some(widget) = child {
-        child = widget.next_sibling();
-        box_.remove(&widget);
     }
 }
 
