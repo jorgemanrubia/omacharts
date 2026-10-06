@@ -1239,24 +1239,30 @@ fn band_groups(
         show.add_suffix(&switch);
         group.add(&show);
 
-        let deviations = adw::SpinRow::with_range(0.1, 6.0, 0.1);
-        deviations.set_title("Standard deviations");
-        deviations.set_digits(1);
-        deviations.set_value(band.deviations);
+        // Tenths, because one, one and a half and two are the figures people
+        // reach for, and six is further out than any band is drawn.
         let window_for_dev = window.clone();
         let refresh_for_dev = refresh.clone();
-        deviations.connect_value_notify(move |row| {
-            let value = row.value();
-            update(&window_for_dev, id, move |indicator| {
-                if let Params::Vwap { bands, .. } = &mut indicator.params
-                    && let Some(band) = bands.get_mut(index)
-                {
-                    band.deviations = value;
-                }
-            });
-            refresh_for_dev.run();
-        });
-        group.add(&deviations);
+        let deviations = controls::bounded_row(
+            "Standard deviations",
+            None,
+            band.deviations,
+            0.1,
+            6.0,
+            0.1,
+            1,
+            move |value| {
+                update(&window_for_dev, id, move |indicator| {
+                    if let Params::Vwap { bands, .. } = &mut indicator.params
+                        && let Some(band) = bands.get_mut(index)
+                    {
+                        band.deviations = value;
+                    }
+                });
+                refresh_for_dev.run();
+            },
+        );
+        group.add(&deviations.row);
 
         let shaded = adw::ActionRow::new();
         shaded.set_title("Shaded");
@@ -1422,20 +1428,14 @@ fn spin_row(
     row
 }
 
-/// A proportion: a slider to aim with, and a box to say it in.
-///
-/// Every percentage in here is chosen by feel — a pane is about a third, a
-/// shading is barely there — and a pair of − and + buttons is the wrong shape
-/// for that question. The box beside the slider is for the times you already
-/// know the figure and would rather type it than aim at it.
-///
-/// One `GtkAdjustment` drives both, so there is one value rather than two
-/// controls that have to be kept in step: dragging moves the number as it
-/// goes, and typing moves the handle.
+/// A proportion, shown as the whole percent a person reads.
 ///
 /// The range arrives as the fractions the thing is really stored in, and
 /// 0–100 is only how it is shown. Callers that did the arithmetic themselves
 /// are how one of these ends up off by a hundred with nobody noticing.
+///
+/// Whole percent. Nothing on the chart shows a tenth of one, and a slider that
+/// stops between figures is a slider the box then disagrees with.
 #[allow(clippy::too_many_arguments)]
 fn percent_row(
     window: &Rc<Window>,
@@ -1447,49 +1447,23 @@ fn percent_row(
     most: f64,
     apply: impl Fn(&mut Indicator, f64) + 'static,
 ) -> adw::ActionRow {
-    let row = adw::ActionRow::new();
-    row.set_title(title);
-
-    let adjustment = percent_adjustment(share, least, most);
-
-    let slider = gtk::Scale::new(gtk::Orientation::Horizontal, Some(&adjustment));
-    slider.set_draw_value(false);
-    slider.set_round_digits(0);
-    slider.set_size_request(180, -1);
-    slider.set_valign(gtk::Align::Center);
-
-    let entry = percent_entry(&adjustment);
-
-    row.add_suffix(&slider);
-    row.add_suffix(&entry);
-
     let window = window.clone();
     let refresh = refresh.clone();
-    adjustment.connect_value_changed(move |adjustment| {
-        let share = as_share(adjustment.value());
-        update(&window, id, |indicator| apply(indicator, share));
-        refresh.run();
-    });
-    row
-}
-
-/// The box a percentage can be typed into.
-///
-/// The figure is committed on Enter or on leaving the box, never per
-/// keystroke: the 5 on the way to 50 would otherwise reach the chart and
-/// redraw it on the way past. Anything outside the range is pulled back to the
-/// nearest end it allows rather than refused — the figure you can have is more
-/// use than a complaint about the one you cannot — and anything that is not a
-/// number at all leaves the value where it was.
-fn percent_entry(adjustment: &gtk::Adjustment) -> gtk::SpinButton {
-    let entry = gtk::SpinButton::new(Some(adjustment), 1.0, 0);
-    entry.set_valign(gtk::Align::Center);
-    entry.set_numeric(true);
-    entry.set_snap_to_ticks(true);
-    entry.set_update_policy(gtk::SpinButtonUpdatePolicy::IfValid);
-    entry.set_width_chars(3);
-    entry.set_max_width_chars(3);
-    entry
+    controls::bounded_row(
+        title,
+        None,
+        as_percent(share),
+        as_percent(least),
+        as_percent(most),
+        1.0,
+        0,
+        move |percent| {
+            let share = as_share(percent);
+            update(&window, id, |indicator| apply(indicator, share));
+            refresh.run();
+        },
+    )
+    .row
 }
 
 /// A stored fraction as the whole percent a person reads, and back.
@@ -1504,26 +1478,6 @@ fn as_percent(share: f64) -> f64 {
 /// The percent on the row as the fraction the indicator is stored in.
 fn as_share(percent: f64) -> f64 {
     percent / 100.0
-}
-
-/// The one value a percentage row runs on, in whole percent.
-///
-/// Both controls share it, which is what keeps them from drifting apart, and
-/// it is where the range is enforced: a figure past either end is pulled back
-/// to the end rather than written through to be clamped later somewhere the
-/// person who typed it cannot see.
-///
-/// Whole percent. Nothing on the chart shows a tenth of one, and a slider that
-/// stops between figures is a slider the box then disagrees with.
-fn percent_adjustment(share: f64, least: f64, most: f64) -> gtk::Adjustment {
-    gtk::Adjustment::new(
-        as_percent(share),
-        as_percent(least),
-        as_percent(most),
-        1.0,
-        10.0,
-        0.0,
-    )
 }
 
 /// An oscillator's overbought and oversold levels, the pair RSI and the
