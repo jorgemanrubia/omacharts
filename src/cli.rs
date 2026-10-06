@@ -347,7 +347,7 @@ pub struct Quote {
 }
 
 /// Read the cached daily bars for an instrument and work out its move.
-pub fn quote(store: &Store, provider: &impl Provider, instrument: &Instrument) -> Option<Quote> {
+pub fn quote(store: &Store, provider: &dyn Provider, instrument: &Instrument) -> Option<Quote> {
     let key = cache_key(provider, instrument)?;
     let bars = store.load_bars(&key, Timeframe::days(1));
     let (previous, last) = (bars.get(bars.len().checked_sub(2)?)?, bars.last()?);
@@ -360,7 +360,7 @@ pub fn quote(store: &Store, provider: &impl Provider, instrument: &Instrument) -
     })
 }
 
-pub fn cache_key(provider: &impl Provider, instrument: &Instrument) -> Option<String> {
+pub fn cache_key(provider: &dyn Provider, instrument: &Instrument) -> Option<String> {
     provider.symbol_for(instrument).map(|symbol| format!("{}:{symbol}", provider.id()))
 }
 
@@ -369,7 +369,7 @@ pub fn cache_key(provider: &impl Provider, instrument: &Instrument) -> Option<St
 ///
 /// Who acts on it depends on where we are running, which is the distinction
 /// [`Live::warm`] exists to make.
-fn stale_daily(store: &Store, provider: &impl Provider, instruments: &[Instrument]) -> Vec<Instrument> {
+fn stale_daily(store: &Store, provider: &dyn Provider, instruments: &[Instrument]) -> Vec<Instrument> {
     let now = chrono::Utc::now().timestamp();
     let daily = Timeframe::days(1);
 
@@ -395,7 +395,7 @@ fn stale_daily(store: &Store, provider: &impl Provider, instruments: &[Instrumen
 /// is the one place that paces requests. Speculative, so they go two seconds
 /// apart and are refused outright while the provider is throttling: a bar
 /// widget must never cost the app its rate limit.
-fn refresh(store: &Store, provider: &impl Provider, instruments: &[Instrument]) {
+fn refresh(store: &Store, provider: &dyn Provider, instruments: &[Instrument]) {
     let (sender, receiver) = async_channel::unbounded();
     let loader = Loader::new(crate::feeds::selected(store), sender);
     let mut outstanding = 0;
@@ -433,9 +433,9 @@ pub fn watchlist_json(store: &Store, refresh_first: bool, live: Option<&dyn Live
             // loader thread and answer from the cache, which is all the
             // widget draws anyway: a quote that arrives on the next tick is
             // not worth six seconds of frozen application.
-            Some(live) => live.warm(&stale_daily(store, &provider, &instruments)),
+            Some(live) => live.warm(&stale_daily(store, provider.as_ref(), &instruments)),
             // A process of its own, with no window and nothing to block.
-            None => refresh(store, &provider, &instruments),
+            None => refresh(store, provider.as_ref(), &instruments),
         }
     }
 
@@ -462,7 +462,7 @@ pub fn watchlist_json(store: &Store, refresh_first: bool, live: Option<&dyn Live
             if e > 0 {
                 out.push(',');
             }
-            out.push_str(&entry_json(store, &provider, instrument));
+            out.push_str(&entry_json(store, provider.as_ref(), instrument));
         }
         out.push_str("]}");
     }
@@ -524,7 +524,7 @@ fn colors_json(store: &Store) -> String {
     )
 }
 
-fn entry_json(store: &Store, provider: &impl Provider, instrument: &Instrument) -> String {
+fn entry_json(store: &Store, provider: &dyn Provider, instrument: &Instrument) -> String {
     let mut fields = format!(
         "{{\"symbol\":{},\"suffix\":{},\"display\":{},\"name\":{},\"kind\":{}",
         json_string(&instrument.symbol),

@@ -23,7 +23,8 @@
 
 use std::sync::OnceLock;
 
-use omacharts_engine::providers::{self, Feed, Listed};
+use omacharts_engine::providers::{self, Listed};
+use omacharts_engine::Provider;
 
 use crate::store::Store;
 
@@ -59,7 +60,7 @@ pub fn in_use(store: &Store) -> &'static Listed {
 ///
 /// Cheap, and called from several places for that reason: building one
 /// connects to nothing. See `omacharts_engine::providers`.
-pub fn selected(store: &Store) -> Feed {
+pub fn selected(store: &Store) -> Box<dyn Provider> {
     providers::selected(Some(in_use(store).id))
 }
 
@@ -80,7 +81,6 @@ pub fn stored(store: &Store) -> &'static Listed {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use omacharts_engine::Provider;
 
     fn store() -> Store {
         Store::memory().expect("an empty database")

@@ -28,26 +28,10 @@
 pub mod tos;
 pub mod yahoo;
 
-use std::time::{Duration, Instant};
-
-use crate::bars::{Bar, Timeframe};
-use crate::provider::{Capability, Delivery, Pacing, Provider, ProviderError};
-use crate::symbols::{Instrument, InstrumentKind};
+use crate::provider::Provider;
 
 pub use tos::Tos;
 pub use yahoo::Yahoo;
-
-/// The feed this process is using.
-///
-/// One value, chosen at startup, dispatching to whichever feed it holds.
-/// An enum rather than a `Box<dyn Provider>` because the loader calls
-/// [`Provider::pacing`] and [`Provider::cooldown_until`] on every pass of its
-/// queue, and because a feed added here cannot be forgotten: the compiler
-/// lists the arms that need filling in.
-pub enum Feed {
-    Yahoo(Yahoo),
-    Tos(Tos),
-}
 
 /// A feed as it is offered: what to call it, what it serves, and whether
 /// picking it is the end of the matter or the start of signing in to
@@ -97,87 +81,18 @@ pub fn listed(id: &str) -> Option<&'static Listed> {
 /// failing, because a settings file is not a command line — refusing to start
 /// over a word in a database would be a worse answer than charting from
 /// Yahoo and saying so in the settings.
-pub fn selected(stored: Option<&str>) -> Feed {
+///
+/// Behind the trait, not behind an enum of the feeds. An enum here was
+/// ninety lines re-stating every method of [`Provider`] to forward it, which
+/// is a second copy of the boundary that has to be edited in step with the
+/// first — and a copy the next feed has to be added to as well, which is
+/// exactly the kind of thing that gets forgotten. The trait is already the
+/// one description of what a feed can do, and it is object-safe, so this is
+/// the whole dispatch.
+pub fn selected(stored: Option<&str>) -> Box<dyn Provider> {
     match stored.and_then(listed) {
-        Some(feed) if feed.id == tos::LISTED.id => Feed::Tos(Tos::new()),
-        _ => Feed::Yahoo(Yahoo::new()),
-    }
-}
-
-impl Provider for Feed {
-    fn id(&self) -> &'static str {
-        match self {
-            Feed::Yahoo(provider) => provider.id(),
-            Feed::Tos(provider) => provider.id(),
-        }
-    }
-
-    fn label(&self) -> &'static str {
-        match self {
-            Feed::Yahoo(provider) => provider.label(),
-            Feed::Tos(provider) => provider.label(),
-        }
-    }
-
-    fn delay_minutes(&self, kind: InstrumentKind) -> u32 {
-        match self {
-            Feed::Yahoo(provider) => provider.delay_minutes(kind),
-            Feed::Tos(provider) => provider.delay_minutes(kind),
-        }
-    }
-
-    fn symbol_for(&self, instrument: &Instrument) -> Option<String> {
-        match self {
-            Feed::Yahoo(provider) => provider.symbol_for(instrument),
-            Feed::Tos(provider) => provider.symbol_for(instrument),
-        }
-    }
-
-    fn capabilities(&self) -> &'static [Capability] {
-        match self {
-            Feed::Yahoo(provider) => provider.capabilities(),
-            Feed::Tos(provider) => provider.capabilities(),
-        }
-    }
-
-    fn bars(
-        &self,
-        symbol: &str,
-        timeframe: Timeframe,
-        since: Option<i64>,
-    ) -> Result<Vec<Bar>, ProviderError> {
-        match self {
-            Feed::Yahoo(provider) => provider.bars(symbol, timeframe, since),
-            Feed::Tos(provider) => provider.bars(symbol, timeframe, since),
-        }
-    }
-
-    fn delivery(&self) -> Delivery {
-        match self {
-            Feed::Yahoo(provider) => provider.delivery(),
-            Feed::Tos(provider) => provider.delivery(),
-        }
-    }
-
-    fn pacing(&self) -> Pacing {
-        match self {
-            Feed::Yahoo(provider) => provider.pacing(),
-            Feed::Tos(provider) => provider.pacing(),
-        }
-    }
-
-    fn cooldown_until(&self) -> Option<Instant> {
-        match self {
-            Feed::Yahoo(provider) => provider.cooldown_until(),
-            Feed::Tos(provider) => provider.cooldown_until(),
-        }
-    }
-
-    fn retry_after(&self, error: &ProviderError, attempt: u32) -> Option<Duration> {
-        match self {
-            Feed::Yahoo(provider) => provider.retry_after(error, attempt),
-            Feed::Tos(provider) => provider.retry_after(error, attempt),
-        }
+        Some(feed) if feed.id == tos::LISTED.id => Box::new(Tos::new()),
+        _ => Box::new(Yahoo::new()),
     }
 }
 

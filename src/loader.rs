@@ -206,10 +206,13 @@ struct Job {
 }
 
 impl Loader {
-    pub fn new<P>(provider: P, sender: async_channel::Sender<Response>) -> Loader
-    where
-        P: Provider + 'static,
-    {
+    /// `provider` is whichever feed this process chose. Taken as a trait
+    /// object rather than a type parameter because there is exactly one of
+    /// these per process, chosen at runtime: making the queue generic over
+    /// it bought a devirtualised `pacing()` on the slowest path in the app —
+    /// one that ends in an HTTP request — and in exchange compiled a second
+    /// copy of the whole loader for every feed that exists.
+    pub fn new(provider: Box<dyn Provider>, sender: async_channel::Sender<Response>) -> Loader {
         let inner = Arc::new(Inner {
             queue: Mutex::new(Queue {
                 jobs: Vec::new(),
@@ -228,7 +231,7 @@ impl Loader {
             while let Some(dispatch) = worker.take(rules) {
                 let (job, outcome) = match dispatch {
                     Dispatch::Send(job) => {
-                        let outcome = attempt(&job.request, &provider);
+                        let outcome = attempt(&job.request, provider.as_ref());
                         (job, outcome)
                     }
                     Dispatch::Refuse(job) => {
@@ -835,7 +838,7 @@ enum Outcome {
 /// Leaves `unasked` false on a failure: whether anybody is waiting for this
 /// depends on what has happened to the queue since it went out, which only
 /// [`Inner::finished`] is in a position to know.
-fn attempt<P: Provider>(request: &Request, provider: &P) -> Outcome {
+fn attempt(request: &Request, provider: &dyn Provider) -> Outcome {
     let native = request.timeframe.native();
     let Ok(store) = Store::open() else {
         return Outcome::Done(failed(request, Vec::new(), FetchFailure::LocalCache));

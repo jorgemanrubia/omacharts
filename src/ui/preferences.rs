@@ -14,7 +14,6 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
-use omacharts_engine::Provider;
 use omacharts_engine::theme::{
     BarScheme, BarSlot, Source, Theme, UiSlot, FALLBACK_THEME_ID, OMARCHY_ID, SWATCH_NAMES,
     THEME_BARS_ID, THEME_MONO_ID, THEME_RED_UP_ID,
@@ -616,11 +615,8 @@ fn build_market_data(context: &Rc<Context>) {
 
     let provider = adw::ActionRow::new();
     provider.set_title("Provider");
-    let feed = omacharts_engine::providers::selected(context.store.setting("provider").as_deref());
-    provider.set_subtitle(match feed.id() {
-        "tos" => "thinkorswim · real time",
-        _ => "Yahoo Finance · delayed 10 min for futures, 15 for indexes",
-    });
+    let feed = crate::feeds::stored(&context.store);
+    provider.set_subtitle(&format!("{} · {}", feed.label, feed.summary));
     group.add(&provider);
 
     let cache = adw::ActionRow::new();

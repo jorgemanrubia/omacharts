@@ -14,7 +14,7 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::glib;
-use omacharts_engine::providers::{self, Feed};
+use omacharts_engine::providers;
 use omacharts_engine::refresh;
 use omacharts_engine::{
     resample, BarStyle, Delivery, FetchFailure, Indicator, Instrument, Provider, SearchIndex,
@@ -1450,7 +1450,7 @@ pub struct Window {
     theming: Rc<RefCell<Theming>>,
     search: Rc<SymbolSearch>,
     watchlist: RefCell<Option<Rc<Watchlist>>>,
-    provider: Rc<Feed>,
+    provider: Rc<dyn Provider>,
     loader: Loader,
     /// Folded series, keyed by cache key and the resolution shown.
     ///
@@ -1537,7 +1537,7 @@ impl Window {
             theming: theming.clone(),
             search: SymbolSearch::new(index.clone()),
             watchlist: RefCell::new(None),
-            provider: Rc::new(providers::selected(Some(feed))),
+            provider: Rc::from(providers::selected(Some(feed))),
             loader,
             series: Rc::new(RefCell::new(HashMap::new())),
             split: split.clone(),
