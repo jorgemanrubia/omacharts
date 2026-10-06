@@ -21,7 +21,7 @@ use std::rc::Rc;
 use adw::prelude::*;
 use gtk::{gio, glib};
 use omacharts_engine::drawings::{
-    self, Arrow, Configurations, Kind, Paint, Preset, Scope, Style, CONFIGURATIONS,
+    self, Arrow, ArrowHead, Configurations, Kind, Paint, Preset, Scope, Style, CONFIGURATIONS,
 };
 use omacharts_engine::Theme;
 
@@ -445,9 +445,12 @@ fn mark_edited(row: &adw::ActionRow, edited: bool) {
 fn describe(kind: Kind, style: &Style) -> String {
     match kind {
         Kind::Line => {
-            let arrow = match style.arrow {
-                Arrow::None => String::new(),
-                arrow => format!(", arrow {}", arrow.label().to_lowercase()),
+            let arrow = match (style.arrow, style.head) {
+                (Arrow::None, _) => String::new(),
+                (arrow, ArrowHead::Filled) => format!(", arrow {}", arrow.label().to_lowercase()),
+                (arrow, head) => {
+                    format!(", {} arrow {}", head.label().to_lowercase(), arrow.label().to_lowercase())
+                }
             };
             format!("{}, {}px{arrow}", name_of(&style.colour), style.width)
         }
@@ -565,8 +568,38 @@ fn style_editor(window: &Rc<Window>, kind: Kind, current: Style, on_style: Rc<dy
             let row_for_show = row.clone();
             shows.push(Rc::new(move |s: &Style| {
                 row_for_show.set_selected(Arrow::ALL.iter().position(|a| *a == s.arrow).unwrap_or(0) as u32);
-                // The samples are in the colour and width of the moment,
-                // which the rows above may just have changed.
+                // The samples are in the colour, width and head of the
+                // moment, which the other rows may just have changed.
+                samples.borrow_mut().retain(|weak| weak.upgrade().is_some());
+                for sample in samples.borrow().iter().filter_map(|weak| weak.upgrade()) {
+                    sample.queue_draw();
+                }
+            }));
+
+            // The head's shape, drawn too. Greyed while there is no arrow
+            // to put it on.
+            let row = adw::ComboRow::new();
+            row.set_title("Arrowhead");
+            let names: Vec<&str> = ArrowHead::ALL.iter().map(|h| h.label()).collect();
+            row.set_model(Some(&gtk::StringList::new(&names)));
+            let (factory, samples) = head_factory(theme.clone(), style.clone());
+            row.set_factory(Some(&factory));
+            row.set_selected(ArrowHead::ALL.iter().position(|h| *h == style.borrow().head).unwrap_or(0) as u32);
+            row.set_sensitive(style.borrow().arrow != Arrow::None);
+            {
+                let style = style.clone();
+                let emit = emit.clone();
+                row.connect_selected_notify(move |row| {
+                    let Some(shape) = ArrowHead::ALL.get(row.selected() as usize).copied() else { return };
+                    style.borrow_mut().head = shape;
+                    emit();
+                });
+            }
+            group.add(&row);
+            let row_for_show = row.clone();
+            shows.push(Rc::new(move |s: &Style| {
+                row_for_show.set_selected(ArrowHead::ALL.iter().position(|h| *h == s.head).unwrap_or(0) as u32);
+                row_for_show.set_sensitive(s.arrow != Arrow::None);
                 samples.borrow_mut().retain(|weak| weak.upgrade().is_some());
                 for sample in samples.borrow().iter().filter_map(|weak| weak.upgrade()) {
                     sample.queue_draw();
@@ -950,10 +983,10 @@ fn draw_preview(cr: &gtk::cairo::Context, w: f64, h: f64, theme: &Theme, kind: K
                 cr.line_to(b.0, b.1);
                 let _ = cr.stroke();
                 if style.arrow.at_end() {
-                    head(cr, a, b, line_w);
+                    head(cr, a, b, line_w, style.head);
                 }
                 if style.arrow.at_start() {
-                    head(cr, b, a, line_w);
+                    head(cr, b, a, line_w, style.head);
                 }
             }
             Kind::Rect => {
@@ -976,52 +1009,75 @@ fn draw_preview(cr: &gtk::cairo::Context, w: f64, h: f64, theme: &Theme, kind: K
 /// them to draw again. Weak, since the rows of a popped-down list go away.
 type Samples = Rc<RefCell<Vec<glib::WeakRef<gtk::DrawingArea>>>>;
 
-/// The arrow choices as pictures: a short line in the style's colour at
-/// its width, with a head at the ends the choice puts one on, and the
-/// choice's name beside it. One factory serves the row and its list.
+/// The arrow choices as pictures and nothing else: a short line in the
+/// style's colour at its width, with a head at the ends the choice puts
+/// one on. One factory serves the row and its list.
 fn arrow_factory(theme: Theme, style: Rc<RefCell<Style>>) -> (gtk::SignalListItemFactory, Samples) {
+    sample_factory(theme, style, |cr, style, arrow, w, h| {
+        let line_w = style.width.min(4.0);
+        let (a, b) = ((6.0, (h / 2.0).round()), (w - 6.0, (h / 2.0).round()));
+        cr.set_line_width(line_w);
+        cr.set_line_cap(gtk::cairo::LineCap::Round);
+        cr.move_to(a.0, a.1);
+        cr.line_to(b.0, b.1);
+        let _ = cr.stroke();
+        let arrow = Arrow::ALL.get(arrow).copied().unwrap_or_default();
+        if arrow.at_end() {
+            head(cr, a, b, line_w, style.head);
+        }
+        if arrow.at_start() {
+            head(cr, b, a, line_w, style.head);
+        }
+    })
+}
+
+/// The arrowhead shapes as pictures: the same short line, with each shape
+/// of head at its end.
+fn head_factory(theme: Theme, style: Rc<RefCell<Style>>) -> (gtk::SignalListItemFactory, Samples) {
+    sample_factory(theme, style, |cr, style, shape, w, h| {
+        let line_w = style.width.min(4.0);
+        let (a, b) = ((6.0, (h / 2.0).round()), (w - 6.0, (h / 2.0).round()));
+        cr.set_line_width(line_w);
+        cr.set_line_cap(gtk::cairo::LineCap::Round);
+        cr.move_to(a.0, a.1);
+        cr.line_to(b.0, b.1);
+        let _ = cr.stroke();
+        let shape = ArrowHead::ALL.get(shape).copied().unwrap_or_default();
+        head(cr, a, b, line_w, shape);
+    })
+}
+
+/// A list factory whose every row is a picture drawn by `paint`, given the
+/// style of the moment and the row's position, with the line's colour
+/// already set as the source. The pictures are collected so a change to
+/// the colour or width can ask them to draw again.
+fn sample_factory(
+    theme: Theme,
+    style: Rc<RefCell<Style>>,
+    paint: impl Fn(&gtk::cairo::Context, &Style, usize, f64, f64) + Clone + 'static,
+) -> (gtk::SignalListItemFactory, Samples) {
     let factory = gtk::SignalListItemFactory::new();
     let samples: Samples = Rc::new(RefCell::new(Vec::new()));
     factory.connect_setup(move |_, item| {
         let Some(item) = item.downcast_ref::<gtk::ListItem>() else { return };
-        let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
         let sample = gtk::DrawingArea::new();
-        sample.set_size_request(56, 18);
+        sample.set_size_request(84, 20);
         sample.set_valign(gtk::Align::Center);
-        let label = gtk::Label::new(None);
-        label.set_xalign(0.0);
-        row.append(&sample);
-        row.append(&label);
-        item.set_child(Some(&row));
+        item.set_child(Some(&sample));
     });
     {
         let samples = samples.clone();
         factory.connect_bind(move |_, item| {
             let Some(item) = item.downcast_ref::<gtk::ListItem>() else { return };
-            let Some(row) = item.child().and_downcast::<gtk::Box>() else { return };
-            let Some(sample) = row.first_child().and_downcast::<gtk::DrawingArea>() else { return };
-            let Some(label) = row.last_child().and_downcast::<gtk::Label>() else { return };
-            let arrow = Arrow::ALL.get(item.position() as usize).copied().unwrap_or_default();
-            label.set_text(arrow.label());
+            let Some(sample) = item.child().and_downcast::<gtk::DrawingArea>() else { return };
+            let position = item.position() as usize;
             let theme = theme.clone();
             let style = style.clone();
+            let paint = paint.clone();
             sample.set_draw_func(move |_, cr, w, h| {
-                let (w, h) = (w as f64, h as f64);
                 let style = style.borrow();
-                let line_w = style.width.min(4.0);
-                let (a, b) = ((4.0, (h / 2.0).round()), (w - 4.0, (h / 2.0).round()));
                 colors::set_source(cr, &style.colour.hex(&theme));
-                cr.set_line_width(line_w);
-                cr.set_line_cap(gtk::cairo::LineCap::Round);
-                cr.move_to(a.0, a.1);
-                cr.line_to(b.0, b.1);
-                let _ = cr.stroke();
-                if arrow.at_end() {
-                    head(cr, a, b, line_w);
-                }
-                if arrow.at_start() {
-                    head(cr, b, a, line_w);
-                }
+                paint(cr, &style, position, w as f64, h as f64);
             });
             samples.borrow_mut().push(sample.downgrade());
         });
@@ -1029,18 +1085,61 @@ fn arrow_factory(theme: Theme, style: Rc<RefCell<Style>>) -> (gtk::SignalListIte
     (factory, samples)
 }
 
-fn head(cr: &gtk::cairo::Context, tail: (f64, f64), tip: (f64, f64), width: f64) {
+fn head(cr: &gtk::cairo::Context, tail: (f64, f64), tip: (f64, f64), width: f64, shape: ArrowHead) {
+    paint_head(cr, tail, tip, width, 5.0 + 2.0 * width, shape);
+}
+
+/// An arrowhead at `tip`, pointing away from `tail`, `size` long, in the
+/// shape asked for: a filled triangle, an open chevron stroked at the
+/// line's width, or a swept barb with a notch where the line meets it.
+/// The source colour is already set.
+pub fn paint_head(
+    cr: &gtk::cairo::Context,
+    tail: (f64, f64),
+    tip: (f64, f64),
+    width: f64,
+    size: f64,
+    shape: ArrowHead,
+) {
     let (dx, dy) = (tip.0 - tail.0, tip.1 - tail.1);
-    let length = dx.hypot(dy).max(1.0);
+    let length = dx.hypot(dy);
+    if length < 1.0 {
+        return;
+    }
     let (ux, uy) = (dx / length, dy / length);
-    let size = 5.0 + 2.0 * width;
     let (bx, by) = (tip.0 - ux * size, tip.1 - uy * size);
-    let (px, py) = (-uy * size * 0.45, ux * size * 0.45);
-    cr.move_to(tip.0, tip.1);
-    cr.line_to(bx + px, by + py);
-    cr.line_to(bx - px, by - py);
-    cr.close_path();
-    let _ = cr.fill();
+    match shape {
+        ArrowHead::Filled => {
+            let (px, py) = (-uy * size * 0.45, ux * size * 0.45);
+            cr.move_to(tip.0, tip.1);
+            cr.line_to(bx + px, by + py);
+            cr.line_to(bx - px, by - py);
+            cr.close_path();
+            let _ = cr.fill();
+        }
+        ArrowHead::Open => {
+            let (px, py) = (-uy * size * 0.5, ux * size * 0.5);
+            cr.save().ok();
+            cr.set_line_width(width.max(1.0));
+            cr.set_line_cap(gtk::cairo::LineCap::Round);
+            cr.set_line_join(gtk::cairo::LineJoin::Round);
+            cr.move_to(bx + px, by + py);
+            cr.line_to(tip.0, tip.1);
+            cr.line_to(bx - px, by - py);
+            let _ = cr.stroke();
+            cr.restore().ok();
+        }
+        ArrowHead::Barb => {
+            let (px, py) = (-uy * size * 0.55, ux * size * 0.55);
+            let (nx, ny) = (tip.0 - ux * size * 0.6, tip.1 - uy * size * 0.6);
+            cr.move_to(tip.0, tip.1);
+            cr.line_to(bx + px, by + py);
+            cr.line_to(nx, ny);
+            cr.line_to(bx - px, by - py);
+            cr.close_path();
+            let _ = cr.fill();
+        }
+    }
 }
 
 fn rounded(cr: &gtk::cairo::Context, x: f64, y: f64, w: f64, h: f64, r: f64) {

@@ -3476,10 +3476,10 @@ fn draw_drawing(
             cr.line_to(projected.to.0, projected.to.1);
             let _ = cr.stroke();
             if style.arrow.at_end() {
-                arrowhead(cr, projected.from, projected.to, style.width);
+                arrowhead(cr, projected.from, projected.to, style.width, style.head);
             }
             if style.arrow.at_start() {
-                arrowhead(cr, projected.to, projected.from, style.width);
+                arrowhead(cr, projected.to, projected.from, style.width, style.head);
             }
         }
         DrawingKind::Rect => {
@@ -3518,21 +3518,14 @@ fn draw_drawing(
 
 /// A filled arrowhead at `tip`, pointing away from `tail`, sized to the
 /// line's width so a thick line gets a head to match.
-fn arrowhead(cr: &cairo::Context, tail: (f64, f64), tip: (f64, f64), width: f64) {
-    let (dx, dy) = (tip.0 - tail.0, tip.1 - tail.1);
-    let length = dx.hypot(dy);
-    if length < 1.0 {
-        return;
-    }
-    let (ux, uy) = (dx / length, dy / length);
-    let size = 6.0 + 3.0 * width;
-    let (bx, by) = (tip.0 - ux * size, tip.1 - uy * size);
-    let (px, py) = (-uy * size * 0.45, ux * size * 0.45);
-    cr.move_to(tip.0, tip.1);
-    cr.line_to(bx + px, by + py);
-    cr.line_to(bx - px, by - py);
-    cr.close_path();
-    let _ = cr.fill();
+fn arrowhead(
+    cr: &cairo::Context,
+    tail: (f64, f64),
+    tip: (f64, f64),
+    width: f64,
+    shape: omacharts_engine::ArrowHead,
+) {
+    crate::ui::drawing_settings::paint_head(cr, tail, tip, width, 6.0 + 3.0 * width, shape);
 }
 
 /// The visible bar closest in time to `ts`, if any is near enough to mean it.

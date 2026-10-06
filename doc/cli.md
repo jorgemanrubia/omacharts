@@ -449,7 +449,8 @@ omacharts chart drawing clear
 **A drawing follows a configuration, or has a look of its own.** Each kind
 has nine configurations, 1 to 9; a drawing that follows one looks like it and
 changes with it. `--config N` puts a drawing on configuration N. Any property
-given by hand — `--color`, `--width`, `--arrow` for a line; `--fill`,
+given by hand — `--color`, `--width`, `--arrow` and `--head` (filled, open
+or barb) for a line; `--fill`,
 `--alpha`, `--border`, `--width`, `--color` for a box's edge — takes the
 drawing off its configuration and gives it that look, which no later change
 to the configuration touches. The configurations themselves:

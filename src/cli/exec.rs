@@ -1767,7 +1767,7 @@ fn configurations_verb(
                 .ok_or_else(|| Fault::usage(format!("--config is a number from 1 to {CONFIGURATIONS}")))?;
             let edits = StyleEdits::read(m)?;
             if edits.is_empty() {
-                return Err(Fault::usage("nothing to configure: give --color, --width, --arrow, --border, --fill or --alpha".into()));
+                return Err(Fault::usage("nothing to configure: give --color, --width, --arrow, --head, --border, --fill or --alpha".into()));
             }
             let mut configs = store.drawing_configurations();
             let mut style = configs.of(kind, n).clone();
@@ -1846,6 +1846,7 @@ fn style_json(style: &omacharts_engine::Style) -> Value {
         "color": style.colour.spell(),
         "width": style.width,
         "arrow": style.arrow.key(),
+        "head": style.head.key(),
         "border": style.border,
         "fill": style.fill.spell(),
         "alpha": style.alpha,
@@ -1874,12 +1875,15 @@ fn describe_drawing(drawing: &omacharts_engine::Drawing, configs: &omacharts_eng
 /// A look in words: `amber, 2.5px, arrow at the end` for a line; `fill amber
 /// at 0.16, edge amber 1px` for a rectangle.
 fn describe_style(kind: omacharts_engine::DrawingKind, style: &omacharts_engine::Style) -> String {
-    use omacharts_engine::drawings::{Arrow, Kind};
+    use omacharts_engine::drawings::{Arrow, ArrowHead, Kind};
     match kind {
         Kind::Line => {
-            let arrow = match style.arrow {
-                Arrow::None => String::new(),
-                arrow => format!(", arrow {}", arrow.label().to_lowercase()),
+            let arrow = match (style.arrow, style.head) {
+                (Arrow::None, _) => String::new(),
+                (arrow, ArrowHead::Filled) => format!(", arrow {}", arrow.label().to_lowercase()),
+                (arrow, head) => {
+                    format!(", {} arrow {}", head.label().to_lowercase(), arrow.label().to_lowercase())
+                }
             };
             format!("{}, {}px{arrow}", style.colour.spell(), style.width)
         }
@@ -1899,6 +1903,7 @@ struct StyleEdits {
     colour: Option<omacharts_engine::Paint>,
     width: Option<f64>,
     arrow: Option<omacharts_engine::Arrow>,
+    head: Option<omacharts_engine::ArrowHead>,
     border: Option<bool>,
     fill: Option<omacharts_engine::Paint>,
     alpha: Option<f64>,
@@ -1906,7 +1911,7 @@ struct StyleEdits {
 
 impl StyleEdits {
     fn read(m: &clap::ArgMatches) -> Result<StyleEdits, Fault> {
-        use omacharts_engine::drawings::{Arrow, Paint};
+        use omacharts_engine::drawings::{Arrow, ArrowHead, Paint};
         let paint = |id: &str| -> Result<Option<Paint>, Fault> {
             let Some(text) = arg(m, id) else { return Ok(None) };
             Paint::parse(text).map(Some).ok_or_else(|| {
@@ -1927,6 +1932,13 @@ impl StyleEdits {
                     .ok_or_else(|| Fault::usage(format!("{text:?} is not an arrow; try none, end, start or both")))?,
             ),
         };
+        let head = match arg(m, "head") {
+            None => None,
+            Some(text) => Some(
+                ArrowHead::from_key(text)
+                    .ok_or_else(|| Fault::usage(format!("{text:?} is not an arrowhead; try filled, open or barb")))?,
+            ),
+        };
         let border = match arg(m, "border").map(String::as_str) {
             None => None,
             Some("on") => Some(true),
@@ -1937,6 +1949,7 @@ impl StyleEdits {
             colour: paint("color")?,
             width,
             arrow,
+            head,
             border,
             fill: paint("fill")?,
             alpha: fraction(m, "alpha", 0.0, 1.0)?,
@@ -1947,6 +1960,7 @@ impl StyleEdits {
         self.colour.is_none()
             && self.width.is_none()
             && self.arrow.is_none()
+            && self.head.is_none()
             && self.border.is_none()
             && self.fill.is_none()
             && self.alpha.is_none()
@@ -1961,6 +1975,9 @@ impl StyleEdits {
         }
         if let Some(arrow) = self.arrow {
             style.arrow = arrow;
+        }
+        if let Some(head) = self.head {
+            style.head = head;
         }
         if let Some(border) = self.border {
             style.border = border;

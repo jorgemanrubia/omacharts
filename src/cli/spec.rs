@@ -120,6 +120,8 @@ const LINKS: &[&str] =
 const COLOURING: &[&str] = &["coloured", "red-up", "monochrome"];
 const DRAWING_KINDS: &[&str] = &["line", "rect"];
 const ARROWS: &[&str] = &["none", "end", "start", "both"];
+/// The shapes an arrowhead comes in.
+const HEADS: &[&str] = &["filled", "open", "barb"];
 /// What a chart shares its drawings with.
 const SHARINGS: &[&str] = &[
     "global", "group-1", "group-2", "group-3", "group-4", "group-5", "group-6", "group-7",
@@ -662,6 +664,7 @@ pub const SURFACE: &[Noun] = &[
                     Flag::valued("color", "COLOUR", "a line's colour, or a box's edge: a preset name or #rrggbb"),
                     Flag::valued("width", "F", "a line's thickness in pixels, or a box's edge"),
                     Flag::valued("arrow", "WHERE", "which ends of a line wear an arrowhead").of(ARROWS),
+                    Flag::valued("head", "SHAPE", "the arrowhead's shape").of(HEADS),
                     Flag::valued("border", "BOOL", "whether a box has an edge").of(SWITCHES),
                     Flag::valued("fill", "COLOUR", "what a box is filled with: a preset name or #rrggbb"),
                     Flag::valued("alpha", "F", "how much of a box's fill shows, 0-1"),

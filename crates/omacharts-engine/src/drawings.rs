@@ -353,6 +353,41 @@ impl Paint {
     }
 }
 
+/// The shape of an arrowhead: a filled triangle, an open chevron, or a
+/// swept barb.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ArrowHead {
+    #[default]
+    Filled,
+    Open,
+    Barb,
+}
+
+impl ArrowHead {
+    pub const ALL: [ArrowHead; 3] = [ArrowHead::Filled, ArrowHead::Open, ArrowHead::Barb];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ArrowHead::Filled => "Filled",
+            ArrowHead::Open => "Open",
+            ArrowHead::Barb => "Barb",
+        }
+    }
+
+    pub fn key(self) -> &'static str {
+        match self {
+            ArrowHead::Filled => "filled",
+            ArrowHead::Open => "open",
+            ArrowHead::Barb => "barb",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<ArrowHead> {
+        ArrowHead::ALL.into_iter().find(|h| h.key().eq_ignore_ascii_case(key))
+    }
+}
+
 /// Which end of a line wears an arrowhead.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -413,6 +448,9 @@ pub struct Style {
     pub width: f64,
     #[serde(default)]
     pub arrow: Arrow,
+    /// The shape of the arrowhead, where there is one.
+    #[serde(default)]
+    pub head: ArrowHead,
     /// Whether a rectangle has an edge at all.
     #[serde(default = "Style::default_border")]
     pub border: bool,
@@ -433,6 +471,7 @@ impl Style {
             colour: Paint::preset(preset),
             width: DEFAULT_WIDTH,
             arrow: Arrow::None,
+            head: ArrowHead::Filled,
             border: true,
             fill: Paint::preset(preset),
             alpha: FILL_ALPHA,
@@ -447,6 +486,7 @@ impl Style {
             colour: Paint::preset(preset),
             width: BORDER_WIDTH,
             arrow: Arrow::None,
+            head: ArrowHead::Filled,
             border: true,
             fill: Paint::preset(preset),
             alpha: FILL_ALPHA,

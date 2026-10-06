@@ -123,7 +123,7 @@ the drawing is then on every chart of it that shares drawings (the default).
 Anchors are a moment and a price. A drawing follows one of nine
 configurations — `--config N`, shipped as the nine theme presets in order, 1
 being the up colour and 2 the down colour — or gets a look of its own from
-`--color`, `--width`, `--arrow`, `--fill`, `--alpha`, `--border`. Prefer a
+`--color`, `--width`, `--arrow`, `--head`, `--fill`, `--alpha`, `--border`. Prefer a
 configuration or a preset name to a hex, so the drawing keeps following the
 desktop theme:
 

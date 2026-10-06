@@ -28,7 +28,7 @@ pub use provider::{Capability, Delivery, FetchFailure, Pacing, Provider, Provide
 pub use session::Session;
 pub use symbols::{Instrument, InstrumentKind, SearchHit, SearchIndex};
 pub use drawings::{
-    Anchor, Arrow, Configurations, Drawing, Grip, Kind as DrawingKind, Paint, Preset, Projected,
+    Anchor, Arrow, ArrowHead, Configurations, Drawing, Grip, Kind as DrawingKind, Paint, Preset, Projected,
     Scope, Sharing, Style,
 };
 pub use frame::Frame;
