@@ -41,6 +41,11 @@ use gtk::glib;
 const PRICE_AXIS_W: f64 = 64.0;
 const TIME_AXIS_H: f64 = 24.0;
 const PAD: f64 = 10.0;
+/// How far past either end of the series the chart can be panned: empty
+/// columns before the first bar or after the last, so there is room to move
+/// things about at the edges. Fixed for now; a setting one day, if anyone
+/// wants a different amount.
+const OVERHANG_PX: f64 = 500.0;
 /// Space between two rows of the stack.
 const PANE_GAP: f64 = 6.0;
 /// The least of the chart the price keeps, however many panes are stacked
@@ -119,6 +124,13 @@ struct State {
     /// Pinned to the right edge, so new bars keep the view at "now" until the
     /// user pans away.
     anchored: bool,
+    /// Empty columns past the last bar, at the right edge, while anchored:
+    /// the room a hand dragged open. Kept as new bars arrive, so the margin
+    /// stays what it was set to. Zero at rest.
+    overhang: usize,
+    /// Empty columns before the first bar, at the left edge, when the hand
+    /// has dragged past the start of the series. Zero at rest.
+    lead: usize,
     drag: Option<Drag>,
     indicators: Vec<Drawn>,
     bar_style: BarStyle,
@@ -210,7 +222,7 @@ const HISTORY: usize = 200;
 /// charting tool, because muscle memory is the feature.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Drag {
-    Pan { first: usize, offset: f64 },
+    Pan { left: i64, offset: f64 },
     PriceScale { zoom: f64 },
     TimeScale { visible: usize },
     /// Pulling a line between two rows, to make the pane beside it taller or
@@ -665,6 +677,8 @@ impl State {
             visible: 160,
             pointer: None,
             anchored: true,
+            overhang: 0,
+            lead: 0,
             indicators: Vec::new(),
             bar_style: BarStyle::default(),
             show_grid: true,
@@ -736,15 +750,17 @@ impl State {
     /// it exactly; past either end of the loaded bars it keeps counting at
     /// the last bar's step, so a line can be drawn into the future.
     fn locate(&self, width: f64, height: f64, x: f64, y: f64) -> Option<Anchor> {
-        let (first, visible) = self.slice();
+        let (first, visible, lead) = self.view();
         if visible == 0 {
             return None;
         }
         let plan = layout(self, width, height);
         let (low, high) = price_range(self, &self.bars[first..first + visible])?;
         let price = high - (y - plan.price_y) / plan.price_h * (high - low);
-        let bar_w = plan.plot_w / visible as f64;
-        let index = first as f64 + (x - plan.plot_x) / bar_w - 0.5;
+        // A column's width, the room at either end counted: the plot's
+        // first column may stand before the first bar.
+        let bar_w = plan.plot_w / self.columns().max(1) as f64;
+        let index = first as f64 - lead as f64 + (x - plan.plot_x) / bar_w - 0.5;
         Some(Anchor::new(ts_at(&self.bars, index.round()), price))
     }
 
@@ -764,11 +780,14 @@ impl State {
 
     /// A drawing as pixels, through the same scales the candles use.
     fn project(&self, plan: &Layout, low: f64, high: f64, drawing: &Drawing) -> Projected {
-        let (first, visible) = self.slice();
-        let bar_w = plan.plot_w / visible.max(1) as f64;
+        let (first, _, lead) = self.view();
+        let bar_w = plan.plot_w / self.columns().max(1) as f64;
+        // The bar index the plot's left edge stands at, negative when room
+        // was opened before the first bar.
+        let left = first as f64 - lead as f64;
         let point = |anchor: &Anchor| {
             let index = index_of_ts(&self.bars, anchor.ts);
-            let x = plan.plot_x + (index - first as f64 + 0.5) * bar_w;
+            let x = plan.plot_x + (index - left + 0.5) * bar_w;
             let y = plan.price_y + plan.price_h * (high - anchor.price) / (high - low);
             (x, y)
         };
@@ -842,30 +861,80 @@ impl State {
     }
 
     /// Shift the view by a number of bars. Positive moves forward in time.
-    fn pan_by(&mut self, bars: f64) {
-        let (first, visible) = self.slice();
-        if self.bars.len() <= visible {
+    /// Past either end of the series the view runs into empty room, as far
+    /// as `OVERHANG_PX` allows at this zoom — which needs the plot's width.
+    fn pan_by(&mut self, bars: f64, plot_w: f64) {
+        let columns = self.columns();
+        if columns == 0 {
             return;
         }
-        let max_first = self.bars.len() - visible;
-        let next = (first as i64 + bars.round() as i64).clamp(0, max_first as i64) as usize;
-        self.first = next;
-        self.anchored = next >= max_first;
+        let len = self.bars.len() as i64;
+        let room = self.max_overhang(plot_w) as i64;
+        // The left edge as a column index: negative is room before the
+        // first bar.
+        let left = self.left_edge() + bars.round() as i64;
+        let left = left.clamp(-room, (len - columns as i64 + room).max(-room));
+        let right = left + columns as i64;
+        self.lead = (-left).max(0) as usize;
+        self.overhang = (right - len).max(0) as usize;
+        self.first = left.max(0) as usize;
+        self.anchored = right >= len;
     }
 
-    /// Zoom the time axis about `anchor`, a fraction across the plot.
-    fn zoom_time(&mut self, factor: f64, anchor: f64) {
-        let (first, visible) = self.slice();
-        let next = ((visible as f64 * factor).round() as usize)
+    /// The column index of the view's left edge, negative when there is
+    /// room before the first bar.
+    fn left_edge(&self) -> i64 {
+        let (first, _, lead) = self.view();
+        first as i64 - lead as i64
+    }
+
+    /// Keep the room at either end within `OVERHANG_PX` at this zoom.
+    fn trim_room(&mut self, plot_w: f64) {
+        let room = self.max_overhang(plot_w);
+        self.lead = self.lead.min(room);
+        self.overhang = self.overhang.min(room);
+    }
+
+    /// How many empty columns `OVERHANG_PX` is at this zoom — short of the
+    /// whole view, so a bar always stays on screen.
+    fn max_overhang(&self, plot_w: f64) -> usize {
+        let columns = self.columns();
+        if columns == 0 {
+            return 0;
+        }
+        let bar_w = plot_w / columns as f64;
+        ((OVERHANG_PX / bar_w).floor() as usize).min(columns - 1)
+    }
+
+    /// Columns across the plot: the bars in view and the empty ones past
+    /// the last. What a bar's width is measured against.
+    fn columns(&self) -> usize {
+        if self.bars.is_empty() {
+            return 0;
+        }
+        self.visible.clamp(MIN_VISIBLE, MAX_VISIBLE).min(self.bars.len())
+    }
+
+    /// Zoom the time axis about `anchor`, a fraction across the plot. On
+    /// the columns across the plot, not the bars in view: with room open
+    /// past an end those differ, and zooming on the smaller count would
+    /// shrink the view a step at a time.
+    fn zoom_time(&mut self, factor: f64, anchor: f64, plot_w: f64) {
+        let columns = self.columns();
+        let next = ((columns as f64 * factor).round() as usize)
             .clamp(MIN_VISIBLE, MAX_VISIBLE)
             .min(self.bars.len().max(MIN_VISIBLE));
         // Anchored to the right edge, zooming reveals history and the last bar
         // stays put — which is what you want when looking at the live edge.
         if !self.anchored {
-            let focus = first as f64 + anchor * visible as f64;
-            self.first = (focus - anchor * next as f64).max(0.0) as usize;
+            let focus = self.left_edge() as f64 + anchor * columns as f64;
+            let left = (focus - anchor * next as f64).round() as i64;
+            self.lead = (-left).max(0) as usize;
+            self.first = left.max(0) as usize;
         }
         self.visible = next;
+        // The room is so many pixels, which is fewer columns zoomed in.
+        self.trim_room(plot_w);
     }
 
     /// Stretch or compress the price scale, taking it off automatic.
@@ -878,27 +947,42 @@ impl State {
         self.price_zoom = (self.price_zoom * factor).clamp(MIN_PRICE_ZOOM, MAX_PRICE_ZOOM);
     }
 
-    /// Back to fitting the data, at the live edge.
+    /// Back to fitting the data, at the live edge, with no room past it.
     fn reset_view(&mut self) {
         self.price_auto = true;
         self.price_zoom = 1.0;
         self.price_offset = 0.0;
         self.visible = 160;
         self.anchored = true;
+        self.overhang = 0;
+        self.lead = 0;
     }
 
-    /// The visible slice, clamped to what we actually have.
+    /// The bars in view: the first, and how many. Fewer than the columns
+    /// across the plot when the view hangs past either end.
     fn slice(&self) -> (usize, usize) {
-        if self.bars.is_empty() {
-            return (0, 0);
-        }
-        let visible = self.visible.clamp(MIN_VISIBLE, MAX_VISIBLE).min(self.bars.len());
-        let first = if self.anchored {
-            self.bars.len() - visible
-        } else {
-            self.first.min(self.bars.len() - visible)
-        };
+        let (first, visible, _) = self.view();
         (first, visible)
+    }
+
+    /// The view: the first bar in it, how many bars, and how many empty
+    /// columns stand before the first. The room at either end is capped at
+    /// one column short of the view, so a bar always stays on screen.
+    fn view(&self) -> (usize, usize, usize) {
+        let columns = self.columns();
+        if columns == 0 {
+            return (0, 0, 0);
+        }
+        let len = self.bars.len() as i64;
+        let left = if self.anchored {
+            len + self.overhang.min(columns - 1) as i64 - columns as i64
+        } else {
+            self.first as i64 - self.lead.min(columns - 1) as i64
+        };
+        let left = left.min(len - 1);
+        let first = left.max(0);
+        let right = (left + columns as i64).min(len);
+        (first as usize, (right - first).max(0) as usize, (-left).max(0) as usize)
     }
 }
 
@@ -1499,7 +1583,7 @@ impl ChartView {
             let Some((low, high)) = price_range(&state, &state.bars[first..first + visible]) else {
                 return;
             };
-            let bar_w = plan.plot_w / visible as f64;
+            let bar_w = plan.plot_w / state.columns().max(1) as f64;
             let by_price = -dy / plan.price_h * (high - low);
             state.remember();
             let mut moved = Vec::new();
@@ -1582,6 +1666,8 @@ impl ChartView {
         state.timeframe = timeframe;
         if changed {
             state.anchored = true;
+            state.overhang = 0;
+            state.lead = 0;
             state.visible = 160;
         }
         drop(state);
@@ -1720,17 +1806,23 @@ impl ChartView {
 
     /// Jump back to the right edge and follow new bars again.
     pub fn go_to_latest(&self) {
-        self.state.borrow_mut().anchored = true;
+        let mut state = self.state.borrow_mut();
+        state.anchored = true;
+        state.overhang = 0;
+        state.lead = 0;
+        drop(state);
         self.redraw();
     }
 
     pub fn zoom(&self, factor: f64) {
-        self.state.borrow_mut().zoom_time(factor, 0.5);
+        let plot_w = plot_width(&self.area);
+        self.state.borrow_mut().zoom_time(factor, 0.5, plot_w);
         self.redraw();
     }
 
     pub fn pan_bars(&self, delta: i64) {
-        self.state.borrow_mut().pan_by(delta as f64);
+        let plot_w = plot_width(&self.area);
+        self.state.borrow_mut().pan_by(delta as f64, plot_w);
         self.redraw();
     }
 
@@ -1865,7 +1957,7 @@ impl ChartView {
 
             // A trackpad's horizontal axis always pans, whatever is held.
             if dx != 0.0 && dy == 0.0 {
-                s.pan_by(dx * 2.0);
+                s.pan_by(dx * 2.0, plot_width(&area));
                 drop(s);
                 redraw(&area, &pointer);
                 return glib::Propagation::Stop;
@@ -1877,8 +1969,8 @@ impl ChartView {
                     s.scale_price(2f64.powf(dy / 4.0));
                 }
                 (Region::Plot, true, _) => {
-                    let visible = s.slice().1 as f64;
-                    s.pan_by(dy * visible / 20.0);
+                    let columns = s.columns() as f64;
+                    s.pan_by(dy * columns / 20.0, plot_width(&area));
                 }
                 _ => {
                     let plot_w = (width - PRICE_AXIS_W - PAD).max(1.0);
@@ -1886,7 +1978,7 @@ impl ChartView {
                         .pointer
                         .map(|(x, _)| ((x - PAD) / plot_w).clamp(0.0, 1.0))
                         .unwrap_or(0.5);
-                    s.zoom_time(if dy > 0.0 { 1.15 } else { 1.0 / 1.15 }, anchor);
+                    s.zoom_time(if dy > 0.0 { 1.15 } else { 1.0 / 1.15 }, anchor, plot_w);
                 }
             }
             drop(s);
@@ -1974,7 +2066,6 @@ impl ChartView {
         }
         let mut s = state.borrow_mut();
         let was_auto = s.price_auto;
-        let (first, visible) = s.slice();
         // The edge wins over whatever region it crosses, because that is
         // what the cursor was already promising.
         let plan = layout(&s, width, height);
@@ -2064,8 +2155,8 @@ impl ChartView {
                     }
                     Drag::PriceScale { zoom: s.price_zoom }
                 }
-                Region::TimeAxis => Drag::TimeScale { visible },
-                Region::Plot => Drag::Pan { first, offset: s.price_offset },
+                Region::TimeAxis => Drag::TimeScale { visible: s.columns() },
+                Region::Plot => Drag::Pan { left: s.left_edge(), offset: s.price_offset },
             },
         );
         drop(s);
@@ -2164,16 +2255,16 @@ impl ChartView {
             }
 
             match drag {
-                Drag::Pan { first, offset } => {
-                    let (_, visible) = s.slice();
-                    if s.bars.len() > visible {
-                        let bar_w = plot_w / visible as f64;
-                        // Dragging right reveals older bars.
+                Drag::Pan { left, offset } => {
+                    let columns = s.columns();
+                    if columns > 0 {
+                        let bar_w = plot_w / columns as f64;
+                        // Dragging right reveals older bars; past either end
+                        // of the series the drag opens room.
                         let shift = -(offset_x / bar_w).round() as i64;
-                        let max_first = s.bars.len() - visible;
-                        let next = (first as i64 + shift).clamp(0, max_first as i64) as usize;
-                        s.first = next;
-                        s.anchored = next >= max_first;
+                        let wanted = left + shift;
+                        let now = s.left_edge();
+                        s.pan_by((wanted - now) as f64, plot_w);
                     }
                     // Vertical panning only means something once the scale is
                     // no longer fitting itself to the data. The content follows
@@ -2208,6 +2299,7 @@ impl ChartView {
                     let next = ((visible as f64 * factor).round() as usize)
                         .clamp(MIN_VISIBLE, MAX_VISIBLE);
                     s.visible = next;
+                    s.trim_room(plot_w);
                 }
                 Drag::Place { .. } | Drag::Grip { .. } | Drag::Marquee { .. } => unreachable!("handled above"),
             }
@@ -2303,6 +2395,8 @@ impl ChartView {
                 Region::TimeAxis => {
                     s.visible = 160;
                     s.anchored = true;
+                    s.overhang = 0;
+                    s.lead = 0;
                 }
                 // Double-clicking the chart itself does nothing, the same as
                 // everywhere else. Resetting is Ctrl+Esc or the axis menu.
@@ -2408,13 +2502,16 @@ fn notify_hover(
 ) {
     let hover = {
         let s = state.borrow();
-        let (first, visible) = s.slice();
+        let (_, visible) = s.slice();
         match (s.pointer, visible) {
             (Some((x, y)), v) if v > 0 => {
                 let plot_w = (area.width() as f64 - PRICE_AXIS_W - PAD).max(1.0);
                 let frac = (x - PAD) / plot_w;
                 if (0.0..=1.0).contains(&frac) {
-                    let index = (first as f64 + frac * visible as f64).floor() as usize;
+                    let (first, visible, lead) = s.view();
+                    let index = (first as f64 - lead as f64 + frac * s.columns() as f64)
+                        .floor()
+                        .max(0.0) as usize;
                     let plan = layout(&s, area.width() as f64, area.height() as f64);
                     let range = price_range(&s, &s.bars[first..first + visible]);
                     s.bars.get(index.min(s.bars.len().saturating_sub(1))).map(|bar| Hover {
@@ -2449,7 +2546,7 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
     colors::set_source(cr, &ui.background);
     let _ = cr.paint();
 
-    let (first, visible) = state.slice();
+    let (first, visible, lead) = state.view();
     if visible == 0 {
         draw_placeholder(cr, width, height, state);
         return;
@@ -2460,8 +2557,12 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
     let (plot_x, plot_w, price_y, price_h) = (plan.plot_x, plan.plot_w, plan.price_y, plan.price_h);
 
     // What will actually be drawn: the visible bars themselves at any normal
-    // zoom, and one aggregate per pixel column past that.
-    let columns = Columns::of(bars, first, visible, plot_x, plot_w);
+    // zoom, and one aggregate per pixel column past that. They take their
+    // own columns of the plot, after whatever room was dragged open before
+    // the first bar and leaving empty what was opened past the last.
+    let column_w = plot_w / state.columns().max(1) as f64;
+    let bars_x = plot_x + lead as f64 * column_w;
+    let columns = Columns::of(bars, first, visible, bars_x, column_w * visible as f64);
 
     let mut max_volume: f64 = 0.0;
     for b in columns.bars.iter() {
@@ -2487,11 +2588,11 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
     let decimals = omacharts_engine::price_decimals(step, (low + high) / 2.0, kind);
 
     draw_price_grid(cr, state, plot_x, plot_w, price_y, price_h, low, high, &to_y);
-    draw_time_axis(cr, state, &columns.bars, plot_x, plot_w, height, bar_w, first);
+    draw_time_axis(cr, state, &columns.bars, plot_x, plot_w, height, bar_w, bars_x);
     // Shaded things go under the candles; lines go over. A band drawn on top
     // of the bars hides the thing it is describing.
     draw_indicator_fills(cr, state, &columns, &to_y);
-    draw_candles(cr, state, &columns.bars, plot_x, bar_w, &to_y);
+    draw_candles(cr, state, &columns.bars, bars_x, bar_w, &to_y);
     draw_indicator_lines(cr, state, &columns, &to_y);
     draw_drawings(cr, state, &plan, low, high);
 
@@ -2508,7 +2609,7 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
                         cr,
                         state,
                         &columns.bars,
-                        plot_x,
+                        bars_x,
                         bar_w,
                         row.top,
                         row.height,
@@ -2546,7 +2647,7 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
 /// passes over the visible bars and a layout, which is nothing beside drawing
 /// them, and reading them off a cache would be one more thing to invalidate.
 fn draw_pointer(cr: &cairo::Context, width: f64, height: f64, state: &State) {
-    let (first, visible) = state.slice();
+    let (first, visible, lead) = state.view();
     if visible == 0 {
         return;
     }
@@ -2554,7 +2655,9 @@ fn draw_pointer(cr: &cairo::Context, width: f64, height: f64, state: &State) {
     let plan = layout(state, width, height);
     let Some((low, high)) = price_range(state, bars) else { return };
     let to_y = |price: f64| plan.price_y + plan.price_h * (high - price) / (high - low);
-    let bar_w = plan.plot_w / visible as f64;
+    let bar_w = plan.plot_w / state.columns().max(1) as f64;
+    // Where the bars begin: after the room before the first, if any.
+    let bars_x = plan.plot_x + lead as f64 * bar_w;
 
     // The way around and out of a strip, offered only while the pointer is in
     // it: four panes each wearing permanent buttons is a dozen things
@@ -2594,7 +2697,7 @@ fn draw_pointer(cr: &cairo::Context, width: f64, height: f64, state: &State) {
     if let Some((px, py)) = state.pointer {
         draw_crosshair(
             cr, state, px, py, plan.plot_x, plan.plot_w, plan.top, plan.price_y, plan.price_h,
-            width, height, bar_w, first, low, high,
+            width, height, bar_w, first as i64 - lead as i64, low, high,
         );
     }
 
@@ -2605,7 +2708,7 @@ fn draw_pointer(cr: &cairo::Context, width: f64, height: f64, state: &State) {
         && let Some(echo) = state.echo
     {
         draw_echo(
-            cr, state, bars, plan.plot_x, plan.plot_w, bar_w, plan.top, plan.price_y,
+            cr, state, bars, bars_x, plan.plot_w, bar_w, plan.top, plan.price_y,
             plan.price_h, height, echo, &to_y,
         );
     }
@@ -2708,7 +2811,7 @@ fn draw_time_axis(
     plot_w: f64,
     height: f64,
     bar_w: f64,
-    _first: usize,
+    bars_x: f64,
 ) {
     let y = height - TIME_AXIS_H;
     colors::set_source(cr, &state.theme.ui.axis);
@@ -2720,24 +2823,47 @@ fn draw_time_axis(
     cr.select_font_face("sans-serif", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
     cr.set_font_size(11.0);
 
-    // About one label per 90px, on a whole number of bars so labels do not
-    // jitter as the view scrolls.
-    let target = (plot_w / 90.0).max(2.0) as usize;
-    let stride = (bars.len() / target).max(1);
+    // The columns across the whole plot, the empty room at either end
+    // included: a tick there is the time that column would be, one
+    // timeframe step on from the last bar or back from the first, so the
+    // axis keeps reading as the chart is dragged past its data.
+    let before = ((bars_x - plot_x) / bar_w).round().max(0.0) as i64;
+    let total = (plot_w / bar_w).round().max(1.0) as i64;
+    let step = state.timeframe.seconds();
+    let time_at = |column: i64| -> Option<i64> {
+        let at = column - before;
+        if at >= 0 && (at as usize) < bars.len() {
+            return Some(bars[at as usize].ts);
+        }
+        if step <= 0 {
+            return None;
+        }
+        if at < 0 {
+            bars.first().map(|b| b.ts + at * step)
+        } else {
+            bars.last().map(|b| b.ts + (at - bars.len() as i64 + 1) * step)
+        }
+    };
+    // About one label per 90px, on a whole number of columns so labels do
+    // not jitter as the view scrolls — counted from the first bar, so the
+    // ticks stay on the same bars as room opens and closes.
+    let target = (plot_w / 90.0).max(2.0) as i64;
+    let stride = (total / target).max(1);
     // How far apart two labels land decides the format: a decade of daily bars
     // labelled "01 Jun" tells you nothing, and nine months of them all
     // labelled "Mar 2026" tells you less.
-    let span = match (bars.first(), bars.last()) {
-        (Some(first), Some(last)) => last.ts - first.ts,
+    let span = match (time_at(0), time_at(total - 1)) {
+        (Some(first), Some(last)) => last - first,
         _ => 0,
     };
-    let labels = (bars.len().div_ceil(stride)).max(1) as i64;
+    let labels = ((total + stride - 1) / stride).max(1);
     let tick_seconds = span / labels;
-    for (i, bar) in bars.iter().enumerate() {
-        if i % stride != 0 {
+    for column in 0..total {
+        if (column - before).rem_euclid(stride) != 0 {
             continue;
         }
-        let x = plot_x + (i as f64 + 0.5) * bar_w;
+        let Some(ts) = time_at(column) else { continue };
+        let x = plot_x + (column as f64 + 0.5) * bar_w;
         if x < plot_x + 18.0 || x > plot_x + plot_w - 18.0 {
             continue;
         }
@@ -2748,7 +2874,7 @@ fn draw_time_axis(
             let _ = cr.stroke();
         }
 
-        let label = format_axis_time(bar.ts, tick_seconds, state.timeframe.is_intraday());
+        let label = format_axis_time(ts, tick_seconds, state.timeframe.is_intraday());
         colors::set_source_alpha(cr, &state.theme.ui.text_muted, 0.9);
         if let Ok(extents) = cr.text_extents(&label) {
             cr.move_to(x - extents.width() / 2.0, height - 7.0);
@@ -3140,7 +3266,7 @@ fn draw_crosshair(
     width: f64,
     height: f64,
     bar_w: f64,
-    first: usize,
+    first: i64,
     low: f64,
     high: f64,
 ) {
@@ -3184,9 +3310,10 @@ fn draw_crosshair(
         );
     }
 
-    // Time under the pointer.
-    if let Some(bar) = state.bars.get(first + index_in_view.max(0.0) as usize) {
-        let label = format_time_full(bar.ts, state.timeframe);
+    // Time under the pointer — over the room past either end as well,
+    // where it is the time that column would be.
+    if let Some(ts) = time_at_column(state, first + index_in_view.max(0.0) as i64) {
+        let label = format_time_full(ts, state.timeframe);
         cr.select_font_face("sans-serif", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
         cr.set_font_size(11.0);
         if let Ok(extents) = cr.text_extents(&label) {
@@ -3566,6 +3693,29 @@ fn band_colour(band: &vwap::BandSeries, drawn: &Drawn, theme: &Theme) -> String 
         .as_ref()
         .map(|choice| choice.resolve(theme))
         .unwrap_or_else(|| drawn.color.clone())
+}
+
+/// The plot's width from the area's: what a bar's width is measured on.
+fn plot_width(area: &gtk::DrawingArea) -> f64 {
+    (area.width() as f64 - PRICE_AXIS_W - PAD).max(1.0)
+}
+
+/// The time at a bar index, counted past either end of the series at the
+/// timeframe's step: what a column in the empty room stands for.
+fn time_at_column(state: &State, index: i64) -> Option<i64> {
+    let len = state.bars.len() as i64;
+    if index >= 0 && index < len {
+        return Some(state.bars[index as usize].ts);
+    }
+    let step = state.timeframe.seconds();
+    if step <= 0 {
+        return None;
+    }
+    if index < 0 {
+        state.bars.first().map(|b| b.ts + index * step)
+    } else {
+        state.bars.last().map(|b| b.ts + (index - len + 1) * step)
+    }
 }
 
 /// One histogram per period, anchored where its period begins.
@@ -4114,6 +4264,72 @@ mod tests {
 
     /// A chart with a volume strip under it, which is the arrangement that
     /// has corner controls as well as a crosshair.
+    /// Panning past either end opens room there — as much as
+    /// `OVERHANG_PX` at this zoom, never the whole view — which new bars
+    /// do not close, and which a reset does.
+    #[test]
+    fn the_view_can_hang_past_the_last_bar() {
+        let mut state = charted(400);
+        state.visible = 160;
+        state.anchored = true;
+        let plot_w = 1600.0; // 10px a bar: 500px is 50 columns
+        assert_eq!(state.slice(), (240, 160));
+        assert_eq!(state.columns(), 160);
+        // Forward in time, past the end: the room opens and is capped.
+        state.pan_by(20.0, plot_w);
+        assert_eq!(state.overhang, 20);
+        assert_eq!(state.slice(), (260, 140));
+        assert!(state.anchored);
+        state.pan_by(1000.0, plot_w);
+        assert_eq!(state.overhang, 50);
+        assert_eq!(state.slice(), (290, 110));
+        // Still 160 columns across, so a bar is the same width as before.
+        assert_eq!(state.columns(), 160);
+        // New bars arrive: the margin is kept, and the view follows.
+        state.bars = ramp(410);
+        assert_eq!(state.slice(), (300, 110));
+        assert_eq!(state.overhang, 50);
+        // Back towards history: the room closes before the view moves.
+        state.pan_by(-50.0, plot_w);
+        assert_eq!(state.overhang, 0);
+        assert_eq!(state.slice(), (250, 160));
+        assert!(state.anchored);
+        state.pan_by(-10.0, plot_w);
+        assert_eq!(state.slice(), (240, 160));
+        assert!(!state.anchored);
+        // A reset is the live edge with no room past it.
+        state.pan_by(100.0, plot_w);
+        assert_eq!(state.overhang, 50);
+        state.reset_view();
+        assert_eq!(state.overhang, 0);
+        assert_eq!(state.slice(), (250, 160));
+        // Zoomed far in, the cap is short of the whole view.
+        state.visible = 12;
+        state.pan_by(1000.0, 1600.0);
+        assert_eq!(state.overhang, 3);
+        assert_eq!(state.slice(), (401, 9));
+        // And the same room before the first bar, at the other end.
+        state.reset_view();
+        state.pan_by(-1000.0, plot_w);
+        assert_eq!(state.lead, 50);
+        assert_eq!(state.slice(), (0, 110));
+        assert_eq!(state.left_edge(), -50);
+        assert!(!state.anchored);
+        // Zooming works on the columns across the plot, so zooming out
+        // still shows more. About the middle, it pushes the edge further
+        // into the room, which is so many pixels: 500px is 100 of the
+        // 5px columns there are now, and no more.
+        state.zoom_time(2.0, 0.5, plot_w);
+        assert_eq!(state.columns(), 320);
+        assert_eq!(state.lead, 100);
+        assert_eq!(state.slice(), (0, 220));
+        // Zooming back in about the middle leaves the room behind.
+        state.zoom_time(0.25, 0.5, plot_w);
+        assert_eq!(state.columns(), 80);
+        assert_eq!(state.lead, 0);
+        assert_eq!(state.slice(), (20, 80));
+    }
+
     fn charted(bars: usize) -> State {
         let theme = omacharts_engine::theme::builtin_themes()
             .into_iter()
