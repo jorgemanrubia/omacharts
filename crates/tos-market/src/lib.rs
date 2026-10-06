@@ -18,6 +18,7 @@
 //! why; [`candles`] with no session fails at once and says what to do instead.
 
 mod auth;
+mod cdp;
 mod client;
 mod config;
 mod error;
@@ -148,12 +149,7 @@ pub(crate) fn state_of(env: &Path) -> SessionState {
 /// a password and a one-time code, or after ten minutes. Call it on a thread
 /// of its own. `log` is handed one progress line at a time.
 pub fn sign_in(log: impl Fn(&str) + Send + Sync + 'static) -> Result<()> {
-    let env = session_file();
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| Error::Other(e.to_string()))?;
-    runtime.block_on(browser_sign_in_with(&env, Box::new(log)))?;
+    browser_sign_in_with(&session_file(), Box::new(log))?;
     Ok(())
 }
 
@@ -287,7 +283,7 @@ fn now() -> i64 {
 }
 
 /// Opens a browser at thinkorswim and writes the captured session to `env`.
-async fn browser_sign_in_with(
+fn browser_sign_in_with(
     env: &Path,
     log: Box<dyn Fn(&str) + Send + Sync>,
 ) -> Result<BrowserSession> {
@@ -300,8 +296,7 @@ async fn browser_sign_in_with(
         timeout: Duration::from_secs(10 * 60),
         user_data_dir: auth::default_profile_dir(),
         log,
-    })
-    .await?;
+    })?;
     session
         .save_to_dotenv(env)
         .map_err(|e| Error::Other(format!("save session: {e}")))?;

@@ -14,19 +14,13 @@
 //! the flow is exactly what Schwab sees from a normal user. As a fallback the
 //! SPA's `sessionStorage` (`token`, `tradingSystem`) is read.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use chromiumoxide::browser::{Browser, BrowserConfig};
-use chromiumoxide::cdp::browser_protocol::network::{
-    EventWebSocketCreated, EventWebSocketFrameReceived, GetCookiesParams,
-};
-use chromiumoxide::Page;
-use futures_util::StreamExt;
 use serde_json::Value;
-use tokio::sync::mpsc;
 
+use crate::cdp::{Browser, Page};
 use crate::config::{fallback_gateway_urls, TradingSystem, TOS_WEB_ORIGIN};
 use crate::error::{Error, Result};
 use crate::session::BrowserSession;
@@ -102,6 +96,21 @@ const CANDIDATES: &[&str] = &[
     "/usr/bin/brave",
 ];
 
+/// The flags the login browser is launched with, and the whole of them.
+///
+/// A driver crate's defaults are puppeteer's list, which includes
+/// `--enable-automation`, a mock keychain and a plain-text password store;
+/// Google's sign-in refuses such a browser ("This browser or app may not be
+/// secure"). This is a real interactive login, not a headless bot, so the
+/// browser is as near stock as it can be and still be spoken to.
+const LAUNCH_FLAGS: &[&str] = &[
+    "no-first-run",
+    "no-default-browser-check",
+    "disable-popup-blocking",
+    "disable-blink-features=AutomationControlled",
+    "window-size=1280,900",
+];
+
 /// thinkorswim ships a Chromium.app under `~/thinkorswim/jxbrowser/…`.
 fn thinkorswim_chromium() -> Option<PathBuf> {
     let root = PathBuf::from(std::env::var_os("HOME")?).join("thinkorswim");
@@ -151,74 +160,12 @@ struct SocketSession {
     account_code: Option<String>,
 }
 
-enum Sniffed {
-    Created { request_id: String, url: String },
-    Frame { request_id: String, payload: String },
-}
-
 fn short_url(url: &str) -> String {
     match url::Url::parse(url) {
         Ok(u) => format!("{}{}", u.origin().ascii_serialization(), u.path()),
         Err(_) if url.is_empty() => "(empty)".into(),
         Err(_) => url.to_string(),
     }
-}
-
-/// Attaches sniffers to every page not yet seen; returns all current pages.
-async fn attach_all(
-    browser: &Browser,
-    attached: &mut HashSet<String>,
-    tx: &mpsc::UnboundedSender<Sniffed>,
-) -> Vec<Page> {
-    let pages = browser.pages().await.unwrap_or_default();
-    for p in &pages {
-        let id = p.target_id().inner().to_string();
-        if attached.insert(id) {
-            let _ = attach(p, tx.clone()).await;
-        }
-    }
-    pages
-}
-
-/// Attaches WebSocket sniffers to a page; events flow into `tx`.
-async fn attach(page: &Page, tx: mpsc::UnboundedSender<Sniffed>) -> Result<()> {
-    let cdp = |e: chromiumoxide::error::CdpError| Error::Other(format!("cdp: {e}"));
-    let mut created = page
-        .event_listener::<EventWebSocketCreated>()
-        .await
-        .map_err(cdp)?;
-    let mut frames = page
-        .event_listener::<EventWebSocketFrameReceived>()
-        .await
-        .map_err(cdp)?;
-    let tx2 = tx.clone();
-    tokio::spawn(async move {
-        while let Some(ev) = created.next().await {
-            if tx2
-                .send(Sniffed::Created {
-                    request_id: ev.request_id.inner().to_string(),
-                    url: ev.url.clone(),
-                })
-                .is_err()
-            {
-                break;
-            }
-        }
-    });
-    tokio::spawn(async move {
-        while let Some(ev) = frames.next().await {
-            if tx
-                .send(Sniffed::Frame {
-                    request_id: ev.request_id.inner().to_string(),
-                    payload: ev.response.payload_data.clone(),
-                })
-                .is_err()
-            {
-                break;
-            }
-        }
-    });
-    Ok(())
 }
 
 fn apply_frame(session: &mut SocketSession, payload: &str, log: &dyn Fn(&str)) {
@@ -266,26 +213,21 @@ struct Stored {
     trading_system: Option<String>,
 }
 
-async fn read_storage(pages: &[Page]) -> Option<Stored> {
-    for p in pages {
-        let Ok(Some(href)) = p.url().await else {
-            continue;
-        };
-        if !href.contains("thinkorswim.com") && !href.contains("schwab.com") {
+fn read_storage(browser: &mut Browser, pages: &[Page]) -> Option<Stored> {
+    for page in pages {
+        if !page.url.contains("thinkorswim.com") && !page.url.contains("schwab.com") {
             continue;
         }
-        let Ok(result) = p
-            .evaluate(
-                "JSON.stringify({token: sessionStorage.getItem('token'), tradingSystem: sessionStorage.getItem('tradingSystem')})",
-            )
-            .await
-        else {
+        let Ok(value) = browser.evaluate(
+            page,
+            "JSON.stringify({token: sessionStorage.getItem('token'), tradingSystem: sessionStorage.getItem('tradingSystem')})",
+        ) else {
             continue;
         };
-        let Ok(text) = result.into_value::<String>() else {
+        let Some(text) = value.as_str() else {
             continue;
         };
-        let Ok(v) = serde_json::from_str::<Value>(&text) else {
+        let Ok(v) = serde_json::from_str::<Value>(text) else {
             continue;
         };
         let token = v["token"]
@@ -340,20 +282,19 @@ fn orphaned_profile_owner(_: &Path) -> Option<u32> {
 
 /// Cookies the browser would send to the TSM host, as one `Cookie` header.
 /// `Network.getCookies` sees HttpOnly cookies. The value is not logged.
-async fn tsm_cookie_from_pages(pages: &[Page]) -> std::result::Result<Option<String>, String> {
+fn tsm_cookie_from_pages(
+    browser: &mut Browser,
+    pages: &[Page],
+) -> std::result::Result<Option<String>, String> {
     if pages.is_empty() {
         return Ok(None);
     }
-    let params = GetCookiesParams::builder().url(crate::tsm::TSM_URL).build();
     let mut last = String::from("no page accepted getCookies");
     for page in pages {
-        match page.execute(params.clone()).await {
-            Ok(got) => {
+        match browser.cookies(page, crate::tsm::TSM_URL) {
+            Ok(cookies) => {
                 let header = crate::tsm::cookie_header(
-                    got.result
-                        .cookies
-                        .iter()
-                        .map(|c| (c.name.as_str(), c.value.as_str())),
+                    cookies.iter().map(|(n, v)| (n.as_str(), v.as_str())),
                 );
                 return Ok((!header.is_empty()).then_some(header));
             }
@@ -365,7 +306,7 @@ async fn tsm_cookie_from_pages(pages: &[Page]) -> std::result::Result<Option<Str
 
 /// Drives a headful login and returns the captured session plus the TSM
 /// cookie, when the browser had one.
-pub async fn capture_browser_session(
+pub fn capture_browser_session(
     opts: CaptureOptions,
 ) -> Result<(BrowserSession, Option<String>)> {
     let log = |m: &str| (opts.log)(m);
@@ -391,52 +332,17 @@ pub async fn capture_browser_session(
             if orphaned_profile_owner(&opts.user_data_dir).is_none() {
                 break;
             }
-            tokio::time::sleep(Duration::from_millis(250)).await;
+            std::thread::sleep(Duration::from_millis(250));
         }
     }
-    // chromiumoxide's default flags (puppeteer's list) include
-    // `--enable-automation`, a mock keychain and a plain-text password store;
-    // Google's sign-in refuses such a browser ("This browser or app may not
-    // be secure"). Launch a near-stock Chrome instead — this is a real
-    // interactive login, not a headless bot.
-    let config = BrowserConfig::builder()
-        .with_head()
-        .disable_default_args()
-        .args([
-            "no-first-run",
-            "no-default-browser-check",
-            "disable-popup-blocking",
-            "disable-blink-features=AutomationControlled",
-        ])
-        .chrome_executable(&executable)
-        .user_data_dir(&opts.user_data_dir)
-        .window_size(1280, 900)
-        .viewport(None)
-        .launch_timeout(Duration::from_secs(30))
-        .build()
-        .map_err(Error::Other)?;
-    let (mut browser, mut handler) = Browser::launch(config)
-        .await
-        .map_err(|e| Error::Other(format!("launch browser: {e}")))?;
-    let pump = tokio::spawn(async move { while let Some(_ev) = handler.next().await {} });
+    let mut browser = Browser::launch(
+        &executable,
+        &opts.user_data_dir,
+        LAUNCH_FLAGS,
+        Duration::from_secs(30),
+    )?;
 
-    let (tx, mut rx) = mpsc::unbounded_channel::<Sniffed>();
-    let mut attached: HashSet<String> = HashSet::new();
     let mut sockets: HashMap<String, SocketSession> = HashMap::new();
-
-    let page = match browser
-        .pages()
-        .await
-        .ok()
-        .and_then(|p| p.into_iter().next())
-    {
-        Some(p) => p,
-        None => browser
-            .new_page("about:blank")
-            .await
-            .map_err(|e| Error::Other(format!("new page: {e}")))?,
-    };
-    attach_all(&browser, &mut attached, &tx).await;
 
     log(&format!("Opening {TOS_WEB_ORIGIN} — log in as usual."));
     match opts.trading_system {
@@ -447,22 +353,57 @@ pub async fn capture_browser_session(
             log("Wanted: Live Trading. If the UI lands in paperMoney, use the account-menu toggle to switch to live.");
         }
     }
-    page.goto(format!("{TOS_WEB_ORIGIN}/"))
-        .await
-        .map_err(|e| Error::Other(format!("navigate: {e}")))?;
+    let result = capture(&mut browser, &opts, &log, &mut sockets);
+
+    if result.is_ok() {
+        log("Closing the browser so this token has a single consumer.");
+    }
+    browser.close();
+    result
+}
+
+/// The capture loop, with the browser already open. Split out so that every
+/// way of leaving it still closes the browser.
+fn capture(
+    browser: &mut Browser,
+    opts: &CaptureOptions,
+    log: &dyn Fn(&str),
+    sockets: &mut HashMap<String, SocketSession>,
+) -> Result<(BrowserSession, Option<String>)> {
+    let mut pages = browser.pages()?;
+    if pages.is_empty() {
+        browser.call(
+            "Target.createTarget",
+            serde_json::json!({"url": "about:blank"}),
+            None,
+        )?;
+        browser.pump(Duration::from_millis(500))?;
+        pages = browser.pages()?;
+    }
+    let first = pages
+        .first()
+        .cloned()
+        .ok_or_else(|| Error::Other("the browser opened no page".into()))?;
+    browser.navigate(&first, &format!("{TOS_WEB_ORIGIN}/"))?;
 
     let deadline = Instant::now() + opts.timeout;
     let mut last_status = String::new();
-    let result = loop {
-        // Drain sniffed traffic.
-        while let Ok(ev) = rx.try_recv() {
-            match ev {
-                Sniffed::Created { request_id, url } => {
+    loop {
+        // A page the SPA opens for the sign-in flow has to be attached before
+        // its traffic can be seen, so this runs every turn, not just once.
+        let pages = browser.pages()?;
+        for event in browser.events() {
+            match event.method.as_str() {
+                "Network.webSocketCreated" => {
+                    let url = event.params["url"].as_str().unwrap_or_default().to_string();
+                    let Some(request) = event.params["requestId"].as_str() else {
+                        continue;
+                    };
                     if url.contains("/Services/WsJson") {
                         let ts = TradingSystem::of_gateway_url(&url);
                         log(&format!("↔ SPA opened gateway socket: {url} ({ts})"));
                         sockets.insert(
-                            request_id,
+                            request.to_string(),
                             SocketSession {
                                 gateway_url: url,
                                 trading_system: Some(ts),
@@ -471,17 +412,21 @@ pub async fn capture_browser_session(
                         );
                     }
                 }
-                Sniffed::Frame {
-                    request_id,
-                    payload,
-                } => {
-                    if let Some(s) = sockets.get_mut(&request_id) {
-                        apply_frame(s, &payload, &log);
-                    }
+                "Network.webSocketFrameReceived" => {
+                    let Some(request) = event.params["requestId"].as_str() else {
+                        continue;
+                    };
+                    let Some(socket) = sockets.get_mut(request) else {
+                        continue;
+                    };
+                    let payload = event.params["response"]["payloadData"]
+                        .as_str()
+                        .unwrap_or_default();
+                    apply_frame(socket, payload, log);
                 }
+                _ => {}
             }
         }
-        let pages = attach_all(&browser, &mut attached, &tx).await;
 
         // 1) sniffed socket session (has everything)
         let sniffed = sockets
@@ -489,39 +434,43 @@ pub async fn capture_browser_session(
             .find(|s| s.trading_system == Some(opts.trading_system) && s.access_token.is_some())
             .cloned();
         // 2) sessionStorage session (token + trading system)
-        let stored = read_storage(&pages).await;
+        let stored = read_storage(browser, &pages);
         let stored_system = stored
             .as_ref()
             .and_then(|s| s.trading_system.as_deref())
             .and_then(TradingSystem::parse);
 
         let found = if let Some(s) = sniffed {
-            Some((
-                BrowserSession {
-                    trading_system: opts.trading_system,
-                    gateway_url: s.gateway_url,
-                    access_token: s.access_token.unwrap(),
-                    refresh_token: s.refresh_token,
-                    account_code: s.account_code,
-                    user_code: s.user_code,
-                },
-                "websocket",
-            ))
+            s.access_token.map(|access_token| {
+                (
+                    BrowserSession {
+                        trading_system: opts.trading_system,
+                        gateway_url: s.gateway_url,
+                        access_token,
+                        refresh_token: s.refresh_token,
+                        account_code: s.account_code,
+                        user_code: s.user_code,
+                    },
+                    "websocket",
+                )
+            })
         } else if let Some(st) = stored
             .as_ref()
             .filter(|_| stored_system == Some(opts.trading_system))
         {
-            Some((
-                BrowserSession {
-                    trading_system: opts.trading_system,
-                    gateway_url: fallback_gateway(opts.trading_system),
-                    access_token: st.token.clone().unwrap(),
-                    refresh_token: None,
-                    account_code: None,
-                    user_code: None,
-                },
-                "sessionStorage",
-            ))
+            st.token.clone().map(|access_token| {
+                (
+                    BrowserSession {
+                        trading_system: opts.trading_system,
+                        gateway_url: fallback_gateway(opts.trading_system),
+                        access_token,
+                        refresh_token: None,
+                        account_code: None,
+                        user_code: None,
+                    },
+                    "sessionStorage",
+                )
+            })
         } else {
             None
         };
@@ -535,7 +484,7 @@ pub async fn capture_browser_session(
                     .map(|a| format!(" (account {a})"))
                     .unwrap_or_default()
             ));
-            let tsm_cookie = match tsm_cookie_from_pages(&pages).await {
+            let tsm_cookie = match tsm_cookie_from_pages(browser, &pages) {
                 Ok(cookie) => {
                     if cookie.is_some() {
                         log("✓ TSM session cookie captured");
@@ -549,7 +498,7 @@ pub async fn capture_browser_session(
                     None
                 }
             };
-            break Ok((session, tsm_cookie));
+            return Ok((session, tsm_cookie));
         }
 
         let status = if let Some(st) = &stored {
@@ -559,10 +508,7 @@ pub async fn capture_browser_session(
                 opts.trading_system
             )
         } else {
-            let mut urls = Vec::new();
-            for p in &pages {
-                urls.push(short_url(&p.url().await.ok().flatten().unwrap_or_default()));
-            }
+            let urls: Vec<String> = pages.iter().map(|p| short_url(&p.url)).collect();
             let socks: Vec<String> = sockets
                 .values()
                 .filter_map(|s| s.trading_system.map(|t| t.to_string()))
@@ -579,21 +525,15 @@ pub async fn capture_browser_session(
             log(&status);
         }
         if Instant::now() > deadline {
-            break Err(Error::Timeout(format!(
+            return Err(Error::Timeout(format!(
                 "waiting for a {} session",
                 opts.trading_system
             )));
         }
-        tokio::time::sleep(Duration::from_millis(1500)).await;
-    };
-
-    if result.is_ok() {
-        log("Closing the browser so this token has a single consumer.");
+        // Reading the socket is also the wait: traffic arriving during it is
+        // what the next turn classifies.
+        browser.pump(Duration::from_millis(1500))?;
     }
-    let _ = browser.close().await;
-    let _ = browser.wait().await;
-    pump.abort();
-    result
 }
 
 #[cfg(test)]
@@ -620,5 +560,20 @@ mod tests {
             let dir = profile_dir_beside(session);
             assert!(dir.is_absolute(), "{}", dir.display());
         }
+    }
+
+    /// The flags are the finding, not an implementation detail: a driver
+    /// crate's puppeteer defaults get a Google sign-in refused outright, so
+    /// the list stays short and stays free of automation markers.
+    #[test]
+    fn the_login_browser_carries_no_automation_flags() {
+        for flag in LAUNCH_FLAGS {
+            assert!(!flag.starts_with("--"), "{flag} is written without dashes");
+            assert!(
+                !flag.contains("enable-automation") && !flag.contains("headless"),
+                "{flag} would get the sign-in refused"
+            );
+        }
+        assert!(LAUNCH_FLAGS.contains(&"disable-blink-features=AutomationControlled"));
     }
 }
