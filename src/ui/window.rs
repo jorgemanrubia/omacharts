@@ -1451,6 +1451,7 @@ pub struct Window {
     grid_action: RefCell<Option<gio::SimpleAction>>,
     auto_scale_action: RefCell<Option<gio::SimpleAction>>,
     drawing_config_action: RefCell<Option<gio::SimpleAction>>,
+    drawing_scope_action: RefCell<Option<gio::SimpleAction>>,
     /// The drawing tools, on the left.
     drawing_bar: RefCell<Option<Rc<crate::ui::drawing_bar::DrawingBar>>>,
     /// Where the tree of charts is mounted, rebuilt whenever it changes.
@@ -1554,6 +1555,7 @@ impl Window {
             grid_action: RefCell::new(None),
             auto_scale_action: RefCell::new(None),
             drawing_config_action: RefCell::new(None),
+            drawing_scope_action: RefCell::new(None),
             drawing_bar: RefCell::new(None),
             chart_host: chart_host.clone(),
             book_strip: book_strip.clone(),
@@ -5557,6 +5559,9 @@ impl Window {
         if let Some(action) = self.drawing_config_action.borrow().as_ref() {
             action.set_state(&(drawing.config.unwrap_or(0) as i32).to_variant());
         }
+        if let Some(action) = self.drawing_scope_action.borrow().as_ref() {
+            action.set_state(&drawing.scope.key().to_variant());
+        }
 
         let menu = gio::Menu::new();
         let edit = gio::Menu::new();
@@ -5574,7 +5579,24 @@ impl Window {
             configs.append_item(&item);
         }
         edit.append_submenu(Some("Configuration"), &configs);
+        // Who else sees it, as a radio over the scopes, the way the dialog
+        // offers it.
+        let scopes = gio::Menu::new();
+        for scope in omacharts_engine::Scope::all() {
+            let item = gio::MenuItem::new(Some(&scope.label()), None);
+            item.set_action_and_target_value(
+                Some("chart.drawing-scope"),
+                Some(&scope.key().to_variant()),
+            );
+            scopes.append_item(&item);
+        }
+        edit.append_submenu(Some("Shown on"), &scopes);
         menu.append_section(None, &edit);
+
+        let order = gio::Menu::new();
+        shortcuts::append(&order, "Bring to front", "chart.drawing-front");
+        shortcuts::append(&order, "Send to back", "chart.drawing-back");
+        menu.append_section(None, &order);
 
         let remove = gio::Menu::new();
         shortcuts::append_with_key(&remove, "Remove drawing", "chart.drawing-delete", "Delete");
@@ -5857,6 +5879,32 @@ impl Window {
         });
         actions.add_action(&drawing_config);
         *self.drawing_config_action.borrow_mut() = Some(drawing_config);
+
+        // Stateful over the scope's key, so the menu marks who sees it.
+        let drawing_scope = gio::SimpleAction::new_stateful(
+            "drawing-scope",
+            Some(glib::VariantTy::STRING),
+            &"global".to_variant(),
+        );
+        let this = self.clone();
+        drawing_scope.connect_activate(move |action, target| {
+            let Some(key) = target.and_then(|t| t.str().map(str::to_string)) else { return };
+            let Some(scope) = omacharts_engine::Scope::from_key(&key) else { return };
+            action.set_state(&key.to_variant());
+            this.focused_pane().view.edit_selected(move |d| d.scope = scope);
+        });
+        actions.add_action(&drawing_scope);
+        *self.drawing_scope_action.borrow_mut() = Some(drawing_scope);
+
+        let drawing_front = gio::SimpleAction::new("drawing-front", None);
+        let this = self.clone();
+        drawing_front.connect_activate(move |_, _| this.focused_pane().view.restack_selected(true));
+        actions.add_action(&drawing_front);
+
+        let drawing_back = gio::SimpleAction::new("drawing-back", None);
+        let this = self.clone();
+        drawing_back.connect_activate(move |_, _| this.focused_pane().view.restack_selected(false));
+        actions.add_action(&drawing_back);
 
         self.window.insert_action_group("chart", Some(&actions));
     }
