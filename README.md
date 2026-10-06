@@ -1,5 +1,7 @@
 # Omacharts
 
+[![CI](https://github.com/jorgemanrubia/omacharts/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jorgemanrubia/omacharts/actions/workflows/ci.yml?query=branch%3Amain)
+
 Fast, beautiful charting software for [Omarchy](https://omarchy.org).
 
 <p align="center">
