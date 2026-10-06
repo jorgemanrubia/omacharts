@@ -259,6 +259,29 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
     actions.add_action(&save_as);
     dialog.insert_action_group("drawing", Some(&actions));
 
+    // Alt+N here is the same choice as a tile in the menu: the keyboard is
+    // in the dialog, so the chart would never see it. Caught on the way
+    // down, before a row that happens to have the focus can.
+    {
+        let keys = gtk::EventControllerKey::new();
+        keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let view = view.clone();
+        let call_refresh = call_refresh.clone();
+        keys.connect_key_pressed(move |_, key, _, modifiers| {
+            if !modifiers.contains(gtk::gdk::ModifierType::ALT_MASK) {
+                return glib::Propagation::Proceed;
+            }
+            let Some(n) = key.to_unicode().and_then(|c| c.to_digit(10)) else {
+                return glib::Propagation::Proceed;
+            };
+            if view.apply_configuration(n as u8) {
+                call_refresh();
+            }
+            glib::Propagation::Stop
+        });
+        dialog.add_controller(keys);
+    }
+
     // A change made with the keys on the chart while this is open — Alt+N,
     // Ctrl+Z — is reflected here too.
     let tick = {
