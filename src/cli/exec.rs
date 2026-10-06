@@ -11,7 +11,9 @@
 
 use serde_json::{json, Value};
 
-use omacharts_engine::indicators::{LineStyle, Stroke, MAX_PANE_SHARE, MIN_PANE_SHARE};
+use omacharts_engine::indicators::{
+    LineStyle, Stroke, MAX_FILL_ALPHA, MAX_PANE_SHARE, MIN_FILL_ALPHA, MIN_PANE_SHARE,
+};
 use omacharts_engine::theme::{
     ColorChoice, SWATCH_NAMES, THEME_BARS_ID, THEME_MONO_ID, THEME_RED_UP_ID,
 };
@@ -1677,7 +1679,10 @@ impl Edits {
                         })?,
                 ),
             },
-            band_alpha: bounded(m, "band-alpha", 0.02, 0.6)?,
+            // The engine's own ends rather than a narrower pair of our own,
+            // for the same reason as the height above: a figure it would
+            // quietly bring back reads as the command having worked.
+            band_alpha: bounded(m, "band-alpha", MIN_FILL_ALPHA, MAX_FILL_ALPHA)?,
             visible: arg(m, "visible").map(|v| v == "on"),
         })
     }
@@ -3046,6 +3051,39 @@ mod tests {
         assert_eq!(bands[1]["enabled"], true);
         assert_eq!(bands[2]["enabled"], false);
         assert_eq!(bands[0]["fill_alpha"], 0.3);
+    }
+
+    /// The flag takes the whole of what an alpha is, and the figure it is
+    /// given is the figure stored — the help says 0-1 and means it.
+    #[test]
+    fn shading_can_be_asked_for_clear_or_solid() {
+        let store = Store::memory().unwrap();
+        run("chartbook create Macro --switch", &store);
+        run("chart indicator add vwap --book Macro --bands 1", &store);
+
+        for wanted in ["0", "1"] {
+            let out = run(
+                &format!("chart indicator set vwap --book Macro --band-alpha {wanted}"),
+                &store,
+            );
+            assert_eq!(out.code, 0, "{}", out.err);
+
+            let listed = run("chart indicator list --book Macro --json", &store);
+            let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+            let bands = parsed["indicators"][0]["params"]["bands"].as_array().unwrap();
+            assert_eq!(bands[0]["fill_alpha"], wanted.parse::<f64>().unwrap());
+        }
+
+        // Wider is not anything-goes: past either end, and anything that is
+        // not a figure at all, is still refused rather than quietly brought
+        // back to the nearest end.
+        for refused in ["1.2", "-0.1", "nan", "inf"] {
+            let out = run(
+                &format!("chart indicator set vwap --book Macro --band-alpha {refused}"),
+                &store,
+            );
+            assert_ne!(out.code, 0, "--band-alpha {refused} was accepted");
+        }
     }
 
     /// A command that resolved its own target has to say which one it found,

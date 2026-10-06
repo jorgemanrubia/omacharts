@@ -9,7 +9,8 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 use omacharts_engine::indicators::{
-    self, Kind, LineStyle, Params, Reset, Stroke, MAX_PANE_SHARE, MIN_PANE_SHARE,
+    self, Kind, LineStyle, Params, Reset, Stroke, MAX_FILL_ALPHA, MAX_PANE_SHARE, MIN_FILL_ALPHA,
+    MIN_PANE_SHARE,
 };
 use omacharts_engine::theme::ColorChoice;
 use omacharts_engine::{BarStyle, Indicator, Session};
@@ -1286,10 +1287,13 @@ fn band_groups(
         shaded.add_suffix(&fill);
         group.add(&shaded);
 
-        // How much of the colour that shading gets, between the ends the
-        // engine's own clamp allows a band: never quite invisible, and
-        // stopping well short of opaque, because it is a backdrop and the bars
-        // have to stay readable through it.
+        // How much of the colour that shading gets, over the whole range the
+        // figure has: clear at one end, solid at the other. How heavy a
+        // backdrop wants to be is a matter of taste, and the shading is drawn
+        // under the candles, so even a solid band has the bars on top of it.
+        //
+        // The ends come from the engine, as the pane height's do, so the
+        // slider and the chart agree about where they are.
         group.add(
             &percent_row(
                 window,
@@ -1297,8 +1301,8 @@ fn band_groups(
                 id,
                 "Shading %",
                 band.alpha(),
-                0.02,
-                0.6,
+                MIN_FILL_ALPHA,
+                MAX_FILL_ALPHA,
                 move |indicator, share| {
                     if let Params::Vwap { bands, .. } = &mut indicator.params
                         && let Some(band) = bands.get_mut(index)
@@ -1849,7 +1853,8 @@ mod tests {
     #[test]
     fn a_stored_fraction_is_shown_as_whole_percent() {
         assert_eq!(as_percent(0.16), 16.0, "a sixth of the chart reads as 16%");
-        assert_eq!(as_percent(0.02), 2.0, "and the faintest shading as 2%");
+        assert_eq!(as_percent(0.0), 0.0, "clear shading reads as 0%");
+        assert_eq!(as_percent(1.0), 100.0, "and solid shading as 100%");
     }
 
     /// The row reads one way and writes the other, so a figure that survives
@@ -1857,7 +1862,7 @@ mod tests {
     /// a hundred times the one that was chosen.
     #[test]
     fn a_percentage_comes_back_as_the_fraction_it_was_shown_from() {
-        for share in [MIN_PANE_SHARE, 0.16, 0.5, MAX_PANE_SHARE] {
+        for share in [0.0, MIN_PANE_SHARE, 0.16, 0.5, MAX_PANE_SHARE, 1.0] {
             assert_eq!(as_share(as_percent(share)), share);
         }
     }

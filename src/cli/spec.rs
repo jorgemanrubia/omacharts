@@ -636,7 +636,7 @@ pub const SURFACE: &[Noun] = &[
                     Flag::valued("overbought", "F", "the RSI or stochastic level drawn across the top, 0-100"),
                     Flag::valued("oversold", "F", "the RSI or stochastic level drawn across the bottom, 0-100 and below overbought"),
                     Flag::valued("bands", "LIST", "which VWAP bands are drawn: 1,2,3 or none"),
-                    Flag::valued("band-alpha", "F", "how solid the VWAP shading is, 0.02-0.6"),
+                    Flag::valued("band-alpha", "F", "how solid the VWAP shading is, 0-1"),
                     Flag::valued("visible", "BOOL", "draw it at all").of(SWITCHES),
                 ],
                 example: "omacharts chart indicator add sma --period 200 --color Amber --style dashed",
@@ -888,7 +888,9 @@ const STORED_FIELDS: &[(&str, &str, &str)] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
-    use omacharts_engine::indicators::{LineStyle, MAX_PANE_SHARE, MIN_PANE_SHARE};
+    use omacharts_engine::indicators::{
+        LineStyle, MAX_FILL_ALPHA, MAX_PANE_SHARE, MIN_FILL_ALPHA, MIN_PANE_SHARE,
+    };
     use omacharts_engine::{link, BarStyle, IndicatorKind, Reset, Session, Timeframe};
 
     #[test]
@@ -1050,6 +1052,22 @@ mod tests {
             .find(|flag| flag.long == "height")
             .expect("a height flag");
         let range = format!("{MIN_PANE_SHARE}-{MAX_PANE_SHARE}");
+        assert!(named.help.contains(&range), "the help says {:?}, not {range}", named.help);
+    }
+
+    /// The same check for the shading, which drifted the other way: the help
+    /// named 0.02-0.6 long after those stopped being the figures anybody had
+    /// agreed to, because the taste they encoded was never the engine's to
+    /// hold.
+    #[test]
+    fn the_band_shading_the_help_names_is_the_range_the_engine_clamps_to() {
+        let named = verb("chart", "indicator")
+            .expect("a chart indicator verb")
+            .flags
+            .iter()
+            .find(|flag| flag.long == "band-alpha")
+            .expect("a band-alpha flag");
+        let range = format!("{MIN_FILL_ALPHA}-{MAX_FILL_ALPHA}");
         assert!(named.help.contains(&range), "the help says {:?}, not {range}", named.help);
     }
 
