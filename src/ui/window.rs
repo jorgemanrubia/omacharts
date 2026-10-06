@@ -1457,6 +1457,9 @@ pub struct Window {
     drawing_settings_action: RefCell<Option<gio::SimpleAction>>,
     /// The drawing tools, on the left.
     drawing_bar: RefCell<Option<Rc<crate::ui::drawing_bar::DrawingBar>>>,
+    /// The tools' handle floating in the bottom-left corner, shown while
+    /// the chartbook strip is not there to carry one.
+    corner_handle: RefCell<Option<gtk::DrawingArea>>,
     /// Where the tree of charts is mounted, rebuilt whenever it changes.
     chart_host: gtk::Box,
     /// The row of chartbook tabs under the charts, empty and hidden until
@@ -1560,6 +1563,7 @@ impl Window {
             drawing_scope_action: RefCell::new(None),
             drawing_settings_action: RefCell::new(None),
             drawing_bar: RefCell::new(None),
+            corner_handle: RefCell::new(None),
             chart_host: chart_host.clone(),
             book_strip: book_strip.clone(),
             corner: RefCell::new(None),
@@ -1689,6 +1693,18 @@ impl Window {
         let overlay = gtk::Overlay::new();
         overlay.set_child(Some(&root));
         overlay.add_overlay(&corner);
+        // The drawing tools' handle, in the bottom-left corner while there
+        // is no chartbook strip to carry it. The strip takes over when it
+        // arrives, so there is one handle at a time and it is always in the
+        // same corner.
+        if let Some(bar) = this.drawing_bar.borrow().as_ref() {
+            let handle = bar.handle();
+            handle.set_margin_start(7);
+            handle.set_margin_bottom(6);
+            handle.set_visible(!this.book_strip.is_visible());
+            overlay.add_overlay(&handle);
+            *this.corner_handle.borrow_mut() = Some(handle);
+        }
         this.watch_sidebar_width();
         window.set_content(Some(&overlay));
 
@@ -3281,8 +3297,20 @@ impl Window {
         // naming the only thing there is would be a row of furniture saying
         // nothing. It arrives with the second book and leaves with it.
         self.book_strip.set_visible(count > 1);
+        if let Some(handle) = self.corner_handle.borrow().as_ref() {
+            handle.set_visible(count < 2);
+        }
         if count < 2 {
             return;
+        }
+        // The drawing tools' handle leads the strip, in the corner it
+        // floats in when there is no strip.
+        if let Some(bar) = self.drawing_bar.borrow().as_ref() {
+            let handle = bar.handle();
+            handle.set_valign(gtk::Align::Center);
+            handle.set_margin_start(3);
+            handle.set_margin_end(6);
+            self.book_strip.append(&handle);
         }
         for index in 0..count {
             self.book_strip.append(&self.build_book_tab(index));
@@ -3381,9 +3409,10 @@ impl Window {
         tab.upcast()
     }
 
-    /// The tab sitting at `index` in the strip right now.
+    /// The tab sitting at `index` in the strip right now. The first child
+    /// is the tools' handle, not a tab.
     fn book_tab(&self, index: usize) -> Option<gtk::Box> {
-        let mut child = self.book_strip.first_child()?;
+        let mut child = self.book_strip.first_child()?.next_sibling()?;
         for _ in 0..index {
             child = child.next_sibling()?;
         }

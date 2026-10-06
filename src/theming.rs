@@ -426,10 +426,11 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
 /* The drawing tools, down the left edge: a column of two, quiet until one is
    in hand, which lights it in the accent the way a pressed tool should. */
 .drawing-bar { padding: 0; }
-/* The handle on the chart's edge: a grip faint enough to be furniture
-   until the pointer is on it, then the accent, so it reads as a thing
-   that does something. */
-.drawing-handle { color: @window_fg_color; opacity: 0.22; transition: opacity 120ms ease-out, color 120ms ease-out; }
+/* The tools' handle in the bottom-left corner: faint enough to be
+   furniture until the pointer is on it or the bar is out, the accent
+   under the pointer, so it reads as a thing that does something. */
+.drawing-handle { color: @window_fg_color; opacity: 0.3; transition: opacity 120ms ease-out, color 120ms ease-out; }
+.drawing-handle.open { opacity: 0.85; }
 .drawing-handle:hover { color: @accent_bg_color; opacity: 1; }
 .drawing-tool { padding: 2px; border-radius: 8px; opacity: 0.8; }
 .drawing-tool:hover { opacity: 1; }
