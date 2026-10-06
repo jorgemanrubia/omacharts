@@ -97,16 +97,22 @@ const CANDIDATES: &[&str] = &[
 /// The flags the login browser is launched with, and the whole of them.
 ///
 /// A driver crate's defaults are puppeteer's list, which includes
-/// `--enable-automation`, a mock keychain and a plain-text password store;
-/// Google's sign-in refuses such a browser ("This browser or app may not be
-/// secure"). This is a real interactive login, not a headless bot, so the
-/// browser is as near stock as it can be and still be spoken to.
+/// `--enable-automation` and a mock keychain; Google's sign-in refuses such a
+/// browser ("This browser or app may not be secure"). This is a real
+/// interactive login, not a headless bot, so the browser is as near stock as
+/// it can be and still be spoken to.
 const LAUNCH_FLAGS: &[&str] = &[
     "no-first-run",
     "no-default-browser-check",
     "disable-popup-blocking",
     "disable-blink-features=AutomationControlled",
     "window-size=1280,900",
+    // Chrome probes org.freedesktop.secrets on startup and waits out the
+    // D-Bus activation timeout when nothing answers — half a minute sat at
+    // about:blank — and on a desktop that does answer it can put a keyring
+    // prompt in front of the login. This profile is ours alone and never
+    // saves a password, so the keyring buys nothing.
+    "password-store=basic",
 ];
 
 /// thinkorswim ships a Chromium.app under `~/thinkorswim/jxbrowser/…`.
@@ -555,5 +561,8 @@ mod tests {
             );
         }
         assert!(LAUNCH_FLAGS.contains(&"disable-blink-features=AutomationControlled"));
+        // The one deliberate departure from stock: the keyring probe costs a
+        // D-Bus activation timeout on a profile that saves no passwords.
+        assert!(LAUNCH_FLAGS.contains(&"password-store=basic"));
     }
 }
