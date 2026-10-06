@@ -136,6 +136,22 @@ pub struct Noun {
     pub verbs: &'static [Verb],
 }
 
+/// The verbs that run in the process they were typed in, whatever is open.
+///
+/// [`Noun::local`] says the same thing for a whole noun, and most of the
+/// reasons are a noun's: `skill` describes the caller's machine. These two
+/// are a verb's own, and the reason is different — a sign-in sits in a
+/// browser window waiting for a person to type a password and read a code
+/// off their phone, and a command handed to the window runs *inside* its
+/// main loop. That is ten minutes of frozen application, with the browser
+/// it is waiting for sitting on top of it. `logout` joins it so that the
+/// pair behave alike, and because neither touches the database.
+///
+/// A table rather than a field on every verb: forty verbs saying "no" to
+/// make two say "yes" is a worse description of the surface than one list
+/// of the exceptions with the reason written on it.
+pub const IN_THE_CALLER: &[(&str, &str)] = &[("provider", "login"), ("provider", "logout")];
+
 /// How a watchlist, section or chartbook is named on the command line.
 pub const SELECTOR: &str =
     "a name, case-insensitive, or `id:N` when two of them share one";
@@ -682,6 +698,53 @@ pub const SURFACE: &[Noun] = &[
                 example: "omacharts chart crosshair off",
                 json: true,
                 writes: true,
+                workspace: false,
+            },
+        ],
+    },
+    Noun {
+        name: "provider",
+        about: "The data feed the charts come from",
+        local: false,
+        verbs: &[
+            Verb {
+                name: "list",
+                about: "Every feed, which one is stored, and which one this process is using",
+                args: &[],
+                flags: &[],
+                example: "omacharts provider list --json",
+                json: true,
+                writes: false,
+                workspace: false,
+            },
+            Verb {
+                name: "status",
+                about: "The chosen feed, and whether it is signed in and ready",
+                args: &[],
+                flags: &[],
+                example: "omacharts provider status",
+                json: true,
+                writes: false,
+                workspace: false,
+            },
+            Verb {
+                name: "login",
+                about: "Sign in to the chosen feed, in a browser window you drive yourself",
+                args: &[Arg::opt("NAME", "the feed to sign in to (default: the stored one)")],
+                flags: &[],
+                example: "omacharts provider login",
+                json: true,
+                writes: false,
+                workspace: false,
+            },
+            Verb {
+                name: "logout",
+                about: "Forget the saved session for a feed",
+                args: &[Arg::opt("NAME", "the feed to sign out of (default: the stored one)")],
+                flags: &[],
+                example: "omacharts provider logout",
+                json: true,
+                writes: false,
                 workspace: false,
             },
         ],

@@ -609,14 +609,53 @@ fn home_relative(path: &std::path::Path) -> String {
     }
 }
 
+/// The provider row's line: which feed, and what that means for the prices.
+///
+/// What is *stored*, not what is running — a launch that was given
+/// `--provider` is this run only, and showing it here would read as a
+/// changed setting that somebody then changes back.
+fn feed_line(store: &Store) -> String {
+    let feed = crate::feeds::stored(store);
+    format!("{} · {}", feed.label, feed.summary)
+}
+
 fn build_market_data(context: &Rc<Context>) {
     let group = adw::PreferencesGroup::new();
     group.set_title("Market data");
 
+    // The provider row opens a page of its own. What a feed is cannot be
+    // said in a combo box: one of them charts a brokerage account, and that
+    // comes with a sign-in, a session that expires and instructions.
     let provider = adw::ActionRow::new();
     provider.set_title("Provider");
-    let feed = crate::feeds::stored(&context.store);
-    provider.set_subtitle(&format!("{} · {}", feed.label, feed.summary));
+    provider.set_subtitle(&feed_line(&context.store));
+    provider.set_activatable(true);
+    provider.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
+
+    let ctx = context.clone();
+    let row = provider.clone();
+    provider.connect_activated(move |provider| {
+        let Some(dialog) = provider.ancestor(adw::PreferencesDialog::static_type()) else {
+            return;
+        };
+        let Some(dialog) = dialog.downcast_ref::<adw::PreferencesDialog>() else {
+            return;
+        };
+        // Both the row behind the page and the window itself follow the
+        // choice: the row because somebody comes back to it, and the window
+        // because the feed is named on every chart's readout.
+        let store = ctx.store.clone();
+        let changed = ctx.on_change.clone();
+        let row = row.clone();
+        crate::ui::feed_settings::push(
+            dialog,
+            ctx.store.clone(),
+            Rc::new(move || {
+                row.set_subtitle(&feed_line(&store));
+                changed();
+            }),
+        );
+    });
     group.add(&provider);
 
     let cache = adw::ActionRow::new();

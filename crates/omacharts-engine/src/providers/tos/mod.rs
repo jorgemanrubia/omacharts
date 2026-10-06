@@ -3,6 +3,8 @@
 //! Candles come from [`tos_market`]. The session is the account's own feed,
 //! so this claims no delay. A live gateway is never opened.
 
+pub mod session;
+
 use crate::bars::{Bar, Timeframe, Unit};
 use crate::provider::{Capability, Provider, ProviderError};
 use crate::symbols::{Instrument, InstrumentKind};
@@ -69,7 +71,7 @@ pub const LISTED: crate::providers::Listed = crate::providers::Listed {
     id: "tos",
     label: "thinkorswim",
     summary: "Real time, from your own Schwab paperMoney session",
-    needs_sign_in: true,
+    setup: Some(&session::SETUP),
 };
 
 pub struct Tos;

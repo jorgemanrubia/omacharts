@@ -133,7 +133,7 @@ pub const LISTED: crate::providers::Listed = crate::providers::Listed {
     id: "yahoo",
     label: "Yahoo Finance",
     summary: "Delayed 10 min for futures, 15 for indexes",
-    needs_sign_in: false,
+    setup: None,
 };
 
 pub struct Yahoo {

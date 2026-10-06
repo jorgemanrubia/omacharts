@@ -12,6 +12,7 @@
 use serde_json::{json, Value};
 
 use omacharts_engine::indicators::{LineStyle, Stroke, MAX_PANE_SHARE, MIN_PANE_SHARE};
+use omacharts_engine::providers;
 use omacharts_engine::theme::{
     ColorChoice, SWATCH_NAMES, THEME_BARS_ID, THEME_MONO_ID, THEME_RED_UP_ID,
 };
@@ -133,6 +134,11 @@ pub fn dispatch(args: &[String], store: &Store, live: Option<&dyn Live>) -> Outc
             }
             charts_verb(store, noun, verb, m, json)
         }
+
+        ("provider", "list") => provider_list(store, json),
+        ("provider", "status") => provider_status(store, json),
+        ("provider", "login") => provider_login(store, m, json),
+        ("provider", "logout") => provider_logout(store, m, json),
 
         ("config", "list") => config_list(store, json),
         ("config", "get") => config_get(store, m, json),
@@ -1903,6 +1909,195 @@ fn crosshair(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<Strin
 
 // -- settings and cache ---------------------------------------------------
 
+/// Which feeds there are, which is stored, and which this process is using.
+///
+/// The three can differ: a launch given `--provider` is using one while
+/// another is stored, and that is worth seeing at a glance rather than
+/// being a thing somebody discovers from a chart.
+fn provider_list(store: &Store, as_json: bool) -> Result<String, Fault> {
+    let stored = crate::feeds::stored(store).id;
+    let in_use = crate::feeds::in_use(store).id;
+    if as_json {
+        let rows = providers::LISTED
+            .iter()
+            .map(|feed| {
+                json!({
+                    "id": feed.id,
+                    "label": feed.label,
+                    "summary": feed.summary,
+                    "stored": feed.id == stored,
+                    "inUse": feed.id == in_use,
+                    "needsSignIn": feed.needs_sign_in(),
+                    "session": providers::access(feed.id).map(|access| access.line()),
+                })
+                .to_string()
+            })
+            .collect();
+        return Ok(wrap_list("providers", rows));
+    }
+    Ok(providers::LISTED
+        .iter()
+        .map(|feed| {
+            let mut note = match (feed.id == stored, feed.id == in_use) {
+                (true, true) => "in use".to_string(),
+                (true, false) => "stored, from the next launch".to_string(),
+                (false, true) => "in use for this launch".to_string(),
+                (false, false) => String::new(),
+            };
+            if let Some(access) = providers::access(feed.id) {
+                if !note.is_empty() {
+                    note.push_str(" · ");
+                }
+                note.push_str(&access.line().to_lowercase());
+            }
+            format!("{:<8} {} · {}{}", feed.id, feed.label, feed.summary, suffixed(&note))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n")
+}
+
+fn suffixed(note: &str) -> String {
+    match note.is_empty() {
+        true => String::new(),
+        false => format!("   ({note})"),
+    }
+}
+
+/// The chosen feed in detail: is it ready, and if not, what is missing.
+///
+/// What the settings panel shows, in the same words, because somebody who
+/// read one and then looks at the other must not have to work out whether
+/// they are being told the same thing.
+fn provider_status(store: &Store, as_json: bool) -> Result<String, Fault> {
+    let stored = crate::feeds::stored(store);
+    let in_use = crate::feeds::in_use(store);
+    let access = providers::access(in_use.id);
+    let browser = providers::can_sign_in(in_use.id);
+    let places = providers::places(in_use.id);
+
+    if as_json {
+        return Ok(format!(
+            "{}\n",
+            json!({
+                "id": in_use.id,
+                "label": in_use.label,
+                "summary": in_use.summary,
+                "stored": stored.id,
+                "forThisLaunch": crate::feeds::for_this_launch().map(|feed| feed.id),
+                "needsSignIn": in_use.needs_sign_in(),
+                "ready": access.as_ref().map(|access| access.ready()).unwrap_or(true),
+                "session": access.as_ref().map(|access| access.line()),
+                "browser": browser.as_ref().ok(),
+                "cannotSignIn": browser.as_ref().err(),
+                "files": places
+                    .iter()
+                    .map(|(what, path)| json!({"what": what, "path": path}))
+                    .collect::<Vec<_>>(),
+            })
+        ));
+    }
+
+    let mut out = format!("{} · {}\n", in_use.label, in_use.summary);
+    if stored.id != in_use.id {
+        out.push_str(&format!(
+            "in use for this launch only; {} is stored\n",
+            stored.label
+        ));
+    }
+    match &access {
+        None => out.push_str("nothing to sign in to; it works as it is\n"),
+        Some(access) => {
+            out.push_str(&format!("{}\n", access.line()));
+            if !access.ready() {
+                out.push_str("charts will be empty until you sign in: omacharts provider login\n");
+            }
+        }
+    }
+    if let Err(why) = &browser
+        && in_use.needs_sign_in()
+    {
+        out.push_str(&format!("{why}\n"));
+    }
+    for (what, path) in places {
+        out.push_str(&format!("{}: {path}\n", what.to_lowercase()));
+    }
+    Ok(out)
+}
+
+/// Sign in to a feed, in a browser the person drives themselves.
+///
+/// Runs in the terminal it was typed in — see `spec::IN_THE_CALLER` — and
+/// blocks for as long as the sign-in takes, printing what the browser is
+/// doing to stderr as it goes. The lines go to stderr rather than into the
+/// result because they are progress rather than an answer: `--json` stays
+/// one object on stdout, which is what something parsing this needs.
+fn provider_login(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<String, Fault> {
+    let feed = named_or_chosen(store, m)?;
+    if !feed.needs_sign_in() {
+        return Err(Fault::refused(format!(
+            "{} needs no signing in; it works as it is",
+            feed.label
+        )));
+    }
+    if let Err(why) = providers::can_sign_in(feed.id) {
+        return Err(Fault::new(super::EXIT_ERROR, why));
+    }
+
+    eprintln!("a browser is opening at {}; sign in there", feed.label);
+    providers::sign_in(feed.id, |line| eprintln!("{line}"))
+        .map_err(|error| Fault::new(super::EXIT_ERROR, error))?;
+
+    let access = providers::access(feed.id).map(|access| access.line());
+    said(
+        as_json,
+        json!({"id": feed.id, "session": access}),
+        format!("signed in to {}", feed.label),
+    )
+}
+
+fn provider_logout(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<String, Fault> {
+    let feed = named_or_chosen(store, m)?;
+    if !feed.needs_sign_in() {
+        return Err(Fault::refused(format!(
+            "{} has nothing saved to forget",
+            feed.label
+        )));
+    }
+    // Saying what was there beats "ok": somebody signing out twice should
+    // be able to tell the difference.
+    let had = providers::access(feed.id).is_some_and(|access| !matches!(access, providers::Access::Missing));
+    providers::sign_out(feed.id).map_err(|error| Fault::new(super::EXIT_ERROR, error))?;
+    said(
+        as_json,
+        json!({"id": feed.id, "forgotten": had}),
+        match had {
+            true => format!("forgot the saved {} session", feed.label),
+            false => format!("no saved {} session to forget", feed.label),
+        },
+    )
+}
+
+/// The feed a command named, or the one in use.
+fn named_or_chosen(
+    store: &Store,
+    m: &clap::ArgMatches,
+) -> Result<&'static providers::Listed, Fault> {
+    match arg(m, "NAME") {
+        Some(name) => providers::listed(name).ok_or_else(|| {
+            Fault::not_found(format!(
+                "no such data feed: {name:?}; the feeds are {}",
+                feed_names()
+            ))
+        }),
+        None => Ok(crate::feeds::in_use(store)),
+    }
+}
+
+fn feed_names() -> String {
+    providers::LISTED.iter().map(|feed| feed.id).collect::<Vec<_>>().join(", ")
+}
+
 fn config_list(store: &Store, as_json: bool) -> Result<String, Fault> {
     let settings = store.settings();
     if as_json {
@@ -1934,7 +2129,27 @@ fn config_get(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<Stri
 fn config_set(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<String, Fault> {
     let key = required(m, "KEY")?;
     let value = required(m, "VALUE")?;
-    store.set_setting(key, value);
+
+    // `config set` writes any setting by name, and that is the point of it.
+    // The feed is the one value naming something from a closed set, where a
+    // misspelling is not stored nonsense but a silent fall back to Yahoo —
+    // somebody who typed `thinkorswimm` would chart from the wrong source
+    // and be told it worked. So this one is checked, and stored canonically
+    // so that `TOS` and `tos` are the same choice rather than two.
+    let value = match key == crate::feeds::SETTING {
+        false => value.to_string(),
+        true => providers::listed(value)
+            .ok_or_else(|| {
+                Fault::usage(format!(
+                    "no such data feed: {value:?}; the feeds are {}",
+                    feed_names()
+                ))
+            })?
+            .id
+            .to_string(),
+    };
+
+    store.set_setting(key, &value);
     said(as_json, json!({"key": key, "value": value}), format!("set {key} to {value}"))
 }
 

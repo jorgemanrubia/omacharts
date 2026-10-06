@@ -282,7 +282,14 @@ pub fn is_command(args: &[String]) -> bool {
 /// [`spec::Noun::local`] for which nouns those are and why.
 pub fn runs_in_the_caller(args: &[String]) -> bool {
     let Some(first) = args.get(1).map(String::as_str) else { return false };
-    spec::SURFACE.iter().any(|noun| noun.name == first && noun.local)
+    if spec::SURFACE.iter().any(|noun| noun.name == first && noun.local) {
+        return true;
+    }
+    // And the handful of verbs whose own reason is not their noun's. See
+    // [`spec::IN_THE_CALLER`]: a sign-in waits on a person, and waiting on a
+    // person inside the window's main loop is a frozen window.
+    let Some(second) = args.get(2).map(String::as_str) else { return false };
+    spec::IN_THE_CALLER.contains(&(first, second))
 }
 
 /// Run one command.

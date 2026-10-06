@@ -232,10 +232,11 @@ fn verb_json(noun: &spec::Noun, verb: &spec::Verb) -> String {
     }
     out.push_str(&flags.join(","));
     out.push_str(&format!(
-        "],\"example\":{},\"writes\":{},\"touchesWorkspace\":{}}}",
+        "],\"example\":{},\"writes\":{},\"touchesWorkspace\":{},\"runsInTheCaller\":{}}}",
         json_str(verb.example),
         verb.writes,
         verb.workspace,
+        noun.local || spec::IN_THE_CALLER.contains(&(noun.name, verb.name)),
     ));
     out
 }

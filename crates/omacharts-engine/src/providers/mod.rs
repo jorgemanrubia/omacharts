@@ -50,11 +50,136 @@ pub struct Listed {
     pub label: &'static str,
     /// The line under the name: what it serves, and how fresh it is.
     pub summary: &'static str,
-    /// Does choosing it leave something for the user to do? True for a feed
-    /// that charts an account's own data, which somebody has to sign in to
-    /// first — and which is therefore the feed the panel has more to say
-    /// about, and the only kind `provider login` applies to.
-    pub needs_sign_in: bool,
+    /// What signing in to it involves, for a feed that charts an account's
+    /// own data. `None` for a feed anybody can use the moment they pick it,
+    /// which is both the better kind and, so far, the default one.
+    ///
+    /// Its presence is also the answer to "does this feed need signing in
+    /// to" — one fact in one place, rather than a boolean beside a block of
+    /// text that can come to disagree with it.
+    pub setup: Option<&'static Setup>,
+}
+
+impl Listed {
+    /// Is there anything to do after picking it?
+    pub fn needs_sign_in(&self) -> bool {
+        self.setup.is_some()
+    }
+}
+
+/// What a feed that needs an account tells a settings panel about itself.
+///
+/// Prose, written in the feed's own folder, rendered by whoever is asking.
+/// The panel knows how to lay out three fields; it knows nothing about
+/// brokerages, browsers or gateways, which is what stops the next feed's
+/// instructions from landing in a UI file.
+#[derive(Debug)]
+pub struct Setup {
+    /// What happens when you sign in, and what the app does and does not
+    /// see while you do.
+    pub explain: &'static str,
+    /// What has to be true of the machine and the account first. Shown as a
+    /// list, because a prerequisite buried in a paragraph is a prerequisite
+    /// somebody discovers by failing.
+    pub requires: &'static [&'static str],
+    /// What the feed may do once it is signed in, and what happens when the
+    /// session ends. The honest small print.
+    pub scope: &'static str,
+}
+
+/// What is saved for a feed that needs signing in to.
+///
+/// Four states, because there are four different things to do about them,
+/// and a panel that collapses any two of them cannot tell somebody why
+/// their charts are empty. Read from disk: asking this must never cost a
+/// network round trip.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Access {
+    /// Nothing saved. Signing in is the next step.
+    Missing,
+    /// Signed in, with whatever is worth saying about it.
+    Signed(String),
+    /// Signed in once, and the provider has since refused it. Only signing
+    /// in again fixes this, which is why it is not merely "missing".
+    Expired(String),
+    /// Something is saved and this feed will not use it. Not a failure to
+    /// sign in — a sign-in that worked and landed somewhere else.
+    Refused(String),
+}
+
+impl Access {
+    /// The line a settings row shows.
+    pub fn line(&self) -> String {
+        match self {
+            Access::Missing => "Not signed in".into(),
+            Access::Signed(detail) => format!("Signed in · {detail}"),
+            Access::Expired(detail) => format!("Session expired · {detail}"),
+            Access::Refused(detail) => format!("Unusable session · {detail}"),
+        }
+    }
+
+    /// Can bars be fetched with what is saved?
+    pub fn ready(&self) -> bool {
+        matches!(self, Access::Signed(_))
+    }
+}
+
+/// What is saved for `id`, or `None` for a feed that needs nothing saved.
+pub fn access(id: &str) -> Option<Access> {
+    match listed(id)?.id {
+        "tos" => Some(tos::session::access()),
+        _ => None,
+    }
+}
+
+/// The browser a sign-in would use, or why it cannot start at all.
+pub fn can_sign_in(id: &str) -> Result<String, String> {
+    match listed(id).map(|feed| feed.id) {
+        Some("tos") => tos::session::can_sign_in(),
+        Some(other) => Err(format!("{other} needs no signing in")),
+        None => Err(format!("no such data feed: {id}")),
+    }
+}
+
+/// Signs in to `id`, blocking until the person is done. `log` is handed one
+/// progress line at a time.
+pub fn sign_in(id: &str, log: impl Fn(&str) + Send + Sync + 'static) -> Result<(), String> {
+    match listed(id).map(|feed| feed.id) {
+        Some("tos") => tos::session::sign_in(log),
+        Some(other) => Err(format!("{other} needs no signing in")),
+        None => Err(format!("no such data feed: {id}")),
+    }
+}
+
+/// Forgets what is saved for `id`.
+pub fn sign_out(id: &str) -> Result<(), String> {
+    match listed(id).map(|feed| feed.id) {
+        Some("tos") => tos::session::sign_out(),
+        Some(other) => Err(format!("{other} has nothing saved to forget")),
+        None => Err(format!("no such data feed: {id}")),
+    }
+}
+
+/// Has this feed connected to anything in this process?
+///
+/// For the tests that hold the feature to its one condition: opening the
+/// settings, reading a session state, or merely choosing a feed must not
+/// build a connection. Only fetching bars may.
+pub fn connected(id: &str) -> bool {
+    match listed(id).map(|feed| feed.id) {
+        Some("tos") => tos::session::connected(),
+        _ => false,
+    }
+}
+
+/// The files a feed keeps on this machine, for showing rather than
+/// guessing: a signed-in brokerage session is something somebody is
+/// entitled to know the location of, and to delete.
+pub fn places(id: &str) -> Vec<(&'static str, String)> {
+    match listed(id).map(|feed| feed.id) {
+        Some("tos") => tos::session::places(),
+        _ => Vec::new(),
+    }
 }
 
 /// Every feed, in the order they are offered.

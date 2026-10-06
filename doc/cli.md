@@ -531,6 +531,60 @@ running changes nothing, and says so instead of being ignored. Use
 The feeds are listed in `omacharts surface --json` under `launch`, so nothing
 has to guess the names.
 
+`provider list` shows them with what is stored and what is running, which can
+differ when a launch was given the flag:
+
+```
+$ omacharts provider list
+yahoo    Yahoo Finance · Delayed 10 min for futures, 15 for indexes   (stored, from the next launch)
+tos      thinkorswim · Real time, from your own Schwab paperMoney session   (in use for this launch · not signed in)
+  [exit 0]
+```
+
+## Signing in to a feed that charts your own account
+
+Yahoo needs nothing. thinkorswim charts your Schwab account, so it has to be
+signed in to once, and `provider status` is how you find out where you stand:
+
+```
+$ omacharts provider status
+thinkorswim · Real time, from your own Schwab paperMoney session
+Not signed in
+charts will be empty until you sign in: omacharts provider login
+session: /home/you/.config/omacharts/tos.env
+browser profile: /home/you/.config/omacharts/tos-browser
+  [exit 0]
+```
+
+`provider login` opens a real browser window at thinkorswim and waits while
+you sign in — your password and your one-time code are typed by you, into the
+browser, and Omacharts neither sees them nor types anything into the page. It
+needs a Chromium-family browser on the machine; with none, it says which to
+install rather than failing in the browser's words. Progress goes to stderr
+while it waits, so `--json` is still one object on stdout.
+
+```
+$ omacharts provider login
+a browser is opening at thinkorswim; sign in there
+…
+signed in to thinkorswim
+  [exit 0]
+```
+
+Unlike every other command, `login` and `logout` run in the terminal you typed
+them in even when a window is open. A sign-in waits for a person, and a command
+handed to the window runs inside its main loop — which would be ten minutes of
+frozen application with the browser it is waiting for sitting on top of it.
+`surface --json` marks both with `runsInTheCaller`.
+
+`provider logout` forgets the saved session. The browser profile stays, so
+signing in again is usually a click rather than another one-time code.
+
+Sessions expire. When one does, charts say so rather than claiming the
+provider is unreachable, `provider status` says `Session expired`, and signing
+in again is the fix. All of this is also in Preferences → Market data →
+Provider, which is the same four facts with a button.
+
 ## The widget in the Omarchy bar
 
 The bar widget is a plugin folder plus an entry in the shell's layout. The
