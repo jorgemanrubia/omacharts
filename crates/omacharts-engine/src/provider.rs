@@ -396,6 +396,18 @@ pub trait Provider: Send + Sync {
         None
     }
 
+    /// The window is done with this provider: release whatever it holds
+    /// that outlives a value — a connection, a session on a gateway.
+    ///
+    /// A method rather than `Drop`, because a provider is a cheap value
+    /// that is built in several places to be asked how it is offered, and
+    /// a connection closed every time one of those is let go of would be a
+    /// connection closed under the window. This is called once, by the
+    /// window, when the feed is switched away from or the window closes.
+    /// Defaults to nothing, which is right for a provider that holds
+    /// nothing.
+    fn retire(&self) {}
+
     /// How a chart drawn from this provider is kept current.
     ///
     /// Derived from [`Self::stream`], and not to be overridden: a provider

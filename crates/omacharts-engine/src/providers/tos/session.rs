@@ -4,7 +4,7 @@
 //! Everything here is about the session rather than about bars: what is
 //! saved, whether it still works, how to get one, how to throw one away.
 //! It is in the feed's own folder because every word of it is specific to
-//! this feed — the browser, the paperMoney gateway, the file the session
+//! this feed — the browser, the gateway, the file the session
 //! lands in — and because the next feed that needs an account will have its
 //! own answers to the same four questions and no reason to share these.
 //!
@@ -20,7 +20,7 @@ use crate::providers::{Access, Setup};
 /// panel renders whatever the feed says, and a feed added later cannot end
 /// up with its instructions in somebody else's file.
 pub const SETUP: Setup = Setup {
-    explain: "Charts come from your own Schwab paperMoney session. Signing in opens a real \
+    explain: "Charts come from your own thinkorswim account. Signing in opens a real \
               Chrome window at thinkorswim, where you type your password and your one-time \
               code yourself — Omacharts never sees either, and types nothing into the page. \
               What it keeps is the session the browser ends up with.",
@@ -28,9 +28,9 @@ pub const SETUP: Setup = Setup {
         "A Schwab account with thinkorswim",
         "Chromium, Chrome, Brave or Edge installed on this machine",
     ],
-    scope: "paperMoney charts only. No orders are ever placed, and a live-trading gateway \
-            is refused. Schwab expires a session after a while: when yours goes, charts stop \
-            updating and say so, and signing in again here is the fix.",
+    scope: "Charts only: the client sends chart requests and nothing else, and cannot \
+            place an order. Schwab expires a session after a while: when yours goes, charts \
+            stop updating and say so, and signing in again here is the fix.",
 };
 
 /// What is saved, without connecting to anything.
@@ -43,14 +43,6 @@ pub fn access() -> Access {
         tos_market::SessionState::Expired { at } => {
             Access::Expired(format!("Schwab ended the session {}", when(at)))
         }
-        // A sign-in that worked and landed somewhere this feed will not
-        // follow. Saying so matters: reported as "no session" it looks like
-        // a login that failed, and somebody goes round the same loop again.
-        tos_market::SessionState::RefusedLive => Access::Refused(
-            "The saved session is a live-trading one. This feed charts paperMoney only — \
-             switch thinkorswim to paperMoney and sign in again."
-                .into(),
-        ),
     }
 }
 
@@ -102,15 +94,21 @@ pub fn places() -> Vec<(&'static str, String)> {
     ]
 }
 
+/// The account and when, joined, or "session saved" when the file says
+/// neither: the line a status row shows after "Signed in · ", so it has to
+/// say something.
 fn describe(account: Option<&str>, saved: Option<i64>) -> String {
-    let mut out = String::from("paperMoney");
+    let mut parts: Vec<String> = Vec::new();
     if let Some(account) = account.filter(|a| !a.is_empty()) {
-        out.push_str(&format!(" · account {account}"));
+        parts.push(format!("account {account}"));
     }
     if let Some(saved) = saved {
-        out.push_str(&format!(" · signed in {}", when(saved)));
+        parts.push(format!("signed in {}", when(saved)));
     }
-    out
+    if parts.is_empty() {
+        return "session saved".into();
+    }
+    parts.join(" · ")
 }
 
 /// A unix second as somebody would say it. Local time, because the only
@@ -136,8 +134,13 @@ mod tests {
         assert!(SETUP.explain.contains("Omacharts never sees"));
         assert!(SETUP.requires.iter().any(|line| line.contains("Schwab")));
         assert!(SETUP.requires.iter().any(|line| line.contains("Chromium")));
-        assert!(SETUP.scope.contains("No orders"));
+        assert!(SETUP.scope.contains("cannot place an order"));
         assert!(SETUP.scope.contains("expires"));
+        // Which kind of account is the account's business: nothing a person
+        // reads here says what sort of session it is.
+        for text in [SETUP.explain, SETUP.scope].into_iter().chain(SETUP.requires.iter().copied()) {
+            assert!(!text.to_lowercase().contains("paper"), "{text}");
+        }
     }
 
     /// Four states, four different things to do about them. Two that read
@@ -147,9 +150,8 @@ mod tests {
     fn every_session_state_reads_differently() {
         let states = [
             Access::Missing,
-            Access::Signed("paperMoney".into()),
+            Access::Signed("session saved".into()),
             Access::Expired("Schwab ended the session".into()),
-            Access::Refused("live".into()),
         ];
         let mut lines: Vec<String> = states.iter().map(|state| state.line()).collect();
         let total = lines.len();
@@ -161,11 +163,14 @@ mod tests {
     #[test]
     fn a_saved_session_says_which_account_and_since_when() {
         let line = describe(Some("D-12345"), Some(1_700_000_000));
-        assert!(line.contains("paperMoney"), "{line}");
         assert!(line.contains("D-12345"), "{line}");
         assert!(line.contains("signed in"), "{line}");
-        // Nothing to say is said with nothing, not with an empty field.
-        assert_eq!(describe(None, None), "paperMoney");
-        assert_eq!(describe(Some(""), None), "paperMoney");
+        // Which account is the account's business, not a kind of account:
+        // nothing here says what sort of session it is.
+        assert!(!line.to_lowercase().contains("paper"), "{line}");
+        // Nothing to say still says something, since the line follows
+        // "Signed in · " and an empty field there reads as a bug.
+        assert_eq!(describe(None, None), "session saved");
+        assert_eq!(describe(Some(""), None), "session saved");
     }
 }

@@ -75,7 +75,7 @@ struct Requested {
 pub const LISTED: crate::providers::Listed = crate::providers::Listed {
     id: "tos",
     label: "thinkorswim",
-    serves: "Your own Schwab paperMoney account, US listings",
+    serves: "US listings, from your thinkorswim account",
     setup: Some(&session::SETUP),
     experimental: true,
 };
@@ -213,10 +213,10 @@ fn map_err(error: tos_market::Error) -> ProviderError {
     use tos_market::Error;
 
     match error {
-        // Nothing saved, or what is saved is a live-trading session this feed
-        // will not connect to. Both are the same thing to a chart: there is
-        // no usable session, and one place to go and get one.
-        Error::NoSession(_) | Error::LiveTradingDisabled | Error::Config(_) => {
+        // Nothing saved, or a session file that names a gateway this client
+        // does not know. Both are the same thing to a chart: there is no
+        // usable session, and one place to go and get one.
+        Error::NoSession(_) | Error::Config(_) => {
             ProviderError::NeedsSetup(NOT_SIGNED_IN.into())
         }
         // The gateway had its say and refused the token. Also setup, not
@@ -352,6 +352,12 @@ impl Provider for Tos {
     fn stream(&self) -> Option<&dyn Stream> {
         Some(self)
     }
+
+    /// The window has stopped charting from here: the connection to the
+    /// gateway closes. A chart that asks again later reconnects.
+    fn retire(&self) {
+        tos_market::disconnect();
+    }
 }
 
 #[cfg(test)]
@@ -476,9 +482,9 @@ mod tests {
     fn nothing_signed_in_is_a_failure_with_something_to_do_about_it() {
         for error in [
             tos_market::Error::NoSession("/x/tos.env".into()),
-            // A saved live-trading session is refused, and refusing it is not
-            // a network problem to wait out.
-            tos_market::Error::LiveTradingDisabled,
+            // A session file naming a gateway that is not thinkorswim's is
+            // refused, and refusing it is not a network problem to wait out.
+            tos_market::Error::Config("example.com is not a thinkorswim gateway host".into()),
         ] {
             let mapped = map_err(error);
             assert!(

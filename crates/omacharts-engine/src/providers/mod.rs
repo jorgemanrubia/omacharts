@@ -113,9 +113,6 @@ pub enum Access {
     /// Signed in once, and the provider has since refused it. Only signing
     /// in again fixes this, which is why it is not merely "missing".
     Expired(String),
-    /// Something is saved and this feed will not use it. Not a failure to
-    /// sign in — a sign-in that worked and landed somewhere else.
-    Refused(String),
 }
 
 impl Access {
@@ -125,7 +122,6 @@ impl Access {
             Access::Missing => "Not signed in".into(),
             Access::Signed(detail) => format!("Signed in · {detail}"),
             Access::Expired(detail) => format!("Session expired · {detail}"),
-            Access::Refused(detail) => format!("Unusable session · {detail}"),
         }
     }
 

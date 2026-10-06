@@ -80,9 +80,12 @@ system.
 
 Omacharts works with more than one data feed. Yahoo Finance is the default
 and needs nothing set up. The other is thinkorswim, the trading platform of
-Charles Schwab, which charts your own account's data — nothing held back the
-way a delayed vendor feed holds it back, though a chart is still a snapshot
-refetched on a timer rather than a live stream.
+Charles Schwab, which charts your own account's data and streams it: every
+chart on screen is a subscription to the gateway, bars arrive as they print,
+and nothing on that path asks for data on a timer. Several charts showing the
+same symbol at the same resolution share one subscription, and the last of
+them to close is what ends it. `omacharts provider status` says what is being
+streamed right now, and whether anything has ticked.
 
 Pick one in Preferences → Market data → Provider, or from a terminal:
 
@@ -91,8 +94,10 @@ omacharts config set provider tos
 omacharts --provider tos          # this launch only
 ```
 
-The feed is read when the process starts, so a change applies the next time
-Omacharts opens.
+A window that is open switches at once: the charts on screen are simply from
+the other feed from then on, painted from its cache where it has one and
+fetched where it does not. Nothing is cleared — each feed's bars are kept
+apart, so switching back is instant.
 
 thinkorswim needs signing in to, once. The settings panel has a button for
 it — Sign in, or Sign out once there is a session to forget, which is also
@@ -111,10 +116,13 @@ is the session the browser ended up with, in `~/.config/omacharts/tos.env`
 `~/.config/omacharts/tos-browser` so that the next sign-in is a trusted
 device rather than another round of codes.
 
-It connects to paperMoney and asks for charts. A live gateway is refused, and
-there is no order-entry code in the client at all. Sessions expire after a
-while; when one does, charts say so and signing in again is the fix, from the
-settings panel or from `omacharts provider login`. The session itself is
+It asks for charts and nothing else: the client sends two kinds of request,
+chart and login, refuses to send any other, and has no order-entry code at
+all — a test fails if one is ever routed. Whichever account you sign in with
+is the one it charts; the gateway it connects to has to be one of
+thinkorswim's own, checked by address. Sessions expire after a while; when
+one does, charts say so and signing in again is the fix, from the settings
+panel or from `omacharts provider login`. The session itself is
 spelled out by `omacharts provider status`: whether one is saved, which
 account and when, the browser a sign-in would open, and the two files above.
 

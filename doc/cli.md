@@ -522,11 +522,14 @@ The order is: `--provider` for this launch, otherwise the stored setting,
 otherwise Yahoo. A name that is not a feed stops the launch with code 2 rather
 than quietly charting from the wrong source.
 
-`--provider` is a launch option, not a command, and the feed is read once when
-the process starts — the request queue is paced to that feed's rules and the
-price cache is keyed by its name. So passing it while Omacharts is already
-running changes nothing, and says so instead of being ignored. Use
-`config set provider` for that, and restart.
+A change takes effect at once. `config set provider tos` with a window open
+switches its charts to the other feed on the spot — each chart paints from
+that feed's cache where it has one and keeps what it shows until the new bars
+land where it does not — and `--provider tos` typed at a running window
+switches that window the same way without storing anything, and says so.
+Nothing is cleared: each feed's bars are kept apart in the cache, so switching
+back is instant. A symbol the new feed cannot carry, or a feed nobody has
+signed in to, is reported on the chart the way any other failure is.
 
 The feeds are listed in `omacharts surface --json` under `launch`, so nothing
 has to guess the names.
@@ -536,8 +539,8 @@ differ when a launch was given the flag:
 
 ```
 $ omacharts provider list
-yahoo    Yahoo Finance · Every listing the symbol search covers · delayed 15 min for indexes, 10 for futures   (stored, from the next launch)
-tos      thinkorswim · Your own Schwab paperMoney account, US listings · refetched on a timer, not a live stream   (in use for this launch · not signed in)
+yahoo    Yahoo Finance · Every listing the symbol search covers · delayed 15 min for indexes, 10 for futures   (stored, not in use)
+tos      thinkorswim · US listings, from your thinkorswim account · live, as each print arrives · experimental   (in use, not stored · not signed in)
   [exit 0]
 ```
 
@@ -548,13 +551,39 @@ signed in to once, and `provider status` is how you find out where you stand:
 
 ```
 $ omacharts provider status
-thinkorswim · Your own Schwab paperMoney account, US listings · refetched on a timer, not a live stream
+thinkorswim · US listings, from your thinkorswim account · live, as each print arrives
 Not signed in
 charts will be empty until you sign in: omacharts provider login
 session: /home/you/.config/omacharts/tos.env
 browser profile: /home/you/.config/omacharts/tos-browser
   [exit 0]
 ```
+
+The last lines of `provider status` say how the feed delivers bars, and — for
+one that streams — what the window holds a subscription to. A streamed feed
+is never refetched on a timer: each chart on screen is one subscription, shared
+by every chart showing the same symbol at the same resolution, and the line
+per subscription says how many charts it serves, how many bars it holds and
+when the last one arrived. It says plainly when a subscription is open and
+nothing has ticked, which with the market shut is the normal state of a live
+chart, rather than implying data is flowing. With no window open nothing is
+subscribed, and it says that too.
+
+```
+$ omacharts provider status
+thinkorswim · US listings, from your thinkorswim account · live, as each print arrives
+Signed in · account D-1 · signed in 6 Oct 2026
+session: /home/you/.config/omacharts/tos.env
+browser profile: /home/you/.config/omacharts/tos-browser
+delivery: streamed — bars arrive as they print, and nothing fetches on a timer
+streaming 2 series:
+  /ES 1m · 2 charts · 2602 bars · last bar 14:32 · updated 3 s ago
+  AAPL 1D · 1 chart · waiting for the first snapshot
+  [exit 0]
+```
+
+A polled feed says `delivery: polled — charts are refetched on a timer` and
+nothing more. With `--json` the same facts are `delivery` and `subscriptions`.
 
 `provider login` opens a real browser window at thinkorswim and waits while
 you sign in — your password and your one-time code are typed by you, into the

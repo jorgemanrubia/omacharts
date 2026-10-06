@@ -55,14 +55,17 @@ to the stored arrangement — you cannot tell last week's from what is on screen
 **Prefer a theme swatch to a hex**, so the indicator goes on following the
 desktop theme. A hex is for when one exact colour was asked for.
 
-**A feed change needs a restart, and a sign-in needs the user.** The data feed
-is read when the process starts, so `config set provider tos` applies to the
-next launch and `--provider` applies only to the launch it is typed at — a
-window already open keeps charting from what it started with, and says so if
-asked. A feed that charts somebody's brokerage account has to be signed in to
+**A feed change is immediate, and a sign-in needs the user.** `config set
+provider tos` switches a window that is open to the other feed on the spot
+and stores it; `--provider tos` on a running window switches that window
+without storing. A feed that charts somebody's brokerage account has to be signed in to
 in a browser, by them: `provider login` opens one and waits, so run it only
 when the user has asked for it and never as a step inside something else.
-`provider status` says whether it is signed in, expired or missing.
+`provider status` says whether it is signed in, expired or missing, how the
+feed delivers bars — polled on a timer, or streamed as each print arrives —
+and, for a feed that streams, what the open window holds a subscription to and
+whether anything has ticked. A chart on a streamed feed is never refetched on
+a timer; if it looks still, `provider status` is where to look first.
 
 **`watchlist feed --json` is the only command that prints a price**, and only
 for the default watchlist. Otherwise "what's X doing" means putting it on screen.
