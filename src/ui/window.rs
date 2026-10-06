@@ -201,6 +201,7 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Click a drawing", "Select it; drag an end, or the whole thing"),
             ("Shift+click a drawing", "Add it to the selection, or take it out; Ctrl does the same"),
             ("Shift+drag the chart", "Select every drawing the box touches"),
+            ("Ctrl+A", "Select every drawing on the plot"),
             ("Right-click a drawing", "Its colour and thickness, or delete it"),
             ("Delete", "Delete the selected drawings"),
             ("Esc", "Put the tool down, or let go of the selection"),

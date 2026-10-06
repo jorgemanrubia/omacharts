@@ -775,6 +775,13 @@ impl State {
         Projected { kind: drawing.kind, from: point(&drawing.from), to: point(&drawing.to) }
     }
 
+    /// Every drawing with any of itself on the plot right now: what Ctrl+A
+    /// takes. One scrolled or zoomed out of view is not part of "all".
+    fn visible_drawings(&self, width: f64, height: f64) -> Vec<usize> {
+        let plan = layout(self, width, height);
+        self.drawings_in(width, height, (plan.plot_x, plan.price_y, plan.plot_w, plan.price_h))
+    }
+
     /// Every drawing a box in pixels touches, in list order.
     fn drawings_in(&self, width: f64, height: f64, rect: (f64, f64, f64, f64)) -> Vec<usize> {
         let (first, visible) = self.slice();
@@ -1114,6 +1121,21 @@ impl ChartView {
         state.primary().and_then(|i| state.drawings.get(i)).cloned()
     }
 
+    /// Ctrl+A: select every drawing on the plot. Says whether there was
+    /// anything to select, so an empty chart lets the key go on.
+    pub fn select_visible(&self) -> bool {
+        let (w, h) = (self.area.width() as f64, self.area.height() as f64);
+        let mut state = self.state.borrow_mut();
+        let visible = state.visible_drawings(w, h);
+        if visible.is_empty() {
+            return false;
+        }
+        state.selected = visible;
+        drop(state);
+        self.redraw();
+        true
+    }
+
     /// Everything that wears grips.
     pub fn selected_drawings(&self) -> Vec<Drawing> {
         let state = self.state.borrow();
@@ -1303,6 +1325,15 @@ impl ChartView {
                         handler();
                     }
                     glib::Propagation::Stop
+                }
+                Key::a | Key::A
+                    if modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK)
+                        && !modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK) =>
+                {
+                    match view.select_visible() {
+                        true => glib::Propagation::Stop,
+                        false => glib::Propagation::Proceed,
+                    }
                 }
                 Key::z | Key::Z | Key::y | Key::Y
                     if modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK) =>
