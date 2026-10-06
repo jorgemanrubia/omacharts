@@ -43,7 +43,6 @@ struct Panel {
     /// shows. Called when the stored feed changes, and nowhere else.
     on_change: Rc<dyn Fn()>,
     page: adw::PreferencesPage,
-    banner: adw::Banner,
     /// The group describing the chosen feed's sign-in, rebuilt whenever
     /// the choice or the session state changes. Held so it can be taken off
     /// the page again — a feed that needs nothing must leave nothing behind.
@@ -63,28 +62,22 @@ pub fn push(
     on_change: Rc<dyn Fn()>,
 ) {
     let page = adw::PreferencesPage::new();
-    let banner = adw::Banner::new("");
 
     let header = adw::HeaderBar::new();
     let toolbar = adw::ToolbarView::new();
     toolbar.add_top_bar(&header);
-    // Under the header, over the page: where libadwaita puts a sentence that
-    // is about the whole page rather than about one row.
-    toolbar.add_top_bar(&banner);
     toolbar.set_content(Some(&page));
 
     let panel = Rc::new(Panel {
         store,
         on_change,
         page,
-        banner,
         setup: RefCell::new(None),
         signing_in: std::cell::Cell::new(false),
     });
 
     panel.page.add(&feeds_group(&panel));
     rebuild_setup(&panel);
-    show_restart_note(&panel);
 
     // Nothing packed into the header: a navigation page draws its own back
     // button, and every choice here applies as it is made, so a Done button
@@ -96,9 +89,7 @@ pub fn push(
 fn feeds_group(panel: &Rc<Panel>) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     group.set_title("Data feed");
-    group.set_description(Some(
-        "Where prices come from. The choice applies the next time Omacharts starts.",
-    ));
+    group.set_description(Some("Where prices come from."));
 
     let chosen = feeds::stored(&panel.store).id;
     let mut first: Option<gtk::CheckButton> = None;
@@ -148,30 +139,13 @@ fn feeds_group(panel: &Rc<Panel>) -> adw::PreferencesGroup {
     group
 }
 
-/// Store the choice, and show what follows from it.
+/// Store the choice. The window reads it back and switches the charts
+/// over, with nothing to restart and nothing on this page saying so: the
+/// person ticks the other feed and the charts are from the other feed.
 fn choose(panel: &Rc<Panel>, feed: &'static Listed) {
     panel.store.set_setting(feeds::SETTING, feed.id);
     (panel.on_change)();
     rebuild_setup(panel);
-    show_restart_note(panel);
-}
-
-/// The feed is read when the process starts, so a change made here is not a
-/// change to what is on screen. Saying so is the whole of the honesty
-/// available: the alternative is a panel that looks like it switched the
-/// feed and charts that keep coming from the old one.
-fn show_restart_note(panel: &Rc<Panel>) {
-    let stored = feeds::stored(&panel.store);
-    let running = feeds::in_use(&panel.store);
-    if stored.id == running.id {
-        panel.banner.set_revealed(false);
-        return;
-    }
-    panel.banner.set_title(&format!(
-        "Charts are still coming from {}. {} starts with the next Omacharts.",
-        running.label, stored.label
-    ));
-    panel.banner.set_revealed(true);
 }
 
 /// Replace the sign-in group with the chosen feed's, or with nothing.
@@ -215,7 +189,7 @@ fn sign_in_row(panel: &Rc<Panel>, feed: &'static Listed, access: &Access) -> adw
     row.set_title(match access {
         // A session that went bad is not a fresh install, and "again" is the
         // whole of the difference worth saying.
-        Access::Expired(_) | Access::Refused(_) => "Sign in again",
+        Access::Expired(_) => "Sign in again",
         _ => "Sign in",
     });
     // Plain text, and room to wrap. The subtitle is empty until the button
@@ -382,7 +356,6 @@ mod tests {
             store: store.clone(),
             on_change: Rc::new(|| {}),
             page,
-            banner: adw::Banner::new(""),
             setup: RefCell::new(None),
             signing_in: std::cell::Cell::new(false),
         });
@@ -455,7 +428,6 @@ mod tests {
             store,
             on_change: Rc::new(|| {}),
             page: adw::PreferencesPage::new(),
-            banner: adw::Banner::new(""),
             setup: RefCell::new(None),
             signing_in: std::cell::Cell::new(false),
         });
@@ -500,7 +472,6 @@ mod tests {
             store,
             on_change: Rc::new(|| {}),
             page: adw::PreferencesPage::new(),
-            banner: adw::Banner::new(""),
             setup: RefCell::new(None),
             signing_in: std::cell::Cell::new(false),
         });
@@ -537,7 +508,6 @@ mod tests {
             store,
             on_change: Rc::new(|| {}),
             page: adw::PreferencesPage::new(),
-            banner: adw::Banner::new(""),
             setup: RefCell::new(None),
             signing_in: std::cell::Cell::new(false),
         });

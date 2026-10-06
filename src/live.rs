@@ -169,7 +169,11 @@ pub enum Written {
 }
 
 struct Writer {
-    jobs: mpsc::Sender<Job>,
+    /// `None` once the writer has been finished: with the last sender gone
+    /// the thread's loop ends, and with the thread gone so does the channel
+    /// the window's listener waits on — which is what lets a retired
+    /// registry be dropped at all.
+    jobs: std::sync::Mutex<Option<mpsc::Sender<Job>>>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -483,15 +487,22 @@ impl Live {
         }
     }
 
-    /// Everything dirty, written, before the process goes.
+    /// Everything dirty, written, and then everything stopped: the window
+    /// is closing, or the feed is being retired.
     ///
-    /// Blocks until the writes have landed — bounded, because a window
-    /// closing is not the moment to hang on a disk.
+    /// The writes are waited for — bounded, because a window closing is not
+    /// the moment to hang on a disk. Then every subscription is dropped, so
+    /// the provider's threads end, and the writer's channel is closed, so
+    /// its thread ends and whatever was listening for its answers ends too.
+    /// After this nothing of the registry is running, whoever still holds
+    /// a reference to it.
     pub fn shutdown(&self) {
         self.flush();
         if let Some(writer) = &self.writer {
             writer.finish();
         }
+        self.watched.borrow_mut().clear();
+        self.by_pane.borrow_mut().clear();
     }
 
     // -- recovery ----------------------------------------------------------
@@ -619,20 +630,27 @@ impl Writer {
                 }
             })
             .ok();
-        Writer { jobs, thread }
+        Writer { jobs: std::sync::Mutex::new(Some(jobs)), thread }
     }
 
     fn send(&self, job: Job) {
-        let _ = self.jobs.send(job);
+        if let Some(jobs) = self.jobs.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            let _ = jobs.send(job);
+        }
     }
 
-    /// Wait for everything queued so far to be written, or for five seconds.
+    /// Wait for everything queued so far to be written, or for five
+    /// seconds, and then let the thread go.
     ///
     /// The queue is in order, so a marker sent after the writes is answered
-    /// after them.
+    /// after them. Dropping the sender afterwards is what ends the thread:
+    /// nothing else holds one.
     fn finish(&self) {
         let (done, landed) = mpsc::channel::<()>();
-        if self.jobs.send(Job::Sync(done)).is_ok() {
+        let jobs = self.jobs.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some(jobs) = jobs
+            && jobs.send(Job::Sync(done)).is_ok()
+        {
             let _ = landed.recv_timeout(Duration::from_secs(5));
         }
     }
@@ -644,8 +662,7 @@ impl Drop for Writer {
         // a field of the thing being dropped — which happens *after* this
         // runs. So it is let go of here, first, or the join below would wait
         // on a loop that is waiting on us.
-        let (orphan, _) = mpsc::channel();
-        drop(std::mem::replace(&mut self.jobs, orphan));
+        self.jobs.lock().unwrap_or_else(|e| e.into_inner()).take();
         if let Some(thread) = self.thread.take() {
             // Waits exactly for what was already queued.
             let _ = thread.join();
@@ -924,6 +941,19 @@ mod tests {
         assert!(!drained.schedule_retry);
         assert!(live.next_retry_at().is_none());
         assert!(matches!(live.report()[0].state, ReportState::Lost { retrying: false, .. }));
+    }
+
+    /// Retiring the registry ends every subscription: the feed's threads
+    /// are what a switch has to leave none of.
+    #[test]
+    fn shutting_down_drops_every_subscription() {
+        let (live, fake) = live();
+        live.watch(1, series("ES", M1), "ES", None);
+        live.watch(2, series("NQ", M1), "NQ", None);
+        live.shutdown();
+        assert_eq!(fake.lock().unwrap().dropped, 2);
+        assert!(fake.lock().unwrap().sinks.is_empty());
+        assert!(live.report().is_empty());
     }
 
     /// A provider that refuses before any request leaves nothing behind.

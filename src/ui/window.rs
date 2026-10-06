@@ -91,6 +91,15 @@ fn worth_warming(delivery: Delivery, cached: bool) -> bool {
 /// often enough to feel immediate.
 const THEME_POLL_SECONDS: u32 = 2;
 
+/// How long a wake from a stream waits for a frame before the series is
+/// brought up to date without one.
+///
+/// Longer than any frame interval, so a window on screen always drains on
+/// its frame clock and this never fires there; short enough that a window
+/// nobody is looking at is never more than this behind the feed. Not a
+/// timer in its own right: it is armed by a tick and runs once.
+const HIDDEN_DRAIN_WAIT: std::time::Duration = std::time::Duration::from_millis(100);
+
 /// Read the stored resolution strip.
 ///
 /// A strip that was never set gets the presets; one that was set to nothing
@@ -1479,12 +1488,23 @@ pub struct Window {
     theming: Rc<RefCell<Theming>>,
     search: Rc<SymbolSearch>,
     watchlist: RefCell<Option<Rc<Watchlist>>>,
-    provider: Arc<dyn Provider>,
-    loader: Loader,
+    /// The feed, and everything built around it. Three cells rather than
+    /// three fields because the feed can change while the window is open —
+    /// see [`Window::switch_feed`], the one place that replaces all three
+    /// in order.
+    provider: RefCell<Arc<dyn Provider>>,
+    loader: RefCell<Loader>,
     /// The one source for everything being streamed, for a provider that
     /// streams. `None` for one that does not, which then pays nothing: no
     /// registry, no writer thread, no wake.
-    live: Option<Rc<Live>>,
+    live: RefCell<Option<Rc<Live>>>,
+    /// Which feed a loader reply belongs to. Bumped by a switch, so a reply
+    /// the old worker had already sent is recognised and dropped rather
+    /// than painted onto a chart that has moved on.
+    feed_generation: Cell<u64>,
+    /// The refresh timer is installed, so a switch to another polled feed
+    /// does not install a second one.
+    refresh_timer_on: Cell<bool>,
     /// A drain is already on the frame clock, so a second wake before it
     /// runs has nothing to add.
     drain_scheduled: Cell<bool>,
@@ -1539,6 +1559,7 @@ impl Window {
         provider: Arc<dyn Provider>,
     ) -> Rc<Window> {
         store.seed_watchlist_if_empty(DEFAULTS);
+        crate::feeds::note_running(provider.id());
 
         let index = crate::inventory::Inventory::curated();
         let theming = Rc::new(RefCell::new(Theming::load(&store)));
@@ -1597,9 +1618,11 @@ impl Window {
             theming: theming.clone(),
             search: SymbolSearch::new(index.clone()),
             watchlist: RefCell::new(None),
-            provider,
-            loader,
-            live,
+            provider: RefCell::new(provider),
+            loader: RefCell::new(loader),
+            live: RefCell::new(live),
+            feed_generation: Cell::new(0),
+            refresh_timer_on: Cell::new(false),
             drain_scheduled: Cell::new(false),
             retry_timer: RefCell::new(None),
             series: Rc::new(RefCell::new(HashMap::new())),
@@ -1725,6 +1748,7 @@ impl Window {
         this.wire_backfill();
         this.wire_refresh();
         this.wire_live();
+        this.wire_close();
 
         // The widget is part of the app, so it arrives with it rather than
         // waiting to be discovered in the settings.
@@ -3762,10 +3786,14 @@ impl Window {
 
     fn build_watchlist(self: &Rc<Self>) -> Rc<Watchlist> {
         let store = self.store.clone();
-        let provider = self.provider.clone();
+        // The window's feed as it stands when a quote is asked for, not the
+        // one there was when the rail was built: a feed switch has to reach
+        // the rail's numbers too, and the rail outlives the switch.
+        let window = Rc::downgrade(self);
         // Quotes come from the cache alone. A rail that fetches is a rail that
         // gets you throttled.
         let quote: crate::ui::watchlist::QuoteLookup = Rc::new(move |instrument: &Instrument| {
+            let provider = window.upgrade()?.provider();
             let symbol = provider.symbol_for(instrument)?;
             let bars = store.load_bars(&format!("{}:{symbol}", provider.id()), Timeframe::days(1));
             let (previous, last) = (bars.get(bars.len().checked_sub(2)?)?, bars.last()?);
@@ -4093,13 +4121,20 @@ impl Window {
     /// Fold arriving bars into the chart. Runs on the main thread.
     fn wire_responses(self: &Rc<Self>, receiver: async_channel::Receiver<Response>) {
         let this = self.clone();
+        let generation = self.feed_generation.get();
         glib::spawn_future_local(async move {
             while let Ok(response) = receiver.recv().await {
+                // The feed this reply came from has been retired. Whatever
+                // the worker had already sent is for charts that no longer
+                // exist in that world, and this task ends with it.
+                if this.feed_generation.get() != generation {
+                    break;
+                }
                 match response {
                     Response::Bars { key, timeframe, bars } => {
                         this.present(&key, timeframe, bars, None);
                         // One at a time, each asked for as the last lands.
-                        this.loader.keep_warming(&key, timeframe, |tf| {
+                        this.loader().keep_warming(&key, timeframe, |tf| {
                             this.store.coverage(&key, tf).is_some()
                         });
                     }
@@ -4119,7 +4154,7 @@ impl Window {
                         }
                         // Three more requests is the worst possible answer to
                         // a provider that has just refused one.
-                        this.loader.stop_warming(&key);
+                        this.loader().stop_warming(&key);
                         if unasked {
                             this.pause_refresh();
                         }
@@ -4333,7 +4368,12 @@ impl Window {
             &self.window,
             self.store.clone(),
             self.theming.clone(),
-            Rc::new(move || this.restyle()),
+            // A change on the panel is a change to the theme or to the feed,
+            // and both are read back from the store rather than passed in.
+            Rc::new(move || {
+                this.restyle();
+                this.adopt_feed();
+            }),
             Rc::new(move || editor.edit_timeframes()),
         );
     }
@@ -4606,11 +4646,11 @@ impl Window {
     /// in the background.
     fn show_in(self: &Rc<Self>, pane: &Rc<ChartPane>, instrument: Instrument) {
         let timeframe = pane.timeframe.get();
-        let Some(symbol) = self.provider.symbol_for(&instrument) else {
+        let Some(symbol) = self.provider().symbol_for(&instrument) else {
             self.show_unserved(pane, instrument);
             return;
         };
-        let key = format!("{}:{symbol}", self.provider.id());
+        let key = format!("{}:{symbol}", self.provider().id());
         let native = timeframe.native();
 
         *pane.instrument.borrow_mut() = Some(instrument.clone());
@@ -4630,7 +4670,7 @@ impl Window {
         // then the cache, so the chart is on screen before any request
         // leaves.
         let series = Series { key: key.clone(), native };
-        let streamed = self.live.as_ref().and_then(|live| live.with_bars(&series, |bars| bars.to_vec()));
+        let streamed = self.live().as_ref().and_then(|live| live.with_bars(&series, |bars| bars.to_vec()));
         let memo = match streamed {
             Some(_) => None,
             None => self.series.borrow().get(&(key.clone(), timeframe)).cloned(),
@@ -4670,16 +4710,16 @@ impl Window {
             // The chart on screen overtakes everything queued behind it, and
             // the old neighbourhood is forgotten: those symbols are no longer
             // the ones a keypress away.
-            self.loader.drop_prefetches();
+            self.loader().drop_prefetches();
             // Fill in the rest of the strip behind this chart, so the first
             // click on 15m is a repaint rather than a wait. Nothing is asked
             // for until this very load lands, which is what keeps a walk down
             // the rail free.
-            self.loader.warm_strip(&key, &symbol, &self.timeframes.borrow(), timeframe, |tf| {
+            self.loader().warm_strip(&key, &symbol, &self.timeframes.borrow(), timeframe, |tf| {
                 self.store.coverage(&key, tf).is_some()
             });
         }
-        match &self.live {
+        match &self.live() {
             // The subscription is the fetch: its snapshot is the history, and
             // nothing on a streamed path asks for bars it is about to be
             // pushed. A chart already streaming this series joins it.
@@ -4694,7 +4734,7 @@ impl Window {
                 }
             }
             None => self
-                .loader
+                .loader()
                 .fetch(Request { key, symbol, timeframe, speculative: false }, FOREGROUND),
         }
         if pane.id == self.focused.get() {
@@ -4774,12 +4814,12 @@ impl Window {
                 continue;
             }
             let instrument = &order[index];
-            let Some(symbol) = self.provider.symbol_for(instrument) else { continue };
-            let key = format!("{}:{symbol}", self.provider.id());
+            let Some(symbol) = self.provider().symbol_for(instrument) else { continue };
+            let key = format!("{}:{symbol}", self.provider().id());
             let distance = index.abs_diff(position) as u32;
 
             if self.store.coverage(&key, timeframe.native()).is_none() {
-                self.loader.fetch(
+                self.loader().fetch(
                     Request {
                         key: key.clone(),
                         symbol: symbol.clone(),
@@ -4793,7 +4833,7 @@ impl Window {
             // them even if you never open it — but after its chart data.
             let daily = Timeframe::days(1);
             if timeframe.native() != daily && self.store.coverage(&key, daily).is_none() {
-                self.loader.fetch(
+                self.loader().fetch(
                     Request { key, symbol, timeframe: daily, speculative: true },
                     distance + BACKGROUND,
                 );
@@ -4819,14 +4859,14 @@ impl Window {
     /// drops a duplicate of something already queued.
     pub fn warm(self: &Rc<Self>, instruments: &[Instrument]) {
         let daily = Timeframe::days(1);
-        let delivery = self.provider.delivery();
+        let delivery = self.provider().delivery();
         for (rank, instrument) in instruments.iter().enumerate() {
-            let Some(symbol) = self.provider.symbol_for(instrument) else { continue };
-            let key = format!("{}:{symbol}", self.provider.id());
+            let Some(symbol) = self.provider().symbol_for(instrument) else { continue };
+            let key = format!("{}:{symbol}", self.provider().id());
             if !worth_warming(delivery, self.store.coverage(&key, daily).is_some()) {
                 continue;
             }
-            self.loader.fetch(
+            self.loader().fetch(
                 Request { key, symbol, timeframe: daily, speculative: true },
                 BACKFILL.saturating_add(rank as u32),
             );
@@ -4879,10 +4919,10 @@ impl Window {
             .flat_order()
             .into_iter()
             .filter(|instrument| {
-                self.provider
+                self.provider()
                     .symbol_for(instrument)
                     .map(|symbol| {
-                        let key = format!("{}:{symbol}", self.provider.id());
+                        let key = format!("{}:{symbol}", self.provider().id());
                         self.store.coverage(&key, daily).is_none()
                     })
                     .unwrap_or(false)
@@ -4902,7 +4942,7 @@ impl Window {
     /// window is never the thing that walks into it. The provider climbs its
     /// own from a minute to fifteen; this only has to stay out of the way.
     fn pause_backfill(self: &Rc<Self>) {
-        self.loader.drop_backfill();
+        self.loader().drop_backfill();
         self.backfill_quiet_until
             .set(Some(std::time::Instant::now() + std::time::Duration::from_secs(300)));
     }
@@ -4926,14 +4966,21 @@ impl Window {
     /// [`omacharts_engine::refresh`], one chart at a time, and most ticks of
     /// this timer queue nothing at all.
     fn wire_refresh(self: &Rc<Self>) {
-        if !wants_refresh_timer(self.provider.delivery()) {
+        if !wants_refresh_timer(self.provider().delivery()) || self.refresh_timer_on.get() {
             return;
         }
+        self.refresh_timer_on.set(true);
         // No first pass on idle, unlike the backfill: every chart on screen
         // has just been fetched by the thing that put it there, so there is
         // nothing a tick at startup could usefully do.
         let this = self.clone();
         glib::timeout_add_seconds_local(REFRESH_TICK_SECONDS, move || {
+            // A switch to a feed that streams: the timer stands down, and a
+            // later switch back installs it again.
+            if !wants_refresh_timer(this.provider().delivery()) {
+                this.refresh_timer_on.set(false);
+                return glib::ControlFlow::Break;
+            }
             this.refresh_charts();
             glib::ControlFlow::Continue
         });
@@ -4951,7 +4998,7 @@ impl Window {
         }
         self.refresh_quiet_until.set(None);
 
-        let delivery = self.provider.delivery();
+        let delivery = self.provider().delivery();
         let visible = self.on_screen();
         let now = chrono::Utc::now().timestamp();
 
@@ -4962,8 +5009,8 @@ impl Window {
             let Some(pane) = self.pane(id) else { continue };
             let instrument = pane.instrument.borrow().clone();
             let Some(instrument) = instrument else { continue };
-            let Some(symbol) = self.provider.symbol_for(&instrument) else { continue };
-            let key = format!("{}:{symbol}", self.provider.id());
+            let Some(symbol) = self.provider().symbol_for(&instrument) else { continue };
+            let key = format!("{}:{symbol}", self.provider().id());
             let timeframe = pane.timeframe.get();
             let candidate = refresh::Candidate {
                 delivery,
@@ -4984,7 +5031,7 @@ impl Window {
             // waiting for and refuses it outright while the provider is
             // throttling. A chart keeping itself current must never be the
             // reason another one loads slowly.
-            self.loader.fetch(Request { key, symbol, timeframe, speculative: true }, REFRESH);
+            self.loader().fetch(Request { key, symbol, timeframe, speculative: true }, REFRESH);
         }
     }
 
@@ -5040,7 +5087,7 @@ impl Window {
         // A series being streamed is newer in memory than any reply: the
         // reply still feeds the rail, and paints nothing.
         let streamed = self
-            .live
+            .live()
             .as_ref()
             .is_some_and(|live| live.is_showing(&Series { key: key.to_string(), native }));
         // One reply can belong to several charts: the same symbol at the same
@@ -5056,8 +5103,8 @@ impl Window {
                         .instrument
                         .borrow()
                         .as_ref()
-                        .and_then(|i| self.provider.symbol_for(i))
-                        .map(|symbol| format!("{}:{symbol}", self.provider.id()) == key)
+                        .and_then(|i| self.provider().symbol_for(i))
+                        .map(|symbol| format!("{}:{symbol}", self.provider().id()) == key)
                         .unwrap_or(false)
             })
             .cloned()
@@ -5189,7 +5236,7 @@ impl Window {
     /// sends one wake, the wake schedules one drain on the next frame, and
     /// the frame clock stops again when the drain has run.
     fn wire_live(self: &Rc<Self>) {
-        let Some(live) = self.live.clone() else { return };
+        let Some(live) = self.live() else { return };
 
         let this = self.clone();
         let nudges = live.nudges();
@@ -5222,13 +5269,122 @@ impl Window {
             }
         });
 
-        // Ten seconds of ticks are in memory and nowhere else; the window
-        // closing is the one exit the write-behind timer cannot cover.
-        let registry = live.clone();
+    }
+
+    /// The window closing is the one exit nothing else covers: ten seconds
+    /// of ticks are in memory and nowhere else, and a feed's threads are
+    /// still running. The same retirement a feed switch does, with nothing
+    /// installed after it.
+    fn wire_close(self: &Rc<Self>) {
+        let this = self.clone();
         self.window.connect_close_request(move |_| {
-            registry.shutdown();
+            this.retire_feed();
             glib::Propagation::Proceed
         });
+    }
+
+    // -- the feed ----------------------------------------------------------
+
+    /// The feed as it stands. A clone of the handle, which is what every
+    /// caller wants: nothing holds the cell across a call that might switch.
+    pub fn provider(&self) -> Arc<dyn Provider> {
+        self.provider.borrow().clone()
+    }
+
+    fn loader(&self) -> std::cell::Ref<'_, Loader> {
+        self.loader.borrow()
+    }
+
+    fn live(&self) -> Option<Rc<Live>> {
+        self.live.borrow().clone()
+    }
+
+    /// Chart from whatever feed the settings now name, if that is not the
+    /// one on screen. What the panel and `config set provider` call.
+    pub fn adopt_feed(self: &Rc<Self>) {
+        let stored = crate::feeds::stored(&self.store);
+        if stored.id != self.provider().id() {
+            self.switch_feed(Arc::from(providers::selected(Some(stored.id))));
+        }
+    }
+
+    /// Chart from `provider` from now on.
+    ///
+    /// One ordered sequence, in one place, because scattered as reactions
+    /// it would be a race that only a second click finds. The order is the
+    /// argument: nothing may be built on the new feed while anything of the
+    /// old one can still deliver, and nothing of the old one may be told to
+    /// stop while a chart could still ask it for more.
+    ///
+    /// 1. Retire the outgoing feed — [`Window::retire_feed`]: its replies
+    ///    are stale from here, its subscriptions are closed and flushed,
+    ///    its queue is dropped, and the worker ends on its own.
+    /// 2. Install the new provider, lazily: constructed, held, connected to
+    ///    nothing until a chart asks.
+    /// 3. Build what the new feed needs — a loader, and a registry if it
+    ///    streams — and wire their replies to the window.
+    /// 4. Re-arm liveness for what the new feed is: the refresh timer if it
+    ///    polls, which the timer itself gives up if a later feed streams.
+    /// 5. Reload what is on screen, and only that: each chart paints from
+    ///    the new feed's cache at once if it has one, keeps what it shows
+    ///    until the new bars land if it does not, and says so through its
+    ///    own trouble dot if the feed cannot carry its symbol or is not
+    ///    signed in. The bar cache is not touched: it is keyed by feed, so
+    ///    nothing mixes and switching back is instant.
+    ///
+    /// Nothing narrates any of this. The person ticks the other feed and
+    /// the charts are from the other feed.
+    pub fn switch_feed(self: &Rc<Self>, provider: Arc<dyn Provider>) {
+        self.retire_feed();
+
+        crate::feeds::note_running(provider.id());
+        *self.provider.borrow_mut() = provider.clone();
+        let (sender, receiver) = async_channel::unbounded::<Response>();
+        *self.loader.borrow_mut() = Loader::new(provider.clone(), sender);
+        *self.live.borrow_mut() = provider.stream().is_some().then(|| {
+            Rc::new(Live::new(provider.clone(), self.store.path().map(Path::to_path_buf)))
+        });
+        self.wire_responses(receiver);
+        self.wire_live();
+        self.wire_refresh();
+
+        self.backfill_quiet_until.set(None);
+        self.refresh_quiet_until.set(None);
+        let panes: Vec<Rc<ChartPane>> = self.panes.borrow().clone();
+        for pane in panes {
+            let instrument = pane.instrument.borrow().clone();
+            if let Some(instrument) = instrument {
+                self.show_in(&pane, instrument);
+            }
+        }
+        if let Some(watchlist) = self.watchlist.borrow().as_ref() {
+            watchlist.refresh_quotes();
+        }
+    }
+
+    /// Stop the feed on screen, in the order that leaves nothing of it able
+    /// to reach a chart.
+    ///
+    /// First the generation moves on, so a reply already on its way from
+    /// the worker is dropped on arrival rather than painted. Then every
+    /// stream subscription is closed and what it held is written, so the
+    /// provider's threads end and the cache is current. Then the queue is
+    /// emptied, the worker finishes whatever it is sending now, finds
+    /// nothing to send and the window gone, and ends. Last the provider is
+    /// told it is retired, which is where a feed that holds a connection
+    /// closes it. The cache keeps every bar: it is keyed by feed, and the
+    /// feed may be back.
+    fn retire_feed(self: &Rc<Self>) {
+        self.feed_generation.set(self.feed_generation.get() + 1);
+        if let Some(live) = self.live.borrow_mut().take() {
+            live.shutdown();
+        }
+        self.loader().drop_prefetches();
+        self.loader().drop_backfill();
+        // Whatever the provider holds beyond its value: a connection, a
+        // session on a gateway. The worker still finishing a request on it
+        // gets a failure it already knows how to report, and drops it.
+        self.provider().retire();
     }
 
     /// Drain on the next frame, once, however many wakes arrive before it.
@@ -5247,13 +5403,27 @@ impl Window {
             this.drain_live();
             glib::ControlFlow::Break
         });
+        // A window on another workspace gets no frames, and a drain that
+        // only ever ran on one would leave the series, the cache and
+        // `provider status` where they were when the window was last seen.
+        // So if no frame has come for the wake, the drain runs anyway, a
+        // tenth of a second later: the series stays current and the writer
+        // keeps writing, while painting stays the frame clock's. On a
+        // window that is on screen the frame comes first and this finds
+        // nothing to do.
+        let this = self.clone();
+        glib::timeout_add_local_once(HIDDEN_DRAIN_WAIT, move || {
+            if this.drain_scheduled.get() {
+                this.drain_live();
+            }
+        });
     }
 
     /// Fold everything that arrived into the series in memory and redraw
     /// what changed.
     fn drain_live(self: &Rc<Self>) {
         self.drain_scheduled.set(false);
-        let Some(live) = self.live.clone() else { return };
+        let Some(live) = self.live() else { return };
         let drained = live.drain();
         for change in drained.changes {
             self.apply_live_change(change);
@@ -5269,7 +5439,7 @@ impl Window {
 
     /// One change to one series, on every chart watching it.
     fn apply_live_change(self: &Rc<Self>, change: Change) {
-        let Some(live) = self.live.clone() else { return };
+        let Some(live) = self.live() else { return };
         match change {
             // The whole series: the ordinary paint, which folds, filters and
             // recomputes, as a loader reply would.
@@ -5355,7 +5525,7 @@ impl Window {
     /// Keep one timer at the earliest retry due, replacing whatever was
     /// timed before. No lost series, no timer.
     fn schedule_retry(self: &Rc<Self>) {
-        let Some(live) = self.live.clone() else { return };
+        let Some(live) = self.live() else { return };
         if let Some(old) = self.retry_timer.borrow_mut().take() {
             old.remove();
         }
@@ -5373,7 +5543,7 @@ impl Window {
 
     /// Chart `id` stopped showing what it was streaming.
     fn release_pane(self: &Rc<Self>, id: u32) {
-        if let Some(live) = &self.live
+        if let Some(live) = &self.live()
             && live.unwatch(id)
         {
             self.schedule_reap();
@@ -5382,7 +5552,7 @@ impl Window {
 
     /// Every chart stopped: a chartbook is coming down.
     fn release_all_panes(self: &Rc<Self>) {
-        if let Some(live) = &self.live
+        if let Some(live) = &self.live()
             && live.unwatch_all()
         {
             self.schedule_reap();
@@ -5393,13 +5563,13 @@ impl Window {
     /// comes straight back — the next chartbook showing the same symbol —
     /// finds its subscription where it left it.
     fn schedule_reap(self: &Rc<Self>) {
-        let Some(live) = self.live.clone() else { return };
+        let Some(live) = self.live() else { return };
         glib::idle_add_local_once(move || live.reap());
     }
 
     /// What is being streamed right now, for `provider status`.
     pub fn streaming(&self) -> Vec<crate::live::Report> {
-        self.live.as_ref().map(|live| live.report()).unwrap_or_default()
+        self.live().as_ref().map(|live| live.report()).unwrap_or_default()
     }
 
     /// Replace the set of indicators and redraw.

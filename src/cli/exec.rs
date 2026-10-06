@@ -142,7 +142,18 @@ pub fn dispatch(args: &[String], store: &Store, live: Option<&dyn Live>) -> Outc
 
         ("config", "list") => config_list(store, json),
         ("config", "get") => config_get(store, m, json),
-        ("config", "set") => config_set(store, m, json),
+        ("config", "set") => {
+            let outcome = config_set(store, m, json);
+            // The feed is the one setting a window acts on the moment it
+            // changes: the charts switch, with nothing to restart.
+            if outcome.is_ok()
+                && required(m, "KEY").is_ok_and(|key| key == crate::feeds::SETTING)
+                && let Some(live) = live
+            {
+                live.adopt_feed();
+            }
+            outcome
+        }
         ("config", "bars") => config_bars(store, m, json, live),
 
         ("plugin", "status") => plugin_status(json),
@@ -1943,8 +1954,8 @@ fn provider_list(store: &Store, as_json: bool) -> Result<String, Fault> {
         .map(|feed| {
             let mut note = match (feed.id == stored, feed.id == in_use) {
                 (true, true) => "in use".to_string(),
-                (true, false) => "stored, from the next launch".to_string(),
-                (false, true) => "in use for this launch".to_string(),
+                (true, false) => "stored, not in use".to_string(),
+                (false, true) => "in use, not stored".to_string(),
                 (false, false) => String::new(),
             };
             if let Some(access) = providers::access(feed.id) {
@@ -2020,7 +2031,7 @@ fn provider_status(store: &Store, live: Option<&dyn Live>, as_json: bool) -> Res
     let mut out = format!("{} · {}\n", in_use.label, providers::described(in_use));
     if stored.id != in_use.id {
         out.push_str(&format!(
-            "in use for this launch only; {} is stored\n",
+            "in use in the open window; {} is stored\n",
             stored.label
         ));
     }

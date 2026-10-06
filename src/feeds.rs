@@ -7,12 +7,12 @@
 //! trying a feed out, for a script that wants one particular source, and for
 //! saying which feed a bug report is about.
 //!
-//! The flag wins, and it only ever applies to the process it was typed at.
-//! That is a consequence of the choice being read once, at startup: the
-//! loader is built around one feed, with one request queue paced to that
-//! feed's rules, and a cache keyed by it. Nothing here pretends otherwise —
-//! an invocation that asks a *running* window for a different feed is told
-//! that is not what the flag does, rather than being quietly ignored.
+//! The flag wins for the launch it was typed at, and a flag typed at a
+//! window already open switches that window without storing anything. A
+//! window switches feeds live — see `Window::switch_feed` — so what is
+//! stored and what is on screen can differ only until the window reads the
+//! setting back, which the panel and `config set provider` make it do at
+//! once.
 //!
 //! There is deliberately no environment variable. `OMACHARTS_PROVIDER` used
 //! to do this job, and an environment variable is the one way of passing an
@@ -33,6 +33,20 @@ pub const SETTING: &str = "provider";
 
 static FOR_THIS_LAUNCH: OnceLock<&'static Listed> = OnceLock::new();
 
+/// The feed the window is charting from right now, set each time it starts
+/// on one or switches to one. What `provider list` and `provider status`
+/// mean by "in use" once a window is open; absent, the launch flag and then
+/// the stored setting say what a window would start on.
+static RUNNING: std::sync::RwLock<Option<&'static Listed>> = std::sync::RwLock::new(None);
+
+/// The window is charting from `id` from now on. A feed that is not listed
+/// — the synthetic one, in a benchmark — is nobody's business here.
+pub fn note_running(id: &str) {
+    if let Some(feed) = providers::listed(id) {
+        *RUNNING.write().unwrap_or_else(|e| e.into_inner()) = Some(feed);
+    }
+}
+
 /// Chart from `feed` for the life of this process, whatever is stored.
 ///
 /// Takes a feed from the catalogue rather than a name, so an unknown one is
@@ -48,10 +62,11 @@ pub fn for_this_launch() -> Option<&'static Listed> {
 }
 
 /// How this feed is offered — its name, what it serves, whether it needs
-/// signing in to. The flag for this launch, otherwise the stored setting,
-/// otherwise the default.
+/// signing in to. The one a window is charting from, otherwise the flag for
+/// this launch, otherwise the stored setting, otherwise the default.
 pub fn in_use(store: &Store) -> &'static Listed {
-    for_this_launch()
+    (*RUNNING.read().unwrap_or_else(|e| e.into_inner()))
+        .or_else(for_this_launch)
         .or_else(|| store.setting(SETTING).as_deref().and_then(providers::listed))
         .unwrap_or_else(|| providers::listed(providers::DEFAULT).expect("the default is listed"))
 }

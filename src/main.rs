@@ -165,18 +165,21 @@ fn main() -> glib::ExitCode {
             return glib::ExitCode::FAILURE;
         };
 
-        // A feed is chosen once, when the process starts: the loader is built
-        // around one, its request queue is paced to that one's rules, and the
-        // price cache is keyed by it. So an invocation that asks a window
-        // already on screen for a different feed cannot have it, and is told
-        // so — silently charting from the old feed while the terminal that
-        // asked believes otherwise is the one outcome worth ruling out.
-        if !starting && let Some(feed) = asked_for {
+        // A window already on screen switches to the feed it was asked for,
+        // the way the settings panel switches it: for this window only, and
+        // without touching what is stored. Said back, so the terminal that
+        // asked knows it happened.
+        if !starting
+            && let Some(feed) = asked_for
+            && window.provider().id() != feed.id
+        {
+            window.switch_feed(std::sync::Arc::from(
+                omacharts_engine::providers::selected(Some(feed.id)),
+            ));
             command_line.printerr_literal(&format!(
-                "omacharts: already running, so --provider {} applies to nothing here; \
-                 `omacharts config set provider {}` sets the default, and it takes \
-                 effect next time Omacharts starts\n",
-                feed.id, feed.id,
+                "omacharts: charting from {} for this window; `omacharts config set \
+                 provider {}` makes it the default\n",
+                feed.label, feed.id,
             ));
         }
 

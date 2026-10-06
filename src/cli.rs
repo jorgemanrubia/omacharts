@@ -155,6 +155,9 @@ pub trait Live {
     fn reload_watchlists(&self);
     /// Re-read the theme and bar scheme, and repaint.
     fn adopt_theming(&self);
+    /// Chart from the feed the settings now name, if it is not the one on
+    /// screen. Nothing to do without a window.
+    fn adopt_feed(&self) {}
 
     /// Save a picture of the focused chart, or of the whole open chartbook.
     ///
@@ -617,6 +620,10 @@ impl Live for Rc<crate::ui::Window> {
 
     fn adopt_theming(&self) {
         crate::ui::Window::adopt_theming(self);
+    }
+
+    fn adopt_feed(&self) {
+        crate::ui::Window::adopt_feed(self);
     }
 
     fn screenshot(
