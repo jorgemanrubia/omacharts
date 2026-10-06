@@ -35,6 +35,8 @@ use crate::ui::window::Window;
 /// The size of a configuration's preview tile.
 const PREVIEW_W: i32 = 84;
 const PREVIEW_H: i32 = 44;
+/// How strong the candles under a preview are: ground, not subject.
+const CANDLE_ALPHA: f64 = 0.5;
 
 /// Something that shows a row a value: the editor keeps one per row so a
 /// style chosen elsewhere can be put in front of the hand.
@@ -853,10 +855,16 @@ fn preview_tile(theme: &Theme, kind: Kind, style: &Style) -> gtk::DrawingArea {
 fn paint_preview(area: &gtk::DrawingArea, theme: &Theme, kind: Kind, style: &Style) {
     let theme = theme.clone();
     let style = style.clone();
-    area.set_draw_func(move |_, cr, w, h| {
-        let (w, h) = (w as f64, h as f64);
+    area.set_draw_func(move |_, cr, w, h| draw_preview(cr, w as f64, h as f64, &theme, kind, &style));
+    area.queue_draw();
+}
+
+/// The picture itself, on any surface: a strip of candles with the
+/// drawing over them, the way it sits on a chart.
+fn draw_preview(cr: &gtk::cairo::Context, w: f64, h: f64, theme: &Theme, kind: Kind, style: &Style) {
+    {
         let scale = (h / PREVIEW_H as f64).clamp(1.0, 3.0);
-        let bars = omacharts_engine::theme::theme_bars(&theme);
+        let bars = omacharts_engine::theme::theme_bars(theme);
         colors::set_source(cr, &theme.ui.background);
         rounded(cr, 0.5, 0.5, w - 1.0, h - 1.0, 5.0);
         let _ = cr.fill();
@@ -877,13 +885,17 @@ fn paint_preview(area: &gtk::DrawingArea, theme: &Theme, kind: Kind, style: &Sty
             let column = x.floor() + 0.5;
             let wick_w = scale.round().max(1.0);
             let up = i % 3 != 1;
-            colors::set_source(cr, if up { &bars.up } else { &bars.down });
+            // At less than full strength: the candles are the ground the
+            // drawing sits on, not the subject, and at full saturation a
+            // body punches through a translucent fill as if it were on
+            // top of it.
+            colors::set_source_alpha(cr, if up { &bars.up } else { &bars.down }, CANDLE_ALPHA);
             cr.rectangle(column - wick_w / 2.0, y - wick_h / 2.0, wick_w, wick_h);
             let _ = cr.fill();
             cr.rectangle(column - body_w / 2.0, y - body_h / 2.0, body_w, body_h);
             let _ = cr.fill();
         }
-        let colour = style.colour.hex(&theme);
+        let colour = style.colour.hex(theme);
         let line_w = style.width.min(4.0) * scale.sqrt();
         match kind {
             Kind::Line => {
@@ -903,7 +915,7 @@ fn paint_preview(area: &gtk::DrawingArea, theme: &Theme, kind: Kind, style: &Sty
             }
             Kind::Rect => {
                 let (x, y, rw, rh) = (w * 0.3, h * 0.2, w * 0.4, h * 0.6);
-                colors::set_source_alpha(cr, &style.fill.hex(&theme), style.alpha);
+                colors::set_source_alpha(cr, &style.fill.hex(theme), style.alpha);
                 cr.rectangle(x, y, rw, rh);
                 let _ = cr.fill();
                 if style.border {
@@ -914,8 +926,7 @@ fn paint_preview(area: &gtk::DrawingArea, theme: &Theme, kind: Kind, style: &Sty
                 }
             }
         }
-    });
-    area.queue_draw();
+    }
 }
 
 /// Every sample the arrow factory has drawn, so a colour change can ask
