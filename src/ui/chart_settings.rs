@@ -4,7 +4,7 @@
 //! looking when you want them. Two pages: how the bars are read and scaled,
 //! and what is drawn on top of them.
 
-use std::cell::RefCell;
+use std::cell::{OnceCell, RefCell};
 use std::rc::Rc;
 
 use adw::prelude::*;
@@ -16,6 +16,7 @@ use omacharts_engine::{BarStyle, Indicator, Session};
 
 use crate::store::Store;
 use crate::ui::colors;
+use crate::ui::controls;
 use crate::ui::dialogs;
 use crate::ui::shortcuts;
 use crate::ui::window::Window;
@@ -1525,6 +1526,97 @@ fn percent_adjustment(share: f64, least: f64, most: f64) -> gtk::Adjustment {
     )
 }
 
+/// An oscillator's overbought and oversold levels, the pair RSI and the
+/// stochastic both draw across their strips.
+///
+/// Each runs the whole 0–100 of the strip, because where the lines go is a
+/// matter of taste — 80/20 on a stochastic, 70/30 on RSI, tighter on a quiet
+/// instrument — and a row that stopped at 50 would be deciding that for you.
+/// What the pair may not do is cross: a band whose floor is above its ceiling
+/// is not a band. So moving one past the other pushes the other along, a step
+/// ahead, rather than refusing the move — the figure you asked for is the one
+/// you get, and the one you did not ask about is the one that gives way.
+/// Overbought stops a step short of 0 and oversold a step short of 100, which
+/// is what keeps there always being somewhere for the other to go.
+fn level_rows(
+    window: &Rc<Window>,
+    refresh: &Refresh,
+    id: u32,
+    overbought: f64,
+    oversold: f64,
+) -> [adw::ActionRow; 2] {
+    // Each row's callback needs the other row, which does not exist yet when
+    // the first is built; the cells are filled once both do.
+    let under: Rc<OnceCell<controls::WeakBounded>> = Rc::new(OnceCell::new());
+    let over: Rc<OnceCell<controls::WeakBounded>> = Rc::new(OnceCell::new());
+
+    let window_for_over = window.clone();
+    let refresh_for_over = refresh.clone();
+    let under_for_over = under.clone();
+    let overbought = controls::bounded_row(
+        "Overbought",
+        None,
+        overbought,
+        LEVEL_STEP,
+        100.0,
+        LEVEL_STEP,
+        0,
+        move |level| {
+            update(&window_for_over, id, |indicator| {
+                if let Params::Rsi { overbought, .. } | Params::Stochastic { overbought, .. } =
+                    &mut indicator.params
+                {
+                    *overbought = level;
+                }
+            });
+            if let Some(under) = under_for_over.get()
+                && under.value().is_some_and(|floor| floor >= level)
+            {
+                under.set(level - LEVEL_STEP);
+            }
+            refresh_for_over.run();
+        },
+    );
+
+    let window_for_under = window.clone();
+    let refresh_for_under = refresh.clone();
+    let over_for_under = over.clone();
+    let oversold = controls::bounded_row(
+        "Oversold",
+        None,
+        oversold,
+        0.0,
+        100.0 - LEVEL_STEP,
+        LEVEL_STEP,
+        0,
+        move |level| {
+            update(&window_for_under, id, |indicator| {
+                if let Params::Rsi { oversold, .. } | Params::Stochastic { oversold, .. } =
+                    &mut indicator.params
+                {
+                    *oversold = level;
+                }
+            });
+            if let Some(over) = over_for_under.get()
+                && over.value().is_some_and(|ceiling| ceiling <= level)
+            {
+                over.set(level + LEVEL_STEP);
+            }
+            refresh_for_under.run();
+        },
+    );
+
+    // Filled once both exist. Neither can already be set: this is the only
+    // place that sets them.
+    let _ = under.set(oversold.downgrade());
+    let _ = over.set(overbought.downgrade());
+
+    [overbought.row, oversold.row]
+}
+
+/// Whole levels, and the least a pair of them can be apart.
+const LEVEL_STEP: f64 = 1.0;
+
 /// How much of the chart an indicator's own strip takes.
 ///
 /// One row for every indicator that has a strip, rather than one per kind: the
@@ -1533,33 +1625,6 @@ fn percent_adjustment(share: f64, least: f64, most: f64) -> gtk::Adjustment {
 /// The ends come from the engine's own clamp rather than from a pair of
 /// numbers typed in here, which is the only way the slider and the chart agree
 /// about what the extremes are.
-/// An oscillator's overbought and oversold levels, the pair RSI and the
-/// stochastic both draw across their strips.
-fn level_rows(
-    window: &Rc<Window>,
-    refresh: &Refresh,
-    id: u32,
-    overbought: f64,
-    oversold: f64,
-) -> [adw::SpinRow; 2] {
-    [
-        spin_row(window, refresh, id, "Overbought", overbought, 50.0, 100.0, 1.0, |indicator, value| {
-            if let Params::Rsi { overbought, .. } | Params::Stochastic { overbought, .. } =
-                &mut indicator.params
-            {
-                *overbought = value;
-            }
-        }),
-        spin_row(window, refresh, id, "Oversold", oversold, 0.0, 50.0, 1.0, |indicator, value| {
-            if let Params::Rsi { oversold, .. } | Params::Stochastic { oversold, .. } =
-                &mut indicator.params
-            {
-                *oversold = value;
-            }
-        }),
-    ]
-}
-
 fn pane_height_row(
     window: &Rc<Window>,
     refresh: &Refresh,
