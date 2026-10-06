@@ -165,25 +165,20 @@ impl BrowserSession {
     /// unless the file now holds a token another process refreshed while this
     /// one connected (see [`Self::save_shared`]). The live gate is
     /// [`Client::connect`]'s, judged by the gateway URL.
-    pub async fn connect(
+    pub fn connect(
         self,
         env_file: &Path,
         allow_live_trading: bool,
     ) -> crate::Result<(Client, BrowserSession)> {
         let token = self.access_token.clone();
-        self.connect_with(
-            env_file,
-            allow_live_trading,
-            Credentials::AccessToken(token),
-        )
-        .await
+        self.connect_with(env_file, allow_live_trading, Credentials::AccessToken(token))
     }
 
     /// Like [`Self::connect`] with an explicit login frame. [`Credentials::AuthCode`]
     /// sends `login/schwab`. `self.access_token` is only the token
     /// [`Self::save_shared`] may replace; a field the reply leaves empty (the
     /// account) stays as it was on `self`.
-    pub async fn connect_with(
+    pub fn connect_with(
         mut self,
         env_file: &Path,
         allow_live_trading: bool,
@@ -196,7 +191,7 @@ impl BrowserSession {
             ..Default::default()
         };
         let logged_in_with = self.access_token.clone();
-        let (client, login) = Client::connect(config, credentials).await?;
+        let (client, login) = Client::connect(config, credentials)?;
         self.absorb_login(&login);
         match self.save_shared(env_file, &logged_in_with) {
             Ok(false) => eprintln!("kept a newer ToS session in {}", env_file.display()),

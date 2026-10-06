@@ -176,34 +176,43 @@ pub fn candles(symbol: &str, aggregation: &str, range: &str) -> Result<Vec<Candl
 
 static CELL: OnceLock<Market> = OnceLock::new();
 
+/// Held while the one connection is being built.
+///
+/// `OnceLock::get_or_init` cannot carry a failure out, which is why the build
+/// does not live inside it — and without this, two threads racing the first
+/// chart would each open a socket to the gateway and one of them would be
+/// thrown away with its session still logged in.
+static BUILDING: Mutex<()> = Mutex::new(());
+
 fn market() -> Result<&'static Market> {
     if let Some(ready) = CELL.get() {
         return Ok(ready);
     }
-    let env = session_file();
-    let built = Market::connect(&env)?;
+    let _building = BUILDING.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(ready) = CELL.get() {
+        return Ok(ready);
+    }
+    let built = Market::connect(&session_file())?;
     Ok(CELL.get_or_init(|| built))
 }
 
 struct Market {
-    runtime: tokio::runtime::Runtime,
-    client: Mutex<Client>,
+    /// The connection, and which one it is. The number is what tells a thread
+    /// whose fetch failed that somebody else has already replaced the client
+    /// it was holding, so that one lost socket costs one reconnection rather
+    /// than one per thread.
+    client: Mutex<(u64, Client)>,
     env: PathBuf,
 }
 
 impl Market {
     fn connect(env: &Path) -> Result<Self> {
-        // Nothing above this line in the process has built a runtime, and
-        // nothing does unless somebody has chosen this feed and asked for a
-        // chart: the first `candles` call is what gets here.
+        // Nothing above this line in the process has opened a socket or
+        // started a thread, and nothing does unless somebody has chosen this
+        // feed and asked for a chart: the first `candles` call gets here.
         let session = stored_session(env).ok_or_else(|| no_session(env))?;
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .enable_all()
-            .build()
-            .map_err(|e| Error::Other(e.to_string()))?;
         // `false`: a chart feed does not open the live gateway.
-        let (client, _) = match runtime.block_on(session.connect(env, false)) {
+        let (client, _) = match session.connect(env, false) {
             // The one answer only the gateway can give. Written down so the
             // settings panel can say "expired" instead of "signed in" next
             // time somebody looks, in this process or another.
@@ -215,37 +224,49 @@ impl Market {
         };
         let _ = BrowserSession::clear_expired(env);
         Ok(Market {
-            runtime,
-            client: Mutex::new(client),
+            client: Mutex::new((0, client)),
             env: env.to_path_buf(),
         })
     }
 
     fn snapshot(&self, symbol: &str, aggregation: &str, range: &str) -> Result<Vec<Candle>> {
-        let client = self
-            .client
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
-        match self
-            .runtime
-            .block_on(fetch(&client, symbol, aggregation, range))
-        {
-            Err(error) if lost(&error) => {
-                let (fresh, _) = self.runtime.block_on(reconnect(&self.env))?;
-                *self.client.lock().unwrap_or_else(|e| e.into_inner()) = fresh.clone();
-                self.runtime
-                    .block_on(fetch(&fresh, symbol, aggregation, range))
+        let (generation, client) = self.client.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        match fetch(&client, symbol, aggregation, range) {
+            Err(error) if lost(&error) || auth_failure(&error) => {
+                let fresh = self.replace(generation, &error)?;
+                fetch(&fresh, symbol, aggregation, range)
             }
             other => other,
         }
+    }
+
+    /// The connection to use after `cause` killed generation `generation`.
+    ///
+    /// Reconnecting is what keeps an expired token from wedging the feed for
+    /// the life of the process: the session file is read again, so a person
+    /// who has signed in since gets their charts back without a restart. A
+    /// refusal is reported as a refusal, because "sign in again" is something
+    /// somebody can act on and "the provider is not answering" is not.
+    fn replace(&self, generation: u64, cause: &Error) -> Result<Client> {
+        if auth_failure(cause) {
+            let _ = BrowserSession::mark_expired(&self.env, now());
+        }
+        let mut held = self.client.lock().unwrap_or_else(|e| e.into_inner());
+        if held.0 != generation {
+            return Ok(held.1.clone());
+        }
+        let (fresh, _) = reconnect(&self.env)?;
+        // A connection that worked is the answer to the mark left above.
+        let _ = BrowserSession::clear_expired(&self.env);
+        *held = (generation + 1, fresh.clone());
+        Ok(fresh)
     }
 }
 
 impl Drop for Market {
     fn drop(&mut self) {
         if let Ok(client) = self.client.lock() {
-            client.disconnect();
+            client.1.disconnect();
         }
     }
 }
@@ -309,33 +330,20 @@ fn browser_sign_in_with(
     Ok(session)
 }
 
-fn reconnect(
-    env: &Path,
-) -> impl std::future::Future<Output = Result<(Client, BrowserSession)>> + '_ {
-    let session = stored_session(env);
-    async move {
-        let session = session.ok_or_else(|| no_session(env))?;
-        match session.connect(env, false).await {
-            Err(error) if auth_failure(&error) => {
-                let _ = BrowserSession::mark_expired(env, now());
-                Err(error)
-            }
-            other => other,
+fn reconnect(env: &Path) -> Result<(Client, BrowserSession)> {
+    let session = stored_session(env).ok_or_else(|| no_session(env))?;
+    match session.connect(env, false) {
+        Err(error) if auth_failure(&error) => {
+            let _ = BrowserSession::mark_expired(env, now());
+            Err(error)
         }
+        other => other,
     }
 }
 
-async fn fetch(
-    client: &Client,
-    symbol: &str,
-    aggregation: &str,
-    range: &str,
-) -> Result<Vec<Candle>> {
+fn fetch(client: &Client, symbol: &str, aggregation: &str, range: &str) -> Result<Vec<Candle>> {
     let mut sub = client.chart(&ChartParams::new(symbol, aggregation, range))?;
-    let res = tokio::time::timeout(Duration::from_secs(30), sub.next())
-        .await
-        .map_err(|_| Error::Timeout("chart".into()))?
-        .ok_or_else(|| Error::Timeout("chart".into()))?;
+    let res = sub.next_timeout(Duration::from_secs(30))?;
     let body: ChartBody = serde_json::from_value(res.into_result()?.body)?;
     Ok(candles_of(&body))
 }
@@ -499,6 +507,56 @@ mod tests {
         BrowserSession::clear_dotenv_for(&path, TradingSystem::PaperMoney).unwrap();
         assert_eq!(state_of(&path), SessionState::Missing);
         assert!(std::fs::read_to_string(&path).unwrap().contains("KEEP=1"));
+    }
+
+    /// A token that dies mid-session used to wedge the feed for the life of
+    /// the process: `Market` lives in a `OnceLock`, so every later fetch
+    /// failed instantly and for ever, and restarting was the only cure.
+    ///
+    /// What it does instead is read the session file again — so somebody who
+    /// has signed in since gets their charts back without a restart — and
+    /// clear the expired mark the refusal left behind.
+    #[test]
+    fn an_expired_session_reconnects_instead_of_wedging_the_feed() {
+        use client::fake::{gateway, log_in, EXPIRED, ONE_BAR};
+        use tungstenite::Message;
+
+        let (url, server) = gateway(vec![
+            // The first connection logs in, then loses the session under a
+            // chart that is waiting for its snapshot.
+            Box::new(|ws| {
+                log_in(ws);
+                ws.read().unwrap();
+                ws.send(Message::text(EXPIRED)).unwrap();
+            }),
+            // The second is a session that works.
+            Box::new(|ws| {
+                log_in(ws);
+                ws.read().unwrap();
+                ws.send(Message::text(ONE_BAR)).unwrap();
+            }),
+        ]);
+
+        let path = env_path("expired-reconnect");
+        std::fs::write(
+            &path,
+            format!("TOS_PAPER_ACCESS_TOKEN=tok\nTOS_PAPER_GATEWAY_URL={url}\n"),
+        )
+        .unwrap();
+
+        let market = Market::connect(&path).expect("first connection");
+        let bars = market
+            .snapshot("/ES", "MIN5", "DAY1")
+            .expect("the refused fetch has to come back through a fresh connection");
+        assert_eq!(bars.len(), 1);
+        assert_eq!(bars[0].close, 1.0);
+        // The refusal was written down on the way past and taken back by the
+        // connection that worked, so the settings panel does not keep saying
+        // "expired" at somebody who is signed in.
+        assert!(state_of(&path).usable(), "{:?}", state_of(&path));
+
+        drop(market);
+        server.join().unwrap();
     }
 
     /// Live chart. Point `TOS_ENV_FILE` at a session file.
