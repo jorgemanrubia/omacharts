@@ -432,6 +432,8 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
 .drawing-config-badge { font-size: 9px; font-weight: 700; min-width: 12px; min-height: 12px; padding: 0 2px; border-radius: 6px; background: @accent_bg_color; color: @accent_fg_color; margin: 0 -4px -4px 0; }
 .drawing-preview { border-radius: 6px; }
 .drawing-config-picker { padding: 0; }
+.drawing-save-as { font-size: 12px; opacity: 0.7; padding: 2px 6px; min-height: 0; }
+.drawing-save-as:hover { opacity: 1; }
 .drawing-config-picker > * { padding: 0; }
 .drawing-config-tag { padding: 3px 12px; border-radius: 12px; font-weight: 700; background: alpha(@window_bg_color, 0.88); color: @window_fg_color; }
 .drawing-preview-current { box-shadow: 0 0 0 2px @accent_bg_color; }

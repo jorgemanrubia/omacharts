@@ -81,14 +81,15 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
     following.add(&picker);
 
     // The way back from a look of its own: write it over configuration N.
-    let save_row = adw::ActionRow::new();
-    save_row.set_title("Save this look");
-    save_row.set_subtitle("As one of the nine, so other drawings can follow it.");
+    // Under the picture, off to the right, and no louder than a link: it
+    // is there while the look is the drawing's own and not otherwise.
     let save = gtk::MenuButton::new();
     save.set_label("Save as…");
-    save.set_valign(gtk::Align::Center);
-    save_row.add_suffix(&save);
-    following.add(&save_row);
+    save.add_css_class("flat");
+    save.add_css_class("drawing-save-as");
+    save.set_halign(gtk::Align::End);
+    let save_row = save.clone();
+    following.add(&save);
     page.add(&following);
 
     // What the row above shows, from the drawing as it is now. Bound late,
