@@ -55,22 +55,28 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
 
     let page = adw::PreferencesPage::new();
 
-    // Which configuration it follows — the number and a picture of it, as
-    // one button — or "Custom" and a picture of its own look. The picture
-    // is always there and always current, so a property changed below shows
-    // here as it changes.
+    // What it looks like, across the top: a picture of the drawing in its
+    // configuration — or in its own look — with the number, or "Custom",
+    // as a tag in the middle of it. The whole picture is the button that
+    // opens the choice, and it repaints as a property below changes.
     let following = adw::PreferencesGroup::new();
-    following.set_title("Configuration");
-    let shown_preview = preview_tile(&theme, kind, drawing.style(&configs_now));
+    let shown_preview = gtk::DrawingArea::new();
+    shown_preview.set_hexpand(true);
+    shown_preview.set_size_request(-1, 112);
+    shown_preview.add_css_class("drawing-preview");
+    paint_preview(&shown_preview, &theme, kind, drawing.style(&configs_now));
     let shown_label = gtk::Label::new(None);
-    shown_label.add_css_class("heading");
-    let shown = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-    shown.append(&shown_label);
-    shown.append(&shown_preview);
+    shown_label.add_css_class("drawing-config-tag");
+    shown_label.set_halign(gtk::Align::Center);
+    shown_label.set_valign(gtk::Align::Center);
+    let shown = gtk::Overlay::new();
+    shown.set_child(Some(&shown_preview));
+    shown.add_overlay(&shown_label);
     let picker = gtk::MenuButton::new();
     picker.set_child(Some(&shown));
-    picker.set_halign(gtk::Align::Center);
+    picker.set_hexpand(true);
     picker.add_css_class("flat");
+    picker.add_css_class("drawing-config-picker");
     picker.set_tooltip_text(Some("Choose a configuration, shown as it will look"));
     following.add(&picker);
 
@@ -169,11 +175,11 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
             let configs = window.drawing_configurations();
             match d.config {
                 Some(n) => {
-                    label.set_text(&format!("Config {n}"));
+                    label.set_text(&format!("{n}"));
                     save_row.set_visible(false);
                 }
                 None => {
-                    label.set_text("Custom config");
+                    label.set_text("Custom");
                     save_row.set_visible(true);
                 }
             }
@@ -780,51 +786,64 @@ fn preview_tile(theme: &Theme, kind: Kind, style: &Style) -> gtk::DrawingArea {
     area
 }
 
+/// Paint a small chart with the drawing on it, at whatever size the area
+/// has. The same picture serves a tile in the menu and the wide strip at
+/// the top of the properties: the candles and the drawing scale with the
+/// height, and more candles fill a wider strip, so neither looks like the
+/// other blown up or shrunk down.
 fn paint_preview(area: &gtk::DrawingArea, theme: &Theme, kind: Kind, style: &Style) {
     let theme = theme.clone();
     let style = style.clone();
     area.set_draw_func(move |_, cr, w, h| {
         let (w, h) = (w as f64, h as f64);
+        let scale = (h / PREVIEW_H as f64).clamp(1.0, 3.0);
         let bars = omacharts_engine::theme::theme_bars(&theme);
         colors::set_source(cr, &theme.ui.background);
         rounded(cr, 0.5, 0.5, w - 1.0, h - 1.0, 5.0);
         let _ = cr.fill();
-        // Four candles, up and down, across the middle.
-        let candles = [(0.25, 0.65, true), (0.4, 0.5, false), (0.55, 0.35, true), (0.7, 0.45, false)];
-        for (fx, fy, up) in candles {
-            let (x, y) = (w * fx, h * fy);
-            let colour = if up { &bars.up } else { &bars.down };
-            colors::set_source(cr, colour);
-            cr.rectangle(x.round() + 0.5, y - 10.0, 1.0, 20.0);
+        // Candles across the middle, a run of them in a wide strip and four
+        // in a tile, rising and falling the way a real stretch does.
+        let pitch = 14.0 * scale;
+        let count = ((w * 0.7) / pitch).floor().max(4.0) as usize;
+        let left = (w - (count as f64 - 1.0) * pitch) / 2.0;
+        let (body_w, wick_h, body_h) = (5.0 * scale, 20.0 * scale, 10.0 * scale);
+        for i in 0..count {
+            let t = i as f64 / (count as f64 - 1.0).max(1.0);
+            let wave = ((t * 6.0).sin() * 0.18) + ((t * 2.0).cos() * 0.1);
+            let (x, y) = (left + i as f64 * pitch, h * (0.5 - wave));
+            let up = i % 3 != 1;
+            colors::set_source(cr, if up { &bars.up } else { &bars.down });
+            cr.rectangle(x.round() + 0.5, y - wick_h / 2.0, scale.round().max(1.0), wick_h);
             let _ = cr.fill();
-            cr.rectangle(x.round() - 2.0, y - 5.0, 5.0, 10.0);
+            cr.rectangle(x.round() - body_w / 2.0, y - body_h / 2.0, body_w, body_h);
             let _ = cr.fill();
         }
         let colour = style.colour.hex(&theme);
+        let line_w = style.width.min(4.0) * scale.sqrt();
         match kind {
             Kind::Line => {
                 let (a, b) = ((w * 0.15, h * 0.75), (w * 0.85, h * 0.25));
                 colors::set_source(cr, &colour);
-                cr.set_line_width(style.width.min(4.0));
+                cr.set_line_width(line_w);
                 cr.set_line_cap(gtk::cairo::LineCap::Round);
                 cr.move_to(a.0, a.1);
                 cr.line_to(b.0, b.1);
                 let _ = cr.stroke();
                 if style.arrow.at_end() {
-                    head(cr, a, b, style.width.min(4.0));
+                    head(cr, a, b, line_w);
                 }
                 if style.arrow.at_start() {
-                    head(cr, b, a, style.width.min(4.0));
+                    head(cr, b, a, line_w);
                 }
             }
             Kind::Rect => {
-                let (x, y, rw, rh) = (w * 0.3, h * 0.2, w * 0.5, h * 0.6);
+                let (x, y, rw, rh) = (w * 0.3, h * 0.2, w * 0.4, h * 0.6);
                 colors::set_source_alpha(cr, &style.fill.hex(&theme), style.alpha);
                 cr.rectangle(x, y, rw, rh);
                 let _ = cr.fill();
                 if style.border {
                     colors::set_source_alpha(cr, &colour, drawings::BORDER_ALPHA);
-                    cr.set_line_width(style.width.clamp(1.0, 3.0));
+                    cr.set_line_width(style.width.clamp(1.0, 3.0) * scale.sqrt());
                     cr.rectangle(x.round() + 0.5, y.round() + 0.5, rw.round(), rh.round());
                     let _ = cr.stroke();
                 }
