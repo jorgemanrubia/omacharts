@@ -62,7 +62,7 @@ pub struct Section {
 }
 
 /// A watchlist entry, stored canonically so it survives a provider change.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Entry {
     pub symbol: String,
     pub suffix: Option<String>,
@@ -426,6 +426,19 @@ impl Store {
     }
 
     // -- watchlist ---------------------------------------------------------
+
+    /// Run `change` as one transaction: all of it lands, or none of it does.
+    ///
+    /// The writers below each commit on their own, which is right for one
+    /// symbol dragged in the rail and wrong for an import of fifty, where
+    /// stopping halfway would leave a watchlist nobody wrote. `None` from
+    /// `change` is it giving up, and what it wrote before that is rolled back.
+    pub fn atomically<T>(&self, change: impl FnOnce() -> Option<T>) -> Option<T> {
+        let transaction = self.conn.unchecked_transaction().ok()?;
+        let done = change()?;
+        transaction.commit().ok()?;
+        Some(done)
+    }
 
     /// Every watchlist, in display order, as id and name.
     pub fn watchlists(&self) -> Vec<(i64, String)> {

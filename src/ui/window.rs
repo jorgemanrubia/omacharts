@@ -152,6 +152,7 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+B", "Open, focus, then close"),
             ("↑ ↓", "Next or previous symbol"),
             ("Ctrl+↑ ↓", "Next or previous section"),
+            ("← → Enter", "Fold or unfold a section"),
             // The one binding in this grid that is not global, so the
             // row says where it works: pressed over a chart it does
             // nothing, and nothing is hard to ask a question about.
@@ -1934,7 +1935,8 @@ impl Window {
                 match &mut indicator.params {
                     omacharts_engine::Params::Volume { height }
                     | omacharts_engine::Params::Rsi { height, .. }
-                    | omacharts_engine::Params::Atr { height, .. } => *height = share,
+                    | omacharts_engine::Params::Atr { height, .. }
+                    | omacharts_engine::Params::Stochastic { height, .. } => *height = share,
                     _ => return,
                 }
                 resizer.set_indicators_of(&pane, indicators);

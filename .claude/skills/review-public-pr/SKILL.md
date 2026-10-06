@@ -10,13 +10,26 @@ things follow: nothing in the PR's own description counts as evidence until
 you have run it, and the diff gets read as something a stranger wrote, not as
 a favour you are obliged to accept.
 
-Review one PR per agent, each in its own worktree, so several can run at once
+## Every review runs in a subagent
+
+Never review on the main thread, not even a single small PR. The main
+thread stays free for the owner — it hands the PR to a subagent with this
+skill, carries on with whatever else is in flight, and relays the report
+when it arrives. A review that runs inline builds and tests for minutes
+with the conversation blocked, and the owner's next message queues behind
+it.
+
+One PR per agent, each in its own worktree, so several can run at once
 without fighting over a checkout. Give each agent its own build directory
 too — two agents sharing a scratchpad binary have overwritten each other
 mid-run and produced contradictory results. Asked to review several, run
 them in batches of three: three agents at once, the next three when those
 report. More than that and the builds starve each other and the reports
 arrive faster than anyone can read them.
+
+The owner's standing instructions travel with the hand-off: whether to
+merge when green, and that the review is done with simplifying in mind.
+The agent reports; the main thread tells the owner.
 
 ## Treat it as hostile until it is not
 
@@ -107,6 +120,20 @@ XDG_DATA_HOME=$(mktemp -d) DBUS_SESSION_BUS_ADDRESS= ./target/debug/omacharts �
 nothing and will write to the real profile. Blanking the bus address keeps
 the command local instead of forwarding it to a running window.
 
+Driving the window itself, when a claim needs it: launch with
+`GDK_BACKEND=x11` so `xdotool` can reach it, find it with `xdotool search
+--pid <pid> --onlyvisible | tail -1`, and capture its own pixels with
+`import -window <id> out.png`, which works whatever is on top and whatever
+workspace it is on. Keyboard reaches it that way; the pointer does not,
+so do not rely on clicks. Two things that have gone wrong: a window
+launched on the owner's active workspace takes his focus, and his next
+keystrokes land in your throwaway app — launch it on a special workspace
+or refuse to type unless your window is the active one; and this
+Hyprland's `hyprctl dispatch` takes Lua, not the old strings —
+`hyprctl dispatch 'hl.dispatch(hl.dsp.focus({window="address:0x…"}))'`,
+`hl.dsp.exec_cmd("[workspace special:x silent] cmd")` — and the old
+syntax fails silently when its output is discarded.
+
 ## Ask whether the app already does it
 
 The most useful question in this repo is usually "can you do that today?".
@@ -134,6 +161,45 @@ and offer to merge the documentation hunk alone. That is the real fix.
   when the window already owns a complete index built off-thread. Measure
   before and after rather than guessing, and say the numbers.
 - **No gratuitous reformatting** of code the PR did not otherwise touch.
+
+## When the PR adds or changes an indicator
+
+An indicator is maths that runs on every bar of every chart that shows it,
+inside the draw path. Three things to establish, each with evidence in the
+report, before the shape of the code is even discussed:
+
+**Correct.** Check the formula against a reference — TradingView's `ta.*`
+definitions are what users compare against — with a hand-computed example
+or a small test you write, not by reading the code and nodding. Count the
+warm-up: how many leading `None`s the formula requires, and that the code
+produces exactly that many. Check alignment: value *i* describes bar *i*
+(an off-by-one here is the classic indicator bug and it looks plausible on
+a chart). Degenerate windows have a defined answer — a zero range is no
+value, not 50; a flat average is no value, not infinity. And it follows the
+conventions the existing indicators use: the same `Option`/warm-up
+handling, the same output type, parameters read the same way.
+
+**Performant.** One pass with a sliding window: rolling sums, a monotonic
+deque or equivalent for a window's highest and lowest. Recomputing the
+window for every bar is O(n·window) and is the thing to look for; so is
+a per-bar allocation, and work done on every redraw that only changes
+when the bars do. Measure it rather than reason about it: time the
+indicator over a 10k-bar and a 100k-bar synthetic series (an ignored test
+is fine) and quote the numbers beside RSI's on the same series.
+
+**Robust.** Feed it the edges and say what happened: an empty series; a
+series shorter than the window; window 0 and 1; smoothing 0 and 1; a flat
+window at the start and in the middle; NaN or infinite highs and lows; a
+bar with high below low; parameters from the CLI that are negative or out
+of range, which must be refused with a usage error rather than produce
+garbage; and a very long series, comparing a rolled sum to a fresh
+recomputation at the end for drift. Nothing may panic: a panic inside a
+draw callback does not unwind, it takes the whole app with it.
+
+A new indicator that also reworks the shared strip code is two PRs, and
+the shared half is the riskier one — it changes what RSI and ATR look
+like for everyone. Compare their screenshots and CLI output on `main`
+and on the branch before saying it is harmless.
 
 ## Review with simplifying in mind
 

@@ -26,7 +26,7 @@ fn main() -> glib::ExitCode {
     // cannot be written.
     if cli::runs_in_the_caller(&args) {
         let nothing = Store::memory().expect("an empty database");
-        return report(cli::run(&args, &nothing, None));
+        return report(cli::run(&args, &nothing, None, &cli::Here));
     }
 
     // Everything else goes where its result can be shown.
@@ -40,8 +40,11 @@ fn main() -> glib::ExitCode {
     // database — no GTK, no display, no window. That is what makes this
     // usable over ssh and out of a cron line, and it is why the check below
     // asks the bus rather than starting an application to find out.
+    if let Some(refused) = cli::stdin_is_not_piped(&args) {
+        return report(refused);
+    }
     if cli::is_command(&args) && !app_is_running() {
-        return report(cli::run(&args, &open_store(), None));
+        return report(cli::run(&args, &open_store(), None, &cli::Here));
     }
     if let Some(code) = peel_off(&args).filter(|_| !cli::is_command(&args)) {
         return code;
@@ -152,7 +155,7 @@ fn main() -> glib::ExitCode {
             let Ok(store) = Store::open() else {
                 return glib::ExitCode::FAILURE;
             };
-            let outcome = cli::run(&args, &store, live.as_deref());
+            let outcome = cli::run(&args, &store, live.as_deref(), &Typed(command_line));
             if !outcome.out.is_empty() {
                 command_line.print_literal(&outcome.out);
             }
@@ -214,6 +217,32 @@ fn app_is_running() -> bool {
     .ok()
     .and_then(|reply| reply.child_value(0).get::<bool>())
     .unwrap_or(false)
+}
+
+/// The terminal a command came from, when the command runs in the window.
+///
+/// GTK hands the window the caller's working directory and stdin along with
+/// the arguments, so a path resolves where it was typed and `-` reads the
+/// pipe that was there.
+struct Typed<'a>(&'a gio::ApplicationCommandLine);
+
+impl cli::Caller for Typed<'_> {
+    fn read(&self, path: &str) -> Result<String, cli::Fault> {
+        use gio::prelude::*;
+        use std::io::Read;
+        if path == "-" {
+            let stdin = self.0.stdin().ok_or_else(|| cli::unreadable(path, "none was passed"))?;
+            let mut text = String::new();
+            stdin.into_read().read_to_string(&mut text).map_err(|e| cli::unreadable(path, e))?;
+            return Ok(text);
+        }
+        let (bytes, _) = self
+            .0
+            .create_file_for_arg(path)
+            .load_contents(gio::Cancellable::NONE)
+            .map_err(|error| cli::unreadable(path, error))?;
+        String::from_utf8(bytes.to_vec()).map_err(|error| cli::unreadable(path, error))
+    }
 }
 
 fn open_store() -> Store {

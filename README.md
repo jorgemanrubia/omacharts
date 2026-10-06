@@ -25,13 +25,15 @@ Fast, beautiful charting software for [Omarchy](https://omarchy.org).
   keeps its own symbol, resolution, indicators and settings. Keep as many
   arrangements as you want as chartbooks, each with its own watchlist, and
   switch between them from the strip along the bottom. Link charts and
-  watchlists as you need to. It all comes back the way you left it.
+  watchlists as you need to. It all comes back the way you left it, and
+  `omacharts watchlist export` and `import` carry your watchlists to your
+  other machines.
 - **Keyboard first.** An intuitive, discoverable user interface, prepared for
   power users. Hotkeys for the whole app: split and close charts, resize them,
   walk the chartbooks, step the resolution, rotate the watchlists. Type a
   letter to find a symbol, a number to set a resolution. Press `?` to learn it all.
 - **Indicators.** Moving averages, VWAP with bands, volume, volume profile,
-  RSI and ATR, each in its own resizable strip. More coming.
+  RSI, ATR and stochastic, each in its own resizable strip. More coming.
 - **Omarchy plugin.** Your watchlist in the bar, with sparklines, live, still
   there after the window closes. It installs itself the first time you run
   Omacharts on an Omarchy desktop, and `omacharts plugin` puts it back, brings

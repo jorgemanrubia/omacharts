@@ -93,10 +93,11 @@ pub enum Kind {
     Volume,
     Rsi,
     Atr,
+    Stochastic,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 7] = [
+    pub const ALL: [Kind; 8] = [
         Kind::Volume,
         Kind::Sma,
         Kind::Ema,
@@ -104,6 +105,7 @@ impl Kind {
         Kind::VolumeProfile,
         Kind::Rsi,
         Kind::Atr,
+        Kind::Stochastic,
     ];
 
     pub fn name(self) -> &'static str {
@@ -117,6 +119,7 @@ impl Kind {
             Kind::Volume => "Volume",
             Kind::Rsi => "Relative Strength Index",
             Kind::Atr => "Average True Range",
+            Kind::Stochastic => "Stochastic",
         }
     }
 
@@ -132,6 +135,7 @@ impl Kind {
             Kind::Volume => "Vol",
             Kind::Rsi => "RSI",
             Kind::Atr => "ATR",
+            Kind::Stochastic => "Stoch",
         }
     }
 
@@ -146,6 +150,7 @@ impl Kind {
             Kind::Volume => &["volume", "vol", "turnover"],
             Kind::Rsi => &["rsi", "relative strength", "oscillator", "momentum", "overbought"],
             Kind::Atr => &["atr", "average true range", "volatility", "range", "stop"],
+            Kind::Stochastic => &["stochastic", "stoch", "kd", "%k", "oscillator", "momentum", "overbought"],
         }
     }
 
@@ -158,6 +163,7 @@ impl Kind {
             Kind::Volume => "volume",
             Kind::Rsi => "rsi",
             Kind::Atr => "atr",
+            Kind::Stochastic => "stochastic",
         }
     }
 
@@ -167,7 +173,7 @@ impl Kind {
     /// the order of the strips is edited where nothing has been computed: the
     /// settings list, and the command line.
     pub fn in_own_pane(self) -> bool {
-        matches!(self, Kind::Volume | Kind::Rsi | Kind::Atr)
+        matches!(self, Kind::Volume | Kind::Rsi | Kind::Atr | Kind::Stochastic)
     }
 
     pub fn default_params(self) -> Params {
@@ -192,6 +198,17 @@ impl Kind {
                 oversold: 30.0,
             },
             Kind::Atr => Params::Atr { period: 14, height: 0.16 },
+            // TradingView's: fourteen bars, %K and %D each smoothed over three,
+            // overbought at eighty and oversold at twenty.
+            Kind::Stochastic => Params::Stochastic {
+                period: 14,
+                k_smooth: 3,
+                d_period: 3,
+                height: 0.16,
+                overbought: 80.0,
+                oversold: 20.0,
+                d_color: None,
+            },
         }
     }
 }
@@ -235,6 +252,21 @@ pub enum Params {
     Atr {
         period: usize,
         height: f64,
+    },
+    Stochastic {
+        /// Bars whose range the close is placed in: %K's length.
+        period: usize,
+        /// Bars %K is averaged over.
+        k_smooth: usize,
+        /// Bars %K is averaged over again to give %D.
+        d_period: usize,
+        height: f64,
+        overbought: f64,
+        oversold: f64,
+        /// The %D line. Unset is the theme's companion to %K's colour, so the
+        /// two lines are told apart without anybody having to choose.
+        #[serde(default)]
+        d_color: Option<ColorChoice>,
     },
 }
 
@@ -306,6 +338,9 @@ impl Indicator {
             Params::Volume { .. } => "Volume".to_string(),
             Params::Rsi { period, .. } | Params::Atr { period, .. } => {
                 format!("{} {period}", self.kind.short_name())
+            }
+            Params::Stochastic { period, k_smooth, d_period, .. } => {
+                format!("Stoch {period} {k_smooth} {d_period}")
             }
         }
     }
@@ -386,6 +421,8 @@ pub enum Output {
 #[derive(Clone, PartialEq, Debug)]
 pub struct Pane {
     pub values: Vec<Option<f64>>,
+    /// A second line over the first, on the same scale: a stochastic's %D.
+    pub signal: Option<Vec<Option<f64>>>,
     /// Share of the chart's height this strip takes.
     pub height: f64,
     /// The scale it always uses, or `None` to fit whatever is on screen.
@@ -575,6 +612,7 @@ pub fn compute(
         )),
         (Kind::Rsi, Params::Rsi { period, height, overbought, oversold }) => Output::Pane(Pane {
             values: oscillators::rsi(bars, *period),
+            signal: None,
             height: height.clamp(MIN_PANE_SHARE, MAX_PANE_SHARE),
             bounds: Some((0.0, 100.0)),
             guides: vec![*oversold, 50.0, *overbought],
@@ -582,11 +620,26 @@ pub fn compute(
         }),
         (Kind::Atr, Params::Atr { period, height }) => Output::Pane(Pane {
             values: oscillators::atr(bars, *period),
+            signal: None,
             height: height.clamp(MIN_PANE_SHARE, MAX_PANE_SHARE),
             bounds: None,
             guides: Vec::new(),
             band: None,
         }),
+        (
+            Kind::Stochastic,
+            Params::Stochastic { period, k_smooth, d_period, height, overbought, oversold, .. },
+        ) => {
+            let (k, d) = oscillators::stochastic(bars, *period, *k_smooth, *d_period);
+            Output::Pane(Pane {
+                values: k,
+                signal: Some(d),
+                height: height.clamp(MIN_PANE_SHARE, MAX_PANE_SHARE),
+                bounds: Some((0.0, 100.0)),
+                guides: vec![*oversold, 50.0, *overbought],
+                band: Some((*oversold, *overbought)),
+            })
+        }
         (Kind::Volume, Params::Volume { height }) => Output::Volume {
             values: bars.iter().map(|bar| bar.volume).collect(),
             height: height.clamp(MIN_PANE_SHARE, MAX_PANE_SHARE),

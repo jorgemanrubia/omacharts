@@ -199,6 +199,12 @@ impl Theme {
         self.series(at.map(|n| n + 1).unwrap_or(1))
     }
 
+    /// A second line's colour: the one somebody chose, or else the companion
+    /// to the main line's `main`.
+    pub fn companion_or(&self, choice: Option<&ColorChoice>, main: &str) -> String {
+        choice.map(|choice| choice.resolve(self)).unwrap_or_else(|| self.companion(main))
+    }
+
     /// The nth overlay's line and fill together.
     pub fn series_pair(&self, n: usize) -> (String, String) {
         let line = self.series(n);

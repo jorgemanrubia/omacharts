@@ -62,6 +62,11 @@ for the default watchlist. Otherwise "what's X doing" means putting it on screen
 
 The orders commands go in, which is the part a surface cannot express.
 
+**Watchlists onto another machine.** `watchlist export > file` there, then
+`watchlist import file` (or `import - < file` over ssh) here. Import only adds
+what is missing, so it is safe to repeat; `--replace` makes each list match the
+file exactly.
+
 **A 2×2 of the majors at 15m, RSI on each.** Three splits make four charts out
 of one; splitting copies what the chart showed, so each position is set
 afterwards:

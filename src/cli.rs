@@ -33,6 +33,7 @@ pub mod exec;
 pub mod parser;
 pub mod skill;
 pub mod spec;
+pub mod transfer;
 
 /// What the shell is told. Documented in `doc/cli.md` and in the JSON
 /// surface, because an agent cannot read a message — only this.
@@ -107,6 +108,57 @@ impl Fault {
             ),
         }
     }
+}
+
+/// Whoever typed the command, for what a command reads from them rather than
+/// from the database: a file they named, or what they piped in.
+///
+/// A command inside the window runs in another process from the terminal that
+/// typed it, with another working directory and no stdin of its own. Reading
+/// `./watchlists.json` there would read the window's file, not theirs.
+pub trait Caller {
+    /// The text of `path` as the caller means it: relative to where they
+    /// were, or their stdin for `-`.
+    fn read(&self, path: &str) -> Result<String, Fault>;
+}
+
+/// This process, which is the caller whenever there is no window.
+pub struct Here;
+
+impl Caller for Here {
+    fn read(&self, path: &str) -> Result<String, Fault> {
+        use std::io::Read;
+        let mut text = String::new();
+        let read = match path {
+            "-" => std::io::stdin().read_to_string(&mut text).map(|_| text),
+            path => std::fs::read_to_string(path),
+        };
+        read.map_err(|error| unreadable(path, error))
+    }
+}
+
+/// A file that could not be read, said the same way wherever it was read.
+pub fn unreadable(path: &str, error: impl std::fmt::Display) -> Fault {
+    match path {
+        "-" => Fault::new(EXIT_ERROR, format!("could not read stdin: {error}")),
+        path => Fault::not_found(format!("could not read {path:?}: {error}")),
+    }
+}
+
+/// A `-` asking for stdin when stdin is the terminal itself.
+///
+/// Checked in the process that was typed in, before anything is handed on:
+/// the window can read a caller's stdin but cannot tell a pipe from a
+/// keyboard, and a read from a keyboard waits for an end of input that never
+/// comes — on the window's own main loop, so the whole app with it.
+pub fn stdin_is_not_piped(args: &[String]) -> Option<Outcome> {
+    use std::io::IsTerminal;
+    (is_command(args) && args.iter().any(|arg| arg == "-") && std::io::stdin().is_terminal())
+        .then(|| {
+            Outcome::failed(Fault::usage(
+                "`-` reads what is piped in, and nothing is; pipe a file in with `< FILE`".into(),
+            ))
+        })
 }
 
 /// What a command produced, kept apart from where it is written.
@@ -216,7 +268,7 @@ pub fn runs_in_the_caller(args: &[String]) -> bool {
 /// `live` is the window when there is one. Its absence is not an error: the
 /// same commands work with nothing running, which is what makes this usable
 /// over ssh and out of a script.
-pub fn run(args: &[String], store: &Store, live: Option<&dyn Live>) -> Outcome {
+pub fn run(args: &[String], store: &Store, live: Option<&dyn Live>, caller: &dyn Caller) -> Outcome {
     // A command runs inside the window when there is one, and a panic there
     // does not merely fail: GLib calls us from C, so unwinding through that
     // frame aborts the process. The window goes, and the arrangement somebody
@@ -231,7 +283,7 @@ pub fn run(args: &[String], store: &Store, live: Option<&dyn Live>) -> Outcome {
     // statement, and the arrangement is written as one value at the end of the
     // verb that changed it, so an abandoned command leaves the last complete
     // version of both.
-    let attempt = std::panic::AssertUnwindSafe(|| exec::dispatch(args, store, live));
+    let attempt = std::panic::AssertUnwindSafe(|| exec::dispatch(args, store, live, caller));
     std::panic::catch_unwind(attempt).unwrap_or_else(|_| {
         Outcome::failed(Fault::new(
             EXIT_BUG,
@@ -599,7 +651,7 @@ mod tests {
         let store = Store::memory().unwrap();
         let args: Vec<String> =
             ["omacharts", "status", "show"].iter().map(|a| a.to_string()).collect();
-        let outcome = run(&args, &store, Some(&Breaks));
+        let outcome = run(&args, &store, Some(&Breaks), &Here);
         assert_eq!(outcome.code, EXIT_BUG);
         assert!(outcome.err.contains("status show"), "it has to say which: {}", outcome.err);
     }

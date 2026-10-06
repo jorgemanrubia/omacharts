@@ -1,7 +1,7 @@
 //! Indicators that need their own pane: they are not prices, so they cannot
 //! share the price scale.
 //!
-//! Both of these are Wilder's, and both are computed the way TradingView
+//! RSI and ATR are Wilder's, and both are computed the way TradingView
 //! computes them, because a number that disagrees with the chart everybody
 //! else is looking at is worse than no number. Wilder's smoothing is an
 //! exponential average with alpha `1/period` rather than `2/(period+1)`, seeded
@@ -83,6 +83,50 @@ pub fn atr(bars: &[Bar], period: usize) -> Vec<Option<f64>> {
 
     for (i, value) in wilder(&ranges, period).into_iter().enumerate() {
         out[i] = value;
+    }
+    out
+}
+
+/// Stochastic oscillator: %K and %D, both 0 to 100.
+///
+/// Where the close sits in the range of the last `period` bars, smoothed over
+/// `k_smooth` bars into %K, and %K smoothed again over `d_period` into %D —
+/// TradingView's slow stochastic, simple averages both times.
+///
+/// A window with no range at all has no answer, so it is `None` rather than a
+/// midpoint nobody measured, and the averages that would take it in wait for it
+/// to pass, as they do there.
+pub fn stochastic(
+    bars: &[Bar],
+    period: usize,
+    k_smooth: usize,
+    d_period: usize,
+) -> (Vec<Option<f64>>, Vec<Option<f64>>) {
+    if period == 0 || k_smooth == 0 || d_period == 0 {
+        return (vec![None; bars.len()], vec![None; bars.len()]);
+    }
+
+    let mut raw = vec![None; bars.len()];
+    for i in period - 1..bars.len() {
+        let window = &bars[i + 1 - period..=i];
+        let low = window.iter().map(|bar| bar.low).fold(f64::INFINITY, f64::min);
+        let high = window.iter().map(|bar| bar.high).fold(f64::NEG_INFINITY, f64::max);
+        if high - low > f64::EPSILON {
+            raw[i] = Some(100.0 * (bars[i].close - low) / (high - low));
+        }
+    }
+
+    let k = mean_of(&raw, k_smooth);
+    let d = mean_of(&k, d_period);
+    (k, d)
+}
+
+/// Simple average of the last `period` values, `None` while any of them is.
+fn mean_of(values: &[Option<f64>], period: usize) -> Vec<Option<f64>> {
+    let mut out = vec![None; values.len()];
+    for i in period.saturating_sub(1)..values.len() {
+        let window = &values[i + 1 - period..=i];
+        out[i] = window.iter().copied().sum::<Option<f64>>().map(|sum| sum / period as f64);
     }
     out
 }
@@ -190,5 +234,52 @@ mod tests {
         assert!(atr(&series, 0).iter().all(Option::is_none));
         assert!(rsi(&[], 14).is_empty());
         assert!(atr(&[], 14).is_empty());
+        let (k, d) = stochastic(&series, 0, 3, 3);
+        assert!(k.iter().chain(&d).all(Option::is_none));
+        let (k, d) = stochastic(&[], 14, 3, 3);
+        assert!(k.is_empty() && d.is_empty());
+    }
+
+    fn candle(high: f64, low: f64, close: f64) -> Bar {
+        Bar { ts: 0, open: close, high, low, close, volume: 100.0 }
+    }
+
+    #[test]
+    fn stochastic_waits_for_both_smoothings() {
+        let closes: Vec<f64> = (0..40).map(|i| 100.0 + (i as f64 * 0.4).sin() * 5.0).collect();
+        let (k, d) = stochastic(&bars(&closes), 14, 3, 3);
+        // Fourteen bars for the range, two more for %K's average, two more for %D's.
+        assert!(k[14].is_none() && k[15].is_some());
+        assert!(d[16].is_none() && d[17].is_some());
+    }
+
+    #[test]
+    fn stochastic_is_where_the_close_sits_in_the_range() {
+        let series = [
+            candle(10.0, 0.0, 5.0),
+            candle(20.0, 10.0, 20.0),
+            candle(20.0, 10.0, 10.0),
+            candle(15.0, 12.0, 14.0),
+        ];
+        let (k, d) = stochastic(&series, 2, 1, 2);
+        // Ranges 0-20, 10-20, 10-20: the close at the top, the bottom, and 40%.
+        assert_eq!(k, vec![None, Some(100.0), Some(0.0), Some(40.0)]);
+        assert_eq!(d, vec![None, None, Some(50.0), Some(20.0)]);
+    }
+
+    #[test]
+    fn stochastic_has_no_reading_for_a_window_with_no_range() {
+        let series: Vec<Bar> = (0..20).map(|_| candle(100.0, 100.0, 100.0)).collect();
+        let (k, d) = stochastic(&series, 5, 3, 3);
+        assert!(k.iter().chain(&d).all(Option::is_none));
+    }
+
+    #[test]
+    fn stochastic_stays_inside_its_scale() {
+        let closes: Vec<f64> = (0..200).map(|i| 50.0 + (i as f64 * 0.17).sin() * 20.0).collect();
+        let (k, d) = stochastic(&bars(&closes), 14, 3, 3);
+        for value in k.into_iter().chain(d).flatten() {
+            assert!((0.0..=100.0).contains(&value), "{value}");
+        }
     }
 }
