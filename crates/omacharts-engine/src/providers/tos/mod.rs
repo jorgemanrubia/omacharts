@@ -6,7 +6,9 @@
 pub mod session;
 
 use crate::bars::{Bar, Timeframe, Unit};
-use crate::provider::{Capability, Provider, ProviderError};
+use crate::provider::{
+    Capability, FetchFailure, Provider, ProviderError, Sink, Stream, Subscription, Update,
+};
 use crate::symbols::{Instrument, InstrumentKind};
 
 const CAPABILITIES: &[Capability] = &[
@@ -240,6 +242,59 @@ fn names_a_symbol(text: &str) -> bool {
     lower.contains("symbol") || lower.contains("not found") || lower.contains("unknown")
 }
 
+fn bar_of(candle: tos_market::Candle) -> Bar {
+    Bar {
+        ts: candle.ts,
+        open: candle.open,
+        high: candle.high,
+        low: candle.low,
+        close: candle.close,
+        volume: candle.volume,
+    }
+}
+
+/// An open chart stream. Dropping it ends the client's thread.
+struct Live(#[allow(dead_code)] tos_market::Stream);
+
+impl Subscription for Live {}
+
+/// The whole of what this feed does to stream: name the gateway's
+/// aggregation and range, hand the client a sink, and translate what comes
+/// back. Sharing one subscription between charts, coalescing ticks to
+/// frames, writing behind to the cache and deciding when to try again after
+/// a loss all happen above this line and know nothing about the gateway.
+impl Stream for Tos {
+    fn subscribe(
+        &self,
+        symbol: &str,
+        timeframe: Timeframe,
+        since: Option<i64>,
+        sink: Sink,
+    ) -> Result<Box<dyn Subscription>, ProviderError> {
+        let requested = requested(timeframe)?;
+        let range = range_code(requested.daily, since, chrono::Utc::now().timestamp());
+        let params = tos_market::ChartParams::new(symbol, requested.aggregation, range);
+        let handle = tos_market::stream(
+            params,
+            requested.bucket,
+            Box::new(move |event| match event {
+                tos_market::Event::Snapshot(candles) => {
+                    sink(Update::Snapshot(candles.into_iter().map(bar_of).collect()));
+                }
+                tos_market::Event::Candles(candles) => {
+                    for candle in candles {
+                        sink(Update::Bar(bar_of(candle)));
+                    }
+                }
+                tos_market::Event::Lost(error) => {
+                    sink(Update::Lost(FetchFailure::from(&map_err(error))));
+                }
+            }),
+        );
+        Ok(Box::new(Live(handle)))
+    }
+}
+
 impl Provider for Tos {
     fn id(&self) -> &'static str {
         "tos"
@@ -289,6 +344,12 @@ impl Provider for Tos {
             bars.retain(|bar| bar.ts >= since);
         }
         Ok(bars)
+    }
+
+    /// The gateway pushes each print, so this feed streams — and saying so
+    /// is handing the stream over, nothing more.
+    fn stream(&self) -> Option<&dyn Stream> {
+        Some(self)
     }
 }
 
