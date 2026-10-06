@@ -27,7 +27,6 @@ mod protocol;
 mod redact;
 mod services;
 mod session;
-mod tsm;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -316,11 +315,8 @@ fn browser_sign_in_with(
     env: &Path,
     log: Box<dyn Fn(&str) + Send + Sync>,
 ) -> Result<BrowserSession> {
-    if let Some(parent) = env.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| Error::Other(format!("session dir: {e}")))?;
-    }
-    let (session, cookie) = capture_browser_session(CaptureOptions {
+    session::ensure_private_dir(env).map_err(|e| Error::Other(format!("session dir: {e}")))?;
+    let session = capture_browser_session(CaptureOptions {
         trading_system: TradingSystem::PaperMoney,
         timeout: Duration::from_secs(10 * 60),
         user_data_dir: auth::default_profile_dir(),
@@ -329,9 +325,6 @@ fn browser_sign_in_with(
     session
         .save_to_dotenv(env)
         .map_err(|e| Error::Other(format!("save session: {e}")))?;
-    if let Some(cookie) = cookie.as_deref() {
-        let _ = BrowserSession::save_tsm_cookie(env, cookie);
-    }
     // A session that was just captured is not expired, whatever the file
     // remembered about the one it replaces.
     let _ = BrowserSession::clear_expired(env);

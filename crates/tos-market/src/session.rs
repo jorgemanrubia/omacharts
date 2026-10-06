@@ -6,15 +6,6 @@ use std::path::Path;
 use crate::client::{Client, ClientConfig, Credentials};
 use crate::config::TradingSystem;
 use crate::services::login::LoginBody;
-use crate::tsm::TSM_URL;
-
-/// Shared Schwab session cookie (`Cookie` header value) for `getAuthCode`.
-/// One key for both trading systems — a paper slot and a live slot are
-/// different gateway sessions, and this cookie is how the web app mints the
-/// other one.
-pub const TSM_COOKIE_KEY: &str = "TOS_TSM_COOKIE";
-/// Optional override of [`TSM_URL`] in the same session file (tests, a moved host).
-pub const TSM_URL_KEY: &str = "TOS_TSM_URL";
 /// When the gateway last refused this session's token, in unix seconds.
 ///
 /// Written beside the session rather than kept in memory because the question
@@ -24,6 +15,14 @@ pub const TSM_URL_KEY: &str = "TOS_TSM_URL";
 /// possibly hours ago in another process. Marking the file is how that one
 /// answer survives to be shown. Cleared by the next connection that works.
 pub const EXPIRED_KEY: &str = "TOS_SESSION_EXPIRED_AT";
+/// A key an earlier version of this crate wrote and nothing ever read: the
+/// browser's whole cookie header for Schwab's session-manager host, sniffed
+/// through DevTools because a paper/live switch might one day have wanted
+/// it. It was the most sensitive thing here, so it is no longer captured —
+/// and a file that already holds one is cleaned of it whenever a session is
+/// written, because a fix that only protects people who have never signed in
+/// is not a fix.
+const RETIRED_COOKIE_KEY: &str = "TOS_TSM_COOKIE";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BrowserSession {
@@ -201,38 +200,6 @@ impl BrowserSession {
         Ok((client, self))
     }
 
-    /// The stored `Cookie` header for TSM, if a browser login captured one.
-    pub fn tsm_cookie(path: impl AsRef<Path>) -> Option<String> {
-        shared_var(path.as_ref(), TSM_COOKIE_KEY)
-    }
-
-    /// `TOS_TSM_URL` in the session file, or the published TSM host.
-    pub fn tsm_url(path: impl AsRef<Path>) -> String {
-        shared_var(path.as_ref(), TSM_URL_KEY).unwrap_or_else(|| TSM_URL.to_string())
-    }
-
-    /// Writes the shared TSM cookie through the same `0600` replace as a
-    /// session. A newline in the value would break the file (and could add a
-    /// key), so it is refused. Does not log the value.
-    pub fn save_tsm_cookie(path: impl AsRef<Path>, cookie: &str) -> std::io::Result<()> {
-        if cookie.is_empty() || cookie.contains(['\n', '\r']) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "refusing a TSM cookie that is empty or has a newline",
-            ));
-        }
-        let path = path.as_ref();
-        with_dotenv_lock(path, || {
-            let existing = read_dotenv(path)?.unwrap_or_default();
-            write_dotenv(
-                path,
-                &existing,
-                &[TSM_COOKIE_KEY],
-                &[(TSM_COOKIE_KEY, cookie.to_string())],
-            )
-        })
-    }
-
     /// The gateway's own idea of the session beats whatever the browser
     /// capture saw: a rotated token, the refresh token, the user code. A field
     /// the reply leaves empty keeps its stored value.
@@ -292,8 +259,8 @@ impl BrowserSession {
     /// process also loads. Same trading system: skip the write when the
     /// file's token is one this login neither sent (`logged_in_with`) nor
     /// received (`self.access_token`). Other trading system: write only this
-    /// system's slot and keep `TOS_TSM_COOKIE`. The active keys stay, so a
-    /// live login does not point the other process at live.
+    /// system's slot. The active keys stay, so a live login does not point
+    /// the other process at live.
     pub fn save_shared(
         &self,
         path: impl AsRef<Path>,
@@ -318,18 +285,13 @@ impl BrowserSession {
     }
 
     /// This system's slot only. Active keys, the other slot, and every
-    /// unrelated line stay. The shared TSM cookie is rewritten in place so
-    /// the slot update does not drop it.
+    /// unrelated line stay — except a cookie an older version left behind,
+    /// which goes.
     fn write_slot_unlocked(&self, path: &Path) -> std::io::Result<()> {
         let existing = read_dotenv(path)?.unwrap_or_default();
-        let vars = parse_dotenv(&existing);
         let k = slot_keys(self.trading_system);
-        let remove = [k.access, k.refresh, k.gateway, k.account, TSM_COOKIE_KEY];
-        let mut pairs = self.slot_pairs();
-        if let Some(cookie) = vars.get(TSM_COOKIE_KEY).filter(|s| !s.is_empty()) {
-            pairs.push((TSM_COOKIE_KEY, cookie.clone()));
-        }
-        write_dotenv(path, &existing, &remove, &pairs)
+        let remove = [k.access, k.refresh, k.gateway, k.account, RETIRED_COOKIE_KEY];
+        write_dotenv(path, &existing, &remove, &self.slot_pairs())
     }
 
     fn write_dotenv_unlocked(&self, path: &Path) -> std::io::Result<()> {
@@ -342,7 +304,9 @@ impl BrowserSession {
         let mut pairs = self.pairs();
         pairs.extend(self.slot_pairs());
         pairs.extend(raw_slot_pairs(&vars, other));
-        write_dotenv(path, &existing, &KEYS, &pairs)
+        let mut remove: Vec<&str> = KEYS.to_vec();
+        remove.push(RETIRED_COOKIE_KEY);
+        write_dotenv(path, &existing, &remove, &pairs)
     }
 
     /// Whatever session the file describes, whichever system it belongs to
@@ -406,7 +370,7 @@ impl BrowserSession {
                 return Ok(());
             };
             let mut remove: Vec<&str> = KEYS.to_vec();
-            remove.push(TSM_COOKIE_KEY);
+            remove.push(RETIRED_COOKIE_KEY);
             remove.push(EXPIRED_KEY);
             write_dotenv(path, &existing, &remove, &[])
         })
@@ -444,6 +408,34 @@ impl BrowserSession {
     }
 }
 
+/// Makes the directory a session file lives in, owner-only.
+///
+/// The file itself is written `0600` through an atomic replace, so what this
+/// protects is the directory around it — which matters because the session
+/// file does not always land somewhere private. With no `HOME` and no
+/// `XDG_CONFIG_HOME` it falls back under the temporary directory, where a
+/// world-traversable parent would let anybody on the machine watch for the
+/// file and stat it. Creating it `0700` costs nothing where the path is
+/// already somebody's own config directory, and is the difference
+/// everywhere else. An existing directory is left exactly as it is: its
+/// permissions are its owner's business, and a crate that tightened
+/// `~/.config` on its way past would be doing something nobody asked for.
+pub(crate) fn ensure_private_dir(file: &Path) -> std::io::Result<()> {
+    let Some(parent) = file.parent().filter(|p| !p.as_os_str().is_empty()) else {
+        return Ok(());
+    };
+    if parent.is_dir() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(parent)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
 /// Exclusive lock beside the env file so two processes cannot interleave a
 /// read-modify-write of the shared session.
 fn with_dotenv_lock<T>(
@@ -452,9 +444,7 @@ fn with_dotenv_lock<T>(
 ) -> std::io::Result<T> {
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or(".env");
     let lock_path = path.with_file_name(format!("{name}.lock"));
-    if let Some(parent) = lock_path.parent().filter(|p| !p.as_os_str().is_empty()) {
-        std::fs::create_dir_all(parent)?;
-    }
+    ensure_private_dir(&lock_path)?;
     let mut options = std::fs::OpenOptions::new();
     options.create(true).read(true).write(true);
     #[cfg(unix)]
@@ -668,14 +658,11 @@ mod tests {
             ..session(TradingSystem::PaperMoney, "paper-tok")
         };
         paper.save_to_dotenv(&path).unwrap();
-        BrowserSession::save_tsm_cookie(&path, "tsm=keep").unwrap();
         let live = BrowserSession {
             account_code: None,
             ..session(TradingSystem::LiveTrading, "live-new")
         };
         assert!(live.save_shared(&path, "live-old").unwrap());
-        let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.contains("TOS_TSM_COOKIE=tsm=keep"), "{text}");
         let loaded_paper = BrowserSession::load_for(&path, TradingSystem::PaperMoney).unwrap();
         assert_eq!(loaded_paper.access_token, "paper-tok");
         assert_eq!(loaded_paper.account_code.as_deref(), Some("D-1"));
@@ -689,30 +676,65 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    /// The directory a session file lives in is the session's own, because
+    /// the file sometimes lands under the temporary directory — with no
+    /// `HOME` and no `XDG_CONFIG_HOME` it has nowhere else to go, and a
+    /// world-traversable parent there is an invitation to watch for it.
     #[test]
-    fn tsm_cookie_round_trips_and_rejects_a_newline() {
-        let (path, dir) = env_path("cookie");
-        session(TradingSystem::PaperMoney, "tok")
-            .save_to_dotenv(&path)
+    #[cfg(unix)]
+    fn the_directory_a_session_lands_in_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir()
+            .join(format!("tos-market-private-{}", std::process::id()))
+            .join("nested");
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("tos.env");
+
+        session(TradingSystem::PaperMoney, "tok").save_to_dotenv(&path).unwrap();
+
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "{mode:o}");
+        let file = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(file, 0o600, "{file:o}");
+        std::fs::remove_dir_all(dir.parent().unwrap()).unwrap();
+    }
+
+    /// A cookie an older version of this crate wrote. Nothing reads it, it
+    /// is the browser's whole session for Schwab's session-manager host, and
+    /// a machine that has already signed in has one sitting in the file. So
+    /// saving a session takes it out, both ways a session can be saved —
+    /// otherwise the people who need the fix are exactly the ones who do not
+    /// get it.
+    #[test]
+    fn a_session_file_is_cleaned_of_the_cookie_nobody_reads() {
+        for (tag, other) in [("cookie-active", false), ("cookie-slot", true)] {
+            let (path, dir) = env_path(tag);
+            std::fs::write(
+                &path,
+                "KEEP=1\nTOS_TSM_COOKIE=sid=abc; secure=yes\nTOS_TSM_URL=http://127.0.0.1:9\n",
+            )
             .unwrap();
-        assert!(BrowserSession::save_tsm_cookie(&path, "a=b\nc=d").is_err());
-        BrowserSession::save_tsm_cookie(&path, "sid=abc").unwrap();
-        assert_eq!(
-            BrowserSession::tsm_cookie(&path).as_deref(),
-            Some("sid=abc")
-        );
-        assert_eq!(BrowserSession::tsm_url(&path), TSM_URL);
-        let mut text = std::fs::read_to_string(&path).unwrap();
-        text.push_str("TOS_TSM_URL=http://127.0.0.1:9\n");
-        std::fs::write(&path, text).unwrap();
-        assert_eq!(BrowserSession::tsm_url(&path), "http://127.0.0.1:9");
-        assert_eq!(
-            BrowserSession::load_for(&path, TradingSystem::PaperMoney)
-                .unwrap()
-                .access_token,
-            "tok"
-        );
-        std::fs::remove_dir_all(dir).unwrap();
+
+            let saving = match other {
+                // The path that writes one system's slot while another
+                // process owns the active keys.
+                true => session(TradingSystem::LiveTrading, "live-tok"),
+                false => session(TradingSystem::PaperMoney, "tok"),
+            };
+            if other {
+                session(TradingSystem::PaperMoney, "paper-tok")
+                    .save_to_dotenv(&path)
+                    .unwrap();
+                assert!(saving.save_shared(&path, "live-old").unwrap());
+            } else {
+                saving.save_to_dotenv(&path).unwrap();
+            }
+
+            let text = std::fs::read_to_string(&path).unwrap();
+            assert!(!text.contains("TOS_TSM_COOKIE"), "{tag}: {text}");
+            assert!(text.contains("KEEP=1"), "{tag}: unrelated lines must stay");
+            std::fs::remove_dir_all(dir).unwrap();
+        }
     }
 
     #[test]
@@ -869,11 +891,9 @@ mod tests {
         };
         paper.save_to_dotenv(&path).unwrap();
         live.save_to_dotenv(&path).unwrap();
-        BrowserSession::save_tsm_cookie(&path, "tsm=keep").unwrap();
         BrowserSession::clear_dotenv_for(&path, TradingSystem::LiveTrading).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.starts_with("OTHER=1\n"), "{text}");
-        assert!(text.contains("TOS_TSM_COOKIE=tsm=keep"), "{text}");
         assert!(!text.contains("live-tok"), "{text}");
         assert!(!text.contains("TOS_ACCESS_TOKEN="), "{text}");
         assert!(!text.contains("TOS_USER_CODE="), "{text}");

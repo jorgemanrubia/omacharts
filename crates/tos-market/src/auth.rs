@@ -7,8 +7,6 @@
 //!   - the service-gateway URL the SPA connected to (live A/B or papermoney)
 //!   - the `login/schwab` / `login` response: access token + refresh token
 //!   - `user_properties`: default account code
-//!   - the cookies `Network.getCookies` would send to the TSM host (HttpOnly
-//!     included), as one `Cookie` header for a later paper/live switch
 //!
 //! Nothing is typed into the page and no request is intercepted or aborted, so
 //! the flow is exactly what Schwab sees from a normal user. As a fallback the
@@ -287,35 +285,8 @@ fn orphaned_profile_owner(_: &Path) -> Option<u32> {
     None
 }
 
-/// Cookies the browser would send to the TSM host, as one `Cookie` header.
-/// `Network.getCookies` sees HttpOnly cookies. The value is not logged.
-fn tsm_cookie_from_pages(
-    browser: &mut Browser,
-    pages: &[Page],
-) -> std::result::Result<Option<String>, String> {
-    if pages.is_empty() {
-        return Ok(None);
-    }
-    let mut last = String::from("no page accepted getCookies");
-    for page in pages {
-        match browser.cookies(page, crate::tsm::TSM_URL) {
-            Ok(cookies) => {
-                let header = crate::tsm::cookie_header(
-                    cookies.iter().map(|(n, v)| (n.as_str(), v.as_str())),
-                );
-                return Ok((!header.is_empty()).then_some(header));
-            }
-            Err(e) => last = e.to_string(),
-        }
-    }
-    Err(last)
-}
-
-/// Drives a headful login and returns the captured session plus the TSM
-/// cookie, when the browser had one.
-pub fn capture_browser_session(
-    opts: CaptureOptions,
-) -> Result<(BrowserSession, Option<String>)> {
+/// Drives a headful login and returns the captured session.
+pub fn capture_browser_session(opts: CaptureOptions) -> Result<BrowserSession> {
     let log = |m: &str| (opts.log)(m);
     let executable = find_browser().ok_or_else(|| {
         Error::Other("no Chrome/Chromium found; set TOS_BROWSER to a browser binary".into())
@@ -376,7 +347,7 @@ fn capture(
     opts: &CaptureOptions,
     log: &dyn Fn(&str),
     sockets: &mut HashMap<String, SocketSession>,
-) -> Result<(BrowserSession, Option<String>)> {
+) -> Result<BrowserSession> {
     let mut pages = browser.pages()?;
     if pages.is_empty() {
         browser.call(
@@ -491,21 +462,7 @@ fn capture(
                     .map(|a| format!(" (account {a})"))
                     .unwrap_or_default()
             ));
-            let tsm_cookie = match tsm_cookie_from_pages(browser, &pages) {
-                Ok(cookie) => {
-                    if cookie.is_some() {
-                        log("✓ TSM session cookie captured");
-                    } else {
-                        log("no TSM session cookie; switching trading systems will open a browser");
-                    }
-                    cookie
-                }
-                Err(e) => {
-                    log(&format!("could not read TSM cookies ({e})"));
-                    None
-                }
-            };
-            return Ok((session, tsm_cookie));
+            return Ok(session);
         }
 
         let status = if let Some(st) = &stored {
