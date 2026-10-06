@@ -151,8 +151,10 @@ impl Client {
         config: ClientConfig,
         credentials: impl Into<Credentials>,
     ) -> Result<(Client, LoginBody)> {
-        // rustls 0.23 does not pick a process default.
-        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        // rustls 0.23 does not pick a process default, and the one it gets
+        // has to be the provider the rest of the process already built with:
+        // ureq, on the engine's Yahoo calls, is compiled against ring.
+        let _ = rustls::crypto::ring::default_provider().install_default();
         assert_trading_system_allowed(config.trading_system, config.allow_live_trading)?;
         let url = config.gateway_url.clone();
         assert_gateway_matches(config.trading_system, &url, config.allow_live_trading)?;
