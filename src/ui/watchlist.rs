@@ -289,10 +289,15 @@ impl Watchlist {
         link.set_always_show_arrow(false);
         link.set_valign(gtk::Align::Center);
 
+        // Flush with the symbol column: a row sits 6px in (Adwaita's sidebar
+        // row margin), pads 8px, and its box starts another 12px in, so the
+        // tickers begin 26px from the rail's edge. The switcher wears no
+        // horizontal padding (see `.rail-switcher`), so this margin alone
+        // decides where the name's first letter lands.
         let named = gtk::Box::new(gtk::Orientation::Horizontal, 2);
         named.set_halign(gtk::Align::Start);
         named.set_valign(gtk::Align::Start);
-        named.set_margin_start(8);
+        named.set_margin_start(26);
         named.set_margin_top(1);
         named.append(&switcher);
         named.append(&link);

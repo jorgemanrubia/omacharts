@@ -433,9 +433,13 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
    Text with a chevron rather than a button: it names what you are looking at,
    and brightens rather than lighting up a background under the pointer, so the
    band stays a label and never grows a button in it. The zero min-height is
-   what keeps it inside the band — Adwaita's default would overflow it. */
+   what keeps it inside the band — Adwaita's default would overflow it.
+
+   No horizontal padding, on either node: the name is lined up with the symbol
+   column by the margin of the box it sits in (see the rail's `named`), and
+   any padding here would push its first letter off that line. */
 .rail-switcher {
-  padding: 1px 4px;
+  padding: 1px 0;
   min-height: 0;
   min-width: 0;
   opacity: 0.6;
@@ -446,6 +450,22 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
   transition: opacity 120ms ease-out;
 }
 .rail-switcher:hover { opacity: 1; }
+/* A GtkMenuButton is a `menubutton` node wrapping a `button` node, and the
+   rules above only reach the outer one. Adwaita still gives the inner button
+   its own 10px of side padding and a hover pill, which is where the name's
+   offset came from and why it did light up. The `.flat` is in the selector
+   only to outweigh Adwaita's `menubutton.flat > button:hover`. */
+.rail-switcher.flat > button,
+.rail-switcher.flat > button:hover,
+.rail-switcher.flat > button:active,
+.rail-switcher.flat > button:checked {
+  padding-left: 0;
+  padding-right: 0;
+  min-width: 0;
+  background: none;
+  background-image: none;
+  box-shadow: none;
+}
 .rail-switcher label { font-size: 0.85em; }
 
 /* A way back to a default, without shouting about it. */
