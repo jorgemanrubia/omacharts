@@ -1,8 +1,14 @@
 //! The drawing tools, on a bar that slides in from the left.
 //!
 //! The rail of watchlists lives on the right; the tools live on the left, the
-//! same way: a key, or a subtle handle on the edge, brings them in, and they
-//! take no room when they are out. One column of buttons, since there are
+//! same way: a key, or a handle on the edge, brings them in, and they take
+//! no room when they are out. The handle is a sliver down the chart's left
+//! edge with a grip in the middle, the way a drawer has one: faint until
+//! the pointer is near, a chevron pointing back once the bar is open, and
+//! a tooltip that says what it is and which key does the same. Nothing in
+//! the window's corner, which belongs to the charts.
+//!
+//! One column of buttons, since there are
 //! two tools and a column of three is already more than a toolbar needs.
 //! Each button is a sign the app drew itself — a pointer, a line with its
 //! grips, a box with two — in the palette's own ink and nothing else, dim
@@ -25,9 +31,16 @@ use omacharts_engine::drawings::Kind;
 /// The width of a tool button, which is also the bar's.
 const TOOL: i32 = 36;
 
+/// The width of the handle: enough to find with a pointer, not enough to
+/// read as a margin.
+const HANDLE: i32 = 10;
+
 pub struct DrawingBar {
-    /// What goes in the layout: the revealer, so the bar can slide.
-    pub root: gtk::Revealer,
+    /// What goes in the layout: the handle, then the revealer the bar
+    /// slides out of.
+    pub root: gtk::Box,
+    revealer: gtk::Revealer,
+    handle: gtk::DrawingArea,
     /// The pointer first, as `None`, then a button a tool.
     buttons: Vec<(Option<Kind>, gtk::ToggleButton, gtk::DrawingArea)>,
     /// The configuration number worn by the tool in hand, so Alt+R, Alt+3
@@ -41,10 +54,12 @@ pub struct DrawingBar {
 
 impl DrawingBar {
     /// `on_arm` is told which tool was picked, or `None` for the pointer;
-    /// `on_configure` which kind's configurations to open.
+    /// `on_configure` which kind's configurations to open; `on_toggle` that
+    /// the handle was clicked.
     pub fn new(
         on_arm: impl Fn(Option<Kind>) + Clone + 'static,
         on_configure: impl Fn(Kind) + Clone + 'static,
+        on_toggle: impl Fn() + 'static,
     ) -> Rc<DrawingBar> {
         let column = gtk::Box::new(gtk::Orientation::Vertical, 4);
         column.add_css_class("drawing-bar");
@@ -108,16 +123,31 @@ impl DrawingBar {
             buttons.push((Some(kind), button, icon));
         }
 
+        let handle = gtk::DrawingArea::new();
+        handle.set_size_request(HANDLE, -1);
+        handle.set_vexpand(true);
+        handle.add_css_class("drawing-handle");
+        handle.set_cursor_from_name(Some("pointer"));
+        handle.set_tooltip_text(Some(&crate::ui::shortcuts::tooltip("Drawing tools", "win.drawing-tools")));
+        let click = gtk::GestureClick::new();
+        click.connect_released(move |_, _, _, _| on_toggle());
+        handle.add_controller(click);
+
+        let root = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        root.append(&handle);
         let bar = Rc::new(DrawingBar {
-            root: gtk::Revealer::new(),
+            root,
+            revealer: gtk::Revealer::new(),
+            handle,
             buttons,
             badges,
             showing: std::cell::Cell::new(false),
         });
-        bar.root.set_transition_type(gtk::RevealerTransitionType::SlideRight);
-        bar.root.set_transition_duration(160);
-        bar.root.set_child(Some(&column));
-        bar.root.set_reveal_child(false);
+        bar.revealer.set_transition_type(gtk::RevealerTransitionType::SlideRight);
+        bar.revealer.set_transition_duration(160);
+        bar.revealer.set_child(Some(&column));
+        bar.revealer.set_reveal_child(false);
+        bar.root.append(&bar.revealer);
 
         for (kind, button, _) in &bar.buttons {
             let kind = *kind;
@@ -165,11 +195,12 @@ impl DrawingBar {
     }
 
     pub fn set_shown(&self, shown: bool) {
-        self.root.set_reveal_child(shown);
+        self.revealer.set_reveal_child(shown);
+        self.handle.queue_draw();
     }
 
     pub fn is_shown(&self) -> bool {
-        self.root.reveals_child()
+        self.revealer.reveals_child()
     }
 
     /// After a theme change: the ink is the button's own colour, read at
@@ -186,6 +217,34 @@ impl DrawingBar {
     /// previews, and the chart beside it is the only thing that should
     /// have colour.
     fn paint(&self) {
+        let revealer = self.revealer.clone();
+        self.handle.set_draw_func(move |area, cr, w, h| {
+            let (w, h) = (w as f64, h as f64);
+            let fg = area.color();
+            cr.set_source_rgba(fg.red() as f64, fg.green() as f64, fg.blue() as f64, fg.alpha() as f64);
+            let (cx, cy) = ((w / 2.0).floor() + 0.5, (h / 2.0).round());
+            if revealer.reveals_child() {
+                // Open: a chevron pointing back at the edge, which is
+                // where a click sends the bar.
+                cr.set_line_width(1.5);
+                cr.set_line_cap(gtk::cairo::LineCap::Round);
+                cr.set_line_join(gtk::cairo::LineJoin::Round);
+                cr.move_to(cx + 2.0, cy - 5.0);
+                cr.line_to(cx - 2.0, cy);
+                cr.line_to(cx + 2.0, cy + 5.0);
+                let _ = cr.stroke();
+            } else {
+                // Shut: a grip, the pill a drawer front wears.
+                let (gw, gh) = (3.0, 28.0);
+                let (x, y) = (cx - gw / 2.0, cy - gh / 2.0);
+                let r = gw / 2.0;
+                cr.new_sub_path();
+                cr.arc(x + r, y + r, r, std::f64::consts::PI, 0.0);
+                cr.arc(x + r, y + gh - r, r, 0.0, std::f64::consts::PI);
+                cr.close_path();
+                let _ = cr.fill();
+            }
+        });
         for (kind, _, icon) in &self.buttons {
             let kind = *kind;
             icon.set_draw_func(move |area, cr, w, h| {
@@ -242,26 +301,4 @@ impl DrawingBar {
             icon.queue_draw();
         }
     }
-}
-
-/// The corner button's glyph: a pen stroke with a grip at its end, in the
-/// button's own colour, so it dims with the rest of the corner.
-pub fn tools_icon() -> gtk::DrawingArea {
-    let area = gtk::DrawingArea::new();
-    area.set_size_request(16, 16);
-    area.set_draw_func(|area, cr, w, h| {
-        let (w, h) = (w as f64, h as f64);
-        let fg = area.color();
-        cr.set_source_rgba(fg.red() as f64, fg.green() as f64, fg.blue() as f64, fg.alpha() as f64);
-        cr.set_line_width(1.8);
-        cr.set_line_cap(gtk::cairo::LineCap::Round);
-        cr.move_to(3.0, h - 3.0);
-        cr.line_to(w - 4.0, 4.0);
-        let _ = cr.stroke();
-        cr.rectangle(w - 6.5, 1.5, 5.0, 5.0);
-        let _ = cr.fill();
-        cr.rectangle(0.5, h - 5.5, 5.0, 5.0);
-        let _ = cr.fill();
-    });
-    area
 }

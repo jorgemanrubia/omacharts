@@ -1470,7 +1470,6 @@ pub struct Window {
     /// and the button is what does it: showing the rail through the button is
     /// what keeps its pressed state honest and the corner clearance correct.
     watchlist_toggle: RefCell<Option<gtk::ToggleButton>>,
-    drawing_tools_toggle: RefCell<Option<gtk::ToggleButton>>,
     /// How wide the rail should be.
     ///
     /// Kept here rather than measured off the handle when it is wanted,
@@ -1565,7 +1564,6 @@ impl Window {
             book_strip: book_strip.clone(),
             corner: RefCell::new(None),
             watchlist_toggle: RefCell::new(None),
-            drawing_tools_toggle: RefCell::new(None),
             sidebar_width: Cell::new(DEFAULT_SIDEBAR_WIDTH),
             sidebar_placed: Cell::new(false),
             store: store.clone(),
@@ -1662,6 +1660,10 @@ impl Window {
             {
                 let this = this.clone();
                 move |kind| this.open_drawing_configurations(kind)
+            },
+            {
+                let this = this.clone();
+                move || this.toggle_drawing_tools()
             },
         );
         let with_tools = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -3608,21 +3610,8 @@ impl Window {
 
         *self.watchlist_toggle.borrow_mut() = Some(toggle.clone());
 
-        // The drawing tools, on the other side. Its own icon, since the
-        // theme's "sidebar" glyphs both mean the rail.
-        let tools = gtk::ToggleButton::new();
-        tools.set_child(Some(&crate::ui::drawing_bar::tools_icon()));
-        tools.set_tooltip_text(Some(&shortcuts::tooltip("Drawing tools", "win.drawing-tools")));
-        tools.add_css_class("flat");
-        tools.set_active(self.store.setting_bool(SHOW_DRAWING_TOOLS, false));
-        let this = self.clone();
-        tools.connect_toggled(move |toggle| {
-            let Some(bar) = this.drawing_bar.borrow().clone() else { return };
-            if bar.is_shown() != toggle.is_active() {
-                this.toggle_drawing_tools();
-            }
-        });
-        *self.drawing_tools_toggle.borrow_mut() = Some(tools.clone());
+        // The drawing tools have no button here: the corner is the charts'.
+        // They come in from a handle on the chart's own edge, or by key.
         let action = gio::SimpleAction::new("drawing-tools", None);
         let this = self.clone();
         action.connect_activate(move |_, _| this.toggle_drawing_tools());
@@ -3639,7 +3628,6 @@ impl Window {
 
         let cluster = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         cluster.add_css_class("window-corner");
-        cluster.append(&tools);
         cluster.append(&toggle);
         cluster.append(&menu_button);
 
@@ -5538,15 +5526,12 @@ impl Window {
         self.save_workspace();
     }
 
-    /// Show or hide the drawing tools. Alt+D, and the corner button.
+    /// Show or hide the drawing tools. Alt+D, and the handle on the edge.
     pub fn toggle_drawing_tools(self: &Rc<Self>) {
         let Some(bar) = self.drawing_bar.borrow().clone() else { return };
         let shown = !bar.is_shown();
         bar.set_shown(shown);
         self.store.set_setting_bool(SHOW_DRAWING_TOOLS, shown);
-        if let Some(toggle) = self.drawing_tools_toggle.borrow().as_ref() {
-            toggle.set_active(shown);
-        }
     }
 
     /// Light the tool in hand on the bar, after the chart was told by a key
