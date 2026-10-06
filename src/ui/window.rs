@@ -192,7 +192,7 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
         &[
             ("Alt+L", "Draw a line: click where it starts, then where it ends"),
             ("Alt+R", "Draw a rectangle over a run of bars"),
-            ("Alt+D", "Show or hide the drawing tools"),
+            ("Ctrl+D", "Show or hide the drawing tools"),
             ("Alt+1 … 9", "Configuration N, for the selected drawing or the one about to be drawn"),
             ("Enter", "The selected drawing's properties"),
             ("← → ↑ ↓", "Nudge the selected drawing a pixel; ten with Shift"),
@@ -5623,7 +5623,7 @@ impl Window {
         self.save_workspace();
     }
 
-    /// Show or hide the drawing tools. Alt+D, and the handle on the edge.
+    /// Show or hide the drawing tools. Ctrl+D, and the tab on the edge.
     pub fn toggle_drawing_tools(self: &Rc<Self>) {
         let Some(bar) = self.drawing_bar.borrow().clone() else { return };
         let shown = !bar.is_shown();

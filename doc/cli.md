@@ -478,7 +478,7 @@ with its chart rather than with the symbol, and is numbered below zero so one
 id names a drawing wherever it lives. `list` names the symbol and the sharing;
 `clear` removes everything the chart can see.
 
-By hand: Alt+D shows the tools, Alt+L and Alt+R arm them (Escape is the
+By hand: Ctrl+D shows the tools, Alt+L and Alt+R arm them (Escape is the
 pointer again), a press and a second press (or one press-and-drag) place a
 drawing, a click selects one (Shift+click or Ctrl+click adds or removes
 another, and Shift+drag on empty chart takes everything the box touches; what
