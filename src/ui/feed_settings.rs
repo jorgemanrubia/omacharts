@@ -49,7 +49,10 @@ struct Panel {
     setup: RefCell<Option<adw::PreferencesGroup>>,
     /// True while a browser login is outstanding, so a second press of the
     /// button cannot open a second browser onto the same profile.
-    signing_in: Rc<std::cell::Cell<bool>>,
+    ///
+    /// A bare `Cell`: the panel itself is behind an `Rc`, and everything
+    /// that reads this holds a clone of that one.
+    signing_in: std::cell::Cell<bool>,
 }
 
 /// Opens the feed page over the settings dialog.
@@ -75,7 +78,7 @@ pub fn push(
         page,
         banner,
         setup: RefCell::new(None),
-        signing_in: Rc::new(std::cell::Cell::new(false)),
+        signing_in: std::cell::Cell::new(false),
     });
 
     panel.page.add(&feeds_group(&panel));
@@ -409,7 +412,7 @@ mod tests {
             page,
             banner: adw::Banner::new(""),
             setup: RefCell::new(None),
-            signing_in: Rc::new(std::cell::Cell::new(false)),
+            signing_in: std::cell::Cell::new(false),
         });
         rebuild_setup(&panel);
         assert!(panel.setup.borrow().is_none(), "Yahoo needs no sign-in rows");
