@@ -215,47 +215,56 @@ fn setup_group(
     group.add(&state);
 
     // The button, and the reason it is not a button when it cannot work.
-    let action = adw::ActionRow::new();
-    action.set_title(match access {
-        Access::Signed(_) => "Sign in again",
-        Access::Expired(_) => "Sign in again",
-        _ => "Sign in",
-    });
+    // Offered only when there is a sign-in to be done: a healthy session has
+    // nothing to sign into, and a row inviting one anyway is noise on the
+    // common case. Sign out, below, is then the only action — which is also
+    // the way out of the rare session that calls itself good and is not.
+    if !access.ready() {
+        let action = adw::ActionRow::new();
+        action.set_title(match access {
+            Access::Expired(_) | Access::Refused(_) => "Sign in again",
+            _ => "Sign in",
+        });
 
-    match providers::can_sign_in(feed.id) {
-        Ok(browser) => {
-            action.set_subtitle(&format!("Opens {browser}"));
-            let button = gtk::Button::with_label("Sign in…");
-            button.set_valign(gtk::Align::Center);
-            if !access.ready() {
+        match providers::can_sign_in(feed.id) {
+            Ok(browser) => {
+                action.set_subtitle(&format!("Opens {browser}"));
+                let button = gtk::Button::with_label("Sign in…");
+                button.set_valign(gtk::Align::Center);
                 button.add_css_class("suggested-action");
+                let panel_for_click = panel.clone();
+                let row = state.clone();
+                let spinning = spinner.clone();
+                let pressed = button.clone();
+                button.connect_clicked(move |_| {
+                    start_sign_in(&panel_for_click, feed, &row, &spinning, &pressed);
+                });
+                action.add_suffix(&button);
             }
-            let panel_for_click = panel.clone();
-            let row = state.clone();
-            let spinning = spinner.clone();
-            let pressed = button.clone();
-            button.connect_clicked(move |_| {
-                start_sign_in(&panel_for_click, feed, &row, &spinning, &pressed);
-            });
-            action.add_suffix(&button);
+            // A machine with no Chromium-family browser cannot do this at
+            // all. An enabled button that fails teaches somebody nothing;
+            // the row says what to install instead.
+            Err(why) => {
+                action.set_subtitle(&why);
+                action.set_subtitle_lines(0);
+                action.add_prefix(&gtk::Image::from_icon_name("dialog-warning-symbolic"));
+                action.set_sensitive(false);
+            }
         }
-        // A machine with no Chromium-family browser cannot do this at all.
-        // An enabled button that fails teaches somebody nothing; the row
-        // says what to install instead.
-        Err(why) => {
-            action.set_subtitle(&why);
-            action.set_subtitle_lines(0);
-            action.add_prefix(&gtk::Image::from_icon_name("dialog-warning-symbolic"));
-            action.set_sensitive(false);
-        }
+        group.add(&action);
     }
-    group.add(&action);
 
     // Only offered when there is something to forget.
     if !matches!(access, Access::Missing) {
         let out = adw::ActionRow::new();
         out.set_title("Sign out");
-        out.set_subtitle("Forgets the saved session. The browser stays signed in.");
+        let mut forgets = String::from("Forgets the saved session. The browser stays signed in.");
+        // With no sign-in row there is nowhere else saying which browser a
+        // login opens, and that is worth knowing before pressing this.
+        if access.ready() && let Ok(browser) = providers::can_sign_in(feed.id) {
+            forgets.push_str(&format!(" Signing in again opens {browser}."));
+        }
+        out.set_subtitle(&forgets);
         out.set_subtitle_lines(0);
         let button = gtk::Button::with_label("Sign out");
         button.add_css_class("destructive-action");
@@ -427,6 +436,62 @@ mod tests {
         choose(&panel, yahoo);
         assert_eq!(store.setting(feeds::SETTING).as_deref(), Some("yahoo"));
         assert!(panel.setup.borrow().is_none(), "rows for a feed nobody chose");
+    }
+
+    /// Every [`adw::ActionRow`] under `widget`, title and subtitle, in the
+    /// order somebody reads them.
+    fn rows_under(widget: &gtk::Widget) -> Vec<(String, String)> {
+        let mut found = Vec::new();
+        let mut next = widget.first_child();
+        while let Some(child) = next {
+            if let Ok(row) = child.clone().downcast::<adw::ActionRow>() {
+                let subtitle = row.subtitle().unwrap_or_default();
+                found.push((row.title().to_string(), subtitle.to_string()));
+            }
+            found.extend(rows_under(&child));
+            next = child.next_sibling();
+        }
+        found
+    }
+
+    /// The sign-in row belongs to a session that needs one. Signed in, sign
+    /// out is the only action offered — and it is then the row that says
+    /// which browser a later login would open, because the row that used to
+    /// say it is no longer there.
+    #[test]
+    fn signing_in_is_offered_only_when_there_is_a_sign_in_to_do() {
+        if !crate::ui::gtk_ready() {
+            return;
+        }
+        let store = Rc::new(Store::memory().expect("an empty database"));
+        let panel = Rc::new(Panel {
+            store,
+            on_change: Rc::new(|| {}),
+            page: adw::PreferencesPage::new(),
+            banner: adw::Banner::new(""),
+            setup: RefCell::new(None),
+            signing_in: std::cell::Cell::new(false),
+        });
+        let tos = providers::listed("tos").expect("thinkorswim is listed");
+        let setup = tos.setup.expect("thinkorswim says how to set it up");
+        let group = setup_group(&panel, tos, setup);
+        let rows = rows_under(group.upcast_ref::<gtk::Widget>());
+
+        // Whichever state this machine's saved session is in, the rows must
+        // agree with it: no sign-in row while it is good, one while it is not.
+        let access = providers::access(tos.id).expect("thinkorswim keeps a session");
+        let offered = rows.iter().any(|(title, _)| title.starts_with("Sign in"));
+        assert_eq!(offered, !access.ready(), "rows disagree with {}", access.line());
+
+        if access.ready() {
+            let (_, forgets) = rows
+                .iter()
+                .find(|(title, _)| title == "Sign out")
+                .expect("a saved session can be forgotten");
+            if let Ok(browser) = providers::can_sign_in(tos.id) {
+                assert!(forgets.contains(&browser), "sign out hides the browser: {forgets}");
+            }
+        }
     }
 
     /// Nothing on this page may reach the network, because it is drawn the
