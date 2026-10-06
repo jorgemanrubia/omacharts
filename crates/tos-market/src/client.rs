@@ -708,11 +708,15 @@ fn reach_failure(host: &str, e: std::io::Error) -> Error {
     }
 }
 
+/// Gives the socket a read timeout, which is what lets the serve loop reach
+/// its commands and its watchdog between frames. A socket that cannot be
+/// given one would block in `read` for ever, so it is refused rather than
+/// used.
 fn read_timeout(socket: &Socket, timeout: Duration) -> Result<()> {
     let stream = match socket.get_ref() {
         MaybeTlsStream::Plain(stream) => stream,
         MaybeTlsStream::Rustls(stream) => &stream.sock,
-        _ => return Ok(()),
+        _ => return Err(Error::Unreachable("socket has no readable timeout".into())),
     };
     stream
         .set_read_timeout(Some(timeout))

@@ -357,11 +357,15 @@ fn endpoint(port_file: &Path, timeout: Duration) -> Result<String> {
 fn connect(url: &str) -> Result<WebSocket<MaybeTlsStream<TcpStream>>> {
     let (socket, _) = tungstenite::connect(url)
         .map_err(|e| Error::Other(format!("devtools connect {url}: {e}")))?;
-    if let MaybeTlsStream::Plain(stream) = socket.get_ref() {
-        stream
-            .set_read_timeout(Some(READ_TIMEOUT))
-            .map_err(|e| Error::Other(format!("devtools socket timeout: {e}")))?;
-    }
+    // The read timeout is what stops `pump` spinning and what gives a caller
+    // its turn back, so a socket that cannot be given one is refused rather
+    // than used. DevTools is always plain `ws://` on loopback.
+    let MaybeTlsStream::Plain(stream) = socket.get_ref() else {
+        return Err(Error::Other(format!("devtools endpoint {url} is not plain")));
+    };
+    stream
+        .set_read_timeout(Some(READ_TIMEOUT))
+        .map_err(|e| Error::Other(format!("devtools socket timeout: {e}")))?;
     Ok(socket)
 }
 
