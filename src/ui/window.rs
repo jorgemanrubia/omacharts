@@ -1488,8 +1488,11 @@ impl Window {
         theming.borrow_mut().apply();
 
         let (sender, receiver) = async_channel::unbounded::<Response>();
-        let stored = store.setting("provider");
-        let loader = Loader::new(providers::selected(stored.as_deref()), sender.clone());
+        // One feed for the life of the window: the loader's queue is paced to
+        // its rules and the price cache is keyed by its id, so this is read
+        // once here and nowhere else asks again.
+        let feed = crate::feeds::in_use(&store).id;
+        let loader = Loader::new(providers::selected(Some(feed)), sender.clone());
 
         let window = adw::ApplicationWindow::new(app);
         // Just the name. Which symbol you are looking at is written over each
@@ -1534,7 +1537,7 @@ impl Window {
             theming: theming.clone(),
             search: SymbolSearch::new(index.clone()),
             watchlist: RefCell::new(None),
-            provider: Rc::new(providers::selected(stored.as_deref())),
+            provider: Rc::new(providers::selected(Some(feed))),
             loader,
             series: Rc::new(RefCell::new(HashMap::new())),
             split: split.clone(),

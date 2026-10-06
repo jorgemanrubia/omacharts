@@ -15,7 +15,25 @@ use omacharts::ui::Window;
 const APP_ID: &str = "com.jorgemanrubia.Omacharts";
 
 fn main() -> glib::ExitCode {
-    let args: Vec<String> = std::env::args().collect();
+    let launch = std::env::args().collect::<Vec<String>>();
+
+    // The launch options come off first, so that everything below reads a
+    // command line of commands and symbols: `--provider` says what this
+    // process charts from, and nothing after this point has to know it
+    // exists. `launch` keeps them, because a second invocation's arguments
+    // are handed to the window and the flag has an answer to earn there too.
+    let args = match cli::peel_launch(&launch) {
+        Ok(peeled) => {
+            if let Some(feed) = peeled.provider {
+                omacharts::feeds::use_for_this_launch(feed);
+            }
+            peeled.args
+        }
+        Err(fault) => {
+            eprintln!("omacharts: {}\n\n{}", fault.message, cli::usage());
+            return glib::ExitCode::from(fault.code);
+        }
+    };
 
     // A few commands answer for the process they were typed in, and the bus is
     // never asked about them: handing `skill` to the window would report on
@@ -78,13 +96,26 @@ fn main() -> glib::ExitCode {
 
     let window: RefCell<Option<Rc<Window>>> = RefCell::new(None);
     app.connect_command_line(move |app, command_line| {
-        let args: Vec<String> = command_line
+        let given: Vec<String> = command_line
             .arguments()
             .into_iter()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();
 
-        if window.borrow().is_none() {
+        // Peeled again, because these arguments may have come from another
+        // process: `omacharts --provider tos NVDA` typed at a terminal with a
+        // window already open arrives here, and `tos` must not be read as a
+        // second symbol.
+        let (args, asked_for) = match cli::peel_launch(&given) {
+            Ok(peeled) => (peeled.args, peeled.provider),
+            Err(fault) => {
+                command_line.printerr_literal(&format!("omacharts: {}\n", fault.message));
+                return glib::ExitCode::from(fault.code);
+            }
+        };
+
+        let starting = window.borrow().is_none();
+        if starting {
             let store = match Store::open() {
                 Ok(store) => store,
                 // Written by a newer Omacharts than this one. The file is
@@ -133,6 +164,21 @@ fn main() -> glib::ExitCode {
         let Some(window) = window.borrow().clone() else {
             return glib::ExitCode::FAILURE;
         };
+
+        // A feed is chosen once, when the process starts: the loader is built
+        // around one, its request queue is paced to that one's rules, and the
+        // price cache is keyed by it. So an invocation that asks a window
+        // already on screen for a different feed cannot have it, and is told
+        // so — silently charting from the old feed while the terminal that
+        // asked believes otherwise is the one outcome worth ruling out.
+        if !starting && let Some(feed) = asked_for {
+            command_line.printerr_literal(&format!(
+                "omacharts: already running, so --provider {} applies to nothing here; \
+                 `omacharts config set provider {}` sets the default, and it takes \
+                 effect next time Omacharts starts\n",
+                feed.id, feed.id,
+            ));
+        }
 
         // The window, to a command that wants what is on screen rather than
         // what was last written down. `None` until `Window` carries the three
@@ -184,7 +230,9 @@ fn main() -> glib::ExitCode {
         glib::ExitCode::SUCCESS
     });
 
-    app.run_with_args(&args)
+    // The arguments as typed, launch options included: these travel to
+    // whichever process holds the window, and the flag is answered there.
+    app.run_with_args(&launch)
 }
 
 /// Is a window already open?

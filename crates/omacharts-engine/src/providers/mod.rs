@@ -57,6 +57,7 @@ pub enum Feed {
 /// answer `provider list`, and to decide whether a name typed at
 /// `config set provider` is one of ours — none of which may touch a network,
 /// a session file or a browser.
+#[derive(Debug)]
 pub struct Listed {
     /// Stored in the `provider` setting, and the `adapter` key in cached
     /// symbol mappings. Never translated, never changed.

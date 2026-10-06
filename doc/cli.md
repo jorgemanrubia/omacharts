@@ -500,6 +500,37 @@ mainland China, Japan and Korea. It remembers the palette in use as well.
 command: it does not remember the scheme that was in use, so putting the colour
 back lands on the default rather than on the palette you had picked.
 
+## Which data feed the charts come from
+
+Yahoo Finance is the default and needs nothing set up. The stored choice is a
+setting like any other:
+
+```
+$ omacharts config set provider tos
+provider is tos
+  [exit 0]
+```
+
+For one run, without changing what is stored, there is a launch option:
+
+```
+omacharts --provider tos
+omacharts --provider tos NVDA
+```
+
+The order is: `--provider` for this launch, otherwise the stored setting,
+otherwise Yahoo. A name that is not a feed stops the launch with code 2 rather
+than quietly charting from the wrong source.
+
+`--provider` is a launch option, not a command, and the feed is read once when
+the process starts — the request queue is paced to that feed's rules and the
+price cache is keyed by its name. So passing it while Omacharts is already
+running changes nothing, and says so instead of being ignored. Use
+`config set provider` for that, and restart.
+
+The feeds are listed in `omacharts surface --json` under `launch`, so nothing
+has to guess the names.
+
 ## The widget in the Omarchy bar
 
 The bar widget is a plugin folder plus an entry in the shell's layout. The

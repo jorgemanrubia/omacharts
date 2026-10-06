@@ -6,6 +6,7 @@
 pub mod bar_plugin;
 pub mod cache;
 pub mod cli;
+pub mod feeds;
 pub mod inventory;
 pub mod loader;
 pub mod migrations;

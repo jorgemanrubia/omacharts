@@ -58,6 +58,48 @@ impl Flag {
     }
 }
 
+/// An option to the launch itself rather than to a command.
+///
+/// Here because this file is the only place allowed to describe the surface,
+/// and a launch option is part of it: it appears in `--help`, in the
+/// completions, in the man page and in `surface --json` because it is in this
+/// table, and for no other reason. The alternative is what this replaced — an
+/// environment variable, which no help output can list and no completion can
+/// offer, and which an agent therefore cannot find.
+///
+/// There are no switches here, only options that take a value, because the
+/// one thing a launch option has ever been needed for is naming something.
+pub struct Launch {
+    pub long: &'static str,
+    pub value: &'static str,
+    pub help: &'static str,
+    /// The values it accepts, when they are a fixed set this file knows. Some
+    /// are not: the feeds come from the engine's catalogue, so they are read
+    /// from there by [`launch_values`] rather than copied into a second list
+    /// that can disagree with the first.
+    pub values: &'static [&'static str],
+}
+
+pub const LAUNCH: &[Launch] = &[Launch {
+    long: "provider",
+    value: "NAME",
+    help: "chart from this data feed for this launch, whatever is stored; \
+           `config set provider` changes the stored default",
+    values: &[],
+}];
+
+/// Everything `--long` accepts, including the sets this table defers on.
+pub fn launch_values(long: &str) -> Vec<&'static str> {
+    match long {
+        "provider" => omacharts_engine::providers::LISTED.iter().map(|feed| feed.id).collect(),
+        _ => LAUNCH
+            .iter()
+            .find(|option| option.long == long)
+            .map(|option| option.values.to_vec())
+            .unwrap_or_default(),
+    }
+}
+
 pub struct Verb {
     pub name: &'static str,
     pub about: &'static str,

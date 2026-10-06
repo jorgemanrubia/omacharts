@@ -78,23 +78,40 @@ system.
 
 ## Data
 
-Omacharts is prepared to work with multiple data providers. Yahoo Finance is
-the default. The other is Thinkorswim, Charles Schwab's trading platform,
-from a major US brokerage:
+Omacharts works with more than one data feed. Yahoo Finance is the default
+and needs nothing set up. The other is thinkorswim, the trading platform of
+Charles Schwab, which charts your own account's data in real time.
+
+Pick one in Preferences → Market data → Provider, or from a terminal:
 
 ```
 omacharts config set provider tos
-OMACHARTS_PROVIDER=tos omacharts
+omacharts --provider tos          # this launch only
 ```
 
-`OMACHARTS_PROVIDER` wins over the stored setting. The choice is read when
-the process starts.
+The feed is read when the process starts, so a change applies the next time
+Omacharts opens.
 
-The first chart opens a browser at thinkorswim. Sign in there, and leave the
-window on paperMoney: a live gateway is refused. The connector reads the
-session from that browser and saves it. Later runs reuse the file.
-`TOS_ENV_FILE` chooses the file; otherwise it is `~/.config/omacharts/tos.env`.
-The feed reads charts only.
+thinkorswim needs signing in to, once. The settings panel has a button for
+it, and so does the command line:
+
+```
+omacharts provider login
+```
+
+That opens a real Chrome window at thinkorswim, where you sign in yourself —
+Omacharts never sees your password or your one-time code, and types nothing
+into the page. It needs a Chromium-family browser on the machine (Chromium,
+Chrome, Brave or Edge) and a Schwab account with thinkorswim. What it keeps
+is the session the browser ended up with, in `~/.config/omacharts/tos.env`
+(`TOS_ENV_FILE` moves it), and a browser profile under
+`~/.local/state/omacharts/tos-browser` so that the next sign-in is a trusted
+device rather than another round of codes.
+
+It connects to paperMoney and asks for charts. A live gateway is refused, and
+there is no order-entry code in the client at all. Sessions expire after a
+while; when one does, charts say so and `omacharts provider status` says so,
+and signing in again is the fix.
 
 The symbol search covers every US-listed stock and ETF, and every listing on
 the two Taiwanese exchanges — the TWSE (`2330.TW`) and the TPEx (`6488.TWO`) —
