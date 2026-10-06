@@ -6,7 +6,7 @@ description = "Fast, beautiful charting software for Omarchy"
 license = "MIT"
 
 [workspace]
-members = [".", "crates/omacharts-engine"]
+members = [".", "crates/omacharts-engine", "crates/tos-market"]
 
 [dependencies]
 omacharts-engine = { path = "crates/omacharts-engine" }

@@ -21,7 +21,7 @@
 
 use std::rc::Rc;
 
-use omacharts_engine::providers::Yahoo;
+use omacharts_engine::providers;
 use omacharts_engine::{Instrument, Provider, SearchIndex, Timeframe};
 
 use crate::loader::{Loader, Request, BACKFILL};
@@ -273,7 +273,7 @@ pub struct Quote {
 }
 
 /// Read the cached daily bars for an instrument and work out its move.
-pub fn quote(store: &Store, provider: &Yahoo, instrument: &Instrument) -> Option<Quote> {
+pub fn quote(store: &Store, provider: &impl Provider, instrument: &Instrument) -> Option<Quote> {
     let key = cache_key(provider, instrument)?;
     let bars = store.load_bars(&key, Timeframe::days(1));
     let (previous, last) = (bars.get(bars.len().checked_sub(2)?)?, bars.last()?);
@@ -286,7 +286,7 @@ pub fn quote(store: &Store, provider: &Yahoo, instrument: &Instrument) -> Option
     })
 }
 
-pub fn cache_key(provider: &Yahoo, instrument: &Instrument) -> Option<String> {
+pub fn cache_key(provider: &impl Provider, instrument: &Instrument) -> Option<String> {
     provider.symbol_for(instrument).map(|symbol| format!("{}:{symbol}", provider.id()))
 }
 
@@ -295,7 +295,7 @@ pub fn cache_key(provider: &Yahoo, instrument: &Instrument) -> Option<String> {
 ///
 /// Who acts on it depends on where we are running, which is the distinction
 /// [`Live::warm`] exists to make.
-fn stale_daily(store: &Store, provider: &Yahoo, instruments: &[Instrument]) -> Vec<Instrument> {
+fn stale_daily(store: &Store, provider: &impl Provider, instruments: &[Instrument]) -> Vec<Instrument> {
     let now = chrono::Utc::now().timestamp();
     let daily = Timeframe::days(1);
 
@@ -321,9 +321,9 @@ fn stale_daily(store: &Store, provider: &Yahoo, instruments: &[Instrument]) -> V
 /// is the one place that paces requests. Speculative, so they go two seconds
 /// apart and are refused outright while the provider is throttling: a bar
 /// widget must never cost the app its rate limit.
-fn refresh(store: &Store, provider: &Yahoo, instruments: &[Instrument]) {
+fn refresh(store: &Store, provider: &impl Provider, instruments: &[Instrument]) {
     let (sender, receiver) = async_channel::unbounded();
-    let loader = Loader::new(Yahoo::new(), sender);
+    let loader = Loader::new(providers::selected(store.setting("provider").as_deref()), sender);
     let mut outstanding = 0;
     let stale = stale_daily(store, provider, instruments);
     for (rank, instrument) in stale.iter().take(MAX_REFRESH).enumerate() {
@@ -345,7 +345,7 @@ fn refresh(store: &Store, provider: &Yahoo, instruments: &[Instrument]) {
 /// The watchlist as JSON, for the bar widget.
 pub fn watchlist_json(store: &Store, refresh_first: bool, live: Option<&dyn Live>) -> String {
     let index = resolver(live);
-    let provider = Yahoo::new();
+    let provider = providers::selected(store.setting("provider").as_deref());
 
     let sections = store.watchlist();
     if refresh_first {
@@ -450,7 +450,7 @@ fn colors_json(store: &Store) -> String {
     )
 }
 
-fn entry_json(store: &Store, provider: &Yahoo, instrument: &Instrument) -> String {
+fn entry_json(store: &Store, provider: &impl Provider, instrument: &Instrument) -> String {
     let mut fields = format!(
         "{{\"symbol\":{},\"suffix\":{},\"display\":{},\"name\":{},\"kind\":{}",
         json_string(&instrument.symbol),
@@ -563,6 +563,7 @@ pub fn live(window: &Rc<crate::ui::Window>) -> Option<Box<dyn Live>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use omacharts_engine::providers::Yahoo;
 
     /// A window that goes wrong. `flush_workspace` is the first thing a command
     /// touching the arrangement calls, so panicking there stands in for a bug

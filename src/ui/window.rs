@@ -14,7 +14,7 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::glib;
-use omacharts_engine::providers::Yahoo;
+use omacharts_engine::providers::{self, Feed};
 use omacharts_engine::refresh;
 use omacharts_engine::{
     resample, BarStyle, Delivery, FetchFailure, Indicator, Instrument, Provider, SearchIndex,
@@ -1450,7 +1450,7 @@ pub struct Window {
     theming: Rc<RefCell<Theming>>,
     search: Rc<SymbolSearch>,
     watchlist: RefCell<Option<Rc<Watchlist>>>,
-    provider: Rc<Yahoo>,
+    provider: Rc<Feed>,
     loader: Loader,
     /// Folded series, keyed by cache key and the resolution shown.
     ///
@@ -1488,7 +1488,8 @@ impl Window {
         theming.borrow_mut().apply();
 
         let (sender, receiver) = async_channel::unbounded::<Response>();
-        let loader = Loader::new(Yahoo::new(), sender.clone());
+        let stored = store.setting("provider");
+        let loader = Loader::new(providers::selected(stored.as_deref()), sender.clone());
 
         let window = adw::ApplicationWindow::new(app);
         // Just the name. Which symbol you are looking at is written over each
@@ -1533,7 +1534,7 @@ impl Window {
             theming: theming.clone(),
             search: SymbolSearch::new(index.clone()),
             watchlist: RefCell::new(None),
-            provider: Rc::new(Yahoo::new()),
+            provider: Rc::new(providers::selected(stored.as_deref())),
             loader,
             series: Rc::new(RefCell::new(HashMap::new())),
             split: split.clone(),

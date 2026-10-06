@@ -1,0 +1,21 @@
+[package]
+name = "tos-market"
+version = "0.1.0"
+edition = "2021"
+description = "Thinkorswim chart candles."
+license = "MIT"
+
+[dependencies]
+futures-util = { version = "0.3", features = ["sink"] }
+json-patch = "4"
+rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "std"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "net"] }
+tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
+tracing = "0.1"
+url = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }

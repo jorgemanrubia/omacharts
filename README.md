@@ -78,8 +78,17 @@ system.
 
 ## Data
 
-Omacharts is prepared to work with multiple data providers, but at launch only
-Yahoo Finance is supported.
+Omacharts is prepared to work with multiple data providers. Yahoo Finance is
+the default. The other is Thinkorswim, Charles Schwab's trading platform,
+from a major US brokerage:
+
+```
+omacharts config set provider tos
+OMACHARTS_PROVIDER=tos omacharts
+```
+
+`OMACHARTS_PROVIDER` wins over the stored setting. `TOS_ENV_FILE` points at
+the session file. The feed reads charts only and does not open a live gateway.
 
 The symbol search covers every US-listed stock and ETF, and every listing on
 the two Taiwanese exchanges — the TWSE (`2330.TW`) and the TPEx (`6488.TWO`) —
