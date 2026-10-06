@@ -17,7 +17,8 @@ use gtk::glib;
 use omacharts_engine::providers::Yahoo;
 use omacharts_engine::refresh;
 use omacharts_engine::{
-    resample, BarStyle, FetchFailure, Indicator, Instrument, Provider, SearchIndex, Session,
+    resample, BarStyle, Delivery, FetchFailure, Indicator, Instrument, Provider, SearchIndex,
+    Session,
     Timeframe,
 };
 
@@ -54,6 +55,19 @@ const BACKFILL_POLL_SECONDS: u32 = 60;
 /// timer's own phase. A tick with nothing to do is a handful of `coverage`
 /// queries against a local, indexed, write-ahead-logged table.
 const REFRESH_TICK_SECONDS: u32 = 30;
+
+/// Does a provider that delivers bars this way need the refresh timer at all?
+///
+/// A provider that streams has nothing to poll, so there is nothing to time:
+/// not a tick every thirty seconds, not the `coverage` queries a tick makes
+/// to find out it has nothing to do. Asked once, when the window is built,
+/// because how a provider delivers bars does not change while it is open.
+/// [`omacharts_engine::refresh::due`] refuses a streamed chart too, so a
+/// caller that reaches it anyway still gets the right answer; this is the
+/// line that keeps the question from being asked in the first place.
+fn wants_refresh_timer(delivery: Delivery) -> bool {
+    delivery == Delivery::Polled
+}
 
 /// How often we look for a desktop theme change. Cheap enough to be invisible,
 /// often enough to feel immediate.
@@ -264,6 +278,16 @@ fn key_synonyms(part: &str) -> &'static [&'static str] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The timer is GTK's and cannot be watched from here, so the decision
+    /// that installs it is a function of its own and this holds that. A
+    /// provider that streams gets no timer at all — nothing to poll, nothing
+    /// to time — and the one that is polled gets it without anybody asking.
+    #[test]
+    fn a_streamed_provider_gets_no_refresh_timer() {
+        assert!(!wants_refresh_timer(Delivery::Streamed));
+        assert!(wants_refresh_timer(Delivery::Polled));
+    }
 
     #[test]
     fn the_resolution_strip_is_ordered_by_length() {
@@ -4756,6 +4780,9 @@ impl Window {
     /// [`omacharts_engine::refresh`], one chart at a time, and most ticks of
     /// this timer queue nothing at all.
     fn wire_refresh(self: &Rc<Self>) {
+        if !wants_refresh_timer(self.provider.delivery()) {
+            return;
+        }
         // No first pass on idle, unlike the backfill: every chart on screen
         // has just been fetched by the thing that put it there, so there is
         // nothing a tick at startup could usefully do.
