@@ -10,7 +10,10 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::path::Path;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::time::Instant;
 
 use adw::prelude::*;
 use gtk::glib;
@@ -22,6 +25,7 @@ use omacharts_engine::{
     Timeframe,
 };
 
+use crate::live::{Change, Live, Series, Watching, Written};
 use crate::loader::{Loader, Request, Response, BACKFILL, BACKGROUND, FOREGROUND, REFRESH};
 use crate::store::{Store, DEFAULT_WATCHLIST};
 use crate::theming::Theming;
@@ -67,6 +71,20 @@ const REFRESH_TICK_SECONDS: u32 = 30;
 /// line that keeps the question from being asked in the first place.
 fn wants_refresh_timer(delivery: Delivery) -> bool {
     delivery == Delivery::Polled
+}
+
+/// Is a rail row worth fetching daily bars for again, given how the provider
+/// delivers and whether the cache already holds any?
+///
+/// On a polled feed, always: "stale" is a thing a polled feed has, and the
+/// bar widget's refresh is how a row keeps up. On a streamed feed, only a
+/// row with nothing cached at all, once — the stream keeps the charted
+/// symbols current, and a row that is not charted keeps the quote it was
+/// first fetched with. Fetching it again on the widget's timer would be
+/// polling the provider behind a path that claims not to, which is the one
+/// thing a streamed feed must never do.
+fn worth_warming(delivery: Delivery, cached: bool) -> bool {
+    delivery == Delivery::Polled || !cached
 }
 
 /// How often we look for a desktop theme change. Cheap enough to be invisible,
@@ -287,6 +305,17 @@ mod tests {
     fn a_streamed_provider_gets_no_refresh_timer() {
         assert!(!wants_refresh_timer(Delivery::Streamed));
         assert!(wants_refresh_timer(Delivery::Polled));
+    }
+
+    /// The bar widget asks every half minute to two minutes. On a polled
+    /// feed that is how rows keep up; on a streamed feed nothing may be
+    /// asked for again because it is old — only a row with nothing, once.
+    #[test]
+    fn a_streamed_feed_warms_a_rail_row_once_and_never_because_it_is_old() {
+        assert!(worth_warming(Delivery::Polled, true));
+        assert!(worth_warming(Delivery::Polled, false));
+        assert!(!worth_warming(Delivery::Streamed, true));
+        assert!(worth_warming(Delivery::Streamed, false));
     }
 
     #[test]
@@ -1450,8 +1479,18 @@ pub struct Window {
     theming: Rc<RefCell<Theming>>,
     search: Rc<SymbolSearch>,
     watchlist: RefCell<Option<Rc<Watchlist>>>,
-    provider: Rc<dyn Provider>,
+    provider: Arc<dyn Provider>,
     loader: Loader,
+    /// The one source for everything being streamed, for a provider that
+    /// streams. `None` for one that does not, which then pays nothing: no
+    /// registry, no writer thread, no wake.
+    live: Option<Rc<Live>>,
+    /// A drain is already on the frame clock, so a second wake before it
+    /// runs has nothing to add.
+    drain_scheduled: Cell<bool>,
+    /// The one timer for asking a lost series again, at the earliest retry
+    /// due. Replaced rather than added to when a loss is due sooner.
+    retry_timer: RefCell<Option<glib::SourceId>>,
     /// Folded series, keyed by cache key and the resolution shown.
     ///
     /// The bars are the chart — there is nothing else to preload — so once a
@@ -1481,6 +1520,24 @@ pub struct Window {
 
 impl Window {
     pub fn build(app: &adw::Application, store: Rc<Store>) -> Rc<Window> {
+        // One feed for the life of the window: the loader's queue is paced to
+        // its rules and the price cache is keyed by its id, so this is read
+        // once here and nowhere else asks again.
+        let feed = crate::feeds::in_use(&store).id;
+        Window::build_with(app, store, Arc::from(providers::selected(Some(feed))))
+    }
+
+    /// The window on a provider of the caller's choosing.
+    ///
+    /// Apart from [`Window::build`] so that something other than the stored
+    /// setting can decide the feed: `examples/live_window.rs` opens the real
+    /// window on the synthetic streaming provider, which is not listed and
+    /// cannot be chosen any other way.
+    pub fn build_with(
+        app: &adw::Application,
+        store: Rc<Store>,
+        provider: Arc<dyn Provider>,
+    ) -> Rc<Window> {
         store.seed_watchlist_if_empty(DEFAULTS);
 
         let index = crate::inventory::Inventory::curated();
@@ -1488,11 +1545,14 @@ impl Window {
         theming.borrow_mut().apply();
 
         let (sender, receiver) = async_channel::unbounded::<Response>();
-        // One feed for the life of the window: the loader's queue is paced to
-        // its rules and the price cache is keyed by its id, so this is read
-        // once here and nowhere else asks again.
-        let feed = crate::feeds::in_use(&store).id;
-        let loader = Loader::new(providers::selected(Some(feed)), sender.clone());
+        let loader = Loader::new(provider.clone(), sender.clone());
+        // A provider that streams gets the registry that shares, coalesces
+        // and writes behind for every chart; one that does not gets nothing
+        // at all, and no line below this one asks which it was.
+        let live = provider
+            .stream()
+            .is_some()
+            .then(|| Rc::new(Live::new(provider.clone(), store.path().map(Path::to_path_buf))));
 
         let window = adw::ApplicationWindow::new(app);
         // Just the name. Which symbol you are looking at is written over each
@@ -1537,8 +1597,11 @@ impl Window {
             theming: theming.clone(),
             search: SymbolSearch::new(index.clone()),
             watchlist: RefCell::new(None),
-            provider: Rc::from(providers::selected(Some(feed))),
+            provider,
             loader,
+            live,
+            drain_scheduled: Cell::new(false),
+            retry_timer: RefCell::new(None),
             series: Rc::new(RefCell::new(HashMap::new())),
             split: split.clone(),
             timeframes: RefCell::new(parse_timeframes(
@@ -1661,6 +1724,7 @@ impl Window {
         this.wire_theme_polling();
         this.wire_backfill();
         this.wire_refresh();
+        this.wire_live();
 
         // The widget is part of the app, so it arrives with it rather than
         // waiting to be discovered in the settings.
@@ -1999,6 +2063,7 @@ impl Window {
         let leaves = next.leaves();
         *self.layout.borrow_mut() = next;
         self.panes.borrow_mut().retain(|p| p.id != id);
+        self.release_pane(id);
         self.rebuild_layout();
         if let Some(first) = leaves.first() {
             self.focus(*first);
@@ -2649,6 +2714,7 @@ impl Window {
             return false;
         }
 
+        self.release_all_panes();
         self.panes.borrow_mut().clear();
         let mut restored: Vec<(Rc<ChartPane>, StoredPane)> = Vec::new();
         for stored in book.panes {
@@ -2858,6 +2924,7 @@ impl Window {
             .as_ref()
             .map(|p| p.show_grid.get())
             .unwrap_or_else(|| store.setting_bool(SETTING_SHOW_GRID, true));
+        self.release_all_panes();
         self.panes.borrow_mut().clear();
         self.maximized.set(None);
         // A new chart carries nothing. Splitting copies the chart you split,
@@ -3700,7 +3767,7 @@ impl Window {
         // gets you throttled.
         let quote: crate::ui::watchlist::QuoteLookup = Rc::new(move |instrument: &Instrument| {
             let symbol = provider.symbol_for(instrument)?;
-            let bars = store.load_bars(&format!("yahoo:{symbol}"), Timeframe::days(1));
+            let bars = store.load_bars(&format!("{}:{symbol}", provider.id()), Timeframe::days(1));
             let (previous, last) = (bars.get(bars.len().checked_sub(2)?)?, bars.last()?);
             let change = last.close - previous.close;
             Some(Quote {
@@ -4558,10 +4625,23 @@ impl Window {
                 .set_setting(LAST_SUFFIX, instrument.suffix.as_deref().unwrap_or(""));
         }
 
-        // Cache first, so the chart is on screen before any request leaves.
-        let memo = self.series.borrow().get(&(key.clone(), timeframe)).cloned();
-        let cached_was_empty = match memo {
-            Some(bars) => {
+        // The live series first, if this is being streamed already: it is
+        // newer than anything the memo or the cache holds. Then the memo,
+        // then the cache, so the chart is on screen before any request
+        // leaves.
+        let series = Series { key: key.clone(), native };
+        let streamed = self.live.as_ref().and_then(|live| live.with_bars(&series, |bars| bars.to_vec()));
+        let memo = match streamed {
+            Some(_) => None,
+            None => self.series.borrow().get(&(key.clone(), timeframe)).cloned(),
+        };
+        let cached_was_empty = match (streamed, memo) {
+            (Some(bars), _) => {
+                let empty = bars.is_empty();
+                self.paint(pane, &key, &instrument, timeframe, bars);
+                empty
+            }
+            (None, Some(bars)) => {
                 let empty = bars.is_empty();
                 // Indicators have to be recomputed here too. Skipping it left
                 // the previous symbol's VWAP on screen until the network reply
@@ -4571,7 +4651,7 @@ impl Window {
                 pane.view.set_series(instrument.clone(), timeframe, (*bars).clone());
                 empty
             }
-            None => {
+            (None, None) => {
                 let cached = self.store.load_bars(&key, native);
                 let empty = cached.is_empty();
                 self.paint(pane, &key, &instrument, timeframe, cached);
@@ -4599,8 +4679,24 @@ impl Window {
                 self.store.coverage(&key, tf).is_some()
             });
         }
-        self.loader
-            .fetch(Request { key, symbol, timeframe, speculative: false }, FOREGROUND);
+        match &self.live {
+            // The subscription is the fetch: its snapshot is the history, and
+            // nothing on a streamed path asks for bars it is about to be
+            // pushed. A chart already streaming this series joins it.
+            Some(live) => {
+                let since = self.store.coverage(&key, native).map(|coverage| coverage.last_ts);
+                match live.watch(pane.id, series, &symbol, since) {
+                    Watching::Showing | Watching::Opening => {}
+                    Watching::Refused(failure) => {
+                        pane.view.set_loading(false);
+                        pane.view.set_trouble(Some(failure));
+                    }
+                }
+            }
+            None => self
+                .loader
+                .fetch(Request { key, symbol, timeframe, speculative: false }, FOREGROUND),
+        }
         if pane.id == self.focused.get() {
             self.prefetch_neighbours(&instrument, timeframe);
         }
@@ -4628,6 +4724,8 @@ impl Window {
         *pane.instrument.borrow_mut() = Some(instrument.clone());
         *pane.pending.borrow_mut() = None;
         pane.write_readout();
+        // Whatever this chart was streaming, it is not showing it now.
+        self.release_pane(pane.id);
         if pane.id == self.focused.get() {
             self.store.set_setting(LAST_SYMBOL, &instrument.symbol);
             self.store
@@ -4721,9 +4819,13 @@ impl Window {
     /// drops a duplicate of something already queued.
     pub fn warm(self: &Rc<Self>, instruments: &[Instrument]) {
         let daily = Timeframe::days(1);
+        let delivery = self.provider.delivery();
         for (rank, instrument) in instruments.iter().enumerate() {
             let Some(symbol) = self.provider.symbol_for(instrument) else { continue };
             let key = format!("{}:{symbol}", self.provider.id());
+            if !worth_warming(delivery, self.store.coverage(&key, daily).is_some()) {
+                continue;
+            }
             self.loader.fetch(
                 Request { key, symbol, timeframe: daily, speculative: true },
                 BACKFILL.saturating_add(rank as u32),
@@ -4935,6 +5037,12 @@ impl Window {
         bars: Vec<omacharts_engine::Bar>,
         trouble: Option<FetchFailure>,
     ) {
+        // A series being streamed is newer in memory than any reply: the
+        // reply still feeds the rail, and paints nothing.
+        let streamed = self
+            .live
+            .as_ref()
+            .is_some_and(|live| live.is_showing(&Series { key: key.to_string(), native }));
         // One reply can belong to several charts: the same symbol at the same
         // resolution in two panes is one fetch and two repaints.
         let waiting: Vec<Rc<ChartPane>> = self
@@ -4942,7 +5050,8 @@ impl Window {
             .borrow()
             .iter()
             .filter(|pane| {
-                pane.timeframe.get().native() == native
+                !streamed
+                    && pane.timeframe.get().native() == native
                     && pane
                         .instrument
                         .borrow()
@@ -5033,6 +5142,22 @@ impl Window {
         timeframe: Timeframe,
         bars: &[omacharts_engine::Bar],
     ) {
+        let drawn = self.drawn_indicators(pane, instrument, timeframe, bars);
+        pane.view.set_indicators(drawn);
+    }
+
+    /// This chart's indicators computed over `bars`, ready to draw.
+    ///
+    /// Apart from putting them on the chart, because the live tail computes
+    /// them over the series the chart already holds, borrowed from it — and
+    /// a chart cannot be handed its indicators while it is lending its bars.
+    fn drawn_indicators(
+        &self,
+        pane: &Rc<ChartPane>,
+        instrument: &Instrument,
+        timeframe: Timeframe,
+        bars: &[omacharts_engine::Bar],
+    ) -> Vec<Drawn> {
         let theme = self.theming.borrow().theme();
         let all = pane.indicators.borrow().clone();
         let colors = omacharts_engine::palette_colors(&all, &theme);
@@ -5051,7 +5176,230 @@ impl Window {
                 indicator: indicator.clone(),
             })
             .collect();
-        pane.view.set_indicators(drawn);
+        drawn
+    }
+
+    // -- streaming ---------------------------------------------------------
+
+    /// Hook the registry up to the main loop: wakes drain on the frame
+    /// clock, the writer's answers paint and refresh the rail, and the
+    /// window closing writes everything down first.
+    ///
+    /// Nothing here runs while nothing arrives. There is no timer; a tick
+    /// sends one wake, the wake schedules one drain on the next frame, and
+    /// the frame clock stops again when the drain has run.
+    fn wire_live(self: &Rc<Self>) {
+        let Some(live) = self.live.clone() else { return };
+
+        let this = self.clone();
+        let nudges = live.nudges();
+        glib::spawn_future_local(async move {
+            while nudges.recv().await.is_ok() {
+                this.schedule_drain();
+            }
+        });
+
+        let this = self.clone();
+        let written = live.written();
+        let registry = live.clone();
+        glib::spawn_future_local(async move {
+            while let Ok(written) = written.recv().await {
+                match written {
+                    Written::Merged { series, bars } => {
+                        if let Some(change) = registry.merged(&series, bars) {
+                            this.apply_live_change(change);
+                        }
+                        // Ticks that waited for the merge are applied on
+                        // top of it in the same breath.
+                        this.drain_live();
+                    }
+                    Written::Flushed { .. } => {
+                        if let Some(watchlist) = this.watchlist.borrow().as_ref() {
+                            watchlist.refresh_quotes();
+                        }
+                    }
+                }
+            }
+        });
+
+        // Ten seconds of ticks are in memory and nowhere else; the window
+        // closing is the one exit the write-behind timer cannot cover.
+        let registry = live.clone();
+        self.window.connect_close_request(move |_| {
+            registry.shutdown();
+            glib::Propagation::Proceed
+        });
+    }
+
+    /// Drain on the next frame, once, however many wakes arrive before it.
+    ///
+    /// The frame clock rather than an idle: the expensive half of a tick —
+    /// the indicators — then runs once per frame whatever the tick rate, and
+    /// a `queue_draw` from inside the update phase is painted in that same
+    /// frame. A frozen clock (the window on another workspace) holds the
+    /// drain, and the mailboxes hold the newest bars, until it runs again.
+    fn schedule_drain(self: &Rc<Self>) {
+        if self.drain_scheduled.replace(true) {
+            return;
+        }
+        let this = self.clone();
+        self.window.add_tick_callback(move |_, _| {
+            this.drain_live();
+            glib::ControlFlow::Break
+        });
+    }
+
+    /// Fold everything that arrived into the series in memory and redraw
+    /// what changed.
+    fn drain_live(self: &Rc<Self>) {
+        self.drain_scheduled.set(false);
+        let Some(live) = self.live.clone() else { return };
+        let drained = live.drain();
+        for change in drained.changes {
+            self.apply_live_change(change);
+        }
+        if drained.schedule_flush {
+            let registry = live.clone();
+            glib::timeout_add_local_once(crate::live::WRITE_BEHIND, move || registry.flush());
+        }
+        if drained.schedule_retry {
+            self.schedule_retry();
+        }
+    }
+
+    /// One change to one series, on every chart watching it.
+    fn apply_live_change(self: &Rc<Self>, change: Change) {
+        let Some(live) = self.live.clone() else { return };
+        match change {
+            // The whole series: the ordinary paint, which folds, filters and
+            // recomputes, as a loader reply would.
+            Change::Snapshot(series) => {
+                let bars = live.with_bars(&series, |bars| bars.to_vec()).unwrap_or_default();
+                for id in live.watchers(&series) {
+                    let Some(pane) = self.pane(id) else { continue };
+                    let instrument = pane.instrument.borrow().clone();
+                    let Some(instrument) = instrument else { continue };
+                    self.paint(&pane, &series.key, &instrument, pane.timeframe.get(), bars.clone());
+                    pane.view.set_trouble(None);
+                    pane.view.set_loading(false);
+                }
+                if let Some(watchlist) = self.watchlist.borrow().as_ref() {
+                    watchlist.refresh_quotes();
+                }
+            }
+            // The end of the series: each chart's view of the bars from the
+            // touched bucket on, put in place of what it had.
+            Change::Tail { series, from } => {
+                for id in live.watchers(&series) {
+                    let Some(pane) = self.pane(id) else { continue };
+                    let instrument = pane.instrument.borrow().clone();
+                    let Some(instrument) = instrument else { continue };
+                    let timeframe = pane.timeframe.get();
+                    let tail = live
+                        .with_bars(&series, |native| {
+                            let start = omacharts_engine::stream::tail_start(
+                                native,
+                                from,
+                                timeframe,
+                                instrument.session_origin,
+                            );
+                            let tail = omacharts_engine::session::filter(
+                                &native[start..],
+                                pane.session.get(),
+                                &instrument,
+                                timeframe.is_intraday(),
+                            );
+                            if timeframe.is_derived() {
+                                resample(&tail, timeframe, instrument.session_origin)
+                            } else {
+                                tail
+                            }
+                        })
+                        .unwrap_or_default();
+                    if tail.is_empty() {
+                        continue;
+                    }
+                    pane.view.apply_tail(&tail);
+                    // The memo this chart was painted from has to agree with
+                    // the chart, or the next switch back paints yesterday.
+                    let memo = {
+                        let mut memo = self.series.borrow_mut();
+                        if let Some(entry) = memo.get_mut(&(series.key.clone(), timeframe)) {
+                            let bars = Rc::make_mut(entry);
+                            for bar in &tail {
+                                omacharts_engine::stream::upsert(bars, *bar);
+                            }
+                        }
+                        memo.get(&(series.key.clone(), timeframe)).cloned()
+                    };
+                    let drawn = match memo {
+                        Some(bars) => self.drawn_indicators(&pane, &instrument, timeframe, &bars),
+                        None => pane
+                            .view
+                            .with_bars(|bars| self.drawn_indicators(&pane, &instrument, timeframe, bars)),
+                    };
+                    pane.view.set_indicators(drawn);
+                }
+            }
+            // The bars stay; the corner says why nothing newer is coming.
+            Change::Lost { series, why } => {
+                for id in live.watchers(&series) {
+                    let Some(pane) = self.pane(id) else { continue };
+                    pane.view.set_loading(false);
+                    pane.view.set_trouble(Some(why));
+                }
+            }
+        }
+    }
+
+    /// Keep one timer at the earliest retry due, replacing whatever was
+    /// timed before. No lost series, no timer.
+    fn schedule_retry(self: &Rc<Self>) {
+        let Some(live) = self.live.clone() else { return };
+        if let Some(old) = self.retry_timer.borrow_mut().take() {
+            old.remove();
+        }
+        let Some(at) = live.next_retry_at() else { return };
+        let this = self.clone();
+        let wait = at.saturating_duration_since(Instant::now());
+        let source = glib::timeout_add_local_once(wait, move || {
+            *this.retry_timer.borrow_mut() = None;
+            if live.retry_due(Instant::now()) {
+                this.schedule_retry();
+            }
+        });
+        *self.retry_timer.borrow_mut() = Some(source);
+    }
+
+    /// Chart `id` stopped showing what it was streaming.
+    fn release_pane(self: &Rc<Self>, id: u32) {
+        if let Some(live) = &self.live
+            && live.unwatch(id)
+        {
+            self.schedule_reap();
+        }
+    }
+
+    /// Every chart stopped: a chartbook is coming down.
+    fn release_all_panes(self: &Rc<Self>) {
+        if let Some(live) = &self.live
+            && live.unwatch_all()
+        {
+            self.schedule_reap();
+        }
+    }
+
+    /// Tear idle series down on idle rather than now, so the chart that
+    /// comes straight back — the next chartbook showing the same symbol —
+    /// finds its subscription where it left it.
+    fn schedule_reap(self: &Rc<Self>) {
+        let Some(live) = self.live.clone() else { return };
+        glib::idle_add_local_once(move || live.reap());
+    }
+
+    /// What is being streamed right now, for `provider status`.
+    pub fn streaming(&self) -> Vec<crate::live::Report> {
+        self.live.as_ref().map(|live| live.report()).unwrap_or_default()
     }
 
     /// Replace the set of indicators and redraw.

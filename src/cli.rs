@@ -188,6 +188,12 @@ pub trait Live {
     /// hundred milliseconds after it opens. A caller that needs the whole
     /// catalogue has to build one then, and had better say so.
     fn symbols(&self) -> Option<Rc<SearchIndex>>;
+
+    /// What the window holds a stream subscription to, for a provider that
+    /// streams. Empty for one that does not, and with no window at all.
+    fn streaming(&self) -> Vec<crate::live::Report> {
+        Vec::new()
+    }
 }
 
 /// A command line with its launch options taken off, and what they said.
@@ -404,7 +410,7 @@ fn stale_daily(store: &Store, provider: &dyn Provider, instruments: &[Instrument
 /// widget must never cost the app its rate limit.
 fn refresh(store: &Store, provider: &dyn Provider, instruments: &[Instrument]) {
     let (sender, receiver) = async_channel::unbounded();
-    let loader = Loader::new(crate::feeds::selected(store), sender);
+    let loader = Loader::new(std::sync::Arc::from(crate::feeds::selected(store)), sender);
     let mut outstanding = 0;
     let stale = stale_daily(store, provider, instruments);
     for (rank, instrument) in stale.iter().take(MAX_REFRESH).enumerate() {
@@ -629,6 +635,10 @@ impl Live for Rc<crate::ui::Window> {
 
     fn symbols(&self) -> Option<Rc<SearchIndex>> {
         crate::ui::Window::symbols(self)
+    }
+
+    fn streaming(&self) -> Vec<crate::live::Report> {
+        crate::ui::Window::streaming(self)
     }
 }
 

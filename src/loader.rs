@@ -211,8 +211,11 @@ impl Loader {
     /// these per process, chosen at runtime: making the queue generic over
     /// it bought a devirtualised `pacing()` on the slowest path in the app —
     /// one that ends in an HTTP request — and in exchange compiled a second
-    /// copy of the whole loader for every feed that exists.
-    pub fn new(provider: Box<dyn Provider>, sender: async_channel::Sender<Response>) -> Loader {
+    /// copy of the whole loader for every feed that exists. Shared rather
+    /// than owned, because the window holds the same one: a provider that
+    /// streams keeps its connection's state behind it, and two instances
+    /// would be two connections.
+    pub fn new(provider: Arc<dyn Provider>, sender: async_channel::Sender<Response>) -> Loader {
         let inner = Arc::new(Inner {
             queue: Mutex::new(Queue {
                 jobs: Vec::new(),

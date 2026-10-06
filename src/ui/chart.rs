@@ -764,6 +764,26 @@ impl ChartView {
         self.redraw();
     }
 
+    /// Put live bars into the series in place: each replaces the bar with
+    /// its timestamp or joins the end, and nothing else about the chart
+    /// moves. A view anchored to the right edge follows a new bar on its
+    /// own, because the anchor is a fact about the series' end rather than
+    /// an index; a view panned into history stays where it is.
+    ///
+    /// A bar arriving is also proof the feed is alive, so whatever the
+    /// corner was saying about the last fetch stops being true.
+    pub fn apply_tail(&self, tail: &[Bar]) {
+        {
+            let mut state = self.state.borrow_mut();
+            for bar in tail {
+                omacharts_engine::stream::upsert(&mut state.bars, *bar);
+            }
+            state.trouble = None;
+            state.loading = false;
+        }
+        self.redraw();
+    }
+
     /// Show or hide the gridlines. The axes and their labels stay: without
     /// them a chart is a shape with no scale.
     pub fn set_show_grid(&self, show: bool) {
@@ -892,6 +912,14 @@ impl ChartView {
 
     pub fn bar_count(&self) -> usize {
         self.state.borrow().bars.len()
+    }
+
+    /// Read the series as the chart holds it, without copying it.
+    ///
+    /// `read` must not reach back into the chart: the state is borrowed for
+    /// its duration, and a `set_indicators` from inside it would be a panic.
+    pub fn with_bars<T>(&self, read: impl FnOnce(&[Bar]) -> T) -> T {
+        read(&self.state.borrow().bars)
     }
 
     /// Jump back to the right edge and follow new bars again.
