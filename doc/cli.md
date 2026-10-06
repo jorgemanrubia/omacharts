@@ -761,6 +761,7 @@ story, and adding a manifest would be a second thing to maintain for nothing.
 | `section` | the named groups inside a watchlist |
 | `chartbook` | saved arrangements of charts |
 | `chart` | the charts inside a chartbook |
+| `provider` | the data feed, and signing in to one that needs it |
 | `config` | stored preferences |
 | `cache` | the cached market data |
 | `plugin` | the widget in the Omarchy bar |

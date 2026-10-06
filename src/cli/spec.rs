@@ -966,6 +966,23 @@ mod tests {
     use omacharts_engine::indicators::{LineStyle, MAX_PANE_SHARE, MIN_PANE_SHARE};
     use omacharts_engine::{link, BarStyle, IndicatorKind, Reset, Session, Timeframe};
 
+    /// The group table in `doc/cli.md` is written by hand — it is the one
+    /// part of the documentation this table does not generate, because it
+    /// says what each group is *for* rather than what it accepts. So it can
+    /// fall behind, and it did: the `provider` group was added here and to
+    /// nowhere a reader would look for a list of them.
+    #[test]
+    fn every_group_has_a_row_in_the_documentation() {
+        let doc = include_str!("../../doc/cli.md");
+        for noun in SURFACE {
+            assert!(
+                doc.contains(&format!("| `{}` |", noun.name)),
+                "doc/cli.md has no row for the {:?} group",
+                noun.name
+            );
+        }
+    }
+
     #[test]
     fn the_bar_styles_on_offer_are_the_ones_that_exist() {
         let engine: Vec<&str> = BarStyle::ALL.iter().map(|s| s.key()).collect();
