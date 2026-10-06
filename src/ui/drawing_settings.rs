@@ -60,7 +60,6 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
     // as a tag in the middle of it. The whole picture is the button that
     // opens the choice, and it repaints as a property below changes.
     let following = adw::PreferencesGroup::new();
-    following.set_title(kind.label());
     let shown_preview = gtk::DrawingArea::new();
     shown_preview.set_hexpand(true);
     shown_preview.set_size_request(-1, 112);
@@ -132,12 +131,11 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
     let editor = style_editor(window, kind, drawing.style(&configs_now).clone(), on_style);
     page.add(&editor.group);
 
-    // Who else sees it.
+    // Who else sees it: one row, a little apart from the look.
     let sharing = adw::PreferencesGroup::new();
-    sharing.set_title("Sharing");
+    sharing.set_margin_top(12);
     let scope_row = adw::ComboRow::new();
     scope_row.set_title("Shown on");
-    scope_row.set_subtitle("Other charts of this symbol, by drawing group.");
     let scopes = Scope::all();
     let names: Vec<String> = scopes.iter().map(|s| s.label()).collect();
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
@@ -154,25 +152,11 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
     sharing.add(&scope_row);
     page.add(&sharing);
 
-    // Deleting is the one thing here that cannot be undone by choosing
-    // again, so it sits apart and looks like what it is.
+    // Removing is the chart's business — Delete, or the drawing's menu —
+    // not a button at the bottom of its properties.
     let dialog = adw::Dialog::new();
     dialog.set_title(&format!("{} properties", kind.label()));
     dialog.set_content_width(440);
-    let remove = adw::PreferencesGroup::new();
-    let delete = gtk::Button::with_label("Remove drawing");
-    delete.add_css_class("destructive-action");
-    delete.set_halign(gtk::Align::Start);
-    {
-        let view = view.clone();
-        let dialog = dialog.clone();
-        delete.connect_clicked(move |_| {
-            view.delete_selected();
-            let _ = dialog.close();
-        });
-    }
-    remove.add(&delete);
-    page.add(&remove);
 
     *refresh.borrow_mut() = Some({
         let view = view.clone();
