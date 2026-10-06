@@ -74,7 +74,12 @@ pub fn can_sign_in() -> Result<String, String> {
 /// Blocking, for as long as it takes somebody to find their phone: callers
 /// run it on a thread of its own and show `log` as it arrives.
 pub fn sign_in(log: impl Fn(&str) + Send + Sync + 'static) -> Result<(), String> {
-    tos_market::sign_in(log).map_err(|error| error.to_string())
+    // Prefixed rather than classified. What comes back is the client's own
+    // sentence about a browser or a socket, which on its own reads like
+    // something the app did wrong; saying which act it belongs to is worth
+    // the four words, and guessing at the cause from the text of an error
+    // is how this feed used to report every failure as the wrong one.
+    tos_market::sign_in(log).map_err(|error| format!("the sign-in did not finish: {error}"))
 }
 
 /// Forgets the saved session. The browser profile stays, so signing in
