@@ -61,6 +61,17 @@ struct Requested {
     bucket: Option<i64>,
 }
 
+/// How thinkorswim is offered.
+///
+/// "Your own" is the point of the summary: these are the account's own
+/// charts, which is why they are real time and why there is a sign-in to do.
+pub const LISTED: crate::providers::Listed = crate::providers::Listed {
+    id: "tos",
+    label: "thinkorswim",
+    summary: "Real time, from your own Schwab paperMoney session",
+    needs_sign_in: true,
+};
+
 pub struct Tos;
 
 impl Default for Tos {

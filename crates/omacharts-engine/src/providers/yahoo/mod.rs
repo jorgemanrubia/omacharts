@@ -126,6 +126,16 @@ impl Cooldown {
     }
 }
 
+/// How Yahoo is offered. First in [`crate::providers::LISTED`], which is
+/// what makes it the default: no key, no account, nothing to set up, and
+/// every instrument type the app knows about.
+pub const LISTED: crate::providers::Listed = crate::providers::Listed {
+    id: "yahoo",
+    label: "Yahoo Finance",
+    summary: "Delayed 10 min for futures, 15 for indexes",
+    needs_sign_in: false,
+};
+
 pub struct Yahoo {
     timeout: Option<Duration>,
     cooldown: Mutex<Cooldown>,
