@@ -148,6 +148,9 @@ struct State {
     /// is the one most recently picked, and what a single-drawing question
     /// is about. Shift with a click adds one or takes one out.
     selected: Vec<usize>,
+    /// What was selected when a marquee began, kept under it: the box adds
+    /// to the selection rather than starting one, since Shift is held.
+    marquee_base: Vec<usize>,
     /// The tool that is armed: the next press on the plot starts a drawing
     /// of this kind. `None` is the usual state, where a press pans.
     tool: Option<DrawingKind>,
@@ -223,6 +226,9 @@ enum Drag {
     /// drawing as it was, so the motion is applied to a fixed starting point
     /// rather than accumulated.
     Grip { index: usize, grip: Grip, origin: Anchor },
+    /// Shift and a press on empty chart: a box dragged out from `from`,
+    /// in pixels, that selects every drawing it touches as it goes.
+    Marquee { from: (f64, f64), to: (f64, f64) },
 }
 
 /// One row of the chart's vertical stack: the price plot, or one indicator's
@@ -670,6 +676,7 @@ impl State {
             price_auto: true,
             drawings: Vec::new(),
             selected: Vec::new(),
+            marquee_base: Vec::new(),
             tool: None,
             placing: None,
             next_config: 1,
@@ -766,6 +773,21 @@ impl State {
             (x, y)
         };
         Projected { kind: drawing.kind, from: point(&drawing.from), to: point(&drawing.to) }
+    }
+
+    /// Every drawing a box in pixels touches, in list order.
+    fn drawings_in(&self, width: f64, height: f64, rect: (f64, f64, f64, f64)) -> Vec<usize> {
+        let (first, visible) = self.slice();
+        if visible == 0 {
+            return Vec::new();
+        }
+        let plan = layout(self, width, height);
+        let Some((low, high)) = price_range(self, &self.bars[first..first + visible]) else {
+            return Vec::new();
+        };
+        (0..self.drawings.len())
+            .filter(|i| self.project(&plan, low, high, &self.drawings[*i]).touches(rect))
+            .collect()
     }
 
     /// The drawing under a pixel, topmost first, and which part of it.
@@ -1887,9 +1909,15 @@ impl ChartView {
         let area = self.area.clone();
         let view = Rc::downgrade(self);
         let on_price_auto = self.on_price_auto.clone();
+        let pointer = self.pointer.clone();
         drag.connect_drag_begin(move |gesture, x, y| {
         let (width, height) = (area.width() as f64, area.height() as f64);
-        let shift = gesture.current_event_state().contains(gtk::gdk::ModifierType::SHIFT_MASK);
+        // Shift or Ctrl: the selection modifier, either one. Design tools
+        // say Shift and charting tools say Ctrl, and a hand that learned
+        // one should not have to learn the other.
+        let modifiers = gesture.current_event_state();
+        let shift = modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK)
+            || modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK);
         // A drawing being laid down takes the press before anything
         // else: the second press is the drawing's second anchor.
         let finishing = {
@@ -1975,7 +2003,15 @@ impl ChartView {
                     area.queue_draw();
                     return;
                 }
-                None if shift => {}
+                // Shift on empty chart: a box, which takes what it touches
+                // as it grows and adds it to what was already selected.
+                None if shift => {
+                    s.marquee_base = s.selected.clone();
+                    s.drag = Some(Drag::Marquee { from: (x, y), to: (x, y) });
+                    drop(s);
+                    pointer.queue_draw();
+                    return;
+                }
                 None => {
                     if !s.selected.is_empty() {
                         s.selected.clear();
@@ -2030,6 +2066,23 @@ impl ChartView {
                     // The drawing in hand is on the pointer layer; the chart
                     // underneath has not changed.
                     pointer.queue_draw();
+                    return;
+                }
+                Drag::Marquee { from, .. } => {
+                    let Some((x, y)) = hand else { return };
+                    s.drag = Some(Drag::Marquee { from, to: (x, y) });
+                    let (left, right) = if from.0 <= x { (from.0, x) } else { (x, from.0) };
+                    let (top, bottom) = if from.1 <= y { (from.1, y) } else { (y, from.1) };
+                    let touched = s.drawings_in(width, height, (left, top, right - left, bottom - top));
+                    let mut selected = s.marquee_base.clone();
+                    selected.extend(touched.into_iter().filter(|i| !s.marquee_base.contains(i)));
+                    let changed = selected != s.selected;
+                    s.selected = selected;
+                    drop(s);
+                    pointer.queue_draw();
+                    if changed {
+                        area.queue_draw();
+                    }
                     return;
                 }
                 Drag::Grip { index, grip, origin } => {
@@ -2124,7 +2177,7 @@ impl ChartView {
                         .clamp(MIN_VISIBLE, MAX_VISIBLE);
                     s.visible = next;
                 }
-                Drag::Place { .. } | Drag::Grip { .. } => unreachable!("handled above"),
+                Drag::Place { .. } | Drag::Grip { .. } | Drag::Marquee { .. } => unreachable!("handled above"),
             }
             drop(s);
             redraw(&area, &pointer);
@@ -2141,6 +2194,14 @@ impl ChartView {
                 // Pressed and released in place: the first anchor is down
                 // and the second waits for the next press.
                 Some(Drag::Place { moved: false }) => return,
+                // The box is gone with the drag; what it took stays taken.
+                Some(Drag::Marquee { .. }) => {
+                    state.borrow_mut().marquee_base.clear();
+                    if let Some(view) = view.upgrade() {
+                        view.pointer.queue_draw();
+                    }
+                    return;
+                }
                 Some(Drag::Place { moved: true }) => {
                     if let Some(view) = view.upgrade() {
                         view.commit_placing();
@@ -2478,6 +2539,23 @@ fn draw_pointer(cr: &cairo::Context, width: f64, height: f64, state: &State) {
         cr.rectangle(plan.plot_x, plan.price_y, plan.plot_w, plan.price_h);
         cr.clip();
         draw_drawing(cr, state, &state.project(&plan, low, high, placing), placing, true);
+        cr.restore().ok();
+    }
+
+    // The selection box, while a hand drags one out.
+    if let Some(Drag::Marquee { from, to }) = state.drag {
+        let (x, y) = (from.0.min(to.0), from.1.min(to.1));
+        let (w, h) = ((from.0 - to.0).abs(), (from.1 - to.1).abs());
+        cr.save().ok();
+        cr.rectangle(plan.plot_x, plan.price_y, plan.plot_w, plan.price_h);
+        cr.clip();
+        colors::set_source_alpha(cr, &state.theme.ui.accent, 0.12);
+        cr.rectangle(x, y, w, h);
+        let _ = cr.fill();
+        colors::set_source_alpha(cr, &state.theme.ui.accent, 0.7);
+        cr.set_line_width(1.0);
+        cr.rectangle(x.round() + 0.5, y.round() + 0.5, w.round(), h.round());
+        let _ = cr.stroke();
         cr.restore().ok();
     }
 

@@ -884,6 +884,22 @@ impl Projected {
         on_body.then_some(Grip::Body)
     }
 
+    /// Whether any of the drawing lies inside a box: the box a hand drags
+    /// out to select what it touches. A line counts when the segment
+    /// crosses the box, not when its own bounding box does, so a long
+    /// diagonal is not taken by a box in the empty corner beside it.
+    pub fn touches(&self, (left, top, width, height): (f64, f64, f64, f64)) -> bool {
+        let (right, bottom) = (left + width, top + height);
+        match self.kind {
+            Kind::Line => segment_meets_box(self.from, self.to, left, top, right, bottom),
+            Kind::Rect => {
+                let (l, r) = ordered(self.from.0, self.to.0);
+                let (t, b) = ordered(self.from.1, self.to.1);
+                l <= right && r >= left && t <= bottom && b >= top
+            }
+        }
+    }
+
     /// The box's corners as (left, top, width, height), for drawing it.
     pub fn bounds(&self) -> (f64, f64, f64, f64) {
         let (left, right) = ordered(self.from.0, self.to.0);
@@ -894,6 +910,35 @@ impl Projected {
 
 fn ordered(a: f64, b: f64) -> (f64, f64) {
     if a <= b { (a, b) } else { (b, a) }
+}
+
+/// Whether the segment `a`–`b` passes through the box, by clipping it to
+/// the box's four edges (Liang–Barsky): what is left of the segment after
+/// the four cuts is inside, and nothing left means it missed.
+fn segment_meets_box(a: (f64, f64), b: (f64, f64), left: f64, top: f64, right: f64, bottom: f64) -> bool {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let (mut enter, mut leave) = (0.0f64, 1.0f64);
+    for (p, q) in [(-dx, a.0 - left), (dx, right - a.0), (-dy, a.1 - top), (dy, bottom - a.1)] {
+        if p == 0.0 {
+            if q < 0.0 {
+                return false;
+            }
+            continue;
+        }
+        let t = q / p;
+        if p < 0.0 {
+            if t > leave {
+                return false;
+            }
+            enter = enter.max(t);
+        } else {
+            if t < enter {
+                return false;
+            }
+            leave = leave.min(t);
+        }
+    }
+    true
 }
 
 fn distance(a: (f64, f64), b: (f64, f64)) -> f64 {
@@ -914,6 +959,24 @@ pub fn distance_to_segment(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
 #[cfg(test)]
 mod shape_tests {
     use super::*;
+
+    /// A box takes a line it crosses and leaves one whose bounding box it
+    /// only shares a corner of; a rectangle counts as soon as they overlap.
+    #[test]
+    fn a_box_takes_what_it_touches() {
+        let diagonal = Projected { kind: Kind::Line, from: (0.0, 0.0), to: (100.0, 100.0) };
+        assert!(diagonal.touches((40.0, 40.0, 20.0, 20.0)));
+        assert!(diagonal.touches((90.0, 50.0, 30.0, 60.0)));
+        assert!(!diagonal.touches((60.0, 0.0, 30.0, 30.0)));
+        assert!(!diagonal.touches((120.0, 120.0, 10.0, 10.0)));
+        let flat = Projected { kind: Kind::Line, from: (10.0, 50.0), to: (90.0, 50.0) };
+        assert!(flat.touches((0.0, 40.0, 20.0, 20.0)));
+        assert!(!flat.touches((0.0, 60.0, 200.0, 20.0)));
+        let rect = Projected { kind: Kind::Rect, from: (10.0, 10.0), to: (50.0, 50.0) };
+        assert!(rect.touches((45.0, 45.0, 20.0, 20.0)));
+        assert!(rect.touches((20.0, 20.0, 5.0, 5.0)));
+        assert!(!rect.touches((51.0, 0.0, 20.0, 20.0)));
+    }
 
     fn line() -> Projected {
         Projected { kind: Kind::Line, from: (100.0, 100.0), to: (300.0, 200.0) }

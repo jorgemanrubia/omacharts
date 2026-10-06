@@ -440,6 +440,12 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
 .drawing-config-edited { font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 9px; background: @accent_bg_color; color: @accent_fg_color; }
 .drawing-config-row-edited { box-shadow: inset 3px 0 0 @accent_bg_color; }
 .drawing-config-picker { padding: 0; }
+/* A configuration row in the drawing's menu: a menu item's own measure,
+   with a picture where the glyph would be. */
+.drawing-config-row { padding: 4px 10px; min-height: 0; border-radius: 6px; }
+/* The Custom tile is the one in use: a button, so it is not greyed, but
+   nothing happens on it. */
+.drawing-preview-chosen { opacity: 1; }
 .drawing-preview-hover { border-radius: 6px; transition: background 120ms ease-out, box-shadow 120ms ease-out; }
 .drawing-config-picker:hover .drawing-preview-hover { background: alpha(@accent_bg_color, 0.14); box-shadow: inset 0 0 0 2px @accent_bg_color; }
 .drawing-config-picker:active .drawing-preview-hover, .drawing-config-picker:checked .drawing-preview-hover { background: alpha(@accent_bg_color, 0.22); }

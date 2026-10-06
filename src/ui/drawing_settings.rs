@@ -35,6 +35,9 @@ use crate::ui::window::Window;
 /// The size of a configuration's preview tile.
 const PREVIEW_W: i32 = 84;
 const PREVIEW_H: i32 = 44;
+/// The swatch on a menu row.
+const SWATCH_W: i32 = 30;
+const SWATCH_H: i32 = 12;
 /// How strong the candles under a preview are: ground, not subject.
 const CANDLE_ALPHA: f64 = 0.5;
 
@@ -829,11 +832,51 @@ fn configuration_grid(
         let preview = preview_tile(theme, kind, custom);
         preview.add_css_class("drawing-preview-current");
         let cell = tile(preview, "Custom", "This drawing's own look, as it is now");
-        cell.set_sensitive(false);
+        // Picking it changes nothing, but it is not greyed: greyed reads as
+        // unavailable, and this is the one that is in use.
+        cell.add_css_class("drawing-preview-chosen");
         grid.attach(&cell, 0, 3, 1, 1);
     }
     content.append(&grid);
     content
+}
+
+/// The look alone, for a menu row: a stroke of the line, or the box with
+/// its fill and edge, at a size that keeps the row a row. No candles — a
+/// menu is read, not studied.
+pub fn swatch(theme: &Theme, kind: Kind, style: &Style) -> gtk::DrawingArea {
+    let area = gtk::DrawingArea::new();
+    area.set_size_request(SWATCH_W, SWATCH_H);
+    area.set_valign(gtk::Align::Center);
+    let theme = theme.clone();
+    let style = style.clone();
+    area.set_draw_func(move |_, cr, w, h| {
+        let (w, h) = (w as f64, h as f64);
+        let colour = style.colour.hex(&theme);
+        match kind {
+            Kind::Line => {
+                colors::set_source(cr, &colour);
+                cr.set_line_width(style.width.clamp(1.0, 4.0));
+                cr.set_line_cap(gtk::cairo::LineCap::Round);
+                let y = (h / 2.0).round() + 0.5;
+                cr.move_to(2.0, y);
+                cr.line_to(w - 2.0, y);
+                let _ = cr.stroke();
+            }
+            Kind::Rect => {
+                colors::set_source_alpha(cr, &style.fill.hex(&theme), style.alpha.max(0.25));
+                cr.rectangle(1.0, 1.0, w - 2.0, h - 2.0);
+                let _ = cr.fill();
+                if style.border {
+                    colors::set_source_alpha(cr, &colour, 0.8);
+                    cr.set_line_width(1.0);
+                    cr.rectangle(1.5, 1.5, w - 3.0, h - 3.0);
+                    let _ = cr.stroke();
+                }
+            }
+        }
+    });
+    area
 }
 
 /// A small chart with the drawing on it: three candles in the theme's own

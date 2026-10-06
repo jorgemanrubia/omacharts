@@ -199,7 +199,8 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+Shift+↑ ↓", "Bring the selected drawing to the front, or send it to the back"),
             ("Ctrl+Z · Ctrl+Y", "Undo and redo, on this chart's drawings"),
             ("Click a drawing", "Select it; drag an end, or the whole thing"),
-            ("Shift+click a drawing", "Add it to the selection, or take it out"),
+            ("Shift+click a drawing", "Add it to the selection, or take it out; Ctrl does the same"),
+            ("Shift+drag the chart", "Select every drawing the box touches"),
             ("Right-click a drawing", "Its colour and thickness, or delete it"),
             ("Delete", "Delete the selected drawings"),
             ("Esc", "Put the tool down, or let go of the selection"),
@@ -1107,7 +1108,23 @@ fn group_state(group: LinkGroup) -> glib::Variant {
 }
 
 fn popup_menu(model: &gio::Menu, over: &impl IsA<gtk::Widget>, x: f64, y: f64) {
+    popup_menu_with(model, over, x, y, Vec::new());
+}
+
+/// The same, with widgets of our own standing in for the items that name
+/// them in a `custom` attribute: a row that shows something rather than
+/// says it.
+fn popup_menu_with(
+    model: &gio::Menu,
+    over: &impl IsA<gtk::Widget>,
+    x: f64,
+    y: f64,
+    children: Vec<(String, gtk::Widget)>,
+) {
     let popover = gtk::PopoverMenu::from_model_full(model, gtk::PopoverMenuFlags::NESTED);
+    for (id, child) in &children {
+        popover.add_child(child, id);
+    }
     popover.set_parent(over);
     popover.set_has_arrow(false);
     popover.set_halign(gtk::Align::Start);
@@ -5662,15 +5679,18 @@ impl Window {
         shortcuts::append_with_key(&edit, "Properties…", "chart.drawing-settings", "Return");
         // The nine configurations, as a radio: the one in use is marked, and
         // a drawing whose properties were changed by hand marks none.
+        // Each row shows the configuration rather than naming it: a swatch
+        // of its colour, the number, the key, and a mark on the one in use.
+        // Our own rows, since a menu item cannot carry a picture.
         let configs = gio::Menu::new();
+        let mut rows: Vec<(String, gtk::Widget)> = Vec::new();
+        let theme = self.theme();
+        let all = self.drawing_configurations();
         for n in 1..=9u8 {
             let item = gio::MenuItem::new(Some(&format!("Configuration {n}")), None);
-            item.set_action_and_target_value(
-                Some("chart.drawing-config"),
-                Some(&(n as i32).to_variant()),
-            );
-            item.set_attribute_value("accel", Some(&format!("<Alt>{n}").to_variant()));
+            item.set_attribute_value("custom", Some(&format!("config-{n}").to_variant()));
             configs.append_item(&item);
+            rows.push((format!("config-{n}"), self.configuration_row(&theme, &all, drawing.kind, n, drawing.config == Some(n))));
         }
         edit.append_submenu(Some("Configuration"), &configs);
         // Who else sees it, as a radio over the scopes, the way the dialog
@@ -5703,7 +5723,46 @@ impl Window {
 
         let area = pane.view.area.clone();
         let (wx, wy) = area.translate_coordinates(&self.window, x, y).unwrap_or((x, y));
-        popup_menu(&menu, &self.window, wx, wy);
+        popup_menu_with(&menu, &self.window, wx, wy, rows);
+    }
+
+    /// One row of the Configuration submenu: swatch, name, the key, and a
+    /// mark when it is the one the drawing follows. A flat button on the
+    /// action, which closes the menu itself since a widget of our own
+    /// does not.
+    fn configuration_row(
+        &self,
+        theme: &omacharts_engine::Theme,
+        all: &omacharts_engine::Configurations,
+        kind: omacharts_engine::DrawingKind,
+        n: u8,
+        current: bool,
+    ) -> gtk::Widget {
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        row.append(&crate::ui::drawing_settings::swatch(theme, kind, all.of(kind, n)));
+        let name = gtk::Label::new(Some(&format!("Configuration {n}")));
+        name.set_xalign(0.0);
+        name.set_hexpand(true);
+        row.append(&name);
+        let key = gtk::Label::new(Some(&format!("Alt+{n}")));
+        key.add_css_class("dim-label");
+        key.add_css_class("caption");
+        row.append(&key);
+        let mark = gtk::Label::new(Some(if current { "✓" } else { "" }));
+        mark.set_width_chars(1);
+        row.append(&mark);
+        let button = gtk::Button::new();
+        button.add_css_class("flat");
+        button.add_css_class("drawing-config-row");
+        button.set_child(Some(&row));
+        button.set_action_name(Some("chart.drawing-config"));
+        button.set_action_target_value(Some(&(n as i32).to_variant()));
+        button.connect_clicked(|button| {
+            if let Some(popover) = button.ancestor(gtk::Popover::static_type()).and_downcast::<gtk::Popover>() {
+                popover.popdown();
+            }
+        });
+        button.upcast()
     }
 
     fn chart_menu(self: &Rc<Self>, x: f64, y: f64) {

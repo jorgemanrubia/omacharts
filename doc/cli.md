@@ -480,9 +480,11 @@ id names a drawing wherever it lives. `list` names the symbol and the sharing;
 
 By hand: Alt+D shows the tools, Alt+L and Alt+R arm them (Escape is the
 pointer again), a press and a second press (or one press-and-drag) place a
-drawing, a click selects one (Shift+click adds or removes another; what is
-done to the selection is done to all of them, properties included when they
-are all one kind), a drag moves a corner or the whole thing, the arrow keys
+drawing, a click selects one (Shift+click or Ctrl+click adds or removes
+another, and Shift+drag on empty chart takes everything the box touches; what
+is done to
+the selection is done to all of them, properties included when they are all
+one kind), a drag moves a corner or the whole thing, the arrow keys
 nudge it (Ctrl+Shift+↑/↓ bring it to the front or send it to the back),
 Delete removes it,
 Enter or a right-click opens its properties, Alt+1 to Alt+9 is configuration
