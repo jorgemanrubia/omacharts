@@ -4540,6 +4540,7 @@ impl Window {
     fn show_in(self: &Rc<Self>, pane: &Rc<ChartPane>, instrument: Instrument) {
         let timeframe = pane.timeframe.get();
         let Some(symbol) = self.provider.symbol_for(&instrument) else {
+            self.show_unserved(pane, instrument);
             return;
         };
         let key = format!("{}:{symbol}", self.provider.id());
@@ -4603,6 +4604,45 @@ impl Window {
         if pane.id == self.focused.get() {
             self.prefetch_neighbours(&instrument, timeframe);
         }
+    }
+
+    /// Chart an instrument the current feed has no name for.
+    ///
+    /// Only some feeds serve everything. Yahoo charts every instrument in the
+    /// index; thinkorswim charts US listings and leaves a Taipei or Madrid
+    /// line unmapped, and a watchlist holds whatever somebody put in it.
+    ///
+    /// So this is a real outcome rather than an impossible one, and it used
+    /// to return early — before `pane.instrument` was set, which meant
+    /// clicking such a symbol did nothing whatsoever: no bars, no message,
+    /// the chart you were already looking at still on screen, and a rail
+    /// selection pointing at something the chart was not showing. Nothing
+    /// said no, so it read as a click that had been dropped.
+    ///
+    /// Now the chart moves to the symbol like any other and says what is
+    /// true: this feed cannot chart it. Nothing is fetched, because there is
+    /// nothing to ask for.
+    fn show_unserved(self: &Rc<Self>, pane: &Rc<ChartPane>, instrument: Instrument) {
+        let timeframe = pane.timeframe.get();
+
+        *pane.instrument.borrow_mut() = Some(instrument.clone());
+        *pane.pending.borrow_mut() = None;
+        pane.write_readout();
+        if pane.id == self.focused.get() {
+            self.store.set_setting(LAST_SYMBOL, &instrument.symbol);
+            self.store
+                .set_setting(LAST_SUFFIX, instrument.suffix.as_deref().unwrap_or(""));
+            if let Some(watchlist) = self.watchlist.borrow().as_ref() {
+                watchlist.highlight(&instrument);
+            }
+        }
+
+        // No bars, and none coming: the previous symbol's must go, or the
+        // chart would be drawing one instrument's prices under another's
+        // name.
+        pane.view.set_series(instrument, timeframe, Vec::new());
+        pane.view.set_loading(false);
+        pane.view.set_trouble(Some(FetchFailure::Unserved));
     }
 
     /// Fetch ahead around the selection, nearest first.

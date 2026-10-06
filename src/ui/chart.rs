@@ -2550,6 +2550,14 @@ mod tests {
     #[test]
     fn a_retry_in_flight_outranks_the_failure_it_is_retrying() {
         assert_eq!(placeholder_text(true, true, Some(FetchFailure::Unreachable)), "Loading…");
+        // A symbol the chosen feed has no name for. It used to be a click
+        // that did nothing at all — the chart kept the previous symbol and
+        // said nothing — so the one thing this must not be is silence or
+        // "No data for this symbol", which blames the ticker.
+        let unserved = placeholder_text(true, false, Some(FetchFailure::Unserved));
+        assert_eq!(unserved, FetchFailure::Unserved.message());
+        assert!(unserved.contains("cannot chart this symbol"), "{unserved}");
+        assert_ne!(unserved, FetchFailure::NoSuchSymbol.message());
     }
 
     #[test]

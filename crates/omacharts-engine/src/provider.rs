@@ -90,6 +90,11 @@ pub enum FetchFailure {
     /// The feed needs signing in to and nobody has. The one failure here with
     /// something the user can do about it.
     NeedsSignIn,
+    /// This feed has no name for this instrument at all, so nothing was
+    /// asked. Apart from [`FetchFailure::NoSuchSymbol`], which is a provider
+    /// that was asked and said no: this one is known before any request, and
+    /// the fix is a different feed rather than a different spelling.
+    Unserved,
 }
 
 impl FetchFailure {
@@ -124,6 +129,9 @@ impl FetchFailure {
             FetchFailure::LocalCache => "Could not open the local price cache.",
             FetchFailure::NeedsSignIn => {
                 "This data provider is not signed in. Open Preferences → Market data → Provider."
+            }
+            FetchFailure::Unserved => {
+                "This data provider cannot chart this symbol. Another one may be able to."
             }
         }
     }
@@ -351,6 +359,7 @@ mod tests {
             FetchFailure::NoSuchSymbol,
             FetchFailure::LocalCache,
             FetchFailure::NeedsSignIn,
+            FetchFailure::Unserved,
         ];
         for failure in failures {
             assert_ne!(failure.message(), "No data for this symbol");
@@ -411,6 +420,7 @@ mod tests {
             FetchFailure::NoSuchSymbol,
             FetchFailure::LocalCache,
             FetchFailure::NeedsSignIn,
+            FetchFailure::Unserved,
         ]
         .iter()
         .map(|f| f.message())
