@@ -38,6 +38,10 @@ use gtk::glib;
 const PRICE_AXIS_W: f64 = 64.0;
 const TIME_AXIS_H: f64 = 24.0;
 const PAD: f64 = 10.0;
+/// How far past the last bar the chart can be panned: empty columns on the
+/// right, so there is room to move things about at the live edge. Fixed for
+/// now; a setting one day, if anyone wants a different amount.
+const OVERHANG_PX: f64 = 500.0;
 /// Space between two rows of the stack.
 const PANE_GAP: f64 = 6.0;
 /// The least of the chart the price keeps, however many panes are stacked
@@ -116,6 +120,10 @@ struct State {
     /// Pinned to the right edge, so new bars keep the view at "now" until the
     /// user pans away.
     anchored: bool,
+    /// Empty columns past the last bar, at the right edge, while anchored:
+    /// the room a hand dragged open. Kept as new bars arrive, so the margin
+    /// stays what it was set to. Zero at rest.
+    overhang: usize,
     drag: Option<Drag>,
     indicators: Vec<Drawn>,
     bar_style: BarStyle,
@@ -544,6 +552,7 @@ impl State {
             visible: 160,
             pointer: None,
             anchored: true,
+            overhang: 0,
             indicators: Vec::new(),
             bar_style: BarStyle::default(),
             show_grid: true,
@@ -571,16 +580,42 @@ impl State {
         (middle - half, middle + half)
     }
 
-    /// Shift the view by a number of bars. Positive moves forward in time.
-    fn pan_by(&mut self, bars: f64) {
-        let (first, visible) = self.slice();
-        if self.bars.len() <= visible {
+    /// Shift the view by a number of bars. Positive moves forward in time,
+    /// and past the last bar into the empty room on the right, as far as
+    /// `OVERHANG_PX` allows at this zoom — which needs the plot's width.
+    fn pan_by(&mut self, bars: f64, plot_w: f64) {
+        let columns = self.columns();
+        if columns == 0 {
             return;
         }
-        let max_first = self.bars.len() - visible;
-        let next = (first as i64 + bars.round() as i64).clamp(0, max_first as i64) as usize;
-        self.first = next;
-        self.anchored = next >= max_first;
+        let len = self.bars.len() as i64;
+        let (first, _) = self.slice();
+        // The column at the right edge, exclusive: where the view ends.
+        let right = first as i64 + columns as i64 + bars.round() as i64;
+        let right = right.clamp(columns as i64, len + self.max_overhang(plot_w) as i64);
+        self.overhang = (right - len).max(0) as usize;
+        self.first = (right - columns as i64).max(0) as usize;
+        self.anchored = right >= len;
+    }
+
+    /// How many empty columns `OVERHANG_PX` is at this zoom — short of the
+    /// whole view, so a bar always stays on screen.
+    fn max_overhang(&self, plot_w: f64) -> usize {
+        let columns = self.columns();
+        if columns == 0 {
+            return 0;
+        }
+        let bar_w = plot_w / columns as f64;
+        ((OVERHANG_PX / bar_w).floor() as usize).min(columns - 1)
+    }
+
+    /// Columns across the plot: the bars in view and the empty ones past
+    /// the last. What a bar's width is measured against.
+    fn columns(&self) -> usize {
+        if self.bars.is_empty() {
+            return 0;
+        }
+        self.visible.clamp(MIN_VISIBLE, MAX_VISIBLE).min(self.bars.len())
     }
 
     /// Zoom the time axis about `anchor`, a fraction across the plot.
@@ -608,27 +643,32 @@ impl State {
         self.price_zoom = (self.price_zoom * factor).clamp(MIN_PRICE_ZOOM, MAX_PRICE_ZOOM);
     }
 
-    /// Back to fitting the data, at the live edge.
+    /// Back to fitting the data, at the live edge, with no room past it.
     fn reset_view(&mut self) {
         self.price_auto = true;
         self.price_zoom = 1.0;
         self.price_offset = 0.0;
         self.visible = 160;
         self.anchored = true;
+        self.overhang = 0;
     }
 
-    /// The visible slice, clamped to what we actually have.
+    /// The bars in view: the first, and how many. Fewer than the columns
+    /// across the plot when the view hangs past the last bar.
     fn slice(&self) -> (usize, usize) {
-        if self.bars.is_empty() {
+        let columns = self.columns();
+        if columns == 0 {
             return (0, 0);
         }
-        let visible = self.visible.clamp(MIN_VISIBLE, MAX_VISIBLE).min(self.bars.len());
-        let first = if self.anchored {
-            self.bars.len() - visible
+        let len = self.bars.len();
+        if self.anchored {
+            let overhang = self.overhang.min(columns - 1);
+            let first = (len + overhang).saturating_sub(columns);
+            (first, len - first)
         } else {
-            self.first.min(self.bars.len() - visible)
-        };
-        (first, visible)
+            let first = self.first.min(len - columns);
+            (first, columns)
+        }
     }
 }
 
@@ -758,6 +798,7 @@ impl ChartView {
         state.timeframe = timeframe;
         if changed {
             state.anchored = true;
+            state.overhang = 0;
             state.visible = 160;
         }
         drop(state);
@@ -896,7 +937,10 @@ impl ChartView {
 
     /// Jump back to the right edge and follow new bars again.
     pub fn go_to_latest(&self) {
-        self.state.borrow_mut().anchored = true;
+        let mut state = self.state.borrow_mut();
+        state.anchored = true;
+        state.overhang = 0;
+        drop(state);
         self.redraw();
     }
 
@@ -906,7 +950,8 @@ impl ChartView {
     }
 
     pub fn pan_bars(&self, delta: i64) {
-        self.state.borrow_mut().pan_by(delta as f64);
+        let plot_w = plot_width(&self.area);
+        self.state.borrow_mut().pan_by(delta as f64, plot_w);
         self.redraw();
     }
 
@@ -1017,7 +1062,7 @@ impl ChartView {
 
             // A trackpad's horizontal axis always pans, whatever is held.
             if dx != 0.0 && dy == 0.0 {
-                s.pan_by(dx * 2.0);
+                s.pan_by(dx * 2.0, plot_width(&area));
                 drop(s);
                 redraw(&area, &pointer);
                 return glib::Propagation::Stop;
@@ -1029,8 +1074,8 @@ impl ChartView {
                     s.scale_price(2f64.powf(dy / 4.0));
                 }
                 (Region::Plot, true, _) => {
-                    let visible = s.slice().1 as f64;
-                    s.pan_by(dy * visible / 20.0);
+                    let columns = s.columns() as f64;
+                    s.pan_by(dy * columns / 20.0, plot_width(&area));
                 }
                 _ => {
                     let plot_w = (width - PRICE_AXIS_W - PAD).max(1.0);
@@ -1143,15 +1188,14 @@ impl ChartView {
 
             match drag {
                 Drag::Pan { first, offset } => {
-                    let (_, visible) = s.slice();
-                    if s.bars.len() > visible {
-                        let bar_w = plot_w / visible as f64;
-                        // Dragging right reveals older bars.
+                    let columns = s.columns();
+                    if columns > 0 {
+                        let bar_w = plot_w / columns as f64;
+                        // Dragging right reveals older bars; dragging left
+                        // past the last one opens room on the right.
                         let shift = -(offset_x / bar_w).round() as i64;
-                        let max_first = s.bars.len() - visible;
-                        let next = (first as i64 + shift).clamp(0, max_first as i64) as usize;
-                        s.first = next;
-                        s.anchored = next >= max_first;
+                        let (now, _) = s.slice();
+                        s.pan_by((first as i64 - now as i64 + shift) as f64, plot_w);
                     }
                     // Vertical panning only means something once the scale is
                     // no longer fitting itself to the data. The content follows
@@ -1235,6 +1279,7 @@ impl ChartView {
                 Region::TimeAxis => {
                     s.visible = 160;
                     s.anchored = true;
+                    s.overhang = 0;
                 }
                 // Double-clicking the chart itself does nothing, the same as
                 // everywhere else. Resetting is Alt+R or the axis menu.
@@ -1376,8 +1421,11 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
     let (plot_x, plot_w, price_y, price_h) = (plan.plot_x, plan.plot_w, plan.price_y, plan.price_h);
 
     // What will actually be drawn: the visible bars themselves at any normal
-    // zoom, and one aggregate per pixel column past that.
-    let columns = Columns::of(bars, first, visible, plot_x, plot_w);
+    // zoom, and one aggregate per pixel column past that. They take the
+    // left of the plot, leaving whatever room was dragged open past the
+    // last bar empty on the right.
+    let bars_w = plot_w * visible as f64 / state.columns().max(1) as f64;
+    let columns = Columns::of(bars, first, visible, plot_x, bars_w);
 
     let mut max_volume: f64 = 0.0;
     for b in columns.bars.iter() {
@@ -1469,7 +1517,7 @@ fn draw_pointer(cr: &cairo::Context, width: f64, height: f64, state: &State) {
     let plan = layout(state, width, height);
     let Some((low, high)) = price_range(state, bars) else { return };
     let to_y = |price: f64| plan.price_y + plan.price_h * (high - price) / (high - low);
-    let bar_w = plan.plot_w / visible as f64;
+    let bar_w = plan.plot_w / state.columns().max(1) as f64;
 
     // The way around and out of a strip, offered only while the pointer is in
     // it: four panes each wearing permanent buttons is a dozen things
@@ -2326,6 +2374,11 @@ fn band_colour(band: &vwap::BandSeries, drawn: &Drawn, theme: &Theme) -> String 
         .unwrap_or_else(|| drawn.color.clone())
 }
 
+/// The plot's width from the area's: what a bar's width is measured on.
+fn plot_width(area: &gtk::DrawingArea) -> f64 {
+    (area.width() as f64 - PRICE_AXIS_W - PAD).max(1.0)
+}
+
 /// One histogram per period, anchored where its period begins.
 fn draw_profiles(
     cr: &cairo::Context,
@@ -2872,6 +2925,52 @@ mod tests {
 
     /// A chart with a volume strip under it, which is the arrangement that
     /// has corner controls as well as a crosshair.
+    /// Panning past the last bar opens room on the right — as much as
+    /// `OVERHANG_PX` at this zoom, never the whole view — which new bars
+    /// do not close, and which a reset does.
+    #[test]
+    fn the_view_can_hang_past_the_last_bar() {
+        let mut state = charted(400);
+        state.visible = 160;
+        state.anchored = true;
+        let plot_w = 1600.0; // 10px a bar: 500px is 50 columns
+        assert_eq!(state.slice(), (240, 160));
+        assert_eq!(state.columns(), 160);
+        // Forward in time, past the end: the room opens and is capped.
+        state.pan_by(20.0, plot_w);
+        assert_eq!(state.overhang, 20);
+        assert_eq!(state.slice(), (260, 140));
+        assert!(state.anchored);
+        state.pan_by(1000.0, plot_w);
+        assert_eq!(state.overhang, 50);
+        assert_eq!(state.slice(), (290, 110));
+        // Still 160 columns across, so a bar is the same width as before.
+        assert_eq!(state.columns(), 160);
+        // New bars arrive: the margin is kept, and the view follows.
+        state.bars = ramp(410);
+        assert_eq!(state.slice(), (300, 110));
+        assert_eq!(state.overhang, 50);
+        // Back towards history: the room closes before the view moves.
+        state.pan_by(-50.0, plot_w);
+        assert_eq!(state.overhang, 0);
+        assert_eq!(state.slice(), (250, 160));
+        assert!(state.anchored);
+        state.pan_by(-10.0, plot_w);
+        assert_eq!(state.slice(), (240, 160));
+        assert!(!state.anchored);
+        // A reset is the live edge with no room past it.
+        state.pan_by(100.0, plot_w);
+        assert_eq!(state.overhang, 50);
+        state.reset_view();
+        assert_eq!(state.overhang, 0);
+        assert_eq!(state.slice(), (250, 160));
+        // Zoomed far in, the cap is short of the whole view.
+        state.visible = 12;
+        state.pan_by(1000.0, 1600.0);
+        assert_eq!(state.overhang, 3);
+        assert_eq!(state.slice(), (401, 9));
+    }
+
     fn charted(bars: usize) -> State {
         let theme = omacharts_engine::theme::builtin_themes()
             .into_iter()
