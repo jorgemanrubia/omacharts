@@ -246,9 +246,12 @@ impl DrawingBar {
             cr.arc(w - radius - 0.5, h - radius - 0.5, radius, 0.0, std::f64::consts::FRAC_PI_2);
             cr.line_to(0.0, h - 0.5);
             cr.close_path();
-            cr.set_source_rgba(r, g, b, a * 0.10);
+            // Louder when it floats over the chart, where a whisper of
+            // the ink blends into whatever indicator sits beneath it.
+            let floating = area.has_css_class("floating");
+            cr.set_source_rgba(r, g, b, a * if floating { 0.14 } else { 0.10 });
             let _ = cr.fill_preserve();
-            cr.set_source_rgba(r, g, b, a * 0.28);
+            cr.set_source_rgba(r, g, b, a * if floating { 0.5 } else { 0.28 });
             cr.set_line_width(1.0);
             let _ = cr.stroke();
             // The glyph: a panel with its left third filled, the mirror of

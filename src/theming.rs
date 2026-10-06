@@ -432,6 +432,12 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
 .drawing-handle { color: @window_fg_color; opacity: 0.45; transition: opacity 120ms ease-out, color 120ms ease-out; }
 .drawing-handle.open { opacity: 0.9; }
 .drawing-handle:hover { color: @accent_bg_color; opacity: 1; }
+/* Floating over the chart, with no strip to sit in: the window's own
+   ground under it and a shadow, so the frame reads as a frame and not
+   as part of the indicator beneath. */
+.drawing-handle.floating { background: @window_bg_color; border-radius: 0 8px 8px 0; box-shadow: 0 1px 3px alpha(black, 0.35); opacity: 0.7; }
+.drawing-handle.floating.open { opacity: 1; }
+.drawing-handle.floating:hover { opacity: 1; }
 .drawing-tool { padding: 2px; border-radius: 8px; opacity: 0.8; }
 .drawing-tool:hover { opacity: 1; }
 .drawing-tool:checked { opacity: 1; background: alpha(@accent_bg_color, 0.25); box-shadow: inset 0 0 0 1px @accent_bg_color; }

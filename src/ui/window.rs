@@ -1724,6 +1724,10 @@ impl Window {
         // same corner.
         if let Some(bar) = this.drawing_bar.borrow().as_ref() {
             let handle = bar.handle();
+            // Over the chart rather than in the strip: it wears the
+            // window's own ground and a shadow, so it reads as a tab on
+            // the frame and not a mark on the chart.
+            handle.add_css_class("floating");
             handle.set_margin_start(0);
             handle.set_margin_bottom(8);
             handle.set_visible(!this.book_strip.is_visible());
