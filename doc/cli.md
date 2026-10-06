@@ -114,6 +114,7 @@ Every indicator the app has, with every parameter it exposes:
 | `sma`, `ema` | `--period` |
 | `rsi` | `--period`, `--overbought`, `--oversold`, `--height` |
 | `atr` | `--period`, `--height` |
+| `stochastic` | `--period` (%K length), `--k-smooth`, `--d-period`, `--overbought`, `--oversold`, `--height`, `--d-color` |
 | `volume` | `--height` |
 | `vwap` | `--anchor`, `--bands`, `--band-alpha` |
 | `volume_profile` | `--anchor`, `--rows` (a number or `auto`), `--value-area`, `--poc-color` |
@@ -132,6 +133,7 @@ Colours come in two kinds, and the difference matters:
 omacharts chart indicator add vwap --anchor month --bands 1,2 --band-alpha 0.3
 omacharts chart indicator add volume_profile --rows auto --color Violet --poc-color Amber
 omacharts chart indicator set rsi --period 21 --overbought 80
+omacharts chart indicator add stochastic --period 14 --k-smooth 3 --d-period 3
 ```
 
 `set` reconfigures one already on the chart. If the chart has two of a kind it
@@ -363,6 +365,47 @@ omacharts: CL is in 2 sections of "Default"; say which with --from id:1 or --fro
 $ omacharts watchlist move Default CL --from Energy --section Majors
 moved CL from Energy to Majors in "Default", at the end
   [exit 0]
+```
+
+## Moving watchlists between machines
+
+`watchlist export` writes every watchlist — sections, their order, the symbols
+in them and the link group each drives — as one JSON file, and `watchlist
+import` brings it in on the other machine. Carry the file however you like:
+Syncthing, a dotfiles repository, `scp`.
+
+```
+$ omacharts watchlist export > watchlists.json
+$ omacharts watchlist export Semis Macro > some.json
+
+$ omacharts watchlist import watchlists.json
+Default: added 2 symbols
+Semis: created, 12 symbols in 3 sections
+Macro: already up to date
+  [exit 0]
+```
+
+**Importing adds and never takes away.** A watchlist is matched by name, and
+the default one to the default one whatever either is called. A match gains
+the sections and symbols it lacks, after what it already has; nothing it holds
+is moved or removed, and a symbol it already has is not added again in another
+section. A watchlist with no match is created, with the link group it drove,
+unless another list here already drives that group. So the same file can be
+imported on every machine, as often as you like, and a second run changes
+nothing.
+
+`--replace` makes each watchlist in the file exactly what it was where it was
+exported — sections, order, link group — for when this machine should match
+rather than combine. Watchlists the file does not name are never touched, by
+either form.
+
+An import lands whole or not at all: a file that is not an export, one made by
+a newer Omacharts, or one naming a list that is ambiguous here changes nothing.
+
+`-` reads the file from stdin, which is how to import over ssh:
+
+```
+$ ssh desktop omacharts watchlist import - < watchlists.json
 ```
 
 ## Failure is unambiguous

@@ -107,15 +107,6 @@ impl Column {
     /// moved on without overriding a choice somebody actually made.
     const PREVIOUS_DEFAULT: [Column; 3] = [Column::Symbol, Column::Change, Column::ChangePct];
 
-    pub fn label(self) -> &'static str {
-        match self {
-            Column::Symbol => "Symbol",
-            Column::Last => "Last",
-            Column::Change => "Chg",
-            Column::ChangePct => "Chg%",
-        }
-    }
-
     pub fn key(self) -> &'static str {
         match self {
             Column::Symbol => "symbol",
@@ -166,10 +157,30 @@ pub fn columns_to_string(columns: &[Column]) -> String {
     columns.iter().map(|c| c.key()).collect::<Vec<_>>().join(",")
 }
 
+/// A key that folds sections.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Fold {
+    Close,
+    Open,
+    Toggle,
+}
+
+/// The section a folding key acts on from this row, and whether it ends up
+/// folded; `None` leaves the key to the list.
+fn fold_target(on: &RowKind, key: Fold) -> Option<(i64, bool)> {
+    match (on, key) {
+        (RowKind::Header { section_id, .. }, Fold::Close) => Some((*section_id, true)),
+        (RowKind::Header { section_id, .. }, Fold::Open) => Some((*section_id, false)),
+        (RowKind::Header { section_id, collapsed }, Fold::Toggle) => Some((*section_id, !collapsed)),
+        (RowKind::Entry { section_id, .. }, Fold::Close) => Some((*section_id, true)),
+        _ => None,
+    }
+}
+
 /// What a row in the list is.
 #[derive(Clone)]
 enum RowKind {
-    Header { section_id: i64 },
+    Header { section_id: i64, collapsed: bool },
     Entry {
         section_id: i64,
         entry: Entry,
@@ -182,7 +193,7 @@ enum RowKind {
 impl RowKind {
     fn section_id(&self) -> i64 {
         match self {
-            RowKind::Header { section_id } | RowKind::Entry { section_id, .. } => *section_id,
+            RowKind::Header { section_id, .. } | RowKind::Entry { section_id, .. } => *section_id,
         }
     }
 }
@@ -205,7 +216,6 @@ fn section_for_new_symbol(sections: &[i64], selected: Option<usize>, root: i64) 
 pub struct Watchlist {
     pub widget: gtk::Box,
     list: gtk::ListBox,
-    header: gtk::Box,
     /// Why the prices are dashes, shown only while they are.
     trouble: gtk::Label,
     store: Rc<Store>,
@@ -262,12 +272,12 @@ impl Watchlist {
         scroller.set_vexpand(true);
         scroller.set_hscrollbar_policy(gtk::PolicyType::Never);
 
-        let header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        header.set_margin_start(12);
-        header.set_margin_end(10);
-        header.set_margin_top(6);
-        header.set_margin_bottom(4);
-        // Stepped down from under the window's corner controls: see `.rail-header`.
+        // The band across the top of the rail: nothing in it but its height,
+        // which `.rail-header` sets. It used to hold the column headings —
+        // "Symbol", "Last", "Chg%" — which said nothing a row did not already
+        // say for itself, so now it only steps down from under the window's
+        // corner controls and stops a few pixels later.
+        let header = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         header.add_css_class("rail-header");
 
         // The step `.rail-header` takes is thirty pixels of nothing, and the
@@ -289,11 +299,11 @@ impl Watchlist {
         link.set_always_show_arrow(false);
         link.set_valign(gtk::Align::Center);
 
-        // Flush with the symbol column: a row sits 6px in (Adwaita's sidebar
-        // row margin), pads 8px, and its box starts another 12px in, so the
-        // tickers begin 26px from the rail's edge. The switcher wears no
-        // horizontal padding (see `.rail-switcher`), so this margin alone
-        // decides where the name's first letter lands.
+        // Over the tickers: a row sits 6px in (Adwaita's sidebar row
+        // margin), pads 8px, and its box starts another 12px in, so a
+        // symbol's first letter lands 26px from the rail's edge, and so
+        // does the name's. The switcher wears no horizontal padding (see
+        // `.rail-switcher`), so this margin alone decides it.
         let named = gtk::Box::new(gtk::Orientation::Horizontal, 2);
         named.set_halign(gtk::Align::Start);
         named.set_valign(gtk::Align::Start);
@@ -342,7 +352,6 @@ impl Watchlist {
         let watchlist = Rc::new(Watchlist {
             widget,
             list,
-            header,
             trouble,
             store,
             index,
@@ -822,6 +831,33 @@ impl Watchlist {
         });
         self.list.add_controller(keys);
 
+        // ← folds and → unfolds the section header the keyboard is on, and
+        // Enter or Space flips it; ← on a symbol folds the section it is in,
+        // the way a tree folds the branch a leaf is on. Caught on the way down,
+        // before the list's own Enter and Space, which would otherwise spend the
+        // key activating a header that does nothing when activated.
+        let keys = gtk::EventControllerKey::new();
+        keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let this = self.clone();
+        keys.connect_key_pressed(move |_, key, _, state| {
+            use gtk::gdk::{Key, ModifierType};
+            let held = ModifierType::CONTROL_MASK
+                | ModifierType::ALT_MASK
+                | ModifierType::SHIFT_MASK
+                | ModifierType::SUPER_MASK;
+            if state.intersects(held) {
+                return glib::Propagation::Proceed;
+            }
+            let fold = match key {
+                Key::Left | Key::KP_Left => Fold::Close,
+                Key::Right | Key::KP_Right => Fold::Open,
+                Key::Return | Key::KP_Enter | Key::space => Fold::Toggle,
+                _ => return glib::Propagation::Proceed,
+            };
+            glib::Propagation::from(this.fold_from_keyboard(fold))
+        });
+        self.list.add_controller(keys);
+
         // Delete takes the highlighted symbol off the rail.
         let keys = gtk::EventControllerKey::new();
         let this = self.clone();
@@ -857,6 +893,48 @@ impl Watchlist {
             glib::Propagation::Stop
         });
         self.widget.add_controller(keys);
+    }
+
+    /// Fold or unfold the section where the keyboard is, and leave the
+    /// keyboard on its header. A rebuild makes every row new, so without that
+    /// the next arrow key would start from nowhere.
+    fn fold_from_keyboard(self: &Rc<Self>, key: Fold) -> bool {
+        // Only when a row itself has the keyboard: a key in the box renaming a
+        // section, or on a button in a header, is that widget's.
+        let Some(row) = self.list.root().and_then(|root| root.focus()).and_downcast::<gtk::ListBoxRow>()
+        else {
+            return false;
+        };
+        let on = self.rows.borrow().get(row.index().max(0) as usize).cloned();
+        let Some((id, folded)) = on.and_then(|on| fold_target(&on, key)) else { return false };
+        // The symbols outside any section have no header to fold to.
+        if self.header_row(id).is_none() {
+            return false;
+        }
+        self.fold_section(id, folded);
+        if let Some(header) = self.header_row(id) {
+            header.grab_focus();
+        }
+        true
+    }
+
+    /// Fold or unfold a section. Nothing is rebuilt when it is already that way.
+    fn fold_section(self: &Rc<Self>, section_id: i64, folded: bool) {
+        let already = self.rows.borrow().iter().any(|kind| match kind {
+            RowKind::Header { section_id: id, collapsed } => *id == section_id && *collapsed == folded,
+            RowKind::Entry { .. } => false,
+        });
+        if !already {
+            self.store.set_section_collapsed(section_id, folded);
+            self.rebuild();
+        }
+    }
+
+    fn header_row(&self, section_id: i64) -> Option<gtk::ListBoxRow> {
+        let at = self.rows.borrow().iter().position(
+            |kind| matches!(kind, RowKind::Header { section_id: id, .. } if *id == section_id),
+        )?;
+        self.list.row_at_index(at as i32)
     }
 
     /// Remove whatever is highlighted, and leave the highlight where it was so
@@ -898,7 +976,7 @@ impl Watchlist {
             .iter()
             .rev()
             .find_map(|kind| match kind {
-                RowKind::Entry { section_id, .. } | RowKind::Header { section_id } => {
+                RowKind::Entry { section_id, .. } | RowKind::Header { section_id, .. } => {
                     Some(*section_id)
                 }
             });
@@ -978,21 +1056,6 @@ impl Watchlist {
 
         self.quiet.set(true);
         clear_rows(&self.list);
-        clear_children(&self.header);
-
-        for column in self.columns.borrow().iter() {
-            let label = gtk::Label::new(Some(column.label()));
-            label.add_css_class("dim-label");
-            label.add_css_class("caption");
-            if *column == Column::Symbol {
-                label.set_xalign(0.0);
-                label.set_hexpand(true);
-            } else {
-                label.set_xalign(1.0);
-                label.set_width_chars(column.width_chars());
-            }
-            self.header.append(&label);
-        }
 
         self.write_switcher();
 
@@ -1000,7 +1063,7 @@ impl Watchlist {
         for section in self.store.watchlist_sections(self.active.get()) {
             if !section.root {
                 self.list.append(&self.section_header(section.id, &section.name, section.collapsed));
-                kinds.push(RowKind::Header { section_id: section.id });
+                kinds.push(RowKind::Header { section_id: section.id, collapsed: section.collapsed });
             }
             for entry in &section.entries {
                 let Some(instrument) = self.index.find(&entry.symbol, entry.suffix.as_deref()) else {
@@ -1052,10 +1115,7 @@ impl Watchlist {
         arrow.add_css_class("flat");
         arrow.set_valign(gtk::Align::Center);
         let this = self.clone();
-        arrow.connect_clicked(move |_| {
-            this.store.set_section_collapsed(id, !collapsed);
-            this.rebuild();
-        });
+        arrow.connect_clicked(move |_| this.fold_section(id, !collapsed));
 
         let label = gtk::Label::new(Some(name));
         label.set_xalign(0.0);
@@ -1113,7 +1173,8 @@ impl Watchlist {
 
         let row = gtk::ListBoxRow::new();
         row.set_child(Some(&header));
-        // Headers are scenery: the arrow keys walk past them.
+        // A header takes the keyboard but never the selection: an arrow key
+        // stops on one without loading anything, and ← → Enter fold it.
         row.set_selectable(false);
         row.set_activatable(false);
 
@@ -2001,17 +2062,6 @@ fn clear_rows(list: &gtk::ListBox) {
     }
 }
 
-/// The same for the column headings. A box takes any child off, popovers
-/// included, so this cannot stick the way a list can — it walks the siblings
-/// to say so once rather than leave two shapes of the same loop side by side.
-fn clear_children(box_: &gtk::Box) {
-    let mut child = box_.first_child();
-    while let Some(widget) = child {
-        child = widget.next_sibling();
-        box_.remove(&widget);
-    }
-}
-
 /// Put a quote into one value label, direction colouring included.
 fn write_cell(
     label: &gtk::Label,
@@ -2326,6 +2376,40 @@ mod tests {
         assert_ne!(one, two, "held by id, so the name may repeat");
 
         assert_eq!(promote_section_in(&store, DEFAULT_WATCHLIST, 9_999, "Nowhere"), None);
+    }
+
+    /// Everything but the folding keys is the list's, so arrows still walk
+    /// the rail and Enter on a symbol is still the symbol's.
+    #[test]
+    fn folding_keys_act_on_the_header_or_the_section_a_symbol_is_in() {
+        let open = RowKind::Header { section_id: 3, collapsed: false };
+        let folded = RowKind::Header { section_id: 3, collapsed: true };
+        assert_eq!(fold_target(&open, Fold::Close), Some((3, true)));
+        assert_eq!(fold_target(&folded, Fold::Open), Some((3, false)));
+        assert_eq!(fold_target(&folded, Fold::Toggle), Some((3, false)));
+        assert_eq!(fold_target(&open, Fold::Toggle), Some((3, true)));
+
+        let symbol = RowKind::Entry {
+            section_id: 3,
+            entry: Entry { symbol: "CL".into(), suffix: None },
+            instrument: Instrument {
+                symbol: "CL".into(),
+                name: "Crude oil".into(),
+                kind: omacharts_engine::InstrumentKind::FutureRoot,
+                suffix: None,
+                currency: None,
+                tier: 1,
+                session_origin: 0,
+                overrides: Vec::new(),
+                exchange: None,
+                popularity: 0,
+                local_name: None,
+            },
+            cells: Vec::new(),
+        };
+        assert_eq!(fold_target(&symbol, Fold::Close), Some((3, true)));
+        assert_eq!(fold_target(&symbol, Fold::Open), None);
+        assert_eq!(fold_target(&symbol, Fold::Toggle), None, "Enter stays the symbol's");
     }
 
     /// A handful of lists, so running off one end should land on the other

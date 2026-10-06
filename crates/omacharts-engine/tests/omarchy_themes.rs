@@ -17,7 +17,7 @@ use omacharts_engine::frame::{MIN_FROM_CANDLE, MIN_FROM_FURNITURE, MIN_GUTTER, R
 use omacharts_engine::omarchy::{AXIS_CONTRAST, CROSSHAIR_CONTRAST, GRID_CONTRAST};
 use omacharts_engine::theme::{
     contrast_ratio, delta_e, hue_gap, theme_bars, theme_mono_bars, Direction, Oklch,
-    MONO_CONTRAST, SWATCH_SEQUENCE,
+    COMPANION_GAP, MONO_CONTRAST, SWATCH_SEQUENCE,
 };
 use omacharts_engine::link::{self, LinkGroup};
 use omacharts_engine::{omarchy, palette, Theme};
@@ -347,6 +347,12 @@ fn series(theme: &Theme) -> Vec<String> {
 /// Every pair of automatic overlays must be told apart at a glance, not only
 /// the consecutive ones. Thirteen shipped themes used to hand out the same
 /// hex for Teal and Cyan, which no consecutive-only check ever saw.
+///
+/// The companion is checked through the rule rather than as the next entry,
+/// because the rule wraps where the sequence does not: the last swatch's
+/// neighbour is the first, and seven shipped palettes put Cyan and Blue
+/// closer than the floor. The rule skips past those; this is what catches it
+/// no longer doing so.
 #[test]
 fn every_pair_of_overlays_is_perceptibly_different_in_every_theme() {
     for (name, theme) in fixtures() {
@@ -363,7 +369,20 @@ fn every_pair_of_overlays_is_perceptibly_different_in_every_theme() {
         }
         for i in 0..colours.len() - 1 {
             let d = delta_e(&colours[i], &colours[i + 1]);
-            assert!(d >= 0.12, "{name}: consecutive {} and {} are {d:.3} apart", colours[i], colours[i + 1]);
+            assert!(
+                d >= COMPANION_GAP,
+                "{name}: consecutive {} and {} are {d:.3} apart",
+                colours[i], colours[i + 1]
+            );
+        }
+        for (i, colour) in colours.iter().enumerate() {
+            let companion = theme.companion(colour);
+            let d = delta_e(colour, &companion);
+            assert!(
+                d >= COMPANION_GAP,
+                "{name}: {} {colour} and its companion {companion} are {d:.3} apart",
+                SWATCH_SEQUENCE[i]
+            );
         }
     }
 }

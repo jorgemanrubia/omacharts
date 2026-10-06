@@ -11,7 +11,9 @@
 
 use serde_json::{json, Value};
 
-use omacharts_engine::indicators::{LineStyle, Stroke, MAX_PANE_SHARE, MIN_PANE_SHARE};
+use omacharts_engine::indicators::{
+    LineStyle, Stroke, MAX_FILL_ALPHA, MAX_PANE_SHARE, MIN_FILL_ALPHA, MIN_PANE_SHARE,
+};
 use omacharts_engine::providers;
 use omacharts_engine::theme::{
     ColorChoice, SWATCH_NAMES, THEME_BARS_ID, THEME_MONO_ID, THEME_RED_UP_ID,
@@ -21,11 +23,16 @@ use omacharts_engine::{
 };
 
 use super::charts::{self, Workspace};
-use super::{parser, Fault, Live, Outcome, EXIT_USAGE};
+use super::{parser, Caller, Fault, Live, Outcome, EXIT_USAGE};
 use crate::store::{Entry, Section, Store, DEFAULT_WATCHLIST};
 
 /// Parse and run.
-pub fn dispatch(args: &[String], store: &Store, live: Option<&dyn Live>) -> Outcome {
+pub fn dispatch(
+    args: &[String],
+    store: &Store,
+    live: Option<&dyn Live>,
+    caller: &dyn Caller,
+) -> Outcome {
     // `omacharts watchlist [--refresh]` was the whole command line once, and
     // it is what the bar widget installed on people's desktops still runs on a
     // timer. `watchlist` grew subcommands around it; this keeps the bare form
@@ -107,6 +114,8 @@ pub fn dispatch(args: &[String], store: &Store, live: Option<&dyn Live>) -> Outc
         ("watchlist", "move") => watchlist_move(store, m, json),
         ("watchlist", "link") => watchlist_link(store, m, json),
         ("watchlist", "feed") => Ok(super::watchlist_json(store, flag(m, "refresh"), live)),
+        ("watchlist", "export") => watchlist_export(store, m),
+        ("watchlist", "import") => watchlist_import(store, m, json, caller),
 
         ("section", "list") => section_list(store, m, json),
         ("section", "create") => section_create(store, m, json),
@@ -362,7 +371,7 @@ fn link_group(text: &str) -> Result<u8, Fault> {
 /// `the_group_a_command_sets_is_the_one_the_rail_reads` writes through this
 /// one and reads back through that one, so the two cannot drift apart
 /// unnoticed.
-fn link_setting(watchlist: i64) -> String {
+pub(super) fn link_setting(watchlist: i64) -> String {
     format!("watchlist_link_{watchlist}")
 }
 
@@ -500,6 +509,49 @@ fn sections_json(sections: &[Section]) -> Value {
             })
             .collect(),
     )
+}
+
+/// Every watchlist, or the ones named, as a file `watchlist import` reads.
+fn watchlist_export(store: &Store, m: &clap::ArgMatches) -> Result<String, Fault> {
+    let lists = match m.get_many::<String>("LIST") {
+        None => store.watchlists(),
+        Some(named) => named.map(|selector| find_list(store, selector)).collect::<Result<_, _>>()?,
+    };
+    let file = super::transfer::export(store, &lists);
+    let text = serde_json::to_string_pretty(&file)
+        .map_err(|error| Fault::new(super::EXIT_ERROR, error.to_string()))?;
+    Ok(format!("{text}\n"))
+}
+
+/// Bring in a file from `watchlist export`, adding what is missing.
+fn watchlist_import(
+    store: &Store,
+    m: &clap::ArgMatches,
+    as_json: bool,
+    caller: &dyn Caller,
+) -> Result<String, Fault> {
+    let file = super::transfer::parse(&caller.read(required(m, "FILE")?)?)?;
+    let imported = super::transfer::import(store, &file, flag(m, "replace"))?;
+    if as_json {
+        let rows = imported
+            .iter()
+            .map(|done| {
+                json!({
+                    "name": done.name,
+                    "action": done.action.key(),
+                    "symbols": done.symbols,
+                    "sections": done.sections,
+                    "linkKeptBy": done.link_kept_by.as_ref().map(|(_, holder)| holder),
+                })
+                .to_string()
+            })
+            .collect();
+        return Ok(wrap_list("watchlists", rows));
+    }
+    match imported.is_empty() {
+        true => Ok("the file holds no watchlists\n".to_string()),
+        false => Ok(imported.iter().map(|done| done.describe() + "\n").collect()),
+    }
 }
 
 fn watchlist_create(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<String, Fault> {
@@ -1555,8 +1607,12 @@ fn describe_indicator(stored: &Value) -> String {
         .find(|k| k.key() == kind)
         .map(|k| k.short_name().to_string())
         .unwrap_or_else(|| kind.to_string());
-    if let Some(period) = stored["params"]["period"].as_u64() {
-        text.push_str(&format!("({period})"));
+    let lengths: Vec<String> = ["period", "k_smooth", "d_period"]
+        .iter()
+        .filter_map(|key| stored["params"][key].as_u64().map(|n| n.to_string()))
+        .collect();
+    if !lengths.is_empty() {
+        text.push_str(&format!("({})", lengths.join(",")));
     }
     if let Some(reset) = stored["params"]["reset"].as_str() {
         text.push_str(&format!(" · {reset}"));
@@ -1567,6 +1623,9 @@ fn describe_indicator(stored: &Value) -> String {
 /// Every parameter a command offered, read and checked before one is written.
 struct Edits {
     period: Option<u64>,
+    k_smooth: Option<u64>,
+    d_period: Option<u64>,
+    d_color: Option<ColorChoice>,
     anchor: Option<Reset>,
     rows: Option<Option<u64>>,
     value_area: Option<f64>,
@@ -1586,6 +1645,9 @@ impl Edits {
     fn read(m: &clap::ArgMatches) -> Result<Edits, Fault> {
         Ok(Edits {
             period: number(m, "period")?.map(|n| n as u64),
+            k_smooth: number(m, "k-smooth")?.map(|n| n as u64),
+            d_period: number(m, "d-period")?.map(|n| n as u64),
+            d_color: colour(m, "d-color")?,
             anchor: match arg(m, "anchor") {
                 None => None,
                 Some(text) => Some(Reset::from_key(text).ok_or_else(|| {
@@ -1599,7 +1661,7 @@ impl Edits {
                     Fault::usage(format!("{text:?} is not a row count; use a number or `auto`"))
                 })?)),
             },
-            value_area: fraction(m, "value-area", 0.0, 1.0)?,
+            value_area: bounded(m, "value-area", 0.0, 1.0)?,
             poc_color: colour(m, "poc-color")?,
             color: colour(m, "color")?,
             width: number(m, "width")?,
@@ -1615,9 +1677,11 @@ impl Edits {
             // The range the engine clamps to rather than a wider one of our own:
             // a height it quietly brings back reads as the command having
             // worked, and the number it was given is not the one on screen.
-            height: fraction(m, "height", MIN_PANE_SHARE, MAX_PANE_SHARE)?,
-            overbought: number(m, "overbought")?,
-            oversold: number(m, "oversold")?,
+            height: bounded(m, "height", MIN_PANE_SHARE, MAX_PANE_SHARE)?,
+            // The strip runs 0 to 100 and a level is drawn across it; one
+            // past either end is a line nowhere on the chart.
+            overbought: bounded(m, "overbought", 0.0, 100.0)?,
+            oversold: bounded(m, "oversold", 0.0, 100.0)?,
             bands: match arg(m, "bands") {
                 None => None,
                 Some(text) if text.eq_ignore_ascii_case("none") => Some(Vec::new()),
@@ -1632,13 +1696,19 @@ impl Edits {
                         })?,
                 ),
             },
-            band_alpha: fraction(m, "band-alpha", 0.02, 0.6)?,
+            // The engine's own ends rather than a narrower pair of our own,
+            // for the same reason as the height above: a figure it would
+            // quietly bring back reads as the command having worked.
+            band_alpha: bounded(m, "band-alpha", MIN_FILL_ALPHA, MAX_FILL_ALPHA)?,
             visible: arg(m, "visible").map(|v| v == "on"),
         })
     }
 
     fn is_empty(&self) -> bool {
         self.period.is_none()
+            && self.k_smooth.is_none()
+            && self.d_period.is_none()
+            && self.d_color.is_none()
             && self.anchor.is_none()
             && self.rows.is_none()
             && self.value_area.is_none()
@@ -1671,6 +1741,24 @@ impl Edits {
                 false => return Err(refuse("period")),
             }
         }
+        if let Some(bars) = self.k_smooth {
+            match params.get("k_smooth").is_some() {
+                true => params["k_smooth"] = json!(bars.max(1)),
+                false => return Err(refuse("%K smoothing")),
+            }
+        }
+        if let Some(bars) = self.d_period {
+            match params.get("d_period").is_some() {
+                true => params["d_period"] = json!(bars.max(1)),
+                false => return Err(refuse("%D smoothing")),
+            }
+        }
+        if let Some(colour) = &self.d_color {
+            match kind == IndicatorKind::Stochastic {
+                true => params["d_color"] = to_value(colour)?,
+                false => return Err(refuse("%D line")),
+            }
+        }
         if let Some(anchor) = self.anchor {
             match params.get("reset").is_some() {
                 true => params["reset"] = json!(anchor.key()),
@@ -1693,6 +1781,21 @@ impl Edits {
             match kind == IndicatorKind::VolumeProfile {
                 true => params["poc_color"] = to_value(colour)?,
                 false => return Err(refuse("point of control")),
+            }
+        }
+        // The pair may not cross: a band whose floor is above its ceiling is
+        // not a band. Whichever of the two the command left out is the one
+        // already on the chart, and the one given has to clear it. Checked
+        // before either is written, so a refusal leaves the chart as it was.
+        if self.overbought.is_some() || self.oversold.is_some() {
+            let ceiling = self.overbought.or(params["overbought"].as_f64());
+            let floor = self.oversold.or(params["oversold"].as_f64());
+            if let (Some(ceiling), Some(floor)) = (ceiling, floor)
+                && floor >= ceiling
+            {
+                return Err(Fault::usage(format!(
+                    "oversold {floor} is not below overbought {ceiling}"
+                )));
             }
         }
         if let Some(level) = self.overbought {
@@ -1763,7 +1866,7 @@ fn number(m: &clap::ArgMatches, id: &str) -> Result<Option<f64>, Fault> {
     }
 }
 
-fn fraction(m: &clap::ArgMatches, id: &str, low: f64, high: f64) -> Result<Option<f64>, Fault> {
+fn bounded(m: &clap::ArgMatches, id: &str, low: f64, high: f64) -> Result<Option<f64>, Fault> {
     match number(m, id)? {
         None => Ok(None),
         Some(value) if (low..=high).contains(&value) => Ok(Some(value)),
@@ -2623,7 +2726,119 @@ mod tests {
     fn run(line: &str, store: &Store) -> Outcome {
         let args: Vec<String> =
             std::iter::once("omacharts".to_string()).chain(line.split_whitespace().map(String::from)).collect();
-        dispatch(&args, store, None)
+        dispatch(&args, store, None, &super::super::Here)
+    }
+
+    /// A caller who piped this text in, whatever path they named.
+    struct Piped(String);
+
+    impl Caller for Piped {
+        fn read(&self, _path: &str) -> Result<String, Fault> {
+            Ok(self.0.clone())
+        }
+    }
+
+    fn import(file: &str, flags: &str, store: &Store) -> Outcome {
+        let args: Vec<String> = ["omacharts", "watchlist", "import", "-"]
+            .into_iter()
+            .map(String::from)
+            .chain(flags.split_whitespace().map(String::from))
+            .collect();
+        dispatch(&args, store, None, &Piped(file.to_string()))
+    }
+
+    /// A machine with a bit of everything an export has to carry.
+    fn exporting() -> Store {
+        let store = Store::memory().unwrap();
+        run("watchlist add Default SPY QQQ", &store);
+        run("watchlist rename Default Mine", &store);
+        run("watchlist create Semis", &store);
+        run("watchlist add Semis NVDA AMD", &store);
+        run("section create Semis Memory", &store);
+        run("watchlist add Semis MU --section Memory", &store);
+        run("watchlist add Semis 2330 --suffix TW --section Memory", &store);
+        run("watchlist link Semis 3", &store);
+        // One symbol in two sections, which a list may hold on purpose.
+        run("watchlist add Semis NVDA --section Memory", &store);
+        store
+    }
+
+    #[test]
+    fn an_export_imported_on_another_machine_comes_back_the_same() {
+        let file = run("watchlist export", &exporting()).out;
+        let elsewhere = Store::memory().unwrap();
+        let out = import(&file, "", &elsewhere);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert!(out.out.contains("Semis: created, 5 symbols in 1 section"), "{}", out.out);
+        // Into the default list, whatever either side calls it, and under the
+        // name it has here — even when the file replaces it.
+        assert!(out.out.contains("Default: added 2 symbols"), "{}", out.out);
+        assert_eq!(run("watchlist export", &elsewhere).out.replace("Default", "Mine"), file);
+        assert!(import(&file, "--replace", &elsewhere).out.contains("Default: replaced"));
+        assert!(run("watchlist list", &elsewhere).out.contains("Default"));
+        assert_eq!(run("watchlist export", &elsewhere).out.replace("Default", "Mine"), file);
+    }
+
+    #[test]
+    fn importing_the_same_file_twice_changes_nothing_the_second_time() {
+        let file = run("watchlist export", &exporting()).out;
+        let elsewhere = Store::memory().unwrap();
+        import(&file, "", &elsewhere);
+        let before = run("watchlist export", &elsewhere).out;
+        let again = import(&file, "", &elsewhere);
+        assert!(again.out.lines().all(|line| line.ends_with("already up to date")), "{}", again.out);
+        assert_eq!(run("watchlist export", &elsewhere).out, before);
+    }
+
+    #[test]
+    fn a_merge_only_adds_and_a_replace_makes_it_match() {
+        let file = run("watchlist export Semis", &exporting()).out;
+        let elsewhere = Store::memory().unwrap();
+        run("watchlist create Semis", &elsewhere);
+        run("watchlist add Semis INTC NVDA", &elsewhere);
+        run("watchlist create Other", &elsewhere);
+
+        let merged = import(&file, "", &elsewhere);
+        // NVDA was already here, so it is not added to Memory as well.
+        assert!(merged.out.contains("Semis: added 3 symbols and 1 section"), "{}", merged.out);
+        let semis = run("watchlist show Semis", &elsewhere).out;
+        // What was here stays, first; what was missing goes after it.
+        assert!(semis.find("INTC").unwrap() < semis.find("AMD").unwrap(), "{semis}");
+
+        let replaced = import(&file, "--replace", &elsewhere);
+        assert!(replaced.out.contains("Semis: replaced"), "{}", replaced.out);
+        assert!(!run("watchlist show Semis", &elsewhere).out.contains("INTC"));
+        // A list the file does not name is never touched.
+        assert!(run("watchlist list", &elsewhere).out.contains("Other"));
+    }
+
+    #[test]
+    fn a_file_that_is_not_an_export_changes_nothing() {
+        let store = exporting();
+        let before = run("watchlist export", &store).out;
+        for bad in [
+            "not json",
+            r#"{"omacharts": "chartbooks", "version": 1, "watchlists": []}"#,
+            r#"{"omacharts": "watchlists", "version": 99, "watchlists": []}"#,
+            r#"{"omacharts": "watchlists", "version": 1, "watchlists": [
+                {"name": "A", "sections": []}, {"name": "a", "sections": []}]}"#,
+        ] {
+            let out = import(bad, "", &store);
+            assert_eq!(out.code, super::super::EXIT_USAGE, "{bad}: {}", out.err);
+        }
+        assert_eq!(run("watchlist export", &store).out, before);
+    }
+
+    #[test]
+    fn a_link_group_already_driven_here_is_left_where_it_is() {
+        let file = run("watchlist export Semis", &exporting()).out;
+        let elsewhere = Store::memory().unwrap();
+        run("watchlist create Macro", &elsewhere);
+        run("watchlist link Macro 3", &elsewhere);
+        let out = import(&file, "", &elsewhere);
+        assert!(out.out.contains("link group 3 stays with \"Macro\""), "{}", out.out);
+        assert_eq!(run("watchlist link Macro", &elsewhere).out, "3\n");
+        assert_eq!(run("watchlist link Semis", &elsewhere).out, "none\n");
     }
 
     #[test]
@@ -3117,6 +3332,69 @@ mod tests {
     }
 
     #[test]
+    fn a_stochastic_takes_its_smoothings_and_a_d_colour_and_nothing_else_does() {
+        let store = Store::memory().unwrap();
+        run("chartbook create Macro --switch", &store);
+        let out = run("chart indicator add stochastic --book Macro", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert!(out.out.contains("Stoch(14,3,3)"), "{}", out.out);
+
+        let out = run(
+            "chart indicator set stochastic --book Macro --period 5 --k-smooth 1 \
+             --d-period 5 --overbought 85 --d-color Amber",
+            &store,
+        );
+        assert_eq!(out.code, 0, "{}", out.err);
+        let listed = run("chart indicator list --book Macro --json", &store);
+        let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+        let stoch = &parsed["indicators"][0]["params"];
+        assert_eq!(stoch["period"], 5);
+        assert_eq!(stoch["k_smooth"], 1);
+        assert_eq!(stoch["d_period"], 5);
+        assert_eq!(stoch["overbought"], 85.0);
+        assert_eq!(stoch["d_color"]["name"], "Amber");
+
+        run("chart indicator add rsi --book Macro", &store);
+        let refused = run("chart indicator set rsi --book Macro --d-period 5", &store);
+        assert_ne!(refused.code, 0);
+    }
+
+    /// A level off the strip, or a floor at or above its ceiling, is a band
+    /// the chart cannot draw. The command says so and stores nothing, on an
+    /// indicator being added as much as on one being changed.
+    #[test]
+    fn a_level_off_the_strip_or_a_crossed_pair_is_refused() {
+        let store = Store::memory().unwrap();
+        run("chartbook create Macro --switch", &store);
+        run("chart indicator add rsi --book Macro", &store);
+        for args in [
+            "--overbought 120",
+            "--oversold -5",
+            "--oversold 75",
+            "--overbought 25",
+            "--overbought 60 --oversold 60",
+        ] {
+            let out = run(&format!("chart indicator set rsi --book Macro {args}"), &store);
+            assert_eq!(out.code, super::super::EXIT_USAGE, "{args}: {}", out.err);
+        }
+        let out = run("chart indicator add stochastic --book Macro --overbought 20 --oversold 80", &store);
+        assert_eq!(out.code, super::super::EXIT_USAGE, "{}", out.err);
+        assert!(out.err.contains("not below"), "{}", out.err);
+
+        let listed = run("chart indicator list --book Macro --json", &store);
+        let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+        let indicators = parsed["indicators"].as_array().unwrap();
+        assert_eq!(indicators.len(), 1, "the refused stochastic was not added");
+        assert_eq!(indicators[0]["params"]["overbought"], 70.0);
+        assert_eq!(indicators[0]["params"]["oversold"], 30.0);
+
+        // Moving both at once past where either was is fine: only the pair
+        // the chart ends up with is judged.
+        let out = run("chart indicator set rsi --book Macro --overbought 25 --oversold 10", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+    }
+
+    #[test]
     fn vwap_bands_can_be_turned_on_and_shaded() {
         let store = Store::memory().unwrap();
         run("chartbook create Macro --switch", &store);
@@ -3129,6 +3407,39 @@ mod tests {
         assert_eq!(bands[1]["enabled"], true);
         assert_eq!(bands[2]["enabled"], false);
         assert_eq!(bands[0]["fill_alpha"], 0.3);
+    }
+
+    /// The flag takes the whole of what an alpha is, and the figure it is
+    /// given is the figure stored — the help says 0-1 and means it.
+    #[test]
+    fn shading_can_be_asked_for_clear_or_solid() {
+        let store = Store::memory().unwrap();
+        run("chartbook create Macro --switch", &store);
+        run("chart indicator add vwap --book Macro --bands 1", &store);
+
+        for wanted in ["0", "1"] {
+            let out = run(
+                &format!("chart indicator set vwap --book Macro --band-alpha {wanted}"),
+                &store,
+            );
+            assert_eq!(out.code, 0, "{}", out.err);
+
+            let listed = run("chart indicator list --book Macro --json", &store);
+            let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+            let bands = parsed["indicators"][0]["params"]["bands"].as_array().unwrap();
+            assert_eq!(bands[0]["fill_alpha"], wanted.parse::<f64>().unwrap());
+        }
+
+        // Wider is not anything-goes: past either end, and anything that is
+        // not a figure at all, is still refused rather than quietly brought
+        // back to the nearest end.
+        for refused in ["1.2", "-0.1", "nan", "inf"] {
+            let out = run(
+                &format!("chart indicator set vwap --book Macro --band-alpha {refused}"),
+                &store,
+            );
+            assert_ne!(out.code, 0, "--band-alpha {refused} was accepted");
+        }
     }
 
     /// A command that resolved its own target has to say which one it found,
@@ -3560,7 +3871,7 @@ mod tests {
                     args.push("--to".to_string());
                     args.push(scratch.to_string_lossy().into_owned());
                 }
-                let outcome = dispatch(&args, &store, Some(&NoWindow));
+                let outcome = dispatch(&args, &store, Some(&NoWindow), &super::super::Here);
                 assert_ne!(
                     outcome.code,
                     super::super::EXIT_USAGE,
@@ -3618,7 +3929,7 @@ mod tests {
                 let args: Vec<String> = std::iter::once("omacharts".to_string())
                     .chain(line.split_whitespace().map(String::from))
                     .collect();
-                let outcome = dispatch(&args, &store, Some(&NoWindow));
+                let outcome = dispatch(&args, &store, Some(&NoWindow), &super::super::Here);
                 assert_eq!(
                     outcome.code,
                     super::super::EXIT_OK,

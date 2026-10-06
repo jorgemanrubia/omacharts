@@ -88,33 +88,60 @@ jobs:
   # attached to the release. After `sync`, so it uses the PKGBUILD carrying
   # this tag's version and digest — which also means a release that gets this
   # far has proved the PKGBUILD works against the tarball GitHub serves.
+  #
+  # Once per architecture, each on a runner of its own kind. Arch Linux itself
+  # is x86_64 only; aarch64 machines — an Omarchy Mac among them — run Arch
+  # Linux ARM, which publishes no container image, so its root filesystem is
+  # imported from the project's own tarball instead.
   package:
     needs: sync
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+            image: archlinux:base-devel
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+            image: archlinuxarm
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: write
-    container:
-      image: archlinux:base-devel
     steps:
-      - name: Dependencies
-        run: |
-          pacman -Syu --noconfirm git rust gtk4 libadwaita github-cli
-          # The container is root and the checkout is not, so git refuses the
-          # directory — and `gh release upload` shells out to git to work out
-          # which repository it is in.
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - uses: actions/checkout@v4
         with:
           ref: main
+      - name: Import Arch Linux ARM's root filesystem
+        if: matrix.arch == 'aarch64'
+        run: |
+          set -euo pipefail
+          base=http://os.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz
+          curl -fsSL "$base" -o rootfs.tar.gz
+          curl -fsSL "$base.sig" -o rootfs.tar.gz.sig
+          # The tarball only travels over plain HTTP — the host's certificate
+          # does not cover it — so its signature is the one thing vouching for
+          # it, and the keyring pacman goes on to trust is inside it.
+          gpg --keyserver hkps://keyserver.ubuntu.com \
+            --recv-keys 68B3537F39A313B3E574D06777193F152BDBE6A6
+          gpg --verify rootfs.tar.gz.sig rootfs.tar.gz
+          docker import rootfs.tar.gz archlinuxarm
       - name: Build the package
         run: |
           set -euo pipefail
-          # makepkg refuses to run as root, which is all a container has.
-          useradd -m builder
-          cp packaging/aur/PKGBUILD /home/builder/
-          chown -R builder:builder /home/builder
-          su builder -c 'cd ~ && makepkg --noconfirm'
-          mv /home/builder/omacharts-*-x86_64.pkg.tar.zst . 2>/dev/null || true
+          docker run --rm -v "$PWD:/w" -w /w "${{ matrix.image }}" bash -euo pipefail -c '
+            # A fresh root filesystem has no keys to check packages against,
+            # and pacman cannot drop to its download user inside a container.
+            pacman-key --init
+            pacman-key --populate
+            sed -i "s/^DownloadUser/#DownloadUser/" /etc/pacman.conf
+            pacman -Syu --noconfirm --needed base-devel git rust gtk4 libadwaita
+            # makepkg refuses to run as root, which is all a container has.
+            useradd -m builder
+            cp packaging/aur/PKGBUILD /home/builder/
+            chown -R builder:builder /home/builder
+            # Arch Linux ARM defaults to .pkg.tar.xz; one name for every arch.
+            su builder -c "cd ~ && PKGEXT=.pkg.tar.zst makepkg --noconfirm"
+            cp /home/builder/omacharts-*.pkg.tar.zst /w/'
           ls -l omacharts-*.pkg.tar.zst
       - name: Attach it to the release
         env:
@@ -123,4 +150,4 @@ jobs:
           set -euo pipefail
           # The debug package is a by-product nobody installs.
           gh release upload "$GITHUB_REF_NAME" \
-            $(ls omacharts-*-x86_64.pkg.tar.zst | grep -v -- '-debug-') --clobber
+            $(ls omacharts-*-${{ matrix.arch }}.pkg.tar.zst | grep -v -- '-debug-') --clobber

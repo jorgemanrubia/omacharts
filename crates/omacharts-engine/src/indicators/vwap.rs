@@ -37,10 +37,24 @@ pub struct Band {
 }
 
 impl Band {
-    /// The shading's opacity, clamped to where it is still a backdrop at the
-    /// top and still visible at the bottom.
+    /// The shading's opacity, anywhere from fully clear to fully solid.
+    ///
+    /// What is left of the guard is only what alpha means — a fraction of the
+    /// colour — and it no longer defends legibility. Solid shading does cover
+    /// the grid behind the band, and clear shading draws nothing; both are the
+    /// chart owner's call, and `fill` is what says whether the shading is on
+    /// at all.
+    ///
+    /// A figure that is not an alpha at all still never reaches the renderer.
+    /// Something past either end is pulled back to it, and a NaN or an
+    /// infinity — which is not faint shading or strong shading but no
+    /// shading — is dropped for the default, because there is no end to pull
+    /// it towards.
     pub fn alpha(&self) -> f64 {
-        self.fill_alpha.unwrap_or(FILL_ALPHA).clamp(0.02, 0.6)
+        self.fill_alpha
+            .filter(|wanted| wanted.is_finite())
+            .unwrap_or(FILL_ALPHA)
+            .clamp(MIN_FILL_ALPHA, MAX_FILL_ALPHA)
     }
 }
 
@@ -105,6 +119,16 @@ pub struct Bands {
 /// A backdrop: enough to read as a region, not enough to compete with the
 /// bars drawn over it.
 pub const FILL_ALPHA: f64 = 0.16;
+
+/// The faintest and the strongest a shading may be set to.
+///
+/// The whole of what an alpha is, and nothing narrower: how heavy a backdrop
+/// should be is taste, and taste is not the engine's to decide. These are
+/// named rather than written out at each end so that the slider, the CLI's
+/// validation and its help text can all read the figures this clamps to
+/// instead of a pair typed in beside them.
+pub const MIN_FILL_ALPHA: f64 = 0.0;
+pub const MAX_FILL_ALPHA: f64 = 1.0;
 
 /// Typical price — the midpoint the weighting is applied to.
 fn typical(bar: &Bar) -> f64 {
@@ -281,6 +305,54 @@ mod tests {
         assert!(out.vwap.is_empty());
         assert_eq!(out.bands.len(), 1);
         assert!(out.bands[0].upper.is_empty());
+    }
+
+    /// Both ends belong to whoever owns the chart, so neither is pulled in.
+    /// A band may be shaded clear and a band may be shaded solid; only a
+    /// figure that is not an alpha at all is brought back.
+    #[test]
+    fn shading_keeps_whatever_opacity_it_was_given() {
+        let mut band = bands(&[1.0]).remove(0);
+
+        band.fill_alpha = None;
+        assert_eq!(band.alpha(), FILL_ALPHA, "an unset band shades as it always has");
+
+        for wanted in [0.0, 0.02, 0.6, 1.0] {
+            band.fill_alpha = Some(wanted);
+            assert_eq!(band.alpha(), wanted);
+        }
+
+        // Only what alpha cannot mean is pulled in.
+        band.fill_alpha = Some(1.4);
+        assert_eq!(band.alpha(), MAX_FILL_ALPHA);
+        band.fill_alpha = Some(-0.2);
+        assert_eq!(band.alpha(), MIN_FILL_ALPHA);
+    }
+
+    /// A hand-edited settings file or a caller doing its own arithmetic can
+    /// hand over something that is not a figure. Whatever it is, the renderer
+    /// is given an alpha.
+    #[test]
+    fn shading_that_is_not_a_figure_shades_as_the_default() {
+        let mut band = bands(&[1.0]).remove(0);
+        for nonsense in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            band.fill_alpha = Some(nonsense);
+            assert_eq!(band.alpha(), FILL_ALPHA, "{nonsense} reached the chart");
+        }
+    }
+
+    /// Shading a band clear is not the same as not shading it, and a chart
+    /// that treated them alike would have no way back from 0%.
+    #[test]
+    fn clear_shading_is_still_shading_that_is_on() {
+        let bars = vec![bar(0, 10.0, 1.0), bar(60, 20.0, 1.0)];
+        let mut set = bands(&[1.0]);
+        set[0].fill = true;
+        set[0].fill_alpha = Some(0.0);
+
+        let out = compute(&bars, Reset::Session, 0, &set);
+        assert!(out.bands[0].fill, "the fill is on");
+        assert_eq!(out.bands[0].fill_alpha, 0.0, "and invisible, which is a different fact");
     }
 
     #[test]

@@ -31,6 +31,10 @@ impl Arg {
     const fn many(name: &'static str, help: &'static str) -> Arg {
         Arg { name, help, required: true, many: true, values: &[] }
     }
+    /// Takes the rest of the line, or nothing at all.
+    const fn any(name: &'static str, help: &'static str) -> Arg {
+        Arg { name, help, required: false, many: true, values: &[] }
+    }
     const fn of(mut self, values: &'static [&'static str]) -> Arg {
         self.values = values;
         self
@@ -169,7 +173,7 @@ pub const CHART_SELECTOR: &str =
 const STYLES: &[&str] = &["candles", "ohlc"];
 const SESSIONS: &[&str] = &["regular", "extended"];
 const SPLITS: &[&str] = &["horizontal", "vertical"];
-const KINDS: &[&str] = &["volume", "sma", "ema", "vwap", "volume_profile", "rsi", "atr"];
+const KINDS: &[&str] = &["volume", "sma", "ema", "vwap", "volume_profile", "rsi", "atr", "stochastic"];
 const ANCHORS: &[&str] = &["session", "week", "month", "quarter", "year"];
 const LINE_STYLES: &[&str] = &["solid", "dashed", "dotted"];
 const SWITCHES: &[&str] = &["on", "off"];
@@ -374,6 +378,29 @@ pub const SURFACE: &[Noun] = &[
                 ],
                 flags: &[],
                 example: "omacharts watchlist link Semis 3",
+                json: true,
+                writes: true,
+                workspace: false,
+            },
+            Verb {
+                name: "export",
+                about: "Write watchlists out as a file another machine can import",
+                args: &[Arg::any("LIST", "only these watchlists (default: every one)")],
+                flags: &[],
+                example: "omacharts watchlist export",
+                json: false,
+                writes: false,
+                workspace: false,
+            },
+            Verb {
+                name: "import",
+                about: "Bring in watchlists exported elsewhere, adding what is missing",
+                args: &[Arg::req("FILE", "a file from `watchlist export`, or `-` for stdin")],
+                flags: &[Flag::switch(
+                    "replace",
+                    "make each imported watchlist exactly as exported, instead of adding to it",
+                )],
+                example: "omacharts watchlist import watchlists.json",
                 json: true,
                 writes: true,
                 workspace: false,
@@ -651,20 +678,23 @@ pub const SURFACE: &[Noun] = &[
                     Flag::valued("book", "BOOK", "which chartbook (default: the open one)"),
                     Flag::valued("chart", "CHART", CHART_SELECTOR),
                     Flag::valued("id", "N", "which one, when a chart has two of a kind"),
-                    Flag::valued("period", "N", "bars averaged: SMA, EMA, RSI, ATR"),
+                    Flag::valued("period", "N", "bars averaged: SMA, EMA, RSI, ATR; the stochastic's %K length"),
+                    Flag::valued("k-smooth", "N", "bars the stochastic's %K is smoothed over"),
+                    Flag::valued("d-period", "N", "bars the stochastic's %D averages %K over"),
                     Flag::valued("anchor", "WHEN", "what VWAP and the volume profile reset on")
                         .of(ANCHORS),
                     Flag::valued("rows", "N", "volume profile rows, or `auto` to follow the instrument's own increment"),
                     Flag::valued("value-area", "F", "the share of volume the value area covers, 0-1"),
                     Flag::valued("poc-color", "COLOUR", "the volume profile's point of control"),
+                    Flag::valued("d-color", "COLOUR", "the stochastic's %D line"),
                     Flag::valued("color", "COLOUR", "the line, or the volume profile's background"),
                     Flag::valued("width", "F", "line thickness; 0 draws no line at all"),
                     Flag::valued("style", "STYLE", "how the line is drawn").of(LINE_STYLES),
-                    Flag::valued("height", "F", "share of the chart a pane takes, 0.05-0.95: volume, RSI, ATR"),
-                    Flag::valued("overbought", "F", "the RSI level drawn across the top"),
-                    Flag::valued("oversold", "F", "the RSI level drawn across the bottom"),
+                    Flag::valued("height", "F", "share of the chart a pane takes, 0.05-0.95: volume, RSI, ATR, stochastic"),
+                    Flag::valued("overbought", "F", "the RSI or stochastic level drawn across the top, 0-100"),
+                    Flag::valued("oversold", "F", "the RSI or stochastic level drawn across the bottom, 0-100 and below overbought"),
                     Flag::valued("bands", "LIST", "which VWAP bands are drawn: 1,2,3 or none"),
-                    Flag::valued("band-alpha", "F", "how solid the VWAP shading is, 0.02-0.6"),
+                    Flag::valued("band-alpha", "F", "how solid the VWAP shading is, 0-1"),
                     Flag::valued("visible", "BOOL", "draw it at all").of(SWITCHES),
                 ],
                 example: "omacharts chart indicator add sma --period 200 --color Amber --style dashed",
@@ -963,7 +993,9 @@ const STORED_FIELDS: &[(&str, &str, &str)] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
-    use omacharts_engine::indicators::{LineStyle, MAX_PANE_SHARE, MIN_PANE_SHARE};
+    use omacharts_engine::indicators::{
+        LineStyle, MAX_FILL_ALPHA, MAX_PANE_SHARE, MIN_FILL_ALPHA, MIN_PANE_SHARE,
+    };
     use omacharts_engine::{link, BarStyle, IndicatorKind, Reset, Session, Timeframe};
 
     /// The group table in `doc/cli.md` is written by hand — it is the one
@@ -1142,6 +1174,22 @@ mod tests {
             .find(|flag| flag.long == "height")
             .expect("a height flag");
         let range = format!("{MIN_PANE_SHARE}-{MAX_PANE_SHARE}");
+        assert!(named.help.contains(&range), "the help says {:?}, not {range}", named.help);
+    }
+
+    /// The same check for the shading, which drifted the other way: the help
+    /// named 0.02-0.6 long after those stopped being the figures anybody had
+    /// agreed to, because the taste they encoded was never the engine's to
+    /// hold.
+    #[test]
+    fn the_band_shading_the_help_names_is_the_range_the_engine_clamps_to() {
+        let named = verb("chart", "indicator")
+            .expect("a chart indicator verb")
+            .flags
+            .iter()
+            .find(|flag| flag.long == "band-alpha")
+            .expect("a band-alpha flag");
+        let range = format!("{MIN_FILL_ALPHA}-{MAX_FILL_ALPHA}");
         assert!(named.help.contains(&range), "the help says {:?}, not {range}", named.help);
     }
 

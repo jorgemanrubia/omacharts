@@ -179,6 +179,7 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+B", "Open, focus, then close"),
             ("↑ ↓", "Next or previous symbol"),
             ("Ctrl+↑ ↓", "Next or previous section"),
+            ("← → Enter", "Fold or unfold a section"),
             // The one binding in this grid that is not global, so the
             // row says where it works: pressed over a chart it does
             // nothing, and nothing is hard to ask a question about.
@@ -1893,7 +1894,8 @@ impl Window {
                 match &mut indicator.params {
                     omacharts_engine::Params::Volume { height }
                     | omacharts_engine::Params::Rsi { height, .. }
-                    | omacharts_engine::Params::Atr { height, .. } => *height = share,
+                    | omacharts_engine::Params::Atr { height, .. }
+                    | omacharts_engine::Params::Stochastic { height, .. } => *height = share,
                     _ => return,
                 }
                 resizer.set_indicators_of(&pane, indicators);
@@ -3676,6 +3678,30 @@ impl Window {
             buttons.push((timeframe, button));
         }
         *pane.buttons.borrow_mut() = buttons;
+
+        // The same list behind the resolution beside the symbol, which stays
+        // when the strip has no room — the way a narrow TradingView chart
+        // folds its intervals into one dropdown.
+        let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let popover = gtk::Popover::new();
+        popover.add_css_class("menu");
+        for timeframe in self.timeframes.borrow().iter().copied() {
+            let item = gtk::Button::with_label(&timeframe.description());
+            item.add_css_class("flat");
+            let this = self.clone();
+            let owner = pane.id;
+            let closing = popover.downgrade();
+            item.connect_clicked(move |_| {
+                if let Some(popover) = closing.upgrade() {
+                    popover.popdown();
+                }
+                this.focus(owner);
+                this.set_timeframe(timeframe);
+            });
+            list.append(&item);
+        }
+        popover.set_child(Some(&list));
+        pane.timeframe_menu.set_popover(Some(&popover));
     }
 
     /// Put a resolution on the strip, in the place its length earns it.
@@ -4296,7 +4322,15 @@ impl Window {
         // window would put it over whichever chart happened to be underneath.
         let popover = gtk::Popover::new();
         popover.set_child(Some(&content));
-        popover.set_parent(&self.focused_pane().strip);
+        // Or, on a chart too narrow to show the strip, to the resolution
+        // beside the symbol that stands in for it. Mapped rather than
+        // visible: the strip is hidden by its row stepping aside, and only
+        // the map state reaches down through the row to the strip itself.
+        let pane = self.focused_pane();
+        match pane.strip.is_mapped() {
+            true => popover.set_parent(&pane.strip),
+            false => popover.set_parent(&pane.timeframe_menu),
+        }
         // Every number typed builds a fresh one, so each has to let go of the
         // strip when it closes or they pile up on it.
         popover.connect_closed(|popover| {

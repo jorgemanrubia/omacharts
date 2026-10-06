@@ -59,7 +59,7 @@ pub struct Section {
 }
 
 /// A watchlist entry, stored canonically so it survives a provider change.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Entry {
     pub symbol: String,
     pub suffix: Option<String>,
@@ -423,6 +423,19 @@ impl Store {
     }
 
     // -- watchlist ---------------------------------------------------------
+
+    /// Run `change` as one transaction: all of it lands, or none of it does.
+    ///
+    /// The writers below each commit on their own, which is right for one
+    /// symbol dragged in the rail and wrong for an import of fifty, where
+    /// stopping halfway would leave a watchlist nobody wrote. `None` from
+    /// `change` is it giving up, and what it wrote before that is rolled back.
+    pub fn atomically<T>(&self, change: impl FnOnce() -> Option<T>) -> Option<T> {
+        let transaction = self.conn.unchecked_transaction().ok()?;
+        let done = change()?;
+        transaction.commit().ok()?;
+        Some(done)
+    }
 
     /// Every watchlist, in display order, as id and name.
     pub fn watchlists(&self) -> Vec<(i64, String)> {
@@ -1552,6 +1565,30 @@ mod tests {
 
         store.set_indicators(&[]);
         assert!(store.indicators().is_empty());
+    }
+
+    /// Shading used to be held between 0.02 and 0.6, so the figures worth
+    /// checking are the ones the old range refused. Nothing clamps on the way
+    /// out — the band that comes back is the band that went in.
+    #[test]
+    fn band_shading_round_trips_at_either_end() {
+        use omacharts_engine::{IndicatorKind, Params};
+        let store = Store::memory().unwrap();
+
+        for wanted in [0.0, 1.0] {
+            let mut vwap = Indicator::new(1, IndicatorKind::Vwap);
+            if let Params::Vwap { bands, .. } = &mut vwap.params {
+                for band in bands.iter_mut() {
+                    band.fill_alpha = Some(wanted);
+                }
+            }
+            store.set_indicators(&[vwap.clone()]);
+
+            let back = store.indicators();
+            assert_eq!(back, vec![vwap]);
+            let Params::Vwap { bands, .. } = &back[0].params else { panic!("not a vwap") };
+            assert!(bands.iter().all(|b| b.alpha() == wanted), "{wanted} came back changed");
+        }
     }
 
     #[test]
