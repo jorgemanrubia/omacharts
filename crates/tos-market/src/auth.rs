@@ -47,10 +47,42 @@ impl Default for CaptureOptions {
         CaptureOptions {
             trading_system: TradingSystem::PaperMoney,
             timeout: Duration::from_secs(10 * 60),
-            user_data_dir: PathBuf::from("./browser-profile"),
+            user_data_dir: default_profile_dir(),
             log: Box::new(|m| eprintln!("{m}")),
         }
     }
+}
+
+/// Where the persistent browser profile lives: `$XDG_STATE_HOME/omacharts/
+/// tos-browser`, or `~/.local/state/omacharts/tos-browser`.
+///
+/// State, not configuration, and emphatically not a relative path. It holds a
+/// logged-in brokerage profile, Chrome rewrites it constantly and it grows to
+/// tens of megabytes, so the XDG state directory is where it belongs —
+/// whereas a relative `./browser-profile` lands wherever the app happened to
+/// be launched from, which means a different login each time somebody starts
+/// omacharts from a different directory, and a signed-in session dropped into
+/// whatever repository they were standing in. Created 0700 by
+/// [`capture_browser_session`], because a trusted-device profile is as good
+/// as the password that made it.
+pub fn default_profile_dir() -> PathBuf {
+    profile_dir_in(
+        std::env::var_os("XDG_STATE_HOME").map(PathBuf::from),
+        std::env::var_os("HOME").map(PathBuf::from),
+    )
+}
+
+/// [`default_profile_dir`] with the environment handed in, so the rule can be
+/// tested without a test rewriting the variables every other test reads.
+fn profile_dir_in(state_home: Option<PathBuf>, home: Option<PathBuf>) -> PathBuf {
+    state_home
+        .filter(|p| !p.as_os_str().is_empty())
+        .or_else(|| {
+            home.filter(|h| !h.as_os_str().is_empty())
+                .map(|home| home.join(".local/state"))
+        })
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join("omacharts/tos-browser")
 }
 
 fn fallback_gateway(trading_system: TradingSystem) -> String {
@@ -102,7 +134,11 @@ fn thinkorswim_chromium() -> Option<PathBuf> {
 }
 
 /// `TOS_BROWSER`, `PUPPETEER_EXECUTABLE_PATH`, then well-known install paths.
-fn find_browser() -> Option<PathBuf> {
+///
+/// Public because a sign-in that cannot work is worth saying before somebody
+/// presses the button: the settings panel asks this to decide between an
+/// enabled button and a sentence naming what has to be installed.
+pub fn find_browser() -> Option<PathBuf> {
     std::env::var_os("TOS_BROWSER")
         .or_else(|| std::env::var_os("PUPPETEER_EXECUTABLE_PATH"))
         .map(PathBuf::from)
@@ -564,4 +600,40 @@ pub async fn capture_browser_session(
     let _ = browser.wait().await;
     pump.abort();
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The profile holds a logged-in brokerage session. It used to be
+    /// `./browser-profile`, which put one in whatever directory the app was
+    /// started from — a different login per directory, and somebody's Schwab
+    /// session dropped into a source tree.
+    #[test]
+    fn the_browser_profile_lives_under_the_state_directory() {
+        assert_eq!(
+            profile_dir_in(Some(PathBuf::from("/x/state")), Some(PathBuf::from("/home/p"))),
+            PathBuf::from("/x/state/omacharts/tos-browser")
+        );
+        assert_eq!(
+            profile_dir_in(None, Some(PathBuf::from("/home/p"))),
+            PathBuf::from("/home/p/.local/state/omacharts/tos-browser")
+        );
+        // An empty variable is not a directory called "".
+        assert_eq!(
+            profile_dir_in(Some(PathBuf::new()), Some(PathBuf::from("/home/p"))),
+            PathBuf::from("/home/p/.local/state/omacharts/tos-browser")
+        );
+    }
+
+    #[test]
+    fn the_profile_is_never_a_relative_path() {
+        for dir in [
+            profile_dir_in(None, None),
+            profile_dir_in(Some(PathBuf::new()), Some(PathBuf::new())),
+        ] {
+            assert!(dir.is_absolute(), "{}", dir.display());
+        }
+    }
 }

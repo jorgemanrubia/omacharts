@@ -6,6 +6,10 @@ pub enum Error {
     LiveTradingDisabled,
     #[error("config: {0}")]
     Config(String),
+    /// Nothing is signed in, and this crate will not sign in behind
+    /// somebody's back. Carries the session file it looked in.
+    #[error("no thinkorswim session in {0}; sign in first")]
+    NoSession(String),
     #[error("websocket: {0}")]
     WebSocket(#[from] tokio_tungstenite::tungstenite::Error),
     #[error("json: {0}")]

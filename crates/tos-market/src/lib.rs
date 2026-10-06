@@ -4,8 +4,18 @@
 
 //! Chart candles from a thinkorswim session.
 //!
-//! One connection for the process. A chart request returns its first
-//! snapshot. The live gateway is refused.
+//! One connection for the process, built on the first chart request and not
+//! before. A chart request returns its first snapshot. The live gateway is
+//! refused: every connection this crate opens is gated on the trading system
+//! the gateway URL implies, with `allow_live_trading` hard-coded false, and
+//! there is no order-entry code here to route anything with in the first
+//! place — the only services are `chart` and `login`.
+//!
+//! Signing in is a separate, explicit act ([`sign_in`]), never something a
+//! chart fetch does on somebody's behalf. A fetch that opened a browser would
+//! park the one thread that fetches bars for as long as it takes a person to
+//! find their phone and read a code off it, with nothing on screen to say
+//! why; [`candles`] with no session fails at once and says what to do instead.
 
 mod auth;
 mod client;
@@ -43,7 +53,9 @@ pub struct Candle {
 
 /// `TOS_ENV_FILE` when set, otherwise `~/.config/omacharts/tos.env`.
 ///
-/// A missing session opens a browser; the captured login is written here.
+/// Where [`sign_in`] writes what it captured, and the only place a chart
+/// fetch looks. Configuration, unlike the browser profile beside it: small,
+/// hand-editable, and worth carrying between machines.
 pub fn session_file() -> PathBuf {
     if let Some(path) = std::env::var_os("TOS_ENV_FILE").filter(|p| !p.is_empty()) {
         return PathBuf::from(path);
@@ -56,14 +68,119 @@ pub fn session_file() -> PathBuf {
     base.join("omacharts/tos.env")
 }
 
+/// Where the browser profile the sign-in uses lives.
+///
+/// Shown in the settings panel, because a persistent brokerage profile is
+/// something a person is entitled to know the location of — and to delete.
+pub fn profile_file() -> PathBuf {
+    auth::default_profile_dir()
+}
+
+/// The Chromium-family browser a sign-in would use, if this machine has one.
+///
+/// `None` is the honest answer to give before the button is pressed rather
+/// than after: the login is a real browser window somebody signs into, so
+/// with nothing to open there is nothing to try.
+pub fn browser() -> Option<PathBuf> {
+    auth::find_browser()
+}
+
+/// What a sign-in would be starting from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionState {
+    /// No session file, or nothing in it for paperMoney.
+    Missing,
+    /// A paperMoney session is saved. `account` is the account code the
+    /// gateway last reported, and `saved` the file's mtime in unix seconds —
+    /// which is "signed in since", near enough to say out loud.
+    Saved {
+        account: Option<String>,
+        saved: Option<i64>,
+    },
+    /// Saved, and the gateway has since refused it. Signing in again is the
+    /// only fix, and it is the one state worth interrupting somebody over.
+    Expired { at: i64 },
+    /// The file holds a live-trading session and nothing else. Refused rather
+    /// than used: this is a chart feed, and it connects to paperMoney only.
+    RefusedLive,
+}
+
+impl SessionState {
+    /// Can a chart be fetched with what is saved?
+    pub fn usable(&self) -> bool {
+        matches!(self, SessionState::Saved { .. })
+    }
+}
+
+/// What the saved session file says, without connecting to anything.
+///
+/// Expiry is the one thing a file cannot be read for — only the gateway knows
+/// — so it is reported from the mark a refused connection leaves behind.
+pub fn session_state() -> SessionState {
+    state_of(&session_file())
+}
+
+pub(crate) fn state_of(env: &Path) -> SessionState {
+    if let Some(at) = BrowserSession::expired_at(env) {
+        return SessionState::Expired { at };
+    }
+    match stored_session(env) {
+        Some(session) => SessionState::Saved {
+            account: session.account_code,
+            saved: std::fs::metadata(env)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs() as i64),
+        },
+        // A live session is worth saying out loud, because "no session"
+        // would read as a sign-in that failed when in fact it worked and
+        // landed somewhere this feed will not follow.
+        None if BrowserSession::any_in(env).is_some() => SessionState::RefusedLive,
+        None => SessionState::Missing,
+    }
+}
+
+/// Opens a browser at thinkorswim, waits for the person to sign in, and saves
+/// the captured session.
+///
+/// Blocking, and slow by nature: it returns when a human has finished typing
+/// a password and a one-time code, or after ten minutes. Call it on a thread
+/// of its own. `log` is handed one progress line at a time.
+pub fn sign_in(log: impl Fn(&str) + Send + Sync + 'static) -> Result<()> {
+    let env = session_file();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| Error::Other(e.to_string()))?;
+    runtime.block_on(browser_sign_in_with(&env, Box::new(log)))?;
+    Ok(())
+}
+
+/// Forgets the saved session. The browser profile stays, so the next sign-in
+/// is still a trusted device and usually just a click.
+pub fn sign_out() -> std::io::Result<()> {
+    BrowserSession::clear_dotenv_for(session_file(), TradingSystem::PaperMoney)
+}
+
+/// Has this process connected to the gateway?
+///
+/// For the one test that matters to everybody who does not use this feed: a
+/// provider that was merely constructed must not have built a runtime, opened
+/// a socket or launched anything.
+pub fn connected() -> bool {
+    CELL.get().is_some()
+}
+
 /// Candles for one symbol, oldest first. `aggregation` and `range` are the
 /// platform's own codes (`MIN5`, `DAY`, `DAY1`, `YEAR2`).
 pub fn candles(symbol: &str, aggregation: &str, range: &str) -> Result<Vec<Candle>> {
     market()?.snapshot(symbol, aggregation, range)
 }
 
+static CELL: OnceLock<Market> = OnceLock::new();
+
 fn market() -> Result<&'static Market> {
-    static CELL: OnceLock<Market> = OnceLock::new();
     if let Some(ready) = CELL.get() {
         return Ok(ready);
     }
@@ -80,25 +197,27 @@ struct Market {
 
 impl Market {
     fn connect(env: &Path) -> Result<Self> {
+        // Nothing above this line in the process has built a runtime, and
+        // nothing does unless somebody has chosen this feed and asked for a
+        // chart: the first `candles` call is what gets here.
+        let session = stored_session(env).ok_or_else(|| no_session(env))?;
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
             .build()
             .map_err(|e| Error::Other(e.to_string()))?;
-        let stored = stored_session(env);
-        let had_stored = stored.is_some();
-        let session = match stored {
-            Some(session) => session,
-            None => runtime.block_on(browser_sign_in(env))?,
-        };
         // `false`: a chart feed does not open the live gateway.
         let (client, _) = match runtime.block_on(session.connect(env, false)) {
-            Err(error) if had_stored && auth_failure(&error) => {
-                let fresh = runtime.block_on(browser_sign_in(env))?;
-                runtime.block_on(fresh.connect(env, false))?
+            // The one answer only the gateway can give. Written down so the
+            // settings panel can say "expired" instead of "signed in" next
+            // time somebody looks, in this process or another.
+            Err(error) if auth_failure(&error) => {
+                let _ = BrowserSession::mark_expired(env, now());
+                return Err(error);
             }
             other => other?,
         };
+        let _ = BrowserSession::clear_expired(env);
         Ok(Market {
             runtime,
             client: Mutex::new(client),
@@ -154,21 +273,33 @@ fn auth_failure(error: &Error) -> bool {
     }
 }
 
+/// Why a fetch with nothing saved fails, in words the UI and the CLI both
+/// repeat verbatim. Never a browser: see the module docs.
+fn no_session(env: &Path) -> Error {
+    Error::NoSession(env.display().to_string())
+}
+
+fn now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or_default()
+}
+
 /// Opens a browser at thinkorswim and writes the captured session to `env`.
-async fn browser_sign_in(env: &Path) -> Result<BrowserSession> {
+async fn browser_sign_in_with(
+    env: &Path,
+    log: Box<dyn Fn(&str) + Send + Sync>,
+) -> Result<BrowserSession> {
     if let Some(parent) = env.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| Error::Other(format!("session dir: {e}")))?;
     }
-    let profile = env
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join("tos-browser");
     let (session, cookie) = capture_browser_session(CaptureOptions {
         trading_system: TradingSystem::PaperMoney,
         timeout: Duration::from_secs(10 * 60),
-        user_data_dir: profile,
-        log: Box::new(|line| eprintln!("thinkorswim: {line}")),
+        user_data_dir: auth::default_profile_dir(),
+        log,
     })
     .await?;
     session
@@ -177,18 +308,25 @@ async fn browser_sign_in(env: &Path) -> Result<BrowserSession> {
     if let Some(cookie) = cookie.as_deref() {
         let _ = BrowserSession::save_tsm_cookie(env, cookie);
     }
+    // A session that was just captured is not expired, whatever the file
+    // remembered about the one it replaces.
+    let _ = BrowserSession::clear_expired(env);
     Ok(session)
 }
 
 fn reconnect(
     env: &Path,
 ) -> impl std::future::Future<Output = Result<(Client, BrowserSession)>> + '_ {
-    let session = BrowserSession::load_for(env, TradingSystem::PaperMoney);
+    let session = stored_session(env);
     async move {
-        let session = session.ok_or_else(|| {
-            Error::Other(format!("no thinkorswim session in {}", env.display()))
-        })?;
-        session.connect(env, false).await
+        let session = session.ok_or_else(|| no_session(env))?;
+        match session.connect(env, false).await {
+            Err(error) if auth_failure(&error) => {
+                let _ = BrowserSession::mark_expired(env, now());
+                Err(error)
+            }
+            other => other,
+        }
     }
 }
 
@@ -263,6 +401,109 @@ mod tests {
         assert_eq!(bars[0].ts, 1_000);
         assert_eq!(bars[0].volume, 0.0);
         assert_eq!(bars[1].close, 2.2);
+    }
+
+    /// `tos.env` in a fresh temp directory of its own.
+    fn env_path(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("tos-market-lib-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("tos.env")
+    }
+
+    const PAPER: &str = "wss://papermoney-services.schwab.com/Services/WsJson";
+    const LIVE: &str = "wss://thinkorswim-services.schwab.com/Services/WsJson";
+
+    #[test]
+    fn with_nothing_saved_there_is_no_session_and_no_browser() {
+        let path = env_path("missing");
+        assert_eq!(state_of(&path), SessionState::Missing);
+        // The error a chart fetch gets, instead of a browser window and ten
+        // minutes of a fetch thread.
+        let error = match Market::connect(&path) {
+            Err(error) => error,
+            Ok(_) => panic!("connected with no session"),
+        };
+        assert!(matches!(error, Error::NoSession(_)), "{error}");
+        assert!(!connected(), "connecting must not have been attempted");
+    }
+
+    #[test]
+    fn a_saved_paper_session_reads_as_signed_in() {
+        let path = env_path("saved");
+        std::fs::write(
+            &path,
+            format!("TOS_PAPER_ACCESS_TOKEN=tok\nTOS_PAPER_GATEWAY_URL={PAPER}\nTOS_PAPER_ACCOUNT_CODE=D-1\n"),
+        )
+        .unwrap();
+        match state_of(&path) {
+            SessionState::Saved { account, saved } => {
+                assert_eq!(account.as_deref(), Some("D-1"));
+                assert!(saved.is_some_and(|t| t > 0));
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(state_of(&path).usable());
+    }
+
+    /// The gateway is the only thing that knows a token has gone stale, and
+    /// it says so once. The panel is opened later, often in another process.
+    #[test]
+    fn a_refused_session_reads_as_expired_until_the_next_one_works() {
+        let path = env_path("expired");
+        std::fs::write(
+            &path,
+            format!("TOS_PAPER_ACCESS_TOKEN=tok\nTOS_PAPER_GATEWAY_URL={PAPER}\n"),
+        )
+        .unwrap();
+        BrowserSession::mark_expired(&path, 1_700_000_000).unwrap();
+        assert_eq!(state_of(&path), SessionState::Expired { at: 1_700_000_000 });
+        assert!(!state_of(&path).usable());
+        BrowserSession::clear_expired(&path).unwrap();
+        assert!(state_of(&path).usable());
+    }
+
+    /// Charts only, paperMoney only. A live session in the file is not used,
+    /// and not reported as nothing either.
+    #[test]
+    fn a_live_session_is_refused_rather_than_used() {
+        let path = env_path("live");
+        std::fs::write(
+            &path,
+            format!("TOS_LIVE_ACCESS_TOKEN=tok\nTOS_LIVE_GATEWAY_URL={LIVE}\n"),
+        )
+        .unwrap();
+        assert_eq!(state_of(&path), SessionState::RefusedLive);
+        assert!(stored_session(&path).is_none());
+        assert!(matches!(Market::connect(&path), Err(Error::NoSession(_))));
+    }
+
+    /// The lie worth testing: a paper slot pointing at a live gateway. The
+    /// label loses to the URL, so this is a live session and refused.
+    #[test]
+    fn a_paper_label_on_a_live_gateway_is_still_live() {
+        let path = env_path("mislabelled");
+        std::fs::write(
+            &path,
+            format!("TOS_PAPER_ACCESS_TOKEN=tok\nTOS_PAPER_GATEWAY_URL={LIVE}\nTOS_TRADING_SYSTEM=PaperMoney\n"),
+        )
+        .unwrap();
+        assert!(stored_session(&path).is_none());
+        assert_eq!(state_of(&path), SessionState::RefusedLive);
+        assert!(matches!(Market::connect(&path), Err(Error::NoSession(_))));
+    }
+
+    #[test]
+    fn signing_out_forgets_the_session_and_keeps_unrelated_lines() {
+        let path = env_path("signout");
+        std::fs::write(
+            &path,
+            format!("KEEP=1\nTOS_PAPER_ACCESS_TOKEN=tok\nTOS_PAPER_GATEWAY_URL={PAPER}\n"),
+        )
+        .unwrap();
+        BrowserSession::clear_dotenv_for(&path, TradingSystem::PaperMoney).unwrap();
+        assert_eq!(state_of(&path), SessionState::Missing);
+        assert!(std::fs::read_to_string(&path).unwrap().contains("KEEP=1"));
     }
 
     /// Live chart. Point `TOS_ENV_FILE` at a session file.

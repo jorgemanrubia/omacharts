@@ -15,6 +15,15 @@ use crate::tsm::TSM_URL;
 pub const TSM_COOKIE_KEY: &str = "TOS_TSM_COOKIE";
 /// Optional override of [`TSM_URL`] in the same session file (tests, a moved host).
 pub const TSM_URL_KEY: &str = "TOS_TSM_URL";
+/// When the gateway last refused this session's token, in unix seconds.
+///
+/// Written beside the session rather than kept in memory because the question
+/// "am I still signed in?" is asked by a settings panel in whatever process
+/// happens to be running, and a token's expiry is not something a file can be
+/// read for: the only way to learn it is to be told by the gateway, once,
+/// possibly hours ago in another process. Marking the file is how that one
+/// answer survives to be shown. Cleared by the next connection that works.
+pub const EXPIRED_KEY: &str = "TOS_SESSION_EXPIRED_AT";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BrowserSession {
@@ -341,6 +350,57 @@ impl BrowserSession {
         write_dotenv(path, &existing, &KEYS, &pairs)
     }
 
+    /// Whatever session the file describes, whichever system it belongs to
+    /// and whatever it calls itself.
+    ///
+    /// For telling "nothing here" apart from "something here this feed will
+    /// not use": a login that landed on live trading, or a paper slot
+    /// pointing at a live gateway, is a sign-in that worked and a feed that
+    /// still cannot chart — and reporting that as "no session" sends somebody
+    /// round the browser loop again to the same end.
+    pub fn any_in(path: impl AsRef<Path>) -> Option<Self> {
+        let text = std::fs::read_to_string(path).ok()?;
+        let vars = parse_dotenv(&text);
+        session_from_slot(&vars, TradingSystem::PaperMoney)
+            .or_else(|| session_from_slot(&vars, TradingSystem::LiveTrading))
+            .or_else(|| Self::from_vars(|k| vars.get(k).cloned()))
+    }
+
+    /// Notes that the gateway refused this file's session, so that whoever
+    /// asks later can say "expired" rather than "signed in".
+    ///
+    /// Best effort by design: the mark is a nicety for the settings panel,
+    /// and a feed that cannot write it still reports the refusal through the
+    /// failure that caused it.
+    pub fn mark_expired(path: impl AsRef<Path>, when: i64) -> std::io::Result<()> {
+        let path = path.as_ref();
+        with_dotenv_lock(path, || {
+            let Some(existing) = read_dotenv(path)? else {
+                return Ok(());
+            };
+            write_dotenv(path, &existing, &[EXPIRED_KEY], &[(EXPIRED_KEY, when.to_string())])
+        })
+    }
+
+    /// Forgets a refusal, after a connection that worked.
+    pub fn clear_expired(path: impl AsRef<Path>) -> std::io::Result<()> {
+        let path = path.as_ref();
+        with_dotenv_lock(path, || {
+            let Some(existing) = read_dotenv(path)? else {
+                return Ok(());
+            };
+            if !existing.lines().any(|line| line_key(line) == EXPIRED_KEY) {
+                return Ok(());
+            }
+            write_dotenv(path, &existing, &[EXPIRED_KEY], &[])
+        })
+    }
+
+    /// When the gateway last refused this file's session, if it has.
+    pub fn expired_at(path: impl AsRef<Path>) -> Option<i64> {
+        shared_var(path.as_ref(), EXPIRED_KEY)?.parse().ok()
+    }
+
     /// Removes every `TOS_*` key from the file (a sign-out of both systems),
     /// keeping every unrelated line. A missing file is fine. Prefer
     /// [`BrowserSession::clear_dotenv_for`] to forget one system only.
@@ -352,6 +412,7 @@ impl BrowserSession {
             };
             let mut remove: Vec<&str> = KEYS.to_vec();
             remove.push(TSM_COOKIE_KEY);
+            remove.push(EXPIRED_KEY);
             write_dotenv(path, &existing, &remove, &[])
         })
     }
@@ -379,6 +440,9 @@ impl BrowserSession {
                 k.refresh,
                 k.gateway,
                 k.account,
+                // A sign-out leaves no stale "expired" behind for the next
+                // sign-in to be judged by.
+                EXPIRED_KEY,
             ];
             write_dotenv(path, &existing, &remove, &[])
         })
