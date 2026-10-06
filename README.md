@@ -113,6 +113,10 @@ there is no order-entry code in the client at all. Sessions expire after a
 while; when one does, charts say so and `omacharts provider status` says so,
 and signing in again is the fix.
 
+It charts US stocks and ETFs, futures (`/ES`), class shares (`BRK.B`) and the
+main US indexes. A Taipei or Madrid listing it has no name for at all, and a
+chart says so rather than sitting empty — those need Yahoo.
+
 The symbol search covers every US-listed stock and ETF, and every listing on
 the two Taiwanese exchanges — the TWSE (`2330.TW`) and the TPEx (`6488.TWO`) —
 searchable by ticker, English name or Chinese name (`台積電`), and charted on
