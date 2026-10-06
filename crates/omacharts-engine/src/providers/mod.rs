@@ -62,6 +62,13 @@ pub struct Listed {
     /// to" — one fact in one place, rather than a boolean beside a block of
     /// text that can come to disagree with it.
     pub setup: Option<&'static Setup>,
+    /// Does this feed rest on something that can be taken away?
+    ///
+    /// True for a feed that talks to an undocumented gateway through a
+    /// captured web session: it works until the vendor changes their web
+    /// client, and then it stops, through no fault of anybody here.
+    /// Somebody choosing it is owed that word before they do.
+    pub experimental: bool,
 }
 
 impl Listed {
@@ -351,12 +358,22 @@ mod tests {
         let yahoo = freshness("yahoo");
         assert_eq!(yahoo, "delayed 15 min for indexes, 10 for futures", "{yahoo}");
 
-        // thinkorswim holds nothing back and does not stream either, so it
-        // must not claim to be live.
+        // thinkorswim streams, and the word for that follows from the
+        // provider handing over its stream — not from a sentence beside it.
+        // The day it stopped streaming this line would change on its own.
         let tos = freshness("tos");
-        assert!(tos.contains("not a live stream"), "{tos}");
-        assert!(!tos.contains("real time"), "{tos}");
+        assert_eq!(
+            selected(Some("tos")).delivery(),
+            Delivery::Streamed,
+            "the claim below is only honest while this holds"
+        );
+        assert!(tos.contains("live"), "{tos}");
         assert!(!tos.contains("delayed"), "{tos}");
+
+        // And a feed that says nothing about streaming is polled, and says
+        // so rather than claiming to be live.
+        let polled = freshness(DEFAULT);
+        assert!(!polled.contains("live"), "{polled}");
 
         for feed in LISTED {
             assert!(!described(feed).is_empty());

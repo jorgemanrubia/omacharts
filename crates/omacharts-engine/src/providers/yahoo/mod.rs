@@ -134,6 +134,7 @@ pub const LISTED: crate::providers::Listed = crate::providers::Listed {
     label: "Yahoo Finance",
     serves: "Every listing the symbol search covers",
     setup: None,
+    experimental: false,
 };
 
 pub struct Yahoo {

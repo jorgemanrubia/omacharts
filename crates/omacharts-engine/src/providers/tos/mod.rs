@@ -1,4 +1,4 @@
-//! Thinkorswim charts.
+//! Charts from thinkorswim.
 //!
 //! Candles come from [`tos_market`]. The session is the account's own feed,
 //! so this claims no delay. A live gateway is never opened.
@@ -77,6 +77,7 @@ pub const LISTED: crate::providers::Listed = crate::providers::Listed {
     label: "thinkorswim",
     serves: "Your own Schwab paperMoney account, US listings",
     setup: Some(&session::SETUP),
+    experimental: true,
 };
 
 pub struct Tos;

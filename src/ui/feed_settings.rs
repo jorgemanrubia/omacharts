@@ -8,10 +8,10 @@
 //!
 //! What the page is built from comes from the feeds themselves — the list,
 //! what each one serves, how fresh it is (asked of the provider, so it stops
-//! saying "real time" the moment that stops being true), and for a feed that
-//! needs an account, its own instructions. Nothing about brokerages or browsers is written here, so
-//! the third feed arrives as a folder in the engine and this file does not
-//! change.
+//! saying "real time" the moment that stops being true), and whether it
+//! needs signing in to. Nothing about brokerages or browsers is written
+//! here, so the third feed arrives as a folder in the engine and this file
+//! does not change.
 //!
 //! The sign-in runs on a thread of its own and reports back over a channel
 //! the GTK main loop polls, because it waits for a person: a browser opens,
@@ -119,6 +119,19 @@ fn feeds_group(panel: &Rc<Panel>) -> adw::PreferencesGroup {
         }
         tick.set_active(feed.id == chosen);
 
+        // A word, not a warning. The feed works; what it rests on is a web
+        // session and an undocumented gateway, so it can be taken away by
+        // somebody else's release. Said quietly, in the row's own small
+        // type, because this is a thing to know when choosing rather than a
+        // thing to be stopped by.
+        if feed.experimental {
+            let tag = gtk::Label::new(Some("Experimental"));
+            tag.add_css_class("caption");
+            tag.add_css_class("dim-label");
+            tag.set_valign(gtk::Align::Center);
+            row.add_suffix(&tag);
+        }
+
         let panel_for_tick = panel.clone();
         tick.connect_toggled(move |tick| {
             if !tick.is_active() {
@@ -167,150 +180,108 @@ fn rebuild_setup(panel: &Rc<Panel>) {
         panel.page.remove(&old);
     }
     let feed = feeds::stored(&panel.store);
-    let Some(setup) = feed.setup else {
+    if !feed.needs_sign_in() {
         return;
-    };
-    let group = setup_group(panel, feed, setup);
+    }
+    let group = setup_group(panel, feed);
     panel.page.add(&group);
     *panel.setup.borrow_mut() = Some(group);
 }
 
-fn setup_group(
-    panel: &Rc<Panel>,
-    feed: &'static Listed,
-    setup: &'static providers::Setup,
-) -> adw::PreferencesGroup {
+/// The chosen feed's sign-in, which is one row: the group's title names the
+/// feed, and the row is the whole of what there is to do about it.
+fn setup_group(panel: &Rc<Panel>, feed: &'static Listed) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     group.set_title(feed.label);
-    group.set_description(Some(setup.explain));
 
     let access = providers::access(feed.id).unwrap_or(Access::Missing);
 
-    // What is true right now, first. A static paragraph about signing in is
-    // no use to somebody who wants to know whether they are signed in.
-    let state = adw::ActionRow::new();
-    state.set_title("Session");
-    // Plain text: these lines carry paths and a brokerage's own wording, and
-    // an ampersand in one must not take the row out.
-    state.set_use_markup(false);
-    state.set_subtitle(&access.line());
-    state.set_subtitle_lines(0);
-    let icon = gtk::Image::from_icon_name(match access {
-        Access::Signed(_) => "emblem-ok-symbolic",
-        Access::Missing => "dialog-information-symbolic",
-        _ => "dialog-warning-symbolic",
-    });
-    // Amber for the two states that are wrong, and not for the one that is
-    // merely not done yet: a fresh install is not a warning, and colouring
-    // it like one teaches somebody to ignore the colour.
-    if matches!(access, Access::Expired(_) | Access::Refused(_)) {
-        icon.add_css_class("warning");
+    // One action, and which one it is says where somebody stands: an offer
+    // to sign in means there is nothing usable saved, and an offer to sign
+    // out means there is. A row spelling the same fact out in a sentence
+    // beside them would only be a second thing to keep in agreement.
+    if access.ready() {
+        group.add(&sign_out_row(panel, feed));
+    } else {
+        group.add(&sign_in_row(panel, feed, &access));
     }
-    state.add_prefix(&icon);
-
-    let spinner = gtk::Spinner::new();
-    spinner.set_valign(gtk::Align::Center);
-    spinner.set_visible(false);
-    state.add_suffix(&spinner);
-    group.add(&state);
-
-    // The button, and the reason it is not a button when it cannot work.
-    // Offered only when there is a sign-in to be done: a healthy session has
-    // nothing to sign into, and a row inviting one anyway is noise on the
-    // common case. Sign out, below, is then the only action — which is also
-    // the way out of the rare session that calls itself good and is not.
-    if !access.ready() {
-        let action = adw::ActionRow::new();
-        action.set_title(match access {
-            Access::Expired(_) | Access::Refused(_) => "Sign in again",
-            _ => "Sign in",
-        });
-
-        match providers::can_sign_in(feed.id) {
-            Ok(browser) => {
-                action.set_subtitle(&format!("Opens {browser}"));
-                let button = gtk::Button::with_label("Sign in…");
-                button.set_valign(gtk::Align::Center);
-                button.add_css_class("suggested-action");
-                let panel_for_click = panel.clone();
-                let row = state.clone();
-                let spinning = spinner.clone();
-                let pressed = button.clone();
-                button.connect_clicked(move |_| {
-                    start_sign_in(&panel_for_click, feed, &row, &spinning, &pressed);
-                });
-                action.add_suffix(&button);
-            }
-            // A machine with no Chromium-family browser cannot do this at
-            // all. An enabled button that fails teaches somebody nothing;
-            // the row says what to install instead.
-            Err(why) => {
-                action.set_subtitle(&why);
-                action.set_subtitle_lines(0);
-                action.add_prefix(&gtk::Image::from_icon_name("dialog-warning-symbolic"));
-                action.set_sensitive(false);
-            }
-        }
-        group.add(&action);
-    }
-
-    // Only offered when there is something to forget.
-    if !matches!(access, Access::Missing) {
-        let out = adw::ActionRow::new();
-        out.set_title("Sign out");
-        let mut forgets = String::from("Forgets the saved session. The browser stays signed in.");
-        // With no sign-in row there is nowhere else saying which browser a
-        // login opens, and that is worth knowing before pressing this.
-        if access.ready() && let Ok(browser) = providers::can_sign_in(feed.id) {
-            forgets.push_str(&format!(" Signing in again opens {browser}."));
-        }
-        out.set_subtitle(&forgets);
-        out.set_subtitle_lines(0);
-        let button = gtk::Button::with_label("Sign out");
-        button.add_css_class("destructive-action");
-        button.set_valign(gtk::Align::Center);
-        let panel_for_click = panel.clone();
-        button.connect_clicked(move |_| {
-            if let Err(error) = providers::sign_out(feed.id) {
-                eprintln!("omacharts: {error}");
-            }
-            rebuild_setup(&panel_for_click);
-        });
-        out.add_suffix(&button);
-        group.add(&out);
-    }
-
-    // One row, both lines. A row each, all titled "Needs", reads as a
-    // stutter rather than as a list.
-    let needs = adw::ActionRow::new();
-    needs.set_title("Needs");
-    needs.set_subtitle(&setup.requires.join("\n"));
-    needs.set_subtitle_lines(0);
-    group.add(&needs);
-
-    for (what, where_it_is) in providers::places(feed.id) {
-        let row = adw::ActionRow::new();
-        row.set_title(what);
-        row.set_subtitle(&home_relative(&where_it_is));
-        row.set_subtitle_lines(0);
-        row.add_css_class("property");
-        group.add(&row);
-    }
-
-    let scope = adw::ActionRow::new();
-    scope.set_title("What it does");
-    scope.set_subtitle(setup.scope);
-    scope.set_subtitle_lines(0);
-    group.add(&scope);
 
     group
+}
+
+/// The sign-in offer, and the reason it is not a button when it cannot work.
+fn sign_in_row(panel: &Rc<Panel>, feed: &'static Listed, access: &Access) -> adw::ActionRow {
+    let row = adw::ActionRow::new();
+    row.set_title(match access {
+        // A session that went bad is not a fresh install, and "again" is the
+        // whole of the difference worth saying.
+        Access::Expired(_) | Access::Refused(_) => "Sign in again",
+        _ => "Sign in",
+    });
+    // Plain text, and room to wrap. The subtitle is empty until the button
+    // is pressed, and then it carries the client's own lines, which can be
+    // long and can hold an ampersand that must not take the row out.
+    row.set_use_markup(false);
+    row.set_subtitle_lines(0);
+
+    match providers::can_sign_in(feed.id) {
+        Ok(_) => {
+            let spinner = gtk::Spinner::new();
+            spinner.set_valign(gtk::Align::Center);
+            spinner.set_visible(false);
+            row.add_suffix(&spinner);
+
+            let button = gtk::Button::with_label("Sign in…");
+            button.set_valign(gtk::Align::Center);
+            button.add_css_class("suggested-action");
+            let panel_for_click = panel.clone();
+            let progress = row.clone();
+            let spinning = spinner.clone();
+            let pressed = button.clone();
+            button.connect_clicked(move |_| {
+                start_sign_in(&panel_for_click, feed, &progress, &spinning, &pressed);
+            });
+            row.add_suffix(&button);
+        }
+        // A machine with no Chromium-family browser cannot do this at all.
+        // An enabled button that fails teaches somebody nothing; the row
+        // says what to install instead.
+        Err(why) => {
+            row.set_subtitle(&why);
+            row.add_prefix(&gtk::Image::from_icon_name("dialog-warning-symbolic"));
+            row.set_sensitive(false);
+        }
+    }
+
+    row
+}
+
+/// The way out of a session that works, and the only row shown while one
+/// does.
+fn sign_out_row(panel: &Rc<Panel>, feed: &'static Listed) -> adw::ActionRow {
+    let row = adw::ActionRow::new();
+    row.set_title("Sign out");
+
+    let button = gtk::Button::with_label("Sign out");
+    button.add_css_class("destructive-action");
+    button.set_valign(gtk::Align::Center);
+    let panel_for_click = panel.clone();
+    button.connect_clicked(move |_| {
+        if let Err(error) = providers::sign_out(feed.id) {
+            eprintln!("omacharts: {error}");
+        }
+        rebuild_setup(&panel_for_click);
+    });
+    row.add_suffix(&button);
+
+    row
 }
 
 /// Run the browser login off the main loop, showing what it says.
 fn start_sign_in(
     panel: &Rc<Panel>,
     feed: &'static Listed,
-    state: &adw::ActionRow,
+    row: &adw::ActionRow,
     spinner: &gtk::Spinner,
     button: &gtk::Button,
 ) {
@@ -323,7 +294,7 @@ fn start_sign_in(
     button.set_sensitive(false);
     spinner.set_visible(true);
     spinner.start();
-    state.set_subtitle("Opening a browser. Sign in there — this waits for you.");
+    row.set_subtitle("Opening a browser. Sign in there — this waits for you.");
 
     let (sender, receiver) = async_channel::unbounded::<Progress>();
     let lines = sender.clone();
@@ -335,7 +306,7 @@ fn start_sign_in(
     });
 
     let panel = panel.clone();
-    let state = state.clone();
+    let row = row.clone();
     let spinner = spinner.clone();
     let button = button.clone();
     glib::spawn_future_local(async move {
@@ -344,14 +315,14 @@ fn start_sign_in(
                 // The browser's own commentary — which page it is on, that
                 // it is waiting for a login. Shown as it arrives, because
                 // ten silent minutes look like a hang.
-                Progress::Line(line) => state.set_subtitle(&line),
+                Progress::Line(line) => row.set_subtitle(&line),
                 Progress::Done(outcome) => {
                     spinner.stop();
                     spinner.set_visible(false);
                     button.set_sensitive(true);
                     panel.signing_in.set(false);
                     if let Err(error) = outcome {
-                        state.set_subtitle(&format!("Sign-in failed · {error}"));
+                        row.set_subtitle(&format!("Sign-in failed · {error}"));
                         return;
                     }
                     // Rebuilt rather than relabelled: a session that now
@@ -363,15 +334,6 @@ fn start_sign_in(
             }
         }
     });
-}
-
-/// A path as somebody would say it.
-fn home_relative(path: &str) -> String {
-    let home = crate::store::home();
-    match std::path::Path::new(path).strip_prefix(&home) {
-        Ok(rest) if !home.as_os_str().is_empty() => format!("~/{}", rest.display()),
-        _ => path.to_string(),
-    }
 }
 
 #[cfg(test)]
@@ -438,28 +400,53 @@ mod tests {
         assert!(panel.setup.borrow().is_none(), "rows for a feed nobody chose");
     }
 
-    /// Every [`adw::ActionRow`] under `widget`, title and subtitle, in the
-    /// order somebody reads them.
-    fn rows_under(widget: &gtk::Widget) -> Vec<(String, String)> {
+    /// Every [`adw::ActionRow`] under `widget`, in the order somebody reads
+    /// them.
+    fn action_rows(widget: &gtk::Widget) -> Vec<adw::ActionRow> {
         let mut found = Vec::new();
         let mut next = widget.first_child();
         while let Some(child) = next {
             if let Ok(row) = child.clone().downcast::<adw::ActionRow>() {
-                let subtitle = row.subtitle().unwrap_or_default();
-                found.push((row.title().to_string(), subtitle.to_string()));
+                found.push(row);
             }
-            found.extend(rows_under(&child));
+            found.extend(action_rows(&child));
             next = child.next_sibling();
         }
         found
     }
 
-    /// The sign-in row belongs to a session that needs one. Signed in, sign
-    /// out is the only action offered — and it is then the row that says
-    /// which browser a later login would open, because the row that used to
-    /// say it is no longer there.
+    /// The same rows as title and subtitle, which is what most of these
+    /// tests are asking about.
+    fn rows_under(widget: &gtk::Widget) -> Vec<(String, String)> {
+        action_rows(widget)
+            .into_iter()
+            .map(|row| (row.title().to_string(), row.subtitle().unwrap_or_default().to_string()))
+            .collect()
+    }
+
+    /// The words of every label under `widget`. A badge is a label the row
+    /// carries, not a property of the row, so there is no other way to ask
+    /// what one says.
+    fn labels_under(widget: &gtk::Widget) -> Vec<String> {
+        let mut found = Vec::new();
+        let mut next = widget.first_child();
+        while let Some(child) = next {
+            if let Ok(label) = child.clone().downcast::<gtk::Label>() {
+                found.push(label.label().to_string());
+            }
+            found.extend(labels_under(&child));
+            next = child.next_sibling();
+        }
+        found
+    }
+
+    /// One row, and which one it is is the whole of what the group says
+    /// about the session: sign in while there is nothing usable saved, sign
+    /// out while there is. Nothing describes the state in words, and the row
+    /// on screen is the row that says which browser a login opens, because
+    /// there is no other row left to say it.
     #[test]
-    fn signing_in_is_offered_only_when_there_is_a_sign_in_to_do() {
+    fn the_group_offers_one_action_and_it_follows_the_session() {
         if !crate::ui::gtk_ready() {
             return;
         }
@@ -473,24 +460,99 @@ mod tests {
             signing_in: std::cell::Cell::new(false),
         });
         let tos = providers::listed("tos").expect("thinkorswim is listed");
-        let setup = tos.setup.expect("thinkorswim says how to set it up");
-        let group = setup_group(&panel, tos, setup);
+        assert!(tos.needs_sign_in(), "thinkorswim needs signing in to");
+        let group = setup_group(&panel, tos);
         let rows = rows_under(group.upcast_ref::<gtk::Widget>());
 
-        // Whichever state this machine's saved session is in, the rows must
-        // agree with it: no sign-in row while it is good, one while it is not.
-        let access = providers::access(tos.id).expect("thinkorswim keeps a session");
-        let offered = rows.iter().any(|(title, _)| title.starts_with("Sign in"));
-        assert_eq!(offered, !access.ready(), "rows disagree with {}", access.line());
+        assert_eq!(rows.len(), 1, "one action and nothing else: {rows:?}");
+        let (title, subtitle) = &rows[0];
 
+        // Whichever state this machine's saved session is in, the row must
+        // agree with it: sign out while it is good, sign in while it is not.
+        let access = providers::access(tos.id).expect("thinkorswim keeps a session");
         if access.ready() {
-            let (_, forgets) = rows
+            assert_eq!(title, "Sign out", "{}", access.line());
+        } else {
+            assert!(title.starts_with("Sign in"), "{} offers {title}", access.line());
+        }
+
+        // A title and a button, and no sentence under either. The one
+        // exception is a machine with no browser to open: that row is a
+        // refusal rather than an offer, and has to say what to install.
+        let expected = match access.ready() {
+            true => String::new(),
+            false => providers::can_sign_in(tos.id).err().unwrap_or_default(),
+        };
+        assert_eq!(subtitle, &expected, "{title} has something to say for itself");
+    }
+
+    /// The feed that rests on somebody else's web client says so where it
+    /// is chosen, and the feed that rests on nothing of the sort says
+    /// nothing. The word is the engine's, so the row cannot be the place
+    /// that disagrees about which feed it belongs to.
+    #[test]
+    fn the_experimental_feed_is_the_only_one_that_says_so() {
+        if !crate::ui::gtk_ready() {
+            return;
+        }
+        let store = Rc::new(Store::memory().expect("an empty database"));
+        let panel = Rc::new(Panel {
+            store,
+            on_change: Rc::new(|| {}),
+            page: adw::PreferencesPage::new(),
+            banner: adw::Banner::new(""),
+            setup: RefCell::new(None),
+            signing_in: std::cell::Cell::new(false),
+        });
+        let group = feeds_group(&panel);
+
+        let rows = action_rows(group.upcast_ref::<gtk::Widget>());
+        assert_eq!(rows.len(), providers::LISTED.len(), "a row per feed");
+        for row in rows {
+            let feed = providers::LISTED
                 .iter()
-                .find(|(title, _)| title == "Sign out")
-                .expect("a saved session can be forgotten");
-            if let Ok(browser) = providers::can_sign_in(tos.id) {
-                assert!(forgets.contains(&browser), "sign out hides the browser: {forgets}");
-            }
+                .find(|feed| feed.label == row.title())
+                .expect("every row is a feed");
+            let said = labels_under(row.upcast_ref::<gtk::Widget>())
+                .iter()
+                .any(|text| text == "Experimental");
+            assert_eq!(said, feed.experimental, "{} is labelled wrong", feed.id);
+        }
+
+        assert!(providers::listed("tos").expect("thinkorswim is listed").experimental);
+        assert!(!providers::listed("yahoo").expect("yahoo is listed").experimental);
+    }
+
+    /// The group is one action row. Every sentence that used to sit beside
+    /// it — the session state, the prerequisites, the file paths, the small
+    /// print — is somewhere a person can read it, and none of those places
+    /// is this panel.
+    #[test]
+    fn nothing_in_the_group_describes_itself() {
+        if !crate::ui::gtk_ready() {
+            return;
+        }
+        let store = Rc::new(Store::memory().expect("an empty database"));
+        let panel = Rc::new(Panel {
+            store,
+            on_change: Rc::new(|| {}),
+            page: adw::PreferencesPage::new(),
+            banner: adw::Banner::new(""),
+            setup: RefCell::new(None),
+            signing_in: std::cell::Cell::new(false),
+        });
+        let tos = providers::listed("tos").expect("thinkorswim is listed");
+        let group = setup_group(&panel, tos);
+
+        assert!(
+            group.description().is_none_or(|text| text.is_empty()),
+            "the group explains itself again"
+        );
+        for (title, _) in rows_under(group.upcast_ref::<gtk::Widget>()) {
+            assert!(
+                !matches!(title.as_str(), "Session" | "Needs" | "Browser profile" | "What it does"),
+                "{title} is back"
+            );
         }
     }
 

@@ -2,7 +2,7 @@
 name = "tos-market"
 version = "0.1.0"
 edition = "2021"
-description = "Thinkorswim chart candles."
+description = "Chart candles from thinkorswim."
 license = "MIT"
 
 [dependencies]

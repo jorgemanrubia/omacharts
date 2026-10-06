@@ -95,7 +95,8 @@ The feed is read when the process starts, so a change applies the next time
 Omacharts opens.
 
 thinkorswim needs signing in to, once. The settings panel has a button for
-it, and so does the command line:
+it — Sign in, or Sign out once there is a session to forget, which is also
+how it says whether there is one — and so does the command line:
 
 ```
 omacharts provider login
@@ -112,8 +113,10 @@ device rather than another round of codes.
 
 It connects to paperMoney and asks for charts. A live gateway is refused, and
 there is no order-entry code in the client at all. Sessions expire after a
-while; when one does, charts say so and `omacharts provider status` says so,
-and signing in again is the fix.
+while; when one does, charts say so and signing in again is the fix, from the
+settings panel or from `omacharts provider login`. The session itself is
+spelled out by `omacharts provider status`: whether one is saved, which
+account and when, the browser a sign-in would open, and the two files above.
 
 It charts US stocks and ETFs, futures (`/ES`), class shares (`BRK.B`) and the
 main US indexes. A Taipei or Madrid listing it has no name for at all, and a

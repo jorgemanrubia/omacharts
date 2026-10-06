@@ -136,7 +136,7 @@ pub fn dispatch(args: &[String], store: &Store, live: Option<&dyn Live>) -> Outc
         }
 
         ("provider", "list") => provider_list(store, json),
-        ("provider", "status") => provider_status(store, json),
+        ("provider", "status") => provider_status(store, live, json),
         ("provider", "login") => provider_login(store, m, json),
         ("provider", "logout") => provider_logout(store, m, json),
 
@@ -1926,9 +1926,11 @@ fn provider_list(store: &Store, as_json: bool) -> Result<String, Fault> {
                     "label": feed.label,
                     "serves": feed.serves,
                     "freshness": providers::freshness(feed.id),
+                    "delivery": providers::selected(Some(feed.id)).delivery().word(),
                     "stored": feed.id == stored,
                     "inUse": feed.id == in_use,
                     "needsSignIn": feed.needs_sign_in(),
+                    "experimental": feed.experimental,
                     "session": providers::access(feed.id).map(|access| access.line()),
                 })
                 .to_string()
@@ -1951,13 +1953,14 @@ fn provider_list(store: &Store, as_json: bool) -> Result<String, Fault> {
                 }
                 note.push_str(&access.line().to_lowercase());
             }
-            format!(
-                "{:<8} {} · {}{}",
-                feed.id,
-                feed.label,
-                providers::described(feed),
-                suffixed(&note)
-            )
+            // The word rides with what the feed serves rather than with
+            // the note beside it: it is a fact about the feed, true whether
+            // or not this machine is using it.
+            let mut serves = providers::described(feed);
+            if feed.experimental {
+                serves.push_str(" · experimental");
+            }
+            format!("{:<8} {} · {}{}", feed.id, feed.label, serves, suffixed(&note))
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -1971,17 +1974,21 @@ fn suffixed(note: &str) -> String {
     }
 }
 
-/// The chosen feed in detail: is it ready, and if not, what is missing.
+/// The chosen feed in detail: is it ready, if not what is missing, how it
+/// delivers bars, and what is being streamed right now.
 ///
-/// What the settings panel shows, in the same words, because somebody who
-/// read one and then looks at the other must not have to work out whether
-/// they are being told the same thing.
-fn provider_status(store: &Store, as_json: bool) -> Result<String, Fault> {
+/// The settings panel says none of this in words — it offers one action,
+/// and which one it is says whether a session exists — so this is where the
+/// session, the files it lives in and the state of every subscription are
+/// spelled out for somebody who needs them.
+fn provider_status(store: &Store, live: Option<&dyn Live>, as_json: bool) -> Result<String, Fault> {
     let stored = crate::feeds::stored(store);
     let in_use = crate::feeds::in_use(store);
     let access = providers::access(in_use.id);
     let browser = providers::can_sign_in(in_use.id);
     let places = providers::places(in_use.id);
+    let delivery = providers::selected(Some(in_use.id)).delivery();
+    let streaming = live.map(|live| live.streaming());
 
     if as_json {
         return Ok(format!(
@@ -1991,6 +1998,10 @@ fn provider_status(store: &Store, as_json: bool) -> Result<String, Fault> {
                 "label": in_use.label,
                 "serves": in_use.serves,
                 "freshness": providers::freshness(in_use.id),
+                "delivery": delivery.word(),
+                "subscriptions": streaming.as_deref().map(|reports| {
+                    reports.iter().map(subscription_json).collect::<Vec<_>>()
+                }),
                 "stored": stored.id,
                 "forThisLaunch": crate::feeds::for_this_launch().map(|feed| feed.id),
                 "needsSignIn": in_use.needs_sign_in(),
@@ -2030,7 +2041,118 @@ fn provider_status(store: &Store, as_json: bool) -> Result<String, Fault> {
     for (what, path) in places {
         out.push_str(&format!("{}: {path}\n", what.to_lowercase()));
     }
+    for line in streaming_lines(delivery, streaming.as_deref()) {
+        out.push_str(&line);
+        out.push('\n');
+    }
     Ok(out)
+}
+
+/// How bars reach a chart, and — for a feed that streams — what the window
+/// holds a subscription to right now.
+///
+/// Honest about what has and has not arrived. A subscription that is open
+/// with nothing ticked says so, rather than implying data is flowing: with
+/// the market shut that is the normal state of a live chart, and the one
+/// thing somebody checking whether streaming works needs to be told.
+fn streaming_lines(delivery: omacharts_engine::Delivery, streaming: Option<&[crate::live::Report]>) -> Vec<String> {
+    use omacharts_engine::Delivery;
+    let mut lines = Vec::new();
+    match delivery {
+        Delivery::Polled => {
+            lines.push("delivery: polled — charts are refetched on a timer".into());
+            return lines;
+        }
+        Delivery::Streamed => {
+            lines.push(
+                "delivery: streamed — bars arrive as they print, and nothing fetches on a timer"
+                    .into(),
+            );
+        }
+    }
+    match streaming {
+        None => lines.push("no window is open, so nothing is subscribed".into()),
+        Some([]) => lines.push("nothing is being streamed: no chart is showing this feed".into()),
+        Some(reports) => {
+            lines.push(format!(
+                "streaming {} series:",
+                reports.len()
+            ));
+            for report in reports {
+                lines.push(format!("  {}", subscription_line(report)));
+            }
+        }
+    }
+    lines
+}
+
+/// One subscription, in one line.
+fn subscription_line(report: &crate::live::Report) -> String {
+    use crate::live::ReportState;
+
+    let charts = match report.charts {
+        1 => "1 chart".to_string(),
+        n => format!("{n} charts"),
+    };
+    let mut line = format!("{} {} · {charts}", report.symbol, report.native.key());
+    match &report.state {
+        ReportState::Opening => line.push_str(" · waiting for the first snapshot"),
+        ReportState::Live => {
+            line.push_str(&format!(" · {} bars", report.bars));
+            if let Some(ts) = report.last_bar {
+                line.push_str(&format!(" · last bar {}", when(ts)));
+            }
+            match report.updated_ago {
+                Some(ago) => line.push_str(&format!(" · updated {} ago", ago_text(ago))),
+                None => line.push_str(" · nothing has arrived since the snapshot"),
+            }
+        }
+        ReportState::Lost { why, retrying } => {
+            line.push_str(&format!(" · lost: {}", why.message()));
+            line.push_str(if *retrying { " · retrying" } else { " · not retrying" });
+        }
+    }
+    line
+}
+
+fn subscription_json(report: &crate::live::Report) -> serde_json::Value {
+    use crate::live::ReportState;
+
+    let (state, why, retrying) = match &report.state {
+        ReportState::Opening => ("opening", None, None),
+        ReportState::Live => ("live", None, None),
+        ReportState::Lost { why, retrying } => ("lost", Some(why.message()), Some(*retrying)),
+    };
+    json!({
+        "symbol": report.symbol,
+        "resolution": report.native.key(),
+        "charts": report.charts,
+        "bars": report.bars,
+        "lastBar": report.last_bar,
+        "updatedSecondsAgo": report.updated_ago.map(|ago| ago.as_secs()),
+        "state": state,
+        "why": why,
+        "retrying": retrying,
+    })
+}
+
+/// A unix second as a clock time in the local zone, which is where the
+/// person reading it is sitting.
+fn when(ts: i64) -> String {
+    chrono::DateTime::from_timestamp(ts, 0)
+        .map(|utc| chrono::DateTime::<chrono::Local>::from(utc).format("%H:%M").to_string())
+        .unwrap_or_else(|| ts.to_string())
+}
+
+fn ago_text(ago: std::time::Duration) -> String {
+    let secs = ago.as_secs();
+    if secs < 60 {
+        format!("{secs} s")
+    } else if secs < 3_600 {
+        format!("{} min", secs / 60)
+    } else {
+        format!("{} h", secs / 3_600)
+    }
 }
 
 /// Sign in to a feed, in a browser the person drives themselves.
