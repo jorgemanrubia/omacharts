@@ -809,8 +809,17 @@ mod tests {
                                 (Some(a), Some(b)) => format!("new bar: ts {} -> {}", a.ts, b.ts),
                                 _ => "first".into(),
                             };
+                            // The wall clock beside the elapsed time, so a
+                            // frame that opens a new bar can be set against
+                            // the bar's own timestamp: how far behind the
+                            // minute the stream runs, measured rather than
+                            // judged by eye.
+                            let wall = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_millis())
+                                .unwrap_or_default();
                             eprintln!(
-                                "[{at:>8.3}s] {tag}: {:?} ver {} {} candles, newest {:?}; {changed}",
+                                "[{at:>8.3}s wall {wall}] {tag}: {:?} ver {} {} candles, newest {:?}; {changed}",
                                 res.kind,
                                 res.ver,
                                 candles.len(),
