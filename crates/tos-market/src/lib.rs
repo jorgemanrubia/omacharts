@@ -7,6 +7,7 @@
 //! One connection for the process. A chart request returns its first
 //! snapshot. The live gateway is refused.
 
+mod auth;
 mod client;
 mod config;
 mod error;
@@ -21,6 +22,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
+use auth::{capture_browser_session, CaptureOptions};
 use client::Client;
 use config::TradingSystem;
 use services::chart::{ChartBody, ChartParams};
@@ -39,17 +41,19 @@ pub struct Candle {
     pub volume: f64,
 }
 
-/// `TOS_ENV_FILE`: the session captured in a dotenv file.
-pub fn session_file() -> Result<PathBuf> {
-    std::env::var("TOS_ENV_FILE")
-        .ok()
+/// `TOS_ENV_FILE` when set, otherwise `~/.config/omacharts/tos.env`.
+///
+/// A missing session opens a browser; the captured login is written here.
+pub fn session_file() -> PathBuf {
+    if let Some(path) = std::env::var_os("TOS_ENV_FILE").filter(|p| !p.is_empty()) {
+        return PathBuf::from(path);
+    }
+    let base = std::env::var_os("XDG_CONFIG_HOME")
         .filter(|p| !p.is_empty())
         .map(PathBuf::from)
-        .ok_or_else(|| {
-            Error::Other(
-                "no thinkorswim session; set TOS_ENV_FILE to a session file".into(),
-            )
-        })
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+        .unwrap_or_else(|| PathBuf::from("/tmp"));
+    base.join("omacharts/tos.env")
 }
 
 /// Candles for one symbol, oldest first. `aggregation` and `range` are the
@@ -63,7 +67,7 @@ fn market() -> Result<&'static Market> {
     if let Some(ready) = CELL.get() {
         return Ok(ready);
     }
-    let env = session_file()?;
+    let env = session_file();
     let built = Market::connect(&env)?;
     Ok(CELL.get_or_init(|| built))
 }
@@ -76,21 +80,25 @@ struct Market {
 
 impl Market {
     fn connect(env: &Path) -> Result<Self> {
-        let session = BrowserSession::load_for(env, TradingSystem::PaperMoney)
-            .filter(|s| s.trading_system == TradingSystem::PaperMoney)
-            .ok_or_else(|| {
-                Error::Other(format!(
-                    "no thinkorswim session in {}",
-                    env.display()
-                ))
-            })?;
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
             .build()
             .map_err(|e| Error::Other(e.to_string()))?;
+        let stored = stored_session(env);
+        let had_stored = stored.is_some();
+        let session = match stored {
+            Some(session) => session,
+            None => runtime.block_on(browser_sign_in(env))?,
+        };
         // `false`: a chart feed does not open the live gateway.
-        let (client, _) = runtime.block_on(session.connect(env, false))?;
+        let (client, _) = match runtime.block_on(session.connect(env, false)) {
+            Err(error) if had_stored && auth_failure(&error) => {
+                let fresh = runtime.block_on(browser_sign_in(env))?;
+                runtime.block_on(fresh.connect(env, false))?
+            }
+            other => other?,
+        };
         Ok(Market {
             runtime,
             client: Mutex::new(client),
@@ -125,6 +133,51 @@ impl Drop for Market {
             client.disconnect();
         }
     }
+}
+
+fn stored_session(env: &Path) -> Option<BrowserSession> {
+    BrowserSession::load_for(env, TradingSystem::PaperMoney)
+        .filter(|session| session.trading_system == TradingSystem::PaperMoney)
+}
+
+fn auth_failure(error: &Error) -> bool {
+    match error {
+        Error::Login(_) => true,
+        Error::Gateway { id, message, .. }
+            if id == "session_expired"
+                || message.to_ascii_lowercase().contains("log in again")
+                || message.to_ascii_lowercase().contains("session has expired") =>
+        {
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Opens a browser at thinkorswim and writes the captured session to `env`.
+async fn browser_sign_in(env: &Path) -> Result<BrowserSession> {
+    if let Some(parent) = env.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| Error::Other(format!("session dir: {e}")))?;
+    }
+    let profile = env
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("tos-browser");
+    let (session, cookie) = capture_browser_session(CaptureOptions {
+        trading_system: TradingSystem::PaperMoney,
+        timeout: Duration::from_secs(10 * 60),
+        user_data_dir: profile,
+        log: Box::new(|line| eprintln!("thinkorswim: {line}")),
+    })
+    .await?;
+    session
+        .save_to_dotenv(env)
+        .map_err(|e| Error::Other(format!("save session: {e}")))?;
+    if let Some(cookie) = cookie.as_deref() {
+        let _ = BrowserSession::save_tsm_cookie(env, cookie);
+    }
+    Ok(session)
 }
 
 fn reconnect(

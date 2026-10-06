@@ -6,6 +6,7 @@ description = "Thinkorswim chart candles."
 license = "MIT"
 
 [dependencies]
+chromiumoxide = "0.9"
 futures-util = { version = "0.3", features = ["sink"] }
 json-patch = "4"
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "std"] }

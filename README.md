@@ -87,8 +87,14 @@ omacharts config set provider tos
 OMACHARTS_PROVIDER=tos omacharts
 ```
 
-`OMACHARTS_PROVIDER` wins over the stored setting. `TOS_ENV_FILE` points at
-the session file. The feed reads charts only and does not open a live gateway.
+`OMACHARTS_PROVIDER` wins over the stored setting. The choice is read when
+the process starts.
+
+The first chart opens a browser at thinkorswim. Sign in there, and leave the
+window on paperMoney: a live gateway is refused. The connector reads the
+session from that browser and saves it. Later runs reuse the file.
+`TOS_ENV_FILE` chooses the file; otherwise it is `~/.config/omacharts/tos.env`.
+The feed reads charts only.
 
 The symbol search covers every US-listed stock and ETF, and every listing on
 the two Taiwanese exchanges — the TWSE (`2330.TW`) and the TPEx (`6488.TWO`) —
