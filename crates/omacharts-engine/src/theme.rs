@@ -113,6 +113,12 @@ pub const SWATCH_NAMES: [&str; 8] = [
 pub const SWATCH_SEQUENCE: [&str; 6] =
     ["Blue", "Amber", "Violet", "Teal", "Orange", "Cyan"];
 
+/// The least a companion may be from what it accompanies, as `delta_e` sees
+/// it — the floor consecutive entries of the sequence are held to, and so
+/// the one the rule that usually hands out the next entry has to meet when
+/// it does not.
+pub const COMPANION_GAP: f64 = 0.12;
+
 /// How a colour was chosen for an indicator or overlay.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
@@ -190,13 +196,27 @@ impl Theme {
 
     /// A colour to set against `hex`, from this theme's own palette.
     ///
-    /// The next one along the sequence, which is the pair the sequence was
-    /// built to keep apart: consecutive entries are far apart in hue, so a
-    /// mark drawn on top of something in `hex` reads as a different thing
-    /// rather than as a brighter patch of the same one.
+    /// The next one along the sequence that reads as a different colour, so
+    /// a mark drawn on top of something in `hex` — %D over %K, a point of
+    /// control over its profile — is a different thing rather than a brighter
+    /// patch of the same one.
+    ///
+    /// Consecutive entries were ordered to be far apart in hue, so that is
+    /// nearly always the very next one. The exception is the wrap: the last
+    /// entry's neighbour is the first, Cyan beside Blue, and in a fair share
+    /// of palettes those two are near enough to be taken for each other. The
+    /// sequence is not reordered to fix that, because its order is what every
+    /// chart's first few overlays wear; the companion skips ahead instead, to
+    /// the first that clears [`COMPANION_GAP`], and only when nothing does
+    /// settles for the neighbour. A `hex` from outside the sequence is held
+    /// to the same test, from the top.
     pub fn companion(&self, hex: &str) -> String {
-        let at = (0..SWATCH_SEQUENCE.len()).find(|n| self.series(*n).eq_ignore_ascii_case(hex));
-        self.series(at.map(|n| n + 1).unwrap_or(1))
+        let len = SWATCH_SEQUENCE.len();
+        let at = (0..len).find(|n| self.series(*n).eq_ignore_ascii_case(hex)).unwrap_or(0);
+        (1..len)
+            .map(|step| self.series(at + step))
+            .find(|candidate| delta_e(hex, candidate) >= COMPANION_GAP)
+            .unwrap_or_else(|| self.series(at + 1))
     }
 
     /// A second line's colour: the one somebody chose, or else the companion
@@ -1183,6 +1203,38 @@ mod tests {
     fn an_unknown_swatch_falls_back_to_the_accent() {
         let choice = ColorChoice::swatch("Chartreuse");
         assert_eq!(choice.resolve(&midnight()), midnight().ui.accent);
+    }
+
+    /// What the rule hands out has to be told from what it was asked about,
+    /// in every shipped theme and for every entry — the last one included,
+    /// whose neighbour is the first and is not always far enough away.
+    #[test]
+    fn a_companion_reads_as_a_different_colour() {
+        for theme in builtin_themes() {
+            for n in 0..SWATCH_SEQUENCE.len() {
+                let colour = theme.series(n);
+                let companion = theme.companion(&colour);
+                let apart = delta_e(&colour, &companion);
+                assert!(
+                    apart >= COMPANION_GAP,
+                    "{}: {colour} and its companion {companion} are {apart:.3} apart",
+                    theme.name
+                );
+            }
+        }
+    }
+
+    /// A line in a colour of its own still gets a companion from the
+    /// palette, and one it can be told from: a hand-picked near-Amber is not
+    /// handed Amber.
+    #[test]
+    fn a_companion_to_a_colour_outside_the_sequence_is_still_far_from_it() {
+        let theme = midnight();
+        let amber = theme.swatch("Amber").unwrap().hex.clone();
+        let near = mix(&amber, &theme.ui.background, 0.05);
+        let companion = theme.companion(&near);
+        assert!(theme.swatches.iter().any(|s| s.hex == companion), "{companion} is not a swatch");
+        assert!(delta_e(&near, &companion) >= COMPANION_GAP);
     }
 
     #[test]
