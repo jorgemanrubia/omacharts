@@ -25,12 +25,14 @@
 //! belongs to the first fetch, which is why [`selected`] can be called to
 //! build any feed in the list and still touch nothing.
 
+pub mod synthetic;
 pub mod tos;
 pub mod yahoo;
 
 use crate::provider::{Delivery, Provider};
 use crate::symbols::InstrumentKind;
 
+pub use synthetic::Synthetic;
 pub use tos::Tos;
 pub use yahoo::Yahoo;
 

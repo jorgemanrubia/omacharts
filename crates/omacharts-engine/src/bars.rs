@@ -333,18 +333,28 @@ pub fn resample(src: &[Bar], target: Timeframe, origin: i64) -> Vec<Bar> {
     if src.is_empty() {
         return Vec::new();
     }
+    fold(src, move |ts| bucket_of(*ts, target, origin))
+}
+
+/// The bucket a bar at `ts` folds into when the chart shows `target`: the
+/// unix second its folded bar opens at.
+///
+/// Public because a live tail has to find the start of the bucket a changed
+/// native bar belongs to, and asking the same function the whole-series fold
+/// asks is the only way the two can agree about where a four-hour bar
+/// begins.
+pub fn bucket_of(ts: i64, target: Timeframe, origin: i64) -> i64 {
     if target.unit == Unit::Week {
         let weeks = target.count.max(1) as i64;
-        return fold(src, move |ts| {
-            let start = week_start(*ts);
-            // Multi-week buckets count from the epoch's first Monday so they
-            // are stable rather than depending on where the data begins.
-            const FIRST_MONDAY: i64 = 4 * 86_400;
-            (start - FIRST_MONDAY).div_euclid(weeks * 604_800) * (weeks * 604_800) + FIRST_MONDAY
-        });
+        let start = week_start(ts);
+        // Multi-week buckets count from the epoch's first Monday so they
+        // are stable rather than depending on where the data begins.
+        const FIRST_MONDAY: i64 = 4 * 86_400;
+        return (start - FIRST_MONDAY).div_euclid(weeks * 604_800) * (weeks * 604_800)
+            + FIRST_MONDAY;
     }
     let step = target.seconds();
-    fold(src, move |ts| (ts - origin).div_euclid(step) * step + origin)
+    (ts - origin).div_euclid(step) * step + origin
 }
 
 fn fold(src: &[Bar], bucket_of: impl Fn(&i64) -> i64) -> Vec<Bar> {
