@@ -171,6 +171,30 @@ impl Pacing {
     }
 }
 
+/// How new bars reach a chart drawn from a provider.
+///
+/// A chart is a photograph until something refetches it, and whether anything
+/// needs to is a fact about the provider, not a preference: a feed that pushes
+/// each print has nothing to be asked for, and one that only ever answers a
+/// request has to be asked again or the chart quietly stops being true. There
+/// is no switch for this anywhere above the provider — there used to be, and
+/// the off position was a chart that looked current and was not, which is the
+/// one way a charting application is actively misleading rather than merely
+/// incomplete.
+///
+/// What is *not* said here is how often. That belongs to whoever holds the
+/// charts, one chart at a time, in [`crate::refresh`]: the provider says it
+/// needs asking, and the cadence that keeps the asking polite is the caller's.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Delivery {
+    /// Nothing arrives unasked. A chart left open stays current only by being
+    /// fetched again.
+    Polled,
+    /// New bars arrive as they print, so a chart left open stays current on
+    /// its own and nothing should be fetching it on a timer.
+    Streamed,
+}
+
 pub trait Provider: Send + Sync {
     /// Stable id, used as the `adapter` key in stored symbol mappings.
     fn id(&self) -> &'static str;
@@ -242,6 +266,17 @@ pub trait Provider: Send + Sync {
         None
     }
 
+    /// How a chart drawn from this provider is kept current.
+    ///
+    /// Polled unless the provider says otherwise, because that is the safe
+    /// direction to be wrong in: a provider that streams and forgot to say so
+    /// is asked for bars it was about to push anyway, while one that is
+    /// polled and claimed to stream would leave every chart stale with
+    /// nothing on screen to say so.
+    fn delivery(&self) -> Delivery {
+        Delivery::Polled
+    }
+
     /// Does this provider serve the timeframe natively?
     fn serves(&self, timeframe: Timeframe) -> bool {
         self.capabilities().iter().any(|c| c.timeframe == timeframe)
@@ -251,6 +286,38 @@ pub trait Provider: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A provider that states nothing beyond what the trait requires.
+    struct Bare;
+
+    impl Provider for Bare {
+        fn id(&self) -> &'static str {
+            "bare"
+        }
+        fn label(&self) -> &'static str {
+            "Bare"
+        }
+        fn delay_minutes(&self, _: InstrumentKind) -> u32 {
+            0
+        }
+        fn symbol_for(&self, instrument: &Instrument) -> Option<String> {
+            Some(instrument.symbol.clone())
+        }
+        fn capabilities(&self) -> &'static [Capability] {
+            &[]
+        }
+        fn bars(&self, _: &str, _: Timeframe, _: Option<i64>) -> Result<Vec<Bar>, ProviderError> {
+            Ok(Vec::new())
+        }
+    }
+
+    /// The safe direction to be wrong in. A provider that says nothing about
+    /// how it delivers bars gets asked for them, so a new implementation
+    /// cannot leave charts stale by forgetting a method.
+    #[test]
+    fn a_provider_that_says_nothing_is_polled() {
+        assert_eq!(Bare.delivery(), Delivery::Polled);
+    }
 
     /// The bug this whole type exists for: every failure used to reach the
     /// chart as the same empty placeholder, which said the symbol had no data.

@@ -20,6 +20,7 @@
 //! in the morning, the minute after the close) ever get exercised at all.
 
 use crate::bars::Timeframe;
+use crate::provider::Delivery;
 use crate::session;
 use crate::symbols::Instrument;
 
@@ -78,8 +79,11 @@ pub fn period(timeframe: Timeframe) -> i64 {
 /// slightly worse cadence — it gets requests going out for a market that
 /// closed on Friday.
 pub struct Candidate<'a> {
-    /// The app-wide setting. Off means off, and nothing below is consulted.
-    pub enabled: bool,
+    /// How the provider keeps a chart current. A provider that streams has
+    /// nothing to be asked for, and nothing below is consulted. There is no
+    /// setting beside it: whether a chart refreshes is the provider's to
+    /// say, and nobody else's.
+    pub delivery: Delivery,
     /// Whether the window is on screen at all. A minimised window, or one on
     /// a workspace nobody is looking at, is charting for an audience of
     /// nobody.
@@ -111,8 +115,8 @@ pub struct Candidate<'a> {
 /// and the two have very different consequences if the logic is wrong.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Held {
-    /// The user turned refreshing off.
-    Off,
+    /// The provider delivers new bars itself, so there is nothing to fetch.
+    Streamed,
     /// The window is not on screen.
     Hidden,
     /// The user has panned back into history.
@@ -134,8 +138,8 @@ pub enum Held {
 /// four minutes ago — is the last thing asked, so that every more
 /// interesting reason gets reported in preference to it.
 pub fn due(candidate: &Candidate, now: i64) -> Result<(), Held> {
-    if !candidate.enabled {
-        return Err(Held::Off);
+    if candidate.delivery == Delivery::Streamed {
+        return Err(Held::Streamed);
     }
     if !candidate.visible {
         return Err(Held::Hidden);
@@ -225,7 +229,7 @@ mod tests {
         now: i64,
     ) -> Candidate<'a> {
         Candidate {
-            enabled: true,
+            delivery: Delivery::Polled,
             visible: true,
             at_latest: true,
             timeframe,
@@ -299,12 +303,28 @@ mod tests {
 
     // -- the refusals ------------------------------------------------------
 
+    /// Nothing a person can set holds a chart back. A chart on a polled
+    /// provider that is on screen, at its live edge, trading and overdue is
+    /// fetched, and there is no field on the candidate through which a
+    /// preference could say otherwise.
     #[test]
-    fn refreshing_can_be_turned_off() {
+    fn a_polled_provider_is_refreshed_without_anybody_asking_for_it() {
         let now = midweek();
         let share = share();
-        let off = Candidate { enabled: false, ..charted(&share, tf("1D"), 86_400, now) };
-        assert_eq!(due(&off, now), Err(Held::Off), "and nothing else is consulted");
+        let chart =
+            Candidate { delivery: Delivery::Polled, ..charted(&share, tf("1D"), 86_400, now) };
+        assert_eq!(due(&chart, now), Ok(()));
+    }
+
+    /// A provider that pushes bars is the one case with nothing to go and
+    /// get, and it is the provider's word that says so.
+    #[test]
+    fn a_streamed_provider_is_never_polled() {
+        let now = midweek();
+        let share = share();
+        let pushed =
+            Candidate { delivery: Delivery::Streamed, ..charted(&share, tf("1D"), 86_400, now) };
+        assert_eq!(due(&pushed, now), Err(Held::Streamed), "and nothing else is consulted");
     }
 
     #[test]

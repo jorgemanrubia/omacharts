@@ -480,45 +480,6 @@ mainland China, Japan and Korea. It remembers the palette in use as well.
 command: it does not remember the scheme that was in use, so putting the colour
 back lands on the default rather than on the palette you had picked.
 
-Whether charts keep themselves up to date is another:
-
-```
-$ omacharts config refresh
-on
-  [exit 0]
-
-$ omacharts config refresh off
-automatic chart refreshing is off
-  [exit 0]
-```
-
-It is on unless you turn it off. A chart left open fetches new bars for itself,
-often enough to stay honest and no more often than that: once per bar on
-screen, never more than once a minute, and never less than once a quarter of an
-hour. So a 5m chart refetches every five minutes and a daily one every fifteen
-— refetching a daily chart once a day would leave today's price as of this
-morning, and refetching a 2m chart every quarter of an hour would be no use at
-all.
-
-It asks for nothing when there is nothing to ask for. Not while the market for
-that instrument is shut — the extended session for a US listing, its own week
-for a future, never for FX or crypto, which have none — not while the window is
-not on screen, and not while you have scrolled a chart back into history, since
-what it is showing does not change when the live edge does. One request goes
-out after a close, to turn the bar that was forming at the bell into the
-finished one.
-
-Every refresh is speculative, which is what keeps it polite: the provider holds
-speculative requests two seconds behind anything you are waiting for and
-refuses them outright while it is throttling us, so a chart keeping itself
-current can never be why another one loads slowly. A refusal stops the
-refreshing for five minutes rather than being retried, and is never shown on a
-chart — you asked for nothing, so there is nothing to report.
-
-Note that `config get auto_refresh` answers "never been set" until you change
-it, because an unwritten setting is the default rather than a row. `config
-refresh` is the one that always knows.
-
 ## The widget in the Omarchy bar
 
 The bar widget is a plugin folder plus an entry in the shell's layout. The

@@ -1113,22 +1113,6 @@ const SETTING_TIMEFRAMES: &str = "timeframes";
 const SETTING_WORKSPACE: &str = "workspace";
 /// Whether a pointer on one chart draws a line on the linked ones.
 pub const SETTING_SYNC_CROSSHAIR: &str = "sync_crosshair";
-/// Whether charts left open fetch new bars for themselves.
-pub const SETTING_AUTO_REFRESH: &str = "auto_refresh";
-
-/// Whether charts left open fetch themselves again.
-///
-/// On unless somebody has said otherwise, because the other default is the
-/// worse failure: a chart that has quietly stopped being true looks exactly
-/// like one that is, and somebody reads this morning's price as though it
-/// were now. Being wrong the other way costs a small tail request every few
-/// minutes for the handful of charts actually on screen.
-///
-/// The default lives here and only here, so that the dialog, the command and
-/// the timer cannot come to disagree about what it is.
-pub fn auto_refresh(store: &Store) -> bool {
-    store.setting_bool(SETTING_AUTO_REFRESH, true)
-}
 
 /// One chart, as it is written down.
 ///
@@ -4755,13 +4739,17 @@ impl Window {
 
     /// Keep the charts on screen from quietly going stale.
     ///
-    /// There is nothing to subscribe to. Yahoo has no stream, and its quote
-    /// path is the very same chart endpoint the bars come from — the older
-    /// `v7/finance/quote` wants a cookie and crumb handshake and is not used
-    /// at all — so there is nothing cheaper to poll than the series itself,
-    /// and no fresher number hiding behind a different URL. Refreshing a
-    /// chart therefore means refetching its tail, which the loader already
-    /// does in one small request from a few bars before where the cache ends.
+    /// Whether a chart needs this at all is the provider's to say, through
+    /// [`Provider::delivery`]: one that streams has nothing to be asked for,
+    /// and one that does not — Yahoo, which has no stream and nothing cheaper
+    /// to poll than the series itself — has to be asked again or the chart
+    /// stops being true with nothing on screen to say so. Refreshing a chart
+    /// means refetching its tail, which the loader already does in one small
+    /// request from a few bars before where the cache ends.
+    ///
+    /// There is no setting beside the provider's answer, and deliberately
+    /// not: the off position was a chart that looked current and was not. An
+    /// `auto_refresh` row left in an older settings table is simply ignored.
     ///
     /// Which leaves the only question worth engineering: how rarely this can
     /// get away with asking. That answer belongs to
@@ -4790,7 +4778,7 @@ impl Window {
         }
         self.refresh_quiet_until.set(None);
 
-        let enabled = auto_refresh(&self.store);
+        let delivery = self.provider.delivery();
         let visible = self.on_screen();
         let now = chrono::Utc::now().timestamp();
 
@@ -4805,7 +4793,7 @@ impl Window {
             let key = format!("{}:{symbol}", self.provider.id());
             let timeframe = pane.timeframe.get();
             let candidate = refresh::Candidate {
-                enabled,
+                delivery,
                 visible,
                 at_latest: pane.view.at_latest(),
                 timeframe,
