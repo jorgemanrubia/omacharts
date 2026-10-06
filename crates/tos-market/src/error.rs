@@ -2,10 +2,16 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("LiveTrading is disabled. Set allow_live_trading to enable live routing.")]
-    LiveTradingDisabled,
     #[error("config: {0}")]
     Config(String),
+    /// A request for a service this crate does not send. The allowlist in
+    /// `services::ALLOWED_SERVICES` is the whole of what can reach the
+    /// socket, so this is a programming error rather than anything a person
+    /// can act on — and the reason "there is no order-entry code here" is
+    /// checkable instead of merely true at the moment somebody last read the
+    /// file.
+    #[error("{0} is not a service this client sends; it charts and nothing else")]
+    ForbiddenService(String),
     /// Nothing is signed in, and this crate will not sign in behind
     /// somebody's back. Carries the session file it looked in.
     #[error("no thinkorswim session in {0}; sign in first")]

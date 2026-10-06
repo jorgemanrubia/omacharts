@@ -2,14 +2,21 @@
 // of the session client, which the lib build otherwise reports as dead.
 #![allow(dead_code)]
 
-//! Chart candles from a thinkorswim session.
+//! Chart candles from a thinkorswim session — any thinkorswim session.
 //!
 //! One connection for the process, built on the first chart request and not
-//! before. A chart request returns its first snapshot. The live gateway is
-//! refused: every connection this crate opens is gated on the trading system
-//! the gateway URL implies, with `allow_live_trading` hard-coded false, and
-//! there is no order-entry code here to route anything with in the first
-//! place — the only services are `chart` and `login`.
+//! before. A chart request returns its first snapshot. Paper or live, it is
+//! the account's own charts either way, and which one it is is this crate's
+//! business rather than its caller's.
+//!
+//! Read-only by construction, and checkably so. The gateway behind a
+//! thinkorswim session is the one the platform's own order entry talks to, so
+//! two properties are written down rather than left to the absence of a
+//! caller: `services::ALLOWED_SERVICES` is the whole of what this crate
+//! will ask for — `chart`, `login`, `login/schwab` — and the single function
+//! that writes a frame refuses anything else; and the gateway's host has to
+//! be one of thinkorswim's, read out of the URL rather than taken from a
+//! label the session file supplies.
 //!
 //! Signing in is a separate, explicit act ([`sign_in`]), never something a
 //! chart fetch does on somebody's behalf. A fetch that opened a browser would
@@ -35,7 +42,6 @@ use std::time::Duration;
 
 use auth::{capture_browser_session, CaptureOptions};
 use client::Client;
-use config::TradingSystem;
 use services::chart::ChartBody;
 use session::BrowserSession;
 
@@ -54,21 +60,51 @@ pub struct Candle {
     pub volume: f64,
 }
 
-/// `TOS_ENV_FILE` when set, otherwise `~/.config/omacharts/tos.env`.
+/// What a machine with nowhere to keep a session is told.
+const NO_HOME: &str = "no home directory to keep the thinkorswim session in";
+
+/// Where the session is kept: `TOS_ENV_FILE` when set, otherwise
+/// `~/.config/omacharts/tos.env`.
 ///
 /// Where [`sign_in`] writes what it captured, and the only place a chart
 /// fetch looks. Configuration, unlike the browser profile beside it: small,
 /// hand-editable, and worth carrying between machines.
-pub fn session_file() -> PathBuf {
-    if let Some(path) = std::env::var_os("TOS_ENV_FILE").filter(|p| !p.is_empty()) {
-        return PathBuf::from(path);
+///
+/// Fallible, because there is one state of a machine with no right answer —
+/// no `TOS_ENV_FILE`, no `XDG_CONFIG_HOME`, no home directory at all — and
+/// refusing is the only honest thing to do there. This used to fall back to
+/// `/tmp`, which put a brokerage session where every account on the machine
+/// could watch for it; nothing in this crate reads or writes a session
+/// anywhere but the path this returns.
+pub fn session_path() -> Result<PathBuf> {
+    session_path_from(|key| std::env::var_os(key), std::env::home_dir())
+}
+
+/// [`session_path`] with the environment handed in, so the rule can be
+/// tested without a test rewriting variables every other test reads.
+fn session_path_from(
+    var: impl Fn(&str) -> Option<std::ffi::OsString>,
+    home: Option<PathBuf>,
+) -> Result<PathBuf> {
+    if let Some(path) = var("TOS_ENV_FILE").filter(|p| !p.is_empty()) {
+        return Ok(PathBuf::from(path));
     }
-    let base = std::env::var_os("XDG_CONFIG_HOME")
+    let config = var("XDG_CONFIG_HOME")
         .filter(|p| !p.is_empty())
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-        .unwrap_or_else(|| PathBuf::from("/tmp"));
-    base.join("omacharts/tos.env")
+        .or_else(|| home.map(|home| home.join(".config")))
+        .ok_or_else(|| Error::Config(NO_HOME.into()))?;
+    Ok(config.join("omacharts/tos.env"))
+}
+
+/// [`session_path`] for a line on screen.
+///
+/// The settings panel tells people where their session is kept, and it is
+/// entitled to an answer even on a machine with nowhere to keep one — where
+/// it shows the path unexpanded, because that is all there is to say. Never
+/// opened: every read and every write goes through [`session_path`].
+pub fn session_file() -> PathBuf {
+    session_path().unwrap_or_else(|_| PathBuf::from("~/.config/omacharts/tos.env"))
 }
 
 /// Where the browser profile the sign-in uses lives.
@@ -91,11 +127,11 @@ pub fn browser() -> Option<PathBuf> {
 /// What a sign-in would be starting from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionState {
-    /// No session file, or nothing in it for paperMoney.
+    /// No session file, or nothing in it.
     Missing,
-    /// A paperMoney session is saved. `account` is the account code the
-    /// gateway last reported, and `saved` the file's mtime in unix seconds —
-    /// which is "signed in since", near enough to say out loud.
+    /// A session is saved. `account` is the account code the gateway last
+    /// reported, and `saved` the file's mtime in unix seconds — which is
+    /// "signed in since", near enough to say out loud.
     Saved {
         account: Option<String>,
         saved: Option<i64>,
@@ -103,9 +139,6 @@ pub enum SessionState {
     /// Saved, and the gateway has since refused it. Signing in again is the
     /// only fix, and it is the one state worth interrupting somebody over.
     Expired { at: i64 },
-    /// The file holds a live-trading session and nothing else. Refused rather
-    /// than used: this is a chart feed, and it connects to paperMoney only.
-    RefusedLive,
 }
 
 impl SessionState {
@@ -118,9 +151,13 @@ impl SessionState {
 /// What the saved session file says, without connecting to anything.
 ///
 /// Expiry is the one thing a file cannot be read for — only the gateway knows
-/// — so it is reported from the mark a refused connection leaves behind.
+/// — so it is reported from the mark a refused connection leaves behind. A
+/// machine with nowhere to keep a session has none of one.
 pub fn session_state() -> SessionState {
-    state_of(&session_file())
+    match session_path() {
+        Ok(env) => state_of(&env),
+        Err(_) => SessionState::Missing,
+    }
 }
 
 pub(crate) fn state_of(env: &Path) -> SessionState {
@@ -136,10 +173,6 @@ pub(crate) fn state_of(env: &Path) -> SessionState {
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|d| d.as_secs() as i64),
         },
-        // A live session is worth saying out loud, because "no session"
-        // would read as a sign-in that failed when in fact it worked and
-        // landed somewhere this feed will not follow.
-        None if BrowserSession::any_in(env).is_some() => SessionState::RefusedLive,
         None => SessionState::Missing,
     }
 }
@@ -151,14 +184,16 @@ pub(crate) fn state_of(env: &Path) -> SessionState {
 /// a password and a one-time code, or after ten minutes. Call it on a thread
 /// of its own. `log` is handed one progress line at a time.
 pub fn sign_in(log: impl Fn(&str) + Send + Sync + 'static) -> Result<()> {
-    browser_sign_in_with(&session_file(), Box::new(log))?;
+    browser_sign_in_with(&session_path()?, Box::new(log))?;
     Ok(())
 }
 
-/// Forgets the saved session. The browser profile stays, so the next sign-in
-/// is still a trusted device and usually just a click.
-pub fn sign_out() -> std::io::Result<()> {
-    BrowserSession::clear_dotenv_for(session_file(), TradingSystem::PaperMoney)
+/// Forgets the saved session, whichever account it was, and both of the
+/// file's slots with it. The browser profile stays, so the next sign-in is
+/// still a trusted device and usually just a click.
+pub fn sign_out() -> Result<()> {
+    let env = session_path()?;
+    BrowserSession::clear_dotenv(&env).map_err(|e| Error::Other(format!("sign out: {e}")))
 }
 
 /// Has this process connected to the gateway?
@@ -168,6 +203,18 @@ pub fn sign_out() -> std::io::Result<()> {
 /// a socket or launched anything.
 pub fn connected() -> bool {
     CELL.get().is_some()
+}
+
+/// Close the connection this process holds, if it holds one.
+///
+/// For a window that has stopped charting from this feed: a socket kept open
+/// to a brokerage for nothing is not a cost worth paying, and every stream on
+/// it has already been let go of. The next request, if one ever comes, finds
+/// the connection dead and replaces it the way a lost one is replaced.
+pub fn disconnect() {
+    if let Some(market) = CELL.get() {
+        market.current().1.disconnect();
+    }
 }
 
 /// Candles for one symbol, oldest first. `aggregation` and `range` are the
@@ -194,7 +241,7 @@ fn market() -> Result<&'static Market> {
     if let Some(ready) = CELL.get() {
         return Ok(ready);
     }
-    let built = Market::connect(&session_file())?;
+    let built = Market::connect(&session_path()?)?;
     Ok(CELL.get_or_init(|| built))
 }
 
@@ -213,8 +260,7 @@ impl Market {
         // started a thread, and nothing does unless somebody has chosen this
         // feed and asked for a chart: the first `candles` call gets here.
         let session = usable_session(env).ok_or_else(|| no_session(env))?;
-        // `false`: a chart feed does not open the live gateway.
-        let (client, _) = match session.connect(env, false) {
+        let (client, _) = match session.connect(env) {
             // The one answer only the gateway can give. Written down so the
             // settings panel can say "expired" instead of "signed in" next
             // time somebody looks, in this process or another.
@@ -275,9 +321,9 @@ impl Drop for Market {
     }
 }
 
+/// The saved session, whichever thinkorswim account it belongs to.
 fn stored_session(env: &Path) -> Option<BrowserSession> {
-    BrowserSession::load_for(env, TradingSystem::PaperMoney)
-        .filter(|session| session.trading_system == TradingSystem::PaperMoney)
+    BrowserSession::any_in(env)
 }
 
 /// The saved session, unless the gateway has already refused it.
@@ -325,9 +371,10 @@ fn browser_sign_in_with(
 ) -> Result<BrowserSession> {
     session::ensure_private_dir(env).map_err(|e| Error::Other(format!("session dir: {e}")))?;
     let session = capture_browser_session(CaptureOptions {
-        trading_system: TradingSystem::PaperMoney,
+        // Whichever account the browser lands in: both of them chart.
+        trading_system: None,
         timeout: Duration::from_secs(10 * 60),
-        user_data_dir: auth::default_profile_dir(),
+        user_data_dir: auth::profile_dir_beside(env),
         log,
     })?;
     session
@@ -341,7 +388,7 @@ fn browser_sign_in_with(
 
 fn reconnect(env: &Path) -> Result<(Client, BrowserSession)> {
     let session = usable_session(env).ok_or_else(|| no_session(env))?;
-    match session.connect(env, false) {
+    match session.connect(env) {
         Err(error) if auth_failure(&error) => {
             let _ = BrowserSession::mark_expired(env, now());
             Err(error)
@@ -391,8 +438,9 @@ pub fn candles_of(body: &ChartBody) -> Vec<Candle> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use crate::config::assert_gateway_allowed;
     use crate::services::chart::ChartBody;
+    use serde_json::json;
 
     #[test]
     fn a_snapshot_becomes_oldest_first_candles() {
@@ -440,6 +488,8 @@ mod tests {
         assert!(!connected(), "connecting must not have been attempted");
     }
 
+    /// A file the previous version of this crate wrote: a paperMoney slot,
+    /// and nothing else in it.
     #[test]
     fn a_saved_paper_session_reads_as_signed_in() {
         let path = env_path("saved");
@@ -475,47 +525,112 @@ mod tests {
         assert!(state_of(&path).usable());
     }
 
-    /// Charts only, paperMoney only. A live session in the file is not used,
-    /// and not reported as nothing either.
+    /// The change the crate exists to make: a live thinkorswim session is a
+    /// session. It reads as signed in, it is the one a chart would use, and
+    /// nothing between the file and the socket refuses its gateway.
     #[test]
-    fn a_live_session_is_refused_rather_than_used() {
+    fn a_saved_live_session_reads_as_signed_in_too() {
         let path = env_path("live");
         std::fs::write(
             &path,
             format!("TOS_LIVE_ACCESS_TOKEN=tok\nTOS_LIVE_GATEWAY_URL={LIVE}\n"),
         )
         .unwrap();
-        assert_eq!(state_of(&path), SessionState::RefusedLive);
-        assert!(stored_session(&path).is_none());
-        assert!(matches!(Market::connect(&path), Err(Error::NoSession(_))));
+        assert!(state_of(&path).usable(), "{:?}", state_of(&path));
+        let session = stored_session(&path).expect("the live session");
+        assert_eq!(session.access_token, "tok");
+        assert_eq!(session.gateway_url, LIVE);
+        assert!(assert_gateway_allowed(session.trading_system, &session.gateway_url).is_ok());
     }
 
-    /// The lie worth testing: a paper slot pointing at a live gateway. The
-    /// label loses to the URL, so this is a live session and refused.
+    /// A paper slot pointing at a live gateway. The label still loses to the
+    /// URL — that is what keeps the session filed under the right keys — but
+    /// losing no longer means being refused.
     #[test]
-    fn a_paper_label_on_a_live_gateway_is_still_live() {
+    fn a_paper_label_on_a_live_gateway_is_the_live_session_it_names() {
         let path = env_path("mislabelled");
         std::fs::write(
             &path,
             format!("TOS_PAPER_ACCESS_TOKEN=tok\nTOS_PAPER_GATEWAY_URL={LIVE}\nTOS_TRADING_SYSTEM=PaperMoney\n"),
         )
         .unwrap();
-        assert!(stored_session(&path).is_none());
-        assert_eq!(state_of(&path), SessionState::RefusedLive);
-        assert!(matches!(Market::connect(&path), Err(Error::NoSession(_))));
+        let session = stored_session(&path).expect("the session the URL names");
+        assert_eq!(session.gateway_url, LIVE);
+        assert!(assert_gateway_allowed(session.trading_system, &session.gateway_url).is_ok());
+        assert!(state_of(&path).usable());
     }
 
+    /// A gateway that is nobody's thinkorswim is refused, and it is refused
+    /// before a socket is opened — a session file is an ordinary text file
+    /// another program on the machine can write to.
     #[test]
-    fn signing_out_forgets_the_session_and_keeps_unrelated_lines() {
+    fn a_session_pointing_somewhere_that_is_not_thinkorswim_is_refused() {
+        let path = env_path("elsewhere");
+        std::fs::write(
+            &path,
+            "TOS_ACCESS_TOKEN=tok\nTOS_GATEWAY_URL=wss://evil.example/Services/WsJson\n",
+        )
+        .unwrap();
+        let Err(error) = Market::connect(&path) else {
+            panic!("a gateway that is not thinkorswim's must be refused");
+        };
+        assert!(
+            matches!(error, Error::Config(ref m) if m.contains("not a thinkorswim gateway")),
+            "{error}"
+        );
+        assert!(!error.to_string().contains("tok"), "{error}");
+    }
+
+    /// Nowhere to keep a session is a refusal, not a fallback. This used to
+    /// land in `/tmp`, where every account on the machine could watch for it.
+    #[test]
+    fn with_no_home_there_is_nowhere_to_keep_a_session() {
+        let nothing = |_: &str| None;
+        let error = session_path_from(nothing, None).expect_err("no home");
+        assert!(matches!(error, Error::Config(ref m) if m == NO_HOME), "{error}");
+        assert!(!error.to_string().contains("tmp"), "{error}");
+        // What it does with a home, and with each way of naming one.
+        let home = PathBuf::from("/home/p");
+        assert_eq!(
+            session_path_from(nothing, Some(home.clone())).unwrap(),
+            PathBuf::from("/home/p/.config/omacharts/tos.env")
+        );
+        let xdg = |k: &str| (k == "XDG_CONFIG_HOME").then(|| "/xdg".into());
+        assert_eq!(
+            session_path_from(xdg, None).unwrap(),
+            PathBuf::from("/xdg/omacharts/tos.env")
+        );
+        let named = |k: &str| (k == "TOS_ENV_FILE").then(|| "/elsewhere/tos.env".into());
+        assert_eq!(
+            session_path_from(named, Some(home)).unwrap(),
+            PathBuf::from("/elsewhere/tos.env")
+        );
+        // An empty variable names nothing.
+        let empty = |_: &str| Some(std::ffi::OsString::new());
+        assert!(session_path_from(empty, None).is_err());
+        // The path shown on screen is never a shared directory either.
+        let shown = session_file();
+        assert!(shown.is_absolute() || shown.starts_with("~"), "{}", shown.display());
+    }
+
+    /// Signing out forgets both accounts, not just the one that happens to
+    /// be active: somebody who presses it has finished with this file.
+    #[test]
+    fn signing_out_forgets_every_session_and_keeps_unrelated_lines() {
         let path = env_path("signout");
         std::fs::write(
             &path,
-            format!("KEEP=1\nTOS_PAPER_ACCESS_TOKEN=tok\nTOS_PAPER_GATEWAY_URL={PAPER}\n"),
+            format!(
+                "KEEP=1\nTOS_ACCESS_TOKEN=tok\nTOS_GATEWAY_URL={PAPER}\nTOS_PAPER_ACCESS_TOKEN=tok\nTOS_PAPER_GATEWAY_URL={PAPER}\nTOS_LIVE_ACCESS_TOKEN=live\nTOS_LIVE_GATEWAY_URL={LIVE}\n"
+            ),
         )
         .unwrap();
-        BrowserSession::clear_dotenv_for(&path, TradingSystem::PaperMoney).unwrap();
+        BrowserSession::clear_dotenv(&path).unwrap();
         assert_eq!(state_of(&path), SessionState::Missing);
-        assert!(std::fs::read_to_string(&path).unwrap().contains("KEEP=1"));
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("KEEP=1"), "{text}");
+        assert!(!text.contains("tok"), "{text}");
+        assert!(!text.contains("live"), "{text}");
     }
 
     /// A chart on a refresh timer asks once a minute, for ever. Asking a

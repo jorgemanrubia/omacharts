@@ -152,7 +152,11 @@ fn whole(response: &Response) -> Vec<Candle> {
     match ChartBody::deserialize(&*response.body) {
         Ok(body) => candles_of(&body),
         Err(error) => {
-            eprintln!("tos-market: {}: a snapshot this could not read: {error}", response.id);
+            eprintln!(
+                "tos-market: {}: a snapshot this could not read ({})",
+                response.id,
+                crate::redact::decode_failure(&error)
+            );
             Vec::new()
         }
     }

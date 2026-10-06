@@ -157,8 +157,12 @@ impl DocumentStore {
                     Some(raw) => match Vec::<Operation>::deserialize(raw) {
                         Ok(p) => p,
                         Err(e) => {
+                            // Not serde's own words: a type error quotes the
+                            // value it tripped over, and that comes from the
+                            // frame.
                             eprintln!(
-                                "undecodable patches on {id}: {e}; dropping the document and resyncing"
+                                "undecodable patches on {id} ({}); dropping the document and resyncing",
+                                crate::redact::decode_failure(&e)
                             );
                             self.docs.remove(&id);
                             self.flag_resync(&id);

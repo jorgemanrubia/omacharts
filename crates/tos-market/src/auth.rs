@@ -4,7 +4,8 @@
 //! normally (password, MFA, device trust), and passively captures what the
 //! client needs from the SPA's own WebSocket traffic via the DevTools protocol:
 //!
-//!   - the service-gateway URL the SPA connected to (live A/B or papermoney)
+//!   - the service-gateway URL the SPA connected to, which has to be one of
+//!     thinkorswim's own (see [`crate::config::KNOWN_GATEWAY_HOSTS`])
 //!   - the `login/schwab` / `login` response: access token + refresh token
 //!   - `user_properties`: default account code
 //!
@@ -19,13 +20,15 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 use crate::cdp::{Browser, Page};
-use crate::config::{fallback_gateway_urls, TradingSystem, TOS_WEB_ORIGIN};
+use crate::config::{fallback_gateway_urls, is_known_gateway, TradingSystem, TOS_WEB_ORIGIN};
 use crate::error::{Error, Result};
 use crate::session::BrowserSession;
 
 pub struct CaptureOptions {
-    /// Which trading system you want a session for.
-    pub trading_system: TradingSystem,
+    /// Which thinkorswim account to wait for, or `None` for whichever one the
+    /// browser lands in — which is what signing in for charts wants, since
+    /// paper and live chart alike.
+    pub trading_system: Option<TradingSystem>,
     /// Give up after this long (default 10 minutes).
     pub timeout: Duration,
     /// Persistent profile so device trust survives between logins.
@@ -37,7 +40,7 @@ pub struct CaptureOptions {
 impl Default for CaptureOptions {
     fn default() -> Self {
         CaptureOptions {
-            trading_system: TradingSystem::PaperMoney,
+            trading_system: None,
             timeout: Duration::from_secs(10 * 60),
             user_data_dir: default_profile_dir(),
             log: Box::new(|m| eprintln!("{m}")),
@@ -60,9 +63,11 @@ pub fn default_profile_dir() -> PathBuf {
     profile_dir_beside(&crate::session_file())
 }
 
-/// [`default_profile_dir`] with the session file handed in, so the rule can
-/// be tested without a test rewriting the variables every other test reads.
-fn profile_dir_beside(session: &Path) -> PathBuf {
+/// [`default_profile_dir`] with the session file handed in: what a sign-in
+/// uses, since it has already resolved the file it is writing to, and what
+/// lets the rule be tested without rewriting the variables every other test
+/// reads.
+pub(crate) fn profile_dir_beside(session: &Path) -> PathBuf {
     session
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -330,12 +335,11 @@ pub fn capture_browser_session(opts: CaptureOptions) -> Result<BrowserSession> {
 
     log(&format!("Opening {TOS_WEB_ORIGIN} — log in as usual."));
     match opts.trading_system {
-        TradingSystem::PaperMoney => {
-            log("Wanted: PaperMoney. If the UI lands in live trading, use the account-menu toggle to switch to paperMoney.");
-        }
-        TradingSystem::LiveTrading => {
-            log("Wanted: Live Trading. If the UI lands in paperMoney, use the account-menu toggle to switch to live.");
-        }
+        None => log("Either account will do: paperMoney and live both chart."),
+        Some(wanted) => log(&format!(
+            "Wanted: {}. Switch with the account menu in the Chrome window if the UI lands in the other one.",
+            wanted.human()
+        )),
     }
     let result = capture(&mut browser, &opts, &log, &mut sockets);
 
@@ -383,9 +387,15 @@ fn capture(
                     let Some(request) = event.params["requestId"].as_str() else {
                         continue;
                     };
-                    if url.contains("/Services/WsJson") {
+                    // A socket on a host this crate would refuse to open
+                    // later is not a session worth capturing now.
+                    if url.contains("/Services/WsJson") && is_known_gateway(&url) {
                         let ts = TradingSystem::of_gateway_url(&url);
-                        log(&format!("↔ SPA opened gateway socket: {url} ({ts})"));
+                        log(&format!(
+                            "↔ SPA opened gateway socket: {} ({})",
+                            short_url(&url),
+                            ts.human()
+                        ));
                         sockets.insert(
                             request.to_string(),
                             SocketSession {
@@ -413,9 +423,13 @@ fn capture(
         }
 
         // 1) sniffed socket session (has everything)
+        let wanted = opts.trading_system;
         let sniffed = sockets
             .values()
-            .find(|s| s.trading_system == Some(opts.trading_system) && s.access_token.is_some())
+            .find(|s| {
+                s.access_token.is_some()
+                    && wanted.is_none_or(|wanted| s.trading_system == Some(wanted))
+            })
             .cloned();
         // 2) sessionStorage session (token + trading system)
         let stored = read_storage(browser, &pages);
@@ -425,10 +439,16 @@ fn capture(
             .and_then(TradingSystem::parse);
 
         let found = if let Some(s) = sniffed {
+            // The system the socket's own host names, not what anything
+            // calls it: the host is what the session is saved under and what
+            // is checked before it is opened again.
+            let trading_system = s
+                .trading_system
+                .unwrap_or_else(|| TradingSystem::of_gateway_url(&s.gateway_url));
             s.access_token.map(|access_token| {
                 (
                     BrowserSession {
-                        trading_system: opts.trading_system,
+                        trading_system,
                         gateway_url: s.gateway_url,
                         access_token,
                         refresh_token: s.refresh_token,
@@ -438,15 +458,14 @@ fn capture(
                     "websocket",
                 )
             })
-        } else if let Some(st) = stored
-            .as_ref()
-            .filter(|_| stored_system == Some(opts.trading_system))
+        } else if let Some(system) =
+            stored_system.filter(|system| wanted.is_none_or(|wanted| wanted == *system))
         {
-            st.token.clone().map(|access_token| {
+            stored.as_ref().and_then(|st| st.token.clone()).map(|access_token| {
                 (
                     BrowserSession {
-                        trading_system: opts.trading_system,
-                        gateway_url: fallback_gateway(opts.trading_system),
+                        trading_system: system,
+                        gateway_url: fallback_gateway(system),
                         access_token,
                         refresh_token: None,
                         account_code: None,
@@ -461,7 +480,7 @@ fn capture(
         if let Some((session, via)) = found {
             log(&format!(
                 "✓ {} session captured via {via}{}",
-                opts.trading_system,
+                session.trading_system.human(),
                 session
                     .account_code
                     .as_ref()
@@ -472,16 +491,26 @@ fn capture(
         }
 
         let status = if let Some(st) = &stored {
-            format!(
-                "Logged in ({}); waiting for the UI to be in {}… (switch via the account menu in the Chrome window)",
-                st.trading_system.clone().unwrap_or_else(|| "unknown system".into()),
-                opts.trading_system
-            )
+            let seen = st
+                .trading_system
+                .as_deref()
+                .and_then(TradingSystem::parse)
+                .map(TradingSystem::human)
+                .unwrap_or("an account it cannot name");
+            match wanted {
+                Some(wanted) => format!(
+                    "Logged in ({seen}); waiting for the UI to be in {}… (switch via the account menu in the Chrome window)",
+                    wanted.human()
+                ),
+                None => format!(
+                    "Logged in ({seen}); waiting for the thinkorswim gateway socket…"
+                ),
+            }
         } else {
             let urls: Vec<String> = pages.iter().map(|p| short_url(&p.url)).collect();
             let socks: Vec<String> = sockets
                 .values()
-                .filter_map(|s| s.trading_system.map(|t| t.to_string()))
+                .filter_map(|s| s.trading_system.map(|t| t.human().to_string()))
                 .collect();
             format!(
                 "Waiting for login… pages={} [{}] sockets=[{}]",
@@ -495,10 +524,10 @@ fn capture(
             log(&status);
         }
         if Instant::now() > deadline {
-            return Err(Error::Timeout(format!(
-                "waiting for a {} session",
-                opts.trading_system
-            )));
+            return Err(Error::Timeout(match wanted {
+                Some(wanted) => format!("waiting for a {} session", wanted.human()),
+                None => "waiting for a thinkorswim session".into(),
+            }));
         }
         // Reading the socket is also the wait: traffic arriving during it is
         // what the next turn classifies.

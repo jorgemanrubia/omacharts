@@ -274,6 +274,32 @@ mod tests {
         }
     }
 
+    /// An error frame reaches the caller as the gateway's own sentence and
+    /// nothing else from the body. Worth pinning: [`crate::Error::Gateway`]
+    /// ends up in a log line and on a chart, and an error frame is one of the
+    /// shapes that can arrive carrying a token beside the message.
+    #[test]
+    fn a_gateway_error_carries_the_message_and_none_of_the_rest_of_the_body() {
+        let body = json!({
+            "message": "No such symbol: ZZZZ",
+            "token": "SECRET-TOKEN",
+            "accessTokenInfo": {"refreshToken": "SECRET-REFRESH"},
+        });
+        assert_eq!(message_of(&body), "No such symbol: ZZZZ");
+        let response = Response {
+            service: "chart".into(),
+            id: "chart-ZZZZ-MIN5".into(),
+            ver: 1,
+            kind: ResponseType::Error,
+            body: Arc::new(body),
+            touched: Vec::new().into(),
+        };
+        let error = response.into_result().expect_err("an error frame");
+        let said = error.to_string();
+        assert!(said.contains("No such symbol"), "{said}");
+        assert!(!said.contains("SECRET"), "{said}");
+    }
+
     #[test]
     fn request_serializes_as_single_payload_item() {
         let req = Request::new("login", "login", 0, json!({"token": "t"}));

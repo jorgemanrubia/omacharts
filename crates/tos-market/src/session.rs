@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use crate::client::{Client, ClientConfig, Credentials};
-use crate::config::TradingSystem;
+use crate::config::{named_host, TradingSystem};
 use crate::services::login::LoginBody;
 /// When the gateway last refused this session's token, in unix seconds.
 ///
@@ -77,17 +77,20 @@ fn slot_keys(ts: TradingSystem) -> SlotKeys {
 
 /// The system a session really talks to: the one its gateway URL implies. A
 /// label (or slot name) that says otherwise is logged and overridden, so a
-/// `.env` that calls a live gateway "paper" cannot bypass the live gate. Only
-/// a loopback gateway (a local fake) leaves the label in charge; with neither
-/// a label nor a classifiable host the session is live.
+/// `.env` that calls a live gateway "paper" is saved back to the slot its
+/// host belongs to rather than losing the session under the wrong keys. Only
+/// a loopback gateway (a local fake) leaves the label in charge.
 fn system_of(label: Option<TradingSystem>, gateway_url: &str, source: &str) -> TradingSystem {
     let Some(of_url) = TradingSystem::implied_by_gateway_url(gateway_url) else {
         return label.unwrap_or(TradingSystem::LiveTrading);
     };
     if let Some(label) = label {
         if label != of_url {
+            // The host, not the URL: this one came out of a file, and the
+            // query of a URL is where a one-time code would sit.
             eprintln!(
-                "{source} says {label} but its gateway {gateway_url} is {of_url}; using {of_url}"
+                "{source} says {label} but its gateway {} is {of_url}; using {of_url}",
+                named_host(gateway_url)
             );
         }
     }
@@ -162,15 +165,11 @@ impl BrowserSession {
     /// Logs in with this session's access token on its own gateway, then saves
     /// what the gateway's reply says about the session back to `env_file` —
     /// unless the file now holds a token another process refreshed while this
-    /// one connected (see [`Self::save_shared`]). The live gate is
-    /// [`Client::connect`]'s, judged by the gateway URL.
-    pub fn connect(
-        self,
-        env_file: &Path,
-        allow_live_trading: bool,
-    ) -> crate::Result<(Client, BrowserSession)> {
+    /// one connected (see [`Self::save_shared`]). The gateway host is
+    /// [`Client::connect`]'s to refuse, judged by the URL.
+    pub fn connect(self, env_file: &Path) -> crate::Result<(Client, BrowserSession)> {
         let token = self.access_token.clone();
-        self.connect_with(env_file, allow_live_trading, Credentials::AccessToken(token))
+        self.connect_with(env_file, Credentials::AccessToken(token))
     }
 
     /// Like [`Self::connect`] with an explicit login frame. [`Credentials::AuthCode`]
@@ -180,20 +179,18 @@ impl BrowserSession {
     pub fn connect_with(
         mut self,
         env_file: &Path,
-        allow_live_trading: bool,
         credentials: Credentials,
     ) -> crate::Result<(Client, BrowserSession)> {
         let config = ClientConfig {
             trading_system: self.trading_system,
             gateway_url: self.gateway_url.clone(),
-            allow_live_trading,
             ..Default::default()
         };
         let logged_in_with = self.access_token.clone();
         let (client, login) = Client::connect(config, credentials)?;
         self.absorb_login(&login);
         match self.save_shared(env_file, &logged_in_with) {
-            Ok(false) => eprintln!("kept a newer ToS session in {}", env_file.display()),
+            Ok(false) => eprintln!("kept a newer thinkorswim session in {}", env_file.display()),
             Err(e) => eprintln!("could not save session to {}: {e}", env_file.display()),
             Ok(true) => {}
         }
@@ -309,20 +306,19 @@ impl BrowserSession {
         write_dotenv(path, &existing, &remove, &pairs)
     }
 
-    /// Whatever session the file describes, whichever system it belongs to
-    /// and whatever it calls itself.
+    /// The saved session, whichever account it belongs to.
     ///
-    /// For telling "nothing here" apart from "something here this feed will
-    /// not use": a login that landed on live trading, or a paper slot
-    /// pointing at a live gateway, is a sign-in that worked and a feed that
-    /// still cannot chart — and reporting that as "no session" sends somebody
-    /// round the browser loop again to the same end.
+    /// The active `TOS_*` keys first, because they are the last sign-in; then
+    /// either slot, so that a file an older version of this crate wrote with
+    /// nothing but a paperMoney slot in it still loads, and so does one
+    /// holding only a live session. Which of the two it is is this crate's
+    /// business and nobody else's: both chart.
     pub fn any_in(path: impl AsRef<Path>) -> Option<Self> {
         let text = std::fs::read_to_string(path).ok()?;
         let vars = parse_dotenv(&text);
-        session_from_slot(&vars, TradingSystem::PaperMoney)
+        Self::from_vars(|k| vars.get(k).cloned())
+            .or_else(|| session_from_slot(&vars, TradingSystem::PaperMoney))
             .or_else(|| session_from_slot(&vars, TradingSystem::LiveTrading))
-            .or_else(|| Self::from_vars(|k| vars.get(k).cloned()))
     }
 
     /// Notes that the gateway refused this file's session, so that whoever
@@ -411,13 +407,11 @@ impl BrowserSession {
 /// Makes the directory a session file lives in, owner-only.
 ///
 /// The file itself is written `0600` through an atomic replace, so what this
-/// protects is the directory around it — which matters because the session
-/// file does not always land somewhere private. With no `HOME` and no
-/// `XDG_CONFIG_HOME` it falls back under the temporary directory, where a
+/// protects is the directory around it. Usually that is somebody's own config
+/// directory, where creating it `0700` costs nothing; it matters wherever
+/// `TOS_ENV_FILE` points the session somewhere shared, because a
 /// world-traversable parent would let anybody on the machine watch for the
-/// file and stat it. Creating it `0700` costs nothing where the path is
-/// already somebody's own config directory, and is the difference
-/// everywhere else. An existing directory is left exactly as it is: its
+/// file and stat it. An existing directory is left exactly as it is: its
 /// permissions are its owner's business, and a crate that tightened
 /// `~/.config` on its way past would be doing something nobody asked for.
 pub(crate) fn ensure_private_dir(file: &Path) -> std::io::Result<()> {
@@ -676,10 +670,10 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
-    /// The directory a session file lives in is the session's own, because
-    /// the file sometimes lands under the temporary directory — with no
-    /// `HOME` and no `XDG_CONFIG_HOME` it has nowhere else to go, and a
-    /// world-traversable parent there is an invitation to watch for it.
+    /// The directory a session file lives in is the session's own, and the
+    /// file inside it is owner-only and written atomically. `TOS_ENV_FILE`
+    /// can point this anywhere, and a world-traversable parent is an
+    /// invitation to watch for the file and stat it.
     #[test]
     #[cfg(unix)]
     fn the_directory_a_session_lands_in_is_owner_only() {
@@ -774,8 +768,8 @@ mod tests {
         use TradingSystem::{LiveTrading, PaperMoney};
         let loopback = "ws://127.0.0.1:8765/Services/WsJson";
         for (label, url, system) in [
-            // A "paper" label on a live gateway is live: the client's gate then
-            // refuses it without allow_live_trading.
+            // A "paper" label on a live gateway is live, so the session is
+            // filed under the live slot's keys rather than lost.
             (Some("PaperMoney"), LIVE_URL, LiveTrading),
             // A "live" label on the paper gateway is paper.
             (Some("LiveTrading"), PAPER_URL, PaperMoney),
@@ -813,6 +807,62 @@ mod tests {
         .unwrap();
         let s = BrowserSession::load_for(&path, TradingSystem::PaperMoney).unwrap();
         assert_eq!(s.trading_system, TradingSystem::PaperMoney);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// The saved session loads whichever account it is, and a file written
+    /// by the version of this crate that only ever kept a paperMoney session
+    /// keeps working. The active keys win when there are several, because
+    /// they are the last sign-in.
+    #[test]
+    fn the_saved_session_loads_whichever_account_it_is() {
+        let (path, dir) = env_path("any-in");
+
+        // What the previous version wrote: active keys plus a paper slot.
+        std::fs::write(
+            &path,
+            format!(
+                "TOS_TRADING_SYSTEM=PaperMoney\nTOS_GATEWAY_URL={PAPER_URL}\nTOS_ACCESS_TOKEN=paper-tok\nTOS_PAPER_ACCESS_TOKEN=paper-tok\nTOS_PAPER_GATEWAY_URL={PAPER_URL}\n"
+            ),
+        )
+        .unwrap();
+        let loaded = BrowserSession::any_in(&path).expect("the paper session");
+        assert_eq!(loaded.access_token, "paper-tok");
+        assert_eq!(loaded.trading_system, TradingSystem::PaperMoney);
+
+        // A paper slot and nothing else: still a session.
+        std::fs::write(
+            &path,
+            format!("TOS_PAPER_ACCESS_TOKEN=paper-tok\nTOS_PAPER_GATEWAY_URL={PAPER_URL}\n"),
+        )
+        .unwrap();
+        assert_eq!(
+            BrowserSession::any_in(&path).expect("the paper slot").access_token,
+            "paper-tok"
+        );
+
+        // A live slot and nothing else: a session too, now.
+        std::fs::write(
+            &path,
+            format!("TOS_LIVE_ACCESS_TOKEN=live-tok\nTOS_LIVE_GATEWAY_URL={LIVE_URL}\n"),
+        )
+        .unwrap();
+        let live = BrowserSession::any_in(&path).expect("the live slot");
+        assert_eq!(live.access_token, "live-tok");
+        assert_eq!(live.trading_system, TradingSystem::LiveTrading);
+
+        // Both slots, and the active keys say which was signed in last.
+        session(TradingSystem::PaperMoney, "paper-tok")
+            .save_to_dotenv(&path)
+            .unwrap();
+        session(TradingSystem::LiveTrading, "live-newest")
+            .save_to_dotenv(&path)
+            .unwrap();
+        assert_eq!(
+            BrowserSession::any_in(&path).expect("the active session").access_token,
+            "live-newest"
+        );
+        assert!(BrowserSession::any_in(dir.join("absent.env")).is_none());
         std::fs::remove_dir_all(dir).unwrap();
     }
 

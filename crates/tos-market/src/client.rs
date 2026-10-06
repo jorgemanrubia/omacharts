@@ -27,9 +27,7 @@ use tungstenite::client::IntoClientRequest;
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Message, WebSocket};
 
-use crate::config::{
-    assert_gateway_matches, assert_trading_system_allowed, TradingSystem, TOS_WEB_ORIGIN,
-};
+use crate::config::{assert_gateway_allowed, TradingSystem, TOS_WEB_ORIGIN};
 use crate::error::{Error, Result};
 use crate::patch::DocumentStore;
 use crate::protocol::{
@@ -37,7 +35,7 @@ use crate::protocol::{
 };
 use crate::redact;
 use crate::services::chart::{chart_request, ChartParams};
-use crate::services::is_replayable;
+use crate::services::{assert_allowed, is_replayable};
 use crate::services::login::{login_request, schwab_login_request, LoginBody};
 
 type Socket = WebSocket<MaybeTlsStream<TcpStream>>;
@@ -54,12 +52,16 @@ const READ_TIMEOUT: Duration = Duration::from_millis(200);
 
 #[derive(Debug, Clone)]
 pub struct ClientConfig {
+    /// Which of thinkorswim's gateways the URL below names. Plumbing: it
+    /// picks the slot the session is saved back to, and it has to agree with
+    /// the host.
     pub trading_system: TradingSystem,
-    /// The gateway to connect to (e.g. the one captured from the browser session).
+    /// The gateway to connect to (e.g. the one captured from the browser
+    /// session). Refused unless its host is one of thinkorswim's.
     pub gateway_url: String,
-    pub allow_live_trading: bool,
     /// Close the socket when no frame (heartbeat included) arrives for this
-    /// long. The gateway heartbeats every ~2 s; 30 s mirrors the ToS web UI.
+    /// long. The gateway heartbeats every ~2 s; 30 s mirrors thinkorswim's
+    /// own web UI.
     pub heartbeat_timeout: Duration,
 }
 
@@ -68,7 +70,6 @@ impl Default for ClientConfig {
         ClientConfig {
             trading_system: TradingSystem::PaperMoney,
             gateway_url: String::new(),
-            allow_live_trading: false,
             heartbeat_timeout: Duration::from_secs(30),
         }
     }
@@ -146,11 +147,10 @@ impl Client {
     /// the background on a thread of its own until the socket goes.
     ///
     /// A `String` is an access token (`login`). [`Credentials::AuthCode`] sends
-    /// `login/schwab` instead. The live gate is applied to the trading system
-    /// the gateway URL implies, not to the `trading_system` label: a label
-    /// that disagrees with the URL is an [`Error::Config`], and any host that
-    /// is not a papermoney host needs `allow_live_trading`. The gate runs
-    /// before the socket opens.
+    /// `login/schwab` instead. The gate is the gateway's host, read out of
+    /// the URL: a host that is not one of thinkorswim's is refused, and a
+    /// `trading_system` label that disagrees with the host is an
+    /// [`Error::Config`]. It runs before the socket opens.
     pub fn connect(
         config: ClientConfig,
         credentials: impl Into<Credentials>,
@@ -159,9 +159,8 @@ impl Client {
         // has to be the provider the rest of the process already built with:
         // ureq, on the engine's Yahoo calls, is compiled against ring.
         let _ = rustls::crypto::ring::default_provider().install_default();
-        assert_trading_system_allowed(config.trading_system, config.allow_live_trading)?;
         let url = config.gateway_url.clone();
-        assert_gateway_matches(config.trading_system, &url, config.allow_live_trading)?;
+        assert_gateway_allowed(config.trading_system, &url)?;
 
         // Opened on this thread rather than the actor's, because what went
         // wrong only survives if it is classified where it happened.
@@ -229,6 +228,10 @@ impl Client {
     }
 
     fn route(&self, request: Request, subscribe: bool) -> Result<Subscription> {
+        // Nothing but a chart and a login ever goes out of here. Refused at
+        // the door so that the caller is told, and refused again in
+        // [`write_request`] so that no path around this one can write it.
+        assert_allowed(request.service())?;
         let (reply, rx) = mpsc::channel();
         let id = request.id().to_string();
         let token = self.next_token.fetch_add(1, Ordering::Relaxed);
@@ -512,14 +515,20 @@ impl Actor {
     /// One text frame. A `Some` answer ends the connection.
     fn frame(&mut self, text: &str, phase: &mut Phase) -> Option<Outcome> {
         if redact::frames_on_stderr() {
-            eprintln!("⬅️ {}", redact::inbound(text));
+            eprintln!("⬅️ {}", redact::frame(text));
         }
         let inbound = match decode_inbound(text) {
             Ok(inbound) => inbound,
             Err(e) => {
-                // The frame is counted, never quoted: it failed to parse, so
-                // nothing here can say which of its fields are secrets.
-                eprintln!("undecodable frame of {} bytes: {e}", text.len());
+                // The frame is counted, never quoted — it failed to parse, so
+                // nothing here can say which of its fields are secrets — and
+                // serde's own account of the failure quotes the value it
+                // tripped over, so that is left out too.
+                eprintln!(
+                    "undecodable frame of {} bytes ({})",
+                    text.len(),
+                    redact::decode_failure(&e)
+                );
                 return None;
             }
         };
@@ -596,7 +605,15 @@ impl Actor {
     }
 
     fn handle_login(&mut self, body: Value) -> Result<()> {
-        let parsed: LoginBody = serde_json::from_value(body)?;
+        // The one body that carries the access token, so not even serde's
+        // words about it are repeated: a type error quotes the value it did
+        // not expect.
+        let parsed: LoginBody = serde_json::from_value(body).map_err(|e| {
+            Error::Other(format!(
+                "the gateway's login reply did not parse ({})",
+                redact::decode_failure(&e)
+            ))
+        })?;
         if !parsed.successful() {
             return Err(Error::Login(
                 parsed.message.unwrap_or(parsed.authentication_status),
@@ -636,10 +653,15 @@ impl Actor {
     }
 }
 
+/// The one place this crate writes a request, and therefore the place the
+/// "charts only" guarantee is made structural: a service off
+/// [`crate::services::ALLOWED_SERVICES`] cannot be written from anywhere,
+/// including the login frame and the resync replay.
 fn write_request(wire: &mut impl Wire, request: &Request) -> Result<()> {
+    assert_allowed(request.service())?;
     let text = serde_json::to_string(request)?;
     if redact::frames_on_stderr() {
-        eprintln!("➡️ {}", redact::outbound(request, &text));
+        eprintln!("➡️ {}", redact::frame(&text));
     }
     wire.send_text(text)
 }
@@ -1033,13 +1055,70 @@ mod tests {
         vec![Box::new(serve)]
     }
 
-    fn paper(url: String) -> ClientConfig {
+    /// A client pointed at a fake gateway on loopback, which stands in for
+    /// either of thinkorswim's.
+    fn fake_gateway(url: String) -> ClientConfig {
         ClientConfig {
             trading_system: TradingSystem::PaperMoney,
             gateway_url: url,
-            allow_live_trading: false,
             ..ClientConfig::default()
         }
+    }
+
+    /// The guarantee, as a test: a request for a service this crate does not
+    /// send is refused by the handle, before anything is queued, let alone
+    /// written. Without the allowlist nothing but the absence of a caller
+    /// stopped an order frame from going out on a live account's socket.
+    #[test]
+    fn a_service_this_client_does_not_send_is_refused_before_the_wire() {
+        let (url, server) = gateway(one(|ws| {
+            log_in(ws);
+            // Nothing else is ever read: if a request got through, the
+            // join below would see the extra frame.
+        }));
+        let (client, _) = Client::connect(fake_gateway(url), "tok".to_string()).expect("connect");
+        for service in ["order", "trade"] {
+            let request = Request::new(service, "x", 0, json!({"symbol": "/ES"}));
+            let Err(refused) = client.subscribe(request.clone()) else {
+                panic!("{service} must never be routed");
+            };
+            assert!(
+                matches!(refused, Error::ForbiddenService(ref s) if s == service),
+                "{service}: {refused}"
+            );
+            let one_shot = client.request(request).expect_err(service);
+            assert!(
+                matches!(one_shot, Error::ForbiddenService(_)),
+                "{service}: {one_shot}"
+            );
+        }
+        // A chart on the same client still works, so the refusal is about
+        // the service and not about the connection.
+        let sub = client
+            .chart(&ChartParams::new("/ES", "MIN5", "DAY1"))
+            .expect("chart");
+        drop(sub);
+        client.disconnect();
+        server.join().unwrap();
+    }
+
+    /// And again at the only place a frame is written, so that a path that
+    /// skips [`Client::route`] — the login frame, the resync replay, whatever
+    /// is added next — cannot write one either.
+    #[test]
+    fn the_write_itself_refuses_a_service_off_the_allowlist() {
+        let mut wire = TestWire::default();
+        let refused = write_request(
+            &mut wire,
+            &Request::new("order", "order-1", 0, json!({"symbol": "/ES"})),
+        )
+        .unwrap_err();
+        assert!(matches!(refused, Error::ForbiddenService(_)), "{refused}");
+        assert_eq!(wire.writes, 0, "nothing may reach the wire");
+        // What it does send, it sends.
+        write_request(&mut wire, &chart_request(&ChartParams::new("/ES", "MIN5", "DAY1")))
+            .unwrap();
+        assert_eq!(wire.writes, 1);
     }
 
     /// The whole life of a connection, against something that answers.
@@ -1058,7 +1137,7 @@ mod tests {
             .unwrap();
         }));
 
-        let (client, login) = Client::connect(paper(url), "tok".to_string()).expect("connect");
+        let (client, login) = Client::connect(fake_gateway(url), "tok".to_string()).expect("connect");
         assert_eq!(login.token, "rotated");
         assert!(login.successful());
 
@@ -1083,15 +1162,20 @@ mod tests {
     fn a_gateway_that_refuses_the_token_fails_the_connection_as_a_login() {
         let (url, server) = gateway(one(|ws| {
             ws.read().unwrap();
+            // A refusal that carries a token beside its message, which is a
+            // shape the gateway is free to send.
             ws.send(Message::text(
-                r#"{"payload":[{"header":{"service":"login","id":"login","ver":0,"type":"snapshot"},"body":{"authenticationStatus":"FAILED","message":"Invalid token"}}]}"#,
+                r#"{"payload":[{"header":{"service":"login","id":"login","ver":0,"type":"snapshot"},"body":{"authenticationStatus":"FAILED","message":"Invalid token","token":"SECRET-TOKEN"}}]}"#,
             ))
             .unwrap();
         }));
-        let Err(error) = Client::connect(paper(url), "stale".to_string()) else {
+        let Err(error) = Client::connect(fake_gateway(url), "stale".to_string()) else {
             panic!("a refused token must not produce a client");
         };
         assert!(matches!(error, Error::Login(ref m) if m == "Invalid token"), "{error}");
+        // The error is read on a chart and written to stderr, so it carries
+        // the gateway's sentence and nothing else out of that body.
+        assert!(!error.to_string().contains("SECRET"), "{error}");
         server.join().unwrap();
     }
 
@@ -1105,7 +1189,7 @@ mod tests {
             ws.read().unwrap();
             ws.send(Message::text(EXPIRED)).unwrap();
         }));
-        let (client, _) = Client::connect(paper(url), "tok".to_string()).expect("connect");
+        let (client, _) = Client::connect(fake_gateway(url), "tok".to_string()).expect("connect");
         let mut sub = client
             .chart(&ChartParams::new("/ES", "MIN5", "DAY1"))
             .expect("chart");
