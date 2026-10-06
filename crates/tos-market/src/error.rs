@@ -42,6 +42,16 @@ pub enum Error {
     ConnectionLost { sent: bool },
     #[error("timed out: {0}")]
     Timeout(String),
+    /// The subscriber let go of the stream from another thread. Not a
+    /// failure of anything; the thread waiting on the stream reads it as
+    /// "stop".
+    #[error("subscription interrupted")]
+    Interrupted,
+    /// The gateway kept patching this id after being asked for a snapshot
+    /// and never sent one — which is what it does for an id it considers
+    /// already served on this connection. Only a fresh connection fixes it.
+    #[error("the gateway will not snapshot {0} on this connection")]
+    NoSnapshot(String),
     #[error("{0}")]
     Other(String),
 }

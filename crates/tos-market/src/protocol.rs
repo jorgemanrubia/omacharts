@@ -7,6 +7,8 @@
 //!   where `type` is `snapshot` | `patch` | `error`.
 //! * Heartbeats: bare `{"heartbeat":<ms>}` every ~2 s.
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -102,18 +104,36 @@ pub struct RawResponseItem {
 
 /// A fully materialized response: for `patch` frames the body is the patched
 /// document, not the patch list (see [`crate::patch::DocumentStore`]).
+///
+/// The body is shared rather than owned. A chart document is twenty sessions
+/// of candles, and one arrives every three seconds per subscription; the
+/// store keeps it to apply the next patch to, and every route for the id is
+/// handed it as well. Cloning it for each of those was the one real cost on
+/// the socket thread, and it bought nothing — nobody writes to a body they
+/// were handed.
 #[derive(Debug, Clone)]
 pub struct Response {
     pub service: String,
     pub id: String,
     pub ver: i64,
     pub kind: ResponseType,
-    pub body: Value,
+    pub body: Arc<Value>,
+    /// For a patch, the JSON pointers its operations named, in order. What a
+    /// subscriber reads to find the candles a tick changed without walking
+    /// the arrays; empty for a snapshot, which changed everything.
+    pub touched: Arc<[String]>,
 }
 
 impl Response {
     pub fn is_error(&self) -> bool {
         self.kind == ResponseType::Error
+    }
+
+    /// Did this frame carry the whole document — a snapshot, or a patch that
+    /// replaced the root? The gateway answers a changed range on a live id
+    /// with the latter, and to a subscriber the two are the same news.
+    pub fn is_whole_document(&self) -> bool {
+        self.kind == ResponseType::Snapshot || self.touched.iter().any(|path| path.is_empty())
     }
 
     /// `body.message` of an error frame, or a generic text.

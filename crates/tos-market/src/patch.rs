@@ -1,38 +1,69 @@
-//! RFC-6902 application keyed by `service_id_ver`, mirroring the SPA's cache.
+//! RFC-6902 application keyed by request id, mirroring the SPA's cache.
 //!
 //! The gateway sends a `snapshot` first and `patch` frames afterwards; every
-//! patch applies to the last document seen for the same request key. The
-//! patches are ordinary RFC-6902, so they are applied here rather than by a
-//! crate: the whole of what the gateway can send is below, and a patch that
-//! fails costs the document and a resync either way, so none of the rollback
-//! a general implementation does would ever be observed.
+//! patch applies to the last document seen for the same id. The patches are
+//! ordinary RFC-6902, so they are applied here rather than by a crate: the
+//! whole of what the gateway can send is below, and a patch that fails costs
+//! the document and a resync either way, so none of the rollback a general
+//! implementation does would ever be observed.
+//!
+//! Two things learned from the wire shape the store beyond that. The gateway
+//! never re-snapshots an id it is already streaming on a connection — a
+//! second request, with any version, gets the running patches and nothing
+//! else — and the vendored protocol has no way to cancel one. So a document
+//! whose last subscriber has gone is kept, up to a limit, and patched like
+//! any other: the next subscriber for that id gets a current document from
+//! its first patch rather than waiting for a snapshot that will not come.
+//! And a request that changes a live id's parameters is answered with a
+//! patch that replaces the root, which is a snapshot in all but name and is
+//! taken as one.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 
 use serde::Deserialize;
 use serde_json::Value;
 
 use crate::protocol::{RawResponseItem, Response, ResponseType};
 
+/// How many documents nobody routes any more are kept current.
+///
+/// Each is a chart's worth of candles — a few hundred kilobytes for a day of
+/// one-minute bars, more for a longer range — and every one costs a patch
+/// applied every few seconds for as long as the connection lasts. Sixteen is
+/// enough that walking back and forth over a watchlist never waits for a
+/// snapshot, and small enough that the socket thread's idle work stays
+/// invisible.
+const KEEP_ABANDONED: usize = 16;
+
+/// How many patches an id may drop while waiting for a snapshot that was
+/// asked for, before the wait is declared hopeless.
+///
+/// Three, because the gateway sends one every few seconds and a snapshot it
+/// is going to send arrives before the first of them: an id still being
+/// patched past this is one the gateway considers already served, and only a
+/// fresh connection will snapshot it.
+const DROPPED_LIMIT: u32 = 3;
+
 #[derive(Debug, Default)]
 pub struct DocumentStore {
-    docs: HashMap<String, Value>,
+    docs: HashMap<String, Arc<Value>>,
     /// Request ids whose stream needs a fresh snapshot, not yet handed out.
     needs_resync: BTreeSet<String>,
     /// Ids handed out by [`DocumentStore::take_needs_resync`] and still
     /// waiting for their snapshot; further broken patches on them are
-    /// dropped silently rather than requested again.
+    /// dropped silently rather than requested again — up to a point.
     awaiting_snapshot: HashSet<String>,
+    /// Patches dropped on each awaiting id since the resync was asked for.
+    dropped: HashMap<String, u32>,
+    /// Ids the gateway will evidently never snapshot on this connection.
+    hopeless: BTreeSet<String>,
+    /// Ids nobody routes any more, oldest first, whose documents are kept
+    /// current for a subscriber that may come back.
+    abandoned: VecDeque<String>,
 }
 
 impl DocumentStore {
-    fn key(item: &RawResponseItem) -> String {
-        format!(
-            "{}_{}_{}",
-            item.header.service, item.header.id, item.header.ver
-        )
-    }
-
     /// Request ids whose document was lost (a patch with no base snapshot,
     /// or one that failed to apply). The caller re-issues the subscription;
     /// each id is returned once until its snapshot arrives.
@@ -42,10 +73,64 @@ impl DocumentStore {
         ids
     }
 
-    fn flag_resync(&mut self, id: &str) {
-        if !self.awaiting_snapshot.contains(id) {
-            self.needs_resync.insert(id.to_string());
+    /// Ids that went on being patched without a snapshot for longer than a
+    /// snapshot takes to arrive. Returned once each; what to do about them
+    /// — a fresh connection is the only thing that works — is the caller's.
+    pub fn take_hopeless(&mut self) -> Vec<String> {
+        let ids: Vec<String> = std::mem::take(&mut self.hopeless).into_iter().collect();
+        for id in &ids {
+            self.awaiting_snapshot.remove(id);
+            self.dropped.remove(id);
         }
+        ids
+    }
+
+    fn flag_resync(&mut self, id: &str) {
+        if self.awaiting_snapshot.contains(id) {
+            let dropped = self.dropped.entry(id.to_string()).or_insert(0);
+            *dropped += 1;
+            if *dropped > DROPPED_LIMIT {
+                self.hopeless.insert(id.to_string());
+            }
+            return;
+        }
+        self.needs_resync.insert(id.to_string());
+    }
+
+    /// Is there a document for `id` to apply the next patch to?
+    pub fn has_document(&self, id: &str) -> bool {
+        self.docs.contains_key(id)
+    }
+
+    /// The last subscriber for `id` has gone. Its document is kept current
+    /// for the next one, and the oldest such document makes room when there
+    /// are more than [`KEEP_ABANDONED`] of them.
+    pub fn abandon(&mut self, id: &str) {
+        if !self.docs.contains_key(id) {
+            return;
+        }
+        self.abandoned.retain(|kept| kept != id);
+        self.abandoned.push_back(id.to_string());
+        while self.abandoned.len() > KEEP_ABANDONED {
+            if let Some(oldest) = self.abandoned.pop_front() {
+                self.forget(&oldest);
+            }
+        }
+    }
+
+    /// Somebody routes `id` again: its document, if kept, is theirs.
+    pub fn revive(&mut self, id: &str) {
+        self.abandoned.retain(|kept| kept != id);
+    }
+
+    /// Drop everything held for `id`.
+    pub fn forget(&mut self, id: &str) {
+        self.docs.remove(id);
+        self.abandoned.retain(|kept| kept != id);
+        self.needs_resync.remove(id);
+        self.awaiting_snapshot.remove(id);
+        self.dropped.remove(id);
+        self.hopeless.remove(id);
     }
 
     /// Materializes one raw frame into a full-document [`Response`]. Returns
@@ -54,47 +139,70 @@ impl DocumentStore {
     /// of emitting an empty or stale one.
     pub fn apply(&mut self, item: RawResponseItem) -> Option<Response> {
         let kind = item.kind();
-        let key = Self::key(&item);
         let RawResponseItem { header, body } = item;
+        let id = header.id.clone();
+        let mut touched: Vec<String> = Vec::new();
         let body = match kind {
             ResponseType::Snapshot => {
-                self.awaiting_snapshot.remove(&header.id);
-                self.needs_resync.remove(&header.id);
-                self.docs.insert(key, body.clone());
+                self.awaiting_snapshot.remove(&id);
+                self.needs_resync.remove(&id);
+                self.dropped.remove(&id);
+                let body = Arc::new(body);
+                self.docs.insert(id, body.clone());
                 body
             }
             ResponseType::Patch => {
-                let Some(mut doc) = self.docs.remove(&key) else {
-                    eprintln!("patch on {key} without a snapshot; dropping it and resyncing");
-                    self.flag_resync(&header.id);
-                    return None;
-                };
                 let patches = match body.get("patches") {
                     None => Vec::new(),
                     Some(raw) => match Vec::<Operation>::deserialize(raw) {
                         Ok(p) => p,
                         Err(e) => {
                             eprintln!(
-                                "undecodable patches on {key}: {e}; dropping the document and resyncing"
+                                "undecodable patches on {id}: {e}; dropping the document and resyncing"
                             );
-                            self.flag_resync(&header.id);
+                            self.docs.remove(&id);
+                            self.flag_resync(&id);
                             return None;
                         }
                     },
                 };
+                // A patch that replaces the root needs no base: it is the
+                // whole document, which is what a snapshot is.
+                let replaces_root = matches!(
+                    patches.first(),
+                    Some(Operation::Replace { path, .. } | Operation::Add { path, .. }) if path.is_empty()
+                );
+                let base = match self.docs.remove(&id) {
+                    // Nobody else holds the previous body by the time the
+                    // next patch arrives, so this is a move rather than a
+                    // copy; a reader still holding it costs one clone.
+                    Some(shared) => Arc::try_unwrap(shared).unwrap_or_else(|shared| (*shared).clone()),
+                    None if replaces_root => Value::Null,
+                    None => {
+                        eprintln!("patch on {id} without a snapshot; dropping it and resyncing");
+                        self.flag_resync(&id);
+                        return None;
+                    }
+                };
+                let mut doc = base;
                 if let Err(e) = apply(&mut doc, &patches) {
-                    eprintln!(
-                        "patch on {key} failed: {e}; dropping the document and resyncing"
-                    );
-                    self.flag_resync(&header.id);
+                    eprintln!("patch on {id} failed: {e}; dropping the document and resyncing");
+                    self.flag_resync(&id);
                     return None;
                 }
-                self.docs.insert(key, doc.clone());
+                if replaces_root {
+                    self.awaiting_snapshot.remove(&id);
+                    self.needs_resync.remove(&id);
+                    self.dropped.remove(&id);
+                }
+                touched = patches.iter().map(|op| op.path().to_string()).collect();
+                let doc = Arc::new(doc);
+                self.docs.insert(id, doc.clone());
                 doc
             }
-            ResponseType::Error => body,
+            ResponseType::Error => Arc::new(body),
             ResponseType::Other => {
-                eprintln!("unknown message type {:?} on {key}", header.kind);
+                eprintln!("unknown message type {:?} on {id}", header.kind);
                 return None;
             }
         };
@@ -104,6 +212,7 @@ impl DocumentStore {
             ver: header.ver,
             kind,
             body,
+            touched: touched.into(),
         })
     }
 }
@@ -261,6 +370,21 @@ fn take(doc: &mut Value, path: &[String]) -> Result<Value, String> {
     }
 }
 
+
+impl Operation {
+    /// The location the operation changes.
+    pub fn path(&self) -> &str {
+        match self {
+            Operation::Add { path, .. }
+            | Operation::Remove { path }
+            | Operation::Replace { path, .. }
+            | Operation::Move { path, .. }
+            | Operation::Copy { path, .. }
+            | Operation::Test { path, .. } => path,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -286,9 +410,24 @@ mod tests {
         let mut store = DocumentStore::default();
         let r = store.apply(one(SNAP)).unwrap();
         assert_eq!(r.kind, ResponseType::Snapshot);
+        assert!(r.touched.is_empty());
         let r = store.apply(one(PATCH)).unwrap();
         assert_eq!(r.kind, ResponseType::Patch);
         assert_eq!(r.body["items"][0]["values"]["QUANTITY"], 2);
+        assert_eq!(&*r.touched, ["/items/0/values/QUANTITY".to_string()]);
+    }
+
+    /// The body is handed out shared and kept shared: a route holding the
+    /// previous document does not make the next patch copy it, and the
+    /// store's copy and the route's are one allocation.
+    #[test]
+    fn the_document_is_shared_rather_than_copied() {
+        let mut store = DocumentStore::default();
+        let first = store.apply(one(SNAP)).unwrap();
+        assert_eq!(Arc::strong_count(&first.body), 2);
+        drop(first);
+        let second = store.apply(one(PATCH)).unwrap();
+        assert_eq!(Arc::strong_count(&second.body), 2);
     }
 
     #[test]
@@ -305,6 +444,78 @@ mod tests {
         let r = store.apply(one(PATCH)).unwrap();
         assert_eq!(r.body["items"][0]["values"]["QUANTITY"], 2);
         assert!(store.take_needs_resync().is_empty());
+        assert!(store.take_hopeless().is_empty());
+    }
+
+    /// Seen on the wire: the gateway does not snapshot an id it already
+    /// streams on a connection, so a resync that keeps being answered with
+    /// patches is one the gateway will never honour. After a few of them the
+    /// id is reported as hopeless, once, so the connection can be replaced.
+    #[test]
+    fn an_id_still_patched_long_after_a_resync_is_hopeless() {
+        let mut store = DocumentStore::default();
+        assert!(store.apply(one(PATCH)).is_none());
+        assert_eq!(store.take_needs_resync(), vec!["positions".to_string()]);
+        for _ in 0..DROPPED_LIMIT {
+            assert!(store.apply(one(PATCH)).is_none());
+            assert!(store.take_hopeless().is_empty());
+        }
+        assert!(store.apply(one(PATCH)).is_none());
+        assert_eq!(store.take_hopeless(), vec!["positions".to_string()]);
+        assert!(store.take_hopeless().is_empty());
+    }
+
+    /// A changed range on a live id arrives as a patch replacing the root —
+    /// seen on the wire — and it is the whole document, so it needs no base
+    /// and reads as one.
+    #[test]
+    fn a_patch_that_replaces_the_root_is_a_snapshot_in_all_but_name() {
+        let mut store = DocumentStore::default();
+        let whole = one(
+            r#"{"payload":[{"header":{"service":"positions","id":"positions","ver":0,"type":"patch"},"body":{"patches":[{"op":"replace","path":"","value":{"items":[{"symbol":"/ESU26","values":{"QUANTITY":7}}]}}]}}]}"#,
+        );
+        let r = store.apply(whole).unwrap();
+        assert!(r.is_whole_document());
+        assert_eq!(r.body["items"][0]["values"]["QUANTITY"], 7);
+        // And it is a base for what follows.
+        let r = store.apply(one(PATCH)).unwrap();
+        assert_eq!(r.body["items"][0]["values"]["QUANTITY"], 2);
+        assert!(!r.is_whole_document());
+    }
+
+    /// Nobody routes the id any more, but the gateway goes on patching it
+    /// and the next subscriber would otherwise never see a snapshot. The
+    /// document is kept and kept current.
+    #[test]
+    fn an_abandoned_document_is_kept_current_for_the_next_subscriber() {
+        let mut store = DocumentStore::default();
+        store.apply(one(SNAP)).unwrap();
+        store.abandon("positions");
+        assert!(store.has_document("positions"));
+        let r = store.apply(one(PATCH)).unwrap();
+        assert_eq!(r.body["items"][0]["values"]["QUANTITY"], 2);
+        store.revive("positions");
+        assert!(store.has_document("positions"));
+        store.forget("positions");
+        assert!(!store.has_document("positions"));
+    }
+
+    /// Bounded: the oldest abandoned document goes when there are too many,
+    /// so a session that browses a hundred symbols does not keep a hundred
+    /// charts' worth of candles alive on the socket thread.
+    #[test]
+    fn only_so_many_abandoned_documents_are_kept() {
+        let mut store = DocumentStore::default();
+        for n in 0..=KEEP_ABANDONED {
+            let snap = format!(
+                r#"{{"payload":[{{"header":{{"service":"chart","id":"chart-{n}","ver":1,"type":"snapshot"}},"body":{{"n":{n}}}}}]}}"#
+            );
+            store.apply(one(&snap)).unwrap();
+            store.abandon(&format!("chart-{n}"));
+        }
+        assert!(!store.has_document("chart-0"), "the oldest should have gone");
+        assert!(store.has_document("chart-1"));
+        assert!(store.has_document(&format!("chart-{KEEP_ABANDONED}")));
     }
 
     #[test]
@@ -335,6 +546,7 @@ mod tests {
             2
         );
     }
+
 
     fn ops(value: serde_json::Value) -> Vec<Operation> {
         serde_json::from_value(value).expect("operations")

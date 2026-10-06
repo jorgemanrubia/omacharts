@@ -27,6 +27,7 @@ mod protocol;
 mod redact;
 mod services;
 mod session;
+mod stream;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -35,10 +36,12 @@ use std::time::Duration;
 use auth::{capture_browser_session, CaptureOptions};
 use client::Client;
 use config::TradingSystem;
-use services::chart::{ChartBody, ChartParams};
+use services::chart::ChartBody;
 use session::BrowserSession;
 
 pub use error::{Error, Result};
+pub use services::chart::ChartParams;
+pub use stream::{fold, stream, Event, Stream};
 
 /// One candle. `ts` is the unix second the bar opens at.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -228,6 +231,11 @@ impl Market {
         })
     }
 
+    /// The connection as it stands, and which generation it is.
+    fn current(&self) -> (u64, Client) {
+        self.client.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
     fn snapshot(&self, symbol: &str, aggregation: &str, range: &str) -> Result<Vec<Candle>> {
         let (generation, client) = self.client.lock().unwrap_or_else(|e| e.into_inner()).clone();
         match fetch(&client, symbol, aggregation, range) {
@@ -345,7 +353,7 @@ fn reconnect(env: &Path) -> Result<(Client, BrowserSession)> {
 fn fetch(client: &Client, symbol: &str, aggregation: &str, range: &str) -> Result<Vec<Candle>> {
     let mut sub = client.chart(&ChartParams::new(symbol, aggregation, range))?;
     let res = sub.next_timeout(Duration::from_secs(30))?;
-    let body: ChartBody = serde_json::from_value(res.into_result()?.body)?;
+    let body: ChartBody = serde_json::from_value((*res.into_result()?.body).clone())?;
     Ok(candles_of(&body))
 }
 
@@ -610,5 +618,108 @@ mod tests {
             hour.len(),
             spx.len()
         );
+    }
+
+    /// Live stream, written to stderr: what the gateway pushes for a chart
+    /// subscription, frame by frame, with the clock beside each one.
+    ///
+    /// Point `TOS_ENV_FILE` at a session file. `TOS_CAPTURE` is a comma
+    /// separated list of `symbol:aggregation` pairs (default `SPY:MIN1`), and
+    /// `TOS_CAPTURE_SECONDS` how long to listen (default 120). With
+    /// `TOS_TRACE=1` the raw frames print as well, patch operations included,
+    /// which is the evidence of what a tick actually looks like on the wire.
+    #[test]
+    #[ignore]
+    fn capture_live_stream() {
+        let specs = std::env::var("TOS_CAPTURE").unwrap_or_else(|_| "SPY:MIN1".into());
+        let seconds: u64 =
+            std::env::var("TOS_CAPTURE_SECONDS").ok().and_then(|s| s.parse().ok()).unwrap_or(120);
+        let market = market().expect("a session");
+        let started = std::time::Instant::now();
+        let mut threads = Vec::new();
+        let drop_at: Option<u64> =
+            std::env::var("TOS_CAPTURE_DROP_AT").ok().and_then(|s| s.parse().ok());
+        for (n, spec) in specs.split(',').enumerate() {
+            // `symbol:aggregation[@ver][!range]`, so a request can be sent
+            // again with a bumped version or a different range.
+            let (spec, range) = spec.split_once('!').unwrap_or((spec, ""));
+            let (spec, ver) = spec.split_once('@').unwrap_or((spec, "1"));
+            let (symbol, aggregation) = spec.split_once(':').expect("symbol:aggregation");
+            let range = if !range.is_empty() {
+                range
+            } else if aggregation == "DAY" {
+                "MONTH6"
+            } else {
+                "DAY1"
+            };
+            let (_, client) = market.client.lock().unwrap().clone();
+            let mut request = crate::services::chart::chart_request(&ChartParams::new(
+                symbol,
+                aggregation,
+                range,
+            ));
+            request.payload[0].header.ver = ver.parse().expect("a version");
+            let mut sub = client.subscribe(request).expect("a subscription");
+            let tag = format!("#{n} {symbol} {aggregation} v{ver} {range}");
+            if let Some(at) = drop_at.filter(|_| n == 0) {
+                let dropper = client.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_secs(at));
+                    eprintln!("[{at:>8.3}s] dropping the connection");
+                    dropper.disconnect();
+                });
+            }
+            eprintln!("[{:>8.3}s] {tag}: subscribed", started.elapsed().as_secs_f64());
+            threads.push(std::thread::spawn(move || {
+                let mut last: Option<Candle> = None;
+                let mut frames = 0u32;
+                loop {
+                    let left = Duration::from_secs(seconds).saturating_sub(started.elapsed());
+                    if left.is_zero() {
+                        break;
+                    }
+                    match sub.next_timeout(left) {
+                        Ok(res) => {
+                            frames += 1;
+                            let at = started.elapsed().as_secs_f64();
+                            let body: ChartBody = serde_json::from_value((*res.body).clone())
+                                .unwrap_or_default();
+                            let candles = candles_of(&body);
+                            let newest = candles.last().copied();
+                            let changed = match (last, newest) {
+                                (Some(a), Some(b)) if a.ts == b.ts => format!(
+                                    "same bar: close {} -> {} vol {} -> {}",
+                                    a.close, b.close, a.volume, b.volume
+                                ),
+                                (Some(a), Some(b)) => format!("new bar: ts {} -> {}", a.ts, b.ts),
+                                _ => "first".into(),
+                            };
+                            eprintln!(
+                                "[{at:>8.3}s] {tag}: {:?} ver {} {} candles, newest {:?}; {changed}",
+                                res.kind,
+                                res.ver,
+                                candles.len(),
+                                newest.map(|c| (c.ts, c.open, c.high, c.low, c.close, c.volume)),
+                            );
+                            last = newest;
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "[{:>8.3}s] {tag}: ended: {e}",
+                                started.elapsed().as_secs_f64()
+                            );
+                            break;
+                        }
+                    }
+                }
+                eprintln!("{tag}: {frames} frames in {seconds}s");
+            }));
+            // Staggered on purpose, so a second request for the same id is
+            // seen to land on a stream that is already flowing.
+            std::thread::sleep(Duration::from_secs(10));
+        }
+        for thread in threads {
+            let _ = thread.join();
+        }
     }
 }

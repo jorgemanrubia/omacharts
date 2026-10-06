@@ -236,7 +236,7 @@ impl Client {
         self.cmd
             .send(Command::Send {
                 request,
-                reply,
+                reply: reply.clone(),
                 subscribe,
                 token,
                 alive: Arc::downgrade(&waiting),
@@ -245,6 +245,7 @@ impl Client {
         Ok(Subscription {
             id,
             rx,
+            reply,
             cmd: self.cmd.clone(),
             token,
             waiting,
@@ -261,13 +262,47 @@ impl Client {
 pub struct Subscription {
     id: String,
     rx: Receiver<Result<Response>>,
+    /// The sending half of our own stream, kept so that an
+    /// [`Interrupter`] can put a stop onto it from another thread.
+    reply: Sender<Result<Response>>,
     cmd: Sender<Command>,
     token: u64,
     /// What the actor watches to know this waiter is still here.
     waiting: Arc<()>,
 }
 
+/// A way to wake whoever is blocked in [`Subscription::next`] from another
+/// thread, so that a stream can be let go of without waiting for its next
+/// frame — which, with the market shut, may be hours away.
+#[derive(Clone)]
+pub struct Interrupter {
+    reply: Sender<Result<Response>>,
+}
+
+impl Interrupter {
+    pub fn interrupt(&self) {
+        let _ = self.reply.send(Err(Error::Interrupted));
+    }
+}
+
 impl Subscription {
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn interrupter(&self) -> Interrupter {
+        Interrupter { reply: self.reply.clone() }
+    }
+
+    /// The next frame, however long it takes. A dead socket ends the wait
+    /// at once, as [`Subscription::next_timeout`] describes.
+    pub fn next(&mut self) -> Result<Response> {
+        match self.rx.recv() {
+            Ok(result) => result,
+            Err(_) => Err(Error::ConnectionLost { sent: true }),
+        }
+    }
+
     /// The next frame, or the reason there will not be one.
     ///
     /// A socket that dies while this is waiting fails it at once rather than
@@ -442,11 +477,16 @@ impl Actor {
                             socket,
                             routes,
                             subscriptions,
+                            store,
                             ..
                         } = self;
-                        if let Err(e) =
-                            dispatch_command(routes, subscriptions, cmd, ready.then_some(socket))
-                        {
+                        if let Err(e) = dispatch_command(
+                            routes,
+                            subscriptions,
+                            store,
+                            cmd,
+                            ready.then_some(socket),
+                        ) {
                             return Outcome::Lost(e.to_string());
                         }
                     }
@@ -509,8 +549,19 @@ impl Actor {
                         *phase = Phase::Ready;
                         continue;
                     }
+                    // The gateway goes on patching an id after its last
+                    // route has gone — there is no cancel in the protocol.
+                    // One that is kept is patched so the next subscriber
+                    // starts current; one that is not costs the decode and
+                    // nothing more.
+                    let routed = self.routes.contains_key(&item.header.id);
+                    if !routed && !self.store.has_document(&item.header.id) {
+                        continue;
+                    }
                     if let Some(response) = self.store.apply(item) {
-                        self.dispatch(response);
+                        if routed {
+                            self.dispatch(response);
+                        }
                     }
                 }
                 for id in self.store.take_needs_resync() {
@@ -521,6 +572,10 @@ impl Actor {
                     if let Err(e) = write_request(&mut self.socket, &request) {
                         return Some(Outcome::Lost(e.to_string()));
                     }
+                }
+                for id in self.store.take_hopeless() {
+                    eprintln!("{id} is still being patched with no snapshot; only a new connection will serve it");
+                    self.fail_id(&id, || Error::NoSnapshot(id.clone()));
                 }
             }
         }
@@ -564,8 +619,20 @@ impl Actor {
             if routes.is_empty() {
                 self.routes.remove(&response.id);
                 self.subscriptions.remove(&response.id);
+                self.store.abandon(&response.id);
             }
         }
+    }
+
+    /// End every route for `id` with `error`, and forget the id.
+    fn fail_id(&mut self, id: &str, error: impl Fn() -> Error) {
+        if let Some(routes) = self.routes.remove(id) {
+            for route in routes {
+                let _ = route.reply.send(Err(error()));
+            }
+        }
+        self.subscriptions.remove(id);
+        self.store.forget(id);
     }
 }
 
@@ -586,6 +653,7 @@ fn write_request(wire: &mut impl Wire, request: &Request) -> Result<()> {
 fn dispatch_command(
     routes: &mut HashMap<String, Vec<Route>>,
     subscriptions: &mut HashMap<String, Request>,
+    store: &mut DocumentStore,
     cmd: Command,
     wire: Option<&mut impl Wire>,
 ) -> Result<()> {
@@ -617,8 +685,10 @@ fn dispatch_command(
                 reply,
             });
             if subscribe && is_replayable(request.service()) {
-                subscriptions.insert(id, request.clone());
+                subscriptions.insert(id.clone(), request.clone());
             }
+            // A document kept from an earlier subscriber is this one's now.
+            store.revive(&id);
             if let Some(wire) = wire {
                 write_request(wire, &request)?;
             }
@@ -629,6 +699,7 @@ fn dispatch_command(
                 if routes_for_id.is_empty() {
                     routes.remove(&id);
                     subscriptions.remove(&id);
+                    store.abandon(&id);
                 }
             }
         }
@@ -812,11 +883,18 @@ mod tests {
     struct Tables {
         routes: HashMap<String, Vec<Route>>,
         subscriptions: HashMap<String, Request>,
+        store: DocumentStore,
     }
 
     impl Tables {
         fn send(&mut self, cmd: Command, wire: Option<&mut TestWire>) -> Result<()> {
-            dispatch_command(&mut self.routes, &mut self.subscriptions, cmd, wire)
+            dispatch_command(
+                &mut self.routes,
+                &mut self.subscriptions,
+                &mut self.store,
+                cmd,
+                wire,
+            )
         }
 
         /// What the actor does when the socket is gone.
@@ -906,9 +984,16 @@ mod tests {
         let mut sub = Subscription {
             id: "chart-1".into(),
             rx,
+            reply: reply.clone(),
             cmd,
             token: 1,
             waiting: Arc::new(()),
+        };
+        // The subscription's own copy of the sender has to go too, or the
+        // channel is still open and the wait is a real wait.
+        sub.reply = {
+            let (dead, _) = mpsc::channel();
+            dead
         };
         drop(reply);
         let err = sub.next_timeout(Duration::from_secs(1)).unwrap_err();
