@@ -160,11 +160,18 @@ struct SocketSession {
     account_code: Option<String>,
 }
 
+/// A page's URL, short enough for a progress line.
+///
+/// The query and the fragment go: a sign-in flow carries its state in them,
+/// and none of it is worth reading off a terminal — or leaving in a log
+/// somebody pastes into an issue.
 fn short_url(url: &str) -> String {
-    match url::Url::parse(url) {
-        Ok(u) => format!("{}{}", u.origin().ascii_serialization(), u.path()),
-        Err(_) if url.is_empty() => "(empty)".into(),
-        Err(_) => url.to_string(),
+    if url.is_empty() {
+        return "(empty)".into();
+    }
+    match url.split_once(['?', '#']) {
+        Some((head, _)) => format!("{head}…"),
+        None => url.to_string(),
     }
 }
 
@@ -560,6 +567,22 @@ mod tests {
             let dir = profile_dir_beside(session);
             assert!(dir.is_absolute(), "{}", dir.display());
         }
+    }
+
+    /// A progress line names which pages are open, and a sign-in flow puts
+    /// one-time state in the query.
+    #[test]
+    fn a_page_url_on_a_progress_line_carries_no_sign_in_state() {
+        assert_eq!(short_url(""), "(empty)");
+        assert_eq!(
+            short_url("https://trade.thinkorswim.com/auth"),
+            "https://trade.thinkorswim.com/auth"
+        );
+        assert_eq!(
+            short_url("https://trade.thinkorswim.com/oauth?code=SECRET&state=SECRET"),
+            "https://trade.thinkorswim.com/oauth…"
+        );
+        assert_eq!(short_url("about:blank#SECRET"), "about:blank…");
     }
 
     /// The flags are the finding, not an implementation detail: a driver

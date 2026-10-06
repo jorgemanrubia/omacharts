@@ -1645,7 +1645,6 @@ dependencies = [
  "serde_json",
  "thiserror",
  "tungstenite",
- "url",
 ]
 
 [[package]]

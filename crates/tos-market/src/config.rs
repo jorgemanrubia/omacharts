@@ -47,28 +47,54 @@ impl TradingSystem {
     /// a local fake gateway can stand in for either system, so there the label
     /// decides (and is still gated). Every other host is classified strictly.
     pub fn implied_by_gateway_url(url: &str) -> Option<Self> {
-        let Ok(parsed) = url::Url::parse(url.trim()) else {
+        let Some(host) = gateway_host(url) else {
             return Some(TradingSystem::LiveTrading);
         };
-        if matches!(
-            parsed.host(),
-            Some(url::Host::Ipv4(ip)) if ip.is_loopback()
-        ) || matches!(
-            parsed.host(),
-            Some(url::Host::Ipv6(ip)) if ip.is_loopback()
-        ) || parsed
-            .host_str()
-            .is_some_and(|h| h.eq_ignore_ascii_case("localhost"))
-        {
+        if is_loopback(&host) {
             return None;
         }
-        let host = parsed.host_str().unwrap_or("").to_ascii_lowercase();
         Some(if host.contains("papermoney") {
             TradingSystem::PaperMoney
         } else {
             TradingSystem::LiveTrading
         })
     }
+}
+
+/// The host a gateway URL names, lowercased, or `None` for anything this
+/// refuses to read as one.
+///
+/// The same parser the socket is opened with, so what the gate judges and
+/// what gets connected to cannot drift apart. A URL with no scheme is not a
+/// gateway URL: `//papermoney.example/` reads as a host to a parser that
+/// tolerates a missing scheme, and refusing it is how that stays unable to
+/// name a paper gateway. Userinfo is not the host either — `Authority::host`
+/// is what skips past `papermoney@`, which is the shape an attempt to fool
+/// this would take.
+fn gateway_host(url: &str) -> Option<String> {
+    let uri: tungstenite::http::Uri = url.trim().parse().ok()?;
+    uri.scheme_str()?;
+    Some(uri.host()?.to_ascii_lowercase())
+}
+
+/// Whether a host is this machine, which is the one case a label is allowed
+/// to decide: a local fake gateway can stand in for either system.
+///
+/// An address only counts if it is written as one. A host that merely parses
+/// as a number in some other base is classified by name instead, which lands
+/// it in live trading and behind the gate — the safe side of the only
+/// mistake this can make.
+fn is_loopback(host: &str) -> bool {
+    if host == "localhost" {
+        return true;
+    }
+    if let Some(inner) = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')) {
+        return inner
+            .parse::<std::net::Ipv6Addr>()
+            .is_ok_and(|ip| ip.is_loopback());
+    }
+    host.parse::<std::net::Ipv4Addr>()
+        .is_ok_and(|ip| ip.is_loopback())
 }
 
 /// Refuses a configuration whose trading-system label disagrees with the
@@ -205,6 +231,35 @@ mod tests {
             TradingSystem::implied_by_gateway_url("ws://127.0.0.1.example.com/"),
             Some(TradingSystem::LiveTrading)
         );
+        // Every shape of lie about the host, each one landing in live
+        // trading, where the gate refuses it.
+        for url in [
+            // Userinfo is not the host.
+            "wss://papermoney-services.schwab.com@evil.example/Services/WsJson",
+            "wss://papermoney@evil.example/",
+            // Nor is a path, a query or a fragment.
+            "wss://evil.example/papermoney-services.schwab.com",
+            "wss://evil.example/?h=papermoney",
+            "wss://evil.example/#papermoney",
+            // A host with no scheme is not a gateway URL at all.
+            "//papermoney-services.schwab.com/Services/WsJson",
+            // Nor is loopback written in a base nobody writes it in.
+            "ws://2130706433/",
+            "ws://0177.0.0.1/",
+        ] {
+            assert_eq!(
+                TradingSystem::implied_by_gateway_url(url),
+                Some(TradingSystem::LiveTrading),
+                "{url}"
+            );
+            assert!(
+                matches!(
+                    assert_gateway_matches(TradingSystem::PaperMoney, url, false),
+                    Err(Error::Config(_))
+                ),
+                "{url} was not refused as a paper gateway"
+            );
+        }
         assert_eq!(
             TradingSystem::implied_by_gateway_url("wss://papermoney-services.schwab.com/"),
             Some(TradingSystem::PaperMoney)
