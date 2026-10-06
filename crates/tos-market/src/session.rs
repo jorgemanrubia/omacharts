@@ -87,7 +87,7 @@ fn system_of(label: Option<TradingSystem>, gateway_url: &str, source: &str) -> T
     };
     if let Some(label) = label {
         if label != of_url {
-            tracing::warn!(
+            eprintln!(
                 "{source} says {label} but its gateway {gateway_url} is {of_url}; using {of_url}"
             );
         }
@@ -199,8 +199,8 @@ impl BrowserSession {
         let (client, login) = Client::connect(config, credentials).await?;
         self.absorb_login(&login);
         match self.save_shared(env_file, &logged_in_with) {
-            Ok(false) => tracing::info!("kept a newer ToS session in {}", env_file.display()),
-            Err(e) => tracing::warn!("could not save session to {}: {e}", env_file.display()),
+            Ok(false) => eprintln!("kept a newer ToS session in {}", env_file.display()),
+            Err(e) => eprintln!("could not save session to {}: {e}", env_file.display()),
             Ok(true) => {}
         }
         Ok((client, self))

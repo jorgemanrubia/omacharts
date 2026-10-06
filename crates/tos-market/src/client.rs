@@ -156,7 +156,6 @@ impl Client {
         assert_trading_system_allowed(config.trading_system, config.allow_live_trading)?;
         let url = config.gateway_url.clone();
         assert_gateway_matches(config.trading_system, &url, config.allow_live_trading)?;
-        tracing::debug!("connecting to {} gateway {url}", config.trading_system);
 
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let (events, _) = broadcast::channel(64);
@@ -342,7 +341,6 @@ enum Outcome {
 
 impl Actor {
     fn emit(&self, event: ConnectionEvent) {
-        tracing::debug!("connection event {event:?}");
         let _ = self.events.send(event);
     }
 
@@ -379,7 +377,9 @@ impl Actor {
             .map_err(|_| Error::Timeout("websocket connect".into()))??;
         let (mut sink, source) = ws.split();
         sink.send(Message::text(CONNECTION_REQUEST_MESSAGE)).await?;
-        tracing::trace!("➡️ {CONNECTION_REQUEST_MESSAGE}");
+        if redact::frames_on_stderr() {
+            eprintln!("➡️ {CONNECTION_REQUEST_MESSAGE}");
+        }
         Ok((sink, source))
     }
 
@@ -389,8 +389,8 @@ impl Actor {
         Error: From<S::Error>,
     {
         let text = serde_json::to_string(request)?;
-        if tracing::enabled!(tracing::Level::TRACE) {
-            tracing::trace!("➡️ {}", redact::outbound(request, &text));
+        if redact::frames_on_stderr() {
+            eprintln!("➡️ {}", redact::outbound(request, &text));
         }
         sink.send(Message::text(text)).await?;
         Ok(())
@@ -434,20 +434,19 @@ impl Actor {
                         None => return Outcome::Lost("socket ended".into()),
                     };
                     last_message_at = Instant::now();
-                    if tracing::enabled!(tracing::Level::TRACE) {
-                        tracing::trace!("⬅️ {}", redact::inbound(&text));
+                    if redact::frames_on_stderr() {
+                        eprintln!("⬅️ {}", redact::inbound(&text));
                     }
                     let inbound = match decode_inbound(&text) {
                         Ok(i) => i,
                         Err(e) => {
-                            tracing::warn!("undecodable frame: {e} :: {}", text.chars().take(200).collect::<String>());
+                            eprintln!("undecodable frame: {e} :: {}", text.chars().take(200).collect::<String>());
                             continue;
                         }
                     };
                     match inbound {
                         Inbound::Heartbeat(_) => {}
-                        Inbound::Connection { session, build, ver } => {
-                            tracing::debug!("gateway session {session} build {build} ver {ver}");
+                        Inbound::Connection { .. } => {
                             let request = match &self.credentials {
                                 Credentials::AccessToken(token) => login_request(token),
                                 Credentials::AuthCode(code) => schwab_login_request(code),
@@ -477,13 +476,13 @@ impl Actor {
                             }
                             for id in self.store.take_needs_resync() {
                                 let Some(req) = self.subscriptions.get(&id) else { continue };
-                                tracing::warn!("re-requesting {id}: patch arrived without a usable base document");
+                                eprintln!("re-requesting {id}: patch arrived without a usable base document");
                                 if let Err(e) = Self::send(&mut sink, req).await {
                                     return Outcome::Lost(e.to_string());
                                 }
                             }
                         }
-                        Inbound::Unknown(v) => tracing::debug!("ignoring frame {v}"),
+                        Inbound::Unknown(_) => {}
                     }
                 }
                 cmd = self.cmd_rx.recv() => {
@@ -503,13 +502,13 @@ impl Actor {
                 }
                 _ = watchdog.tick() => {
                     if let Some(gap) = sleep.slept() {
-                        tracing::warn!("system slept for {gap:?}; the socket is stale, closing it");
+                        eprintln!("system slept for {gap:?}; the socket is stale, closing it");
                         let _ = sink.close().await;
                         return Outcome::Lost(format!("resumed after {gap:?} asleep"));
                     }
                     let silent = last_message_at.elapsed();
                     if silent > self.heartbeat_timeout {
-                        tracing::warn!("no frames for {silent:?}; closing the socket");
+                        eprintln!("no frames for {silent:?}; closing the socket");
                         let _ = sink.close().await;
                         return Outcome::Lost(format!("no frames for {silent:?}"));
                     }
@@ -519,7 +518,7 @@ impl Actor {
     }
 
     fn fail_login(&mut self, e: Error) -> Outcome {
-        tracing::warn!("login failed: {e}");
+        eprintln!("login failed: {e}");
         if let Some(tx) = self.pending_login.take() {
             let _ = tx.send(Err(e));
             // Login rejected: stop, there is nothing to retry with.
@@ -594,30 +593,17 @@ impl Actor {
     }
 
     fn dispatch(&mut self, response: Response) {
-        let mut delivered = false;
         if let Some(routes) = self.routes.get_mut(&response.id) {
             routes.retain(|r| {
                 if !r.subscribe && r.ver != response.ver {
                     return true;
                 }
-                let ok = r.reply.send(Ok(response.clone())).is_ok();
-                if ok {
-                    delivered = true;
-                }
-                ok
+                r.reply.send(Ok(response.clone())).is_ok()
             });
             if routes.is_empty() {
                 self.routes.remove(&response.id);
                 self.subscriptions.remove(&response.id);
             }
-        }
-        if !delivered {
-            tracing::debug!(
-                "unrouted frame {} {} ({:?})",
-                response.service,
-                response.id,
-                response.kind
-            );
         }
     }
 }

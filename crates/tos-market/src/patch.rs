@@ -61,7 +61,7 @@ impl DocumentStore {
             }
             ResponseType::Patch => {
                 let Some(mut doc) = self.docs.remove(&key) else {
-                    tracing::warn!("patch on {key} without a snapshot; dropping it and resyncing");
+                    eprintln!("patch on {key} without a snapshot; dropping it and resyncing");
                     self.flag_resync(&header.id);
                     return None;
                 };
@@ -70,7 +70,7 @@ impl DocumentStore {
                     Some(raw) => match Vec::<json_patch::PatchOperation>::deserialize(raw) {
                         Ok(p) => p,
                         Err(e) => {
-                            tracing::warn!(
+                            eprintln!(
                                 "undecodable patches on {key}: {e}; dropping the document and resyncing"
                             );
                             self.flag_resync(&header.id);
@@ -79,7 +79,7 @@ impl DocumentStore {
                     },
                 };
                 if let Err(e) = json_patch::patch(&mut doc, &patches) {
-                    tracing::warn!(
+                    eprintln!(
                         "patch on {key} failed: {e}; dropping the document and resyncing"
                     );
                     self.flag_resync(&header.id);
@@ -90,7 +90,7 @@ impl DocumentStore {
             }
             ResponseType::Error => body,
             ResponseType::Other => {
-                tracing::warn!("unknown message type {:?} on {key}", header.kind);
+                eprintln!("unknown message type {:?} on {key}", header.kind);
                 return None;
             }
         };

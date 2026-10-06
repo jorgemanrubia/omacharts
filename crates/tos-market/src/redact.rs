@@ -1,7 +1,9 @@
-//! Trace-log redaction for the login services, whose frames carry the access
-//! token and the refresh token. Those dumps are `tracing::trace`, with
-//! `token` and `accessTokenInfo` replaced, so `RUST_LOG=debug` does not print
-//! them. This crate logs no bearer token or API key.
+//! Frame-dump redaction for the login services, whose frames carry the access
+//! token and the refresh token. Those dumps are off unless `TOS_TRACE` asks
+//! for them, and `token` and `accessTokenInfo` are replaced before anything
+//! reaches stderr. This crate prints no bearer token or API key.
+
+use std::sync::OnceLock;
 
 use serde_json::Value;
 
@@ -10,6 +12,16 @@ use crate::protocol::Request;
 const REDACTED: &str = "<redacted>";
 const PARAM_SECRETS: &[&str] = &["token", "authCode"];
 const BODY_SECRETS: &[&str] = &["token", "accessTokenInfo"];
+
+/// Whether `TOS_TRACE` asks for every frame the socket carries on stderr.
+///
+/// Read once, and off by default: a frame dump is for somebody debugging the
+/// gateway by hand, and the redaction below is what makes leaving it reachable
+/// safe at all.
+pub(crate) fn frames_on_stderr() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("TOS_TRACE").is_some_and(|v| !v.is_empty()))
+}
 
 pub(crate) fn is_login_service(service: &str) -> bool {
     service == "login" || service == "login/schwab"
