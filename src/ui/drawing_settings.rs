@@ -440,11 +440,9 @@ fn style_editor(window: &Rc<Window>, kind: Kind, current: Style, on_style: Rc<dy
     // Set while the rows are being shown a style, so a row's own signal does
     // not call back as if the hand had changed it.
     let showing = Rc::new(std::cell::Cell::new(false));
+    // No title: the dialog's own says which kind this is, and the rows say
+    // the rest.
     let group = adw::PreferencesGroup::new();
-    group.set_title(match kind {
-        Kind::Line => "Line",
-        Kind::Rect => "Rectangle",
-    });
 
     let emit = {
         let style = style.clone();
