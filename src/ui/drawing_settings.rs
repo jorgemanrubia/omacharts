@@ -222,6 +222,12 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
         save_menu.append_item(&item);
     }
     save.set_menu_model(Some(&save_menu));
+    // Under the button, between the picture and the rest of the sheet,
+    // where the eye already is; not up over the picture it was just given.
+    save.set_direction(gtk::ArrowType::Down);
+    if let Some(popover) = save.popover() {
+        popover.set_position(gtk::PositionType::Bottom);
+    }
     let actions = gio::SimpleActionGroup::new();
     let save_as = gio::SimpleAction::new("save-as", Some(glib::VariantTy::INT32));
     {
@@ -527,11 +533,15 @@ fn style_editor(window: &Rc<Window>, kind: Kind, current: Style, on_style: Rc<dy
             group.add(&row);
             shows.push(Rc::new(move |s: &Style| show(s.width)));
 
-            // Arrow.
+            // Arrow. Each choice is drawn rather than named, in the line's
+            // own colour at its own width: which end "the start" is, and
+            // what a head looks like on a thick line, are things to see.
             let row = adw::ComboRow::new();
             row.set_title("Arrow");
             let names: Vec<&str> = Arrow::ALL.iter().map(|a| a.label()).collect();
             row.set_model(Some(&gtk::StringList::new(&names)));
+            let (factory, samples) = arrow_factory(theme.clone(), style.clone());
+            row.set_factory(Some(&factory));
             row.set_selected(Arrow::ALL.iter().position(|a| *a == style.borrow().arrow).unwrap_or(0) as u32);
             {
                 let style = style.clone();
@@ -545,7 +555,13 @@ fn style_editor(window: &Rc<Window>, kind: Kind, current: Style, on_style: Rc<dy
             group.add(&row);
             let row_for_show = row.clone();
             shows.push(Rc::new(move |s: &Style| {
-                row_for_show.set_selected(Arrow::ALL.iter().position(|a| *a == s.arrow).unwrap_or(0) as u32)
+                row_for_show.set_selected(Arrow::ALL.iter().position(|a| *a == s.arrow).unwrap_or(0) as u32);
+                // The samples are in the colour and width of the moment,
+                // which the rows above may just have changed.
+                samples.borrow_mut().retain(|weak| weak.upgrade().is_some());
+                for sample in samples.borrow().iter().filter_map(|weak| weak.upgrade()) {
+                    sample.queue_draw();
+                }
             }));
         }
         Kind::Rect => {
@@ -896,6 +912,63 @@ fn paint_preview(area: &gtk::DrawingArea, theme: &Theme, kind: Kind, style: &Sty
         }
     });
     area.queue_draw();
+}
+
+/// Every sample the arrow factory has drawn, so a colour change can ask
+/// them to draw again. Weak, since the rows of a popped-down list go away.
+type Samples = Rc<RefCell<Vec<glib::WeakRef<gtk::DrawingArea>>>>;
+
+/// The arrow choices as pictures: a short line in the style's colour at
+/// its width, with a head at the ends the choice puts one on, and the
+/// choice's name beside it. One factory serves the row and its list.
+fn arrow_factory(theme: Theme, style: Rc<RefCell<Style>>) -> (gtk::SignalListItemFactory, Samples) {
+    let factory = gtk::SignalListItemFactory::new();
+    let samples: Samples = Rc::new(RefCell::new(Vec::new()));
+    factory.connect_setup(move |_, item| {
+        let Some(item) = item.downcast_ref::<gtk::ListItem>() else { return };
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        let sample = gtk::DrawingArea::new();
+        sample.set_size_request(56, 18);
+        sample.set_valign(gtk::Align::Center);
+        let label = gtk::Label::new(None);
+        label.set_xalign(0.0);
+        row.append(&sample);
+        row.append(&label);
+        item.set_child(Some(&row));
+    });
+    {
+        let samples = samples.clone();
+        factory.connect_bind(move |_, item| {
+            let Some(item) = item.downcast_ref::<gtk::ListItem>() else { return };
+            let Some(row) = item.child().and_downcast::<gtk::Box>() else { return };
+            let Some(sample) = row.first_child().and_downcast::<gtk::DrawingArea>() else { return };
+            let Some(label) = row.last_child().and_downcast::<gtk::Label>() else { return };
+            let arrow = Arrow::ALL.get(item.position() as usize).copied().unwrap_or_default();
+            label.set_text(arrow.label());
+            let theme = theme.clone();
+            let style = style.clone();
+            sample.set_draw_func(move |_, cr, w, h| {
+                let (w, h) = (w as f64, h as f64);
+                let style = style.borrow();
+                let line_w = style.width.min(4.0);
+                let (a, b) = ((4.0, (h / 2.0).round()), (w - 4.0, (h / 2.0).round()));
+                colors::set_source(cr, &style.colour.hex(&theme));
+                cr.set_line_width(line_w);
+                cr.set_line_cap(gtk::cairo::LineCap::Round);
+                cr.move_to(a.0, a.1);
+                cr.line_to(b.0, b.1);
+                let _ = cr.stroke();
+                if arrow.at_end() {
+                    head(cr, a, b, line_w);
+                }
+                if arrow.at_start() {
+                    head(cr, b, a, line_w);
+                }
+            });
+            samples.borrow_mut().push(sample.downgrade());
+        });
+    }
+    (factory, samples)
 }
 
 fn head(cr: &gtk::cairo::Context, tail: (f64, f64), tip: (f64, f64), width: f64) {
