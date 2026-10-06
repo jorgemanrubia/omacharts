@@ -53,36 +53,30 @@ impl Default for CaptureOptions {
     }
 }
 
-/// Where the persistent browser profile lives: `$XDG_STATE_HOME/omacharts/
-/// tos-browser`, or `~/.local/state/omacharts/tos-browser`.
+/// Where the persistent browser profile lives: `tos-browser`, beside the
+/// session file.
 ///
-/// State, not configuration, and emphatically not a relative path. It holds a
-/// logged-in brokerage profile, Chrome rewrites it constantly and it grows to
-/// tens of megabytes, so the XDG state directory is where it belongs —
-/// whereas a relative `./browser-profile` lands wherever the app happened to
-/// be launched from, which means a different login each time somebody starts
-/// omacharts from a different directory, and a signed-in session dropped into
-/// whatever repository they were standing in. Created 0700 by
+/// Beside the session because the two are one thing — a login and the
+/// trusted device that produced it — so moving, backing up or deleting one
+/// should take the other with it. Never a relative path: `./browser-profile`
+/// would land wherever the app happened to be launched from, which means a
+/// different login per directory and a signed-in brokerage profile dropped
+/// into whatever source tree somebody was standing in. Created 0700 by
 /// [`capture_browser_session`], because a trusted-device profile is as good
 /// as the password that made it.
 pub fn default_profile_dir() -> PathBuf {
-    profile_dir_in(
-        std::env::var_os("XDG_STATE_HOME").map(PathBuf::from),
-        std::env::var_os("HOME").map(PathBuf::from),
-    )
+    profile_dir_beside(&crate::session_file())
 }
 
-/// [`default_profile_dir`] with the environment handed in, so the rule can be
-/// tested without a test rewriting the variables every other test reads.
-fn profile_dir_in(state_home: Option<PathBuf>, home: Option<PathBuf>) -> PathBuf {
-    state_home
-        .filter(|p| !p.as_os_str().is_empty())
-        .or_else(|| {
-            home.filter(|h| !h.as_os_str().is_empty())
-                .map(|home| home.join(".local/state"))
-        })
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("omacharts/tos-browser")
+/// [`default_profile_dir`] with the session file handed in, so the rule can
+/// be tested without a test rewriting the variables every other test reads.
+fn profile_dir_beside(session: &Path) -> PathBuf {
+    session
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| std::env::temp_dir().join("omacharts"))
+        .join("tos-browser")
 }
 
 fn fallback_gateway(trading_system: TradingSystem) -> String {
@@ -606,33 +600,24 @@ pub async fn capture_browser_session(
 mod tests {
     use super::*;
 
-    /// The profile holds a logged-in brokerage session. It used to be
-    /// `./browser-profile`, which put one in whatever directory the app was
-    /// started from — a different login per directory, and somebody's Schwab
-    /// session dropped into a source tree.
+    /// The profile holds a logged-in brokerage session, and it belongs with
+    /// the session file that login produced: moving, backing up or deleting
+    /// one should take the other with it. It must also never be relative —
+    /// as `./browser-profile` it landed in whatever directory the app was
+    /// started from, which is a different login per directory and somebody's
+    /// Schwab session dropped into a source tree.
     #[test]
-    fn the_browser_profile_lives_under_the_state_directory() {
+    fn the_browser_profile_sits_beside_the_session_file() {
         assert_eq!(
-            profile_dir_in(Some(PathBuf::from("/x/state")), Some(PathBuf::from("/home/p"))),
-            PathBuf::from("/x/state/omacharts/tos-browser")
-        );
-        assert_eq!(
-            profile_dir_in(None, Some(PathBuf::from("/home/p"))),
-            PathBuf::from("/home/p/.local/state/omacharts/tos-browser")
-        );
-        // An empty variable is not a directory called "".
-        assert_eq!(
-            profile_dir_in(Some(PathBuf::new()), Some(PathBuf::from("/home/p"))),
-            PathBuf::from("/home/p/.local/state/omacharts/tos-browser")
+            profile_dir_beside(Path::new("/home/p/.config/omacharts/tos.env")),
+            PathBuf::from("/home/p/.config/omacharts/tos-browser")
         );
     }
 
     #[test]
     fn the_profile_is_never_a_relative_path() {
-        for dir in [
-            profile_dir_in(None, None),
-            profile_dir_in(Some(PathBuf::new()), Some(PathBuf::new())),
-        ] {
+        for session in [Path::new("tos.env"), Path::new("")] {
+            let dir = profile_dir_beside(session);
             assert!(dir.is_absolute(), "{}", dir.display());
         }
     }

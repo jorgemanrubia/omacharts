@@ -104,8 +104,8 @@ Omacharts never sees your password or your one-time code, and types nothing
 into the page. It needs a Chromium-family browser on the machine (Chromium,
 Chrome, Brave or Edge) and a Schwab account with thinkorswim. What it keeps
 is the session the browser ended up with, in `~/.config/omacharts/tos.env`
-(`TOS_ENV_FILE` moves it), and a browser profile under
-`~/.local/state/omacharts/tos-browser` so that the next sign-in is a trusted
+(`TOS_ENV_FILE` moves it), and a browser profile beside it in
+`~/.config/omacharts/tos-browser` so that the next sign-in is a trusted
 device rather than another round of codes.
 
 It connects to paperMoney and asks for charts. A live gateway is refused, and
