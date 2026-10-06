@@ -1912,12 +1912,13 @@ impl ChartView {
         let pointer = self.pointer.clone();
         drag.connect_drag_begin(move |gesture, x, y| {
         let (width, height) = (area.width() as f64, area.height() as f64);
-        // Shift or Ctrl: the selection modifier, either one. Design tools
-        // say Shift and charting tools say Ctrl, and a hand that learned
-        // one should not have to learn the other.
+        // On a drawing, Shift or Ctrl adds it to the selection: design
+        // tools say Shift and charting tools say Ctrl, and a hand that
+        // learned one should not have to learn the other. On empty chart
+        // only Shift pulls out a box; Ctrl with a drag is left for later.
         let modifiers = gesture.current_event_state();
-        let shift = modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK)
-            || modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK);
+        let shift_only = modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK);
+        let shift = shift_only || modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK);
         // A drawing being laid down takes the press before anything
         // else: the second press is the drawing's second anchor.
         let finishing = {
@@ -2005,7 +2006,7 @@ impl ChartView {
                 }
                 // Shift on empty chart: a box, which takes what it touches
                 // as it grows and adds it to what was already selected.
-                None if shift => {
+                None if shift_only => {
                     s.marquee_base = s.selected.clone();
                     s.drag = Some(Drag::Marquee { from: (x, y), to: (x, y) });
                     drop(s);
