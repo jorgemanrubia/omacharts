@@ -185,8 +185,9 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+Shift+↑ ↓", "Bring the selected drawing to the front, or send it to the back"),
             ("Ctrl+Z · Ctrl+Y", "Undo and redo, on this chart's drawings"),
             ("Click a drawing", "Select it; drag an end, or the whole thing"),
+            ("Shift+click a drawing", "Add it to the selection, or take it out"),
             ("Right-click a drawing", "Its colour and thickness, or delete it"),
-            ("Delete", "Delete the selected drawing"),
+            ("Delete", "Delete the selected drawings"),
             ("Esc", "Put the tool down, or let go of the selection"),
         ],
     ),
@@ -1453,6 +1454,7 @@ pub struct Window {
     auto_scale_action: RefCell<Option<gio::SimpleAction>>,
     drawing_config_action: RefCell<Option<gio::SimpleAction>>,
     drawing_scope_action: RefCell<Option<gio::SimpleAction>>,
+    drawing_settings_action: RefCell<Option<gio::SimpleAction>>,
     /// The drawing tools, on the left.
     drawing_bar: RefCell<Option<Rc<crate::ui::drawing_bar::DrawingBar>>>,
     /// Where the tree of charts is mounted, rebuilt whenever it changes.
@@ -1557,6 +1559,7 @@ impl Window {
             auto_scale_action: RefCell::new(None),
             drawing_config_action: RefCell::new(None),
             drawing_scope_action: RefCell::new(None),
+            drawing_settings_action: RefCell::new(None),
             drawing_bar: RefCell::new(None),
             chart_host: chart_host.clone(),
             book_strip: book_strip.clone(),
@@ -5578,7 +5581,15 @@ impl Window {
     fn drawing_menu(self: &Rc<Self>, x: f64, y: f64) {
         let pane = self.focused_pane();
         let Some(drawing) = pane.view.selected_drawing() else { return };
+        let count = pane.view.selected_drawings().len();
+        // Properties and configurations are a kind's: with lines and
+        // rectangles selected together, neither can be asked for.
+        let one_kind = pane.view.selection_kind().is_some();
+        if let Some(action) = self.drawing_settings_action.borrow().as_ref() {
+            action.set_enabled(one_kind);
+        }
         if let Some(action) = self.drawing_config_action.borrow().as_ref() {
+            action.set_enabled(one_kind);
             action.set_state(&(drawing.config.unwrap_or(0) as i32).to_variant());
         }
         if let Some(action) = self.drawing_scope_action.borrow().as_ref() {
@@ -5621,7 +5632,12 @@ impl Window {
         menu.append_section(None, &order);
 
         let remove = gio::Menu::new();
-        shortcuts::append_with_key(&remove, "Remove drawing", "chart.drawing-delete", "Delete");
+        let label = match count {
+            1 => "Remove drawing".to_string(),
+            n => format!("Remove {n} drawings"),
+        };
+        shortcuts::append_with_key(&remove, &label, "chart.drawing-delete", "Delete");
+        shortcuts::append(&remove, "Remove all drawings", "chart.drawing-clear");
         menu.append_section(None, &remove);
 
         let area = pane.view.area.clone();
@@ -5637,6 +5653,9 @@ impl Window {
         let draw = gio::Menu::new();
         shortcuts::append(&draw, "Draw a line", "chart.draw-line");
         shortcuts::append(&draw, "Draw a rectangle", "chart.draw-rect");
+        if !self.focused_pane().view.drawings().is_empty() {
+            shortcuts::append(&draw, "Remove all drawings", "chart.drawing-clear");
+        }
         menu.append_section(None, &draw);
 
         // Choices live behind a named item rather than loose in the menu: a
@@ -5882,6 +5901,12 @@ impl Window {
         let this = self.clone();
         drawing_settings.connect_activate(move |_, _| this.open_drawing_settings());
         actions.add_action(&drawing_settings);
+        *self.drawing_settings_action.borrow_mut() = Some(drawing_settings);
+
+        let drawing_clear = gio::SimpleAction::new("drawing-clear", None);
+        let this = self.clone();
+        drawing_clear.connect_activate(move |_, _| this.focused_pane().view.delete_all());
+        actions.add_action(&drawing_clear);
 
         let drawing_delete = gio::SimpleAction::new("drawing-delete", None);
         let this = self.clone();

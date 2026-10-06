@@ -144,7 +144,10 @@ struct State {
     /// chart draws what it is handed; the store is where they live.
     drawings: Vec<Drawing>,
     /// Which of them has the grips, by position in `drawings`.
-    selected: Option<usize>,
+    /// The drawings that wear grips, in the order they were taken: the last
+    /// is the one most recently picked, and what a single-drawing question
+    /// is about. Shift with a click adds one or takes one out.
+    selected: Vec<usize>,
     /// The tool that is armed: the next press on the plot starts a drawing
     /// of this kind. `None` is the usual state, where a press pans.
     tool: Option<DrawingKind>,
@@ -666,7 +669,7 @@ impl State {
             price_offset: 0.0,
             price_auto: true,
             drawings: Vec::new(),
-            selected: None,
+            selected: Vec::new(),
             tool: None,
             placing: None,
             next_config: 1,
@@ -685,6 +688,37 @@ impl State {
             self.undo.remove(0);
         }
         self.redo.clear();
+    }
+
+    /// The drawing most recently taken into the selection.
+    fn primary(&self) -> Option<usize> {
+        self.selected.last().copied()
+    }
+
+    /// The kind the whole selection is, when it is all one kind: what the
+    /// properties and the configurations can be asked about. Mixed, or
+    /// nothing selected, is `None`.
+    fn selection_kind(&self) -> Option<DrawingKind> {
+        let mut kinds = self.selected.iter().filter_map(|i| self.drawings.get(*i)).map(|d| d.kind);
+        let first = kinds.next()?;
+        kinds.all(|k| k == first).then_some(first)
+    }
+
+    /// Keep the selection on the same drawings after the list was rebuilt,
+    /// by id; a drawing with no id yet is the newest row.
+    fn reselect(&mut self, ids: Vec<i64>) {
+        self.selected = ids
+            .into_iter()
+            .filter_map(|id| match id {
+                0 => self.drawings.len().checked_sub(1),
+                id => self.drawings.iter().position(|d| d.id == id),
+            })
+            .collect();
+        self.selected.dedup();
+    }
+
+    fn selected_ids(&self) -> Vec<i64> {
+        self.selected.iter().filter_map(|i| self.drawings.get(*i)).map(|d| d.id).collect()
     }
 
     /// Where a pixel is in the chart's own units: the moment of the bar
@@ -742,9 +776,9 @@ impl State {
         }
         let plan = layout(self, width, height);
         let (low, high) = price_range(self, &self.bars[first..first + visible])?;
-        // The selected one first, since its grips are what the hand is most
-        // likely reaching for; then the most recently drawn.
-        let order = self.selected.into_iter().chain((0..self.drawings.len()).rev());
+        // The selected ones first, since their grips are what the hand is
+        // most likely reaching for; then the most recently drawn.
+        let order = self.selected.iter().rev().copied().chain((0..self.drawings.len()).rev());
         for index in order {
             let drawing = self.drawings.get(index)?;
             let projected = self.project(&plan, low, high, drawing);
@@ -753,7 +787,7 @@ impl State {
             // whole thing is a body, so a press on an unselected line's end
             // selects it rather than starting to move the end.
             let hit = match hit {
-                Some(_) if self.selected != Some(index) => Some(Grip::Body),
+                Some(_) if !self.selected.contains(&index) => Some(Grip::Body),
                 other => other,
             };
             if let Some(grip) = hit {
@@ -995,14 +1029,9 @@ impl ChartView {
     pub fn set_drawings(&self, drawings: Vec<Drawing>) {
         {
             let mut state = self.state.borrow_mut();
-            let selected_id = state.selected.and_then(|i| state.drawings.get(i)).map(|d| d.id);
-            state.selected = match selected_id {
-                // The one just drawn had no id yet; it is the newest row.
-                Some(0) => drawings.len().checked_sub(1),
-                Some(id) => drawings.iter().position(|d| d.id == id),
-                None => None,
-            };
+            let ids = state.selected_ids();
             state.drawings = drawings;
+            state.reselect(ids);
         }
         self.redraw();
     }
@@ -1025,7 +1054,7 @@ impl ChartView {
             state.tool = kind;
             state.placing = None;
             if kind.is_some() {
-                state.selected = None;
+                state.selected.clear();
             }
         }
         self.area.set_cursor_from_name(Some(if kind.is_some() { "crosshair" } else { "default" }));
@@ -1044,8 +1073,8 @@ impl ChartView {
     pub fn cancel(&self) -> bool {
         let busy = {
             let mut s = self.state.borrow_mut();
-            let busy = s.tool.is_some() || s.placing.is_some() || s.selected.is_some();
-            s.selected = None;
+            let busy = s.tool.is_some() || s.placing.is_some() || !s.selected.is_empty();
+            s.selected.clear();
             // The drag the gesture is still in ends with nothing to commit.
             if matches!(s.drag, Some(Drag::Place { .. })) {
                 s.drag = None;
@@ -1056,14 +1085,29 @@ impl ChartView {
         busy
     }
 
-    /// The drawing that has the grips, if one does.
+    /// The drawing most recently taken into the selection, if any has the
+    /// grips: the one a single-drawing question is about.
     pub fn selected_drawing(&self) -> Option<Drawing> {
         let state = self.state.borrow();
-        state.selected.and_then(|i| state.drawings.get(i)).cloned()
+        state.primary().and_then(|i| state.drawings.get(i)).cloned()
+    }
+
+    /// Everything that wears grips.
+    pub fn selected_drawings(&self) -> Vec<Drawing> {
+        let state = self.state.borrow();
+        state.selected.iter().filter_map(|i| state.drawings.get(*i)).cloned().collect()
+    }
+
+    /// The kind the whole selection is, when it is all one kind: a line's
+    /// properties can be put on every selected line, and on nothing else.
+    pub fn selection_kind(&self) -> Option<DrawingKind> {
+        self.state.borrow().selection_kind()
     }
 
     /// Select whatever drawing is under a pixel, for a right-click: the menu
-    /// that opens there should be about the thing under the pointer.
+    /// that opens there should be about the thing under the pointer. A
+    /// drawing already in the selection keeps its company, so the menu is
+    /// about all of them.
     pub fn select_at(&self, x: f64, y: f64) -> bool {
         let hit = {
             let state = self.state.borrow();
@@ -1071,10 +1115,18 @@ impl ChartView {
         };
         let changed = {
             let mut state = self.state.borrow_mut();
-            let next = hit.map(|(index, _)| index);
-            let changed = state.selected != next;
-            state.selected = next;
-            changed
+            match hit {
+                Some((index, _)) if state.selected.contains(&index) => false,
+                Some((index, _)) => {
+                    state.selected = vec![index];
+                    true
+                }
+                None => {
+                    let had = !state.selected.is_empty();
+                    state.selected.clear();
+                    had
+                }
+            }
         };
         if changed {
             self.redraw();
@@ -1082,48 +1134,79 @@ impl ChartView {
         hit.is_some()
     }
 
-    /// Change the selected drawing, and say so.
-    pub fn edit_selected(&self, edit: impl FnOnce(&mut Drawing)) {
+    /// Change every selected drawing the same way, and say so for each one
+    /// that changed. One step back, however many there were.
+    pub fn edit_selected(&self, edit: impl Fn(&mut Drawing)) {
         let changed = {
             let mut state = self.state.borrow_mut();
-            let Some(index) = state.selected else { return };
-            let before = state.drawings.get(index).cloned();
-            let Some(drawing) = state.drawings.get_mut(index) else { return };
-            edit(drawing);
-            let after = drawing.clone();
-            // An edit that changed nothing is not a step back worth having.
-            if before.as_ref() == Some(&after) {
+            if state.selected.is_empty() {
                 return;
             }
-            let mut drawings = state.drawings.clone();
-            if let (Some(before), Some(slot)) = (before, drawings.get_mut(index)) {
-                *slot = before;
+            let before = state.drawings.clone();
+            let mut changed = Vec::new();
+            for index in state.selected.clone() {
+                let Some(drawing) = state.drawings.get_mut(index) else { continue };
+                edit(drawing);
+                if before.get(index) != Some(drawing) {
+                    changed.push(drawing.clone());
+                }
             }
-            state.undo.push(drawings);
+            // An edit that changed nothing is not a step back worth having.
+            if changed.is_empty() {
+                return;
+            }
+            state.undo.push(before);
             if state.undo.len() > HISTORY {
                 state.undo.remove(0);
             }
             state.redo.clear();
-            after
+            changed
         };
         self.redraw();
-        self.tell(DrawingEvent::Changed(changed));
+        for drawing in changed {
+            self.tell(DrawingEvent::Changed(drawing));
+        }
     }
 
+    /// Delete everything selected, as one step back.
     pub fn delete_selected(&self) {
         let removed = {
             let mut state = self.state.borrow_mut();
-            let Some(index) = state.selected.take() else { return };
-            if index >= state.drawings.len() {
+            let mut indices: Vec<usize> = std::mem::take(&mut state.selected);
+            indices.sort_unstable();
+            indices.dedup();
+            indices.retain(|i| *i < state.drawings.len());
+            if indices.is_empty() {
                 return;
             }
             state.remember();
-            Some(state.drawings.remove(index))
+            // From the back, so the ones still to go keep their places.
+            indices.into_iter().rev().map(|i| state.drawings.remove(i)).collect::<Vec<_>>()
         };
-        let Some(removed) = removed else { return };
         self.redraw();
-        if removed.id != 0 {
-            self.tell(DrawingEvent::Removed(removed.id));
+        for removed in removed {
+            if removed.id != 0 {
+                self.tell(DrawingEvent::Removed(removed.id));
+            }
+        }
+    }
+
+    /// Delete every drawing this chart shows, as one step back.
+    pub fn delete_all(&self) {
+        let removed = {
+            let mut state = self.state.borrow_mut();
+            if state.drawings.is_empty() {
+                return;
+            }
+            state.selected.clear();
+            state.remember();
+            std::mem::take(&mut state.drawings)
+        };
+        self.redraw();
+        for removed in removed {
+            if removed.id != 0 {
+                self.tell(DrawingEvent::Removed(removed.id));
+            }
         }
     }
 
@@ -1157,9 +1240,9 @@ impl ChartView {
             } else {
                 state.undo.push(now);
             }
-            // The selection follows the drawing, if it is still there.
-            let selected_id = state.selected.and_then(|i| now_id(&now_list(&list, i)));
-            state.selected = selected_id.and_then(|id| state.drawings.iter().position(|d| d.id == id));
+            // The selection follows the drawings, those still there.
+            let ids: Vec<i64> = state.selected.iter().filter_map(|i| now_id(&now_list(&list, *i))).collect();
+            state.reselect(ids);
             state.placing = None;
             list
         };
@@ -1184,14 +1267,14 @@ impl ChartView {
                     false => glib::Propagation::Proceed,
                 },
                 Key::Delete | Key::BackSpace | Key::KP_Delete => {
-                    if view.state.borrow().selected.is_none() {
+                    if view.state.borrow().selected.is_empty() {
                         return glib::Propagation::Proceed;
                     }
                     view.delete_selected();
                     glib::Propagation::Stop
                 }
                 Key::Return | Key::KP_Enter | Key::ISO_Enter => {
-                    if view.state.borrow().selected.is_none() {
+                    if view.state.borrow().selected.is_empty() {
                         return glib::Propagation::Proceed;
                     }
                     if let Some(handler) = view.on_drawing_properties.borrow().as_ref() {
@@ -1214,7 +1297,7 @@ impl ChartView {
                 // among the other drawings. Up is front, the way a stack
                 // reads.
                 Key::Up | Key::Down
-                    if view.state.borrow().selected.is_some()
+                    if !view.state.borrow().selected.is_empty()
                         && modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK)
                         && modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK) =>
                 {
@@ -1222,7 +1305,7 @@ impl ChartView {
                     glib::Propagation::Stop
                 }
                 Key::Left | Key::Right | Key::Up | Key::Down
-                    if view.state.borrow().selected.is_some()
+                    if !view.state.borrow().selected.is_empty()
                         && !modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK) =>
                 {
                     // A pixel at a time; ten with Shift.
@@ -1266,7 +1349,7 @@ impl ChartView {
         }
         let (armed, selected) = {
             let s = self.state.borrow();
-            (s.tool.is_some() || s.placing.is_some(), s.selected.is_some())
+            (s.tool.is_some() || s.placing.is_some(), !s.selected.is_empty())
         };
         if armed {
             let mut s = self.state.borrow_mut();
@@ -1280,7 +1363,11 @@ impl ChartView {
             return true;
         }
         if selected {
-            self.edit_selected(|d| d.follow(n));
+            // A configuration is a kind's: the key means something only
+            // when the selection is all lines or all rectangles.
+            if self.selection_kind().is_some() {
+                self.edit_selected(|d| d.follow(n));
+            }
             return true;
         }
         false
@@ -1305,26 +1392,40 @@ impl ChartView {
         self.state.borrow().sharing
     }
 
-    /// Put the selected drawing in front of, or behind, every other. Over
-    /// the candles either way: the order is among drawings only.
+    /// Put the selected drawings in front of, or behind, every other, in
+    /// the order they already have among themselves. Over the candles
+    /// either way: the order is among drawings only.
     pub fn restack_selected(&self, to_front: bool) {
         let changed = {
             let mut state = self.state.borrow_mut();
-            let Some(index) = state.selected else { return };
+            let mut indices = state.selected.clone();
+            indices.sort_unstable();
+            indices.dedup();
+            indices.retain(|i| *i < state.drawings.len());
+            if indices.is_empty() {
+                return;
+            }
             let (lowest, highest) = state
                 .drawings
                 .iter()
                 .fold((i64::MAX, i64::MIN), |(lo, hi), d| (lo.min(d.order), hi.max(d.order)));
             state.remember();
-            let Some(drawing) = state.drawings.get_mut(index) else { return };
-            drawing.order = if to_front { highest + 1 } else { lowest - 1 };
-            let moved = drawing.clone();
+            let count = indices.len() as i64;
+            let mut moved = Vec::new();
+            for (n, index) in indices.into_iter().enumerate() {
+                let Some(drawing) = state.drawings.get_mut(index) else { continue };
+                drawing.order = if to_front { highest + 1 + n as i64 } else { lowest - count + n as i64 };
+                moved.push(drawing.clone());
+            }
+            let ids = state.selected_ids();
             drawings::sort_for_painting(&mut state.drawings);
-            state.selected = state.drawings.iter().position(|d| d == &moved);
+            state.reselect(ids);
             moved
         };
         self.redraw();
-        self.tell(DrawingEvent::Changed(changed));
+        for drawing in changed {
+            self.tell(DrawingEvent::Changed(drawing));
+        }
     }
 
     /// Move the selected drawing by a few pixels, from the arrow keys. The
@@ -1333,7 +1434,9 @@ impl ChartView {
     pub fn nudge_selected(&self, dx: f64, dy: f64) {
         let moved = {
             let mut state = self.state.borrow_mut();
-            let Some(index) = state.selected else { return };
+            if state.selected.is_empty() {
+                return;
+            }
             let (w, h) = (self.area.width() as f64, self.area.height() as f64);
             let (first, visible) = state.slice();
             if visible == 0 {
@@ -1345,20 +1448,25 @@ impl ChartView {
             };
             let bar_w = plan.plot_w / visible as f64;
             let by_price = -dy / plan.price_h * (high - low);
-            // A pixel is a fraction of a bar, and a bar is a step in time.
-            let from_ts = match state.drawings.get(index) {
-                Some(d) => d.from.ts,
-                None => return,
-            };
-            let at = index_of_ts(&state.bars, from_ts);
-            let by_ts = ts_at(&state.bars, at + dx / bar_w) - from_ts;
             state.remember();
-            let Some(drawing) = state.drawings.get_mut(index) else { return };
-            drawing.shift(by_ts, by_price);
-            drawing.clone()
+            let mut moved = Vec::new();
+            for index in state.selected.clone() {
+                // A pixel is a fraction of a bar, and a bar is a step in
+                // time — measured from where each drawing starts, since
+                // the bars are not evenly spaced in time.
+                let Some(from_ts) = state.drawings.get(index).map(|d| d.from.ts) else { continue };
+                let at = index_of_ts(&state.bars, from_ts);
+                let by_ts = ts_at(&state.bars, at + dx / bar_w) - from_ts;
+                let Some(drawing) = state.drawings.get_mut(index) else { continue };
+                drawing.shift(by_ts, by_price);
+                moved.push(drawing.clone());
+            }
+            moved
         };
         self.redraw();
-        self.tell(DrawingEvent::Changed(moved));
+        for drawing in moved {
+            self.tell(DrawingEvent::Changed(drawing));
+        }
     }
 
     /// A drawing is finished: it joins the list, takes the grips, and is
@@ -1370,7 +1478,7 @@ impl ChartView {
             let Some(drawing) = state.placing.take() else { return };
             state.remember();
             state.drawings.push(drawing.clone());
-            state.selected = Some(state.drawings.len() - 1);
+            state.selected = vec![state.drawings.len() - 1];
             state.tool = None;
             state.next_config = 1;
             drawing
@@ -1779,8 +1887,9 @@ impl ChartView {
         let area = self.area.clone();
         let view = Rc::downgrade(self);
         let on_price_auto = self.on_price_auto.clone();
-        drag.connect_drag_begin(move |_, x, y| {
+        drag.connect_drag_begin(move |gesture, x, y| {
         let (width, height) = (area.width() as f64, area.height() as f64);
+        let shift = gesture.current_event_state().contains(gtk::gdk::ModifierType::SHIFT_MASK);
         // A drawing being laid down takes the press before anything
         // else: the second press is the drawing's second anchor.
         let finishing = {
@@ -1831,12 +1940,30 @@ impl ChartView {
                 s.begin_placing(width, height, x, y);
                 return;
             }
-            // A drawing under the hand: take hold of it. Otherwise a
-            // press on the chart lets go of whatever was selected, and
-            // pans as it always did.
+            // A drawing under the hand: take hold of it. With Shift it
+            // joins the selection, or leaves it, and nothing moves. One
+            // already selected keeps its company, so a drag on it moves
+            // them all. Otherwise a press on the chart lets go of whatever
+            // was selected, and pans as it always did.
             match s.drawing_at(width, height, x, y) {
+                Some((index, _)) if shift => {
+                    match s.selected.iter().position(|i| *i == index) {
+                        Some(at) => {
+                            s.selected.remove(at);
+                        }
+                        None => s.selected.push(index),
+                    }
+                    drop(s);
+                    area.queue_draw();
+                    return;
+                }
                 Some((index, grip)) => {
-                    s.selected = Some(index);
+                    if let Some(at) = s.selected.iter().position(|i| *i == index) {
+                        s.selected.remove(at);
+                    } else {
+                        s.selected.clear();
+                    }
+                    s.selected.push(index);
                     if let Some(origin) = s.locate(width, height, x, y) {
                         // Before the first motion, so a drag is one step
                         // back however far it went. A press that never
@@ -1848,8 +1975,10 @@ impl ChartView {
                     area.queue_draw();
                     return;
                 }
+                None if shift => {}
                 None => {
-                    if s.selected.take().is_some() {
+                    if !s.selected.is_empty() {
+                        s.selected.clear();
                         area.queue_draw();
                     }
                 }
@@ -1906,28 +2035,43 @@ impl ChartView {
                 Drag::Grip { index, grip, origin } => {
                     let Some((x, y)) = hand else { return };
                     let Some(now) = s.locate(width, height, x, y) else { return };
-                    if let Some(drawing) = s.drawings.get_mut(index) {
-                        match grip {
-                            Grip::Body => {
-                                // The whole thing follows the hand by the
-                                // distance it has travelled since the last
-                                // motion, so a drag past the end of the bars
-                                // keeps moving at the bars' own step.
-                                drawing.shift(now.ts - origin.ts, now.price - origin.price);
-                                s.drag = Some(Drag::Grip { index, grip, origin: now });
+                    let moving: Vec<Drawing> = match grip {
+                        Grip::Body => {
+                            // The whole selection follows the hand by the
+                            // distance it has travelled since the last
+                            // motion, so a drag past the end of the bars
+                            // keeps moving at the bars' own step.
+                            let (by_ts, by_price) = (now.ts - origin.ts, now.price - origin.price);
+                            let indices = s.selected.clone();
+                            let mut moving = Vec::new();
+                            for i in indices {
+                                if let Some(drawing) = s.drawings.get_mut(i) {
+                                    drawing.shift(by_ts, by_price);
+                                    moving.push(drawing.clone());
+                                }
                             }
-                            grip => drawing.move_grip(grip, now),
+                            s.drag = Some(Drag::Grip { index, grip, origin: now });
+                            moving
                         }
-                    }
-                    let moving = s.drawings.get(index).cloned();
+                        grip => {
+                            // A corner is one drawing's own.
+                            match s.drawings.get_mut(index) {
+                                Some(drawing) => {
+                                    drawing.move_grip(grip, now);
+                                    vec![drawing.clone()]
+                                }
+                                None => Vec::new(),
+                            }
+                        }
+                    };
                     drop(s);
                     area.queue_draw();
                     // The other charts of this symbol follow the hand too,
                     // not only the release.
-                    if let Some(moving) = moving
-                        && let Some(view) = view.upgrade()
-                    {
-                        view.tell(DrawingEvent::Moving(moving));
+                    if let Some(view) = view.upgrade() {
+                        for drawing in moving {
+                            view.tell(DrawingEvent::Moving(drawing));
+                        }
                     }
                     return;
                 }
@@ -2003,20 +2147,27 @@ impl ChartView {
                     }
                     return;
                 }
-                Some(Drag::Grip { index, .. }) => {
-                    let moved = {
+                Some(Drag::Grip { .. }) => {
+                    let moved: Vec<Drawing> = {
                         let mut s = state.borrow_mut();
-                        let moved = s.drawings.get(index).cloned();
+                        let before = s.undo.last().cloned().unwrap_or_default();
+                        let moved: Vec<Drawing> = s
+                            .drawings
+                            .iter()
+                            .enumerate()
+                            .filter(|(i, d)| before.get(*i) != Some(*d))
+                            .map(|(_, d)| d.clone())
+                            .collect();
                         // A press that selected and let go moved nothing.
-                        if s.undo.last().map(|before| before.get(index) == moved.as_ref()).unwrap_or(false) {
+                        if moved.is_empty() {
                             s.undo.pop();
-                            None
-                        } else {
-                            moved
                         }
+                        moved
                     };
-                    if let (Some(moved), Some(view)) = (moved, view.upgrade()) {
-                        view.tell(DrawingEvent::Changed(moved));
+                    if let Some(view) = view.upgrade() {
+                        for drawing in moved {
+                            view.tell(DrawingEvent::Changed(drawing));
+                        }
                     }
                     return;
                 }
@@ -3057,7 +3208,7 @@ fn draw_drawings(cr: &cairo::Context, state: &State, plan: &Layout, low: f64, hi
     cr.clip();
     for (index, drawing) in state.drawings.iter().enumerate() {
         let projected = state.project(plan, low, high, drawing);
-        draw_drawing(cr, state, &projected, drawing, state.selected == Some(index));
+        draw_drawing(cr, state, &projected, drawing, state.selected.contains(&index));
     }
     cr.restore().ok();
 }
@@ -4215,9 +4366,30 @@ mod drawing_tests {
         state.drawings.push(Drawing::new(DrawingKind::Rect, a, b));
         assert_eq!(state.drawing_at(w, h, 350.0, 200.0), Some((1, Grip::Body)));
         assert_eq!(state.drawing_at(w, h, 200.0, 150.0), Some((1, Grip::Body)));
-        state.selected = Some(1);
+        state.selected = vec![1];
         assert_eq!(state.drawing_at(w, h, 200.0, 150.0), Some((1, Grip::From)));
         assert_eq!(state.drawing_at(w, h, 50.0, 30.0), None);
+    }
+
+    /// A selection of one kind can be asked for its properties; a mixed
+    /// one cannot, and the newest pick is the one a single question is
+    /// about.
+    #[test]
+    fn a_selection_has_a_kind_only_when_it_is_all_one_kind() {
+        let mut state = charted(400);
+        let (w, h) = (800.0, 400.0);
+        let a = state.locate(w, h, 200.0, 150.0).unwrap();
+        let b = state.locate(w, h, 500.0, 250.0).unwrap();
+        state.drawings.push(Drawing::new(DrawingKind::Line, a, b));
+        state.drawings.push(Drawing::new(DrawingKind::Line, a, b));
+        state.drawings.push(Drawing::new(DrawingKind::Rect, a, b));
+        assert_eq!(state.selection_kind(), None);
+        state.selected = vec![0, 1];
+        assert_eq!(state.selection_kind(), Some(DrawingKind::Line));
+        assert_eq!(state.primary(), Some(1));
+        state.selected.push(2);
+        assert_eq!(state.selection_kind(), None);
+        assert_eq!(state.primary(), Some(2));
     }
 
     /// The fill a box paints is the engine's alpha and not a solid: the

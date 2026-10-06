@@ -44,10 +44,14 @@ type Shower<T> = Rc<dyn Fn(&T)>;
 // A drawing's properties
 // ---------------------------------------------------------------------------
 
-/// Open the properties of the drawing selected on `pane`. Nothing selected,
-/// nothing opens.
+/// Open the properties of the drawing selected on `pane` — of all of them,
+/// when several of one kind are: what is set here goes on each. Nothing
+/// selected, or lines and rectangles together, and nothing opens.
 pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
     let view = pane.view.clone();
+    if view.selection_kind().is_none() {
+        return;
+    }
     let Some(drawing) = view.selected_drawing() else { return };
     let theme = window.theme();
     let kind = drawing.kind;
@@ -123,7 +127,7 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
         Rc::new(move |style: Style| {
             let configs = window.drawing_configurations();
             view.edit_selected(move |d| {
-                d.edit_style(&configs, |own| *own = style);
+                d.edit_style(&configs, |own| *own = style.clone());
             });
             call_refresh();
         })
