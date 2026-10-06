@@ -210,7 +210,7 @@ impl Market {
         // Nothing above this line in the process has opened a socket or
         // started a thread, and nothing does unless somebody has chosen this
         // feed and asked for a chart: the first `candles` call gets here.
-        let session = stored_session(env).ok_or_else(|| no_session(env))?;
+        let session = usable_session(env).ok_or_else(|| no_session(env))?;
         // `false`: a chart feed does not open the live gateway.
         let (client, _) = match session.connect(env, false) {
             // The one answer only the gateway can give. Written down so the
@@ -233,7 +233,7 @@ impl Market {
         let (generation, client) = self.client.lock().unwrap_or_else(|e| e.into_inner()).clone();
         match fetch(&client, symbol, aggregation, range) {
             Err(error) if lost(&error) || auth_failure(&error) => {
-                let fresh = self.replace(generation, &error)?;
+                let fresh = self.replace(generation)?;
                 fetch(&fresh, symbol, aggregation, range)
             }
             other => other,
@@ -244,19 +244,16 @@ impl Market {
     ///
     /// Reconnecting is what keeps an expired token from wedging the feed for
     /// the life of the process: the session file is read again, so a person
-    /// who has signed in since gets their charts back without a restart. A
-    /// refusal is reported as a refusal, because "sign in again" is something
-    /// somebody can act on and "the provider is not answering" is not.
-    fn replace(&self, generation: u64, cause: &Error) -> Result<Client> {
-        if auth_failure(cause) {
-            let _ = BrowserSession::mark_expired(&self.env, now());
-        }
+    /// who has signed in since gets their charts back without a restart —
+    /// which is also why the refusal is not written down before trying. A
+    /// session that really is dead is marked by [`reconnect`], once, on the
+    /// attempt that proves it.
+    fn replace(&self, generation: u64) -> Result<Client> {
         let mut held = self.client.lock().unwrap_or_else(|e| e.into_inner());
         if held.0 != generation {
             return Ok(held.1.clone());
         }
         let (fresh, _) = reconnect(&self.env)?;
-        // A connection that worked is the answer to the mark left above.
         let _ = BrowserSession::clear_expired(&self.env);
         *held = (generation + 1, fresh.clone());
         Ok(fresh)
@@ -274,6 +271,17 @@ impl Drop for Market {
 fn stored_session(env: &Path) -> Option<BrowserSession> {
     BrowserSession::load_for(env, TradingSystem::PaperMoney)
         .filter(|session| session.trading_system == TradingSystem::PaperMoney)
+}
+
+/// The saved session, unless the gateway has already refused it.
+///
+/// A token the gateway has said no to will be said no to again, and a chart
+/// on a refresh timer would ask it once a minute for ever — a TLS connection
+/// to a brokerage per minute, to be told the same thing. The mark is cleared
+/// by a sign-in and by a connection that works, so it being there means
+/// nobody has done anything that could change the answer.
+fn usable_session(env: &Path) -> Option<BrowserSession> {
+    stored_session(env).filter(|_| BrowserSession::expired_at(env).is_none())
 }
 
 fn auth_failure(error: &Error) -> bool {
@@ -331,7 +339,7 @@ fn browser_sign_in_with(
 }
 
 fn reconnect(env: &Path) -> Result<(Client, BrowserSession)> {
-    let session = stored_session(env).ok_or_else(|| no_session(env))?;
+    let session = usable_session(env).ok_or_else(|| no_session(env))?;
     match session.connect(env, false) {
         Err(error) if auth_failure(&error) => {
             let _ = BrowserSession::mark_expired(env, now());
@@ -507,6 +515,37 @@ mod tests {
         BrowserSession::clear_dotenv_for(&path, TradingSystem::PaperMoney).unwrap();
         assert_eq!(state_of(&path), SessionState::Missing);
         assert!(std::fs::read_to_string(&path).unwrap().contains("KEEP=1"));
+    }
+
+    /// A chart on a refresh timer asks once a minute, for ever. Asking a
+    /// gateway that has already refused this token costs a TLS connection to
+    /// a brokerage to be told the same thing again, so the mark the refusal
+    /// left is read before anything is opened.
+    #[test]
+    fn a_session_the_gateway_has_already_refused_costs_no_socket() {
+        let path = env_path("expired-no-socket");
+        // Port 1 on loopback: anything that opened a socket would fail with
+        // Unreachable rather than NoSession, which is how this test can tell.
+        std::fs::write(
+            &path,
+            "TOS_PAPER_ACCESS_TOKEN=tok\nTOS_PAPER_GATEWAY_URL=ws://127.0.0.1:1/Services/WsJson\n",
+        )
+        .unwrap();
+        assert!(matches!(
+            Market::connect(&path),
+            Err(Error::Unreachable(_))
+        ));
+        BrowserSession::mark_expired(&path, 1_700_000_000).unwrap();
+        assert!(
+            matches!(Market::connect(&path), Err(Error::NoSession(_))),
+            "a refused session must be refused from the file"
+        );
+        // Signing in again clears the mark, and the feed tries once more.
+        BrowserSession::clear_expired(&path).unwrap();
+        assert!(matches!(
+            Market::connect(&path),
+            Err(Error::Unreachable(_))
+        ));
     }
 
     /// A token that dies mid-session used to wedge the feed for the life of
