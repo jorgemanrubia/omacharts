@@ -58,6 +58,26 @@ impl Scene {
         Scene { state }
     }
 
+    /// What a drained tick costs a chart: the tail put in place, and the
+    /// indicators recomputed over the series — which is the whole of the
+    /// per-frame work the window does for a chart whose bars moved, apart
+    /// from the frame itself.
+    pub fn tick(&mut self, tail: &[Bar]) {
+        for bar in tail {
+            omacharts_engine::stream::upsert(&mut self.state.bars, *bar);
+        }
+        let timeframe = self.state.timeframe;
+        let series = &self.state.bars;
+        for drawn in &mut self.state.indicators {
+            drawn.output = indicators::compute(&drawn.indicator, series, 0, timeframe, None);
+        }
+    }
+
+    /// The last bar as the chart holds it, for a benchmark to move.
+    pub fn last_bar(&self) -> Option<Bar> {
+        self.state.bars.last().copied()
+    }
+
     /// Put the pointer where a hand holds it, as a fraction across and down
     /// the chart.
     pub fn point_at(&mut self, width: f64, height: f64, across: f64, down: f64) {
