@@ -703,6 +703,20 @@ impl State {
         Some(Anchor::new(ts_at(&self.bars, index.round()), price))
     }
 
+    /// The first press with a tool in hand: a drawing of that kind, in the
+    /// configuration chosen for it and the scope this chart draws into, with
+    /// both anchors where the hand is until the hand moves.
+    fn begin_placing(&mut self, width: f64, height: f64, x: f64, y: f64) -> bool {
+        let Some(kind) = self.tool else { return false };
+        let Some(anchor) = self.locate(width, height, x, y) else { return false };
+        let mut drawing = Drawing::new(kind, anchor, anchor);
+        drawing.follow(self.next_config);
+        drawing.scope = self.sharing.scope_for_new();
+        self.placing = Some(drawing);
+        self.drag = Some(Drag::Place { moved: false });
+        true
+    }
+
     /// A drawing as pixels, through the same scales the candles use.
     fn project(&self, plan: &Layout, low: f64, high: f64, drawing: &Drawing) -> Projected {
         let (first, visible) = self.slice();
@@ -861,6 +875,9 @@ pub struct ChartView {
     on_drawing_menu: Handler<dyn Fn(f64, f64)>,
     /// Enter on a selected drawing: its properties.
     on_drawing_properties: Handler<dyn Fn()>,
+    /// The tool in hand, or the configuration it will draw with, changed —
+    /// so whatever shows the tool can show it.
+    on_tool: Handler<dyn Fn()>,
     /// Told when a gesture on the chart takes the price scale off automatic
     /// or puts it back — a drag or a wheel on the axis, a double-click to
     /// reset it. Whether the scale is automatic is written down with the
@@ -908,6 +925,7 @@ impl ChartView {
             on_drawing: Rc::new(RefCell::new(None)),
             on_drawing_menu: Rc::new(RefCell::new(None)),
             on_drawing_properties: Rc::new(RefCell::new(None)),
+            on_tool: Rc::new(RefCell::new(None)),
             on_price_auto: Rc::new(RefCell::new(None)),
         });
         view.wire_drawing();
@@ -931,6 +949,21 @@ impl ChartView {
 
     pub fn set_drawing_properties_handler(&self, handler: impl Fn() + 'static) {
         *self.on_drawing_properties.borrow_mut() = Some(Box::new(handler));
+    }
+
+    pub fn set_tool_handler(&self, handler: impl Fn() + 'static) {
+        *self.on_tool.borrow_mut() = Some(Box::new(handler));
+    }
+
+    fn tool_changed(&self) {
+        if let Some(handler) = self.on_tool.borrow().as_ref() {
+            handler();
+        }
+    }
+
+    /// The configuration the next drawing gets.
+    pub fn next_config(&self) -> u8 {
+        self.state.borrow().next_config
     }
 
     /// Hand the chart what is drawn on its symbol. The selection survives
@@ -968,6 +1001,7 @@ impl ChartView {
         }
         self.area.set_cursor_from_name(Some(if kind.is_some() { "crosshair" } else { "default" }));
         self.redraw();
+        self.tool_changed();
     }
 
     pub fn armed(&self) -> Option<DrawingKind> {
@@ -1190,6 +1224,7 @@ impl ChartView {
             }
             drop(s);
             self.pointer.queue_draw();
+            self.tool_changed();
             return true;
         }
         if selected {
@@ -1289,6 +1324,7 @@ impl ChartView {
         };
         self.area.set_cursor_from_name(Some("default"));
         self.redraw();
+        self.tool_changed();
         self.tell(DrawingEvent::Added(added));
     }
 
@@ -1738,14 +1774,8 @@ impl ChartView {
         let region = region_at(x, y, width, height);
         if region == Region::Plot {
             // An armed tool: this press is the first anchor.
-            if let Some(kind) = s.tool {
-                if let Some(anchor) = s.locate(width, height, x, y) {
-                    let mut drawing = Drawing::new(kind, anchor, anchor);
-                    drawing.follow(s.next_config);
-                    drawing.scope = s.sharing.scope_for_new();
-                    s.placing = Some(drawing);
-                    s.drag = Some(Drag::Place { moved: false });
-                }
+            if s.tool.is_some() {
+                s.begin_placing(width, height, x, y);
                 return;
             }
             // A drawing under the hand: take hold of it. Otherwise a
@@ -4089,6 +4119,27 @@ mod drawing_tests {
         let x = plan.plot_x + 120.5 * bar_w;
         let anchor = state.locate(w, h, x, 100.0).unwrap();
         assert_eq!(anchor.ts, state.bars[99].ts + 21 * 3600);
+    }
+
+    /// Alt+R, Alt+3, click: the rectangle laid down follows configuration 3
+    /// and draws into the chart's drawing group, and the choice is kept for
+    /// the next one.
+    #[test]
+    fn a_tool_in_hand_draws_in_the_configuration_chosen_for_it() {
+        let mut state = charted(400);
+        state.sharing = Sharing::Group(2);
+        state.tool = Some(DrawingKind::Rect);
+        state.next_config = 3;
+        assert!(state.begin_placing(800.0, 400.0, 200.0, 150.0));
+        let placing = state.placing.clone().expect("a drawing in hand");
+        assert_eq!(placing.kind, DrawingKind::Rect);
+        assert_eq!(placing.config, Some(3));
+        assert_eq!(placing.scope, drawings::Scope::Group(2));
+        assert_eq!(state.drag, Some(Drag::Place { moved: false }));
+        // Nothing in hand, nothing begins.
+        state.tool = None;
+        state.placing = None;
+        assert!(!state.begin_placing(800.0, 400.0, 200.0, 150.0));
     }
 
     /// The newest drawing is picked first, and a press on an unselected

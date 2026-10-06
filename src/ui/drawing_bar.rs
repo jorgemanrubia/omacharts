@@ -28,6 +28,9 @@ pub struct DrawingBar {
     /// What goes in the layout: the revealer, so the bar can slide.
     pub root: gtk::Revealer,
     buttons: Vec<(Kind, gtk::ToggleButton, gtk::DrawingArea)>,
+    /// The configuration number worn by the tool in hand, so Alt+R, Alt+3
+    /// shows a 3 on the rectangle before anything is drawn.
+    badges: Vec<gtk::Label>,
     theme: RefCell<Theme>,
     /// Set while the buttons are being shown a state, so their own signal
     /// does not read as a click.
@@ -50,13 +53,23 @@ impl DrawingBar {
         column.set_margin_end(2);
 
         let mut buttons = Vec::new();
+        let mut badges = Vec::new();
         for kind in Kind::ALL {
             let icon = gtk::DrawingArea::new();
             icon.set_size_request(TOOL - 10, TOOL - 10);
+            let badge = gtk::Label::new(None);
+            badge.add_css_class("drawing-config-badge");
+            badge.set_halign(gtk::Align::End);
+            badge.set_valign(gtk::Align::End);
+            badge.set_visible(false);
+            let stack = gtk::Overlay::new();
+            stack.set_child(Some(&icon));
+            stack.add_overlay(&badge);
+            badges.push(badge);
             let button = gtk::ToggleButton::new();
             button.add_css_class("drawing-tool");
             button.add_css_class("flat");
-            button.set_child(Some(&icon));
+            button.set_child(Some(&stack));
             button.set_size_request(TOOL, TOOL);
             button.set_tooltip_text(Some(match kind {
                 Kind::Line => "Line (Alt+L): click where it starts, then where it ends",
@@ -86,6 +99,7 @@ impl DrawingBar {
         let bar = Rc::new(DrawingBar {
             root: gtk::Revealer::new(),
             buttons,
+            badges,
             theme: RefCell::new(theme),
             showing: std::cell::Cell::new(false),
         });
@@ -120,11 +134,15 @@ impl DrawingBar {
         bar
     }
 
-    /// Light the button of the tool in hand, and only that one.
-    pub fn show_armed(&self, armed: Option<Kind>) {
+    /// Light the button of the tool in hand, and only that one, with the
+    /// configuration it will draw in on it.
+    pub fn show_armed(&self, armed: Option<Kind>, config: u8) {
         self.showing.set(true);
-        for (kind, button, _) in &self.buttons {
-            button.set_active(armed == Some(*kind));
+        for ((kind, button, _), badge) in self.buttons.iter().zip(&self.badges) {
+            let lit = armed == Some(*kind);
+            button.set_active(lit);
+            badge.set_text(&format!("{config}"));
+            badge.set_visible(lit);
         }
         self.showing.set(false);
     }

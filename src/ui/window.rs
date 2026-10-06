@@ -1858,6 +1858,12 @@ impl Window {
             opener.focus(id);
             opener.open_drawing_settings();
         });
+        let shower = self.clone();
+        pane.view.set_tool_handler(move || {
+            if shower.focused.get() == id {
+                shower.sync_drawing_bar();
+            }
+        });
 
         // A drag or a wheel on the price axis takes the scale off automatic
         // inside the chart, where nothing is written down. It is a setting
@@ -4041,6 +4047,16 @@ impl Window {
                 .map(|w| w.has_focus())
                 .unwrap_or(false);
 
+            // Alt with a digit is a drawing configuration — for the tool in
+            // hand or the selected drawing — and never a resolution, even
+            // when the keyboard is not on the chart itself.
+            if state.contains(gtk::gdk::ModifierType::ALT_MASK) {
+                if let Some(n) = key.to_unicode().and_then(|c| c.to_digit(10)) {
+                    this.focused_pane().view.apply_configuration(n as u8);
+                    return glib::Propagation::Stop;
+                }
+            }
+
             match (key, ctrl) {
                 (Key::slash, false) => {
                     this.open_search();
@@ -5509,7 +5525,8 @@ impl Window {
     /// or a menu rather than by the bar itself.
     fn sync_drawing_bar(&self) {
         if let Some(bar) = self.drawing_bar.borrow().as_ref() {
-            bar.show_armed(self.focused_pane().view.armed());
+            let view = &self.focused_pane().view;
+            bar.show_armed(view.armed(), view.next_config());
         }
     }
 
