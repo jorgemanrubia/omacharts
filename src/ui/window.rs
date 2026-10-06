@@ -182,6 +182,7 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Alt+1 … 9", "Configuration N, for the selected drawing or the one about to be drawn"),
             ("Enter", "The selected drawing's properties"),
             ("← → ↑ ↓", "Nudge the selected drawing a pixel; ten with Shift"),
+            ("Ctrl+Shift+↑ ↓", "Bring the selected drawing to the front, or send it to the back"),
             ("Ctrl+Z · Ctrl+Y", "Undo and redo, on this chart's drawings"),
             ("Click a drawing", "Select it; drag an end, or the whole thing"),
             ("Right-click a drawing", "Its colour and thickness, or delete it"),
@@ -1646,7 +1647,6 @@ impl Window {
         // slides in on the right; they are not part of the split, so the
         // divider between charts and rail is still the only divider.
         let bar = crate::ui::drawing_bar::DrawingBar::new(
-            this.theming.borrow().theme(),
             {
                 let this = this.clone();
                 move |kind| {
@@ -3953,6 +3953,10 @@ impl Window {
                         dialog.close();
                         return glib::Propagation::Stop;
                     }
+                    // Whatever the chart was in the middle of — a tool in
+                    // hand, a drawing selected — Escape ends it, wherever
+                    // the keyboard was.
+                    this.focused_pane().view.cancel();
                     this.focused_pane().view.area.grab_focus();
                     return glib::Propagation::Stop;
                 }
@@ -4222,7 +4226,7 @@ impl Window {
             (theming.theme(), theming.bar_scheme())
         };
         if let Some(bar) = self.drawing_bar.borrow().as_ref() {
-            bar.restyle(theme.clone());
+            bar.restyle();
         }
         for pane in self.panes.borrow().iter() {
             pane.view.restyle(theme.clone(), scheme.clone());
@@ -5395,6 +5399,25 @@ impl Window {
         let Some(instrument) = instrument else { return };
         let suffix = instrument.suffix.as_deref();
         match event {
+            DrawingEvent::Moving(drawing) => {
+                // Shown to the other charts of the symbol as it moves, and
+                // written down by nobody: the release does that.
+                if drawing.is_local() {
+                    return;
+                }
+                for other in self.panes.borrow().iter() {
+                    let same = other
+                        .instrument
+                        .borrow()
+                        .as_ref()
+                        .map(|i| i.symbol == instrument.symbol && i.suffix.as_deref() == suffix)
+                        .unwrap_or(false);
+                    if same && other.id != pane_id {
+                        other.view.follow_moving(&drawing);
+                    }
+                }
+                return;
+            }
             DrawingEvent::Added(mut drawing) => {
                 if drawing.is_local() {
                     drawing.id = next_local_id(&pane.local_drawings.borrow());
@@ -5536,13 +5559,12 @@ impl Window {
         crate::ui::drawing_settings::present_configurations(self, &self.store, kind);
     }
 
-    /// Arm a drawing tool on the focused chart, or put it down if it is the
-    /// one already in hand: the key is a toggle, so there is a way back from
-    /// it that is the same key.
+    /// Arm a drawing tool on the focused chart. The key is not a toggle:
+    /// Alt+R twice is still the rectangle, so a hand that is not sure
+    /// whether it pressed can press again. Escape is the way back.
     fn arm_drawing(&self, kind: omacharts_engine::DrawingKind) {
         let pane = self.focused_pane();
-        let next = if pane.view.armed() == Some(kind) { None } else { Some(kind) };
-        pane.view.arm(next);
+        pane.view.arm(Some(kind));
         pane.view.area.grab_focus();
         self.sync_drawing_bar();
     }
@@ -5594,8 +5616,8 @@ impl Window {
         menu.append_section(None, &edit);
 
         let order = gio::Menu::new();
-        shortcuts::append(&order, "Bring to front", "chart.drawing-front");
-        shortcuts::append(&order, "Send to back", "chart.drawing-back");
+        shortcuts::append_with_key(&order, "Bring to front", "chart.drawing-front", "<Ctrl><Shift>Up");
+        shortcuts::append_with_key(&order, "Send to back", "chart.drawing-back", "<Ctrl><Shift>Down");
         menu.append_section(None, &order);
 
         let remove = gio::Menu::new();

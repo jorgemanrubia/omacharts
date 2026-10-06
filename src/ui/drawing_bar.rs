@@ -3,23 +3,24 @@
 //! The rail of watchlists lives on the right; the tools live on the left, the
 //! same way: a key, or a subtle handle on the edge, brings them in, and they
 //! take no room when they are out. One column of buttons, since there are
-//! two tools and a column of two is already more than a toolbar needs. Each
-//! button is an icon the app drew itself in the theme's own colours — a line
-//! with its grips, a box over a candle — rather than a stock glyph that
-//! would look like every other application's.
+//! two tools and a column of three is already more than a toolbar needs.
+//! Each button is a sign the app drew itself — a pointer, a line with its
+//! grips, a box with two — in the palette's own ink and nothing else, dim
+//! until it is hovered or lit, rather than a stock glyph that would look
+//! like every other application's or a preview that would compete with the
+//! chart.
 //!
-//! A button is lit while its tool is in hand, and clicking it again puts the
-//! tool down. Right-clicking one opens that kind's configurations.
+//! The first button is no tool at all: the pointer, which selects and moves
+//! what is drawn, and is what Escape goes back to. One button is lit at a
+//! time, the way radio buttons are, and clicking the lit one leaves it lit:
+//! the way to put a tool down is to pick another, or the pointer. A
+//! right-click on a tool opens that kind's configurations.
 
-use std::cell::RefCell;
 use std::rc::Rc;
 
 use gtk::prelude::*;
 use gtk::{gio, glib};
-use omacharts_engine::drawings::{self, Kind, Paint};
-use omacharts_engine::Theme;
-
-use crate::ui::colors;
+use omacharts_engine::drawings::Kind;
 
 /// The width of a tool button, which is also the bar's.
 const TOOL: i32 = 36;
@@ -27,21 +28,21 @@ const TOOL: i32 = 36;
 pub struct DrawingBar {
     /// What goes in the layout: the revealer, so the bar can slide.
     pub root: gtk::Revealer,
-    buttons: Vec<(Kind, gtk::ToggleButton, gtk::DrawingArea)>,
+    /// The pointer first, as `None`, then a button a tool.
+    buttons: Vec<(Option<Kind>, gtk::ToggleButton, gtk::DrawingArea)>,
     /// The configuration number worn by the tool in hand, so Alt+R, Alt+3
-    /// shows a 3 on the rectangle before anything is drawn.
+    /// shows a 3 on the rectangle before anything is drawn. One per button,
+    /// the pointer's never shown.
     badges: Vec<gtk::Label>,
-    theme: RefCell<Theme>,
     /// Set while the buttons are being shown a state, so their own signal
     /// does not read as a click.
     showing: std::cell::Cell<bool>,
 }
 
 impl DrawingBar {
-    /// `on_arm` is told which tool was picked, or `None` for the one in hand
-    /// being put down; `on_configure` which kind's configurations to open.
+    /// `on_arm` is told which tool was picked, or `None` for the pointer;
+    /// `on_configure` which kind's configurations to open.
     pub fn new(
-        theme: Theme,
         on_arm: impl Fn(Option<Kind>) + Clone + 'static,
         on_configure: impl Fn(Kind) + Clone + 'static,
     ) -> Rc<DrawingBar> {
@@ -52,9 +53,9 @@ impl DrawingBar {
         column.set_margin_start(6);
         column.set_margin_end(2);
 
-        let mut buttons = Vec::new();
+        let mut buttons: Vec<(Option<Kind>, gtk::ToggleButton, gtk::DrawingArea)> = Vec::new();
         let mut badges = Vec::new();
-        for kind in Kind::ALL {
+        for kind in std::iter::once(None).chain(Kind::ALL.into_iter().map(Some)) {
             let icon = gtk::DrawingArea::new();
             icon.set_size_request(TOOL - 10, TOOL - 10);
             let badge = gtk::Label::new(None);
@@ -72,10 +73,21 @@ impl DrawingBar {
             button.set_child(Some(&stack));
             button.set_size_request(TOOL, TOOL);
             button.set_tooltip_text(Some(match kind {
-                Kind::Line => "Line (Alt+L): click where it starts, then where it ends",
-                Kind::Rect => "Rectangle (Alt+R): press at one corner, release at the other",
+                None => "Pointer (Esc): select, move and resize drawings",
+                Some(Kind::Line) => "Line (Alt+L): click where it starts, then where it ends",
+                Some(Kind::Rect) => "Rectangle (Alt+R): press at one corner, release at the other",
             }));
+            // One lit at a time, and a click on the lit one changes nothing:
+            // a group of toggles is a set of radio buttons.
+            if let Some((_, first, _)) = buttons.first() {
+                button.set_group(Some(first));
+            }
             column.append(&button);
+
+            let Some(kind) = kind else {
+                buttons.push((None, button, icon));
+                continue;
+            };
 
             // Right-click: the configurations of this kind.
             let menu = gio::Menu::new();
@@ -93,14 +105,13 @@ impl DrawingBar {
                 popover_for_click.popup();
             });
             button.add_controller(right);
-            buttons.push((kind, button, icon));
+            buttons.push((Some(kind), button, icon));
         }
 
         let bar = Rc::new(DrawingBar {
             root: gtk::Revealer::new(),
             buttons,
             badges,
-            theme: RefCell::new(theme),
             showing: std::cell::Cell::new(false),
         });
         bar.root.set_transition_type(gtk::RevealerTransitionType::SlideRight);
@@ -114,10 +125,12 @@ impl DrawingBar {
             let weak = Rc::downgrade(&bar);
             button.connect_toggled(move |button| {
                 let Some(bar) = weak.upgrade() else { return };
-                if bar.showing.get() {
+                // The group lights one and dims the rest; only the one
+                // lit is a choice.
+                if bar.showing.get() || !button.is_active() {
                     return;
                 }
-                on_arm(if button.is_active() { Some(kind) } else { None });
+                on_arm(kind);
             });
         }
 
@@ -131,18 +144,22 @@ impl DrawingBar {
         column.insert_action_group("tools", Some(&actions));
 
         bar.paint();
+        // The pointer, until a tool is picked.
+        bar.show_armed(None, 1);
         bar
     }
 
-    /// Light the button of the tool in hand, and only that one, with the
-    /// configuration it will draw in on it.
+    /// Light the button of the tool in hand — the pointer, when there is
+    /// none — with the configuration it will draw in on it, when that is
+    /// not the first: the usual one needs no saying, and a badge that is
+    /// always there is one nobody reads.
     pub fn show_armed(&self, armed: Option<Kind>, config: u8) {
         self.showing.set(true);
         for ((kind, button, _), badge) in self.buttons.iter().zip(&self.badges) {
-            let lit = armed == Some(*kind);
+            let lit = armed == *kind;
             button.set_active(lit);
             badge.set_text(&format!("{config}"));
-            badge.set_visible(lit);
+            badge.set_visible(lit && kind.is_some() && config != 1);
         }
         self.showing.set(false);
     }
@@ -155,69 +172,68 @@ impl DrawingBar {
         self.root.reveals_child()
     }
 
-    pub fn restyle(&self, theme: Theme) {
-        *self.theme.borrow_mut() = theme;
-        self.paint();
+    /// After a theme change: the ink is the button's own colour, read at
+    /// draw time, so there is nothing to do but draw.
+    pub fn restyle(&self) {
+        for (_, _, icon) in &self.buttons {
+            icon.queue_draw();
+        }
     }
 
-    /// The icons, in the theme's colours: the line is the first
-    /// configuration's and the box the second's, the way the first two
-    /// configurations are the candles' colours.
+    /// The signs, in the button's ink: the palette's foreground, which the
+    /// button dims until it is hovered or lit. No colour of their own and
+    /// no candle under the box — a toolbar is a row of signs, not of
+    /// previews, and the chart beside it is the only thing that should
+    /// have colour.
     fn paint(&self) {
-        let theme = self.theme.borrow().clone();
         for (kind, _, icon) in &self.buttons {
             let kind = *kind;
-            let theme = theme.clone();
             icon.set_draw_func(move |area, cr, w, h| {
                 let (w, h) = (w as f64, h as f64);
                 let fg = area.color();
-                let ink = format!(
-                    "#{:02x}{:02x}{:02x}",
-                    (fg.red() * 255.0) as u8,
-                    (fg.green() * 255.0) as u8,
-                    (fg.blue() * 255.0) as u8
-                );
+                let (r, g, b, a) = (fg.red() as f64, fg.green() as f64, fg.blue() as f64, fg.alpha() as f64);
+                cr.set_source_rgba(r, g, b, a);
+                cr.set_line_width(1.5);
+                cr.set_line_cap(gtk::cairo::LineCap::Round);
+                cr.set_line_join(gtk::cairo::LineJoin::Round);
                 match kind {
-                    Kind::Line => {
-                        let colour = Paint::preset(drawings::Preset::Blue).hex(&theme);
-                        let (a, b) = ((4.0, h - 5.0), (w - 4.0, 5.0));
-                        colors::set_source(cr, &colour);
-                        cr.set_line_width(2.0);
-                        cr.set_line_cap(gtk::cairo::LineCap::Round);
+                    None => {
+                        // The arrow every pointer is.
+                        let (x, y) = ((w / 2.0 - 5.0).round() + 0.5, (h / 2.0 - 7.5).round() + 0.5);
+                        cr.move_to(x, y);
+                        cr.line_to(x, y + 14.0);
+                        cr.line_to(x + 3.5, y + 10.5);
+                        cr.line_to(x + 6.0, y + 16.0);
+                        cr.line_to(x + 8.5, y + 15.0);
+                        cr.line_to(x + 6.0, y + 9.5);
+                        cr.line_to(x + 11.0, y + 9.5);
+                        cr.close_path();
+                        let _ = cr.fill();
+                    }
+                    Some(Kind::Line) => {
+                        // A stroke with a grip at each end, which is what
+                        // says "a drawing" rather than "a slash".
+                        let (a, b) = ((4.5, h - 4.5), (w - 4.5, 4.5));
                         cr.move_to(a.0, a.1);
                         cr.line_to(b.0, b.1);
                         let _ = cr.stroke();
-                        // The grips, which are what say "a drawing" rather
-                        // than "a slash".
                         for (x, y) in [a, b] {
-                            colors::set_source(cr, &theme.ui.background);
-                            cr.rectangle(x - 3.5, y - 3.5, 7.0, 7.0);
-                            let _ = cr.fill();
-                            colors::set_source(cr, &ink);
                             cr.rectangle(x - 2.5, y - 2.5, 5.0, 5.0);
                             let _ = cr.fill();
                         }
                     }
-                    Kind::Rect => {
-                        let colour = Paint::preset(drawings::Preset::Amber).hex(&theme);
-                        // A candle under the box, so the box reads as a box
-                        // over price.
-                        let bars = omacharts_engine::theme::theme_bars(&theme);
-                        colors::set_source(cr, &bars.up);
-                        cr.rectangle((w / 2.0).round() + 0.5, 2.0, 1.0, h - 4.0);
-                        let _ = cr.fill();
-                        cr.rectangle((w / 2.0).round() - 2.0, h * 0.3, 5.0, h * 0.4);
-                        let _ = cr.fill();
-                        colors::set_source_alpha(cr, &colour, 0.3);
-                        cr.rectangle(3.0, 5.0, w - 6.0, h - 10.0);
-                        let _ = cr.fill();
-                        colors::set_source(cr, &colour);
+                    Some(Kind::Rect) => {
+                        // A box, faintly filled the way the drawn one is,
+                        // with a grip at the two corners a hand places.
+                        let (x, y, rw, rh) = (4.5, 5.5, w - 9.0, h - 11.0);
+                        cr.rectangle(x, y, rw, rh);
+                        cr.set_source_rgba(r, g, b, a * 0.18);
+                        let _ = cr.fill_preserve();
+                        cr.set_source_rgba(r, g, b, a);
                         cr.set_line_width(1.0);
-                        cr.rectangle(3.5, 5.5, w - 7.0, h - 11.0);
                         let _ = cr.stroke();
-                        for (x, y) in [(3.5, 5.5), (w - 3.5, h - 5.5)] {
-                            colors::set_source(cr, &ink);
-                            cr.rectangle(x - 2.0, y - 2.0, 4.0, 4.0);
+                        for (gx, gy) in [(x, y), (x + rw, y + rh)] {
+                            cr.rectangle(gx - 2.5, gy - 2.5, 5.0, 5.0);
                             let _ = cr.fill();
                         }
                     }

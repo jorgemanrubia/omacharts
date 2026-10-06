@@ -154,8 +154,8 @@ struct State {
     placing: Option<Drawing>,
     /// The configuration the next drawing gets: Alt+N while a tool is armed
     /// chooses it, so Alt+R, Alt+2, click, click draws a rectangle in the
-    /// second configuration. Kept between drawings, since the next one is
-    /// usually like the last.
+    /// second configuration. Back to the first once the drawing is down or
+    /// the tool is put down: the choice was for that drawing.
     next_config: u8,
     /// The nine configurations of each kind, as the window has them: what a
     /// drawing that follows configuration N looks like.
@@ -182,6 +182,10 @@ struct State {
 pub enum DrawingEvent {
     Added(Drawing),
     Changed(Drawing),
+    /// Under the hand, between a press and its release: where the drawing
+    /// is at this moment, for the other charts that show it to follow
+    /// along. Nothing is written down until `Changed`.
+    Moving(Drawing),
     Removed(i64),
     /// The whole list, after an undo or a redo: whatever is in the store for
     /// this chart that is not here goes, and whatever is here that is not
@@ -966,6 +970,25 @@ impl ChartView {
         self.state.borrow().next_config
     }
 
+    /// A drawing another chart has in hand, where it is now. Shown in
+    /// place of this chart's copy, so the two charts agree while the hand
+    /// is still moving; the written-down version arrives at the release.
+    pub fn follow_moving(&self, moving: &Drawing) {
+        let shown = {
+            let mut state = self.state.borrow_mut();
+            match state.drawings.iter_mut().find(|d| d.id == moving.id) {
+                Some(slot) => {
+                    *slot = moving.clone();
+                    true
+                }
+                None => false,
+            }
+        };
+        if shown {
+            self.redraw();
+        }
+    }
+
     /// Hand the chart what is drawn on its symbol. The selection survives
     /// when the same drawing is still in the list, which is the usual case:
     /// the window hands the list back after writing a change down.
@@ -989,10 +1012,16 @@ impl ChartView {
     }
 
     /// Arm a tool: the next press on the plot starts a drawing of this kind.
-    /// Arming the tool again, or Escape, puts it down.
+    /// `None` is the pointer, which Escape goes back to.
     pub fn arm(&self, kind: Option<DrawingKind>) {
         {
             let mut state = self.state.borrow_mut();
+            if state.tool != kind {
+                // A different tool, or none: the configuration chosen for
+                // the last one is not a choice about this one. The same
+                // tool again keeps it, so Alt+R, Alt+2, Alt+R is still 2.
+                state.next_config = 1;
+            }
             state.tool = kind;
             state.placing = None;
             if kind.is_some() {
@@ -1006,6 +1035,25 @@ impl ChartView {
 
     pub fn armed(&self) -> Option<DrawingKind> {
         self.state.borrow().tool
+    }
+
+    /// Escape: back to the pointer, with nothing in hand and nothing
+    /// selected. A drawing half laid down — even one mid-drag — is dropped
+    /// rather than finished. Says whether there was anything to drop, so a
+    /// key that found nothing can go on to whoever else wants it.
+    pub fn cancel(&self) -> bool {
+        let busy = {
+            let mut s = self.state.borrow_mut();
+            let busy = s.tool.is_some() || s.placing.is_some() || s.selected.is_some();
+            s.selected = None;
+            // The drag the gesture is still in ends with nothing to commit.
+            if matches!(s.drag, Some(Drag::Place { .. })) {
+                s.drag = None;
+            }
+            busy
+        };
+        self.arm(None);
+        busy
     }
 
     /// The drawing that has the grips, if one does.
@@ -1131,18 +1179,10 @@ impl ChartView {
             let Some(view) = view.upgrade() else { return glib::Propagation::Proceed };
             use gtk::gdk::Key;
             match key {
-                Key::Escape => {
-                    let busy = {
-                        let s = view.state.borrow();
-                        s.tool.is_some() || s.placing.is_some() || s.selected.is_some()
-                    };
-                    if !busy {
-                        return glib::Propagation::Proceed;
-                    }
-                    view.state.borrow_mut().selected = None;
-                    view.arm(None);
-                    glib::Propagation::Stop
-                }
+                Key::Escape => match view.cancel() {
+                    true => glib::Propagation::Stop,
+                    false => glib::Propagation::Proceed,
+                },
                 Key::Delete | Key::BackSpace | Key::KP_Delete => {
                     if view.state.borrow().selected.is_none() {
                         return glib::Propagation::Proceed;
@@ -1170,8 +1210,20 @@ impl ChartView {
                         false => glib::Propagation::Proceed,
                     }
                 }
+                // Ctrl+Shift with up or down: to the front, or to the back,
+                // among the other drawings. Up is front, the way a stack
+                // reads.
+                Key::Up | Key::Down
+                    if view.state.borrow().selected.is_some()
+                        && modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK)
+                        && modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK) =>
+                {
+                    view.restack_selected(key == Key::Up);
+                    glib::Propagation::Stop
+                }
                 Key::Left | Key::Right | Key::Up | Key::Down
-                    if view.state.borrow().selected.is_some() =>
+                    if view.state.borrow().selected.is_some()
+                        && !modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK) =>
                 {
                     // A pixel at a time; ten with Shift.
                     let step = if modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK) {
@@ -1320,6 +1372,7 @@ impl ChartView {
             state.drawings.push(drawing.clone());
             state.selected = Some(state.drawings.len() - 1);
             state.tool = None;
+            state.next_config = 1;
             drawing
         };
         self.area.set_cursor_from_name(Some("default"));
@@ -1825,6 +1878,7 @@ impl ChartView {
         let state = self.state.clone();
         let area = self.area.clone();
         let pointer = self.pointer.clone();
+        let view = Rc::downgrade(self);
         drag.connect_drag_update(move |gesture, offset_x, offset_y| {
             let mut s = state.borrow_mut();
             let Some(drag) = s.drag else { return };
@@ -1865,8 +1919,16 @@ impl ChartView {
                             grip => drawing.move_grip(grip, now),
                         }
                     }
+                    let moving = s.drawings.get(index).cloned();
                     drop(s);
                     area.queue_draw();
+                    // The other charts of this symbol follow the hand too,
+                    // not only the release.
+                    if let Some(moving) = moving
+                        && let Some(view) = view.upgrade()
+                    {
+                        view.tell(DrawingEvent::Moving(moving));
+                    }
                     return;
                 }
                 _ => {}
@@ -4122,8 +4184,7 @@ mod drawing_tests {
     }
 
     /// Alt+R, Alt+3, click: the rectangle laid down follows configuration 3
-    /// and draws into the chart's drawing group, and the choice is kept for
-    /// the next one.
+    /// and draws into the chart's drawing group.
     #[test]
     fn a_tool_in_hand_draws_in_the_configuration_chosen_for_it() {
         let mut state = charted(400);
