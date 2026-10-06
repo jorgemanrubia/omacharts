@@ -25,6 +25,11 @@ pub enum ProviderError {
     Network(String),
     /// A response arrived but did not look like data.
     Malformed(String),
+    /// The provider is not set up on this machine yet — a feed that needs an
+    /// account signed into, with nothing signed in. Carries the sentence to
+    /// put in front of the user, which is the provider's to write because
+    /// only it knows what is missing.
+    NeedsSetup(String),
     /// The provider has no such symbol.
     NotFound,
 }
@@ -37,6 +42,7 @@ impl fmt::Display for ProviderError {
             ProviderError::Offline(e) => write!(f, "offline: {e}"),
             ProviderError::Network(e) => write!(f, "network: {e}"),
             ProviderError::Malformed(e) => write!(f, "unexpected response: {e}"),
+            ProviderError::NeedsSetup(what) => write!(f, "{what}"),
             ProviderError::NotFound => write!(f, "no such symbol"),
         }
     }
@@ -81,6 +87,9 @@ pub enum FetchFailure {
     /// The local price cache could not be opened. Nothing to do with the
     /// network, and saying so stops a disk problem looking like one.
     LocalCache,
+    /// The feed needs signing in to and nobody has. The one failure here with
+    /// something the user can do about it.
+    NeedsSignIn,
 }
 
 impl FetchFailure {
@@ -88,12 +97,18 @@ impl FetchFailure {
     /// the tooltip on the dot a chart that does have bars shows in its corner.
     ///
     /// One sentence for what happened, and — only where it is true — a second
-    /// for the fact that it fixes itself. Never an instruction, because there
-    /// is nothing for the user to do about any of these. On a chart with bars
-    /// what is drawn is real and older than it should be, and this says why
-    /// nothing newer arrived; it replaced a marker that only ever said
-    /// "stale", which left the user to guess between a dead symbol, a broken
-    /// app and a provider having a bad minute.
+    /// for the fact that it fixes itself. On a chart with bars what is drawn
+    /// is real and older than it should be, and this says why nothing newer
+    /// arrived; it replaced a marker that only ever said "stale", which left
+    /// the user to guess between a dead symbol, a broken app and a provider
+    /// having a bad minute.
+    ///
+    /// An instruction appears in exactly one of these, and only because
+    /// there is genuinely something to do: a feed nobody has signed in to
+    /// stays broken until somebody signs in, so the line says where. For all
+    /// the rest there is nothing for the user to act on — they fix themselves
+    /// or they are not about the chart — and inventing an instruction for
+    /// those would be advice to go and fiddle with something that is working.
     pub fn message(self) -> &'static str {
         match self {
             FetchFailure::RateLimited => {
@@ -107,6 +122,9 @@ impl FetchFailure {
             FetchFailure::Unsupported => "The data provider does not serve this resolution.",
             FetchFailure::NoSuchSymbol => "The data provider does not have this symbol.",
             FetchFailure::LocalCache => "Could not open the local price cache.",
+            FetchFailure::NeedsSignIn => {
+                "This data provider is not signed in. Open Preferences → Market data → Provider."
+            }
         }
     }
 
@@ -119,6 +137,7 @@ impl From<&ProviderError> for FetchFailure {
             ProviderError::Offline(_) => FetchFailure::Offline,
             ProviderError::Network(_) => FetchFailure::Unreachable,
             ProviderError::Malformed(_) => FetchFailure::Garbled,
+            ProviderError::NeedsSetup(_) => FetchFailure::NeedsSignIn,
             ProviderError::Unsupported(_) => FetchFailure::Unsupported,
             ProviderError::NotFound => FetchFailure::NoSuchSymbol,
         }
@@ -331,6 +350,7 @@ mod tests {
             FetchFailure::Unsupported,
             FetchFailure::NoSuchSymbol,
             FetchFailure::LocalCache,
+            FetchFailure::NeedsSignIn,
         ];
         for failure in failures {
             assert_ne!(failure.message(), "No data for this symbol");
@@ -371,6 +391,7 @@ mod tests {
             (ProviderError::Malformed(String::new()), FetchFailure::Garbled),
             (ProviderError::Unsupported(String::new()), FetchFailure::Unsupported),
             (ProviderError::NotFound, FetchFailure::NoSuchSymbol),
+            (ProviderError::NeedsSetup(String::new()), FetchFailure::NeedsSignIn),
         ];
         for (error, expected) in &cases {
             assert_eq!(FetchFailure::from(error), *expected, "{error}");
@@ -389,6 +410,7 @@ mod tests {
             FetchFailure::Unsupported,
             FetchFailure::NoSuchSymbol,
             FetchFailure::LocalCache,
+            FetchFailure::NeedsSignIn,
         ]
         .iter()
         .map(|f| f.message())

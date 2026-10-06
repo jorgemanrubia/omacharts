@@ -183,16 +183,45 @@ fn fold(mut bars: Vec<Bar>, bucket: i64) -> Vec<Bar> {
     out
 }
 
+/// What a chart says when this feed has nobody signed in to it.
+///
+/// One sentence, and it is the same one the settings panel and the CLI use,
+/// because somebody reading it on a chart and then going to look will
+/// otherwise wonder whether they found the right place.
+pub const NOT_SIGNED_IN: &str = "thinkorswim is not signed in";
+
 fn map_err(error: tos_market::Error) -> ProviderError {
-    let text = error.to_string();
+    use tos_market::Error;
+
+    match error {
+        // Nothing saved, or what is saved is a live-trading session this feed
+        // will not connect to. Both are the same thing to a chart: there is
+        // no usable session, and one place to go and get one.
+        Error::NoSession(_) | Error::LiveTradingDisabled | Error::Config(_) => {
+            ProviderError::NeedsSetup(NOT_SIGNED_IN.into())
+        }
+        // The gateway had its say and refused the token. Also setup, not
+        // network: nothing retried on a timer will make an expired session
+        // work, and the chart must say so rather than claim the provider is
+        // having a bad minute.
+        Error::Login(why) => ProviderError::NeedsSetup(format!(
+            "the thinkorswim session has expired ({why}); sign in again"
+        )),
+        // A gateway complaining about the symbol is the one error worth
+        // telling apart from a transport failure, because the answer is a
+        // different ticker rather than waiting.
+        Error::Gateway { ref id, ref message, .. }
+            if names_a_symbol(id) || names_a_symbol(message) =>
+        {
+            ProviderError::NotFound
+        }
+        other => ProviderError::Network(other.to_string()),
+    }
+}
+
+fn names_a_symbol(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
-    if lower.contains("no thinkorswim") || lower.contains("not a paper") {
-        return ProviderError::Offline(text);
-    }
-    if lower.contains("symbol") || lower.contains("not found") || lower.contains("unknown") {
-        return ProviderError::NotFound;
-    }
-    ProviderError::Network(text)
+    lower.contains("symbol") || lower.contains("not found") || lower.contains("unknown")
 }
 
 impl Provider for Tos {
@@ -359,6 +388,58 @@ mod tests {
         assert_eq!(folded[0].close, 12.0);
         assert_eq!(folded[0].volume, 2.0);
         assert_eq!(folded[1].ts, 7_200);
+    }
+
+    /// Nothing here calls [`Provider::bars`]. A test that did would reach a
+    /// brokerage from whatever machine ran it — and on a machine with a real
+    /// session, succeed at it. The mapping is what has to be right, and the
+    /// mapping can be asked directly.
+    #[test]
+    fn nothing_signed_in_is_a_failure_with_something_to_do_about_it() {
+        for error in [
+            tos_market::Error::NoSession("/x/tos.env".into()),
+            // A saved live-trading session is refused, and refusing it is not
+            // a network problem to wait out.
+            tos_market::Error::LiveTradingDisabled,
+        ] {
+            let mapped = map_err(error);
+            assert!(
+                matches!(&mapped, ProviderError::NeedsSetup(what) if what == NOT_SIGNED_IN),
+                "{mapped}"
+            );
+            assert_eq!(
+                crate::provider::FetchFailure::from(&mapped),
+                crate::provider::FetchFailure::NeedsSignIn
+            );
+        }
+    }
+
+    /// An expired session is the same kind of thing: no amount of retrying
+    /// makes a refused token work, so the chart must not say "not answering".
+    #[test]
+    fn an_expired_session_says_to_sign_in_again() {
+        let mapped = map_err(tos_market::Error::Login("session expired".into()));
+        let ProviderError::NeedsSetup(what) = &mapped else {
+            panic!("{mapped}");
+        };
+        assert!(what.contains("sign in again"), "{what}");
+    }
+
+    #[test]
+    fn a_gateway_that_does_not_know_the_ticker_is_a_missing_symbol() {
+        let mapped = map_err(tos_market::Error::Gateway {
+            service: "chart".into(),
+            id: "bad_symbol".into(),
+            message: "unknown symbol ZZZZ".into(),
+        });
+        assert!(matches!(mapped, ProviderError::NotFound), "{mapped}");
+    }
+
+    /// Everything else is transport, and transport is worth waiting out.
+    #[test]
+    fn a_dropped_connection_is_still_a_network_failure() {
+        let mapped = map_err(tos_market::Error::ConnectionLost { sent: true });
+        assert!(matches!(mapped, ProviderError::Network(_)), "{mapped}");
     }
 
     #[test]
