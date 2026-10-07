@@ -240,6 +240,16 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
     define("omacharts_up", &scheme.up);
     define("omacharts_down", &scheme.down);
 
+    // Whether a market is open is the theme's green and amber, not the bar
+    // scheme's: a scheme that draws rising bars in blue has not made "open"
+    // blue, and one that draws them red has certainly not made it red.
+    let swatch = |name: &str, fallback: &str| {
+        theme.swatch(name).map(|s| s.hex.clone()).unwrap_or_else(|| fallback.to_string())
+    };
+    define("omacharts_market_open", &swatch("Green", &scheme.up));
+    define("omacharts_market_extended", &swatch("Amber", &ui.accent));
+    define("omacharts_text_muted", &ui.text_muted);
+
     // The frame around tiled charts. Derived, not taken: the engine explains
     // why in `frame.rs`, and `doc/themes/frames.html` shows the result on
     // every theme.
@@ -278,6 +288,43 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
   background: alpha(@card_fg_color, 0.08);
   opacity: 0.75;
 }
+
+/* Whether the market is trading, beside the resolution. A filled dot with a
+   faint halo while it is — green for the session, amber either side of it —
+   and an empty ring when it is not, so closed reads as an absence even to
+   somebody who cannot tell the green from the grey. */
+.market-dot {
+  min-width: 8px;
+  min-height: 8px;
+  border-radius: 999px;
+  transition: background-color 300ms ease-out, box-shadow 300ms ease-out;
+}
+.market-dot.open {
+  background-color: @omacharts_market_open;
+  box-shadow: 0 0 0 3px alpha(@omacharts_market_open, 0.2);
+}
+.market-dot.pre-market,
+.market-dot.post-market {
+  background-color: @omacharts_market_extended;
+  box-shadow: 0 0 0 3px alpha(@omacharts_market_extended, 0.2);
+}
+.market-dot.closed {
+  background-color: transparent;
+  box-shadow: inset 0 0 0 1.5px alpha(@omacharts_text_muted, 0.7);
+}
+
+/* The clock, in the corner where the two axes meet. The axes' own size and
+   colour, so it reads as part of the chart's frame rather than a widget on
+   it, and a touch firmer than the labels beside it because it is the one
+   thing there that moves. Tabular figures, or the seconds jitter. */
+.pane-clock {
+  font-size: 11px;
+  font-weight: 500;
+  color: @omacharts_text_muted;
+  opacity: 0.9;
+  letter-spacing: 0.02em;
+}
+.pane-clock:hover { opacity: 1; color: @view_fg_color; }
 
 /* Timeframe buttons: flat strip, the active one filled. */
 .timeframe-strip { padding: 2px; }

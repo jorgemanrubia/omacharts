@@ -250,7 +250,7 @@ fn symbol_search(m: &clap::ArgMatches, as_json: bool) -> Result<String, Fault> {
         return Err(Fault::not_found(format!("nothing matches {query:?}")));
     }
     if as_json {
-        return Ok(wrap_list("symbols", hits.iter().map(|i| instrument_json(i)).collect()));
+        return Ok(wrap_list("symbols", hits.iter().map(|i| instrument_json(i).to_string()).collect()));
     }
     Ok(hits
         .iter()
@@ -280,20 +280,46 @@ fn symbol_show(m: &clap::ArgMatches, as_json: bool) -> Result<String, Fault> {
             spell(&symbol, suffix.as_deref())
         ))
     })?;
+    let now = chrono::Utc::now().timestamp();
+    let market = omacharts_engine::session::status(found, now);
     if as_json {
-        return Ok(format!("{}\n", instrument_json(found)));
+        let mut value = instrument_json(found);
+        value["market"] = market.map_or(Value::Null, |m| market_json(&m, now));
+        return Ok(format!("{value}\n"));
     }
     Ok(format!(
-        "{}\n{}\nkind      {}\nexchange  {}\ncurrency  {}\n",
+        "{}\n{}\nkind      {}\nexchange  {}\ncurrency  {}\nmarket    {}\n",
         found.display_symbol(),
         found.full_name(),
         found.kind.label(),
         found.exchange_label().unwrap_or("unknown"),
         found.currency.as_deref().unwrap_or("unknown"),
+        market.map_or_else(|| "hours unknown".to_string(), |m| market_line(&m, now)),
     ))
 }
 
-fn instrument_json(i: &omacharts_engine::Instrument) -> String {
+/// "open, closes in 2h 26m (16:00 New York)" — what the dot beside a chart's
+/// symbol says, and what its tooltip adds.
+fn market_line(market: &omacharts_engine::session::MarketStatus, now: i64) -> String {
+    let mut line = format!("{}, {}", market.phase.key(), market.countdown(now));
+    if let Some(at) = market.next_local(now) {
+        line.push_str(&format!(" ({at})"));
+    }
+    line
+}
+
+fn market_json(market: &omacharts_engine::session::MarketStatus, now: i64) -> Value {
+    json!({
+        "phase": market.phase.key(),
+        "label": market.phase.label(),
+        "next_phase": market.next.map(|(phase, _)| phase.key()),
+        "changes_at": market.next.map(|(_, at)| at),
+        "countdown": market.countdown(now),
+        "zone": market.zone.name(),
+    })
+}
+
+fn instrument_json(i: &omacharts_engine::Instrument) -> Value {
     json!({
         "symbol": i.symbol,
         "suffix": i.suffix,
@@ -304,7 +330,6 @@ fn instrument_json(i: &omacharts_engine::Instrument) -> String {
         "exchange": i.exchange_label(),
         "currency": i.currency,
     })
-    .to_string()
 }
 
 // -- watchlists -----------------------------------------------------------

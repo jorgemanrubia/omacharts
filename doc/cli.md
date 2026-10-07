@@ -281,6 +281,34 @@ TSM        Taiwan Semiconductor ADR           Stock    NYSE
   [exit 0]
 ```
 
+`symbol show` also says where the symbol's market is in its day — what the dot
+beside a chart's symbol shows, green for the session, amber for the pre- and
+post-market, an empty ring when it is shut — and when that next changes, in
+the market's own time:
+
+```
+$ omacharts symbol show AAPL
+AAPL
+Apple
+kind      Stock
+exchange  NASDAQ
+currency  USD
+market    open, closes in 2h 26m (16:00 New York)
+  [exit 0]
+```
+
+The hours are New York's and Taipei's sessions, the futures and FX weeks, and
+crypto's no hours at all; a listing abroad says `hours unknown` rather than
+guessing. Holidays and early closes come from the exchanges' own calendars —
+the NYSE's, kept by hand from the three years it publishes, and the TWSE's,
+refreshed with `tools/build_taiwan_holidays.py` — so Thanksgiving is closed and
+the day after closes at 1pm. Past the last year written down, a holiday reads
+as a normal day, and futures and FX keep no holidays.
+
+With `--json`, `market` carries `phase` (`open`, `pre-market`, `post-market`,
+`closed`),
+`next_phase`, and `changes_at` as a Unix timestamp, or is `null`.
+
 A section can become a watchlist of its own, carrying its symbols with it:
 
 ```

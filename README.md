@@ -21,7 +21,9 @@ Fast, beautiful charting software for [Omarchy](https://omarchy.org).
 - **Beautiful.** The charts are the protagonists and the user interface is at
   their service. It follows your Omarchy theme as you change it, and generates
   an indicator palette for whichever theme is active, so things look great
-  without you having to be an artist.
+  without you having to be an artist. A dot beside each chart's symbol says
+  whether its market is open, in the pre- or post-market, or shut, and a clock
+  ticks in the corner where the axes meet.
 - **Configurable layout.** Split a chart horizontally or vertically, as deep as
   you like, and resize the panes with the mouse or the keyboard. Each chart
   keeps its own symbol, resolution, indicators and settings. Keep as many

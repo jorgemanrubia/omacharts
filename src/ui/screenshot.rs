@@ -83,6 +83,8 @@ pub const FOLDER: &str = "Omacharts";
 /// - `legend-gear`, `legend-link` — chart settings, and the link group.
 /// - `legend-button` — a row's hide, settings and remove buttons.
 /// - `pane-expand` — the maximize corner.
+/// - `pane-clock` — the time now, which is not the time of anything in the
+///   picture and would date it to the second for no reason.
 /// - [`POINTER_LAYER`] — the crosshair, its axis labels, and the boxes
 ///   a strip wears under the pointer. Not a control, and the only thing here
 ///   that is not: it is where the mouse is, and a picture has no mouse.
@@ -92,6 +94,7 @@ const LEFT_OUT: &[&str] = &[
     "legend-link",
     "legend-button",
     "pane-expand",
+    "pane-clock",
     POINTER_LAYER,
 ];
 

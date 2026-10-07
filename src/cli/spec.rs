@@ -245,7 +245,7 @@ pub const SURFACE: &[Noun] = &[
             },
             Verb {
                 name: "show",
-                about: "Everything known about one instrument",
+                about: "Everything known about one instrument, and whether its market is open",
                 args: &[
                     Arg::req("SYMBOL", "the ticker, or the ticker and its venue: SAP DE and SAP.DE are one"),
                     Arg::opt("SUFFIX", "the venue suffix for a listing abroad, such as DE"),

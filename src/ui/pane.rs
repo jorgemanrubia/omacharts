@@ -14,6 +14,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use gtk::prelude::*;
+use omacharts_engine::session;
 use omacharts_engine::{BarStyle, Indicator, Instrument, LinkGroup, Session, Theme, Timeframe};
 
 use crate::ui::chart::ChartView;
@@ -57,6 +58,19 @@ pub struct ChartPane {
     pub indicator_legend: gtk::Box,
     pub gear: gtk::Button,
     pub link: gtk::MenuButton,
+    /// Whether the market for this chart's symbol is open, in a dot beside
+    /// the resolution: a dot because with four charts on screen it has to be
+    /// read at a glance and ignored the rest of the time. Hovering it says
+    /// how long until that changes.
+    market_dot: gtk::Box,
+    /// When the dot next needs working out: the moment the market's phase
+    /// changes, or 0 once the symbol has, so the next tick asks at once.
+    market_due: Cell<i64>,
+    /// The time, in the box where the price axis meets the time axis — space
+    /// every chart has and none of them uses. Shown on one chart only, the one
+    /// in the window's bottom right corner, which is where TradingView keeps
+    /// its clock and where the eye goes looking for one.
+    clock: gtk::Label,
     /// Fills the window with this chart, and puts it back. In the top right
     /// corner, out from under the legend, and only there while the pointer is
     /// on the chart: with four charts open, four of these drawn all the time
@@ -158,10 +172,21 @@ impl ChartPane {
         gear.set_tooltip_text(Some(&shortcuts::tooltip("Chart settings", "chart.settings")));
         gear.set_valign(gtk::Align::Center);
 
+        let market_dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        market_dot.add_css_class("market-dot");
+        market_dot.set_valign(gtk::Align::Center);
+        market_dot.set_margin_start(2);
+        market_dot.set_margin_end(6);
+        market_dot.set_visible(false);
+        market_dot.set_has_tooltip(true);
+
         // The link sits with the symbol, because that is what it is about:
-        // whether this chart follows the rail's symbol or keeps its own.
+        // whether this chart follows the rail's symbol or keeps its own. The
+        // market's state goes straight after the name, because it is a fact
+        // about the symbol and not about this chart.
         let bar = gtk::Box::new(gtk::Orientation::Horizontal, 2);
         bar.append(&symbol_button);
+        bar.append(&market_dot);
         bar.append(&link);
         bar.append(&timeframe_menu);
         bar.append(&gear);
@@ -207,6 +232,26 @@ impl ChartPane {
         corner.set_margin_end(CORNER_MARGIN);
         corner.append(&expand);
 
+        // Inset to sit inside the price axis column, clear of the last time
+        // label, which stops eighteen pixels short of the plot's edge.
+        let clock = gtk::Label::new(None);
+        clock.add_css_class("pane-clock");
+        clock.add_css_class("numeric");
+        // A fixed width, so the text changing every second never changes the
+        // size the overlay has to lay out around.
+        clock.set_width_chars(8);
+        clock.set_xalign(1.0);
+        clock.set_halign(gtk::Align::End);
+        clock.set_valign(gtk::Align::End);
+        clock.set_margin_end(8);
+        clock.set_margin_bottom(5);
+        clock.set_has_tooltip(true);
+        clock.set_visible(false);
+        clock.connect_query_tooltip(|_, _, _, _, tooltip| {
+            tooltip.set_markup(Some(&clock_tooltip(chrono::Utc::now().timestamp())));
+            true
+        });
+
         let overlay = gtk::Overlay::new();
         // The chart's own two layers, stacked, rather than the drawing area
         // alone: the crosshair is a widget over the bars now.
@@ -214,6 +259,7 @@ impl ChartPane {
         overlay.add_overlay(&legend);
         overlay.add_overlay(&top);
         overlay.add_overlay(&corner);
+        overlay.add_overlay(&clock);
 
         // The three are laid over the chart independently, so on a narrow
         // chart the centred strip lands on the symbol. It steps aside rather
@@ -245,7 +291,7 @@ impl ChartPane {
         root.set_vexpand(true);
         root.append(&overlay);
 
-        Rc::new(ChartPane {
+        let pane = Rc::new(ChartPane {
             id,
             view,
             root,
@@ -257,6 +303,9 @@ impl ChartPane {
             indicator_legend,
             gear,
             link,
+            market_dot,
+            market_due: Cell::new(0),
+            clock,
             expand,
             expand_icon,
             expand_state,
@@ -269,7 +318,22 @@ impl ChartPane {
             show_grid: Cell::new(show_grid),
             linked: Cell::new(linked),
             link_colour,
-        })
+        });
+
+        // Worked out when asked rather than every second: the countdown is the
+        // only part that moves, and it only matters while somebody reads it.
+        let weak = Rc::downgrade(&pane);
+        pane.market_dot.connect_query_tooltip(move |_, _, _, _, tooltip| {
+            let Some(pane) = weak.upgrade() else { return false };
+            let now = chrono::Utc::now().timestamp();
+            let instrument = pane.instrument.borrow();
+            let Some(status) = instrument.as_ref().and_then(|i| session::status(i, now)) else {
+                return false;
+            };
+            tooltip.set_markup(Some(&market_tooltip(&status, now)));
+            true
+        });
+        pane
     }
 
     /// Point this chart's strip, and the resolution beside its symbol, at the
@@ -354,6 +418,40 @@ impl ChartPane {
         self.expand.set_tooltip_text(Some(&shortcuts::tooltip(what, "chart.maximize")));
     }
 
+    /// Bring the clock and the market's dot up to `now`.
+    ///
+    /// Called every second, so it only touches a widget when what it shows
+    /// has changed: the clock's text does every time, the dot a few times a
+    /// day.
+    pub fn tick(&self, now: i64) {
+        if self.clock.is_visible() {
+            self.clock.set_text(&clock_text(now));
+        }
+        // The status says when it next changes, so until then there is
+        // nothing to ask: the dot is worked out a few times a day, not every
+        // second. Never again for something that never closes, or whose hours
+        // are not known, until the symbol changes.
+        if now < self.market_due.get() {
+            return;
+        }
+        let status = self.instrument.borrow().as_ref().and_then(|i| session::status(i, now));
+        self.market_due.set(status.and_then(|s| s.next).map_or(i64::MAX, |(_, at)| at));
+        match status {
+            Some(status) => self.market_dot.set_css_classes(&["market-dot", status.phase.key()]),
+            None => self.market_dot.set_css_classes(&["market-dot"]),
+        }
+        self.market_dot.set_visible(status.is_some());
+    }
+
+    /// Show the clock on this chart, or not. Only one chart in the window
+    /// shows it, and the window decides which.
+    pub fn set_shows_clock(&self, shows: bool) {
+        self.clock.set_visible(shows);
+        if shows {
+            self.tick(chrono::Utc::now().timestamp());
+        }
+    }
+
     pub fn label(&self) -> String {
         match self.instrument.borrow().as_ref() {
             Some(instrument) => format!(
@@ -374,6 +472,10 @@ impl ChartPane {
             .unwrap_or_default();
         self.symbol_button.set_label(&symbol);
         self.write_timeframe();
+        // A new symbol can be a different market, and the dot should not wait
+        // up to a second, or until the old market's next bell, to say so.
+        self.market_due.set(0);
+        self.tick(chrono::Utc::now().timestamp());
     }
 
     /// The resolution, beside the symbol.
@@ -387,6 +489,68 @@ impl ChartPane {
     /// the chart was on when its symbol last arrived.
     fn write_timeframe(&self) {
         self.timeframe_label.set_text(&self.timeframe.get().label());
+    }
+}
+
+/// The time as the clock shows it: local, to the second.
+fn clock_text(now: i64) -> String {
+    use chrono::TimeZone;
+    chrono::Local
+        .timestamp_opt(now, 0)
+        .single()
+        .map(|t| t.format("%H:%M:%S").to_string())
+        .unwrap_or_default()
+}
+
+/// "UTC−4", or "UTC+5:30", for the offset the machine is keeping.
+fn utc_offset(seconds: i32) -> String {
+    let sign = if seconds < 0 { '\u{2212}' } else { '+' };
+    let (hours, minutes) = (seconds.abs() / 3600, seconds.abs() % 3600 / 60);
+    match (hours, minutes) {
+        (0, 0) => "UTC".into(),
+        (h, 0) => format!("UTC{sign}{h}"),
+        (h, m) => format!("UTC{sign}{h}:{m:02}"),
+    }
+}
+
+/// The clock's tooltip: the date and the offset the clock is in, and the time
+/// in each market this app keeps hours for, with where that market's day is.
+fn clock_tooltip(now: i64) -> String {
+    use chrono::{Offset, TimeZone};
+    let Some(local) = chrono::Local.timestamp_opt(now, 0).single() else {
+        return String::new();
+    };
+    let mut text = format!(
+        "<b>{}</b>  <span alpha=\"60%\">{}</span>",
+        local.format("%A %-d %B %Y"),
+        utc_offset(local.offset().fix().local_minus_utc()),
+    );
+    for (zone, phase) in session::exchanges(now) {
+        let Some(there) = zone.timestamp_opt(now, 0).single() else { continue };
+        text.push_str(&format!(
+            "\n{}  <tt>{}</tt>  <span alpha=\"60%\">{}</span>",
+            session::city(zone),
+            there.format("%H:%M"),
+            phase.label(),
+        ));
+    }
+    text
+}
+
+/// The dot's tooltip: the state in words, and when it next changes.
+fn market_tooltip(status: &session::MarketStatus, now: i64) -> String {
+    let mut text = format!("<b>{}</b>\n{}", status.phase.label(), capitalised(&status.countdown(now)));
+    if let Some(at) = status.next_local(now) {
+        text.push_str(&format!("  <span alpha=\"60%\">{at}</span>"));
+    }
+    text
+}
+
+fn capitalised(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
     }
 }
 
@@ -802,6 +966,45 @@ impl Node {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A tooltip whose markup does not parse is shown as nothing at all, so
+    /// the text has to be valid Pango whatever the hour, the zone or the
+    /// market's state.
+    #[test]
+    fn the_clock_and_market_tooltips_are_markup_that_parses() {
+        let now = 1_791_351_000; // a Wednesday, Oct 2026
+        let share = Instrument {
+            symbol: "X".into(),
+            name: "X".into(),
+            kind: omacharts_engine::InstrumentKind::Equity,
+            suffix: None,
+            currency: None,
+            tier: 0,
+            session_origin: 0,
+            overrides: Vec::new(),
+            exchange: None,
+            popularity: 0,
+            local_name: None,
+        };
+        for at in (0..7 * 24).map(|h| now + h * 3600) {
+            let clock = clock_tooltip(at);
+            assert!(gtk::pango::parse_markup(&clock, '\0').is_ok(), "{clock}");
+            for kind in [omacharts_engine::InstrumentKind::Equity, omacharts_engine::InstrumentKind::Crypto] {
+                let instrument = Instrument { kind, ..share.clone() };
+                let status = session::status(&instrument, at).unwrap();
+                let text = market_tooltip(&status, at);
+                assert!(gtk::pango::parse_markup(&text, '\0').is_ok(), "{text}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_offset_is_written_the_way_tradingview_writes_it() {
+        assert_eq!(utc_offset(0), "UTC");
+        assert_eq!(utc_offset(8 * 3600), "UTC+8");
+        assert_eq!(utc_offset(-4 * 3600), "UTC\u{2212}4");
+        assert_eq!(utc_offset(5 * 3600 + 1800), "UTC+5:30");
+    }
 
     #[test]
     fn the_strip_shows_only_where_it_clears_both_corners() {

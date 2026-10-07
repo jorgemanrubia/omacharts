@@ -1,0 +1,40 @@
+# Days the New York Stock Exchange does not trade, and the days it closes early.
+# From the NYSE's Holidays & Trading Hours page, which lists three years ahead:
+# https://www.nyse.com/markets/hours-calendars. It has no feed, so this is kept
+# by hand; add the next year when the exchange publishes it.
+# One ISO date per line, then what the exchange calls it. An early close puts
+# the closing bell's time first: 2026-11-27 @13:00 means the session ends at 1pm.
+2026-01-01 New Year's Day
+2026-01-19 Martin Luther King, Jr. Day
+2026-02-16 Washington's Birthday
+2026-04-03 Good Friday
+2026-05-25 Memorial Day
+2026-06-19 Juneteenth
+2026-07-03 Independence Day observed
+2026-09-07 Labor Day
+2026-11-26 Thanksgiving Day
+2026-11-27 @13:00 Day after Thanksgiving
+2026-12-24 @13:00 Christmas Eve
+2026-12-25 Christmas Day
+2027-01-01 New Year's Day
+2027-01-18 Martin Luther King, Jr. Day
+2027-02-15 Washington's Birthday
+2027-03-26 Good Friday
+2027-05-31 Memorial Day
+2027-06-18 Juneteenth observed
+2027-07-05 Independence Day observed
+2027-09-06 Labor Day
+2027-11-25 Thanksgiving Day
+2027-11-26 @13:00 Day after Thanksgiving
+2027-12-24 Christmas Day observed
+2028-01-17 Martin Luther King, Jr. Day
+2028-02-21 Washington's Birthday
+2028-04-14 Good Friday
+2028-05-29 Memorial Day
+2028-06-19 Juneteenth
+2028-07-03 @13:00 Day before Independence Day
+2028-07-04 Independence Day
+2028-09-04 Labor Day
+2028-11-23 Thanksgiving Day
+2028-11-24 @13:00 Day after Thanksgiving
+2028-12-25 Christmas Day
