@@ -8,13 +8,17 @@
 //! One instance serves every place a symbol is picked — charting it, adding it
 //! to a watchlist section — by swapping the handler at presentation time.
 //! Identical behaviour everywhere, and the index is only built once.
+//!
+//! On a chart it also takes a resolution. Typing on a chart opens this box
+//! whatever the first key was, because a number is as likely to be `2330`,
+//! TSMC, as it is `15` minutes, and only the whole query can tell them apart.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::glib;
-use omacharts_engine::{Instrument, SearchIndex};
+use omacharts_engine::{Instrument, SearchIndex, Timeframe};
 
 use crate::ui::dialogs;
 
@@ -22,6 +26,16 @@ use crate::ui::dialogs;
 const LIMIT: usize = 24;
 
 type Handler = Rc<RefCell<Option<Box<dyn Fn(Instrument)>>>>;
+type ResolutionHandler = Rc<RefCell<Option<Box<dyn Fn(Timeframe)>>>>;
+
+/// One row's worth of answer.
+#[derive(Clone, Debug, PartialEq)]
+enum Pick {
+    Symbol(Instrument),
+    /// A ticker the inventory does not have, offered anyway.
+    Unlisted(Instrument),
+    Resolution(Timeframe),
+}
 
 pub struct SymbolSearch {
     dialog: adw::Dialog,
@@ -31,9 +45,12 @@ pub struct SymbolSearch {
     scroller: gtk::ScrolledWindow,
     entry: gtk::SearchEntry,
     index: crate::inventory::Inventory,
-    /// Instruments on display, parallel to the list rows.
-    shown: Rc<RefCell<Vec<Instrument>>>,
+    /// What is on display, parallel to the list rows.
+    shown: Rc<RefCell<Vec<Pick>>>,
     handler: Handler,
+    /// Set only where a resolution means something — on a chart, not when
+    /// adding to a watchlist — and its absence is what keeps the row out.
+    on_resolution: ResolutionHandler,
     /// True from the moment the picker is asked to open until it has settled.
     ///
     /// An entry selects what it holds when it gains focus, and on the first
@@ -83,6 +100,7 @@ impl SymbolSearch {
             index,
             shown: Rc::new(RefCell::new(Vec::new())),
             handler: Rc::new(RefCell::new(None)),
+            on_resolution: Rc::new(RefCell::new(None)),
             opening: Rc::new(std::cell::Cell::new(false)),
         });
         search.wire();
@@ -116,8 +134,10 @@ impl SymbolSearch {
         // Typing. Every keystroke re-runs the search against memory, which is
         // cheap enough that debouncing would only add latency.
         let (list, index, shown) = (self.list.clone(), self.index.clone(), self.shown.clone());
+        let on_resolution = self.on_resolution.clone();
         self.entry.connect_search_changed(move |entry| {
-            repopulate(&list, &index.get(), &shown, &entry.text());
+            let resolutions = on_resolution.borrow().is_some();
+            repopulate(&list, &index.get(), &shown, &entry.text(), resolutions);
         });
 
         // Enter takes the highlighted row, so an exact ticker never needs the
@@ -173,20 +193,29 @@ impl SymbolSearch {
         let shown = self.shown.clone();
         let dialog = self.dialog.clone();
         let handler = self.handler.clone();
+        let on_resolution = self.on_resolution.clone();
         self.list.connect_row_activated(move |_, row| {
             let index = row.index().max(0) as usize;
-            let picked = shown.borrow().get(index).cloned();
-            if let Some(instrument) = picked {
-                dialog.close();
-                if let Some(handler) = handler.borrow().as_ref() {
-                    handler(instrument);
+            let Some(picked) = shown.borrow().get(index).cloned() else { return };
+            dialog.close();
+            match picked {
+                Pick::Symbol(instrument) | Pick::Unlisted(instrument) => {
+                    if let Some(handler) = handler.borrow().as_ref() {
+                        handler(instrument);
+                    }
+                }
+                Pick::Resolution(timeframe) => {
+                    if let Some(handler) = on_resolution.borrow().as_ref() {
+                        handler(timeframe);
+                    }
                 }
             }
         });
     }
 
     fn populate(&self, query: &str) {
-        repopulate(&self.list, &self.index.get(), &self.shown, query);
+        let resolutions = self.on_resolution.borrow().is_some();
+        repopulate(&self.list, &self.index.get(), &self.shown, query, resolutions);
     }
 
     /// Open the picker. `title` says what picking will do.
@@ -196,15 +225,27 @@ impl SymbolSearch {
         title: &str,
         on_pick: impl Fn(Instrument) + 'static,
     ) {
-        self.present_with(parent, title, "", on_pick);
+        *self.on_resolution.borrow_mut() = None;
+        self.open(parent, title, "", on_pick);
     }
 
-    /// Open it already carrying a query.
+    /// Open it on a chart, already carrying a query: a symbol or a resolution.
     ///
-    /// Typing a letter on the chart opens this with that letter in the box, so
-    /// the keystroke that summoned the picker is not lost — which is what
-    /// makes "just start typing" feel like one gesture instead of two.
-    pub fn present_with(
+    /// Typing on the chart opens this with that keystroke in the box, so the
+    /// key that summoned the picker is not lost — which is what makes "just
+    /// start typing" feel like one gesture instead of two.
+    pub fn present_for_chart(
+        &self,
+        parent: &impl IsA<gtk::Widget>,
+        query: &str,
+        on_pick: impl Fn(Instrument) + 'static,
+        on_resolution: impl Fn(Timeframe) + 'static,
+    ) {
+        *self.on_resolution.borrow_mut() = Some(Box::new(on_resolution));
+        self.open(parent, "Symbol or resolution", query, on_pick);
+    }
+
+    fn open(
         &self,
         parent: &impl IsA<gtk::Widget>,
         title: &str,
@@ -234,30 +275,21 @@ impl SymbolSearch {
 fn repopulate(
     list: &gtk::ListBox,
     index: &SearchIndex,
-    shown: &RefCell<Vec<Instrument>>,
+    shown: &RefCell<Vec<Pick>>,
     query: &str,
+    resolutions: bool,
 ) {
     while let Some(child) = list.first_child() {
         list.remove(&child);
     }
 
-    let hits = index.search(query, LIMIT);
-    let mut rows = Vec::with_capacity(hits.len());
-    for hit in &hits {
-        let Some(instrument) = index.get(hit.index) else { continue };
-        list.append(&row_for(instrument));
-        rows.push(instrument.clone());
-    }
-
-    // Nothing matched, but the query looks like a ticker: offer it anyway.
-    //
-    // The inventory is a list of symbols somebody wrote down, and the provider
-    // knows more symbols than any list does — a company that listed this
-    // morning has prices before it has an entry. Refusing to try is the app
-    // asserting something it cannot know.
-    if let Some(guess) = rows.is_empty().then(|| unlisted(query)).flatten() {
-        list.append(&unlisted_row(&guess));
-        rows.push(guess);
+    let rows = picks(index, query, resolutions);
+    for pick in &rows {
+        list.append(&match pick {
+            Pick::Symbol(instrument) => row_for(instrument),
+            Pick::Unlisted(instrument) => unlisted_row(instrument),
+            Pick::Resolution(timeframe) => resolution_row(*timeframe),
+        });
     }
     *shown.borrow_mut() = rows;
 
@@ -272,6 +304,51 @@ fn repopulate(
             scroller.vadjustment().set_value(0.0);
         }
     }
+}
+
+/// What a query offers, best first — the first is what Enter takes.
+fn picks(index: &SearchIndex, query: &str, resolutions: bool) -> Vec<Pick> {
+    let symbols: Vec<Instrument> = index
+        .search(query, LIMIT)
+        .iter()
+        .filter_map(|hit| index.get(hit.index).cloned())
+        .collect();
+
+    // Nothing matched, but the query looks like a ticker: offer it anyway.
+    //
+    // The inventory is a list of symbols somebody wrote down, and the provider
+    // knows more symbols than any list does — a company that listed this
+    // morning has prices before it has an entry. Refusing to try is the app
+    // asserting something it cannot know.
+    let guess = symbols.is_empty().then(|| unlisted(query)).flatten();
+    let mut rows: Vec<Pick> =
+        symbols.into_iter().map(Pick::Symbol).chain(guess.map(Pick::Unlisted)).collect();
+
+    // A resolution only where one means something, and only when the query
+    // starts with a digit: `d`, `h` and `w` parse as resolutions on their
+    // own, and would get in front of DIS, HD and WMT.
+    let timeframe = (resolutions && query.trim().starts_with(|c: char| c.is_ascii_digit()))
+        .then(|| Timeframe::parse(query))
+        .flatten();
+    if let Some(timeframe) = timeframe {
+        // First, unless the query is exactly a ticker. Every all-digit ticker
+        // has four digits or more, so `5`, `15` and `240` are resolutions; and
+        // `2330` typed whole means TSMC rather than a day and a half of
+        // minutes. Either way the other answer is one arrow away.
+        let at = match rows.first() {
+            Some(Pick::Symbol(first)) if is_exactly(first, query) => 1,
+            _ => 0,
+        };
+        rows.insert(at, Pick::Resolution(timeframe));
+    }
+    rows
+}
+
+/// Is `query` this instrument's ticker, written in full?
+fn is_exactly(instrument: &Instrument, query: &str) -> bool {
+    let query = query.trim();
+    instrument.symbol.eq_ignore_ascii_case(query)
+        || instrument.display_symbol().eq_ignore_ascii_case(query)
 }
 
 /// Bring a row into the window, moving as little as will do it.
@@ -345,6 +422,11 @@ const BADGE: i32 = 18;
 /// kind is already named in words further along the row, so this is there to
 /// be recognised at a glance down the list, not read.
 fn kind_badge(kind: omacharts_engine::InstrumentKind) -> gtk::DrawingArea {
+    badge(move |cr, w, h| draw_kind(cr, kind, w, h))
+}
+
+/// A badge drawn by `draw`, in the row's own colour at half strength.
+fn badge(draw: impl Fn(&gtk::cairo::Context, f64, f64) + 'static) -> gtk::DrawingArea {
     let area = gtk::DrawingArea::new();
     area.set_content_width(BADGE);
     area.set_content_height(BADGE);
@@ -357,7 +439,7 @@ fn kind_badge(kind: omacharts_engine::InstrumentKind) -> gtk::DrawingArea {
         // equally quiet.
         let alpha = if 0.3 * r + 0.6 * g + 0.1 * b > 0.5 { 0.5 } else { 0.62 };
         cr.set_source_rgba(r, g, b, alpha);
-        draw_kind(cr, kind, w as f64, h as f64);
+        draw(cr, w as f64, h as f64);
     });
     area
 }
@@ -465,20 +547,55 @@ fn row_for(instrument: &Instrument) -> gtk::ListBoxRow {
     kind.add_css_class("symbol-kind");
     kind.set_valign(gtk::Align::Center);
 
+    row_of(&[
+        kind_badge(instrument.kind).upcast(),
+        ticker.upcast(),
+        name.upcast(),
+        venue.upcast(),
+        kind.upcast(),
+    ])
+}
+
+/// The row that sets the resolution, saying what it will be: `240` reads
+/// back as "4 hours" before anybody commits to it.
+fn resolution_row(timeframe: Timeframe) -> gtk::ListBoxRow {
+    let what = gtk::Label::new(Some(&timeframe.description()));
+    what.add_css_class("symbol-row-ticker");
+    what.set_xalign(0.0);
+    what.set_hexpand(true);
+
+    let kind = gtk::Label::new(Some("Resolution"));
+    kind.add_css_class("symbol-kind");
+    kind.set_valign(gtk::Align::Center);
+
+    row_of(&[badge(draw_clock).upcast(), what.upcast(), kind.upcast()])
+}
+
+/// One row, its parts laid out left to right.
+fn row_of(parts: &[gtk::Widget]) -> gtk::ListBoxRow {
     let row_box = gtk::Box::new(gtk::Orientation::Horizontal, 10);
     row_box.set_margin_top(7);
     row_box.set_margin_bottom(7);
     row_box.set_margin_start(10);
     row_box.set_margin_end(10);
-    row_box.append(&kind_badge(instrument.kind));
-    row_box.append(&ticker);
-    row_box.append(&name);
-    row_box.append(&venue);
-    row_box.append(&kind);
-
+    for part in parts {
+        row_box.append(part);
+    }
     let row = gtk::ListBoxRow::new();
     row.set_child(Some(&row_box));
     row
+}
+
+/// A clock face, in the same 11-pixel box as the kind marks.
+fn draw_clock(cr: &gtk::cairo::Context, w: f64, h: f64) {
+    let (cx, cy) = ((w / 2.0).floor() + 0.5, (h / 2.0).floor() + 0.5);
+    cr.set_line_width(1.0);
+    cr.set_line_cap(gtk::cairo::LineCap::Round);
+    cr.arc(cx, cy, 5.5, 0.0, std::f64::consts::TAU);
+    cr.move_to(cx, cy - 3.0);
+    cr.line_to(cx, cy);
+    cr.line_to(cx + 2.5, cy);
+    let _ = cr.stroke();
 }
 
 fn row_count(list: &gtk::ListBox) -> i32 {
@@ -491,3 +608,57 @@ fn row_count(list: &gtk::ListBox) -> i32 {
     n
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn all(query: &str, resolutions: bool) -> Vec<Pick> {
+        picks(&crate::inventory::everything(), query, resolutions)
+    }
+
+    fn resolution(text: &str) -> Pick {
+        Pick::Resolution(Timeframe::parse(text).unwrap())
+    }
+
+    fn ticker(pick: Option<&Pick>) -> Option<String> {
+        match pick {
+            Some(Pick::Symbol(instrument)) => Some(instrument.display_symbol()),
+            _ => None,
+        }
+    }
+
+    fn offers_a_resolution(picks: &[Pick]) -> bool {
+        picks.iter().any(|p| matches!(p, Pick::Resolution(_)))
+    }
+
+    #[test]
+    fn a_short_number_or_a_unit_is_a_resolution() {
+        for (query, expected) in [("5", "5"), ("15", "15"), ("240", "4h"), ("4h", "4h"), ("1D", "1D")] {
+            assert_eq!(all(query, true).first(), Some(&resolution(expected)), "{query:?}");
+        }
+    }
+
+    #[test]
+    fn a_number_that_is_a_ticker_is_the_ticker_with_the_resolution_next() {
+        let picks = all("2330", true);
+        assert_eq!(ticker(picks.first()).as_deref(), Some("2330.TW"));
+        assert_eq!(picks.get(1), Some(&resolution("2330")));
+        assert_eq!(ticker(all("2330.tw", true).first()).as_deref(), Some("2330.TW"));
+    }
+
+    #[test]
+    fn letters_never_offer_a_resolution() {
+        // `d`, `h` and `w` parse as resolutions on their own.
+        for query in ["msft", "d", "h", "w"] {
+            assert!(!offers_a_resolution(&all(query, true)), "{query:?}");
+        }
+        assert_eq!(ticker(all("msft", true).first()).as_deref(), Some("MSFT"));
+    }
+
+    #[test]
+    fn picking_for_a_watchlist_never_offers_a_resolution() {
+        for query in ["5", "240", "2330"] {
+            assert!(!offers_a_resolution(&all(query, false)), "{query:?}");
+        }
+    }
+}

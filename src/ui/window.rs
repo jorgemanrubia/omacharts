@@ -149,9 +149,8 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
     (
         "Finding things",
         &[
-            ("Type a letter", "Find a symbol"),
-            ("Type a number", "Set the resolution"),
-            ("Ctrl+K", "Find a symbol"),
+            ("Start typing", "Find a symbol or set the resolution"),
+            ("Ctrl+K", "Find a symbol or set the resolution"),
             ("Ctrl+I", "Indicators"),
             ("Ctrl+Shift+I", "Add an indicator"),
             ("Ctrl+Shift+S", "Chart settings"),
@@ -4093,15 +4092,13 @@ impl Window {
                 (_, true) => glib::Propagation::Proceed,
                 _ => {
                     // Start typing and the chart does what every charting tool
-                    // does: letters look for a symbol, digits set the
-                    // resolution. The keystroke carries into the box.
+                    // does: look for a symbol or set the resolution. One box
+                    // for both, because a number can be either — `15` is
+                    // minutes and `2330` is TSMC — and only the whole query
+                    // tells them apart. The keystroke carries into the box.
                     match key.to_unicode() {
-                        Some(c) if c.is_ascii_alphabetic() => {
+                        Some(c) if c.is_ascii_alphanumeric() => {
                             this.open_search_with(&c.to_string());
-                            glib::Propagation::Stop
-                        }
-                        Some(c) if c.is_ascii_digit() => {
-                            this.prompt_resolution(&c.to_string());
                             glib::Propagation::Stop
                         }
                         _ => glib::Propagation::Proceed,
@@ -4261,112 +4258,13 @@ impl Window {
 
     fn open_search_with(self: &Rc<Self>, query: &str) {
         let this = self.clone();
-        self.search.present_with(&self.window, "Find symbol", query, move |instrument| {
-            this.show(instrument)
-        });
-    }
-
-    /// The resolution box: type "3", "15", "4h", "1D".
-    ///
-    /// A bare number means minutes, so the digit that opened this is already
-    /// the start of an answer.
-    fn prompt_resolution(self: &Rc<Self>, start: &str) {
-        let entry = gtk::Entry::new();
-        entry.set_text(start);
-        entry.set_position(-1);
-        entry.set_placeholder_text(Some("3, 15, 4h, 1D"));
-        entry.set_width_chars(10);
-
-        let hint = gtk::Label::new(Some("Resolution"));
-        hint.add_css_class("dim-label");
-        hint.add_css_class("caption");
-        hint.set_xalign(0.0);
-
-        // Says what is about to happen, as it is typed. "240" reading back as
-        // "4 hours" is the whole reason this is here.
-        let preview = gtk::Label::new(None);
-        preview.add_css_class("caption");
-        preview.set_xalign(0.0);
-
-        let content = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        content.append(&hint);
-        content.append(&entry);
-        content.append(&preview);
-
-        let describe = |text: &str, preview: &gtk::Label| {
-            preview.remove_css_class("dim-label");
-            preview.remove_css_class("error");
-            match Timeframe::parse(text) {
-                Some(timeframe) => preview.set_text(&timeframe.description()),
-                None if text.trim().is_empty() => {
-                    preview.set_text("3, 15, 4h, 1D");
-                    preview.add_css_class("dim-label");
-                }
-                None => {
-                    preview.set_text("not a resolution");
-                    preview.add_css_class("error");
-                }
-            }
-        };
-        describe(&entry.text(), &preview);
-
-        let preview_weak = preview.downgrade();
-        entry.connect_changed(move |entry| {
-            if let Some(preview) = preview_weak.upgrade() {
-                describe(&entry.text(), &preview);
-            }
-        });
-
-        // Anchored to the focused chart's own resolution strip, which is what
-        // it is about and where the answer will appear. Hanging it off the
-        // window would put it over whichever chart happened to be underneath.
-        let popover = gtk::Popover::new();
-        popover.set_child(Some(&content));
-        // Or, on a chart too narrow to show the strip, to the resolution
-        // beside the symbol that stands in for it. Mapped rather than
-        // visible: the strip is hidden by its row stepping aside, and only
-        // the map state reaches down through the row to the strip itself.
-        let pane = self.focused_pane();
-        match pane.strip.is_mapped() {
-            true => popover.set_parent(&pane.strip),
-            false => popover.set_parent(&pane.timeframe_menu),
-        }
-        // Every number typed builds a fresh one, so each has to let go of the
-        // strip when it closes or they pile up on it.
-        popover.connect_closed(|popover| {
-            let popover = popover.clone();
-            glib::idle_add_local_once(move || popover.unparent());
-        });
-
-        let this = self.clone();
-        let popover_weak = popover.downgrade();
-        entry.connect_activate(move |entry| {
-            if let Some(timeframe) = Timeframe::parse(&entry.text()) {
-                this.apply_timeframe(timeframe);
-            }
-            if let Some(popover) = popover_weak.upgrade() {
-                popover.popdown();
-            }
-        });
-
-        // The window's key controller would otherwise take Escape to move
-        // focus back to the chart, leaving this open behind it.
-        let popover_weak = popover.downgrade();
-        let escape = gtk::EventControllerKey::new();
-        escape.connect_key_pressed(move |_, key, _, _| {
-            if key == gtk::gdk::Key::Escape {
-                if let Some(popover) = popover_weak.upgrade() {
-                    popover.popdown();
-                }
-                return glib::Propagation::Stop;
-            }
-            glib::Propagation::Proceed
-        });
-        entry.add_controller(escape);
-
-        popover.popup();
-        entry.grab_focus();
-        entry.set_position(-1);
+        let again = self.clone();
+        self.search.present_for_chart(
+            &self.window,
+            query,
+            move |instrument| this.show(instrument),
+            move |timeframe| again.apply_timeframe(timeframe),
+        );
     }
 
     pub fn open_chart_settings(self: &Rc<Self>) {

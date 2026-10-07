@@ -32,8 +32,9 @@ Fast, beautiful charting software for [Omarchy](https://omarchy.org).
   other machines.
 - **Keyboard first.** An intuitive, discoverable user interface, prepared for
   power users. Hotkeys for the whole app: split and close charts, resize them,
-  walk the chartbooks, step the resolution, rotate the watchlists. Type a
-  letter to find a symbol, a number to set a resolution. Press `?` to learn it all.
+  walk the chartbooks, step the resolution, rotate the watchlists. Start
+  typing to find a symbol or set a resolution — `msft`, `2330`, `15`, `4h` —
+  in the same box. Press `?` to learn it all.
 - **Indicators.** Moving averages, VWAP with bands, volume, volume profile,
   RSI, ATR and stochastic, each in its own resizable strip. More coming.
 - **Omarchy plugin.** Your watchlist in the bar, with sparklines, live, still
