@@ -1118,6 +1118,10 @@ fn list_holds(store: &Store, watchlist: i64, symbol: &str, suffix: Option<&str>)
     })
 }
 
+/// What a link key's number is held to: WCAG's floor for small text.
+const LINK_KEY_CONTRAST: omacharts_engine::theme::ContrastBand =
+    omacharts_engine::theme::ContrastBand::new(4.5, 21.0);
+
 /// A group as a menu action's target: the number, and zero for unlinked.
 fn group_state(group: LinkGroup) -> glib::Variant {
     (group.number().unwrap_or(0) as i32).to_variant()
@@ -2408,8 +2412,15 @@ impl Window {
     ///
     /// Resolved on demand rather than stored, because the number is the group
     /// and the colour is only this theme's answer about it.
+    ///
+    /// Held to the background, because the number on a chart's key is drawn
+    /// in it: a swatch that is a fine stripe can be a faint digit, and amber
+    /// on a light theme is.
     fn link_colour(&self, group: LinkGroup) -> Option<String> {
-        group.colour(&self.theming.borrow().theme())
+        let theme = self.theming.borrow().theme();
+        let colour = group.colour(&theme)?;
+        let ground = &theme.ui.background;
+        Some(omacharts_engine::theme::held_to(&colour, ground, LINK_KEY_CONTRAST, None))
     }
 
     /// The list of groups, as a popover. `choose` is handed the group the row

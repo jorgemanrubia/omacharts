@@ -18,6 +18,7 @@ use gtk::glib;
 use omacharts_engine::{FetchFailure, Instrument, LinkGroup};
 
 use crate::store::{Entry, Section, Store, DEFAULT_WATCHLIST};
+use crate::ui::pane::{link_icon, mark_link, LinkMark};
 use crate::ui::search::SymbolSearch;
 use crate::ui::shortcuts;
 
@@ -231,7 +232,7 @@ pub struct Watchlist {
     quiet: Cell<bool>,
     /// The chain beside the name: which group of charts this list drives.
     link: gtk::MenuButton,
-    link_tint: Rc<RefCell<Option<String>>>,
+    link_mark: Rc<RefCell<LinkMark>>,
     link_group: Cell<LinkGroup>,
     /// Which watchlist the rail is showing. Not which one the bar widget
     /// shows — that is always the default one.
@@ -291,9 +292,9 @@ impl Watchlist {
 
         // The chain beside the name, because the question it answers is about
         // this list: which group of charts does picking a symbol here move.
-        let link_tint: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+        let link_mark: Rc<RefCell<LinkMark>> = Rc::default();
         let link = gtk::MenuButton::new();
-        link.set_child(Some(&crate::ui::pane::chain_icon(link_tint.clone())));
+        link.set_child(Some(&link_icon(link_mark.clone())));
         link.add_css_class("flat");
         link.add_css_class("legend-link");
         link.set_always_show_arrow(false);
@@ -362,7 +363,7 @@ impl Watchlist {
             columns: RefCell::new(columns),
             quiet: Cell::new(false),
             link: link.clone(),
-            link_tint,
+            link_mark,
             link_group: Cell::new(LinkGroup::None),
             active: Cell::new(active),
             switcher: switcher.clone(),
@@ -615,10 +616,7 @@ impl Watchlist {
             other => format!("Linked · {}", other.label()),
         }));
         self.link.set_opacity(if group.is_linked() { 1.0 } else { 0.28 });
-        *self.link_tint.borrow_mut() = colour;
-        if let Some(icon) = self.link.child() {
-            icon.queue_draw();
-        }
+        mark_link(&self.link, &self.link_mark, group, colour);
     }
 
     /// Select a symbol the way a click does, so whatever is listening for a

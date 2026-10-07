@@ -83,10 +83,10 @@ pub struct ChartPane {
     pub session: Cell<Session>,
     pub show_grid: Cell<bool>,
     pub linked: Cell<LinkGroup>,
-    /// What the chain is painted in, so the group can be read off four charts
-    /// at a glance rather than by opening four popovers. Held here because the
+    /// The group and its colour, so it can be read off four charts at a
+    /// glance rather than by opening four popovers. Held here because the
     /// drawing happens on every frame and the theme it comes from does not.
-    link_colour: Rc<RefCell<Option<String>>>,
+    link_mark: Rc<RefCell<LinkMark>>,
 }
 
 impl ChartPane {
@@ -138,11 +138,11 @@ impl ChartPane {
         // downward arrow under it — it means *insert* a link, and the arrow
         // read as a dropdown nobody could open. There is no plain chain in the
         // theme, so here is one: two capsules and the bar that joins them,
-        // painted in whatever colour the button currently has, which is what
-        // makes it follow the theme and dim with the rest of the legend.
-        let link_colour: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+        // in the legend's own colour while unlinked. Once linked it gives way
+        // to the group's number on a key.
+        let link_mark: Rc<RefCell<LinkMark>> = Rc::default();
         let link = gtk::MenuButton::new();
-        link.set_child(Some(&chain_icon(link_colour.clone())));
+        link.set_child(Some(&link_icon(link_mark.clone())));
         link.add_css_class("flat");
         link.add_css_class("legend-link");
         link.set_valign(gtk::Align::Center);
@@ -268,7 +268,7 @@ impl ChartPane {
             session: Cell::new(session),
             show_grid: Cell::new(show_grid),
             linked: Cell::new(linked),
-            link_colour,
+            link_mark,
         })
     }
 
@@ -324,11 +324,8 @@ impl ChartPane {
     /// ask once the user has changed it.
     pub fn set_link_group(&self, group: LinkGroup, colour: Option<String>) {
         self.linked.set(group);
-        *self.link_colour.borrow_mut() = colour;
         set_link_look(&self.link, group);
-        if let Some(icon) = self.link.child() {
-            icon.queue_draw();
-        }
+        mark_link(&self.link, &self.link_mark, group, colour);
     }
 
     /// Push the maximize corner in from the right, to leave room for
@@ -470,50 +467,219 @@ fn expand_icon(maximized: Rc<Cell<bool>>) -> gtk::DrawingArea {
     area
 }
 
-/// A chain: two rounded links, overlapping, on the diagonal.
+/// Which group a link toggle stands for, and the colour it wears in this
+/// theme.
+#[derive(Default)]
+pub(crate) struct LinkMark {
+    group: LinkGroup,
+    colour: Option<String>,
+}
+
+/// Point a link toggle at a group.
+pub(crate) fn mark_link(
+    link: &gtk::MenuButton,
+    mark: &RefCell<LinkMark>,
+    group: LinkGroup,
+    colour: Option<String>,
+) {
+    *mark.borrow_mut() = LinkMark { group, colour };
+    if let Some(icon) = link.child() {
+        icon.queue_draw();
+    }
+}
+
+/// The link toggle: a faint chain while unlinked, and the group's number on a
+/// key in its colour once linked.
+///
+/// The number because it is the group — the colour is only this theme's
+/// answer about it, and the first group has none on purpose. A tinted chain
+/// was all this used to be, and across four charts nobody could tell group 1
+/// from unlinked, or which group the watchlist drove, without a popover.
+pub(crate) fn link_icon(mark: Rc<RefCell<LinkMark>>) -> gtk::DrawingArea {
+    let area = gtk::DrawingArea::new();
+    area.set_content_width(19);
+    area.set_content_height(18);
+    area.set_draw_func(move |area, cr, width, height| {
+        let mark = mark.borrow();
+        let (w, h) = (width as f64, height as f64);
+        let (Some(number), Some(colour)) = (mark.group.number(), mark.colour.as_deref()) else {
+            // Unlinked is furniture, and dims with the rest of the legend
+            // rather than insisting on a hue of its own.
+            let ink = area.color();
+            let (r, g, b, a) = (ink.red(), ink.green(), ink.blue(), ink.alpha());
+            cr.set_source_rgba(r as f64, g as f64, b as f64, a as f64);
+            draw_chain(cr, w / 2.0, h / 2.0, h);
+            return;
+        };
+        draw_key(area, cr, w, h, colour, &number.to_string());
+    });
+    area
+}
+
+/// A key cap: the group's colour as a wash and a hairline, and its number on
+/// top in the colour itself.
+///
+/// A wash rather than a fill, so the key sits in the legend like the text
+/// beside it instead of shouting over the chart, and works on a light theme
+/// and a dark one alike — the colour arrives already held legible against
+/// the background, which is the only thing a theme can get wrong here.
+fn draw_key(
+    area: &gtk::DrawingArea,
+    cr: &gtk::cairo::Context,
+    w: f64,
+    h: f64,
+    colour: &str,
+    label: &str,
+) {
+    use crate::ui::colors::{set_source, set_source_alpha};
+    // The interface's own face, so the number matches the symbol and the
+    // resolution beside it rather than whatever cairo calls sans.
+    let family = area.pango_context().font_description().and_then(|f| f.family());
+    let family = family.as_deref().unwrap_or("sans-serif").to_string();
+    let scale = area.scale_factor().max(1);
+    let options = cr.font_options().ok();
+    let Some(ink) = ink_box(&family, scale, options.as_ref(), label) else { return };
+
+    // In device pixels, because that is where centring is won or lost. The
+    // digit's box is measured as drawn rather than predicted from the font's
+    // metrics, which hinting and antialiasing both overrule; and a digit an
+    // odd number of pixels wide cannot sit in the middle of a key an even
+    // number wide, so the key gives up a pixel to match it rather than the
+    // digit being drawn on a half pixel and blurred.
+    let s = f64::from(scale);
+    let mut key_w = (w * s).round() as i32;
+    if (key_w - ink.width) % 2 != 0 {
+        key_w -= 1;
+    }
+    // A little shorter than the box, so it sits on the text's height rather
+    // than towering over it. Its height is even in device pixels, as every
+    // digit's is not, for the same reason.
+    let mut key_h = (16.0_f64.min(h) * s).round() as i32;
+    if (key_h - ink.height) % 2 != 0 {
+        key_h -= 1;
+    }
+    let key_top = ((h * s).round() as i32 - key_h) / 2;
+
+    // The hairline half a line in from the key's edge, so it covers whole
+    // pixels rather than smearing across two.
+    let line = 1.0;
+    let (kw, kh) = (f64::from(key_w) / s, f64::from(key_h) / s);
+    let top = f64::from(key_top) / s;
+    rounded(cr, line / 2.0, top + line / 2.0, kw - line, kh - line, 4.0);
+    set_source_alpha(cr, colour, 0.16);
+    let _ = cr.fill_preserve();
+    set_source_alpha(cr, colour, 0.75);
+    cr.set_line_width(line);
+    let _ = cr.stroke();
+
+    set_source(cr, colour);
+    cr.select_font_face(&family, gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Bold);
+    cr.set_font_size(KEY_FONT);
+    let left = (key_w - ink.width) / 2 - ink.left;
+    let baseline = key_top + (key_h - ink.height) / 2 - ink.top;
+    cr.move_to(f64::from(left) / s, f64::from(baseline) / s);
+    let _ = cr.show_text(label);
+}
+
+const KEY_FONT: f64 = 10.5;
+
+/// Where a digit's ink falls, in device pixels, relative to where it is drawn
+/// from.
+#[derive(Clone, Copy)]
+struct Ink {
+    left: i32,
+    top: i32,
+    width: i32,
+    height: i32,
+}
+
+/// A digit's ink, measured by drawing it once off screen at this scale with
+/// these font options, and remembered: there are nine digits and the answer
+/// only changes with the font and the screen.
+fn ink_box(
+    family: &str,
+    scale: i32,
+    options: Option<&gtk::cairo::FontOptions>,
+    label: &str,
+) -> Option<Ink> {
+    thread_local! {
+        static SEEN: RefCell<HashMap<(String, i32, String), Option<Ink>>> =
+            RefCell::new(HashMap::new());
+    }
+    let key = (family.to_string(), scale, label.to_string());
+    if let Some(ink) = SEEN.with(|seen| seen.borrow().get(&key).copied()) {
+        return ink;
+    }
+    let ink = measure_ink(family, scale, options, label);
+    SEEN.with(|seen| seen.borrow_mut().insert(key, ink));
+    ink
+}
+
+fn measure_ink(
+    family: &str,
+    scale: i32,
+    options: Option<&gtk::cairo::FontOptions>,
+    label: &str,
+) -> Option<Ink> {
+    const SIDE: i32 = 96;
+    const ORIGIN: i32 = 32;
+    let mut surface = gtk::cairo::ImageSurface::create(gtk::cairo::Format::A8, SIDE, SIDE).ok()?;
+    {
+        let cr = gtk::cairo::Context::new(&surface).ok()?;
+        if let Some(options) = options {
+            cr.set_font_options(options);
+        }
+        cr.scale(f64::from(scale), f64::from(scale));
+        cr.select_font_face(family, gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Bold);
+        cr.set_font_size(KEY_FONT);
+        let origin = f64::from(ORIGIN) / f64::from(scale);
+        cr.move_to(origin, origin);
+        cr.show_text(label).ok()?;
+    }
+    surface.flush();
+    let stride = surface.stride() as usize;
+    let data = surface.data().ok()?;
+    // Half covered or more is ink: the faint fringe of antialiasing is there
+    // on both sides alike and only blurs where the edge is.
+    let (mut x0, mut y0, mut x1, mut y1) = (SIDE, SIDE, -1, -1);
+    for y in 0..SIDE {
+        for x in 0..SIDE {
+            if data[y as usize * stride + x as usize] >= 128 {
+                (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
+            }
+        }
+    }
+    (x1 >= x0).then(|| Ink {
+        left: x0 - ORIGIN,
+        top: y0 - ORIGIN,
+        width: x1 - x0 + 1,
+        height: y1 - y0 + 1,
+    })
+}
+
+/// A chain: two rounded links, overlapping, on the diagonal, centred on
+/// `(cx, cy)` in a box `size` across.
 ///
 /// Flat and side by side they read as a Venn diagram — two ovals that happen
 /// to overlap. On the diagonal the same two shapes read as a chain, which is
 /// why every chain icon is drawn that way, and it survives being shrunk to
 /// sixteen pixels where the flat version does not. Checked by rendering all
 /// three at true size and looking at them.
-pub(crate) fn chain_icon(tint: Rc<RefCell<Option<String>>>) -> gtk::DrawingArea {
-    let area = gtk::DrawingArea::new();
-    area.set_content_width(18);
-    area.set_content_height(18);
-    area.set_draw_func(move |area, cr, width, height| {
-        // The group's colour when it has one, and the legend's own otherwise:
-        // an unlinked chain is furniture and should dim with everything else
-        // around it rather than insisting on a hue of its own.
-        match tint.borrow().as_deref() {
-            Some(hex) => crate::ui::colors::set_source(cr, hex),
-            None => {
-                let colour = area.color();
-                cr.set_source_rgba(
-                    colour.red() as f64,
-                    colour.green() as f64,
-                    colour.blue() as f64,
-                    colour.alpha() as f64,
-                );
-            }
-        }
-        let (w, h) = (width as f64, height as f64);
-        let link_w = w * 0.56;
-        let link_h = h * 0.36;
-        let overlap = link_h * 0.34;
-        cr.set_line_width(1.3);
+fn draw_chain(cr: &gtk::cairo::Context, cx: f64, cy: f64, size: f64) {
+    let link_w = size * 0.56;
+    let link_h = size * 0.36;
+    let overlap = link_h * 0.34;
+    cr.set_line_width(1.3);
 
-        cr.save().ok();
-        cr.translate(w / 2.0, h / 2.0);
-        cr.rotate(-std::f64::consts::FRAC_PI_4);
-        let total = link_w * 2.0 - overlap;
-        for x in [-total / 2.0, -total / 2.0 + link_w - overlap] {
-            rounded(cr, x, -link_h / 2.0, link_w, link_h, link_h / 2.0);
-            let _ = cr.stroke();
-        }
-        cr.restore().ok();
-    });
-    area
+    cr.save().ok();
+    cr.translate(cx, cy);
+    cr.rotate(-std::f64::consts::FRAC_PI_4);
+    let total = link_w * 2.0 - overlap;
+    for x in [-total / 2.0, -total / 2.0 + link_w - overlap] {
+        rounded(cr, x, -link_h / 2.0, link_w, link_h, link_h / 2.0);
+        let _ = cr.stroke();
+    }
+    cr.restore().ok();
 }
 
 fn rounded(cr: &gtk::cairo::Context, x: f64, y: f64, w: f64, h: f64, r: f64) {
