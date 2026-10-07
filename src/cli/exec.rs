@@ -113,6 +113,7 @@ pub fn dispatch(
         ("watchlist", "remove") => watchlist_add(store, m, json, false),
         ("watchlist", "move") => watchlist_move(store, m, json),
         ("watchlist", "link") => watchlist_link(store, m, json),
+        ("watchlist", "sort") => watchlist_sort(store, m, json),
         ("watchlist", "feed") => Ok(super::watchlist_json(store, flag(m, "refresh"), live)),
         ("watchlist", "export") => watchlist_export(store, m),
         ("watchlist", "import") => watchlist_import(store, m, json, caller),
@@ -420,6 +421,32 @@ fn watchlist_link(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<
     said(as_json, json!({"id": id, "name": name, "group": group}), text)
 }
 
+fn watchlist_sort(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<String, Fault> {
+    use crate::ui::watchlist::{store_sort, stored_sort, Column, Sort};
+    let (id, name) = find_list(store, required(m, "LIST")?)?;
+    let Some(wanted) = arg(m, "COLUMN") else {
+        let sort = stored_sort(store, id).map(Sort::key);
+        return match as_json {
+            true => Ok(format!("{}\n", json!({"id": id, "name": name, "sort": sort}))),
+            false => Ok(format!("{}\n", sort.unwrap_or_else(|| "none".to_string()))),
+        };
+    };
+    // `none` is no column, which is the list's own order; the parser has
+    // already refused anything that is neither.
+    let descending = flag(m, "descending");
+    let sort = Column::from_key(wanted).map(|column| Sort { column, descending });
+    store_sort(store, id, sort);
+    let text = match sort {
+        None => format!("{name:?} is in its own order"),
+        Some(sort) => format!(
+            "{name:?} sorted by {}, {}",
+            sort.column.key(),
+            if sort.descending { "high to low" } else { "low to high" }
+        ),
+    };
+    said(as_json, json!({"id": id, "name": name, "sort": sort.map(Sort::key)}), text)
+}
+
 /// A group where somebody reads it. Zero is not a group.
 fn spell_group(group: u8) -> String {
     match group {
@@ -448,6 +475,8 @@ fn watchlist_list(store: &Store, as_json: bool) -> Result<String, Fault> {
                     "symbols": counted(*id),
                     "isDefault": *id == DEFAULT_WATCHLIST,
                     "link": link_group_of(store, *id),
+                    "sort": crate::ui::watchlist::stored_sort(store, *id)
+                        .map(crate::ui::watchlist::Sort::key),
                 })
                 .to_string()
             })

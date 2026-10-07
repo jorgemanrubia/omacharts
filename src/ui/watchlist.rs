@@ -120,6 +120,16 @@ impl Column {
         Column::ALL.into_iter().find(|c| c.key() == key)
     }
 
+    /// What the column's header says.
+    fn title(self) -> &'static str {
+        match self {
+            Column::Symbol => "Symbol",
+            Column::Last => "Last",
+            Column::Change => "Chg",
+            Column::ChangePct => "Chg %",
+        }
+    }
+
     fn width_chars(self) -> i32 {
         match self {
             Column::Symbol => 0,
@@ -155,6 +165,80 @@ pub fn parse_columns(stored: Option<&str>) -> Vec<Column> {
 
 pub fn columns_to_string(columns: &[Column]) -> String {
     columns.iter().map(|c| c.key()).collect::<Vec<_>>().join(",")
+}
+
+/// How a watchlist's rows are ordered within each section, when not in the
+/// order they were put there.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Sort {
+    pub column: Column,
+    pub descending: bool,
+}
+
+impl Sort {
+    /// Written as the column's key, with `:desc` when it runs high to low.
+    pub fn key(self) -> String {
+        match self.descending {
+            true => format!("{}:desc", self.column.key()),
+            false => self.column.key().to_string(),
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Sort> {
+        let (column, descending) = match key.strip_suffix(":desc") {
+            Some(column) => (column, true),
+            None => (key, false),
+        };
+        Column::from_key(column).map(|column| Sort { column, descending })
+    }
+
+    /// The next state a click on `column`'s header moves to: up, then down,
+    /// then back to the order the list was written in.
+    fn after_click(current: Option<Sort>, column: Column) -> Option<Sort> {
+        match current {
+            Some(sort) if sort.column == column && !sort.descending => {
+                Some(Sort { column, descending: true })
+            }
+            Some(sort) if sort.column == column => None,
+            _ => Some(Sort { column, descending: false }),
+        }
+    }
+
+    /// Order two rows. A row with no price yet sorts last whichever way the
+    /// column runs: a dash is not a small number.
+    fn compare(self, a: &Instrument, b: &Instrument, quote: &QuoteLookup) -> std::cmp::Ordering {
+        let value = |instrument: &Instrument| {
+            quote(instrument).map(|q| match self.column {
+                Column::Last => q.last,
+                Column::Change => q.change,
+                _ => q.change_pct,
+            })
+        };
+        let ordering = match self.column {
+            Column::Symbol => a.display_symbol().cmp(&b.display_symbol()),
+            _ => match (value(a), value(b)) {
+                (Some(x), Some(y)) => x.total_cmp(&y),
+                (Some(_), None) => return std::cmp::Ordering::Less,
+                (None, Some(_)) => return std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            },
+        };
+        if self.descending { ordering.reverse() } else { ordering }
+    }
+}
+
+/// Where a watchlist's sort is kept. Per list, because a list of movers wants
+/// sorting by change and a list of holdings wants the order it was built in.
+pub fn sort_setting(watchlist: i64) -> String {
+    format!("watchlist_sort_{watchlist}")
+}
+
+pub fn stored_sort(store: &Store, watchlist: i64) -> Option<Sort> {
+    store.setting(&sort_setting(watchlist)).as_deref().and_then(Sort::from_key)
+}
+
+pub fn store_sort(store: &Store, watchlist: i64, sort: Option<Sort>) {
+    store.set_setting(&sort_setting(watchlist), &sort.map(Sort::key).unwrap_or_default());
 }
 
 /// A key that folds sections.
@@ -196,6 +280,13 @@ impl RowKind {
             RowKind::Header { section_id, .. } | RowKind::Entry { section_id, .. } => *section_id,
         }
     }
+
+    fn instrument(&self) -> Option<&Instrument> {
+        match self {
+            RowKind::Entry { instrument, .. } => Some(instrument),
+            RowKind::Header { .. } => None,
+        }
+    }
 }
 
 /// Which section a new symbol belongs in.
@@ -226,6 +317,10 @@ pub struct Watchlist {
     /// Parallel to the list's rows.
     rows: RefCell<Vec<RowKind>>,
     columns: RefCell<Vec<Column>>,
+    /// The column titles over the rows, which are also how they are sorted.
+    column_header: gtk::Box,
+    /// How the list on screen is sorted, read from the store on every rebuild.
+    sort: Cell<Option<Sort>>,
     /// Set while we are selecting a row ourselves, so rebuilding does not
     /// re-load the chart.
     quiet: Cell<bool>,
@@ -332,10 +427,20 @@ impl Watchlist {
         trouble.set_margin_bottom(2);
         trouble.set_visible(false);
 
+        // The column titles, lined up over the cells: a row's box starts 26px
+        // from the rail's edge (see the switcher above) and ends 24px from the
+        // other, 6px of Adwaita's row margin and 8 of padding past its own 10.
+        let column_header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        column_header.set_margin_start(26);
+        column_header.set_margin_end(24);
+        column_header.set_margin_top(4);
+        column_header.set_margin_bottom(2);
+
         let widget = gtk::Box::new(gtk::Orientation::Vertical, 0);
         widget.set_size_request(248, -1);
         widget.append(&band);
         widget.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        widget.append(&column_header);
         widget.append(&trouble);
         widget.append(&scroller);
 
@@ -360,6 +465,8 @@ impl Watchlist {
             on_pick: Rc::new(on_pick),
             rows: RefCell::new(Vec::new()),
             columns: RefCell::new(columns),
+            column_header: column_header.clone(),
+            sort: Cell::new(None),
             quiet: Cell::new(false),
             link: link.clone(),
             link_tint,
@@ -1053,11 +1160,19 @@ impl Watchlist {
     /// from patching it in place.
     pub fn rebuild(self: &Rc<Self>) {
         let selected = self.list.selected_row().map(|r| r.index());
+        // The symbol, so that a sort, which moves it, keeps it selected; the
+        // place, for when it has gone.
+        let selected_entry = selected.and_then(|at| match self.rows.borrow().get(at as usize) {
+            Some(RowKind::Entry { section_id, entry, .. }) => Some((*section_id, entry.clone())),
+            _ => None,
+        });
 
         self.quiet.set(true);
         clear_rows(&self.list);
 
         self.write_switcher();
+        self.sort.set(stored_sort(&self.store, self.active.get()));
+        self.write_column_header();
 
         let mut kinds = Vec::new();
         for section in self.store.watchlist_sections(self.active.get()) {
@@ -1065,10 +1180,18 @@ impl Watchlist {
                 self.list.append(&self.section_header(section.id, &section.name, section.collapsed));
                 kinds.push(RowKind::Header { section_id: section.id, collapsed: section.collapsed });
             }
-            for entry in &section.entries {
-                let Some(instrument) = self.index.find(&entry.symbol, entry.suffix.as_deref()) else {
-                    continue;
-                };
+            let mut entries: Vec<(&Entry, Instrument)> = section
+                .entries
+                .iter()
+                .filter_map(|entry| {
+                    let found = self.index.find(&entry.symbol, entry.suffix.as_deref());
+                    found.map(|instrument| (entry, instrument))
+                })
+                .collect();
+            if let Some(sort) = self.sort.get() {
+                entries.sort_by(|(_, a), (_, b)| sort.compare(a, b, &self.quote));
+            }
+            for (entry, instrument) in entries {
                 let (row, cells) = self.entry_row(section.id, entry, &instrument);
                 row.set_visible(!section.collapsed);
                 self.list.append(&row);
@@ -1091,10 +1214,15 @@ impl Watchlist {
             *self.empty_focus.borrow_mut() = None;
         }
 
-        if let Some(index) = selected {
-            if let Some(row) = self.list.row_at_index(index) {
-                self.list.select_row(Some(&row));
-            }
+        let moved_to = selected_entry.and_then(|(section, wanted)| {
+            self.rows.borrow().iter().position(|kind| {
+                matches!(kind, RowKind::Entry { section_id, entry, .. }
+                    if *section_id == section && *entry == wanted)
+            })
+        });
+        let reselect = moved_to.map(|at| at as i32).or(selected);
+        if let Some(row) = reselect.and_then(|at| self.list.row_at_index(at)) {
+            self.list.select_row(Some(&row));
         }
         self.quiet.set(false);
     }
@@ -1337,6 +1465,116 @@ impl Watchlist {
                 write_cell(label, *column, quote, instrument.kind);
             }
         }
+        // New prices can reorder a list sorted by them.
+        if self.sort.get().is_some_and(|sort| sort.column != Column::Symbol) {
+            self.resort();
+        }
+    }
+
+    /// Put the rows back in sorted order after their prices moved, by moving
+    /// the rows that are out of place rather than building the rail again —
+    /// which would lose the selection, the focus and the scroll every time a
+    /// quote came in.
+    fn resort(&self) {
+        let Some(sort) = self.sort.get() else { return };
+        let mut rows = self.rows.borrow_mut();
+        // One section's run of symbols at a time, between its headers.
+        let mut start = 0;
+        for end in 0..=rows.len() {
+            if end < rows.len() && rows[end].instrument().is_some() {
+                continue;
+            }
+            let mut order: Vec<usize> = (start..end).collect();
+            order.sort_by(|&a, &b| match (rows[a].instrument(), rows[b].instrument()) {
+                (Some(a), Some(b)) => sort.compare(a, b, &self.quote),
+                _ => std::cmp::Ordering::Equal,
+            });
+            if order.iter().copied().ne(start..end) {
+                self.move_rows(&mut rows, start, &order);
+            }
+            start = end + 1;
+        }
+    }
+
+    /// Lay `rows[start..]` out in `order`, widgets and all, keeping whatever
+    /// was selected and focused where it was.
+    fn move_rows(&self, rows: &mut [RowKind], start: usize, order: &[usize]) {
+        let widgets: Vec<gtk::ListBoxRow> =
+            order.iter().filter_map(|&at| self.list.row_at_index(at as i32)).collect();
+        if widgets.len() != order.len() {
+            return;
+        }
+        let selected = self.list.selected_row();
+        let focused = widgets.iter().find(|row| row.has_focus()).cloned();
+        self.quiet.set(true);
+        for row in &widgets {
+            self.list.remove(row);
+        }
+        for (offset, row) in widgets.iter().enumerate() {
+            self.list.insert(row, (start + offset) as i32);
+        }
+        if let Some(row) = selected {
+            self.list.select_row(Some(&row));
+        }
+        if let Some(row) = focused {
+            row.grab_focus();
+        }
+        self.quiet.set(false);
+        let reordered: Vec<RowKind> = order.iter().map(|&at| rows[at].clone()).collect();
+        for (offset, kind) in reordered.into_iter().enumerate() {
+            rows[start + offset] = kind;
+        }
+    }
+
+    /// The column titles, each one sorting by itself when clicked, with an
+    /// arrow on the one the list is sorted by.
+    fn write_column_header(self: &Rc<Self>) {
+        while let Some(child) = self.column_header.first_child() {
+            self.column_header.remove(&child);
+        }
+        let sort = self.sort.get();
+        for column in self.columns.borrow().iter().copied() {
+            let arrow = match sort {
+                Some(sort) if sort.column == column && sort.descending => Some("↓"),
+                Some(sort) if sort.column == column => Some("↑"),
+                _ => None,
+            };
+            // Numbers line up on the right, so their titles do too, with the
+            // arrow on the side away from the edge they share.
+            let title = column.title();
+            let label = gtk::Label::new(Some(&match arrow {
+                None => title.to_string(),
+                Some(arrow) if column == Column::Symbol => format!("{title} {arrow}"),
+                Some(arrow) => format!("{arrow} {title}"),
+            }));
+            label.add_css_class("caption");
+            if arrow.is_none() {
+                label.add_css_class("dim-label");
+            }
+            if column == Column::Symbol {
+                label.set_xalign(0.0);
+                label.set_hexpand(true);
+            } else {
+                label.set_xalign(1.0);
+                label.set_width_chars(column.width_chars());
+            }
+            let tip = match Sort::after_click(sort, column) {
+                Some(next) if next.descending => format!("Sort by {title}, high to low"),
+                Some(_) => format!("Sort by {title}, low to high"),
+                None => "Back to the list's own order".to_string(),
+            };
+            label.set_tooltip_text(Some(&tip));
+
+            let click = gtk::GestureClick::new();
+            let this = self.clone();
+            click.connect_released(move |_, _, _, _| {
+                let next = Sort::after_click(this.sort.get(), column);
+                store_sort(&this.store, this.active.get(), next);
+                this.rebuild();
+            });
+            label.add_controller(click);
+            self.column_header.append(&label);
+        }
     }
 
     fn cell(&self, column: Column, instrument: &Instrument, quote: Option<Quote>) -> gtk::Label {
@@ -1406,7 +1644,9 @@ impl Watchlist {
         let onto = entry.clone();
         target.connect_drop(move |_, value, _, _| match parse_drag(value) {
             Some(Dragged::Entry { from, entry }) => {
-                if from == section_id && entry == onto {
+                // A place in a sorted section is the sort's to decide, so a
+                // symbol can only be dropped into a different one.
+                if from == section_id && (entry == onto || this.sort.get().is_some()) {
                     return false;
                 }
                 this.store.move_entry_to_section(from, section_id, &entry, Some(&onto));
@@ -2563,6 +2803,64 @@ mod tests {
         assert_eq!(parse_columns(None), Column::DEFAULT.to_vec());
         assert_eq!(parse_columns(Some("")), Column::DEFAULT.to_vec());
         assert_eq!(parse_columns(Some("nonsense,rubbish")), Column::DEFAULT.to_vec());
+    }
+
+    #[test]
+    fn a_sort_round_trips_through_its_setting() {
+        for sort in [
+            Sort { column: Column::ChangePct, descending: true },
+            Sort { column: Column::Symbol, descending: false },
+        ] {
+            assert_eq!(Sort::from_key(&sort.key()), Some(sort));
+        }
+        assert_eq!(Sort::from_key(""), None, "an empty setting is the list's own order");
+        assert_eq!(Sort::from_key("volume"), None);
+    }
+
+    #[test]
+    fn a_header_click_goes_up_then_down_then_off() {
+        let up = Some(Sort { column: Column::Last, descending: false });
+        let down = Some(Sort { column: Column::Last, descending: true });
+        assert_eq!(Sort::after_click(None, Column::Last), up);
+        assert_eq!(Sort::after_click(up, Column::Last), down);
+        assert_eq!(Sort::after_click(down, Column::Last), None);
+        assert_eq!(
+            Sort::after_click(down, Column::Symbol),
+            Some(Sort { column: Column::Symbol, descending: false }),
+            "another column starts from the bottom"
+        );
+    }
+
+    #[test]
+    fn a_symbol_without_a_price_sorts_last_either_way() {
+        let named = |symbol: &str| Instrument {
+            symbol: symbol.to_string(),
+            name: symbol.to_string(),
+            kind: omacharts_engine::InstrumentKind::Equity,
+            suffix: None,
+            currency: None,
+            tier: 1,
+            session_origin: 0,
+            overrides: Vec::new(),
+            exchange: None,
+            popularity: 0,
+            local_name: None,
+        };
+        let quote: QuoteLookup = Rc::new(|instrument: &Instrument| {
+            match instrument.symbol.as_str() {
+                "UP" => Some(Quote { last: 10.0, change: 1.0, change_pct: 5.0 }),
+                "DOWN" => Some(Quote { last: 20.0, change: -1.0, change_pct: -2.0 }),
+                _ => None,
+            }
+        });
+        let mut rows = vec![named("NONE"), named("UP"), named("DOWN")];
+        for descending in [false, true] {
+            let sort = Sort { column: Column::ChangePct, descending };
+            rows.sort_by(|a, b| sort.compare(a, b, &quote));
+            let order: Vec<&str> = rows.iter().map(|i| i.symbol.as_str()).collect();
+            let expected = if descending { ["UP", "DOWN", "NONE"] } else { ["DOWN", "UP", "NONE"] };
+            assert_eq!(order, expected);
+        }
     }
 
     #[test]

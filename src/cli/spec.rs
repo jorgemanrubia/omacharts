@@ -180,6 +180,7 @@ const SWITCHES: &[&str] = &["on", "off"];
 const LINKS: &[&str] =
     &["none", "1", "2", "3", "4", "5", "6", "7", "8", "9"];
 const COLOURING: &[&str] = &["coloured", "red-up", "monochrome"];
+const SORT_COLUMNS: &[&str] = &["symbol", "last", "change", "change_pct", "none"];
 
 /// How a colour is written on the command line.
 ///
@@ -378,6 +379,20 @@ pub const SURFACE: &[Noun] = &[
                 ],
                 flags: &[],
                 example: "omacharts watchlist link Semis 3",
+                json: true,
+                writes: true,
+                workspace: false,
+            },
+            Verb {
+                name: "sort",
+                about: "How a watchlist is sorted within each section, as its headers sort it",
+                args: &[
+                    Arg::req("LIST", SELECTOR),
+                    Arg::opt("COLUMN", "a column, or `none` for its own order; omit to read it")
+                        .of(SORT_COLUMNS),
+                ],
+                flags: &[Flag::switch("descending", "high to low, or Z to A")],
+                example: "omacharts watchlist sort Semis change_pct --descending",
                 json: true,
                 writes: true,
                 workspace: false,
@@ -1068,6 +1083,14 @@ mod tests {
         for name in omacharts_engine::theme::SWATCH_NAMES {
             assert!(COLOUR.contains(name), "the help does not mention {name}");
         }
+    }
+
+    #[test]
+    fn the_sort_columns_on_offer_are_the_rails_columns() {
+        let mut rail: Vec<&str> =
+            crate::ui::watchlist::Column::ALL.iter().map(|column| column.key()).collect();
+        rail.push("none");
+        assert_eq!(SORT_COLUMNS.to_vec(), rail);
     }
 
     #[test]
