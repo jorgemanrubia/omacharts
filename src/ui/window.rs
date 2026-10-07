@@ -2041,7 +2041,7 @@ impl Window {
     /// Point the header and the rail at the focused chart.
     fn sync_header(self: &Rc<Self>) {
         let pane = self.focused_pane();
-        self.sync_timeframe_buttons();
+        pane.sync_strip();
         self.sync_chart_actions(&pane);
         if let (Some(watchlist), Some(instrument)) =
             (self.watchlist.borrow().as_ref(), pane.instrument.borrow().as_ref())
@@ -4551,18 +4551,12 @@ impl Window {
         self.show(order[next].clone());
     }
 
-    /// Switch resolution from somewhere other than the strip, keeping the
-    /// strip's buttons honest about what is being shown.
+    /// Switch to a resolution that may not be on the strip yet.
     fn apply_timeframe(self: &Rc<Self>, timeframe: Timeframe) {
         // A resolution you typed belongs on the strip: you asked for it once,
         // you will ask for it again.
         self.remember_timeframe(timeframe);
         self.set_timeframe(timeframe);
-        self.sync_timeframe_buttons();
-    }
-
-    fn sync_timeframe_buttons(self: &Rc<Self>) {
-        self.focused_pane().sync_strip();
     }
 
     /// The resolution belongs to the focused chart. Splitting a chart to put
@@ -4570,6 +4564,9 @@ impl Window {
     fn set_timeframe(self: &Rc<Self>, timeframe: Timeframe) {
         let pane = self.focused_pane();
         pane.timeframe.set(timeframe);
+        // Every way of changing the resolution ends here, so the strip
+        // follows whichever one it was.
+        pane.sync_strip();
         self.store.set_setting(LAST_TIMEFRAME, &timeframe.key());
         // A promoted reset period changes with the resolution, so the legend
         // has to be rewritten when the resolution does.
