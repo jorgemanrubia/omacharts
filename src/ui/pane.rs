@@ -53,7 +53,9 @@ pub struct ChartPane {
     /// one way to change it that fits on any chart, however narrow.
     pub timeframe_menu: gtk::MenuButton,
     timeframe_label: gtk::Label,
-    /// One row per indicator, under the readout.
+    /// One row per indicator, under the readout. Shown on the focused chart
+    /// only, like the strip: four charts each listing their moving averages
+    /// over the drawing is the noise the strip already learned to avoid.
     pub indicator_legend: gtk::Box,
     pub gear: gtk::Button,
     pub link: gtk::MenuButton,
@@ -168,6 +170,7 @@ impl ChartPane {
 
         let indicator_legend = gtk::Box::new(gtk::Orientation::Vertical, 0);
         indicator_legend.set_halign(gtk::Align::Start);
+        indicator_legend.set_visible(false);
 
         let legend = gtk::Box::new(gtk::Orientation::Vertical, 0);
         legend.set_halign(gtk::Align::Start);
@@ -317,6 +320,7 @@ impl ChartPane {
             self.root.remove_css_class("focused");
         }
         self.strip.set_visible(focused);
+        self.indicator_legend.set_visible(focused);
     }
 
     /// Join a group, or leave. The colour is resolved against the live theme
