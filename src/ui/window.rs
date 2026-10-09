@@ -1962,6 +1962,7 @@ impl Window {
 
         self.panes.borrow_mut().push(pane.clone());
         self.rebuild_strip_of(&pane);
+        self.rebuild_legend_of(&pane);
         pane
     }
 
