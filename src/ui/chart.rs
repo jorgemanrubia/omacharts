@@ -1833,8 +1833,7 @@ fn draw_candles(
             }
             any = true;
             let x = (plot_x + (i as f64 + 0.5) * bar_w).round() + 0.5;
-            cr.move_to(x, to_y(bar.high).round());
-            cr.line_to(x, to_y(bar.low).round());
+            draw_wick(cr, x, to_y(bar.high), to_y(bar.low));
         }
         if any {
             let _ = cr.stroke();
@@ -1869,6 +1868,14 @@ fn draw_candles(
     }
 }
 
+/// A bar's high-low line, a pixel long at least: when the two round to the
+/// same row, a line from there to itself draws nothing and the bar vanishes.
+fn draw_wick(cr: &cairo::Context, x: f64, high: f64, low: f64) {
+    let top = high.round();
+    cr.move_to(x, top);
+    cr.line_to(x, low.round().max(top + 1.0));
+}
+
 /// Open and close as ticks either side of a high-low line.
 fn draw_ohlc(
     cr: &cairo::Context,
@@ -1889,8 +1896,7 @@ fn draw_ohlc(
             }
             any = true;
             let x = (plot_x + (i as f64 + 0.5) * bar_w).round() + 0.5;
-            cr.move_to(x, to_y(bar.high).round());
-            cr.line_to(x, to_y(bar.low).round());
+            draw_wick(cr, x, to_y(bar.high), to_y(bar.low));
             if tick > 1.0 {
                 let open = to_y(bar.open).round() + 0.5;
                 cr.move_to(x - tick, open);
@@ -3350,6 +3356,19 @@ mod tests {
         let crosshair = frame(w, h, |cr| draw_pointer(cr, w, h, &state));
         // Two lines across a 600x400 chart, and the chips at the ends of them.
         assert!(painted(&crosshair) > 500, "the crosshair drew {} pixels", painted(&crosshair));
+    }
+
+    #[test]
+    fn a_bar_with_less_than_a_pixel_of_range_still_shows() {
+        // Zoomed out, a quiet bar's high and low round to the same row.
+        let mut state = charted(1);
+        let bars = [Bar { ts: 0, open: 100.0, high: 100.2, low: 100.0, close: 100.1, volume: 0.0 }];
+        let to_y = |price: f64| 50.0 - price / 100.0;
+        for style in BarStyle::ALL {
+            state.bar_style = style;
+            let drawn = frame(10.0, 100.0, |cr| draw_candles(cr, &state, &bars, 0.0, 2.0, &to_y));
+            assert!(painted(&drawn) > 0, "{style:?} drew nothing");
+        }
     }
 
     #[test]
