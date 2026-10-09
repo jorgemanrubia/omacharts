@@ -1757,24 +1757,8 @@ fn draw_time_axis(
             bars.last().map(|b| b.ts + (at - bars.len() as i64 + 1) * step)
         }
     };
-    // About one label per 90px, on a whole number of columns so labels do
-    // not jitter as the view scrolls — counted from the first bar, so the
-    // ticks stay on the same bars as room opens and closes.
-    let target = (plot_w / 90.0).max(2.0) as i64;
-    let stride = (total / target).max(1);
-    // How far apart two labels land decides the format: a decade of daily bars
-    // labelled "01 Jun" tells you nothing, and nine months of them all
-    // labelled "Mar 2026" tells you less.
-    let span = match (time_at(0), time_at(total - 1)) {
-        (Some(first), Some(last)) => last - first,
-        _ => 0,
-    };
-    let labels = ((total + stride - 1) / stride).max(1);
-    let tick_seconds = span / labels;
-    for column in 0..total {
-        if (column - before).rem_euclid(stride) != 0 {
-            continue;
-        }
+    let (ticks, tick_seconds) = axis_ticks(total, plot_w, step, time_at);
+    for column in ticks {
         let Some(ts) = time_at(column) else { continue };
         let x = plot_x + (column as f64 + 0.5) * bar_w;
         if x < plot_x + 18.0 || x > plot_x + plot_w - 18.0 {
@@ -2822,6 +2806,115 @@ pub fn decimals_for(step: f64) -> usize {
     places.clamp(0.0, 6.0) as usize
 }
 
+/// About how far apart, in pixels, two time labels should be.
+const TIME_LABEL_GAP: f64 = 90.0;
+
+/// Round stretches of time a tick can mark, finest first: the tick goes on
+/// the first bar of each one.
+#[derive(Clone, Copy)]
+enum Every {
+    Minutes(i64),
+    Day,
+    Week,
+    Months(i64),
+}
+
+impl Every {
+    const LADDER: [Every; 21] = [
+        Every::Minutes(1),
+        Every::Minutes(2),
+        Every::Minutes(5),
+        Every::Minutes(10),
+        Every::Minutes(15),
+        Every::Minutes(30),
+        Every::Minutes(60),
+        Every::Minutes(120),
+        Every::Minutes(240),
+        Every::Minutes(360),
+        Every::Day,
+        Every::Week,
+        Every::Months(1),
+        Every::Months(2),
+        Every::Months(3),
+        Every::Months(6),
+        Every::Months(12),
+        Every::Months(24),
+        Every::Months(60),
+        Every::Months(120),
+        Every::Months(240),
+    ];
+
+    fn seconds(self) -> i64 {
+        const DAY: i64 = 86_400;
+        match self {
+            Every::Minutes(n) => n * 60,
+            Every::Day => DAY,
+            Every::Week => 7 * DAY,
+            Every::Months(n) => n * 30 * DAY,
+        }
+    }
+
+    /// Which stretch a moment falls in; a tick goes where this changes.
+    fn period(self, at: chrono::NaiveDateTime) -> i64 {
+        use chrono::{Datelike, Timelike};
+        let day = at.date().num_days_from_ce() as i64;
+        match self {
+            Every::Minutes(n) => (day * 1_440 + (at.hour() * 60 + at.minute()) as i64).div_euclid(n),
+            Every::Day => day,
+            Every::Week => (day - at.weekday().num_days_from_monday() as i64).div_euclid(7),
+            Every::Months(n) => (at.year() as i64 * 12 + at.month0() as i64).div_euclid(n),
+        }
+    }
+}
+
+/// Which columns carry a time tick, and about how many seconds apart they are.
+///
+/// Ticks go on round times — the first bar of an hour, a day, a month, a year —
+/// using the finest round time that leaves a label room, counted on the bars
+/// actually on screen so closed hours and weekends take no room. A tick every
+/// so many bars instead drifts against the calendar: twenty-six weeks is not
+/// six months.
+fn axis_ticks(
+    total: i64,
+    plot_w: f64,
+    step: i64,
+    time_at: impl Fn(i64) -> Option<i64>,
+) -> (Vec<i64>, i64) {
+    use chrono::{Local, TimeZone};
+    let times: Vec<Option<chrono::NaiveDateTime>> = (0..total)
+        .map(|column| {
+            let ts = time_at(column)?;
+            Some(Local.timestamp_opt(ts, 0).single()?.naive_local())
+        })
+        .collect();
+    let ticks = |every: Every| {
+        let mut ticks = Vec::new();
+        let mut previous = None;
+        for (column, at) in times.iter().enumerate() {
+            let Some(at) = at else { continue };
+            let period = every.period(*at);
+            if previous.is_some_and(|p| p != period) {
+                ticks.push(column as i64);
+            }
+            previous = Some(period);
+        }
+        ticks
+    };
+    let room = (plot_w / TIME_LABEL_GAP).max(1.0) as usize;
+    let mut coarsest = Every::Months(240);
+    for every in Every::LADDER {
+        if every.seconds() < step {
+            continue;
+        }
+        let found = ticks(every);
+        if found.len() <= room {
+            return (found, every.seconds());
+        }
+        coarsest = every;
+    }
+    (ticks(coarsest), coarsest.seconds())
+}
+
 /// Label an axis tick at the detail the gap between ticks justifies.
 ///
 /// The gap, not the whole span: twenty ticks across nine months are about a
@@ -3571,6 +3664,24 @@ mod tests {
         let a = format_axis_time(1_200_000_000, tick, false);
         let b = format_axis_time(1_700_000_000, tick, false);
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn weekly_gridlines_fall_on_the_first_week_of_a_month() {
+        use chrono::{Datelike, Local, TimeZone};
+        // Every twenty-six bars put "Mar 2024" on whichever week the count
+        // reached. Monday noon, so no zone moves a bar across a month.
+        const WEEK: i64 = 7 * 86_400;
+        let time_at = |column: i64| Some(1_704_110_400 + column * WEEK);
+        let month = |column: i64| {
+            let at = Local.timestamp_opt(time_at(column).unwrap(), 0).unwrap();
+            (at.year(), at.month())
+        };
+        let (ticks, _) = axis_ticks(520, 3_120.0, WEEK, time_at);
+        assert!(ticks.len() > 5, "{ticks:?}");
+        for column in ticks {
+            assert_ne!(month(column), month(column - 1), "column {column} is mid-month");
+        }
     }
 
     #[test]
