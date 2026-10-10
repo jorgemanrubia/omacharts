@@ -164,6 +164,13 @@ struct State {
     /// What was selected when a marquee began, kept under it: the box adds
     /// to the selection rather than starting one, since Shift is held.
     marquee_base: Vec<usize>,
+    /// Whether the tool stays in hand after a drawing is finished.
+    ///
+    /// Off by default: a tool is normally for the one drawing you reached
+    /// for it to make, and going back to the pointer is what lets you take
+    /// hold of it straight away. On, it is for laying down six of
+    /// something, and Escape is the way out.
+    sticky: bool,
     /// The tool that is armed: the next press on the plot starts a drawing
     /// of this kind. `None` is the usual state, where a press pans.
     tool: Option<DrawingKind>,
@@ -540,9 +547,24 @@ fn ts_at(bars: &[Bar], index: f64) -> i64 {
 /// because the chart's columns are evenly spaced and its timestamps are not:
 /// see the body drag for what that costs.
 fn shift_by_columns(bars: &[Bar], drawing: &mut Drawing, by_index: f64, by_price: f64) {
-    for anchor in [&mut drawing.from, &mut drawing.to] {
+    let move_anchor = |anchor: &mut Anchor| {
         anchor.ts = ts_at(bars, index_of_ts(bars, anchor.ts) + by_index);
         anchor.price += by_price;
+    };
+    // Every corner, not only the two ends. A zig-zag is drawn from its own
+    // corners, so a shift that moved the ends and left them behind moved
+    // nothing anybody could see — which is exactly what it did.
+    for anchor in drawing.points.iter_mut() {
+        move_anchor(anchor);
+    }
+    move_anchor(&mut drawing.from);
+    move_anchor(&mut drawing.to);
+    // The ends are the ends of the run, and were just moved the same way as
+    // the corners, so they already agree; this is only in case a drawing
+    // ever carries corners that do not reach them.
+    if let (Some(first), Some(last)) = (drawing.points.first(), drawing.points.last()) {
+        drawing.from = *first;
+        drawing.to = *last;
     }
 }
 
@@ -718,6 +740,7 @@ impl State {
             price_offset: 0.0,
             price_auto: true,
             drawings: Vec::new(),
+            sticky: false,
             editing: None,
             editing_at: None,
             selected: Vec::new(),
@@ -808,7 +831,10 @@ impl State {
     fn begin_placing(&mut self, width: f64, height: f64, x: f64, y: f64) -> bool {
         let Some(kind) = self.tool else { return false };
         let Some(anchor) = self.locate(width, height, x, y) else { return false };
-        let mut drawing = Drawing::new(kind, anchor, anchor);
+        let mut drawing = match kind.is_path() {
+            true => Drawing::zigzag_from(anchor),
+            false => Drawing::new(kind, anchor, anchor),
+        };
         drawing.follow(self.next_config);
         drawing.scope = self.sharing.scope_for_new();
         self.placing = Some(drawing);
@@ -829,7 +855,10 @@ impl State {
             let y = plan.price_y + plan.price_h * (high - anchor.price) / (high - low);
             (x, y)
         };
-        let projected = Projected::new(drawing.kind, point(&drawing.from), point(&drawing.to));
+        let projected = match drawing.kind.is_path() {
+            true => Projected::through(drawing.kind, drawing.corners().iter().map(point).collect()),
+            false => Projected::new(drawing.kind, point(&drawing.from), point(&drawing.to)),
+        };
         // Measured here, for every caller, because the words are part of
         // the drawing and not only part of the picture of it: a label is
         // what the pointer takes hold of when it sits clear of the stroke,
@@ -1297,8 +1326,14 @@ impl ChartView {
     /// Arm a tool: the next press on the plot starts a drawing of this kind.
     /// `None` is the pointer, which Escape goes back to.
     pub fn arm(&self, kind: Option<DrawingKind>) {
+        self.arm_sticky(kind, false);
+    }
+
+    /// Arm a tool, and say whether it stays in hand after each drawing.
+    pub fn arm_sticky(&self, kind: Option<DrawingKind>, sticky: bool) {
         {
             let mut state = self.state.borrow_mut();
+            state.sticky = sticky && kind.is_some();
             if state.tool != kind {
                 // A different tool, or none: the configuration chosen for
                 // the last one is not a choice about this one. The same
@@ -1318,6 +1353,11 @@ impl ChartView {
 
     pub fn armed(&self) -> Option<DrawingKind> {
         self.state.borrow().tool
+    }
+
+    /// Whether the tool in hand stays there.
+    pub fn is_sticky(&self) -> bool {
+        self.state.borrow().sticky
     }
 
     /// Escape: back to the pointer, with nothing in hand and nothing
@@ -1579,6 +1619,16 @@ impl ChartView {
                 // the properties here, which left Enter and F2 meaning two
                 // different things — the one arrangement none of those apps
                 // has.
+                // Enter ends a zig-zag, which is the keyboard's way of
+                // saying "that is the last corner". Tried before the text
+                // keys, since while one is being laid down that is what the
+                // key is for.
+                Key::Return | Key::KP_Enter | Key::ISO_Enter
+                    if view.state.borrow().placing.as_ref().is_some_and(|d| d.kind.is_path()) =>
+                {
+                    view.commit_placing();
+                    glib::Propagation::Stop
+                }
                 Key::F2 | Key::Return | Key::KP_Enter | Key::ISO_Enter => {
                     match view.edit_selected_text() {
                         true => glib::Propagation::Stop,
@@ -1829,15 +1879,17 @@ impl ChartView {
             let by_price = -dy / plan.price_h * (high - low);
             state.remember();
             let mut moved = Vec::new();
-            for index in state.selected.clone() {
-                // A pixel is a fraction of a bar, and a bar is a step in
-                // time — measured from where each drawing starts, since
-                // the bars are not evenly spaced in time.
-                let Some(from_ts) = state.drawings.get(index).map(|d| d.from.ts) else { continue };
-                let at = index_of_ts(&state.bars, from_ts);
-                let by_ts = ts_at(&state.bars, at + dx / bar_w) - from_ts;
-                let Some(drawing) = state.drawings.get_mut(index) else { continue };
-                drawing.shift(by_ts, by_price);
+            // By columns, like the drag: a pixel is a fraction of a bar,
+            // and bars are evenly spaced on screen however unevenly they
+            // are spaced in time. Nudging by a span of time instead would
+            // change the shape of anything whose ends sit either side of a
+            // weekend.
+            let by_index = dx / bar_w;
+            let selected = state.selected.clone();
+            let State { bars, drawings, .. } = &mut *state;
+            for index in selected {
+                let Some(drawing) = drawings.get_mut(index) else { continue };
+                shift_by_columns(bars, drawing, by_index, by_price);
                 moved.push(drawing.clone());
             }
             moved
@@ -1854,15 +1906,34 @@ impl ChartView {
     fn commit_placing(&self) {
         let added = {
             let mut state = self.state.borrow_mut();
-            let Some(drawing) = state.placing.take() else { return };
+            let Some(mut drawing) = state.placing.take() else { return };
+            // The last corner of a path was only ever following the hand.
+            // Dropping it can leave too little to be a drawing — one press
+            // and Enter — and then there is nothing to commit.
+            if !drawing.finish_path() {
+                if !state.sticky {
+                    state.tool = None;
+                }
+                state.next_config = 1;
+                drop(state);
+                self.area.set_cursor_from_name(Some("default"));
+                self.redraw();
+                self.tool_changed();
+                return;
+            }
             state.remember();
             state.drawings.push(drawing.clone());
             state.selected = vec![state.drawings.len() - 1];
-            state.tool = None;
+            if !state.sticky {
+                state.tool = None;
+            }
             state.next_config = 1;
             drawing
         };
-        self.area.set_cursor_from_name(Some("default"));
+        self.area.set_cursor_from_name(Some(match self.armed().is_some() {
+            true => "crosshair",
+            false => "default",
+        }));
         self.redraw();
         self.tool_changed();
         self.tell(DrawingEvent::Added(added));
@@ -1888,7 +1959,9 @@ impl ChartView {
             state.remember();
             state.drawings.push(drawing.clone());
             state.selected = vec![state.drawings.len() - 1];
-            state.tool = None;
+            if !state.sticky {
+                state.tool = None;
+            }
             state.next_config = 1;
             (state.drawings.len() - 1, drawing)
         };
@@ -2608,7 +2681,10 @@ impl ChartView {
                     if let Some(anchor) = s.locate(w, h, x, y)
                         && let Some(placing) = s.placing.as_mut()
                     {
-                        placing.move_grip(Grip::To, anchor);
+                        match placing.kind.is_path() {
+                            true => placing.move_last_corner(anchor),
+                            false => placing.move_grip(Grip::To, anchor),
+                        }
                     }
                 }
             }
@@ -2785,25 +2861,60 @@ impl ChartView {
         let shift = shift_only || modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK);
         // A drawing being laid down takes the press before anything
         // else: the second press is the drawing's second anchor.
-        let finishing = {
+        // What this press means for a drawing already being laid down:
+        // nothing, because there is none; another corner, for a zig-zag; or
+        // the end of it, for every other kind.
+        enum Press {
+            Elsewhere,
+            Corner,
+            Finish,
+        }
+        let press = {
             let mut s = state.borrow_mut();
-            if s.placing.is_some() {
-                if let Some(anchor) = s.locate(width, height, x, y)
+            if s.placing.is_none() {
+                Press::Elsewhere
+            } else {
+                let anchor = s.locate(width, height, x, y);
+                let path = s.placing.as_ref().is_some_and(|d| d.kind.is_path());
+                if let Some(anchor) = anchor
                     && let Some(placing) = s.placing.as_mut()
                 {
-                    placing.move_grip(Grip::To, anchor);
+                    match path {
+                        // Another corner, and another following the hand.
+                        // A zig-zag ends when it is told to, not when the
+                        // second press lands.
+                        true => {
+                            placing.move_last_corner(anchor);
+                            placing.add_corner(anchor);
+                        }
+                        false => placing.move_grip(Grip::To, anchor),
+                    }
                 }
                 s.drag = None;
-                true
-            } else {
-                false
+                match path {
+                    true => Press::Corner,
+                    false => Press::Finish,
+                }
             }
         };
-        if finishing {
-            if let Some(view) = view.upgrade() {
-                view.commit_placing();
+        match press {
+            Press::Finish => {
+                if let Some(view) = view.upgrade() {
+                    view.commit_placing();
+                }
+                return;
             }
-            return;
+            // Handled, and nothing below applies — least of all the arm
+            // below, which would otherwise take this press as the start of
+            // a *new* zig-zag and throw away the one being drawn. That is
+            // exactly what it did: every click after the first put a fresh
+            // one-corner path in place of the run so far, so the segments
+            // vanished as they were made.
+            Press::Corner => {
+                area.queue_draw();
+                return;
+            }
+            Press::Elsewhere => {}
         }
         let mut s = state.borrow_mut();
         let was_auto = s.price_auto;
@@ -2841,6 +2952,12 @@ impl ChartView {
             }
             if s.tool.is_some() {
                 s.begin_placing(width, height, x, y);
+                // A zig-zag is laid down by pressing, a corner at a time,
+                // so the drag that would rubber-band a line out of this
+                // press is never started.
+                if s.placing.as_ref().is_some_and(|d| d.kind.is_path()) {
+                    s.drag = None;
+                }
                 return;
             }
             // A drawing under the hand: take hold of it. With Shift it
@@ -2932,7 +3049,10 @@ impl ChartView {
                     if let Some(anchor) = s.locate(width, height, x, y)
                         && let Some(placing) = s.placing.as_mut()
                     {
-                        placing.move_grip(Grip::To, anchor);
+                        match placing.kind.is_path() {
+                            true => placing.move_last_corner(anchor),
+                            false => placing.move_grip(Grip::To, anchor),
+                        }
                     }
                     if !moved && offset_x.hypot(offset_y) > 4.0 {
                         s.drag = Some(Drag::Place { moved: true });
@@ -3152,6 +3272,15 @@ impl ChartView {
         let view = Rc::downgrade(self);
         click.connect_pressed(move |_, presses, x, y| {
             if presses < 2 {
+                return;
+            }
+            // A zig-zag being laid down: the second click is the end of it.
+            // Before everything else, because while one is in hand that is
+            // the only thing a double-click can mean.
+            if state.borrow().placing.as_ref().is_some_and(|d| d.kind.is_path()) {
+                if let Some(view) = view.upgrade() {
+                    view.commit_placing();
+                }
                 return;
             }
             let region = region_at(x, y, area.width() as f64, area.height() as f64);
@@ -4449,26 +4578,32 @@ fn draw_drawing(
     let style = drawing.style(&state.configs);
     let colour = style.colour.hex(&state.theme);
     match drawing.kind {
-        DrawingKind::Line | DrawingKind::Horizontal | DrawingKind::Arrow => {
+        DrawingKind::Line | DrawingKind::Horizontal | DrawingKind::Arrow | DrawingKind::Zigzag => {
             colors::set_source(cr, &colour);
             cr.set_line_width(style.width);
             cr.set_line_cap(cairo::LineCap::Round);
-            // Pulled back under any head it wears. A round cap is a
+            // Every leg, which for all but the zig-zag is one. The ends are
+            // pulled back under any head they wear: a round cap is a
             // half-disc of the line's own radius centred on the end of the
-            // path, so a line drawn all the way to the tip puts half its
+            // path, so a leg drawn all the way to the tip puts half its
             // width *past* the tip — a stub poking out of the arrowhead,
-            // and the thicker the line the worse it looks. Ending the path
-            // half a width short lands the cap's far edge exactly on the
-            // tip, which is where the head's point is.
-            let (from, to) = headless_ends(projected, style);
-            cr.move_to(from.0, from.1);
-            cr.line_to(to.0, to.1);
-            let _ = cr.stroke();
-            if style.arrow.at_end() {
-                arrowhead(cr, projected.from, projected.to, style.width, style.head);
+            // and the thicker the line the worse it looks.
+            cr.set_line_join(cairo::LineJoin::Round);
+            let legs = projected.segments();
+            let last = legs.len().saturating_sub(1);
+            for (n, (a, b)) in legs.iter().enumerate() {
+                let (from, to) = headless_leg(*a, *b, style, n == 0, n == last);
+                cr.move_to(from.0, from.1);
+                cr.line_to(to.0, to.1);
             }
-            if style.arrow.at_start() {
-                arrowhead(cr, projected.to, projected.from, style.width, style.head);
+            let _ = cr.stroke();
+            if let (Some(first), Some((a, b))) = (legs.first(), legs.last()) {
+                if style.arrow.at_end() {
+                    arrowhead(cr, *a, *b, style.width, style.head);
+                }
+                if style.arrow.at_start() {
+                    arrowhead(cr, first.1, first.0, style.width, style.head);
+                }
             }
         }
         DrawingKind::Rect => {
@@ -4564,7 +4699,7 @@ fn draw_drawing(
             cr.set_dash(&[], 0.0);
         }
         for grip in drawing.grips() {
-            let Some((x, y)) = projected.grip(*grip) else { continue };
+            let Some((x, y)) = projected.grip(grip) else { continue };
             colors::set_source(cr, &state.theme.ui.background);
             cr.rectangle(
                 x - GRIP_HALF - 1.0,
@@ -4642,29 +4777,34 @@ fn draw_label(
     crate::ui::text::draw(cr, (x, y), &drawing.text, &style.text, at.alignment(), &ink, &ground);
 }
 
-/// The ends of the stroke itself: the drawing's own, each pulled in by half
-/// the line's width where a head is going to sit over it.
-fn headless_ends(
-    projected: &Projected,
+/// One leg of a stroke, with either end pulled in by half the line's width
+/// where a head is going to sit over it.
+///
+/// Only the outermost legs can wear one: a zig-zag's heads are at the ends
+/// of the whole run, not at every corner.
+fn headless_leg(
+    a: (f64, f64),
+    b: (f64, f64),
     style: &omacharts_engine::Style,
+    first: bool,
+    last: bool,
 ) -> ((f64, f64), (f64, f64)) {
-    let (dx, dy) = (projected.to.0 - projected.from.0, projected.to.1 - projected.from.1);
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
     let length = dx.hypot(dy);
     if length < 1.0 {
-        return (projected.from, projected.to);
+        return (a, b);
     }
-    let back = style.width / 2.0;
-    // Never more than the line has to give: a very short line with heads at
+    // Never more than the leg has to give: a very short one with heads at
     // both ends keeps a sliver rather than turning inside out.
-    let back = back.min(length / 2.0 - 0.5).max(0.0);
+    let back = (style.width / 2.0).min(length / 2.0 - 0.5).max(0.0);
     let (ux, uy) = (dx / length * back, dy / length * back);
-    let from = match style.arrow.at_start() {
-        true => (projected.from.0 + ux, projected.from.1 + uy),
-        false => projected.from,
+    let from = match first && style.arrow.at_start() {
+        true => (a.0 + ux, a.1 + uy),
+        false => a,
     };
-    let to = match style.arrow.at_end() {
-        true => (projected.to.0 - ux, projected.to.1 - uy),
-        false => projected.to,
+    let to = match last && style.arrow.at_end() {
+        true => (b.0 - ux, b.1 - uy),
+        false => b,
     };
     (from, to)
 }

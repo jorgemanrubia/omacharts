@@ -229,17 +229,12 @@ fn scales_group(window: &Rc<Window>) -> adw::PreferencesGroup {
 fn session_group(window: &Rc<Window>, store: &Rc<Store>) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     group.set_title("Session");
-    group.set_description(Some(
-        "Overnight trade is thin, and a few prints at 3am stretch the price scale \
-         enough to squash the session everyone actually traded.",
-    ));
 
     let names: Vec<&str> = Session::ALL.iter().map(|s| s.label()).collect();
     let session = window.session();
 
     let row = adw::ComboRow::new();
     row.set_title("Hours");
-    row.set_subtitle("Ignored for FX, crypto and foreign listings, which have no cash session.");
     row.set_model(Some(&gtk::StringList::new(&names)));
     row.set_selected(Session::ALL.iter().position(|s| *s == session).unwrap_or(0) as u32);
 
@@ -261,11 +256,6 @@ fn drawings_group(window: &Rc<Window>) -> adw::PreferencesGroup {
     use omacharts_engine::Sharing;
     let group = adw::PreferencesGroup::new();
     group.set_title("Drawings");
-    group.set_description(Some(
-        "A drawing is on every chart of its symbol in the same drawing group. The global \
-         group is every chart; a numbered group is a few; not sharing keeps what is drawn \
-         here on this chart.",
-    ));
     let all = Sharing::all();
     let names: Vec<String> = all.iter().map(|s| s.label()).collect();
     let names: Vec<&str> = names.iter().map(String::as_str).collect();

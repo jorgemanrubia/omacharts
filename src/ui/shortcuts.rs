@@ -74,6 +74,7 @@ pub const BINDINGS: &[Binding] = &[
     global("chart.draw-line", &["<Alt>l"]),
     global("chart.draw-hline", &["<Alt>h"]),
     global("chart.draw-arrow", &["<Alt>a"]),
+    global("chart.draw-zigzag", &["<Alt>z"]),
     global("chart.draw-rect", &["<Alt>r"]),
     global("chart.draw-ellipse", &["<Alt>c"]),
     global("chart.draw-text", &["<Alt>t"]),

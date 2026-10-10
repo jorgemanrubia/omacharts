@@ -77,14 +77,22 @@ pub struct DrawingBar {
     /// Set while the buttons are being shown a state, so their own signal
     /// does not read as a click.
     showing: std::cell::Cell<bool>,
+    /// Whether Ctrl was down on the press that is about to become a toggle.
+    ///
+    /// A toggle says which button was lit and nothing about the keyboard,
+    /// so the press is watched on the way down and what it saw is read a
+    /// moment later by the toggle it causes.
+    sticky_press: std::cell::Cell<bool>,
 }
 
 impl DrawingBar {
-    /// `on_arm` is told which tool was picked, or `None` for the pointer;
+    /// `on_arm` is told which tool was picked — `None` for the pointer —
+    /// and whether it should stay in hand after each drawing, which is what
+    /// Ctrl on the click asks for;
     /// `on_configure` which kind's configurations to open; `on_toggle` that
     /// the handle was clicked.
     pub fn new(
-        on_arm: impl Fn(Option<Kind>) + Clone + 'static,
+        on_arm: impl Fn(Option<Kind>, bool) + Clone + 'static,
         on_configure: impl Fn(Kind) + Clone + 'static,
         on_toggle: impl Fn() + 'static,
     ) -> Rc<DrawingBar> {
@@ -127,19 +135,29 @@ impl DrawingBar {
             button.add_css_class("flat");
             button.set_child(Some(&stack));
             button.set_size_request(TOOL, TOOL);
-            button.set_tooltip_text(Some(match kind {
+            // Every tool says the one thing that is true of all of them, at
+            // the end of what is true of it alone.
+            let held = match kind {
+                None => "",
+                Some(_) => "\nCtrl+click to keep it in hand",
+            };
+            let about = match kind {
                 None => "Pointer (Esc): select, move and resize drawings",
                 Some(Kind::Line) => "Line (Alt+L): click where it starts, then where it ends",
                 Some(Kind::Horizontal) => {
                     "Horizontal line (Alt+H): a level, held flat however you drag it"
                 }
                 Some(Kind::Arrow) => "Arrow (Alt+A): a line that points where it ends",
+                Some(Kind::Zigzag) => {
+                    "Zig-zag (Alt+Z): click each corner; double-click or Enter ends it, Esc drops it"
+                }
                 Some(Kind::Rect) => "Rectangle (Alt+R): press at one corner, release at the other",
                 Some(Kind::Ellipse) => {
                     "Circle (Alt+C): press and drag to any shape, round or wide"
                 }
                 Some(Kind::Text) => "Text (Alt+T): click where the words go, then type",
-            }));
+            };
+            button.set_tooltip_text(Some(&format!("{about}{held}")));
             // One lit at a time, and a click on the lit one changes nothing:
             // a group of toggles is a set of radio buttons.
             if let Some((_, first, _)) = buttons.first() {
@@ -178,6 +196,7 @@ impl DrawingBar {
             buttons,
             badges,
             showing: std::cell::Cell::new(false),
+            sticky_press: std::cell::Cell::new(false),
         });
         bar.root.set_transition_type(gtk::RevealerTransitionType::SlideRight);
         bar.root.set_transition_duration(160);
@@ -188,6 +207,20 @@ impl DrawingBar {
             let kind = *kind;
             let on_arm = on_arm.clone();
             let weak = Rc::downgrade(&bar);
+            {
+                // On the way down, before the toggle it causes.
+                let press = gtk::GestureClick::new();
+                press.set_propagation_phase(gtk::PropagationPhase::Capture);
+                let weak = Rc::downgrade(&bar);
+                press.connect_pressed(move |gesture, _, _, _| {
+                    let Some(bar) = weak.upgrade() else { return };
+                    let ctrl = gesture
+                        .current_event_state()
+                        .contains(gtk::gdk::ModifierType::CONTROL_MASK);
+                    bar.sticky_press.set(ctrl);
+                });
+                button.add_controller(press);
+            }
             button.connect_toggled(move |button| {
                 let Some(bar) = weak.upgrade() else { return };
                 // The group lights one and dims the rest; only the one
@@ -195,7 +228,7 @@ impl DrawingBar {
                 if bar.showing.get() || !button.is_active() {
                     return;
                 }
-                on_arm(kind);
+                on_arm(kind, bar.sticky_press.take());
             });
         }
 
@@ -210,7 +243,7 @@ impl DrawingBar {
 
         bar.paint();
         // The pointer, until a tool is picked.
-        bar.show_armed(None, 1);
+        bar.show_armed(None, 1, false);
         bar
     }
 
@@ -218,13 +251,19 @@ impl DrawingBar {
     /// none — with the configuration it will draw in on it, when that is
     /// not the first: the usual one needs no saying, and a badge that is
     /// always there is one nobody reads.
-    pub fn show_armed(&self, armed: Option<Kind>, config: u8) {
+    pub fn show_armed(&self, armed: Option<Kind>, config: u8, sticky: bool) {
         self.showing.set(true);
         for ((kind, button, _), badge) in self.buttons.iter().zip(&self.badges) {
             let lit = armed == *kind;
             button.set_active(lit);
             badge.set_text(&format!("{config}"));
             badge.set_visible(lit && kind.is_some() && config != 1);
+            // A tool that stays in hand says so, or the chart simply goes
+            // on drawing and nobody knows why.
+            match lit && sticky {
+                true => button.add_css_class("drawing-tool-stuck"),
+                false => button.remove_css_class("drawing-tool-stuck"),
+            }
         }
         self.showing.set(false);
     }
@@ -356,6 +395,37 @@ impl DrawingBar {
                         let y = (h / 2.0).round() + 0.5;
                         cr.move_to(4.5, y);
                         cr.line_to(w - 4.5, y);
+                        let _ = cr.stroke();
+                    }
+                    // Three legs climbing, and a head on the last. Four
+                    // made an M — too many turns at this size to read as
+                    // anything but a letter — and swinging about one level
+                    // made it a symbol rather than a picture of what the
+                    // tool draws. A run of swings on a chart goes
+                    // somewhere; this one goes up, and says so.
+                    Some(Kind::Zigzag) => {
+                        let (x0, x1) = (4.5, w - 5.5);
+                        let step = (x1 - x0) / 3.0;
+                        // Each swing a little higher than the last: the
+                        // highs climb, the lows climb with them.
+                        let corners = [
+                            (x0, h - 5.0),
+                            (x0 + step, h - 12.0),
+                            (x0 + step * 2.0, h - 9.0),
+                            (x1, 5.0),
+                        ];
+                        cr.move_to(corners[0].0, corners[0].1);
+                        for (x, y) in &corners[1..] {
+                            cr.line_to(*x, *y);
+                        }
+                        let _ = cr.stroke();
+                        let (tail, tip) = (corners[2], corners[3]);
+                        let angle = (tip.1 - tail.1).atan2(tip.0 - tail.0);
+                        for side in [-1.0, 1.0] {
+                            let away = angle + std::f64::consts::PI + side * 0.45;
+                            cr.move_to(tip.0, tip.1);
+                            cr.line_to(tip.0 + 6.0 * away.cos(), tip.1 + 6.0 * away.sin());
+                        }
                         let _ = cr.stroke();
                     }
                     // The line, with the open head it is drawn with.

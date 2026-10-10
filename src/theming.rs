@@ -443,6 +443,9 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
 .drawing-tool { padding: 2px; border-radius: 8px; opacity: 0.8; }
 .drawing-tool:hover { opacity: 1; }
 .drawing-tool:checked { opacity: 1; background: alpha(@accent_bg_color, 0.25); box-shadow: inset 0 0 0 1px @accent_bg_color; }
+/* A tool that stays in hand: the same lit button, held in a solid ring. The
+   chart otherwise goes on drawing and nothing says why. */
+.drawing-tool.drawing-tool-stuck:checked { background: alpha(@accent_bg_color, 0.38); box-shadow: inset 0 0 0 2px @accent_bg_color; }
 .drawing-config-badge { font-size: 9px; font-weight: 700; min-width: 12px; min-height: 12px; padding: 0 2px; border-radius: 6px; background: @accent_bg_color; color: @accent_fg_color; margin: 0 -4px -4px 0; }
 .drawing-preview { border-radius: 6px; }
 .drawing-config-edited { font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 9px; background: @accent_bg_color; color: @accent_fg_color; }

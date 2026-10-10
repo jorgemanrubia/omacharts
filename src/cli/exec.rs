@@ -1949,6 +1949,8 @@ fn drawing_json(d: &omacharts_engine::Drawing, configs: &omacharts_engine::Confi
         "from": {"ts": d.from.ts, "when": spell_moment(d.from.ts), "price": d.from.price},
         "to": {"ts": d.to.ts, "when": spell_moment(d.to.ts), "price": d.to.price},
         "config": d.config,
+        // Where a look of its own came from, for a drawing that has one.
+        "started_from": d.started_from,
         "style": style_json(d.style(configs)),
         "scope": d.scope.key(),
         "order": d.order,
@@ -2029,7 +2031,7 @@ fn shorten(text: &str, most: usize) -> String {
 fn describe_style(kind: omacharts_engine::DrawingKind, style: &omacharts_engine::Style) -> String {
     use omacharts_engine::drawings::{Arrow, ArrowHead, Kind};
     match kind {
-        Kind::Line | Kind::Horizontal | Kind::Arrow => {
+        Kind::Line | Kind::Horizontal | Kind::Arrow | Kind::Zigzag => {
             let arrow = match (style.arrow, style.head) {
                 (Arrow::None, _) => String::new(),
                 (arrow, ArrowHead::Filled) => format!(", arrow {}", arrow.label().to_lowercase()),

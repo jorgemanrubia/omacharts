@@ -382,6 +382,11 @@ pub enum Kind {
     /// off a chart is a number, and a support line that came out a tenth of
     /// a percent out of true is a lie you cannot see.
     Horizontal,
+    /// A run of joined segments, with as many corners as the hand puts in.
+    /// The only kind that is not two anchors: its points are its own, and
+    /// `from` and `to` are kept as the first and the last so that
+    /// everything which only wants the span of a drawing goes on working.
+    Zigzag,
     /// The same line, pointing: an arrowhead where it ends. Its own kind
     /// rather than a line that happens to be configured with one, so that
     /// the tool is a tool and its nine configurations are about arrows —
@@ -405,10 +410,11 @@ impl Kind {
     /// Every kind, in the order the tools are offered: the plain line
     /// first, then the two that are a line with one thing added, then the
     /// shapes, then the words.
-    pub const ALL: [Kind; 6] = [
+    pub const ALL: [Kind; 7] = [
         Kind::Line,
         Kind::Horizontal,
         Kind::Arrow,
+        Kind::Zigzag,
         Kind::Rect,
         Kind::Ellipse,
         Kind::Text,
@@ -416,13 +422,17 @@ impl Kind {
 
     /// The kinds that are a shape, which is every kind that can carry text
     /// of its own.
-    pub const FIGURES: [Kind; 5] =
-        [Kind::Line, Kind::Horizontal, Kind::Arrow, Kind::Rect, Kind::Ellipse];
+    pub const FIGURES: [Kind; 6] =
+        [Kind::Line, Kind::Horizontal, Kind::Arrow, Kind::Zigzag, Kind::Rect, Kind::Ellipse];
 
-    /// Whether this kind is a stroke between two anchors rather than a
-    /// shape with an inside.
+    /// Whether this kind is a stroke rather than a shape with an inside.
     pub fn is_line(self) -> bool {
-        matches!(self, Kind::Line | Kind::Horizontal | Kind::Arrow)
+        matches!(self, Kind::Line | Kind::Horizontal | Kind::Arrow | Kind::Zigzag)
+    }
+
+    /// Whether it is laid down a point at a time rather than in one gesture.
+    pub fn is_path(self) -> bool {
+        self == Kind::Zigzag
     }
 
     pub fn label(self) -> &'static str {
@@ -430,6 +440,7 @@ impl Kind {
             Kind::Line => "Line",
             Kind::Horizontal => "Horizontal line",
             Kind::Arrow => "Arrow",
+            Kind::Zigzag => "Zig-zag",
             Kind::Rect => "Rectangle",
             Kind::Ellipse => "Circle",
             Kind::Text => "Text",
@@ -441,6 +452,7 @@ impl Kind {
             Kind::Line => "line",
             Kind::Horizontal => "hline",
             Kind::Arrow => "arrow",
+            Kind::Zigzag => "zigzag",
             Kind::Rect => "rect",
             Kind::Ellipse => "ellipse",
             Kind::Text => "text",
@@ -940,6 +952,15 @@ impl Style {
         Style::line(preset)
     }
 
+    /// A zig-zag is a line that turns corners, and it points: a run of
+    /// swings is read in the direction it was drawn, so the head says which
+    /// way that was. Every arrow setting is still a setting — it is the
+    /// same `arrow` and `head` every stroke has — this is only where it
+    /// starts.
+    pub fn zigzag(preset: Preset) -> Style {
+        Style::arrow(preset)
+    }
+
     /// An ellipse starts from exactly what a box does. The two are the same
     /// drawing with a different outline, they share the nine presets, and a
     /// preset that was measured over every theme as a fill under a hairline
@@ -964,6 +985,7 @@ impl Style {
             Kind::Line => Style::line(preset),
             Kind::Horizontal => Style::horizontal(preset),
             Kind::Arrow => Style::arrow(preset),
+            Kind::Zigzag => Style::zigzag(preset),
             Kind::Rect => Style::rect(preset),
             Kind::Ellipse => Style::ellipse(preset),
             Kind::Text => Style::text(preset),
@@ -1009,6 +1031,8 @@ pub struct Configurations {
     pub arrow: Vec<Style>,
     #[serde(default)]
     pub horizontal: Vec<Style>,
+    #[serde(default)]
+    pub zigzag: Vec<Style>,
 }
 
 /// How many configurations each kind has.
@@ -1020,6 +1044,7 @@ impl Default for Configurations {
         Configurations {
             line: nine(Style::line),
             horizontal: nine(Style::horizontal),
+            zigzag: nine(Style::zigzag),
             arrow: nine(Style::arrow),
             rect: nine(Style::rect),
             ellipse: nine(Style::ellipse),
@@ -1079,6 +1104,7 @@ impl Configurations {
         match kind {
             Kind::Line => &self.line,
             Kind::Horizontal => &self.horizontal,
+            Kind::Zigzag => &self.zigzag,
             Kind::Arrow => &self.arrow,
             Kind::Rect => &self.rect,
             Kind::Ellipse => &self.ellipse,
@@ -1090,6 +1116,7 @@ impl Configurations {
         match kind {
             Kind::Line => &mut self.line,
             Kind::Horizontal => &mut self.horizontal,
+            Kind::Zigzag => &mut self.zigzag,
             Kind::Arrow => &mut self.arrow,
             Kind::Rect => &mut self.rect,
             Kind::Ellipse => &mut self.ellipse,
@@ -1272,6 +1299,25 @@ pub struct Drawing {
     /// The look set by hand. Ignored while `config` is some.
     #[serde(default)]
     pub style: Option<Style>,
+    /// The corners of a zig-zag, first to last, and empty for every other
+    /// kind.
+    ///
+    /// `from` and `to` are kept as the first and the last of these, so a
+    /// zig-zag still answers every question that is about the span of a
+    /// drawing — where it starts, where it ends, how to shift it — without
+    /// each of those having to know this field exists.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub points: Vec<Anchor>,
+    /// The configuration this was following when a property was first set
+    /// by hand, for a drawing that has its own look now.
+    ///
+    /// Kept because losing it loses the one thing that makes "Custom"
+    /// legible: a drawing whose look is its own came from somewhere, and
+    /// *where* is what somebody needs to know both to put it back and to
+    /// decide which of the nine to write it over. Nothing reads it to draw
+    /// anything — it is a note about where this look started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_from: Option<u8>,
     #[serde(default)]
     pub scope: Scope,
     /// Where it sits among the others: higher is nearer the front. All of
@@ -1306,9 +1352,64 @@ impl Drawing {
             to,
             config: Some(1),
             style: None,
+            points: Vec::new(),
+            started_from: None,
             scope: Scope::Global,
             order: 0,
             text: Text::default(),
+        }
+    }
+
+    /// A zig-zag beginning at one point, with a second following the hand.
+    pub fn zigzag_from(at: Anchor) -> Drawing {
+        let mut drawing = Drawing::new(Kind::Zigzag, at, at);
+        drawing.points = vec![at, at];
+        drawing
+    }
+
+    /// The corners it is drawn through: its own for a zig-zag, its two
+    /// anchors for everything else.
+    pub fn corners(&self) -> Vec<Anchor> {
+        match self.kind.is_path() && self.points.len() >= 2 {
+            true => self.points.clone(),
+            false => vec![self.from, self.to],
+        }
+    }
+
+    /// Put another corner on the end, for the next click of a zig-zag.
+    pub fn add_corner(&mut self, at: Anchor) {
+        if !self.kind.is_path() {
+            return;
+        }
+        self.points.push(at);
+        self.settle();
+    }
+
+    /// Move the corner the hand is on — the last, while one is being laid
+    /// down.
+    pub fn move_last_corner(&mut self, at: Anchor) {
+        if let Some(last) = self.points.last_mut() {
+            *last = at;
+        }
+        self.settle();
+    }
+
+    /// Drop the corner that was only following the hand, at the end of
+    /// laying one down. Says whether what is left is still a drawing.
+    pub fn finish_path(&mut self) -> bool {
+        if !self.kind.is_path() {
+            return true;
+        }
+        self.points.pop();
+        self.settle();
+        self.points.len() >= 2
+    }
+
+    /// Keep `from` and `to` on the ends of the path.
+    fn settle(&mut self) {
+        if let (Some(first), Some(last)) = (self.points.first(), self.points.last()) {
+            self.from = *first;
+            self.to = *last;
         }
     }
 
@@ -1350,6 +1451,12 @@ impl Drawing {
     pub fn edit_style(&mut self, configs: &Configurations, edit: impl FnOnce(&mut Style)) {
         let mut own = self.style(configs).clone();
         edit(&mut own);
+        // Only on the way out of following one. A drawing already wearing
+        // its own look keeps the number it originally left, however many
+        // times it is edited after that.
+        if let Some(following) = self.config {
+            self.started_from = Some(following);
+        }
         self.config = None;
         self.style = Some(own);
     }
@@ -1358,6 +1465,8 @@ impl Drawing {
     pub fn follow(&mut self, n: u8) {
         self.config = Some(n.clamp(1, CONFIGURATIONS));
         self.style = None;
+        // Following again, so there is no look of its own to have come from.
+        self.started_from = None;
     }
 
     /// Whether this drawing lives in the store (shared) rather than with a
@@ -1373,6 +1482,7 @@ impl Drawing {
             Grip::From => Some(&mut self.from),
             Grip::To => Some(&mut self.to),
             Grip::FromTo | Grip::ToFrom | Grip::Body => None,
+            Grip::Corner(n) => self.points.get_mut(n),
         }
     }
 
@@ -1400,6 +1510,13 @@ impl Drawing {
             self.to.price = at.price;
             return;
         }
+        if let Grip::Corner(n) = grip {
+            if let Some(corner) = self.points.get_mut(n) {
+                *corner = at;
+            }
+            self.settle();
+            return;
+        }
         match grip {
             Grip::From => self.from = at,
             Grip::To => self.to = at,
@@ -1411,7 +1528,8 @@ impl Drawing {
                 self.to.ts = at.ts;
                 self.from.price = at.price;
             }
-            Grip::Body => {}
+            // Answered above, before the kinds that have fixed ends.
+            Grip::Corner(_) | Grip::Body => {}
         }
     }
 
@@ -1421,10 +1539,23 @@ impl Drawing {
             anchor.ts += by_ts;
             anchor.price += by_price;
         }
+        for anchor in self.points.iter_mut() {
+            anchor.ts += by_ts;
+            anchor.price += by_price;
+        }
     }
 
-    /// The grips this kind of drawing wears when selected.
-    pub fn grips(&self) -> &'static [Grip] {
+    /// The grips this drawing wears when selected.
+    pub fn grips(&self) -> Vec<Grip> {
+        // One per corner, however many there are: a zig-zag with no grip on
+        // the corner you want to move is a zig-zag you have to redraw.
+        if self.kind.is_path() {
+            return (0..self.points.len()).map(Grip::Corner).collect();
+        }
+        self.fixed_grips().to_vec()
+    }
+
+    fn fixed_grips(&self) -> &'static [Grip] {
         match self.kind {
             Kind::Line | Kind::Horizontal | Kind::Arrow => &[Grip::From, Grip::To],
             // The ellipse is dragged by the corners of the box it is drawn
@@ -1435,6 +1566,8 @@ impl Drawing {
             // its properties, and a grip on its corner would promise a
             // stretch that is not on offer.
             Kind::Text => &[],
+            // Answered above, where the number of them is known.
+            Kind::Zigzag => &[],
         }
     }
 }
@@ -1448,6 +1581,8 @@ pub enum Grip {
     FromTo,
     /// And the one at `to`'s moment and `from`'s price.
     ToFrom,
+    /// One corner of a zig-zag, by its place in the run.
+    Corner(usize),
     /// The line itself, or the inside of the box: drag to move the whole
     /// thing.
     Body,
@@ -1463,11 +1598,15 @@ pub const GRIP_REACH: f64 = 8.0;
 /// The chart does the projecting, since only it knows where a moment and a
 /// price are on screen; everything about hitting the result is geometry and
 /// lives here, where it can be tested without a window.
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug)]
 pub struct Projected {
     pub kind: Kind,
     pub from: (f64, f64),
     pub to: (f64, f64),
+    /// A zig-zag's corners in pixels, and empty for every other kind, which
+    /// is why this is a plain list rather than an option: "no corners of its
+    /// own" and "two anchors" are the same thing to everything below.
+    pub corners: Vec<(f64, f64)>,
     /// The box a drawing's words fill, in pixels, for the kinds whose size
     /// is their text: measured by the chart, which is the only place that
     /// can measure text, and `None` until it has.
@@ -1480,7 +1619,16 @@ pub struct Projected {
 
 impl Projected {
     pub fn new(kind: Kind, from: (f64, f64), to: (f64, f64)) -> Projected {
-        Projected { kind, from, to, words: None }
+        Projected { kind, from, to, corners: Vec::new(), words: None }
+    }
+
+    /// A projection through a run of corners: the first and the last are
+    /// also its two ends, so everything that only wants those goes on
+    /// working.
+    pub fn through(kind: Kind, corners: Vec<(f64, f64)>) -> Projected {
+        let from = corners.first().copied().unwrap_or((0.0, 0.0));
+        let to = corners.last().copied().unwrap_or(from);
+        Projected { kind, from, to, corners, words: None }
     }
 
     /// The same projection, told where its words landed.
@@ -1488,8 +1636,19 @@ impl Projected {
         Projected { words: Some(words), ..self }
     }
 
+    /// The segments it is drawn as, end to end.
+    pub fn segments(&self) -> Vec<((f64, f64), (f64, f64))> {
+        match self.corners.len() >= 2 {
+            true => self.corners.windows(2).map(|pair| (pair[0], pair[1])).collect(),
+            false => vec![(self.from, self.to)],
+        }
+    }
+
     /// Where a grip is on screen.
     pub fn grip(&self, grip: Grip) -> Option<(f64, f64)> {
+        if let Grip::Corner(n) = grip {
+            return self.corners.get(n).copied();
+        }
         match (self.kind, grip) {
             (Kind::Text, _) => None,
             (_, Grip::From) => Some(self.from),
@@ -1503,7 +1662,8 @@ impl Projected {
     /// What the pointer at (`x`, `y`) is on, if anything. Grips win over the
     /// body, because a grip sits on the body and is the harder target.
     pub fn hit(&self, x: f64, y: f64) -> Option<Grip> {
-        for grip in [Grip::From, Grip::To, Grip::FromTo, Grip::ToFrom] {
+        let corners = (0..self.corners.len()).map(Grip::Corner);
+        for grip in [Grip::From, Grip::To, Grip::FromTo, Grip::ToFrom].into_iter().chain(corners) {
             if let Some(at) = self.grip(grip)
                 && distance(at, (x, y)) <= GRIP_REACH
             {
@@ -1523,9 +1683,10 @@ impl Projected {
             // Every kind that is a stroke is picked the same way: near the
             // segment. What differs between them is what is drawn on it, not
             // where it is.
-            Kind::Line | Kind::Horizontal | Kind::Arrow => {
-                distance_to_segment((x, y), self.from, self.to) <= reach
-            }
+            Kind::Line | Kind::Horizontal | Kind::Arrow | Kind::Zigzag => self
+                .segments()
+                .iter()
+                .any(|(a, b)| distance_to_segment((x, y), *a, *b) <= reach),
             Kind::Rect => {
                 let (left, right) = ordered(self.from.0, self.to.0);
                 let (top, bottom) = ordered(self.from.1, self.to.1);
@@ -1560,9 +1721,10 @@ impl Projected {
             return true;
         }
         match self.kind {
-            Kind::Line | Kind::Horizontal | Kind::Arrow => {
-                segment_meets_box(self.from, self.to, left, top, right, bottom)
-            }
+            Kind::Line | Kind::Horizontal | Kind::Arrow | Kind::Zigzag => self
+                .segments()
+                .iter()
+                .any(|(a, b)| segment_meets_box(*a, *b, left, top, right, bottom)),
             // The box the shape fills. A dragged selection is a rough
             // gesture over a region, not a click: catching an ellipse whose
             // bounding box the hand swept is what the hand meant.
@@ -1578,8 +1740,18 @@ impl Projected {
         if self.kind.is_text() {
             return self.words.unwrap_or((self.from.0, self.from.1, 0.0, 0.0));
         }
-        let (left, right) = ordered(self.from.0, self.to.0);
-        let (top, bottom) = ordered(self.from.1, self.to.1);
+        // Every corner, not only the ends: a zig-zag's box is the box round
+        // all of it, which is what a label on one is placed against.
+        let mut left = self.from.0.min(self.to.0);
+        let mut right = self.from.0.max(self.to.0);
+        let mut top = self.from.1.min(self.to.1);
+        let mut bottom = self.from.1.max(self.to.1);
+        for (x, y) in &self.corners {
+            left = left.min(*x);
+            right = right.max(*x);
+            top = top.min(*y);
+            bottom = bottom.max(*y);
+        }
         (left, top, right - left, bottom - top)
     }
 }
@@ -2479,7 +2651,7 @@ mod stroke_tests {
         assert_eq!(Style { arrow: Arrow::None, head: ArrowHead::Filled, ..arrow.clone() }, Style::line(Preset::Blue));
 
         let drawing = Drawing::new(Kind::Arrow, Anchor::new(0, 1.0), Anchor::new(10, 2.0));
-        assert_eq!(drawing.grips(), &[Grip::From, Grip::To]);
+        assert_eq!(drawing.grips(), vec![Grip::From, Grip::To]);
         let projected = Projected::new(Kind::Arrow, (0.0, 0.0), (100.0, 100.0));
         assert_eq!(projected.hit(50.0, 50.0), Some(Grip::Body));
         assert_eq!(projected.hit(10.0, 90.0), None);
@@ -2489,7 +2661,8 @@ mod stroke_tests {
     #[test]
     fn the_strokes_know_they_are_strokes() {
         for kind in Kind::ALL {
-            let stroke = matches!(kind, Kind::Line | Kind::Horizontal | Kind::Arrow);
+            let stroke =
+                matches!(kind, Kind::Line | Kind::Horizontal | Kind::Arrow | Kind::Zigzag);
             assert_eq!(kind.is_line(), stroke, "{}", kind.key());
             assert!(!(kind.is_line() && kind.is_bounded()), "{}", kind.key());
         }
@@ -2507,5 +2680,162 @@ mod stroke_tests {
         assert_eq!(line.hit(190.0, 48.0), None, "beside the words is not on them");
         // And a box dragged over only the words takes it.
         assert!(line.touches((70.0, 30.0, 20.0, 20.0)));
+    }
+}
+
+#[cfg(test)]
+mod started_from_tests {
+    use super::*;
+
+    fn amber_box() -> (Configurations, Drawing) {
+        let configs = Configurations::default();
+        let mut drawing = Drawing::new(Kind::Rect, Anchor::new(0, 1.0), Anchor::new(10, 2.0));
+        drawing.follow(4);
+        (configs, drawing)
+    }
+
+    /// A drawing that leaves its configuration remembers which one it left.
+    #[test]
+    fn a_custom_look_remembers_where_it_started() {
+        let (configs, mut drawing) = amber_box();
+        assert_eq!(drawing.started_from, None, "a drawing that follows one has not left one");
+        drawing.edit_style(&configs, |style| style.width = 3.0);
+        assert_eq!(drawing.config, None);
+        assert_eq!(drawing.started_from, Some(4));
+    }
+
+    /// And goes on remembering the one it left, not the last edit.
+    #[test]
+    fn editing_again_does_not_move_where_it_started() {
+        let (configs, mut drawing) = amber_box();
+        drawing.edit_style(&configs, |style| style.width = 3.0);
+        drawing.edit_style(&configs, |style| style.width = 5.0);
+        drawing.edit_style(&configs, |style| style.alpha = 0.5);
+        assert_eq!(drawing.started_from, Some(4));
+    }
+
+    /// Following one again is a fresh start: there is no look of its own
+    /// left to have come from.
+    #[test]
+    fn following_again_forgets_it() {
+        let (configs, mut drawing) = amber_box();
+        drawing.edit_style(&configs, |style| style.width = 3.0);
+        drawing.follow(7);
+        assert_eq!(drawing.started_from, None);
+        drawing.edit_style(&configs, |style| style.width = 3.0);
+        assert_eq!(drawing.started_from, Some(7));
+    }
+
+    /// It survives being written down, and costs nothing on a drawing that
+    /// never left a configuration.
+    #[test]
+    fn it_round_trips_and_is_not_written_when_there_is_none() {
+        let (configs, mut drawing) = amber_box();
+        let json = serde_json::to_string(&drawing).unwrap();
+        assert!(!json.contains("started_from"), "{json}");
+        drawing.edit_style(&configs, |style| style.width = 3.0);
+        let json = serde_json::to_string(&drawing).unwrap();
+        assert!(json.contains("started_from"), "{json}");
+        assert_eq!(serde_json::from_str::<Drawing>(&json).unwrap(), drawing);
+    }
+}
+
+#[cfg(test)]
+mod zigzag_tests {
+    use super::*;
+
+    fn at(ts: i64, price: f64) -> Anchor {
+        Anchor::new(ts, price)
+    }
+
+    /// The gesture, as the chart performs it: a press starts it, every
+    /// press after that pins the corner the hand is on and starts another
+    /// following it, and finishing drops the one still following.
+    fn drawn_through(corners: &[Anchor]) -> Drawing {
+        let mut path = Drawing::zigzag_from(corners[0]);
+        for corner in &corners[1..] {
+            path.move_last_corner(*corner);
+            path.add_corner(*corner);
+        }
+        path.finish_path();
+        path
+    }
+
+    /// Laid down a corner at a time: the last one follows the hand until
+    /// the next click pins it.
+    #[test]
+    fn a_zigzag_grows_a_corner_at_a_time() {
+        let mut path = Drawing::zigzag_from(at(0, 100.0));
+        assert_eq!(path.points.len(), 2, "it starts with the corner and the one following");
+        path.move_last_corner(at(5, 120.0));
+        path.add_corner(at(5, 120.0));
+        path.move_last_corner(at(9, 90.0));
+        assert_eq!(path.points.len(), 3);
+        // The ends follow the path, so everything that wants a span works.
+        assert_eq!(path.from, at(0, 100.0));
+        assert_eq!(path.to, at(9, 90.0), "the end is the corner under the hand");
+    }
+
+    /// Finishing drops the corner that was only following the hand, and
+    /// says whether what is left is a drawing at all.
+    #[test]
+    fn finishing_drops_the_corner_under_the_hand() {
+        let path = drawn_through(&[at(0, 100.0), at(5, 120.0)]);
+        assert_eq!(path.points, vec![at(0, 100.0), at(5, 120.0)]);
+        assert_eq!(path.to, at(5, 120.0));
+
+        // One click and nothing else is not: the second corner was never
+        // anywhere but under the hand.
+        let mut barely = Drawing::zigzag_from(at(0, 100.0));
+        assert!(!barely.finish_path());
+    }
+
+    /// A grip on every corner, and moving one moves only that one.
+    #[test]
+    fn every_corner_has_a_grip_of_its_own() {
+        let mut path = drawn_through(&[at(0, 100.0), at(5, 120.0), at(9, 90.0)]);
+        assert_eq!(path.grips(), vec![Grip::Corner(0), Grip::Corner(1), Grip::Corner(2)]);
+        path.move_grip(Grip::Corner(1), at(6, 130.0));
+        assert_eq!(path.points[1], at(6, 130.0));
+        assert_eq!(path.points[0], at(0, 100.0));
+        // Moving an end carries the drawing's own end with it.
+        path.move_grip(Grip::Corner(0), at(-2, 95.0));
+        assert_eq!(path.from, at(-2, 95.0));
+    }
+
+    /// Picked anywhere along it, not only on the straight line between its
+    /// ends — which for a zig-zag passes through nothing.
+    #[test]
+    fn a_zigzag_is_picked_on_any_of_its_segments() {
+        let path = Projected::through(
+            Kind::Zigzag,
+            vec![(0.0, 0.0), (50.0, 100.0), (100.0, 0.0)],
+        );
+        assert_eq!(path.hit(25.0, 50.0), Some(Grip::Body), "the first leg missed");
+        assert_eq!(path.hit(75.0, 50.0), Some(Grip::Body), "the second leg missed");
+        // The straight line between the two ends runs along y = 0, where
+        // there is nothing drawn but the ends themselves.
+        assert_eq!(path.hit(50.0, 2.0), None, "it was picked where nothing is drawn");
+        // Its box is the box round all of it, not round its ends.
+        assert_eq!(path.bounds(), (0.0, 0.0, 100.0, 100.0));
+        // And a box over the peak takes it.
+        assert!(path.touches((40.0, 80.0, 20.0, 20.0)));
+    }
+
+    /// The whole of it moves together.
+    #[test]
+    fn shifting_moves_every_corner() {
+        let mut path = drawn_through(&[at(0, 100.0), at(5, 120.0)]);
+        path.shift(10, -5.0);
+        assert_eq!(path.points, vec![at(10, 95.0), at(15, 115.0)]);
+        assert_eq!(path.from, at(10, 95.0));
+    }
+
+    /// It points where it was drawn, out of the box.
+    #[test]
+    fn a_zigzag_ships_pointing() {
+        let style = Style::zigzag(Preset::Blue);
+        assert_eq!(style.arrow, Arrow::End);
+        assert_eq!(style.head, ArrowHead::ALL[1]);
     }
 }

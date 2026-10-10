@@ -221,6 +221,8 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Alt+L", "Draw a line: click where it starts, then where it ends"),
             ("Alt+H", "Draw a horizontal line: a level, held flat"),
             ("Alt+A", "Draw an arrow"),
+            ("Alt+Z", "Draw a zig-zag: click each corner, double-click or Enter to end it"),
+            ("Ctrl+click a tool", "Keep it in hand for drawing after drawing; Esc puts it down"),
             ("Alt+R", "Draw a rectangle over a run of bars"),
             ("Alt+C", "Draw a circle, dragged to any shape"),
             ("Alt+T", "Write on the chart: click, then type"),
@@ -1791,9 +1793,9 @@ impl Window {
         let bar = crate::ui::drawing_bar::DrawingBar::new(
             {
                 let this = this.clone();
-                move |kind| {
+                move |kind, sticky| {
                     let pane = this.focused_pane();
-                    pane.view.arm(kind);
+                    pane.view.arm_sticky(kind, sticky);
                     pane.view.area.grab_focus();
                     this.sync_drawing_bar();
                 }
@@ -6297,7 +6299,7 @@ impl Window {
     fn sync_drawing_bar(&self) {
         if let Some(bar) = self.drawing_bar.borrow().as_ref() {
             let view = &self.focused_pane().view;
-            bar.show_armed(view.armed(), view.next_config());
+            bar.show_armed(view.armed(), view.next_config(), view.is_sticky());
         }
     }
 
@@ -6820,6 +6822,13 @@ impl Window {
             this.arm_drawing(omacharts_engine::DrawingKind::Horizontal)
         });
         actions.add_action(&draw_hline);
+
+        let draw_zigzag = gio::SimpleAction::new("draw-zigzag", None);
+        let this = self.clone();
+        draw_zigzag.connect_activate(move |_, _| {
+            this.arm_drawing(omacharts_engine::DrawingKind::Zigzag)
+        });
+        actions.add_action(&draw_zigzag);
 
         let draw_arrow = gio::SimpleAction::new("draw-arrow", None);
         let this = self.clone();

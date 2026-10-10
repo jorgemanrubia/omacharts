@@ -234,6 +234,13 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
                 }
                 None => {
                     label.set_text("Custom");
+                    // The pill stays one word — it has to read at a glance
+                    // over a picture — and says the rest when asked.
+                    label.set_tooltip_text(Some(&match d.started_from {
+                        Some(n) => format!("Its own look, from configuration {n}"),
+                        None => "Its own look".to_string(),
+                    }));
+                    offer_save_as(&save_row, d.started_from);
                     save_row.set_visible(true);
                 }
             }
@@ -276,19 +283,10 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
     }
     picker.set_popover(Some(&popover));
 
-    let save_menu = gio::Menu::new();
-    for n in 1..=CONFIGURATIONS {
-        let item = gio::MenuItem::new(Some(&format!("Configuration {n}")), None);
-        item.set_action_and_target_value(Some("drawing.save-as"), Some(&(n as i32).to_variant()));
-        save_menu.append_item(&item);
-    }
-    save.set_menu_model(Some(&save_menu));
     // Under the button, between the picture and the rest of the sheet,
     // where the eye already is; not up over the picture it was just given.
     save.set_direction(gtk::ArrowType::Down);
-    if let Some(popover) = save.popover() {
-        popover.set_position(gtk::PositionType::Bottom);
-    }
+    offer_save_as(&save, drawing.started_from);
     let actions = gio::SimpleActionGroup::new();
     let save_as = gio::SimpleAction::new("save-as", Some(glib::VariantTy::INT32));
     {
@@ -516,10 +514,41 @@ fn mark_edited(row: &adw::ActionRow, edited: bool) {
     }
 }
 
+/// The nine, as somewhere to write this drawing's own look.
+///
+/// The one it was following when it stopped following anything wears a
+/// star, because it is the answer somebody is most often looking for: a
+/// look arrived at by nudging Configuration 4 usually wants to go back over
+/// Configuration 4, and without the mark there is nothing on the screen
+/// that says which 4 it was. A star rather than a word, since it is one row
+/// of nine that reads differently and nothing about it needs explaining
+/// twice.
+fn offer_save_as(button: &gtk::MenuButton, started_from: Option<u8>) {
+    button.set_menu_model(Some(&save_menu(started_from)));
+    // A new model is a new popover, and the position goes with the old one.
+    if let Some(popover) = button.popover() {
+        popover.set_position(gtk::PositionType::Bottom);
+    }
+}
+
+fn save_menu(started_from: Option<u8>) -> gio::Menu {
+    let menu = gio::Menu::new();
+    for n in 1..=CONFIGURATIONS {
+        let label = match started_from == Some(n) {
+            true => format!("Configuration {n} *"),
+            false => format!("Configuration {n}"),
+        };
+        let item = gio::MenuItem::new(Some(&label), None);
+        item.set_action_and_target_value(Some("drawing.save-as"), Some(&(n as i32).to_variant()));
+        menu.append_item(&item);
+    }
+    menu
+}
+
 /// A configuration in words, for the row under its number.
 fn describe(kind: Kind, style: &Style) -> String {
     match kind {
-        Kind::Line | Kind::Horizontal | Kind::Arrow => {
+        Kind::Line | Kind::Horizontal | Kind::Arrow | Kind::Zigzag => {
             let arrow = match (style.arrow, style.head) {
                 (Arrow::None, _) => String::new(),
                 (arrow, ArrowHead::Filled) => format!(", arrow {}", arrow.label().to_lowercase()),
@@ -615,7 +644,7 @@ fn style_editor(window: &Rc<Window>, kind: Kind, current: Style, on_style: Rc<dy
     let mut shows: Vec<Shower<Style>> = Vec::new();
 
     match kind {
-        Kind::Line | Kind::Horizontal | Kind::Arrow => {
+        Kind::Line | Kind::Horizontal | Kind::Arrow | Kind::Zigzag => {
             // Colour.
             let (row, show) = paint_row(&theme, "Colour", &style.borrow().colour, {
                 let style = style.clone();
@@ -1431,7 +1460,7 @@ pub fn swatch(theme: &Theme, kind: Kind, style: &Style) -> gtk::DrawingArea {
         let (w, h) = (w as f64, h as f64);
         let colour = style.colour.hex(&theme);
         match kind {
-            Kind::Line | Kind::Horizontal | Kind::Arrow => {
+            Kind::Line | Kind::Horizontal | Kind::Arrow | Kind::Zigzag => {
                 colors::set_source(cr, &colour);
                 cr.set_line_width(style.width.clamp(1.0, 4.0));
                 cr.set_line_cap(gtk::cairo::LineCap::Round);
@@ -1522,17 +1551,21 @@ fn preview_bars(count: usize) -> Vec<omacharts_engine::Bar> {
         .map(|i| {
             let t = i as f64 / (count as f64 - 1.0).max(1.0);
             let wave = ((t * 6.0).sin() * 0.18) + ((t * 2.0).cos() * 0.1);
-            let mid = 100.0 + wave * 100.0;
+            // The swing the bars travel over, against the size of a bar.
+            // Too wide a swing and every candle is a speck at the end of
+            // a long wick; these are the proportions a real stretch has.
+            let mid = 100.0 + wave * 55.0;
             let rising = i % 3 != 1;
+            let (body, wick) = (9.0, 16.0);
             let (open, close) = match rising {
-                true => (mid - 4.0, mid + 4.0),
-                false => (mid + 4.0, mid - 4.0),
+                true => (mid - body, mid + body),
+                false => (mid + body, mid - body),
             };
             omacharts_engine::Bar {
                 ts: i as i64,
                 open,
-                high: mid + 9.0,
-                low: mid - 9.0,
+                high: mid + wick,
+                low: mid - wick,
                 close,
                 volume: 0.0,
             }
@@ -1586,9 +1619,35 @@ fn draw_preview(
         let colour = style.colour.hex(theme);
         let line_w = style.width.min(4.0) * scale.sqrt();
         match kind {
-            Kind::Line | Kind::Horizontal | Kind::Arrow => {
-                // A level is drawn level, or the picture would promise a
-                // slope the tool will not give.
+            Kind::Line | Kind::Horizontal | Kind::Arrow | Kind::Zigzag => {
+                // A level is drawn level, and a zig-zag zig-zags, or the
+                // picture would promise something the tool will not give.
+                if kind == Kind::Zigzag {
+                    let (x0, x1) = (w * 0.12, w * 0.88);
+                    let (lo, hi) = (h * 0.76, h * 0.24);
+                    let step = (x1 - x0) / 3.0;
+                    let corners = [
+                        (x0, lo),
+                        (x0 + step, hi),
+                        (x0 + step * 2.0, (lo + hi) / 2.0),
+                        (x1, hi),
+                    ];
+                    colors::set_source(cr, &colour);
+                    cr.set_line_width(line_w);
+                    cr.set_line_cap(gtk::cairo::LineCap::Round);
+                    cr.set_line_join(gtk::cairo::LineJoin::Round);
+                    cr.move_to(corners[0].0, corners[0].1);
+                    for (cx, cy) in &corners[1..] {
+                        cr.line_to(*cx, *cy);
+                    }
+                    let _ = cr.stroke();
+                    if style.arrow.at_end() {
+                        head(cr, corners[2], corners[3], line_w, style.head);
+                    }
+                    if style.arrow.at_start() {
+                        head(cr, corners[1], corners[0], line_w, style.head);
+                    }
+                } else {
                 let (a, b) = match kind {
                     Kind::Horizontal => ((w * 0.12, h * 0.5), (w * 0.88, h * 0.5)),
                     _ => ((w * 0.15, h * 0.75), (w * 0.85, h * 0.25)),
@@ -1604,6 +1663,7 @@ fn draw_preview(
                 }
                 if style.arrow.at_start() {
                     head(cr, b, a, line_w, style.head);
+                }
                 }
             }
             Kind::Rect | Kind::Ellipse => {
@@ -1689,7 +1749,13 @@ fn preview_text(
     // anything. It is shown smaller, which is what a picture of a thing at
     // a quarter of the size is anyway.
     if tw > 0.0 && th > 0.0 {
-        let fit = (bounds.2 / tw).min(bounds.3 / th);
+        // A hair under what would exactly fit. Scaling to the bound itself
+        // asks for a block the same width as the box it goes in, and type
+        // does not shrink linearly — it lands a pixel or two over as often
+        // as under, and a pixel over was enough for the guard below to drop
+        // the label entirely. A label that was *nearly* too wide drew
+        // nothing at all, which is what this looked like.
+        let fit = (bounds.2 / tw).min(bounds.3 / th) * 0.94;
         if fit < 1.0 {
             style.text.size = (style.text.size * fit).max(drawings::MIN_TEXT_SIZE);
         }
@@ -1697,8 +1763,9 @@ fn preview_text(
     let Some((x, y, tw, th)) = crate::ui::text::block(kind, bounds, &text, &style) else { return };
     // Still too big, at the smallest the engine will set type: the tile has
     // no room for words at all, and a word spilling out of the box is a
-    // worse picture than no word.
-    if tw > bounds.2 || th > bounds.3 {
+    // worse picture than no word. A pixel of slack, because this is a
+    // measurement of glyphs against a box and neither is exact.
+    if tw > bounds.2 + 1.0 || th > bounds.3 + 1.0 {
         return;
     }
     let ground = drawings::text_ground(kind, &style, theme);
