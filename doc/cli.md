@@ -473,21 +473,33 @@ next time the app opens.
 
 ## Drawing on a chart
 
-A drawing is a line between two anchors, or a box with them at opposite
-corners. An anchor is a moment and a price — `2026-09-01,180.5`, or with the
-minute, `2026-09-01T14:30,180.5`, or unix seconds — which is how the chart
-keeps them too, so a line through two daily closes still passes through the
-same two moments on the hourly chart.
+A drawing is a line between two anchors, a box or an ellipse with them at
+opposite corners, or words at one. An anchor is a moment and a price —
+`2026-09-01,180.5`, or with the minute, `2026-09-01T14:30,180.5`, or unix
+seconds — which is how the chart keeps them too, so a line through two daily
+closes still passes through the same two moments on the hourly chart.
 
 ```
 omacharts chart drawing add line --from 2026-09-01,180.5 --to 2026-09-19,192 --config 4
 omacharts chart drawing add rect --from 2026-09-08,178 --to 2026-09-12,186 --fill down --alpha 0.25
+omacharts chart drawing add ellipse --from 2026-09-08,178 --to 2026-09-12,186 --config 5
+omacharts chart drawing add text --from 2026-09-10,184 --text "gap fills here"
 omacharts chart drawing list
 omacharts chart drawing set --id 1 --color ink --width 2.5 --arrow end
 omacharts chart drawing set --id 1 --order front
 omacharts chart drawing remove --id 2
 omacharts chart drawing clear
 ```
+
+**An ellipse is a box with a curve for an outline.** `ellipse` — `circle` is
+read as the same word — takes the same two anchors at opposite corners of the
+box it is drawn in, and the same fill and edge a box has. It is never held
+round: dragged wide it is wide. What it has that a box has not is empty
+corners, which belong to whatever is under them.
+
+**A text drawing is at one point**, so `add text` takes `--from` and does not
+read `--to`, and needs `--text`: words that say nothing draw nothing, and are
+refused rather than written down invisible.
 
 **A drawing follows a configuration, or has a look of its own.** Each kind
 has nine configurations, 1 to 9; a drawing that follows one looks like it and
@@ -503,6 +515,37 @@ omacharts chart drawing configs
 omacharts chart drawing configure line --config 3 --color teal --arrow end
 omacharts chart drawing reset-configs rect
 ```
+
+**Any drawing can carry words.** `--text` on a line, a box or an ellipse is a
+label on it, placed by `--text-at` — `center` by default, or an edge or a
+corner: `top`, `bottom`, `left`, `right`, `top-left` and the rest. The empty
+string takes a label off again.
+
+```
+omacharts chart drawing set --id 1 --text "supply" --text-at top
+omacharts chart drawing set --id 1 --text-color ink --font-size 16
+omacharts chart drawing set --id 1 --text ""
+```
+
+What a drawing says is never part of a configuration — a configuration says
+how words are set, never which words — so `--text` leaves a drawing on the
+configuration it follows. How they are set is: `--text-color`, `--font` and
+`--font-size` are among the nine, and giving one by hand takes the drawing
+off its configuration the way `--color` does. `--font system` is the
+desktop's own face, which is the default and what `--json` reports as a null
+font; anything else is a family by name, and a family this machine does not
+have falls back to the system's.
+
+Bold and italic are runs inside the text rather than properties of it, and
+have no flag: they are set on the chart, with the caret in the word. `--text`
+writes plain characters, so using it on a label that was partly bold flattens
+it. `--json` reports the runs, so a reader can see where the bold was.
+
+**Text is held to a contrast floor against what it lands on**, which is the
+composited fill inside a filled box or ellipse and the chart's background
+anywhere else. A colour already clear of the floor is drawn exactly as the
+preset resolves it, so an amber label on an amber box is the box's amber; one
+that is not is lifted until it reads.
 
 **Colours are the nine presets, or a hex.** `up` and `down` are the theme's
 candle colours; `blue`, `amber`, `violet`, `teal`, `orange` and `cyan` are the
@@ -522,9 +565,10 @@ with its chart rather than with the symbol, and is numbered below zero so one
 id names a drawing wherever it lives. `list` names the symbol and the sharing;
 `clear` removes everything the chart can see.
 
-By hand: Ctrl+D shows the tools, Alt+L and Alt+R arm them (Escape is the
-pointer again), a press and a second press (or one press-and-drag) place a
-drawing, a click selects one (Shift+click or Ctrl+click adds or removes
+By hand: Ctrl+D shows the tools, Alt+L, Alt+R, Alt+C and Alt+T arm them
+(Escape is the pointer again), a press and a second press (or one
+press-and-drag) place a drawing — except the text tool, where one press puts
+the caret down and you type on the chart — a click selects one (Shift+click or Ctrl+click adds or removes
 another, Shift+drag on empty chart takes everything the box touches, and
 Ctrl+A takes every drawing on the plot; what
 is done to
@@ -534,6 +578,13 @@ nudge it (Ctrl+Shift+↑/↓ bring it to the front or send it to the back),
 Delete removes it,
 Enter or a right-click opens its properties, Alt+1 to Alt+9 is configuration
 N, and Ctrl+Z and Ctrl+Y undo and redo on that chart.
+
+Words are typed where they will be drawn: double-click any drawing, or take
+"Edit text" from its menu, and the caret lands on the chart in the drawing's
+own font and ink. Enter commits and Shift+Enter is a newline; Escape leaves
+it as it was; Ctrl+B and Ctrl+I set the selection — or the word the caret is
+in — bold or italic. Ctrl+= and Ctrl+− grow and shrink the selected
+drawing's text, which on a figure is its label rather than the figure.
 
 ## Taking a picture of a chart
 

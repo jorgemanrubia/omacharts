@@ -4800,6 +4800,53 @@ mod tests {
         store
     }
 
+    /// A command line split the way a shell splits it: on spaces, except
+    /// inside quotes.
+    ///
+    /// `split_whitespace` was enough while every value was one word, and
+    /// stopped being enough the moment a drawing could carry a label —
+    /// `--text "gap fills here"` is three arguments to a naive splitter and
+    /// fails as one. What a skill shows has to be what somebody can paste,
+    /// so the test reads it the way their shell will.
+    fn words_of(line: &str) -> Vec<String> {
+        let mut words = Vec::new();
+        let mut word = String::new();
+        let mut quote: Option<char> = None;
+        let mut started = false;
+        for c in line.chars() {
+            match (quote, c) {
+                (Some(open), c) if c == open => quote = None,
+                (Some(_), c) => word.push(c),
+                (None, '"') | (None, '\'') => {
+                    quote = Some(c);
+                    // An empty pair of quotes is an empty argument, which is
+                    // how a label is taken off again.
+                    started = true;
+                }
+                (None, c) if c.is_whitespace() => {
+                    if started || !word.is_empty() {
+                        words.push(std::mem::take(&mut word));
+                        started = false;
+                    }
+                }
+                (None, c) => word.push(c),
+            }
+        }
+        if started || !word.is_empty() {
+            words.push(word);
+        }
+        words
+    }
+
+    #[test]
+    fn a_quoted_value_is_one_argument() {
+        assert_eq!(words_of("a b"), vec!["a", "b"]);
+        assert_eq!(words_of("--text \"two words\""), vec!["--text", "two words"]);
+        assert_eq!(words_of("--text \"\""), vec!["--text", ""]);
+        assert_eq!(words_of("  spaced   out  "), vec!["spaced", "out"]);
+        assert_eq!(words_of("--text 'single quoted'"), vec!["--text", "single quoted"]);
+    }
+
     /// Every command in the agent skill is a command that runs.
     ///
     /// This is the condition the skill ships on. `agents/skills/omacharts`
@@ -4829,7 +4876,7 @@ mod tests {
             let store = skill_seed();
             for line in block {
                 let args: Vec<String> = std::iter::once("omacharts".to_string())
-                    .chain(line.split_whitespace().map(String::from))
+                    .chain(words_of(line))
                     .collect();
                 let outcome = dispatch(&args, &store, Some(&NoWindow), &super::super::Here);
                 assert_eq!(

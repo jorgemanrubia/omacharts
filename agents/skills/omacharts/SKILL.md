@@ -147,8 +147,39 @@ desktop theme:
 ```
 omacharts chart drawing add line --from 2026-09-01,180.5 --to 2026-09-19,192 --config 4
 omacharts chart drawing add rect --from 2026-09-08,178 --to 2026-09-12,186 --config 2
+omacharts chart drawing add ellipse --from 2026-09-08,178 --to 2026-09-12,186 --config 5
 omacharts chart drawing list --json
 omacharts chart drawing set --id 1 --color ink --arrow end
 omacharts chart drawing configs line --json
 omacharts chart drawing remove --id 2
 ```
+
+**A circle is dragged to any shape.** `ellipse` — `circle` is taken as the
+same word — is a box with its outline swapped for a curve: the same two
+anchors at opposite corners of the box it is drawn in, the same fill and
+edge, never held round. Reach for it over a box when the empty corners
+matter.
+
+**Words go on the chart two ways.** `text` is a drawing that is nothing but
+what it says, at one anchor — `--from` alone, and `--to` is not read. Any
+other kind takes `--text` as a *label on itself*, placed by `--text-at`,
+which is `center` by default and takes the edges and the corners:
+
+```
+omacharts chart drawing add text --from 2026-09-10,184 --text "gap fills here"
+omacharts chart drawing add rect --from 2026-09-08,178 --to 2026-09-12,186 --config 2
+omacharts chart drawing set --id 2 --text "supply" --text-at top
+omacharts chart drawing set --id 2 --text ""
+```
+
+What a drawing says is never part of its configuration — a configuration says
+how words are set, never which words — so `--text` leaves a drawing following
+the configuration it was on, and the empty string takes the label off again.
+How they are set *is*: `--text-color`, `--font` and `--font-size` are part of
+the nine, and setting one gives that drawing a look of its own the way
+`--color` does. `--font system` is the desktop's own face, which is the
+default and what the JSON reports as a null font.
+
+Bold and italic are runs inside the text and have no flag: they are set on
+the chart, with the caret in the word. `--text` writes plain characters, so
+using it on a label that was partly bold flattens it.
