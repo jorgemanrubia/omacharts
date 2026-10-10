@@ -2021,7 +2021,7 @@ impl StyleEdits {
             head,
             border,
             fill: paint("fill")?,
-            alpha: fraction(m, "alpha", 0.0, 1.0)?,
+            alpha: bounded(m, "alpha", MIN_FILL_ALPHA, MAX_FILL_ALPHA)?,
         })
     }
 
