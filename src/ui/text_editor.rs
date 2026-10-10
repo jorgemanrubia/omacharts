@@ -77,9 +77,8 @@ impl Editing {
             if !next.forward_char() {
                 break;
             }
-            let Some(text) = buffer.text(&at_iter, &next, true).to_string().into() else { break };
             spans.push(Span {
-                text,
+                text: buffer.text(&at_iter, &next, true).to_string(),
                 bold: at_iter.has_tag(&self.bold),
                 italic: at_iter.has_tag(&self.italic),
             });

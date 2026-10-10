@@ -711,6 +711,13 @@ impl State {
 
     /// Remember the drawings as they are, for undo, before they change. A
     /// new change is a new future, so what was redoable is not any more.
+    /// Drop the step most recently remembered, for a change that turned out
+    /// not to be one: the step is still the top of the stack, because
+    /// nothing else can have been remembered in between.
+    fn forget(&mut self) {
+        self.undo.pop();
+    }
+
     fn remember(&mut self) {
         self.undo.push(self.drawings.clone());
         if self.undo.len() > HISTORY {
@@ -800,10 +807,30 @@ impl State {
             (x, y)
         };
         let projected = Projected::new(drawing.kind, point(&drawing.from), point(&drawing.to));
-        // What the drawing says, measured and placed. A text drawing has no
-        // size without this and a labelled figure is still hit by its own
-        // shape, so the measuring is done once here rather than at each of
-        // the places that ask what the pointer is over.
+        // A text drawing has no size at all without its words measured —
+        // nothing to hit, nothing to select — so it is measured here, where
+        // every caller gets it. A figure is hit by its own shape whether or
+        // not it carries a label, and laying type out to answer "what is
+        // under the pointer" would be a Pango layout per labelled drawing
+        // per mouse move. The painter asks for that separately.
+        match drawing.kind.is_text() {
+            false => projected,
+            true => self.with_words(projected, drawing),
+        }
+    }
+
+    /// The same projection with the drawing's label measured and placed:
+    /// what the painter needs, and what a figure does not pay for until it
+    /// is being drawn.
+    fn project_label(&self, projected: Projected, drawing: &Drawing) -> Projected {
+        match drawing.kind.is_text() {
+            // Already measured by `project`, which had to.
+            true => projected,
+            false => self.with_words(projected, drawing),
+        }
+    }
+
+    fn with_words(&self, projected: Projected, drawing: &Drawing) -> Projected {
         match crate::ui::text::block(
             drawing.kind,
             projected.bounds(),
@@ -1835,6 +1862,9 @@ impl ChartView {
                 return;
             };
             let projected = state.project(&plan, low, high, drawing);
+            // The drawing's own box, not the label's: a figure is placed in
+            // by its shape, and a text drawing hangs from its anchor, which
+            // `text_origin` reads off the degenerate box either way.
             (drawings::text_origin(drawing.kind, projected.bounds(), size, at), size)
         };
         editing.place(&self.editor_layer, placed.0, placed.1);
@@ -1851,9 +1881,17 @@ impl ChartView {
         let event = match how {
             text_editor::Ended::Cancel => {
                 // A drawing made for this edit and abandoned was never
-                // really made: take it away again, quietly, without a step
-                // on the undo stack for something nobody saw.
-                editing.fresh.then(|| self.drop_drawing(editing.index.get())).flatten()
+                // really made: take it away again, and take the undo step
+                // that was pushed for it with it, so Ctrl+Z is not a press
+                // that undoes something nobody saw.
+                match editing.fresh {
+                    true => {
+                        let gone = self.drop_drawing(editing.index.get());
+                        self.state.borrow_mut().forget();
+                        gone
+                    }
+                    false => None,
+                }
             }
             text_editor::Ended::Commit => {
                 let at = {
@@ -1885,7 +1923,14 @@ impl ChartView {
                     if drawing.text == typed {
                         None
                     } else {
-                        state.remember();
+                        // One step for a drawing that was made to be typed
+                        // into: putting it down and saying something are
+                        // one action, and its own step was pushed when it
+                        // was made. Two for a label added to a drawing that
+                        // was already there, which are two.
+                        if !editing.fresh {
+                            state.remember();
+                        }
                         let drawing = &mut state.drawings[editing.index.get()];
                         drawing.set_text(typed);
                         Some(DrawingEvent::Changed(drawing.clone()))
@@ -3066,7 +3111,8 @@ fn draw_pointer(cr: &cairo::Context, width: f64, height: f64, state: &State) {
         cr.save().ok();
         cr.rectangle(plan.plot_x, plan.price_y, plan.plot_w, plan.price_h);
         cr.clip();
-        draw_drawing(cr, state, &state.project(&plan, low, high, placing), placing, true, false);
+        let placed = state.project_label(state.project(&plan, low, high, placing), placing);
+        draw_drawing(cr, state, &placed, placing, true, false);
         cr.restore().ok();
     }
 
@@ -4004,7 +4050,7 @@ fn draw_drawings(cr: &cairo::Context, state: &State, plan: &Layout, low: f64, hi
     cr.rectangle(plan.plot_x, plan.price_y, plan.plot_w, plan.price_h);
     cr.clip();
     for (index, drawing) in state.drawings.iter().enumerate() {
-        let projected = state.project(plan, low, high, drawing);
+        let projected = state.project_label(state.project(plan, low, high, drawing), drawing);
         let typing = state.editing == Some(index);
         draw_drawing(cr, state, &projected, drawing, state.selected.contains(&index), typing);
     }
