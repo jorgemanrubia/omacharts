@@ -33,7 +33,7 @@ pub use session::Session;
 pub use symbols::{Instrument, InstrumentKind, SearchHit, SearchIndex};
 pub use drawings::{
     Align, Anchor, Arrow, ArrowHead, Configurations, Drawing, Grip, Kind as DrawingKind, Paint, Place,
-    Preset, Projected, Scope, Sharing, Span, Style, Text as DrawingText, TextStyle,
+    Preset, Projected, Scope, Span, Style, Text as DrawingText, TextStyle,
 };
 pub use frame::Frame;
 pub use theme::{

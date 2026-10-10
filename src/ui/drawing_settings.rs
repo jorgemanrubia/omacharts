@@ -21,7 +21,7 @@ use std::rc::Rc;
 use adw::prelude::*;
 use gtk::{gio, glib};
 use omacharts_engine::drawings::{
-    self, Arrow, ArrowHead, Configurations, Kind, Paint, Place, Preset, Scope, Style, Text,
+    self, Arrow, ArrowHead, Configurations, Kind, Paint, Place, Preset, Style, Text,
     CONFIGURATIONS,
 };
 use omacharts_engine::{BarScheme, BarStyle, Theme};
@@ -32,6 +32,22 @@ use crate::ui::dialogs;
 use crate::ui::palette;
 use crate::ui::pane::ChartPane;
 use crate::ui::window::Window;
+
+/// A preview's candle, in pixels, since a preview maps one price unit to
+/// one of them.
+///
+/// From one column to the next; the chart makes a body a shade over two
+/// thirds of that, so eighteen gives an eleven-pixel body — about as wide
+/// as it is tall, which is what a candle on a chart looks like. The wick is
+/// a little over twice the body, and the run swings by about a body either
+/// way: enough to read as a stretch of market, little enough that the
+/// smallest tile still holds it.
+const CANDLE_PITCH: f64 = 18.0;
+const CANDLE_BODY: f64 = 11.0;
+const CANDLE_WICK: f64 = 26.0;
+const CANDLE_SWING: f64 = 9.0;
+/// The price the run is drawn about, which is also the middle of the tile.
+const CANDLE_MID: f64 = 100.0;
 
 /// The size of a configuration's preview tile.
 const PREVIEW_W: i32 = 84;
@@ -188,26 +204,10 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
         text_page(window, &drawing, drawing.style(&configs_now).clone(), on_style, on_text)
     });
 
-    // Who else sees it: one row, a little apart from the look.
-    let sharing = adw::PreferencesGroup::new();
-    sharing.set_margin_top(12);
-    let scope_row = adw::ComboRow::new();
-    scope_row.set_title("Shown on");
-    let scopes = Scope::all();
-    let names: Vec<String> = scopes.iter().map(|s| s.label()).collect();
-    let names: Vec<&str> = names.iter().map(String::as_str).collect();
-    scope_row.set_model(Some(&gtk::StringList::new(&names)));
-    scope_row.set_selected(scopes.iter().position(|s| *s == drawing.scope).unwrap_or(1) as u32);
-    {
-        let view = view.clone();
-        let scopes = scopes.clone();
-        scope_row.connect_selected_notify(move |row| {
-            let Some(scope) = scopes.get(row.selected() as usize).copied() else { return };
-            view.edit_selected(move |d| d.scope = scope);
-        });
-    }
-    sharing.add(&scope_row);
-    page.add(&sharing);
+    // No row for who else sees it. Where a drawing goes is the chart's
+    // business now — two switches at the foot of its settings — and asking
+    // the same question again of every drawing was most of what made the
+    // old arrangement heavy.
 
     // Removing is the chart's business — Delete, or the drawing's menu —
     // not a button at the bottom of its properties.
@@ -365,6 +365,30 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
             stack.add_titled(&text_page, Some("text"), "Text");
             let switcher = gtk::StackSwitcher::new();
             switcher.set_stack(Some(&stack));
+            {
+                // Alt and an arrow between Look and Text, and the keyboard
+                // goes with it.
+                let stack = stack.clone();
+                dialogs::step_tabs_with_alt(&dialog, move |forward| {
+                    let pages = stack.pages();
+                    let count = pages.n_items();
+                    let at = (0..count)
+                        .find(|n| {
+                            pages
+                                .item(*n)
+                                .and_downcast::<gtk::StackPage>()
+                                .zip(stack.visible_child())
+                                .is_some_and(|(page, shown)| page.child() == shown)
+                        })
+                        .unwrap_or(0);
+                    let next = dialogs::step_round(at, count.max(1), forward);
+                    if let Some(page) = pages.item(next).and_downcast::<gtk::StackPage>() {
+                        let child = page.child();
+                        stack.set_visible_child(&child);
+                        focus_into(child);
+                    }
+                });
+            }
             finish(&dialog, &stack, Some(&switcher), &view.area, Some(tick));
         }
     }
@@ -543,6 +567,18 @@ fn save_menu(started_from: Option<u8>) -> gio::Menu {
         menu.append_item(&item);
     }
     menu
+}
+
+/// Put the keyboard in a page just switched to.
+///
+/// On the next turn of the loop, because the page has not been laid out yet
+/// and has nothing to give the focus to until it has. Leaving the focus on
+/// a row of the page no longer showing means the next Tab walks a tab
+/// nobody is looking at.
+fn focus_into(page: impl IsA<gtk::Widget> + 'static) {
+    glib::idle_add_local_once(move || {
+        page.as_ref().child_focus(gtk::DirectionType::TabForward);
+    });
 }
 
 /// A configuration in words, for the row under its number.
@@ -1551,21 +1587,17 @@ fn preview_bars(count: usize) -> Vec<omacharts_engine::Bar> {
         .map(|i| {
             let t = i as f64 / (count as f64 - 1.0).max(1.0);
             let wave = ((t * 6.0).sin() * 0.18) + ((t * 2.0).cos() * 0.1);
-            // The swing the bars travel over, against the size of a bar.
-            // Too wide a swing and every candle is a speck at the end of
-            // a long wick; these are the proportions a real stretch has.
-            let mid = 100.0 + wave * 55.0;
+            let mid = CANDLE_MID + wave * CANDLE_SWING;
             let rising = i % 3 != 1;
-            let (body, wick) = (9.0, 16.0);
             let (open, close) = match rising {
-                true => (mid - body, mid + body),
-                false => (mid + body, mid - body),
+                true => (mid - CANDLE_BODY / 2.0, mid + CANDLE_BODY / 2.0),
+                false => (mid + CANDLE_BODY / 2.0, mid - CANDLE_BODY / 2.0),
             };
             omacharts_engine::Bar {
                 ts: i as i64,
                 open,
-                high: mid + wick,
-                low: mid - wick,
+                high: mid + CANDLE_WICK / 2.0,
+                low: mid - CANDLE_WICK / 2.0,
                 close,
                 volume: 0.0,
             }
@@ -1595,25 +1627,24 @@ fn draw_preview(
         // chart that does not exist, and this one was: rectangles for
         // wicks, a body width of its own, and the outline colour where the
         // chart fills with the fill — so a hollow scheme came out solid.
-        let pitch = 14.0 * scale;
-        let count = ((w * 0.7) / pitch).floor().max(4.0) as usize;
-        let left = (w - (count as f64 - 1.0) * pitch) / 2.0;
+        // One candle, at one size, wherever it is drawn. The width used to
+        // follow the tile while the height fell out of fitting the
+        // synthetic prices into a band, so the two grew at different rates
+        // — the same candle came out half again as fat and a third shorter
+        // in the wide strip than in a tile. The bars are written in units
+        // that *are* pixels and placed about the middle, so a bigger
+        // picture is more of the same candles rather than bigger ones.
+        let count = ((w * 0.72) / CANDLE_PITCH).floor().max(3.0) as usize;
+        let left = (w - (count as f64 - 1.0) * CANDLE_PITCH) / 2.0;
         let bars = preview_bars(count);
-        // The price window the synthetic bars span, mapped onto the middle
-        // of the tile so they sit where they always did.
-        let (lo, hi) = bars.iter().fold((f64::MAX, f64::MIN), |(lo, hi), b| {
-            (lo.min(b.low), hi.max(b.high))
-        });
-        let span = (hi - lo).max(f64::EPSILON);
-        let band = h * 0.56;
-        let to_y = move |price: f64| h / 2.0 + band / 2.0 - (price - lo) / span * band;
+        let to_y = move |price: f64| h / 2.0 - (price - CANDLE_MID);
         crate::ui::chart::candles(
             cr,
             look.style,
             &look.scheme,
             &bars,
-            left - pitch / 2.0,
-            pitch,
+            left - CANDLE_PITCH / 2.0,
+            CANDLE_PITCH,
             &to_y,
         );
         let colour = style.colour.hex(theme);

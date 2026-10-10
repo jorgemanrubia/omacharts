@@ -100,8 +100,11 @@ impl DrawingBar {
         column.add_css_class("drawing-bar");
         column.set_valign(gtk::Align::Start);
         column.set_margin_top(10);
-        column.set_margin_start(6);
-        column.set_margin_end(2);
+        // The same either side. It was six and two, which put the column a
+        // visible two pixels left of centre in its own bar — the kind of
+        // thing you cannot name but can see.
+        column.set_margin_start(4);
+        column.set_margin_end(4);
 
         let mut buttons: Vec<(Option<Kind>, gtk::ToggleButton, gtk::DrawingArea)> = Vec::new();
         let mut badges = Vec::new();
@@ -406,13 +409,19 @@ impl DrawingBar {
                     Some(Kind::Zigzag) => {
                         let (x0, x1) = (4.5, w - 5.5);
                         let step = (x1 - x0) / 3.0;
-                        // Each swing a little higher than the last: the
-                        // highs climb, the lows climb with them.
+                        // Up, back a quarter of the way, up the same again:
+                        // the two rises are equal and the pull-back sits
+                        // between them, so the shape is the same read from
+                        // either end. The first try had three legs of three
+                        // different lengths and leaned.
+                        let (lo, hi) = (h - 5.0, 5.0);
+                        let dip = (lo - hi) * 0.25;
+                        let rise = (lo - hi + dip) / 2.0;
                         let corners = [
-                            (x0, h - 5.0),
-                            (x0 + step, h - 12.0),
-                            (x0 + step * 2.0, h - 9.0),
-                            (x1, 5.0),
+                            (x0, lo),
+                            (x0 + step, lo - rise),
+                            (x0 + step * 2.0, lo - rise + dip),
+                            (x1, hi),
                         ];
                         cr.move_to(corners[0].0, corners[0].1);
                         for (x, y) in &corners[1..] {

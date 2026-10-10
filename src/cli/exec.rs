@@ -1298,12 +1298,16 @@ fn chart_set(
         None => None,
         Some(text) => Some(link_group(text)?),
     };
-    let drawing_sharing = match arg(m, "drawing-sharing") {
-        None => None,
-        Some(text) => Some(omacharts_engine::Sharing::from_key(text).ok_or_else(|| {
-            Fault::usage(format!("{text:?} is not a drawing group; try global, group-1 to group-9, or off"))
-        })?),
+    let switch = |id: &str| -> Result<Option<bool>, Fault> {
+        match arg(m, id).map(String::as_str) {
+            None => Ok(None),
+            Some("on") => Ok(Some(true)),
+            Some("off") => Ok(Some(false)),
+            Some(other) => Err(Fault::usage(format!("--{id} is on or off, not {other:?}"))),
+        }
     };
+    let shows_drawings = switch("show-drawings")?;
+    let sends_drawings = switch("send-drawings")?;
 
     // Which group it was in, read before anything is written: only an actual
     // change leads the group. Re-stating the group a chart is already in is
@@ -1342,9 +1346,17 @@ fn chart_set(
         chart["show_grid"] = json!(grid == "on");
         changed.push(format!("grid {grid}"));
     }
-    if let Some(sharing) = drawing_sharing {
-        chart["drawing_sharing"] = json!(sharing.key());
-        changed.push(format!("drawing group {}", sharing.key()));
+    if let Some(shows) = shows_drawings {
+        chart["shows_drawings"] = json!(shows);
+        changed.push(format!("shows other charts' drawings {}", on_off(shows)));
+    }
+    if let Some(sends) = sends_drawings {
+        let was = chart["sends_drawings"].as_bool().unwrap_or(true);
+        chart["sends_drawings"] = json!(sends);
+        if was != sends {
+            move_this_chart_s_drawings(store, chart, sends);
+        }
+        changed.push(format!("sends drawings to other charts {}", on_off(sends)));
     }
     if let Some(auto) = arg(m, "auto-scale") {
         chart["auto_scale"] = json!(auto == "on");
@@ -1359,7 +1371,7 @@ fn chart_set(
     if changed.is_empty() {
         return Err(Fault::usage(
             "nothing to change; pass --symbol, --resolution, --style, --session, --link, --grid, \
-             --auto-scale or --drawing-sharing"
+             --auto-scale, --show-drawings or --send-drawings"
                 .into(),
         ));
     }
@@ -1566,7 +1578,7 @@ fn chart_drawing(
     at: usize,
     pane: u32,
 ) -> Result<String, Fault> {
-    use omacharts_engine::drawings::{Drawing, Kind, Scope, Sharing, CONFIGURATIONS};
+    use omacharts_engine::drawings::{Drawing, Kind, Scope, CONFIGURATIONS};
 
     let action = required(m, "ACTION")?.as_str();
     let kind = match arg(m, "KIND") {
@@ -1593,24 +1605,21 @@ fn chart_drawing(
     if symbol.is_empty() {
         return Err(Fault::refused("that chart has no symbol to draw on".into()));
     }
-    let sharing = chart["drawing_sharing"]
-        .as_str()
-        .and_then(Sharing::from_key)
-        .unwrap_or_default();
+    let shows = chart["shows_drawings"].as_bool().unwrap_or(true);
+    let sends = chart["sends_drawings"].as_bool().unwrap_or(true);
     let configs = store.drawing_configurations();
 
-    // What this chart shows: the shared drawings its sharing lets through,
-    // and its own.
+    // What this chart shows: the symbol's, when it is shown what other
+    // charts send, and its own either way.
     let locals: Vec<Drawing> = chart["drawings"]
         .as_array()
         .map(|list| list.iter().filter_map(|d| serde_json::from_value(d.clone()).ok()).collect())
         .unwrap_or_default();
     let shown = |store: &Store, locals: &[Drawing]| -> Vec<Drawing> {
-        let mut all: Vec<Drawing> = store
-            .drawings(&symbol, suffix.as_deref())
-            .into_iter()
-            .filter(|d| sharing.shows(d.scope))
-            .collect();
+        let mut all: Vec<Drawing> = match shows {
+            true => store.drawings(&symbol, suffix.as_deref()),
+            false => Vec::new(),
+        };
         all.extend(locals.iter().cloned());
         omacharts_engine::drawings::sort_for_painting(&mut all);
         all
@@ -1620,9 +1629,8 @@ fn chart_drawing(
         let listed = shown(store, &locals);
         return match as_json {
             true => Ok(format!(
-                "{{\"chart\":{pane},\"symbol\":{},\"sharing\":{},\"drawings\":[{}]}}\n",
+                "{{\"chart\":{pane},\"symbol\":{},\"shows_drawings\":{shows},\"sends_drawings\":{sends},\"drawings\":[{}]}}\n",
                 json!(spell(&symbol, suffix.as_deref())),
-                json!(sharing.key()),
                 listed.iter().map(|d| drawing_json(d, &configs).to_string()).collect::<Vec<_>>().join(",")
             )),
             false if listed.is_empty() => Ok(format!("nothing drawn on {}\n", spell(&symbol, suffix.as_deref()))),
@@ -1698,6 +1706,7 @@ fn chart_drawing(
                 ));
             }
             let mut drawing = Drawing::new(kind, from, to);
+            drawing.origin = chart["drawing_uid"].as_str().map(str::to_string).filter(|u| !u.is_empty());
             drawing.follow(config.unwrap_or(1));
             if !style.is_empty() {
                 drawing.edit_style(&configs, |s| style.apply(s));
@@ -1705,7 +1714,10 @@ fn chart_drawing(
             if !words.is_empty() {
                 words.apply(&mut drawing);
             }
-            drawing.scope = scope.unwrap_or_else(|| sharing.scope_for_new());
+            drawing.scope = scope.unwrap_or(match sends {
+                true => Scope::Shared,
+                false => Scope::Local,
+            });
             drawing.order = shown(store, &locals).iter().map(|d| d.order).max().unwrap_or(0);
             if drawing.is_local() {
                 drawing.id = next_local_id(&locals);
@@ -1907,6 +1919,57 @@ fn configurations_verb(
 
 /// A chart's local drawings get negative ids, below everything the store
 /// hands out, so one number names a drawing wherever it lives.
+/// Take back what this chart sent, or send what it has been keeping.
+///
+/// The window does the same thing when the switch is flicked there. Only
+/// this chart's own move: each drawing remembers which chart made it, so a
+/// switch here never withdraws another chart's work, and a drawing made
+/// before charts had names belongs to none of them and stays put.
+fn move_this_chart_s_drawings(store: &Store, chart: &mut Value, sends: bool) {
+    use omacharts_engine::{Drawing, Scope};
+    let symbol = chart["symbol"].as_str().unwrap_or("").to_string();
+    if symbol.is_empty() {
+        return;
+    }
+    let suffix = chart["suffix"].as_str().filter(|s| !s.is_empty()).map(str::to_string);
+    let suffix = suffix.as_deref();
+    let mine = chart["drawing_uid"].as_str().unwrap_or("").to_string();
+    let mut locals: Vec<Drawing> = chart["drawings"]
+        .as_array()
+        .map(|list| list.iter().filter_map(|d| serde_json::from_value(d.clone()).ok()).collect())
+        .unwrap_or_default();
+
+    match sends {
+        true => {
+            for mut drawing in locals.drain(..) {
+                drawing.id = 0;
+                drawing.scope = Scope::Shared;
+                if !mine.is_empty() {
+                    drawing.origin = Some(mine.clone());
+                }
+                store.add_drawing(&symbol, suffix, &drawing);
+            }
+        }
+        false => {
+            if mine.is_empty() {
+                return;
+            }
+            let sent: Vec<Drawing> = store
+                .drawings(&symbol, suffix)
+                .into_iter()
+                .filter(|d| d.origin.as_deref() == Some(mine.as_str()))
+                .collect();
+            for mut drawing in sent {
+                store.remove_drawing(drawing.id);
+                drawing.id = next_local_id(&locals);
+                drawing.scope = Scope::Local;
+                locals.push(drawing);
+            }
+        }
+    }
+    chart["drawings"] = json!(locals);
+}
+
 fn next_local_id(locals: &[omacharts_engine::Drawing]) -> i64 {
     locals.iter().map(|d| d.id).min().unwrap_or(0).min(0) - 1
 }
@@ -2230,6 +2293,14 @@ impl TextEdits {
             text.at = at;
         }
         drawing.set_text(text);
+    }
+}
+
+/// A switch, as a command line says it back.
+fn on_off(on: bool) -> &'static str {
+    match on {
+        true => "on",
+        false => "off",
     }
 }
 
@@ -2652,7 +2723,8 @@ fn pane_json(pane: &Value) -> String {
         // of those was fitting itself.
         "auto_scale": pane["auto_scale"].as_bool().unwrap_or(true),
         "link": pane["linked"],
-        "drawing_sharing": pane["drawing_sharing"].as_str().unwrap_or("global"),
+        "shows_drawings": pane["shows_drawings"].as_bool().unwrap_or(true),
+        "sends_drawings": pane["sends_drawings"].as_bool().unwrap_or(true),
         "indicators": pane["indicators"]
             .as_array()
             .map(|all| all.iter().filter_map(|i| i["kind"].as_str()).collect::<Vec<_>>())
@@ -4647,7 +4719,7 @@ mod tests {
         assert_eq!(parsed["drawings"][0]["kind"], "line");
         assert_eq!(parsed["drawings"][0]["config"], 4);
         assert_eq!(parsed["drawings"][0]["style"]["color"], "amber");
-        assert_eq!(parsed["drawings"][0]["scope"], "global");
+        assert_eq!(parsed["drawings"][0]["scope"], "shared");
         assert_eq!(parsed["drawings"][0]["from"]["price"], 180.5);
         assert_eq!(parsed["drawings"][0]["from"]["when"], "2026-09-01");
 
@@ -4694,45 +4766,100 @@ mod tests {
         assert!(listed.out.starts_with("nothing drawn on AAPL"), "{}", listed.out);
     }
 
-    /// A chart's sharing decides what it sees and what it draws into; a
-    /// local drawing lives with the chart and has a negative id.
+    /// Turning sending off takes back what this chart sent, and turning it
+    /// on sends back what it kept — its own either way, never another
+    /// chart's.
     #[test]
-    fn sharing_decides_what_a_chart_sees() {
+    fn sending_takes_back_only_this_chart_s_own() {
         let store = Store::memory().unwrap();
         run("chartbook create Macro --symbol AAPL --switch", &store);
         run("chart split vertical --book Macro", &store);
-        run("chart set --book Macro --chart pos:1 --symbol AAPL --drawing-sharing group-2", &store);
+        run("chart set --book Macro --chart pos:1 --symbol AAPL", &store);
+
+        run("chart drawing add line --book Macro --chart pos:0 --from 2026-09-01,100 --to 2026-09-19,110", &store);
+        run("chart drawing add rect --book Macro --chart pos:1 --from 2026-09-01,120 --to 2026-09-19,130", &store);
+
+        let seen = |chart: &str| -> Vec<String> {
+            let out = run(&format!("chart drawing list --book Macro --chart {chart} --json"), &store);
+            let parsed: serde_json::Value = serde_json::from_str(&out.out).unwrap();
+            parsed["drawings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|d| d["kind"].as_str().unwrap().to_string())
+                .collect()
+        };
+
+        // Both send, so both see both.
+        assert_eq!(seen("pos:0"), vec!["line", "rect"]);
+        assert_eq!(seen("pos:1"), vec!["line", "rect"]);
+
+        // The second stops sending: it keeps its rectangle and the first
+        // stops seeing it, while the first's line is untouched.
+        run("chart set --book Macro --chart pos:1 --send-drawings off", &store);
+        assert_eq!(seen("pos:0"), vec!["line"], "the first chart kept seeing what the second took back");
+        assert_eq!(seen("pos:1"), vec!["line", "rect"], "the second lost its own");
+
+        // And sending again puts it back.
+        run("chart set --book Macro --chart pos:1 --send-drawings on", &store);
+        assert_eq!(seen("pos:0"), vec!["line", "rect"]);
+        assert_eq!(seen("pos:1"), vec!["line", "rect"]);
+    }
+
+    /// The two switches decide what a chart sees and where what is drawn
+    /// on it goes; a drawing that is not sent lives with the chart and has
+    /// a negative id.
+    #[test]
+    fn the_two_switches_decide_what_a_chart_sees_and_sends() {
+        let store = Store::memory().unwrap();
+        run("chartbook create Macro --symbol AAPL --switch", &store);
+        run("chart split vertical --book Macro", &store);
+        run("chart set --book Macro --chart pos:1 --symbol AAPL --send-drawings off", &store);
 
         run("chart drawing add line --book Macro --chart pos:0 --from 2026-09-01,100 --to 2026-09-19,110", &store);
         run("chart drawing add line --book Macro --chart pos:1 --from 2026-09-01,120 --to 2026-09-19,130", &store);
-        run("chart drawing add rect --book Macro --chart pos:1 --from 2026-09-01,140 --to 2026-09-19,150 --scope local", &store);
 
-        let global = run("chart drawing list --book Macro --chart pos:0 --json", &store);
-        let global: serde_json::Value = serde_json::from_str(&global.out).unwrap();
-        assert_eq!(global["sharing"], "global");
-        let scopes: Vec<&str> = global["drawings"].as_array().unwrap().iter().map(|d| d["scope"].as_str().unwrap()).collect();
-        assert_eq!(scopes, vec!["global"], "a global chart sees global drawings only");
+        // The first chart sends, so its line is the symbol's; the second
+        // does not, so its line is its own.
+        let sending = run("chart drawing list --book Macro --chart pos:0 --json", &store);
+        let sending: serde_json::Value = serde_json::from_str(&sending.out).unwrap();
+        assert_eq!(sending["shows_drawings"], true);
+        assert_eq!(sending["sends_drawings"], true);
+        let scopes: Vec<&str> =
+            sending["drawings"].as_array().unwrap().iter().map(|d| d["scope"].as_str().unwrap()).collect();
+        assert_eq!(scopes, vec!["shared"], "a chart sees the symbol's, not another chart's own");
 
-        let grouped = run("chart drawing list --book Macro --chart pos:1 --json", &store);
-        let grouped: serde_json::Value = serde_json::from_str(&grouped.out).unwrap();
-        let mut scopes: Vec<&str> = grouped["drawings"].as_array().unwrap().iter().map(|d| d["scope"].as_str().unwrap()).collect();
+        // The second sees the symbol's as well as its own, since it still
+        // shows what others send.
+        let keeping = run("chart drawing list --book Macro --chart pos:1 --json", &store);
+        let keeping: serde_json::Value = serde_json::from_str(&keeping.out).unwrap();
+        assert_eq!(keeping["sends_drawings"], false);
+        let mut scopes: Vec<&str> =
+            keeping["drawings"].as_array().unwrap().iter().map(|d| d["scope"].as_str().unwrap()).collect();
         scopes.sort();
-        assert_eq!(scopes, vec!["global", "group-2", "local"]);
-        let local = grouped["drawings"].as_array().unwrap().iter().find(|d| d["scope"] == "local").unwrap();
-        assert!(local["id"].as_i64().unwrap() < 0, "a local drawing is numbered below the store's");
+        assert_eq!(scopes, vec!["local", "shared"]);
+        let local =
+            keeping["drawings"].as_array().unwrap().iter().find(|d| d["scope"] == "local").unwrap();
+        assert!(local["id"].as_i64().unwrap() < 0, "a drawing a chart kept is numbered below the store's");
 
-        // A local drawing is removed through its chart, like any other.
+        // Stop showing what others send and only its own is left.
+        run("chart set --book Macro --chart pos:1 --show-drawings off", &store);
+        let alone = run("chart drawing list --book Macro --chart pos:1 --json", &store);
+        let alone: serde_json::Value = serde_json::from_str(&alone.out).unwrap();
+        assert_eq!(alone["shows_drawings"], false);
+        let scopes: Vec<&str> =
+            alone["drawings"].as_array().unwrap().iter().map(|d| d["scope"].as_str().unwrap()).collect();
+        assert_eq!(scopes, vec!["local"]);
+
+        // A drawing a chart kept is removed through it, like any other.
         let id = local["id"].as_i64().unwrap();
         let out = run(&format!("chart drawing remove --book Macro --chart pos:1 --id {id}"), &store);
         assert_eq!(out.code, 0, "{}", out.err);
-        let grouped = run("chart drawing list --book Macro --chart pos:1 --json", &store);
-        let grouped: serde_json::Value = serde_json::from_str(&grouped.out).unwrap();
-        assert_eq!(grouped["drawings"].as_array().unwrap().len(), 2);
+        let alone = run("chart drawing list --book Macro --chart pos:1 --json", &store);
+        let alone: serde_json::Value = serde_json::from_str(&alone.out).unwrap();
+        assert!(alone["drawings"].as_array().unwrap().is_empty());
     }
 
-    /// Editing a configuration changes every drawing that follows it and
-    /// none that has a look of its own; restoring the defaults puts the nine
-    /// back.
     #[test]
     fn a_configuration_moves_the_drawings_that_follow_it() {
         let store = Store::memory().unwrap();

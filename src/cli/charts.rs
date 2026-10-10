@@ -295,7 +295,11 @@ pub fn new_pane(id: u32, symbol: &str, suffix: Option<&str>) -> Value {
         "session": "extended",
         "show_grid": true,
         "linked": 0,
-        "drawing_sharing": "global",
+        "shows_drawings": true,
+        "sends_drawings": true,
+        // What the chart is called among the drawings it makes, so it can
+        // take them back if it stops sending.
+        "drawing_uid": gtk::glib::uuid_string_random().to_string(),
         "drawings": [],
         "auto_scale": true,
     })
@@ -305,6 +309,12 @@ pub fn new_pane(id: u32, symbol: &str, suffix: Option<&str>) -> Value {
 pub fn copy_pane(from: &Value, id: u32) -> Value {
     let mut copy = from.clone();
     copy["id"] = json!(id);
+    // Its own name among the drawings, not the one it was copied from.
+    // Two charts answering to the same name means a switch on either takes
+    // back what both of them drew — which is how splitting a chart and
+    // turning sending off on the half made the other half's work vanish
+    // as well.
+    copy["drawing_uid"] = json!(gtk::glib::uuid_string_random().to_string());
     copy
 }
 

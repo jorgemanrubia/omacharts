@@ -119,24 +119,29 @@ impl Editing {
     pub fn text(&self, at: omacharts_engine::Place) -> Text {
         let buffer = self.view.buffer();
         let (start, end) = buffer.bounds();
-        let mut spans: Vec<Span> = Vec::new();
-        let mut at_iter = start;
-        while at_iter < end {
-            let mut next = at_iter;
-            // A character at a time, run together below. The buffer can say
-            // where the next tag change is, but only for one tag at a time,
-            // and two tags that change at different places would need both
-            // answers reconciled; a label is a few dozen characters.
-            if !next.forward_char() {
-                break;
-            }
-            spans.push(Span {
-                text: buffer.text(&at_iter, &next, true).to_string(),
-                bold: at_iter.has_tag(&self.bold),
-                italic: at_iter.has_tag(&self.italic),
-            });
-            at_iter = next;
-        }
+        let typed = buffer.text(&start, &end, true).to_string();
+        // A character at a time, by offset, run together below. The buffer
+        // can say where the next tag change is, but only for one tag at a
+        // time, and two tags that change at different places would need
+        // both answers reconciled; a label is a few dozen characters.
+        //
+        // By offset rather than by walking an iterator, because
+        // `forward_char` reports whether what it landed on can be read, and
+        // the position after the last character cannot — so walking until
+        // it says no stops one character early and ate the last one off
+        // every label.
+        let spans: Vec<Span> = typed
+            .chars()
+            .enumerate()
+            .map(|(at_char, ch)| {
+                let at = buffer.iter_at_offset(at_char as i32);
+                Span {
+                    text: ch.to_string(),
+                    bold: at.has_tag(&self.bold),
+                    italic: at.has_tag(&self.italic),
+                }
+            })
+            .collect();
         Text { spans, at }.tidied()
     }
 

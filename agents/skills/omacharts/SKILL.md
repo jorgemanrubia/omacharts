@@ -136,8 +136,10 @@ omacharts status show --json
 
 **Draw on the symbol, not the chart.** "Mark the breakout" is a line or a box
 on what the user is looking at; the chart named only says which symbol, and
-the drawing is then on every chart of it that shares drawings (the default).
-Anchors are a moment and a price. A drawing follows one of nine
+the drawing is then on every chart of that symbol. Two switches per chart say
+how it takes part — `chart set --send-drawings off` keeps what is drawn there
+to that chart, `--show-drawings off` keeps it clear of what others drew — and
+both are on unless somebody turned one off. Anchors are a moment and a price. A drawing follows one of nine
 configurations — `--config N`, shipped as the nine theme presets in order, 1
 being the up colour and 2 the down colour — or gets a look of its own from
 `--color`, `--width`, `--arrow`, `--head`, `--fill`, `--alpha`, `--border`. Prefer a

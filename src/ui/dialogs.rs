@@ -79,6 +79,52 @@ fn is_enter(key: gtk::gdk::Key) -> bool {
     matches!(key, Key::Return | Key::KP_Enter | Key::ISO_Enter)
 }
 
+/// Alt and an arrow walks a dialog's tabs.
+///
+/// `step` is handed `true` for the next tab and `false` for the one before,
+/// and does the switching: the two dialogs that have tabs hold them in
+/// different widgets — a plain stack in one, a preferences dialog's own
+/// pages in the other — and there is nothing to share between them but the
+/// key.
+///
+/// Alt because every other arrow is spoken for: a bare one moves inside a
+/// row, and on the chart behind it nudges a drawing. Alt with an arrow
+/// already means "to the next thing" in this app — it is how the focus
+/// walks from chart to chart.
+///
+/// Caught on the way down, before a row that has the keyboard can take it:
+/// a combo row and a spin button both answer to arrows, and the hand is
+/// usually on one.
+pub fn step_tabs_with_alt(dialog: &impl IsA<gtk::Widget>, step: impl Fn(bool) + 'static) {
+    let keys = gtk::EventControllerKey::new();
+    keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+    keys.connect_key_pressed(move |_, key, _, modifiers| {
+        use gtk::gdk::Key;
+        if !modifiers.contains(gtk::gdk::ModifierType::ALT_MASK) {
+            return glib::Propagation::Proceed;
+        }
+        match key {
+            Key::Right => step(true),
+            Key::Left => step(false),
+            _ => return glib::Propagation::Proceed,
+        }
+        glib::Propagation::Stop
+    });
+    dialog.as_ref().add_controller(keys);
+}
+
+/// The one after `at` in a run of `count`, or the one before, wrapping at
+/// both ends.
+///
+/// Wrapping because there are two of them: stopping at an end would make
+/// the second press do nothing for no reason anybody could see.
+pub fn step_round(at: u32, count: u32, forward: bool) -> u32 {
+    match forward {
+        true => (at + 1) % count,
+        false => (at + count - 1) % count,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

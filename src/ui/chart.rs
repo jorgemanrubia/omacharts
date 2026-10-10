@@ -29,7 +29,7 @@ use gtk::cairo;
 use gtk::prelude::*;
 use crate::ui::text_editor;
 use omacharts_engine::drawings::{
-    self, Anchor, Configurations, Drawing, Grip, Kind as DrawingKind, Projected, Sharing,
+    self, Anchor, Configurations, Drawing, Grip, Kind as DrawingKind, Projected, Scope,
 };
 use omacharts_engine::indicators::{self as indicators, vwap, Output, Profile};
 use omacharts_engine::{
@@ -188,7 +188,11 @@ struct State {
     configs: Configurations,
     /// What this chart shares its drawings with, which is also the scope a
     /// drawing made on it gets.
-    sharing: Sharing,
+    /// Whether a drawing made here goes to the symbol or stays on this
+    /// chart. The other half of the pair — whether what others send is
+    /// shown — is the window's, since it decides which drawings the chart
+    /// is handed in the first place.
+    sends: bool,
     /// Every change to the drawings, as the list was before it, so Ctrl+Z
     /// puts it back; and what Ctrl+Z took away, so Ctrl+Y can put it back
     /// again. One list rather than one event per kind of change, because a
@@ -749,7 +753,7 @@ impl State {
             placing: None,
             next_config: 1,
             configs: Configurations::default(),
-            sharing: Sharing::default(),
+            sends: true,
             undo: Vec::new(),
             redo: Vec::new(),
         }
@@ -836,7 +840,7 @@ impl State {
             false => Drawing::new(kind, anchor, anchor),
         };
         drawing.follow(self.next_config);
-        drawing.scope = self.sharing.scope_for_new();
+        drawing.scope = scope_for(self.sends);
         self.placing = Some(drawing);
         self.drag = Some(Drag::Place { moved: false });
         true
@@ -1081,6 +1085,47 @@ impl State {
 /// Something the window hangs off the chart after building it. Optional
 /// because the chart is constructed before there is a window to tell.
 type Handler<F> = Rc<RefCell<Option<Box<F>>>>;
+
+/// The cursor for a grip: which way it moves what it is on.
+fn grip_cursor(grip: Grip) -> &'static str {
+    match grip {
+        Grip::Top | Grip::Bottom => "ns-resize",
+        Grip::Left | Grip::Right => "ew-resize",
+        // The two diagonals, each naming the corners it runs between.
+        Grip::From | Grip::To => "nwse-resize",
+        Grip::FromTo | Grip::ToFrom => "nesw-resize",
+        Grip::Corner(_) => "move",
+        Grip::Body => "pointer",
+    }
+}
+
+/// How far the hand has to travel before a press counts as a drag.
+///
+/// The desktop's own number — the one it uses to tell a click from the start
+/// of a drag everywhere else — rather than one of ours. It matters here
+/// because a rectangle can be laid down two ways: press-drag-release, or
+/// click, move, click. A press that travels is the first; a press that does
+/// not is the first half of the second. Four pixels, which this used to be,
+/// is less than a deliberate click moves on a sensitive mouse — so a click
+/// meant as "this corner" was read as a whole drag and committed a
+/// rectangle a few pixels across.
+///
+/// Never under eight, which is GTK's own default. A desktop tuned lower is
+/// tuned for dragging things that have nowhere else to go; here the press
+/// has a second meaning waiting for it, and reading it wrong costs a
+/// drawing.
+fn drag_threshold() -> f64 {
+    gtk::Settings::default().map(|s| s.gtk_dnd_drag_threshold()).unwrap_or(8).max(8) as f64
+}
+
+/// Where a drawing made on a chart goes: to the symbol when the chart sends
+/// what is drawn on it, and no further than the chart when it does not.
+fn scope_for(sends: bool) -> Scope {
+    match sends {
+        true => Scope::Shared,
+        false => Scope::Local,
+    }
+}
 
 /// The CSS class the pointer layer carries, so the one other module that has
 /// an opinion about it — the screenshot, which leaves it out — can say so by
@@ -1813,12 +1858,12 @@ impl ChartView {
     }
 
     /// What this chart shares its drawings with.
-    pub fn set_sharing(&self, sharing: Sharing) {
-        self.state.borrow_mut().sharing = sharing;
+    pub fn set_sends(&self, sends: bool) {
+        self.state.borrow_mut().sends = sends;
     }
 
-    pub fn sharing(&self) -> Sharing {
-        self.state.borrow().sharing
+    pub fn sends(&self) -> bool {
+        self.state.borrow().sends
     }
 
     /// Put the selected drawings in front of, or behind, every other, in
@@ -1954,7 +1999,7 @@ impl ChartView {
             let mut state = self.state.borrow_mut();
             let mut drawing = Drawing::text_at(at);
             drawing.follow(state.next_config);
-            drawing.scope = state.sharing.scope_for_new();
+            drawing.scope = scope_for(state.sends);
             drawing.order = state.drawings.iter().map(|d| d.order).max().unwrap_or(0);
             state.remember();
             state.drawings.push(drawing.clone());
@@ -2700,16 +2745,19 @@ impl ChartView {
             };
             let (armed, over_drawing) = {
                 let s = state.borrow();
-                let over = s.drag.is_none()
-                    && s.tool.is_none()
-                    && s.drawing_at(area.width() as f64, area.height() as f64, x, y).is_some();
-                (s.tool.is_some(), over)
+                let over = (s.drag.is_none() && s.tool.is_none())
+                    .then(|| s.drawing_at(area.width() as f64, area.height() as f64, x, y))
+                    .flatten();
+                (s.tool.is_some(), over.map(|(_, grip)| grip))
             };
             area.set_cursor_from_name(Some(match (over_edge, over_control, armed, over_drawing) {
                 (true, _, _, _) => "ns-resize",
                 (_, true, _, _) => "pointer",
                 (_, _, true, _) => "crosshair",
-                (_, _, _, true) => "pointer",
+                // What the grip under the pointer will do, said by the
+                // pointer itself. A handle in the middle of an edge that
+                // looks like every other handle is a handle nobody tries.
+                (_, _, _, Some(grip)) => grip_cursor(grip),
                 _ => "default",
             }));
             notify_hover(&state, &on_hover, &area);
@@ -3054,7 +3102,7 @@ impl ChartView {
                             false => placing.move_grip(Grip::To, anchor),
                         }
                     }
-                    if !moved && offset_x.hypot(offset_y) > 4.0 {
+                    if !moved && offset_x.hypot(offset_y) > drag_threshold() {
                         s.drag = Some(Drag::Place { moved: true });
                     }
                     drop(s);
@@ -6015,18 +6063,24 @@ mod drawing_tests {
     }
 
     /// Alt+R, Alt+3, click: the rectangle laid down follows configuration 3
-    /// and draws into the chart's drawing group.
+    /// and goes where the chart sends what is drawn on it.
     #[test]
     fn a_tool_in_hand_draws_in_the_configuration_chosen_for_it() {
         let mut state = charted(400);
-        state.sharing = Sharing::Group(2);
+        state.sends = false;
         state.tool = Some(DrawingKind::Rect);
         state.next_config = 3;
         assert!(state.begin_placing(800.0, 400.0, 200.0, 150.0));
         let placing = state.placing.clone().expect("a drawing in hand");
         assert_eq!(placing.kind, DrawingKind::Rect);
         assert_eq!(placing.config, Some(3));
-        assert_eq!(placing.scope, drawings::Scope::Group(2));
+        assert_eq!(placing.scope, drawings::Scope::Local, "a chart that does not send keeps it");
+        state.sends = true;
+        assert!(state.begin_placing(800.0, 400.0, 200.0, 150.0));
+        assert_eq!(
+            state.placing.clone().expect("a drawing in hand").scope,
+            drawings::Scope::Shared
+        );
         assert_eq!(state.drag, Some(Drag::Place { moved: false }));
         // Nothing in hand, nothing begins.
         state.tool = None;

@@ -531,7 +531,9 @@ mod tests {
                 session: "extended".to_string(),
                 show_grid: true,
                 linked: LinkGroup::None,
-                drawing_sharing: Default::default(),
+                shows_drawings: true,
+                sends_drawings: true,
+                drawing_uid: String::new(),
                 drawings: Vec::new(),
                 auto_scale: false,
             }],
@@ -589,7 +591,9 @@ mod tests {
             session: "extended".to_string(),
             show_grid: true,
             linked,
-            drawing_sharing: Default::default(),
+            shows_drawings: true,
+            sends_drawings: true,
+            drawing_uid: String::new(),
             drawings: Vec::new(),
             auto_scale: true,
         }
@@ -1183,7 +1187,19 @@ fn popup_menu_with(
     y: f64,
     children: Vec<(String, gtk::Widget)>,
 ) {
-    let popover = gtk::PopoverMenu::from_model_full(model, gtk::PopoverMenuFlags::NESTED);
+    // Sliding submenus, which is GTK's default and not what this used.
+    //
+    // `NESTED` puts each submenu in a popover of its own, and a popover of
+    // its own takes the pointer grab: with one open, a click on the chart
+    // dismissed the submenu and went no further, so the menu behind it sat
+    // there. Hovering `Bar style` and then clicking away left a menu that
+    // would not close. The same flag is why a custom widget inside a
+    // submenu drew nothing — it is a slot a nested popover never fills,
+    // which is how the Configuration submenu came to open empty.
+    //
+    // Sliding keeps the whole menu in one popover: one grab, one click to
+    // dismiss, and widgets of our own render wherever they are put.
+    let popover = gtk::PopoverMenu::from_model(Some(model));
     for (id, child) in &children {
         popover.add_child(child, id);
     }
@@ -1263,13 +1279,27 @@ struct StoredPane {
     /// this was remembered, and every one of those was fitting itself.
     #[serde(default = "fits_itself")]
     auto_scale: bool,
-    /// What the chart shares its drawings with. A book written before
-    /// drawings existed shares globally, which is what a new chart does.
+    /// Whether the chart shows what other charts of its symbol draw, and
+    /// whether it sends them what is drawn here. Both on by default, which
+    /// is what a book written before either existed gets — and what the
+    /// drawing groups these replaced did for every chart that had not been
+    /// put in one.
+    #[serde(default = "yes")]
+    shows_drawings: bool,
+    #[serde(default = "yes")]
+    sends_drawings: bool,
+    /// What this chart is called among the drawings it has made. Empty for
+    /// a chart written down before drawings remembered who drew them, which
+    /// simply means none of them name it.
     #[serde(default)]
-    drawing_sharing: omacharts_engine::Sharing,
+    drawing_uid: String,
     /// The drawings that are this chart's alone.
     #[serde(default)]
     drawings: Vec<omacharts_engine::Drawing>,
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// What a chart's price scale does until somebody takes hold of it.
@@ -1540,7 +1570,6 @@ pub struct Window {
     grid_action: RefCell<Option<gio::SimpleAction>>,
     auto_scale_action: RefCell<Option<gio::SimpleAction>>,
     drawing_config_action: RefCell<Option<gio::SimpleAction>>,
-    drawing_scope_action: RefCell<Option<gio::SimpleAction>>,
     drawing_settings_action: RefCell<Option<gio::SimpleAction>>,
     /// The drawing tools, on the left.
     drawing_bar: RefCell<Option<Rc<crate::ui::drawing_bar::DrawingBar>>>,
@@ -1694,7 +1723,6 @@ impl Window {
             grid_action: RefCell::new(None),
             auto_scale_action: RefCell::new(None),
             drawing_config_action: RefCell::new(None),
-            drawing_scope_action: RefCell::new(None),
             drawing_settings_action: RefCell::new(None),
             drawing_bar: RefCell::new(None),
             corner_handle: RefCell::new(None),
@@ -2796,7 +2824,9 @@ impl Window {
                     session: pane.session.get().key().to_string(),
                     show_grid: pane.show_grid.get(),
                     linked: pane.linked.get(),
-                    drawing_sharing: pane.drawing_sharing.get(),
+                    shows_drawings: pane.shows_drawings.get(),
+                    sends_drawings: pane.sends_drawings.get(),
+                    drawing_uid: pane.uid.borrow().clone(),
                     drawings: pane.local_drawings.borrow().clone(),
                     auto_scale: pane.view.price_auto(),
                 }
@@ -2960,8 +2990,15 @@ impl Window {
                 stored.show_grid,
                 stored.linked,
             );
-            pane.drawing_sharing.set(stored.drawing_sharing);
-            pane.view.set_sharing(stored.drawing_sharing);
+            pane.shows_drawings.set(stored.shows_drawings);
+            pane.sends_drawings.set(stored.sends_drawings);
+            pane.view.set_sends(stored.sends_drawings);
+            // Keep the name it was written down under, so the drawings that
+            // name it go on naming it. A chart that has none keeps the one
+            // it was just minted.
+            if !stored.drawing_uid.is_empty() {
+                *pane.uid.borrow_mut() = stored.drawing_uid.clone();
+            }
             *pane.local_drawings.borrow_mut() = stored.drawings.clone();
             pane.view.set_price_auto(stored.auto_scale);
             restored.push((pane, stored));
@@ -6170,6 +6207,9 @@ impl Window {
                 return;
             }
             DrawingEvent::Added(mut drawing) => {
+                // Stamped with the chart that made it, so the chart can
+                // take it back if it stops sending.
+                drawing.origin = Some(pane.uid.borrow().clone());
                 if drawing.is_local() {
                     drawing.id = next_local_id(&pane.local_drawings.borrow());
                     pane.local_drawings.borrow_mut().push(drawing);
@@ -6214,10 +6254,13 @@ impl Window {
                 // gone; whatever is in the list is back, under its own id.
                 let (locals, shared): (Vec<_>, Vec<_>) = list.into_iter().partition(|d| d.id < 0);
                 *pane.local_drawings.borrow_mut() = locals;
-                let sharing = pane.drawing_sharing.get();
+                let shows = pane.shows_drawings.get();
                 let keep: std::collections::HashSet<i64> = shared.iter().map(|d| d.id).collect();
                 for d in self.store.drawings(&instrument.symbol, suffix) {
-                    if sharing.shows(d.scope) && !keep.contains(&d.id) {
+                    // Only what this chart could see is this chart's to
+                    // undo: a chart that is not shown the symbol's drawings
+                    // cannot have removed one.
+                    if shows && !keep.contains(&d.id) {
                         self.store.remove_drawing(d.id);
                     }
                 }
@@ -6249,9 +6292,12 @@ impl Window {
 
     /// What one chart sees, out of what is drawn on its symbol.
     fn drawings_for(&self, pane: &ChartPane, shared: &[omacharts_engine::Drawing]) -> Vec<omacharts_engine::Drawing> {
-        let sharing = pane.drawing_sharing.get();
-        let mut all: Vec<omacharts_engine::Drawing> =
-            shared.iter().filter(|d| sharing.shows(d.scope)).cloned().collect();
+        // The symbol's, when this chart is shown what others send; and its
+        // own either way, which is the half a toggle never takes away.
+        let mut all: Vec<omacharts_engine::Drawing> = match pane.shows_drawings.get() {
+            true => shared.to_vec(),
+            false => Vec::new(),
+        };
         all.extend(pane.local_drawings.borrow().iter().cloned());
         omacharts_engine::drawings::sort_for_painting(&mut all);
         all
@@ -6272,16 +6318,72 @@ impl Window {
         }
     }
 
-    /// What the focused chart shares its drawings with, from the settings
-    /// dialog or a command. The chart is shown its drawings again, since
-    /// the answer to "which do I see" just changed.
-    pub fn set_drawing_sharing(self: &Rc<Self>, sharing: omacharts_engine::Sharing) {
+    /// Whether the focused chart is shown what other charts of its symbol
+    /// draw. It is shown its drawings again, since the answer to "which do
+    /// I see" just changed.
+    pub fn set_shows_drawings(self: &Rc<Self>, shows: bool) {
         let pane = self.focused_pane();
-        pane.drawing_sharing.set(sharing);
-        pane.view.set_sharing(sharing);
+        pane.shows_drawings.set(shows);
         let instrument = pane.instrument.borrow().clone();
         if let Some(instrument) = instrument {
             self.reload_drawings(&instrument.symbol, instrument.suffix.as_deref());
+        }
+        self.save_workspace();
+    }
+
+    /// Whether what is drawn on the focused chart goes to the symbol.
+    ///
+    /// Live, not only for what is drawn next: turning it off takes back the
+    /// drawings this chart sent, and turning it on sends what it has been
+    /// keeping. A switch that only governed the future would read as doing
+    /// nothing at all — the drawing you were looking at when you flicked it
+    /// would sit there on the other chart.
+    ///
+    /// Only this chart's own move. Each drawing remembers which chart made
+    /// it, so another chart's work is never withdrawn by a switch on this
+    /// one — and a drawing made before charts had names belongs to none of
+    /// them and stays where it is.
+    pub fn set_sends_drawings(self: &Rc<Self>, sends: bool) {
+        let pane = self.focused_pane();
+        if pane.sends_drawings.get() == sends {
+            return;
+        }
+        pane.sends_drawings.set(sends);
+        pane.view.set_sends(sends);
+        let instrument = pane.instrument.borrow().clone();
+        if let Some(instrument) = instrument {
+            let (symbol, suffix) = (instrument.symbol.clone(), instrument.suffix.clone());
+            let suffix = suffix.as_deref();
+            let mine = pane.uid.borrow().clone();
+            match sends {
+                // Out of this chart's keeping and on to the symbol.
+                true => {
+                    let keeping: Vec<omacharts_engine::Drawing> =
+                        pane.local_drawings.borrow_mut().drain(..).collect();
+                    for mut drawing in keeping {
+                        drawing.id = 0;
+                        drawing.scope = omacharts_engine::Scope::Shared;
+                        drawing.origin = Some(mine.clone());
+                        self.store.add_drawing(&symbol, suffix, &drawing);
+                    }
+                }
+                // Back off the symbol and into this chart's keeping.
+                false => {
+                    let sent: Vec<omacharts_engine::Drawing> = self
+                        .store
+                        .drawings(&symbol, suffix)
+                        .into_iter()
+                        .filter(|d| d.origin.as_deref() == Some(mine.as_str()))
+                        .collect();
+                    for mut drawing in sent {
+                        self.store.remove_drawing(drawing.id);
+                        drawing.id = next_local_id(&pane.local_drawings.borrow());
+                        drawing.scope = omacharts_engine::Scope::Local;
+                        pane.local_drawings.borrow_mut().push(drawing);
+                    }
+                }
+            }
+            self.reload_drawings(&symbol, suffix);
         }
         self.save_workspace();
     }
@@ -6337,9 +6439,6 @@ impl Window {
             action.set_enabled(one_kind);
             action.set_state(&(drawing.config.unwrap_or(0) as i32).to_variant());
         }
-        if let Some(action) = self.drawing_scope_action.borrow().as_ref() {
-            action.set_state(&drawing.scope.key().to_variant());
-        }
 
         let menu = gio::Menu::new();
         let edit = gio::Menu::new();
@@ -6394,18 +6493,9 @@ impl Window {
         // of this drawing in each, which is more than a swatch in a row
         // could ever have shown.
         //
-        // Who else sees it, as a radio over the scopes, the way the dialog
-        // offers it.
-        let scopes = gio::Menu::new();
-        for scope in omacharts_engine::Scope::all() {
-            let item = gio::MenuItem::new(Some(&scope.label()), None);
-            item.set_action_and_target_value(
-                Some("chart.drawing-scope"),
-                Some(&scope.key().to_variant()),
-            );
-            scopes.append_item(&item);
-        }
-        edit.append_submenu(Some("Shown on"), &scopes);
+        // And no "Shown on" either. Where a drawing goes is the chart's
+        // business now, in two switches at the foot of its settings, rather
+        // than a question asked again of every drawing.
         menu.append_section(None, &edit);
 
         let order = gio::Menu::new();
@@ -6910,22 +7000,6 @@ impl Window {
         });
         actions.add_action(&drawing_config);
         *self.drawing_config_action.borrow_mut() = Some(drawing_config);
-
-        // Stateful over the scope's key, so the menu marks who sees it.
-        let drawing_scope = gio::SimpleAction::new_stateful(
-            "drawing-scope",
-            Some(glib::VariantTy::STRING),
-            &"global".to_variant(),
-        );
-        let this = self.clone();
-        drawing_scope.connect_activate(move |action, target| {
-            let Some(key) = target.and_then(|t| t.str().map(str::to_string)) else { return };
-            let Some(scope) = omacharts_engine::Scope::from_key(&key) else { return };
-            action.set_state(&key.to_variant());
-            this.focused_pane().view.edit_selected(move |d| d.scope = scope);
-        });
-        actions.add_action(&drawing_scope);
-        *self.drawing_scope_action.borrow_mut() = Some(drawing_scope);
 
         let drawing_front = gio::SimpleAction::new("drawing-front", None);
         let this = self.clone();

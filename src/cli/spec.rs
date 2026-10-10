@@ -198,11 +198,9 @@ const PLACES: &[&str] = &[
 const ARROWS: &[&str] = &["none", "end", "start", "both"];
 /// The shapes an arrowhead comes in.
 const HEADS: &[&str] = &["filled", "open", "barb"];
-/// What a chart shares its drawings with.
-const SHARINGS: &[&str] = &[
-    "global", "group-1", "group-2", "group-3", "group-4", "group-5", "group-6", "group-7",
-    "group-8", "group-9", "off",
-];
+/// Who else sees a drawing: the symbol's charts, or only the one it was
+/// drawn on.
+const SCOPES: &[&str] = &["shared", "local"];
 /// How a drawing's anchor is written: a moment and a price.
 const ANCHOR: &str = "WHEN,PRICE — a date `2026-09-01`, a moment `2026-09-01T14:30`, or unix seconds; then the price";
 
@@ -684,8 +682,10 @@ pub const SURFACE: &[Noun] = &[
                     Flag::valued("link", "GROUP", "the link group it joins and then leads, or `none` to leave one")
                         .of(LINKS),
                     Flag::valued("grid", "BOOL", "draw the grid").of(&["on", "off"]),
-                    Flag::valued("drawing-sharing", "GROUP", "which drawings of its symbol the chart shows and draws into")
-                        .of(SHARINGS),
+                    Flag::valued("show-drawings", "BOOL", "whether the chart shows what other charts of its symbol draw")
+                        .of(SWITCHES),
+                    Flag::valued("send-drawings", "BOOL", "whether what is drawn here goes to the symbol's other charts")
+                        .of(SWITCHES),
                     Flag::valued("auto-scale", "BOOL", "fit the price axis to the visible bars, or hold it still")
                         .of(&["on", "off"]),
                 ],
@@ -770,7 +770,8 @@ pub const SURFACE: &[Noun] = &[
                     Flag::valued("border", "BOOL", "whether a box has an edge").of(SWITCHES),
                     Flag::valued("fill", "COLOUR", "what a box is filled with: a preset name or #rrggbb"),
                     Flag::valued("alpha", "F", "how much of a box's fill shows, 0-1"),
-                    Flag::valued("scope", "SCOPE", "who else sees it: local, global, or group-1 to group-9 (default: the chart's own sharing)"),
+                    Flag::valued("scope", "SCOPE", "who else sees it (default: shared, unless the chart does not send)")
+                        .of(SCOPES),
                     Flag::valued("order", "WHERE", "bring it to the front or send it to the back").of(&["front", "back"]),
                     Flag::valued("text", "WORDS", "what it says: the whole of a text drawing, a label on any other kind; empty takes the label off"),
                     Flag::valued("text-at", "WHERE", "where a figure's label sits in it").of(PLACES),
@@ -1042,8 +1043,14 @@ const STORED_FIELDS: &[(&str, &str, &str)] = &[
     ("session", "chart set", "--session"),
     ("show_grid", "chart set", "--grid"),
     ("linked", "chart set", "--link"),
-    ("drawing_sharing", "chart set", "--drawing-sharing"),
+    ("shows_drawings", "chart set", "--show-drawings"),
+    ("sends_drawings", "chart set", "--send-drawings"),
     ("drawings", "chart drawing", ""),
+    (
+        "drawing_uid",
+        "",
+        "identity rather than state: what the chart is called among the drawings it made,          minted once so that turning sending off takes back its own and nobody else's",
+    ),
     ("auto_scale", "chart set", "--auto-scale"),
     ("name", "chartbook rename", ""),
     ("layout", "chart split", ""),

@@ -555,17 +555,36 @@ when the theme changes; `#rrggbb` is exactly that colour, and the theme leaves
 it alone. The shipped configurations are the nine presets in order, so
 configuration 1 is the up colour and 2 the down colour.
 
-**Drawings belong to the symbol, and a chart's drawing group says which it
-shows.** A chart shares globally by default: every chart of the symbol sees
-what it draws. `chart set --drawing-sharing group-3` puts a chart in group 3,
-where it sees the global drawings and group 3's; `--drawing-sharing off`
-keeps what is drawn on it to itself. A drawing's own `--scope` — `global`,
-`group-N` or `local` — defaults to the chart's sharing; a local drawing lives
-with its chart rather than with the symbol, and is numbered below zero so one
-id names a drawing wherever it lives. `list` names the symbol and the sharing;
-`clear` removes everything the chart can see.
+**Drawings belong to the symbol, and two switches say how a chart takes part.**
+Both are on by default, so a drawing made on a symbol is a drawing about the
+symbol: every chart of it sees what every other draws.
 
-By hand: Ctrl+D shows the tools, Alt+L, Alt+R, Alt+C and Alt+T arm them
+```
+omacharts chart set --send-drawings off
+omacharts chart set --show-drawings off
+```
+
+`--send-drawings off` keeps what is drawn on that chart to that chart —
+useful for sketching on one view without it appearing on every other.
+`--show-drawings off` keeps the chart clear of what is already drawn on the
+symbol; its own are still there either way. The two are independent: a chart
+that shows but does not send is a reference view.
+
+Both switches are live, not only about what comes next. Turning sending off
+takes back the drawings that chart sent — they stay on it and come off the
+others — and turning it on sends back what it has been keeping. Only its own
+move: each drawing remembers which chart made it, so a switch on one chart
+never withdraws another's work, and a drawing made before charts recorded
+that belongs to none of them and stays where it is.
+
+A drawing's own `--scope` is `shared` or `local`, and defaults to what the
+chart sends. A local drawing lives with its chart rather than with the symbol
+and is numbered below zero, so one id names a drawing wherever it lives.
+`list` names the symbol and both switches; `clear` removes everything the
+chart can see.
+
+By hand: Ctrl+D shows the tools, Alt+L, Alt+H, Alt+A, Alt+Z, Alt+R, Alt+C and
+Alt+T arm them
 (Escape is the pointer again), a press and a second press (or one
 press-and-drag) place a drawing — except the text tool, where one press puts
 the caret down and you type on the chart — a click selects one (Shift+click or Ctrl+click adds or removes

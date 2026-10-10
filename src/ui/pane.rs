@@ -85,7 +85,18 @@ pub struct ChartPane {
     pub linked: Cell<LinkGroup>,
     /// What this chart shares its drawings with: the global group, one of
     /// the nine, or nothing.
-    pub drawing_sharing: Cell<omacharts_engine::Sharing>,
+    /// Whether this chart shows the drawings other charts of its symbol
+    /// send, and whether it sends its own. Both on by default: a drawing
+    /// made on a symbol is usually a drawing about the symbol.
+    pub shows_drawings: Cell<bool>,
+    pub sends_drawings: Cell<bool>,
+    /// What this chart is called among the drawings it has made.
+    ///
+    /// Not the pane's id, which is handed out afresh every time the window
+    /// rebuilds the arrangement — a drawing that named one would belong to
+    /// a different chart after the next split. Minted once and written down
+    /// with the chart.
+    pub uid: RefCell<String>,
     /// The drawings that are this chart's alone, kept with it rather than
     /// in the store, since they belong to no symbol but to this pane.
     pub local_drawings: RefCell<Vec<omacharts_engine::Drawing>>,
@@ -274,7 +285,9 @@ impl ChartPane {
             session: Cell::new(session),
             show_grid: Cell::new(show_grid),
             linked: Cell::new(linked),
-            drawing_sharing: Cell::new(omacharts_engine::Sharing::default()),
+            shows_drawings: Cell::new(true),
+            sends_drawings: Cell::new(true),
+            uid: RefCell::new(gtk::glib::uuid_string_random().to_string()),
             local_drawings: RefCell::new(Vec::new()),
             link_colour,
         })

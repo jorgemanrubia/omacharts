@@ -1131,149 +1131,66 @@ impl Configurations {
 
 static DEFAULTS: std::sync::OnceLock<Configurations> = std::sync::OnceLock::new();
 
-/// Who a drawing is shared with.
+/// Whether a drawing belongs to the symbol or to the chart it was drawn on.
 ///
-/// Every chart showing the symbol sees a global drawing; the charts in group
-/// N see group N's; a local drawing belongs to the chart it was drawn on and
-/// to nothing else. Which of these a new drawing gets is the chart's own
-/// setting, so a chart in group 3 draws into group 3 without being asked.
+/// Two answers, and there were four: a drawing used to be able to belong to
+/// one of nine numbered groups as well, with each chart choosing a group to
+/// draw into and to read from. That bought a kind of sharing nobody asked
+/// twice for and cost a question — *which group?* — on every drawing, every
+/// chart and every command. What is left is the distinction that was doing
+/// the work: a drawing is the symbol's, or it is this chart's.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Scope {
+    /// Drawn on a chart that does not send, and stays with it.
     Local,
+    /// The symbol's, and on every chart of it that shows what others send.
     #[default]
-    Global,
-    Group(u8),
+    Shared,
 }
 
 impl Scope {
-    pub fn key(self) -> String {
+    pub fn key(self) -> &'static str {
         match self {
-            Scope::Local => "local".to_string(),
-            Scope::Global => "global".to_string(),
-            Scope::Group(n) => format!("group-{n}"),
+            Scope::Local => "local",
+            Scope::Shared => "shared",
         }
     }
 
-    pub fn label(self) -> String {
+    pub fn label(self) -> &'static str {
         match self {
-            Scope::Local => "This chart only".to_string(),
-            Scope::Global => "Every chart".to_string(),
-            Scope::Group(n) => format!("Drawing group {n}"),
+            Scope::Local => "This chart only",
+            Scope::Shared => "Every chart of the symbol",
         }
     }
 
     pub fn from_key(key: &str) -> Option<Scope> {
         match key.to_lowercase().as_str() {
             "local" => Some(Scope::Local),
-            "global" => Some(Scope::Global),
-            other => other
-                .strip_prefix("group-")
-                .and_then(|n| n.parse::<u8>().ok())
-                .filter(|n| (1..=9).contains(n))
-                .map(Scope::Group),
+            // "global" is what shared drawings were written down as, and a
+            // "group-N" is one that belonged to a group that no longer
+            // exists. Both were drawings somebody meant to share, so both
+            // come back shared rather than quietly becoming private to
+            // whichever chart happens to open first.
+            "shared" | "global" => Some(Scope::Shared),
+            other => other.starts_with("group-").then_some(Scope::Shared),
         }
     }
 
-    /// Every scope a drawing can have, in the order a menu lists them.
-    pub fn all() -> Vec<Scope> {
-        let mut all = vec![Scope::Local, Scope::Global];
-        all.extend((1..=9).map(Scope::Group));
-        all
+    pub fn all() -> [Scope; 2] {
+        [Scope::Shared, Scope::Local]
     }
 }
 
 impl Serialize for Scope {
-    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(&self.key())
+    fn serialize<S: serde::Serializer>(&self, out: S) -> Result<S::Ok, S::Error> {
+        out.serialize_str(self.key())
     }
 }
 
 impl<'de> Deserialize<'de> for Scope {
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Scope, D::Error> {
-        let key = String::deserialize(d)?;
-        Scope::from_key(&key).ok_or_else(|| serde::de::Error::custom(format!("{key:?} is not a drawing scope")))
-    }
-}
-
-/// What a chart shares its drawings with: the global group, one of the nine,
-/// or nothing, in which case what is drawn on it stays on it.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum Sharing {
-    #[default]
-    Global,
-    Group(u8),
-    Off,
-}
-
-impl Sharing {
-    pub fn key(self) -> String {
-        match self {
-            Sharing::Global => "global".to_string(),
-            Sharing::Group(n) => format!("group-{n}"),
-            Sharing::Off => "off".to_string(),
-        }
-    }
-
-    pub fn label(self) -> String {
-        match self {
-            Sharing::Global => "Global drawing group".to_string(),
-            Sharing::Group(n) => format!("Drawing group {n}"),
-            Sharing::Off => "Not shared".to_string(),
-        }
-    }
-
-    pub fn from_key(key: &str) -> Option<Sharing> {
-        match key.to_lowercase().as_str() {
-            "global" => Some(Sharing::Global),
-            "off" | "none" => Some(Sharing::Off),
-            other => other
-                .strip_prefix("group-")
-                .and_then(|n| n.parse::<u8>().ok())
-                .filter(|n| (1..=9).contains(n))
-                .map(Sharing::Group),
-        }
-    }
-
-    pub fn all() -> Vec<Sharing> {
-        let mut all = vec![Sharing::Global];
-        all.extend((1..=9).map(Sharing::Group));
-        all.push(Sharing::Off);
-        all
-    }
-
-    /// The scope a drawing made on a chart with this sharing gets.
-    pub fn scope_for_new(self) -> Scope {
-        match self {
-            Sharing::Global => Scope::Global,
-            Sharing::Group(n) => Scope::Group(n),
-            Sharing::Off => Scope::Local,
-        }
-    }
-
-    /// Whether a chart with this sharing shows a shared drawing of its
-    /// symbol. Local drawings are not shared and are not asked.
-    pub fn shows(self, scope: Scope) -> bool {
-        match (self, scope) {
-            (_, Scope::Local) => false,
-            (Sharing::Off, _) => false,
-            (Sharing::Global, Scope::Global) => true,
-            (Sharing::Global, Scope::Group(_)) => false,
-            (Sharing::Group(_), Scope::Global) => true,
-            (Sharing::Group(mine), Scope::Group(theirs)) => mine == theirs,
-        }
-    }
-}
-
-impl Serialize for Sharing {
-    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(&self.key())
-    }
-}
-
-impl<'de> Deserialize<'de> for Sharing {
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Sharing, D::Error> {
-        let key = String::deserialize(d)?;
-        Sharing::from_key(&key).ok_or_else(|| serde::de::Error::custom(format!("{key:?} is not a sharing setting")))
+    fn deserialize<D: serde::Deserializer<'de>>(input: D) -> Result<Scope, D::Error> {
+        let key = String::deserialize(input)?;
+        Ok(Scope::from_key(&key).unwrap_or_default())
     }
 }
 
@@ -1299,6 +1216,16 @@ pub struct Drawing {
     /// The look set by hand. Ignored while `config` is some.
     #[serde(default)]
     pub style: Option<Style>,
+    /// Which chart drew it, for a drawing that is the symbol's.
+    ///
+    /// A chart that stops sending has to take back the drawings it sent,
+    /// and "the ones it sent" is a question nothing could answer: a shared
+    /// drawing sits with the symbol, and the symbol does not remember who
+    /// put it there. So it is written down. Nothing reads it to draw
+    /// anything, and a drawing written before charts had names has none —
+    /// which means no chart claims it, and no chart can withdraw it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
     /// The corners of a zig-zag, first to last, and empty for every other
     /// kind.
     ///
@@ -1353,8 +1280,9 @@ impl Drawing {
             config: Some(1),
             style: None,
             points: Vec::new(),
+            origin: None,
             started_from: None,
-            scope: Scope::Global,
+            scope: Scope::Shared,
             order: 0,
             text: Text::default(),
         }
@@ -1469,8 +1397,8 @@ impl Drawing {
         self.started_from = None;
     }
 
-    /// Whether this drawing lives in the store (shared) rather than with a
-    /// chart (local).
+    /// Whether this drawing lives with the chart it was drawn on rather
+    /// than with the symbol.
     pub fn is_local(&self) -> bool {
         self.scope == Scope::Local
     }
@@ -1481,6 +1409,9 @@ impl Drawing {
         match grip {
             Grip::From => Some(&mut self.from),
             Grip::To => Some(&mut self.to),
+            // Half of one anchor each, so there is no whole anchor to hand
+            // back; `move_grip` is the way to move them.
+            Grip::Top | Grip::Bottom | Grip::Left | Grip::Right => None,
             Grip::FromTo | Grip::ToFrom | Grip::Body => None,
             Grip::Corner(n) => self.points.get_mut(n),
         }
@@ -1528,6 +1459,24 @@ impl Drawing {
                 self.to.ts = at.ts;
                 self.from.price = at.price;
             }
+            // One edge, which is one field of one anchor: whichever of the
+            // two is on that side.
+            Grip::Top | Grip::Bottom => {
+                let top = self.from.price >= self.to.price;
+                let anchor = match (grip == Grip::Top) == top {
+                    true => &mut self.from,
+                    false => &mut self.to,
+                };
+                anchor.price = at.price;
+            }
+            Grip::Left | Grip::Right => {
+                let left = self.from.ts <= self.to.ts;
+                let anchor = match (grip == Grip::Left) == left {
+                    true => &mut self.from,
+                    false => &mut self.to,
+                };
+                anchor.ts = at.ts;
+            }
             // Answered above, before the kinds that have fixed ends.
             Grip::Corner(_) | Grip::Body => {}
         }
@@ -1561,7 +1510,18 @@ impl Drawing {
             // The ellipse is dragged by the corners of the box it is drawn
             // in, exactly as the box is, which is what lets it be shaped to
             // anything rather than held round.
-            Kind::Rect | Kind::Ellipse => &[Grip::From, Grip::To, Grip::FromTo, Grip::ToFrom],
+            // The four corners, which move two edges at once, and the
+            // middle of each edge, which moves one.
+            Kind::Rect | Kind::Ellipse => &[
+                Grip::From,
+                Grip::To,
+                Grip::FromTo,
+                Grip::ToFrom,
+                Grip::Top,
+                Grip::Bottom,
+                Grip::Left,
+                Grip::Right,
+            ],
             // None. A word's size is its font size, set from the keyboard or
             // its properties, and a grip on its corner would promise a
             // stretch that is not on offer.
@@ -1581,6 +1541,17 @@ pub enum Grip {
     FromTo,
     /// And the one at `to`'s moment and `from`'s price.
     ToFrom,
+    /// The middle of one of a box's four edges: drag it and only that edge
+    /// moves, so the shape changes in one direction and holds still in the
+    /// other.
+    ///
+    /// Named for where they sit on screen rather than for an anchor, since
+    /// which anchor is the top one depends on which way the box was drawn
+    /// and nobody dragging its top edge is thinking about that.
+    Top,
+    Bottom,
+    Left,
+    Right,
     /// One corner of a zig-zag, by its place in the run.
     Corner(usize),
     /// The line itself, or the inside of the box: drag to move the whole
@@ -1655,6 +1626,17 @@ impl Projected {
             (_, Grip::To) => Some(self.to),
             (Kind::Rect | Kind::Ellipse, Grip::FromTo) => Some((self.from.0, self.to.1)),
             (Kind::Rect | Kind::Ellipse, Grip::ToFrom) => Some((self.to.0, self.from.1)),
+            (Kind::Rect | Kind::Ellipse, edge) => {
+                let (left, top, w, h) = self.bounds();
+                let (mid_x, mid_y) = (left + w / 2.0, top + h / 2.0);
+                match edge {
+                    Grip::Top => Some((mid_x, top)),
+                    Grip::Bottom => Some((mid_x, top + h)),
+                    Grip::Left => Some((left, mid_y)),
+                    Grip::Right => Some((left + w, mid_y)),
+                    _ => None,
+                }
+            }
             _ => None,
         }
     }
@@ -1663,7 +1645,17 @@ impl Projected {
     /// body, because a grip sits on the body and is the harder target.
     pub fn hit(&self, x: f64, y: f64) -> Option<Grip> {
         let corners = (0..self.corners.len()).map(Grip::Corner);
-        for grip in [Grip::From, Grip::To, Grip::FromTo, Grip::ToFrom].into_iter().chain(corners) {
+        let fixed = [
+            Grip::From,
+            Grip::To,
+            Grip::FromTo,
+            Grip::ToFrom,
+            Grip::Top,
+            Grip::Bottom,
+            Grip::Left,
+            Grip::Right,
+        ];
+        for grip in fixed.into_iter().chain(corners) {
             if let Some(at) = self.grip(grip)
                 && distance(at, (x, y)) <= GRIP_REACH
             {
@@ -1970,16 +1962,16 @@ mod shape_tests {
     fn a_drawing_round_trips_through_json_and_fills_in_what_an_old_one_lacks() {
         let mut drawing = Drawing::new(Kind::Rect, Anchor::new(1_700_000_000, 101.5), Anchor::new(1_700_086_400, 99.0));
         drawing.follow(4);
-        drawing.scope = Scope::Group(3);
+        drawing.scope = Scope::Local;
         let json = serde_json::to_string(&drawing).unwrap();
-        assert!(json.contains("\"scope\":\"group-3\""), "{json}");
+        assert!(json.contains("\"scope\":\"local\""), "{json}");
         assert_eq!(serde_json::from_str::<Drawing>(&json).unwrap(), drawing);
 
         let bare = r#"{"kind":"line","from":{"ts":1,"price":2.0},"to":{"ts":3,"price":4.0}}"#;
         let old: Drawing = serde_json::from_str(bare).unwrap();
         assert_eq!(old.config, Some(1));
         assert_eq!(old.style, None);
-        assert_eq!(old.scope, Scope::Global);
+        assert_eq!(old.scope, Scope::Shared);
         assert_eq!(old.id, 0);
     }
 
@@ -2033,24 +2025,25 @@ mod shape_tests {
         assert_eq!(configs.of(Kind::Rect, 40), configs.of(Kind::Rect, 9));
     }
 
+    /// Two scopes, and the words every old one was written down as still
+    /// read: a drawing somebody meant to share comes back shared rather
+    /// than quietly becoming private to whichever chart opens first.
     #[test]
-    fn sharing_decides_what_a_chart_shows_and_what_it_draws_into() {
-        assert!(Sharing::Global.shows(Scope::Global));
-        assert!(!Sharing::Global.shows(Scope::Group(2)));
-        assert!(Sharing::Group(2).shows(Scope::Global));
-        assert!(Sharing::Group(2).shows(Scope::Group(2)));
-        assert!(!Sharing::Group(2).shows(Scope::Group(3)));
-        assert!(!Sharing::Off.shows(Scope::Global));
-        assert!(!Sharing::Group(1).shows(Scope::Local), "local is never shared");
-        assert_eq!(Sharing::Off.scope_for_new(), Scope::Local);
-        assert_eq!(Sharing::Group(5).scope_for_new(), Scope::Group(5));
+    fn a_scope_is_spelled_the_way_it_is_written_down() {
         for scope in Scope::all() {
-            assert_eq!(Scope::from_key(&scope.key()), Some(scope));
+            assert_eq!(Scope::from_key(scope.key()), Some(scope));
+            let json = serde_json::to_string(&scope).unwrap();
+            assert_eq!(serde_json::from_str::<Scope>(&json).unwrap(), scope);
         }
-        for sharing in Sharing::all() {
-            assert_eq!(Sharing::from_key(&sharing.key()), Some(sharing));
-        }
-        assert_eq!(Scope::from_key("group-0"), None);
+        // What the groups left behind.
+        assert_eq!(Scope::from_key("global"), Some(Scope::Shared));
+        assert_eq!(Scope::from_key("group-3"), Some(Scope::Shared));
+        assert_eq!(Scope::from_key("group-nonsense"), Some(Scope::Shared));
+        assert_eq!(Scope::from_key("LOCAL"), Some(Scope::Local));
+        assert_eq!(Scope::from_key("whatever"), None);
+        // And a drawing written down with one of them reads back shared.
+        let old = r#"{"kind":"line","from":{"ts":1,"price":2.0},"to":{"ts":3,"price":4.0},"scope":"group-7"}"#;
+        assert_eq!(serde_json::from_str::<Drawing>(old).unwrap().scope, Scope::Shared);
     }
 
     #[test]
@@ -2302,9 +2295,14 @@ mod ellipse_tests {
     fn an_ellipse_is_picked_on_the_curve_and_not_in_the_corners() {
         let oval = ellipse((0.0, 0.0), (200.0, 100.0));
         assert_eq!(oval.hit(100.0, 50.0), Some(Grip::Body), "the middle missed");
-        // Just inside the left end and the top, both on the curve.
-        assert_eq!(oval.hit(4.0, 50.0), Some(Grip::Body), "the left end missed");
-        assert_eq!(oval.hit(100.0, 4.0), Some(Grip::Body), "the top missed");
+        // The ends of the two axes are where the edge grips sit, so they
+        // answer as those rather than as the shape.
+        assert_eq!(oval.hit(4.0, 50.0), Some(Grip::Left));
+        assert_eq!(oval.hit(100.0, 4.0), Some(Grip::Top));
+        // The curve between them is the shape.
+        let quarter = std::f64::consts::FRAC_1_SQRT_2;
+        let on_curve = (100.0 + 100.0 * quarter, 50.0 - 50.0 * quarter);
+        assert_eq!(oval.hit(on_curve.0, on_curve.1), Some(Grip::Body), "the curve missed");
         // The bounding box's corners, which are well outside the curve.
         for corner in [(0.0, 0.0), (200.0, 0.0), (0.0, 100.0), (200.0, 100.0)] {
             // The corners are also where two grips sit, and a grip is a hit.
@@ -2837,5 +2835,66 @@ mod zigzag_tests {
         let style = Style::zigzag(Preset::Blue);
         assert_eq!(style.arrow, Arrow::End);
         assert_eq!(style.head, ArrowHead::ALL[1]);
+    }
+}
+
+#[cfg(test)]
+mod edge_grip_tests {
+    use super::*;
+
+    fn boxed() -> Drawing {
+        Drawing::new(Kind::Rect, Anchor::new(0, 100.0), Anchor::new(10, 80.0))
+    }
+
+    /// A box and an ellipse wear eight: four corners and the middle of each
+    /// edge.
+    #[test]
+    fn a_bounded_figure_wears_eight_grips() {
+        for kind in [Kind::Rect, Kind::Ellipse] {
+            let drawing = Drawing::new(kind, Anchor::new(0, 1.0), Anchor::new(10, 2.0));
+            assert_eq!(drawing.grips().len(), 8, "{}", kind.key());
+        }
+        let projected = Projected::new(Kind::Rect, (0.0, 0.0), (200.0, 100.0));
+        assert_eq!(projected.grip(Grip::Top), Some((100.0, 0.0)));
+        assert_eq!(projected.grip(Grip::Bottom), Some((100.0, 100.0)));
+        assert_eq!(projected.grip(Grip::Left), Some((0.0, 50.0)));
+        assert_eq!(projected.grip(Grip::Right), Some((200.0, 50.0)));
+        // A stroke has none of them.
+        let line = Projected::new(Kind::Line, (0.0, 0.0), (200.0, 100.0));
+        assert_eq!(line.grip(Grip::Top), None);
+    }
+
+    /// An edge moves in one direction and holds still in the other.
+    #[test]
+    fn an_edge_grip_moves_one_side_only() {
+        let mut drawing = boxed();
+        // `from` is the higher price, so it is the top edge.
+        drawing.move_grip(Grip::Top, Anchor::new(999, 120.0));
+        assert_eq!(drawing.from, Anchor::new(0, 120.0), "the top edge took the moment too");
+        assert_eq!(drawing.to, Anchor::new(10, 80.0), "the bottom edge moved");
+
+        drawing.move_grip(Grip::Bottom, Anchor::new(999, 60.0));
+        assert_eq!(drawing.to, Anchor::new(10, 60.0));
+        assert_eq!(drawing.from, Anchor::new(0, 120.0));
+
+        // `from` is the earlier moment, so it is the left edge.
+        drawing.move_grip(Grip::Left, Anchor::new(-5, 999.0));
+        assert_eq!(drawing.from, Anchor::new(-5, 120.0), "the left edge took the price too");
+        drawing.move_grip(Grip::Right, Anchor::new(20, 999.0));
+        assert_eq!(drawing.to, Anchor::new(20, 60.0));
+    }
+
+    /// Which anchor is on which side follows the shape, not the order it
+    /// was drawn in: a box dragged out right-to-left has its edges where
+    /// they look.
+    #[test]
+    fn the_edges_are_where_they_look_however_it_was_drawn() {
+        let mut backwards = Drawing::new(Kind::Rect, Anchor::new(10, 80.0), Anchor::new(0, 100.0));
+        backwards.move_grip(Grip::Top, Anchor::new(999, 120.0));
+        // `to` carries the higher price here, so that is what moved.
+        assert_eq!(backwards.to, Anchor::new(0, 120.0));
+        assert_eq!(backwards.from, Anchor::new(10, 80.0));
+        backwards.move_grip(Grip::Left, Anchor::new(-5, 999.0));
+        assert_eq!(backwards.to, Anchor::new(-5, 120.0), "the earlier anchor is the left edge");
     }
 }

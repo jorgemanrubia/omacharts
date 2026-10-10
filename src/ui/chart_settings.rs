@@ -69,6 +69,33 @@ impl ChartSettings {
         indicators_page.set_title("Indicators");
         indicators_page.set_icon_name(Some("view-list-symbolic"));
         dialog.add(&indicators_page);
+        {
+            // Alt and an arrow between Chart and Indicators, and the
+            // keyboard goes with it. The pages are named here rather than
+            // asked of the dialog: a preferences dialog keeps them in a
+            // view stack of its own, and the two it was given are the two
+            // it has.
+            let pages = [chart_page.clone(), indicators_page.clone()];
+            let dialog_for_tabs = dialog.clone();
+            crate::ui::dialogs::step_tabs_with_alt(&dialog, move |forward| {
+                let shown = dialog_for_tabs.visible_page();
+                let at = pages
+                    .iter()
+                    .position(|page| shown.as_ref() == Some(page.upcast_ref()))
+                    .unwrap_or(0) as u32;
+                let next = crate::ui::dialogs::step_round(at, pages.len() as u32, forward);
+                let Some(page) = pages.get(next as usize) else { return };
+                dialog_for_tabs.set_visible_page(page);
+                // On the next turn of the loop: the page being moved to has
+                // not been laid out and has nothing to give the focus to
+                // until it has.
+                let page = page.clone();
+                glib::idle_add_local_once(move || {
+                    page.child_focus(gtk::DirectionType::TabForward);
+                });
+            });
+        }
+
         let list = IndicatorList::new(&indicators_page);
         // Wired once here rather than on every rebuild: the button outlives
         // the rows, and reconnecting it each time would stack up handlers.
@@ -251,25 +278,47 @@ fn session_group(window: &Rc<Window>, store: &Rc<Store>) -> adw::PreferencesGrou
     group
 }
 
-/// What this chart shares its drawings with.
+/// Whether this chart shows what other charts of its symbol draw, and
+/// whether it sends them what is drawn here.
+///
+/// Two switches, where there used to be a choice of eleven. A chart could
+/// belong to one of nine numbered drawing groups, or to the global one, or
+/// to none — which meant every drawing, every chart and every command
+/// carried a question nobody asked twice: *which group?* Both switches are
+/// on, so a drawing made on a symbol is a drawing about the symbol, and the
+/// two that are worth having are reachable one at a time:
+///
+/// - turn **sending** off to sketch on one chart without it appearing on
+///   every other view of the same instrument;
+/// - turn **showing** off to keep one chart clean of what is already drawn.
+///
+/// They are independent on purpose. A chart that shows but does not send is
+/// a reference view; one that sends but does not show is rarer and still
+/// coherent, and neither needs explaining in terms of the other.
 fn drawings_group(window: &Rc<Window>) -> adw::PreferencesGroup {
-    use omacharts_engine::Sharing;
     let group = adw::PreferencesGroup::new();
     group.set_title("Drawings");
-    let all = Sharing::all();
-    let names: Vec<String> = all.iter().map(|s| s.label()).collect();
-    let names: Vec<&str> = names.iter().map(String::as_str).collect();
-    let row = adw::ComboRow::new();
-    row.set_title("Drawing group");
-    row.set_model(Some(&gtk::StringList::new(&names)));
-    let current = window.focused_pane().drawing_sharing.get();
-    row.set_selected(all.iter().position(|s| *s == current).unwrap_or(0) as u32);
-    let window = window.clone();
-    row.connect_selected_notify(move |row| {
-        let Some(chosen) = all.get(row.selected() as usize).copied() else { return };
-        window.set_drawing_sharing(chosen);
-    });
-    group.add(&row);
+
+    let pane = window.focused_pane();
+
+    let shows = adw::SwitchRow::new();
+    shows.set_title("Show drawings from other charts");
+    shows.set_active(pane.shows_drawings.get());
+    {
+        let window = window.clone();
+        shows.connect_active_notify(move |row| window.set_shows_drawings(row.is_active()));
+    }
+    group.add(&shows);
+
+    let sends = adw::SwitchRow::new();
+    sends.set_title("Send drawings to other charts");
+    sends.set_active(pane.sends_drawings.get());
+    {
+        let window = window.clone();
+        sends.connect_active_notify(move |row| window.set_sends_drawings(row.is_active()));
+    }
+    group.add(&sends);
+
     group
 }
 
