@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Omacharts — Beautiful charting software for Omarchy</title>
+<meta name="description" content="Omacharts is a market-charting app for Omarchy. Everything the window can do, the omacharts command can do from a terminal.">
+
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="icon" href="icon.png" sizes="32x32" type="image/png">
+<link rel="canonical" href="https://omacharts.org/">
+
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://omacharts.org/">
+<meta property="og:title" content="Omacharts">
+<meta property="og:description" content="Beautiful charting software for Omarchy.">
+<meta property="og:image" content="https://omacharts.org/social.jpg">
+<meta name="twitter:card" content="summary_large_image">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;800&display=swap">
+
+<style>
+  /* Every colour is the app's own: Everforest's ground and foreground, and
+     the amber it draws a trendline in. The page commits to the dark look
+     deliberately — it is a picture of the application, and the application
+     is dark here. */
+  :root {
+    --ground: #0d1114;
+    --bright: #f3ecdc;
+    --soft:   rgba(243, 236, 220, .92);
+    --quiet:  rgba(243, 236, 220, .8);
+    --amber:  #e2c285;
+    --sans: "Archivo", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    min-height: 100svh;
+    display: grid;
+    place-items: center;
+    padding: clamp(1.5rem, 5vw, 4rem);
+    background-color: var(--ground);
+    background-image: url("background.jpg");
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+    color: var(--bright);
+    font-family: var(--sans);
+    text-align: center;
+    /* A colour under the picture, so a slow or failed load is still the
+       app's ground rather than white. */
+  }
+
+  /* The same scrim the cover uses, so the words read over candles rather
+     than fighting them. */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    background: radial-gradient(58% 54% at 50% 48%,
+      rgba(13, 17, 20, .93) 0%,
+      rgba(13, 17, 20, .7) 48%,
+      rgba(13, 17, 20, .26) 100%);
+    pointer-events: none;
+  }
+
+  main {
+    position: relative;
+    display: grid;
+    justify-items: center;
+    gap: clamp(.45rem, 1.1vw, 1.3rem);
+    max-width: 100%;
+  }
+
+  h1 {
+    margin: 0;
+    font-size: clamp(3rem, 11vw, 18rem);
+    font-weight: 800;
+    line-height: .86;
+    letter-spacing: -.045em;
+    color: var(--bright);
+    text-shadow: 0 .02em .14em rgba(0, 0, 0, .6);
+  }
+
+  .tagline {
+    margin: 0;
+    font-size: clamp(1.05rem, 2.7vw, 4.3rem);
+    font-weight: 500;
+    line-height: 1.26;
+    letter-spacing: .012em;
+    color: var(--soft);
+    text-wrap: balance;
+    text-shadow: 0 .02em .1em rgba(0, 0, 0, .65);
+  }
+
+  .release {
+    margin: clamp(.8rem, 1.8vw, 2.2rem) 0 0;
+    font-size: clamp(1rem, 2.5vw, 4rem);
+    font-weight: 600;
+    letter-spacing: .02em;
+    color: var(--amber);
+    text-shadow: 0 .02em .1em rgba(0, 0, 0, .7);
+  }
+
+  .repo {
+    margin-top: clamp(1.6rem, 3.4vw, 4rem);
+    padding: .72em 1.5em;
+    border: 1px solid rgba(243, 236, 220, .28);
+    border-radius: 999px;
+    background: rgba(13, 17, 20, .42);
+    color: var(--quiet);
+    font-size: clamp(.9rem, 1.3vw, 1.6rem);
+    font-weight: 500;
+    letter-spacing: .04em;
+    text-decoration: none;
+    transition: transform .18s ease, border-color .18s ease,
+                color .18s ease, background-color .18s ease;
+  }
+  .repo:hover {
+    transform: translateY(-2px);
+    border-color: rgba(243, 236, 220, .6);
+    background: rgba(13, 17, 20, .62);
+    color: var(--bright);
+  }
+  .repo:focus-visible {
+    outline: 2px solid var(--amber);
+    outline-offset: 4px;
+    color: var(--bright);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .repo { transition: none; }
+    .repo:hover { transform: none; }
+  }
+</style>
+</head>
+<body>
+  <main>
+    <h1>Omacharts</h1>
+    <p class="tagline">Beautiful charting software for Omarchy</p>
+    <p class="release">Drawings</p>
+    <a class="repo" href="https://github.com/jorgemanrubia/omacharts">View on GitHub</a>
+  </main>
+</body>
+</html>
