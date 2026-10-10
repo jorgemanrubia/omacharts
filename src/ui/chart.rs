@@ -791,7 +791,20 @@ impl State {
             let y = plan.price_y + plan.price_h * (high - anchor.price) / (high - low);
             (x, y)
         };
-        Projected { kind: drawing.kind, from: point(&drawing.from), to: point(&drawing.to) }
+        let projected = Projected::new(drawing.kind, point(&drawing.from), point(&drawing.to));
+        // What the drawing says, measured and placed. A text drawing has no
+        // size without this and a labelled figure is still hit by its own
+        // shape, so the measuring is done once here rather than at each of
+        // the places that ask what the pointer is over.
+        match crate::ui::text::block(
+            drawing.kind,
+            projected.bounds(),
+            &drawing.text,
+            drawing.style(&self.configs),
+        ) {
+            Some(words) => projected.with_words(words),
+            None => projected,
+        }
     }
 
     /// Every drawing with any of itself on the plot right now: what Ctrl+A
@@ -3692,8 +3705,63 @@ fn draw_drawing(
                 let _ = cr.stroke();
             }
         }
+        // The same fill under the same edge as a box, in an ellipse drawn
+        // inside the box the two anchors make: a circle scaled to the box
+        // rather than an arc, so an ellipse dragged wide is wide. Not put on
+        // the pixel grid the way a box is — there is no pixel grid for a
+        // curve, and the only honest edge for one is the antialiased one.
+        DrawingKind::Ellipse => {
+            let (x, y, w, h) = projected.bounds();
+            if w <= 0.0 || h <= 0.0 {
+                return;
+            }
+            let ellipse = |cr: &cairo::Context| {
+                cr.save().ok();
+                cr.translate(x + w / 2.0, y + h / 2.0);
+                cr.scale(w / 2.0, h / 2.0);
+                cr.arc(0.0, 0.0, 1.0, 0.0, std::f64::consts::TAU);
+                // Back before the stroke, or the scale that made the circle
+                // an ellipse would make the hairline an ellipse too: thick
+                // on the flat sides and thin on the ends.
+                cr.restore().ok();
+            };
+            colors::set_source_alpha(cr, &style.fill.hex(&state.theme), style.alpha);
+            ellipse(cr);
+            let _ = cr.fill();
+            if style.border {
+                colors::set_source_alpha(cr, &colour, drawings::BORDER_ALPHA);
+                cr.set_line_width(style.width.max(1.0));
+                ellipse(cr);
+                let _ = cr.stroke();
+            }
+        }
+        // Nothing but the words, which the label pass below draws for every
+        // kind. A text drawing with nothing typed into it yet draws nothing
+        // at all, which is the right picture of a caret waiting.
+        DrawingKind::Text => {}
     }
+    draw_label(cr, state, projected, drawing, style);
     if selected {
+        // A text drawing wears no grips, so the box its words fill is what
+        // says it is selected: a dashed outline a hair outside the glyphs,
+        // in the drawing's own colour. The same outline would be noise on a
+        // figure, which has grips to say it.
+        if drawing.kind.is_text()
+            && let Some((x, y, w, h)) = projected.words
+        {
+            colors::set_source_alpha(cr, &colour, drawings::BORDER_ALPHA);
+            cr.set_line_width(1.0);
+            cr.set_dash(&[3.0, 3.0], 0.0);
+            let pad = SELECTED_TEXT_PAD;
+            cr.rectangle(
+                (x - pad).round() + 0.5,
+                (y - pad).round() + 0.5,
+                (w + 2.0 * pad).round(),
+                (h + 2.0 * pad).round(),
+            );
+            let _ = cr.stroke();
+            cr.set_dash(&[], 0.0);
+        }
         for grip in drawing.grips() {
             let Some((x, y)) = projected.grip(*grip) else { continue };
             colors::set_source(cr, &state.theme.ui.background);
@@ -3709,6 +3777,31 @@ fn draw_drawing(
             let _ = cr.fill();
         }
     }
+}
+
+/// How far outside the glyphs a selected text drawing's outline sits.
+const SELECTED_TEXT_PAD: f64 = 3.0;
+
+/// What the drawing says, where its placement puts it.
+///
+/// Every kind goes through here: for the text kind these are the drawing,
+/// and for a line, a box or an ellipse they are its label. The ink is the
+/// text colour held to the text floor against what it actually lands on —
+/// the composited fill inside a filled figure, the chart's background
+/// anywhere else — so an amber label on an amber box is amber where amber
+/// reads and lifted where it does not.
+fn draw_label(
+    cr: &cairo::Context,
+    state: &State,
+    projected: &Projected,
+    drawing: &Drawing,
+    style: &omacharts_engine::Style,
+) {
+    let Some((x, y, _, _)) = projected.words else { return };
+    let ground = drawings::text_ground(drawing.kind, style, &state.theme);
+    let ink = drawings::text_colour(&style.text.colour, &state.theme, &ground);
+    let at = crate::ui::text::placement(drawing.kind, &drawing.text);
+    crate::ui::text::draw(cr, (x, y), &drawing.text, &style.text, at.alignment(), &ink);
 }
 
 /// A filled arrowhead at `tip`, pointing away from `tail`, sized to the

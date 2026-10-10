@@ -1956,14 +1956,25 @@ fn describe_style(kind: omacharts_engine::DrawingKind, style: &omacharts_engine:
             };
             format!("{}, {}px{arrow}", style.colour.spell(), style.width)
         }
-        Kind::Rect => {
+        Kind::Rect | Kind::Ellipse => {
             let edge = match style.border {
                 true => format!(", edge {} {}px", style.colour.spell(), style.width),
                 false => ", no edge".to_string(),
             };
             format!("fill {} at {:.2}{edge}", style.fill.spell(), style.alpha)
         }
+        Kind::Text => describe_text_style(style),
     }
+}
+
+/// How a configuration sets words: the ink, the size, and the face when it is
+/// not the desktop's.
+fn describe_text_style(style: &omacharts_engine::Style) -> String {
+    let face = match style.text.family_name() {
+        Some(family) => format!(", {family}"),
+        None => String::new(),
+    };
+    format!("{} {:.0}px{face}", style.text.colour.spell(), style.text.clamped_size())
 }
 
 /// The properties a command offered for a drawing or a configuration, read

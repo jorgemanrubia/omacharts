@@ -9,10 +9,10 @@
 //! strip would occupy when there is not. Nothing in the window's top
 //! corner, which belongs to the charts.
 //!
-//! One column of buttons, since there are
-//! two tools and a column of three is already more than a toolbar needs.
-//! Each button is a sign the app drew itself — a pointer, a line with its
-//! grips, a box with two — in the palette's own ink and nothing else, dim
+//! One column of buttons, which is the shape a handful of tools wants and
+//! stays the shape as they are added. Each button is a sign the app drew
+//! itself — a pointer, a line with its grips, a box with two, the same box
+//! as a curve, a letter — in the palette's own ink and nothing else, dim
 //! until it is hovered or lit, rather than a stock glyph that would look
 //! like every other application's or a preview that would compete with the
 //! chart.
@@ -104,6 +104,10 @@ impl DrawingBar {
                 None => "Pointer (Esc): select, move and resize drawings",
                 Some(Kind::Line) => "Line (Alt+L): click where it starts, then where it ends",
                 Some(Kind::Rect) => "Rectangle (Alt+R): press at one corner, release at the other",
+                Some(Kind::Ellipse) => {
+                    "Circle (Alt+C): press and drag to any shape, round or wide"
+                }
+                Some(Kind::Text) => "Text (Alt+T): click where the words go, then type",
             }));
             // One lit at a time, and a click on the lit one changes nothing:
             // a group of toggles is a set of radio buttons.
@@ -334,6 +338,51 @@ impl DrawingBar {
                             cr.rectangle(gx - 2.5, gy - 2.5, 5.0, 5.0);
                             let _ = cr.fill();
                         }
+                    }
+                    Some(Kind::Ellipse) => {
+                        // The box's sign with the box's outline swapped for
+                        // the curve, and the same two grips on the same two
+                        // corners, which is what says it is dragged the way
+                        // the box is rather than out from a centre. Drawn a
+                        // little wider than tall, because the tool is not
+                        // held to a circle and the sign should not promise
+                        // one.
+                        let (x, y, rw, rh) = (4.5, 5.5, w - 9.0, h - 11.0);
+                        let curve = |cr: &gtk::cairo::Context| {
+                            cr.save().ok();
+                            cr.translate(x + rw / 2.0, y + rh / 2.0);
+                            cr.scale(rw / 2.0, rh / 2.0);
+                            cr.arc(0.0, 0.0, 1.0, 0.0, std::f64::consts::TAU);
+                            cr.restore().ok();
+                        };
+                        curve(cr);
+                        cr.set_source_rgba(r, g, b, a * 0.18);
+                        let _ = cr.fill();
+                        cr.set_source_rgba(r, g, b, a);
+                        cr.set_line_width(1.0);
+                        curve(cr);
+                        let _ = cr.stroke();
+                        for (gx, gy) in [(x, y), (x + rw, y + rh)] {
+                            cr.rectangle(gx - 2.5, gy - 2.5, 5.0, 5.0);
+                            let _ = cr.fill();
+                        }
+                    }
+                    Some(Kind::Text) => {
+                        // A capital I with its serifs: the mark every
+                        // application puts on its text tool, and the one
+                        // thing in this column that is a letter rather than
+                        // a shape — which is the point, since the tool makes
+                        // letters.
+                        let (cx, top, bottom) = ((w / 2.0).round() + 0.5, 5.5, h - 5.5);
+                        let arm = 4.0;
+                        cr.set_line_width(1.5);
+                        cr.move_to(cx, top);
+                        cr.line_to(cx, bottom);
+                        cr.move_to(cx - arm, top);
+                        cr.line_to(cx + arm, top);
+                        cr.move_to(cx - arm, bottom);
+                        cr.line_to(cx + arm, bottom);
+                        let _ = cr.stroke();
                     }
                 }
             });

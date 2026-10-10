@@ -454,12 +454,22 @@ fn describe(kind: Kind, style: &Style) -> String {
             };
             format!("{}, {}px{arrow}", name_of(&style.colour), style.width)
         }
-        Kind::Rect => {
+        Kind::Rect | Kind::Ellipse => {
             let edge = match style.border {
                 true => format!(", edge {} {}px", name_of(&style.colour), style.width),
                 false => ", no edge".to_string(),
             };
             format!("{} at {:.0}%{edge}", name_of(&style.fill), style.alpha * 100.0)
+        }
+        // A text configuration is its three text properties and nothing
+        // else, so they are what the row says. The face is named only when
+        // it is not the desktop's, which is the one nobody chose.
+        Kind::Text => {
+            let face = match style.text.family_name() {
+                Some(family) => format!(", {family}"),
+                None => String::new(),
+            };
+            format!("{}, {:.0}px{face}", name_of(&style.text.colour), style.text.clamped_size())
         }
     }
 }
@@ -504,7 +514,7 @@ fn style_editor(window: &Rc<Window>, kind: Kind, current: Style, on_style: Rc<dy
         let style = style.clone();
         let on_style = on_style.clone();
         let showing = showing.clone();
-        Rc::new(move || {
+        let emit: Rc<dyn Fn()> = Rc::new(move || {
             if showing.get() {
                 return;
             }
@@ -514,7 +524,8 @@ fn style_editor(window: &Rc<Window>, kind: Kind, current: Style, on_style: Rc<dy
             // again and needs the cell for itself.
             let current = style.borrow().clone();
             on_style(current);
-        })
+        });
+        emit
     };
 
     let mut shows: Vec<Shower<Style>> = Vec::new();
@@ -606,7 +617,10 @@ fn style_editor(window: &Rc<Window>, kind: Kind, current: Style, on_style: Rc<dy
                 }
             }));
         }
-        Kind::Rect => {
+        // A box and an ellipse have the same properties — a fill at an alpha
+        // under an edge — and differ only in the outline drawn round them, so
+        // they are edited by the same rows.
+        Kind::Rect | Kind::Ellipse => {
             // Background and how much of it shows.
             let (row, show) = paint_row(&theme, "Background", &style.borrow().fill, {
                 let style = style.clone();
@@ -695,6 +709,15 @@ fn style_editor(window: &Rc<Window>, kind: Kind, current: Style, on_style: Rc<dy
                 follow(s.border);
             }));
         }
+        // A text drawing has no shape to edit, so its look *is* its text
+        // properties: the three rows that would be the Text tab on a figure
+        // are the page here, with no tab to put them behind.
+        Kind::Text => {
+            for (row, show) in text_rows(&theme, &style, &emit) {
+                group.add(&row);
+                shows.push(show);
+            }
+        }
     }
 
     let show: Rc<dyn Fn(&Style)> = {
@@ -710,6 +733,159 @@ fn style_editor(window: &Rc<Window>, kind: Kind, current: Style, on_style: Rc<dy
         })
     };
     Editor { group, show }
+}
+
+/// The three rows a text configuration is: ink, face, size.
+///
+/// Shared by the text drawing's own page and by the Text tab of every figure,
+/// because they are the same three properties and a label written in a box
+/// should be set from the same rows as a label written on its own.
+fn text_rows(
+    theme: &Theme,
+    style: &Rc<RefCell<Style>>,
+    emit: &Rc<dyn Fn()>,
+) -> Vec<(adw::ActionRow, Shower<Style>)> {
+    let mut rows: Vec<(adw::ActionRow, Shower<Style>)> = Vec::new();
+
+    let (row, show) = paint_row(theme, "Colour", &style.borrow().text.colour, {
+        let style = style.clone();
+        let emit = emit.clone();
+        move |paint| {
+            style.borrow_mut().text.colour = paint;
+            emit();
+        }
+    });
+    row.set_subtitle("Lifted where it has to be, to stay readable on what it lands on.");
+    rows.push((row, Rc::new(move |s: &Style| show(&s.text.colour))));
+
+    let (row, show) = font_row(&style.borrow().text, {
+        let style = style.clone();
+        let emit = emit.clone();
+        move |family| {
+            style.borrow_mut().text.family = family;
+            emit();
+        }
+    });
+    rows.push((row, Rc::new(move |s: &Style| show(&s.text))));
+
+    let (row, show) = size_row(style.borrow().text.clamped_size(), {
+        let style = style.clone();
+        let emit = emit.clone();
+        move |size| {
+            style.borrow_mut().text.size = size;
+            emit();
+        }
+    });
+    rows.push((row, Rc::new(move |s: &Style| show(s.text.clamped_size()))));
+
+    rows
+}
+
+/// A row that picks the face: the desktop's own font, or any family the font
+/// system has.
+///
+/// The system's font is the first choice and the default, named as what it
+/// is rather than by the family it happens to be on this desktop, so a
+/// configuration saved here follows the desktop the way a preset colour
+/// follows the theme. Everything after it is a family by name.
+fn font_row(
+    current: &drawings::TextStyle,
+    on_pick: impl Fn(Option<String>) + 'static,
+) -> (adw::ActionRow, Shower<drawings::TextStyle>) {
+    let row = adw::ComboRow::new();
+    row.set_title("Font");
+    let families = font_families();
+    let mut names: Vec<String> = vec![system_font_label()];
+    names.extend(families.iter().cloned());
+    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    row.set_model(Some(&gtk::StringList::new(&refs)));
+
+    let index_of = {
+        let families = families.clone();
+        move |style: &drawings::TextStyle| match style.family_name() {
+            None => 0,
+            Some(family) => families
+                .iter()
+                .position(|f| f.eq_ignore_ascii_case(family))
+                .map(|at| at as u32 + 1)
+                // A face the configuration names and this machine does not
+                // have: shown as the system's, because that is what will be
+                // drawn, and left alone unless the hand picks another.
+                .unwrap_or(0),
+        }
+    };
+    row.set_selected(index_of(current));
+    {
+        let families = families.clone();
+        row.connect_selected_notify(move |row| {
+            let picked = match row.selected() {
+                0 => None,
+                n => families.get(n as usize - 1).cloned(),
+            };
+            on_pick(picked);
+        });
+    }
+    let row_for_show = row.clone();
+    let shower: Shower<drawings::TextStyle> =
+        Rc::new(move |style: &drawings::TextStyle| row_for_show.set_selected(index_of(style)));
+    (row.upcast(), shower)
+}
+
+/// The families the font system has, sorted, deduplicated.
+fn font_families() -> Vec<String> {
+    use gtk::prelude::FontMapExt;
+    let mut names: Vec<String> = pangocairo::FontMap::default()
+        .list_families()
+        .iter()
+        .map(|family| family.name().to_string())
+        .collect();
+    names.sort_by_key(|n| n.to_lowercase());
+    names.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+    names
+}
+
+/// How the system's own font is offered: as itself, with the family it is on
+/// this desktop in brackets, so the choice is both the role and the fact.
+fn system_font_label() -> String {
+    match crate::ui::text::system_family() {
+        Some(family) => format!("System font ({family})"),
+        None => "System font".to_string(),
+    }
+}
+
+/// A row that picks the text size, in pixels, with a slider and a box that
+/// agree — the control every other bounded figure in the window uses.
+fn size_row(current: f64, on_pick: impl Fn(f64) + 'static) -> (adw::ActionRow, Rc<dyn Fn(f64)>) {
+    let bounded = crate::ui::controls::bounded_row(
+        "Size",
+        Some(&format!(
+            "In pixels, like the chart's own labels. {} and {} step it on the chart too.",
+            size_step_label(true),
+            size_step_label(false)
+        )),
+        current,
+        drawings::MIN_TEXT_SIZE,
+        drawings::MAX_TEXT_SIZE,
+        drawings::TEXT_SIZE_STEP,
+        0,
+        on_pick,
+    );
+    let row = bounded.row.clone();
+    let weak = bounded.downgrade();
+    // The control is owned by the row it was put in; only a handle to it is
+    // kept here, so showing a style a dialog has since closed is a no-op
+    // rather than a dangling call.
+    let shower: Rc<dyn Fn(f64)> = Rc::new(move |size: f64| weak.set(size));
+    (row, shower)
+}
+
+/// How the key that grows or shrinks the text prints on this keyboard.
+fn size_step_label(grow: bool) -> String {
+    let key = match grow {
+        true => gtk::gdk::Key::plus,
+        false => gtk::gdk::Key::minus,
+    };
+    gtk::accelerator_get_label(key, gtk::gdk::ModifierType::CONTROL_MASK).to_string()
 }
 
 /// A row that picks a width, in pixels, by number.
@@ -907,6 +1083,34 @@ pub fn swatch(theme: &Theme, kind: Kind, style: &Style) -> gtk::DrawingArea {
                     let _ = cr.stroke();
                 }
             }
+            Kind::Ellipse => {
+                let curve = |cr: &gtk::cairo::Context, inset: f64| {
+                    cr.save().ok();
+                    cr.translate(w / 2.0, h / 2.0);
+                    cr.scale(w / 2.0 - inset, h / 2.0 - inset);
+                    cr.arc(0.0, 0.0, 1.0, 0.0, std::f64::consts::TAU);
+                    cr.restore().ok();
+                };
+                colors::set_source_alpha(cr, &style.fill.hex(&theme), style.alpha.max(0.25));
+                curve(cr, 1.0);
+                let _ = cr.fill();
+                if style.border {
+                    colors::set_source_alpha(cr, &colour, 0.8);
+                    cr.set_line_width(1.0);
+                    curve(cr, 1.5);
+                    let _ = cr.stroke();
+                }
+            }
+            // A swatch is thirty pixels by twelve: too small for a word, so
+            // the text configuration shows the ink as a bar of it, the way
+            // every other colour in the window is shown at this size.
+            Kind::Text => {
+                let ground = theme.ui.background.clone();
+                let ink = drawings::text_colour(&style.text.colour, &theme, &ground);
+                colors::set_source(cr, &ink);
+                cr.rectangle(2.0, (h / 2.0).round() - 2.0, w - 4.0, 4.0);
+                let _ = cr.fill();
+            }
         }
     });
     area
@@ -989,20 +1193,81 @@ fn draw_preview(cr: &gtk::cairo::Context, w: f64, h: f64, theme: &Theme, kind: K
                     head(cr, b, a, line_w, style.head);
                 }
             }
-            Kind::Rect => {
+            Kind::Rect | Kind::Ellipse => {
                 let (x, y, rw, rh) = (w * 0.3, h * 0.2, w * 0.4, h * 0.6);
+                let edge_w = style.width.clamp(1.0, 3.0) * scale.sqrt();
                 colors::set_source_alpha(cr, &style.fill.hex(theme), style.alpha);
-                cr.rectangle(x, y, rw, rh);
-                let _ = cr.fill();
-                if style.border {
-                    colors::set_source_alpha(cr, &colour, drawings::BORDER_ALPHA);
-                    cr.set_line_width(style.width.clamp(1.0, 3.0) * scale.sqrt());
-                    cr.rectangle(x.round() + 0.5, y.round() + 0.5, rw.round(), rh.round());
-                    let _ = cr.stroke();
+                if kind == Kind::Rect {
+                    cr.rectangle(x, y, rw, rh);
+                    let _ = cr.fill();
+                    if style.border {
+                        colors::set_source_alpha(cr, &colour, drawings::BORDER_ALPHA);
+                        cr.set_line_width(edge_w);
+                        cr.rectangle(x.round() + 0.5, y.round() + 0.5, rw.round(), rh.round());
+                        let _ = cr.stroke();
+                    }
+                } else {
+                    let curve = |cr: &gtk::cairo::Context| {
+                        cr.save().ok();
+                        cr.translate(x + rw / 2.0, y + rh / 2.0);
+                        cr.scale(rw / 2.0, rh / 2.0);
+                        cr.arc(0.0, 0.0, 1.0, 0.0, std::f64::consts::TAU);
+                        cr.restore().ok();
+                    };
+                    curve(cr);
+                    let _ = cr.fill();
+                    if style.border {
+                        colors::set_source_alpha(cr, &colour, drawings::BORDER_ALPHA);
+                        cr.set_line_width(edge_w);
+                        curve(cr);
+                        let _ = cr.stroke();
+                    }
                 }
+                sample_text(cr, (x, y, rw, rh), kind, theme, style, scale);
+            }
+            // The word itself, over the candles, which is the whole of what
+            // this configuration decides. Centred, because there is no
+            // figure for it to sit in the corner of.
+            Kind::Text => {
+                let box_h = h * 0.6;
+                sample_text(cr, (0.0, (h - box_h) / 2.0, w, box_h), Kind::Rect, theme, style, scale);
             }
         }
     }
+}
+
+/// The words a preview shows, in the configuration's own text style, placed
+/// in the figure the way a real label would be.
+///
+/// A preview exists so a configuration can be judged rather than read, and
+/// the thing most worth judging about a label is whether it can be read at
+/// all over its own fill. So the picture carries one — short, so it fits a
+/// tile; real text through the same layout the chart uses, so what the tile
+/// shows is what the chart will draw. Scaled with the tile, and skipped
+/// outright when the tile is too small for the result to be anything but a
+/// smudge.
+fn sample_text(
+    cr: &gtk::cairo::Context,
+    bounds: (f64, f64, f64, f64),
+    kind: Kind,
+    theme: &Theme,
+    style: &Style,
+    scale: f64,
+) {
+    const SAMPLE: &str = "Note";
+    let mut style = style.clone();
+    style.text.size = style.text.clamped_size() * scale.sqrt();
+    let text = drawings::Text { spans: vec![drawings::Span::plain(SAMPLE)], at: drawings::Place::Center };
+    let Some((x, y, tw, th)) = crate::ui::text::block(kind, bounds, &text, &style) else { return };
+    // Wider or taller than the figure it is meant to sit in: the tile is too
+    // small for this face at this size, and a word spilling out of the box
+    // is a worse picture than no word.
+    if tw > bounds.2 || th > bounds.3 {
+        return;
+    }
+    let ground = drawings::text_ground(kind, &style, theme);
+    let ink = drawings::text_colour(&style.text.colour, theme, &ground);
+    crate::ui::text::draw(cr, (x, y), &text, &style.text, drawings::Align::Center, &ink);
 }
 
 /// Every sample the arrow factory has drawn, so a colour change can ask

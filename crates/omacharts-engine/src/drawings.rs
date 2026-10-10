@@ -115,6 +115,73 @@ pub const DRAWING_CONTRAST: ContrastBand = ContrastBand::new(4.0, 21.0);
 /// drawing floor would cost more than [`REACH`]: faithful beats loud.
 pub const PALETTE_CONTRAST: f64 = 3.2;
 
+/// What a drawing's text is held to, against whatever it is actually sitting
+/// on.
+///
+/// Higher than [`DRAWING_CONTRAST`], and for a reason: a line is a stroke
+/// several pixels wide that the eye finds at 4:1, while text is a mesh of
+/// hairlines at the size the chart's own labels use and falls apart there.
+/// 4.5:1 is the floor that small text is readable at, and the only number in
+/// this file taken from outside it. A drawing's colour is not: the same amber
+/// that is a good amber line is an unreadable amber word.
+///
+/// There is no ceiling for the same reason the drawing band has none, and the
+/// floor is a floor rather than a target: a colour already clear of it is
+/// left exactly where the palette put it, so Amber text on an amber box is
+/// the box's amber wherever that is readable, and only moves when it is not.
+pub const TEXT_CONTRAST: ContrastBand = ContrastBand::new(4.5, 21.0);
+
+/// Text is held higher than a stroke is. Checked here rather than in a test,
+/// because it is a relation between two constants and the compiler can hold
+/// it: lowering the text floor under the drawing floor stops the build.
+const _: () = assert!(TEXT_CONTRAST.floor > DRAWING_CONTRAST.floor);
+
+/// The default size of a drawing's text, in pixels.
+///
+/// The chart sets its axis labels at 11 and its symbol at 13. A drawing's
+/// words are something a person put there to be read, not furniture, so they
+/// start a step above the labels and at the symbol's own size: big enough to
+/// read over candles at a glance, small enough that a note on a level does
+/// not become the level.
+pub const TEXT_SIZE: f64 = 13.0;
+
+/// How small and how large the font may be set, by the dialog, the keyboard
+/// or the terminal. Below the floor the hairlines close up at any weight;
+/// above the ceiling a drawing is a banner.
+pub const MIN_TEXT_SIZE: f64 = 6.0;
+pub const MAX_TEXT_SIZE: f64 = 96.0;
+
+/// A step of Ctrl+= and Ctrl+-, in pixels. One pixel is a change nobody can
+/// see and ten overshoots everything; a chart's own type ladder runs 10, 11,
+/// 13, so the step is the ladder's.
+pub const TEXT_SIZE_STEP: f64 = 1.0;
+
+/// Text's colour on this theme, over the ground it will actually be drawn on.
+///
+/// The ground matters, which is why this takes one. The same Amber word is
+/// readable on the chart's background and marginal on an amber box's fill,
+/// and the caller is the only one who knows which of those it is about: the
+/// chart composites the fill before it sets any text. Pass what the eye will
+/// see behind the glyphs — [`fill_over`] of a filled figure, the chart's
+/// background otherwise.
+pub fn text_colour(paint: &Paint, theme: &Theme, ground: &str) -> String {
+    held_to(&paint.hex(theme), ground, TEXT_CONTRAST, None)
+}
+
+/// The ground a drawing's text is read against, given the drawing's own look.
+///
+/// Inside a filled box or ellipse it is the fill as composited; everywhere
+/// else — a line, an unfilled figure, a word on its own — it is the chart's
+/// background. The candles under it are not counted: they move, and a colour
+/// that followed them would never hold still.
+pub fn text_ground(kind: Kind, style: &Style, theme: &Theme) -> String {
+    let bg = &theme.ui.background;
+    match kind.is_bounded() && style.alpha > 0.0 {
+        true => mix(&style.fill.hex(theme), bg, 1.0 - style.alpha),
+        false => bg.clone(),
+    }
+}
+
 /// How far in lightness a preset may travel from the swatch it came from
 /// before the swatch's own lightness is the better answer. The palette
 /// generator's own reach.
@@ -272,8 +339,9 @@ impl Anchor {
     }
 }
 
-/// The two kinds of drawing. Both are two anchors; what differs is what is
-/// drawn between them.
+/// The kinds of drawing. All of them are two anchors; what differs is what
+/// is drawn between them — and, for text, that the second anchor is the
+/// first, because a word sits at a point rather than spanning two.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
@@ -281,15 +349,30 @@ pub enum Kind {
     Line,
     /// A box with the two anchors at opposite corners.
     Rect,
+    /// An ellipse inscribed in the box the two anchors make. Dragged to
+    /// whatever shape the hand wants, round only when the hand makes it
+    /// round: the same freedom a box has, which is what the drawing tools
+    /// in a slide editor give and what anybody reaching for "a circle on
+    /// this chart" actually wants.
+    Ellipse,
+    /// Words on the chart, at the first anchor. The only kind whose size
+    /// comes from what it says rather than from where its anchors are.
+    Text,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 2] = [Kind::Line, Kind::Rect];
+    pub const ALL: [Kind; 4] = [Kind::Line, Kind::Rect, Kind::Ellipse, Kind::Text];
+
+    /// The kinds that are a shape, which is every kind that can carry text
+    /// of its own.
+    pub const FIGURES: [Kind; 3] = [Kind::Line, Kind::Rect, Kind::Ellipse];
 
     pub fn label(self) -> &'static str {
         match self {
             Kind::Line => "Line",
             Kind::Rect => "Rectangle",
+            Kind::Ellipse => "Circle",
+            Kind::Text => "Text",
         }
     }
 
@@ -297,11 +380,29 @@ impl Kind {
         match self {
             Kind::Line => "line",
             Kind::Rect => "rect",
+            Kind::Ellipse => "ellipse",
+            Kind::Text => "text",
         }
     }
 
     pub fn from_key(key: &str) -> Option<Kind> {
-        Kind::ALL.into_iter().find(|k| k.key().eq_ignore_ascii_case(key))
+        Kind::ALL
+            .into_iter()
+            .find(|k| k.key().eq_ignore_ascii_case(key))
+            // "circle" is what the tool is called, so it is what somebody
+            // types; the shape it draws is an ellipse.
+            .or_else(|| key.eq_ignore_ascii_case("circle").then_some(Kind::Ellipse))
+    }
+
+    /// Whether this kind has an inside: a fill, and room for text in it.
+    pub fn is_bounded(self) -> bool {
+        matches!(self, Kind::Rect | Kind::Ellipse)
+    }
+
+    /// Whether the drawing is the text itself, rather than a shape that may
+    /// carry some.
+    pub fn is_text(self) -> bool {
+        self == Kind::Text
     }
 }
 
@@ -350,6 +451,205 @@ impl Paint {
             .into_iter()
             .find(|p| p.name().eq_ignore_ascii_case(text))
             .map(Paint::preset)
+    }
+}
+
+/// Where a drawing's text sits against the drawing.
+///
+/// A nine-cell grid, which is both what the dialog shows as a picture and
+/// everything the five named places can mean: *centre* is centred on both
+/// axes, *top* is centred across and against the top, and the corners are
+/// the pairs. Inside the figure in every case, inset by a hair, the way text
+/// in a shape works in a slide editor — a label that floated outside the box
+/// it belongs to would have to be dragged back to it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Place {
+    TopLeft,
+    Top,
+    TopRight,
+    Left,
+    #[default]
+    Center,
+    Right,
+    BottomLeft,
+    Bottom,
+    BottomRight,
+}
+
+impl Place {
+    /// Reading order, which is the order the grid is drawn in.
+    pub const ALL: [Place; 9] = [
+        Place::TopLeft,
+        Place::Top,
+        Place::TopRight,
+        Place::Left,
+        Place::Center,
+        Place::Right,
+        Place::BottomLeft,
+        Place::Bottom,
+        Place::BottomRight,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Place::TopLeft => "Top left",
+            Place::Top => "Top",
+            Place::TopRight => "Top right",
+            Place::Left => "Left",
+            Place::Center => "Centre",
+            Place::Right => "Right",
+            Place::BottomLeft => "Bottom left",
+            Place::Bottom => "Bottom",
+            Place::BottomRight => "Bottom right",
+        }
+    }
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Place::TopLeft => "top-left",
+            Place::Top => "top",
+            Place::TopRight => "top-right",
+            Place::Left => "left",
+            Place::Center => "center",
+            Place::Right => "right",
+            Place::BottomLeft => "bottom-left",
+            Place::Bottom => "bottom",
+            Place::BottomRight => "bottom-right",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Place> {
+        let key = key.replace('_', "-");
+        Place::ALL
+            .into_iter()
+            .find(|p| p.key().eq_ignore_ascii_case(&key))
+            .or_else(|| key.eq_ignore_ascii_case("centre").then_some(Place::Center))
+    }
+
+    /// How far along each axis, 0 to 1: left to right, and top to bottom.
+    pub fn fractions(self) -> (f64, f64) {
+        let across = match self {
+            Place::TopLeft | Place::Left | Place::BottomLeft => 0.0,
+            Place::Top | Place::Center | Place::Bottom => 0.5,
+            Place::TopRight | Place::Right | Place::BottomRight => 1.0,
+        };
+        let down = match self {
+            Place::TopLeft | Place::Top | Place::TopRight => 0.0,
+            Place::Left | Place::Center | Place::Right => 0.5,
+            Place::BottomLeft | Place::Bottom | Place::BottomRight => 1.0,
+        };
+        (across, down)
+    }
+
+    /// How the lines of a multi-line label line up with each other, which
+    /// follows where the block sits: a block against the left edge reads
+    /// ragged-right, one against the right edge ragged-left, a centred one
+    /// centred.
+    pub fn alignment(self) -> Align {
+        let across = self.fractions().0;
+        if across == 0.0 {
+            Align::Start
+        } else if across == 1.0 {
+            Align::End
+        } else {
+            Align::Center
+        }
+    }
+}
+
+/// Which edge the lines of a label are flush with.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Align {
+    Start,
+    Center,
+    End,
+}
+
+/// A run of characters that share a weight and a slope.
+///
+/// Rich text, kept as the spans it is rather than as markup: a string with
+/// tags in it would have to be escaped, parsed and validated at every
+/// boundary — the store, the terminal, the editor — and one malformed tag
+/// would take a drawing with it. Spans cannot be malformed. Bold and italic
+/// are all there is for now, which is what a note on a chart needs; a third
+/// attribute is a field here and a key in the editor and nothing else.
+#[derive(Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+pub struct Span {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub bold: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub italic: bool,
+}
+
+fn is_false(flag: &bool) -> bool {
+    !*flag
+}
+
+impl Span {
+    pub fn plain(text: &str) -> Span {
+        Span { text: text.to_string(), bold: false, italic: false }
+    }
+
+    /// Whether two spans differ in anything but their characters, and so
+    /// cannot be run together.
+    pub fn same_style(&self, other: &Span) -> bool {
+        self.bold == other.bold && self.italic == other.italic
+    }
+}
+
+/// What a drawing says, and where.
+///
+/// Every kind can have one: the text kind *is* its text, and a line, a box
+/// or an ellipse carries one as a label. Empty is the normal state for a
+/// figure and means it has nothing to say, which is not the same as having
+/// an empty line of text — a figure with no text draws none, and takes no
+/// room for it.
+#[derive(Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+pub struct Text {
+    /// The content, as the runs it is made of. Newlines live in the runs.
+    #[serde(default)]
+    pub spans: Vec<Span>,
+    /// Where it sits against the drawing.
+    #[serde(default)]
+    pub at: Place,
+}
+
+impl Text {
+    pub fn plain(text: &str) -> Text {
+        Text { spans: vec![Span::plain(text)], at: Place::default() }.tidied()
+    }
+
+    /// Whether there is anything to draw.
+    pub fn is_empty(&self) -> bool {
+        self.spans.iter().all(|s| s.text.is_empty())
+    }
+
+    /// The characters, with the styling dropped: what the terminal prints
+    /// and what a plain editor shows.
+    pub fn plain_text(&self) -> String {
+        self.spans.iter().map(|s| s.text.as_str()).collect()
+    }
+
+    /// The same text with empty runs dropped and neighbours that share a
+    /// style run together, so the spans never grow from editing alone.
+    pub fn tidied(mut self) -> Text {
+        self.spans.retain(|s| !s.text.is_empty());
+        let mut runs: Vec<Span> = Vec::with_capacity(self.spans.len());
+        for span in self.spans {
+            match runs.last_mut() {
+                Some(last) if last.same_style(&span) => last.text.push_str(&span.text),
+                _ => runs.push(span),
+            }
+        }
+        self.spans = runs;
+        self
+    }
+
+    /// How many lines it is, which is what a figure needs to leave room for.
+    pub fn lines(&self) -> usize {
+        self.plain_text().lines().count().max(1)
     }
 }
 
@@ -461,6 +761,69 @@ pub struct Style {
     /// transparency level, the other way up.
     #[serde(default = "Style::default_alpha")]
     pub alpha: f64,
+    /// How the drawing's words are set, whether it is the text itself or a
+    /// figure carrying a label. Part of the configuration, so a box saved as
+    /// *Amber* labels itself in the amber that reads on amber; what the words
+    /// actually say never is.
+    #[serde(default)]
+    pub text: TextStyle,
+}
+
+/// How a drawing's text is set: its colour, its face and its size.
+///
+/// Three properties and no more, because they are the three that change how
+/// a chart reads. The weight and the slope are not here: those belong to a
+/// run of characters inside the text, not to every drawing that follows a
+/// configuration, and live on [`Span`].
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub struct TextStyle {
+    /// The ink. Held to [`TEXT_CONTRAST`] against whatever it is drawn on,
+    /// so a preset that is a fine line colour is still readable as a word.
+    pub colour: Paint,
+    /// The face, by family name. `None` is the system's own font, which is
+    /// what the rest of the window is set in and the right default: a chart
+    /// annotated in the desktop's font looks like part of the desktop.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub family: Option<String>,
+    /// The size in pixels, to match the chart's own type rather than the
+    /// printer's points.
+    #[serde(default = "TextStyle::default_size")]
+    pub size: f64,
+}
+
+impl Default for TextStyle {
+    fn default() -> TextStyle {
+        TextStyle::of(Preset::Ink)
+    }
+}
+
+impl TextStyle {
+    /// The text of a drawing in a preset: the preset's own colour, at the
+    /// chart's reading size, in the system's font.
+    ///
+    /// The preset's own colour rather than a neutral, because a label belongs
+    /// to the figure it is on and saying so in its colour is what makes a
+    /// chart of four boxes readable. It is only *held* to the text floor at
+    /// paint time, against the ground it lands on, so where the preset is
+    /// already readable the word is the figure's colour exactly.
+    pub fn of(preset: Preset) -> TextStyle {
+        TextStyle { colour: Paint::preset(preset), family: None, size: TEXT_SIZE }
+    }
+
+    fn default_size() -> f64 {
+        TEXT_SIZE
+    }
+
+    /// The family as a font system wants it: the name, or nothing at all for
+    /// the system's own.
+    pub fn family_name(&self) -> Option<&str> {
+        self.family.as_deref().filter(|name| !name.trim().is_empty())
+    }
+
+    /// The size, kept inside what can be drawn.
+    pub fn clamped_size(&self) -> f64 {
+        self.size.clamp(MIN_TEXT_SIZE, MAX_TEXT_SIZE)
+    }
 }
 
 impl Style {
@@ -475,6 +838,7 @@ impl Style {
             border: true,
             fill: Paint::preset(preset),
             alpha: FILL_ALPHA,
+            text: TextStyle::of(preset),
         }
     }
 
@@ -490,6 +854,35 @@ impl Style {
             border: true,
             fill: Paint::preset(preset),
             alpha: FILL_ALPHA,
+            text: TextStyle::of(preset),
+        }
+    }
+
+    /// An ellipse starts from exactly what a box does. The two are the same
+    /// drawing with a different outline, they share the nine presets, and a
+    /// preset that was measured over every theme as a fill under a hairline
+    /// is measured for both.
+    pub fn ellipse(preset: Preset) -> Style {
+        Style::rect(preset)
+    }
+
+    /// Text starts from the same preset, and nothing a shape has.
+    ///
+    /// No border, no fill: a word on a chart is the word. The rest of the
+    /// fields are still here and still the preset's, so a text drawing
+    /// switched to a box later is a box in the same colour rather than a
+    /// box in nothing.
+    pub fn text(preset: Preset) -> Style {
+        Style { border: false, alpha: 0.0, ..Style::rect(preset) }
+    }
+
+    /// The configuration this kind starts from.
+    pub fn of(kind: Kind, preset: Preset) -> Style {
+        match kind {
+            Kind::Line => Style::line(preset),
+            Kind::Rect => Style::rect(preset),
+            Kind::Ellipse => Style::ellipse(preset),
+            Kind::Text => Style::text(preset),
         }
     }
 
@@ -513,10 +906,21 @@ impl Style {
 /// which is the point of a configuration over a copy. The defaults are the
 /// nine presets in order, so configuration 1 is Up and 2 is Down, as the
 /// brief asks.
+///
+/// One list per kind, and every list is nine long. A kind added later reads
+/// back as absent from anything already written down, which [`list`] treats
+/// as "the defaults" — so a store written before the ellipse and the text
+/// existed opens with their nine as shipped rather than with none.
+///
+/// [`list`]: Configurations::list
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct Configurations {
     pub line: Vec<Style>,
     pub rect: Vec<Style>,
+    #[serde(default)]
+    pub ellipse: Vec<Style>,
+    #[serde(default)]
+    pub text: Vec<Style>,
 }
 
 /// How many configurations each kind has.
@@ -524,9 +928,12 @@ pub const CONFIGURATIONS: u8 = 9;
 
 impl Default for Configurations {
     fn default() -> Configurations {
+        let nine = |make: fn(Preset) -> Style| Preset::ALL.into_iter().map(make).collect();
         Configurations {
-            line: Preset::ALL.into_iter().map(Style::line).collect(),
-            rect: Preset::ALL.into_iter().map(Style::rect).collect(),
+            line: nine(Style::line),
+            rect: nine(Style::rect),
+            ellipse: nine(Style::ellipse),
+            text: nine(Style::text),
         }
     }
 }
@@ -542,48 +949,62 @@ impl Configurations {
 
     pub fn set(&mut self, kind: Kind, n: u8, style: Style) {
         let at = n.clamp(1, CONFIGURATIONS) as usize - 1;
-        let list = match kind {
-            Kind::Line => &mut self.line,
-            Kind::Rect => &mut self.rect,
-        };
-        if let Some(slot) = list.get_mut(at) {
+        // A list that was never written — a kind this store predates — is
+        // filled in from the defaults first, or the write would land in an
+        // empty vector and vanish.
+        if self.stored(kind).len() < CONFIGURATIONS as usize {
+            let fresh = Configurations::default().stored_owned(kind);
+            *self.stored_mut(kind) = fresh;
+        }
+        if let Some(slot) = self.stored_mut(kind).get_mut(at) {
             *slot = style;
         }
     }
 
     /// Put one kind's nine back to what shipped.
     pub fn reset(&mut self, kind: Kind) {
-        let fresh = Configurations::default();
-        match kind {
-            Kind::Line => self.line = fresh.line,
-            Kind::Rect => self.rect = fresh.rect,
-        }
+        let fresh = Configurations::default().stored_owned(kind);
+        *self.stored_mut(kind) = fresh;
     }
 
     pub fn list(&self, kind: Kind) -> &[Style] {
-        let list = match kind {
-            Kind::Line => &self.line,
-            Kind::Rect => &self.rect,
-        };
-        // A stored list that is short — written by a build with fewer — is
-        // read as if it were the defaults for the rest.
+        let list = self.stored(kind);
+        // A stored list that is short — written by a build with fewer, or
+        // with none because the kind did not exist — is read as if it were
+        // the defaults.
         if list.len() >= CONFIGURATIONS as usize {
             list
         } else {
-            DEFAULTS.get_or_init(Configurations::default).list_or_default(kind)
-        }
-    }
-
-    fn list_or_default(&self, kind: Kind) -> &[Style] {
-        match kind {
-            Kind::Line => &self.line,
-            Kind::Rect => &self.rect,
+            DEFAULTS.get_or_init(Configurations::default).stored(kind)
         }
     }
 
     /// Whether configuration `n` of a kind is as shipped.
     pub fn is_default(&self, kind: Kind, n: u8) -> bool {
         DEFAULTS.get_or_init(Configurations::default).of(kind, n) == self.of(kind, n)
+    }
+
+    /// The list exactly as stored, short or empty included.
+    fn stored(&self, kind: Kind) -> &[Style] {
+        match kind {
+            Kind::Line => &self.line,
+            Kind::Rect => &self.rect,
+            Kind::Ellipse => &self.ellipse,
+            Kind::Text => &self.text,
+        }
+    }
+
+    fn stored_mut(&mut self, kind: Kind) -> &mut Vec<Style> {
+        match kind {
+            Kind::Line => &mut self.line,
+            Kind::Rect => &mut self.rect,
+            Kind::Ellipse => &mut self.ellipse,
+            Kind::Text => &mut self.text,
+        }
+    }
+
+    fn stored_owned(&self, kind: Kind) -> Vec<Style> {
+        self.stored(kind).to_vec()
     }
 }
 
@@ -764,6 +1185,12 @@ pub struct Drawing {
     /// themselves, for "bring to front" and "send to back".
     #[serde(default)]
     pub order: i64,
+    /// What it says. The whole of a text drawing; a label on any other kind,
+    /// and empty on most of those. Never part of a configuration — a
+    /// configuration says how words are set, never which words — so it sits
+    /// here beside the anchors rather than in [`Style`].
+    #[serde(default, skip_serializing_if = "Text::is_empty")]
+    pub text: Text,
 }
 
 /// Put drawings in the order they are painted: back to front, and the older
@@ -778,7 +1205,37 @@ pub const DEFAULT_WIDTH: f64 = 1.5;
 
 impl Drawing {
     pub fn new(kind: Kind, from: Anchor, to: Anchor) -> Drawing {
-        Drawing { id: 0, kind, from, to, config: Some(1), style: None, scope: Scope::Global, order: 0 }
+        Drawing {
+            id: 0,
+            kind,
+            from,
+            to,
+            config: Some(1),
+            style: None,
+            scope: Scope::Global,
+            order: 0,
+            text: Text::default(),
+        }
+    }
+
+    /// A text drawing at one point, saying nothing yet: what a click with the
+    /// text tool makes, before anything is typed into it.
+    pub fn text_at(at: Anchor) -> Drawing {
+        Drawing::new(Kind::Text, at, at)
+    }
+
+    /// Whether there is anything to draw as words.
+    pub fn has_text(&self) -> bool {
+        !self.text.is_empty()
+    }
+
+    /// Set what it says, tidying the runs. The text is not a style, so this
+    /// does not take the drawing off its configuration the way
+    /// [`edit_style`] does: a labelled amber box still follows amber.
+    ///
+    /// [`edit_style`]: Drawing::edit_style
+    pub fn set_text(&mut self, text: Text) {
+        self.text = text.tidied();
     }
 
     fn default_config() -> Option<u8> {
@@ -827,6 +1284,15 @@ impl Drawing {
 
     /// Put the grip where the hand is.
     pub fn move_grip(&mut self, grip: Grip, at: Anchor) {
+        // A text drawing is one point wearing two anchors, so whichever is
+        // moved both go: nothing reads the second, and letting them drift
+        // apart would leave a drawing whose box depends on which grip was
+        // last dragged.
+        if self.kind.is_text() {
+            self.from = at;
+            self.to = at;
+            return;
+        }
         match grip {
             Grip::From => self.from = at,
             Grip::To => self.to = at,
@@ -854,7 +1320,14 @@ impl Drawing {
     pub fn grips(&self) -> &'static [Grip] {
         match self.kind {
             Kind::Line => &[Grip::From, Grip::To],
-            Kind::Rect => &[Grip::From, Grip::To, Grip::FromTo, Grip::ToFrom],
+            // The ellipse is dragged by the corners of the box it is drawn
+            // in, exactly as the box is, which is what lets it be shaped to
+            // anything rather than held round.
+            Kind::Rect | Kind::Ellipse => &[Grip::From, Grip::To, Grip::FromTo, Grip::ToFrom],
+            // None. A word's size is its font size, set from the keyboard or
+            // its properties, and a grip on its corner would promise a
+            // stretch that is not on offer.
+            Kind::Text => &[],
         }
     }
 }
@@ -888,16 +1361,34 @@ pub struct Projected {
     pub kind: Kind,
     pub from: (f64, f64),
     pub to: (f64, f64),
+    /// The box a drawing's words fill, in pixels, for the kinds whose size
+    /// is their text: measured by the chart, which is the only place that
+    /// can measure text, and `None` until it has.
+    ///
+    /// A text drawing with no box has no size — nothing to hit and nothing
+    /// to select — which is the right answer for a word nobody has laid out
+    /// yet, and a state that lasts exactly one frame.
+    pub words: Option<(f64, f64, f64, f64)>,
 }
 
 impl Projected {
+    pub fn new(kind: Kind, from: (f64, f64), to: (f64, f64)) -> Projected {
+        Projected { kind, from, to, words: None }
+    }
+
+    /// The same projection, told where its words landed.
+    pub fn with_words(self, words: (f64, f64, f64, f64)) -> Projected {
+        Projected { words: Some(words), ..self }
+    }
+
     /// Where a grip is on screen.
     pub fn grip(&self, grip: Grip) -> Option<(f64, f64)> {
         match (self.kind, grip) {
+            (Kind::Text, _) => None,
             (_, Grip::From) => Some(self.from),
             (_, Grip::To) => Some(self.to),
-            (Kind::Rect, Grip::FromTo) => Some((self.from.0, self.to.1)),
-            (Kind::Rect, Grip::ToFrom) => Some((self.to.0, self.from.1)),
+            (Kind::Rect | Kind::Ellipse, Grip::FromTo) => Some((self.from.0, self.to.1)),
+            (Kind::Rect | Kind::Ellipse, Grip::ToFrom) => Some((self.to.0, self.from.1)),
             _ => None,
         }
     }
@@ -912,14 +1403,29 @@ impl Projected {
                 return Some(grip);
             }
         }
+        let reach = PICK_REACH;
         let on_body = match self.kind {
-            Kind::Line => distance_to_segment((x, y), self.from, self.to) <= PICK_REACH,
+            Kind::Line => distance_to_segment((x, y), self.from, self.to) <= reach,
             Kind::Rect => {
                 let (left, right) = ordered(self.from.0, self.to.0);
                 let (top, bottom) = ordered(self.from.1, self.to.1);
-                let reach = PICK_REACH;
                 (left - reach..=right + reach).contains(&x) && (top - reach..=bottom + reach).contains(&y)
             }
+            // The ellipse itself, not the box it is drawn in: the empty
+            // corners belong to whatever is under them, which is the whole
+            // reason to reach for an ellipse over a box.
+            Kind::Ellipse => inside_ellipse((x, y), self.bounds(), reach),
+            // A word is hit on the box its glyphs fill. The box is generous
+            // by the same reach every other kind is, since a word is a
+            // scatter of thin strokes and aiming between two of them is not
+            // a miss.
+            Kind::Text => match self.words {
+                Some((left, top, w, h)) => {
+                    (left - reach..=left + w + reach).contains(&x)
+                        && (top - reach..=top + h + reach).contains(&y)
+                }
+                None => false,
+            },
         };
         on_body.then_some(Grip::Body)
     }
@@ -930,22 +1436,118 @@ impl Projected {
     /// diagonal is not taken by a box in the empty corner beside it.
     pub fn touches(&self, (left, top, width, height): (f64, f64, f64, f64)) -> bool {
         let (right, bottom) = (left + width, top + height);
+        let overlaps = |(l, t, w, h): (f64, f64, f64, f64)| {
+            l <= right && l + w >= left && t <= bottom && t + h >= top
+        };
         match self.kind {
             Kind::Line => segment_meets_box(self.from, self.to, left, top, right, bottom),
-            Kind::Rect => {
-                let (l, r) = ordered(self.from.0, self.to.0);
-                let (t, b) = ordered(self.from.1, self.to.1);
-                l <= right && r >= left && t <= bottom && b >= top
-            }
+            // The box the shape fills. A dragged selection is a rough
+            // gesture over a region, not a click: catching an ellipse whose
+            // bounding box the hand swept is what the hand meant.
+            Kind::Rect | Kind::Ellipse => overlaps(self.bounds()),
+            Kind::Text => self.words.is_some_and(overlaps),
         }
     }
 
-    /// The box's corners as (left, top, width, height), for drawing it.
+    /// The drawing's box as (left, top, width, height), for drawing it and
+    /// for placing text in it. For a text drawing it is the words' own box,
+    /// and an empty box at the anchor until they have been measured.
     pub fn bounds(&self) -> (f64, f64, f64, f64) {
+        if self.kind.is_text() {
+            return self.words.unwrap_or((self.from.0, self.from.1, 0.0, 0.0));
+        }
         let (left, right) = ordered(self.from.0, self.to.0);
         let (top, bottom) = ordered(self.from.1, self.to.1);
         (left, top, right - left, bottom - top)
     }
+}
+
+/// Whether a point is in the ellipse inscribed in `bounds`, allowing `reach`
+/// pixels of slack all round so the outline is as easy to pick as a line is.
+///
+/// The slack is applied to the radii rather than to the answer, which is why
+/// it is not simply a distance: an ellipse has no single distance to a
+/// point, and growing the shape by the reach is both the cheap way and the
+/// one that behaves at the ends of a very flat ellipse.
+fn inside_ellipse(point: (f64, f64), bounds: (f64, f64, f64, f64), reach: f64) -> bool {
+    let (left, top, width, height) = bounds;
+    let (rx, ry) = (width / 2.0 + reach, height / 2.0 + reach);
+    if rx <= 0.0 || ry <= 0.0 {
+        return false;
+    }
+    let (cx, cy) = (left + width / 2.0, top + height / 2.0);
+    let (dx, dy) = ((point.0 - cx) / rx, (point.1 - cy) / ry);
+    dx * dx + dy * dy <= 1.0
+}
+
+/// How far a label is held off the edge of the figure it is in, in pixels.
+///
+/// Enough that the glyphs are not touching the border, little enough that a
+/// label in the corner of a small box still reads as being in that corner.
+pub const TEXT_INSET: f64 = 4.0;
+
+/// Where the top-left of a block of text goes, given the figure's box on
+/// screen and how big the block is.
+///
+/// Geometry rather than drawing, so the placement can be tested without a
+/// font: the chart measures the block and asks where to put it.
+///
+/// Each kind places text the way that kind wants it:
+///
+/// - A **box** holds it inside, inset from the edge, which is what text in a
+///   shape means everywhere else.
+/// - An **ellipse** holds it inside the curve, not inside the corner of the
+///   box the curve is drawn in — a label placed at the top-left of an
+///   ellipse's bounding box is outside the ellipse. The corners and edges
+///   are placed in the largest rectangle the ellipse contains; the centre,
+///   which is in the ellipse by definition, uses the whole box.
+/// - A **line** has no inside, so the block goes against the segment's box
+///   and clear of the stroke: above it for the top row, below for the
+///   bottom, and just above the line for the middle one, since a label
+///   written across a trendline hides the trendline.
+/// - **Text** is its own block: the anchor is its top-left, because a word
+///   typed on a chart grows right and down from where the caret was.
+pub fn text_origin(
+    kind: Kind,
+    bounds: (f64, f64, f64, f64),
+    (block_w, block_h): (f64, f64),
+    at: Place,
+) -> (f64, f64) {
+    let (left, top, width, height) = bounds;
+    if kind.is_text() {
+        return (left, top);
+    }
+    let (across, down) = at.fractions();
+    if kind == Kind::Line {
+        let x = left + across * width - across * block_w;
+        // Above the box for the top row, below it for the bottom, and
+        // clear of the stroke for the middle.
+        let y = if down == 0.0 {
+            top - block_h - TEXT_INSET
+        } else if down == 1.0 {
+            top + height + TEXT_INSET
+        } else {
+            top + height / 2.0 - block_h - TEXT_INSET
+        };
+        return (x, y);
+    }
+    // The box the block is placed in: the figure's, pulled in by the inset,
+    // and pulled in further for an ellipse's corners and edges so the words
+    // stay under the curve.
+    let (mut box_w, mut box_h) = (width, height);
+    if kind == Kind::Ellipse && !(across == 0.5 && down == 0.5) {
+        // The largest rectangle inside an ellipse has sides the axes over
+        // root two.
+        const INSCRIBED: f64 = std::f64::consts::FRAC_1_SQRT_2;
+        box_w *= INSCRIBED;
+        box_h *= INSCRIBED;
+    }
+    let (box_x, box_y) = (left + (width - box_w) / 2.0, top + (height - box_h) / 2.0);
+    let inner_w = (box_w - 2.0 * TEXT_INSET).max(0.0);
+    let inner_h = (box_h - 2.0 * TEXT_INSET).max(0.0);
+    let x = box_x + TEXT_INSET + across * (inner_w - block_w);
+    let y = box_y + TEXT_INSET + down * (inner_h - block_h);
+    (x, y)
 }
 
 fn ordered(a: f64, b: f64) -> (f64, f64) {
@@ -1004,26 +1606,26 @@ mod shape_tests {
     /// only shares a corner of; a rectangle counts as soon as they overlap.
     #[test]
     fn a_box_takes_what_it_touches() {
-        let diagonal = Projected { kind: Kind::Line, from: (0.0, 0.0), to: (100.0, 100.0) };
+        let diagonal = Projected::new(Kind::Line, (0.0, 0.0), (100.0, 100.0));
         assert!(diagonal.touches((40.0, 40.0, 20.0, 20.0)));
         assert!(diagonal.touches((90.0, 50.0, 30.0, 60.0)));
         assert!(!diagonal.touches((60.0, 0.0, 30.0, 30.0)));
         assert!(!diagonal.touches((120.0, 120.0, 10.0, 10.0)));
-        let flat = Projected { kind: Kind::Line, from: (10.0, 50.0), to: (90.0, 50.0) };
+        let flat = Projected::new(Kind::Line, (10.0, 50.0), (90.0, 50.0));
         assert!(flat.touches((0.0, 40.0, 20.0, 20.0)));
         assert!(!flat.touches((0.0, 60.0, 200.0, 20.0)));
-        let rect = Projected { kind: Kind::Rect, from: (10.0, 10.0), to: (50.0, 50.0) };
+        let rect = Projected::new(Kind::Rect, (10.0, 10.0), (50.0, 50.0));
         assert!(rect.touches((45.0, 45.0, 20.0, 20.0)));
         assert!(rect.touches((20.0, 20.0, 5.0, 5.0)));
         assert!(!rect.touches((51.0, 0.0, 20.0, 20.0)));
     }
 
     fn line() -> Projected {
-        Projected { kind: Kind::Line, from: (100.0, 100.0), to: (300.0, 200.0) }
+        Projected::new(Kind::Line, (100.0, 100.0), (300.0, 200.0))
     }
 
     fn rect() -> Projected {
-        Projected { kind: Kind::Rect, from: (300.0, 200.0), to: (100.0, 100.0) }
+        Projected::new(Kind::Rect, (300.0, 200.0), (100.0, 100.0))
     }
 
     #[test]
@@ -1172,7 +1774,7 @@ mod tests {
 
     /// Every theme the app can wear: the Omarchy fixtures through the same
     /// derivation the app runs, and the built-ins.
-    fn every_theme() -> Vec<Theme> {
+    pub(super) fn every_theme() -> Vec<Theme> {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/omarchy");
         let mut out = Vec::new();
         for entry in std::fs::read_dir(&dir).expect("fixtures directory") {
@@ -1384,5 +1986,334 @@ mod tests {
             assert_eq!(serde_json::from_str::<Preset>(&json).unwrap(), preset);
         }
         assert_eq!(serde_json::to_string(&Preset::Ink).unwrap(), "\"ink\"");
+    }
+}
+
+#[cfg(test)]
+mod ellipse_tests {
+    use super::*;
+
+    fn ellipse(from: (f64, f64), to: (f64, f64)) -> Projected {
+        Projected::new(Kind::Ellipse, from, to)
+    }
+
+    /// The point of reaching for an ellipse over a box is that its corners
+    /// are not part of it: a click in one belongs to whatever is underneath.
+    #[test]
+    fn an_ellipse_is_picked_on_the_curve_and_not_in_the_corners() {
+        let oval = ellipse((0.0, 0.0), (200.0, 100.0));
+        assert_eq!(oval.hit(100.0, 50.0), Some(Grip::Body), "the middle missed");
+        // Just inside the left end and the top, both on the curve.
+        assert_eq!(oval.hit(4.0, 50.0), Some(Grip::Body), "the left end missed");
+        assert_eq!(oval.hit(100.0, 4.0), Some(Grip::Body), "the top missed");
+        // The bounding box's corners, which are well outside the curve.
+        for corner in [(0.0, 0.0), (200.0, 0.0), (0.0, 100.0), (200.0, 100.0)] {
+            // The corners are also where two grips sit, and a grip is a hit.
+            // Step a little inside the box and away from both.
+            let (x, y) = (
+                corner.0 + if corner.0 == 0.0 { 14.0 } else { -14.0 },
+                corner.1 + if corner.1 == 0.0 { 9.0 } else { -9.0 },
+            );
+            assert_eq!(oval.hit(x, y), None, "the corner at {corner:?} was taken");
+        }
+    }
+
+    /// An ellipse is dragged by the corners of the box it is drawn in, the
+    /// same four a box has, which is what lets it be shaped freely.
+    #[test]
+    fn an_ellipse_wears_a_box_s_four_grips() {
+        let drawing = Drawing::new(Kind::Ellipse, Anchor::new(0, 1.0), Anchor::new(10, 2.0));
+        assert_eq!(drawing.grips(), Drawing::new(Kind::Rect, Anchor::new(0, 1.0), Anchor::new(10, 2.0)).grips());
+        let oval = ellipse((0.0, 0.0), (200.0, 100.0));
+        assert_eq!(oval.grip(Grip::FromTo), Some((0.0, 100.0)));
+        assert_eq!(oval.grip(Grip::ToFrom), Some((200.0, 0.0)));
+    }
+
+    /// Drawn backwards — the hand went right to left — and it is the same
+    /// ellipse.
+    #[test]
+    fn an_ellipse_is_the_same_drawn_either_way() {
+        let forward = ellipse((0.0, 0.0), (200.0, 100.0));
+        let backward = ellipse((200.0, 100.0), (0.0, 0.0));
+        assert_eq!(forward.bounds(), backward.bounds());
+        assert_eq!(backward.hit(100.0, 50.0), Some(Grip::Body));
+    }
+}
+
+#[cfg(test)]
+mod text_tests {
+    use super::*;
+
+    fn words(text: &str) -> Text {
+        Text::plain(text)
+    }
+
+    /// Runs that share a style are one run, and empty runs are not runs at
+    /// all: editing must not grow the spans without changing the text.
+    #[test]
+    fn tidying_runs_neighbours_together_and_drops_the_empty() {
+        let text = Text {
+            spans: vec![
+                Span::plain("Held "),
+                Span::plain(""),
+                Span::plain("at "),
+                Span { text: "192".into(), bold: true, italic: false },
+                Span { text: "".into(), bold: true, italic: false },
+            ],
+            at: Place::Center,
+        }
+        .tidied();
+        assert_eq!(text.spans.len(), 2, "{:?}", text.spans);
+        assert_eq!(text.spans[0], Span::plain("Held at "));
+        assert_eq!(text.plain_text(), "Held at 192");
+    }
+
+    /// A figure with nothing typed into it has nothing to draw, which is not
+    /// the same as having an empty line.
+    #[test]
+    fn text_is_empty_until_something_is_typed() {
+        assert!(Text::default().is_empty());
+        assert!(words("").is_empty());
+        assert!(!words(" ").is_empty(), "a space is something");
+    }
+
+    /// The text never rides on a configuration: two drawings following the
+    /// same number say different things.
+    #[test]
+    fn what_a_drawing_says_is_not_part_of_its_configuration() {
+        let configs = Configurations::default();
+        let mut a = Drawing::new(Kind::Rect, Anchor::new(0, 1.0), Anchor::new(10, 2.0));
+        let mut b = a.clone();
+        a.set_text(words("support"));
+        b.set_text(words("resistance"));
+        assert_eq!(a.config, Some(1), "saying something took the drawing off its configuration");
+        assert_eq!(a.style(&configs), b.style(&configs));
+        assert_ne!(a.text, b.text);
+    }
+
+    /// A word has no grips: its size is its font size, and a grip on its
+    /// corner would promise a stretch that is not on offer.
+    #[test]
+    fn a_text_drawing_has_nothing_to_drag_but_itself() {
+        let drawing = Drawing::text_at(Anchor::new(0, 1.0));
+        assert!(drawing.grips().is_empty());
+        let projected = Projected::new(Kind::Text, (50.0, 50.0), (50.0, 50.0));
+        assert_eq!(projected.grip(Grip::From), None);
+        // And nothing to hit until the words have been measured.
+        assert_eq!(projected.hit(50.0, 50.0), None);
+        let measured = projected.with_words((50.0, 50.0, 60.0, 16.0));
+        assert_eq!(measured.hit(60.0, 55.0), Some(Grip::Body));
+        assert_eq!(measured.hit(200.0, 55.0), None);
+    }
+
+    /// Both anchors follow, whichever is moved, so the box a word is hit on
+    /// never depends on which grip was dragged last.
+    #[test]
+    fn moving_a_word_moves_both_its_anchors() {
+        let mut drawing = Drawing::text_at(Anchor::new(100, 5.0));
+        drawing.move_grip(Grip::To, Anchor::new(200, 9.0));
+        assert_eq!(drawing.from, drawing.to);
+        assert_eq!(drawing.from, Anchor::new(200, 9.0));
+    }
+
+    /// The nine places, in a box: each lands the block against the edges its
+    /// name says, inside the figure.
+    #[test]
+    fn the_nine_places_put_a_block_where_they_say() {
+        let bounds = (0.0, 0.0, 200.0, 100.0);
+        let block = (40.0, 20.0);
+        let at = |place| text_origin(Kind::Rect, bounds, block, place);
+        assert_eq!(at(Place::TopLeft), (TEXT_INSET, TEXT_INSET));
+        let (x, y) = at(Place::Center);
+        assert!((x - 80.0).abs() < 0.01 && (y - 40.0).abs() < 0.01, "centre landed at {x},{y}");
+        let (x, y) = at(Place::BottomRight);
+        assert!(
+            (x - (200.0 - TEXT_INSET - 40.0)).abs() < 0.01
+                && (y - (100.0 - TEXT_INSET - 20.0)).abs() < 0.01,
+            "bottom right landed at {x},{y}"
+        );
+        // Top is centred across and against the top; left is centred down
+        // and against the left.
+        assert_eq!(at(Place::Top).1, TEXT_INSET);
+        assert_eq!(at(Place::Left).0, TEXT_INSET);
+        assert!((at(Place::Top).0 - 80.0).abs() < 0.01);
+    }
+
+    /// A label in the corner of an ellipse goes under the curve, not into
+    /// the corner of the box the curve is drawn in — which is outside it.
+    #[test]
+    fn an_ellipse_keeps_its_corner_labels_under_the_curve() {
+        let bounds = (0.0, 0.0, 200.0, 100.0);
+        let block = (30.0, 14.0);
+        let in_box = text_origin(Kind::Rect, bounds, block, Place::TopLeft);
+        let in_oval = text_origin(Kind::Ellipse, bounds, block, Place::TopLeft);
+        assert!(in_oval.0 > in_box.0 && in_oval.1 > in_box.1, "{in_oval:?} was not pulled in from {in_box:?}");
+        // And the block's own corner is inside the ellipse.
+        let corner = (in_oval.0, in_oval.1);
+        assert!(
+            inside_ellipse(corner, bounds, 0.0),
+            "the label's corner at {corner:?} fell outside the curve"
+        );
+        // The centre is in the ellipse by definition, so it uses the whole
+        // box and lands where a box would put it.
+        assert_eq!(
+            text_origin(Kind::Ellipse, bounds, block, Place::Center),
+            text_origin(Kind::Rect, bounds, block, Place::Center)
+        );
+    }
+
+    /// A label on a line goes clear of the stroke: a note written across a
+    /// trendline hides the trendline.
+    #[test]
+    fn a_label_on_a_line_sits_off_the_line() {
+        // A flat line: its box has no height at all.
+        let bounds = (0.0, 50.0, 200.0, 0.0);
+        let block = (40.0, 20.0);
+        let (_, y) = text_origin(Kind::Line, bounds, block, Place::Center);
+        assert!(y + block.1 <= 50.0, "the label at {y} crossed the line at 50");
+        let (_, below) = text_origin(Kind::Line, bounds, block, Place::Bottom);
+        assert!(below >= 50.0, "the bottom label at {below} crossed the line at 50");
+    }
+
+    /// A word hangs from its anchor by the top-left corner: typing on a
+    /// chart grows right and down from where the caret was.
+    #[test]
+    fn a_word_hangs_from_the_caret() {
+        let bounds = (120.0, 80.0, 0.0, 0.0);
+        for place in Place::ALL {
+            assert_eq!(text_origin(Kind::Text, bounds, (50.0, 16.0), place), (120.0, 80.0));
+        }
+    }
+
+    /// Text is held higher than a line is, and against what it actually
+    /// lands on: inside a filled box that is the composited fill, not the
+    /// chart's background.
+    #[test]
+    fn a_label_is_held_to_the_ground_it_lands_on() {
+        let theme = crate::theme::builtin_themes()[0].clone();
+        let mut style = Style::rect(Preset::Amber);
+        let on_fill = text_ground(Kind::Rect, &style, &theme);
+        assert_ne!(on_fill, theme.ui.background, "a filled box read as bare background");
+        // With nothing shown of the fill there is nothing but the background.
+        style.alpha = 0.0;
+        assert_eq!(text_ground(Kind::Rect, &style, &theme), theme.ui.background);
+        // And a line has no inside at all.
+        assert_eq!(
+            text_ground(Kind::Line, &Style::line(Preset::Amber), &theme),
+            theme.ui.background
+        );
+    }
+
+    /// Every preset's text clears the floor on every shipped theme, over the
+    /// ground it is actually drawn on — which is the whole promise of the
+    /// text band.
+    #[test]
+    fn every_preset_s_text_is_readable_on_every_theme() {
+        for theme in super::tests::every_theme() {
+            for kind in Kind::ALL {
+                for preset in Preset::ALL {
+                    let style = Style::of(kind, preset);
+                    let ground = text_ground(kind, &style, &theme);
+                    let ink = text_colour(&style.text.colour, &theme, &ground);
+                    let ratio = contrast_ratio(&ink, &ground);
+                    assert!(
+                        ratio >= TEXT_CONTRAST.floor - 0.01,
+                        "{} {} text is {ratio:.2}:1 on {}",
+                        kind.key(),
+                        preset.name(),
+                        theme.name
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod configuration_tests {
+    use super::*;
+
+    /// A store written before a kind existed has no list for it, and must
+    /// open on that kind's defaults rather than on nothing.
+    #[test]
+    fn a_kind_the_stored_settings_predate_reads_as_shipped() {
+        let json = r#"{"line":[],"rect":[]}"#;
+        let configs: Configurations = serde_json::from_str(json).unwrap();
+        for n in 1..=CONFIGURATIONS {
+            assert_eq!(configs.of(Kind::Ellipse, n), Configurations::default().of(Kind::Ellipse, n));
+            assert_eq!(configs.of(Kind::Text, n), Configurations::default().of(Kind::Text, n));
+            assert!(configs.is_default(Kind::Text, n));
+        }
+    }
+
+    /// And a write to such a list lands rather than vanishing into an empty
+    /// vector.
+    #[test]
+    fn writing_a_configuration_of_a_fresh_kind_sticks() {
+        let mut configs: Configurations = serde_json::from_str(r#"{"line":[],"rect":[]}"#).unwrap();
+        let mut style = Style::text(Preset::Cyan);
+        style.text.size = 31.0;
+        configs.set(Kind::Text, 4, style.clone());
+        assert_eq!(configs.of(Kind::Text, 4), &style);
+        assert!(!configs.is_default(Kind::Text, 4));
+        // The rest of the nine are still as shipped.
+        assert!(configs.is_default(Kind::Text, 5));
+        configs.reset(Kind::Text);
+        assert!(configs.is_default(Kind::Text, 4));
+    }
+
+    /// Nine of every kind, named by the preset of that number, so Alt+4 is
+    /// amber whichever tool is in hand.
+    #[test]
+    fn the_nine_are_the_nine_presets_for_every_kind() {
+        let configs = Configurations::default();
+        for kind in Kind::ALL {
+            assert_eq!(configs.list(kind).len(), CONFIGURATIONS as usize);
+            for (at, preset) in Preset::ALL.into_iter().enumerate() {
+                assert_eq!(configs.of(kind, at as u8 + 1), &Style::of(kind, preset));
+            }
+        }
+    }
+
+    /// The names a command line uses round-trip, and "circle" is taken for
+    /// the ellipse because that is what the tool is called.
+    #[test]
+    fn every_kind_is_spelled_and_read_back() {
+        for kind in Kind::ALL {
+            assert_eq!(Kind::from_key(kind.key()), Some(kind));
+            let json = serde_json::to_string(&kind).unwrap();
+            assert_eq!(serde_json::from_str::<Kind>(&json).unwrap(), kind);
+        }
+        assert_eq!(Kind::from_key("circle"), Some(Kind::Ellipse));
+        assert_eq!(Kind::from_key("CIRCLE"), Some(Kind::Ellipse));
+        assert_eq!(Kind::from_key("blob"), None);
+    }
+
+    /// A drawing written down before text existed reads back with none, and
+    /// one with nothing to say does not write the field at all.
+    #[test]
+    fn a_drawing_without_text_round_trips_without_it() {
+        let drawing = Drawing::new(Kind::Rect, Anchor::new(1, 1.0), Anchor::new(2, 2.0));
+        let json = serde_json::to_string(&drawing).unwrap();
+        assert!(!json.contains("text"), "{json}");
+        assert_eq!(serde_json::from_str::<Drawing>(&json).unwrap(), drawing);
+
+        let mut labelled = drawing.clone();
+        labelled.set_text(Text { spans: vec![Span { text: "hi".into(), bold: true, italic: false }], at: Place::Top });
+        let json = serde_json::to_string(&labelled).unwrap();
+        assert_eq!(serde_json::from_str::<Drawing>(&json).unwrap(), labelled);
+    }
+
+    /// The places a command line writes round-trip too, British spelling
+    /// included.
+    #[test]
+    fn every_place_is_spelled_and_read_back() {
+        for place in Place::ALL {
+            assert_eq!(Place::from_key(place.key()), Some(place));
+            let json = serde_json::to_string(&place).unwrap();
+            assert_eq!(serde_json::from_str::<Place>(&json).unwrap(), place);
+        }
+        assert_eq!(Place::from_key("centre"), Some(Place::Center));
+        assert_eq!(Place::from_key("top_left"), Some(Place::TopLeft));
     }
 }

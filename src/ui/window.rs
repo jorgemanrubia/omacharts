@@ -220,6 +220,8 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
         &[
             ("Alt+L", "Draw a line: click where it starts, then where it ends"),
             ("Alt+R", "Draw a rectangle over a run of bars"),
+            ("Alt+C", "Draw a circle, dragged to any shape"),
+            ("Alt+T", "Write on the chart: click, then type"),
             ("Ctrl+D", "Show or hide the drawing tools"),
             ("Alt+1 … 9", "Configuration N, for the selected drawing or the one about to be drawn"),
             ("Enter", "The selected drawing's properties"),
@@ -6585,6 +6587,20 @@ impl Window {
             this.arm_drawing(omacharts_engine::DrawingKind::Rect)
         });
         actions.add_action(&draw_rect);
+
+        let draw_ellipse = gio::SimpleAction::new("draw-ellipse", None);
+        let this = self.clone();
+        draw_ellipse.connect_activate(move |_, _| {
+            this.arm_drawing(omacharts_engine::DrawingKind::Ellipse)
+        });
+        actions.add_action(&draw_ellipse);
+
+        let draw_text = gio::SimpleAction::new("draw-text", None);
+        let this = self.clone();
+        draw_text.connect_activate(move |_, _| {
+            this.arm_drawing(omacharts_engine::DrawingKind::Text)
+        });
+        actions.add_action(&draw_text);
 
         let drawing_settings = gio::SimpleAction::new("drawing-settings", None);
         let this = self.clone();

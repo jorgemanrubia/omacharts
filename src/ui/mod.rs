@@ -14,6 +14,7 @@ pub mod preferences;
 pub mod screenshot;
 pub mod search;
 pub mod shortcuts;
+pub mod text;
 pub mod watchlist;
 pub mod window;
 
