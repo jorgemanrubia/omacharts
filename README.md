@@ -49,8 +49,8 @@ On Arch, x86_64 or aarch64, install the package attached to the latest
 [release](https://github.com/jorgemanrubia/omacharts/releases/latest):
 
 ```sh
-curl -LO https://github.com/jorgemanrubia/omacharts/releases/latest/download/omacharts-0.1.10-1-$(uname -m).pkg.tar.zst
-sudo pacman -U omacharts-0.1.10-1-$(uname -m).pkg.tar.zst
+curl -LO https://github.com/jorgemanrubia/omacharts/releases/latest/download/omacharts-0.1.11-1-$(uname -m).pkg.tar.zst
+sudo pacman -U omacharts-0.1.11-1-$(uname -m).pkg.tar.zst
 ```
 
 Or build that same package yourself from a clone:
