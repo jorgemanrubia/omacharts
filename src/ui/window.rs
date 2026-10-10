@@ -6377,6 +6377,8 @@ impl Window {
         let draw = gio::Menu::new();
         shortcuts::append(&draw, "Draw a line", "chart.draw-line");
         shortcuts::append(&draw, "Draw a rectangle", "chart.draw-rect");
+        shortcuts::append(&draw, "Draw a circle", "chart.draw-ellipse");
+        shortcuts::append(&draw, "Write on the chart", "chart.draw-text");
         if !self.focused_pane().view.drawings().is_empty() {
             shortcuts::append(&draw, "Remove all drawings", "chart.drawing-clear");
         }

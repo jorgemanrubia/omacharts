@@ -1593,7 +1593,7 @@ fn sample_text(
     }
     let ground = drawings::text_ground(kind, &style, theme);
     let ink = drawings::text_colour(&style.text.colour, theme, &ground);
-    crate::ui::text::draw(cr, (x, y), &text, &style.text, drawings::Align::Center, &ink);
+    crate::ui::text::draw(cr, (x, y), &text, &style.text, drawings::Align::Center, &ink, &ground);
 }
 
 /// Every sample the arrow factory has drawn, so a colour change can ask
@@ -1733,7 +1733,7 @@ pub fn paint_head(
     }
 }
 
-fn rounded(cr: &gtk::cairo::Context, x: f64, y: f64, w: f64, h: f64, r: f64) {
+pub fn rounded(cr: &gtk::cairo::Context, x: f64, y: f64, w: f64, h: f64, r: f64) {
     let r = r.min(w / 2.0).min(h / 2.0);
     cr.new_sub_path();
     cr.arc(x + w - r, y + r, r, -std::f64::consts::FRAC_PI_2, 0.0);

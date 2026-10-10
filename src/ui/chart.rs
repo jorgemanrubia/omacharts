@@ -195,6 +195,16 @@ struct State {
     /// sitting exactly where the label would be, in the same font and the
     /// same ink, and drawing both would be drawing it twice.
     editing: Option<usize>,
+    /// Where that editor is, in pixels, so the chart can put the label's own
+    /// ground under it.
+    ///
+    /// A committed label gets its ground as a halo round each glyph, which a
+    /// text widget cannot draw. So while the caret is in it the ground goes
+    /// down as a plate instead: the same colour, under the whole block, which
+    /// is if anything more readable than the result and never less. The
+    /// editor is told where to sit after every keystroke, and tells the
+    /// chart here.
+    editing_at: Option<(f64, f64, f64, f64)>,
 }
 
 /// Something that happened to a drawing, for whoever keeps them.
@@ -697,6 +707,7 @@ impl State {
             price_auto: true,
             drawings: Vec::new(),
             editing: None,
+            editing_at: None,
             selected: Vec::new(),
             marquee_base: Vec::new(),
             tool: None,
@@ -1248,7 +1259,11 @@ impl ChartView {
         let Some(editing) = self.editing.borrow_mut().take() else { return };
         self.editor_layer.remove(&editing.view);
         self.editor_layer.set_can_target(false);
-        self.state.borrow_mut().editing = None;
+        {
+            let mut state = self.state.borrow_mut();
+            state.editing = None;
+            state.editing_at = None;
+        }
         self.area.grab_focus();
     }
 
@@ -1868,6 +1883,12 @@ impl ChartView {
             (drawings::text_origin(drawing.kind, projected.bounds(), size, at), size)
         };
         editing.place(&self.editor_layer, placed.0, placed.1);
+        let ((x, y), (w, h)) = placed;
+        let moved = self.state.borrow().editing_at != Some((x, y, w, h));
+        if moved {
+            self.state.borrow_mut().editing_at = Some((x, y, w, h));
+            self.redraw();
+        }
     }
 
     /// Take the editor off the chart, keeping what was typed or throwing it
@@ -1876,7 +1897,11 @@ impl ChartView {
         let Some(editing) = self.editing.borrow_mut().take() else { return };
         self.editor_layer.remove(&editing.view);
         self.editor_layer.set_can_target(false);
-        self.state.borrow_mut().editing = None;
+        {
+            let mut state = self.state.borrow_mut();
+            state.editing = None;
+            state.editing_at = None;
+        }
 
         let event = match how {
             text_editor::Ended::Cancel => {
@@ -4053,6 +4078,9 @@ fn draw_drawings(cr: &cairo::Context, state: &State, plan: &Layout, low: f64, hi
         let projected = state.project_label(state.project(plan, low, high, drawing), drawing);
         let typing = state.editing == Some(index);
         draw_drawing(cr, state, &projected, drawing, state.selected.contains(&index), typing);
+        if typing {
+            draw_editing_ground(cr, state, drawing);
+        }
     }
     cr.restore().ok();
 }
@@ -4184,6 +4212,23 @@ fn draw_drawing(
 /// How far outside the glyphs a selected text drawing's outline sits.
 const SELECTED_TEXT_PAD: f64 = 3.0;
 
+/// How far the plate under the caret reaches past the block it is under.
+const EDITING_PAD: f64 = 3.0;
+
+/// The ground under the words being typed: the colour the ink was held
+/// against, put down so that what is on screen while somebody types is as
+/// readable as what they will get. See [`crate::ui::text::draw`] for why a
+/// label needs its ground drawn at all.
+fn draw_editing_ground(cr: &cairo::Context, state: &State, drawing: &Drawing) {
+    let Some((x, y, w, h)) = state.editing_at else { return };
+    let style = drawing.style(&state.configs);
+    let ground = drawings::text_ground(drawing.kind, style, &state.theme);
+    colors::set_source(cr, &ground);
+    let pad = EDITING_PAD;
+    crate::ui::drawing_settings::rounded(cr, x - pad, y - pad, w + 2.0 * pad, h + 2.0 * pad, 3.0);
+    let _ = cr.fill();
+}
+
 /// What the drawing says, where its placement puts it.
 ///
 /// Every kind goes through here: for the text kind these are the drawing,
@@ -4203,7 +4248,7 @@ fn draw_label(
     let ground = drawings::text_ground(drawing.kind, style, &state.theme);
     let ink = drawings::text_colour(&style.text.colour, &state.theme, &ground);
     let at = crate::ui::text::placement(drawing.kind, &drawing.text);
-    crate::ui::text::draw(cr, (x, y), &drawing.text, &style.text, at.alignment(), &ink);
+    crate::ui::text::draw(cr, (x, y), &drawing.text, &style.text, at.alignment(), &ink, &ground);
 }
 
 /// A filled arrowhead at `tip`, pointing away from `tail`, sized to the

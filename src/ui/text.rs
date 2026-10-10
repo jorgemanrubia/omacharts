@@ -161,7 +161,34 @@ pub fn placement(kind: Kind, text: &Text) -> Place {
     }
 }
 
-/// Put the block on the chart at (`x`, `y`), in `colour`.
+/// How wide the halo round a label's glyphs is, in pixels of stroke.
+///
+/// The stroke straddles the outline, so half of this is what shows outside
+/// each stem. Two pixels is one pixel of ground either side: enough to lift
+/// a thin stem off a candle, little enough that at 13px the counters of an
+/// *a* or an *e* do not close up.
+const HALO: f64 = 2.0;
+
+/// Put the block on the chart at (`x`, `y`), in `colour`, over a halo of
+/// `ground`.
+///
+/// The halo is the point, and it is not decoration. A label's colour is held
+/// to a contrast floor against the ground it is supposed to land on — the
+/// composited fill inside a figure, the chart's background outside one — but
+/// that fill is a 16% tint, so what is really behind the glyphs is mostly
+/// *candle*. Measured over the twenty-six themes, the held colour is under
+/// 3:1 against the candle beneath it in all but one case, for every preset,
+/// Ink included: every colour on a chart lives in the same luminance band,
+/// and no choice of ink gets out of it. A word written straight onto a green
+/// candle in a green box is a word you cannot read, whatever it is coloured.
+///
+/// So rather than choose a colour against a ground that is not there, the
+/// ground is put there: the glyph outlines are stroked in exactly the colour
+/// the contrast was computed against before they are filled. The 4.5:1 stops
+/// being a claim about an average and becomes true of the pixels — the ink
+/// really is sitting on that colour, candle or no candle — and it costs a
+/// hairline rather than the opaque plate that would hide the bars the label
+/// is about.
 pub fn draw(
     cr: &gtk::cairo::Context,
     (x, y): (f64, f64),
@@ -169,15 +196,23 @@ pub fn draw(
     style: &TextStyle,
     align: Align,
     colour: &str,
+    ground: &str,
 ) {
     if text.is_empty() {
         return;
     }
     let layout = layout(text, style, align);
-    crate::ui::colors::set_source(cr, colour);
     cr.move_to(x, y);
-    pangocairo::functions::show_layout(cr, &layout);
-    // `show_layout` leaves the path where the glyphs were; anything stroking
-    // after this would stroke them.
+    pangocairo::functions::layout_path(cr, &layout);
+    crate::ui::colors::set_source(cr, ground);
+    cr.set_line_width(HALO);
+    cr.set_line_join(gtk::cairo::LineJoin::Round);
+    // Preserved, so the fill below is the same outlines rather than a second
+    // layout laid over the first a fraction off.
+    let _ = cr.stroke_preserve();
+    crate::ui::colors::set_source(cr, colour);
+    let _ = cr.fill();
+    // The path is spent, but say so: anything stroking after this would
+    // otherwise stroke the glyphs.
     cr.new_path();
 }

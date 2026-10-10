@@ -180,7 +180,15 @@ const SWITCHES: &[&str] = &["on", "off"];
 const LINKS: &[&str] =
     &["none", "1", "2", "3", "4", "5", "6", "7", "8", "9"];
 const COLOURING: &[&str] = &["coloured", "red-up", "monochrome"];
-const DRAWING_KINDS: &[&str] = &["line", "rect", "ellipse", "text"];
+/// The kinds a drawing comes in, plus the one alias.
+///
+/// `circle` is offered as well as `ellipse` because the tool is called a
+/// circle everywhere a person meets it — the button, its tooltip, the chart's
+/// menu — and somebody who has read that and types it should not be refused
+/// by a list that does not contain the word they were shown. Clap checks this
+/// list before the parser sees anything, so an alias the engine understands
+/// and the table does not is an alias nobody can use.
+const DRAWING_KINDS: &[&str] = &["line", "rect", "ellipse", "circle", "text"];
 /// Where a figure's label sits in it.
 const PLACES: &[&str] = &[
     "center", "top", "bottom", "left", "right", "top-left", "top-right", "bottom-left",
@@ -1081,6 +1089,44 @@ mod tests {
     fn the_sessions_on_offer_are_the_ones_that_exist() {
         let mut engine: Vec<&str> = Session::ALL.iter().map(|s| s.key()).collect();
         let mut offered = SESSIONS.to_vec();
+        engine.sort_unstable();
+        offered.sort_unstable();
+        assert_eq!(offered, engine);
+    }
+
+    /// Every kind the table offers is one the engine reads, and every kind
+    /// the engine has is one the table offers.
+    ///
+    /// Both directions, because they fail differently: a value in the table
+    /// the engine does not know is a command that parses and then says it
+    /// cannot, and a kind the engine has that the table leaves out is a
+    /// drawing nobody can make from a terminal — which, in this repo, is a
+    /// drawing that is not finished. The alias is allowed to be in the table
+    /// and not in `ALL`; that is what it is.
+    #[test]
+    fn the_drawing_kinds_on_offer_are_the_ones_that_exist() {
+        use omacharts_engine::drawings::Kind;
+        for offered in DRAWING_KINDS {
+            assert!(
+                Kind::from_key(offered).is_some(),
+                "the table offers {offered:?} and the engine does not read it"
+            );
+        }
+        for kind in Kind::ALL {
+            assert!(
+                DRAWING_KINDS.contains(&kind.key()),
+                "the engine has {:?} and the table does not offer it",
+                kind.key()
+            );
+        }
+    }
+
+    /// And the places a label can sit, the same way.
+    #[test]
+    fn the_places_on_offer_are_the_ones_that_exist() {
+        use omacharts_engine::drawings::Place;
+        let mut engine: Vec<&str> = Place::ALL.iter().map(|p| p.key()).collect();
+        let mut offered = PLACES.to_vec();
         engine.sort_unstable();
         offered.sort_unstable();
         assert_eq!(offered, engine);
