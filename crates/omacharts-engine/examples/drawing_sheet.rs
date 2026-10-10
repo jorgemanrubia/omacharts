@@ -6,9 +6,12 @@
 //! belongs on Gruvbox, and can a line in Teal be told from one in Cyan on
 //! Paper? Each theme is drawn at one CSS pixel per pixel: the nine lines
 //! cutting through candles on the left, the nine rectangles over runs of them
-//! on the right, and under each picture the numbers it is judged by. Before
-//! the themes, the same boxes are drawn at three border strengths, which is
-//! how the border's alpha was chosen.
+//! in the middle, and on the right the nine as ellipses with a label in each
+//! — which is where the halo under a label's glyphs can be judged, since a
+//! 16% fill means what is really behind them is a candle. Under each picture
+//! are the numbers it is judged by. Before the themes, the same boxes are
+//! drawn at three border strengths, which is how the border's alpha was
+//! chosen.
 //!
 //!     cargo run -p omacharts-engine --example drawing_sheet
 //!
@@ -26,12 +29,12 @@ use std::path::{Path, PathBuf};
 
 use omacharts_engine::drawings::{
     self, BORDER_ALPHA, BORDER_WIDTH, CROSSHAIR_ALPHA, DRAWING_CONTRAST, FILL_ALPHA,
-    MIN_FROM_FURNITURE, MIN_SEPARATION, Preset,
+    MIN_FROM_FURNITURE, MIN_SEPARATION, Preset, TEXT_CONTRAST,
 };
 use omacharts_engine::omarchy;
 use omacharts_engine::theme::{
-    BarScheme, ContrastBand, Direction, Oklch, Theme, builtin_themes, contrast_ratio, delta_e, mix,
-    theme_bars,
+    BarScheme, ContrastBand, Direction, Oklch, Theme, builtin_themes, contrast_ratio, delta_e,
+    held_to, mix, theme_bars,
 };
 
 /// The nine, by name, in the order the picker shows them.
@@ -1008,7 +1011,7 @@ const PRICE_AXIS_W: f64 = 52.0;
 const TIME_AXIS_H: f64 = 20.0;
 
 fn mock(html: &mut String, row: &Row) {
-    let w = PANE_W * 2.0 + 8.0;
+    let w = PANE_W * 3.0 + 16.0;
     let _ = write!(
         html,
         r#"<svg width="{w}" height="{PANE_H}" viewBox="0 0 {w} {PANE_H}" shape-rendering="crispEdges" role="img" aria-label="Drawing presets on {name}">"#,
@@ -1023,7 +1026,67 @@ fn mock(html: &mut String, row: &Row) {
     lines_over(html, row, 0.0, &closes);
     let closes = pane(html, row, PANE_W + 8.0, 2);
     rects_over(html, row, PANE_W + 8.0, &closes, BORDER_ALPHA);
+    let closes = pane(html, row, (PANE_W + 8.0) * 2.0, 3);
+    ellipses_over(html, row, (PANE_W + 8.0) * 2.0, &closes);
     html.push_str("</svg>\n");
+}
+
+/// Nine ellipses, each with a label in it.
+///
+/// The third pane answers the question the first two cannot: a label is read
+/// against the fill it sits in, and that fill is a 16% tint, so what is
+/// actually behind the glyphs is a candle. Here the words are drawn the way
+/// the chart draws them — the ink at the text floor, over a halo of exactly
+/// the ground it was held against — so the halo can be judged by eye rather
+/// than only by the numbers under the picture. The ellipse is the same fill
+/// under the same edge a box has, which is the other thing worth seeing side
+/// by side with the pane to its left.
+fn ellipses_over(html: &mut String, row: &Row, x: f64, closes: &[(f64, f64)]) {
+    let plot_w = PANE_W - PRICE_AXIS_W;
+    let count = 9.0;
+    let slot = (plot_w - 12.0) / count;
+    let rw = (slot - 8.0).floor();
+    for (i, (l, r)) in row.lines.iter().zip(&row.rects).enumerate() {
+        let rx = (x + 6.0 + i as f64 * slot).floor() + 0.5;
+        let first = ((rx - x - 8.0) / 9.0).max(0.0) as usize;
+        let last = (first + (rw / 9.0) as usize).min(closes.len() - 1);
+        let window = &closes[first.min(closes.len() - 1)..=last];
+        let lo = window.iter().map(|c| c.1).fold(f64::MAX, f64::min);
+        let hi = window.iter().map(|c| c.1).fold(f64::MIN, f64::max);
+        let top = (lo - 26.0).max(14.0).round() + 0.5;
+        let bottom = (hi + 26.0).min(PANE_H - TIME_AXIS_H - 48.0).round() + 0.5;
+        let (cx, cy) = (rx + rw / 2.0, (top + bottom) / 2.0);
+        let (ex, ey) = (rw / 2.0, (bottom - top) / 2.0);
+        let _ = write!(
+            html,
+            r#"<ellipse cx="{cx:.1}" cy="{cy:.1}" rx="{ex:.1}" ry="{ey:.1}" fill="{}" fill-opacity="{FILL_ALPHA}" stroke="{}" stroke-opacity="{BORDER_ALPHA}" stroke-width="{BORDER_WIDTH}" shape-rendering="geometricPrecision"/>"#,
+            l.hex, l.hex
+        );
+        // Which preset this is, over the shape, where the boxes in the pane
+        // to the left say it — so the nine can be read down the row without
+        // the names crowding each other inside shapes this narrow.
+        let _ = write!(
+            html,
+            r#"<text x="{:.1}" y="{:.1}" fill="{}" font-size="10" font-weight="600">{}</text>"#,
+            rx + 2.0,
+            top - 4.0,
+            l.hex,
+            r.name
+        );
+        // And a word inside it, as the chart sets one: held to the text floor
+        // against the composited fill, and stroked in that same colour before
+        // it is filled. `paint-order` is what puts the stroke under the glyph
+        // rather than over it, which is the whole of the halo. Short, because
+        // what is being judged is whether the glyphs survive the candle
+        // behind them, not how a sentence wraps.
+        let ground = mix(&l.hex, &row.theme.ui.background, 1.0 - FILL_ALPHA);
+        let ink = held_to(&l.hex, &ground, TEXT_CONTRAST, None);
+        let _ = write!(
+            html,
+            r#"<text x="{cx:.1}" y="{:.1}" fill="{ink}" stroke="{ground}" stroke-width="2" paint-order="stroke" font-size="13" font-weight="600" text-anchor="middle">Note</text>"#,
+            cy + 5.0,
+        );
+    }
 }
 
 /// One chart pane: grid, axes, labels, candles, volume. Returns the candle
