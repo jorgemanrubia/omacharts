@@ -15,6 +15,12 @@ async-channel = "2.5.0"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "serde"] }
 chrono-tz = "0.10.4"
 gtk = { version = "0.11.5", package = "gtk4", features = ["v4_10"] }
+# A drawing's text is rich text — runs of bold and italic inside one label,
+# over several lines — and cairo's own text API draws one font in one style
+# in one line. Pango lays it out, pangocairo puts the result on the same
+# context everything else on the chart is drawn with, and the bold range is
+# an attribute rather than something measured and stitched by hand.
+pangocairo = "0.22"
 # Pulled in explicitly only to turn on `v2_80`, which is where
 # GApplicationCommandLine learned to send a remote invocation's output
 # back to the terminal that asked. The CLI is built on that.

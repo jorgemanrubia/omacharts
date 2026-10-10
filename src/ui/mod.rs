@@ -5,6 +5,8 @@ pub mod chart_settings;
 pub mod controls;
 pub mod colors;
 pub mod dialogs;
+pub mod drawing_bar;
+pub mod drawing_settings;
 pub mod feed_settings;
 pub mod pane;
 pub mod palette;
@@ -12,6 +14,8 @@ pub mod preferences;
 pub mod screenshot;
 pub mod search;
 pub mod shortcuts;
+pub mod text;
+pub mod text_editor;
 pub mod watchlist;
 pub mod window;
 

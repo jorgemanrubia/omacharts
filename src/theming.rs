@@ -423,6 +423,82 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
 }
 .window-corner:hover button { opacity: 1; }
 
+/* The drawing tools, down the left edge: a column of two, quiet until one is
+   in hand, which lights it in the accent the way a pressed tool should. */
+.drawing-bar { padding: 0; }
+/* The tools' handle in the bottom-left corner: faint enough to be
+   furniture until the pointer is on it or the bar is out, the accent
+   under the pointer, so it reads as a thing that does something. */
+.drawing-handle { color: @window_fg_color; opacity: 0.45; transition: opacity 120ms ease-out, color 120ms ease-out; }
+.drawing-handle.open { opacity: 0.9; }
+.drawing-handle:hover { color: @accent_bg_color; opacity: 1; }
+/* Floating over the chart, with no strip to sit in: the window's own
+   ground under it and a shadow, so the frame reads as a frame and not
+   as part of the indicator beneath. */
+.drawing-handle.floating { background: @window_bg_color; border-radius: 0 8px 8px 0; box-shadow: 0 1px 3px alpha(black, 0.35); opacity: 0.7; }
+.drawing-handle.floating.open { opacity: 1; }
+.drawing-handle.floating:hover { opacity: 1; }
+/* The rules between the bands of tools: present, and no louder than that. */
+.drawing-tool-rule { background: alpha(@window_fg_color, 0.14); min-height: 1px; margin: 3px 7px; }
+.drawing-tool { padding: 2px; border-radius: 8px; opacity: 0.8; }
+.drawing-tool:hover { opacity: 1; }
+.drawing-tool:checked { opacity: 1; background: alpha(@accent_bg_color, 0.25); box-shadow: inset 0 0 0 1px @accent_bg_color; }
+/* A tool that stays in hand: the same lit button, held in a solid ring. The
+   chart otherwise goes on drawing and nothing says why. */
+.drawing-tool.drawing-tool-stuck:checked { background: alpha(@accent_bg_color, 0.38); box-shadow: inset 0 0 0 2px @accent_bg_color; }
+.drawing-config-badge { font-size: 9px; font-weight: 700; min-width: 12px; min-height: 12px; padding: 0 2px; border-radius: 6px; background: @accent_bg_color; color: @accent_fg_color; margin: 0 -4px -4px 0; }
+.drawing-preview { border-radius: 6px; }
+.drawing-config-edited { font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 9px; background: @accent_bg_color; color: @accent_fg_color; }
+.drawing-config-row-edited { box-shadow: inset 3px 0 0 @accent_bg_color; }
+.drawing-config-picker { padding: 0; }
+/* A configuration row in the drawing's menu: a menu item's own measure,
+   with a picture where the glyph would be. */
+.drawing-config-row { padding: 4px 10px; min-height: 0; border-radius: 6px; }
+/* The arrowhead row: four pictures side by side in a menu row, the one in
+   use ringed. Tight, because four of them and a key have to fit the width a
+   menu item already has. */
+.drawing-head-row { padding: 2px 10px; }
+.drawing-head-cell { padding: 2px; min-width: 0; min-height: 0; border-radius: 5px; opacity: 0.75; }
+.drawing-head-cell:hover { opacity: 1; }
+/* The Custom tile is the one in use: a button, so it is not greyed, but
+   nothing happens on it. */
+.drawing-preview-chosen { opacity: 1; }
+.drawing-preview-hover { border-radius: 6px; transition: background 120ms ease-out, box-shadow 120ms ease-out; }
+.drawing-config-picker:hover .drawing-preview-hover { background: alpha(@accent_bg_color, 0.14); box-shadow: inset 0 0 0 2px @accent_bg_color; }
+.drawing-config-picker:active .drawing-preview-hover, .drawing-config-picker:checked .drawing-preview-hover { background: alpha(@accent_bg_color, 0.22); }
+.drawing-save-as { font-size: 12px; opacity: 0.7; padding: 2px 6px; min-height: 0; }
+.drawing-save-as:hover { opacity: 1; }
+.drawing-config-picker > * { padding: 0; }
+/* The tag on the picture is the chart's own palette turned inside out: the
+   text colour as its ground and the chart colour as its ink, so it reads on
+   the picture whatever the picture is. */
+.drawing-config-tag { padding: 2px 10px; border-radius: 10px; font-weight: 700; font-size: 12px; background: @window_fg_color; color: @view_bg_color; }
+.drawing-preview-current { box-shadow: 0 0 0 2px @accent_bg_color; }
+/* Typing on the chart: nothing behind the glyphs, so what is under them is
+   the chart. The caret is the accent, which is the one thing on a text
+   widget that has to be found rather than read, and a ring in the same
+   colour says where the words will end up without drawing a field around
+   them. */
+/* The view and its text layer are transparent so the chart shows through.
+   The selection is NOT — it was in this list, under `selection:focus`, which
+   is the selection you have while you are typing: every range you took was
+   taken invisibly. */
+.drawing-text-editor, .drawing-text-editor text { background: none; background-color: transparent; }
+/* The caret is the accent, which is the one thing on a text widget that has
+   to be found rather than read. Nothing else: the words are already in the
+   drawing's own face, size and ink, over the drawing's own ground, and a
+   border or a highlight round them would be the one thing on screen that
+   changes when the edit is committed. A chart you can type on should not
+   flinch when you press Enter. */
+.drawing-text-editor { caret-color: @accent_bg_color; }
+.drawing-text-editor text selection, .drawing-text-editor text selection:focus { background-color: alpha(@accent_bg_color, 0.45); color: @window_fg_color; }
+/* The nine places, as a block of nine cells rather than nine buttons: no
+   padding between them, one ring around the lot, and the lit one filled. */
+.drawing-place-grid { padding: 2px; border-radius: 7px; box-shadow: inset 0 0 0 1px alpha(@window_fg_color, 0.18); }
+.drawing-place-cell { padding: 1px; min-width: 0; min-height: 0; border-radius: 4px; opacity: 0.55; }
+.drawing-place-cell:hover { opacity: 0.85; }
+.drawing-place-cell:checked { opacity: 1; background: alpha(@accent_bg_color, 0.28); }
+
 /* The corner sits over the rail when the rail is open, which is where the
    HIG puts a sidebar's menu (above the sidebar list), so the rail's band
    steps down out from under it. The step is the corner's height: three
@@ -531,7 +607,9 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
    pulled off the prices to find it. One hairline above it, and nothing else:
    at this height a border on every side is a box, and a box is furniture. */
 .chartbook-strip {
-  padding: 1px 4px;
+  /* No padding on the left: the drawing tools' tab sits flush with the
+     window's edge, the way a tab on a drawer does. */
+  padding: 1px 4px 1px 0;
   border-top: 1px solid alpha(currentColor, 0.08);
 }
 .chartbook-tab {

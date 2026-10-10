@@ -66,18 +66,39 @@ pub const BINDINGS: &[Binding] = &[
     // closing one already is.
     global("chart.screenshot", &["<Ctrl>o"]),
     global("win.screenshot", &["<Ctrl><Shift>o"]),
-    global("chart.reset-view", &["<Alt>r"]),
-    global("chart.split-h", &["<Ctrl>h"]),
+    // Alt with a letter is the drawing tools' register: a line and a
+    // rectangle. Resetting the view used to be Alt+R and gave the key up:
+    // a tool is reached for many times an hour and a reset once. Escape
+    // already means "back to the chart", and Ctrl with it means all the way
+    // back, to how the chart opens.
+    global("chart.draw-line", &["<Alt>l"]),
+    global("chart.draw-hline", &["<Alt>h"]),
+    global("chart.draw-arrow", &["<Alt>a"]),
+    global("chart.draw-zigzag", &["<Alt>z"]),
+    global("chart.draw-rect", &["<Alt>r"]),
+    global("chart.draw-ellipse", &["<Alt>c"]),
+    global("chart.draw-text", &["<Alt>t"]),
+    // The bar itself is a panel, so its key is the watchlist's neighbour:
+    // Ctrl+B for the rail on the right, Ctrl+D for the tools on the left.
+    global("win.drawing-tools", &["<Ctrl>d"]),
+    global("chart.reset-view", &["<Ctrl>Escape"]),
+    global("chart.split-h", &["<Ctrl><Alt>h"]),
     global("chart.maximize", &["<Ctrl>m"]),
     global("win.new-chartbook", &["<Ctrl>n"]),
     global("win.rename-chartbook", &["<Ctrl><Shift>r"]),
-    // Ctrl+X closes a chart, so the chartbook holding it is the same
-    // key with Shift. Safe to own outright: Shift+X is nobody's cut.
-    global("win.close-chartbook", &["<Ctrl><Shift>x"]),
-    // Paste and cut. The keys are the keys; what changes is whether
-    // the keyboard is in something you can type into.
-    careful("chart.split-v", &["<Ctrl>v"]),
-    careful("chart.close", &["<Ctrl>x"]),
+    // Everything that arranges charts is on Ctrl+Alt, which is where the
+    // rest of "go to another chart" already lives: Ctrl+Alt and an arrow
+    // walks the chartbooks and the symbols. It moved there when Ctrl+C,
+    // Ctrl+V and Ctrl+X stopped being free — those three mean one thing
+    // each to the hand that presses them, whatever an application would
+    // rather they meant — and nothing is typed into a box with Ctrl+Alt, so
+    // these can be owned outright rather than caught on the way down.
+    //
+    // Closing a chart is Ctrl+Alt+X, so the chartbook holding it is the
+    // same key with Shift.
+    global("chart.split-v", &["<Ctrl><Alt>v"]),
+    global("chart.close", &["<Ctrl><Alt>x"]),
+    global("win.close-chartbook", &["<Ctrl><Shift><Alt>x"]),
     // A bare key, which an entry has to see first.
     careful("win.shortcuts", &["question"]),
 ];
@@ -104,6 +125,50 @@ pub const MAIN_MENU: &str = "F10";
 pub fn install(app: &adw::Application) {
     for binding in BINDINGS.iter().filter(|binding| binding.global) {
         app.set_accels_for_action(binding.action, binding.accels);
+    }
+}
+
+/// The chords a label being typed on the chart needs for itself.
+///
+/// Bold and italic, which is what those two keys mean in every application
+/// that has text in it, and what they have to mean here while there is a
+/// caret in a label.
+const TEXT_EDITING_CHORDS: &[&str] = &["<Ctrl>b", "<Ctrl>i"];
+
+/// Lend those chords to the text editor, or take them back.
+///
+/// An application accelerator is owned everywhere: GTK activates it at the
+/// window, on the way down, before the widget with the keyboard is offered
+/// the key at all. So a controller on the editor cannot win Ctrl+B from the
+/// rail by being closer to the hand — Ctrl+B simply opened the rail, with
+/// the caret still blinking in the label. The only way the editor gets them
+/// is for the accelerators not to be there while it is open, which is also
+/// the honest description of what is true: while you are typing a label,
+/// Ctrl+B is bold.
+///
+/// Driven off the same table the accelerators are installed from, so a chord
+/// moved to another action goes on being lent to the editor, and one of
+/// these taken off an action stops being lent without anybody remembering to
+/// come back here.
+pub fn lend_to_text_editor(app: &adw::Application, lend: bool) {
+    for binding in BINDINGS.iter().filter(|binding| binding.global) {
+        if !binding.accels.iter().any(|accel| TEXT_EDITING_CHORDS.contains(accel)) {
+            continue;
+        }
+        match lend {
+            // Only the lent chord goes; an action with another accelerator
+            // keeps it, so Ctrl+K still finds a symbol while Ctrl+F is away.
+            true => {
+                let left: Vec<&str> = binding
+                    .accels
+                    .iter()
+                    .copied()
+                    .filter(|accel| !TEXT_EDITING_CHORDS.contains(accel))
+                    .collect();
+                app.set_accels_for_action(binding.action, &left);
+            }
+            false => app.set_accels_for_action(binding.action, binding.accels),
+        }
     }
 }
 
@@ -259,10 +324,11 @@ mod tests {
 
     #[test]
     fn what_is_typed_into_a_box_is_never_taken_by_the_application() {
-        // The three that would break pasting, cutting, or typing a
-        // question mark. If one of these is ever marked global, the
-        // bug it causes is somebody else's afternoon.
-        for action in ["chart.split-v", "chart.close", "win.shortcuts"] {
+        // The one that would break typing a question mark. If it is ever
+        // marked global, the bug it causes is somebody else's afternoon.
+        // Splitting and closing are not among them any more: they are on
+        // Ctrl+Alt, which nothing types.
+        for action in ["win.shortcuts"] {
             let binding = binding(action).expect(action);
             assert!(!binding.global, "{action} must stay out of the accelerator table");
         }

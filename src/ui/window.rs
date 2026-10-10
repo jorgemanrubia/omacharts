@@ -166,7 +166,7 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
         &[
             ("Ctrl+N", "New chartbook"),
             ("Ctrl+Shift+R", "Rename this chartbook"),
-            ("Ctrl+Shift+X", "Remove this chartbook"),
+            ("Ctrl+Shift+Alt+X", "Remove this chartbook"),
             ("Ctrl+Shift+O", "Screenshot this chartbook"),
             ("Ctrl+Alt+← →", "Previous or next chartbook"),
             ("Double-click a tab", "Rename it"),
@@ -192,9 +192,9 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
     (
         "Charts",
         &[
-            ("Ctrl+H", "Split horizontally"),
-            ("Ctrl+V", "Split vertically"),
-            ("Ctrl+X", "Close this chart"),
+            ("Ctrl+Alt+H", "Split horizontally"),
+            ("Ctrl+Alt+V", "Split vertically"),
+            ("Ctrl+Alt+X", "Close this chart"),
             ("Ctrl+M", "Give this chart the window, or put it back"),
             ("Ctrl+O", "Screenshot this chart"),
             ("Ctrl+L", "Link this chart to the watchlist, or unlink it"),
@@ -210,9 +210,46 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("← →", "Pan"),
             ("+ −", "Zoom"),
             ("End", "Jump to the latest bar"),
-            ("Alt+R", "Reset the view"),
+            ("Ctrl+Esc", "Reset the view"),
             ("Ctrl+Shift+G", "Show or hide the gridlines"),
             ("Esc", "Back to the chart"),
+        ],
+    ),
+    (
+        "Drawing",
+        &[
+            ("Alt+L", "Draw a line: click where it starts, then where it ends"),
+            ("Alt+H", "Draw a horizontal line: a level, held flat"),
+            ("Alt+A", "Draw an arrow"),
+            ("Alt+Z", "Draw a zig-zag: click each corner, double-click or Enter to end it"),
+            ("Ctrl+click a tool", "Keep it in hand for drawing after drawing; Esc puts it down"),
+            ("Ctrl+C / Ctrl+V", "Copy the selected drawings, and put them down again"),
+            ("Alt+R", "Draw a rectangle over a run of bars"),
+            ("Alt+C", "Draw a circle, dragged to any shape"),
+            ("Alt+T", "Write on the chart: click, then type"),
+            ("Ctrl+D", "Show or hide the drawing tools"),
+            ("Alt+1 … 9", "Configuration N, for the selected drawing or the one about to be drawn"),
+            ("Enter / F2", "Put the caret in the selected drawing's text"),
+            ("Alt+Enter", "The selected drawing's properties"),
+            ("Double-click", "Put the caret in a drawing and type on it"),
+            ("Ctrl++ / Ctrl+−", "Grow or shrink the selected drawing's text"),
+            ("Shift+Enter", "A new line, while typing on the chart"),
+            ("Ctrl+B / Ctrl+I", "Bold or italic, over what is selected while typing"),
+            ("Alt+Shift+← → ↑ ↓", "Put a selected drawing's label against that edge"),
+            ("Alt+Shift+.", "Put it back in the middle"),
+            ("Alt+Shift+A", "Step the selected drawing's arrowhead: none, filled, open, barb"),
+            ("Alt+Shift++ / Alt+Shift+−", "Thicken or thin a selected drawing's line or edge"),
+            ("Enter", "The selected drawing's properties"),
+            ("← → ↑ ↓", "Nudge the selected drawing a pixel; ten with Shift"),
+            ("Ctrl+Shift+↑ ↓", "Bring the selected drawing to the front, or send it to the back"),
+            ("Ctrl+Z · Ctrl+Y", "Undo and redo, on this chart's drawings"),
+            ("Click a drawing", "Select it; drag an end, or the whole thing"),
+            ("Shift+click a drawing", "Add it to the selection, or take it out; Ctrl does the same"),
+            ("Shift+drag the chart", "Select every drawing the box touches"),
+            ("Ctrl+A", "Select every drawing on the plot"),
+            ("Right-click a drawing", "Its colour and thickness, or delete it"),
+            ("Delete", "Delete the selected drawings"),
+            ("Esc", "Put the tool down, or let go of the selection"),
         ],
     ),
 ];
@@ -495,6 +532,10 @@ mod tests {
                 session: "extended".to_string(),
                 show_grid: true,
                 linked: LinkGroup::None,
+                shows_drawings: true,
+                sends_drawings: true,
+                drawing_uid: String::new(),
+                drawings: Vec::new(),
                 auto_scale: false,
             }],
             watchlist: Some(4),
@@ -551,6 +592,10 @@ mod tests {
             session: "extended".to_string(),
             show_grid: true,
             linked,
+            shows_drawings: true,
+            sends_drawings: true,
+            drawing_uid: String::new(),
+            drawings: Vec::new(),
             auto_scale: true,
         }
     }
@@ -996,9 +1041,9 @@ mod tests {
     fn what_a_key_does_finds_the_key_that_does_it() {
         assert_eq!(
             found("split"),
-            vec!["Ctrl+H — Split horizontally", "Ctrl+V — Split vertically"]
+            vec!["Ctrl+Alt+H — Split horizontally", "Ctrl+Alt+V — Split vertically"]
         );
-        assert_eq!(found("SPLIT HORI"), vec!["Ctrl+H — Split horizontally"]);
+        assert_eq!(found("SPLIT HORI"), vec!["Ctrl+Alt+H — Split horizontally"]);
     }
 
     /// Nobody writes a chord the way the next person does, and somebody
@@ -1023,8 +1068,14 @@ mod tests {
             vec!["Ctrl+Shift+O — Screenshot this chartbook", "Ctrl+O — Screenshot this chart"]
         );
         // Two is enough to mean a word again, and three to mean one somebody
-        // only half typed.
-        assert_eq!(found("hori"), vec!["Ctrl+H — Split horizontally"]);
+        // only half typed — and then it finds every row that says it.
+        assert_eq!(
+            found("hori"),
+            vec![
+                "Ctrl+Alt+H — Split horizontally",
+                "Alt+H — Draw a horizontal line: a level, held flat",
+            ]
+        );
     }
 
     /// Half the chart's keys are arrows, and an arrow cannot be typed.
@@ -1124,7 +1175,35 @@ fn group_state(group: LinkGroup) -> glib::Variant {
 }
 
 fn popup_menu(model: &gio::Menu, over: &impl IsA<gtk::Widget>, x: f64, y: f64) {
-    let popover = gtk::PopoverMenu::from_model_full(model, gtk::PopoverMenuFlags::NESTED);
+    popup_menu_with(model, over, x, y, Vec::new());
+}
+
+/// The same, with widgets of our own standing in for the items that name
+/// them in a `custom` attribute: a row that shows something rather than
+/// says it.
+fn popup_menu_with(
+    model: &gio::Menu,
+    over: &impl IsA<gtk::Widget>,
+    x: f64,
+    y: f64,
+    children: Vec<(String, gtk::Widget)>,
+) {
+    // Sliding submenus, which is GTK's default and not what this used.
+    //
+    // `NESTED` puts each submenu in a popover of its own, and a popover of
+    // its own takes the pointer grab: with one open, a click on the chart
+    // dismissed the submenu and went no further, so the menu behind it sat
+    // there. Hovering `Bar style` and then clicking away left a menu that
+    // would not close. The same flag is why a custom widget inside a
+    // submenu drew nothing — it is a slot a nested popover never fills,
+    // which is how the Configuration submenu came to open empty.
+    //
+    // Sliding keeps the whole menu in one popover: one grab, one click to
+    // dismiss, and widgets of our own render wherever they are put.
+    let popover = gtk::PopoverMenu::from_model(Some(model));
+    for (id, child) in &children {
+        popover.add_child(child, id);
+    }
     popover.set_parent(over);
     popover.set_has_arrow(false);
     popover.set_halign(gtk::Align::Start);
@@ -1174,6 +1253,8 @@ pub const SETTING_SHOW_GRID: &str = "show_grid";
 const SETTING_TIMEFRAMES: &str = "timeframes";
 /// The whole arrangement of charts, as one stored value.
 const SETTING_WORKSPACE: &str = "workspace";
+/// Whether the drawing tools are on screen.
+const SHOW_DRAWING_TOOLS: &str = "show_drawing_tools";
 /// Whether a pointer on one chart draws a line on the linked ones.
 pub const SETTING_SYNC_CROSSHAIR: &str = "sync_crosshair";
 
@@ -1199,6 +1280,27 @@ struct StoredPane {
     /// this was remembered, and every one of those was fitting itself.
     #[serde(default = "fits_itself")]
     auto_scale: bool,
+    /// Whether the chart shows what other charts of its symbol draw, and
+    /// whether it sends them what is drawn here. Both on by default, which
+    /// is what a book written before either existed gets — and what the
+    /// drawing groups these replaced did for every chart that had not been
+    /// put in one.
+    #[serde(default = "yes")]
+    shows_drawings: bool,
+    #[serde(default = "yes")]
+    sends_drawings: bool,
+    /// What this chart is called among the drawings it has made. Empty for
+    /// a chart written down before drawings remembered who drew them, which
+    /// simply means none of them name it.
+    #[serde(default)]
+    drawing_uid: String,
+    /// The drawings that are this chart's alone.
+    #[serde(default)]
+    drawings: Vec<omacharts_engine::Drawing>,
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// What a chart's price scale does until somebody takes hold of it.
@@ -1252,6 +1354,12 @@ struct Chartbook {
 struct Workspace {
     books: Vec<Chartbook>,
     active: usize,
+}
+
+/// A chart's local drawings get negative ids, below everything the store
+/// hands out, so one number names a drawing wherever it lives.
+fn next_local_id(locals: &[omacharts_engine::Drawing]) -> i64 {
+    locals.iter().map(|d| d.id).min().unwrap_or(0).min(0) - 1
 }
 
 /// What a chartbook nobody has renamed is called.
@@ -1462,6 +1570,21 @@ pub struct Window {
     session_action: RefCell<Option<gio::SimpleAction>>,
     grid_action: RefCell<Option<gio::SimpleAction>>,
     auto_scale_action: RefCell<Option<gio::SimpleAction>>,
+    drawing_config_action: RefCell<Option<gio::SimpleAction>>,
+    drawing_settings_action: RefCell<Option<gio::SimpleAction>>,
+    /// What was last copied, waiting to be put down somewhere.
+    ///
+    /// The window's rather than the system's: a drawing is a moment, a
+    /// price and a look, and the only thing that can read one back is this
+    /// application. Being the window's also means a copy carries between
+    /// charts and chartbooks, which is most of what copying a drawing is
+    /// for.
+    drawing_clipboard: RefCell<Vec<omacharts_engine::Drawing>>,
+    /// The drawing tools, on the left.
+    drawing_bar: RefCell<Option<Rc<crate::ui::drawing_bar::DrawingBar>>>,
+    /// The tools' handle floating in the bottom-left corner, shown while
+    /// the chartbook strip is not there to carry one.
+    corner_handle: RefCell<Option<gtk::DrawingArea>>,
     /// Where the tree of charts is mounted, rebuilt whenever it changes.
     chart_host: gtk::Box,
     /// The row of chartbook tabs under the charts, empty and hidden until
@@ -1608,6 +1731,11 @@ impl Window {
             session_action: RefCell::new(None),
             grid_action: RefCell::new(None),
             auto_scale_action: RefCell::new(None),
+            drawing_config_action: RefCell::new(None),
+            drawing_settings_action: RefCell::new(None),
+            drawing_clipboard: RefCell::new(Vec::new()),
+            drawing_bar: RefCell::new(None),
+            corner_handle: RefCell::new(None),
             chart_host: chart_host.clone(),
             book_strip: book_strip.clone(),
             corner: RefCell::new(None),
@@ -1697,7 +1825,34 @@ impl Window {
         split.set_shrink_end_child(false);
         watchlist.widget.set_visible(store.setting_bool(SHOW_WATCHLIST, true));
 
-        split.set_start_child(Some(&chart_host));
+        // The tools slide in on the left of the charts, the way the rail
+        // slides in on the right; they are not part of the split, so the
+        // divider between charts and rail is still the only divider.
+        let bar = crate::ui::drawing_bar::DrawingBar::new(
+            {
+                let this = this.clone();
+                move |kind, sticky| {
+                    let pane = this.focused_pane();
+                    pane.view.arm_sticky(kind, sticky);
+                    pane.view.area.grab_focus();
+                    this.sync_drawing_bar();
+                }
+            },
+            {
+                let this = this.clone();
+                move |kind| this.open_drawing_configurations(kind)
+            },
+            {
+                let this = this.clone();
+                move || this.toggle_drawing_tools()
+            },
+        );
+        let with_tools = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        with_tools.append(&bar.root);
+        with_tools.append(&chart_host);
+        bar.set_shown(store.setting_bool(SHOW_DRAWING_TOOLS, false));
+        *this.drawing_bar.borrow_mut() = Some(bar);
+        split.set_start_child(Some(&with_tools));
 
         // No header bar: the window's controls float over its top-right
         // corner, and the chart gets the row the bar used to take.
@@ -1715,6 +1870,22 @@ impl Window {
         let overlay = gtk::Overlay::new();
         overlay.set_child(Some(&root));
         overlay.add_overlay(&corner);
+        // The drawing tools' handle, in the bottom-left corner while there
+        // is no chartbook strip to carry it. The strip takes over when it
+        // arrives, so there is one handle at a time and it is always in the
+        // same corner.
+        if let Some(bar) = this.drawing_bar.borrow().as_ref() {
+            let handle = bar.handle();
+            // Over the chart rather than in the strip: it wears the
+            // window's own ground and a shadow, so it reads as a tab on
+            // the frame and not a mark on the chart.
+            handle.add_css_class("floating");
+            handle.set_margin_start(0);
+            handle.set_margin_bottom(8);
+            handle.set_visible(!this.book_strip.is_visible());
+            overlay.add_overlay(&handle);
+            *this.corner_handle.borrow_mut() = Some(handle);
+        }
         this.watch_sidebar_width();
         window.set_content(Some(&overlay));
 
@@ -1878,6 +2049,43 @@ impl Window {
             menu_owner.chart_menu(x, y);
         });
 
+        // What the hand drew is written down by the symbol it was drawn on,
+        // and every chart showing that symbol is told.
+        let keeper = self.clone();
+        pane.view.set_drawing_handler(move |event| keeper.record_drawing(id, event));
+
+        let menu_owner = self.clone();
+        pane.view.set_drawing_menu_handler(move |x, y| {
+            menu_owner.focus(id);
+            menu_owner.drawing_menu(x, y);
+        });
+        let opener = self.clone();
+        {
+            // While a caret is in a label, Ctrl+B is bold and Ctrl+I is
+            // italic. Those chords belong to the rail and the indicators the
+            // rest of the time, and an application accelerator is owned
+            // everywhere — GTK activates it at the window before the editor
+            // is offered the key — so the editor can only have them by the
+            // accelerators standing down while it is open.
+            let window = self.window.clone();
+            pane.view.set_typing_handler(move |typing| {
+                if let Some(app) = window.application().and_downcast::<adw::Application>() {
+                    shortcuts::lend_to_text_editor(&app, typing);
+                }
+            });
+        }
+
+        pane.view.set_drawing_properties_handler(move || {
+            opener.focus(id);
+            opener.open_drawing_settings();
+        });
+        let shower = self.clone();
+        pane.view.set_tool_handler(move || {
+            if shower.focused.get() == id {
+                shower.sync_drawing_bar();
+            }
+        });
+
         // A drag or a wheel on the price axis takes the scale off automatic
         // inside the chart, where nothing is written down. It is a setting
         // like the gridlines, so it is stored the way they are.
@@ -1948,12 +2156,27 @@ impl Window {
         // it was — which made Ctrl+B close the rail you had just clicked
         // away from, because the rail still held the keyboard and Ctrl+B
         // reads that to decide between focusing and closing.
+        //
+        // Except on the text editor. This runs on the way *down*, before the
+        // widget under the pointer sees the press at all, so a click meant
+        // to put the caret somewhere in a label was taking the keyboard off
+        // the editor first — which commits the edit and takes the editor off
+        // the chart, so the press that followed landed on bare chart. Every
+        // pointer gesture inside a label died that way: no caret placement,
+        // no drag to select, no double-click to take a word.
         let focuser = self.clone();
         let click = gtk::GestureClick::new();
         click.set_button(0);
         click.set_propagation_phase(gtk::PropagationPhase::Capture);
-        click.connect_pressed(move |_, _, _, _| {
+        let root_for_pick = pane.root.clone();
+        click.connect_pressed(move |_, _, x, y| {
             focuser.focus(id);
+            if root_for_pick
+                .pick(x, y, gtk::PickFlags::DEFAULT)
+                .is_some_and(|under| Window::is_editor(&under))
+            {
+                return;
+            }
             if let Some(pane) = focuser.pane(id) {
                 pane.view.area.grab_focus();
             }
@@ -1963,6 +2186,23 @@ impl Window {
         self.panes.borrow_mut().push(pane.clone());
         self.rebuild_strip_of(&pane);
         pane
+    }
+
+    /// Whether the point is on a chart's open text editor.
+    ///
+    /// Asked of the widget actually under the pointer rather than of a
+    /// rectangle worked out by hand, so it stays true however the editor is
+    /// placed. Its class is the only thing it has to be recognised by, which
+    /// is enough: there is one editor and it wears it.
+    fn is_editor(widget: &gtk::Widget) -> bool {
+        let mut at = Some(widget.clone());
+        while let Some(widget) = at {
+            if widget.has_css_class(crate::ui::text_editor::CLASS) {
+                return true;
+            }
+            at = widget.parent();
+        }
+        false
     }
 
     pub fn focused_pane(&self) -> Rc<ChartPane> {
@@ -2043,6 +2283,7 @@ impl Window {
         let pane = self.focused_pane();
         self.sync_timeframe_buttons();
         self.sync_chart_actions(&pane);
+        self.sync_drawing_bar();
         if let (Some(watchlist), Some(instrument)) =
             (self.watchlist.borrow().as_ref(), pane.instrument.borrow().as_ref())
         {
@@ -2593,6 +2834,10 @@ impl Window {
                     session: pane.session.get().key().to_string(),
                     show_grid: pane.show_grid.get(),
                     linked: pane.linked.get(),
+                    shows_drawings: pane.shows_drawings.get(),
+                    sends_drawings: pane.sends_drawings.get(),
+                    drawing_uid: pane.uid.borrow().clone(),
+                    drawings: pane.local_drawings.borrow().clone(),
                     auto_scale: pane.view.price_auto(),
                 }
             })
@@ -2755,6 +3000,16 @@ impl Window {
                 stored.show_grid,
                 stored.linked,
             );
+            pane.shows_drawings.set(stored.shows_drawings);
+            pane.sends_drawings.set(stored.sends_drawings);
+            pane.view.set_sends(stored.sends_drawings);
+            // Keep the name it was written down under, so the drawings that
+            // name it go on naming it. A chart that has none keeps the one
+            // it was just minted.
+            if !stored.drawing_uid.is_empty() {
+                *pane.uid.borrow_mut() = stored.drawing_uid.clone();
+            }
+            *pane.local_drawings.borrow_mut() = stored.drawings.clone();
             pane.view.set_price_auto(stored.auto_scale);
             restored.push((pane, stored));
         }
@@ -3285,8 +3540,20 @@ impl Window {
         // naming the only thing there is would be a row of furniture saying
         // nothing. It arrives with the second book and leaves with it.
         self.book_strip.set_visible(count > 1);
+        if let Some(handle) = self.corner_handle.borrow().as_ref() {
+            handle.set_visible(count < 2);
+        }
         if count < 2 {
             return;
+        }
+        // The drawing tools' handle leads the strip, in the corner it
+        // floats in when there is no strip.
+        if let Some(bar) = self.drawing_bar.borrow().as_ref() {
+            let handle = bar.handle();
+            handle.set_valign(gtk::Align::Center);
+            handle.set_margin_start(0);
+            handle.set_margin_end(6);
+            self.book_strip.append(&handle);
         }
         for index in 0..count {
             self.book_strip.append(&self.build_book_tab(index));
@@ -3385,9 +3652,10 @@ impl Window {
         tab.upcast()
     }
 
-    /// The tab sitting at `index` in the strip right now.
+    /// The tab sitting at `index` in the strip right now. The first child
+    /// is the tools' handle, not a tab.
     fn book_tab(&self, index: usize) -> Option<gtk::Box> {
-        let mut child = self.book_strip.first_child()?;
+        let mut child = self.book_strip.first_child()?.next_sibling()?;
         for _ in 0..index {
             child = child.next_sibling()?;
         }
@@ -3613,6 +3881,13 @@ impl Window {
         });
 
         *self.watchlist_toggle.borrow_mut() = Some(toggle.clone());
+
+        // The drawing tools have no button here: the corner is the charts'.
+        // They come in from a handle on the chart's own edge, or by key.
+        let action = gio::SimpleAction::new("drawing-tools", None);
+        let this = self.clone();
+        action.connect_activate(move |_, _| this.toggle_drawing_tools());
+        self.window.add_action(&action);
 
         // Ctrl+B is not a toggle. A rail you can see but cannot drive with the
         // arrow keys is a rail you still have to reach for the mouse to use, so
@@ -3969,6 +4244,10 @@ impl Window {
                         dialog.close();
                         return glib::Propagation::Stop;
                     }
+                    // Whatever the chart was in the middle of — a tool in
+                    // hand, a drawing selected — Escape ends it, wherever
+                    // the keyboard was.
+                    this.focused_pane().view.cancel();
                     this.focused_pane().view.area.grab_focus();
                     return glib::Propagation::Stop;
                 }
@@ -4065,6 +4344,16 @@ impl Window {
                 .map(|w| w.has_focus())
                 .unwrap_or(false);
 
+            // Alt with a digit is a drawing configuration — for the tool in
+            // hand or the selected drawing — and never a resolution, even
+            // when the keyboard is not on the chart itself.
+            if state.contains(gtk::gdk::ModifierType::ALT_MASK) {
+                if let Some(n) = key.to_unicode().and_then(|c| c.to_digit(10)) {
+                    this.focused_pane().view.apply_configuration(n as u8);
+                    return glib::Propagation::Stop;
+                }
+            }
+
             match (key, ctrl) {
                 (Key::slash, false) => {
                     this.open_search();
@@ -4085,6 +4374,26 @@ impl Window {
                 (Key::minus, false) => {
                     this.focused_pane().view.zoom(1.25);
                     glib::Propagation::Stop
+                }
+                // With Ctrl held the same two keys are the text size of
+                // whatever is selected, which is the pair every application
+                // grows type with. Bare, they are the chart's zoom and
+                // always have been — the modifier is what keeps a key that
+                // means "bigger" meaning it about two different things
+                // without either taking the other's.
+                (Key::plus | Key::equal, true) | (Key::KP_Add, true) => {
+                    let by = omacharts_engine::drawings::TEXT_SIZE_STEP;
+                    match this.focused_pane().view.step_text_size(by) {
+                        true => glib::Propagation::Stop,
+                        false => glib::Propagation::Proceed,
+                    }
+                }
+                (Key::minus, true) | (Key::KP_Subtract, true) => {
+                    let by = -omacharts_engine::drawings::TEXT_SIZE_STEP;
+                    match this.focused_pane().view.step_text_size(by) {
+                        true => glib::Propagation::Stop,
+                        false => glib::Propagation::Proceed,
+                    }
                 }
                 (Key::End, false) if !on_watchlist => {
                     this.focused_pane().view.go_to_latest();
@@ -4111,13 +4420,14 @@ impl Window {
         });
         self.window.add_controller(keys);
 
-        // Ctrl+V is paste and Ctrl+X is cut, and GTK claims both before a
-        // controller on the window ever sees them — which is why the vertical
-        // split did nothing while the horizontal one worked. The layout keys
-        // have to be caught on the way down.
+        // Ctrl+C and Ctrl+V are copy and paste, and GTK claims both before
+        // a controller on the window ever sees them — which is why the
+        // vertical split did nothing here while the horizontal one worked,
+        // back when those were the split's keys. A drawing's clipboard has
+        // to be caught on the way down for the same reason.
         //
         // Only when the focus is not in something you can type into, or
-        // pasting a symbol into a box would split the window instead.
+        // copying a symbol out of a box would copy a drawing instead.
         let capture = gtk::EventControllerKey::new();
         capture.set_propagation_phase(gtk::PropagationPhase::Capture);
         let this = self.clone();
@@ -4126,17 +4436,23 @@ impl Window {
             if !state.contains(gtk::gdk::ModifierType::CONTROL_MASK) || this.is_typing() {
                 return glib::Propagation::Proceed;
             }
-            // Only the bare Ctrl combos. Ctrl+Shift+X removes the chartbook
-            // and Ctrl+Shift+V is nothing of ours, and catching a key here
-            // means the accelerator for it never runs — which is how
-            // Ctrl+Shift+X came to close the chart instead of the book
-            // holding it.
-            if state.contains(gtk::gdk::ModifierType::SHIFT_MASK) {
+            // Only the bare Ctrl combos. Catching a key here means the
+            // accelerator for it never runs — which is how Ctrl+Alt+V, the
+            // vertical split, came to be eaten as a paste that had nothing
+            // to paste.
+            let other = gtk::gdk::ModifierType::SHIFT_MASK | gtk::gdk::ModifierType::ALT_MASK;
+            if state.intersects(other) {
                 return glib::Propagation::Proceed;
             }
             match key {
-                Key::v | Key::V => this.split_focused(false),
-                Key::x | Key::X => this.close_focused(),
+                // Copy and paste, outright. They used to share Ctrl+V with
+                // the vertical split, which is a key that can only ever
+                // mean one thing to the hand that presses it; the split is
+                // on Ctrl+Alt+V now.
+                Key::c | Key::C => this.copy_drawings(),
+                Key::v | Key::V => {
+                    this.paste_drawings();
+                }
                 _ => return glib::Propagation::Proceed,
             }
             glib::Propagation::Stop
@@ -4234,6 +4550,9 @@ impl Window {
             theming.apply();
             (theming.theme(), theming.bar_scheme())
         };
+        if let Some(bar) = self.drawing_bar.borrow().as_ref() {
+            bar.restyle();
+        }
         for pane in self.panes.borrow().iter() {
             pane.view.restyle(theme.clone(), scheme.clone());
             // The group is the number and the colour is the theme's answer
@@ -4734,6 +5053,9 @@ impl Window {
         };
         pane.view.set_trouble(None);
         pane.view.set_loading(cached_was_empty);
+        pane.view.set_configurations(self.store.drawing_configurations());
+        let shared = self.store.drawings(&instrument.symbol, instrument.suffix.as_deref());
+        pane.view.set_drawings(self.drawings_for(pane, &shared));
 
         // Only the focused chart drives the rail and the prefetch window: the
         // others are not where the next keystroke is going.
@@ -5862,8 +6184,596 @@ impl Window {
         Ok((what, path))
     }
 
+    /// Write a drawing's change down, and hand every chart of the symbol
+    /// what is drawn on it now — the one it came from included, which is
+    /// how a new drawing learns its id. A local drawing lives with its
+    /// chart; a shared one lives in the store under the symbol.
+    fn record_drawing(self: &Rc<Self>, pane_id: u32, event: crate::ui::chart::DrawingEvent) {
+        use crate::ui::chart::DrawingEvent;
+        let Some(pane) = self.pane(pane_id) else { return };
+        let instrument = pane.instrument.borrow().clone();
+        let Some(instrument) = instrument else { return };
+        let suffix = instrument.suffix.as_deref();
+        match event {
+            DrawingEvent::Moving(drawing) => {
+                // Shown to the other charts of the symbol as it moves, and
+                // written down by nobody: the release does that.
+                if drawing.is_local() {
+                    return;
+                }
+                for other in self.panes.borrow().iter() {
+                    let same = other
+                        .instrument
+                        .borrow()
+                        .as_ref()
+                        .map(|i| i.symbol == instrument.symbol && i.suffix.as_deref() == suffix)
+                        .unwrap_or(false);
+                    if same && other.id != pane_id {
+                        other.view.follow_moving(&drawing);
+                    }
+                }
+                return;
+            }
+            DrawingEvent::Added(mut drawing) => {
+                // Stamped with the chart that made it, so the chart can
+                // take it back if it stops sending.
+                drawing.origin = Some(pane.uid.borrow().clone());
+                if drawing.is_local() {
+                    drawing.id = next_local_id(&pane.local_drawings.borrow());
+                    pane.local_drawings.borrow_mut().push(drawing);
+                } else {
+                    self.store.add_drawing(&instrument.symbol, suffix, &drawing);
+                }
+            }
+            DrawingEvent::Changed(drawing) => {
+                // A drawing that changed scope moves house.
+                let was_local = drawing.id < 0;
+                match (was_local, drawing.is_local()) {
+                    (true, true) => {
+                        let mut locals = pane.local_drawings.borrow_mut();
+                        if let Some(slot) = locals.iter_mut().find(|d| d.id == drawing.id) {
+                            *slot = drawing;
+                        }
+                    }
+                    (false, false) => self.store.update_drawing(&drawing),
+                    (true, false) => {
+                        pane.local_drawings.borrow_mut().retain(|d| d.id != drawing.id);
+                        let mut moved = drawing;
+                        moved.id = 0;
+                        self.store.add_drawing(&instrument.symbol, suffix, &moved);
+                    }
+                    (false, true) => {
+                        self.store.remove_drawing(drawing.id);
+                        let mut moved = drawing;
+                        moved.id = next_local_id(&pane.local_drawings.borrow());
+                        pane.local_drawings.borrow_mut().push(moved);
+                    }
+                }
+            }
+            DrawingEvent::Removed(id) => {
+                if id < 0 {
+                    pane.local_drawings.borrow_mut().retain(|d| d.id != id);
+                } else {
+                    self.store.remove_drawing(id);
+                }
+            }
+            DrawingEvent::Replaced(list) => {
+                // Whatever this chart could see that is not in the list is
+                // gone; whatever is in the list is back, under its own id.
+                let (locals, shared): (Vec<_>, Vec<_>) = list.into_iter().partition(|d| d.id < 0);
+                *pane.local_drawings.borrow_mut() = locals;
+                let shows = pane.shows_drawings.get();
+                let keep: std::collections::HashSet<i64> = shared.iter().map(|d| d.id).collect();
+                for d in self.store.drawings(&instrument.symbol, suffix) {
+                    // Only what this chart could see is this chart's to
+                    // undo: a chart that is not shown the symbol's drawings
+                    // cannot have removed one.
+                    if shows && !keep.contains(&d.id) {
+                        self.store.remove_drawing(d.id);
+                    }
+                }
+                for d in &shared {
+                    self.store.put_drawing(&instrument.symbol, suffix, d);
+                }
+            }
+        }
+        self.save_soon();
+        self.reload_drawings(&instrument.symbol, suffix);
+    }
+
+    /// Show every chart of `symbol` what it should see drawn on it: the
+    /// shared drawings its sharing lets through, and its own.
+    pub fn reload_drawings(&self, symbol: &str, suffix: Option<&str>) {
+        let shared = self.store.drawings(symbol, suffix);
+        for pane in self.panes.borrow().iter() {
+            let same = pane
+                .instrument
+                .borrow()
+                .as_ref()
+                .map(|i| i.symbol == symbol && i.suffix.as_deref() == suffix)
+                .unwrap_or(false);
+            if same {
+                pane.view.set_drawings(self.drawings_for(pane, &shared));
+            }
+        }
+    }
+
+    /// What one chart sees, out of what is drawn on its symbol.
+    fn drawings_for(&self, pane: &ChartPane, shared: &[omacharts_engine::Drawing]) -> Vec<omacharts_engine::Drawing> {
+        // The symbol's, when this chart is shown what others send; and its
+        // own either way, which is the half a toggle never takes away.
+        let mut all: Vec<omacharts_engine::Drawing> = match pane.shows_drawings.get() {
+            true => shared.to_vec(),
+            false => Vec::new(),
+        };
+        all.extend(pane.local_drawings.borrow().iter().cloned());
+        omacharts_engine::drawings::sort_for_painting(&mut all);
+        all
+    }
+
+    /// The nine configurations of each kind, as stored.
+    pub fn drawing_configurations(&self) -> omacharts_engine::Configurations {
+        self.store.drawing_configurations()
+    }
+
+    /// Write the configurations down and show every chart the new ones, so
+    /// a drawing that follows configuration N changes with it, on every
+    /// chart, as it is edited.
+    pub fn set_drawing_configurations(&self, store: &Store, configs: omacharts_engine::Configurations) {
+        store.set_drawing_configurations(&configs);
+        for pane in self.panes.borrow().iter() {
+            pane.view.set_configurations(configs.clone());
+        }
+    }
+
+    /// Whether the focused chart is shown what other charts of its symbol
+    /// draw. It is shown its drawings again, since the answer to "which do
+    /// I see" just changed.
+    pub fn set_shows_drawings(self: &Rc<Self>, shows: bool) {
+        let pane = self.focused_pane();
+        pane.shows_drawings.set(shows);
+        let instrument = pane.instrument.borrow().clone();
+        if let Some(instrument) = instrument {
+            self.reload_drawings(&instrument.symbol, instrument.suffix.as_deref());
+        }
+        self.save_workspace();
+    }
+
+    /// Whether what is drawn on the focused chart goes to the symbol.
+    ///
+    /// Live, not only for what is drawn next: turning it off takes back the
+    /// drawings this chart sent, and turning it on sends what it has been
+    /// keeping. A switch that only governed the future would read as doing
+    /// nothing at all — the drawing you were looking at when you flicked it
+    /// would sit there on the other chart.
+    ///
+    /// Only this chart's own move. Each drawing remembers which chart made
+    /// it, so another chart's work is never withdrawn by a switch on this
+    /// one — and a drawing made before charts had names belongs to none of
+    /// them and stays where it is.
+    pub fn set_sends_drawings(self: &Rc<Self>, sends: bool) {
+        let pane = self.focused_pane();
+        if pane.sends_drawings.get() == sends {
+            return;
+        }
+        pane.sends_drawings.set(sends);
+        pane.view.set_sends(sends);
+        let instrument = pane.instrument.borrow().clone();
+        if let Some(instrument) = instrument {
+            let (symbol, suffix) = (instrument.symbol.clone(), instrument.suffix.clone());
+            let suffix = suffix.as_deref();
+            let mine = pane.uid.borrow().clone();
+            match sends {
+                // Out of this chart's keeping and on to the symbol.
+                true => {
+                    let keeping: Vec<omacharts_engine::Drawing> =
+                        pane.local_drawings.borrow_mut().drain(..).collect();
+                    for mut drawing in keeping {
+                        drawing.id = 0;
+                        drawing.scope = omacharts_engine::Scope::Shared;
+                        drawing.origin = Some(mine.clone());
+                        self.store.add_drawing(&symbol, suffix, &drawing);
+                    }
+                }
+                // Back off the symbol and into this chart's keeping.
+                false => {
+                    let sent: Vec<omacharts_engine::Drawing> = self
+                        .store
+                        .drawings(&symbol, suffix)
+                        .into_iter()
+                        .filter(|d| d.origin.as_deref() == Some(mine.as_str()))
+                        .collect();
+                    for mut drawing in sent {
+                        self.store.remove_drawing(drawing.id);
+                        drawing.id = next_local_id(&pane.local_drawings.borrow());
+                        drawing.scope = omacharts_engine::Scope::Local;
+                        pane.local_drawings.borrow_mut().push(drawing);
+                    }
+                }
+            }
+            self.reload_drawings(&symbol, suffix);
+        }
+        self.save_workspace();
+    }
+
+    /// Show or hide the drawing tools. Ctrl+D, and the tab on the edge.
+    pub fn toggle_drawing_tools(self: &Rc<Self>) {
+        let Some(bar) = self.drawing_bar.borrow().clone() else { return };
+        let shown = !bar.is_shown();
+        bar.set_shown(shown);
+        self.store.set_setting_bool(SHOW_DRAWING_TOOLS, shown);
+    }
+
+    /// Light the tool in hand on the bar, after the chart was told by a key
+    /// or a menu rather than by the bar itself.
+    fn sync_drawing_bar(&self) {
+        if let Some(bar) = self.drawing_bar.borrow().as_ref() {
+            let view = &self.focused_pane().view;
+            bar.show_armed(view.armed(), view.next_config(), view.is_sticky());
+        }
+    }
+
+    fn open_drawing_configurations(self: &Rc<Self>, kind: omacharts_engine::DrawingKind) {
+        crate::ui::drawing_settings::present_configurations(self, &self.store, kind);
+    }
+
+    /// Arm a drawing tool on the focused chart. The key is not a toggle:
+    /// Alt+R twice is still the rectangle, so a hand that is not sure
+    /// whether it pressed can press again. Escape is the way back.
+    fn arm_drawing(&self, kind: omacharts_engine::DrawingKind) {
+        let pane = self.focused_pane();
+        pane.view.arm(Some(kind));
+        pane.view.area.grab_focus();
+        self.sync_drawing_bar();
+    }
+
+    /// Take a copy of whatever is selected on the focused chart.
+    pub fn copy_drawings(self: &Rc<Self>) {
+        let copied = self.focused_pane().view.copy_selected();
+        if !copied.is_empty() {
+            *self.drawing_clipboard.borrow_mut() = copied;
+        }
+    }
+
+    /// Put the copy down on the focused chart. Says whether there was one.
+    pub fn paste_drawings(self: &Rc<Self>) -> bool {
+        let copied = self.drawing_clipboard.borrow().clone();
+        let pane = self.focused_pane();
+        // Offset only where it would otherwise land exactly on what it was
+        // copied from. Pasted onto another chart — another symbol, another
+        // resolution — the moment and the price are the whole point, and
+        // nudging them would be the one thing a paste must not do.
+        let same = pane
+            .view
+            .drawings()
+            .iter()
+            .any(|there| copied.iter().any(|copy| there.from == copy.from && there.to == copy.to));
+        pane.view.paste(&copied, same)
+    }
+
+    fn has_copied_drawings(&self) -> bool {
+        !self.drawing_clipboard.borrow().is_empty()
+    }
+
+    fn open_drawing_settings(self: &Rc<Self>) {
+        crate::ui::drawing_settings::present(self, &self.store, &self.focused_pane());
+    }
+
+    /// The menu a drawing gets when it is right-clicked: about the drawing
+    /// and nothing else. The chart's own menu is a right-click on the chart.
+    fn drawing_menu(self: &Rc<Self>, x: f64, y: f64) {
+        let pane = self.focused_pane();
+        let Some(drawing) = pane.view.selected_drawing() else { return };
+        let count = pane.view.selected_drawings().len();
+        // Properties and configurations are a kind's: with lines and
+        // rectangles selected together, neither can be asked for.
+        let one_kind = pane.view.selection_kind().is_some();
+        if let Some(action) = self.drawing_settings_action.borrow().as_ref() {
+            action.set_enabled(one_kind);
+        }
+        if let Some(action) = self.drawing_config_action.borrow().as_ref() {
+            action.set_enabled(one_kind);
+            action.set_state(&(drawing.config.unwrap_or(0) as i32).to_variant());
+        }
+
+        let menu = gio::Menu::new();
+        let edit = gio::Menu::new();
+        // Above the properties, because it is the more common errand and the
+        // shorter way to it: a double-click on the drawing does the same.
+        // Labelled for what is there — one that already says something is
+        // being changed, one that says nothing is being given words.
+        let words = match drawing.has_text() {
+            true => "Edit text",
+            false => "Add text",
+        };
+        shortcuts::append_with_key(&edit, words, "chart.drawing-text", "Return");
+        let copy = match count {
+            1 => "Copy drawing".to_string(),
+            n => format!("Copy {n} drawings"),
+        };
+        shortcuts::append_with_key(&edit, &copy, "chart.drawing-copy", "<Ctrl>c");
+        menu.append_section(None, &edit);
+
+        // The arrowhead, as the four pictures it is, on one row: the three
+        // shapes and the one that is no shape. A row of four rather than a
+        // submenu of four, because a submenu's rows cannot carry a picture —
+        // a custom widget nested inside one is a slot GtkPopoverMenu leaves
+        // empty, which is how the Configuration submenu came to open on
+        // nothing. At the top level it renders, so this is where it goes.
+        let mut rows: Vec<(String, gtk::Widget)> = Vec::new();
+        let kind = pane.view.selection_kind();
+        // Three rows of pictures in one section — the configuration, the
+        // thickness, the arrowhead — each answering "what does this look
+        // like" by looking. The last two appear only for the kinds that
+        // have the property; the first is on every kind, because every kind
+        // follows a configuration.
+        let pictures = gio::Menu::new();
+        // The first four configurations, as pictures of this kind in each.
+        // Above the thickness, because which configuration a drawing
+        // follows is the larger choice — it carries the colour, the
+        // thickness and everything else — and the row below it is one
+        // property of the look it lands on. The other five are Alt+5 to
+        // Alt+9 and the picker in the properties; four is what a menu row
+        // holds at a size where the picture is still a picture.
+        if kind.is_some() {
+            let item = gio::MenuItem::new(Some("Configuration"), None);
+            item.set_attribute_value("custom", Some(&"configs".to_variant()));
+            pictures.append_item(&item);
+            rows.push(("configs".to_string(), self.configurations_row(&pane)));
+        }
+        if kind.is_some_and(|kind| !kind.is_text()) {
+            let item = gio::MenuItem::new(Some("Thickness"), None);
+            item.set_attribute_value("custom", Some(&"width".to_variant()));
+            pictures.append_item(&item);
+            rows.push(("width".to_string(), self.width_row(&pane)));
+        }
+        if kind.is_some_and(|kind| kind.is_line()) {
+            let item = gio::MenuItem::new(Some("Arrowhead"), None);
+            item.set_attribute_value("custom", Some(&"arrowhead".to_variant()));
+            pictures.append_item(&item);
+            rows.push(("arrowhead".to_string(), self.arrowhead_row(&pane)));
+        }
+        if !rows.is_empty() {
+            menu.append_section(None, &pictures);
+        }
+
+        if self.has_copied_drawings() {
+            let paste = gio::Menu::new();
+            shortcuts::append_with_key(&paste, "Paste", "chart.drawing-paste", "<Ctrl>v");
+            menu.append_section(None, &paste);
+        }
+
+        let edit = gio::Menu::new();
+        // No Configuration submenu. Its nine rows were widgets of our own,
+        // because a menu item cannot carry a picture, and a custom widget in
+        // a *nested* submenu is a slot `GtkPopoverMenu` does not fill — so
+        // the submenu opened empty.
+        //
+        // Not worth fixing, because it was the third way to the same choice
+        // and the worst of the three: Alt+1 to Alt+9 does it without a menu
+        // at all, and the properties dialog offers the nine as live pictures
+        // of this drawing in each, which is more than a swatch in a row
+        // could ever have shown.
+        //
+        // And no "Shown on" either. Where a drawing goes is the chart's
+        // business now, in two switches at the foot of its settings, rather
+        // than a question asked again of every drawing.
+        menu.append_section(None, &edit);
+
+        let order = gio::Menu::new();
+        shortcuts::append_with_key(&order, "Bring to front", "chart.drawing-front", "<Ctrl><Shift>Up");
+        shortcuts::append_with_key(&order, "Send to back", "chart.drawing-back", "<Ctrl><Shift>Down");
+        menu.append_section(None, &order);
+
+        let remove = gio::Menu::new();
+        let label = match count {
+            1 => "Remove drawing".to_string(),
+            n => format!("Remove {n} drawings"),
+        };
+        // This drawing, and not every drawing. Clearing the chart is a
+        // thing done to the chart, and it lives in the chart's own menu —
+        // sitting it under "Remove drawing" put the widest action on the
+        // screen one row below the narrowest, with nothing between them.
+        shortcuts::append_with_key(&remove, &label, "chart.drawing-delete", "Delete");
+        menu.append_section(None, &remove);
+
+        // Last, and alone. Everything above is a thing to do to the drawing;
+        // this opens a window about it, which is the heavier choice and the
+        // one that should not be sitting under the pointer when the menu
+        // opens. A section of its own puts a rule above it that says so.
+        let properties = gio::Menu::new();
+        shortcuts::append_with_key(&properties, "Properties…", "chart.drawing-settings", "<Alt>Return");
+        menu.append_section(None, &properties);
+
+        let area = pane.view.area.clone();
+        let (wx, wy) = area.translate_coordinates(&self.window, x, y).unwrap_or((x, y));
+        popup_menu_with(&menu, &self.window, wx, wy, rows);
+    }
+
+    /// The configurations row: the first four, each drawn as this kind
+    /// would look following it, with the one in use ringed.
+    ///
+    /// The same shape as the two rows below it. A configuration is a thing
+    /// you recognise rather than a thing you read — which is why the old
+    /// submenu of nine named rows went, and why this is four pictures.
+    fn configurations_row(self: &Rc<Self>, pane: &Rc<ChartPane>) -> gtk::Widget {
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+        row.add_css_class("drawing-head-row");
+        row.set_homogeneous(true);
+        let theme = self.theme();
+        let all = self.drawing_configurations();
+        let Some(kind) = pane.view.selection_kind() else { return row.upcast() };
+        let following = pane.view.selected_drawing().and_then(|d| d.config);
+
+        for n in 1..=4u8 {
+            let picture = crate::ui::drawing_settings::swatch(&theme, kind, all.of(kind, n));
+            picture.set_size_request(-1, 20);
+            picture.set_hexpand(true);
+            let button = gtk::Button::new();
+            button.add_css_class("flat");
+            button.add_css_class("drawing-head-cell");
+            button.set_child(Some(&picture));
+            button.set_tooltip_text(Some(&format!("Configuration {n} (Alt+{n})")));
+            if following == Some(n) {
+                button.add_css_class("drawing-preview-current");
+            }
+            button.set_hexpand(true);
+            button.set_action_name(Some("chart.drawing-config"));
+            button.set_action_target_value(Some(&(n as i32).to_variant()));
+            button.connect_clicked(|button| {
+                if let Some(popover) =
+                    button.ancestor(gtk::Popover::static_type()).and_downcast::<gtk::Popover>()
+                {
+                    popover.popdown();
+                }
+            });
+            row.append(&button);
+        }
+        row.upcast()
+    }
+
+    /// The thickness row: four strokes, the one in use ringed, and the keys
+    /// that step between them off to the side.
+    ///
+    /// The same shape as the arrowhead row below it, because it answers the
+    /// same sort of question — one you settle by looking rather than by
+    /// reading a number. The number is still in the properties for anybody
+    /// who wants one this row does not offer.
+    fn width_row(self: &Rc<Self>, pane: &Rc<ChartPane>) -> gtk::Widget {
+        // Homogeneous and expanding, so the four pictures share the row's
+        // whole width instead of huddling at the left end of it.
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+        row.add_css_class("drawing-head-row");
+        row.set_homogeneous(true);
+        let current = pane.view.selected_width();
+
+        for width in omacharts_engine::drawings::WIDTHS {
+            let picture = gtk::DrawingArea::new();
+            picture.set_content_height(20);
+            picture.set_hexpand(true);
+            picture.set_draw_func(move |area, cr, w, h| {
+                let fg = area.color();
+                let (r, g, b, a) =
+                    (fg.red() as f64, fg.green() as f64, fg.blue() as f64, fg.alpha() as f64);
+                cr.set_source_rgba(r, g, b, a);
+                cr.set_line_width(width);
+                cr.set_line_cap(gtk::cairo::LineCap::Round);
+                // On the half-pixel for odd widths, on the pixel for even,
+                // so a hairline is a hairline rather than two grey rows.
+                let y = (h as f64 / 2.0).round()
+                    + if (width.round() as i64) % 2 == 1 { 0.5 } else { 0.0 };
+                cr.move_to(5.0, y);
+                cr.line_to(w as f64 - 5.0, y);
+                let _ = cr.stroke();
+            });
+            let button = gtk::Button::new();
+            button.add_css_class("flat");
+            button.add_css_class("drawing-head-cell");
+            button.set_child(Some(&picture));
+            button.set_tooltip_text(Some(&format!("{width}px")));
+            if current == Some(width) {
+                button.add_css_class("drawing-preview-current");
+            }
+            button.set_hexpand(true);
+            button.set_action_name(Some("chart.drawing-width"));
+            button.set_action_target_value(Some(&width.to_variant()));
+            button.connect_clicked(|button| {
+                if let Some(popover) =
+                    button.ancestor(gtk::Popover::static_type()).and_downcast::<gtk::Popover>()
+                {
+                    popover.popdown();
+                }
+            });
+            row.append(&button);
+        }
+
+        row.upcast()
+    }
+
+    /// The arrowhead row: four pictures, the one in use ringed, and the key
+    /// that steps between them off to the side.
+    fn arrowhead_row(self: &Rc<Self>, pane: &Rc<ChartPane>) -> gtk::Widget {
+        use omacharts_engine::{Arrow, ArrowHead};
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+        row.add_css_class("drawing-head-row");
+        row.set_homogeneous(true);
+        let current = pane.view.selected_head();
+
+        for shape in [None, Some(ArrowHead::ALL[0]), Some(ArrowHead::ALL[1]), Some(ArrowHead::ALL[2])] {
+            let picture = gtk::DrawingArea::new();
+            picture.set_content_height(20);
+            picture.set_hexpand(true);
+            picture.set_draw_func(move |area, cr, w, h| {
+                let fg = area.color();
+                let (r, g, b, a) =
+                    (fg.red() as f64, fg.green() as f64, fg.blue() as f64, fg.alpha() as f64);
+                cr.set_source_rgba(r, g, b, a);
+                cr.set_line_width(1.4);
+                cr.set_line_cap(gtk::cairo::LineCap::Round);
+                let y = (h as f64 / 2.0).round() + 0.5;
+                let (tail, tip) = ((5.0, y), (w as f64 - 6.0, y));
+                cr.move_to(tail.0, tail.1);
+                cr.line_to(tip.0, tip.1);
+                let _ = cr.stroke();
+                if let Some(shape) = shape {
+                    crate::ui::drawing_settings::paint_head(cr, tail, tip, 1.4, 7.0, shape);
+                }
+            });
+            let button = gtk::Button::new();
+            button.add_css_class("flat");
+            button.add_css_class("drawing-head-cell");
+            button.set_child(Some(&picture));
+            button.set_tooltip_text(Some(match shape {
+                None => "No arrowhead",
+                Some(shape) => shape.label(),
+            }));
+            // Ringed rather than ticked: there is no room for a mark beside
+            // a picture this size, and the ring is what the configuration
+            // tiles already use for "this is the one".
+            let chosen = match (current, shape) {
+                (Some((Arrow::None, _)), None) => true,
+                (Some((arrow, head)), Some(shape)) => arrow != Arrow::None && head == shape,
+                _ => false,
+            };
+            if chosen {
+                button.add_css_class("drawing-preview-current");
+            }
+            button.set_hexpand(true);
+            button.set_action_name(Some("chart.drawing-head"));
+            button.set_action_target_value(Some(
+                &shape.map(|s| s.key()).unwrap_or("none").to_variant(),
+            ));
+            button.connect_clicked(|button| {
+                if let Some(popover) =
+                    button.ancestor(gtk::Popover::static_type()).and_downcast::<gtk::Popover>()
+                {
+                    popover.popdown();
+                }
+            });
+            row.append(&button);
+        }
+
+        row.upcast()
+    }
+
     fn chart_menu(self: &Rc<Self>, x: f64, y: f64) {
         let menu = gio::Menu::new();
+
+        // Paste first: it is the one thing in this menu that puts something
+        // on the chart rather than changing how the chart is drawn, and it
+        // is only here while there is something to put down.
+        if self.has_copied_drawings() {
+            let paste = gio::Menu::new();
+            shortcuts::append_with_key(&paste, "Paste drawing", "chart.drawing-paste", "<Ctrl>v");
+            menu.append_section(None, &paste);
+        }
+
+        // Not the tools. They were here when the only way to reach them was
+        // a key, and there is a bar of them on the chart's own edge now —
+        // four more rows naming what four buttons already show is a menu
+        // you have to read past to get to what is only here. Clearing is
+        // not a tool, and is further down with the rest of the things done
+        // to the chart rather than at the head of the menu.
 
         // Choices live behind a named item rather than loose in the menu: a
         // flat list of radio buttons makes you read every option to find out
@@ -5921,10 +6831,18 @@ impl Window {
             groups.append_item(&item);
         }
         rest.append_submenu(Some("Link group"), &groups);
-        shortcuts::append(&rest, "Indicators…", "chart.indicators");
-        shortcuts::append(&rest, "Chart settings…", "chart.settings");
         shortcuts::append(&rest, "Screenshot chart", "chart.screenshot");
+        if !self.focused_pane().view.drawings().is_empty() {
+            shortcuts::append(&rest, "Remove all drawings", "chart.drawing-clear");
+        }
         menu.append_section(None, &rest);
+
+        // Last, and together, below a rule: everything above is something
+        // done to this chart, and these two open a window about it.
+        let settings = gio::Menu::new();
+        shortcuts::append(&settings, "Indicators…", "chart.indicators");
+        shortcuts::append(&settings, "Chart settings…", "chart.settings");
+        menu.append_section(None, &settings);
 
         // Hung off the window rather than the chart it was opened on: a menu
         // parented to one pane of a split has only that pane's height to fit
@@ -6089,6 +7007,137 @@ impl Window {
         let this = self.clone();
         resolutions.connect_activate(move |_, _| this.edit_timeframes());
         actions.add_action(&resolutions);
+
+        let draw_line = gio::SimpleAction::new("draw-line", None);
+        let this = self.clone();
+        draw_line.connect_activate(move |_, _| {
+            this.arm_drawing(omacharts_engine::DrawingKind::Line)
+        });
+        actions.add_action(&draw_line);
+
+        let draw_rect = gio::SimpleAction::new("draw-rect", None);
+        let this = self.clone();
+        draw_rect.connect_activate(move |_, _| {
+            this.arm_drawing(omacharts_engine::DrawingKind::Rect)
+        });
+        actions.add_action(&draw_rect);
+
+        let draw_hline = gio::SimpleAction::new("draw-hline", None);
+        let this = self.clone();
+        draw_hline.connect_activate(move |_, _| {
+            this.arm_drawing(omacharts_engine::DrawingKind::Horizontal)
+        });
+        actions.add_action(&draw_hline);
+
+        let draw_zigzag = gio::SimpleAction::new("draw-zigzag", None);
+        let this = self.clone();
+        draw_zigzag.connect_activate(move |_, _| {
+            this.arm_drawing(omacharts_engine::DrawingKind::Zigzag)
+        });
+        actions.add_action(&draw_zigzag);
+
+        let draw_arrow = gio::SimpleAction::new("draw-arrow", None);
+        let this = self.clone();
+        draw_arrow.connect_activate(move |_, _| {
+            this.arm_drawing(omacharts_engine::DrawingKind::Arrow)
+        });
+        actions.add_action(&draw_arrow);
+
+        let draw_ellipse = gio::SimpleAction::new("draw-ellipse", None);
+        let this = self.clone();
+        draw_ellipse.connect_activate(move |_, _| {
+            this.arm_drawing(omacharts_engine::DrawingKind::Ellipse)
+        });
+        actions.add_action(&draw_ellipse);
+
+        let draw_text = gio::SimpleAction::new("draw-text", None);
+        let this = self.clone();
+        draw_text.connect_activate(move |_, _| {
+            this.arm_drawing(omacharts_engine::DrawingKind::Text)
+        });
+        actions.add_action(&draw_text);
+
+        let drawing_text = gio::SimpleAction::new("drawing-text", None);
+        let this = self.clone();
+        drawing_text.connect_activate(move |_, _| {
+            this.focused_pane().view.edit_selected_text();
+        });
+        actions.add_action(&drawing_text);
+
+        let drawing_width = gio::SimpleAction::new("drawing-width", Some(glib::VariantTy::DOUBLE));
+        let this = self.clone();
+        drawing_width.connect_activate(move |_, target| {
+            let Some(width) = target.and_then(|t| t.get::<f64>()) else { return };
+            this.focused_pane().view.set_width(width);
+        });
+        actions.add_action(&drawing_width);
+
+        let drawing_head = gio::SimpleAction::new("drawing-head", Some(glib::VariantTy::STRING));
+        let this = self.clone();
+        drawing_head.connect_activate(move |_, target| {
+            let Some(key) = target.and_then(|t| t.str()) else { return };
+            let shape = match key {
+                "none" => None,
+                key => match omacharts_engine::ArrowHead::from_key(key) {
+                    Some(shape) => Some(shape),
+                    None => return,
+                },
+            };
+            this.focused_pane().view.set_head(shape);
+        });
+        actions.add_action(&drawing_head);
+
+        let drawing_copy = gio::SimpleAction::new("drawing-copy", None);
+        let this = self.clone();
+        drawing_copy.connect_activate(move |_, _| this.copy_drawings());
+        actions.add_action(&drawing_copy);
+
+        let drawing_paste = gio::SimpleAction::new("drawing-paste", None);
+        let this = self.clone();
+        drawing_paste.connect_activate(move |_, _| {
+            this.paste_drawings();
+        });
+        actions.add_action(&drawing_paste);
+
+        let drawing_settings = gio::SimpleAction::new("drawing-settings", None);
+        let this = self.clone();
+        drawing_settings.connect_activate(move |_, _| this.open_drawing_settings());
+        actions.add_action(&drawing_settings);
+        *self.drawing_settings_action.borrow_mut() = Some(drawing_settings);
+
+        let drawing_clear = gio::SimpleAction::new("drawing-clear", None);
+        let this = self.clone();
+        drawing_clear.connect_activate(move |_, _| this.focused_pane().view.delete_all());
+        actions.add_action(&drawing_clear);
+
+        let drawing_delete = gio::SimpleAction::new("drawing-delete", None);
+        let this = self.clone();
+        drawing_delete.connect_activate(move |_, _| this.focused_pane().view.delete_selected());
+        actions.add_action(&drawing_delete);
+
+        // Stateful over the number, so the menu marks the configuration the
+        // drawing follows; zero is a drawing with a look of its own.
+        let drawing_config =
+            gio::SimpleAction::new_stateful("drawing-config", Some(glib::VariantTy::INT32), &0i32.to_variant());
+        let this = self.clone();
+        drawing_config.connect_activate(move |action, target| {
+            let Some(number) = target.and_then(|t| t.get::<i32>()) else { return };
+            if this.focused_pane().view.apply_configuration(number.clamp(0, 9) as u8) {
+                action.set_state(&number.to_variant());
+            }
+        });
+        actions.add_action(&drawing_config);
+        *self.drawing_config_action.borrow_mut() = Some(drawing_config);
+
+        let drawing_front = gio::SimpleAction::new("drawing-front", None);
+        let this = self.clone();
+        drawing_front.connect_activate(move |_, _| this.focused_pane().view.restack_selected(true));
+        actions.add_action(&drawing_front);
+
+        let drawing_back = gio::SimpleAction::new("drawing-back", None);
+        let this = self.clone();
+        drawing_back.connect_activate(move |_, _| this.focused_pane().view.restack_selected(false));
+        actions.add_action(&drawing_back);
 
         self.window.insert_action_group("chart", Some(&actions));
     }
