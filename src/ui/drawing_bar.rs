@@ -11,8 +11,8 @@
 //!
 //! One column of buttons, which is the shape a handful of tools wants and
 //! stays the shape as they are added. Each button is a sign the app drew
-//! itself — a pointer, a line with its grips, a box with two, the same box
-//! as a curve, a letter — in the palette's own ink and nothing else, dim
+//! itself — a pointer, a line, a box, the same box as a curve, a letter —
+//! each the bare shape, in the palette's own ink and nothing else, dim
 //! until it is hovered or lit, rather than a stock glyph that would look
 //! like every other application's or a preview that would compete with the
 //! chart.
@@ -32,6 +32,20 @@ use omacharts_engine::drawings::Kind;
 
 /// The width of a tool button, which is also the bar's.
 const TOOL: i32 = 36;
+
+/// Which band of the bar a tool belongs to.
+///
+/// Read off the kind rather than written out as a list, so a kind added to
+/// the engine lands in the right band without anybody remembering to come
+/// back here.
+fn tool_group(kind: Option<Kind>) -> u8 {
+    match kind {
+        None => 0,
+        Some(k) if k.is_line() => 1,
+        Some(k) if k.is_text() => 3,
+        Some(_) => 2,
+    }
+}
 
 /// A rounded rectangle as a path, corner radius `r`.
 fn rounded(cr: &gtk::cairo::Context, x: f64, y: f64, w: f64, h: f64, r: f64) {
@@ -83,7 +97,20 @@ impl DrawingBar {
 
         let mut buttons: Vec<(Option<Kind>, gtk::ToggleButton, gtk::DrawingArea)> = Vec::new();
         let mut badges = Vec::new();
+        let mut group_so_far: Option<u8> = None;
         for kind in std::iter::once(None).chain(Kind::ALL.into_iter().map(Some)) {
+            // A rule between the groups: the pointer, which selects rather
+            // than draws; the strokes; the shapes; the words. A
+            // `GtkSeparator` rather than a line drawn here, because that is
+            // what a toolbar's dividers are made of everywhere else and it
+            // takes the theme's own colour for the job.
+            let group = tool_group(kind);
+            if group_so_far.is_some_and(|last| last != group) {
+                let rule = gtk::Separator::new(gtk::Orientation::Horizontal);
+                rule.add_css_class("drawing-tool-rule");
+                column.append(&rule);
+            }
+            group_so_far = Some(group);
             let icon = gtk::DrawingArea::new();
             icon.set_size_request(TOOL - 10, TOOL - 10);
             let badge = gtk::Label::new(None);
@@ -103,6 +130,10 @@ impl DrawingBar {
             button.set_tooltip_text(Some(match kind {
                 None => "Pointer (Esc): select, move and resize drawings",
                 Some(Kind::Line) => "Line (Alt+L): click where it starts, then where it ends",
+                Some(Kind::Horizontal) => {
+                    "Horizontal line (Alt+H): a level, held flat however you drag it"
+                }
+                Some(Kind::Arrow) => "Arrow (Alt+A): a line that points where it ends",
                 Some(Kind::Rect) => "Rectangle (Alt+R): press at one corner, release at the other",
                 Some(Kind::Ellipse) => {
                     "Circle (Alt+C): press and drag to any shape, round or wide"
@@ -313,20 +344,37 @@ impl DrawingBar {
                         let _ = cr.fill();
                     }
                     Some(Kind::Line) => {
-                        // A stroke with a grip at each end, which is what
-                        // says "a drawing" rather than "a slash".
                         let (a, b) = ((4.5, h - 4.5), (w - 4.5, 4.5));
                         cr.move_to(a.0, a.1);
                         cr.line_to(b.0, b.1);
                         let _ = cr.stroke();
-                        for (x, y) in [a, b] {
-                            cr.rectangle(x - 2.5, y - 2.5, 5.0, 5.0);
-                            let _ = cr.fill();
+                    }
+                    // Flat, which is the whole of what it is: the sign is
+                    // the one thing in the column that cannot be mistaken
+                    // for the line above it.
+                    Some(Kind::Horizontal) => {
+                        let y = (h / 2.0).round() + 0.5;
+                        cr.move_to(4.5, y);
+                        cr.line_to(w - 4.5, y);
+                        let _ = cr.stroke();
+                    }
+                    // The line, with the open head it is drawn with.
+                    Some(Kind::Arrow) => {
+                        let (a, b) = ((4.5, h - 4.5), (w - 5.0, 5.0));
+                        cr.move_to(a.0, a.1);
+                        cr.line_to(b.0, b.1);
+                        let _ = cr.stroke();
+                        let angle = (b.1 - a.1).atan2(b.0 - a.0);
+                        let (spread, length) = (0.42, 6.5);
+                        for side in [-1.0, 1.0] {
+                            let away = angle + std::f64::consts::PI + side * spread;
+                            cr.move_to(b.0, b.1);
+                            cr.line_to(b.0 + length * away.cos(), b.1 + length * away.sin());
                         }
+                        let _ = cr.stroke();
                     }
                     Some(Kind::Rect) => {
-                        // A box, faintly filled the way the drawn one is,
-                        // with a grip at the two corners a hand places.
+                        // A box, faintly filled the way the drawn one is.
                         let (x, y, rw, rh) = (4.5, 5.5, w - 9.0, h - 11.0);
                         cr.rectangle(x, y, rw, rh);
                         cr.set_source_rgba(r, g, b, a * 0.18);
@@ -334,19 +382,12 @@ impl DrawingBar {
                         cr.set_source_rgba(r, g, b, a);
                         cr.set_line_width(1.0);
                         let _ = cr.stroke();
-                        for (gx, gy) in [(x, y), (x + rw, y + rh)] {
-                            cr.rectangle(gx - 2.5, gy - 2.5, 5.0, 5.0);
-                            let _ = cr.fill();
-                        }
                     }
                     Some(Kind::Ellipse) => {
-                        // The box's sign with the box's outline swapped for
-                        // the curve, and the same two grips on the same two
-                        // corners, which is what says it is dragged the way
-                        // the box is rather than out from a centre. Drawn a
-                        // little wider than tall, because the tool is not
-                        // held to a circle and the sign should not promise
-                        // one.
+                        // The box's sign with the outline swapped for the
+                        // curve. Drawn a little wider than tall, because the
+                        // tool is not held to a circle and the sign should
+                        // not promise one.
                         let (x, y, rw, rh) = (4.5, 5.5, w - 9.0, h - 11.0);
                         let curve = |cr: &gtk::cairo::Context| {
                             cr.save().ok();
@@ -362,10 +403,6 @@ impl DrawingBar {
                         cr.set_line_width(1.0);
                         curve(cr);
                         let _ = cr.stroke();
-                        for (gx, gy) in [(x, y), (x + rw, y + rh)] {
-                            cr.rectangle(gx - 2.5, gy - 2.5, 5.0, 5.0);
-                            let _ = cr.fill();
-                        }
                     }
                     Some(Kind::Text) => {
                         // A capital I with its serifs: the mark every

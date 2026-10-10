@@ -438,6 +438,8 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
 .drawing-handle.floating { background: @window_bg_color; border-radius: 0 8px 8px 0; box-shadow: 0 1px 3px alpha(black, 0.35); opacity: 0.7; }
 .drawing-handle.floating.open { opacity: 1; }
 .drawing-handle.floating:hover { opacity: 1; }
+/* The rules between the bands of tools: present, and no louder than that. */
+.drawing-tool-rule { background: alpha(@window_fg_color, 0.14); min-height: 1px; margin: 3px 7px; }
 .drawing-tool { padding: 2px; border-radius: 8px; opacity: 0.8; }
 .drawing-tool:hover { opacity: 1; }
 .drawing-tool:checked { opacity: 1; background: alpha(@accent_bg_color, 0.25); box-shadow: inset 0 0 0 1px @accent_bg_color; }
@@ -449,6 +451,12 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
 /* A configuration row in the drawing's menu: a menu item's own measure,
    with a picture where the glyph would be. */
 .drawing-config-row { padding: 4px 10px; min-height: 0; border-radius: 6px; }
+/* The arrowhead row: four pictures side by side in a menu row, the one in
+   use ringed. Tight, because four of them and a key have to fit the width a
+   menu item already has. */
+.drawing-head-row { padding: 2px 10px; }
+.drawing-head-cell { padding: 2px; min-width: 0; min-height: 0; border-radius: 5px; opacity: 0.75; }
+.drawing-head-cell:hover { opacity: 1; }
 /* The Custom tile is the one in use: a button, so it is not greyed, but
    nothing happens on it. */
 .drawing-preview-chosen { opacity: 1; }
@@ -468,9 +476,19 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
    widget that has to be found rather than read, and a ring in the same
    colour says where the words will end up without drawing a field around
    them. */
-.drawing-text-editor, .drawing-text-editor text, .drawing-text-editor text selection:focus { background: none; background-color: transparent; }
-.drawing-text-editor { caret-color: @accent_bg_color; box-shadow: 0 0 0 1px alpha(@accent_bg_color, 0.65); border-radius: 2px; }
-.drawing-text-editor text selection { background-color: alpha(@accent_bg_color, 0.35); }
+/* The view and its text layer are transparent so the chart shows through.
+   The selection is NOT — it was in this list, under `selection:focus`, which
+   is the selection you have while you are typing: every range you took was
+   taken invisibly. */
+.drawing-text-editor, .drawing-text-editor text { background: none; background-color: transparent; }
+/* The caret is the accent, which is the one thing on a text widget that has
+   to be found rather than read. Nothing else: the words are already in the
+   drawing's own face, size and ink, over the drawing's own ground, and a
+   border or a highlight round them would be the one thing on screen that
+   changes when the edit is committed. A chart you can type on should not
+   flinch when you press Enter. */
+.drawing-text-editor { caret-color: @accent_bg_color; }
+.drawing-text-editor text selection, .drawing-text-editor text selection:focus { background-color: alpha(@accent_bg_color, 0.45); color: @window_fg_color; }
 /* The nine places, as a block of nine cells rather than nine buttons: no
    padding between them, one ring around the lot, and the lit one filled. */
 .drawing-place-grid { padding: 2px; border-radius: 7px; box-shadow: inset 0 0 0 1px alpha(@window_fg_color, 0.18); }

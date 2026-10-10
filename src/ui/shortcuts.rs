@@ -72,6 +72,8 @@ pub const BINDINGS: &[Binding] = &[
     // already means "back to the chart", and Ctrl with it means all the way
     // back, to how the chart opens.
     global("chart.draw-line", &["<Alt>l"]),
+    global("chart.draw-hline", &["<Alt>h"]),
+    global("chart.draw-arrow", &["<Alt>a"]),
     global("chart.draw-rect", &["<Alt>r"]),
     global("chart.draw-ellipse", &["<Alt>c"]),
     global("chart.draw-text", &["<Alt>t"]),
@@ -116,6 +118,50 @@ pub const MAIN_MENU: &str = "F10";
 pub fn install(app: &adw::Application) {
     for binding in BINDINGS.iter().filter(|binding| binding.global) {
         app.set_accels_for_action(binding.action, binding.accels);
+    }
+}
+
+/// The chords a label being typed on the chart needs for itself.
+///
+/// Bold and italic, which is what those two keys mean in every application
+/// that has text in it, and what they have to mean here while there is a
+/// caret in a label.
+const TEXT_EDITING_CHORDS: &[&str] = &["<Ctrl>b", "<Ctrl>i"];
+
+/// Lend those chords to the text editor, or take them back.
+///
+/// An application accelerator is owned everywhere: GTK activates it at the
+/// window, on the way down, before the widget with the keyboard is offered
+/// the key at all. So a controller on the editor cannot win Ctrl+B from the
+/// rail by being closer to the hand — Ctrl+B simply opened the rail, with
+/// the caret still blinking in the label. The only way the editor gets them
+/// is for the accelerators not to be there while it is open, which is also
+/// the honest description of what is true: while you are typing a label,
+/// Ctrl+B is bold.
+///
+/// Driven off the same table the accelerators are installed from, so a chord
+/// moved to another action goes on being lent to the editor, and one of
+/// these taken off an action stops being lent without anybody remembering to
+/// come back here.
+pub fn lend_to_text_editor(app: &adw::Application, lend: bool) {
+    for binding in BINDINGS.iter().filter(|binding| binding.global) {
+        if !binding.accels.iter().any(|accel| TEXT_EDITING_CHORDS.contains(accel)) {
+            continue;
+        }
+        match lend {
+            // Only the lent chord goes; an action with another accelerator
+            // keeps it, so Ctrl+K still finds a symbol while Ctrl+F is away.
+            true => {
+                let left: Vec<&str> = binding
+                    .accels
+                    .iter()
+                    .copied()
+                    .filter(|accel| !TEXT_EDITING_CHORDS.contains(accel))
+                    .collect();
+                app.set_accels_for_action(binding.action, &left);
+            }
+            false => app.set_accels_for_action(binding.action, binding.accels),
+        }
     }
 }
 

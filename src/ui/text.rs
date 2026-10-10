@@ -19,6 +19,13 @@ use std::cell::RefCell;
 use gtk::pango;
 use omacharts_engine::drawings::{self, Align, Kind, Place, Style, Text, TextStyle};
 
+/// Tabular figures, as a font feature string.
+///
+/// Named here because the editor has to set the same one: a label with a
+/// number in it that was one width under the caret and another beside it
+/// would shift the moment it was committed.
+pub const FIGURES: &str = "tnum 1";
+
 thread_local! {
     /// The one context, made on first use. A Pango context is a font map and
     /// a language, not a surface, so it costs nothing to keep and nothing to
@@ -94,7 +101,7 @@ fn attributes(text: &Text) -> pango::AttrList {
     // Digits that line up, so two notes on two levels read as a column
     // rather than as a ragged pair. Costs nothing on a face without the
     // feature, which simply ignores it.
-    let mut figures = pango::AttrFontFeatures::new("tnum 1");
+    let mut figures = pango::AttrFontFeatures::new(FIGURES);
     figures.set_start_index(0);
     figures.set_end_index(u32::MAX);
     attrs.insert(figures);

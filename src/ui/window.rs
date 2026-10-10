@@ -219,15 +219,23 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
         "Drawing",
         &[
             ("Alt+L", "Draw a line: click where it starts, then where it ends"),
+            ("Alt+H", "Draw a horizontal line: a level, held flat"),
+            ("Alt+A", "Draw an arrow"),
             ("Alt+R", "Draw a rectangle over a run of bars"),
             ("Alt+C", "Draw a circle, dragged to any shape"),
             ("Alt+T", "Write on the chart: click, then type"),
             ("Ctrl+D", "Show or hide the drawing tools"),
             ("Alt+1 … 9", "Configuration N, for the selected drawing or the one about to be drawn"),
+            ("Enter / F2", "Put the caret in the selected drawing's text"),
+            ("Alt+Enter", "The selected drawing's properties"),
             ("Double-click", "Put the caret in a drawing and type on it"),
             ("Ctrl++ / Ctrl+−", "Grow or shrink the selected drawing's text"),
             ("Shift+Enter", "A new line, while typing on the chart"),
             ("Ctrl+B / Ctrl+I", "Bold or italic, over what is selected while typing"),
+            ("Alt+Shift+← → ↑ ↓", "Put a selected drawing's label against that edge"),
+            ("Alt+Shift+.", "Put it back in the middle"),
+            ("Alt+Shift+A", "Step the selected drawing's arrowhead: none, filled, open, barb"),
+            ("Alt+Shift++ / Alt+Shift+−", "Thicken or thin a selected drawing's line or edge"),
             ("Enter", "The selected drawing's properties"),
             ("← → ↑ ↓", "Nudge the selected drawing a pixel; ten with Shift"),
             ("Ctrl+Shift+↑ ↓", "Bring the selected drawing to the front, or send it to the back"),
@@ -1053,8 +1061,14 @@ mod tests {
             vec!["Ctrl+Shift+O — Screenshot this chartbook", "Ctrl+O — Screenshot this chart"]
         );
         // Two is enough to mean a word again, and three to mean one somebody
-        // only half typed.
-        assert_eq!(found("hori"), vec!["Ctrl+H — Split horizontally"]);
+        // only half typed — and then it finds every row that says it.
+        assert_eq!(
+            found("hori"),
+            vec![
+                "Ctrl+H — Split horizontally",
+                "Alt+H — Draw a horizontal line: a level, held flat",
+            ]
+        );
     }
 
     /// Half the chart's keys are arrows, and an arrow cannot be typed.
@@ -2006,6 +2020,21 @@ impl Window {
             menu_owner.drawing_menu(x, y);
         });
         let opener = self.clone();
+        {
+            // While a caret is in a label, Ctrl+B is bold and Ctrl+I is
+            // italic. Those chords belong to the rail and the indicators the
+            // rest of the time, and an application accelerator is owned
+            // everywhere — GTK activates it at the window before the editor
+            // is offered the key — so the editor can only have them by the
+            // accelerators standing down while it is open.
+            let window = self.window.clone();
+            pane.view.set_typing_handler(move |typing| {
+                if let Some(app) = window.application().and_downcast::<adw::Application>() {
+                    shortcuts::lend_to_text_editor(&app, typing);
+                }
+            });
+        }
+
         pane.view.set_drawing_properties_handler(move || {
             opener.focus(id);
             opener.open_drawing_settings();
@@ -2087,12 +2116,27 @@ impl Window {
         // it was — which made Ctrl+B close the rail you had just clicked
         // away from, because the rail still held the keyboard and Ctrl+B
         // reads that to decide between focusing and closing.
+        //
+        // Except on the text editor. This runs on the way *down*, before the
+        // widget under the pointer sees the press at all, so a click meant
+        // to put the caret somewhere in a label was taking the keyboard off
+        // the editor first — which commits the edit and takes the editor off
+        // the chart, so the press that followed landed on bare chart. Every
+        // pointer gesture inside a label died that way: no caret placement,
+        // no drag to select, no double-click to take a word.
         let focuser = self.clone();
         let click = gtk::GestureClick::new();
         click.set_button(0);
         click.set_propagation_phase(gtk::PropagationPhase::Capture);
-        click.connect_pressed(move |_, _, _, _| {
+        let root_for_pick = pane.root.clone();
+        click.connect_pressed(move |_, _, x, y| {
             focuser.focus(id);
+            if root_for_pick
+                .pick(x, y, gtk::PickFlags::DEFAULT)
+                .is_some_and(|under| Window::is_editor(&under))
+            {
+                return;
+            }
             if let Some(pane) = focuser.pane(id) {
                 pane.view.area.grab_focus();
             }
@@ -2102,6 +2146,23 @@ impl Window {
         self.panes.borrow_mut().push(pane.clone());
         self.rebuild_strip_of(&pane);
         pane
+    }
+
+    /// Whether the point is on a chart's open text editor.
+    ///
+    /// Asked of the widget actually under the pointer rather than of a
+    /// rectangle worked out by hand, so it stays true however the editor is
+    /// placed. Its class is the only thing it has to be recognised by, which
+    /// is enough: there is one editor and it wears it.
+    fn is_editor(widget: &gtk::Widget) -> bool {
+        let mut at = Some(widget.clone());
+        while let Some(widget) = at {
+            if widget.has_css_class(crate::ui::text_editor::CLASS) {
+                return true;
+            }
+            at = widget.parent();
+        }
+        false
     }
 
     pub fn focused_pane(&self) -> Rc<ChartPane> {
@@ -5957,6 +6018,15 @@ impl Window {
         self.theming.borrow().theme()
     }
 
+    /// How bars are coloured and drawn right now: the desktop's scheme, and
+    /// the focused chart's own style.
+    ///
+    /// For the previews, which draw candles through the chart's own routine
+    /// and so need what the chart would draw with.
+    pub fn bars(&self) -> (omacharts_engine::BarScheme, omacharts_engine::BarStyle) {
+        (self.theming.borrow().bar_scheme(), self.focused_pane().view.bar_style())
+    }
+
     /// The focused chart's trading hours.
     pub fn session(&self) -> Session {
         self.focused_pane().session.get()
@@ -6279,24 +6349,49 @@ impl Window {
             true => "Edit text",
             false => "Add text",
         };
-        shortcuts::append(&edit, words, "chart.drawing-text");
-        shortcuts::append_with_key(&edit, "Properties…", "chart.drawing-settings", "Return");
-        // The nine configurations, as a radio: the one in use is marked, and
-        // a drawing whose properties were changed by hand marks none.
-        // Each row shows the configuration rather than naming it: a swatch
-        // of its colour, the number, the key, and a mark on the one in use.
-        // Our own rows, since a menu item cannot carry a picture.
-        let configs = gio::Menu::new();
+        shortcuts::append_with_key(&edit, words, "chart.drawing-text", "Return");
+        menu.append_section(None, &edit);
+
+        // The arrowhead, as the four pictures it is, on one row: the three
+        // shapes and the one that is no shape. A row of four rather than a
+        // submenu of four, because a submenu's rows cannot carry a picture —
+        // a custom widget nested inside one is a slot GtkPopoverMenu leaves
+        // empty, which is how the Configuration submenu came to open on
+        // nothing. At the top level it renders, so this is where it goes.
         let mut rows: Vec<(String, gtk::Widget)> = Vec::new();
-        let theme = self.theme();
-        let all = self.drawing_configurations();
-        for n in 1..=9u8 {
-            let item = gio::MenuItem::new(Some(&format!("Configuration {n}")), None);
-            item.set_attribute_value("custom", Some(&format!("config-{n}").to_variant()));
-            configs.append_item(&item);
-            rows.push((format!("config-{n}"), self.configuration_row(&theme, &all, drawing.kind, n, drawing.config == Some(n))));
+        let kind = pane.view.selection_kind();
+        // The thickness, for every kind that has one, and the arrowhead for
+        // the ones that can wear one. Two rows of pictures in the same
+        // section: both are "what does this look like", answered by looking.
+        let pictures = gio::Menu::new();
+        if kind.is_some_and(|kind| !kind.is_text()) {
+            let item = gio::MenuItem::new(Some("Thickness"), None);
+            item.set_attribute_value("custom", Some(&"width".to_variant()));
+            pictures.append_item(&item);
+            rows.push(("width".to_string(), self.width_row(&pane)));
         }
-        edit.append_submenu(Some("Configuration"), &configs);
+        if kind.is_some_and(|kind| kind.is_line()) {
+            let item = gio::MenuItem::new(Some("Arrowhead"), None);
+            item.set_attribute_value("custom", Some(&"arrowhead".to_variant()));
+            pictures.append_item(&item);
+            rows.push(("arrowhead".to_string(), self.arrowhead_row(&pane)));
+        }
+        if !rows.is_empty() {
+            menu.append_section(None, &pictures);
+        }
+
+        let edit = gio::Menu::new();
+        // No Configuration submenu. Its nine rows were widgets of our own,
+        // because a menu item cannot carry a picture, and a custom widget in
+        // a *nested* submenu is a slot `GtkPopoverMenu` does not fill — so
+        // the submenu opened empty.
+        //
+        // Not worth fixing, because it was the third way to the same choice
+        // and the worst of the three: Alt+1 to Alt+9 does it without a menu
+        // at all, and the properties dialog offers the nine as live pictures
+        // of this drawing in each, which is more than a swatch in a row
+        // could ever have shown.
+        //
         // Who else sees it, as a radio over the scopes, the way the dialog
         // offers it.
         let scopes = gio::Menu::new();
@@ -6325,64 +6420,152 @@ impl Window {
         shortcuts::append(&remove, "Remove all drawings", "chart.drawing-clear");
         menu.append_section(None, &remove);
 
+        // Last, and alone. Everything above is a thing to do to the drawing;
+        // this opens a window about it, which is the heavier choice and the
+        // one that should not be sitting under the pointer when the menu
+        // opens. A section of its own puts a rule above it that says so.
+        let properties = gio::Menu::new();
+        shortcuts::append_with_key(&properties, "Properties…", "chart.drawing-settings", "<Alt>Return");
+        menu.append_section(None, &properties);
+
         let area = pane.view.area.clone();
         let (wx, wy) = area.translate_coordinates(&self.window, x, y).unwrap_or((x, y));
         popup_menu_with(&menu, &self.window, wx, wy, rows);
     }
 
-    /// One row of the Configuration submenu: swatch, name, the key, and a
-    /// mark when it is the one the drawing follows. A flat button on the
-    /// action, which closes the menu itself since a widget of our own
-    /// does not.
-    fn configuration_row(
-        &self,
-        theme: &omacharts_engine::Theme,
-        all: &omacharts_engine::Configurations,
-        kind: omacharts_engine::DrawingKind,
-        n: u8,
-        current: bool,
-    ) -> gtk::Widget {
-        let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-        row.append(&crate::ui::drawing_settings::swatch(theme, kind, all.of(kind, n)));
-        let name = gtk::Label::new(Some(&format!("Configuration {n}")));
-        name.set_xalign(0.0);
-        name.set_hexpand(true);
-        row.append(&name);
-        let key = gtk::Label::new(Some(&format!("Alt+{n}")));
-        key.add_css_class("dim-label");
-        key.add_css_class("caption");
-        row.append(&key);
-        let mark = gtk::Label::new(Some(if current { "✓" } else { "" }));
-        mark.set_width_chars(1);
-        row.append(&mark);
-        let button = gtk::Button::new();
-        button.add_css_class("flat");
-        button.add_css_class("drawing-config-row");
-        button.set_child(Some(&row));
-        button.set_action_name(Some("chart.drawing-config"));
-        button.set_action_target_value(Some(&(n as i32).to_variant()));
-        button.connect_clicked(|button| {
-            if let Some(popover) = button.ancestor(gtk::Popover::static_type()).and_downcast::<gtk::Popover>() {
-                popover.popdown();
+    /// The thickness row: four strokes, the one in use ringed, and the keys
+    /// that step between them off to the side.
+    ///
+    /// The same shape as the arrowhead row below it, because it answers the
+    /// same sort of question — one you settle by looking rather than by
+    /// reading a number. The number is still in the properties for anybody
+    /// who wants one this row does not offer.
+    fn width_row(self: &Rc<Self>, pane: &Rc<ChartPane>) -> gtk::Widget {
+        // Homogeneous and expanding, so the four pictures share the row's
+        // whole width instead of huddling at the left end of it.
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+        row.add_css_class("drawing-head-row");
+        row.set_homogeneous(true);
+        let current = pane.view.selected_width();
+
+        for width in omacharts_engine::drawings::WIDTHS {
+            let picture = gtk::DrawingArea::new();
+            picture.set_content_height(20);
+            picture.set_hexpand(true);
+            picture.set_draw_func(move |area, cr, w, h| {
+                let fg = area.color();
+                let (r, g, b, a) =
+                    (fg.red() as f64, fg.green() as f64, fg.blue() as f64, fg.alpha() as f64);
+                cr.set_source_rgba(r, g, b, a);
+                cr.set_line_width(width);
+                cr.set_line_cap(gtk::cairo::LineCap::Round);
+                // On the half-pixel for odd widths, on the pixel for even,
+                // so a hairline is a hairline rather than two grey rows.
+                let y = (h as f64 / 2.0).round()
+                    + if (width.round() as i64) % 2 == 1 { 0.5 } else { 0.0 };
+                cr.move_to(5.0, y);
+                cr.line_to(w as f64 - 5.0, y);
+                let _ = cr.stroke();
+            });
+            let button = gtk::Button::new();
+            button.add_css_class("flat");
+            button.add_css_class("drawing-head-cell");
+            button.set_child(Some(&picture));
+            button.set_tooltip_text(Some(&format!("{width}px")));
+            if current == Some(width) {
+                button.add_css_class("drawing-preview-current");
             }
-        });
-        button.upcast()
+            button.set_hexpand(true);
+            button.set_action_name(Some("chart.drawing-width"));
+            button.set_action_target_value(Some(&width.to_variant()));
+            button.connect_clicked(|button| {
+                if let Some(popover) =
+                    button.ancestor(gtk::Popover::static_type()).and_downcast::<gtk::Popover>()
+                {
+                    popover.popdown();
+                }
+            });
+            row.append(&button);
+        }
+
+        row.upcast()
+    }
+
+    /// The arrowhead row: four pictures, the one in use ringed, and the key
+    /// that steps between them off to the side.
+    fn arrowhead_row(self: &Rc<Self>, pane: &Rc<ChartPane>) -> gtk::Widget {
+        use omacharts_engine::{Arrow, ArrowHead};
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+        row.add_css_class("drawing-head-row");
+        row.set_homogeneous(true);
+        let current = pane.view.selected_head();
+
+        for shape in [None, Some(ArrowHead::ALL[0]), Some(ArrowHead::ALL[1]), Some(ArrowHead::ALL[2])] {
+            let picture = gtk::DrawingArea::new();
+            picture.set_content_height(20);
+            picture.set_hexpand(true);
+            picture.set_draw_func(move |area, cr, w, h| {
+                let fg = area.color();
+                let (r, g, b, a) =
+                    (fg.red() as f64, fg.green() as f64, fg.blue() as f64, fg.alpha() as f64);
+                cr.set_source_rgba(r, g, b, a);
+                cr.set_line_width(1.4);
+                cr.set_line_cap(gtk::cairo::LineCap::Round);
+                let y = (h as f64 / 2.0).round() + 0.5;
+                let (tail, tip) = ((5.0, y), (w as f64 - 6.0, y));
+                cr.move_to(tail.0, tail.1);
+                cr.line_to(tip.0, tip.1);
+                let _ = cr.stroke();
+                if let Some(shape) = shape {
+                    crate::ui::drawing_settings::paint_head(cr, tail, tip, 1.4, 7.0, shape);
+                }
+            });
+            let button = gtk::Button::new();
+            button.add_css_class("flat");
+            button.add_css_class("drawing-head-cell");
+            button.set_child(Some(&picture));
+            button.set_tooltip_text(Some(match shape {
+                None => "No arrowhead",
+                Some(shape) => shape.label(),
+            }));
+            // Ringed rather than ticked: there is no room for a mark beside
+            // a picture this size, and the ring is what the configuration
+            // tiles already use for "this is the one".
+            let chosen = match (current, shape) {
+                (Some((Arrow::None, _)), None) => true,
+                (Some((arrow, head)), Some(shape)) => arrow != Arrow::None && head == shape,
+                _ => false,
+            };
+            if chosen {
+                button.add_css_class("drawing-preview-current");
+            }
+            button.set_hexpand(true);
+            button.set_action_name(Some("chart.drawing-head"));
+            button.set_action_target_value(Some(
+                &shape.map(|s| s.key()).unwrap_or("none").to_variant(),
+            ));
+            button.connect_clicked(|button| {
+                if let Some(popover) =
+                    button.ancestor(gtk::Popover::static_type()).and_downcast::<gtk::Popover>()
+                {
+                    popover.popdown();
+                }
+            });
+            row.append(&button);
+        }
+
+        row.upcast()
     }
 
     fn chart_menu(self: &Rc<Self>, x: f64, y: f64) {
         let menu = gio::Menu::new();
 
-        // The tools first: what somebody right-clicking the chart with
-        // nothing under the pointer most often came for.
-        let draw = gio::Menu::new();
-        shortcuts::append(&draw, "Draw a line", "chart.draw-line");
-        shortcuts::append(&draw, "Draw a rectangle", "chart.draw-rect");
-        shortcuts::append(&draw, "Draw a circle", "chart.draw-ellipse");
-        shortcuts::append(&draw, "Write on the chart", "chart.draw-text");
-        if !self.focused_pane().view.drawings().is_empty() {
-            shortcuts::append(&draw, "Remove all drawings", "chart.drawing-clear");
-        }
-        menu.append_section(None, &draw);
+        // Not the tools. They were here when the only way to reach them was
+        // a key, and there is a bar of them on the chart's own edge now —
+        // four more rows naming what four buttons already show is a menu
+        // you have to read past to get to what is only here. Clearing is
+        // not a tool, and is further down with the rest of the things done
+        // to the chart rather than at the head of the menu.
 
         // Choices live behind a named item rather than loose in the menu: a
         // flat list of radio buttons makes you read every option to find out
@@ -6440,10 +6623,18 @@ impl Window {
             groups.append_item(&item);
         }
         rest.append_submenu(Some("Link group"), &groups);
-        shortcuts::append(&rest, "Indicators…", "chart.indicators");
-        shortcuts::append(&rest, "Chart settings…", "chart.settings");
         shortcuts::append(&rest, "Screenshot chart", "chart.screenshot");
+        if !self.focused_pane().view.drawings().is_empty() {
+            shortcuts::append(&rest, "Remove all drawings", "chart.drawing-clear");
+        }
         menu.append_section(None, &rest);
+
+        // Last, and together, below a rule: everything above is something
+        // done to this chart, and these two open a window about it.
+        let settings = gio::Menu::new();
+        shortcuts::append(&settings, "Indicators…", "chart.indicators");
+        shortcuts::append(&settings, "Chart settings…", "chart.settings");
+        menu.append_section(None, &settings);
 
         // Hung off the window rather than the chart it was opened on: a menu
         // parented to one pane of a split has only that pane's height to fit
@@ -6623,6 +6814,20 @@ impl Window {
         });
         actions.add_action(&draw_rect);
 
+        let draw_hline = gio::SimpleAction::new("draw-hline", None);
+        let this = self.clone();
+        draw_hline.connect_activate(move |_, _| {
+            this.arm_drawing(omacharts_engine::DrawingKind::Horizontal)
+        });
+        actions.add_action(&draw_hline);
+
+        let draw_arrow = gio::SimpleAction::new("draw-arrow", None);
+        let this = self.clone();
+        draw_arrow.connect_activate(move |_, _| {
+            this.arm_drawing(omacharts_engine::DrawingKind::Arrow)
+        });
+        actions.add_action(&draw_arrow);
+
         let draw_ellipse = gio::SimpleAction::new("draw-ellipse", None);
         let this = self.clone();
         draw_ellipse.connect_activate(move |_, _| {
@@ -6643,6 +6848,29 @@ impl Window {
             this.focused_pane().view.edit_selected_text();
         });
         actions.add_action(&drawing_text);
+
+        let drawing_width = gio::SimpleAction::new("drawing-width", Some(glib::VariantTy::DOUBLE));
+        let this = self.clone();
+        drawing_width.connect_activate(move |_, target| {
+            let Some(width) = target.and_then(|t| t.get::<f64>()) else { return };
+            this.focused_pane().view.set_width(width);
+        });
+        actions.add_action(&drawing_width);
+
+        let drawing_head = gio::SimpleAction::new("drawing-head", Some(glib::VariantTy::STRING));
+        let this = self.clone();
+        drawing_head.connect_activate(move |_, target| {
+            let Some(key) = target.and_then(|t| t.str()) else { return };
+            let shape = match key {
+                "none" => None,
+                key => match omacharts_engine::ArrowHead::from_key(key) {
+                    Some(shape) => Some(shape),
+                    None => return,
+                },
+            };
+            this.focused_pane().view.set_head(shape);
+        });
+        actions.add_action(&drawing_head);
 
         let drawing_settings = gio::SimpleAction::new("drawing-settings", None);
         let this = self.clone();

@@ -2029,7 +2029,7 @@ fn shorten(text: &str, most: usize) -> String {
 fn describe_style(kind: omacharts_engine::DrawingKind, style: &omacharts_engine::Style) -> String {
     use omacharts_engine::drawings::{Arrow, ArrowHead, Kind};
     match kind {
-        Kind::Line => {
+        Kind::Line | Kind::Horizontal | Kind::Arrow => {
             let arrow = match (style.arrow, style.head) {
                 (Arrow::None, _) => String::new(),
                 (arrow, ArrowHead::Filled) => format!(", arrow {}", arrow.label().to_lowercase()),
@@ -2079,7 +2079,7 @@ struct StyleEdits {
 
 impl StyleEdits {
     fn read(m: &clap::ArgMatches) -> Result<StyleEdits, Fault> {
-        use omacharts_engine::drawings::{Arrow, ArrowHead, Paint};
+        use omacharts_engine::drawings::{Arrow, ArrowHead, Paint, MAX_WIDTH, MIN_WIDTH};
         let paint = |id: &str| -> Result<Option<Paint>, Fault> {
             let Some(text) = arg(m, id) else { return Ok(None) };
             Paint::parse(text).map(Some).ok_or_else(|| {
@@ -2090,8 +2090,12 @@ impl StyleEdits {
         };
         let width = match number(m, "width")? {
             None => None,
-            Some(w) if (0.5..=12.0).contains(&w) => Some(w),
-            Some(w) => return Err(Fault::usage(format!("--width is {w}, which is outside 0.5 to 12"))),
+            Some(w) if (MIN_WIDTH..=MAX_WIDTH).contains(&w) => Some(w),
+            Some(w) => {
+                return Err(Fault::usage(format!(
+                    "--width is {w}, which is outside {MIN_WIDTH} to {MAX_WIDTH}"
+                )))
+            }
         };
         let arrow = match arg(m, "arrow") {
             None => None,

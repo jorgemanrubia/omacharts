@@ -15,7 +15,7 @@
 //! stores. And Enter, which commits — the chart is not a word processor and
 //! a label is usually one line — leaving Shift+Enter as the newline.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use gtk::prelude::*;
@@ -29,13 +29,70 @@ pub const CLASS: &str = "drawing-text-editor";
 /// Bold, as a text tag counts weight: the number Pango's own `Bold` is.
 const BOLD: i32 = 700;
 
-/// How much room the editor leaves itself past the glyphs.
+thread_local! {
+    /// The one stylesheet the editor is dressed by, put on the display the
+    /// first time an editor opens and rewritten every time one does.
+    ///
+    /// One, because there is one editor at a time: a provider per editor
+    /// would be a provider per edit left on the display for the life of the
+    /// process. It is keyed by the class, so it dresses whichever editor is
+    /// currently wearing it and nothing else.
+    static DRESS: RefCell<Option<gtk::CssProvider>> = const { RefCell::new(None) };
+}
+
+/// Put the drawing's face, size and ink on the editor, in the units the
+/// chart draws them in.
+fn dress(style: &TextStyle, ink: &str) {
+    let family = style
+        .family_name()
+        .map(str::to_string)
+        .or_else(crate::ui::text::system_family)
+        .unwrap_or_else(|| "sans-serif".to_string());
+    // Quoted, because a family name has spaces in it as often as not and an
+    // unquoted one would be read as a list.
+    // Not `.{CLASS} text selection`: a selection's own colours belong to the
+    // stylesheet, and a rule here putting the drawing's ink on everything
+    // inside the view would repaint the selected range in it too.
+    let css = format!(
+        ".{CLASS}, .{CLASS} text {{ font-family: \"{family}\"; font-size: {size}px; color: {ink};          padding: 0; margin: 0; border: none; }}",
+        size = style.clamped_size(),
+    );
+    DRESS.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let provider = slot.get_or_insert_with(|| {
+            let provider = gtk::CssProvider::new();
+            if let Some(display) = gtk::gdk::Display::default() {
+                // Above the application's own sheet, so the editor's size
+                // wins over anything a theme has to say about a text view.
+                gtk::style_context_add_provider_for_display(
+                    &display,
+                    &provider,
+                    gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 1,
+                );
+            }
+            provider
+        });
+        provider.load_from_data(&css);
+    });
+}
+
+/// How much room the editor keeps past the glyphs, as a multiple of the
+/// font size, and never less than this many pixels.
 ///
-/// A text view puts the caret just past the last character, and with no
-/// padding at all a caret at the end of the text sits outside the widget and
-/// is clipped away. Two pixels is enough for the caret and little enough
-/// that the text does not visibly shift when the editor opens over it.
-const CARET_ROOM: i32 = 2;
+/// Sized exactly to its contents, the editor is always one frame too narrow:
+/// the width is re-requested on the keystroke and granted on the next layout
+/// pass, so what is on screen is the new text in the old frame. A text view
+/// used to paper over that by scrolling to keep the caret in view — which is
+/// what pushed the first character off the left — and with the scrolling
+/// pinned off it clipped the last one instead. Neither is a fix; the frame
+/// being a character behind is.
+///
+/// So the frame is never tight. It carries slack for a character and a
+/// caret, which costs nothing — the view has no background — and the slack
+/// is taken off the margin again so the glyphs still land exactly where the
+/// chart will draw them.
+const SLACK: f64 = 1.6;
+const MIN_SLACK: f64 = 24.0;
 
 /// The editor in the middle of being typed into.
 pub struct Editing {
@@ -55,10 +112,6 @@ pub struct Editing {
     pub fresh: bool,
     bold: gtk::TextTag,
     italic: gtk::TextTag,
-    /// The tag carrying the face, the size and the ink, so a size changed
-    /// from the keyboard while the caret is still in the text changes what
-    /// is being typed as well as what will be drawn.
-    base: gtk::TextTag,
 }
 
 impl Editing {
@@ -92,22 +145,50 @@ impl Editing {
         self.view.buffer().char_count() == 0
     }
 
+    /// Take all of it, the way opening a field to edit a name does.
+    ///
+    /// A label is a handful of words that is usually being replaced rather
+    /// than appended to, so the first keystroke should replace it. Anything
+    /// else — a click, an arrow — drops the selection and leaves the caret
+    /// where it was aimed, so nothing is lost by offering it.
+    pub fn select_all(&self) {
+        let buffer = self.view.buffer();
+        let (start, end) = buffer.bounds();
+        buffer.select_range(&start, &end);
+    }
+
     /// Set it in a style it was not opened with: what a size key pressed
     /// while the caret is still in the text has to do, or the words would
     /// grow on the chart and not under the caret.
     pub fn restyle(&self, style: &TextStyle, ink: &str) {
-        if let Some(family) = style.family_name().map(str::to_string).or_else(crate::ui::text::system_family) {
-            self.base.set_family(Some(&family));
-        }
-        self.base.set_size(((style.clamped_size() * pango::SCALE as f64) as i32).max(1));
-        self.base.set_foreground(Some(ink));
+        dress(style, ink);
     }
 
     /// Move it to where the words now belong, and size it to them.
-    pub fn place(&self, layer: &gtk::Fixed, (x, y): (f64, f64), size: (f64, f64)) {
+    /// Move it to where the words now belong, and size it to them.
+    ///
+    /// By margin against the top-left of the overlay, which is how a widget
+    /// is placed in one. The alternative — a `GtkFixed` layer over the whole
+    /// chart — has to be targetable for the editor inside it to take a
+    /// click, and a targetable layer the size of the chart takes *every*
+    /// click: selecting a word with the pointer worked, and the chart
+    /// underneath stopped answering to anything.
+    pub fn place(&self, (x, y): (f64, f64), size: (f64, f64), font: f64) {
+        let slack = (font * SLACK).max(MIN_SLACK);
         self.view
-            .set_size_request(size.0.ceil() as i32 + CARET_ROOM, size.1.ceil() as i32);
-        layer.move_(&self.view, x, y);
+            .set_size_request((size.0 + slack).ceil() as i32, (size.1 + slack).ceil() as i32);
+        // How much of the slack sits to the left of the glyphs, which is
+        // where the view's own justification puts it: all of it on the right
+        // for a block flush left, half each side for a centred one, all of
+        // it on the left for one flush right. Taken off the margin so the
+        // text itself does not move.
+        let before = match self.view.justification() {
+            gtk::Justification::Center => slack / 2.0,
+            gtk::Justification::Right => slack,
+            _ => 0.0,
+        };
+        self.view.set_margin_start((x - before).max(0.0).round() as i32);
+        self.view.set_margin_top(y.max(0.0).round() as i32);
     }
 
     /// How big what has been typed is, through the same layout the chart
@@ -136,12 +217,18 @@ pub struct Opened<'a> {
     pub align: Align,
 }
 
-/// What the editor asks the chart to do when a key ends the edit.
+/// What the editor asks the chart to do when the edit ends.
 pub enum Ended {
-    /// Enter, or the focus went elsewhere: keep what was typed.
+    /// Enter: keep what was typed, and the chart has the keyboard again.
     Commit,
     /// Escape: leave the drawing as it was.
     Cancel,
+    /// The keyboard went somewhere else — another chart, another window, a
+    /// click on the rail. What was typed is kept, the way clicking away from
+    /// a label keeps it everywhere else, but the keyboard is left where it
+    /// has gone: it was moved on purpose, and taking it back to the chart
+    /// would undo the very keystroke that moved it.
+    LostFocus,
 }
 
 /// Build an editor for a drawing's text, loaded with what it already says.
@@ -159,15 +246,24 @@ pub fn build(
     let buffer = gtk::TextBuffer::new(None);
     let table = buffer.tag_table();
 
-    // The face, the size and the ink, over everything: the same three
-    // properties the drawing is set in, applied as a tag rather than as CSS
-    // so they go through the font description Pango will draw with.
+    // The face, the size and the ink go on through CSS rather than through a
+    // text tag, and that is not a detail: a tag's `size` is in *points*, and
+    // every size in this app is in pixels — the chart sets its labels at 11
+    // and 13 device pixels and the engine stores a drawing's text the same
+    // way. A 13 handed to a tag is 13 points, which on a 96-dpi screen is
+    // 17.3 pixels and on a scaled one more again. The editor came up a third
+    // too big, and since the block is placed from what Pango measures at the
+    // real size, everything under it was out as well.
+    //
+    // CSS `px` is the unit the rest of the window is laid out in and the one
+    // `set_absolute_size` draws in, so going through the stylesheet makes the
+    // editor and the chart agree by construction rather than by a conversion
+    // that has to be kept right.
     let base = gtk::TextTag::new(Some("base"));
-    if let Some(family) = style.family_name().map(str::to_string).or_else(crate::ui::text::system_family) {
-        base.set_family(Some(&family));
-    }
-    base.set_size(((style.clamped_size() * pango::SCALE as f64) as i32).max(1));
-    base.set_foreground(Some(ink));
+    // Except the digits, which have no CSS: the chart sets labels with
+    // tabular figures, and without the same here a label with a number in it
+    // would be a different width under the caret than beside it.
+    base.set_font_features(Some(crate::ui::text::FIGURES));
     table.add(&base);
 
     let bold = gtk::TextTag::new(Some("bold"));
@@ -195,8 +291,24 @@ pub fn build(
     let (start, end) = buffer.bounds();
     buffer.apply_tag(&base, &start, &end);
 
+    dress(style, ink);
     let view = gtk::TextView::with_buffer(&buffer);
     view.add_css_class(CLASS);
+    // The editor never scrolls. It is exactly as big as what is in it, and
+    // it is re-sized after every keystroke — but the re-size lands on the
+    // *next* layout pass, and in between a text view does what a text view
+    // does and scrolls to keep the caret in view. Against a frame still the
+    // width of the empty text that was there a moment ago, that pushed the
+    // first character off the left-hand edge, where it stayed. Pinning both
+    // adjustments at nothing says the thing that is actually true: there is
+    // nowhere to scroll to.
+    for adjustment in [view.hadjustment(), view.vadjustment()].into_iter().flatten() {
+        adjustment.connect_value_changed(|adjustment| {
+            if adjustment.value() != 0.0 {
+                adjustment.set_value(0.0);
+            }
+        });
+    }
     view.set_wrap_mode(gtk::WrapMode::None);
     view.set_accepts_tab(false);
     view.set_left_margin(0);
@@ -219,7 +331,6 @@ pub fn build(
         fresh,
         bold: bold.clone(),
         italic: italic.clone(),
-        base: base.clone(),
     });
 
     // Everything typed carries the face, the size and the ink: a tag applied
@@ -277,10 +388,24 @@ pub fn build(
 
     // Clicking away keeps what was typed, which is what every canvas does:
     // the alternative is losing a label to a stray click on the chart.
+    //
+    // Not here, though — on the next turn of the loop. GTK is part way
+    // through handing the keyboard to something else when this runs, and
+    // taking the widget it is handing it *from* out of the tree underneath
+    // it leaves the focus machinery walking a parent chain whose first link
+    // has gone. That is not a crash with a backtrace: it is
+    // `gtk_widget_get_parent` failing forever, millions of times a second,
+    // until the log fills the disk or the kernel kills the process. Alt and
+    // an arrow while typing — move the keyboard to the next chart — was all
+    // it took. An idle callback runs after the focus change has finished,
+    // when there is nothing left to re-enter.
     {
         let focus = gtk::EventControllerFocus::new();
         let ended = ended.clone();
-        focus.connect_leave(move |_| ended(Ended::Commit));
+        focus.connect_leave(move |_| {
+            let ended = ended.clone();
+            glib::idle_add_local_once(move || ended(Ended::LostFocus));
+        });
         view.add_controller(focus);
     }
 

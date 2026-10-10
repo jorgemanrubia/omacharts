@@ -138,18 +138,47 @@ const _: () = assert!(TEXT_CONTRAST.floor > DRAWING_CONTRAST.floor);
 
 /// The default size of a drawing's text, in pixels.
 ///
-/// The chart sets its axis labels at 11 and its symbol at 13. A drawing's
-/// words are something a person put there to be read, not furniture, so they
-/// start a step above the labels and at the symbol's own size: big enough to
-/// read over candles at a glance, small enough that a note on a level does
-/// not become the level.
-pub const TEXT_SIZE: f64 = 13.0;
+/// The chart sets its axis labels at 11 and its symbol at 13, and a drawing's
+/// words started there — which was reasoning from the furniture and wrong.
+/// A label is not furniture: it is the one thing on the chart somebody put
+/// there on purpose, usually to be seen from across a desk, and at the size
+/// of an axis label it reads as another tick. Clearly above everything the
+/// chart writes for itself, and still a note on a level rather than a
+/// headline.
+pub const TEXT_SIZE: f64 = 18.0;
 
 /// How small and how large the font may be set, by the dialog, the keyboard
 /// or the terminal. Below the floor the hairlines close up at any weight;
 /// above the ceiling a drawing is a banner.
 pub const MIN_TEXT_SIZE: f64 = 6.0;
 pub const MAX_TEXT_SIZE: f64 = 96.0;
+
+/// How thin and how thick a stroke may be set: a line's thickness, and a
+/// box's or an ellipse's edge.
+///
+/// Below the floor a line is not a line on any display; above the ceiling it
+/// is a band. Named here rather than written out at each of the three places
+/// that enforce it — the dialog's spin, the terminal's check, and the key
+/// that steps it — because three copies of a range is two chances to
+/// disagree.
+pub const MIN_WIDTH: f64 = 0.5;
+pub const MAX_WIDTH: f64 = 12.0;
+
+/// A step of the width keys, and of the dialog's spin: half a pixel, which
+/// is the smallest change that shows on a hairline.
+pub const WIDTH_STEP: f64 = 0.5;
+
+/// The four widths a menu offers, for the hand that wants a thickness
+/// rather than a number.
+///
+/// The first two are the ones the app already ships: a box's edge is drawn
+/// at 1 and a line at 1.5, so picking from this row can always get back to
+/// how a drawing started. The other two step up by about half again each
+/// time, which is the smallest ratio at which two strokes beside each other
+/// are plainly different. Four, because the row sits in a menu beside the
+/// arrowheads and has to fit the same width — and because the number box in
+/// the properties is there for anybody who wants 3.5.
+pub const WIDTHS: [f64; 4] = [BORDER_WIDTH, DEFAULT_WIDTH, 2.5, 4.0];
 
 /// A step of Ctrl+= and Ctrl+-, in pixels. One pixel is a change nobody can
 /// see and ten overshoots everything; a chart's own type ladder runs 10, 11,
@@ -347,6 +376,18 @@ impl Anchor {
 pub enum Kind {
     /// A straight line from one anchor to the other.
     Line,
+    /// A line held level: a price, drawn across the span its two anchors
+    /// mark out. Both ends are at the same price and no gesture can put them
+    /// anywhere else, which is the whole of what it is for — a level read
+    /// off a chart is a number, and a support line that came out a tenth of
+    /// a percent out of true is a lie you cannot see.
+    Horizontal,
+    /// The same line, pointing: an arrowhead where it ends. Its own kind
+    /// rather than a line that happens to be configured with one, so that
+    /// the tool is a tool and its nine configurations are about arrows —
+    /// reaching for an arrow and then setting a line's arrow property is
+    /// two steps to say one thing.
+    Arrow,
     /// A box with the two anchors at opposite corners.
     Rect,
     /// An ellipse inscribed in the box the two anchors make. Dragged to
@@ -361,15 +402,34 @@ pub enum Kind {
 }
 
 impl Kind {
-    pub const ALL: [Kind; 4] = [Kind::Line, Kind::Rect, Kind::Ellipse, Kind::Text];
+    /// Every kind, in the order the tools are offered: the plain line
+    /// first, then the two that are a line with one thing added, then the
+    /// shapes, then the words.
+    pub const ALL: [Kind; 6] = [
+        Kind::Line,
+        Kind::Horizontal,
+        Kind::Arrow,
+        Kind::Rect,
+        Kind::Ellipse,
+        Kind::Text,
+    ];
 
     /// The kinds that are a shape, which is every kind that can carry text
     /// of its own.
-    pub const FIGURES: [Kind; 3] = [Kind::Line, Kind::Rect, Kind::Ellipse];
+    pub const FIGURES: [Kind; 5] =
+        [Kind::Line, Kind::Horizontal, Kind::Arrow, Kind::Rect, Kind::Ellipse];
+
+    /// Whether this kind is a stroke between two anchors rather than a
+    /// shape with an inside.
+    pub fn is_line(self) -> bool {
+        matches!(self, Kind::Line | Kind::Horizontal | Kind::Arrow)
+    }
 
     pub fn label(self) -> &'static str {
         match self {
             Kind::Line => "Line",
+            Kind::Horizontal => "Horizontal line",
+            Kind::Arrow => "Arrow",
             Kind::Rect => "Rectangle",
             Kind::Ellipse => "Circle",
             Kind::Text => "Text",
@@ -379,6 +439,8 @@ impl Kind {
     pub fn key(self) -> &'static str {
         match self {
             Kind::Line => "line",
+            Kind::Horizontal => "hline",
+            Kind::Arrow => "arrow",
             Kind::Rect => "rect",
             Kind::Ellipse => "ellipse",
             Kind::Text => "text",
@@ -390,8 +452,15 @@ impl Kind {
             .into_iter()
             .find(|k| k.key().eq_ignore_ascii_case(key))
             // "circle" is what the tool is called, so it is what somebody
-            // types; the shape it draws is an ellipse.
+            // types; the shape it draws is an ellipse. "horizontal" is what
+            // the tool is called, and "hline" what it is quickest to type.
             .or_else(|| key.eq_ignore_ascii_case("circle").then_some(Kind::Ellipse))
+            .or_else(|| {
+                ["horizontal", "horizontal-line", "level"]
+                    .iter()
+                    .any(|name| key.eq_ignore_ascii_case(name))
+                    .then_some(Kind::Horizontal)
+            })
     }
 
     /// Whether this kind has an inside: a fill, and room for text in it.
@@ -858,6 +927,19 @@ impl Style {
         }
     }
 
+    /// An arrow is a line that points: the same stroke, with an open head
+    /// where it ends. Open rather than filled, because a filled triangle at
+    /// a line's own weight reads as a blob on a chart, and because the
+    /// filled one is what a line configured by hand already gets.
+    pub fn arrow(preset: Preset) -> Style {
+        Style { arrow: Arrow::End, head: ArrowHead::Open, ..Style::line(preset) }
+    }
+
+    /// A level is a line, and looks like one.
+    pub fn horizontal(preset: Preset) -> Style {
+        Style::line(preset)
+    }
+
     /// An ellipse starts from exactly what a box does. The two are the same
     /// drawing with a different outline, they share the nine presets, and a
     /// preset that was measured over every theme as a fill under a hairline
@@ -880,6 +962,8 @@ impl Style {
     pub fn of(kind: Kind, preset: Preset) -> Style {
         match kind {
             Kind::Line => Style::line(preset),
+            Kind::Horizontal => Style::horizontal(preset),
+            Kind::Arrow => Style::arrow(preset),
             Kind::Rect => Style::rect(preset),
             Kind::Ellipse => Style::ellipse(preset),
             Kind::Text => Style::text(preset),
@@ -921,6 +1005,10 @@ pub struct Configurations {
     pub ellipse: Vec<Style>,
     #[serde(default)]
     pub text: Vec<Style>,
+    #[serde(default)]
+    pub arrow: Vec<Style>,
+    #[serde(default)]
+    pub horizontal: Vec<Style>,
 }
 
 /// How many configurations each kind has.
@@ -931,6 +1019,8 @@ impl Default for Configurations {
         let nine = |make: fn(Preset) -> Style| Preset::ALL.into_iter().map(make).collect();
         Configurations {
             line: nine(Style::line),
+            horizontal: nine(Style::horizontal),
+            arrow: nine(Style::arrow),
             rect: nine(Style::rect),
             ellipse: nine(Style::ellipse),
             text: nine(Style::text),
@@ -988,6 +1078,8 @@ impl Configurations {
     fn stored(&self, kind: Kind) -> &[Style] {
         match kind {
             Kind::Line => &self.line,
+            Kind::Horizontal => &self.horizontal,
+            Kind::Arrow => &self.arrow,
             Kind::Rect => &self.rect,
             Kind::Ellipse => &self.ellipse,
             Kind::Text => &self.text,
@@ -997,6 +1089,8 @@ impl Configurations {
     fn stored_mut(&mut self, kind: Kind) -> &mut Vec<Style> {
         match kind {
             Kind::Line => &mut self.line,
+            Kind::Horizontal => &mut self.horizontal,
+            Kind::Arrow => &mut self.arrow,
             Kind::Rect => &mut self.rect,
             Kind::Ellipse => &mut self.ellipse,
             Kind::Text => &mut self.text,
@@ -1293,6 +1387,19 @@ impl Drawing {
             self.to = at;
             return;
         }
+        // A level stays level. Whichever end is dragged carries the price
+        // for both, so pulling an end up moves the line and pulling it
+        // sideways changes how far it reaches — and nothing anybody can do
+        // with a pointer leaves it sloping by a pixel.
+        if self.kind == Kind::Horizontal {
+            match grip {
+                Grip::To | Grip::ToFrom => self.to.ts = at.ts,
+                _ => self.from.ts = at.ts,
+            }
+            self.from.price = at.price;
+            self.to.price = at.price;
+            return;
+        }
         match grip {
             Grip::From => self.from = at,
             Grip::To => self.to = at,
@@ -1319,7 +1426,7 @@ impl Drawing {
     /// The grips this kind of drawing wears when selected.
     pub fn grips(&self) -> &'static [Grip] {
         match self.kind {
-            Kind::Line => &[Grip::From, Grip::To],
+            Kind::Line | Kind::Horizontal | Kind::Arrow => &[Grip::From, Grip::To],
             // The ellipse is dragged by the corners of the box it is drawn
             // in, exactly as the box is, which is what lets it be shaped to
             // anything rather than held round.
@@ -1404,8 +1511,21 @@ impl Projected {
             }
         }
         let reach = PICK_REACH;
+        // A label is part of the drawing it is on. Clicking the words picks
+        // the drawing — which on a box or an ellipse happens anyway, since
+        // the words are inside the shape, but on a line they can sit well
+        // clear of the stroke and used to be the one part of a drawing you
+        // could not take hold of.
+        if self.words.is_some_and(|box_| within(box_, (x, y), reach)) {
+            return Some(Grip::Body);
+        }
         let on_body = match self.kind {
-            Kind::Line => distance_to_segment((x, y), self.from, self.to) <= reach,
+            // Every kind that is a stroke is picked the same way: near the
+            // segment. What differs between them is what is drawn on it, not
+            // where it is.
+            Kind::Line | Kind::Horizontal | Kind::Arrow => {
+                distance_to_segment((x, y), self.from, self.to) <= reach
+            }
             Kind::Rect => {
                 let (left, right) = ordered(self.from.0, self.to.0);
                 let (top, bottom) = ordered(self.from.1, self.to.1);
@@ -1419,13 +1539,8 @@ impl Projected {
             // by the same reach every other kind is, since a word is a
             // scatter of thin strokes and aiming between two of them is not
             // a miss.
-            Kind::Text => match self.words {
-                Some((left, top, w, h)) => {
-                    (left - reach..=left + w + reach).contains(&x)
-                        && (top - reach..=top + h + reach).contains(&y)
-                }
-                None => false,
-            },
+            // Nothing but its words, which were tried above.
+            Kind::Text => false,
         };
         on_body.then_some(Grip::Body)
     }
@@ -1439,13 +1554,20 @@ impl Projected {
         let overlaps = |(l, t, w, h): (f64, f64, f64, f64)| {
             l <= right && l + w >= left && t <= bottom && t + h >= top
         };
+        // A box dragged over a drawing's label takes the drawing, for the
+        // same reason clicking the label does.
+        if self.words.is_some_and(overlaps) {
+            return true;
+        }
         match self.kind {
-            Kind::Line => segment_meets_box(self.from, self.to, left, top, right, bottom),
+            Kind::Line | Kind::Horizontal | Kind::Arrow => {
+                segment_meets_box(self.from, self.to, left, top, right, bottom)
+            }
             // The box the shape fills. A dragged selection is a rough
             // gesture over a region, not a click: catching an ellipse whose
             // bounding box the hand swept is what the hand meant.
             Kind::Rect | Kind::Ellipse => overlaps(self.bounds()),
-            Kind::Text => self.words.is_some_and(overlaps),
+            Kind::Text => false,
         }
     }
 
@@ -1469,6 +1591,11 @@ impl Projected {
 /// it is not simply a distance: an ellipse has no single distance to a
 /// point, and growing the shape by the reach is both the cheap way and the
 /// one that behaves at the ends of a very flat ellipse.
+/// Whether a point is in a box, with `reach` pixels of slack all round.
+fn within((left, top, w, h): (f64, f64, f64, f64), (x, y): (f64, f64), reach: f64) -> bool {
+    (left - reach..=left + w + reach).contains(&x) && (top - reach..=top + h + reach).contains(&y)
+}
+
 fn inside_ellipse(point: (f64, f64), bounds: (f64, f64, f64, f64), reach: f64) -> bool {
     let (left, top, width, height) = bounds;
     let (rx, ry) = (width / 2.0 + reach, height / 2.0 + reach);
@@ -1518,7 +1645,7 @@ pub fn text_origin(
         return (left, top);
     }
     let (across, down) = at.fractions();
-    if kind == Kind::Line {
+    if kind.is_line() {
         let x = left + across * width - across * block_w;
         // Above the box for the top row, below it for the bottom, and
         // clear of the stroke for the middle.
@@ -2315,5 +2442,70 @@ mod configuration_tests {
         }
         assert_eq!(Place::from_key("centre"), Some(Place::Center));
         assert_eq!(Place::from_key("top_left"), Some(Place::TopLeft));
+    }
+}
+
+#[cfg(test)]
+mod stroke_tests {
+    use super::*;
+
+    /// A level stays level, however it is dragged: the whole point of the
+    /// kind is that a price read off it is the price.
+    #[test]
+    fn a_horizontal_line_cannot_be_made_to_slope() {
+        let mut level = Drawing::new(Kind::Horizontal, Anchor::new(0, 100.0), Anchor::new(10, 100.0));
+        // Pull the right end up and away: it carries the whole line with it.
+        level.move_grip(Grip::To, Anchor::new(20, 140.0));
+        assert_eq!(level.from.price, level.to.price);
+        assert_eq!(level.to.price, 140.0);
+        assert_eq!(level.from.ts, 0, "the end that was not dragged moved in time");
+        assert_eq!(level.to.ts, 20);
+        // And the other end, the same way.
+        level.move_grip(Grip::From, Anchor::new(-5, 90.0));
+        assert_eq!(level.from.price, level.to.price);
+        assert_eq!(level.to.ts, 20);
+        // Shifting the whole thing keeps it level too.
+        level.shift(3, -10.0);
+        assert_eq!(level.from.price, level.to.price);
+    }
+
+    /// An arrow is a line that points, and is one everywhere it matters:
+    /// picked like a line, dragged like a line, labelled like a line.
+    #[test]
+    fn an_arrow_is_a_line_that_points() {
+        let arrow = Style::arrow(Preset::Blue);
+        assert_eq!(arrow.arrow, Arrow::End);
+        assert_eq!(arrow.head, ArrowHead::ALL[1]);
+        assert_eq!(Style { arrow: Arrow::None, head: ArrowHead::Filled, ..arrow.clone() }, Style::line(Preset::Blue));
+
+        let drawing = Drawing::new(Kind::Arrow, Anchor::new(0, 1.0), Anchor::new(10, 2.0));
+        assert_eq!(drawing.grips(), &[Grip::From, Grip::To]);
+        let projected = Projected::new(Kind::Arrow, (0.0, 0.0), (100.0, 100.0));
+        assert_eq!(projected.hit(50.0, 50.0), Some(Grip::Body));
+        assert_eq!(projected.hit(10.0, 90.0), None);
+    }
+
+    /// Every kind that is a stroke says so, and no kind that is not does.
+    #[test]
+    fn the_strokes_know_they_are_strokes() {
+        for kind in Kind::ALL {
+            let stroke = matches!(kind, Kind::Line | Kind::Horizontal | Kind::Arrow);
+            assert_eq!(kind.is_line(), stroke, "{}", kind.key());
+            assert!(!(kind.is_line() && kind.is_bounded()), "{}", kind.key());
+        }
+    }
+
+    /// A label is part of the drawing it is on: clicking the words takes
+    /// hold of it, which on a line is the only way to reach them.
+    #[test]
+    fn a_label_is_part_of_what_it_labels() {
+        // A flat line across the middle, with its words well above it.
+        let line = Projected::new(Kind::Line, (0.0, 100.0), (200.0, 100.0))
+            .with_words((80.0, 40.0, 50.0, 18.0));
+        assert_eq!(line.hit(100.0, 48.0), Some(Grip::Body), "the words were not part of it");
+        assert_eq!(line.hit(100.0, 100.0), Some(Grip::Body), "the stroke stopped answering");
+        assert_eq!(line.hit(190.0, 48.0), None, "beside the words is not on them");
+        // And a box dragged over only the words takes it.
+        assert!(line.touches((70.0, 30.0, 20.0, 20.0)));
     }
 }

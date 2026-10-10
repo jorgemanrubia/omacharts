@@ -534,6 +534,18 @@ fn ts_at(bars: &[Bar], index: f64) -> i64 {
     bars[lo].ts + ((bars[hi].ts - bars[lo].ts) as f64 * within).round() as i64
 }
 
+/// Move a drawing by a number of columns and a difference in price.
+///
+/// Through the index and back, rather than by adding to the timestamps,
+/// because the chart's columns are evenly spaced and its timestamps are not:
+/// see the body drag for what that costs.
+fn shift_by_columns(bars: &[Bar], drawing: &mut Drawing, by_index: f64, by_price: f64) {
+    for anchor in [&mut drawing.from, &mut drawing.to] {
+        anchor.ts = ts_at(bars, index_of_ts(bars, anchor.ts) + by_index);
+        anchor.price += by_price;
+    }
+}
+
 /// The inverse: where a moment falls among the bars, as a fractional index.
 ///
 /// Between two bars it interpolates, so a moment that no bar carries — a
@@ -818,26 +830,18 @@ impl State {
             (x, y)
         };
         let projected = Projected::new(drawing.kind, point(&drawing.from), point(&drawing.to));
-        // A text drawing has no size at all without its words measured —
-        // nothing to hit, nothing to select — so it is measured here, where
-        // every caller gets it. A figure is hit by its own shape whether or
-        // not it carries a label, and laying type out to answer "what is
-        // under the pointer" would be a Pango layout per labelled drawing
-        // per mouse move. The painter asks for that separately.
-        match drawing.kind.is_text() {
+        // Measured here, for every caller, because the words are part of
+        // the drawing and not only part of the picture of it: a label is
+        // what the pointer takes hold of when it sits clear of the stroke,
+        // which on a line it usually does.
+        //
+        // This is a Pango layout per *labelled* drawing per question asked,
+        // and the questions include "what is under the pointer", which is
+        // asked on every motion. A drawing with nothing written on it pays
+        // nothing, which is most of them.
+        match drawing.has_text() {
             false => projected,
             true => self.with_words(projected, drawing),
-        }
-    }
-
-    /// The same projection with the drawing's label measured and placed:
-    /// what the painter needs, and what a figure does not pay for until it
-    /// is being drawn.
-    fn project_label(&self, projected: Projected, drawing: &Drawing) -> Projected {
-        match drawing.kind.is_text() {
-            // Already measured by `project`, which had to.
-            true => projected,
-            false => self.with_words(projected, drawing),
         }
     }
 
@@ -1061,12 +1065,15 @@ pub struct ChartView {
     pub area: gtk::DrawingArea,
     /// The crosshair and the rest of what follows the pointer, over the top.
     pointer: gtk::DrawingArea,
-    /// Where the text editor goes when there is one: a layer that places a
-    /// widget at a pixel, so the caret can be put exactly where the glyphs
-    /// will be. Empty, and untargetable, the rest of the time — a layer
-    /// that could take a click would swallow every one of them.
-    editor_layer: gtk::Fixed,
     /// The editor open on the chart, if any.
+    ///
+    /// It hangs straight off [`root`], placed by its margins, and is there
+    /// only while somebody is typing. A layer of its own over the whole
+    /// chart was the first try and the wrong one: to let the editor inside
+    /// it take a click the layer has to be targetable, and a targetable
+    /// layer the size of the chart takes every click there is.
+    ///
+    /// [`root`]: ChartView::root
     editing: RefCell<Option<Rc<text_editor::Editing>>>,
     /// The two of them stacked. This is what goes in the layout.
     pub root: gtk::Overlay,
@@ -1092,6 +1099,9 @@ pub struct ChartView {
     on_drawing_menu: Handler<dyn Fn(f64, f64)>,
     /// Enter on a selected drawing: its properties.
     on_drawing_properties: Handler<dyn Fn()>,
+    /// A caret went into a label, or came out of one. The window lends the
+    /// editor the chords it needs while this is true.
+    on_typing: Handler<dyn Fn(bool)>,
     /// The tool in hand, or the configuration it will draw with, changed —
     /// so whatever shows the tool can show it.
     on_tool: Handler<dyn Fn()>,
@@ -1121,15 +1131,9 @@ impl ChartView {
         pointer.set_hexpand(true);
         pointer.set_vexpand(true);
 
-        // Over the crosshair, since the caret is the thing in front while
-        // somebody is typing.
-        let editor_layer = gtk::Fixed::new();
-        editor_layer.set_can_target(false);
-
         let root = gtk::Overlay::new();
         root.set_child(Some(&area));
         root.add_overlay(&pointer);
-        root.add_overlay(&editor_layer);
 
         let state = Rc::new(RefCell::new(State::blank(theme, scheme)));
         let on_hover: Handler<dyn Fn(Option<Hover>)> = Rc::new(RefCell::new(None));
@@ -1137,7 +1141,6 @@ impl ChartView {
         let view = Rc::new(ChartView {
             area,
             pointer,
-            editor_layer,
             editing: RefCell::new(None),
             root,
             state,
@@ -1150,6 +1153,7 @@ impl ChartView {
             on_drawing: Rc::new(RefCell::new(None)),
             on_drawing_menu: Rc::new(RefCell::new(None)),
             on_drawing_properties: Rc::new(RefCell::new(None)),
+            on_typing: Rc::new(RefCell::new(None)),
             on_tool: Rc::new(RefCell::new(None)),
             on_price_auto: Rc::new(RefCell::new(None)),
         });
@@ -1174,6 +1178,16 @@ impl ChartView {
 
     pub fn set_drawing_properties_handler(&self, handler: impl Fn() + 'static) {
         *self.on_drawing_properties.borrow_mut() = Some(Box::new(handler));
+    }
+
+    pub fn set_typing_handler(&self, handler: impl Fn(bool) + 'static) {
+        *self.on_typing.borrow_mut() = Some(Box::new(handler));
+    }
+
+    fn tell_typing(&self, typing: bool) {
+        if let Some(handler) = self.on_typing.borrow().as_ref() {
+            handler(typing);
+        }
     }
 
     pub fn set_tool_handler(&self, handler: impl Fn() + 'static) {
@@ -1230,8 +1244,17 @@ impl ChartView {
             state.drawings = drawings;
             state.reselect(ids);
             match editing_id {
+                // Zero is the drawing that has just been added and not yet
+                // written down, which comes back as the newest row — the
+                // same convention the selection follows, for the same
+                // reason: there is no id to find it by yet.
+                Some(0) => {
+                    let now = state.drawings.len().checked_sub(1);
+                    state.editing = now;
+                    now
+                }
                 Some(id) => {
-                    let now = state.drawings.iter().position(|d| d.id == id && id != 0);
+                    let now = state.drawings.iter().position(|d| d.id == id);
                     state.editing = now;
                     now
                 }
@@ -1257,13 +1280,13 @@ impl ChartView {
     /// drawing it was on is no longer there to read it into.
     fn close_editor(&self) {
         let Some(editing) = self.editing.borrow_mut().take() else { return };
-        self.editor_layer.remove(&editing.view);
-        self.editor_layer.set_can_target(false);
+        self.root.remove_overlay(&editing.view);
         {
             let mut state = self.state.borrow_mut();
             state.editing = None;
             state.editing_at = None;
         }
+        self.tell_typing(false);
         self.area.grab_focus();
     }
 
@@ -1509,6 +1532,17 @@ impl ChartView {
     /// mean anything while the chart has the keyboard — and a Delete typed
     /// into a search box must stay in the box.
     fn wire_keys(self: &Rc<Self>) {
+        use gtk::gdk::ModifierType;
+        fn ctrl(m: ModifierType) -> bool {
+            m.contains(ModifierType::CONTROL_MASK)
+        }
+        fn shift(m: ModifierType) -> bool {
+            m.contains(ModifierType::SHIFT_MASK)
+        }
+        fn alt(m: ModifierType) -> bool {
+            m.contains(ModifierType::ALT_MASK)
+        }
+
         let keys = gtk::EventControllerKey::new();
         let view = Rc::downgrade(self);
         keys.connect_key_pressed(move |_, key, _, modifiers| {
@@ -1526,7 +1560,10 @@ impl ChartView {
                     view.delete_selected();
                     glib::Propagation::Stop
                 }
-                Key::Return | Key::KP_Enter | Key::ISO_Enter => {
+                // Alt and Enter opens the properties, which is what it opens
+                // on a selected object in Explorer, Visual Studio, Visio and
+                // AutoCAD. Enter acts on the thing; Alt+Enter asks about it.
+                Key::Return | Key::KP_Enter | Key::ISO_Enter if alt(modifiers) => {
                     if view.state.borrow().selected.is_empty() {
                         return glib::Propagation::Proceed;
                     }
@@ -1534,6 +1571,19 @@ impl ChartView {
                         handler();
                     }
                     glib::Propagation::Stop
+                }
+                // Enter and F2 both put the caret in the drawing's text, and
+                // they do it because that is what they do in PowerPoint,
+                // Keynote, Google Slides, draw.io, LibreOffice and Figma.
+                // The pointer's way in is a double-click. Enter used to open
+                // the properties here, which left Enter and F2 meaning two
+                // different things — the one arrangement none of those apps
+                // has.
+                Key::F2 | Key::Return | Key::KP_Enter | Key::ISO_Enter => {
+                    match view.edit_selected_text() {
+                        true => glib::Propagation::Stop,
+                        false => glib::Propagation::Proceed,
+                    }
                 }
                 Key::a | Key::A
                     if modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK)
@@ -1551,6 +1601,73 @@ impl ChartView {
                         || modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK);
                     let done = if redo { view.redo() } else { view.undo() };
                     match done {
+                        true => glib::Propagation::Stop,
+                        false => glib::Propagation::Proceed,
+                    }
+                }
+                // Alt+Shift and an arrow: put the selected drawings' labels
+                // against that edge of the shape, and Alt+Shift+. puts them
+                // back in the middle. Four edges and a centre, not nine
+                // places: the corners are a thing to aim at with the picture
+                // in the properties, and a key for each would need two
+                // arrows pressed together to mean one of them.
+                //
+                // Before the nudge arm below, which otherwise takes any
+                // arrow on a selected drawing. It only claims the key when
+                // there is a label to move — on a figure with nothing
+                // written on it the arrows go on nudging, rather than the
+                // chord quietly doing nothing.
+                Key::Left | Key::Right | Key::Up | Key::Down
+                    if alt(modifiers) && shift(modifiers) && !ctrl(modifiers) =>
+                {
+                    let at = match key {
+                        Key::Left => drawings::Place::Left,
+                        Key::Right => drawings::Place::Right,
+                        Key::Up => drawings::Place::Top,
+                        _ => drawings::Place::Bottom,
+                    };
+                    match view.place_text(at) {
+                        true => glib::Propagation::Stop,
+                        false => glib::Propagation::Proceed,
+                    }
+                }
+                // Alt+Shift and the size keys: the stroke of whatever is
+                // selected. Ctrl with the same keys is the text's size, and
+                // bare they are the chart's zoom — three things that all
+                // mean "bigger", kept apart by which modifier is held and
+                // what is selected.
+                Key::plus | Key::equal | Key::KP_Add
+                    if alt(modifiers) && shift(modifiers) && !ctrl(modifiers) =>
+                {
+                    match view.step_width(drawings::WIDTH_STEP) {
+                        true => glib::Propagation::Stop,
+                        false => glib::Propagation::Proceed,
+                    }
+                }
+                Key::minus | Key::underscore | Key::KP_Subtract
+                    if alt(modifiers) && shift(modifiers) && !ctrl(modifiers) =>
+                {
+                    match view.step_width(-drawings::WIDTH_STEP) {
+                        true => glib::Propagation::Stop,
+                        false => glib::Propagation::Proceed,
+                    }
+                }
+                // Alt+Shift+A steps the arrowhead round its four states.
+                // The same hand that holds Alt+Shift to place a label, on
+                // the letter the arrow tool already answers to.
+                Key::a | Key::A if alt(modifiers) && shift(modifiers) && !ctrl(modifiers) => {
+                    match view.cycle_head() {
+                        true => glib::Propagation::Stop,
+                        false => glib::Propagation::Proceed,
+                    }
+                }
+                // The full stop, wherever the layout hides it: Shift makes it
+                // a colon on a Spanish keyboard and a greater-than on a US
+                // one, and the chord is the same chord on both.
+                Key::period | Key::greater | Key::colon | Key::KP_Decimal
+                    if alt(modifiers) && shift(modifiers) && !ctrl(modifiers) =>
+                {
+                    match view.place_text(drawings::Place::Center) {
                         true => glib::Propagation::Stop,
                         false => glib::Propagation::Proceed,
                     }
@@ -1762,21 +1879,28 @@ impl ChartView {
     /// drawing. What is special is only that it starts out saying nothing,
     /// and that saying nothing at the end means it goes away again.
     fn start_text_at(self: &Rc<Self>, at: Anchor) {
-        let index = {
+        let (index, added) = {
             let mut state = self.state.borrow_mut();
             let mut drawing = Drawing::text_at(at);
             drawing.follow(state.next_config);
             drawing.scope = state.sharing.scope_for_new();
             drawing.order = state.drawings.iter().map(|d| d.order).max().unwrap_or(0);
             state.remember();
-            state.drawings.push(drawing);
+            state.drawings.push(drawing.clone());
             state.selected = vec![state.drawings.len() - 1];
             state.tool = None;
             state.next_config = 1;
-            state.drawings.len() - 1
+            (state.drawings.len() - 1, drawing)
         };
         self.area.set_cursor_from_name(Some("default"));
         self.tool_changed();
+        // Announced before a character is typed, the way a line is announced
+        // the moment it is laid down. Whoever keeps the drawings writes it
+        // and it gets an id; without that it is a drawing with id zero, and
+        // the change that carries the words is an update to a row that was
+        // never written — which the store quietly drops, so the words would
+        // appear under the caret and vanish on Enter.
+        self.tell(DrawingEvent::Added(added));
         self.begin_text_edit(index, true);
     }
 
@@ -1843,8 +1967,12 @@ impl ChartView {
         );
 
         self.state.borrow_mut().editing = Some(index);
-        self.editor_layer.set_can_target(true);
-        self.editor_layer.put(&editing.view, 0.0, 0.0);
+        self.tell_typing(true);
+        // Over the crosshair, since the caret is the thing in front while
+        // somebody is typing, and measured out of the overlay so a long
+        // label cannot make the chart want to be wider than it is.
+        self.root.add_overlay(&editing.view);
+        self.root.set_measure_overlay(&editing.view, false);
         *self.editing.borrow_mut() = Some(editing.clone());
         self.place_editor();
         self.redraw();
@@ -1853,6 +1981,9 @@ impl ChartView {
         let editing = editing.clone();
         glib::idle_add_local_once(move || {
             editing.view.grab_focus();
+            // After the focus, which places the caret and would otherwise
+            // drop the selection the moment it is made.
+            editing.select_all();
         });
         true
     }
@@ -1880,10 +2011,11 @@ impl ChartView {
             // The drawing's own box, not the label's: a figure is placed in
             // by its shape, and a text drawing hangs from its anchor, which
             // `text_origin` reads off the degenerate box either way.
-            (drawings::text_origin(drawing.kind, projected.bounds(), size, at), size)
+            let origin = drawings::text_origin(drawing.kind, projected.bounds(), size, at);
+            (origin, size, style.text.clamped_size())
         };
-        editing.place(&self.editor_layer, placed.0, placed.1);
-        let ((x, y), (w, h)) = placed;
+        editing.place(placed.0, placed.1, placed.2);
+        let ((x, y), (w, h), _) = placed;
         let moved = self.state.borrow().editing_at != Some((x, y, w, h));
         if moved {
             self.state.borrow_mut().editing_at = Some((x, y, w, h));
@@ -1895,13 +2027,13 @@ impl ChartView {
     /// away.
     fn end_text_edit(&self, how: text_editor::Ended) {
         let Some(editing) = self.editing.borrow_mut().take() else { return };
-        self.editor_layer.remove(&editing.view);
-        self.editor_layer.set_can_target(false);
+        self.root.remove_overlay(&editing.view);
         {
             let mut state = self.state.borrow_mut();
             state.editing = None;
             state.editing_at = None;
         }
+        self.tell_typing(false);
 
         let event = match how {
             text_editor::Ended::Cancel => {
@@ -1918,7 +2050,7 @@ impl ChartView {
                     false => None,
                 }
             }
-            text_editor::Ended::Commit => {
+            text_editor::Ended::Commit | text_editor::Ended::LostFocus => {
                 let at = {
                     let state = self.state.borrow();
                     state
@@ -1964,7 +2096,13 @@ impl ChartView {
             }
         };
         self.redraw();
-        self.area.grab_focus();
+        // Only when the edit ended on its own terms. If the keyboard was
+        // moved somewhere else — the key that ended this was the key that
+        // moved it — taking it back to the chart would undo what the hand
+        // just asked for.
+        if !matches!(how, text_editor::Ended::LostFocus) {
+            self.area.grab_focus();
+        }
         if let Some(event) = event {
             self.tell(event);
         }
@@ -1987,6 +2125,173 @@ impl ChartView {
         // Never written down, so there is nothing to remove from the store
         // and nothing to tell anybody about.
         (gone.id != 0).then_some(DrawingEvent::Removed(gone.id))
+    }
+
+    /// Put the selected drawings' labels at `at`, for the placement keys.
+    ///
+    /// Only the drawings it means anything for: a figure that has something
+    /// to say. A text drawing hangs from its own anchor and has no placement
+    /// to set, and a figure with no label has nowhere to put one — moving
+    /// either would be a key that looks like it did nothing. Says whether it
+    /// found any, so the caller can let the key go on to what it otherwise
+    /// does.
+    pub fn place_text(&self, at: drawings::Place) -> bool {
+        let any = {
+            let state = self.state.borrow();
+            state
+                .selected
+                .iter()
+                .filter_map(|i| state.drawings.get(*i))
+                .any(|d| !d.kind.is_text() && d.has_text())
+        };
+        if !any {
+            return false;
+        }
+        self.edit_selected(move |drawing| {
+            if !drawing.kind.is_text() && drawing.has_text() {
+                let mut text = drawing.text.clone();
+                text.at = at;
+                drawing.set_text(text);
+            }
+        });
+        true
+    }
+
+    /// Step the stroke of everything selected, for Alt+Shift+= and
+    /// Alt+Shift+-.
+    ///
+    /// One key for every kind that has one, because they are one property:
+    /// a line's thickness and a box's edge are the same field, and a hand
+    /// that has learned to thicken a line should not have to learn a second
+    /// way to thicken a rectangle. Text has no stroke and lets the key go
+    /// on.
+    pub fn step_width(self: &Rc<Self>, by: f64) -> bool {
+        let any = {
+            let state = self.state.borrow();
+            state
+                .selected
+                .iter()
+                .filter_map(|i| state.drawings.get(*i))
+                .any(|d| !d.kind.is_text())
+        };
+        if !any {
+            return false;
+        }
+        let configs = self.state.borrow().configs.clone();
+        self.edit_selected(move |drawing| {
+            if drawing.kind.is_text() {
+                return;
+            }
+            let now = drawing.style(&configs).width;
+            let next = (now + by).clamp(drawings::MIN_WIDTH, drawings::MAX_WIDTH);
+            if next != now {
+                drawing.edit_style(&configs, |style| style.width = next);
+            }
+        });
+        true
+    }
+
+    /// Put a named arrowhead on everything selected; `None` takes it off.
+    ///
+    /// What the row of four in the drawing's menu does. The key cycles, this
+    /// picks, and both land on the same two fields.
+    pub fn set_head(self: &Rc<Self>, head: Option<omacharts_engine::ArrowHead>) {
+        let configs = self.state.borrow().configs.clone();
+        self.edit_selected(move |drawing| {
+            if !drawing.kind.is_line() {
+                return;
+            }
+            // A line that already points at both ends goes on pointing at
+            // both: this row is about the shape of the head, and the one
+            // choice in it that is not a shape is "none".
+            let keep = drawing.style(&configs).arrow;
+            drawing.edit_style(&configs, |style| match head {
+                Some(shape) => {
+                    style.head = shape;
+                    if keep == omacharts_engine::Arrow::None {
+                        style.arrow = omacharts_engine::Arrow::End;
+                    }
+                }
+                None => style.arrow = omacharts_engine::Arrow::None,
+            });
+        });
+    }
+
+    /// Put a width on everything selected: what the row of four in the
+    /// drawing's menu does, where the keys step.
+    pub fn set_width(self: &Rc<Self>, width: f64) {
+        let configs = self.state.borrow().configs.clone();
+        let width = width.clamp(drawings::MIN_WIDTH, drawings::MAX_WIDTH);
+        self.edit_selected(move |drawing| {
+            if drawing.kind.is_text() {
+                return;
+            }
+            drawing.edit_style(&configs, |style| style.width = width);
+        });
+    }
+
+    /// The width the selection shares, if it is all of one mind.
+    pub fn selected_width(&self) -> Option<f64> {
+        let state = self.state.borrow();
+        let mut seen = state
+            .selected
+            .iter()
+            .filter_map(|i| state.drawings.get(*i))
+            .filter(|d| !d.kind.is_text())
+            .map(|d| d.style(&state.configs).width);
+        let first = seen.next()?;
+        seen.all(|other| other == first).then_some(first)
+    }
+
+    /// The arrow and head the selection shares, if it is all of one mind.
+    pub fn selected_head(&self) -> Option<(omacharts_engine::Arrow, omacharts_engine::ArrowHead)> {
+        let state = self.state.borrow();
+        let mut seen = state
+            .selected
+            .iter()
+            .filter_map(|i| state.drawings.get(*i))
+            .filter(|d| d.kind.is_line())
+            .map(|d| {
+                let style = d.style(&state.configs);
+                (style.arrow, style.head)
+            });
+        let first = seen.next()?;
+        seen.all(|other| other == first).then_some(first)
+    }
+
+    /// Step the arrowhead of everything selected round its four states, for
+    /// Alt+Shift+A.
+    ///
+    /// None, then the three shapes, then none again. A line that already
+    /// wears heads at both ends keeps them and only changes their shape —
+    /// quietly demoting it to one end would be the key doing a second thing
+    /// nobody asked for — and one that had none comes back pointing at its
+    /// end, which is where an arrow points.
+    pub fn cycle_head(self: &Rc<Self>) -> bool {
+        let any = {
+            let state = self.state.borrow();
+            state
+                .selected
+                .iter()
+                .filter_map(|i| state.drawings.get(*i))
+                .any(|d| d.kind.is_line())
+        };
+        if !any {
+            return false;
+        }
+        let configs = self.state.borrow().configs.clone();
+        self.edit_selected(move |drawing| {
+            if !drawing.kind.is_line() {
+                return;
+            }
+            let style = drawing.style(&configs);
+            let next = step_head(style.arrow, style.head);
+            drawing.edit_style(&configs, |style| {
+                style.arrow = next.0;
+                style.head = next.1;
+            });
+        });
+        true
     }
 
     /// Step the text size of everything selected, for Ctrl+= and Ctrl+-.
@@ -2103,6 +2408,10 @@ impl ChartView {
     pub fn set_show_grid(&self, show: bool) {
         self.state.borrow_mut().show_grid = show;
         self.redraw();
+    }
+
+    pub fn bar_style(&self) -> BarStyle {
+        self.state.borrow().bar_style
     }
 
     pub fn set_bar_style(&self, style: BarStyle) {
@@ -2299,7 +2608,7 @@ impl ChartView {
                     if let Some(anchor) = s.locate(w, h, x, y)
                         && let Some(placing) = s.placing.as_mut()
                     {
-                        placing.to = anchor;
+                        placing.move_grip(Grip::To, anchor);
                     }
                 }
             }
@@ -2482,7 +2791,7 @@ impl ChartView {
                 if let Some(anchor) = s.locate(width, height, x, y)
                     && let Some(placing) = s.placing.as_mut()
                 {
-                    placing.to = anchor;
+                    placing.move_grip(Grip::To, anchor);
                 }
                 s.drag = None;
                 true
@@ -2623,7 +2932,7 @@ impl ChartView {
                     if let Some(anchor) = s.locate(width, height, x, y)
                         && let Some(placing) = s.placing.as_mut()
                     {
-                        placing.to = anchor;
+                        placing.move_grip(Grip::To, anchor);
                     }
                     if !moved && offset_x.hypot(offset_y) > 4.0 {
                         s.drag = Some(Drag::Place { moved: true });
@@ -2660,12 +2969,29 @@ impl ChartView {
                             // distance it has travelled since the last
                             // motion, so a drag past the end of the bars
                             // keeps moving at the bars' own step.
-                            let (by_ts, by_price) = (now.ts - origin.ts, now.price - origin.price);
+                            //
+                            // Moved by *bars*, not by time. Time is where a
+                            // drawing lives, but the chart lays bars out
+                            // evenly however unevenly they are spaced, so
+                            // the same number of seconds is a different
+                            // number of pixels in one gap than in the next —
+                            // a weekend is a column like any other. Shifting
+                            // both anchors by the same span of time
+                            // therefore changed the distance between them on
+                            // screen as the drawing crossed one, and a box
+                            // dragged over a weekend visibly breathed.
+                            // Shifting both by the same number of columns
+                            // cannot: columns are evenly spaced by
+                            // construction.
+                            let by_index = index_of_ts(&s.bars, now.ts)
+                                - index_of_ts(&s.bars, origin.ts);
+                            let by_price = now.price - origin.price;
                             let indices = s.selected.clone();
                             let mut moving = Vec::new();
+                            let State { bars, drawings, .. } = &mut *s;
                             for i in indices {
-                                if let Some(drawing) = s.drawings.get_mut(i) {
-                                    drawing.shift(by_ts, by_price);
+                                if let Some(drawing) = drawings.get_mut(i) {
+                                    shift_by_columns(bars, drawing, by_index, by_price);
                                     moving.push(drawing.clone());
                                 }
                             }
@@ -3136,7 +3462,7 @@ fn draw_pointer(cr: &cairo::Context, width: f64, height: f64, state: &State) {
         cr.save().ok();
         cr.rectangle(plan.plot_x, plan.price_y, plan.plot_w, plan.price_h);
         cr.clip();
-        let placed = state.project_label(state.project(&plan, low, high, placing), placing);
+        let placed = state.project(&plan, low, high, placing);
         draw_drawing(cr, state, &placed, placing, true, false);
         cr.restore().ok();
     }
@@ -3358,11 +3684,30 @@ fn draw_candles(
     bar_w: f64,
     to_y: &impl Fn(f64) -> f64,
 ) {
-    if state.bar_style == BarStyle::Ohlc {
-        draw_ohlc(cr, state, bars, plot_x, bar_w, to_y);
+    candles(cr, state.bar_style, &state.scheme, bars, plot_x, bar_w, to_y);
+}
+
+/// Candles, from nothing but what it takes to draw one.
+///
+/// Split out of the chart so a preview can call the very routine the chart
+/// calls. A preview that draws its own approximation of a candle is a
+/// preview of a chart that does not exist — and this one did: rectangles
+/// for wicks, a body width of its own, and the scheme's outline colour where
+/// the chart fills with the scheme's fill, so a hollow scheme came out
+/// solid.
+pub fn candles(
+    cr: &cairo::Context,
+    bar_style: BarStyle,
+    scheme: &BarScheme,
+    bars: &[Bar],
+    plot_x: f64,
+    bar_w: f64,
+    to_y: &impl Fn(f64) -> f64,
+) {
+    if bar_style == BarStyle::Ohlc {
+        ohlc(cr, scheme, bars, plot_x, bar_w, to_y);
         return;
     }
-    let scheme = &state.scheme;
     let body_w = (bar_w * 0.68).clamp(1.0, 24.0);
     // Below about three pixels a candle is a line; outlining it just muddies
     // the colour.
@@ -3422,9 +3767,9 @@ fn draw_candles(
 }
 
 /// Open and close as ticks either side of a high-low line.
-fn draw_ohlc(
+fn ohlc(
     cr: &cairo::Context,
-    state: &State,
+    scheme: &BarScheme,
     bars: &[Bar],
     plot_x: f64,
     bar_w: f64,
@@ -3453,7 +3798,7 @@ fn draw_ohlc(
             }
         }
         if any {
-            colors::set_source(cr, state.scheme.outline(direction));
+            colors::set_source(cr, scheme.outline(direction));
             let _ = cr.stroke();
         }
     }
@@ -4075,7 +4420,7 @@ fn draw_drawings(cr: &cairo::Context, state: &State, plan: &Layout, low: f64, hi
     cr.rectangle(plan.plot_x, plan.price_y, plan.plot_w, plan.price_h);
     cr.clip();
     for (index, drawing) in state.drawings.iter().enumerate() {
-        let projected = state.project_label(state.project(plan, low, high, drawing), drawing);
+        let projected = state.project(plan, low, high, drawing);
         let typing = state.editing == Some(index);
         draw_drawing(cr, state, &projected, drawing, state.selected.contains(&index), typing);
         if typing {
@@ -4104,12 +4449,20 @@ fn draw_drawing(
     let style = drawing.style(&state.configs);
     let colour = style.colour.hex(&state.theme);
     match drawing.kind {
-        DrawingKind::Line => {
+        DrawingKind::Line | DrawingKind::Horizontal | DrawingKind::Arrow => {
             colors::set_source(cr, &colour);
             cr.set_line_width(style.width);
             cr.set_line_cap(cairo::LineCap::Round);
-            cr.move_to(projected.from.0, projected.from.1);
-            cr.line_to(projected.to.0, projected.to.1);
+            // Pulled back under any head it wears. A round cap is a
+            // half-disc of the line's own radius centred on the end of the
+            // path, so a line drawn all the way to the tip puts half its
+            // width *past* the tip — a stub poking out of the arrowhead,
+            // and the thicker the line the worse it looks. Ending the path
+            // half a width short lands the cap's far edge exactly on the
+            // tip, which is where the head's point is.
+            let (from, to) = headless_ends(projected, style);
+            cr.move_to(from.0, from.1);
+            cr.line_to(to.0, to.1);
             let _ = cr.stroke();
             if style.arrow.at_end() {
                 arrowhead(cr, projected.from, projected.to, style.width, style.head);
@@ -4124,12 +4477,24 @@ fn draw_drawing(
             cr.rectangle(x, y, w, h);
             let _ = cr.fill();
             if style.border {
-                // On the pixel grid, so a one-pixel edge is one pixel.
+                // Inside the shape, not astride its edge. A stroke is
+                // centred on the path it is given, so half of a four-pixel
+                // edge would sit over the fill and half over the chart —
+                // two bands of two different colours, which at that width
+                // reads as two lines rather than one thick one. Pulled in
+                // by half its own width it lands wholly on the fill and is
+                // one colour all the way across. The half-pixel is what
+                // keeps a hairline a hairline.
                 let width = style.width.max(1.0);
+                let half = width / 2.0;
                 colors::set_source_alpha(cr, &colour, drawings::BORDER_ALPHA);
                 cr.set_line_width(width);
-                let inset = if (width.round() as i64) % 2 == 1 { 0.5 } else { 0.0 };
-                cr.rectangle(x.round() + inset, y.round() + inset, w.round().max(1.0), h.round().max(1.0));
+                cr.rectangle(
+                    x.round() + half,
+                    y.round() + half,
+                    (w.round() - width).max(1.0),
+                    (h.round() - width).max(1.0),
+                );
                 let _ = cr.stroke();
             }
         }
@@ -4143,10 +4508,15 @@ fn draw_drawing(
             if w <= 0.0 || h <= 0.0 {
                 return;
             }
-            let ellipse = |cr: &cairo::Context| {
+            // `inset` pulls the curve in from the box, for the same reason
+            // a box's edge is pulled in: a stroke straddles its path, and an
+            // edge half over the fill and half over the chart is two
+            // colours.
+            let ellipse = |cr: &cairo::Context, inset: f64| {
+                let (rx, ry) = ((w / 2.0 - inset).max(0.1), (h / 2.0 - inset).max(0.1));
                 cr.save().ok();
                 cr.translate(x + w / 2.0, y + h / 2.0);
-                cr.scale(w / 2.0, h / 2.0);
+                cr.scale(rx, ry);
                 cr.arc(0.0, 0.0, 1.0, 0.0, std::f64::consts::TAU);
                 // Back before the stroke, or the scale that made the circle
                 // an ellipse would make the hairline an ellipse too: thick
@@ -4154,12 +4524,13 @@ fn draw_drawing(
                 cr.restore().ok();
             };
             colors::set_source_alpha(cr, &style.fill.hex(&state.theme), style.alpha);
-            ellipse(cr);
+            ellipse(cr, 0.0);
             let _ = cr.fill();
             if style.border {
+                let width = style.width.max(1.0);
                 colors::set_source_alpha(cr, &colour, drawings::BORDER_ALPHA);
-                cr.set_line_width(style.width.max(1.0));
-                ellipse(cr);
+                cr.set_line_width(width);
+                ellipse(cr, width / 2.0);
                 let _ = cr.stroke();
             }
         }
@@ -4209,11 +4580,31 @@ fn draw_drawing(
     }
 }
 
+/// The next of the four states an arrowhead is in: no head, then each
+/// shape in the order the picker offers them, then no head again.
+fn step_head(
+    arrow: omacharts_engine::Arrow,
+    head: omacharts_engine::ArrowHead,
+) -> (omacharts_engine::Arrow, omacharts_engine::ArrowHead) {
+    use omacharts_engine::{Arrow, ArrowHead};
+    if arrow == Arrow::None {
+        return (Arrow::End, ArrowHead::ALL[0]);
+    }
+    let at = ArrowHead::ALL.iter().position(|h| *h == head).unwrap_or(0);
+    match ArrowHead::ALL.get(at + 1) {
+        Some(next) => (arrow, *next),
+        None => (Arrow::None, ArrowHead::ALL[0]),
+    }
+}
+
 /// How far outside the glyphs a selected text drawing's outline sits.
 const SELECTED_TEXT_PAD: f64 = 3.0;
 
 /// How far the plate under the caret reaches past the block it is under.
-const EDITING_PAD: f64 = 3.0;
+///
+/// The same reach the halo has round a committed label, so the footprint of
+/// the ground does not change when the edit ends.
+const EDITING_PAD: f64 = 1.0;
 
 /// The ground under the words being typed: the colour the ink was held
 /// against, put down so that what is on screen while somebody types is as
@@ -4249,6 +4640,33 @@ fn draw_label(
     let ink = drawings::text_colour(&style.text.colour, &state.theme, &ground);
     let at = crate::ui::text::placement(drawing.kind, &drawing.text);
     crate::ui::text::draw(cr, (x, y), &drawing.text, &style.text, at.alignment(), &ink, &ground);
+}
+
+/// The ends of the stroke itself: the drawing's own, each pulled in by half
+/// the line's width where a head is going to sit over it.
+fn headless_ends(
+    projected: &Projected,
+    style: &omacharts_engine::Style,
+) -> ((f64, f64), (f64, f64)) {
+    let (dx, dy) = (projected.to.0 - projected.from.0, projected.to.1 - projected.from.1);
+    let length = dx.hypot(dy);
+    if length < 1.0 {
+        return (projected.from, projected.to);
+    }
+    let back = style.width / 2.0;
+    // Never more than the line has to give: a very short line with heads at
+    // both ends keeps a sliver rather than turning inside out.
+    let back = back.min(length / 2.0 - 0.5).max(0.0);
+    let (ux, uy) = (dx / length * back, dy / length * back);
+    let from = match style.arrow.at_start() {
+        true => (projected.from.0 + ux, projected.from.1 + uy),
+        false => projected.from,
+    };
+    let to = match style.arrow.at_end() {
+        true => (projected.to.0 - ux, projected.to.1 - uy),
+        false => projected.to,
+    };
+    (from, to)
 }
 
 /// A filled arrowhead at `tip`, pointing away from `tail`, sized to the

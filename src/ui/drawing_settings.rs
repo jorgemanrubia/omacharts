@@ -24,7 +24,7 @@ use omacharts_engine::drawings::{
     self, Arrow, ArrowHead, Configurations, Kind, Paint, Place, Preset, Scope, Style, Text,
     CONFIGURATIONS,
 };
-use omacharts_engine::Theme;
+use omacharts_engine::{BarScheme, BarStyle, Theme};
 
 use crate::store::Store;
 use crate::ui::colors;
@@ -39,8 +39,26 @@ const PREVIEW_H: i32 = 44;
 /// The swatch on a menu row.
 const SWATCH_W: i32 = 30;
 const SWATCH_H: i32 = 12;
-/// How strong the candles under a preview are: ground, not subject.
-const CANDLE_ALPHA: f64 = 0.5;
+
+/// Everything a preview needs to look like the chart it is a preview of:
+/// the theme's colours, and how bars are coloured and drawn.
+///
+/// One value rather than three parameters threaded through five painters,
+/// and one place to add the next thing a candle turns out to depend on.
+#[derive(Clone)]
+pub struct Look {
+    pub theme: Theme,
+    pub scheme: BarScheme,
+    pub style: BarStyle,
+}
+
+impl Look {
+    /// What the window is wearing now.
+    pub fn of(window: &Rc<Window>) -> Look {
+        let (scheme, style) = window.bars();
+        Look { theme: window.theme(), scheme, style }
+    }
+}
 
 /// Something that shows a row a value: the editor keeps one per row so a
 /// style chosen elsewhere can be put in front of the hand.
@@ -69,7 +87,7 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
         return;
     }
     let Some(drawing) = view.selected_drawing() else { return };
-    let theme = window.theme();
+    let look = Look::of(window);
     let kind = drawing.kind;
     let configs_now = window.drawing_configurations();
 
@@ -84,7 +102,7 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
     shown_preview.set_hexpand(true);
     shown_preview.set_size_request(-1, 112);
     shown_preview.add_css_class("drawing-preview");
-    paint_preview(&shown_preview, &theme, kind, drawing.style(&configs_now));
+    paint_preview(&shown_preview, &look, kind, drawing.style(&configs_now), &drawing.text);
     let shown_label = gtk::Label::new(None);
     shown_label.add_css_class("drawing-config-tag");
     shown_label.set_halign(gtk::Align::Start);
@@ -157,11 +175,17 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
     let text_tab = (!kind.is_text()).then(|| {
         let on_text: Rc<dyn Fn(Text)> = {
             let view = view.clone();
+            let call_refresh = call_refresh.clone();
             Rc::new(move |text: Text| {
                 view.edit_selected(move |d| d.set_text(text.clone()));
+                // The picture above shows this drawing's own words, so it
+                // has to be redrawn as they are typed. Without this it
+                // caught up on the dialog's quarter-second tick, which is
+                // long enough to read as the preview lagging the field.
+                call_refresh();
             })
         };
-        text_page(window, kind, &drawing, drawing.style(&configs_now).clone(), on_style, on_text)
+        text_page(window, &drawing, drawing.style(&configs_now).clone(), on_style, on_text)
     });
 
     // Who else sees it: one row, a little apart from the look.
@@ -195,11 +219,11 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
     *refresh.borrow_mut() = Some({
         let view = view.clone();
         let label = shown_label.clone();
+        let look = look.clone();
         let preview = shown_preview.clone();
         let save_row = save_row.clone();
         let editor = editor.clone();
         let window = window.clone();
-        let theme = theme.clone();
         Rc::new(move || {
             let Some(d) = view.selected_drawing() else { return };
             let configs = window.drawing_configurations();
@@ -214,7 +238,7 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
                 }
             }
             let style = d.style(&configs);
-            paint_preview(&preview, &theme, kind, style);
+            paint_preview(&preview, &look, kind, style, &d.text);
             editor.show(style);
             if let Some(show_text) = show_text.as_ref() {
                 show_text(&d, style);
@@ -231,13 +255,13 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
     {
         let view = view.clone();
         let window = window.clone();
-        let theme = theme.clone();
+        let look = look.clone();
         let call_refresh = call_refresh.clone();
         popover.connect_show(move |popover| {
             let Some(d) = view.selected_drawing() else { return };
             let configs = window.drawing_configurations();
             let custom = d.style.clone().filter(|_| d.config.is_none());
-            let grid = configuration_grid(&theme, kind, &configs, d.config, custom.as_ref(), {
+            let grid = configuration_grid(&look, kind, &configs, d.config, custom.as_ref(), &d.text, {
                 let view = view.clone();
                 let popover = popover.clone();
                 let call_refresh = call_refresh.clone();
@@ -329,15 +353,20 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
         // One subject, one page, no switcher to put over it.
         None => finish(&dialog, &page, None, &view.area, Some(tick)),
         Some((text_page, _)) => {
-            let stack = adw::ViewStack::new();
-            // "Look" rather than the kind's name: the dialog's title already
-            // says which kind this is, and a tab repeating it would be the
-            // one tab that does not name its own subject.
-            stack.add_titled(&page, Some("look"), "Look");
+            // A plain stack and its switcher, not `AdwViewSwitcher`: that one
+            // always draws an icon beside the label, and two tabs about a
+            // drawing's shape and its words have no icons that would say
+            // anything a word does not. Asked for none it drew the
+            // "no symbol" placeholder beside both, which is how this was
+            // found. A `GtkStackSwitcher` shows the titles and nothing else.
+            let stack = gtk::Stack::new();
+            stack.set_vexpand(true);
+            // "General" rather than the kind's name: the dialog's title
+            // already says which kind this is.
+            stack.add_titled(&page, Some("general"), "General");
             stack.add_titled(&text_page, Some("text"), "Text");
-            let switcher = adw::ViewSwitcher::new();
+            let switcher = gtk::StackSwitcher::new();
             switcher.set_stack(Some(&stack));
-            switcher.set_policy(adw::ViewSwitcherPolicy::Wide);
             finish(&dialog, &stack, Some(&switcher), &view.area, Some(tick));
         }
     }
@@ -351,7 +380,7 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
 /// The nine configurations of a kind: each shown as it looks, each editable,
 /// and a way back to the defaults.
 pub fn present_configurations(window: &Rc<Window>, store: &Rc<Store>, kind: Kind) {
-    let theme = window.theme();
+    let look = Look::of(window);
     let dialog = adw::Dialog::new();
     dialog.set_title(&format!("{} configurations", kind.label()));
     dialog.set_content_width(480);
@@ -373,7 +402,7 @@ pub fn present_configurations(window: &Rc<Window>, store: &Rc<Store>, kind: Kind
         row.set_title(&format!("Configuration {n}"));
         row.set_subtitle(&describe(kind, &style));
         row.set_activatable(true);
-        let preview = preview_tile(&theme, kind, &style);
+        let preview = preview_tile(&look, kind, &style, &sample());
         row.add_prefix(&preview);
         // A tag rather than a word in the subtitle: the eye finds a tag
         // down a list of nine, and reads a word in nine subtitles.
@@ -389,7 +418,7 @@ pub fn present_configurations(window: &Rc<Window>, store: &Rc<Store>, kind: Kind
             let store = store.clone();
             let navigation = navigation.clone();
             let rows = rows.clone();
-            let theme = theme.clone();
+            let look = look.clone();
             row.connect_activated(move |_| {
                 let configs = window.drawing_configurations();
                 let current = configs.of(kind, n).clone();
@@ -397,14 +426,14 @@ pub fn present_configurations(window: &Rc<Window>, store: &Rc<Store>, kind: Kind
                     let window = window.clone();
                     let store = store.clone();
                     let rows = rows.clone();
-                    let theme = theme.clone();
+                    let look = look.clone();
                     Rc::new(move |style: Style| {
                         let mut configs = window.drawing_configurations();
                         configs.set(kind, n, style.clone());
                         window.set_drawing_configurations(&store, configs.clone());
                         if let Some((row, preview, edited)) = rows.borrow().get(n as usize - 1) {
                             row.set_subtitle(&describe(kind, &style));
-                            paint_preview(preview, &theme, kind, &style);
+                            paint_preview(preview, &look, kind, &style, &sample());
                             let changed = !configs.is_default(kind, n);
                             edited.set_visible(changed);
                             mark_edited(row, changed);
@@ -437,7 +466,7 @@ pub fn present_configurations(window: &Rc<Window>, store: &Rc<Store>, kind: Kind
         let window = window.clone();
         let store = store.clone();
         let rows = rows.clone();
-        let theme = theme.clone();
+        let look = look.clone();
         restore.connect_clicked(move |_| {
             let mut configs = window.drawing_configurations();
             configs.reset(kind);
@@ -446,7 +475,7 @@ pub fn present_configurations(window: &Rc<Window>, store: &Rc<Store>, kind: Kind
                 let n = n as u8 + 1;
                 let style = configs.of(kind, n);
                 row.set_subtitle(&describe(kind, style));
-                paint_preview(preview, &theme, kind, style);
+                paint_preview(preview, &look, kind, style, &sample());
                 edited.set_visible(false);
                 mark_edited(row, false);
             }
@@ -490,7 +519,7 @@ fn mark_edited(row: &adw::ActionRow, edited: bool) {
 /// A configuration in words, for the row under its number.
 fn describe(kind: Kind, style: &Style) -> String {
     match kind {
-        Kind::Line => {
+        Kind::Line | Kind::Horizontal | Kind::Arrow => {
             let arrow = match (style.arrow, style.head) {
                 (Arrow::None, _) => String::new(),
                 (arrow, ArrowHead::Filled) => format!(", arrow {}", arrow.label().to_lowercase()),
@@ -586,7 +615,7 @@ fn style_editor(window: &Rc<Window>, kind: Kind, current: Style, on_style: Rc<dy
     let mut shows: Vec<Shower<Style>> = Vec::new();
 
     match kind {
-        Kind::Line => {
+        Kind::Line | Kind::Horizontal | Kind::Arrow => {
             // Colour.
             let (row, show) = paint_row(&theme, "Colour", &style.borrow().colour, {
                 let style = style.clone();
@@ -821,7 +850,6 @@ fn style_editor(window: &Rc<Window>, kind: Kind, current: Style, on_style: Rc<dy
 /// shape's rows do.
 fn text_page(
     window: &Rc<Window>,
-    kind: Kind,
     drawing: &omacharts_engine::Drawing,
     style: Style,
     on_style: Rc<dyn Fn(Style)>,
@@ -845,15 +873,25 @@ fn text_page(
         })
     };
 
+    // Where the words sit, first and above everything: the picture is what
+    // the eye goes to, and it is the choice most often being made when this
+    // tab is opened.
+    let (place, show_place) = place_picker(text.borrow().at, {
+        let text = text.clone();
+        let emit_text = emit_text.clone();
+        move |at| {
+            text.borrow_mut().at = at;
+            emit_text();
+        }
+    });
+    page.add(&place);
+
     // What it says. A plain area: the weight and the slope of a run live in
     // the text and a box like this cannot show them, so it edits the
     // characters and says so — the chart itself is where a word is made
     // bold, with the caret in it.
     let content = adw::PreferencesGroup::new();
     content.set_title("Text");
-    content.set_description(Some(
-        "Double-click the drawing to type on the chart, where Ctrl+B and Ctrl+I set a word in bold or italic.",
-    ));
     let area = gtk::TextView::new();
     area.set_wrap_mode(gtk::WrapMode::WordChar);
     area.set_top_margin(8);
@@ -892,7 +930,6 @@ fn text_page(
 
     // Where it sits, and how it is set.
     let look = adw::PreferencesGroup::new();
-    look.set_title("How it is set");
     let style_cell: Rc<RefCell<Style>> = Rc::new(RefCell::new(style));
     let emit_style: Rc<dyn Fn()> = {
         let style_cell = style_cell.clone();
@@ -907,15 +944,6 @@ fn text_page(
         })
     };
 
-    let (place, show_place) = place_row(kind, text.borrow().at, {
-        let text = text.clone();
-        let emit_text = emit_text.clone();
-        move |at| {
-            text.borrow_mut().at = at;
-            emit_text();
-        }
-    });
-    look.add(&place);
 
     let mut show_style: Vec<Shower<Style>> = Vec::new();
     for (row, show) in text_rows(&theme, &style_cell, &emit_style) {
@@ -958,27 +986,41 @@ fn text_page(
 /// not have to do. Each cell is the figure in miniature with a bar of text
 /// where the label would go, so the control is a row of nine small answers
 /// to the question rather than a menu about it.
-fn place_row(
-    kind: Kind,
+fn place_picker(
     current: Place,
     on_pick: impl Fn(Place) + Clone + 'static,
-) -> (adw::ActionRow, Shower<Place>) {
-    let row = adw::ActionRow::new();
-    row.set_title("Position");
-    row.set_subtitle("Where the words sit in the shape.");
+) -> (adw::PreferencesGroup, Shower<Place>) {
+    // A heading over it and no row under it: the picker opens the Text tab
+    // as a band of its own, centred, rather than sitting on the right-hand
+    // end of a row the way a switch does. It is the one control here that is
+    // looked at rather than read, and giving it the width lets the nine
+    // places be nine places rather than a cluster in a corner.
+    let group = adw::PreferencesGroup::new();
+    group.set_title("Position");
 
     let grid = gtk::Grid::new();
-    grid.set_row_spacing(2);
-    grid.set_column_spacing(2);
+    grid.set_row_spacing(3);
+    grid.set_column_spacing(3);
+    grid.set_halign(gtk::Align::Center);
     grid.set_valign(gtk::Align::Center);
+    grid.set_margin_top(4);
+    grid.set_margin_bottom(4);
     grid.add_css_class("drawing-place-grid");
 
     let mut buttons: Vec<(Place, gtk::ToggleButton)> = Vec::new();
+    let mut cells: Vec<gtk::DrawingArea> = Vec::new();
     for (at, place) in Place::ALL.into_iter().enumerate() {
         let cell = gtk::DrawingArea::new();
         cell.set_size_request(PLACE_CELL, PLACE_CELL);
-        cell.set_draw_func(move |area, cr, w, h| draw_place(area, cr, w as f64, h as f64, kind, place));
         let button = gtk::ToggleButton::new();
+        {
+            // Lit from the button, read at draw time, so the stylesheet and
+            // the picture cannot disagree about which cell is chosen.
+            let button = button.clone();
+            cell.set_draw_func(move |area, cr, w, h| {
+                draw_place(area, cr, w as f64, h as f64, button.is_active())
+            });
+        }
         button.add_css_class("flat");
         button.add_css_class("drawing-place-cell");
         button.set_child(Some(&cell));
@@ -988,6 +1030,7 @@ fn place_row(
         }
         grid.attach(&button, at as i32 % 3, at as i32 / 3, 1, 1);
         buttons.push((place, button));
+        cells.push(cell);
     }
 
     // Set while the buttons are being shown a place, so lighting one does
@@ -997,7 +1040,11 @@ fn place_row(
         let place = *place;
         let on_pick = on_pick.clone();
         let showing = showing.clone();
+        let cells_for_press = cells.clone();
         button.connect_toggled(move |button| {
+            for cell in &cells_for_press {
+                cell.queue_draw();
+            }
             if showing.get() || !button.is_active() {
                 return;
             }
@@ -1005,59 +1052,61 @@ fn place_row(
         });
     }
 
+    let cells: Vec<gtk::DrawingArea> = cells;
     let light = {
         let buttons = buttons.clone();
+        let cells = cells.clone();
         let showing = showing.clone();
         move |at: Place| {
             showing.set(true);
             for (place, button) in &buttons {
-                button.set_active(*place == at);
+                // Only when it is actually wrong. These are a radio group,
+                // and this runs inside one of their own toggle handlers —
+                // the click tells the drawing, the drawing tells the dialog,
+                // the dialog shows the picker — so setting a button that is
+                // already right sends GTK round the group again from inside
+                // its own bookkeeping.
+                let want = *place == at;
+                if button.is_active() != want {
+                    button.set_active(want);
+                }
             }
             showing.set(false);
+            for cell in &cells {
+                cell.queue_draw();
+            }
         }
     };
     light(current);
-    row.add_suffix(&grid);
-    (row, Rc::new(move |at: &Place| light(*at)))
+    group.add(&grid);
+    (group, Rc::new(move |at: &Place| light(*at)))
 }
 
 /// The side of one cell of the position grid.
-const PLACE_CELL: i32 = 22;
+///
+/// Big enough to aim at and no bigger: there is one bar in each now, so the
+/// cell only has to be a comfortable target.
+const PLACE_CELL: i32 = 28;
 
-/// One cell: the figure's outline with a bar of "text" where this place puts
-/// it. In the button's own ink, like every other sign the app draws.
-fn draw_place(area: &gtk::DrawingArea, cr: &gtk::cairo::Context, w: f64, h: f64, kind: Kind, place: Place) {
+/// One cell: a bar standing for the words, and nothing else.
+///
+/// The first try drew the figure in every cell with the bar placed inside
+/// it, which is more faithful and much worse to look at: nine outlines and
+/// nine dashes, at this size, read as a field of noise rather than as nine
+/// positions. The grid's own border is the figure — one outline, round the
+/// lot — and each cell is simply a place in it, which is how an anchor
+/// picker works everywhere else. What is lit says where the words go.
+fn draw_place(area: &gtk::DrawingArea, cr: &gtk::cairo::Context, w: f64, h: f64, lit: bool) {
     let fg = area.color();
     let (r, g, b, a) = (fg.red() as f64, fg.green() as f64, fg.blue() as f64, fg.alpha() as f64);
-    let inset = 3.5;
-    let (x, y, fw, fh) = (inset, inset, w - 2.0 * inset, h - 2.0 * inset);
-    cr.set_line_width(1.0);
-    cr.set_source_rgba(r, g, b, a * 0.45);
-    match kind {
-        Kind::Ellipse => {
-            cr.save().ok();
-            cr.translate(x + fw / 2.0, y + fh / 2.0);
-            cr.scale(fw / 2.0, fh / 2.0);
-            cr.arc(0.0, 0.0, 1.0, 0.0, std::f64::consts::TAU);
-            cr.restore().ok();
-        }
-        // A line has no box to show, so the cell shows the line itself and
-        // the bar lands above or below it the way the label will.
-        Kind::Line => {
-            cr.move_to(x, y + fh / 2.0);
-            cr.line_to(x + fw, y + fh / 2.0);
-        }
-        _ => cr.rectangle(x, y, fw, fh),
-    }
-    let _ = cr.stroke();
-
-    // The bar standing for the words, placed by the same arithmetic the
-    // chart places them with, so the picture cannot disagree with the
-    // result.
-    let bar = (fw * 0.44, 2.0);
-    let (bx, by) = drawings::text_origin(kind, (x, y, fw, fh), bar, place);
-    cr.set_source_rgba(r, g, b, a);
-    cr.rectangle(bx.round(), by.round(), bar.0.round(), bar.1);
+    // A dot, not a bar. A bar is a picture of a line of text, and nine of
+    // them is a page of text where what is wanted is nine places — the
+    // smallest mark that can sit somewhere says "somewhere" and nothing
+    // else. Quiet until it is the one chosen, and a little larger then, so
+    // the chosen place reads at a glance rather than only by its cell.
+    let radius = if lit { 3.0 } else { 2.0 };
+    cr.set_source_rgba(r, g, b, a * if lit { 1.0 } else { 0.35 });
+    cr.arc((w / 2.0).round(), (h / 2.0).round(), radius, 0.0, std::f64::consts::TAU);
     let _ = cr.fill();
 }
 
@@ -1081,7 +1130,6 @@ fn text_rows(
             emit();
         }
     });
-    row.set_subtitle("Lifted where it has to be, to stay readable on what it lands on.");
     rows.push((row, Rc::new(move |s: &Style| show(&s.text.colour))));
 
     let (row, show) = font_row(&style.borrow().text, {
@@ -1183,12 +1231,8 @@ fn system_font_label() -> String {
 /// agree — the control every other bounded figure in the window uses.
 fn size_row(current: f64, on_pick: impl Fn(f64) + 'static) -> (adw::ActionRow, Rc<dyn Fn(f64)>) {
     let bounded = crate::ui::controls::bounded_row(
-        "Size",
-        Some(&format!(
-            "In pixels, like the chart's own labels. {} and {} step it on the chart too.",
-            size_step_label(true),
-            size_step_label(false)
-        )),
+        "Font size",
+        None,
         current,
         drawings::MIN_TEXT_SIZE,
         drawings::MAX_TEXT_SIZE,
@@ -1205,20 +1249,15 @@ fn size_row(current: f64, on_pick: impl Fn(f64) + 'static) -> (adw::ActionRow, R
     (row, shower)
 }
 
-/// How the key that grows or shrinks the text prints on this keyboard.
-fn size_step_label(grow: bool) -> String {
-    let key = match grow {
-        true => gtk::gdk::Key::plus,
-        false => gtk::gdk::Key::minus,
-    };
-    gtk::accelerator_get_label(key, gtk::gdk::ModifierType::CONTROL_MASK).to_string()
-}
-
 /// A row that picks a width, in pixels, by number.
 fn width_row(title: &str, current: f64, on_pick: impl Fn(f64) + 'static) -> (adw::ActionRow, Rc<dyn Fn(f64)>) {
     let row = adw::ActionRow::new();
     row.set_title(title);
-    let spin = gtk::SpinButton::with_range(0.5, 12.0, 0.5);
+    let spin = gtk::SpinButton::with_range(
+        drawings::MIN_WIDTH,
+        drawings::MAX_WIDTH,
+        drawings::WIDTH_STEP,
+    );
     spin.set_digits(1);
     spin.set_valign(gtk::Align::Center);
     spin.set_value(current);
@@ -1323,11 +1362,14 @@ fn paint_row(
 /// The nine configurations as tiles, each drawn as it will look, the one in
 /// use ringed. For the picker in a drawing's properties.
 fn configuration_grid(
-    theme: &Theme,
+    look: &Look,
     kind: Kind,
     configs: &Configurations,
     current: Option<u8>,
     custom: Option<&Style>,
+    // The drawing's own words, so each tile shows what *this* label would
+    // look like in that configuration rather than a stand-in.
+    text: &Text,
     on_pick: impl Fn(u8) + Clone + 'static,
 ) -> gtk::Box {
     let content = gtk::Box::new(gtk::Orientation::Vertical, 6);
@@ -1352,7 +1394,7 @@ fn configuration_grid(
         cell
     };
     for n in 1..=CONFIGURATIONS {
-        let preview = preview_tile(theme, kind, configs.of(kind, n));
+        let preview = preview_tile(look, kind, configs.of(kind, n), text);
         if current == Some(n) {
             preview.add_css_class("drawing-preview-current");
         }
@@ -1364,7 +1406,7 @@ fn configuration_grid(
     // This drawing's own look, while it has one: the one in use, and not a
     // choice so much as a reminder of what choosing a number gives up.
     if let Some(custom) = custom {
-        let preview = preview_tile(theme, kind, custom);
+        let preview = preview_tile(look, kind, custom, text);
         preview.add_css_class("drawing-preview-current");
         let cell = tile(preview, "Custom", "This drawing's own look, as it is now");
         // Picking it changes nothing, but it is not greyed: greyed reads as
@@ -1389,7 +1431,7 @@ pub fn swatch(theme: &Theme, kind: Kind, style: &Style) -> gtk::DrawingArea {
         let (w, h) = (w as f64, h as f64);
         let colour = style.colour.hex(&theme);
         match kind {
-            Kind::Line => {
+            Kind::Line | Kind::Horizontal | Kind::Arrow => {
                 colors::set_source(cr, &colour);
                 cr.set_line_width(style.width.clamp(1.0, 4.0));
                 cr.set_line_cap(gtk::cairo::LineCap::Round);
@@ -1445,11 +1487,11 @@ pub fn swatch(theme: &Theme, kind: Kind, style: &Style) -> gtk::DrawingArea {
 /// A small chart with the drawing on it: three candles in the theme's own
 /// colours, and the drawing as the style says, so a picker shows the look
 /// rather than naming it.
-fn preview_tile(theme: &Theme, kind: Kind, style: &Style) -> gtk::DrawingArea {
+fn preview_tile(look: &Look, kind: Kind, style: &Style, text: &Text) -> gtk::DrawingArea {
     let area = gtk::DrawingArea::new();
     area.set_size_request(PREVIEW_W, PREVIEW_H);
     area.add_css_class("drawing-preview");
-    paint_preview(&area, theme, kind, style);
+    paint_preview(&area, look, kind, style, text);
     area
 }
 
@@ -1458,54 +1500,99 @@ fn preview_tile(theme: &Theme, kind: Kind, style: &Style) -> gtk::DrawingArea {
 /// the top of the properties: the candles and the drawing scale with the
 /// height, and more candles fill a wider strip, so neither looks like the
 /// other blown up or shrunk down.
-fn paint_preview(area: &gtk::DrawingArea, theme: &Theme, kind: Kind, style: &Style) {
-    let theme = theme.clone();
+fn paint_preview(area: &gtk::DrawingArea, look: &Look, kind: Kind, style: &Style, text: &Text) {
+    let look = look.clone();
     let style = style.clone();
-    area.set_draw_func(move |_, cr, w, h| draw_preview(cr, w as f64, h as f64, &theme, kind, &style));
+    let text = text.clone();
+    area.set_draw_func(move |_, cr, w, h| {
+        draw_preview(cr, w as f64, h as f64, &look, kind, &style, &text)
+    });
     area.queue_draw();
+}
+
+/// The run of bars every preview is drawn over.
+///
+/// A fixed, made-up stretch rather than real data: the picture has to be the
+/// same from one opening to the next, or two tiles of the same configuration
+/// side by side would not be comparable. Rising and falling the way a real
+/// stretch does, with the body somewhere inside the range so the wicks show
+/// at both ends.
+fn preview_bars(count: usize) -> Vec<omacharts_engine::Bar> {
+    (0..count)
+        .map(|i| {
+            let t = i as f64 / (count as f64 - 1.0).max(1.0);
+            let wave = ((t * 6.0).sin() * 0.18) + ((t * 2.0).cos() * 0.1);
+            let mid = 100.0 + wave * 100.0;
+            let rising = i % 3 != 1;
+            let (open, close) = match rising {
+                true => (mid - 4.0, mid + 4.0),
+                false => (mid + 4.0, mid - 4.0),
+            };
+            omacharts_engine::Bar {
+                ts: i as i64,
+                open,
+                high: mid + 9.0,
+                low: mid - 9.0,
+                close,
+                volume: 0.0,
+            }
+        })
+        .collect()
 }
 
 /// The picture itself, on any surface: a strip of candles with the
 /// drawing over them, the way it sits on a chart.
-fn draw_preview(cr: &gtk::cairo::Context, w: f64, h: f64, theme: &Theme, kind: Kind, style: &Style) {
+fn draw_preview(
+    cr: &gtk::cairo::Context,
+    w: f64,
+    h: f64,
+    look: &Look,
+    kind: Kind,
+    style: &Style,
+    text: &Text,
+) {
+    let theme = &look.theme;
     {
         let scale = (h / PREVIEW_H as f64).clamp(1.0, 3.0);
-        let bars = omacharts_engine::theme::theme_bars(theme);
         colors::set_source(cr, &theme.ui.background);
         rounded(cr, 0.5, 0.5, w - 1.0, h - 1.0, 5.0);
         let _ = cr.fill();
-        // Candles across the middle, a run of them in a wide strip and four
-        // in a tile, rising and falling the way a real stretch does.
+        // Candles across the middle, through the chart's own routine. A
+        // preview that draws its own idea of a candle is a preview of a
+        // chart that does not exist, and this one was: rectangles for
+        // wicks, a body width of its own, and the outline colour where the
+        // chart fills with the fill — so a hollow scheme came out solid.
         let pitch = 14.0 * scale;
         let count = ((w * 0.7) / pitch).floor().max(4.0) as usize;
         let left = (w - (count as f64 - 1.0) * pitch) / 2.0;
-        let body_w = (5.0 * scale).round();
-        let body_w = if body_w % 2.0 == 0.0 { body_w + 1.0 } else { body_w };
-        let (wick_h, body_h) = ((20.0 * scale).round(), (10.0 * scale).round());
-        for i in 0..count {
-            let t = i as f64 / (count as f64 - 1.0).max(1.0);
-            let wave = ((t * 6.0).sin() * 0.18) + ((t * 2.0).cos() * 0.1);
-            let (x, y) = (left + i as f64 * pitch, (h * (0.5 - wave)).round());
-            // Wick and body share one pixel column: a wick drawn a pixel to
-            // the right of its body is the first thing the eye catches.
-            let column = x.floor() + 0.5;
-            let wick_w = scale.round().max(1.0);
-            let up = i % 3 != 1;
-            // At less than full strength: the candles are the ground the
-            // drawing sits on, not the subject, and at full saturation a
-            // body punches through a translucent fill as if it were on
-            // top of it.
-            colors::set_source_alpha(cr, if up { &bars.up } else { &bars.down }, CANDLE_ALPHA);
-            cr.rectangle(column - wick_w / 2.0, y - wick_h / 2.0, wick_w, wick_h);
-            let _ = cr.fill();
-            cr.rectangle(column - body_w / 2.0, y - body_h / 2.0, body_w, body_h);
-            let _ = cr.fill();
-        }
+        let bars = preview_bars(count);
+        // The price window the synthetic bars span, mapped onto the middle
+        // of the tile so they sit where they always did.
+        let (lo, hi) = bars.iter().fold((f64::MAX, f64::MIN), |(lo, hi), b| {
+            (lo.min(b.low), hi.max(b.high))
+        });
+        let span = (hi - lo).max(f64::EPSILON);
+        let band = h * 0.56;
+        let to_y = move |price: f64| h / 2.0 + band / 2.0 - (price - lo) / span * band;
+        crate::ui::chart::candles(
+            cr,
+            look.style,
+            &look.scheme,
+            &bars,
+            left - pitch / 2.0,
+            pitch,
+            &to_y,
+        );
         let colour = style.colour.hex(theme);
         let line_w = style.width.min(4.0) * scale.sqrt();
         match kind {
-            Kind::Line => {
-                let (a, b) = ((w * 0.15, h * 0.75), (w * 0.85, h * 0.25));
+            Kind::Line | Kind::Horizontal | Kind::Arrow => {
+                // A level is drawn level, or the picture would promise a
+                // slope the tool will not give.
+                let (a, b) = match kind {
+                    Kind::Horizontal => ((w * 0.12, h * 0.5), (w * 0.88, h * 0.5)),
+                    _ => ((w * 0.15, h * 0.75), (w * 0.85, h * 0.25)),
+                };
                 colors::set_source(cr, &colour);
                 cr.set_line_width(line_w);
                 cr.set_line_cap(gtk::cairo::LineCap::Round);
@@ -1549,51 +1636,83 @@ fn draw_preview(cr: &gtk::cairo::Context, w: f64, h: f64, theme: &Theme, kind: K
                         let _ = cr.stroke();
                     }
                 }
-                sample_text(cr, (x, y, rw, rh), kind, theme, style, scale);
+                preview_text(cr, (x, y, rw, rh), kind, theme, style, text, scale);
             }
             // The word itself, over the candles, which is the whole of what
             // this configuration decides. Centred, because there is no
             // figure for it to sit in the corner of.
             Kind::Text => {
                 let box_h = h * 0.6;
-                sample_text(cr, (0.0, (h - box_h) / 2.0, w, box_h), Kind::Rect, theme, style, scale);
+                let box_at = (0.0, (h - box_h) / 2.0, w, box_h);
+                preview_text(cr, box_at, Kind::Rect, theme, style, text, scale);
             }
         }
     }
 }
 
-/// The words a preview shows, in the configuration's own text style, placed
-/// in the figure the way a real label would be.
+/// The words a preview shows, in the style it is drawn in, placed in the
+/// figure the way a real label would be.
 ///
-/// A preview exists so a configuration can be judged rather than read, and
-/// the thing most worth judging about a label is whether it can be read at
-/// all over its own fill. So the picture carries one — short, so it fits a
-/// tile; real text through the same layout the chart uses, so what the tile
-/// shows is what the chart will draw. Scaled with the tile, and skipped
-/// outright when the tile is too small for the result to be anything but a
-/// smudge.
-fn sample_text(
+/// A drawing's preview shows *that drawing's* words, so a label being typed
+/// into the Text tab appears in the picture above it as it is typed and the
+/// picture of a drawing that says nothing says nothing. Only a
+/// configuration, which has no words of its own, gets [`SAMPLE`] — there a
+/// stand-in is the only way the three text properties the configuration
+/// does own are visible at all.
+///
+/// Real text through the same layout the chart uses, so what the tile shows
+/// is what the chart will draw. Scaled with the tile, and skipped outright
+/// when the tile is too small for the result to be anything but a smudge.
+fn preview_text(
     cr: &gtk::cairo::Context,
     bounds: (f64, f64, f64, f64),
     kind: Kind,
     theme: &Theme,
     style: &Style,
+    text: &Text,
     scale: f64,
 ) {
-    const SAMPLE: &str = "Note";
+    if text.is_empty() {
+        return;
+    }
     let mut style = style.clone();
     style.text.size = style.text.clamped_size() * scale.sqrt();
-    let text = drawings::Text { spans: vec![drawings::Span::plain(SAMPLE)], at: drawings::Place::Center };
+    // Centred whatever the drawing's own placement is: a preview is a
+    // picture of the look, and a label pinned to the bottom-left of a tile
+    // this size is a label half off it.
+    let text = drawings::Text { spans: text.spans.clone(), at: drawings::Place::Center };
+    let Some((_, _, tw, th)) = crate::ui::text::block(kind, bounds, &text, &style) else { return };
+    // Brought down to fit rather than dropped. A tile is a fraction of a
+    // chart, so a label that is comfortable at full size is wider than the
+    // figure here more often than not — and a preview that answers "what
+    // does this say" with nothing, for most labels, is not a preview of
+    // anything. It is shown smaller, which is what a picture of a thing at
+    // a quarter of the size is anyway.
+    if tw > 0.0 && th > 0.0 {
+        let fit = (bounds.2 / tw).min(bounds.3 / th);
+        if fit < 1.0 {
+            style.text.size = (style.text.size * fit).max(drawings::MIN_TEXT_SIZE);
+        }
+    }
     let Some((x, y, tw, th)) = crate::ui::text::block(kind, bounds, &text, &style) else { return };
-    // Wider or taller than the figure it is meant to sit in: the tile is too
-    // small for this face at this size, and a word spilling out of the box
-    // is a worse picture than no word.
+    // Still too big, at the smallest the engine will set type: the tile has
+    // no room for words at all, and a word spilling out of the box is a
+    // worse picture than no word.
     if tw > bounds.2 || th > bounds.3 {
         return;
     }
     let ground = drawings::text_ground(kind, &style, theme);
     let ink = drawings::text_colour(&style.text.colour, theme, &ground);
     crate::ui::text::draw(cr, (x, y), &text, &style.text, drawings::Align::Center, &ink, &ground);
+}
+
+/// What a configuration's preview says, having no words of its own.
+///
+/// Short enough for a tile, and a real word rather than lorem: the question
+/// it is there to answer is whether a label in this configuration can be
+/// read over its own fill, and that needs glyphs with stems and counters.
+fn sample() -> Text {
+    Text::plain("Note")
 }
 
 /// Every sample the arrow factory has drawn, so a colour change can ask
@@ -1749,7 +1868,7 @@ pub fn rounded(cr: &gtk::cairo::Context, x: f64, y: f64, w: f64, h: f64, r: f64)
 fn finish(
     dialog: &adw::Dialog,
     body: &impl IsA<gtk::Widget>,
-    switcher: Option<&adw::ViewSwitcher>,
+    switcher: Option<&gtk::StackSwitcher>,
     area: &gtk::DrawingArea,
     tick: Option<glib::SourceId>,
 ) {
