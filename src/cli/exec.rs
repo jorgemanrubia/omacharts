@@ -1642,6 +1642,18 @@ fn chart_drawing(
     // anchor leaves the symbol's drawings exactly as they were.
     let from = anchor(m, "from")?;
     let to = anchor(m, "to")?;
+    let corners = anchors(m, "point")?;
+    if corners.len() == 1 {
+        return Err(Fault::usage(
+            "a zig-zag needs at least two --point corners; one corner is not a drawing".into(),
+        ));
+    }
+    // What a kind that has no corners of its own should hear, rather than
+    // having them quietly dropped: four points on a rectangle is somebody
+    // expecting a polygon.
+    let not_a_path = || {
+        Fault::usage("--point is a zig-zag's corners; every other kind is --from and --to".into())
+    };
     let config = match arg(m, "config") {
         None => None,
         Some(text) => Some(
@@ -1656,7 +1668,7 @@ fn chart_drawing(
     let scope = match arg(m, "scope") {
         None => None,
         Some(text) => Some(Scope::from_key(text).ok_or_else(|| {
-            Fault::usage(format!("{text:?} is not a scope; try local, global or group-1 to group-9"))
+            Fault::usage(format!("{text:?} is not a scope; try shared or local"))
         })?),
     };
     let order = match arg(m, "order").map(String::as_str) {
@@ -1680,10 +1692,16 @@ fn chart_drawing(
             let kind = kind.ok_or_else(|| {
                 Fault::usage("`drawing add` needs a kind: line, rect, ellipse or text".into())
             })?;
+            if !corners.is_empty() && !kind.is_path() {
+                return Err(not_a_path());
+            }
             // Words sit at a point, so a text drawing takes one anchor and
-            // uses it for both. Everything else spans two.
-            let (from, to) = match kind.is_text() {
-                true => {
+            // uses it for both. A zig-zag given its corners has its ends
+            // among them and needs no --from and --to of its own. Everything
+            // else spans two.
+            let (from, to) = match (kind.is_text(), corners.first(), corners.last()) {
+                (_, Some(first), Some(last)) => (*first, *last),
+                (true, ..) => {
                     let Some(at) = from.or(to) else {
                         return Err(Fault::usage(
                             "`drawing add text` needs --from WHEN,PRICE: where the words go".into(),
@@ -1691,8 +1709,13 @@ fn chart_drawing(
                     };
                     (at, at)
                 }
-                false => match (from, to) {
+                (false, ..) => match (from, to) {
                     (Some(from), Some(to)) => (from, to),
+                    _ if kind.is_path() => {
+                        return Err(Fault::usage(
+                            "`drawing add zigzag` needs --point WHEN,PRICE for each corner, or --from and --to for a single leg".into(),
+                        ))
+                    }
                     _ => {
                         return Err(Fault::usage(
                             "`drawing add` needs --from and --to, each WHEN,PRICE".into(),
@@ -1706,6 +1729,9 @@ fn chart_drawing(
                 ));
             }
             let mut drawing = Drawing::new(kind, from, to);
+            if !corners.is_empty() {
+                drawing.set_corners(corners.clone());
+            }
             drawing.origin = chart["drawing_uid"].as_str().map(str::to_string).filter(|u| !u.is_empty());
             drawing.follow(config.unwrap_or(1));
             if !style.is_empty() {
@@ -1737,6 +1763,7 @@ fn chart_drawing(
             };
             if from.is_none()
                 && to.is_none()
+                && corners.is_empty()
                 && config.is_none()
                 && style.is_empty()
                 && words.is_empty()
@@ -1744,7 +1771,7 @@ fn chart_drawing(
                 && order.is_none()
             {
                 return Err(Fault::usage(
-                    "nothing to set: give --from, --to, --config, --scope, --order, --text, or a property".into(),
+                    "nothing to set: give --from, --to, --point, --config, --scope, --order, --text, or a property".into(),
                 ));
             }
             let mut drawing = find_drawing(store, &symbol, suffix.as_deref(), &locals, id)?;
@@ -1756,6 +1783,11 @@ fn chart_drawing(
             }
             if let Some(to) = to {
                 drawing.move_grip(omacharts_engine::Grip::To, to);
+            }
+            // Last, so that the path's own corners settle the ends rather
+            // than the other way about.
+            if !corners.is_empty() && !drawing.set_corners(corners.clone()) {
+                return Err(not_a_path());
             }
             if let Some(n) = config {
                 drawing.follow(n);
@@ -2011,6 +2043,11 @@ fn drawing_json(d: &omacharts_engine::Drawing, configs: &omacharts_engine::Confi
         "kind": d.kind.key(),
         "from": {"ts": d.from.ts, "when": spell_moment(d.from.ts), "price": d.from.price},
         "to": {"ts": d.to.ts, "when": spell_moment(d.to.ts), "price": d.to.price},
+        // Only a zig-zag has corners of its own; for every other kind they
+        // would be `from` and `to` said a second time.
+        "corners": d.kind.is_path().then(|| d.corners().iter().map(|a| json!({
+            "ts": a.ts, "when": spell_moment(a.ts), "price": a.price,
+        })).collect::<Vec<_>>()),
         "config": d.config,
         // Where a look of its own came from, for a drawing that has one.
         "started_from": d.started_from,
@@ -2019,6 +2056,10 @@ fn drawing_json(d: &omacharts_engine::Drawing, configs: &omacharts_engine::Confi
         "order": d.order,
         "text": d.has_text().then(|| json!({
             "words": d.text.plain_text(),
+            // The same words as `--text` would take to make them, emphasis
+            // and all, so a label can be read off one drawing and put on
+            // another without going through the runs by hand.
+            "markup": d.text.markup(),
             "at": d.text.at.key(),
             // The runs, so a reader can see where the bold is rather than
             // only that the characters are there. A plain label is one run.
@@ -2060,7 +2101,7 @@ fn describe_drawing(drawing: &omacharts_engine::Drawing, configs: &omacharts_eng
     // paragraph belongs in `--json`, not in a line of a listing.
     let words = match drawing.has_text() {
         false => String::new(),
-        true => format!("  {:?}", shorten(&drawing.text.plain_text().replace('\n', " "), 40)),
+        true => format!("  {:?}", shorten(&drawing.text.markup().replace('\n', " "), 40)),
     };
     // A word is at one point, so saying the same moment twice would be noise.
     let span = match drawing.kind.is_text() {
@@ -2281,13 +2322,13 @@ impl TextEdits {
         self.words.is_none() && self.at.is_none()
     }
 
-    /// Put them on the drawing. The runs are rebuilt from plain characters,
-    /// so a label that was partly bold loses that — which is the honest
-    /// result of handing a terminal one string, and is said in the help.
+    /// Put them on the drawing. The runs are read back out of the one string
+    /// a terminal can hand over: `**bold**`, `*italic*`, `***both***`, which
+    /// is how emphasis survives a flag.
     fn apply(&self, drawing: &mut omacharts_engine::Drawing) {
         let mut text = drawing.text.clone();
         if let Some(words) = &self.words {
-            text.spans = vec![omacharts_engine::Span::plain(words)];
+            text.spans = omacharts_engine::drawings::Text::from_markup(words).spans;
         }
         if let Some(at) = self.at {
             text.at = at;
@@ -2318,8 +2359,24 @@ fn spell_moment(ts: i64) -> String {
 /// `WHEN,PRICE` as an anchor. The moment is a local date, a local date and
 /// time, or unix seconds; the price is a number.
 fn anchor(m: &clap::ArgMatches, id: &str) -> Result<Option<omacharts_engine::Anchor>, Fault> {
+    match arg(m, id) {
+        None => Ok(None),
+        Some(text) => read_anchor(text, id).map(Some),
+    }
+}
+
+/// The same, for a flag that may be given more than once: a zig-zag's
+/// corners, in the order they were typed.
+fn anchors(m: &clap::ArgMatches, id: &str) -> Result<Vec<omacharts_engine::Anchor>, Fault> {
+    m.get_many::<String>(id)
+        .into_iter()
+        .flatten()
+        .map(|text| read_anchor(text, id))
+        .collect()
+}
+
+fn read_anchor(text: &str, id: &str) -> Result<omacharts_engine::Anchor, Fault> {
     use chrono::{Local, NaiveDate, NaiveDateTime, TimeZone};
-    let Some(text) = arg(m, id) else { return Ok(None) };
     let bad = || Fault::usage(format!("--{id} takes WHEN,PRICE — like 2026-09-01,180.5 or 2026-09-01T14:30,180.5 — not {text:?}"));
     let (when, price) = text.rsplit_once(',').ok_or_else(bad)?;
     let price: f64 = price.trim().parse().map_err(|_| bad())?;
@@ -2334,7 +2391,7 @@ fn anchor(m: &clap::ArgMatches, id: &str) -> Result<Option<omacharts_engine::Anc
     } else {
         return Err(bad());
     };
-    Ok(Some(omacharts_engine::Anchor::new(ts, price)))
+    Ok(omacharts_engine::Anchor::new(ts, price))
 }
 
 /// Does this stored indicator have that kind?
@@ -4890,6 +4947,93 @@ mod tests {
         assert_eq!(parsed["configurations"][2]["default"], true);
         assert_eq!(parsed["configurations"][2]["style"]["color"], "blue");
         assert_eq!(parsed["configurations"].as_array().unwrap().len(), 9);
+    }
+
+    /// A zig-zag is the one kind that is not two anchors, so it is the one
+    /// kind `--from` and `--to` cannot describe.
+    #[test]
+    fn a_zigzag_is_drawn_through_its_corners() {
+        let store = Store::memory().unwrap();
+        run("chartbook create Macro --symbol AAPL --switch", &store);
+        let out = run(
+            "chart drawing add zigzag --book Macro --point 2026-09-01,100 --point 2026-09-05,120 --point 2026-09-09,110",
+            &store,
+        );
+        assert_eq!(out.code, 0, "{}", out.err);
+
+        let listed = run("chart drawing list --book Macro --json", &store);
+        let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+        let corners = parsed["drawings"][0]["corners"].as_array().unwrap();
+        assert_eq!(corners.len(), 3);
+        assert_eq!(corners[1]["price"], 120.0);
+        // Its ends are the first and the last of them, which is what
+        // everything that only wants a drawing's span reads.
+        assert_eq!(parsed["drawings"][0]["from"]["price"], 100.0);
+        assert_eq!(parsed["drawings"][0]["to"]["price"], 110.0);
+
+        let out = run(
+            "chart drawing set --book Macro --id 1 --point 2026-09-01,100 --point 2026-09-05,130 --point 2026-09-09,105 --point 2026-09-12,140",
+            &store,
+        );
+        assert_eq!(out.code, 0, "{}", out.err);
+        let listed = run("chart drawing list --book Macro --json", &store);
+        let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+        assert_eq!(parsed["drawings"][0]["corners"].as_array().unwrap().len(), 4);
+        assert_eq!(parsed["drawings"][0]["to"]["price"], 140.0);
+
+        // A kind with no corners of its own says so rather than dropping
+        // them, and a single corner is not a drawing.
+        for bad in [
+            "chart drawing add rect --book Macro --point 2026-09-01,100 --point 2026-09-05,120",
+            "chart drawing add zigzag --book Macro --point 2026-09-01,100",
+            "chart drawing set --book Macro --id 1 --point oops,100 --point 2026-09-05,120",
+        ] {
+            let out = run(bad, &store);
+            assert_eq!(out.code, super::super::EXIT_USAGE, "{bad}: {}", out.out);
+        }
+        let listed = run("chart drawing list --book Macro --json", &store);
+        let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+        assert_eq!(parsed["drawings"].as_array().unwrap().len(), 1, "nothing else was drawn");
+        assert_eq!(parsed["drawings"][0]["corners"].as_array().unwrap().len(), 4, "and nothing moved");
+        assert!(parsed["drawings"][0]["corners"].is_array());
+
+        // Every other kind has none, rather than a copy of its two ends.
+        run("chart drawing add line --book Macro --from 2026-09-01,100 --to 2026-09-19,110", &store);
+        let listed = run("chart drawing list --book Macro --json", &store);
+        let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+        assert!(parsed["drawings"][1]["corners"].is_null(), "{}", listed.out);
+    }
+
+    /// Emphasis has to arrive as characters, because a terminal has no
+    /// Ctrl+B — and it goes back out the same way, so a label can be read off
+    /// one drawing and put on another without going through the runs by hand.
+    #[test]
+    fn a_label_keeps_its_bold_through_a_terminal() {
+        let store = Store::memory().unwrap();
+        run("chartbook create Macro --symbol AAPL --switch", &store);
+        let out = run(
+            "chart drawing add rect --book Macro --from 2026-09-01,180 --to 2026-09-19,192 --text buy-**the**-dip --text-at top",
+            &store,
+        );
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert!(out.out.contains("buy-**the**-dip"), "{}", out.out);
+
+        let listed = run("chart drawing list --book Macro --json", &store);
+        let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+        let text = &parsed["drawings"][0]["text"];
+        assert_eq!(text["words"], "buy-the-dip", "the characters, with the asterisks gone");
+        assert_eq!(text["markup"], "buy-**the**-dip");
+        assert_eq!(text["at"], "top");
+        let spans = text["spans"].as_array().unwrap();
+        assert_eq!(spans.len(), 3);
+        assert_eq!(spans[1]["text"], "the");
+        assert_eq!(spans[1]["bold"], true);
+        assert_eq!(spans[1]["italic"], false);
+
+        // What is in a configuration is how words are set, never which
+        // words, so a label is not carried off onto one.
+        let out = run("chart drawing configure --config 1 rect --text nope", &store);
+        assert_eq!(out.code, super::super::EXIT_USAGE, "{}", out.out);
     }
 
     /// One bad value refuses the whole command, and names what was wrong.

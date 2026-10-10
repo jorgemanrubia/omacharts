@@ -732,6 +732,177 @@ impl Text {
     pub fn lines(&self) -> usize {
         self.plain_text().lines().count().max(1)
     }
+
+    /// Words with `**bold**` and `*italic*` in them, read into runs.
+    ///
+    /// Emphasis has to arrive as characters from a terminal, which has no
+    /// Ctrl+B, and these are the characters everybody already types for it.
+    /// `***both***` is both. An asterisk that is only an asterisk is written
+    /// `\\*`, and so is a backslash before one.
+    ///
+    /// A delimiter with nothing closing it is characters where it stands
+    /// rather than an error: a label reading `up 3*` is a label somebody
+    /// meant, and refusing it would be refusing the commoner case to serve
+    /// the rarer one.
+    pub fn from_markup(words: &str) -> Text {
+        Text { spans: read_markup(words), at: Place::default() }.tidied()
+    }
+
+    /// The same text written back out that way, so what a listing prints can
+    /// be handed straight to `--text` and come back the same runs.
+    pub fn markup(&self) -> String {
+        let mut out = String::new();
+        for span in &self.spans {
+            let fence = fence(span.bold, span.italic);
+            out.push_str(fence);
+            for ch in span.text.chars() {
+                if matches!(ch, '*' | '\\') {
+                    out.push('\\');
+                }
+                out.push(ch);
+            }
+            out.push_str(fence);
+        }
+        out
+    }
+}
+
+/// The asterisks that stand for a style, and nothing for no style.
+fn fence(bold: bool, italic: bool) -> &'static str {
+    match (bold, italic) {
+        (true, true) => "***",
+        (true, false) => "**",
+        (false, true) => "*",
+        (false, false) => "",
+    }
+}
+
+/// A piece of marked-up text: characters, or a run of asterisks that may or
+/// may not turn out to be a delimiter.
+enum Mark {
+    Chars(String),
+    Run(usize),
+}
+
+/// What a run of asterisks turned out to be.
+#[derive(Clone, Copy)]
+enum Step {
+    /// A delimiter this long, turning its styling on or off.
+    Turn(usize),
+    /// Not a delimiter after all: this many asterisks, as characters.
+    Plain(usize),
+}
+
+/// Read marked-up words into runs.
+///
+/// Two passes, because whether a run of asterisks is a delimiter cannot be
+/// known where it stands — only once something has or has not closed it.
+fn read_markup(words: &str) -> Vec<Span> {
+    let marks = scan_marks(words);
+    let steps = resolve_runs(&marks);
+    let mut spans: Vec<Span> = Vec::new();
+    let (mut bold, mut italic) = (false, false);
+    let mut run = 0;
+    for mark in &marks {
+        match mark {
+            Mark::Chars(text) => spans.push(Span { text: text.clone(), bold, italic }),
+            Mark::Run(_) => {
+                for step in &steps[run] {
+                    match *step {
+                        Step::Turn(2) => bold = !bold,
+                        Step::Turn(1) => italic = !italic,
+                        // Three or more is both, so `***x***` is bold italic
+                        // and a longer run is not a third thing.
+                        Step::Turn(_) => {
+                            bold = !bold;
+                            italic = !italic;
+                        }
+                        Step::Plain(n) => {
+                            spans.push(Span { text: "*".repeat(n), bold, italic })
+                        }
+                    }
+                }
+                run += 1;
+            }
+        }
+    }
+    spans
+}
+
+/// Split the text into characters and runs of asterisks.
+fn scan_marks(words: &str) -> Vec<Mark> {
+    let mut marks: Vec<Mark> = Vec::new();
+    let mut chars = words.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            // A backslash escapes an asterisk or another backslash and is a
+            // backslash anywhere else, because a label is likelier to hold a
+            // path than an escape nobody wrote.
+            '\\' if matches!(chars.peek(), Some('*' | '\\')) => {
+                let escaped = chars.next().unwrap_or('\\');
+                push_char(&mut marks, escaped);
+            }
+            '*' => {
+                let mut run = 1;
+                while chars.peek() == Some(&'*') {
+                    chars.next();
+                    run += 1;
+                }
+                marks.push(Mark::Run(run));
+            }
+            other => push_char(&mut marks, other),
+        }
+    }
+    marks
+}
+
+fn push_char(marks: &mut Vec<Mark>, ch: char) {
+    match marks.last_mut() {
+        Some(Mark::Chars(text)) => text.push(ch),
+        _ => marks.push(Mark::Chars(ch.to_string())),
+    }
+}
+
+/// Which runs of asterisks are delimiters, and what each one does.
+///
+/// A run closes what is open, innermost first, as far as it reaches, and
+/// whatever is left of it opens. That is the rule that makes two emphasised
+/// runs able to *touch*: a bold ending where an italic begins writes five
+/// asterisks, and five asterisks close the bold and open the italic rather
+/// than being five asterisks. Without it [`Text::markup`] would need
+/// something between them, and there is nothing to put there.
+///
+/// Anything still open when the words run out was never a delimiter, so it
+/// goes back to being characters in the place it stood.
+fn resolve_runs(marks: &[Mark]) -> Vec<Vec<Step>> {
+    let mut steps: Vec<Vec<Step>> = Vec::new();
+    // What is open: how long its delimiter was, and where the step that
+    // opened it is, in case nothing ever closes it.
+    let mut open: Vec<(usize, usize, usize)> = Vec::new();
+    for mark in marks {
+        let Mark::Run(mut left) = *mark else { continue };
+        let at = steps.len();
+        let mut mine: Vec<Step> = Vec::new();
+        while left > 0 {
+            match open.last() {
+                Some(&(len, _, _)) if len <= left => {
+                    open.pop();
+                    mine.push(Step::Turn(len));
+                    left -= len;
+                }
+                _ => {
+                    open.push((left, at, mine.len()));
+                    mine.push(Step::Turn(left));
+                    left = 0;
+                }
+            }
+        }
+        steps.push(mine);
+    }
+    for (len, at, slot) in open {
+        steps[at][slot] = Step::Plain(len);
+    }
+    steps
 }
 
 /// The shape of an arrowhead: a filled triangle, an open chevron, or a
@@ -1331,6 +1502,18 @@ impl Drawing {
         self.points.pop();
         self.settle();
         self.points.len() >= 2
+    }
+
+    /// Put a path on a run of corners already known, which is how one
+    /// arrives from a terminal: there is no hand to follow, only a list.
+    /// Says whether what it was given is a drawing.
+    pub fn set_corners(&mut self, corners: Vec<Anchor>) -> bool {
+        if !self.kind.is_path() || corners.len() < 2 {
+            return false;
+        }
+        self.points = corners;
+        self.settle();
+        true
     }
 
     /// Keep `from` and `to` on the ends of the path.
@@ -2524,6 +2707,77 @@ mod text_tests {
             }
         }
     }
+
+    fn runs(words: &str) -> Vec<(String, bool, bool)> {
+        Text::from_markup(words)
+            .spans
+            .into_iter()
+            .map(|s| (s.text, s.bold, s.italic))
+            .collect()
+    }
+
+    #[test]
+    fn asterisks_say_bold_and_italic() {
+        assert_eq!(
+            runs("buy **the** dip"),
+            vec![
+                ("buy ".into(), false, false),
+                ("the".into(), true, false),
+                (" dip".into(), false, false),
+            ]
+        );
+        assert_eq!(runs("*maybe*"), vec![("maybe".into(), false, true)]);
+        assert_eq!(runs("***both***"), vec![("both".into(), true, true)]);
+    }
+
+    /// The common reason somebody types an asterisk and means one.
+    #[test]
+    fn a_lone_asterisk_is_an_asterisk() {
+        assert_eq!(runs("up 3*"), vec![("up 3*".into(), false, false)]);
+        assert_eq!(runs("2 * 3 = 6"), vec![("2 * 3 = 6".into(), false, false)]);
+        assert_eq!(runs(r"a \*star\* here"), vec![("a *star* here".into(), false, false)]);
+    }
+
+    /// Nothing here can be malformed, so every string is some text — the
+    /// point of reading runs rather than refusing them.
+    #[test]
+    fn no_string_is_refused() {
+        for words in ["", "*", "**", "***", "****", "*a**b", "**a*b", r"\\", r"\", "a*"] {
+            let text = Text::from_markup(words);
+            assert!(
+                text.spans.iter().all(|s| !s.text.is_empty()),
+                "{words:?} left an empty run"
+            );
+        }
+    }
+
+    /// What a listing prints, `--text` takes back. Every pair of styles,
+    /// including two emphasised runs that touch, which is the case the
+    /// asterisks have to be counted carefully for.
+    #[test]
+    fn marked_up_text_goes_out_and_comes_back() {
+        let styles = [(false, false), (true, false), (false, true), (true, true)];
+        for first in styles {
+            for second in styles {
+                if first == second {
+                    continue;
+                }
+                let text = Text {
+                    spans: vec![
+                        Span { text: "ab".into(), bold: first.0, italic: first.1 },
+                        Span { text: "cd".into(), bold: second.0, italic: second.1 },
+                    ],
+                    at: Place::default(),
+                };
+                let written = text.markup();
+                assert_eq!(
+                    Text::from_markup(&written).spans,
+                    text.spans,
+                    "{written:?} did not come back as it went out"
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2835,6 +3089,19 @@ mod zigzag_tests {
         let style = Style::zigzag(Preset::Blue);
         assert_eq!(style.arrow, Arrow::End);
         assert_eq!(style.head, ArrowHead::ALL[1]);
+    }
+
+    #[test]
+    fn a_path_can_be_given_its_corners_whole() {
+        let corners = vec![Anchor::new(0, 100.0), Anchor::new(5, 120.0), Anchor::new(9, 110.0)];
+        let mut path = Drawing::new(Kind::Zigzag, corners[0], corners[0]);
+        assert!(path.set_corners(corners.clone()));
+        assert_eq!(path.corners(), corners);
+        assert_eq!(path.from, corners[0], "the ends follow the path");
+        assert_eq!(path.to, corners[2]);
+        assert!(!path.set_corners(vec![Anchor::new(0, 1.0)]), "one corner is not a drawing");
+        let mut box_ = Drawing::new(Kind::Rect, corners[0], corners[1]);
+        assert!(!box_.set_corners(corners), "only a path has corners of its own");
     }
 }
 

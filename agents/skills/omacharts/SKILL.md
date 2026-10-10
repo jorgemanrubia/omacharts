@@ -11,9 +11,12 @@ description: >-
   for indicators (moving average, VWAP, volume profile, RSI, ATR),
   resolutions and sessions, bar styles and colours, watchlists and their
   sections, chartbooks, link groups, the instrument search, and the cached
-  price data. Use it for any mention of omacharts, and whenever the user
-  speaks about charts, watchlists, chartbooks or link groups as things
-  already on their screen.
+  price data. Also for marking a chart up — "draw the trendline", "box the
+  range", "circle that gap", "mark the breakout", "label this high" — which
+  is lines, horizontal levels, arrows, zig-zags, boxes, circles and words.
+  Use it for any mention of omacharts, and whenever the user speaks about
+  charts, watchlists, chartbooks or link groups as things already on their
+  screen.
 ---
 
 # Omacharts
@@ -156,6 +159,23 @@ omacharts chart drawing configs line --json
 omacharts chart drawing remove --id 2
 ```
 
+**Reach for the kind that says the thing.** A support or resistance level is
+an `hline`, which is held level by the model rather than by the anchors, so a
+price read off it is the price: give it two anchors and whichever carries the
+price sets the level for both. An `arrow` is a line that points, and is its
+own kind rather than a line with a property — reaching for an arrow and then
+setting a line's `--arrow` is two steps to say one thing. A `zigzag` is a run
+of swings, and the only kind that is not two anchors: its corners are
+`--point`, once each and in order, and its ends are the first and the last of
+them.
+
+```
+omacharts chart drawing add hline --from 2026-09-01,178.4 --to 2026-09-30,178.4 --config 2
+omacharts chart drawing add arrow --from 2026-09-03,172 --to 2026-09-09,184 --config 1
+omacharts chart drawing add zigzag --point 2026-09-01,170 --point 2026-09-08,186 --point 2026-09-15,176
+omacharts chart drawing set --id 1 --order front
+```
+
 **A circle is dragged to any shape.** `ellipse` — `circle` is taken as the
 same word — is a box with its outline swapped for a curve: the same two
 anchors at opposite corners of the box it is drawn in, the same fill and
@@ -182,6 +202,12 @@ the nine, and setting one gives that drawing a look of its own the way
 `--color` does. `--font system` is the desktop's own face, which is the
 default and what the JSON reports as a null font.
 
-Bold and italic are runs inside the text and have no flag: they are set on
-the chart, with the caret in the word. `--text` writes plain characters, so
-using it on a label that was partly bold flattens it.
+**Emphasis is written the way everybody writes it.** `**bold**`, `*italic*`,
+`***both***`, and `\*` for an asterisk that is only an asterisk. It comes back
+the same way: a drawing's `text.markup` in the JSON is what `--text` would
+take to say it again, where `text.words` is the characters alone and
+`text.spans` is where the emphasis falls.
+
+```
+omacharts chart drawing add text --from 2026-09-10,184 --text "**gap** fills here"
+```

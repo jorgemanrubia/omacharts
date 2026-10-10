@@ -122,6 +122,9 @@ fn build_verb(verb: &'static spec::Verb) -> Command {
             // below zero, and `--id -1` has to reach the arm as a value.
             Some(name) => a = a.value_name(name).num_args(1).allow_negative_numbers(true),
         }
+        if flag.many {
+            a = a.action(ArgAction::Append);
+        }
         if !flag.values.is_empty() {
             a = a.value_parser(flag.values.to_vec());
         }
@@ -214,7 +217,7 @@ fn verb_json(noun: &spec::Noun, verb: &spec::Verb) -> String {
         .iter()
         .map(|flag| {
             format!(
-                "{{\"name\":{},\"description\":{},\"type\":{},\"value\":{},\"values\":{}}}",
+                "{{\"name\":{},\"description\":{},\"type\":{},\"value\":{},\"values\":{},\"repeats\":{}}}",
                 json_str(flag.long),
                 json_str(flag.help),
                 json_str(if flag.value.is_some() { "value" } else { "switch" }),
@@ -223,12 +226,13 @@ fn verb_json(noun: &spec::Noun, verb: &spec::Verb) -> String {
                     None => "null".to_string(),
                 },
                 json_list(flag.values),
+                flag.many,
             )
         })
         .collect();
     if verb.json {
         flags.push(format!(
-            "{{\"name\":\"json\",\"description\":{},\"type\":\"switch\",\"value\":null,\"values\":[]}}",
+            "{{\"name\":\"json\",\"description\":{},\"type\":\"switch\",\"value\":null,\"values\":[],\"repeats\":false}}",
             json_str("print the result as JSON, for scripts and agents"),
         ));
     }
