@@ -793,10 +793,23 @@ impl State {
     /// Keep the selection on the same drawings after the list was rebuilt,
     /// by id; a drawing with no id yet is the newest row.
     fn reselect(&mut self, ids: Vec<i64>) {
+        // A drawing with no id yet has only just been made and has not come
+        // back from wherever drawings are kept, so there is nothing to find
+        // it by: it is one of the newest rows. One of those used to mean
+        // *the* newest row, which was right while only one drawing could be
+        // made at a time — and then pasting three of them selected the same
+        // last row three times over, and the dedup below left one selected.
+        // As many as there are, in the order they went down.
+        let fresh = ids.iter().filter(|id| **id == 0).count();
+        let mut next = self.drawings.len().saturating_sub(fresh);
         self.selected = ids
             .into_iter()
             .filter_map(|id| match id {
-                0 => self.drawings.len().checked_sub(1),
+                0 => {
+                    let at = (next < self.drawings.len()).then_some(next);
+                    next += 1;
+                    at
+                }
                 id => self.drawings.iter().position(|d| d.id == id),
             })
             .collect();
@@ -888,6 +901,52 @@ impl State {
             Some(words) => projected.with_words(words),
             None => projected,
         }
+    }
+
+    /// Put copies down, offset if asked, and take hold of them. Hands back
+    /// what was added, for whoever has to write it down.
+    fn paste(
+        &mut self,
+        copied: &[Drawing],
+        offset: bool,
+        width: f64,
+        height: f64,
+    ) -> Vec<Drawing> {
+        if copied.is_empty() {
+            return Vec::new();
+        }
+        let (first, visible) = self.slice();
+        if visible == 0 {
+            return Vec::new();
+        }
+        let plan = layout(self, width, height);
+        let Some((low, high)) = price_range(self, &self.bars[first..first + visible]) else {
+            return Vec::new();
+        };
+        let bar_w = plan.plot_w / self.columns().max(1) as f64;
+        let (by_index, by_price) = match offset {
+            true => (PASTE_OFFSET / bar_w, -PASTE_OFFSET / plan.price_h * (high - low)),
+            false => (0.0, 0.0),
+        };
+        let order = self.drawings.iter().map(|d| d.order).max().unwrap_or(0);
+        let scope = scope_for(self.sends);
+        self.remember();
+        let mut added = Vec::new();
+        let State { bars, drawings, .. } = self;
+        for copy in copied {
+            let mut copy = copy.clone();
+            copy.id = 0;
+            copy.order = order;
+            copy.scope = scope;
+            shift_by_columns(bars, &mut copy, by_index, by_price);
+            drawings.push(copy.clone());
+            added.push(copy);
+        }
+        // The copies are what is in hand now, which is what lets a paste be
+        // nudged, restyled or pasted on again straight away.
+        let from = self.drawings.len() - added.len();
+        self.selected = (from..self.drawings.len()).collect();
+        added
     }
 
     /// Every drawing with any of itself on the plot right now: what Ctrl+A
@@ -1085,6 +1144,13 @@ impl State {
 /// Something the window hangs off the chart after building it. Optional
 /// because the chart is constructed before there is a window to tell.
 type Handler<F> = Rc<RefCell<Option<Box<F>>>>;
+
+/// How far a pasted copy lands from what it was copied from, in pixels.
+///
+/// Enough to see that there are two of them and to take hold of the one on
+/// top; little enough that it is plainly the same drawing moved rather than
+/// one somewhere else.
+const PASTE_OFFSET: f64 = 16.0;
 
 /// The cursor for a grip: which way it moves what it is on.
 fn grip_cursor(grip: Grip) -> &'static str {
@@ -1379,10 +1445,12 @@ impl ChartView {
         {
             let mut state = self.state.borrow_mut();
             state.sticky = sticky && kind.is_some();
-            if state.tool != kind {
-                // A different tool, or none: the configuration chosen for
-                // the last one is not a choice about this one. The same
-                // tool again keeps it, so Alt+R, Alt+2, Alt+R is still 2.
+            // Putting the tool down abandons the choice; picking one up
+            // keeps it, whichever order the two were asked for in. The
+            // choice belongs to the next drawing, not to the tool that
+            // happens to be in hand when it is made — and it is cleared
+            // where that drawing is committed.
+            if kind.is_none() {
                 state.next_config = 1;
             }
             state.tool = kind;
@@ -1844,7 +1912,13 @@ impl ChartView {
             }
             return true;
         }
-        false
+        // Nothing in hand and nothing selected: the choice is for whatever
+        // is drawn next. Alt+3 then Alt+L is the same sentence as Alt+L
+        // then Alt+3, and used to be two — the first half said nothing at
+        // all, and arming a tool then threw the choice away.
+        self.state.borrow_mut().next_config = n;
+        self.tool_changed();
+        true
     }
 
     /// The configurations every drawing on this chart is read through.
@@ -2333,6 +2407,52 @@ impl ChartView {
                 None => style.arrow = omacharts_engine::Arrow::None,
             });
         });
+    }
+
+    /// Everything selected, ready to be put down again.
+    ///
+    /// Without ids, because a copy is not the drawing it came from: the id
+    /// is where it lives, and these do not live anywhere until they are
+    /// pasted. Without the chart that made them, for the same reason — a
+    /// pasted drawing belongs to the chart it is pasted on.
+    pub fn copy_selected(&self) -> Vec<Drawing> {
+        let state = self.state.borrow();
+        let mut taken: Vec<Drawing> = state
+            .selected
+            .iter()
+            .filter_map(|i| state.drawings.get(*i))
+            .map(|drawing| Drawing { id: 0, origin: None, ..drawing.clone() })
+            .collect();
+        drawings::sort_for_painting(&mut taken);
+        taken
+    }
+
+    /// Put a copy down on this chart, a little off where it came from, and
+    /// take hold of it.
+    ///
+    /// Offset so that a paste onto the chart it was copied from is a
+    /// drawing you can see rather than one hiding exactly behind another,
+    /// and so that pasting twice gives two. In pixels rather than in
+    /// moments, because what it has to clear is the drawing on screen.
+    ///
+    /// Says whether anything was put down, so the key can go on to whatever
+    /// else it means when there is nothing to paste.
+    pub fn paste(&self, copied: &[Drawing], offset: bool) -> bool {
+        let (width, height) = (self.area.width() as f64, self.area.height() as f64);
+        // One borrow, and nothing called from inside it. The first version
+        // asked a getter for the chart's own sharing while holding this,
+        // and a getter takes the same cell: not an error anybody sees until
+        // the key is pressed, and then not a panic but an abort, because it
+        // happens under a GTK callback.
+        let added = self.state.borrow_mut().paste(copied, offset, width, height);
+        if added.is_empty() {
+            return false;
+        }
+        self.redraw();
+        for drawing in added {
+            self.tell(DrawingEvent::Added(drawing));
+        }
+        true
     }
 
     /// Put a width on everything selected: what the row of four in the
@@ -3864,15 +3984,13 @@ fn draw_candles(
     candles(cr, state.bar_style, &state.scheme, bars, plot_x, bar_w, to_y);
 }
 
-/// Candles, from nothing but what it takes to draw one.
+/// Candles, from nothing but what it takes to draw one: the style, the
+/// scheme, the bars, and where they go.
 ///
-/// Split out of the chart so a preview can call the very routine the chart
-/// calls. A preview that draws its own approximation of a candle is a
-/// preview of a chart that does not exist — and this one did: rectangles
-/// for wicks, a body width of its own, and the scheme's outline colour where
-/// the chart fills with the scheme's fill, so a hollow scheme came out
-/// solid.
-pub fn candles(
+/// Split out of the chart's own state so that what draws a candle is a
+/// routine taking what a candle needs, rather than a method reaching into
+/// a `State` for two fields out of thirty.
+fn candles(
     cr: &cairo::Context,
     bar_style: BarStyle,
     scheme: &BarScheme,
@@ -6060,6 +6178,131 @@ mod drawing_tests {
         let x = plan.plot_x + 120.5 * bar_w;
         let anchor = state.locate(w, h, x, 100.0).unwrap();
         assert_eq!(anchor.ts, state.bars[99].ts + 21 * 3600);
+    }
+
+    /// The configuration chosen for the next drawing survives picking a
+    /// tool, so the two can be asked for in either order.
+    #[test]
+    fn choosing_a_configuration_and_choosing_a_tool_are_one_sentence() {
+        let mut state = charted(400);
+
+        // Tool first, then the number — which always worked.
+        state.tool = Some(DrawingKind::Line);
+        state.next_config = 3;
+        assert!(state.begin_placing(800.0, 400.0, 200.0, 150.0));
+        assert_eq!(state.placing.as_ref().unwrap().config, Some(3));
+
+        // And the other way round: the number is already set when the tool
+        // arrives, and arming must not throw it away.
+        let mut state = charted(400);
+        state.next_config = 3;
+        state.tool = Some(DrawingKind::Rect);
+        assert!(state.begin_placing(800.0, 400.0, 200.0, 150.0));
+        assert_eq!(state.placing.as_ref().unwrap().config, Some(3));
+
+        // Laying one down ends the choice: the next is the usual one.
+        state.placing = None;
+        state.next_config = 1;
+        state.tool = Some(DrawingKind::Ellipse);
+        assert!(state.begin_placing(800.0, 400.0, 200.0, 150.0));
+        assert_eq!(state.placing.as_ref().unwrap().config, Some(1));
+    }
+
+    /// A paste puts the copies down, takes hold of them, and leaves one
+    /// step back on the stack however many were pasted.
+    #[test]
+    fn pasting_puts_the_copies_down_and_takes_hold_of_them() {
+        let mut state = charted(400);
+        let (w, h) = (800.0, 400.0);
+        let a = Anchor::new(state.bars[100].ts, state.bars[100].close);
+        let b = Anchor::new(state.bars[140].ts, state.bars[140].close);
+        let mut one = Drawing::new(DrawingKind::Rect, a, b);
+        one.id = 7;
+        let mut two = Drawing::new(DrawingKind::Line, a, b);
+        two.id = 9;
+
+        let added = state.paste(&[one.clone(), two.clone()], true, w, h);
+        assert_eq!(added.len(), 2, "both copies went down");
+        assert_eq!(state.drawings.len(), 2);
+        assert!(added.iter().all(|d| d.id == 0), "a copy is not the drawing it came from");
+        assert_eq!(state.selected, vec![0, 1], "the copies are what is in hand");
+        assert_eq!(state.undo.len(), 1, "two drawings is still one step back");
+
+        // Offset, so a copy of something on this chart is visible beside it.
+        assert_ne!(state.drawings[0].from, a, "the copy landed exactly on the original");
+        // And the shape is unchanged: both ends moved by the same amount.
+        let moved = &state.drawings[0];
+        assert_eq!(moved.to.ts - moved.from.ts, b.ts - a.ts);
+
+        // Asked not to offset — a paste onto another chart — it lands on
+        // the moment and the price it was copied from.
+        let mut elsewhere = charted(400);
+        elsewhere.paste(&[one.clone()], false, w, h);
+        assert_eq!(elsewhere.drawings[0].from, a);
+        assert_eq!(elsewhere.drawings[0].to, b);
+    }
+
+    /// The selection survives the list being rebuilt — which is what
+    /// happens the moment a paste is written down — with every pasted copy
+    /// still in hand, not just the last of them.
+    #[test]
+    fn every_pasted_copy_is_still_selected_after_the_list_comes_back() {
+        let mut state = charted(400);
+        let a = Anchor::new(state.bars[100].ts, state.bars[100].close);
+        let b = Anchor::new(state.bars[140].ts, state.bars[140].close);
+        // One already written down, and three just pasted.
+        let mut old = Drawing::new(DrawingKind::Line, a, b);
+        old.id = 4;
+        state.drawings.push(old);
+        let copies = vec![
+            Drawing::new(DrawingKind::Rect, a, b),
+            Drawing::new(DrawingKind::Ellipse, a, b),
+            Drawing::new(DrawingKind::Line, a, b),
+        ];
+        state.paste(&copies, true, 800.0, 400.0);
+        assert_eq!(state.selected, vec![1, 2, 3]);
+
+        // The list comes back from the store with the copies still
+        // unnumbered, as it does between the paste and the write.
+        let ids = state.selected_ids();
+        assert_eq!(ids, vec![0, 0, 0], "a copy has no id until it is written down");
+        let same = state.drawings.clone();
+        state.drawings = same;
+        state.reselect(ids);
+        assert_eq!(state.selected, vec![1, 2, 3], "only the last copy stayed in hand");
+
+        // And one on its own still means the newest row.
+        state.reselect(vec![0]);
+        assert_eq!(state.selected, vec![3]);
+    }
+
+    /// A copy belongs to the chart it was pasted on, and goes where that
+    /// chart sends what is drawn on it.
+    #[test]
+    fn a_pasted_copy_takes_the_chart_s_own_sharing() {
+        let (w, h) = (800.0, 400.0);
+        let a = Anchor::new(1, 1.0);
+        let copy = Drawing::new(DrawingKind::Rect, a, Anchor::new(2, 2.0));
+
+        let mut sending = charted(400);
+        sending.sends = true;
+        sending.paste(&[copy.clone()], false, w, h);
+        assert_eq!(sending.drawings[0].scope, drawings::Scope::Shared);
+
+        let mut keeping = charted(400);
+        keeping.sends = false;
+        keeping.paste(&[copy], false, w, h);
+        assert_eq!(keeping.drawings[0].scope, drawings::Scope::Local);
+    }
+
+    /// Nothing copied, nothing pasted — and the caller is told, so the key
+    /// can go on to what it otherwise means.
+    #[test]
+    fn pasting_nothing_does_nothing() {
+        let mut state = charted(400);
+        assert!(state.paste(&[], true, 800.0, 400.0).is_empty());
+        assert!(state.drawings.is_empty());
+        assert!(state.undo.is_empty(), "nothing happened, so there is nothing to undo");
     }
 
     /// Alt+R, Alt+3, click: the rectangle laid down follows configuration 3

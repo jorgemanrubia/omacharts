@@ -24,7 +24,7 @@ use omacharts_engine::drawings::{
     self, Arrow, ArrowHead, Configurations, Kind, Paint, Place, Preset, Style, Text,
     CONFIGURATIONS,
 };
-use omacharts_engine::{BarScheme, BarStyle, Theme};
+use omacharts_engine::Theme;
 
 use crate::store::Store;
 use crate::ui::colors;
@@ -33,48 +33,12 @@ use crate::ui::palette;
 use crate::ui::pane::ChartPane;
 use crate::ui::window::Window;
 
-/// A preview's candle, in pixels, since a preview maps one price unit to
-/// one of them.
-///
-/// From one column to the next; the chart makes a body a shade over two
-/// thirds of that, so eighteen gives an eleven-pixel body — about as wide
-/// as it is tall, which is what a candle on a chart looks like. The wick is
-/// a little over twice the body, and the run swings by about a body either
-/// way: enough to read as a stretch of market, little enough that the
-/// smallest tile still holds it.
-const CANDLE_PITCH: f64 = 18.0;
-const CANDLE_BODY: f64 = 11.0;
-const CANDLE_WICK: f64 = 26.0;
-const CANDLE_SWING: f64 = 9.0;
-/// The price the run is drawn about, which is also the middle of the tile.
-const CANDLE_MID: f64 = 100.0;
-
 /// The size of a configuration's preview tile.
 const PREVIEW_W: i32 = 84;
 const PREVIEW_H: i32 = 44;
 /// The swatch on a menu row.
 const SWATCH_W: i32 = 30;
 const SWATCH_H: i32 = 12;
-
-/// Everything a preview needs to look like the chart it is a preview of:
-/// the theme's colours, and how bars are coloured and drawn.
-///
-/// One value rather than three parameters threaded through five painters,
-/// and one place to add the next thing a candle turns out to depend on.
-#[derive(Clone)]
-pub struct Look {
-    pub theme: Theme,
-    pub scheme: BarScheme,
-    pub style: BarStyle,
-}
-
-impl Look {
-    /// What the window is wearing now.
-    pub fn of(window: &Rc<Window>) -> Look {
-        let (scheme, style) = window.bars();
-        Look { theme: window.theme(), scheme, style }
-    }
-}
 
 /// Something that shows a row a value: the editor keeps one per row so a
 /// style chosen elsewhere can be put in front of the hand.
@@ -103,7 +67,7 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
         return;
     }
     let Some(drawing) = view.selected_drawing() else { return };
-    let look = Look::of(window);
+    let theme = window.theme();
     let kind = drawing.kind;
     let configs_now = window.drawing_configurations();
 
@@ -118,7 +82,7 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
     shown_preview.set_hexpand(true);
     shown_preview.set_size_request(-1, 112);
     shown_preview.add_css_class("drawing-preview");
-    paint_preview(&shown_preview, &look, kind, drawing.style(&configs_now), &drawing.text);
+    paint_preview(&shown_preview, &theme, kind, drawing.style(&configs_now), &drawing.text);
     let shown_label = gtk::Label::new(None);
     shown_label.add_css_class("drawing-config-tag");
     shown_label.set_halign(gtk::Align::Start);
@@ -219,7 +183,7 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
     *refresh.borrow_mut() = Some({
         let view = view.clone();
         let label = shown_label.clone();
-        let look = look.clone();
+        let theme = theme.clone();
         let preview = shown_preview.clone();
         let save_row = save_row.clone();
         let editor = editor.clone();
@@ -245,7 +209,7 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
                 }
             }
             let style = d.style(&configs);
-            paint_preview(&preview, &look, kind, style, &d.text);
+            paint_preview(&preview, &theme, kind, style, &d.text);
             editor.show(style);
             if let Some(show_text) = show_text.as_ref() {
                 show_text(&d, style);
@@ -262,13 +226,13 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
     {
         let view = view.clone();
         let window = window.clone();
-        let look = look.clone();
+        let theme = theme.clone();
         let call_refresh = call_refresh.clone();
         popover.connect_show(move |popover| {
             let Some(d) = view.selected_drawing() else { return };
             let configs = window.drawing_configurations();
             let custom = d.style.clone().filter(|_| d.config.is_none());
-            let grid = configuration_grid(&look, kind, &configs, d.config, custom.as_ref(), &d.text, {
+            let grid = configuration_grid(&theme, kind, &configs, d.config, custom.as_ref(), &d.text, {
                 let view = view.clone();
                 let popover = popover.clone();
                 let call_refresh = call_refresh.clone();
@@ -402,7 +366,7 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
 /// The nine configurations of a kind: each shown as it looks, each editable,
 /// and a way back to the defaults.
 pub fn present_configurations(window: &Rc<Window>, store: &Rc<Store>, kind: Kind) {
-    let look = Look::of(window);
+    let theme = window.theme();
     let dialog = adw::Dialog::new();
     dialog.set_title(&format!("{} configurations", kind.label()));
     dialog.set_content_width(480);
@@ -424,7 +388,7 @@ pub fn present_configurations(window: &Rc<Window>, store: &Rc<Store>, kind: Kind
         row.set_title(&format!("Configuration {n}"));
         row.set_subtitle(&describe(kind, &style));
         row.set_activatable(true);
-        let preview = preview_tile(&look, kind, &style, &sample());
+        let preview = preview_tile(&theme, kind, &style, &sample());
         row.add_prefix(&preview);
         // A tag rather than a word in the subtitle: the eye finds a tag
         // down a list of nine, and reads a word in nine subtitles.
@@ -440,7 +404,7 @@ pub fn present_configurations(window: &Rc<Window>, store: &Rc<Store>, kind: Kind
             let store = store.clone();
             let navigation = navigation.clone();
             let rows = rows.clone();
-            let look = look.clone();
+            let theme = theme.clone();
             row.connect_activated(move |_| {
                 let configs = window.drawing_configurations();
                 let current = configs.of(kind, n).clone();
@@ -448,14 +412,14 @@ pub fn present_configurations(window: &Rc<Window>, store: &Rc<Store>, kind: Kind
                     let window = window.clone();
                     let store = store.clone();
                     let rows = rows.clone();
-                    let look = look.clone();
+                    let theme = theme.clone();
                     Rc::new(move |style: Style| {
                         let mut configs = window.drawing_configurations();
                         configs.set(kind, n, style.clone());
                         window.set_drawing_configurations(&store, configs.clone());
                         if let Some((row, preview, edited)) = rows.borrow().get(n as usize - 1) {
                             row.set_subtitle(&describe(kind, &style));
-                            paint_preview(preview, &look, kind, &style, &sample());
+                            paint_preview(preview, &theme, kind, &style, &sample());
                             let changed = !configs.is_default(kind, n);
                             edited.set_visible(changed);
                             mark_edited(row, changed);
@@ -488,7 +452,7 @@ pub fn present_configurations(window: &Rc<Window>, store: &Rc<Store>, kind: Kind
         let window = window.clone();
         let store = store.clone();
         let rows = rows.clone();
-        let look = look.clone();
+        let theme = theme.clone();
         restore.connect_clicked(move |_| {
             let mut configs = window.drawing_configurations();
             configs.reset(kind);
@@ -497,7 +461,7 @@ pub fn present_configurations(window: &Rc<Window>, store: &Rc<Store>, kind: Kind
                 let n = n as u8 + 1;
                 let style = configs.of(kind, n);
                 row.set_subtitle(&describe(kind, style));
-                paint_preview(preview, &look, kind, style, &sample());
+                paint_preview(preview, &theme, kind, style, &sample());
                 edited.set_visible(false);
                 mark_edited(row, false);
             }
@@ -1427,7 +1391,7 @@ fn paint_row(
 /// The nine configurations as tiles, each drawn as it will look, the one in
 /// use ringed. For the picker in a drawing's properties.
 fn configuration_grid(
-    look: &Look,
+    theme: &Theme,
     kind: Kind,
     configs: &Configurations,
     current: Option<u8>,
@@ -1459,7 +1423,7 @@ fn configuration_grid(
         cell
     };
     for n in 1..=CONFIGURATIONS {
-        let preview = preview_tile(look, kind, configs.of(kind, n), text);
+        let preview = preview_tile(theme, kind, configs.of(kind, n), text);
         if current == Some(n) {
             preview.add_css_class("drawing-preview-current");
         }
@@ -1471,7 +1435,7 @@ fn configuration_grid(
     // This drawing's own look, while it has one: the one in use, and not a
     // choice so much as a reminder of what choosing a number gives up.
     if let Some(custom) = custom {
-        let preview = preview_tile(look, kind, custom, text);
+        let preview = preview_tile(theme, kind, custom, text);
         preview.add_css_class("drawing-preview-current");
         let cell = tile(preview, "Custom", "This drawing's own look, as it is now");
         // Picking it changes nothing, but it is not greyed: greyed reads as
@@ -1549,194 +1513,148 @@ pub fn swatch(theme: &Theme, kind: Kind, style: &Style) -> gtk::DrawingArea {
     area
 }
 
-/// A small chart with the drawing on it: three candles in the theme's own
-/// colours, and the drawing as the style says, so a picker shows the look
+/// A tile showing the drawing as the style says, so a picker shows the look
 /// rather than naming it.
-fn preview_tile(look: &Look, kind: Kind, style: &Style, text: &Text) -> gtk::DrawingArea {
+fn preview_tile(theme: &Theme, kind: Kind, style: &Style, text: &Text) -> gtk::DrawingArea {
     let area = gtk::DrawingArea::new();
     area.set_size_request(PREVIEW_W, PREVIEW_H);
     area.add_css_class("drawing-preview");
-    paint_preview(&area, look, kind, style, text);
+    paint_preview(&area, theme, kind, style, text);
     area
 }
 
-/// Paint a small chart with the drawing on it, at whatever size the area
-/// has. The same picture serves a tile in the menu and the wide strip at
-/// the top of the properties: the candles and the drawing scale with the
-/// height, and more candles fill a wider strip, so neither looks like the
-/// other blown up or shrunk down.
-fn paint_preview(area: &gtk::DrawingArea, look: &Look, kind: Kind, style: &Style, text: &Text) {
-    let look = look.clone();
+/// Paint the drawing on its own ground, at whatever size the area has.
+///
+/// No candles, anywhere. They were here so that a preview showed how a
+/// drawing sits on a chart — but what a preview is for is telling one
+/// drawing from another, and a run of market behind every one of them is
+/// the same run every time: something the eye has to look past to reach the
+/// thing that differs. They also cost a scheme, a bar style and a page of
+/// arithmetic about how big a candle should be, all of it in aid of a
+/// backdrop.
+fn paint_preview(area: &gtk::DrawingArea, theme: &Theme, kind: Kind, style: &Style, text: &Text) {
+    let theme = theme.clone();
     let style = style.clone();
     let text = text.clone();
     area.set_draw_func(move |_, cr, w, h| {
-        draw_preview(cr, w as f64, h as f64, &look, kind, &style, &text)
+        let (w, h) = (w as f64, h as f64);
+        colors::set_source(cr, &theme.ui.background);
+        rounded(cr, 0.5, 0.5, w - 1.0, h - 1.0, 5.0);
+        let _ = cr.fill();
+        draw_preview_figure(cr, w, h, &theme, kind, &style, &text);
     });
     area.queue_draw();
 }
 
-/// The run of bars every preview is drawn over.
+/// How much bigger than the smallest tile a picture is being drawn.
 ///
-/// A fixed, made-up stretch rather than real data: the picture has to be the
-/// same from one opening to the next, or two tiles of the same configuration
-/// side by side would not be comparable. Rising and falling the way a real
-/// stretch does, with the body somewhere inside the range so the wicks show
-/// at both ends.
-fn preview_bars(count: usize) -> Vec<omacharts_engine::Bar> {
-    (0..count)
-        .map(|i| {
-            let t = i as f64 / (count as f64 - 1.0).max(1.0);
-            let wave = ((t * 6.0).sin() * 0.18) + ((t * 2.0).cos() * 0.1);
-            let mid = CANDLE_MID + wave * CANDLE_SWING;
-            let rising = i % 3 != 1;
-            let (open, close) = match rising {
-                true => (mid - CANDLE_BODY / 2.0, mid + CANDLE_BODY / 2.0),
-                false => (mid + CANDLE_BODY / 2.0, mid - CANDLE_BODY / 2.0),
-            };
-            omacharts_engine::Bar {
-                ts: i as i64,
-                open,
-                high: mid + CANDLE_WICK / 2.0,
-                low: mid - CANDLE_WICK / 2.0,
-                close,
-                volume: 0.0,
-            }
-        })
-        .collect()
+/// The strokes and the sample text follow it, so the wide strip at the top
+/// of a drawing's properties is the same picture as a tile in the picker
+/// rather than a different one at a different size.
+fn preview_scale(h: f64) -> f64 {
+    (h / PREVIEW_H as f64).clamp(1.0, 2.0)
 }
 
-/// The picture itself, on any surface: a strip of candles with the
-/// drawing over them, the way it sits on a chart.
-fn draw_preview(
+/// The drawing itself, over whatever ground the preview has laid down.
+fn draw_preview_figure(
     cr: &gtk::cairo::Context,
     w: f64,
     h: f64,
-    look: &Look,
+    theme: &Theme,
     kind: Kind,
     style: &Style,
     text: &Text,
 ) {
-    let theme = &look.theme;
-    {
-        let scale = (h / PREVIEW_H as f64).clamp(1.0, 3.0);
-        colors::set_source(cr, &theme.ui.background);
-        rounded(cr, 0.5, 0.5, w - 1.0, h - 1.0, 5.0);
-        let _ = cr.fill();
-        // Candles across the middle, through the chart's own routine. A
-        // preview that draws its own idea of a candle is a preview of a
-        // chart that does not exist, and this one was: rectangles for
-        // wicks, a body width of its own, and the outline colour where the
-        // chart fills with the fill — so a hollow scheme came out solid.
-        // One candle, at one size, wherever it is drawn. The width used to
-        // follow the tile while the height fell out of fitting the
-        // synthetic prices into a band, so the two grew at different rates
-        // — the same candle came out half again as fat and a third shorter
-        // in the wide strip than in a tile. The bars are written in units
-        // that *are* pixels and placed about the middle, so a bigger
-        // picture is more of the same candles rather than bigger ones.
-        let count = ((w * 0.72) / CANDLE_PITCH).floor().max(3.0) as usize;
-        let left = (w - (count as f64 - 1.0) * CANDLE_PITCH) / 2.0;
-        let bars = preview_bars(count);
-        let to_y = move |price: f64| h / 2.0 - (price - CANDLE_MID);
-        crate::ui::chart::candles(
-            cr,
-            look.style,
-            &look.scheme,
-            &bars,
-            left - CANDLE_PITCH / 2.0,
-            CANDLE_PITCH,
-            &to_y,
-        );
-        let colour = style.colour.hex(theme);
-        let line_w = style.width.min(4.0) * scale.sqrt();
-        match kind {
-            Kind::Line | Kind::Horizontal | Kind::Arrow | Kind::Zigzag => {
-                // A level is drawn level, and a zig-zag zig-zags, or the
-                // picture would promise something the tool will not give.
-                if kind == Kind::Zigzag {
-                    let (x0, x1) = (w * 0.12, w * 0.88);
-                    let (lo, hi) = (h * 0.76, h * 0.24);
-                    let step = (x1 - x0) / 3.0;
-                    let corners = [
-                        (x0, lo),
-                        (x0 + step, hi),
-                        (x0 + step * 2.0, (lo + hi) / 2.0),
-                        (x1, hi),
-                    ];
-                    colors::set_source(cr, &colour);
-                    cr.set_line_width(line_w);
-                    cr.set_line_cap(gtk::cairo::LineCap::Round);
-                    cr.set_line_join(gtk::cairo::LineJoin::Round);
-                    cr.move_to(corners[0].0, corners[0].1);
-                    for (cx, cy) in &corners[1..] {
-                        cr.line_to(*cx, *cy);
-                    }
-                    let _ = cr.stroke();
-                    if style.arrow.at_end() {
-                        head(cr, corners[2], corners[3], line_w, style.head);
-                    }
-                    if style.arrow.at_start() {
-                        head(cr, corners[1], corners[0], line_w, style.head);
-                    }
-                } else {
-                let (a, b) = match kind {
-                    Kind::Horizontal => ((w * 0.12, h * 0.5), (w * 0.88, h * 0.5)),
-                    _ => ((w * 0.15, h * 0.75), (w * 0.85, h * 0.25)),
-                };
+    let scale = preview_scale(h);
+    let colour = style.colour.hex(theme);
+    let line_w = style.width.min(4.0) * scale.sqrt();
+    match kind {
+        Kind::Line | Kind::Horizontal | Kind::Arrow | Kind::Zigzag => {
+            // A level is drawn level, and a zig-zag zig-zags, or the
+            // picture would promise something the tool will not give.
+            if kind == Kind::Zigzag {
+                let (x0, x1) = (w * 0.12, w * 0.88);
+                let (lo, hi) = (h * 0.76, h * 0.24);
+                let step = (x1 - x0) / 3.0;
+                let corners = [
+                    (x0, lo),
+                    (x0 + step, hi),
+                    (x0 + step * 2.0, (lo + hi) / 2.0),
+                    (x1, hi),
+                ];
                 colors::set_source(cr, &colour);
                 cr.set_line_width(line_w);
                 cr.set_line_cap(gtk::cairo::LineCap::Round);
-                cr.move_to(a.0, a.1);
-                cr.line_to(b.0, b.1);
+                cr.set_line_join(gtk::cairo::LineJoin::Round);
+                cr.move_to(corners[0].0, corners[0].1);
+                for (cx, cy) in &corners[1..] {
+                    cr.line_to(*cx, *cy);
+                }
                 let _ = cr.stroke();
                 if style.arrow.at_end() {
-                    head(cr, a, b, line_w, style.head);
+                    head(cr, corners[2], corners[3], line_w, style.head);
                 }
                 if style.arrow.at_start() {
-                    head(cr, b, a, line_w, style.head);
+                    head(cr, corners[1], corners[0], line_w, style.head);
                 }
-                }
+            } else {
+            let (a, b) = match kind {
+                Kind::Horizontal => ((w * 0.12, h * 0.5), (w * 0.88, h * 0.5)),
+                _ => ((w * 0.15, h * 0.75), (w * 0.85, h * 0.25)),
+            };
+            colors::set_source(cr, &colour);
+            cr.set_line_width(line_w);
+            cr.set_line_cap(gtk::cairo::LineCap::Round);
+            cr.move_to(a.0, a.1);
+            cr.line_to(b.0, b.1);
+            let _ = cr.stroke();
+            if style.arrow.at_end() {
+                head(cr, a, b, line_w, style.head);
             }
-            Kind::Rect | Kind::Ellipse => {
-                let (x, y, rw, rh) = (w * 0.3, h * 0.2, w * 0.4, h * 0.6);
-                let edge_w = style.width.clamp(1.0, 3.0) * scale.sqrt();
-                colors::set_source_alpha(cr, &style.fill.hex(theme), style.alpha);
-                if kind == Kind::Rect {
-                    cr.rectangle(x, y, rw, rh);
-                    let _ = cr.fill();
-                    if style.border {
-                        colors::set_source_alpha(cr, &colour, drawings::BORDER_ALPHA);
-                        cr.set_line_width(edge_w);
-                        cr.rectangle(x.round() + 0.5, y.round() + 0.5, rw.round(), rh.round());
-                        let _ = cr.stroke();
-                    }
-                } else {
-                    let curve = |cr: &gtk::cairo::Context| {
-                        cr.save().ok();
-                        cr.translate(x + rw / 2.0, y + rh / 2.0);
-                        cr.scale(rw / 2.0, rh / 2.0);
-                        cr.arc(0.0, 0.0, 1.0, 0.0, std::f64::consts::TAU);
-                        cr.restore().ok();
-                    };
+            if style.arrow.at_start() {
+                head(cr, b, a, line_w, style.head);
+            }
+            }
+        }
+        Kind::Rect | Kind::Ellipse => {
+            let (x, y, rw, rh) = (w * 0.3, h * 0.2, w * 0.4, h * 0.6);
+            let edge_w = style.width.clamp(1.0, 3.0) * scale.sqrt();
+            colors::set_source_alpha(cr, &style.fill.hex(theme), style.alpha);
+            if kind == Kind::Rect {
+                cr.rectangle(x, y, rw, rh);
+                let _ = cr.fill();
+                if style.border {
+                    colors::set_source_alpha(cr, &colour, drawings::BORDER_ALPHA);
+                    cr.set_line_width(edge_w);
+                    cr.rectangle(x.round() + 0.5, y.round() + 0.5, rw.round(), rh.round());
+                    let _ = cr.stroke();
+                }
+            } else {
+                let curve = |cr: &gtk::cairo::Context| {
+                    cr.save().ok();
+                    cr.translate(x + rw / 2.0, y + rh / 2.0);
+                    cr.scale(rw / 2.0, rh / 2.0);
+                    cr.arc(0.0, 0.0, 1.0, 0.0, std::f64::consts::TAU);
+                    cr.restore().ok();
+                };
+                curve(cr);
+                let _ = cr.fill();
+                if style.border {
+                    colors::set_source_alpha(cr, &colour, drawings::BORDER_ALPHA);
+                    cr.set_line_width(edge_w);
                     curve(cr);
-                    let _ = cr.fill();
-                    if style.border {
-                        colors::set_source_alpha(cr, &colour, drawings::BORDER_ALPHA);
-                        cr.set_line_width(edge_w);
-                        curve(cr);
-                        let _ = cr.stroke();
-                    }
+                    let _ = cr.stroke();
                 }
-                preview_text(cr, (x, y, rw, rh), kind, theme, style, text, scale);
             }
-            // The word itself, over the candles, which is the whole of what
-            // this configuration decides. Centred, because there is no
-            // figure for it to sit in the corner of.
-            Kind::Text => {
-                let box_h = h * 0.6;
-                let box_at = (0.0, (h - box_h) / 2.0, w, box_h);
-                preview_text(cr, box_at, Kind::Rect, theme, style, text, scale);
-            }
+            preview_text(cr, (x, y, rw, rh), kind, theme, style, text, scale);
+        }
+        // The word itself, over the candles, which is the whole of what
+        // this configuration decides. Centred, because there is no
+        // figure for it to sit in the corner of.
+        Kind::Text => {
+            let box_h = h * 0.6;
+            let box_at = (0.0, (h - box_h) / 2.0, w, box_h);
+            preview_text(cr, box_at, Kind::Rect, theme, style, text, scale);
         }
     }
 }

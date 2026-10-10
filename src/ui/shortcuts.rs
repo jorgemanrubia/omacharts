@@ -82,17 +82,23 @@ pub const BINDINGS: &[Binding] = &[
     // Ctrl+B for the rail on the right, Ctrl+D for the tools on the left.
     global("win.drawing-tools", &["<Ctrl>d"]),
     global("chart.reset-view", &["<Ctrl>Escape"]),
-    global("chart.split-h", &["<Ctrl>h"]),
+    global("chart.split-h", &["<Ctrl><Alt>h"]),
     global("chart.maximize", &["<Ctrl>m"]),
     global("win.new-chartbook", &["<Ctrl>n"]),
     global("win.rename-chartbook", &["<Ctrl><Shift>r"]),
-    // Ctrl+X closes a chart, so the chartbook holding it is the same
-    // key with Shift. Safe to own outright: Shift+X is nobody's cut.
-    global("win.close-chartbook", &["<Ctrl><Shift>x"]),
-    // Paste and cut. The keys are the keys; what changes is whether
-    // the keyboard is in something you can type into.
-    careful("chart.split-v", &["<Ctrl>v"]),
-    careful("chart.close", &["<Ctrl>x"]),
+    // Everything that arranges charts is on Ctrl+Alt, which is where the
+    // rest of "go to another chart" already lives: Ctrl+Alt and an arrow
+    // walks the chartbooks and the symbols. It moved there when Ctrl+C,
+    // Ctrl+V and Ctrl+X stopped being free — those three mean one thing
+    // each to the hand that presses them, whatever an application would
+    // rather they meant — and nothing is typed into a box with Ctrl+Alt, so
+    // these can be owned outright rather than caught on the way down.
+    //
+    // Closing a chart is Ctrl+Alt+X, so the chartbook holding it is the
+    // same key with Shift.
+    global("chart.split-v", &["<Ctrl><Alt>v"]),
+    global("chart.close", &["<Ctrl><Alt>x"]),
+    global("win.close-chartbook", &["<Ctrl><Shift><Alt>x"]),
     // A bare key, which an entry has to see first.
     careful("win.shortcuts", &["question"]),
 ];
@@ -318,10 +324,11 @@ mod tests {
 
     #[test]
     fn what_is_typed_into_a_box_is_never_taken_by_the_application() {
-        // The three that would break pasting, cutting, or typing a
-        // question mark. If one of these is ever marked global, the
-        // bug it causes is somebody else's afternoon.
-        for action in ["chart.split-v", "chart.close", "win.shortcuts"] {
+        // The one that would break typing a question mark. If it is ever
+        // marked global, the bug it causes is somebody else's afternoon.
+        // Splitting and closing are not among them any more: they are on
+        // Ctrl+Alt, which nothing types.
+        for action in ["win.shortcuts"] {
             let binding = binding(action).expect(action);
             assert!(!binding.global, "{action} must stay out of the accelerator table");
         }

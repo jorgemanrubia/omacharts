@@ -166,7 +166,7 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
         &[
             ("Ctrl+N", "New chartbook"),
             ("Ctrl+Shift+R", "Rename this chartbook"),
-            ("Ctrl+Shift+X", "Remove this chartbook"),
+            ("Ctrl+Shift+Alt+X", "Remove this chartbook"),
             ("Ctrl+Shift+O", "Screenshot this chartbook"),
             ("Ctrl+Alt+← →", "Previous or next chartbook"),
             ("Double-click a tab", "Rename it"),
@@ -192,9 +192,9 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
     (
         "Charts",
         &[
-            ("Ctrl+H", "Split horizontally"),
-            ("Ctrl+V", "Split vertically"),
-            ("Ctrl+X", "Close this chart"),
+            ("Ctrl+Alt+H", "Split horizontally"),
+            ("Ctrl+Alt+V", "Split vertically"),
+            ("Ctrl+Alt+X", "Close this chart"),
             ("Ctrl+M", "Give this chart the window, or put it back"),
             ("Ctrl+O", "Screenshot this chart"),
             ("Ctrl+L", "Link this chart to the watchlist, or unlink it"),
@@ -223,6 +223,7 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Alt+A", "Draw an arrow"),
             ("Alt+Z", "Draw a zig-zag: click each corner, double-click or Enter to end it"),
             ("Ctrl+click a tool", "Keep it in hand for drawing after drawing; Esc puts it down"),
+            ("Ctrl+C / Ctrl+V", "Copy the selected drawings, and put them down again"),
             ("Alt+R", "Draw a rectangle over a run of bars"),
             ("Alt+C", "Draw a circle, dragged to any shape"),
             ("Alt+T", "Write on the chart: click, then type"),
@@ -1040,9 +1041,9 @@ mod tests {
     fn what_a_key_does_finds_the_key_that_does_it() {
         assert_eq!(
             found("split"),
-            vec!["Ctrl+H — Split horizontally", "Ctrl+V — Split vertically"]
+            vec!["Ctrl+Alt+H — Split horizontally", "Ctrl+Alt+V — Split vertically"]
         );
-        assert_eq!(found("SPLIT HORI"), vec!["Ctrl+H — Split horizontally"]);
+        assert_eq!(found("SPLIT HORI"), vec!["Ctrl+Alt+H — Split horizontally"]);
     }
 
     /// Nobody writes a chord the way the next person does, and somebody
@@ -1071,7 +1072,7 @@ mod tests {
         assert_eq!(
             found("hori"),
             vec![
-                "Ctrl+H — Split horizontally",
+                "Ctrl+Alt+H — Split horizontally",
                 "Alt+H — Draw a horizontal line: a level, held flat",
             ]
         );
@@ -1571,6 +1572,14 @@ pub struct Window {
     auto_scale_action: RefCell<Option<gio::SimpleAction>>,
     drawing_config_action: RefCell<Option<gio::SimpleAction>>,
     drawing_settings_action: RefCell<Option<gio::SimpleAction>>,
+    /// What was last copied, waiting to be put down somewhere.
+    ///
+    /// The window's rather than the system's: a drawing is a moment, a
+    /// price and a look, and the only thing that can read one back is this
+    /// application. Being the window's also means a copy carries between
+    /// charts and chartbooks, which is most of what copying a drawing is
+    /// for.
+    drawing_clipboard: RefCell<Vec<omacharts_engine::Drawing>>,
     /// The drawing tools, on the left.
     drawing_bar: RefCell<Option<Rc<crate::ui::drawing_bar::DrawingBar>>>,
     /// The tools' handle floating in the bottom-left corner, shown while
@@ -1724,6 +1733,7 @@ impl Window {
             auto_scale_action: RefCell::new(None),
             drawing_config_action: RefCell::new(None),
             drawing_settings_action: RefCell::new(None),
+            drawing_clipboard: RefCell::new(Vec::new()),
             drawing_bar: RefCell::new(None),
             corner_handle: RefCell::new(None),
             chart_host: chart_host.clone(),
@@ -4410,13 +4420,14 @@ impl Window {
         });
         self.window.add_controller(keys);
 
-        // Ctrl+V is paste and Ctrl+X is cut, and GTK claims both before a
-        // controller on the window ever sees them — which is why the vertical
-        // split did nothing while the horizontal one worked. The layout keys
-        // have to be caught on the way down.
+        // Ctrl+C and Ctrl+V are copy and paste, and GTK claims both before
+        // a controller on the window ever sees them — which is why the
+        // vertical split did nothing here while the horizontal one worked,
+        // back when those were the split's keys. A drawing's clipboard has
+        // to be caught on the way down for the same reason.
         //
         // Only when the focus is not in something you can type into, or
-        // pasting a symbol into a box would split the window instead.
+        // copying a symbol out of a box would copy a drawing instead.
         let capture = gtk::EventControllerKey::new();
         capture.set_propagation_phase(gtk::PropagationPhase::Capture);
         let this = self.clone();
@@ -4425,17 +4436,23 @@ impl Window {
             if !state.contains(gtk::gdk::ModifierType::CONTROL_MASK) || this.is_typing() {
                 return glib::Propagation::Proceed;
             }
-            // Only the bare Ctrl combos. Ctrl+Shift+X removes the chartbook
-            // and Ctrl+Shift+V is nothing of ours, and catching a key here
-            // means the accelerator for it never runs — which is how
-            // Ctrl+Shift+X came to close the chart instead of the book
-            // holding it.
-            if state.contains(gtk::gdk::ModifierType::SHIFT_MASK) {
+            // Only the bare Ctrl combos. Catching a key here means the
+            // accelerator for it never runs — which is how Ctrl+Alt+V, the
+            // vertical split, came to be eaten as a paste that had nothing
+            // to paste.
+            let other = gtk::gdk::ModifierType::SHIFT_MASK | gtk::gdk::ModifierType::ALT_MASK;
+            if state.intersects(other) {
                 return glib::Propagation::Proceed;
             }
             match key {
-                Key::v | Key::V => this.split_focused(false),
-                Key::x | Key::X => this.close_focused(),
+                // Copy and paste, outright. They used to share Ctrl+V with
+                // the vertical split, which is a key that can only ever
+                // mean one thing to the hand that presses it; the split is
+                // on Ctrl+Alt+V now.
+                Key::c | Key::C => this.copy_drawings(),
+                Key::v | Key::V => {
+                    this.paste_drawings();
+                }
                 _ => return glib::Propagation::Proceed,
             }
             glib::Propagation::Stop
@@ -6057,15 +6074,6 @@ impl Window {
         self.theming.borrow().theme()
     }
 
-    /// How bars are coloured and drawn right now: the desktop's scheme, and
-    /// the focused chart's own style.
-    ///
-    /// For the previews, which draw candles through the chart's own routine
-    /// and so need what the chart would draw with.
-    pub fn bars(&self) -> (omacharts_engine::BarScheme, omacharts_engine::BarStyle) {
-        (self.theming.borrow().bar_scheme(), self.focused_pane().view.bar_style())
-    }
-
     /// The focused chart's trading hours.
     pub fn session(&self) -> Session {
         self.focused_pane().session.get()
@@ -6419,6 +6427,34 @@ impl Window {
         self.sync_drawing_bar();
     }
 
+    /// Take a copy of whatever is selected on the focused chart.
+    pub fn copy_drawings(self: &Rc<Self>) {
+        let copied = self.focused_pane().view.copy_selected();
+        if !copied.is_empty() {
+            *self.drawing_clipboard.borrow_mut() = copied;
+        }
+    }
+
+    /// Put the copy down on the focused chart. Says whether there was one.
+    pub fn paste_drawings(self: &Rc<Self>) -> bool {
+        let copied = self.drawing_clipboard.borrow().clone();
+        let pane = self.focused_pane();
+        // Offset only where it would otherwise land exactly on what it was
+        // copied from. Pasted onto another chart — another symbol, another
+        // resolution — the moment and the price are the whole point, and
+        // nudging them would be the one thing a paste must not do.
+        let same = pane
+            .view
+            .drawings()
+            .iter()
+            .any(|there| copied.iter().any(|copy| there.from == copy.from && there.to == copy.to));
+        pane.view.paste(&copied, same)
+    }
+
+    fn has_copied_drawings(&self) -> bool {
+        !self.drawing_clipboard.borrow().is_empty()
+    }
+
     fn open_drawing_settings(self: &Rc<Self>) {
         crate::ui::drawing_settings::present(self, &self.store, &self.focused_pane());
     }
@@ -6451,6 +6487,11 @@ impl Window {
             false => "Add text",
         };
         shortcuts::append_with_key(&edit, words, "chart.drawing-text", "Return");
+        let copy = match count {
+            1 => "Copy drawing".to_string(),
+            n => format!("Copy {n} drawings"),
+        };
+        shortcuts::append_with_key(&edit, &copy, "chart.drawing-copy", "<Ctrl>c");
         menu.append_section(None, &edit);
 
         // The arrowhead, as the four pictures it is, on one row: the three
@@ -6461,10 +6502,25 @@ impl Window {
         // nothing. At the top level it renders, so this is where it goes.
         let mut rows: Vec<(String, gtk::Widget)> = Vec::new();
         let kind = pane.view.selection_kind();
-        // The thickness, for every kind that has one, and the arrowhead for
-        // the ones that can wear one. Two rows of pictures in the same
-        // section: both are "what does this look like", answered by looking.
+        // Three rows of pictures in one section — the configuration, the
+        // thickness, the arrowhead — each answering "what does this look
+        // like" by looking. The last two appear only for the kinds that
+        // have the property; the first is on every kind, because every kind
+        // follows a configuration.
         let pictures = gio::Menu::new();
+        // The first four configurations, as pictures of this kind in each.
+        // Above the thickness, because which configuration a drawing
+        // follows is the larger choice — it carries the colour, the
+        // thickness and everything else — and the row below it is one
+        // property of the look it lands on. The other five are Alt+5 to
+        // Alt+9 and the picker in the properties; four is what a menu row
+        // holds at a size where the picture is still a picture.
+        if kind.is_some() {
+            let item = gio::MenuItem::new(Some("Configuration"), None);
+            item.set_attribute_value("custom", Some(&"configs".to_variant()));
+            pictures.append_item(&item);
+            rows.push(("configs".to_string(), self.configurations_row(&pane)));
+        }
         if kind.is_some_and(|kind| !kind.is_text()) {
             let item = gio::MenuItem::new(Some("Thickness"), None);
             item.set_attribute_value("custom", Some(&"width".to_variant()));
@@ -6479,6 +6535,12 @@ impl Window {
         }
         if !rows.is_empty() {
             menu.append_section(None, &pictures);
+        }
+
+        if self.has_copied_drawings() {
+            let paste = gio::Menu::new();
+            shortcuts::append_with_key(&paste, "Paste", "chart.drawing-paste", "<Ctrl>v");
+            menu.append_section(None, &paste);
         }
 
         let edit = gio::Menu::new();
@@ -6508,8 +6570,11 @@ impl Window {
             1 => "Remove drawing".to_string(),
             n => format!("Remove {n} drawings"),
         };
+        // This drawing, and not every drawing. Clearing the chart is a
+        // thing done to the chart, and it lives in the chart's own menu —
+        // sitting it under "Remove drawing" put the widest action on the
+        // screen one row below the narrowest, with nothing between them.
         shortcuts::append_with_key(&remove, &label, "chart.drawing-delete", "Delete");
-        shortcuts::append(&remove, "Remove all drawings", "chart.drawing-clear");
         menu.append_section(None, &remove);
 
         // Last, and alone. Everything above is a thing to do to the drawing;
@@ -6523,6 +6588,48 @@ impl Window {
         let area = pane.view.area.clone();
         let (wx, wy) = area.translate_coordinates(&self.window, x, y).unwrap_or((x, y));
         popup_menu_with(&menu, &self.window, wx, wy, rows);
+    }
+
+    /// The configurations row: the first four, each drawn as this kind
+    /// would look following it, with the one in use ringed.
+    ///
+    /// The same shape as the two rows below it. A configuration is a thing
+    /// you recognise rather than a thing you read — which is why the old
+    /// submenu of nine named rows went, and why this is four pictures.
+    fn configurations_row(self: &Rc<Self>, pane: &Rc<ChartPane>) -> gtk::Widget {
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+        row.add_css_class("drawing-head-row");
+        row.set_homogeneous(true);
+        let theme = self.theme();
+        let all = self.drawing_configurations();
+        let Some(kind) = pane.view.selection_kind() else { return row.upcast() };
+        let following = pane.view.selected_drawing().and_then(|d| d.config);
+
+        for n in 1..=4u8 {
+            let picture = crate::ui::drawing_settings::swatch(&theme, kind, all.of(kind, n));
+            picture.set_size_request(-1, 20);
+            picture.set_hexpand(true);
+            let button = gtk::Button::new();
+            button.add_css_class("flat");
+            button.add_css_class("drawing-head-cell");
+            button.set_child(Some(&picture));
+            button.set_tooltip_text(Some(&format!("Configuration {n} (Alt+{n})")));
+            if following == Some(n) {
+                button.add_css_class("drawing-preview-current");
+            }
+            button.set_hexpand(true);
+            button.set_action_name(Some("chart.drawing-config"));
+            button.set_action_target_value(Some(&(n as i32).to_variant()));
+            button.connect_clicked(|button| {
+                if let Some(popover) =
+                    button.ancestor(gtk::Popover::static_type()).and_downcast::<gtk::Popover>()
+                {
+                    popover.popdown();
+                }
+            });
+            row.append(&button);
+        }
+        row.upcast()
     }
 
     /// The thickness row: four strokes, the one in use ringed, and the keys
@@ -6651,6 +6758,15 @@ impl Window {
 
     fn chart_menu(self: &Rc<Self>, x: f64, y: f64) {
         let menu = gio::Menu::new();
+
+        // Paste first: it is the one thing in this menu that puts something
+        // on the chart rather than changing how the chart is drawn, and it
+        // is only here while there is something to put down.
+        if self.has_copied_drawings() {
+            let paste = gio::Menu::new();
+            shortcuts::append_with_key(&paste, "Paste drawing", "chart.drawing-paste", "<Ctrl>v");
+            menu.append_section(None, &paste);
+        }
 
         // Not the tools. They were here when the only way to reach them was
         // a key, and there is a bar of them on the chart's own edge now —
@@ -6970,6 +7086,18 @@ impl Window {
             this.focused_pane().view.set_head(shape);
         });
         actions.add_action(&drawing_head);
+
+        let drawing_copy = gio::SimpleAction::new("drawing-copy", None);
+        let this = self.clone();
+        drawing_copy.connect_activate(move |_, _| this.copy_drawings());
+        actions.add_action(&drawing_copy);
+
+        let drawing_paste = gio::SimpleAction::new("drawing-paste", None);
+        let this = self.clone();
+        drawing_paste.connect_activate(move |_, _| {
+            this.paste_drawings();
+        });
+        actions.add_action(&drawing_paste);
 
         let drawing_settings = gio::SimpleAction::new("drawing-settings", None);
         let this = self.clone();
