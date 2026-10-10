@@ -607,6 +607,120 @@ mainland China, Japan and Korea. It remembers the palette in use as well.
 command: it does not remember the scheme that was in use, so putting the colour
 back lands on the default rather than on the palette you had picked.
 
+## Which data feed the charts come from
+
+Yahoo Finance is the default and needs nothing set up. The stored choice is a
+setting like any other:
+
+```
+$ omacharts config set provider tos
+provider is tos
+  [exit 0]
+```
+
+For one run, without changing what is stored, there is a launch option:
+
+```
+omacharts --provider tos
+omacharts --provider tos NVDA
+```
+
+The order is: `--provider` for this launch, otherwise the stored setting,
+otherwise Yahoo. A name that is not a feed stops the launch with code 2 rather
+than quietly charting from the wrong source.
+
+A change takes effect at once. `config set provider tos` with a window open
+switches its charts to the other feed on the spot — each chart paints from
+that feed's cache where it has one and keeps what it shows until the new bars
+land where it does not — and `--provider tos` typed at a running window
+switches that window the same way without storing anything, and says so.
+Nothing is cleared: each feed's bars are kept apart in the cache, so switching
+back is instant. A symbol the new feed cannot carry, or a feed nobody has
+signed in to, is reported on the chart the way any other failure is.
+
+The feeds are listed in `omacharts surface --json` under `launch`, so nothing
+has to guess the names.
+
+`provider list` shows them with what is stored and what is running, which can
+differ when a launch was given the flag:
+
+```
+$ omacharts provider list
+yahoo    Yahoo Finance · Every listing the symbol search covers · delayed 15 min for indexes, 10 for futures   (stored, not in use)
+tos      thinkorswim · US listings, from your thinkorswim account · live, as each print arrives · experimental   (in use, not stored · not signed in)
+  [exit 0]
+```
+
+## Signing in to a feed that charts your own account
+
+Yahoo needs nothing. thinkorswim charts your Schwab account, so it has to be
+signed in to once, and `provider status` is how you find out where you stand:
+
+```
+$ omacharts provider status
+thinkorswim · US listings, from your thinkorswim account · live, as each print arrives
+Not signed in
+charts will be empty until you sign in: omacharts provider login
+session: /home/you/.config/omacharts/tos.env
+browser profile: /home/you/.config/omacharts/tos-browser
+  [exit 0]
+```
+
+The last lines of `provider status` say how the feed delivers bars, and — for
+one that streams — what the window holds a subscription to. A streamed feed
+is never refetched on a timer: each chart on screen is one subscription, shared
+by every chart showing the same symbol at the same resolution, and the line
+per subscription says how many charts it serves, how many bars it holds and
+when the last one arrived. It says plainly when a subscription is open and
+nothing has ticked, which with the market shut is the normal state of a live
+chart, rather than implying data is flowing. With no window open nothing is
+subscribed, and it says that too.
+
+```
+$ omacharts provider status
+thinkorswim · US listings, from your thinkorswim account · live, as each print arrives
+Signed in · account D-1 · signed in 6 Oct 2026
+session: /home/you/.config/omacharts/tos.env
+browser profile: /home/you/.config/omacharts/tos-browser
+delivery: streamed — bars arrive as they print, and nothing fetches on a timer
+streaming 2 series:
+  /ES 1m · 2 charts · 2602 bars · last bar 14:32 · updated 3 s ago
+  AAPL 1D · 1 chart · waiting for the first snapshot
+  [exit 0]
+```
+
+A polled feed says `delivery: polled — charts are refetched on a timer` and
+nothing more. With `--json` the same facts are `delivery` and `subscriptions`.
+
+`provider login` opens a real browser window at thinkorswim and waits while
+you sign in — your password and your one-time code are typed by you, into the
+browser, and Omacharts neither sees them nor types anything into the page. It
+needs a Chromium-family browser on the machine; with none, it says which to
+install rather than failing in the browser's words. Progress goes to stderr
+while it waits, so `--json` is still one object on stdout.
+
+```
+$ omacharts provider login
+a browser is opening at thinkorswim; sign in there
+…
+signed in to thinkorswim
+  [exit 0]
+```
+
+Unlike every other command, `login` and `logout` run in the terminal you typed
+them in even when a window is open. A sign-in waits for a person, and a command
+handed to the window runs inside its main loop — which would be ten minutes of
+frozen application with the browser it is waiting for sitting on top of it.
+`surface --json` marks both with `runsInTheCaller`.
+
+`provider logout` forgets the saved session. The browser profile stays, so
+signing in again is usually a click rather than another one-time code.
+
+Sessions expire. When one does, charts say so rather than claiming the
+provider is unreachable, `provider status` says `Session expired`, and signing
+in again is the fix. All of this is also in Preferences → Market data →
+Provider, which is the same four facts with a button.
+
 ## The widget in the Omarchy bar
 
 The bar widget is a plugin folder plus an entry in the shell's layout. The
@@ -783,6 +897,7 @@ story, and adding a manifest would be a second thing to maintain for nothing.
 | `section` | the named groups inside a watchlist |
 | `chartbook` | saved arrangements of charts |
 | `chart` | the charts inside a chartbook |
+| `provider` | the data feed, and signing in to one that needs it |
 | `config` | stored preferences |
 | `cache` | the cached market data |
 | `plugin` | the widget in the Omarchy bar |

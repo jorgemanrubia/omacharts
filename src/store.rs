@@ -1708,6 +1708,30 @@ mod tests {
         assert!(store.drawings("AAPL", None).is_empty());
     }
 
+    /// Shading used to be held between 0.02 and 0.6, so the figures worth
+    /// checking are the ones the old range refused. Nothing clamps on the way
+    /// out — the band that comes back is the band that went in.
+    #[test]
+    fn band_shading_round_trips_at_either_end() {
+        use omacharts_engine::{IndicatorKind, Params};
+        let store = Store::memory().unwrap();
+
+        for wanted in [0.0, 1.0] {
+            let mut vwap = Indicator::new(1, IndicatorKind::Vwap);
+            if let Params::Vwap { bands, .. } = &mut vwap.params {
+                for band in bands.iter_mut() {
+                    band.fill_alpha = Some(wanted);
+                }
+            }
+            store.set_indicators(&[vwap.clone()]);
+
+            let back = store.indicators();
+            assert_eq!(back, vec![vwap]);
+            let Params::Vwap { bands, .. } = &back[0].params else { panic!("not a vwap") };
+            assert!(bands.iter().all(|b| b.alpha() == wanted), "{wanted} came back changed");
+        }
+    }
+
     #[test]
     fn an_unreadable_indicator_list_is_ignored_rather_than_fatal() {
         let store = Store::memory().unwrap();

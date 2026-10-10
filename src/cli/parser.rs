@@ -69,6 +69,23 @@ pub fn command() -> Command {
                 ),
         );
 
+    // The launch options. Declared to clap so that they appear in `--help`
+    // like everything else — they are taken off the line before any command
+    // is parsed, so clap never actually sees one, but help somebody cannot
+    // find is help that does not exist.
+    for option in spec::LAUNCH {
+        let mut arg = Arg::new(option.long)
+            .long(option.long)
+            .value_name(option.value)
+            .num_args(1)
+            .help(option.help);
+        let values = spec::launch_values(option.long);
+        if !values.is_empty() {
+            arg = arg.value_parser(values);
+        }
+        app = app.arg(arg);
+    }
+
     for noun in SURFACE {
         let mut group = Command::new(noun.name)
             .about(noun.about)
@@ -133,7 +150,20 @@ pub fn surface_json() -> String {
     out.push_str(&json_str(env!("CARGO_PKG_VERSION")));
     out.push_str(",\"selector\":");
     out.push_str(&json_str(spec::SELECTOR));
-    out.push_str(",\"exitCodes\":[");
+    out.push_str(",\"launch\":[");
+    for (i, option) in spec::LAUNCH.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&format!(
+            "{{\"name\":{},\"description\":{},\"type\":\"value\",\"value\":{},\"values\":{}}}",
+            json_str(option.long),
+            json_str(option.help),
+            json_str(option.value),
+            json_list(&spec::launch_values(option.long)),
+        ));
+    }
+    out.push_str("],\"exitCodes\":[");
     for (i, (code, meaning)) in super::EXIT_CODES.iter().enumerate() {
         if i > 0 {
             out.push(',');
@@ -204,10 +234,11 @@ fn verb_json(noun: &spec::Noun, verb: &spec::Verb) -> String {
     }
     out.push_str(&flags.join(","));
     out.push_str(&format!(
-        "],\"example\":{},\"writes\":{},\"touchesWorkspace\":{}}}",
+        "],\"example\":{},\"writes\":{},\"touchesWorkspace\":{},\"runsInTheCaller\":{}}}",
         json_str(verb.example),
         verb.writes,
         verb.workspace,
+        noun.local || spec::IN_THE_CALLER.contains(&(noun.name, verb.name)),
     ));
     out
 }
@@ -257,6 +288,33 @@ mod tests {
         for command in listed {
             assert!(command["example"].as_str().unwrap().starts_with("omacharts "));
             assert!(!command["description"].as_str().unwrap().is_empty());
+        }
+    }
+
+    /// A launch option is part of the surface, and the surface is the only
+    /// thing something driving this from a script can read. An option
+    /// described nowhere is the environment variable this replaced.
+    #[test]
+    fn the_surface_describes_the_launch_options_and_the_feeds_they_accept() {
+        let parsed: serde_json::Value = serde_json::from_str(&surface_json()).unwrap();
+        let launch = parsed["launch"].as_array().expect("launch options");
+        assert_eq!(launch.len(), spec::LAUNCH.len());
+        let provider = launch
+            .iter()
+            .find(|option| option["name"] == "provider")
+            .expect("--provider");
+        let values: Vec<&str> =
+            provider["values"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+        assert!(values.contains(&"yahoo") && values.contains(&"tos"), "{values:?}");
+        assert_eq!(provider["value"], "NAME");
+    }
+
+    /// `--help` is where a person looks, and it is built from the same table.
+    #[test]
+    fn the_help_names_every_launch_option() {
+        let help = command().render_help().to_string();
+        for option in spec::LAUNCH {
+            assert!(help.contains(&format!("--{}", option.long)), "{help}");
         }
     }
 

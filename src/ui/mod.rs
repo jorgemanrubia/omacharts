@@ -2,10 +2,12 @@
 
 pub mod chart;
 pub mod chart_settings;
+pub mod controls;
 pub mod colors;
 pub mod dialogs;
 pub mod drawing_bar;
 pub mod drawing_settings;
+pub mod feed_settings;
 pub mod pane;
 pub mod palette;
 pub mod preferences;

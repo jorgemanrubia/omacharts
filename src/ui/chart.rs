@@ -1674,6 +1674,26 @@ impl ChartView {
         self.redraw();
     }
 
+    /// Put live bars into the series in place: each replaces the bar with
+    /// its timestamp or joins the end, and nothing else about the chart
+    /// moves. A view anchored to the right edge follows a new bar on its
+    /// own, because the anchor is a fact about the series' end rather than
+    /// an index; a view panned into history stays where it is.
+    ///
+    /// A bar arriving is also proof the feed is alive, so whatever the
+    /// corner was saying about the last fetch stops being true.
+    pub fn apply_tail(&self, tail: &[Bar]) {
+        {
+            let mut state = self.state.borrow_mut();
+            for bar in tail {
+                omacharts_engine::stream::upsert(&mut state.bars, *bar);
+            }
+            state.trouble = None;
+            state.loading = false;
+        }
+        self.redraw();
+    }
+
     /// Show or hide the gridlines. The axes and their labels stay: without
     /// them a chart is a shape with no scale.
     pub fn set_show_grid(&self, show: bool) {
@@ -1802,6 +1822,14 @@ impl ChartView {
 
     pub fn bar_count(&self) -> usize {
         self.state.borrow().bars.len()
+    }
+
+    /// Read the series as the chart holds it, without copying it.
+    ///
+    /// `read` must not reach back into the chart: the state is borrowed for
+    /// its duration, and a `set_indicators` from inside it would be a panic.
+    pub fn with_bars<T>(&self, read: impl FnOnce(&[Bar]) -> T) -> T {
+        read(&self.state.borrow().bars)
     }
 
     /// Jump back to the right edge and follow new bars again.
@@ -3116,10 +3144,10 @@ fn pane_plot(top: f64, height: f64) -> (f64, f64) {
 /// How many places a strip's values are written to. A fixed scale gets two,
 /// as TradingView gives an oscillator; a fitted one gets the precision its own
 /// ticks would, as the price does.
-fn pane_decimals(pane: &omacharts_engine::indicators::Pane, low: f64, high: f64, height: f64) -> usize {
+fn pane_decimals(pane: &omacharts_engine::indicators::Pane, low: f64, high: f64) -> usize {
     match pane.bounds {
         Some(_) => 2,
-        None => decimals_for(nice_step(high - low, (height / 52.0).max(2.0) as usize)),
+        None => decimals_for(nice_step(high - low, 3)),
     }
 }
 
@@ -3191,7 +3219,7 @@ fn draw_pane(
     let marks: Vec<(f64, String)> = if pane.bounds.is_some() {
         pane.guides.iter().map(|g| (*g, format!("{g:.0}"))).collect()
     } else {
-        let decimals = decimals_for(nice_step(high - low, 3));
+        let decimals = pane_decimals(pane, low, high);
         vec![(low, format!("{low:.decimals$}")), (high, format!("{high:.decimals$}"))]
     };
     for (value, text) in marks {
@@ -3219,7 +3247,7 @@ fn draw_pane(
 
     // Each line's latest value on the axis, in the line's own colour, as the
     // last price is.
-    let decimals = pane_decimals(pane, low, high, height);
+    let decimals = pane_decimals(pane, low, high);
     let lines = [(&pane.values, drawn.color.as_str())]
         .into_iter()
         .chain(signal.iter().map(|(series, colour)| (*series, colour.as_str())));
@@ -3490,7 +3518,7 @@ fn draw_pane_value(
     };
     let (inner_top, inner_h) = pane_plot(row.top, row.height);
     let value = high - (py - inner_top) / inner_h * (high - low);
-    let decimals = pane_decimals(pane, low, high, row.height);
+    let decimals = pane_decimals(pane, low, high);
     label_on_axis(
         cr,
         state,
@@ -4101,6 +4129,14 @@ mod tests {
     #[test]
     fn a_retry_in_flight_outranks_the_failure_it_is_retrying() {
         assert_eq!(placeholder_text(true, true, Some(FetchFailure::Unreachable)), "Loading…");
+        // A symbol the chosen feed has no name for. It used to be a click
+        // that did nothing at all — the chart kept the previous symbol and
+        // said nothing — so the one thing this must not be is silence or
+        // "No data for this symbol", which blames the ticker.
+        let unserved = placeholder_text(true, false, Some(FetchFailure::Unserved));
+        assert_eq!(unserved, FetchFailure::Unserved.message());
+        assert!(unserved.contains("cannot chart this symbol"), "{unserved}");
+        assert_ne!(unserved, FetchFailure::NoSuchSymbol.message());
     }
 
     #[test]

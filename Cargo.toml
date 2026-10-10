@@ -1,12 +1,12 @@
 [package]
 name = "omacharts"
-version = "0.1.9"
+version = "0.1.10"
 edition = "2024"
 description = "Fast, beautiful charting software for Omarchy"
 license = "MIT"
 
 [workspace]
-members = [".", "crates/omacharts-engine"]
+members = [".", "crates/omacharts-engine", "crates/tos-market"]
 
 [dependencies]
 omacharts-engine = { path = "crates/omacharts-engine" }

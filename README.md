@@ -1,5 +1,7 @@
 # Omacharts
 
+[![CI](https://github.com/jorgemanrubia/omacharts/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jorgemanrubia/omacharts/actions/workflows/ci.yml?query=branch%3Amain)
+
 Fast, beautiful charting software for [Omarchy](https://omarchy.org).
 
 <p align="center">
@@ -47,8 +49,8 @@ On Arch, x86_64 or aarch64, install the package attached to the latest
 [release](https://github.com/jorgemanrubia/omacharts/releases/latest):
 
 ```sh
-curl -LO https://github.com/jorgemanrubia/omacharts/releases/latest/download/omacharts-0.1.9-1-$(uname -m).pkg.tar.zst
-sudo pacman -U omacharts-0.1.9-1-$(uname -m).pkg.tar.zst
+curl -LO https://github.com/jorgemanrubia/omacharts/releases/latest/download/omacharts-0.1.10-1-$(uname -m).pkg.tar.zst
+sudo pacman -U omacharts-0.1.10-1-$(uname -m).pkg.tar.zst
 ```
 
 Or build that same package yourself from a clone:
@@ -80,8 +82,57 @@ system.
 
 ## Data
 
-Omacharts is prepared to work with multiple data providers, but at launch only
-Yahoo Finance is supported.
+Omacharts works with more than one data feed. Yahoo Finance is the default
+and needs nothing set up. The other is thinkorswim, the trading platform of
+Charles Schwab, which charts your own account's data and streams it: every
+chart on screen is a subscription to the gateway, bars arrive as they print,
+and nothing on that path asks for data on a timer. Several charts showing the
+same symbol at the same resolution share one subscription, and the last of
+them to close is what ends it. `omacharts provider status` says what is being
+streamed right now, and whether anything has ticked.
+
+Pick one in Preferences → Market data → Provider, or from a terminal:
+
+```
+omacharts config set provider tos
+omacharts --provider tos          # this launch only
+```
+
+A window that is open switches at once: the charts on screen are simply from
+the other feed from then on, painted from its cache where it has one and
+fetched where it does not. Nothing is cleared — each feed's bars are kept
+apart, so switching back is instant.
+
+thinkorswim needs signing in to, once. The settings panel has a button for
+it — Sign in, or Sign out once there is a session to forget, which is also
+how it says whether there is one — and so does the command line:
+
+```
+omacharts provider login
+```
+
+That opens a real Chrome window at thinkorswim, where you sign in yourself —
+Omacharts never sees your password or your one-time code, and types nothing
+into the page. It needs a Chromium-family browser on the machine (Chromium,
+Chrome, Brave or Edge) and a Schwab account with thinkorswim. What it keeps
+is the session the browser ended up with, in `~/.config/omacharts/tos.env`
+(`TOS_ENV_FILE` moves it), and a browser profile beside it in
+`~/.config/omacharts/tos-browser` so that the next sign-in is a trusted
+device rather than another round of codes.
+
+It asks for charts and nothing else: the client sends two kinds of request,
+chart and login, refuses to send any other, and has no order-entry code at
+all — a test fails if one is ever routed. Whichever account you sign in with
+is the one it charts; the gateway it connects to has to be one of
+thinkorswim's own, checked by address. Sessions expire after a while; when
+one does, charts say so and signing in again is the fix, from the settings
+panel or from `omacharts provider login`. The session itself is
+spelled out by `omacharts provider status`: whether one is saved, which
+account and when, the browser a sign-in would open, and the two files above.
+
+It charts US stocks and ETFs, futures (`/ES`), class shares (`BRK.B`) and the
+main US indexes. A Taipei or Madrid listing it has no name for at all, and a
+chart says so rather than sitting empty — those need Yahoo.
 
 The symbol search covers every US-listed stock and ETF, and every listing on
 the two Taiwanese exchanges — the TWSE (`2330.TW`) and the TPEx (`6488.TWO`) —

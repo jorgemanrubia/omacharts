@@ -11,7 +11,10 @@
 
 use serde_json::{json, Value};
 
-use omacharts_engine::indicators::{LineStyle, Stroke, MAX_PANE_SHARE, MIN_PANE_SHARE};
+use omacharts_engine::indicators::{
+    LineStyle, Stroke, MAX_FILL_ALPHA, MAX_PANE_SHARE, MIN_FILL_ALPHA, MIN_PANE_SHARE,
+};
+use omacharts_engine::providers;
 use omacharts_engine::theme::{
     ColorChoice, SWATCH_NAMES, THEME_BARS_ID, THEME_MONO_ID, THEME_RED_UP_ID,
 };
@@ -141,9 +144,25 @@ pub fn dispatch(
             charts_verb(store, noun, verb, m, json)
         }
 
+        ("provider", "list") => provider_list(store, json),
+        ("provider", "status") => provider_status(store, live, json),
+        ("provider", "login") => provider_login(store, m, json),
+        ("provider", "logout") => provider_logout(store, m, json),
+
         ("config", "list") => config_list(store, json),
         ("config", "get") => config_get(store, m, json),
-        ("config", "set") => config_set(store, m, json),
+        ("config", "set") => {
+            let outcome = config_set(store, m, json);
+            // The feed is the one setting a window acts on the moment it
+            // changes: the charts switch, with nothing to restart.
+            if outcome.is_ok()
+                && required(m, "KEY").is_ok_and(|key| key == crate::feeds::SETTING)
+                && let Some(live) = live
+            {
+                live.adopt_feed();
+            }
+            outcome
+        }
         ("config", "bars") => config_bars(store, m, json, live),
 
         ("plugin", "status") => plugin_status(json),
@@ -2205,7 +2224,7 @@ impl Edits {
                     Fault::usage(format!("{text:?} is not a row count; use a number or `auto`"))
                 })?)),
             },
-            value_area: fraction(m, "value-area", 0.0, 1.0)?,
+            value_area: bounded(m, "value-area", 0.0, 1.0)?,
             poc_color: colour(m, "poc-color")?,
             color: colour(m, "color")?,
             width: number(m, "width")?,
@@ -2221,9 +2240,11 @@ impl Edits {
             // The range the engine clamps to rather than a wider one of our own:
             // a height it quietly brings back reads as the command having
             // worked, and the number it was given is not the one on screen.
-            height: fraction(m, "height", MIN_PANE_SHARE, MAX_PANE_SHARE)?,
-            overbought: number(m, "overbought")?,
-            oversold: number(m, "oversold")?,
+            height: bounded(m, "height", MIN_PANE_SHARE, MAX_PANE_SHARE)?,
+            // The strip runs 0 to 100 and a level is drawn across it; one
+            // past either end is a line nowhere on the chart.
+            overbought: bounded(m, "overbought", 0.0, 100.0)?,
+            oversold: bounded(m, "oversold", 0.0, 100.0)?,
             bands: match arg(m, "bands") {
                 None => None,
                 Some(text) if text.eq_ignore_ascii_case("none") => Some(Vec::new()),
@@ -2238,7 +2259,10 @@ impl Edits {
                         })?,
                 ),
             },
-            band_alpha: fraction(m, "band-alpha", 0.02, 0.6)?,
+            // The engine's own ends rather than a narrower pair of our own,
+            // for the same reason as the height above: a figure it would
+            // quietly bring back reads as the command having worked.
+            band_alpha: bounded(m, "band-alpha", MIN_FILL_ALPHA, MAX_FILL_ALPHA)?,
             visible: arg(m, "visible").map(|v| v == "on"),
         })
     }
@@ -2322,6 +2346,21 @@ impl Edits {
                 false => return Err(refuse("point of control")),
             }
         }
+        // The pair may not cross: a band whose floor is above its ceiling is
+        // not a band. Whichever of the two the command left out is the one
+        // already on the chart, and the one given has to clear it. Checked
+        // before either is written, so a refusal leaves the chart as it was.
+        if self.overbought.is_some() || self.oversold.is_some() {
+            let ceiling = self.overbought.or(params["overbought"].as_f64());
+            let floor = self.oversold.or(params["oversold"].as_f64());
+            if let (Some(ceiling), Some(floor)) = (ceiling, floor)
+                && floor >= ceiling
+            {
+                return Err(Fault::usage(format!(
+                    "oversold {floor} is not below overbought {ceiling}"
+                )));
+            }
+        }
         if let Some(level) = self.overbought {
             match params.get("overbought").is_some() {
                 true => params["overbought"] = json!(level),
@@ -2390,7 +2429,7 @@ fn number(m: &clap::ArgMatches, id: &str) -> Result<Option<f64>, Fault> {
     }
 }
 
-fn fraction(m: &clap::ArgMatches, id: &str, low: f64, high: f64) -> Result<Option<f64>, Fault> {
+fn bounded(m: &clap::ArgMatches, id: &str, low: f64, high: f64) -> Result<Option<f64>, Fault> {
     match number(m, id)? {
         None => Ok(None),
         Some(value) if (low..=high).contains(&value) => Ok(Some(value)),
@@ -2548,6 +2587,325 @@ fn crosshair(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<Strin
 
 // -- settings and cache ---------------------------------------------------
 
+/// Which feeds there are, which is stored, and which this process is using.
+///
+/// The three can differ: a launch given `--provider` is using one while
+/// another is stored, and that is worth seeing at a glance rather than
+/// being a thing somebody discovers from a chart.
+fn provider_list(store: &Store, as_json: bool) -> Result<String, Fault> {
+    let stored = crate::feeds::stored(store).id;
+    let in_use = crate::feeds::in_use(store).id;
+    if as_json {
+        let rows = providers::LISTED
+            .iter()
+            .map(|feed| {
+                json!({
+                    "id": feed.id,
+                    "label": feed.label,
+                    "serves": feed.serves,
+                    "freshness": providers::freshness(feed.id),
+                    "delivery": providers::selected(Some(feed.id)).delivery().word(),
+                    "stored": feed.id == stored,
+                    "inUse": feed.id == in_use,
+                    "needsSignIn": feed.needs_sign_in(),
+                    "experimental": feed.experimental,
+                    "session": providers::access(feed.id).map(|access| access.line()),
+                })
+                .to_string()
+            })
+            .collect();
+        return Ok(wrap_list("providers", rows));
+    }
+    Ok(providers::LISTED
+        .iter()
+        .map(|feed| {
+            let mut note = match (feed.id == stored, feed.id == in_use) {
+                (true, true) => "in use".to_string(),
+                (true, false) => "stored, not in use".to_string(),
+                (false, true) => "in use, not stored".to_string(),
+                (false, false) => String::new(),
+            };
+            if let Some(access) = providers::access(feed.id) {
+                if !note.is_empty() {
+                    note.push_str(" · ");
+                }
+                note.push_str(&access.line().to_lowercase());
+            }
+            // The word rides with what the feed serves rather than with
+            // the note beside it: it is a fact about the feed, true whether
+            // or not this machine is using it.
+            let mut serves = providers::described(feed);
+            if feed.experimental {
+                serves.push_str(" · experimental");
+            }
+            format!("{:<8} {} · {}{}", feed.id, feed.label, serves, suffixed(&note))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n")
+}
+
+fn suffixed(note: &str) -> String {
+    match note.is_empty() {
+        true => String::new(),
+        false => format!("   ({note})"),
+    }
+}
+
+/// The chosen feed in detail: is it ready, if not what is missing, how it
+/// delivers bars, and what is being streamed right now.
+///
+/// The settings panel says none of this in words — it offers one action,
+/// and which one it is says whether a session exists — so this is where the
+/// session, the files it lives in and the state of every subscription are
+/// spelled out for somebody who needs them.
+fn provider_status(store: &Store, live: Option<&dyn Live>, as_json: bool) -> Result<String, Fault> {
+    let stored = crate::feeds::stored(store);
+    let in_use = crate::feeds::in_use(store);
+    let access = providers::access(in_use.id);
+    let browser = providers::can_sign_in(in_use.id);
+    let places = providers::places(in_use.id);
+    let delivery = providers::selected(Some(in_use.id)).delivery();
+    let streaming = live.map(|live| live.streaming());
+
+    if as_json {
+        return Ok(format!(
+            "{}\n",
+            json!({
+                "id": in_use.id,
+                "label": in_use.label,
+                "serves": in_use.serves,
+                "freshness": providers::freshness(in_use.id),
+                "delivery": delivery.word(),
+                "subscriptions": streaming.as_deref().map(|reports| {
+                    reports.iter().map(subscription_json).collect::<Vec<_>>()
+                }),
+                "stored": stored.id,
+                "forThisLaunch": crate::feeds::for_this_launch().map(|feed| feed.id),
+                "needsSignIn": in_use.needs_sign_in(),
+                "ready": access.as_ref().map(|access| access.ready()).unwrap_or(true),
+                "session": access.as_ref().map(|access| access.line()),
+                "browser": browser.as_ref().ok(),
+                "cannotSignIn": browser.as_ref().err(),
+                "files": places
+                    .iter()
+                    .map(|(what, path)| json!({"what": what, "path": path}))
+                    .collect::<Vec<_>>(),
+            })
+        ));
+    }
+
+    let mut out = format!("{} · {}\n", in_use.label, providers::described(in_use));
+    if stored.id != in_use.id {
+        out.push_str(&format!(
+            "in use in the open window; {} is stored\n",
+            stored.label
+        ));
+    }
+    match &access {
+        None => out.push_str("nothing to sign in to; it works as it is\n"),
+        Some(access) => {
+            out.push_str(&format!("{}\n", access.line()));
+            if !access.ready() {
+                out.push_str("charts will be empty until you sign in: omacharts provider login\n");
+            }
+        }
+    }
+    if let Err(why) = &browser
+        && in_use.needs_sign_in()
+    {
+        out.push_str(&format!("{why}\n"));
+    }
+    for (what, path) in places {
+        out.push_str(&format!("{}: {path}\n", what.to_lowercase()));
+    }
+    for line in streaming_lines(delivery, streaming.as_deref()) {
+        out.push_str(&line);
+        out.push('\n');
+    }
+    Ok(out)
+}
+
+/// How bars reach a chart, and — for a feed that streams — what the window
+/// holds a subscription to right now.
+///
+/// Honest about what has and has not arrived. A subscription that is open
+/// with nothing ticked says so, rather than implying data is flowing: with
+/// the market shut that is the normal state of a live chart, and the one
+/// thing somebody checking whether streaming works needs to be told.
+fn streaming_lines(delivery: omacharts_engine::Delivery, streaming: Option<&[crate::live::Report]>) -> Vec<String> {
+    use omacharts_engine::Delivery;
+    let mut lines = Vec::new();
+    match delivery {
+        Delivery::Polled => {
+            lines.push("delivery: polled — charts are refetched on a timer".into());
+            return lines;
+        }
+        Delivery::Streamed => {
+            lines.push(
+                "delivery: streamed — bars arrive as they print, and nothing fetches on a timer"
+                    .into(),
+            );
+        }
+    }
+    match streaming {
+        None => lines.push("no window is open, so nothing is subscribed".into()),
+        Some([]) => lines.push("nothing is being streamed: no chart is showing this feed".into()),
+        Some(reports) => {
+            lines.push(format!(
+                "streaming {} series:",
+                reports.len()
+            ));
+            for report in reports {
+                lines.push(format!("  {}", subscription_line(report)));
+            }
+        }
+    }
+    lines
+}
+
+/// One subscription, in one line.
+fn subscription_line(report: &crate::live::Report) -> String {
+    use crate::live::ReportState;
+
+    let charts = match report.charts {
+        1 => "1 chart".to_string(),
+        n => format!("{n} charts"),
+    };
+    let mut line = format!("{} {} · {charts}", report.symbol, report.native.key());
+    match &report.state {
+        ReportState::Opening => line.push_str(" · waiting for the first snapshot"),
+        ReportState::Live => {
+            line.push_str(&format!(" · {} bars", report.bars));
+            if let Some(ts) = report.last_bar {
+                line.push_str(&format!(" · last bar {}", when(ts)));
+            }
+            match report.updated_ago {
+                Some(ago) => line.push_str(&format!(" · updated {} ago", ago_text(ago))),
+                None => line.push_str(" · nothing has arrived since the snapshot"),
+            }
+        }
+        ReportState::Lost { why, retrying } => {
+            line.push_str(&format!(" · lost: {}", why.message()));
+            line.push_str(if *retrying { " · retrying" } else { " · not retrying" });
+        }
+    }
+    line
+}
+
+fn subscription_json(report: &crate::live::Report) -> serde_json::Value {
+    use crate::live::ReportState;
+
+    let (state, why, retrying) = match &report.state {
+        ReportState::Opening => ("opening", None, None),
+        ReportState::Live => ("live", None, None),
+        ReportState::Lost { why, retrying } => ("lost", Some(why.message()), Some(*retrying)),
+    };
+    json!({
+        "symbol": report.symbol,
+        "resolution": report.native.key(),
+        "charts": report.charts,
+        "bars": report.bars,
+        "lastBar": report.last_bar,
+        "updatedSecondsAgo": report.updated_ago.map(|ago| ago.as_secs()),
+        "state": state,
+        "why": why,
+        "retrying": retrying,
+    })
+}
+
+/// A unix second as a clock time in the local zone, which is where the
+/// person reading it is sitting.
+fn when(ts: i64) -> String {
+    chrono::DateTime::from_timestamp(ts, 0)
+        .map(|utc| chrono::DateTime::<chrono::Local>::from(utc).format("%H:%M").to_string())
+        .unwrap_or_else(|| ts.to_string())
+}
+
+fn ago_text(ago: std::time::Duration) -> String {
+    let secs = ago.as_secs();
+    if secs < 60 {
+        format!("{secs} s")
+    } else if secs < 3_600 {
+        format!("{} min", secs / 60)
+    } else {
+        format!("{} h", secs / 3_600)
+    }
+}
+
+/// Sign in to a feed, in a browser the person drives themselves.
+///
+/// Runs in the terminal it was typed in — see `spec::IN_THE_CALLER` — and
+/// blocks for as long as the sign-in takes, printing what the browser is
+/// doing to stderr as it goes. The lines go to stderr rather than into the
+/// result because they are progress rather than an answer: `--json` stays
+/// one object on stdout, which is what something parsing this needs.
+fn provider_login(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<String, Fault> {
+    let feed = named_or_chosen(store, m)?;
+    if !feed.needs_sign_in() {
+        return Err(Fault::refused(format!(
+            "{} needs no signing in; it works as it is",
+            feed.label
+        )));
+    }
+    if let Err(why) = providers::can_sign_in(feed.id) {
+        return Err(Fault::new(super::EXIT_ERROR, why));
+    }
+
+    eprintln!("a browser is opening at {}; sign in there", feed.label);
+    providers::sign_in(feed.id, |line| eprintln!("{line}"))
+        .map_err(|error| Fault::new(super::EXIT_ERROR, error))?;
+
+    let access = providers::access(feed.id).map(|access| access.line());
+    said(
+        as_json,
+        json!({"id": feed.id, "session": access}),
+        format!("signed in to {}", feed.label),
+    )
+}
+
+fn provider_logout(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<String, Fault> {
+    let feed = named_or_chosen(store, m)?;
+    if !feed.needs_sign_in() {
+        return Err(Fault::refused(format!(
+            "{} has nothing saved to forget",
+            feed.label
+        )));
+    }
+    // Saying what was there beats "ok": somebody signing out twice should
+    // be able to tell the difference.
+    let had = providers::access(feed.id).is_some_and(|access| !matches!(access, providers::Access::Missing));
+    providers::sign_out(feed.id).map_err(|error| Fault::new(super::EXIT_ERROR, error))?;
+    said(
+        as_json,
+        json!({"id": feed.id, "forgotten": had}),
+        match had {
+            true => format!("forgot the saved {} session", feed.label),
+            false => format!("no saved {} session to forget", feed.label),
+        },
+    )
+}
+
+/// The feed a command named, or the one in use.
+fn named_or_chosen(
+    store: &Store,
+    m: &clap::ArgMatches,
+) -> Result<&'static providers::Listed, Fault> {
+    match arg(m, "NAME") {
+        Some(name) => providers::listed(name).ok_or_else(|| {
+            Fault::not_found(format!(
+                "no such data feed: {name:?}; the feeds are {}",
+                feed_names()
+            ))
+        }),
+        None => Ok(crate::feeds::in_use(store)),
+    }
+}
+
+fn feed_names() -> String {
+    providers::LISTED.iter().map(|feed| feed.id).collect::<Vec<_>>().join(", ")
+}
+
 fn config_list(store: &Store, as_json: bool) -> Result<String, Fault> {
     let settings = store.settings();
     if as_json {
@@ -2579,7 +2937,27 @@ fn config_get(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<Stri
 fn config_set(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<String, Fault> {
     let key = required(m, "KEY")?;
     let value = required(m, "VALUE")?;
-    store.set_setting(key, value);
+
+    // `config set` writes any setting by name, and that is the point of it.
+    // The feed is the one value naming something from a closed set, where a
+    // misspelling is not stored nonsense but a silent fall back to Yahoo —
+    // somebody who typed `thinkorswimm` would chart from the wrong source
+    // and be told it worked. So this one is checked, and stored canonically
+    // so that `TOS` and `tos` are the same choice rather than two.
+    let value = match key == crate::feeds::SETTING {
+        false => value.to_string(),
+        true => providers::listed(value)
+            .ok_or_else(|| {
+                Fault::usage(format!(
+                    "no such data feed: {value:?}; the feeds are {}",
+                    feed_names()
+                ))
+            })?
+            .id
+            .to_string(),
+    };
+
+    store.set_setting(key, &value);
     said(as_json, json!({"key": key, "value": value}), format!("set {key} to {value}"))
 }
 
@@ -3545,6 +3923,41 @@ mod tests {
         assert_ne!(refused.code, 0);
     }
 
+    /// A level off the strip, or a floor at or above its ceiling, is a band
+    /// the chart cannot draw. The command says so and stores nothing, on an
+    /// indicator being added as much as on one being changed.
+    #[test]
+    fn a_level_off_the_strip_or_a_crossed_pair_is_refused() {
+        let store = Store::memory().unwrap();
+        run("chartbook create Macro --switch", &store);
+        run("chart indicator add rsi --book Macro", &store);
+        for args in [
+            "--overbought 120",
+            "--oversold -5",
+            "--oversold 75",
+            "--overbought 25",
+            "--overbought 60 --oversold 60",
+        ] {
+            let out = run(&format!("chart indicator set rsi --book Macro {args}"), &store);
+            assert_eq!(out.code, super::super::EXIT_USAGE, "{args}: {}", out.err);
+        }
+        let out = run("chart indicator add stochastic --book Macro --overbought 20 --oversold 80", &store);
+        assert_eq!(out.code, super::super::EXIT_USAGE, "{}", out.err);
+        assert!(out.err.contains("not below"), "{}", out.err);
+
+        let listed = run("chart indicator list --book Macro --json", &store);
+        let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+        let indicators = parsed["indicators"].as_array().unwrap();
+        assert_eq!(indicators.len(), 1, "the refused stochastic was not added");
+        assert_eq!(indicators[0]["params"]["overbought"], 70.0);
+        assert_eq!(indicators[0]["params"]["oversold"], 30.0);
+
+        // Moving both at once past where either was is fine: only the pair
+        // the chart ends up with is judged.
+        let out = run("chart indicator set rsi --book Macro --overbought 25 --oversold 10", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+    }
+
     #[test]
     fn vwap_bands_can_be_turned_on_and_shaded() {
         let store = Store::memory().unwrap();
@@ -3558,6 +3971,39 @@ mod tests {
         assert_eq!(bands[1]["enabled"], true);
         assert_eq!(bands[2]["enabled"], false);
         assert_eq!(bands[0]["fill_alpha"], 0.3);
+    }
+
+    /// The flag takes the whole of what an alpha is, and the figure it is
+    /// given is the figure stored — the help says 0-1 and means it.
+    #[test]
+    fn shading_can_be_asked_for_clear_or_solid() {
+        let store = Store::memory().unwrap();
+        run("chartbook create Macro --switch", &store);
+        run("chart indicator add vwap --book Macro --bands 1", &store);
+
+        for wanted in ["0", "1"] {
+            let out = run(
+                &format!("chart indicator set vwap --book Macro --band-alpha {wanted}"),
+                &store,
+            );
+            assert_eq!(out.code, 0, "{}", out.err);
+
+            let listed = run("chart indicator list --book Macro --json", &store);
+            let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+            let bands = parsed["indicators"][0]["params"]["bands"].as_array().unwrap();
+            assert_eq!(bands[0]["fill_alpha"], wanted.parse::<f64>().unwrap());
+        }
+
+        // Wider is not anything-goes: past either end, and anything that is
+        // not a figure at all, is still refused rather than quietly brought
+        // back to the nearest end.
+        for refused in ["1.2", "-0.1", "nan", "inf"] {
+            let out = run(
+                &format!("chart indicator set vwap --book Macro --band-alpha {refused}"),
+                &store,
+            );
+            assert_ne!(out.code, 0, "--band-alpha {refused} was accepted");
+        }
     }
 
     /// A command that resolved its own target has to say which one it found,

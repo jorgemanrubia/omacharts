@@ -246,6 +246,20 @@ gh api -X POST repos/jorgemanrubia/omacharts/actions/runs/<id>/approve
 Approve the run for the newest head SHA, and never merge anything red or
 anything with an open blocker. Report instead.
 
+## A tweak the owner asks for lands in the author's PR
+
+While a PR is open and the owner is trying it, anything he asks for on it
+— a slider instead of a number, a colour, a fix the review found — goes
+into that PR: pushed to the contributor's own branch, as commits on top
+of theirs, so the PR stays the one organised unit of the change and the
+history shows it as the author's work with the maintainer's tweaks on
+top. Never merge a PR with an asked-for tweak still outstanding, and
+never turn the tweak into a follow-up PR of its own: the owner reads the
+PR as the whole of the change, and a feature that arrives in three pieces
+is three things to review and release instead of one. "What are you
+waiting for" from the owner means push the tweak, not merge without it;
+if it is not clear which, ask, in one line.
+
 ## Landing it
 
 Fix the PR title first if it needs it — it becomes the squash subject, and

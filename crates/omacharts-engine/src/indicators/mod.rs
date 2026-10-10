@@ -21,7 +21,7 @@ use crate::theme::{ColorChoice, Theme, SWATCH_SEQUENCE};
 
 pub use periods::Reset;
 pub use profile::{Profile, ProfileRow};
-pub use vwap::Bands;
+pub use vwap::{Bands, MAX_FILL_ALPHA, MIN_FILL_ALPHA};
 
 /// How a line is drawn.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]

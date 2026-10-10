@@ -21,7 +21,7 @@
 
 use std::rc::Rc;
 
-use omacharts_engine::providers::Yahoo;
+use omacharts_engine::providers;
 use omacharts_engine::{Instrument, Provider, SearchIndex, Timeframe};
 
 use crate::loader::{Loader, Request, BACKFILL};
@@ -207,6 +207,9 @@ pub trait Live {
     fn reload_watchlists(&self);
     /// Re-read the theme and bar scheme, and repaint.
     fn adopt_theming(&self);
+    /// Chart from the feed the settings now name, if it is not the one on
+    /// screen. Nothing to do without a window.
+    fn adopt_feed(&self) {}
 
     /// Save a picture of the focused chart, or of the whole open chartbook.
     ///
@@ -240,6 +243,86 @@ pub trait Live {
     /// hundred milliseconds after it opens. A caller that needs the whole
     /// catalogue has to build one then, and had better say so.
     fn symbols(&self) -> Option<Rc<SearchIndex>>;
+
+    /// What the window holds a stream subscription to, for a provider that
+    /// streams. Empty for one that does not, and with no window at all.
+    fn streaming(&self) -> Vec<crate::live::Report> {
+        Vec::new()
+    }
+}
+
+/// A command line with its launch options taken off, and what they said.
+#[derive(Debug)]
+pub struct Launched {
+    /// What is left, including `argv[0]`, for the command dispatch and the
+    /// symbol to open.
+    pub args: Vec<String>,
+    /// The feed `--provider` named, already checked against the catalogue.
+    pub provider: Option<&'static omacharts_engine::providers::Listed>,
+}
+
+/// Takes the options in [`spec::LAUNCH`] off a command line.
+///
+/// Before anything else looks at the arguments, because a launch option is
+/// not a command's argument and not a symbol: `omacharts --provider tos NVDA`
+/// has to leave `NVDA` looking like the ticker it is, and
+/// `omacharts --provider tos watchlist list` has to still be a `watchlist`
+/// command. Taking them off here is also what keeps [`is_command`] and
+/// [`runs_in_the_caller`] reading `args[1]` — they ask what was typed, and a
+/// launch option is not part of the answer.
+///
+/// Refuses rather than ignores. A name that is not a feed we have is a
+/// mistake worth stopping for: carrying on with Yahoo would chart from the
+/// wrong source for an hour before anybody noticed, and a script that
+/// misspells a feed wants to hear about it.
+pub fn peel_launch(args: &[String]) -> Result<Launched, Fault> {
+    let mut kept: Vec<String> = Vec::with_capacity(args.len());
+    let mut provider = None;
+    let mut rest = args.iter();
+
+    while let Some(arg) = rest.next() {
+        let Some((long, inline)) = arg.strip_prefix("--").map(split_option) else {
+            kept.push(arg.clone());
+            continue;
+        };
+        let Some(option) = spec::LAUNCH.iter().find(|option| option.long == long) else {
+            kept.push(arg.clone());
+            continue;
+        };
+        let value = match inline {
+            Some(value) => value.to_string(),
+            None => rest
+                .next()
+                .cloned()
+                .ok_or_else(|| Fault::usage(format!("--{long} takes a {}", option.value)))?,
+        };
+        match option.long {
+            "provider" => provider = Some(feed_named(&value)?),
+            // Unreachable while LAUNCH has one entry, and the compiler cannot
+            // know that. A new launch option lands here.
+            other => return Err(Fault::usage(format!("--{other} is not handled"))),
+        }
+    }
+
+    Ok(Launched { args: kept, provider })
+}
+
+/// `name=value` as a long option's two halves.
+fn split_option(rest: &str) -> (&str, Option<&str>) {
+    match rest.split_once('=') {
+        Some((long, value)) => (long, Some(value)),
+        None => (rest, None),
+    }
+}
+
+/// The feed with this name, or a usage error listing the ones there are.
+fn feed_named(name: &str) -> Result<&'static omacharts_engine::providers::Listed, Fault> {
+    providers::listed(name).ok_or_else(|| {
+        Fault::usage(format!(
+            "no such data feed: {name:?}; the feeds are {}",
+            spec::launch_values("provider").join(", ")
+        ))
+    })
 }
 
 /// Is this argument list a command rather than a symbol to open?
@@ -260,7 +343,14 @@ pub fn is_command(args: &[String]) -> bool {
 /// [`spec::Noun::local`] for which nouns those are and why.
 pub fn runs_in_the_caller(args: &[String]) -> bool {
     let Some(first) = args.get(1).map(String::as_str) else { return false };
-    spec::SURFACE.iter().any(|noun| noun.name == first && noun.local)
+    if spec::SURFACE.iter().any(|noun| noun.name == first && noun.local) {
+        return true;
+    }
+    // And the handful of verbs whose own reason is not their noun's. See
+    // [`spec::IN_THE_CALLER`]: a sign-in waits on a person, and waiting on a
+    // person inside the window's main loop is a frozen window.
+    let Some(second) = args.get(2).map(String::as_str) else { return false };
+    spec::IN_THE_CALLER.contains(&(first, second))
 }
 
 /// Run one command.
@@ -325,7 +415,7 @@ pub struct Quote {
 }
 
 /// Read the cached daily bars for an instrument and work out its move.
-pub fn quote(store: &Store, provider: &Yahoo, instrument: &Instrument) -> Option<Quote> {
+pub fn quote(store: &Store, provider: &dyn Provider, instrument: &Instrument) -> Option<Quote> {
     let key = cache_key(provider, instrument)?;
     let bars = store.load_bars(&key, Timeframe::days(1));
     let (previous, last) = (bars.get(bars.len().checked_sub(2)?)?, bars.last()?);
@@ -338,7 +428,7 @@ pub fn quote(store: &Store, provider: &Yahoo, instrument: &Instrument) -> Option
     })
 }
 
-pub fn cache_key(provider: &Yahoo, instrument: &Instrument) -> Option<String> {
+pub fn cache_key(provider: &dyn Provider, instrument: &Instrument) -> Option<String> {
     provider.symbol_for(instrument).map(|symbol| format!("{}:{symbol}", provider.id()))
 }
 
@@ -347,7 +437,7 @@ pub fn cache_key(provider: &Yahoo, instrument: &Instrument) -> Option<String> {
 ///
 /// Who acts on it depends on where we are running, which is the distinction
 /// [`Live::warm`] exists to make.
-fn stale_daily(store: &Store, provider: &Yahoo, instruments: &[Instrument]) -> Vec<Instrument> {
+fn stale_daily(store: &Store, provider: &dyn Provider, instruments: &[Instrument]) -> Vec<Instrument> {
     let now = chrono::Utc::now().timestamp();
     let daily = Timeframe::days(1);
 
@@ -373,9 +463,9 @@ fn stale_daily(store: &Store, provider: &Yahoo, instruments: &[Instrument]) -> V
 /// is the one place that paces requests. Speculative, so they go two seconds
 /// apart and are refused outright while the provider is throttling: a bar
 /// widget must never cost the app its rate limit.
-fn refresh(store: &Store, provider: &Yahoo, instruments: &[Instrument]) {
+fn refresh(store: &Store, provider: &dyn Provider, instruments: &[Instrument]) {
     let (sender, receiver) = async_channel::unbounded();
-    let loader = Loader::new(Yahoo::new(), sender);
+    let loader = Loader::new(std::sync::Arc::from(crate::feeds::selected(store)), sender);
     let mut outstanding = 0;
     let stale = stale_daily(store, provider, instruments);
     for (rank, instrument) in stale.iter().take(MAX_REFRESH).enumerate() {
@@ -397,7 +487,7 @@ fn refresh(store: &Store, provider: &Yahoo, instruments: &[Instrument]) {
 /// The watchlist as JSON, for the bar widget.
 pub fn watchlist_json(store: &Store, refresh_first: bool, live: Option<&dyn Live>) -> String {
     let index = resolver(live);
-    let provider = Yahoo::new();
+    let provider = crate::feeds::selected(store);
 
     let sections = store.watchlist();
     if refresh_first {
@@ -411,9 +501,9 @@ pub fn watchlist_json(store: &Store, refresh_first: bool, live: Option<&dyn Live
             // loader thread and answer from the cache, which is all the
             // widget draws anyway: a quote that arrives on the next tick is
             // not worth six seconds of frozen application.
-            Some(live) => live.warm(&stale_daily(store, &provider, &instruments)),
+            Some(live) => live.warm(&stale_daily(store, provider.as_ref(), &instruments)),
             // A process of its own, with no window and nothing to block.
-            None => refresh(store, &provider, &instruments),
+            None => refresh(store, provider.as_ref(), &instruments),
         }
     }
 
@@ -440,7 +530,7 @@ pub fn watchlist_json(store: &Store, refresh_first: bool, live: Option<&dyn Live
             if e > 0 {
                 out.push(',');
             }
-            out.push_str(&entry_json(store, &provider, instrument));
+            out.push_str(&entry_json(store, provider.as_ref(), instrument));
         }
         out.push_str("]}");
     }
@@ -502,7 +592,7 @@ fn colors_json(store: &Store) -> String {
     )
 }
 
-fn entry_json(store: &Store, provider: &Yahoo, instrument: &Instrument) -> String {
+fn entry_json(store: &Store, provider: &dyn Provider, instrument: &Instrument) -> String {
     let mut fields = format!(
         "{{\"symbol\":{},\"suffix\":{},\"display\":{},\"name\":{},\"kind\":{}",
         json_string(&instrument.symbol),
@@ -584,6 +674,10 @@ impl Live for Rc<crate::ui::Window> {
         crate::ui::Window::adopt_theming(self);
     }
 
+    fn adopt_feed(&self) {
+        crate::ui::Window::adopt_feed(self);
+    }
+
     fn screenshot(
         &self,
         whole_book: bool,
@@ -601,6 +695,10 @@ impl Live for Rc<crate::ui::Window> {
     fn symbols(&self) -> Option<Rc<SearchIndex>> {
         crate::ui::Window::symbols(self)
     }
+
+    fn streaming(&self) -> Vec<crate::live::Report> {
+        crate::ui::Window::streaming(self)
+    }
 }
 
 /// The window as something a command can refresh.
@@ -615,6 +713,81 @@ pub fn live(window: &Rc<crate::ui::Window>) -> Option<Box<dyn Live>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use omacharts_engine::providers::Yahoo;
+
+    fn line(words: &[&str]) -> Vec<String> {
+        words.iter().map(|w| w.to_string()).collect()
+    }
+
+    #[test]
+    fn a_launch_option_comes_off_and_leaves_the_rest_alone() {
+        let peeled = peel_launch(&line(&["omacharts", "--provider", "tos", "NVDA"])).unwrap();
+        assert_eq!(peeled.args, line(&["omacharts", "NVDA"]));
+        assert_eq!(peeled.provider.map(|feed| feed.id), Some("tos"));
+
+        // The feed's name must not survive as a symbol — this is the bug the
+        // peeling exists to prevent, because the symbol filter only drops
+        // arguments that start with a dash.
+        assert!(!peeled.args.iter().any(|arg| arg == "tos"));
+    }
+
+    #[test]
+    fn it_is_written_either_way_round() {
+        for written in [
+            line(&["omacharts", "--provider=tos"]),
+            line(&["omacharts", "--provider", "tos"]),
+        ] {
+            assert_eq!(peel_launch(&written).unwrap().provider.map(|f| f.id), Some("tos"));
+        }
+    }
+
+    /// A command keeps being a command with a launch option in front of it,
+    /// which is what `is_command` and `runs_in_the_caller` read `args[1]`
+    /// for.
+    #[test]
+    fn a_command_behind_a_launch_option_is_still_that_command() {
+        let peeled = peel_launch(&line(&["omacharts", "--provider", "tos", "watchlist", "list"]))
+            .unwrap();
+        assert!(is_command(&peeled.args));
+        let local = peel_launch(&line(&["omacharts", "--provider", "yahoo", "skill", "status"]))
+            .unwrap();
+        assert!(runs_in_the_caller(&local.args));
+    }
+
+    #[test]
+    fn nothing_to_peel_is_the_line_unchanged() {
+        let given = line(&["omacharts", "chart", "symbol", "AAPL"]);
+        let peeled = peel_launch(&given).unwrap();
+        assert_eq!(peeled.args, given);
+        assert!(peeled.provider.is_none());
+    }
+
+    /// Charting from the wrong source because a name was misspelled is worse
+    /// than refusing to start, and a script that typos a feed wants to know.
+    #[test]
+    fn a_feed_we_do_not_have_is_a_usage_error_naming_the_ones_we_do() {
+        let fault = peel_launch(&line(&["omacharts", "--provider", "bloomberg"])).unwrap_err();
+        assert_eq!(fault.code, EXIT_USAGE);
+        assert!(fault.message.contains("bloomberg"), "{}", fault.message);
+        assert!(fault.message.contains("yahoo"), "{}", fault.message);
+        assert!(fault.message.contains("tos"), "{}", fault.message);
+    }
+
+    #[test]
+    fn an_option_with_nothing_after_it_says_what_it_wanted() {
+        let fault = peel_launch(&line(&["omacharts", "--provider"])).unwrap_err();
+        assert_eq!(fault.code, EXIT_USAGE);
+        assert!(fault.message.contains("NAME"), "{}", fault.message);
+    }
+
+    /// Everything else that looks like an option is left where it was, for
+    /// `peel_off` and clap to have their say — a launch option list is not a
+    /// licence to swallow arguments.
+    #[test]
+    fn another_option_is_not_ours_to_take() {
+        let given = line(&["omacharts", "--nonsense", "--version"]);
+        assert_eq!(peel_launch(&given).unwrap().args, given);
+    }
 
     /// A window that goes wrong. `flush_workspace` is the first thing a command
     /// touching the arrangement calls, so panicking there stands in for a bug

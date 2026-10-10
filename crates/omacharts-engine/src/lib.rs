@@ -16,15 +16,19 @@ pub mod provider;
 pub mod refresh;
 pub mod session;
 pub mod providers;
+pub mod stream;
 pub mod symbols;
 pub mod theme;
 
 pub use bars::{
-    price_decimals, repair_continuous_opens, resample, Bar, BarStyle, Timeframe,
+    bucket_of, price_decimals, repair_continuous_opens, resample, Bar, BarStyle, Timeframe,
 };
 pub use indicators::{palette_colors, Indicator, Kind as IndicatorKind, Output, Params, Reset};
 pub use link::LinkGroup;
-pub use provider::{Capability, Delivery, FetchFailure, Pacing, Provider, ProviderError};
+pub use provider::{
+    Capability, Delivery, FetchFailure, Pacing, Provider, ProviderError, Sink, Stream,
+    Subscription, Update,
+};
 pub use session::Session;
 pub use symbols::{Instrument, InstrumentKind, SearchHit, SearchIndex};
 pub use drawings::{

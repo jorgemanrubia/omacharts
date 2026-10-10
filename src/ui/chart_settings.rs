@@ -4,18 +4,20 @@
 //! looking when you want them. Two pages: how the bars are read and scaled,
 //! and what is drawn on top of them.
 
-use std::cell::RefCell;
+use std::cell::{OnceCell, RefCell};
 use std::rc::Rc;
 
 use adw::prelude::*;
 use omacharts_engine::indicators::{
-    self, Kind, LineStyle, Params, Reset, Stroke, MAX_PANE_SHARE, MIN_PANE_SHARE,
+    self, Kind, LineStyle, Params, Reset, Stroke, MAX_FILL_ALPHA, MAX_PANE_SHARE, MIN_FILL_ALPHA,
+    MIN_PANE_SHARE,
 };
 use omacharts_engine::theme::ColorChoice;
 use omacharts_engine::{BarStyle, Indicator, Session};
 
 use crate::store::Store;
 use crate::ui::colors;
+use crate::ui::controls;
 use crate::ui::dialogs;
 use crate::ui::shortcuts;
 use crate::ui::window::Window;
@@ -1266,24 +1268,30 @@ fn band_groups(
         show.add_suffix(&switch);
         group.add(&show);
 
-        let deviations = adw::SpinRow::with_range(0.1, 6.0, 0.1);
-        deviations.set_title("Standard deviations");
-        deviations.set_digits(1);
-        deviations.set_value(band.deviations);
+        // Tenths, because one, one and a half and two are the figures people
+        // reach for, and six is further out than any band is drawn.
         let window_for_dev = window.clone();
         let refresh_for_dev = refresh.clone();
-        deviations.connect_value_notify(move |row| {
-            let value = row.value();
-            update(&window_for_dev, id, move |indicator| {
-                if let Params::Vwap { bands, .. } = &mut indicator.params
-                    && let Some(band) = bands.get_mut(index)
-                {
-                    band.deviations = value;
-                }
-            });
-            refresh_for_dev.run();
-        });
-        group.add(&deviations);
+        let deviations = controls::bounded_row(
+            "Standard deviations",
+            None,
+            band.deviations,
+            0.1,
+            6.0,
+            0.1,
+            1,
+            move |value| {
+                update(&window_for_dev, id, move |indicator| {
+                    if let Params::Vwap { bands, .. } = &mut indicator.params
+                        && let Some(band) = bands.get_mut(index)
+                    {
+                        band.deviations = value;
+                    }
+                });
+                refresh_for_dev.run();
+            },
+        );
+        group.add(&deviations.row);
 
         let shaded = adw::ActionRow::new();
         shaded.set_title("Shaded");
@@ -1307,10 +1315,13 @@ fn band_groups(
         shaded.add_suffix(&fill);
         group.add(&shaded);
 
-        // How much of the colour that shading gets, between the ends the
-        // engine's own clamp allows a band: never quite invisible, and
-        // stopping well short of opaque, because it is a backdrop and the bars
-        // have to stay readable through it.
+        // How much of the colour that shading gets, over the whole range the
+        // figure has: clear at one end, solid at the other. How heavy a
+        // backdrop wants to be is a matter of taste, and the shading is drawn
+        // under the candles, so even a solid band has the bars on top of it.
+        //
+        // The ends come from the engine, as the pane height's do, so the
+        // slider and the chart agree about where they are.
         group.add(
             &percent_row(
                 window,
@@ -1318,8 +1329,8 @@ fn band_groups(
                 id,
                 "Shading %",
                 band.alpha(),
-                0.02,
-                0.6,
+                MIN_FILL_ALPHA,
+                MAX_FILL_ALPHA,
                 move |indicator, share| {
                     if let Params::Vwap { bands, .. } = &mut indicator.params
                         && let Some(band) = bands.get_mut(index)
@@ -1449,20 +1460,14 @@ fn spin_row(
     row
 }
 
-/// A proportion: a slider to aim with, and a box to say it in.
-///
-/// Every percentage in here is chosen by feel — a pane is about a third, a
-/// shading is barely there — and a pair of − and + buttons is the wrong shape
-/// for that question. The box beside the slider is for the times you already
-/// know the figure and would rather type it than aim at it.
-///
-/// One `GtkAdjustment` drives both, so there is one value rather than two
-/// controls that have to be kept in step: dragging moves the number as it
-/// goes, and typing moves the handle.
+/// A proportion, shown as the whole percent a person reads.
 ///
 /// The range arrives as the fractions the thing is really stored in, and
 /// 0–100 is only how it is shown. Callers that did the arithmetic themselves
 /// are how one of these ends up off by a hundred with nobody noticing.
+///
+/// Whole percent. Nothing on the chart shows a tenth of one, and a slider that
+/// stops between figures is a slider the box then disagrees with.
 #[allow(clippy::too_many_arguments)]
 fn percent_row(
     window: &Rc<Window>,
@@ -1474,49 +1479,23 @@ fn percent_row(
     most: f64,
     apply: impl Fn(&mut Indicator, f64) + 'static,
 ) -> adw::ActionRow {
-    let row = adw::ActionRow::new();
-    row.set_title(title);
-
-    let adjustment = percent_adjustment(share, least, most);
-
-    let slider = gtk::Scale::new(gtk::Orientation::Horizontal, Some(&adjustment));
-    slider.set_draw_value(false);
-    slider.set_round_digits(0);
-    slider.set_size_request(180, -1);
-    slider.set_valign(gtk::Align::Center);
-
-    let entry = percent_entry(&adjustment);
-
-    row.add_suffix(&slider);
-    row.add_suffix(&entry);
-
     let window = window.clone();
     let refresh = refresh.clone();
-    adjustment.connect_value_changed(move |adjustment| {
-        let share = as_share(adjustment.value());
-        update(&window, id, |indicator| apply(indicator, share));
-        refresh.run();
-    });
-    row
-}
-
-/// The box a percentage can be typed into.
-///
-/// The figure is committed on Enter or on leaving the box, never per
-/// keystroke: the 5 on the way to 50 would otherwise reach the chart and
-/// redraw it on the way past. Anything outside the range is pulled back to the
-/// nearest end it allows rather than refused — the figure you can have is more
-/// use than a complaint about the one you cannot — and anything that is not a
-/// number at all leaves the value where it was.
-fn percent_entry(adjustment: &gtk::Adjustment) -> gtk::SpinButton {
-    let entry = gtk::SpinButton::new(Some(adjustment), 1.0, 0);
-    entry.set_valign(gtk::Align::Center);
-    entry.set_numeric(true);
-    entry.set_snap_to_ticks(true);
-    entry.set_update_policy(gtk::SpinButtonUpdatePolicy::IfValid);
-    entry.set_width_chars(3);
-    entry.set_max_width_chars(3);
-    entry
+    controls::bounded_row(
+        title,
+        None,
+        as_percent(share),
+        as_percent(least),
+        as_percent(most),
+        1.0,
+        0,
+        move |percent| {
+            let share = as_share(percent);
+            update(&window, id, |indicator| apply(indicator, share));
+            refresh.run();
+        },
+    )
+    .row
 }
 
 /// A stored fraction as the whole percent a person reads, and back.
@@ -1533,25 +1512,96 @@ fn as_share(percent: f64) -> f64 {
     percent / 100.0
 }
 
-/// The one value a percentage row runs on, in whole percent.
+/// An oscillator's overbought and oversold levels, the pair RSI and the
+/// stochastic both draw across their strips.
 ///
-/// Both controls share it, which is what keeps them from drifting apart, and
-/// it is where the range is enforced: a figure past either end is pulled back
-/// to the end rather than written through to be clamped later somewhere the
-/// person who typed it cannot see.
-///
-/// Whole percent. Nothing on the chart shows a tenth of one, and a slider that
-/// stops between figures is a slider the box then disagrees with.
-fn percent_adjustment(share: f64, least: f64, most: f64) -> gtk::Adjustment {
-    gtk::Adjustment::new(
-        as_percent(share),
-        as_percent(least),
-        as_percent(most),
-        1.0,
-        10.0,
+/// Each runs the whole 0–100 of the strip, because where the lines go is a
+/// matter of taste — 80/20 on a stochastic, 70/30 on RSI, tighter on a quiet
+/// instrument — and a row that stopped at 50 would be deciding that for you.
+/// What the pair may not do is cross: a band whose floor is above its ceiling
+/// is not a band. So moving one past the other pushes the other along, a step
+/// ahead, rather than refusing the move — the figure you asked for is the one
+/// you get, and the one you did not ask about is the one that gives way.
+/// Overbought stops a step short of 0 and oversold a step short of 100, which
+/// is what keeps there always being somewhere for the other to go.
+fn level_rows(
+    window: &Rc<Window>,
+    refresh: &Refresh,
+    id: u32,
+    overbought: f64,
+    oversold: f64,
+) -> [adw::ActionRow; 2] {
+    // Each row's callback needs the other row, which does not exist yet when
+    // the first is built; the cells are filled once both do.
+    let under: Rc<OnceCell<controls::WeakBounded>> = Rc::new(OnceCell::new());
+    let over: Rc<OnceCell<controls::WeakBounded>> = Rc::new(OnceCell::new());
+
+    let window_for_over = window.clone();
+    let refresh_for_over = refresh.clone();
+    let under_for_over = under.clone();
+    let overbought = controls::bounded_row(
+        "Overbought",
+        None,
+        overbought,
+        LEVEL_STEP,
+        100.0,
+        LEVEL_STEP,
+        0,
+        move |level| {
+            update(&window_for_over, id, |indicator| {
+                if let Params::Rsi { overbought, .. } | Params::Stochastic { overbought, .. } =
+                    &mut indicator.params
+                {
+                    *overbought = level;
+                }
+            });
+            if let Some(under) = under_for_over.get()
+                && under.value().is_some_and(|floor| floor >= level)
+            {
+                under.set(level - LEVEL_STEP);
+            }
+            refresh_for_over.run();
+        },
+    );
+
+    let window_for_under = window.clone();
+    let refresh_for_under = refresh.clone();
+    let over_for_under = over.clone();
+    let oversold = controls::bounded_row(
+        "Oversold",
+        None,
+        oversold,
         0.0,
-    )
+        100.0 - LEVEL_STEP,
+        LEVEL_STEP,
+        0,
+        move |level| {
+            update(&window_for_under, id, |indicator| {
+                if let Params::Rsi { oversold, .. } | Params::Stochastic { oversold, .. } =
+                    &mut indicator.params
+                {
+                    *oversold = level;
+                }
+            });
+            if let Some(over) = over_for_under.get()
+                && over.value().is_some_and(|ceiling| ceiling <= level)
+            {
+                over.set(level + LEVEL_STEP);
+            }
+            refresh_for_under.run();
+        },
+    );
+
+    // Filled once both exist. Neither can already be set: this is the only
+    // place that sets them.
+    let _ = under.set(oversold.downgrade());
+    let _ = over.set(overbought.downgrade());
+
+    [overbought.row, oversold.row]
 }
+
+/// Whole levels, and the least a pair of them can be apart.
+const LEVEL_STEP: f64 = 1.0;
 
 /// How much of the chart an indicator's own strip takes.
 ///
@@ -1561,33 +1611,6 @@ fn percent_adjustment(share: f64, least: f64, most: f64) -> gtk::Adjustment {
 /// The ends come from the engine's own clamp rather than from a pair of
 /// numbers typed in here, which is the only way the slider and the chart agree
 /// about what the extremes are.
-/// An oscillator's overbought and oversold levels, the pair RSI and the
-/// stochastic both draw across their strips.
-fn level_rows(
-    window: &Rc<Window>,
-    refresh: &Refresh,
-    id: u32,
-    overbought: f64,
-    oversold: f64,
-) -> [adw::SpinRow; 2] {
-    [
-        spin_row(window, refresh, id, "Overbought", overbought, 50.0, 100.0, 1.0, |indicator, value| {
-            if let Params::Rsi { overbought, .. } | Params::Stochastic { overbought, .. } =
-                &mut indicator.params
-            {
-                *overbought = value;
-            }
-        }),
-        spin_row(window, refresh, id, "Oversold", oversold, 0.0, 50.0, 1.0, |indicator, value| {
-            if let Params::Rsi { oversold, .. } | Params::Stochastic { oversold, .. } =
-                &mut indicator.params
-            {
-                *oversold = value;
-            }
-        }),
-    ]
-}
-
 fn pane_height_row(
     window: &Rc<Window>,
     refresh: &Refresh,
@@ -1858,7 +1881,8 @@ mod tests {
     #[test]
     fn a_stored_fraction_is_shown_as_whole_percent() {
         assert_eq!(as_percent(0.16), 16.0, "a sixth of the chart reads as 16%");
-        assert_eq!(as_percent(0.02), 2.0, "and the faintest shading as 2%");
+        assert_eq!(as_percent(0.0), 0.0, "clear shading reads as 0%");
+        assert_eq!(as_percent(1.0), 100.0, "and solid shading as 100%");
     }
 
     /// The row reads one way and writes the other, so a figure that survives
@@ -1866,7 +1890,7 @@ mod tests {
     /// a hundred times the one that was chosen.
     #[test]
     fn a_percentage_comes_back_as_the_fraction_it_was_shown_from() {
-        for share in [MIN_PANE_SHARE, 0.16, 0.5, MAX_PANE_SHARE] {
+        for share in [0.0, MIN_PANE_SHARE, 0.16, 0.5, MAX_PANE_SHARE, 1.0] {
             assert_eq!(as_share(as_percent(share)), share);
         }
     }
