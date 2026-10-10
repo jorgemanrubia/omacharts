@@ -180,7 +180,12 @@ const SWITCHES: &[&str] = &["on", "off"];
 const LINKS: &[&str] =
     &["none", "1", "2", "3", "4", "5", "6", "7", "8", "9"];
 const COLOURING: &[&str] = &["coloured", "red-up", "monochrome"];
-const DRAWING_KINDS: &[&str] = &["line", "rect"];
+const DRAWING_KINDS: &[&str] = &["line", "rect", "ellipse", "text"];
+/// Where a figure's label sits in it.
+const PLACES: &[&str] = &[
+    "center", "top", "bottom", "left", "right", "top-left", "top-right", "bottom-left",
+    "bottom-right",
+];
 const ARROWS: &[&str] = &["none", "end", "start", "both"];
 /// The shapes an arrowhead comes in.
 const HEADS: &[&str] = &["filled", "open", "barb"];
@@ -735,11 +740,11 @@ pub const SURFACE: &[Noun] = &[
             },
             Verb {
                 name: "drawing",
-                about: "Draw a line or a box on the chart's symbol; list, move, restyle or remove what is drawn; edit the nine configurations",
+                about: "Draw a line, a box, a circle or words on the chart's symbol; label any of them; list, move, restyle or remove what is drawn; edit the nine configurations",
                 args: &[
                     Arg::req("ACTION", "what to do")
                         .of(&["list", "add", "set", "remove", "clear", "configs", "configure", "reset-configs"]),
-                    Arg::opt("KIND", "a line between two anchors, or a box with them at opposite corners")
+                    Arg::opt("KIND", "a line or a box between two anchors, a circle in the box they make, or words at the first")
                         .of(DRAWING_KINDS),
                 ],
                 flags: &[
@@ -758,6 +763,11 @@ pub const SURFACE: &[Noun] = &[
                     Flag::valued("alpha", "F", "how much of a box's fill shows, 0-1"),
                     Flag::valued("scope", "SCOPE", "who else sees it: local, global, or group-1 to group-9 (default: the chart's own sharing)"),
                     Flag::valued("order", "WHERE", "bring it to the front or send it to the back").of(&["front", "back"]),
+                    Flag::valued("text", "WORDS", "what it says: the whole of a text drawing, a label on any other kind; empty takes the label off"),
+                    Flag::valued("text-at", "WHERE", "where a figure's label sits in it").of(PLACES),
+                    Flag::valued("text-color", "COLOUR", "the words' colour: a preset name or #rrggbb"),
+                    Flag::valued("font", "FAMILY", "the words' font family; `system` for the desktop's own"),
+                    Flag::valued("font-size", "F", "the words' size in pixels"),
                 ],
                 example: "omacharts chart drawing add line --from 2026-09-01,180.5 --to 2026-09-19,192 --config 4",
                 json: true,

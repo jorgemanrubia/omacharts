@@ -21,7 +21,8 @@ use std::rc::Rc;
 use adw::prelude::*;
 use gtk::{gio, glib};
 use omacharts_engine::drawings::{
-    self, Arrow, ArrowHead, Configurations, Kind, Paint, Preset, Scope, Style, CONFIGURATIONS,
+    self, Arrow, ArrowHead, Configurations, Kind, Paint, Place, Preset, Scope, Style, Text,
+    CONFIGURATIONS,
 };
 use omacharts_engine::Theme;
 
@@ -44,6 +45,16 @@ const CANDLE_ALPHA: f64 = 0.5;
 /// Something that shows a row a value: the editor keeps one per row so a
 /// style chosen elsewhere can be put in front of the hand.
 type Shower<T> = Rc<dyn Fn(&T)>;
+
+/// A row and the way to show it a style: what every builder in here hands
+/// back, and what the editor collects.
+type StyleRow = (adw::ActionRow, Shower<Style>);
+
+/// The way to put a drawing, as it now is, in front of the Text tab.
+type ShowText = Rc<dyn Fn(&omacharts_engine::Drawing, &Style)>;
+
+/// The Text tab, and the way to show it a drawing as it now is.
+type TextTab = (adw::PreferencesPage, ShowText);
 
 // ---------------------------------------------------------------------------
 // A drawing's properties
@@ -137,8 +148,21 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
             call_refresh();
         })
     };
-    let editor = style_editor(window, kind, drawing.style(&configs_now).clone(), on_style);
+    let editor = style_editor(window, kind, drawing.style(&configs_now).clone(), on_style.clone());
     page.add(&editor.group);
+
+    // A figure's words are a subject of their own, behind a tab. A text
+    // drawing *is* its words, and `style_editor` has already put the three
+    // rows on this page: a tab there would be a tab over nothing.
+    let text_tab = (!kind.is_text()).then(|| {
+        let on_text: Rc<dyn Fn(Text)> = {
+            let view = view.clone();
+            Rc::new(move |text: Text| {
+                view.edit_selected(move |d| d.set_text(text.clone()));
+            })
+        };
+        text_page(window, kind, &drawing, drawing.style(&configs_now).clone(), on_style, on_text)
+    });
 
     // Who else sees it: one row, a little apart from the look.
     let sharing = adw::PreferencesGroup::new();
@@ -167,6 +191,7 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
     dialog.set_title(&format!("{} properties", kind.label()));
     dialog.set_content_width(440);
 
+    let show_text = text_tab.as_ref().map(|(_, show)| show.clone());
     *refresh.borrow_mut() = Some({
         let view = view.clone();
         let label = shown_label.clone();
@@ -191,6 +216,9 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
             let style = d.style(&configs);
             paint_preview(&preview, &theme, kind, style);
             editor.show(style);
+            if let Some(show_text) = show_text.as_ref() {
+                show_text(&d, style);
+            }
         })
     });
     call_refresh();
@@ -297,7 +325,22 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
         })
     };
 
-    finish(&dialog, &page, &view.area, Some(tick));
+    match text_tab {
+        // One subject, one page, no switcher to put over it.
+        None => finish(&dialog, &page, None, &view.area, Some(tick)),
+        Some((text_page, _)) => {
+            let stack = adw::ViewStack::new();
+            // "Look" rather than the kind's name: the dialog's title already
+            // says which kind this is, and a tab repeating it would be the
+            // one tab that does not name its own subject.
+            stack.add_titled(&page, Some("look"), "Look");
+            stack.add_titled(&text_page, Some("text"), "Text");
+            let switcher = adw::ViewSwitcher::new();
+            switcher.set_stack(Some(&stack));
+            switcher.set_policy(adw::ViewSwitcherPolicy::Wide);
+            finish(&dialog, &stack, Some(&switcher), &view.area, Some(tick));
+        }
+    }
     dialog.present(Some(&window.window));
 }
 
@@ -371,6 +414,9 @@ pub fn present_configurations(window: &Rc<Window>, store: &Rc<Store>, kind: Kind
                 let editor = style_editor(&window, kind, current, on_style);
                 let sub = adw::PreferencesPage::new();
                 sub.add(&editor.group);
+                if let Some(text) = &editor.text {
+                    sub.add(text);
+                }
                 let toolbar = adw::ToolbarView::new();
                 toolbar.add_top_bar(&adw::HeaderBar::new());
                 toolbar.set_content(Some(&sub));
@@ -489,6 +535,15 @@ fn name_of(paint: &Paint) -> String {
 #[derive(Clone)]
 struct Editor {
     group: adw::PreferencesGroup,
+    /// How the kind's words are set, for the kinds that are a shape and so
+    /// keep that apart from their own rows.
+    ///
+    /// Handed back rather than added, because the two dialogs put it in
+    /// different places: a drawing's properties give it a tab of its own,
+    /// since a figure's label is a second subject; a configuration is one
+    /// page and the rows simply follow the shape's. Either way they are the
+    /// same rows, driven by the same editor, so `show` reaches them both.
+    text: Option<adw::PreferencesGroup>,
     show: Rc<dyn Fn(&Style)>,
 }
 
@@ -720,6 +775,23 @@ fn style_editor(window: &Rc<Window>, kind: Kind, current: Style, on_style: Rc<dy
         }
     }
 
+    // A shape's words, in a group of their own. The text kind's three rows
+    // are already its page, above.
+    let text = (!kind.is_text()).then(|| {
+        let group = adw::PreferencesGroup::new();
+        group.set_title("Text");
+        // The ink, the face and the size, and not where it sits: a
+        // configuration says how words are set, never where one drawing's
+        // happen to sit. Placement belongs to the drawing, and is on its
+        // Text tab.
+        group.set_description(Some("How a label on this drawing is set."));
+        for (row, show) in text_rows(&theme, &style, &emit) {
+            group.add(&row);
+            shows.push(show);
+        }
+        group
+    });
+
     let show: Rc<dyn Fn(&Style)> = {
         let style = style.clone();
         let showing = showing.clone();
@@ -732,7 +804,261 @@ fn style_editor(window: &Rc<Window>, kind: Kind, current: Style, on_style: Rc<dy
             showing.set(false);
         })
     };
-    Editor { group, show }
+    Editor { group, text, show }
+}
+
+/// The Text tab of a figure's properties: what it says, where that sits, and
+/// how it is set.
+///
+/// A tab rather than more rows under the shape's, because a figure's text is
+/// a second subject: a box has a fill, an edge and a thickness, and then,
+/// separately, it may have something written in it. Mixing the two into one
+/// list makes the common case — a box with no label at all — read as a page
+/// half of which does not apply.
+///
+/// The content is not part of the configuration and is edited straight onto
+/// the drawing; the three style rows are, and go through the same editor the
+/// shape's rows do.
+fn text_page(
+    window: &Rc<Window>,
+    kind: Kind,
+    drawing: &omacharts_engine::Drawing,
+    style: Style,
+    on_style: Rc<dyn Fn(Style)>,
+    on_text: Rc<dyn Fn(Text)>,
+) -> TextTab {
+    let theme = window.theme();
+    let page = adw::PreferencesPage::new();
+    let showing = Rc::new(std::cell::Cell::new(false));
+    let text: Rc<RefCell<Text>> = Rc::new(RefCell::new(drawing.text.clone()));
+
+    let emit_text: Rc<dyn Fn()> = {
+        let text = text.clone();
+        let on_text = on_text.clone();
+        let showing = showing.clone();
+        Rc::new(move || {
+            if showing.get() {
+                return;
+            }
+            let now = text.borrow().clone();
+            on_text(now);
+        })
+    };
+
+    // What it says. A plain area: the weight and the slope of a run live in
+    // the text and a box like this cannot show them, so it edits the
+    // characters and says so — the chart itself is where a word is made
+    // bold, with the caret in it.
+    let content = adw::PreferencesGroup::new();
+    content.set_title("Text");
+    content.set_description(Some(
+        "Double-click the drawing to type on the chart, where Ctrl+B and Ctrl+I set a word in bold or italic.",
+    ));
+    let area = gtk::TextView::new();
+    area.set_wrap_mode(gtk::WrapMode::WordChar);
+    area.set_top_margin(8);
+    area.set_bottom_margin(8);
+    area.set_left_margin(8);
+    area.set_right_margin(8);
+    area.buffer().set_text(&drawing.text.plain_text());
+    let frame = gtk::ScrolledWindow::new();
+    frame.set_child(Some(&area));
+    frame.set_min_content_height(84);
+    frame.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+    frame.add_css_class("card");
+    content.add(&frame);
+    page.add(&content);
+    {
+        let text = text.clone();
+        let emit_text = emit_text.clone();
+        let showing = showing.clone();
+        area.buffer().connect_changed(move |buffer| {
+            if showing.get() {
+                return;
+            }
+            let (start, end) = buffer.bounds();
+            let typed = buffer.text(&start, &end, true).to_string();
+            let mut text = text.borrow_mut();
+            // The runs are rebuilt from plain characters, so editing here
+            // flattens a label that was partly bold. The description above
+            // points at the chart, which is where the formatting lives.
+            text.spans = vec![omacharts_engine::Span::plain(&typed)];
+            let at = text.at;
+            *text = Text { spans: text.spans.clone(), at }.tidied();
+            drop(text);
+            emit_text();
+        });
+    }
+
+    // Where it sits, and how it is set.
+    let look = adw::PreferencesGroup::new();
+    look.set_title("How it is set");
+    let style_cell: Rc<RefCell<Style>> = Rc::new(RefCell::new(style));
+    let emit_style: Rc<dyn Fn()> = {
+        let style_cell = style_cell.clone();
+        let on_style = on_style.clone();
+        let showing = showing.clone();
+        Rc::new(move || {
+            if showing.get() {
+                return;
+            }
+            let now = style_cell.borrow().clone();
+            on_style(now);
+        })
+    };
+
+    let (place, show_place) = place_row(kind, text.borrow().at, {
+        let text = text.clone();
+        let emit_text = emit_text.clone();
+        move |at| {
+            text.borrow_mut().at = at;
+            emit_text();
+        }
+    });
+    look.add(&place);
+
+    let mut show_style: Vec<Shower<Style>> = Vec::new();
+    for (row, show) in text_rows(&theme, &style_cell, &emit_style) {
+        look.add(&row);
+        show_style.push(show);
+    }
+    page.add(&look);
+
+    let show: ShowText = {
+        let text = text.clone();
+        let style_cell = style_cell.clone();
+        let area = area.clone();
+        let showing = showing.clone();
+        Rc::new(move |drawing: &omacharts_engine::Drawing, style: &Style| {
+            showing.set(true);
+            *text.borrow_mut() = drawing.text.clone();
+            *style_cell.borrow_mut() = style.clone();
+            let plain = drawing.text.plain_text();
+            // Only when it differs, or setting it would move the caret to
+            // the end on every keystroke.
+            let (start, end) = area.buffer().bounds();
+            if area.buffer().text(&start, &end, true) != plain {
+                area.buffer().set_text(&plain);
+            }
+            show_place(&drawing.text.at);
+            for show in &show_style {
+                show(style);
+            }
+            showing.set(false);
+        })
+    };
+    (page, show)
+}
+
+/// Where a figure's label sits, as a picture of the figure with the words in
+/// it: nine cells, one lit.
+///
+/// A graphical control rather than a list of nine names, because "top left"
+/// is a position and reading a position off a word is work the eye should
+/// not have to do. Each cell is the figure in miniature with a bar of text
+/// where the label would go, so the control is a row of nine small answers
+/// to the question rather than a menu about it.
+fn place_row(
+    kind: Kind,
+    current: Place,
+    on_pick: impl Fn(Place) + Clone + 'static,
+) -> (adw::ActionRow, Shower<Place>) {
+    let row = adw::ActionRow::new();
+    row.set_title("Position");
+    row.set_subtitle("Where the words sit in the shape.");
+
+    let grid = gtk::Grid::new();
+    grid.set_row_spacing(2);
+    grid.set_column_spacing(2);
+    grid.set_valign(gtk::Align::Center);
+    grid.add_css_class("drawing-place-grid");
+
+    let mut buttons: Vec<(Place, gtk::ToggleButton)> = Vec::new();
+    for (at, place) in Place::ALL.into_iter().enumerate() {
+        let cell = gtk::DrawingArea::new();
+        cell.set_size_request(PLACE_CELL, PLACE_CELL);
+        cell.set_draw_func(move |area, cr, w, h| draw_place(area, cr, w as f64, h as f64, kind, place));
+        let button = gtk::ToggleButton::new();
+        button.add_css_class("flat");
+        button.add_css_class("drawing-place-cell");
+        button.set_child(Some(&cell));
+        button.set_tooltip_text(Some(place.label()));
+        if let Some((_, first)) = buttons.first() {
+            button.set_group(Some(first));
+        }
+        grid.attach(&button, at as i32 % 3, at as i32 / 3, 1, 1);
+        buttons.push((place, button));
+    }
+
+    // Set while the buttons are being shown a place, so lighting one does
+    // not read as a hand choosing it.
+    let showing = Rc::new(std::cell::Cell::new(false));
+    for (place, button) in &buttons {
+        let place = *place;
+        let on_pick = on_pick.clone();
+        let showing = showing.clone();
+        button.connect_toggled(move |button| {
+            if showing.get() || !button.is_active() {
+                return;
+            }
+            on_pick(place);
+        });
+    }
+
+    let light = {
+        let buttons = buttons.clone();
+        let showing = showing.clone();
+        move |at: Place| {
+            showing.set(true);
+            for (place, button) in &buttons {
+                button.set_active(*place == at);
+            }
+            showing.set(false);
+        }
+    };
+    light(current);
+    row.add_suffix(&grid);
+    (row, Rc::new(move |at: &Place| light(*at)))
+}
+
+/// The side of one cell of the position grid.
+const PLACE_CELL: i32 = 22;
+
+/// One cell: the figure's outline with a bar of "text" where this place puts
+/// it. In the button's own ink, like every other sign the app draws.
+fn draw_place(area: &gtk::DrawingArea, cr: &gtk::cairo::Context, w: f64, h: f64, kind: Kind, place: Place) {
+    let fg = area.color();
+    let (r, g, b, a) = (fg.red() as f64, fg.green() as f64, fg.blue() as f64, fg.alpha() as f64);
+    let inset = 3.5;
+    let (x, y, fw, fh) = (inset, inset, w - 2.0 * inset, h - 2.0 * inset);
+    cr.set_line_width(1.0);
+    cr.set_source_rgba(r, g, b, a * 0.45);
+    match kind {
+        Kind::Ellipse => {
+            cr.save().ok();
+            cr.translate(x + fw / 2.0, y + fh / 2.0);
+            cr.scale(fw / 2.0, fh / 2.0);
+            cr.arc(0.0, 0.0, 1.0, 0.0, std::f64::consts::TAU);
+            cr.restore().ok();
+        }
+        // A line has no box to show, so the cell shows the line itself and
+        // the bar lands above or below it the way the label will.
+        Kind::Line => {
+            cr.move_to(x, y + fh / 2.0);
+            cr.line_to(x + fw, y + fh / 2.0);
+        }
+        _ => cr.rectangle(x, y, fw, fh),
+    }
+    let _ = cr.stroke();
+
+    // The bar standing for the words, placed by the same arithmetic the
+    // chart places them with, so the picture cannot disagree with the
+    // result.
+    let bar = (fw * 0.44, 2.0);
+    let (bx, by) = drawings::text_origin(kind, (x, y, fw, fh), bar, place);
+    cr.set_source_rgba(r, g, b, a);
+    cr.rectangle(bx.round(), by.round(), bar.0.round(), bar.1);
+    let _ = cr.fill();
 }
 
 /// The three rows a text configuration is: ink, face, size.
@@ -744,8 +1070,8 @@ fn text_rows(
     theme: &Theme,
     style: &Rc<RefCell<Style>>,
     emit: &Rc<dyn Fn()>,
-) -> Vec<(adw::ActionRow, Shower<Style>)> {
-    let mut rows: Vec<(adw::ActionRow, Shower<Style>)> = Vec::new();
+) -> Vec<StyleRow> {
+    let mut rows: Vec<StyleRow> = Vec::new();
 
     let (row, show) = paint_row(theme, "Colour", &style.borrow().text.colour, {
         let style = style.clone();
@@ -1420,10 +1746,19 @@ fn rounded(cr: &gtk::cairo::Context, x: f64, y: f64, w: f64, h: f64, r: f64) {
 /// The header with its Done button, Ctrl+Enter through it, and the keyboard
 /// back on the chart afterwards: Delete and Escape on it mean the drawing
 /// that is still selected.
-fn finish(dialog: &adw::Dialog, page: &adw::PreferencesPage, area: &gtk::DrawingArea, tick: Option<glib::SourceId>) {
+fn finish(
+    dialog: &adw::Dialog,
+    body: &impl IsA<gtk::Widget>,
+    switcher: Option<&adw::ViewSwitcher>,
+    area: &gtk::DrawingArea,
+    tick: Option<glib::SourceId>,
+) {
     let header = adw::HeaderBar::new();
     header.set_show_start_title_buttons(false);
     header.set_show_end_title_buttons(false);
+    if let Some(switcher) = switcher {
+        header.set_title_widget(Some(switcher));
+    }
     let done = gtk::Button::with_label("Done");
     done.add_css_class("suggested-action");
     done.set_tooltip_text(Some(&format!("Done ({})", dialogs::commit_label())));
@@ -1435,7 +1770,7 @@ fn finish(dialog: &adw::Dialog, page: &adw::PreferencesPage, area: &gtk::Drawing
 
     let content = adw::ToolbarView::new();
     content.add_top_bar(&header);
-    content.set_content(Some(page));
+    content.set_content(Some(body));
     dialog.set_child(Some(&content));
 
     let done_on_key = done.clone();

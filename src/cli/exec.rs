@@ -1644,6 +1644,7 @@ fn chart_drawing(
         ),
     };
     let style = StyleEdits::read(m)?;
+    let words = TextEdits::read(m)?;
     let scope = match arg(m, "scope") {
         None => None,
         Some(text) => Some(Scope::from_key(text).ok_or_else(|| {
@@ -1668,14 +1669,41 @@ fn chart_drawing(
     let mut locals = locals;
     let text = match action {
         "add" => {
-            let kind = kind.ok_or_else(|| Fault::usage("`drawing add` needs a kind: line or rect".into()))?;
-            let (Some(from), Some(to)) = (from, to) else {
-                return Err(Fault::usage("`drawing add` needs --from and --to, each WHEN,PRICE".into()));
+            let kind = kind.ok_or_else(|| {
+                Fault::usage("`drawing add` needs a kind: line, rect, ellipse or text".into())
+            })?;
+            // Words sit at a point, so a text drawing takes one anchor and
+            // uses it for both. Everything else spans two.
+            let (from, to) = match kind.is_text() {
+                true => {
+                    let Some(at) = from.or(to) else {
+                        return Err(Fault::usage(
+                            "`drawing add text` needs --from WHEN,PRICE: where the words go".into(),
+                        ));
+                    };
+                    (at, at)
+                }
+                false => match (from, to) {
+                    (Some(from), Some(to)) => (from, to),
+                    _ => {
+                        return Err(Fault::usage(
+                            "`drawing add` needs --from and --to, each WHEN,PRICE".into(),
+                        ))
+                    }
+                },
             };
+            if kind.is_text() && words.words.as_deref().unwrap_or_default().is_empty() {
+                return Err(Fault::usage(
+                    "`drawing add text` needs --text: a text drawing with nothing to say draws nothing".into(),
+                ));
+            }
             let mut drawing = Drawing::new(kind, from, to);
             drawing.follow(config.unwrap_or(1));
             if !style.is_empty() {
                 drawing.edit_style(&configs, |s| style.apply(s));
+            }
+            if !words.is_empty() {
+                words.apply(&mut drawing);
             }
             drawing.scope = scope.unwrap_or_else(|| sharing.scope_for_new());
             drawing.order = shown(store, &locals).iter().map(|d| d.order).max().unwrap_or(0);
@@ -1695,24 +1723,41 @@ fn chart_drawing(
             let Some(id) = id else {
                 return Err(Fault::usage("`drawing set` needs --id, from `drawing list`".into()));
             };
-            if from.is_none() && to.is_none() && config.is_none() && style.is_empty() && scope.is_none() && order.is_none() {
+            if from.is_none()
+                && to.is_none()
+                && config.is_none()
+                && style.is_empty()
+                && words.is_empty()
+                && scope.is_none()
+                && order.is_none()
+            {
                 return Err(Fault::usage(
-                    "nothing to set: give --from, --to, --config, --scope, --order, or a property".into(),
+                    "nothing to set: give --from, --to, --config, --scope, --order, --text, or a property".into(),
                 ));
             }
             let mut drawing = find_drawing(store, &symbol, suffix.as_deref(), &locals, id)?;
             let was_local = drawing.is_local();
+            // Through `move_grip` rather than straight onto the field, so a
+            // text drawing's two anchors stay the one point they are.
             if let Some(from) = from {
-                drawing.from = from;
+                drawing.move_grip(omacharts_engine::Grip::From, from);
             }
             if let Some(to) = to {
-                drawing.to = to;
+                drawing.move_grip(omacharts_engine::Grip::To, to);
             }
             if let Some(n) = config {
                 drawing.follow(n);
             }
             if !style.is_empty() {
                 drawing.edit_style(&configs, |s| style.apply(s));
+            }
+            if !words.is_empty() {
+                words.apply(&mut drawing);
+            }
+            if drawing.kind.is_text() && !drawing.has_text() {
+                return Err(Fault::usage(
+                    "a text drawing with nothing to say draws nothing; `drawing remove` is the way to take it off".into(),
+                ));
             }
             if let Some(scope) = scope {
                 drawing.scope = scope;
@@ -1907,6 +1952,17 @@ fn drawing_json(d: &omacharts_engine::Drawing, configs: &omacharts_engine::Confi
         "style": style_json(d.style(configs)),
         "scope": d.scope.key(),
         "order": d.order,
+        "text": d.has_text().then(|| json!({
+            "words": d.text.plain_text(),
+            "at": d.text.at.key(),
+            // The runs, so a reader can see where the bold is rather than
+            // only that the characters are there. A plain label is one run.
+            "spans": d.text.spans.iter().map(|span| json!({
+                "text": span.text,
+                "bold": span.bold,
+                "italic": span.italic,
+            })).collect::<Vec<_>>(),
+        })),
     })
 }
 
@@ -1919,6 +1975,11 @@ fn style_json(style: &omacharts_engine::Style) -> Value {
         "border": style.border,
         "fill": style.fill.spell(),
         "alpha": style.alpha,
+        "text_color": style.text.colour.spell(),
+        // Null for the desktop's own font, which is a role rather than a
+        // family and resolves differently on another machine.
+        "font": style.text.family_name(),
+        "font_size": style.text.clamped_size(),
     })
 }
 
@@ -1929,16 +1990,38 @@ fn describe_drawing(drawing: &omacharts_engine::Drawing, configs: &omacharts_eng
         Some(n) => format!("configuration {n}"),
         None => describe_style(drawing.kind, drawing.style(configs)),
     };
+    // What it says, in quotes, since a label is the thing somebody is
+    // looking for in a list of six boxes. Trimmed to a line: the whole of a
+    // paragraph belongs in `--json`, not in a line of a listing.
+    let words = match drawing.has_text() {
+        false => String::new(),
+        true => format!("  {:?}", shorten(&drawing.text.plain_text().replace('\n', " "), 40)),
+    };
+    // A word is at one point, so saying the same moment twice would be noise.
+    let span = match drawing.kind.is_text() {
+        true => format!("{} {:.2}", spell_moment(drawing.from.ts), drawing.from.price),
+        false => format!(
+            "{} {:.2} → {} {:.2}",
+            spell_moment(drawing.from.ts),
+            drawing.from.price,
+            spell_moment(drawing.to.ts),
+            drawing.to.price
+        ),
+    };
     format!(
-        "#{} {}  {} {:.2} → {} {:.2}  {look} · {}",
+        "#{} {}  {span}{words}  {look} · {}",
         drawing.id,
         drawing.kind.key(),
-        spell_moment(drawing.from.ts),
-        drawing.from.price,
-        spell_moment(drawing.to.ts),
-        drawing.to.price,
         drawing.scope.key()
     )
+}
+
+/// A string cut to `most` characters, with an ellipsis standing for the rest.
+fn shorten(text: &str, most: usize) -> String {
+    match text.chars().count() > most {
+        false => text.to_string(),
+        true => text.chars().take(most.saturating_sub(1)).collect::<String>() + "…",
+    }
 }
 
 /// A look in words: `amber, 2.5px, arrow at the end` for a line; `fill amber
@@ -1987,6 +2070,11 @@ struct StyleEdits {
     border: Option<bool>,
     fill: Option<omacharts_engine::Paint>,
     alpha: Option<f64>,
+    text_colour: Option<omacharts_engine::Paint>,
+    /// The face: `Some(Some(family))` for one by name, `Some(None)` for the
+    /// desktop's own, which `--font system` is the way to ask for.
+    font: Option<Option<String>>,
+    font_size: Option<f64>,
 }
 
 impl StyleEdits {
@@ -2025,6 +2113,10 @@ impl StyleEdits {
             Some("off") => Some(false),
             Some(other) => return Err(Fault::usage(format!("--border is on or off, not {other:?}"))),
         };
+        let font = arg(m, "font").map(|family| match family.eq_ignore_ascii_case("system") {
+            true => None,
+            false => Some(family.to_string()),
+        });
         Ok(StyleEdits {
             colour: paint("color")?,
             width,
@@ -2033,6 +2125,14 @@ impl StyleEdits {
             border,
             fill: paint("fill")?,
             alpha: bounded(m, "alpha", MIN_FILL_ALPHA, MAX_FILL_ALPHA)?,
+            text_colour: paint("text-color")?,
+            font,
+            font_size: bounded(
+                m,
+                "font-size",
+                omacharts_engine::drawings::MIN_TEXT_SIZE,
+                omacharts_engine::drawings::MAX_TEXT_SIZE,
+            )?,
         })
     }
 
@@ -2044,6 +2144,9 @@ impl StyleEdits {
             && self.border.is_none()
             && self.fill.is_none()
             && self.alpha.is_none()
+            && self.text_colour.is_none()
+            && self.font.is_none()
+            && self.font_size.is_none()
     }
 
     fn apply(&self, style: &mut omacharts_engine::Style) {
@@ -2068,6 +2171,59 @@ impl StyleEdits {
         if let Some(alpha) = self.alpha {
             style.alpha = alpha;
         }
+        if let Some(colour) = &self.text_colour {
+            style.text.colour = colour.clone();
+        }
+        if let Some(font) = &self.font {
+            style.text.family = font.clone();
+        }
+        if let Some(size) = self.font_size {
+            style.text.size = size;
+        }
+    }
+}
+
+/// What a command said about the words themselves, as opposed to how they are
+/// set.
+///
+/// Apart from [`StyleEdits`] because they are not a style: a configuration
+/// says how words are set and never which words, so `--text` edits the
+/// drawing and must not take it off the configuration it follows the way
+/// `--text-color` does.
+struct TextEdits {
+    words: Option<String>,
+    at: Option<omacharts_engine::Place>,
+}
+
+impl TextEdits {
+    fn read(m: &clap::ArgMatches) -> Result<TextEdits, Fault> {
+        let at = match arg(m, "text-at") {
+            None => None,
+            Some(text) => Some(omacharts_engine::Place::from_key(text).ok_or_else(|| {
+                Fault::usage(format!(
+                    "{text:?} is not a place; try center, top, bottom, left, right, or a corner like top-left"
+                ))
+            })?),
+        };
+        Ok(TextEdits { words: arg(m, "text").cloned(), at })
+    }
+
+    fn is_empty(&self) -> bool {
+        self.words.is_none() && self.at.is_none()
+    }
+
+    /// Put them on the drawing. The runs are rebuilt from plain characters,
+    /// so a label that was partly bold loses that — which is the honest
+    /// result of handing a terminal one string, and is said in the help.
+    fn apply(&self, drawing: &mut omacharts_engine::Drawing) {
+        let mut text = drawing.text.clone();
+        if let Some(words) = &self.words {
+            text.spans = vec![omacharts_engine::Span::plain(words)];
+        }
+        if let Some(at) = self.at {
+            text.at = at;
+        }
+        drawing.set_text(text);
     }
 }
 

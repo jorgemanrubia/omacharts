@@ -463,6 +463,20 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
    the picture whatever the picture is. */
 .drawing-config-tag { padding: 2px 10px; border-radius: 10px; font-weight: 700; font-size: 12px; background: @window_fg_color; color: @view_bg_color; }
 .drawing-preview-current { box-shadow: 0 0 0 2px @accent_bg_color; }
+/* Typing on the chart: nothing behind the glyphs, so what is under them is
+   the chart. The caret is the accent, which is the one thing on a text
+   widget that has to be found rather than read, and a ring in the same
+   colour says where the words will end up without drawing a field around
+   them. */
+.drawing-text-editor, .drawing-text-editor text, .drawing-text-editor text selection:focus { background: none; background-color: transparent; }
+.drawing-text-editor { caret-color: @accent_bg_color; box-shadow: 0 0 0 1px alpha(@accent_bg_color, 0.65); border-radius: 2px; }
+.drawing-text-editor text selection { background-color: alpha(@accent_bg_color, 0.35); }
+/* The nine places, as a block of nine cells rather than nine buttons: no
+   padding between them, one ring around the lot, and the lit one filled. */
+.drawing-place-grid { padding: 2px; border-radius: 7px; box-shadow: inset 0 0 0 1px alpha(@window_fg_color, 0.18); }
+.drawing-place-cell { padding: 1px; min-width: 0; min-height: 0; border-radius: 4px; opacity: 0.55; }
+.drawing-place-cell:hover { opacity: 0.85; }
+.drawing-place-cell:checked { opacity: 1; background: alpha(@accent_bg_color, 0.28); }
 
 /* The corner sits over the rail when the rail is open, which is where the
    HIG puts a sidebar's menu (above the sidebar list), so the rail's band

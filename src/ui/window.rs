@@ -224,6 +224,10 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Alt+T", "Write on the chart: click, then type"),
             ("Ctrl+D", "Show or hide the drawing tools"),
             ("Alt+1 … 9", "Configuration N, for the selected drawing or the one about to be drawn"),
+            ("Double-click", "Put the caret in a drawing and type on it"),
+            ("Ctrl++ / Ctrl+−", "Grow or shrink the selected drawing's text"),
+            ("Shift+Enter", "A new line, while typing on the chart"),
+            ("Ctrl+B / Ctrl+I", "Bold or italic, over what is selected while typing"),
             ("Enter", "The selected drawing's properties"),
             ("← → ↑ ↓", "Nudge the selected drawing a pixel; ten with Shift"),
             ("Ctrl+Shift+↑ ↓", "Bring the selected drawing to the front, or send it to the back"),
@@ -4261,6 +4265,26 @@ impl Window {
                     this.focused_pane().view.zoom(1.25);
                     glib::Propagation::Stop
                 }
+                // With Ctrl held the same two keys are the text size of
+                // whatever is selected, which is the pair every application
+                // grows type with. Bare, they are the chart's zoom and
+                // always have been — the modifier is what keeps a key that
+                // means "bigger" meaning it about two different things
+                // without either taking the other's.
+                (Key::plus | Key::equal, true) | (Key::KP_Add, true) => {
+                    let by = omacharts_engine::drawings::TEXT_SIZE_STEP;
+                    match this.focused_pane().view.step_text_size(by) {
+                        true => glib::Propagation::Stop,
+                        false => glib::Propagation::Proceed,
+                    }
+                }
+                (Key::minus, true) | (Key::KP_Subtract, true) => {
+                    let by = -omacharts_engine::drawings::TEXT_SIZE_STEP;
+                    match this.focused_pane().view.step_text_size(by) {
+                        true => glib::Propagation::Stop,
+                        false => glib::Propagation::Proceed,
+                    }
+                }
                 (Key::End, false) if !on_watchlist => {
                     this.focused_pane().view.go_to_latest();
                     glib::Propagation::Stop
@@ -6247,6 +6271,15 @@ impl Window {
 
         let menu = gio::Menu::new();
         let edit = gio::Menu::new();
+        // Above the properties, because it is the more common errand and the
+        // shorter way to it: a double-click on the drawing does the same.
+        // Labelled for what is there — one that already says something is
+        // being changed, one that says nothing is being given words.
+        let words = match drawing.has_text() {
+            true => "Edit text",
+            false => "Add text",
+        };
+        shortcuts::append(&edit, words, "chart.drawing-text");
         shortcuts::append_with_key(&edit, "Properties…", "chart.drawing-settings", "Return");
         // The nine configurations, as a radio: the one in use is marked, and
         // a drawing whose properties were changed by hand marks none.
@@ -6601,6 +6634,13 @@ impl Window {
             this.arm_drawing(omacharts_engine::DrawingKind::Text)
         });
         actions.add_action(&draw_text);
+
+        let drawing_text = gio::SimpleAction::new("drawing-text", None);
+        let this = self.clone();
+        drawing_text.connect_activate(move |_, _| {
+            this.focused_pane().view.edit_selected_text();
+        });
+        actions.add_action(&drawing_text);
 
         let drawing_settings = gio::SimpleAction::new("drawing-settings", None);
         let this = self.clone();

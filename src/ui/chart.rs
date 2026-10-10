@@ -27,6 +27,7 @@ use std::rc::Rc;
 
 use gtk::cairo;
 use gtk::prelude::*;
+use crate::ui::text_editor;
 use omacharts_engine::drawings::{
     self, Anchor, Configurations, Drawing, Grip, Kind as DrawingKind, Projected, Sharing,
 };
@@ -188,6 +189,12 @@ struct State {
     /// "the drawings were this and are now that".
     undo: Vec<Vec<Drawing>>,
     redo: Vec<Vec<Drawing>>,
+    /// The drawing whose words are being typed, by position in `drawings`.
+    ///
+    /// Its label is left off the chart while this is set: the editor is
+    /// sitting exactly where the label would be, in the same font and the
+    /// same ink, and drawing both would be drawing it twice.
+    editing: Option<usize>,
 }
 
 /// Something that happened to a drawing, for whoever keeps them.
@@ -689,6 +696,7 @@ impl State {
             price_offset: 0.0,
             price_auto: true,
             drawings: Vec::new(),
+            editing: None,
             selected: Vec::new(),
             marquee_base: Vec::new(),
             tool: None,
@@ -1015,6 +1023,13 @@ pub struct ChartView {
     pub area: gtk::DrawingArea,
     /// The crosshair and the rest of what follows the pointer, over the top.
     pointer: gtk::DrawingArea,
+    /// Where the text editor goes when there is one: a layer that places a
+    /// widget at a pixel, so the caret can be put exactly where the glyphs
+    /// will be. Empty, and untargetable, the rest of the time — a layer
+    /// that could take a click would swallow every one of them.
+    editor_layer: gtk::Fixed,
+    /// The editor open on the chart, if any.
+    editing: RefCell<Option<Rc<text_editor::Editing>>>,
     /// The two of them stacked. This is what goes in the layout.
     pub root: gtk::Overlay,
     state: Rc<RefCell<State>>,
@@ -1068,9 +1083,15 @@ impl ChartView {
         pointer.set_hexpand(true);
         pointer.set_vexpand(true);
 
+        // Over the crosshair, since the caret is the thing in front while
+        // somebody is typing.
+        let editor_layer = gtk::Fixed::new();
+        editor_layer.set_can_target(false);
+
         let root = gtk::Overlay::new();
         root.set_child(Some(&area));
         root.add_overlay(&pointer);
+        root.add_overlay(&editor_layer);
 
         let state = Rc::new(RefCell::new(State::blank(theme, scheme)));
         let on_hover: Handler<dyn Fn(Option<Hover>)> = Rc::new(RefCell::new(None));
@@ -1078,6 +1099,8 @@ impl ChartView {
         let view = Rc::new(ChartView {
             area,
             pointer,
+            editor_layer,
+            editing: RefCell::new(None),
             root,
             state,
             on_hover,
@@ -1153,13 +1176,53 @@ impl ChartView {
     /// when the same drawing is still in the list, which is the usual case:
     /// the window hands the list back after writing a change down.
     pub fn set_drawings(&self, drawings: Vec<Drawing>) {
-        {
+        // An open editor is pointed at a position in the list, and the list
+        // is about to be a different list: follow the drawing it is on by
+        // id, and close the editor if that drawing is not in the new list at
+        // all. Without this a reload while somebody is typing would leave
+        // the caret on whatever had moved into that position.
+        let editing_id = self
+            .editing
+            .borrow()
+            .as_ref()
+            .and_then(|editing| self.state.borrow().drawings.get(editing.index.get()).map(|d| d.id));
+        let still_there = {
             let mut state = self.state.borrow_mut();
             let ids = state.selected_ids();
             state.drawings = drawings;
             state.reselect(ids);
+            match editing_id {
+                Some(id) => {
+                    let now = state.drawings.iter().position(|d| d.id == id && id != 0);
+                    state.editing = now;
+                    now
+                }
+                None => None,
+            }
+        };
+        match (editing_id.is_some(), still_there) {
+            // It moved: the editor keeps the caret, pointed at the new place.
+            (true, Some(index)) => {
+                if let Some(editing) = self.editing.borrow().as_ref() {
+                    editing.index.set(index);
+                }
+                self.place_editor();
+            }
+            // It went: nothing to type into.
+            (true, None) => self.close_editor(),
+            (false, _) => {}
         }
         self.redraw();
+    }
+
+    /// Take the editor off the chart without reading it back: for when the
+    /// drawing it was on is no longer there to read it into.
+    fn close_editor(&self) {
+        let Some(editing) = self.editing.borrow_mut().take() else { return };
+        self.editor_layer.remove(&editing.view);
+        self.editor_layer.set_can_target(false);
+        self.state.borrow_mut().editing = None;
+        self.area.grab_focus();
     }
 
     pub fn drawings(&self) -> Vec<Drawing> {
@@ -1197,6 +1260,13 @@ impl ChartView {
     /// rather than finished. Says whether there was anything to drop, so a
     /// key that found nothing can go on to whoever else wants it.
     pub fn cancel(&self) -> bool {
+        // Typing is the thing Escape ends first, and the editor's own key
+        // handler normally gets there before this does; arriving here with
+        // an editor open means Escape came from somewhere else.
+        if self.is_typing_text() {
+            self.end_text_edit(text_editor::Ended::Cancel);
+            return true;
+        }
         let busy = {
             let mut s = self.state.borrow_mut();
             let busy = s.tool.is_some() || s.placing.is_some() || !s.selected.is_empty();
@@ -1637,6 +1707,257 @@ impl ChartView {
         self.redraw();
         self.tool_changed();
         self.tell(DrawingEvent::Added(added));
+    }
+
+    // -- typing on the chart -----------------------------------------------
+
+    /// A press with the text tool in hand: a word at that point, with the
+    /// caret already in it.
+    ///
+    /// The drawing goes into the list and is told about straight away, so it
+    /// is a real drawing with a real id while it is being typed — undo,
+    /// sharing and the store all see the same thing they see for any other
+    /// drawing. What is special is only that it starts out saying nothing,
+    /// and that saying nothing at the end means it goes away again.
+    fn start_text_at(self: &Rc<Self>, at: Anchor) {
+        let index = {
+            let mut state = self.state.borrow_mut();
+            let mut drawing = Drawing::text_at(at);
+            drawing.follow(state.next_config);
+            drawing.scope = state.sharing.scope_for_new();
+            drawing.order = state.drawings.iter().map(|d| d.order).max().unwrap_or(0);
+            state.remember();
+            state.drawings.push(drawing);
+            state.selected = vec![state.drawings.len() - 1];
+            state.tool = None;
+            state.next_config = 1;
+            state.drawings.len() - 1
+        };
+        self.area.set_cursor_from_name(Some("default"));
+        self.tool_changed();
+        self.begin_text_edit(index, true);
+    }
+
+    /// Whether somebody is typing into a drawing right now.
+    ///
+    /// The window asks, because while this is true the chart's own keys are
+    /// the typist's: Delete deletes a character, Escape ends the edit rather
+    /// than the selection, and a letter is a letter rather than the start of
+    /// a symbol search.
+    pub fn is_typing_text(&self) -> bool {
+        self.editing.borrow().is_some()
+    }
+
+    /// Open the editor on the selected drawing, if one is selected. What
+    /// "Edit text" in the drawing's menu does, and Enter is not: Enter opens
+    /// the properties, which is where it has always gone.
+    pub fn edit_selected_text(self: &Rc<Self>) -> bool {
+        let index = {
+            let state = self.state.borrow();
+            match state.selected.last() {
+                Some(index) if state.drawings.get(*index).is_some() => *index,
+                _ => return false,
+            }
+        };
+        self.begin_text_edit(index, false)
+    }
+
+    /// Put a caret on the drawing at `index` and let the keyboard have it.
+    ///
+    /// `fresh` says the drawing was made for this edit — a click with the
+    /// text tool — so that nothing typed means nothing drawn, and the empty
+    /// drawing goes away again rather than becoming litter nobody can see
+    /// to clear.
+    fn begin_text_edit(self: &Rc<Self>, index: usize, fresh: bool) -> bool {
+        self.end_text_edit(text_editor::Ended::Commit);
+        let (text, style, ink, align) = {
+            let state = self.state.borrow();
+            let Some(drawing) = state.drawings.get(index) else { return false };
+            let style = drawing.style(&state.configs).clone();
+            let ground = drawings::text_ground(drawing.kind, &style, &state.theme);
+            let ink = drawings::text_colour(&style.text.colour, &state.theme, &ground);
+            let align = crate::ui::text::placement(drawing.kind, &drawing.text).alignment();
+            (drawing.text.clone(), style, ink, align)
+        };
+
+        let editing = text_editor::build(
+            text_editor::Opened { index, fresh, text: &text, style: &style.text, ink: &ink, align },
+            {
+                let view = Rc::downgrade(self);
+                move || {
+                    if let Some(view) = view.upgrade() {
+                        view.place_editor();
+                    }
+                }
+            },
+            {
+                let view = Rc::downgrade(self);
+                move |how| {
+                    if let Some(view) = view.upgrade() {
+                        view.end_text_edit(how);
+                    }
+                }
+            },
+        );
+
+        self.state.borrow_mut().editing = Some(index);
+        self.editor_layer.set_can_target(true);
+        self.editor_layer.put(&editing.view, 0.0, 0.0);
+        *self.editing.borrow_mut() = Some(editing.clone());
+        self.place_editor();
+        self.redraw();
+        // After the layout, or the caret lands in a widget that has not been
+        // given a size yet and the first keystroke moves it.
+        let editing = editing.clone();
+        glib::idle_add_local_once(move || {
+            editing.view.grab_focus();
+        });
+        true
+    }
+
+    /// Put the editor where the words belong, and size it to them.
+    ///
+    /// Called again after every keystroke, because the place depends on the
+    /// size: a label centred in a box moves left as it grows, and one that
+    /// did not would drift away from where it is about to be drawn.
+    fn place_editor(&self) {
+        let Some(editing) = self.editing.borrow().clone() else { return };
+        let (width, height) = (self.area.width() as f64, self.area.height() as f64);
+        let placed = {
+            let state = self.state.borrow();
+            let Some(drawing) = state.drawings.get(editing.index.get()) else { return };
+            let style = drawing.style(&state.configs);
+            let at = crate::ui::text::placement(drawing.kind, &drawing.text);
+            let size = editing.measure(&style.text, at.alignment(), at);
+            let plan = layout(&state, width, height);
+            let (first, visible) = state.slice();
+            let Some((low, high)) = price_range(&state, &state.bars[first..first + visible]) else {
+                return;
+            };
+            let projected = state.project(&plan, low, high, drawing);
+            (drawings::text_origin(drawing.kind, projected.bounds(), size, at), size)
+        };
+        editing.place(&self.editor_layer, placed.0, placed.1);
+    }
+
+    /// Take the editor off the chart, keeping what was typed or throwing it
+    /// away.
+    fn end_text_edit(&self, how: text_editor::Ended) {
+        let Some(editing) = self.editing.borrow_mut().take() else { return };
+        self.editor_layer.remove(&editing.view);
+        self.editor_layer.set_can_target(false);
+        self.state.borrow_mut().editing = None;
+
+        let event = match how {
+            text_editor::Ended::Cancel => {
+                // A drawing made for this edit and abandoned was never
+                // really made: take it away again, quietly, without a step
+                // on the undo stack for something nobody saw.
+                editing.fresh.then(|| self.drop_drawing(editing.index.get())).flatten()
+            }
+            text_editor::Ended::Commit => {
+                let at = {
+                    let state = self.state.borrow();
+                    state
+                        .drawings
+                        .get(editing.index.get())
+                        .map(|d| d.text.at)
+                        .unwrap_or_default()
+                };
+                let typed = editing.text(at);
+                // Nothing typed into a drawing that is nothing but its text:
+                // there is no drawing. One that is a figure simply has no
+                // label.
+                let empty_text_drawing = typed.is_empty()
+                    && self
+                        .state
+                        .borrow()
+                        .drawings
+                        .get(editing.index.get())
+                        .is_some_and(|d| d.kind.is_text());
+                if empty_text_drawing {
+                    self.drop_drawing(editing.index.get())
+                } else {
+                    let mut state = self.state.borrow_mut();
+                    let Some(drawing) = state.drawings.get_mut(editing.index.get()) else {
+                        return;
+                    };
+                    if drawing.text == typed {
+                        None
+                    } else {
+                        state.remember();
+                        let drawing = &mut state.drawings[editing.index.get()];
+                        drawing.set_text(typed);
+                        Some(DrawingEvent::Changed(drawing.clone()))
+                    }
+                }
+            }
+        };
+        self.redraw();
+        self.area.grab_focus();
+        if let Some(event) = event {
+            self.tell(event);
+        }
+    }
+
+    /// Take a drawing out of the list and say so, for the one that was never
+    /// wanted: an empty word.
+    fn drop_drawing(&self, index: usize) -> Option<DrawingEvent> {
+        let mut state = self.state.borrow_mut();
+        if index >= state.drawings.len() {
+            return None;
+        }
+        let gone = state.drawings.remove(index);
+        state.selected.retain(|i| *i != index);
+        for selected in state.selected.iter_mut() {
+            if *selected > index {
+                *selected -= 1;
+            }
+        }
+        // Never written down, so there is nothing to remove from the store
+        // and nothing to tell anybody about.
+        (gone.id != 0).then_some(DrawingEvent::Removed(gone.id))
+    }
+
+    /// Step the text size of everything selected, for Ctrl+= and Ctrl+-.
+    ///
+    /// On a figure it is the figure's label that grows, not the figure: the
+    /// shape is sized by its grips and a key that quietly resized it would
+    /// be a second way to do what dragging already does.
+    pub fn step_text_size(self: &Rc<Self>, by: f64) -> bool {
+        let changed = {
+            let state = self.state.borrow();
+            !state.selected.is_empty()
+        };
+        if !changed {
+            return false;
+        }
+        let configs = self.state.borrow().configs.clone();
+        self.edit_selected(move |drawing| {
+            let now = drawing.style(&configs).text.clamped_size();
+            let next = (now + by).clamp(drawings::MIN_TEXT_SIZE, drawings::MAX_TEXT_SIZE);
+            if next != now {
+                drawing.edit_style(&configs, |style| style.text.size = next);
+            }
+        });
+        self.restyle_editor();
+        true
+    }
+
+    /// Set an open editor in the style its drawing now has, and put it back
+    /// where the new size belongs.
+    fn restyle_editor(&self) {
+        let Some(editing) = self.editing.borrow().clone() else { return };
+        let (style, ink) = {
+            let state = self.state.borrow();
+            let Some(drawing) = state.drawings.get(editing.index.get()) else { return };
+            let style = drawing.style(&state.configs).clone();
+            let ground = drawings::text_ground(drawing.kind, &style, &state.theme);
+            let ink = drawings::text_colour(&style.text.colour, &state.theme, &ground);
+            (style, ink)
+        };
+        editing.restyle(&style.text, &ink);
+        self.place_editor();
     }
 
     /// Show where another chart's pointer is, in time and in price.
@@ -2127,7 +2448,18 @@ impl ChartView {
         }
         let region = region_at(x, y, width, height);
         if region == Region::Plot {
-            // An armed tool: this press is the first anchor.
+            // An armed tool: this press is the first anchor. Except the
+            // text tool, which has no second anchor to wait for — a word
+            // is at a point — so one press puts the caret down and the
+            // keyboard takes over from there.
+            if s.tool == Some(DrawingKind::Text) {
+                let anchor = s.locate(width, height, x, y);
+                drop(s);
+                if let (Some(view), Some(anchor)) = (view.upgrade(), anchor) {
+                    view.start_text_at(anchor);
+                }
+                return;
+            }
             if s.tool.is_some() {
                 s.begin_placing(width, height, x, y);
                 return;
@@ -2414,17 +2746,36 @@ impl ChartView {
         self.area.add_controller(drag);
 
         // Double-clicking an axis puts it back on automatic, which is the way
-        // out of any scale you have stretched into uselessness.
+        // out of any scale you have stretched into uselessness; double-clicking
+        // a drawing puts the caret in it.
         let click = gtk::GestureClick::new();
         let state = self.state.clone();
         let area = self.area.clone();
         let pointer = self.pointer.clone();
         let on_price_auto = self.on_price_auto.clone();
+        let view = Rc::downgrade(self);
         click.connect_pressed(move |_, presses, x, y| {
             if presses < 2 {
                 return;
             }
             let region = region_at(x, y, area.width() as f64, area.height() as f64);
+            // A drawing under the pointer: the second click puts the caret
+            // in it. This is the shortest way to a label — the way a slide
+            // editor opens a shape's text — and it is free, because a
+            // double-click on the plot has never done anything.
+            if region == Region::Plot {
+                let hit = {
+                    let s = state.borrow();
+                    s.drawing_at(area.width() as f64, area.height() as f64, x, y)
+                };
+                if let Some((index, _)) = hit
+                    && let Some(view) = view.upgrade()
+                {
+                    view.select_at(x, y);
+                    view.begin_text_edit(index, false);
+                    return;
+                }
+            }
             let mut s = state.borrow_mut();
             let was_auto = s.price_auto;
             match region {
@@ -2439,8 +2790,9 @@ impl ChartView {
                     s.overhang = 0;
                     s.lead = 0;
                 }
-                // Double-clicking the chart itself does nothing, the same as
-                // everywhere else. Resetting is Ctrl+Esc or the axis menu.
+                // Double-clicking bare chart does nothing, the same as
+                // everywhere else — a drawing was handled above. Resetting
+                // is Ctrl+Esc or the axis menu.
                 Region::Plot => return,
             }
             drop(s);
@@ -2714,7 +3066,7 @@ fn draw_pointer(cr: &cairo::Context, width: f64, height: f64, state: &State) {
         cr.save().ok();
         cr.rectangle(plan.plot_x, plan.price_y, plan.plot_w, plan.price_h);
         cr.clip();
-        draw_drawing(cr, state, &state.project(&plan, low, high, placing), placing, true);
+        draw_drawing(cr, state, &state.project(&plan, low, high, placing), placing, true, false);
         cr.restore().ok();
     }
 
@@ -3653,7 +4005,8 @@ fn draw_drawings(cr: &cairo::Context, state: &State, plan: &Layout, low: f64, hi
     cr.clip();
     for (index, drawing) in state.drawings.iter().enumerate() {
         let projected = state.project(plan, low, high, drawing);
-        draw_drawing(cr, state, &projected, drawing, state.selected.contains(&index));
+        let typing = state.editing == Some(index);
+        draw_drawing(cr, state, &projected, drawing, state.selected.contains(&index), typing);
     }
     cr.restore().ok();
 }
@@ -3672,6 +4025,7 @@ fn draw_drawing(
     projected: &Projected,
     drawing: &Drawing,
     selected: bool,
+    typing: bool,
 ) {
     let style = drawing.style(&state.configs);
     let colour = style.colour.hex(&state.theme);
@@ -3740,7 +4094,9 @@ fn draw_drawing(
         // at all, which is the right picture of a caret waiting.
         DrawingKind::Text => {}
     }
-    draw_label(cr, state, projected, drawing, style);
+    if !typing {
+        draw_label(cr, state, projected, drawing, style);
+    }
     if selected {
         // A text drawing wears no grips, so the box its words fill is what
         // says it is selected: a dashed outline a hair outside the glyphs,
