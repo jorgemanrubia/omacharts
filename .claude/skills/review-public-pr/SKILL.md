@@ -192,17 +192,29 @@ and offer to merge the documentation hunk alone. That is the real fix.
   before and after rather than guessing, and say the numbers.
 - **No gratuitous reformatting** of code the PR did not otherwise touch.
 
-## A change in the draw path gets measured
+## Performance is a reviewed property, not an afterthought
 
 Standing instruction from the owner: do not let a performance regression in
-so quietly that nobody notices until the app feels slow. Rendering, the draw
-callbacks, bar geometry, gridlines, the indicator strips, the hit-testing
-that runs on pointer motion — anything on that path runs for every bar of
-every chart on every frame, so a cost that looks trivial per bar is the
-frame budget at 100k bars.
+so quietly that nobody notices until the app feels slow. Three areas are
+critical, and a PR that touches any of them gets numbers rather than
+reasoning:
 
-A PR that touches any of it gets numbers, on `main` and on the branch,
-measured the same way on the same data:
+- **Startup.** The time from launching the app to having usable charts on
+  screen. Work added to the startup path is paid by every launch, and it is
+  the first thing anyone judges the app by. Watch for anything moved from
+  lazy to eager, a store read that grew, or work that could have waited for
+  the first frame.
+- **Drawing.** Rendering, the draw callbacks, bar geometry, gridlines, the
+  indicator strips. This runs for every bar of every chart on every frame,
+  so a cost that looks trivial per bar is the frame budget at 100k bars.
+- **Interactivity.** Everything between an input and the screen catching
+  up: pointer motion and hover, the hit-testing behind it, keyboard
+  handling, changing resolution or symbol, and a command dispatched into a
+  running window. These run on the GTK main loop, where anything slow is
+  felt directly as lag rather than measured as a number.
+
+For any of the three, get numbers on `main` and on the branch, measured the
+same way on the same data:
 
 - Time the work itself over a synthetic series at 10k and 100k bars, the way
   the indicator rules above ask for, and quote both sides. An `#[ignore]`d
@@ -218,6 +230,8 @@ measured the same way on the same data:
 - Scroll and zoom a long series in the real window and say whether it still
   feels immediate. A number that got worse but stays under a millisecond is
   worth a line in the report, not a blocker.
+- For startup, time the launch itself, repeatedly — it is noisy, so one run
+  proves nothing.
 
 A regression that is real and intended — the feature cannot be had any
 cheaper — is the owner's call, so report it with the measurement rather
