@@ -237,6 +237,7 @@ Things to know before trusting what you see:
   to drive the pointer: it refuses to deliver motion while a button is
   held, so a drag through it does nothing at all. The `drag` verb goes
   through the virtual-pointer protocol, which does.
+
 ## Ask whether the app already does it
 
 The most useful question in this repo is usually "can you do that today?".
