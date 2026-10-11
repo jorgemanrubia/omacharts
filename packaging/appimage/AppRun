@@ -1,0 +1,93 @@
+#!/bin/sh
+# AppRun for the omacharts AppImage.
+#
+# The AppImage ships its own glibc, so the omacharts binary has its ELF
+# interpreter patched to @LOADER@ (a fixed path chosen at build time; the
+# kernel cannot expand variables there). This script puts a copy of the bundled
+# dynamic loader at that path, points the bundled GTK at its runtime data, and
+# starts omacharts.
+HERE="$(dirname "$(readlink -f "$0")")"
+LOADER="@LOADER@"
+LOADER_DIR="$(dirname "$LOADER")"
+BUNDLED_LOADER="$HERE/lib64/ld-linux-x86-64.so.2"
+
+# Only coreutils here: minimal containers lack cmp, find, ...
+same_loader() {
+    [ -f "$LOADER" ] && [ "$(sha256sum <"$BUNDLED_LOADER")" = "$(sha256sum <"$LOADER")" ]
+}
+if ! same_loader; then
+    umask 022
+    mkdir -p "$LOADER_DIR" 2>/dev/null
+    tmp="$(mktemp "$LOADER_DIR/.ld.XXXXXX" 2>/dev/null)" &&
+        cp "$BUNDLED_LOADER" "$tmp" && chmod 755 "$tmp" &&
+        mv -f "$tmp" "$LOADER"
+fi
+# Never trust a loader directory someone else owns or can write to: it is
+# executed as the interpreter of the program.
+owner="$(stat -c %u "$LOADER_DIR" 2>/dev/null)"
+mode="$(stat -c %a "$LOADER_DIR" 2>/dev/null)"
+case "$mode" in
+*[2367]? | *[2367]) writable=1 ;;
+*) writable=0 ;;
+esac
+if ! same_loader || [ "$writable" = 1 ] || { [ "$owner" != "$(id -u)" ] && [ "$owner" != 0 ]; }; then
+    echo "omacharts AppImage: cannot set up the bundled loader in $LOADER_DIR" >&2
+    echo "(the directory must be writable by you only and /tmp must allow exec)" >&2
+    exit 1
+fi
+
+# Everything exported below is for the bundled GTK only. Programs omacharts
+# starts (the browser for the thinkorswim sign-in, xdg-open, ...) belong to the
+# host and get the environment back the way it was: usr/lib/exec.so, preloaded
+# here, restores every variable named in APPIMAGE_RESTORE_VARS from
+# APPIMAGE_ORIG_<NAME> on each exec. Deliberately NO LD_LIBRARY_PATH: every
+# bundled ELF carries a relative RPATH instead (set-runpaths.sh).
+APPIMAGE_RESTORE_VARS=""
+remember() { # remember NAME: keep what NAME was before AppRun changed it
+    eval "if [ -n \"\${$1+x}\" ]; then export APPIMAGE_ORIG_$1=\"\$$1\"; fi"
+    APPIMAGE_RESTORE_VARS="$APPIMAGE_RESTORE_VARS${APPIMAGE_RESTORE_VARS:+ }$1"
+}
+setenv() { remember "$1" && export "$1=$2"; }
+unsetenv() { remember "$1" && unset "$1"; }
+setenv LD_PRELOAD "$HERE/usr/lib/exec.so${LD_PRELOAD:+:$LD_PRELOAD}"
+# The loader cache needs absolute paths, and the mount point is only known now.
+sed "s|@LOADERS@|$HERE/usr/lib/gdk-pixbuf-2.0/2.10.0/loaders|" \
+    "$HERE/usr/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache.in" >"$LOADER_DIR/loaders.cache"
+setenv GDK_PIXBUF_MODULE_FILE "$LOADER_DIR/loaders.cache"
+setenv GCONV_PATH "$HERE/usr/lib/gconv"
+setenv XDG_DATA_DIRS "$HERE/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+# GTK's compiled-in prefix is the build machine's /usr; its modules (media,
+# print backends) must not come from the host's GTK at that path.
+setenv GTK_EXE_PREFIX "$HERE/usr"
+setenv GTK_DATA_PREFIX "$HERE/usr"
+# Modules from the host (dconf, gvfs, GTK input methods, ...) are built against
+# the host's GLib and GTK, so none may be loaded into the bundled ones.
+setenv GIO_MODULE_DIR "$HERE/usr/lib/gio/modules"
+setenv GIO_USE_VFS local
+setenv GSETTINGS_BACKEND memory
+unsetenv GTK_PATH
+unsetenv GTK_MODULES
+unsetenv GTK_IM_MODULE
+# The bundled fontconfig reads the host's configuration and fonts; a host
+# without any gets the bundled DejaVu through the bundled configuration.
+if [ ! -r /etc/fonts/fonts.conf ] && [ -z "$FONTCONFIG_FILE" ]; then
+    setenv FONTCONFIG_FILE "$HERE/etc/fonts/fonts.conf"
+fi
+export APPIMAGE_RESTORE_VARS
+
+if [ -n "$OMACHARTS_APPIMAGE_DEBUG" ]; then
+    # Troubleshooting: OMACHARTS_APPIMAGE_DEBUG=1 ./Omacharts-*.AppImage prints
+    # the environment, GTK's own debug output and, with gdb installed, a
+    # backtrace of a crash.
+    echo "== AppImage environment ==" >&2
+    env | sort | grep -E '^(APPDIR|APPIMAGE|LD_|GDK_|GSK_|GTK_|GIO_|GSETTINGS_|XDG_|FONTCONFIG|WAYLAND|DISPLAY|DBUS|LANG|LC_)' >&2
+    export GDK_DEBUG=opengl,misc LIBGL_DEBUG=verbose EGL_LOG_LEVEL=debug
+    if command -v gdb >/dev/null 2>&1; then
+        exec gdb -q -batch -ex 'set pagination off' -ex 'handle SIGPIPE nostop noprint' -ex run \
+            -ex 'echo \n== backtrace ==\n' -ex bt -ex 'thread apply all bt 30' \
+            --args "$HERE/usr/bin/omacharts" "$@"
+    fi
+    echo "gdb not found; install it to get a backtrace" >&2
+fi
+
+exec "$HERE/usr/bin/omacharts" "$@"

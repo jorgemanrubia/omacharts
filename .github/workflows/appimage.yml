@@ -1,0 +1,128 @@
+name: AppImage
+
+# Builds a self-contained AppImage (every library down to glibc is inside;
+# only the GPU driver stack comes from the host) and starts it in stock
+# Debian, Ubuntu and Fedora containers to prove it runs elsewhere. Details in
+# packaging/appimage/README.md.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    paths:
+      - 'packaging/appimage/**'
+      - '.github/workflows/appimage.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: appimage-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install GTK and packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-4-dev libadwaita-1-dev librsvg2-common adwaita-icon-theme \
+            gsettings-desktop-schemas fonts-dejavu-core patchelf file squashfs-tools
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked --bin omacharts
+      - name: Read the version
+        id: version
+        run: echo "version=$(cargo pkgid --offline | sed 's/.*[#@]//')" >> "$GITHUB_OUTPUT"
+      - name: Assemble the AppDir
+        run: packaging/appimage/build-appdir.sh AppDir
+      - name: Check that programs started from it get the host's environment back
+        # The hook is linked against the bundled glibc, which is also this
+        # runner's, so a host program can be run through it here.
+        run: |
+          out="$(APPIMAGE_RESTORE_VARS='GDK_PIXBUF_MODULE_FILE XDG_DATA_DIRS LD_PRELOAD' \
+            APPIMAGE_ORIG_XDG_DATA_DIRS=/original GDK_PIXBUF_MODULE_FILE=/leaked XDG_DATA_DIRS=/leaked \
+            LD_PRELOAD="$PWD/AppDir/usr/lib/exec.so" \
+            AppDir/lib64/ld-linux-x86-64.so.2 --library-path AppDir/usr/lib /usr/bin/python3 -c \
+              'import subprocess; print(subprocess.run(["/usr/bin/env"], capture_output=True, text=True).stdout)')"
+          echo "$out" | grep -E 'leaked|original|LD_PRELOAD|APPIMAGE_' || true
+          echo "$out" | grep -qx 'XDG_DATA_DIRS=/original'
+          ! echo "$out" | grep -qE 'leaked|LD_PRELOAD|APPIMAGE_'
+      - name: Create the AppImage
+        env:
+          # A tagged appimagetool release, verified by checksum. To update, change both:
+          # the checksum is that of .../releases/download/<tag>/appimagetool-x86_64.AppImage
+          APPIMAGETOOL_VERSION: '1.9.1'
+          APPIMAGETOOL_SHA256: ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0
+        run: |
+          curl -fsSLo appimagetool "https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-x86_64.AppImage"
+          echo "${APPIMAGETOOL_SHA256}  appimagetool" | sha256sum -c -
+          chmod +x appimagetool
+          # Runners have no /dev/fuse: extract appimagetool instead of running it.
+          ./appimagetool --appimage-extract >/dev/null
+          ARCH=x86_64 squashfs-root/AppRun --no-appstream AppDir \
+            "Omacharts-${{ steps.version.outputs.version }}-x86_64.AppImage"
+          ls -lh *.AppImage
+      - uses: actions/upload-artifact@v4
+        with:
+          name: omacharts-appimage
+          path: Omacharts-*-x86_64.AppImage
+          if-no-files-found: error
+
+  test:
+    name: test (${{ matrix.image }})
+    needs: build
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        # Different glibc versions and families, none with GTK installed:
+        # Debian 13 (glibc 2.41, and given its own GTK 4 to prove the bundle
+        # ignores it), Ubuntu 22.04 (2.35, older than the build host), Fedora.
+        include:
+          - image: debian:trixie-slim
+            hostile_gtk: '1'
+          - image: ubuntu:22.04
+          - image: fedora:latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: packaging/appimage
+      - uses: actions/download-artifact@v4
+        with:
+          name: omacharts-appimage
+      - name: Run the AppImage in a stock container
+        run: |
+          mkdir -p results
+          docker run --rm --cap-add SYS_PTRACE -e HOSTILE_GTK="${{ matrix.hostile_gtk }}" \
+            -v "$PWD:/work" -w /work "${{ matrix.image }}" \
+            bash -c 'packaging/appimage/test-appimage.sh Omacharts-*-x86_64.AppImage results'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: appimage-test-${{ strategy.job-index }}
+          path: results
+          if-no-files-found: ignore
+
+  # A tag's AppImage joins the tarball and the packages on its release, once
+  # it has passed on every distribution above.
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: test
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: omacharts-appimage
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: Omacharts-*-x86_64.AppImage
