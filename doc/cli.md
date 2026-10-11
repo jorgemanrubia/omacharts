@@ -192,6 +192,32 @@ asking before changing any of it. Out of the box the default watchlist drives
 group 1, and charts start in group 1, so a fresh install has the list driving
 the charts.
 
+### Sorting a watchlist
+
+The rail's column headers sort it: click one for low to high, again for high to
+low, and a third time to go back to the order the list was written in. The same
+from a terminal, kept per watchlist:
+
+```
+$ omacharts watchlist sort Semis change_pct --descending
+"Semis" sorted by change_pct, high to low
+  [exit 0]
+
+$ omacharts watchlist sort Semis
+change_pct:desc
+  [exit 0]
+
+$ omacharts watchlist sort Semis none
+"Semis" is in its own order
+  [exit 0]
+```
+
+A list is sorted **within each section**, so the sections stay where you put
+them, and it keeps itself sorted as prices move. A symbol without a price yet
+sorts last either way. While a list is sorted, dragging a symbol within its
+section does nothing — the sort decides its place — but dragging it into
+another section still moves it.
+
 **A chart put in a group leads it.** What that chart is showing becomes the
 group's symbol, and everything else in the group follows: the other charts, the
 charts of the chartbooks that are not open, and the watchlist driving the group.

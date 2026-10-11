@@ -120,6 +120,16 @@ impl Column {
         Column::ALL.into_iter().find(|c| c.key() == key)
     }
 
+    /// What the column's header says.
+    fn title(self) -> &'static str {
+        match self {
+            Column::Symbol => "Symbol",
+            Column::Last => "Last",
+            Column::Change => "Chg",
+            Column::ChangePct => "Chg %",
+        }
+    }
+
     fn width_chars(self) -> i32 {
         match self {
             Column::Symbol => 0,
@@ -155,6 +165,190 @@ pub fn parse_columns(stored: Option<&str>) -> Vec<Column> {
 
 pub fn columns_to_string(columns: &[Column]) -> String {
     columns.iter().map(|c| c.key()).collect::<Vec<_>>().join(",")
+}
+
+/// How a watchlist's rows are ordered within each section, when not in the
+/// order they were put there.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Sort {
+    pub column: Column,
+    pub descending: bool,
+}
+
+impl Sort {
+    /// Written as the column's key, with `:desc` when it runs high to low.
+    pub fn key(self) -> String {
+        match self.descending {
+            true => format!("{}:desc", self.column.key()),
+            false => self.column.key().to_string(),
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Sort> {
+        let (column, descending) = match key.strip_suffix(":desc") {
+            Some(column) => (column, true),
+            None => (key, false),
+        };
+        Column::from_key(column).map(|column| Sort { column, descending })
+    }
+
+    /// The next state a click on `column`'s header moves to: up, then down,
+    /// then back to the order the list was written in.
+    fn after_click(current: Option<Sort>, column: Column) -> Option<Sort> {
+        match current {
+            Some(sort) if sort.column == column && !sort.descending => {
+                Some(Sort { column, descending: true })
+            }
+            Some(sort) if sort.column == column => None,
+            _ => Some(Sort { column, descending: false }),
+        }
+    }
+
+    /// What a row sorts on, worked out once for each of them.
+    ///
+    /// A quote is a read of the bar cache — a query and a whole series
+    /// decoded — so asking for one inside the comparator costs the 2·n·log n
+    /// reads a sort makes rather than the n there are rows: 3.45ms against
+    /// 1.44ms for a 200-row list, on the main loop, every time a quote
+    /// arrives. It also keeps the comparison pure, and a comparator whose
+    /// answers can change part-way through a sort is one the sort may panic
+    /// on — which in here would take the window with it.
+    fn rank(self, instrument: &Instrument, quote: &QuoteLookup) -> Rank {
+        match self.column {
+            Column::Symbol => Rank::Name(instrument.display_symbol()),
+            Column::Last => Rank::Price(quote(instrument).map(|q| q.last)),
+            Column::Change => Rank::Price(quote(instrument).map(|q| q.change)),
+            Column::ChangePct => Rank::Price(quote(instrument).map(|q| q.change_pct)),
+        }
+    }
+
+    /// Order two rows. A row with no price yet sorts last whichever way the
+    /// column runs: a dash is not a small number.
+    fn compare(self, a: &Rank, b: &Rank) -> std::cmp::Ordering {
+        let ordering = match (a, b) {
+            (Rank::Name(a), Rank::Name(b)) => a.cmp(b),
+            (Rank::Price(Some(x)), Rank::Price(Some(y))) => x.total_cmp(y),
+            (Rank::Price(Some(_)), Rank::Price(None)) => return std::cmp::Ordering::Less,
+            (Rank::Price(None), Rank::Price(Some(_))) => return std::cmp::Ordering::Greater,
+            _ => std::cmp::Ordering::Equal,
+        };
+        if self.descending { ordering.reverse() } else { ordering }
+    }
+}
+
+/// What one row of a sorted list is held against the others by.
+enum Rank {
+    Name(String),
+    Price(Option<f64>),
+}
+
+/// A column on its way to another place in the header.
+///
+/// A type of its own rather than the column's key as a string, because a
+/// drop target matches on the type it is offered: the symbols below take a
+/// string, and sharing one with them lit every row up as somewhere a column
+/// could be dropped. Nothing but the header accepts this, and the header
+/// accepts nothing else.
+#[derive(Clone, Copy, glib::Boxed)]
+#[boxed_type(name = "OmachartsColumnDrag")]
+struct ColumnDrag(Column);
+
+/// Which gap between the column titles `x` falls in, counted in columns.
+fn gap_at(header: &gtk::Box, x: f64) -> usize {
+    let mut at = 0;
+    let mut child = header.first_child();
+    while let Some(widget) = child {
+        child = widget.next_sibling();
+        let middle = widget.allocation().x() as f64 + widget.width() as f64 / 2.0;
+        if x < middle {
+            break;
+        }
+        at += 1;
+    }
+    at
+}
+
+/// Where the line stands for the `at`th gap: against the near edge of the
+/// title that would follow it, or past the last one at the end of the row.
+fn gap_x(header: &gtk::Box, at: usize) -> i32 {
+    let mut seen = 0;
+    let mut last = 0;
+    let mut child = header.first_child();
+    while let Some(widget) = child {
+        child = widget.next_sibling();
+        if seen == at {
+            return (widget.allocation().x() - 3).max(0);
+        }
+        last = widget.allocation().x() + widget.width();
+        seen += 1;
+    }
+    // Past the last title is the rail's own edge, so the line stands just
+    // inside it rather than half off the end.
+    (last - 2).max(0)
+}
+
+/// Halfway between two rows, measured from their middles rather than from
+/// the edges between them.
+///
+/// The edges are the layout's business — padding, margins and a row's own
+/// box all land on them — and a line halfway between two of those sat six
+/// pixels above where the eye says the middle is. Halfway between the two
+/// rows' centres is the middle of the two symbols, which is what the line
+/// is claiming to be.
+fn between(within: &gtk::Overlay, above: &gtk::ListBoxRow, below: &gtk::ListBoxRow) -> i32 {
+    let middle = |row: &gtk::ListBoxRow| match row.compute_bounds(within) {
+        Some(box_) => box_.y() + box_.height() / 2.0,
+        None => (row.allocation().y() + row.height() / 2) as f32,
+    };
+    ((middle(above) + middle(below)) / 2.0).round() as i32
+}
+
+/// A row's top and bottom in the overlay the line is drawn on.
+fn within(overlay: &gtk::Overlay, row: &gtk::ListBoxRow) -> (i32, i32) {
+    match row.compute_bounds(overlay) {
+        Some(box_) => (box_.y().round() as i32, (box_.y() + box_.height()).round() as i32),
+        None => (row.allocation().y(), row.allocation().y() + row.height()),
+    }
+}
+
+/// How far a press may travel and still be a click rather than a drag.
+const CLICK_SLOP: f64 = 4.0;
+
+/// The columns after `moving` is dropped in the `at`th gap, or nothing when
+/// that is the gap it already sits in.
+fn dropped(columns: &[Column], moving: Column, at: usize) -> Option<Vec<Column>> {
+    // The symbol column does not move, and nothing lands in front of it:
+    // a drop over on that side takes the nearest place that is really a
+    // place, which is straight after it.
+    if moving == Column::Symbol {
+        return None;
+    }
+    let at = at.max(1);
+    let from = columns.iter().position(|c| *c == moving)?;
+    // The gaps are counted among the columns as they stand, so a gap after
+    // the one being moved loses a place once it is taken out.
+    let to = if at > from { at - 1 } else { at };
+    if to == from {
+        return None;
+    }
+    let mut columns = columns.to_vec();
+    let column = columns.remove(from);
+    columns.insert(to.min(columns.len()), column);
+    Some(columns)
+}
+
+/// Where a watchlist's sort is kept. Per list, because a list of movers wants
+/// sorting by change and a list of holdings wants the order it was built in.
+fn sort_setting(watchlist: i64) -> String {
+    format!("watchlist_sort_{watchlist}")
+}
+
+pub fn stored_sort(store: &Store, watchlist: i64) -> Option<Sort> {
+    store.setting(&sort_setting(watchlist)).as_deref().and_then(Sort::from_key)
+}
+
+pub fn store_sort(store: &Store, watchlist: i64, sort: Option<Sort>) {
+    store.set_setting(&sort_setting(watchlist), &sort.map(Sort::key).unwrap_or_default());
 }
 
 /// A key that folds sections.
@@ -196,6 +390,13 @@ impl RowKind {
             RowKind::Header { section_id, .. } | RowKind::Entry { section_id, .. } => *section_id,
         }
     }
+
+    fn instrument(&self) -> Option<&Instrument> {
+        match self {
+            RowKind::Entry { instrument, .. } => Some(instrument),
+            RowKind::Header { .. } => None,
+        }
+    }
 }
 
 /// Which section a new symbol belongs in.
@@ -226,6 +427,22 @@ pub struct Watchlist {
     /// Parallel to the list's rows.
     rows: RefCell<Vec<RowKind>>,
     columns: RefCell<Vec<Column>>,
+    /// The column titles over the rows, which are also how they are sorted.
+    column_header: gtk::Box,
+    /// The line that says where a column being dragged would land.
+    column_marker: gtk::Box,
+    /// Where a symbol being dragged will be inserted.
+    row_marker: gtk::Box,
+    /// What that line is positioned inside. A row's allocation is in the
+    /// list's coordinates and the line's margin is in the overlay's, and
+    /// the list sits a few pixels into the overlay — which is exactly how
+    /// far above the gap the line was landing.
+    row_overlay: gtk::Overlay,
+    /// Where that line is now, so motion over one row costs nothing after
+    /// the first event.
+    row_marked: Cell<i32>,
+    /// How the list on screen is sorted, read from the store on every rebuild.
+    sort: Cell<Option<Sort>>,
     /// Set while we are selecting a row ourselves, so rebuilding does not
     /// re-load the chart.
     quiet: Cell<bool>,
@@ -267,8 +484,25 @@ impl Watchlist {
         list.set_selection_mode(gtk::SelectionMode::Single);
         list.add_css_class("navigation-sidebar");
 
+        // The same mark again, lying down: where a symbol being dragged will
+        // be inserted. Over the list rather than between the rows, so the
+        // rows do not open a gap and shuffle while one is being carried.
+        let row_marker = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        row_marker.add_css_class("row-drop");
+        row_marker.set_size_request(-1, 2);
+        row_marker.set_margin_start(8);
+        row_marker.set_margin_end(8);
+        row_marker.set_halign(gtk::Align::Fill);
+        row_marker.set_valign(gtk::Align::Start);
+        row_marker.set_can_target(false);
+        row_marker.set_visible(false);
+
+        let rows_under_mark = gtk::Overlay::new();
+        rows_under_mark.set_child(Some(&list));
+        rows_under_mark.add_overlay(&row_marker);
+
         let scroller = gtk::ScrolledWindow::new();
-        scroller.set_child(Some(&list));
+        scroller.set_child(Some(&rows_under_mark));
         scroller.set_vexpand(true);
         scroller.set_hscrollbar_policy(gtk::PolicyType::Never);
 
@@ -332,10 +566,41 @@ impl Watchlist {
         trouble.set_margin_bottom(2);
         trouble.set_visible(false);
 
+        // The column titles, lined up over the cells: a row's box starts 26px
+        // from the rail's edge (see the switcher above) and ends 24px from the
+        // other, 6px of Adwaita's row margin and 8 of padding past its own 10.
+        let column_header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        // Named so the stylesheet can take GTK's drop outline off this one
+        // row without touching the drop feedback on the symbols below.
+        column_header.add_css_class("column-headings");
+
+        // A tick between two titles rather than a rule down the row: it says
+        // where the column lands without reading as a divider between them.
+        // Over the titles rather than among them, so nothing shifts while a
+        // column is being carried, and never a drop target of its own.
+        let column_marker = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        column_marker.add_css_class("column-drop");
+        column_marker.set_size_request(2, 11);
+        column_marker.set_halign(gtk::Align::Start);
+        column_marker.set_valign(gtk::Align::Center);
+        column_marker.set_can_target(false);
+        column_marker.set_visible(false);
+
+        // The margins belong to the overlay, so a title's own x is the one
+        // the line is placed at.
+        let columns_over_rows = gtk::Overlay::new();
+        columns_over_rows.set_child(Some(&column_header));
+        columns_over_rows.add_overlay(&column_marker);
+        columns_over_rows.set_margin_start(26);
+        columns_over_rows.set_margin_end(24);
+        columns_over_rows.set_margin_top(4);
+        columns_over_rows.set_margin_bottom(2);
+
         let widget = gtk::Box::new(gtk::Orientation::Vertical, 0);
         widget.set_size_request(248, -1);
         widget.append(&band);
         widget.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        widget.append(&columns_over_rows);
         widget.append(&trouble);
         widget.append(&scroller);
 
@@ -360,6 +625,12 @@ impl Watchlist {
             on_pick: Rc::new(on_pick),
             rows: RefCell::new(Vec::new()),
             columns: RefCell::new(columns),
+            column_header: column_header.clone(),
+            column_marker: column_marker.clone(),
+            row_marker: row_marker.clone(),
+            row_overlay: rows_under_mark.clone(),
+            row_marked: Cell::new(-1),
+            sort: Cell::new(None),
             quiet: Cell::new(false),
             link: link.clone(),
             link_tint,
@@ -399,6 +670,7 @@ impl Watchlist {
         watchlist.wire_keys();
         watchlist.wire_click_to_focus();
         watchlist.wire_switcher();
+        watchlist.wire_column_drop();
         watchlist.rebuild();
         watchlist
     }
@@ -1053,11 +1325,19 @@ impl Watchlist {
     /// from patching it in place.
     pub fn rebuild(self: &Rc<Self>) {
         let selected = self.list.selected_row().map(|r| r.index());
+        // The symbol, so that a sort, which moves it, keeps it selected; the
+        // place, for when it has gone.
+        let selected_entry = selected.and_then(|at| match self.rows.borrow().get(at as usize) {
+            Some(RowKind::Entry { section_id, entry, .. }) => Some((*section_id, entry.clone())),
+            _ => None,
+        });
 
         self.quiet.set(true);
         clear_rows(&self.list);
 
         self.write_switcher();
+        self.sort.set(stored_sort(&self.store, self.active.get()));
+        self.write_column_header();
 
         let mut kinds = Vec::new();
         for section in self.store.watchlist_sections(self.active.get()) {
@@ -1065,10 +1345,23 @@ impl Watchlist {
                 self.list.append(&self.section_header(section.id, &section.name, section.collapsed));
                 kinds.push(RowKind::Header { section_id: section.id, collapsed: section.collapsed });
             }
-            for entry in &section.entries {
-                let Some(instrument) = self.index.find(&entry.symbol, entry.suffix.as_deref()) else {
-                    continue;
-                };
+            let mut entries: Vec<(&Entry, Instrument)> = section
+                .entries
+                .iter()
+                .filter_map(|entry| {
+                    let found = self.index.find(&entry.symbol, entry.suffix.as_deref());
+                    found.map(|instrument| (entry, instrument))
+                })
+                .collect();
+            if let Some(sort) = self.sort.get() {
+                let mut ranked: Vec<(Rank, (&Entry, Instrument))> = entries
+                    .into_iter()
+                    .map(|row| (sort.rank(&row.1, &self.quote), row))
+                    .collect();
+                ranked.sort_by(|(a, _), (b, _)| sort.compare(a, b));
+                entries = ranked.into_iter().map(|(_, row)| row).collect();
+            }
+            for (entry, instrument) in entries {
                 let (row, cells) = self.entry_row(section.id, entry, &instrument);
                 row.set_visible(!section.collapsed);
                 self.list.append(&row);
@@ -1091,10 +1384,15 @@ impl Watchlist {
             *self.empty_focus.borrow_mut() = None;
         }
 
-        if let Some(index) = selected {
-            if let Some(row) = self.list.row_at_index(index) {
-                self.list.select_row(Some(&row));
-            }
+        let moved_to = selected_entry.and_then(|(section, wanted)| {
+            self.rows.borrow().iter().position(|kind| {
+                matches!(kind, RowKind::Entry { section_id, entry, .. }
+                    if *section_id == section && *entry == wanted)
+            })
+        });
+        let reselect = moved_to.map(|at| at as i32).or(selected);
+        if let Some(row) = reselect.and_then(|at| self.list.row_at_index(at)) {
+            self.list.select_row(Some(&row));
         }
         self.quiet.set(false);
     }
@@ -1177,14 +1475,46 @@ impl Watchlist {
         // stops on one without loading anything, and ← → Enter fold it.
         row.set_selectable(false);
         row.set_activatable(false);
+        // Named like the symbols for the same reason: the line says where
+        // the drop lands, so the frame GTK would draw here is noise.
+        row.add_css_class("section-row");
 
         // Dropping a symbol on a header puts it in that section, at the end.
         // Without this there is no way to move something into a collapsed or
         // empty section. Dropping a section on one puts it beside that section.
         let target = gtk::DropTarget::new(glib::Type::STRING, gtk::gdk::DragAction::MOVE);
         let this = self.clone();
+        target.set_preload(true);
+        let marking = self.clone();
+        target.connect_motion(move |target, _, _| {
+            let at = match target.value().as_ref().and_then(parse_drag) {
+                // Beside this section, on the side it is coming from.
+                Some(Dragged::Section(moving)) => {
+                    let order: Vec<i64> = marking
+                        .rows
+                        .borrow()
+                        .iter()
+                        .filter_map(|kind| match kind {
+                            RowKind::Header { section_id, .. } => Some(*section_id),
+                            RowKind::Entry { .. } => None,
+                        })
+                        .collect();
+                    match header_drop_side(&order, moving, id) {
+                        Beside::Before => marking.gap_above_section(id),
+                        Beside::After => marking.end_of_section(id),
+                    }
+                }
+                // A symbol dropped on a header joins the section at its end.
+                _ => marking.end_of_section(id),
+            };
+            marking.mark_insertion(at);
+            gtk::gdk::DragAction::MOVE
+        });
+        let marking = self.clone();
+        target.connect_leave(move |_| marking.mark_insertion(None));
         target.connect_drop(move |_, value, _, _| match parse_drag(value) {
             Some(Dragged::Entry { from, entry }) => {
+                this.mark_insertion(None);
                 this.store.move_entry_to_section(from, id, &entry, None);
                 this.changed();
                 true
@@ -1287,6 +1617,10 @@ impl Watchlist {
         row.set_child(Some(&row_box));
         row.set_activatable(true);
         row.set_tooltip_text(Some(&instrument.full_name()));
+        // Named so the stylesheet can take GTK's drop frame off the symbols:
+        // the line between them says where the drop goes, which is the thing
+        // being asked.
+        row.add_css_class("symbol-row");
 
         self.wire_row_removal(&row, section_id, entry);
         self.wire_row_reorder(&row, section_id, entry);
@@ -1336,6 +1670,330 @@ impl Watchlist {
             for (column, label) in cells {
                 write_cell(label, *column, quote, instrument.kind);
             }
+        }
+        // New prices can reorder a list sorted by them.
+        if self.sort.get().is_some_and(|sort| sort.column != Column::Symbol) {
+            self.resort();
+        }
+    }
+
+    /// Put the rows back in sorted order after their prices moved, by moving
+    /// the rows that are out of place rather than building the rail again —
+    /// which would lose the selection, the focus and the scroll every time a
+    /// quote came in.
+    fn resort(&self) {
+        let Some(sort) = self.sort.get() else { return };
+        let mut rows = self.rows.borrow_mut();
+        // One section's run of symbols at a time, between its headers.
+        let mut start = 0;
+        for end in 0..=rows.len() {
+            if end < rows.len() && rows[end].instrument().is_some() {
+                continue;
+            }
+            let ranks: Vec<Rank> = rows[start..end]
+                .iter()
+                .map(|row| match row.instrument() {
+                    Some(instrument) => sort.rank(instrument, &self.quote),
+                    // Never: the run ends at the first row that is not a symbol.
+                    None => Rank::Price(None),
+                })
+                .collect();
+            let mut order: Vec<usize> = (start..end).collect();
+            order.sort_by(|&a, &b| sort.compare(&ranks[a - start], &ranks[b - start]));
+            if order.iter().copied().ne(start..end) {
+                self.move_rows(&mut rows, start, &order);
+            }
+            start = end + 1;
+        }
+    }
+
+    /// Lay `rows[start..]` out in `order`, widgets and all, keeping whatever
+    /// was selected and focused where it was.
+    fn move_rows(&self, rows: &mut [RowKind], start: usize, order: &[usize]) {
+        let widgets: Vec<gtk::ListBoxRow> =
+            order.iter().filter_map(|&at| self.list.row_at_index(at as i32)).collect();
+        if widgets.len() != order.len() {
+            return;
+        }
+        let selected = self.list.selected_row();
+        let focused = widgets.iter().find(|row| row.has_focus()).cloned();
+        self.quiet.set(true);
+        for row in &widgets {
+            self.list.remove(row);
+        }
+        for (offset, row) in widgets.iter().enumerate() {
+            self.list.insert(row, (start + offset) as i32);
+        }
+        if let Some(row) = selected {
+            self.list.select_row(Some(&row));
+        }
+        if let Some(row) = focused {
+            row.grab_focus();
+        }
+        self.quiet.set(false);
+        let reordered: Vec<RowKind> = order.iter().map(|&at| rows[at].clone()).collect();
+        for (offset, kind) in reordered.into_iter().enumerate() {
+            rows[start + offset] = kind;
+        }
+    }
+
+    /// Where the `at`th divide between columns is, measured on the cells in
+    /// the rows rather than on the titles over them.
+    ///
+    /// The headings are not the columns. A heading row and a row of symbols
+    /// carry different margins and give their stretchy first column
+    /// different amounts of room, so the gap between two titles and the gap
+    /// between the numbers under them land in different places — and a
+    /// handle belongs on the one the reader can see, which is where the data
+    /// divides.
+    fn column_edge(&self, at: usize) -> Option<i32> {
+        let column = *self.columns.borrow().get(at)?;
+        let cell = self.rows.borrow().iter().find_map(|kind| match kind {
+            RowKind::Entry { cells, .. } => {
+                cells.iter().find(|(c, _)| *c == column).map(|(_, label)| label.clone())
+            }
+            RowKind::Header { .. } => None,
+        })?;
+        let mine = cell.compute_bounds(&self.column_header)?;
+        // Halfway across the gutter between this column and the one before
+        // it, which is the line the eye draws between them.
+        match cell.prev_sibling().and_then(|before| before.compute_bounds(&self.column_header)) {
+            Some(before) => Some(((before.x() + before.width() + mine.x()) / 2.0).round() as i32),
+            None => Some(mine.x().round() as i32),
+        }
+    }
+
+    /// Where a mark stands for the `at`th divide: on the cells' own edge,
+    /// and on the titles' only when there are no rows to measure.
+    fn divide_x(&self, at: usize) -> i32 {
+        self.column_edge(at).unwrap_or_else(|| gap_x(&self.column_header, at))
+    }
+
+    fn write_column_header(self: &Rc<Self>) {
+        while let Some(child) = self.column_header.first_child() {
+            self.column_header.remove(&child);
+        }
+        let sort = self.sort.get();
+        for column in self.columns.borrow().iter().copied() {
+            let arrow = match sort {
+                Some(sort) if sort.column == column && sort.descending => Some("↓"),
+                Some(sort) if sort.column == column => Some("↑"),
+                _ => None,
+            };
+            // Numbers line up on the right, so their titles do too, with the
+            // arrow on the side away from the edge they share.
+            let title = column.title();
+            let label = gtk::Label::new(Some(&match arrow {
+                None => title.to_string(),
+                Some(arrow) if column == Column::Symbol => format!("{title} {arrow}"),
+                Some(arrow) => format!("{arrow} {title}"),
+            }));
+            label.add_css_class("caption");
+            if arrow.is_none() {
+                label.add_css_class("dim-label");
+            }
+            if column == Column::Symbol {
+                label.set_xalign(0.0);
+                label.set_hexpand(true);
+            } else {
+                label.set_xalign(1.0);
+                label.set_width_chars(column.width_chars());
+            }
+            let tip = match Sort::after_click(sort, column) {
+                Some(next) if next.descending => format!("Sort by {title}, high to low"),
+                Some(_) => format!("Sort by {title}, low to high"),
+                None => "Back to the list's own order".to_string(),
+            };
+            label.set_tooltip_text(Some(&tip));
+
+            let click = gtk::GestureClick::new();
+            let from = Rc::new(Cell::new(f64::MIN));
+            let pressed = from.clone();
+            click.connect_pressed(move |_, _, x, _| pressed.set(x));
+            let this = self.clone();
+            click.connect_released(move |_, _, x, _| {
+                // A press that travelled was somebody moving the column, or
+                // trying to; it is not a click, whatever it ends up doing.
+                if (x - from.get()).abs() > CLICK_SLOP {
+                    return;
+                }
+                let next = Sort::after_click(this.sort.get(), column);
+                store_sort(&this.store, this.active.get(), next);
+                this.rebuild();
+            });
+            label.add_controller(click);
+
+            // Carried further than a click, the same press moves the column
+            // instead of sorting by it: GTK hands the sequence to whichever
+            // of the two the gesture turns out to be. Not the symbol, which
+            // is always the first column — a drag of it could only ever have
+            // been undone by the rule that puts it back.
+            if column == Column::Symbol {
+                self.column_header.append(&label);
+                continue;
+            }
+            let source = gtk::DragSource::new();
+            source.set_actions(gtk::gdk::DragAction::MOVE);
+            source.connect_prepare(move |_, _, _| {
+                Some(gtk::gdk::ContentProvider::for_value(&ColumnDrag(column).to_value()))
+            });
+            // What you are dragging: the title itself, under the pointer,
+            // which is the widget we already have rather than a drawing of it.
+            source.connect_drag_begin(move |source, _| {
+                let Some(label) = source.widget().and_downcast::<gtk::Label>() else { return };
+                let ghost = gtk::WidgetPaintable::new(Some(&label));
+                source.set_icon(Some(&ghost), label.width() / 2, label.height() / 2);
+            });
+            label.add_controller(source);
+            self.column_header.append(&label);
+        }
+        self.column_marker.set_visible(false);
+    }
+
+    /// Where a dragged column would land: a short line standing in the gap it
+    /// would go into, which moves between the titles as the pointer does.
+    ///
+    /// Over the titles rather than among them, so the header does not open a
+    /// gap and shuffle sideways while a column is being carried — the line
+    /// says where it would land, and nothing else moves until it does.
+    /// A motion works out which gap the pointer is in and moves the line only
+    /// when that answer changes; that is the whole of the per-motion work.
+    fn wire_column_drop(self: &Rc<Self>) {
+        let marker = self.column_marker.clone();
+        let target = gtk::DropTarget::new(ColumnDrag::static_type(), gtk::gdk::DragAction::MOVE);
+        // Which gap the line is standing in, so a motion inside the same gap
+        // costs the lookup and nothing else.
+        let showing: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+
+        let header = self.column_header.clone();
+        let mark = marker.clone();
+        let at_now = showing.clone();
+        let this = self.clone();
+        target.connect_motion(move |_, x, _| {
+            let at = gap_at(&header, x).max(1);
+            if at_now.get() != Some(at) {
+                at_now.set(Some(at));
+                mark.set_margin_start(this.divide_x(at));
+                mark.set_visible(true);
+            }
+            gtk::gdk::DragAction::MOVE
+        });
+
+        let mark = marker.clone();
+        let at_now = showing.clone();
+        target.connect_leave(move |_| {
+            at_now.set(None);
+            mark.set_visible(false);
+        });
+
+        let this = self.clone();
+        let header = self.column_header.clone();
+        let mark = marker.clone();
+        let at_now = showing.clone();
+        target.connect_drop(move |_, value, x, _| {
+            at_now.set(None);
+            mark.set_visible(false);
+            let Ok(ColumnDrag(moving)) = value.get::<ColumnDrag>() else { return false };
+            let at = gap_at(&header, x).max(1);
+            let Some(columns) = dropped(&this.columns.borrow(), moving, at) else { return false };
+            this.set_columns(columns);
+            true
+        });
+        self.column_header.add_controller(target);
+    }
+
+    /// The middle of the gap above the row at `at`, which is where a symbol
+    /// dropped on that row goes in.
+    ///
+    /// Between the two rows rather than on one of their edges: the rows
+    /// carry a margin, so their edges are a few pixels apart and a line on
+    /// either of them reads as belonging to that row rather than to the
+    /// space between.
+    fn gap_above(&self, at: i32) -> Option<i32> {
+        let row = self.list.row_at_index(at)?;
+        match at.checked_sub(1).and_then(|above| self.list.row_at_index(above)) {
+            Some(above) => Some(between(&self.row_overlay, &above, &row)),
+            // Nothing above it: the top of the list is the gap.
+            None => Some(within(&self.row_overlay, &row).0),
+        }
+    }
+
+    /// The middle of the gap below the row at `at`.
+    fn gap_below(&self, at: i32) -> Option<i32> {
+        let row = self.list.row_at_index(at)?;
+        match self.list.row_at_index(at + 1) {
+            Some(below) => Some(between(&self.row_overlay, &row, &below)),
+            None => Some(within(&self.row_overlay, &row).1),
+        }
+    }
+
+    /// Put the insertion line at `y` in the list, or take it away.
+    ///
+    /// Per motion: the same answer moves nothing, which is most of them —
+    /// a row is many pixels tall and the line sits on its edge.
+    fn mark_insertion(&self, y: Option<i32>) {
+        match y {
+            Some(y) => {
+                if self.row_marked.get() == y && self.row_marker.is_visible() {
+                    return;
+                }
+                self.row_marked.set(y);
+                self.row_marker.set_margin_top((y - 1).max(0));
+                self.row_marker.set_visible(true);
+            }
+            None => {
+                self.row_marked.set(-1);
+                self.row_marker.set_visible(false);
+            }
+        }
+    }
+
+    /// Where a symbol dropped on this section's header would go in: after
+    /// its last symbol, or against the header itself when it has none.
+    fn end_of_section(&self, section_id: i64) -> Option<i32> {
+        let rows = self.rows.borrow();
+        let last = rows.iter().enumerate().filter(|(_, kind)| {
+            matches!(kind, RowKind::Entry { section_id: id, .. } if *id == section_id)
+        });
+        let at = last.map(|(at, _)| at).next_back();
+        let at = match at {
+            Some(at) => at,
+            None => rows.iter().position(
+                |kind| matches!(kind, RowKind::Header { section_id: id, .. } if *id == section_id),
+            )?,
+        };
+        drop(rows);
+        self.gap_below(at as i32)
+    }
+
+    /// The middle of the gap above a section's header, where a section
+    /// dropped in front of it would go.
+    fn gap_above_section(&self, section_id: i64) -> Option<i32> {
+        let at = self.rows.borrow().iter().position(
+            |kind| matches!(kind, RowKind::Header { section_id: id, .. } if *id == section_id),
+        )?;
+        self.gap_above(at as i32)
+    }
+
+    /// Where a section dropped on this one's symbols would go: a section
+    /// cannot sit among another's rows, so it goes to the end of it the
+    /// pointer is nearer.
+    fn nearer_end(&self, section_id: i64, row: i32) -> Option<i32> {
+        let rows = self.rows.borrow();
+        let mine: Vec<usize> = rows
+            .iter()
+            .enumerate()
+            .filter(|(_, kind)| {
+                matches!(kind, RowKind::Entry { section_id: id, .. } if *id == section_id)
+            })
+            .map(|(at, _)| at)
+            .collect();
+        let at = mine.iter().position(|at| *at == row as usize)?;
+        let first = mine.len();
+        drop(rows);
+        match at * 2 < first {
+            true => self.gap_above_section(section_id),
+            false => self.end_of_section(section_id),
         }
     }
 
@@ -1399,14 +2057,58 @@ impl Watchlist {
         source.connect_prepare(move |_, _, _| {
             Some(gtk::gdk::ContentProvider::for_value(&dragged.to_value()))
         });
+        // The row itself under the pointer. Without an icon of its own GTK
+        // draws the payload, and the payload is a section id and a tab.
+        let this = self.clone();
+        source.connect_drag_begin(move |source, _| {
+            this.list.add_css_class("dragging");
+            let Some(row) = source.widget() else { return };
+            let ghost = gtk::WidgetPaintable::new(Some(&row));
+            source.set_icon(Some(&ghost), row.width() / 2, row.height() / 2);
+        });
+        let this = self.clone();
+        source.connect_drag_end(move |_, _, _| {
+            this.list.remove_css_class("dragging");
+            this.mark_insertion(None);
+        });
         row.add_controller(source);
 
         let target = gtk::DropTarget::new(glib::Type::STRING, gtk::gdk::DragAction::MOVE);
+        // A symbol lands in front of the row it is dropped on, so the line
+        // goes on that row's top edge — the place, not the row.
+        // Read the payload while it is over us rather than only on the drop,
+        // so the line can say where this particular thing would land.
+        target.set_preload(true);
+        let this = self.clone();
+        let marked = row.clone();
+        target.connect_motion(move |target, _, _| {
+            let dragged = target.value().as_ref().and_then(parse_drag);
+            let at = match dragged {
+                // A section cannot sit among another's symbols.
+                Some(Dragged::Section(_)) => this.nearer_end(section_id, marked.index()),
+                // Where it lands when the list is in its own order is this
+                // row's place. When the list is sorted the row is the sort's
+                // to pick and all the drop decides is the section, so the
+                // line goes at the end of it rather than promising a place
+                // it will not take.
+                _ => match this.sort.get() {
+                    Some(_) => this.end_of_section(section_id),
+                    None => this.gap_above(marked.index()),
+                },
+            };
+            this.mark_insertion(at);
+            gtk::gdk::DragAction::MOVE
+        });
+        let this = self.clone();
+        target.connect_leave(move |_| this.mark_insertion(None));
         let this = self.clone();
         let onto = entry.clone();
         target.connect_drop(move |_, value, _, _| match parse_drag(value) {
             Some(Dragged::Entry { from, entry }) => {
-                if from == section_id && entry == onto {
+                this.mark_insertion(None);
+                // A place in a sorted section is the sort's to decide, so a
+                // symbol can only be dropped into a different one.
+                if from == section_id && (entry == onto || this.sort.get().is_some()) {
                     return false;
                 }
                 this.store.move_entry_to_section(from, section_id, &entry, Some(&onto));
@@ -1431,6 +2133,20 @@ impl Watchlist {
         let payload = format!("{SECTION_DRAG}\t{id}");
         source.connect_prepare(move |_, _, _| {
             Some(gtk::gdk::ContentProvider::for_value(&payload.to_value()))
+        });
+        // A section travels as itself, and the rows it passes over stay as
+        // they are: the line says where it lands.
+        let this = self.clone();
+        source.connect_drag_begin(move |source, _| {
+            this.list.add_css_class("dragging");
+            let Some(row) = source.widget() else { return };
+            let ghost = gtk::WidgetPaintable::new(Some(&row));
+            source.set_icon(Some(&ghost), row.width() / 2, row.height() / 2);
+        });
+        let this = self.clone();
+        source.connect_drag_end(move |_, _, _| {
+            this.list.remove_css_class("dragging");
+            this.mark_insertion(None);
         });
         row.add_controller(source);
     }
@@ -2563,6 +3279,96 @@ mod tests {
         assert_eq!(parse_columns(None), Column::DEFAULT.to_vec());
         assert_eq!(parse_columns(Some("")), Column::DEFAULT.to_vec());
         assert_eq!(parse_columns(Some("nonsense,rubbish")), Column::DEFAULT.to_vec());
+    }
+
+    #[test]
+    fn a_column_dropped_in_a_gap_lands_there() {
+        use Column::{Change, ChangePct, Last, Symbol};
+        let shown = [Symbol, Last, ChangePct];
+        // Carried right, past the column after it: the gap beyond Chg % is
+        // the third, and Last ends up after it.
+        assert_eq!(dropped(&shown, Last, 3), Some(vec![Symbol, ChangePct, Last]));
+        // And back again.
+        assert_eq!(dropped(&[Symbol, ChangePct, Last], Last, 1), Some(vec![Symbol, Last, ChangePct]));
+        // Dropped in the gap it came from, either side of itself: nothing
+        // moves, so the drop is refused rather than rebuilding the rail.
+        assert_eq!(dropped(&shown, Last, 1), None);
+        assert_eq!(dropped(&shown, Last, 2), None);
+        // A column the rail is not showing is not a column to move.
+        assert_eq!(dropped(&shown, Change, 1), None);
+        // The far end, which is where a pointer that overshoots lands.
+        assert_eq!(dropped(&shown, Last, 3), Some(vec![Symbol, ChangePct, Last]));
+        // Symbol is first whatever a drop says, which is the rule the rail
+        // has always had and the reason the drop goes through `parse_columns`.
+        assert_eq!(parse_columns(Some(&columns_to_string(&[Last, ChangePct, Symbol])))[0], Symbol);
+        // It does not move, and nothing lands in front of it: a drop over
+        // on that side takes the first place that is really a place.
+        assert_eq!(dropped(&shown, Symbol, 2), None, "the symbol column stays put");
+        assert_eq!(dropped(&shown, Symbol, 0), None);
+        assert_eq!(
+            dropped(&shown, ChangePct, 0),
+            Some(vec![Symbol, ChangePct, Last]),
+            "dropped to the left of the symbol, it lands just after it"
+        );
+        assert_eq!(dropped(&shown, Last, 0), None, "which is where it already was");
+    }
+
+    #[test]
+    fn a_sort_round_trips_through_its_setting() {
+        for sort in [
+            Sort { column: Column::ChangePct, descending: true },
+            Sort { column: Column::Symbol, descending: false },
+        ] {
+            assert_eq!(Sort::from_key(&sort.key()), Some(sort));
+        }
+        assert_eq!(Sort::from_key(""), None, "an empty setting is the list's own order");
+        assert_eq!(Sort::from_key("volume"), None);
+    }
+
+    #[test]
+    fn a_header_click_goes_up_then_down_then_off() {
+        let up = Some(Sort { column: Column::Last, descending: false });
+        let down = Some(Sort { column: Column::Last, descending: true });
+        assert_eq!(Sort::after_click(None, Column::Last), up);
+        assert_eq!(Sort::after_click(up, Column::Last), down);
+        assert_eq!(Sort::after_click(down, Column::Last), None);
+        assert_eq!(
+            Sort::after_click(down, Column::Symbol),
+            Some(Sort { column: Column::Symbol, descending: false }),
+            "another column starts from the bottom"
+        );
+    }
+
+    #[test]
+    fn a_symbol_without_a_price_sorts_last_either_way() {
+        let named = |symbol: &str| Instrument {
+            symbol: symbol.to_string(),
+            name: symbol.to_string(),
+            kind: omacharts_engine::InstrumentKind::Equity,
+            suffix: None,
+            currency: None,
+            tier: 1,
+            session_origin: 0,
+            overrides: Vec::new(),
+            exchange: None,
+            popularity: 0,
+            local_name: None,
+        };
+        let quote: QuoteLookup = Rc::new(|instrument: &Instrument| {
+            match instrument.symbol.as_str() {
+                "UP" => Some(Quote { last: 10.0, change: 1.0, change_pct: 5.0 }),
+                "DOWN" => Some(Quote { last: 20.0, change: -1.0, change_pct: -2.0 }),
+                _ => None,
+            }
+        });
+        let mut rows = [named("NONE"), named("UP"), named("DOWN")];
+        for descending in [false, true] {
+            let sort = Sort { column: Column::ChangePct, descending };
+            rows.sort_by(|a, b| sort.compare(&sort.rank(a, &quote), &sort.rank(b, &quote)));
+            let order: Vec<&str> = rows.iter().map(|i| i.symbol.as_str()).collect();
+            let expected = if descending { ["UP", "DOWN", "NONE"] } else { ["DOWN", "UP", "NONE"] };
+            assert_eq!(order, expected);
+        }
     }
 
     #[test]
