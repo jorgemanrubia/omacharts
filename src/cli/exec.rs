@@ -12,7 +12,8 @@
 use serde_json::{json, Value};
 
 use omacharts_engine::indicators::{
-    LineStyle, Stroke, MAX_FILL_ALPHA, MAX_PANE_SHARE, MIN_FILL_ALPHA, MIN_PANE_SHARE,
+    bollinger::MAX_DEVIATIONS, LineStyle, Stroke, MAX_FILL_ALPHA, MAX_PANE_SHARE, MIN_FILL_ALPHA,
+    MIN_PANE_SHARE,
 };
 use omacharts_engine::providers;
 use omacharts_engine::theme::{
@@ -2498,10 +2499,21 @@ fn describe_indicator(stored: &Value) -> String {
         .find(|k| k.key() == kind)
         .map(|k| k.short_name().to_string())
         .unwrap_or_else(|| kind.to_string());
-    let lengths: Vec<String> = ["period", "k_smooth", "d_period"]
+    let mut lengths: Vec<String> = ["period", "fast", "slow", "signal", "k_smooth", "d_period"]
         .iter()
         .filter_map(|key| stored["params"][key].as_u64().map(|n| n.to_string()))
         .collect();
+    // A Bollinger's multiple says as much about it as its period does, so it
+    // goes in the same brackets. Only a Bollinger's: a VWAP's three bands sit
+    // at three different multiples and none of them is the indicator's.
+    if kind == IndicatorKind::Bollinger.key()
+        && let Some(deviations) = stored["params"]["bands"]
+            .as_array()
+            .and_then(|bands| bands.first())
+            .and_then(|band| band["deviations"].as_f64())
+    {
+        lengths.push(deviations.to_string());
+    }
     if !lengths.is_empty() {
         text.push_str(&format!("({})", lengths.join(",")));
     }
@@ -2514,6 +2526,11 @@ fn describe_indicator(stored: &Value) -> String {
 /// Every parameter a command offered, read and checked before one is written.
 struct Edits {
     period: Option<u64>,
+    deviations: Option<f64>,
+    fast: Option<u64>,
+    slow: Option<u64>,
+    signal: Option<u64>,
+    signal_color: Option<ColorChoice>,
     k_smooth: Option<u64>,
     d_period: Option<u64>,
     d_color: Option<ColorChoice>,
@@ -2535,9 +2552,17 @@ struct Edits {
 impl Edits {
     fn read(m: &clap::ArgMatches) -> Result<Edits, Fault> {
         Ok(Edits {
-            period: number(m, "period")?.map(|n| n as u64),
-            k_smooth: number(m, "k-smooth")?.map(|n| n as u64),
-            d_period: number(m, "d-period")?.map(|n| n as u64),
+            period: count(m, "period")?,
+            // Nought is a band on the line, which is a real if useless answer,
+            // so the floor is nought and not the engine's own. The ceiling is
+            // the engine's, as the height's and the shading's are.
+            deviations: bounded(m, "deviations", 0.0, MAX_DEVIATIONS)?,
+            fast: count(m, "fast")?,
+            slow: count(m, "slow")?,
+            signal: count(m, "signal")?,
+            signal_color: colour(m, "signal-color")?,
+            k_smooth: count(m, "k-smooth")?,
+            d_period: count(m, "d-period")?,
             d_color: colour(m, "d-color")?,
             anchor: match arg(m, "anchor") {
                 None => None,
@@ -2597,6 +2622,11 @@ impl Edits {
 
     fn is_empty(&self) -> bool {
         self.period.is_none()
+            && self.deviations.is_none()
+            && self.fast.is_none()
+            && self.slow.is_none()
+            && self.signal.is_none()
+            && self.signal_color.is_none()
             && self.k_smooth.is_none()
             && self.d_period.is_none()
             && self.d_color.is_none()
@@ -2628,19 +2658,59 @@ impl Edits {
 
         if let Some(period) = self.period {
             match params.get("period").is_some() {
-                true => params["period"] = json!(period.max(1)),
+                true => params["period"] = json!(period),
                 false => return Err(refuse("period")),
+            }
+        }
+        // The quick average has to stay quicker than the slow one: equal
+        // lengths measure nothing, and the wrong way round is the line upside
+        // down. Whichever of the two the command left out is the one already
+        // on the chart. Checked before either is written, so a refusal leaves
+        // the chart as it was.
+        if self.fast.is_some() || self.slow.is_some() {
+            let quick = self.fast.or_else(|| params["fast"].as_u64());
+            let slower = self.slow.or_else(|| params["slow"].as_u64());
+            if let (Some(quick), Some(slower)) = (quick, slower)
+                && quick >= slower
+            {
+                return Err(Fault::usage(format!(
+                    "--fast {quick} is not below --slow {slower}"
+                )));
+            }
+        }
+        if let Some(bars) = self.fast {
+            match params.get("fast").is_some() {
+                true => params["fast"] = json!(bars),
+                false => return Err(refuse("fast average")),
+            }
+        }
+        if let Some(bars) = self.slow {
+            match params.get("slow").is_some() {
+                true => params["slow"] = json!(bars),
+                false => return Err(refuse("slow average")),
+            }
+        }
+        if let Some(bars) = self.signal {
+            match params.get("signal").is_some() {
+                true => params["signal"] = json!(bars),
+                false => return Err(refuse("signal line")),
+            }
+        }
+        if let Some(colour) = &self.signal_color {
+            match kind == IndicatorKind::Macd {
+                true => params["signal_color"] = to_value(colour)?,
+                false => return Err(refuse("signal line")),
             }
         }
         if let Some(bars) = self.k_smooth {
             match params.get("k_smooth").is_some() {
-                true => params["k_smooth"] = json!(bars.max(1)),
+                true => params["k_smooth"] = json!(bars),
                 false => return Err(refuse("%K smoothing")),
             }
         }
         if let Some(bars) = self.d_period {
             match params.get("d_period").is_some() {
-                true => params["d_period"] = json!(bars.max(1)),
+                true => params["d_period"] = json!(bars),
                 false => return Err(refuse("%D smoothing")),
             }
         }
@@ -2707,19 +2777,48 @@ impl Edits {
                 false => return Err(refuse("pane height")),
             }
         }
-        if self.bands.is_some() || self.band_alpha.is_some() {
-            if kind != IndicatorKind::Vwap {
-                return Err(refuse("bands"));
-            }
-            let Some(bands) = params["bands"].as_array_mut() else {
-                return Err(refuse("bands"));
+        // A VWAP and a Bollinger both carry bands, in the same shape, so both
+        // answer to the same flags. Anything else has none.
+        if self.bands.is_some() || self.band_alpha.is_some() || self.deviations.is_some() {
+            let what = match self.deviations.is_some() {
+                true => "deviations",
+                false => "bands",
             };
+            let Some(bands) = params["bands"].as_array_mut() else {
+                return Err(refuse(what));
+            };
+            // Naming a band this indicator has not got would otherwise read as
+            // having switched something on: a Bollinger has one, and `--bands
+            // 2` on it would quietly switch its only band off.
+            if let Some(wanted) = &self.bands
+                && let Some(past) = wanted.iter().find(|at| **at >= bands.len())
+            {
+                return Err(Fault::usage(format!(
+                    "{} has {} band{}, so {} is not one of them",
+                    kind.short_name(),
+                    bands.len(),
+                    if bands.len() == 1 { "" } else { "s" },
+                    past + 1
+                )));
+            }
+            // One multiple for one band. A VWAP's three sit at different ones
+            // on purpose, and a single figure cannot say which it means.
+            if self.deviations.is_some() && kind != IndicatorKind::Bollinger {
+                return Err(Fault::usage(format!(
+                    "--deviations sets the one band a Bollinger has; {} has {} of them",
+                    kind.short_name(),
+                    bands.len()
+                )));
+            }
             for (at, band) in bands.iter_mut().enumerate() {
                 if let Some(wanted) = &self.bands {
                     band["enabled"] = json!(wanted.contains(&at));
                 }
                 if let Some(alpha) = self.band_alpha {
                     band["fill_alpha"] = json!(alpha);
+                }
+                if let Some(deviations) = self.deviations {
+                    band["deviations"] = json!(deviations);
                 }
             }
         }
@@ -2745,6 +2844,22 @@ impl Edits {
 
 fn to_value<T: serde::Serialize>(value: &T) -> Result<Value, Fault> {
     serde_json::to_value(value).map_err(|e| Fault::new(super::EXIT_ERROR, e.to_string()))
+}
+
+/// A length in bars: a whole number of them, and at least one.
+///
+/// Not `number(...) as u64`, which is how `--period -5` used to come out as a
+/// period of one — a float cast to an unsigned integer saturates at nought,
+/// and the floor that followed turned it into a figure nobody asked for. A
+/// caller that cannot see the screen has to be told instead.
+fn count(m: &clap::ArgMatches, id: &str) -> Result<Option<u64>, Fault> {
+    let Some(text) = arg(m, id) else { return Ok(None) };
+    match text.parse::<u64>() {
+        Ok(bars) if bars >= 1 => Ok(Some(bars)),
+        _ => Err(Fault::usage(format!(
+            "--{id} takes a whole number of bars, one or more, not {text:?}"
+        ))),
+    }
 }
 
 fn number(m: &clap::ArgMatches, id: &str) -> Result<Option<f64>, Fault> {
@@ -4197,6 +4312,168 @@ mod tests {
         assert!(vp["params"]["rows"].is_null(), "auto is stored as no number at all");
         assert_eq!(vp["params"]["reset"], "week");
         assert_eq!(vp["params"]["poc_color"]["name"], "Amber");
+    }
+
+
+    #[test]
+    fn a_bollinger_takes_a_period_and_a_multiple() {
+        let store = Store::memory().unwrap();
+        run("chartbook create Macro --switch", &store);
+        let out = run("chart indicator add bollinger --book Macro", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert!(out.out.contains("BB(20,2)"), "{}", out.out);
+
+        let out = run(
+            "chart indicator set bollinger --book Macro --period 10 --deviations 2.5 \
+             --band-alpha 0.3",
+            &store,
+        );
+        assert_eq!(out.code, 0, "{}", out.err);
+        let listed = run("chart indicator list --book Macro --json", &store);
+        let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+        let bollinger = &parsed["indicators"][0]["params"];
+        assert_eq!(bollinger["period"], 10);
+        assert_eq!(bollinger["bands"][0]["deviations"], 2.5);
+        assert_eq!(bollinger["bands"][0]["fill_alpha"], 0.3);
+        assert_eq!(bollinger["bands"][0]["enabled"], true, "a band is what it is for");
+    }
+
+    /// A VWAP's three bands and a Bollinger's one are the same thing, so the
+    /// same flags reach both — and naming a band an indicator has not got is
+    /// refused rather than quietly switching off the one it has.
+    #[test]
+    fn the_band_flags_reach_both_indicators_that_have_bands_and_nothing_else() {
+        let store = Store::memory().unwrap();
+        run("chartbook create Macro --switch", &store);
+        run("chart indicator add bollinger --book Macro", &store);
+        run("chart indicator add vwap --book Macro", &store);
+        run("chart indicator add rsi --book Macro", &store);
+
+        assert_eq!(run("chart indicator set vwap --book Macro --bands 1,3", &store).code, 0);
+        assert_eq!(run("chart indicator set bollinger --book Macro --bands none", &store).code, 0);
+
+        let refused = run("chart indicator set bollinger --book Macro --bands 2", &store);
+        assert_eq!(refused.code, super::super::EXIT_USAGE);
+        assert!(refused.err.contains("has 1 band"), "{}", refused.err);
+
+        // One figure cannot say which of three bands it means.
+        let refused = run("chart indicator set vwap --book Macro --deviations 2", &store);
+        assert_eq!(refused.code, super::super::EXIT_USAGE);
+        assert!(refused.err.contains("has 3 of them"), "{}", refused.err);
+
+        let refused = run("chart indicator set rsi --book Macro --bands 1", &store);
+        assert_eq!(refused.code, super::super::EXIT_USAGE);
+        assert!(refused.err.contains("no bands"), "{}", refused.err);
+
+        let listed = run("chart indicator list --book Macro --json", &store);
+        let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+        let vwap = &parsed["indicators"][1]["params"]["bands"];
+        assert_eq!(vwap[0]["enabled"], true);
+        assert_eq!(vwap[1]["enabled"], false);
+        assert_eq!(vwap[2]["enabled"], true);
+        assert_eq!(parsed["indicators"][0]["params"]["bands"][0]["enabled"], false);
+    }
+
+    #[test]
+    fn a_macd_takes_three_lengths_and_a_colour_for_its_signal() {
+        let store = Store::memory().unwrap();
+        run("chartbook create Macro --switch", &store);
+        let out = run("chart indicator add macd --book Macro", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert!(out.out.contains("MACD(12,26,9)"), "{}", out.out);
+
+        let out = run(
+            "chart indicator set macd --book Macro --fast 5 --slow 35 --signal 5 \
+             --signal-color Amber --height 0.3",
+            &store,
+        );
+        assert_eq!(out.code, 0, "{}", out.err);
+        let listed = run("chart indicator list --book Macro --json", &store);
+        let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+        let macd = &parsed["indicators"][0]["params"];
+        assert_eq!(macd["fast"], 5);
+        assert_eq!(macd["slow"], 35);
+        assert_eq!(macd["signal"], 5);
+        assert_eq!(macd["height"], 0.3);
+        assert_eq!(macd["signal_color"]["name"], "Amber");
+
+        run("chart indicator add rsi --book Macro", &store);
+        assert_ne!(run("chart indicator set rsi --book Macro --fast 5", &store).code, 0);
+        assert_ne!(run("chart indicator set rsi --book Macro --signal-color Amber", &store).code, 0);
+    }
+
+    /// A quick average no quicker than the slow one measures nothing, or
+    /// measures it upside down. Either way the chart is left as it was.
+    #[test]
+    fn a_macd_whose_averages_are_the_wrong_way_round_is_refused() {
+        let store = Store::memory().unwrap();
+        run("chartbook create Macro --switch", &store);
+        run("chart indicator add macd --book Macro", &store);
+
+        for args in ["--fast 26", "--slow 12", "--fast 30 --slow 10", "--fast 9 --slow 9"] {
+            let out = run(&format!("chart indicator set macd --book Macro {args}"), &store);
+            assert_eq!(out.code, super::super::EXIT_USAGE, "{args}: {}", out.err);
+            assert!(out.err.contains("not below"), "{args}: {}", out.err);
+        }
+
+        let listed = run("chart indicator list --book Macro --json", &store);
+        let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+        assert_eq!(parsed["indicators"][0]["params"]["fast"], 12, "nothing was written");
+        assert_eq!(parsed["indicators"][0]["params"]["slow"], 26);
+
+        // Moving both at once past where either was is fine, as it is for the
+        // overbought and oversold pair: only the pair it ends up with is
+        // judged.
+        let out = run("chart indicator set macd --book Macro --fast 30 --slow 60", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+    }
+
+    /// A length is a whole number of bars and at least one of them. A float
+    /// cast to an unsigned integer saturates at nought, so `--period -5` used
+    /// to be floored into a period of one and reported as having worked.
+    #[test]
+    fn a_length_that_is_not_a_number_of_bars_is_refused_rather_than_floored() {
+        let store = Store::memory().unwrap();
+        run("chartbook create Macro --switch", &store);
+        run("chart indicator add bollinger --book Macro", &store);
+        run("chart indicator add macd --book Macro", &store);
+        run("chart indicator add sma --book Macro", &store);
+
+        for (kind, flag) in [
+            ("bollinger", "--period"),
+            ("sma", "--period"),
+            ("macd", "--fast"),
+            ("macd", "--slow"),
+            ("macd", "--signal"),
+        ] {
+            for value in ["0", "-5", "1.5", "lots"] {
+                let out =
+                    run(&format!("chart indicator set {kind} --book Macro {flag} {value}"), &store);
+                assert_eq!(out.code, super::super::EXIT_USAGE, "{flag} {value}: {}", out.err);
+                assert!(out.err.contains("whole number of bars"), "{flag} {value}: {}", out.err);
+            }
+        }
+
+        let listed = run("chart indicator list --book Macro --json", &store);
+        let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+        assert_eq!(parsed["indicators"][0]["params"]["period"], 20, "nothing was written");
+        assert_eq!(parsed["indicators"][2]["params"]["period"], 50);
+    }
+
+    /// Nought deviations is a band on the line, which is useless and defined;
+    /// a negative one and one past the engine's own end are neither.
+    #[test]
+    fn a_band_width_outside_what_a_band_can_be_is_refused() {
+        let store = Store::memory().unwrap();
+        run("chartbook create Macro --switch", &store);
+        run("chart indicator add bollinger --book Macro", &store);
+
+        assert_eq!(run("chart indicator set bollinger --book Macro --deviations 0", &store).code, 0);
+        for value in ["-2", "51", "wide"] {
+            let out =
+                run(&format!("chart indicator set bollinger --book Macro --deviations {value}"), &store);
+            assert_eq!(out.code, super::super::EXIT_USAGE, "{value}: {}", out.err);
+        }
     }
 
     /// Quietly ignoring a parameter the indicator has no use for would read

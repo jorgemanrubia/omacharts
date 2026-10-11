@@ -9,6 +9,8 @@
 //! so adding four indicators gives four colours that already work together,
 //! in any theme, including one the user edited.
 
+pub mod bands;
+pub mod bollinger;
 pub mod oscillators;
 pub mod periods;
 pub mod profile;
@@ -19,9 +21,9 @@ use serde::{Deserialize, Serialize};
 use crate::bars::{Bar, Timeframe};
 use crate::theme::{ColorChoice, Theme, SWATCH_SEQUENCE};
 
+pub use bands::{Band, BandSeries, Bands, FILL_ALPHA, MAX_FILL_ALPHA, MIN_FILL_ALPHA};
 pub use periods::Reset;
 pub use profile::{Profile, ProfileRow};
-pub use vwap::{Bands, MAX_FILL_ALPHA, MIN_FILL_ALPHA};
 
 /// How a line is drawn.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
@@ -89,21 +91,27 @@ pub enum Kind {
     Sma,
     Ema,
     Vwap,
+    Bollinger,
     VolumeProfile,
     Volume,
     Rsi,
+    Macd,
     Atr,
     Stochastic,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 8] = [
+    pub const ALL: [Kind; 10] = [
         Kind::Volume,
         Kind::Sma,
         Kind::Ema,
         Kind::Vwap,
+        // Beside the VWAP rather than beside the averages: the two draw the
+        // same picture, and somebody who has used one is looking for the other.
+        Kind::Bollinger,
         Kind::VolumeProfile,
         Kind::Rsi,
+        Kind::Macd,
         Kind::Atr,
         Kind::Stochastic,
     ];
@@ -115,6 +123,8 @@ impl Kind {
             Kind::Sma => "Simple Moving Average",
             Kind::Ema => "Exponential Moving Average",
             Kind::Vwap => "Volume Weighted Average Price",
+            Kind::Bollinger => "Bollinger Bands",
+            Kind::Macd => "Moving Average Convergence Divergence",
             Kind::VolumeProfile => "Volume Profile",
             Kind::Volume => "Volume",
             Kind::Rsi => "Relative Strength Index",
@@ -131,6 +141,8 @@ impl Kind {
             Kind::Sma => "SMA",
             Kind::Ema => "EMA",
             Kind::Vwap => "VWAP",
+            Kind::Bollinger => "BB",
+            Kind::Macd => "MACD",
             Kind::VolumeProfile => "VP",
             Kind::Volume => "Vol",
             Kind::Rsi => "RSI",
@@ -146,6 +158,12 @@ impl Kind {
             Kind::Sma => &["sma", "ma", "moving average", "mean"],
             Kind::Ema => &["ema", "ma", "moving average", "exponential"],
             Kind::Vwap => &["vwap", "volume weighted", "average price", "bands"],
+            Kind::Bollinger => {
+                &["bollinger", "bb", "bands", "bollinger bands", "deviation", "volatility"]
+            }
+            Kind::Macd => {
+                &["macd", "convergence", "divergence", "histogram", "signal", "momentum"]
+            }
             Kind::VolumeProfile => &["volume profile", "vp", "poc", "value area", "tpo"],
             Kind::Volume => &["volume", "vol", "turnover"],
             Kind::Rsi => &["rsi", "relative strength", "oscillator", "momentum", "overbought"],
@@ -159,6 +177,8 @@ impl Kind {
             Kind::Sma => "sma",
             Kind::Ema => "ema",
             Kind::Vwap => "vwap",
+            Kind::Bollinger => "bollinger",
+            Kind::Macd => "macd",
             Kind::VolumeProfile => "volume_profile",
             Kind::Volume => "volume",
             Kind::Rsi => "rsi",
@@ -173,7 +193,7 @@ impl Kind {
     /// the order of the strips is edited where nothing has been computed: the
     /// settings list, and the command line.
     pub fn in_own_pane(self) -> bool {
-        matches!(self, Kind::Volume | Kind::Rsi | Kind::Atr | Kind::Stochastic)
+        matches!(self, Kind::Volume | Kind::Rsi | Kind::Macd | Kind::Atr | Kind::Stochastic)
     }
 
     pub fn default_params(self) -> Params {
@@ -181,6 +201,12 @@ impl Kind {
             Kind::Sma => Params::MovingAverage { period: 50 },
             Kind::Ema => Params::MovingAverage { period: 21 },
             Kind::Vwap => Params::Vwap { reset: Reset::Session, bands: vwap::default_bands() },
+            // Twenty bars at two standard deviations: what Bollinger
+            // published, what `ta.bb` defaults to, and what the level
+            // somebody is watching on another chart was drawn with.
+            Kind::Bollinger => {
+                Params::Bollinger { period: 20, bands: bollinger::default_bands() }
+            }
             Kind::VolumeProfile => Params::VolumeProfile {
                 reset: Reset::Session,
                 rows: None,
@@ -198,6 +224,11 @@ impl Kind {
                 oversold: 30.0,
             },
             Kind::Atr => Params::Atr { period: 14, height: 0.16 },
+            // Twelve, twenty-six and nine, which is what Appel published and
+            // what `ta.macd` defaults to.
+            Kind::Macd => {
+                Params::Macd { fast: 12, slow: 26, signal: 9, height: 0.16, signal_color: None }
+            }
             // TradingView's: fourteen bars, %K and %D each smoothed over three,
             // overbought at eighty and oversold at twenty.
             Kind::Stochastic => Params::Stochastic {
@@ -222,7 +253,15 @@ pub enum Params {
     Vwap {
         reset: Reset,
         /// Three bands, off until asked for.
-        bands: Vec<vwap::Band>,
+        bands: Vec<bands::Band>,
+    },
+    Bollinger {
+        /// Bars the average and the deviation are both taken over.
+        period: usize,
+        /// The envelope, in the same shape a VWAP's bands are so that one
+        /// editor and one renderer serve both. Exactly one of them, because
+        /// the multiple it sits at is what a Bollinger is.
+        bands: Vec<bands::Band>,
     },
     VolumeProfile {
         reset: Reset,
@@ -253,6 +292,20 @@ pub enum Params {
         period: usize,
         height: f64,
     },
+    Macd {
+        /// Bars the quick average covers.
+        fast: usize,
+        /// Bars the slow one covers.
+        slow: usize,
+        /// Bars the line itself is averaged over to give the signal.
+        signal: usize,
+        height: f64,
+        /// The signal line. Unset is the theme's companion to the MACD line's
+        /// colour, so the two are told apart without anybody having to choose,
+        /// as a stochastic's %D is.
+        #[serde(default)]
+        signal_color: Option<ColorChoice>,
+    },
     Stochastic {
         /// Bars whose range the close is placed in: %K's length.
         period: usize,
@@ -268,6 +321,29 @@ pub enum Params {
         #[serde(default)]
         d_color: Option<ColorChoice>,
     },
+}
+
+impl Params {
+    /// The envelope this indicator carries, if it carries one.
+    ///
+    /// A VWAP and a Bollinger both do, and they are the same bands drawn by
+    /// the same code — so the editor and the command line ask this rather than
+    /// each knowing which kinds have bands, which is the sort of list that is
+    /// wrong the next time one is added.
+    pub fn bands(&self) -> Option<&[Band]> {
+        match self {
+            Params::Vwap { bands, .. } | Params::Bollinger { bands, .. } => Some(bands),
+            _ => None,
+        }
+    }
+
+    /// The same, to write to.
+    pub fn bands_mut(&mut self) -> Option<&mut Vec<Band>> {
+        match self {
+            Params::Vwap { bands, .. } | Params::Bollinger { bands, .. } => Some(bands),
+            _ => None,
+        }
+    }
 }
 
 /// One indicator on a chart.
@@ -334,6 +410,13 @@ impl Indicator {
         match &self.params {
             Params::MovingAverage { period } => format!("{} {period}", self.kind.short_name()),
             Params::Vwap { reset, .. } => format!("VWAP · {}", effective(*reset).label()),
+            // The multiple belongs in the name: two Bollingers at different
+            // widths are a pair of envelopes nobody can tell apart otherwise.
+            Params::Bollinger { period, bands } => {
+                let deviations = bands.first().map(|band| band.deviations).unwrap_or_default();
+                format!("BB {period} {deviations}")
+            }
+            Params::Macd { fast, slow, signal, .. } => format!("MACD {fast} {slow} {signal}"),
             Params::VolumeProfile { reset, .. } => format!("VP · {}", effective(*reset).label()),
             Params::Volume { .. } => "Volume".to_string(),
             Params::Rsi { period, .. } | Params::Atr { period, .. } => {
@@ -421,8 +504,12 @@ pub enum Output {
 #[derive(Clone, PartialEq, Debug)]
 pub struct Pane {
     pub values: Vec<Option<f64>>,
-    /// A second line over the first, on the same scale: a stochastic's %D.
+    /// A second line over the first, on the same scale: a stochastic's %D, a
+    /// MACD's signal.
     pub signal: Option<Vec<Option<f64>>>,
+    /// Bars from zero rather than a line, on the same scale again: a MACD's
+    /// histogram. Drawn under both lines, as the volume strip's bars are.
+    pub histogram: Option<Vec<Option<f64>>>,
     /// Share of the chart's height this strip takes.
     pub height: f64,
     /// The scale it always uses, or `None` to fit whatever is on screen.
@@ -610,9 +697,29 @@ pub fn compute(
             session_origin,
             bands,
         )),
+        (Kind::Bollinger, Params::Bollinger { period, bands }) => {
+            Output::Bands(bollinger::compute(bars, *period, bands))
+        }
+        (Kind::Macd, Params::Macd { fast, slow, signal, height, .. }) => {
+            let (line, signal, histogram) = oscillators::macd(bars, *fast, *slow, *signal);
+            Output::Pane(Pane {
+                values: line,
+                signal: Some(signal),
+                histogram: Some(histogram),
+                height: height.clamp(MIN_PANE_SHARE, MAX_PANE_SHARE),
+                // Fitted, not fixed: a MACD is a price distance with no
+                // natural ceiling, and it goes either side of nothing.
+                bounds: None,
+                // The only level a MACD has, and the one that means
+                // something: the quick average crossing the slow one.
+                guides: vec![0.0],
+                band: None,
+            })
+        }
         (Kind::Rsi, Params::Rsi { period, height, overbought, oversold }) => Output::Pane(Pane {
             values: oscillators::rsi(bars, *period),
             signal: None,
+            histogram: None,
             height: height.clamp(MIN_PANE_SHARE, MAX_PANE_SHARE),
             bounds: Some((0.0, 100.0)),
             guides: vec![*oversold, 50.0, *overbought],
@@ -621,6 +728,7 @@ pub fn compute(
         (Kind::Atr, Params::Atr { period, height }) => Output::Pane(Pane {
             values: oscillators::atr(bars, *period),
             signal: None,
+            histogram: None,
             height: height.clamp(MIN_PANE_SHARE, MAX_PANE_SHARE),
             bounds: None,
             guides: Vec::new(),
@@ -634,6 +742,7 @@ pub fn compute(
             Output::Pane(Pane {
                 values: k,
                 signal: Some(d),
+                histogram: None,
                 height: height.clamp(MIN_PANE_SHARE, MAX_PANE_SHARE),
                 bounds: Some((0.0, 100.0)),
                 guides: vec![*oversold, 50.0, *overbought],
@@ -1166,5 +1275,174 @@ mod tests {
 
         assert_eq!(search("").len(), Kind::ALL.len());
         assert!(search("zzzz").is_empty());
+    }
+
+    #[test]
+    fn the_two_band_indicators_are_computed_into_the_same_shape() {
+        let series = bars(&(0..60).map(|i| 100.0 + (i as f64 / 4.0).sin() * 3.0).collect::<Vec<_>>());
+        let bollinger = Indicator::new(1, Kind::Bollinger);
+        let vwap = Indicator::new(2, Kind::Vwap);
+
+        for indicator in [&bollinger, &vwap] {
+            match compute(indicator, &series, 0, Timeframe::days(1), None) {
+                Output::Bands(bands) => {
+                    assert_eq!(bands.center.len(), series.len());
+                    assert!(bands.bands.iter().all(|band| band.upper.len() == series.len()));
+                }
+                other => panic!("{:?} is not an envelope: {other:?}", indicator.kind),
+            }
+        }
+        // Which is the point of them being the same shape: neither needs a
+        // strip, and the renderer has one path for both.
+        assert!(!Kind::Bollinger.in_own_pane() && !Kind::Vwap.in_own_pane());
+    }
+
+    #[test]
+    fn a_macd_is_a_strip_with_two_lines_and_a_histogram_in_it() {
+        let series = bars(&(0..80).map(|i| 100.0 + i as f64 * 0.3).collect::<Vec<_>>());
+        let macd = Indicator::new(1, Kind::Macd);
+        match compute(&macd, &series, 0, Timeframe::days(1), None) {
+            Output::Pane(pane) => {
+                assert_eq!(pane.values.len(), series.len());
+                assert_eq!(pane.signal.as_ref().map(Vec::len), Some(series.len()));
+                assert_eq!(pane.histogram.as_ref().map(Vec::len), Some(series.len()));
+                // Fitted rather than fixed, and with nothing as its one level.
+                assert_eq!(pane.bounds, None);
+                assert_eq!(pane.guides, vec![0.0]);
+                assert_eq!(pane.band, None, "a MACD has no region to shade");
+            }
+            other => panic!("expected a strip, got {other:?}"),
+        }
+        assert!(Kind::Macd.in_own_pane());
+    }
+
+    /// Every other strip hands back no histogram, so nothing that was here
+    /// before starts drawing bars it never drew.
+    #[test]
+    fn only_the_macd_draws_a_histogram() {
+        let series = bars(&(0..80).map(|i| 100.0 + (i as f64 / 5.0).sin()).collect::<Vec<_>>());
+        for kind in Kind::ALL {
+            let Output::Pane(pane) =
+                compute(&Indicator::new(1, kind), &series, 0, Timeframe::days(1), None)
+            else {
+                continue;
+            };
+            assert_eq!(
+                pane.histogram.is_some(),
+                kind == Kind::Macd,
+                "{kind:?} answered with {:?}",
+                pane.histogram.is_some()
+            );
+        }
+    }
+
+    #[test]
+    fn the_new_indicators_arrive_with_the_settings_everybody_elses_chart_uses() {
+        let Params::Bollinger { period, bands } = Kind::Bollinger.default_params() else {
+            panic!("not a Bollinger")
+        };
+        assert_eq!(period, 20);
+        assert_eq!(bands.len(), 1);
+        assert_eq!(bands[0].deviations, 2.0);
+
+        let Params::Macd { fast, slow, signal, .. } = Kind::Macd.default_params() else {
+            panic!("not a MACD")
+        };
+        assert_eq!((fast, slow, signal), (12, 26, 9));
+    }
+
+    #[test]
+    fn the_new_indicators_say_what_they_are() {
+        assert_eq!(Indicator::new(1, Kind::Bollinger).label(), "BB 20 2");
+        assert_eq!(Indicator::new(2, Kind::Macd).label(), "MACD 12 26 9");
+
+        // Neither is promoted by the timeframe, as a VWAP's anchor is: a
+        // window of bars means the same thing on any chart.
+        assert_eq!(Indicator::new(1, Kind::Bollinger).label_for(Timeframe::weeks(1)), "BB 20 2");
+        assert_eq!(Indicator::new(2, Kind::Macd).label_for(Timeframe::weeks(1)), "MACD 12 26 9");
+
+        // A multiple somebody moved shows in the name, or two envelopes at
+        // different widths are two legend rows nobody can tell apart.
+        let mut wider = Indicator::new(1, Kind::Bollinger);
+        if let Some(bands) = wider.params.bands_mut() {
+            bands[0].deviations = 2.5;
+        }
+        assert_eq!(wider.label(), "BB 20 2.5");
+    }
+
+    #[test]
+    fn the_picker_finds_both_of_them() {
+        assert_eq!(search("bollinger")[0], Kind::Bollinger);
+        assert_eq!(search("bb")[0], Kind::Bollinger);
+        assert_eq!(search("macd")[0], Kind::Macd);
+        assert!(search("divergence").contains(&Kind::Macd));
+        // "bands" is a VWAP's word too, and both should come back for it.
+        let bands = search("bands");
+        assert!(bands.contains(&Kind::Vwap) && bands.contains(&Kind::Bollinger));
+    }
+
+    /// Only the two of them carry an envelope, and the accessor is what the
+    /// editor and the command line ask rather than each keeping a list.
+    #[test]
+    fn the_indicators_that_carry_bands_are_the_two_that_draw_them() {
+        for kind in Kind::ALL {
+            let carries = kind.default_params().bands().is_some();
+            assert_eq!(
+                carries,
+                matches!(kind, Kind::Vwap | Kind::Bollinger),
+                "{kind:?} answered {carries}"
+            );
+        }
+    }
+
+    /// A MACD's strip stacks and moves like any other, which is the whole
+    /// reason it is one.
+    #[test]
+    fn a_macd_takes_its_place_in_the_stack_like_the_strips_already_there() {
+        let mut set = vec![
+            Indicator::new(1, Kind::Volume),
+            Indicator::new(2, Kind::Bollinger),
+            Indicator::new(3, Kind::Rsi),
+            Indicator::new(4, Kind::Macd),
+        ];
+        assert_eq!(
+            stack(&set),
+            vec![Row::Price, Row::Strip(1), Row::Strip(3), Row::Strip(4)],
+            "the Bollinger is an overlay, so it is not a row"
+        );
+        assert!(move_pane(&mut set, 4, Move::Up));
+        assert_eq!(stack(&set), vec![Row::Price, Row::Strip(1), Row::Strip(4), Row::Strip(3)]);
+    }
+
+    /// Both are written into the stored arrangement, so both have to survive
+    /// the trip through it — a band somebody restyled included.
+    #[test]
+    fn the_new_indicators_survive_being_written_down() {
+        let mut set =
+            vec![Indicator::new(1, Kind::Bollinger), Indicator::new(2, Kind::Macd)];
+        if let Some(bands) = set[0].params.bands_mut() {
+            bands[0].deviations = 1.5;
+            bands[0].fill = false;
+        }
+        if let Params::Macd { signal_color, .. } = &mut set[1].params {
+            *signal_color = Some(ColorChoice::swatch("Amber"));
+        }
+        let json = serde_json::to_string(&set).expect("writable");
+        let back: Vec<Indicator> = serde_json::from_str(&json).expect("readable");
+        assert_eq!(back, set);
+        assert!(json.contains(r#""kind":"bollinger""#), "{json}");
+        assert!(json.contains(r#""kind":"macd""#), "{json}");
+    }
+
+    /// A MACD written before it had a signal colour of its own — which is
+    /// every one anybody could have, but the default is what keeps it true
+    /// when the next field arrives.
+    #[test]
+    fn a_macd_written_without_a_signal_colour_reads_back_following_the_theme() {
+        let json = r#"{"id": 1, "kind": "macd", "visible": true,
+            "params": {"kind": "macd", "fast": 12, "slow": 26, "signal": 9, "height": 0.16}}"#;
+        let indicator: Indicator = serde_json::from_str(json).expect("an older MACD");
+        let Params::Macd { signal_color, .. } = &indicator.params else { panic!("not a MACD") };
+        assert_eq!(*signal_color, None);
     }
 }

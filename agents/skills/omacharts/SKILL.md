@@ -8,8 +8,8 @@ description: >-
   the 15 minute", "chart SPY and QQQ side by side", "set me up for the
   open", "a 2x2 of the majors with RSI on each, linked", "put a 200-day
   average on this", "add AMD to my semis list", "what have I got open". Also
-  for indicators (moving average, VWAP, volume profile, RSI, ATR),
-  resolutions and sessions, bar styles and colours, watchlists and their
+  for indicators (moving average, VWAP, Bollinger bands, volume profile,
+  RSI, MACD, ATR), resolutions and sessions, bar styles and colours, watchlists and their
   sections, chartbooks, link groups, the instrument search, and the cached
   price data. Also for marking a chart up — "draw the trendline", "box the
   range", "circle that gap", "mark the breakout", "label this high" — which

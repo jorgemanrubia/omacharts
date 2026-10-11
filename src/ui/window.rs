@@ -2102,6 +2102,7 @@ impl Window {
                 match &mut indicator.params {
                     omacharts_engine::Params::Volume { height }
                     | omacharts_engine::Params::Rsi { height, .. }
+                    | omacharts_engine::Params::Macd { height, .. }
                     | omacharts_engine::Params::Atr { height, .. }
                     | omacharts_engine::Params::Stochastic { height, .. } => *height = share,
                     _ => return,

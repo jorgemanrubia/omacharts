@@ -34,15 +34,32 @@ impl Scene {
     /// A chart holding `bars` bars with `visible` of them on screen, wearing
     /// the furniture a chart usually wears.
     pub fn new(bars: usize, visible: usize) -> Scene {
+        Scene::of(bars, visible, &["volume", "sma", "ema", "rsi"]).expect("the usual furniture")
+    }
+
+    /// The same, wearing the indicators named by the keys the store and the
+    /// command line name them by.
+    ///
+    /// By key rather than by variant, and that is worth the indirection:
+    /// `bin/perf-compare` copies this file onto the revision a branch came
+    /// off and builds it there, so a scenario naming a variant the branch
+    /// added would fail that build and take the whole comparison down with
+    /// it — every other row included. Named by key, the older side has no
+    /// such indicator, the scenario is simply absent there, and the
+    /// comparison says so and carries on.
+    pub fn of(bars: usize, visible: usize, kinds: &[&str]) -> Option<Scene> {
         let series = series(bars);
         let theme = theme::builtin_themes().into_iter().next().expect("a built-in theme");
         let scheme = theme::theme_bars(&theme);
 
-        let indicators: Vec<Indicator> = [Kind::Volume, Kind::Sma, Kind::Ema, Kind::Rsi]
-            .into_iter()
+        let indicators: Vec<Indicator> = kinds
+            .iter()
             .enumerate()
-            .map(|(at, kind)| Indicator::new(at as u32 + 1, kind))
-            .collect();
+            .map(|(at, key)| {
+                let kind = Kind::ALL.into_iter().find(|kind| kind.key() == *key)?;
+                Some(Indicator::new(at as u32 + 1, kind))
+            })
+            .collect::<Option<Vec<Indicator>>>()?;
         let colors = indicators::palette_colors(&indicators, &theme);
         let timeframe = Timeframe::days(1);
         let drawn: Vec<Drawn> = indicators
@@ -60,7 +77,7 @@ impl Scene {
         state.indicators = drawn;
         state.timeframe = timeframe;
         state.visible = visible;
-        Scene { state }
+        Some(Scene { state })
     }
 
     /// What a drained tick costs a chart: the tail put in place, and the

@@ -36,8 +36,9 @@ Fast, beautiful charting software for [Omarchy](https://omarchy.org).
   power users. Hotkeys for the whole app: split and close charts, resize them,
   walk the chartbooks, step the resolution, rotate the watchlists. Type a
   letter to find a symbol, a number to set a resolution. Press `?` to learn it all.
-- **Indicators.** Moving averages, VWAP with bands, volume, volume profile,
-  RSI, ATR and stochastic, each in its own resizable strip. More coming.
+- **Indicators.** Moving averages, VWAP with bands, Bollinger bands, volume,
+  volume profile, RSI, MACD, ATR and stochastic, each in its own resizable
+  strip. More coming.
 - **Drawings.** Trendlines, levels, arrows, zig-zags, boxes, circles and text,
   a keystroke each. Their colours are roles your theme fills, held clear of
   the candles, so a drawing reads on any theme. Figures take labels, and what

@@ -860,21 +860,27 @@ fn appearance_group(
         group.add(&row);
     }
 
-    // %D follows the theme the way a point of control does: unset is the next
-    // colour along from %K's, so the two lines never come out the same.
-    if let Params::Stochastic { d_color, .. } = &indicator.params {
-        let shown = window.theme().companion_or(d_color.as_ref(), colour);
+    // A strip's second line follows the theme the way a point of control
+    // does: unset is the next colour along from the first line's, so the two
+    // never come out the same.
+    let second = match &indicator.params {
+        Params::Stochastic { d_color, .. } => Some(("%D colour", d_color.clone())),
+        Params::Macd { signal_color, .. } => Some(("Signal colour", signal_color.clone())),
+        _ => None,
+    };
+    if let Some((title, chosen)) = second {
+        let shown = window.theme().companion_or(chosen.as_ref(), colour);
         group.add(&colour_row(
             window,
             refresh,
             &Ink::new(String::new),
-            "%D colour",
+            title,
             &shown,
-            d_color.clone(),
-            move |indicator, choice| {
-                if let Params::Stochastic { d_color, .. } = &mut indicator.params {
-                    *d_color = choice;
-                }
+            chosen,
+            move |indicator, choice| match &mut indicator.params {
+                Params::Stochastic { d_color, .. } => *d_color = choice,
+                Params::Macd { signal_color, .. } => *signal_color = choice,
+                _ => {}
             },
             id,
         ));
@@ -1138,6 +1144,18 @@ fn parameters_group(
         Params::Vwap { reset, .. } => {
             group.add(&reset_row(window, refresh, id, *reset));
         }
+        // The multiple the bands sit at is edited with the band itself, below,
+        // which is where a VWAP's is edited too.
+        Params::Bollinger { period, .. } => {
+            group.add(&spin_row(
+                window, refresh, id, "Period", *period as f64, 1.0, 500.0, 1.0,
+                move |indicator, value| {
+                    if let Params::Bollinger { period, .. } = &mut indicator.params {
+                        *period = value as usize;
+                    }
+                },
+            ));
+        }
         Params::Volume { height } => {
             group.add(&pane_height_row(window, refresh, id, *height));
         }
@@ -1183,6 +1201,37 @@ fn parameters_group(
             for row in level_rows(window, refresh, id, *overbought, *oversold) {
                 group.add(&row);
             }
+            group.add(&pane_height_row(window, refresh, id, *height));
+        }
+        Params::Macd { fast, slow, signal, height, .. } => {
+            for row in macd_length_rows(window, refresh, id, *fast as f64, *slow as f64) {
+                group.add(&row);
+            }
+            // The same kind of row as the two above it, rather than the
+            // stepper the other strips use: three lengths that look like two
+            // and a half read as a mistake.
+            let window_for_signal = window.clone();
+            let refresh_for_signal = refresh.clone();
+            group.add(
+                &controls::bounded_row(
+                    "Signal length",
+                    None,
+                    *signal as f64,
+                    1.0,
+                    MAX_MACD_LENGTH,
+                    1.0,
+                    0,
+                    move |length| {
+                        update(&window_for_signal, id, |indicator| {
+                            if let Params::Macd { signal, .. } = &mut indicator.params {
+                                *signal = length as usize;
+                            }
+                        });
+                        refresh_for_signal.run();
+                    },
+                )
+                .row,
+            );
             group.add(&pane_height_row(window, refresh, id, *height));
         }
         Params::Atr { period, height } => {
@@ -1277,14 +1326,19 @@ fn band_groups(
     line_colour: &str,
     indicator: &Indicator,
 ) -> Vec<adw::PreferencesGroup> {
-    let Params::Vwap { bands, .. } = &indicator.params else { return Vec::new() };
+    let Some(bands) = indicator.params.bands() else { return Vec::new() };
     let id = indicator.id;
     let line_colour = line_colour.to_string();
     let mut groups = Vec::new();
 
     for (index, band) in bands.iter().enumerate() {
         let group = adw::PreferencesGroup::new();
-        group.set_title(&format!("Band {}", index + 1));
+        // Numbered only where there is more than one to tell apart. "Band 1"
+        // on a Bollinger reads as a promise of a Band 2 that is not coming.
+        group.set_title(&match bands.len() {
+            1 => "Band".to_string(),
+            _ => format!("Band {}", index + 1),
+        });
 
         let show = adw::ActionRow::new();
         show.set_title("Show");
@@ -1295,8 +1349,8 @@ fn band_groups(
         let refresh_for_show = refresh.clone();
         switch.connect_state_set(move |_, on| {
             update(&window_for_show, id, move |indicator| {
-                if let Params::Vwap { bands, .. } = &mut indicator.params
-                    && let Some(band) = bands.get_mut(index)
+                if let Some(band) =
+                    indicator.params.bands_mut().and_then(|bands| bands.get_mut(index))
                 {
                     band.enabled = on;
                 }
@@ -1321,8 +1375,8 @@ fn band_groups(
             1,
             move |value| {
                 update(&window_for_dev, id, move |indicator| {
-                    if let Params::Vwap { bands, .. } = &mut indicator.params
-                        && let Some(band) = bands.get_mut(index)
+                    if let Some(band) =
+                        indicator.params.bands_mut().and_then(|bands| bands.get_mut(index))
                     {
                         band.deviations = value;
                     }
@@ -1342,8 +1396,8 @@ fn band_groups(
         let refresh_for_fill = refresh.clone();
         fill.connect_state_set(move |_, on| {
             update(&window_for_fill, id, move |indicator| {
-                if let Params::Vwap { bands, .. } = &mut indicator.params
-                    && let Some(band) = bands.get_mut(index)
+                if let Some(band) =
+                    indicator.params.bands_mut().and_then(|bands| bands.get_mut(index))
                 {
                     band.fill = on;
                 }
@@ -1371,8 +1425,8 @@ fn band_groups(
                 MIN_FILL_ALPHA,
                 MAX_FILL_ALPHA,
                 move |indicator, share| {
-                    if let Params::Vwap { bands, .. } = &mut indicator.params
-                        && let Some(band) = bands.get_mut(index)
+                    if let Some(band) =
+                        indicator.params.bands_mut().and_then(|bands| bands.get_mut(index))
                     {
                         band.fill_alpha = Some(share);
                     }
@@ -1395,10 +1449,9 @@ fn band_groups(
                 let band_colour = indicators
                     .iter()
                     .find(|i| i.id == id)
-                    .and_then(|i| match &i.params {
-                        Params::Vwap { bands, .. } => bands.get(index).and_then(|b| b.color.clone()),
-                        _ => None,
-                    })
+                    .and_then(|i| i.params.bands())
+                    .and_then(|bands| bands.get(index))
+                    .and_then(|band| band.color.clone())
                     .map(|choice| choice.resolve(&window.theme()));
                 band_colour.unwrap_or_else(|| drawn_colour(&window, &indicators, id))
             })
@@ -1412,8 +1465,8 @@ fn band_groups(
             &current,
             band.color.clone(),
             move |indicator, choice| {
-                if let Params::Vwap { bands, .. } = &mut indicator.params
-                    && let Some(band) = bands.get_mut(index)
+                if let Some(band) =
+                    indicator.params.bands_mut().and_then(|bands| bands.get_mut(index))
                 {
                     band.color = choice;
                 }
@@ -1423,8 +1476,8 @@ fn band_groups(
 
         for row in stroke_rows(window, refresh, &ink, id, "", band.stroke, {
             move |indicator: &mut Indicator, stroke: Stroke| {
-                if let Params::Vwap { bands, .. } = &mut indicator.params
-                    && let Some(band) = bands.get_mut(index)
+                if let Some(band) =
+                    indicator.params.bands_mut().and_then(|bands| bands.get_mut(index))
                 {
                     band.stroke = stroke;
                 }
@@ -1459,8 +1512,10 @@ fn reset_row(
             Params::Vwap { reset, .. } => *reset = chosen,
             Params::VolumeProfile { reset, .. } => *reset = chosen,
             Params::MovingAverage { .. }
+            | Params::Bollinger { .. }
             | Params::Volume { .. }
             | Params::Rsi { .. }
+            | Params::Macd { .. }
             | Params::Atr { .. }
             | Params::Stochastic { .. } => {}
         });
@@ -1642,6 +1697,89 @@ fn level_rows(
 /// Whole levels, and the least a pair of them can be apart.
 const LEVEL_STEP: f64 = 1.0;
 
+/// A MACD's two averages, which have to stay in that order.
+///
+/// A fast average no faster than the slow one does not measure convergence at
+/// all — at equal lengths there is nothing to measure, and past it the line is
+/// the one you wanted upside down. So each row pushes the other out of its way
+/// rather than refusing the drag, which is what the overbought and oversold
+/// pair above do and for the same reason: a slider that stops dead reads as
+/// broken, and one that quietly makes room says what the rule is.
+fn macd_length_rows(
+    window: &Rc<Window>,
+    refresh: &Refresh,
+    id: u32,
+    fast: f64,
+    slow: f64,
+) -> [adw::ActionRow; 2] {
+    // Each row's callback needs the other row, which does not exist yet when
+    // the first is built; the cells are filled once both do.
+    let quick: Rc<OnceCell<controls::WeakBounded>> = Rc::new(OnceCell::new());
+    let slower: Rc<OnceCell<controls::WeakBounded>> = Rc::new(OnceCell::new());
+
+    let window_for_fast = window.clone();
+    let refresh_for_fast = refresh.clone();
+    let slower_for_fast = slower.clone();
+    let fast = controls::bounded_row(
+        "Fast length",
+        None,
+        fast,
+        1.0,
+        MAX_MACD_LENGTH - 1.0,
+        1.0,
+        0,
+        move |length| {
+            update(&window_for_fast, id, |indicator| {
+                if let Params::Macd { fast, .. } = &mut indicator.params {
+                    *fast = length as usize;
+                }
+            });
+            if let Some(slower) = slower_for_fast.get()
+                && slower.value().is_some_and(|slow| slow <= length)
+            {
+                slower.set(length + 1.0);
+            }
+            refresh_for_fast.run();
+        },
+    );
+
+    let window_for_slow = window.clone();
+    let refresh_for_slow = refresh.clone();
+    let quick_for_slow = quick.clone();
+    let slow = controls::bounded_row(
+        "Slow length",
+        None,
+        slow,
+        2.0,
+        MAX_MACD_LENGTH,
+        1.0,
+        0,
+        move |length| {
+            update(&window_for_slow, id, |indicator| {
+                if let Params::Macd { slow, .. } = &mut indicator.params {
+                    *slow = length as usize;
+                }
+            });
+            if let Some(quick) = quick_for_slow.get()
+                && quick.value().is_some_and(|fast| fast >= length)
+            {
+                quick.set(length - 1.0);
+            }
+            refresh_for_slow.run();
+        },
+    );
+
+    // Filled once both exist. Neither can already be set: this is the only
+    // place that sets them.
+    let _ = slower.set(slow.downgrade());
+    let _ = quick.set(fast.downgrade());
+
+    [fast.row, slow.row]
+}
+
+/// The longest either of a MACD's averages may be set to from the window.
+const MAX_MACD_LENGTH: f64 = 200.0;
+
 /// How much of the chart an indicator's own strip takes.
 ///
 /// One row for every indicator that has a strip, rather than one per kind: the
@@ -1667,6 +1805,7 @@ fn pane_height_row(
         move |indicator, share| match &mut indicator.params {
             Params::Volume { height }
             | Params::Rsi { height, .. }
+            | Params::Macd { height, .. }
             | Params::Atr { height, .. }
             | Params::Stochastic { height, .. } => *height = share,
             _ => {}

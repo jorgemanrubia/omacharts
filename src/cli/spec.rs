@@ -185,7 +185,10 @@ pub const CHART_SELECTOR: &str =
 const STYLES: &[&str] = &["candles", "ohlc"];
 const SESSIONS: &[&str] = &["regular", "extended"];
 const SPLITS: &[&str] = &["horizontal", "vertical"];
-const KINDS: &[&str] = &["volume", "sma", "ema", "vwap", "volume_profile", "rsi", "atr", "stochastic"];
+const KINDS: &[&str] = &[
+    "volume", "sma", "ema", "vwap", "bollinger", "volume_profile", "rsi", "macd", "atr",
+    "stochastic",
+];
 const ANCHORS: &[&str] = &["session", "week", "month", "quarter", "year"];
 const LINE_STYLES: &[&str] = &["solid", "dashed", "dotted"];
 const SWITCHES: &[&str] = &["on", "off"];
@@ -741,7 +744,12 @@ pub const SURFACE: &[Noun] = &[
                     Flag::valued("book", "BOOK", "which chartbook (default: the open one)"),
                     Flag::valued("chart", "CHART", CHART_SELECTOR),
                     Flag::valued("id", "N", "which one, when a chart has two of a kind"),
-                    Flag::valued("period", "N", "bars averaged: SMA, EMA, RSI, ATR; the stochastic's %K length"),
+                    Flag::valued("period", "N", "bars averaged: SMA, EMA, RSI, ATR, Bollinger; the stochastic's %K length"),
+                    Flag::valued("deviations", "F", "standard deviations the Bollinger bands sit at, 0-50"),
+                    Flag::valued("fast", "N", "bars the MACD's quick average covers"),
+                    Flag::valued("slow", "N", "bars the MACD's slow average covers; above --fast"),
+                    Flag::valued("signal", "N", "bars the MACD line is averaged over"),
+                    Flag::valued("signal-color", "COLOUR", "the MACD's signal line"),
                     Flag::valued("k-smooth", "N", "bars the stochastic's %K is smoothed over"),
                     Flag::valued("d-period", "N", "bars the stochastic's %D averages %K over"),
                     Flag::valued("anchor", "WHEN", "what VWAP and the volume profile reset on")
@@ -753,11 +761,11 @@ pub const SURFACE: &[Noun] = &[
                     Flag::valued("color", "COLOUR", "the line, or the volume profile's background"),
                     Flag::valued("width", "F", "line thickness; 0 draws no line at all"),
                     Flag::valued("style", "STYLE", "how the line is drawn").of(LINE_STYLES),
-                    Flag::valued("height", "F", "share of the chart a pane takes, 0.05-0.95: volume, RSI, ATR, stochastic"),
+                    Flag::valued("height", "F", "share of the chart a pane takes, 0.05-0.95: volume, RSI, MACD, ATR, stochastic"),
                     Flag::valued("overbought", "F", "the RSI or stochastic level drawn across the top, 0-100"),
                     Flag::valued("oversold", "F", "the RSI or stochastic level drawn across the bottom, 0-100 and below overbought"),
-                    Flag::valued("bands", "LIST", "which VWAP bands are drawn: 1,2,3 or none"),
-                    Flag::valued("band-alpha", "F", "how solid the VWAP shading is, 0-1"),
+                    Flag::valued("bands", "LIST", "which bands are drawn: 1,2,3 for a VWAP, 1 or none for a Bollinger"),
+                    Flag::valued("band-alpha", "F", "how solid a band's shading is, 0-1"),
                     Flag::valued("visible", "BOOL", "draw it at all").of(SWITCHES),
                 ],
                 example: "omacharts chart indicator add sma --period 200 --color Amber --style dashed",
@@ -1103,7 +1111,8 @@ const STORED_FIELDS: &[(&str, &str, &str)] = &[
 mod tests {
     use super::*;
     use omacharts_engine::indicators::{
-        LineStyle, MAX_FILL_ALPHA, MAX_PANE_SHARE, MIN_FILL_ALPHA, MIN_PANE_SHARE,
+        bollinger::MAX_DEVIATIONS, LineStyle, MAX_FILL_ALPHA, MAX_PANE_SHARE, MIN_FILL_ALPHA,
+        MIN_PANE_SHARE,
     };
     use omacharts_engine::{link, BarStyle, IndicatorKind, Reset, Session, Timeframe};
 
@@ -1345,6 +1354,21 @@ mod tests {
             .find(|flag| flag.long == "band-alpha")
             .expect("a band-alpha flag");
         let range = format!("{MIN_FILL_ALPHA}-{MAX_FILL_ALPHA}");
+        assert!(named.help.contains(&range), "the help says {:?}, not {range}", named.help);
+    }
+
+    /// And the same again for the Bollinger's multiple, for the same reason:
+    /// the help names a range, a figure outside it is refused rather than
+    /// quietly brought back, so the range named has to be the engine's.
+    #[test]
+    fn the_band_width_the_help_names_is_the_range_the_engine_allows() {
+        let named = verb("chart", "indicator")
+            .expect("a chart indicator verb")
+            .flags
+            .iter()
+            .find(|flag| flag.long == "deviations")
+            .expect("a deviations flag");
+        let range = format!("0-{MAX_DEVIATIONS}");
         assert!(named.help.contains(&range), "the help says {:?}, not {range}", named.help);
     }
 

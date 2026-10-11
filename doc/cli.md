@@ -112,7 +112,9 @@ Every indicator the app has, with every parameter it exposes:
 | Indicator | Parameters |
 |---|---|
 | `sma`, `ema` | `--period` |
+| `bollinger` | `--period`, `--deviations`, `--bands` (`1` or `none`), `--band-alpha` |
 | `rsi` | `--period`, `--overbought`, `--oversold`, `--height` |
+| `macd` | `--fast`, `--slow`, `--signal`, `--signal-color`, `--height` |
 | `atr` | `--period`, `--height` |
 | `stochastic` | `--period` (%K length), `--k-smooth`, `--d-period`, `--overbought`, `--oversold`, `--height`, `--d-color` |
 | `volume` | `--height` |
@@ -134,7 +136,21 @@ omacharts chart indicator add vwap --anchor month --bands 1,2 --band-alpha 0.3
 omacharts chart indicator add volume_profile --rows auto --color Violet --poc-color Amber
 omacharts chart indicator set rsi --period 21 --overbought 80
 omacharts chart indicator add stochastic --period 14 --k-smooth 3 --d-period 3
+omacharts chart indicator add bollinger --period 20 --deviations 2
+omacharts chart indicator add macd --fast 12 --slow 26 --signal 9 --signal-color Amber
 ```
+
+A Bollinger and a VWAP carry the same kind of band, so they answer to the same
+two flags: `--bands` says which of them are drawn and `--band-alpha` how solid
+the shading is. A VWAP has three, at one, one and a half and two standard
+deviations; a Bollinger has one, and `--deviations` is what moves it. Naming a
+band an indicator has not got is an error rather than a quiet no-op, so
+`--bands 2` on a Bollinger is refused instead of switching its only band off.
+
+A MACD's quick average has to stay quicker than its slow one — equal lengths
+measure nothing and the wrong way round is the line upside down — so
+`--fast 26 --slow 12` is refused, and so is either one on its own that would
+cross what the chart already holds.
 
 `set` reconfigures one already on the chart. If the chart has two of a kind it
 asks which, with `--id`.

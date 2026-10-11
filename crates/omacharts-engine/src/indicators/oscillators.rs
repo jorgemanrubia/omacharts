@@ -1,15 +1,25 @@
 //! Indicators that need their own pane: they are not prices, so they cannot
 //! share the price scale.
 //!
-//! RSI and ATR are Wilder's, and both are computed the way TradingView
-//! computes them, because a number that disagrees with the chart everybody
-//! else is looking at is worse than no number. Wilder's smoothing is an
-//! exponential average with alpha `1/period` rather than `2/(period+1)`, seeded
-//! with the simple average of the first `period` values — which is why an RSI
-//! here matches one there bar for bar rather than drifting apart over a long
-//! series.
+//! RSI and ATR are Wilder's, the stochastic is the slow one, and the MACD is
+//! Appel's — and every one of them is computed the way TradingView computes
+//! it, because a number that disagrees with the chart everybody else is
+//! looking at is worse than no number. Wilder's smoothing is an exponential
+//! average with alpha `1/period` rather than `2/(period+1)`, seeded with the
+//! simple average of the first `period` values, which is why an RSI here
+//! matches one there bar for bar rather than drifting apart over a long
+//! series. The MACD's averages are seeded the same way, for the same reason.
+//!
+//! The MACD is also the one strip here whose values go either side of nothing,
+//! so it is where the strip drawing learned not to assume a floor of zero.
 
 use crate::bars::Bar;
+
+/// What a strip draws: a value per bar, and `None` on a bar it has none for.
+///
+/// Named because a MACD answers with three of them, and three of the long
+/// spelling in one signature says less than three of the short one.
+pub type Series = Vec<Option<f64>>;
 
 /// Wilder's smoothing, seeded with the simple average of the first `period`.
 ///
@@ -127,6 +137,107 @@ fn mean_of(values: &[Option<f64>], period: usize) -> Vec<Option<f64>> {
     for i in period.saturating_sub(1)..values.len() {
         let window = &values[i + 1 - period..=i];
         out[i] = window.iter().copied().sum::<Option<f64>>().map(|sum| sum / period as f64);
+    }
+    out
+}
+
+/// Moving average convergence/divergence: the line, its signal, and the
+/// histogram between them.
+///
+/// The difference of two exponential averages of close — `fast` less `slow` —
+/// then an exponential average of that difference over `signal`, and the gap
+/// between the two drawn as bars. TradingView's `ta.macd` to the letter,
+/// including the seeding, which is the usual reason two platforms disagree
+/// about this one: both averages here are [`super::ema`], seeded with the
+/// simple average of their first `period` closes, so the fast average is the
+/// same number an EMA overlay of the same length would draw on the same chart.
+///
+/// Unlike every other strip here, all three series go negative — that is the
+/// whole of what they say, which side of the slow average the fast one is on —
+/// so the strip they are drawn in fits what it is given rather than assuming a
+/// floor of zero.
+///
+/// The warm-up follows from the seeding and is worth stating, because it is
+/// what a chart compared against another platform is compared on: the line
+/// starts where the longer of the two averages does — bar `slow - 1`, for the
+/// `fast` under `slow` that a MACD means — and
+/// the signal needs `signal` of those before it has a seed of its own, so it
+/// starts at bar `slow + signal - 2`. For the usual 12, 26 and 9 that is bar
+/// 25 and bar 33.
+pub fn macd(bars: &[Bar], fast: usize, slow: usize, signal: usize) -> (Series, Series, Series) {
+    let blank = || vec![None; bars.len()];
+    if fast == 0 || slow == 0 || signal == 0 {
+        return (blank(), blank(), blank());
+    }
+
+    let quick = super::ema(bars, fast);
+    let slower = super::ema(bars, slow);
+    let line: Vec<Option<f64>> = quick
+        .iter()
+        .zip(&slower)
+        .map(|pair| match pair {
+            (Some(quick), Some(slower)) => Some(quick - slower),
+            _ => None,
+        })
+        // A close that is not a number turns an exponential average into one
+        // too, from that bar on, and a figure that is not a figure must not
+        // reach the renderer. There is nothing to draw, so nothing is drawn.
+        .map(|value| value.filter(|v: &f64| v.is_finite()))
+        .collect();
+
+    let signal_line = ema_of(&line, signal);
+    let histogram = line
+        .iter()
+        .zip(&signal_line)
+        .map(|pair| match pair {
+            (Some(line), Some(signal)) => Some(line - signal),
+            _ => None,
+        })
+        .collect();
+    (line, signal_line, histogram)
+}
+
+/// Exponential average of a series that has not started yet at bar nought.
+///
+/// Seeded with the simple average of the first `period` values it finds, which
+/// is how [`super::ema`] seeds and how TradingView's `ta.ema` does — so the
+/// signal line here is the signal line there.
+///
+/// A hole in the middle, which only a series that stopped being a number can
+/// produce, ends the average and seeds a fresh one on the far side. Carrying a
+/// value across a gap would draw a line through bars it was never told about.
+fn ema_of(values: &[Option<f64>], period: usize) -> Series {
+    let mut out = vec![None; values.len()];
+    if period == 0 {
+        return out;
+    }
+    let alpha = 2.0 / (period as f64 + 1.0);
+    let mut average: Option<f64> = None;
+    let (mut run, mut seed) = (0usize, 0.0f64);
+
+    for (i, value) in values.iter().enumerate() {
+        let Some(value) = *value else {
+            average = None;
+            run = 0;
+            seed = 0.0;
+            continue;
+        };
+        match average {
+            Some(previous) => {
+                let next = value * alpha + previous * (1.0 - alpha);
+                average = Some(next);
+                out[i] = Some(next);
+            }
+            None => {
+                run += 1;
+                seed += value;
+                if run == period {
+                    let mean = seed / period as f64;
+                    average = Some(mean);
+                    out[i] = Some(mean);
+                }
+            }
+        }
     }
     out
 }
@@ -281,5 +392,199 @@ mod tests {
         for value in k.into_iter().chain(d).flatten() {
             assert!((0.0..=100.0).contains(&value), "{value}");
         }
+    }
+
+    /// Hand-computed, every value of it, against `ta.macd(close, 2, 3, 2)`.
+    ///
+    /// Closes 1 to 8. The two-bar average is seeded at 1.5 on bar 1 and runs
+    /// 2.5, 3.5, 4.5, 5.5, 6.5, 7.5; the three-bar one is seeded at 2 on bar 2
+    /// and runs 3, 4, 5, 6, 7. Their difference is a half from bar 2 on, so the
+    /// signal — seeded with the mean of the first two of those — is a half from
+    /// bar 3, and the histogram is nothing at all.
+    #[test]
+    fn macd_is_the_difference_of_two_averages_and_an_average_of_that() {
+        let series = bars(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
+        let (line, signal, histogram) = macd(&series, 2, 3, 2);
+
+        assert_eq!(line[0], None, "nothing until the slower average starts");
+        assert_eq!(line[1], None);
+        for (at, value) in line.iter().enumerate().skip(2) {
+            assert!((value.unwrap() - 0.5).abs() < 1e-12, "bar {at}: {value:?}");
+        }
+
+        assert_eq!(signal[2], None, "the signal needs two readings of the line");
+        for (at, value) in signal.iter().enumerate().skip(3) {
+            assert!((value.unwrap() - 0.5).abs() < 1e-12, "bar {at}: {value:?}");
+        }
+
+        assert_eq!(histogram[2], None, "and so does the histogram");
+        for (at, value) in histogram.iter().enumerate().skip(3) {
+            assert!(value.unwrap().abs() < 1e-12, "bar {at}: {value:?}");
+        }
+    }
+
+    /// The warm-up at the usual settings, which is the number a chart put
+    /// beside another platform's is compared on: the line starts at bar 25 and
+    /// the signal at bar 33.
+    #[test]
+    fn the_warmup_at_twelve_twenty_six_and_nine_is_twenty_five_bars_and_then_eight_more() {
+        let closes: Vec<f64> = (0..80).map(|i| 100.0 + (i as f64 / 5.0).sin() * 4.0).collect();
+        let (line, signal, histogram) = macd(&bars(&closes), 12, 26, 9);
+
+        assert_eq!(line.iter().take_while(|v| v.is_none()).count(), 25);
+        assert_eq!(signal.iter().take_while(|v| v.is_none()).count(), 33);
+        assert_eq!(histogram.iter().take_while(|v| v.is_none()).count(), 33);
+        // And nothing is missing after that: a hole in the middle of a strip
+        // is a line that stops for no reason anybody can see.
+        assert!(line[25..].iter().all(Option::is_some));
+        assert!(signal[33..].iter().all(Option::is_some));
+    }
+
+    /// The line has to be the difference of the two averages an EMA overlay of
+    /// the same lengths would draw on the same chart, to the last place.
+    /// Anything else and the strip is arguing with the lines above it.
+    #[test]
+    fn the_line_agrees_with_the_two_moving_averages_it_is_made_of() {
+        let closes: Vec<f64> =
+            (0..300).map(|i| 50.0 + (i as f64 / 23.0).sin() * 6.0 + i as f64 * 0.01).collect();
+        let series = bars(&closes);
+        let (line, _, _) = macd(&series, 12, 26, 9);
+        let fast = super::super::ema(&series, 12);
+        let slow = super::super::ema(&series, 26);
+
+        for at in 0..closes.len() {
+            match (fast[at], slow[at]) {
+                (Some(fast), Some(slow)) => {
+                    let wanted = fast - slow;
+                    assert!((line[at].unwrap() - wanted).abs() < 1e-12, "bar {at}");
+                }
+                _ => assert_eq!(line[at], None, "bar {at}"),
+            }
+        }
+    }
+
+    /// Which is the whole point of it: above nothing when the quick average is
+    /// over the slow one, below when it is under.
+    #[test]
+    fn the_line_crosses_nothing_when_the_averages_cross() {
+        let mut closes = vec![100.0; 60];
+        closes.extend((0..40).map(|i| 100.0 + i as f64)); // a run up
+        closes.extend((0..60).map(|i| 140.0 - i as f64 * 2.0)); // and a harder run down
+        let (line, _, histogram) = macd(&bars(&closes), 12, 26, 9);
+
+        assert!(line[95].unwrap() > 0.0, "climbing: {:?}", line[95]);
+        assert!(line[155].unwrap() < 0.0, "falling: {:?}", line[155]);
+        // The histogram changes sign before the line does, which is what it is
+        // read for, so it must be allowed to.
+        assert!(histogram.iter().flatten().any(|v| *v > 0.0));
+        assert!(histogram.iter().flatten().any(|v| *v < 0.0));
+    }
+
+    /// A series that does not move has two identical averages, so the line is
+    /// nothing — exactly nothing, not a rounding error either side of it.
+    #[test]
+    fn a_flat_series_has_no_divergence_at_all() {
+        let (line, signal, histogram) = macd(&bars(&[48_000.125; 60]), 12, 26, 9);
+        for (at, value) in line.iter().enumerate().skip(25) {
+            assert_eq!(*value, Some(0.0), "bar {at}");
+        }
+        for (at, value) in signal.iter().enumerate().skip(33) {
+            assert_eq!(*value, Some(0.0), "bar {at}");
+            assert_eq!(histogram[at], Some(0.0), "bar {at}");
+        }
+    }
+
+    #[test]
+    fn macd_degenerate_lengths_draw_nothing_rather_than_guess() {
+        let series = bars(&(0..60).map(|i| 100.0 + i as f64).collect::<Vec<_>>());
+        for (fast, slow, signal) in [(0, 26, 9), (12, 0, 9), (12, 26, 0)] {
+            let (line, sig, hist) = macd(&series, fast, slow, signal);
+            assert!(line.iter().all(Option::is_none), "{fast}/{slow}/{signal}");
+            assert!(sig.iter().all(Option::is_none));
+            assert!(hist.iter().all(Option::is_none));
+        }
+
+        // Shorter than the slow average: nothing yet, and no panic for it.
+        let (line, _, _) = macd(&bars(&[1.0, 2.0, 3.0]), 12, 26, 9);
+        assert!(line.iter().all(Option::is_none));
+
+        // Nothing at all.
+        let (line, sig, hist) = macd(&[], 12, 26, 9);
+        assert!(line.is_empty() && sig.is_empty() && hist.is_empty());
+    }
+
+    /// Lengths of one, where the exponential average is the close itself, and
+    /// a fast average no faster than the slow one, where the line is nothing
+    /// or the wrong way round. Neither is a MACD anybody means — the command
+    /// line refuses both — but a stored indicator can hold them and the engine
+    /// has to answer.
+    #[test]
+    fn macd_lengths_that_make_no_sense_still_answer_something_finite() {
+        let series = bars(&(0..60).map(|i| 100.0 + (i as f64 / 4.0).sin()).collect::<Vec<_>>());
+
+        let (line, signal, _) = macd(&series, 1, 1, 1);
+        assert_eq!(line[0], Some(0.0), "one average less itself");
+        assert_eq!(signal[0], Some(0.0));
+
+        // Equal lengths: no divergence to measure.
+        let (line, _, _) = macd(&series, 26, 26, 9);
+        assert!(line[25..].iter().flatten().all(|v| v.abs() < 1e-12));
+
+        // The fast one slower than the slow one: still finite, just mirrored.
+        let (fast_slower, _, _) = macd(&series, 26, 12, 9);
+        let (right_way, _, _) = macd(&series, 12, 26, 9);
+        for (at, (a, b)) in fast_slower.iter().zip(&right_way).enumerate().skip(25) {
+            let (a, b) = (a.unwrap(), b.unwrap());
+            assert!((a + b).abs() < 1e-12, "bar {at}: {a} is not {b} mirrored");
+        }
+        assert!(fast_slower.iter().flatten().all(|v| v.is_finite()));
+    }
+
+    /// A close that is not a number stops the line rather than filling the
+    /// strip with NaN: an exponential average never recovers from one, so the
+    /// honest answer is that there is nothing more to draw.
+    #[test]
+    fn a_close_that_is_not_a_number_stops_the_line_instead_of_poisoning_it() {
+        for nonsense in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut closes: Vec<f64> = (0..60).map(|i| 100.0 + i as f64 * 0.5).collect();
+            closes[40] = nonsense;
+            let (line, signal, histogram) = macd(&bars(&closes), 12, 26, 9);
+
+            assert!(line[39].is_some(), "{nonsense}: fine up to the bad bar");
+            assert!(line[40..].iter().all(Option::is_none), "{nonsense}: and stops there");
+            for series in [&line, &signal, &histogram] {
+                assert!(
+                    series.iter().flatten().all(|v| v.is_finite()),
+                    "{nonsense} reached a chart"
+                );
+            }
+        }
+    }
+
+    /// A bar with its high under its low cannot change an indicator of closes,
+    /// but a chart can hold one.
+    #[test]
+    fn macd_ignores_a_bar_that_is_upside_down() {
+        let closes: Vec<f64> = (0..60).map(|i| 100.0 + (i as f64 / 6.0).sin() * 3.0).collect();
+        let clean = macd(&bars(&closes), 12, 26, 9).0;
+        let mut broken = bars(&closes);
+        broken[30].high = 0.0;
+        broken[30].low = 1_000.0;
+        assert_eq!(macd(&broken, 12, 26, 9).0, clean);
+    }
+
+    /// An average of a series with a hole in it starts again on the far side
+    /// rather than carrying a value across bars it was never told about.
+    #[test]
+    fn an_average_of_a_series_with_a_hole_seeds_again_past_it() {
+        let values: Vec<Option<f64>> =
+            vec![Some(1.0), Some(3.0), None, Some(5.0), Some(7.0), Some(9.0)];
+        let out = ema_of(&values, 2);
+        assert_eq!(out[0], None, "waiting for a second value");
+        assert_eq!(out[1], Some(2.0), "seeded with the mean of the first two");
+        assert_eq!(out[2], None, "the hole");
+        assert_eq!(out[3], None, "and one value is not a seed");
+        assert_eq!(out[4], Some(6.0), "seeded again with the mean of 5 and 7");
+        assert_eq!(out[5], Some(8.0), "9 * 2/3 + 6 * 1/3");
     }
 }

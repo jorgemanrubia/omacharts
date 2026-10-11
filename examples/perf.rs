@@ -266,6 +266,46 @@ fn drawing(rows: &mut Vec<Row>) {
             }));
         }
     }
+
+    // A frame carrying the two indicators that draw something the others do
+    // not: a shaded envelope over the price, and a histogram in a strip. Both
+    // are new draw-path code, so both are covered from the day they land
+    // rather than the day somebody notices a frame got slower.
+    if let Some(mut scene) = Scene::of(3_000, 1_500, &["volume", "bollinger", "macd"]) {
+        scene.point_at(WIDTH, HEIGHT, 0.5, 0.45);
+        let (surface, cr) = canvas();
+        rows.push(row("draw", "pan/zoom frame, bollinger and macd, 1500 bars", || {
+            scene.view_frame(&cr, WIDTH, HEIGHT);
+            surface.flush();
+        }));
+    }
+
+    // What one indicator's arithmetic costs over a long series, which is what
+    // every tick pays and what the first frame of a chart pays. A row each
+    // rather than one pass over all of them, because the question a regression
+    // raises is always which one — and RSI is in the list so that the two new
+    // ones are read beside something whose cost is already known.
+    for bars in [10_000usize, 100_000] {
+        let series = bench::series(bars);
+        for key in ["rsi", "bollinger", "macd"] {
+            let Some(indicator) = named(key) else { continue };
+            rows.push(row("draw", &format!("compute {key} over {bars} bars"), || {
+                black_box(indicators::compute(&indicator, &series, 0, Timeframe::days(1), None));
+            }));
+        }
+    }
+}
+
+/// An indicator named the way the store and the command line name it.
+///
+/// By key rather than by variant for the reason [`Scene::of`] gives: this file
+/// is copied onto the revision the branch came off and built there, so naming
+/// a variant the branch added would fail that build and lose the comparison
+/// for every other row too. `None` on a revision that has never heard of it,
+/// and the scenario is simply missing from that side.
+fn named(key: &str) -> Option<Indicator> {
+    let kind = Kind::ALL.into_iter().find(|kind| kind.key() == key)?;
+    Some(Indicator::new(1, kind))
 }
 
 /// Where each chart sits when `charts` of them share the window. One fills it;

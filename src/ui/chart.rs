@@ -31,7 +31,7 @@ use crate::ui::text_editor;
 use omacharts_engine::drawings::{
     self, Anchor, Configurations, Drawing, Grip, Kind as DrawingKind, Projected, Scope,
 };
-use omacharts_engine::indicators::{self as indicators, vwap, Output, Profile};
+use omacharts_engine::indicators::{self as indicators, BandSeries, Output, Profile};
 use omacharts_engine::{
     Bar, BarScheme, BarStyle, Direction, FetchFailure, Indicator, Instrument, Theme, Timeframe,
 };
@@ -4230,12 +4230,13 @@ fn pane_decimals(pane: &omacharts_engine::indicators::Pane, low: f64, high: f64)
     }
 }
 
-/// The colour of a strip's second line: a stochastic's %D. Its own if somebody
-/// chose one, otherwise the theme's companion to the main line, as a point of
-/// control is.
+/// The colour of a strip's second line: a stochastic's %D, a MACD's signal.
+/// Its own if somebody chose one, otherwise the theme's companion to the main
+/// line, as a point of control is.
 fn signal_colour(state: &State, drawn: &Drawn) -> String {
     let chosen = match &drawn.indicator.params {
         omacharts_engine::Params::Stochastic { d_color, .. } => d_color.as_ref(),
+        omacharts_engine::Params::Macd { signal_color, .. } => signal_color.as_ref(),
         _ => None,
     };
     state.theme.companion_or(chosen, &drawn.color)
@@ -4266,9 +4267,13 @@ fn draw_pane(
     let plot_x = columns.plot_x;
     let (first, visible) = (columns.first, columns.visible);
     let values = on_screen(&pane.values, first, visible);
-    let Some((low, high)) = pane_range(pane, values) else { return };
+    let Some((low, high)) = pane_range(pane, first, visible) else { return };
     let (inner_top, inner_h) = pane_plot(top, height);
     let to_y = |value: f64| inner_top + inner_h * (high - value) / (high - low);
+    // Everything drawn in the strip is kept inside it. Nothing fitted falls
+    // outside, but a strip on a fixed scale can be handed a value past its own
+    // end, and a rectangle that overshot would be drawn over its neighbour.
+    let strip = |value: f64| to_y(value).clamp(top, top + height);
 
     // The band between the guides, so overbought and oversold read as regions
     // rather than two lines you have to remember the meaning of.
@@ -4276,6 +4281,13 @@ fn draw_pane(
         cr.rectangle(plot_x, to_y(to), plot_w, (to_y(from) - to_y(to)).abs());
         colors::set_source_alpha(cr, &state.theme.ui.grid, 0.35);
         let _ = cr.fill();
+    }
+
+    // Under the guides and the lines, because it is the backdrop they are read
+    // against — the same order the volume strip's bars and the price plot's
+    // band shading are drawn in.
+    if let Some(histogram) = &pane.histogram {
+        draw_histogram(cr, state, on_screen(histogram, first, visible), columns, &strip);
     }
 
     cr.save().ok();
@@ -4317,7 +4329,6 @@ fn draw_pane(
     if stroke.is_hidden() {
         return;
     }
-    let strip = |value: f64| to_y(value).clamp(top, top + height);
     stroke_pane_line(cr, stroke, &drawn.color, values, columns, &strip);
     let signal = pane.signal.as_ref().map(|signal| (signal, signal_colour(state, drawn)));
     if let Some((signal, colour)) = &signal {
@@ -4383,9 +4394,16 @@ fn spread_chips(ys: &mut [f64], gap: f64, floor: f64) {
 ///
 /// Its own function because the crosshair has to read the strip on the same
 /// scale it was drawn on, or the number on the axis is not the line under it.
+///
+/// Everything the strip draws is fitted, not just its first line: a MACD's
+/// signal can lead the line it is an average of, its histogram reaches further
+/// than either, and anything left out of this would be drawn outside the box
+/// it belongs to. Nothing here assumes a floor of nought — a MACD is the one
+/// strip whose whole point is which side of nought it is on.
 fn pane_range(
     pane: &omacharts_engine::indicators::Pane,
-    values: &[Option<f64>],
+    first: usize,
+    visible: usize,
 ) -> Option<(f64, f64)> {
     if let Some(bounds) = pane.bounds {
         return Some(bounds);
@@ -4397,11 +4415,26 @@ fn pane_range(
     // top and bottom of its strip has no shape to read.
     let mut low = f64::MAX;
     let mut high = f64::MIN;
-    for value in values.iter().flatten() {
-        low = low.min(*value);
-        high = high.max(*value);
+    let drawn = [Some(&pane.values), pane.signal.as_ref(), pane.histogram.as_ref()];
+    for series in drawn.into_iter().flatten() {
+        for value in on_screen(series, first, visible).iter().flatten() {
+            low = low.min(*value);
+            high = high.max(*value);
+        }
     }
-    if !low.is_finite() || !high.is_finite() {
+    // A guide is part of the scale rather than something drawn on top of it.
+    // A MACD's histogram is measured from its zero line, so the zero line has
+    // to be inside the strip — and a guide outside the fitted range would not
+    // merely be invisible, it would be drawn across whichever strip is next.
+    for guide in &pane.guides {
+        low = low.min(*guide);
+        high = high.max(*guide);
+    }
+    // Nothing on screen to scale to, which is what a strip still in its
+    // warm-up has — thirty-three bars of it for a MACD. Neither end was ever
+    // written, so `low` is still above `high`, and carrying on from there gave
+    // a scale of plus and minus infinity and an axis labelled "inf".
+    if low > high || !low.is_finite() || !high.is_finite() {
         return None;
     }
     if (high - low).abs() < f64::EPSILON {
@@ -4409,6 +4442,47 @@ fn pane_range(
     } else {
         let air = (high - low) * 0.12;
         Some((low - air, high + air))
+    }
+}
+
+/// A strip's bars, measured from nought rather than from the foot of the box.
+///
+/// Which is the difference between this and the volume strip: a volume bar
+/// stands on the bottom of its strip because there is no such thing as
+/// negative volume, and a MACD's histogram hangs either side of nought
+/// because which side it is on is the whole of what it says. Nought is in the
+/// strip's own scale — [`pane_range`] puts it there — so the baseline is
+/// simply where that value falls.
+///
+/// Two passes, one per direction, so the colour is set twice for the whole
+/// strip rather than once per bar.
+fn draw_histogram(
+    cr: &cairo::Context,
+    state: &State,
+    values: &[Option<f64>],
+    columns: &Columns,
+    to_y: &impl Fn(f64) -> f64,
+) {
+    let base = to_y(0.0);
+    let body_w = (columns.bar_w * 0.68).clamp(1.0, 24.0);
+    for rising in [false, true] {
+        let colour = state.scheme.volume(if rising { Direction::Up } else { Direction::Down });
+        let mut any = false;
+        for at in 0..columns.len() {
+            let Some(Some(value)) = values.get(columns.offset(at)) else { continue };
+            if (*value >= 0.0) != rising || *value == 0.0 {
+                continue;
+            }
+            any = true;
+            let y = to_y(*value);
+            let (top, h) = (y.min(base), (y - base).abs().max(1.0));
+            let x = columns.x(at) - body_w / 2.0;
+            cr.rectangle(x.round(), top.round(), body_w.round(), h.round());
+        }
+        if any {
+            colors::set_source_alpha(cr, colour, 0.85);
+            let _ = cr.fill();
+        }
     }
 }
 
@@ -4592,7 +4666,7 @@ fn draw_pane_value(
     else {
         return;
     };
-    let Some((low, high)) = pane_range(pane, on_screen(&pane.values, first, visible)) else {
+    let Some((low, high)) = pane_range(pane, first, visible) else {
         return;
     };
     let (inner_top, inner_h) = pane_plot(row.top, row.height);
@@ -5133,7 +5207,7 @@ fn draw_indicator_lines(
                     cr.set_dash(&stroke.style.dashes(stroke.width), 0.0);
                     colors::set_source(cr, &drawn.color);
                     cr.set_line_width(stroke.width);
-                    stroke_series(cr, &bands.vwap, columns, to_y);
+                    stroke_series(cr, &bands.center, columns, to_y);
                     cr.restore().ok();
                 }
             }
@@ -5143,7 +5217,7 @@ fn draw_indicator_lines(
 }
 
 /// A band's own colour, or the indicator's if it has none.
-fn band_colour(band: &vwap::BandSeries, drawn: &Drawn, theme: &Theme) -> String {
+fn band_colour(band: &BandSeries, drawn: &Drawn, theme: &Theme) -> String {
     band.color
         .as_ref()
         .map(|choice| choice.resolve(theme))
@@ -6297,6 +6371,119 @@ mod tests {
         assert_eq!(decimals_for(0.5), 1);
         assert_eq!(decimals_for(0.01), 2);
         assert_eq!(decimals_for(0.0001), 4);
+    }
+
+    /// A strip with these values, drawn on whatever scale it asks for.
+    fn strip(
+        values: &[Option<f64>],
+        signal: Option<&[Option<f64>]>,
+        histogram: Option<&[Option<f64>]>,
+        guides: &[f64],
+    ) -> indicators::Pane {
+        indicators::Pane {
+            values: values.to_vec(),
+            signal: signal.map(<[Option<f64>]>::to_vec),
+            histogram: histogram.map(<[Option<f64>]>::to_vec),
+            height: 0.16,
+            bounds: None,
+            guides: guides.to_vec(),
+            band: None,
+        }
+    }
+
+    /// The strip code is shared, so the first thing to establish about any
+    /// change to it is that RSI and ATR are drawn on the scale they always
+    /// were: a fixed one is its own bounds whatever is in it, and a fitted
+    /// one with nothing to anchor it is still the values with a little air.
+    #[test]
+    fn what_a_strip_is_drawn_on_has_not_changed_for_the_strips_that_were_here() {
+        let values = [Some(10.0), Some(40.0), Some(90.0)];
+
+        let mut fixed = strip(&values, None, None, &[30.0, 50.0, 70.0]);
+        fixed.bounds = Some((0.0, 100.0));
+        assert_eq!(pane_range(&fixed, 0, 3), Some((0.0, 100.0)), "an RSI is always nought to 100");
+
+        // An ATR: fitted, no guides, and the air either side is what it was.
+        let fitted = strip(&values, None, None, &[]);
+        let (low, high) = pane_range(&fitted, 0, 3).expect("a range");
+        let air = (90.0 - 10.0) * 0.12;
+        assert!((low - (10.0 - air)).abs() < 1e-9, "{low}");
+        assert!((high - (90.0 + air)).abs() < 1e-9, "{high}");
+    }
+
+    /// A MACD is the first strip whose values go either side of nothing, and
+    /// three things follow that nothing else here needed: the scale has to
+    /// take negatives, it has to cover the second line and the histogram as
+    /// well as the first line, and it has to hold the zero guide — a guide
+    /// outside the fitted range would not merely be invisible, it would be
+    /// drawn across whichever strip is next down the stack.
+    #[test]
+    fn a_strips_scale_covers_everything_it_draws_including_below_nothing() {
+        let line = [Some(-4.0), Some(-1.0), Some(2.0)];
+        let signal = [Some(-6.0), Some(-2.0), Some(1.0)];
+        let histogram = [Some(2.0), Some(1.0), Some(8.0)];
+
+        let both = strip(&line, Some(&signal), Some(&histogram), &[0.0]);
+        let (low, high) = pane_range(&both, 0, 3).expect("a range");
+        assert!(low <= -6.0, "the signal's trough is off the bottom: {low}");
+        assert!(high >= 8.0, "the histogram's peak is off the top: {high}");
+        assert!(low < 0.0 && high > 0.0, "nothing has to be on the scale");
+
+        // All one side of nothing, which is where a zero line would otherwise
+        // fall outside the strip it belongs to.
+        let above = strip(&[Some(5.0), Some(9.0)], None, None, &[0.0]);
+        let (low, high) = pane_range(&above, 0, 2).expect("a range");
+        assert!(low <= 0.0, "the zero line fell off the bottom: {low}");
+        assert!(high >= 9.0);
+    }
+
+    /// Warm-up: a MACD has no value for its first 33 bars, and a strip with
+    /// nothing in it yet still has a scale to draw its own furniture on
+    /// rather than drawing nothing at all.
+    #[test]
+    fn a_strip_with_nothing_in_it_yet_still_has_somewhere_to_draw_its_zero() {
+        let empty = strip(&[None, None], None, None, &[0.0]);
+        let (low, high) = pane_range(&empty, 0, 2).expect("a range");
+        assert!(low < 0.0 && high > 0.0, "{low} to {high}");
+
+        // And with no guides either there is genuinely nothing to scale to.
+        assert_eq!(pane_range(&strip(&[None, None], None, None, &[]), 0, 2), None);
+    }
+
+    /// The whole chart with the two new indicators on it, drawn through the
+    /// real draw function: a panic in here does not unwind, it takes the app
+    /// with it, so the degenerate shapes are drawn rather than reasoned about.
+    #[test]
+    fn drawing_the_new_indicators_paints_something_and_never_panics() {
+        let (w, h) = (600.0, 400.0);
+        for bars in [0usize, 1, 5, 40, 300] {
+            let mut state = charted(bars.max(1));
+            state.bars = ramp(bars);
+            state.visible = bars;
+            let series = state.bars.clone();
+            state.indicators = [indicators::Kind::Bollinger, indicators::Kind::Macd]
+                .into_iter()
+                .enumerate()
+                .map(|(at, kind)| {
+                    let indicator = Indicator::new(at as u32 + 1, kind);
+                    Drawn {
+                        color: "#5588ff".to_string(),
+                        output: indicators::compute(&indicator, &series, 0, state.timeframe, None),
+                        indicator,
+                    }
+                })
+                .collect();
+
+            let painted_pixels = painted(&frame(w, h, |cr| draw(cr, w, h, &state)));
+            match bars {
+                0 => {}
+                _ => assert!(painted_pixels > 0, "{bars} bars drew nothing"),
+            }
+            // And the crosshair layer over it, which reads the strips back on
+            // the same scale they were drawn on.
+            state.pointer = Some((300.0, 360.0));
+            let _ = frame(w, h, |cr| draw_pointer(cr, w, h, &state));
+        }
     }
 }
 
