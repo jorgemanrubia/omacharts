@@ -191,6 +191,40 @@ The first keeps a command in its own process; the second is for when the run
 needs a window of its own. Two separate sessions have changed a live chart by
 getting this half right.
 
+## A fresh target directory is a cold build, and cold here means minutes
+
+The dependency graph includes the GTK bindings, so building this workspace
+from nothing compiles over a thousand crates. A warm `target/` in the repo
+makes a local change feel instant — one crate recompiled and a relink — and
+that is misleading: point `CARGO_TARGET_DIR` somewhere new and the same
+change takes minutes instead.
+
+Which matters because concurrent agents are each given their own target
+directory on purpose. Two builds of different branches both write
+`target/debug/omacharts`, so sharing one directory means overwriting each
+other's binary mid-run and reporting results from a mix of the two. The
+directories have to stay separate; what should be shared is the compilation
+cache underneath them:
+
+```sh
+sudo pacman -S --needed sccache
+```
+
+```toml
+# ~/.cargo/config.toml
+[build]
+rustc-wrapper = "sccache"
+```
+
+Then the first build to need a crate pays for it and every other target
+directory gets it from the cache, so a fresh directory stops meaning a cold
+build. `sccache --show-stats` reports the hit rate. Do not add this to the
+repo's own `.cargo/config.toml` — it is a property of the machine doing the
+building, not of the project, and CI has no cache to hit.
+
+Before blaming a PR for a slow review, check which of the two kinds of build
+it was.
+
 ## Verifying parity
 
 Before calling a feature done:
