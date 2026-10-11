@@ -28,7 +28,12 @@ it.
 One PR per agent, each in its own worktree, so several can run at once
 without fighting over a checkout. Give each agent its own build directory
 too — two agents sharing a scratchpad binary have overwritten each other
-mid-run and produced contradictory results. Asked to review several, run
+mid-run and produced contradictory results. "Somewhere in your scratchpad"
+is not enough: the scratchpad belongs to the session, not to the agent, so
+every agent told that picks `scratchpad/target` and they collide. Name the
+directory after the PR — `CARGO_TARGET_DIR=…/scratchpad/target-pr45` — and
+an agent that finds a binary it did not build moves and rebuilds rather
+than trusting it. Asked to review several, run
 them in batches of three: three agents at once, the next three when those
 report. More than that and the builds starve each other and the reports
 arrive faster than anyone can read them.
@@ -150,11 +155,28 @@ XDG_DATA_HOME=$(mktemp -d) DBUS_SESSION_BUS_ADDRESS= ./target/debug/omacharts �
 nothing and will write to the real profile. Blanking the bus address keeps
 the command local instead of forwarding it to a running window.
 
+**Kill only what you launched, by pid.** `pkill omacharts` matches the
+owner's own window, which is open on his real profile while he works — an
+agent tidying up its test processes that way killed his live app and every
+other agent's test window with it. Keep the pids you started and kill
+those. The same goes for closing his instance to launch your own build:
+single-instance over D-Bus means a launch otherwise just raises the old
+binary, so sometimes it has to happen — but it is his app disappearing from
+his screen, so say in the report that you did it.
+
 Driving the window itself, when a claim needs it: launch with
-`GDK_BACKEND=x11` so `xdotool` can reach it, find it with `xdotool search
---pid <pid> --onlyvisible | tail -1`, and capture its own pixels with
-`import -window <id> out.png`, which works whatever is on top and whatever
-workspace it is on. Keyboard reaches it that way; the pointer does not,
+`GDK_BACKEND=x11` so `xdotool` can reach it, and find it with `xdotool
+search --pid <pid> --onlyvisible | tail -1`.
+
+**Screenshot through the app, not the compositor.** `import -window <id>`
+hands back a stale pixmap for a window on a hidden workspace, because
+nothing is being composited — and the obvious guard against that, capturing
+twice and checking the frames match, reports "settled" for exactly the same
+reason. Three captures in one review were stale that way and nearly produced
+a wrong answer about a gridline fix. `omacharts chart screenshot --output`
+renders from inside the app with no compositor in the path, so it is the one
+to trust; keep `import -window` for the case where what is being checked is
+the window's own decoration. Keyboard reaches it that way; the pointer does not,
 so do not rely on clicks. Two things that have gone wrong: a window
 launched on the owner's active workspace takes his focus, and his next
 keystrokes land in your throwaway app — launch it on a special workspace

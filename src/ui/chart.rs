@@ -421,8 +421,8 @@ impl Layout {
 /// highest high, summed volume. Nothing is sampled and nothing is averaged,
 /// which is what makes this safe to do to a price chart — a column's wick is
 /// exactly the union of the wicks it stands for, so no high and no low can go
-/// missing at any zoom. It is the picture the old code was trying to draw, for
-/// a bounded amount of work.
+/// missing at any zoom, and no gap between two of them is filled in. It is
+/// the picture the old code was trying to draw, for a bounded amount of work.
 ///
 /// At a bar a pixel or wider there is nothing to aggregate and the visible
 /// slice is borrowed as it is, untouched, which is the case every chart at a
@@ -445,6 +445,8 @@ struct Columns<'a> {
     plot_x: f64,
     /// One column's width, never less than a pixel.
     bar_w: f64,
+    /// The visible bars the columns were made from.
+    slice: &'a [Bar],
 }
 
 impl<'a> Columns<'a> {
@@ -455,7 +457,7 @@ impl<'a> Columns<'a> {
         let columns = (plot_w.floor().max(1.0) as usize).min(visible);
         let bar_w = plot_w / columns as f64;
         if columns >= visible || bars.len() < visible {
-            return Columns { bars: Cow::Borrowed(bars), first, visible, plot_x, bar_w };
+            return Columns { bars: Cow::Borrowed(bars), first, visible, plot_x, bar_w, slice: bars };
         }
         let mut aggregated = Vec::with_capacity(columns);
         for at in 0..columns {
@@ -482,7 +484,7 @@ impl<'a> Columns<'a> {
             }
             aggregated.push(column);
         }
-        Columns { bars: Cow::Owned(aggregated), first, visible, plot_x, bar_w }
+        Columns { bars: Cow::Owned(aggregated), first, visible, plot_x, bar_w, slice: bars }
     }
 
     fn len(&self) -> usize {
@@ -492,6 +494,28 @@ impl<'a> Columns<'a> {
     /// The middle of a column, which is where a candle is centred.
     fn x(&self, at: usize) -> f64 {
         self.plot_x + (at as f64 + 0.5) * self.bar_w
+    }
+
+    /// A column's wick as high-low pairs, one per run of its bars whose ranges
+    /// overlap. One line from the lowest low to the highest high would fill in
+    /// any gap between two bars that happened to share the column.
+    fn wicks(&self, at: usize) -> impl Iterator<Item = (f64, f64)> + '_ {
+        let group = match self.bars {
+            Cow::Borrowed(_) => std::slice::from_ref(&self.bars[at]),
+            Cow::Owned(_) => {
+                &self.slice[at * self.visible / self.len()..(at + 1) * self.visible / self.len()]
+            }
+        };
+        let mut group = group.iter().peekable();
+        std::iter::from_fn(move || {
+            let first = group.next()?;
+            let (mut high, mut low) = (first.high, first.low);
+            while let Some(bar) = group.next_if(|bar| bar.low <= high && bar.high >= low) {
+                high = high.max(bar.high);
+                low = low.min(bar.low);
+            }
+            Some((high, low))
+        })
     }
 
     /// The bar a column is read from when a series is indexed by bar: the last
@@ -3678,7 +3702,7 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
     // Shaded things go under the candles; lines go over. A band drawn on top
     // of the bars hides the thing it is describing.
     draw_indicator_fills(cr, state, &columns, &to_y);
-    draw_candles(cr, state, &columns.bars, bars_x, bar_w, &to_y);
+    draw_candles(cr, state, &columns, &to_y);
     draw_indicator_lines(cr, state, &columns, &to_y);
     draw_drawings(cr, state, &plan, low, high);
 
@@ -3932,24 +3956,8 @@ fn draw_time_axis(
             bars.last().map(|b| b.ts + (at - bars.len() as i64 + 1) * step)
         }
     };
-    // About one label per 90px, on a whole number of columns so labels do
-    // not jitter as the view scrolls — counted from the first bar, so the
-    // ticks stay on the same bars as room opens and closes.
-    let target = (plot_w / 90.0).max(2.0) as i64;
-    let stride = (total / target).max(1);
-    // How far apart two labels land decides the format: a decade of daily bars
-    // labelled "01 Jun" tells you nothing, and nine months of them all
-    // labelled "Mar 2026" tells you less.
-    let span = match (time_at(0), time_at(total - 1)) {
-        (Some(first), Some(last)) => last - first,
-        _ => 0,
-    };
-    let labels = ((total + stride - 1) / stride).max(1);
-    let tick_seconds = span / labels;
-    for column in 0..total {
-        if (column - before).rem_euclid(stride) != 0 {
-            continue;
-        }
+    let (ticks, tick_seconds) = axis_ticks(total, plot_w, step, time_at);
+    for column in ticks {
         let Some(ts) = time_at(column) else { continue };
         let x = plot_x + (column as f64 + 0.5) * bar_w;
         if x < plot_x + 18.0 || x > plot_x + plot_w - 18.0 {
@@ -3973,19 +3981,12 @@ fn draw_time_axis(
 
 /// Up and down candles in two passes, each building one path for wicks and one
 /// for bodies.
-fn draw_candles(
-    cr: &cairo::Context,
-    state: &State,
-    bars: &[Bar],
-    plot_x: f64,
-    bar_w: f64,
-    to_y: &impl Fn(f64) -> f64,
-) {
-    candles(cr, state.bar_style, &state.scheme, bars, plot_x, bar_w, to_y);
+fn draw_candles(cr: &cairo::Context, state: &State, columns: &Columns, to_y: &impl Fn(f64) -> f64) {
+    candles(cr, state.bar_style, &state.scheme, columns, to_y);
 }
 
 /// Candles, from nothing but what it takes to draw one: the style, the
-/// scheme, the bars, and where they go.
+/// scheme, and the columns they are drawn as.
 ///
 /// Split out of the chart's own state so that what draws a candle is a
 /// routine taking what a candle needs, rather than a method reaching into
@@ -3994,15 +3995,14 @@ fn candles(
     cr: &cairo::Context,
     bar_style: BarStyle,
     scheme: &BarScheme,
-    bars: &[Bar],
-    plot_x: f64,
-    bar_w: f64,
+    columns: &Columns,
     to_y: &impl Fn(f64) -> f64,
 ) {
     if bar_style == BarStyle::Ohlc {
-        ohlc(cr, scheme, bars, plot_x, bar_w, to_y);
+        ohlc(cr, scheme, columns, to_y);
         return;
     }
+    let (bars, bar_w) = (&columns.bars, columns.bar_w);
     let body_w = (bar_w * 0.68).clamp(1.0, 24.0);
     // Below about three pixels a candle is a line; outlining it just muddies
     // the colour.
@@ -4024,9 +4024,10 @@ fn candles(
                 continue;
             }
             any = true;
-            let x = (plot_x + (i as f64 + 0.5) * bar_w).round() + 0.5;
-            cr.move_to(x, to_y(bar.high).round());
-            cr.line_to(x, to_y(bar.low).round());
+            let x = columns.x(i).round() + 0.5;
+            for (high, low) in columns.wicks(i) {
+                draw_wick(cr, x, to_y(high), to_y(low));
+            }
         }
         if any {
             let _ = cr.stroke();
@@ -4045,7 +4046,7 @@ fn candles(
             if (bar.close >= bar.open) != rising {
                 continue;
             }
-            let x = plot_x + (i as f64 + 0.5) * bar_w - body_w / 2.0;
+            let x = columns.x(i) - body_w / 2.0;
             let top = to_y(bar.open.max(bar.close)).round();
             let bottom = to_y(bar.open.min(bar.close)).round();
             cr.rectangle(x.round(), top, body_w.round(), (bottom - top).max(1.0));
@@ -4061,28 +4062,30 @@ fn candles(
     }
 }
 
+/// A bar's high-low line, a pixel long at least: when the two round to the
+/// same row, a line from there to itself draws nothing and the bar vanishes.
+fn draw_wick(cr: &cairo::Context, x: f64, high: f64, low: f64) {
+    let top = high.round();
+    cr.move_to(x, top);
+    cr.line_to(x, low.round().max(top + 1.0));
+}
+
 /// Open and close as ticks either side of a high-low line.
-fn ohlc(
-    cr: &cairo::Context,
-    scheme: &BarScheme,
-    bars: &[Bar],
-    plot_x: f64,
-    bar_w: f64,
-    to_y: &impl Fn(f64) -> f64,
-) {
-    let tick = (bar_w * 0.32).clamp(1.0, 10.0);
+fn ohlc(cr: &cairo::Context, scheme: &BarScheme, columns: &Columns, to_y: &impl Fn(f64) -> f64) {
+    let tick = (columns.bar_w * 0.32).clamp(1.0, 10.0);
     cr.set_line_width(1.0);
     for rising in [false, true] {
         let direction = if rising { Direction::Up } else { Direction::Down };
         let mut any = false;
-        for (i, bar) in bars.iter().enumerate() {
+        for (i, bar) in columns.bars.iter().enumerate() {
             if (bar.close >= bar.open) != rising {
                 continue;
             }
             any = true;
-            let x = (plot_x + (i as f64 + 0.5) * bar_w).round() + 0.5;
-            cr.move_to(x, to_y(bar.high).round());
-            cr.line_to(x, to_y(bar.low).round());
+            let x = columns.x(i).round() + 0.5;
+            for (high, low) in columns.wicks(i) {
+                draw_wick(cr, x, to_y(high), to_y(low));
+            }
             if tick > 1.0 {
                 let open = to_y(bar.open).round() + 0.5;
                 cr.move_to(x - tick, open);
@@ -5326,6 +5329,136 @@ pub fn decimals_for(step: f64) -> usize {
     places.clamp(0.0, 6.0) as usize
 }
 
+/// About how far apart, in pixels, two time labels should be.
+const TIME_LABEL_GAP: f64 = 90.0;
+
+/// Round stretches of time a tick can mark, finest first: the tick goes on
+/// the first bar of each one.
+#[derive(Clone, Copy)]
+enum Every {
+    Minutes(i64),
+    Day,
+    Week,
+    Months(i64),
+}
+
+impl Every {
+    const LADDER: [Every; 21] = [
+        Every::Minutes(1),
+        Every::Minutes(2),
+        Every::Minutes(5),
+        Every::Minutes(10),
+        Every::Minutes(15),
+        Every::Minutes(30),
+        Every::Minutes(60),
+        Every::Minutes(120),
+        Every::Minutes(240),
+        Every::Minutes(360),
+        Every::Day,
+        Every::Week,
+        Every::Months(1),
+        Every::Months(2),
+        Every::Months(3),
+        Every::Months(6),
+        Every::Months(12),
+        Every::Months(24),
+        Every::Months(60),
+        Every::Months(120),
+        Every::Months(240),
+    ];
+
+    fn seconds(self) -> i64 {
+        const DAY: i64 = 86_400;
+        match self {
+            Every::Minutes(n) => n * 60,
+            Every::Day => DAY,
+            Every::Week => 7 * DAY,
+            Every::Months(n) => n * 30 * DAY,
+        }
+    }
+
+    /// Which stretch a moment falls in; a tick goes where this changes.
+    fn period(self, at: chrono::NaiveDateTime) -> i64 {
+        use chrono::{Datelike, Timelike};
+        let day = at.date().num_days_from_ce() as i64;
+        match self {
+            Every::Minutes(n) => (day * 1_440 + (at.hour() * 60 + at.minute()) as i64).div_euclid(n),
+            Every::Day => day,
+            Every::Week => (day - at.weekday().num_days_from_monday() as i64).div_euclid(7),
+            Every::Months(n) => (at.year() as i64 * 12 + at.month0() as i64).div_euclid(n),
+        }
+    }
+}
+
+/// Which columns carry a time tick, and about how many seconds apart they are.
+///
+/// Ticks go on round times — the first bar of an hour, a day, a month, a year —
+/// using the finest round time that leaves a label room, counted on the bars
+/// actually on screen so closed hours and weekends take no room. A tick every
+/// so many bars instead drifts against the calendar: twenty-six weeks is not
+/// six months.
+///
+/// Which round time to use is settled on how many of them there are; what
+/// finally gets drawn is thinned so no two labels sit on top of each other.
+fn axis_ticks(
+    total: i64,
+    plot_w: f64,
+    step: i64,
+    time_at: impl Fn(i64) -> Option<i64>,
+) -> (Vec<i64>, i64) {
+    use chrono::{Local, TimeZone};
+    let times: Vec<Option<chrono::NaiveDateTime>> = (0..total)
+        .map(|column| {
+            let ts = time_at(column)?;
+            Some(Local.timestamp_opt(ts, 0).single()?.naive_local())
+        })
+        .collect();
+    let ticks = |every: Every| {
+        let mut ticks = Vec::new();
+        let mut previous = None;
+        for (column, at) in times.iter().enumerate() {
+            let Some(at) = at else { continue };
+            let period = every.period(*at);
+            if previous.is_some_and(|p| p != period) {
+                ticks.push(column as i64);
+            }
+            previous = Some(period);
+        }
+        ticks
+    };
+    // A session's first bar starts a new stretch, and the round time just
+    // after it starts another: 15:30 and 16:00 land two bars apart on a 15m
+    // chart and their labels overprint. The round time is what the axis is
+    // for — the open only earned a tick by being first after the overnight
+    // gap — so it takes the open's place rather than crowding in beside it.
+    let bar_w = plot_w / total.max(1) as f64;
+    let spaced = |columns: Vec<i64>| {
+        let mut kept: Vec<i64> = Vec::with_capacity(columns.len());
+        for column in columns {
+            if kept.last().is_some_and(|last| (column - last) as f64 * bar_w < TIME_LABEL_GAP) {
+                kept.pop();
+            }
+            kept.push(column);
+        }
+        kept
+    };
+    // Counted before thinning: thinning alone would leave every rung looking
+    // like it fits, and the finest one would always win.
+    let room = (plot_w / TIME_LABEL_GAP).max(1.0) as usize;
+    let mut coarsest = Every::Months(240);
+    for every in Every::LADDER {
+        if every.seconds() < step {
+            continue;
+        }
+        let found = ticks(every);
+        if found.len() <= room {
+            return (spaced(found), every.seconds());
+        }
+        coarsest = every;
+    }
+    (spaced(ticks(coarsest)), coarsest.seconds())
+}
+
 /// Label an axis tick at the detail the gap between ticks justifies.
 ///
 /// The gap, not the whole span: twenty ticks across nine months are about a
@@ -5646,6 +5779,16 @@ mod tests {
         assert_eq!(lowest(&columns.bars), lowest(&bars));
     }
 
+    #[test]
+    fn a_gap_between_two_bars_in_one_column_stays_a_gap() {
+        let bar = |low: f64, high: f64| Bar { ts: 0, open: low, high, low, close: high, volume: 1.0 };
+        // Four bars to two pixels: a gap inside the first column, none in the second.
+        let bars = [bar(100.0, 110.0), bar(120.0, 130.0), bar(125.0, 135.0), bar(130.0, 140.0)];
+        let columns = Columns::of(&bars, 0, 4, PAD, 2.0);
+        assert_eq!(columns.wicks(0).collect::<Vec<_>>(), [(110.0, 100.0), (130.0, 120.0)]);
+        assert_eq!(columns.wicks(1).collect::<Vec<_>>(), [(140.0, 125.0)]);
+    }
+
     /// Bars rarely divide evenly into pixels. The columns still have to tile
     /// the slice — no bar in two of them, none in none of them.
     #[test]
@@ -5854,6 +5997,20 @@ mod tests {
         let crosshair = frame(w, h, |cr| draw_pointer(cr, w, h, &state));
         // Two lines across a 600x400 chart, and the chips at the ends of them.
         assert!(painted(&crosshair) > 500, "the crosshair drew {} pixels", painted(&crosshair));
+    }
+
+    #[test]
+    fn a_bar_with_less_than_a_pixel_of_range_still_shows() {
+        // Zoomed out, a quiet bar's high and low round to the same row.
+        let mut state = charted(1);
+        let bars = [Bar { ts: 0, open: 100.0, high: 100.2, low: 100.0, close: 100.1, volume: 0.0 }];
+        let to_y = |price: f64| 50.0 - price / 100.0;
+        for style in BarStyle::ALL {
+            state.bar_style = style;
+            let columns = Columns::of(&bars, 0, 1, 0.0, 2.0);
+            let drawn = frame(10.0, 100.0, |cr| draw_candles(cr, &state, &columns, &to_y));
+            assert!(painted(&drawn) > 0, "{style:?} drew nothing");
+        }
     }
 
     #[test]
@@ -6075,6 +6232,62 @@ mod tests {
         let a = format_axis_time(1_200_000_000, tick, false);
         let b = format_axis_time(1_700_000_000, tick, false);
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn weekly_gridlines_fall_on_the_first_week_of_a_month() {
+        use chrono::{Datelike, Local, TimeZone};
+        // Every twenty-six bars put "Mar 2024" on whichever week the count
+        // reached. Monday noon, so no zone moves a bar across a month.
+        const WEEK: i64 = 7 * 86_400;
+        let time_at = |column: i64| Some(1_704_110_400 + column * WEEK);
+        let month = |column: i64| {
+            let at = Local.timestamp_opt(time_at(column).unwrap(), 0).unwrap();
+            (at.year(), at.month())
+        };
+        let (ticks, _) = axis_ticks(520, 3_120.0, WEEK, time_at);
+        assert!(ticks.len() > 5, "{ticks:?}");
+        for column in ticks {
+            assert_ne!(month(column), month(column - 1), "column {column} is mid-month");
+        }
+    }
+
+    /// The bug: an intraday session opens mid-stretch, so its first bar and
+    /// the round time just after it both took a tick — "15:30" and "16:00"
+    /// two bars apart, printed over each other.
+    #[test]
+    fn an_intraday_session_open_does_not_crowd_the_round_time_after_it() {
+        use chrono::{Local, TimeZone};
+        // Regular hours at 15m: 26 bars a session, then an overnight gap.
+        const STEP: i64 = 900;
+        let mut stamps = Vec::new();
+        let mut day =
+            Local.with_ymd_and_hms(2026, 10, 5, 15, 30, 0).single().expect("a session open");
+        for _ in 0..5 {
+            for bar in 0..26 {
+                stamps.push(day.timestamp() + bar * STEP);
+            }
+            day += chrono::Duration::days(1);
+        }
+
+        let total = stamps.len() as i64;
+        let plot_w = 2_400.0;
+        let (ticks, _) = axis_ticks(total, plot_w, STEP, |column| {
+            stamps.get(column as usize).copied()
+        });
+
+        let bar_w = plot_w / total as f64;
+        for pair in ticks.windows(2) {
+            let gap = (pair[1] - pair[0]) as f64 * bar_w;
+            assert!(gap >= TIME_LABEL_GAP, "{gap} px between columns {pair:?}");
+        }
+        // And the one that survives each session open is the round time.
+        let minute = |column: &i64| {
+            let at = Local.timestamp_opt(stamps[*column as usize], 0).unwrap();
+            at.format("%H:%M").to_string()
+        };
+        let at = ticks.iter().map(minute).collect::<Vec<_>>();
+        assert!(at.iter().all(|minute| minute.ends_with(":00")), "{at:?}");
     }
 
     #[test]
