@@ -33,6 +33,8 @@
     --quiet:  rgba(243, 236, 220, .8);
     --amber:  #e2c285;
     --sans: "Archivo", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+            "Liberation Mono", monospace;
   }
 
   * { box-sizing: border-box; }
@@ -117,8 +119,59 @@
     border-radius: 2px;
   }
 
+  /* The install line is the one thing on the page a visitor is meant to take
+     away, so it looks like what it is: a prompt, in the terminal's own
+     letterforms, sitting above the link rather than competing with it. */
+  .install {
+    margin: clamp(1.6rem, 3.4vw, 4rem) 0 0;
+    display: inline-flex;
+    align-items: center;
+    gap: .7em;
+    padding: .62em 1.1em;
+    border: 1px solid rgba(243, 236, 220, .18);
+    border-radius: .55rem;
+    background: rgba(13, 17, 20, .62);
+    color: var(--soft);
+    font-family: var(--mono);
+    font-size: clamp(.82rem, 1.15vw, 1.4rem);
+    line-height: 1;
+    cursor: pointer;
+    transition: border-color .18s ease, background-color .18s ease;
+  }
+  .install:hover,
+  .install:focus-visible {
+    border-color: rgba(226, 194, 133, .55);
+    background: rgba(13, 17, 20, .78);
+  }
+  .install:focus-visible {
+    outline: 2px solid var(--amber);
+    outline-offset: 4px;
+  }
+  .install .prompt {
+    color: var(--amber);
+    user-select: none;
+  }
+  .install code {
+    font: inherit;
+    letter-spacing: .01em;
+    white-space: nowrap;
+  }
+  /* Narrow enough and the command wraps rather than overflowing the phone. */
+  @media (max-width: 26rem) {
+    .install { gap: .5em; padding: .6em .8em; }
+    .install code { white-space: normal; }
+  }
+  .install .hint {
+    color: rgba(243, 236, 220, .45);
+    font-size: .8em;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    user-select: none;
+  }
+  .install[data-copied] .hint { color: var(--amber); }
+
   .repo {
-    margin-top: clamp(1.6rem, 3.4vw, 4rem);
+    margin-top: clamp(.9rem, 1.8vw, 1.8rem);
     padding: .72em 1.5em;
     border: 1px solid rgba(243, 236, 220, .28);
     border-radius: 999px;
@@ -145,6 +198,7 @@
 
   @media (prefers-reduced-motion: reduce) {
     .tagline a { transition: none; }
+    .install { transition: none; }
     .repo { transition: none; }
     .repo:hover { transform: none; }
   }
@@ -154,7 +208,31 @@
   <main>
     <h1>Omacharts</h1>
     <p class="tagline">Beautiful charting software for <a href="https://omarchy.org">Omarchy</a></p>
+    <button class="install" type="button" data-command="omarchy pkg add omacharts">
+      <span class="prompt" aria-hidden="true">$</span>
+      <code>omarchy pkg add omacharts</code>
+      <span class="hint">copy</span>
+    </button>
     <a class="repo" href="https://github.com/jorgemanrubia/omacharts">View on GitHub</a>
   </main>
+  <script>
+    /* Progressive: with no clipboard and no script the command is still there
+       to read and select, which is all it has to be. */
+    const install = document.querySelector('.install');
+    const hint = install.querySelector('.hint');
+    install.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(install.dataset.command);
+      } catch {
+        return;
+      }
+      install.dataset.copied = '';
+      hint.textContent = 'copied';
+      setTimeout(() => {
+        delete install.dataset.copied;
+        hint.textContent = 'copy';
+      }, 1600);
+    });
+  </script>
 </body>
 </html>
