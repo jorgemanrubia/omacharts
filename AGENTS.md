@@ -191,6 +191,51 @@ The first keeps a command in its own process; the second is for when the run
 needs a window of its own. Two separate sessions have changed a live chart by
 getting this half right.
 
+### And its own compositor, when the run needs to be driven
+
+A window that has to be typed into, clicked on and photographed needs a
+third thing nobody has: a screen. This desktop has one monitor and somebody
+is using it, so a test window either takes it or sits unfocused, and an
+unfocused GTK4 window is one synthetic input never reaches. An agent gave
+up on verifying a drawing fix for exactly that reason, and another worked
+around it by patching the app to call a button's own handler from a timer —
+which proves the handler runs, not that clicking the button does.
+
+`bin/headless-window` is the answer: a second compositor with no monitor
+behind it, on its own bus and its own profile, which an agent owns
+completely.
+
+```sh
+eval "$(bin/headless-window start)"
+bin/headless-window app
+bin/headless-window key ctrl+b
+bin/headless-window click 753 24
+bin/headless-window drag 900 400 400 400
+bin/headless-window shot /tmp/after.png
+bin/headless-window stop
+```
+
+It is sway on its headless backend, because the headless backend is the
+part Hyprland does not have: aquamarine builds its allocator from a
+backend's DRM descriptor, the headless one has none, and a Hyprland with
+nothing else available refuses to start at all. Nested Hyprland works only
+inside another Wayland compositor, which means a window on the screen this
+exists to stay off.
+
+Native Wayland throughout, which is the other half of the point: the output
+is 2560×1440 at scale 2, so the window is drawn at HiDPI and a screenshot
+is what a user would actually see. `GDK_BACKEND=x11` gets no scaling under
+XWayland, which is how a test window came to look broken enough that
+somebody asked whether the app was.
+
+What it needs from the machine is `sway`; `wtype`, `grim`, `dbus-daemon`
+and `python3` are already here. No root, no `uinput`, no seat of its own,
+and nothing written outside its own directory under `$XDG_RUNTIME_DIR`.
+The limits — coordinates are layout coordinates, the first chord a fresh
+window is sent is swallowed and has to be sent twice, and `swaymsg`'s own
+cursor command cannot drag — are in the review skill's section on driving
+the window, which is where an agent is when it needs them.
+
 ## A fresh target directory is a cold build, and cold here means minutes
 
 The dependency graph includes the GTK bindings, so building this workspace

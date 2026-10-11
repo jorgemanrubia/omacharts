@@ -164,19 +164,63 @@ single-instance over D-Bus means a launch otherwise just raises the old
 binary, so sometimes it has to happen — but it is his app disappearing from
 his screen, so say in the report that you did it.
 
-Driving the window itself, when a claim needs it: launch with
-`GDK_BACKEND=x11` so `xdotool` can reach it, find it with `xdotool search
---pid <pid> --onlyvisible | tail -1`, and capture its own pixels with
-`import -window <id> out.png`, which works whatever is on top and whatever
-workspace it is on. Keyboard reaches it that way; the pointer does not,
-so do not rely on clicks. Two things that have gone wrong: a window
-launched on the owner's active workspace takes his focus, and his next
-keystrokes land in your throwaway app — launch it on a special workspace
-or refuse to type unless your window is the active one; and this
-Hyprland's `hyprctl dispatch` takes Lua, not the old strings —
-`hyprctl dispatch 'hl.dispatch(hl.dsp.focus({window="address:0x…"}))'`,
-`hl.dsp.exec_cmd("[workspace special:x silent] cmd")` — and the old
-syntax fails silently when its output is discarded.
+### Driving the window itself
+
+`bin/headless-window` is the whole of it. It starts a second compositor
+with no monitor behind it and runs the window in there, so the keyboard,
+the pointer and the screenshot all work and the owner's screen never
+changes:
+
+```
+eval "$(bin/headless-window start)"   # exports OMACHARTS_WINDOW
+bin/headless-window app               # launches the built binary, prints its pid
+bin/headless-window key ctrl+b        # chords and named keys
+bin/headless-window click 753 24      # a real press and release
+bin/headless-window drag 900 400 400 400
+bin/headless-window scroll 640 400 -6
+bin/headless-window shot /tmp/after.png
+bin/headless-window cli chart list    # the CLI, against that same window
+bin/headless-window tree              # where things are, as JSON
+bin/headless-window stop              # kills what it started, by pid
+```
+
+Do not launch the app on the owner's session any more, and do not reach
+for `GDK_BACKEND=x11`, `xdotool` or a special workspace. The X11 path has
+three problems that are not worth working around: XWayland gives the
+window no HiDPI scaling, so the screenshot is not what a user sees;
+`xdotool key --window` never arrives at an unfocused GTK4 app; and a
+window that does take focus takes the owner's keystrokes with it.
+
+What it needs from the machine: `sway` (`sudo pacman -S sway` — the only
+thing likely to be missing), plus `wtype`, `grim`, `dbus-daemon` and
+`python3`, all of which are already here. No root, no `uinput`, no seat of
+its own, nothing written outside `$XDG_RUNTIME_DIR/omacharts-window.<pid>`.
+`ydotool` is the wrong tool here twice over: it wants a `uinput` device,
+which is privileged, and it injects into the compositor holding the real
+devices — the owner's.
+
+Things to know before trusting what you see:
+
+- **Coordinates are layout coordinates, not screenshot pixels.** The output
+  is 2560×1440 at scale 2, so the layout is 1280×720 and a target measured
+  on a screenshot is halved before it is clicked. `tree` reports the same
+  coordinates the pointer takes.
+- **Read the result, do not assume it.** Every claim is a screenshot taken
+  afterwards and compared, not a command that exited 0. `compare -metric AE
+  before.png after.png null:` is enough to say whether anything moved.
+- **The first chord a fresh window is sent is swallowed.** Nothing sent
+  beforehand prevents it — a bound accelerator spent on purpose does not
+  take its place — so the first `key ctrl+…` after `app` is sent, checked
+  against a screenshot, and sent again. Everything after it lands: ten
+  consecutive `ctrl+b` toggles, ten rails.
+- **A modal dialog eats the chords** it is meant to eat, so a run that
+  leaves one open makes everything afterwards look broken. `key Escape`
+  first if you are not sure.
+- **Only the keyboard and the pointer.** There is no touch, no tablet and
+  no clipboard owner in there, and `swaymsg seat ... cursor` is not the way
+  to drive the pointer: it refuses to deliver motion while a button is
+  held, so a drag through it does nothing at all. The `drag` verb goes
+  through the virtual-pointer protocol, which does.
 
 ## Ask whether the app already does it
 

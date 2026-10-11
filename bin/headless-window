@@ -1,0 +1,299 @@
+#!/usr/bin/env bash
+# A window an agent can drive, on a screen nobody is looking at.
+#
+# Reviewing a change that shows up in the window means pressing the key,
+# dragging the thing and reading the pixels, and on a one-monitor desktop
+# there was nowhere to do that: a test window either took the screen or sat
+# unfocused, where synthetic input never arrives. This starts a second
+# compositor with no monitor behind it — sway on its headless backend — and
+# everything happens inside that. The owner's session never learns about it.
+#
+#   eval "$(bin/headless-window start)"
+#   bin/headless-window app
+#   bin/headless-window key ctrl+b
+#   bin/headless-window click 753 24
+#   bin/headless-window shot /tmp/after.png
+#   bin/headless-window stop
+#
+# Coordinates are the layout's own, the ones `headless-window tree` reports,
+# which at the default scale of 2 is half of what a screenshot measures.
+set -euo pipefail
+
+self="$(readlink -f "${BASH_SOURCE[0]}")"
+here="$(dirname "$self")"
+root="$(cd "$here/.." && pwd)"
+runtime="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+die() { echo "headless-window: $*" >&2; exit 1; }
+
+usage() {
+  cat <<'EOF'
+headless-window — drive omacharts inside a compositor with no screen
+
+  start [--size WxH] [--scale N]   start it; prints the line to eval
+  stop                             kill what this started, by pid
+  app [ARG...]                     launch the built binary inside; prints its pid
+  cli ARG...                       run a command against that same window
+  run CMD [ARG...]                 run anything inside the session
+  key CHORD...                     ctrl+b, Escape, question, ctrl+shift+s
+  type TEXT                        type literal text
+  move X Y                         move the pointer, pressing nothing
+  click X Y                        press and release where it lands
+  drag X1 Y1 X2 Y2                 press, move and release as one gesture
+  scroll X Y STEPS                 wheel notches; negative scrolls up
+  shot FILE                        screenshot the headless output
+  tree                             the window tree, as JSON
+
+Coordinates are layout coordinates — what `tree` reports, half of what a
+screenshot measures at the default scale of 2.
+EOF
+}
+
+# What this needs from the machine, and nothing more: no root, no uinput, no
+# seat of its own. Only sway is likely to be missing; the rest is already
+# here for other reasons.
+require() {
+  local missing=()
+  command -v sway >/dev/null || missing+=("sway (pacman -S sway)")
+  command -v swaymsg >/dev/null || missing+=("swaymsg (pacman -S sway)")
+  command -v wtype >/dev/null || missing+=("wtype (pacman -S wtype)")
+  command -v grim >/dev/null || missing+=("grim (pacman -S grim)")
+  command -v dbus-daemon >/dev/null || missing+=("dbus-daemon (pacman -S dbus)")
+  command -v python3 >/dev/null || missing+=("python3")
+  [ ${#missing[@]} -eq 0 ] || die "missing: ${missing[*]}"
+}
+
+session() {
+  if [ -n "${OMACHARTS_WINDOW:-}" ]; then
+    [ -d "$OMACHARTS_WINDOW" ] || die "OMACHARTS_WINDOW names no session: $OMACHARTS_WINDOW"
+    echo "$OMACHARTS_WINDOW"
+    return
+  fi
+  local found=() dir
+  for dir in "$runtime"/omacharts-window.*; do
+    [ -d "$dir" ] && found+=("$dir")
+  done
+  case ${#found[@]} in
+    1) echo "${found[0]}" ;;
+    0) die "no session; start one with: eval \"\$(bin/headless-window start)\"" ;;
+    *) die "several sessions; say which with OMACHARTS_WINDOW=..." ;;
+  esac
+}
+
+# Everything inside the session answers to its own runtime directory, which
+# is what makes swaymsg, grim and wtype find this compositor rather than the
+# owner's, and what keeps a command handed to the app from being forwarded
+# to the window he is looking at.
+load_env() {
+  unset WAYLAND_DISPLAY DISPLAY HYPRLAND_INSTANCE_SIGNATURE SWAYSOCK
+  set -a
+  # shellcheck disable=SC1091
+  . "$1/env"
+  set +a
+}
+
+inside() { load_env "$(session)"; exec "$@"; }
+
+# Killing somebody else's process is the one unrecoverable mistake here, so
+# nothing is ever matched by name: each pid is written down as it starts,
+# beside what the kernel should be calling it, and a pid that has come to be
+# something else in the meantime is left alone.
+remember() { printf '%s %s\n' "$1" "$2" >> "$(session)/pids"; }
+
+main() {
+  local verb="${1:-}"; shift || true
+  case "$verb" in
+    start) start "$@" ;;
+    stop) stop ;;
+    app) app "$@" ;;
+    cli) inside "$(binary)" "$@" ;;
+    run) inside "$@" ;;
+    key) keys "$@" ;;
+    type) inside wtype -- "$@" ;;
+    move|click|drag|scroll) inside "$here/virtual-pointer" "$verb" "$@" ;;
+    shot) inside grim -o HEADLESS-1 "$1" ;;
+    tree) inside swaymsg -t get_tree ;;
+    ""|-h|--help|help) usage ;;
+    *) usage >&2; exit 2 ;;
+  esac
+}
+
+start() {
+  local size=2560x1440 scale=2
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --size) size="$2"; shift 2 ;;
+      --scale) scale="$2"; shift 2 ;;
+      *) die "start: unknown option $1" ;;
+    esac
+  done
+  require
+
+  local dir="$runtime/omacharts-window.$$"
+  mkdir -p "$dir/data"
+  chmod 700 "$dir"
+  : > "$dir/pids"
+  export OMACHARTS_WINDOW="$dir"
+
+  cat > "$dir/sway.conf" <<EOF
+output HEADLESS-1 resolution $size scale $scale
+default_border none
+default_floating_border none
+focus_follows_mouse no
+EOF
+
+  # Unsetting WAYLAND_DISPLAY is what makes this headless rather than a
+  # window on the owner's screen. wlroots takes the first backend it can
+  # open, and with no display to nest inside and no seat to take — his
+  # compositor already holds this login session's device control — the one
+  # left is the headless one, which has no output on any monitor at all.
+  (
+    unset WAYLAND_DISPLAY DISPLAY HYPRLAND_INSTANCE_SIGNATURE SWAYSOCK
+    export XDG_RUNTIME_DIR="$dir"
+    export WLR_BACKENDS=headless WLR_HEADLESS_OUTPUTS=1 WLR_RENDERER=gles2
+    exec sway -c "$dir/sway.conf"
+  ) > "$dir/sway.log" 2>&1 < /dev/null &
+  remember $! sway
+
+  local socket="" found _
+  for _ in $(seq 1 100); do
+    for found in "$dir"/sway-ipc.*.sock; do
+      [ -S "$found" ] && socket="$found"
+    done
+    [ -n "$socket" ] && break
+    sleep 0.1
+  done
+  [ -n "$socket" ] || { sed -n '$p' "$dir/sway.log" >&2; die "sway did not start; see $dir/sway.log"; }
+
+  # Its own bus, not just its own profile. A command is handed to whatever
+  # owns the application id on the session bus, so a test run that keeps the
+  # owner's bus reaches the window he is looking at however disposable its
+  # data directory is.
+  # Through two files rather than a pipe: the daemon closes each descriptor
+  # as soon as it has written to it, so the address and the pid cannot share
+  # one, and anything of this process's that it keeps open is something
+  # `$(headless-window start)` then waits on for ever.
+  dbus-daemon --session --print-address=3 --print-pid=4 --fork \
+    3>"$dir/bus-address" 4>"$dir/bus-pid" >/dev/null 2>&1 </dev/null
+
+  cat > "$dir/env" <<EOF
+XDG_RUNTIME_DIR=$dir
+WAYLAND_DISPLAY=wayland-1
+SWAYSOCK=$socket
+DBUS_SESSION_BUS_ADDRESS=$(cat "$dir/bus-address")
+XDG_DATA_HOME=$dir/data
+GDK_BACKEND=wayland
+GTK_A11Y=none
+EOF
+  remember "$(cat "$dir/bus-pid")" dbus-daemon
+
+  local layout
+  layout="$(OMACHARTS_WINDOW="$dir" "$self" tree | python3 -c '
+import json, sys
+for output in json.load(sys.stdin)["nodes"]:
+    if output["name"] == "HEADLESS-1":
+        print("%dx%d" % (output["rect"]["width"], output["rect"]["height"]))')"
+  echo "VIRTUAL_POINTER_EXTENT=$layout" >> "$dir/env"
+
+  # Two input devices nothing is ever sent through. A seat with no keyboard
+  # and no pointer says so, and a client that has been told there is no
+  # pointer never binds one — so the first gesture after a device appears
+  # is delivered to nobody at all. Held for the whole run, the seat never
+  # goes back to having none, and a click lands the first time it is sent.
+  ( load_env "$dir"; hold_keyboard ) > "$dir/keyboard.log" 2>&1 < /dev/null &
+  remember $! bash
+  ( load_env "$dir"; exec "$here/virtual-pointer" hold ) > "$dir/pointer.log" 2>&1 < /dev/null &
+  # python3, not virtual-pointer: a script run through its shebang is called
+  # after the interpreter that is actually executing.
+  remember $! python3
+  sleep 0.5
+
+  echo "export OMACHARTS_WINDOW=$dir"
+}
+
+# wtype keeps its virtual keyboard only while it runs, and its longest sleep
+# is about half an hour, so the device is held by sleeping in a loop. The
+# sleep is the whole job: with no key named, it types nothing on the way out.
+hold_keyboard() {
+  local child=
+  trap '[ -n "$child" ] && kill "$child" 2>/dev/null; exit 0' TERM INT EXIT
+  while :; do
+    wtype -s 2000000 & child=$!
+    wait "$child" || exit 0
+  done
+}
+
+stop() {
+  local dir pid expected actual
+  dir="$(session)"
+  [ -f "$dir/pids" ] || die "nothing recorded in $dir"
+  # In reverse, so the devices go before the compositor they hang off.
+  while read -r pid expected; do
+    actual="$(cat "/proc/$pid/comm" 2>/dev/null || true)"
+    [ -n "$actual" ] || continue
+    if [ "$actual" != "$expected" ]; then
+      echo "headless-window: $pid is $actual now, not $expected; left alone" >&2
+      continue
+    fi
+    kill "$pid" 2>/dev/null || true
+  done < <(tac "$dir/pids")
+  sleep 0.3
+  rm -rf "$dir"
+}
+
+binary() {
+  if [ -n "${OMACHARTS_BIN:-}" ]; then echo "$OMACHARTS_BIN"; return; fi
+  local target="${CARGO_TARGET_DIR:-$root/target}" build
+  for build in debug release; do
+    [ -x "$target/$build/omacharts" ] && { echo "$target/$build/omacharts"; return; }
+  done
+  die "nothing built under $target; cargo build first, or set OMACHARTS_BIN"
+}
+
+app() {
+  local dir; dir="$(session)"
+  local bin; bin="$(binary)"
+  ( load_env "$dir"; exec "$bin" "$@" ) > "$dir/app.log" 2>&1 < /dev/null &
+  local pid=$!
+  remember "$pid" omacharts
+
+  local _
+  for _ in $(seq 1 200); do
+    [ -d "/proc/$pid" ] || die "it exited; see $dir/app.log"
+    OMACHARTS_WINDOW="$dir" "$self" tree | grep -q '"app_id": *"[^"]' && break
+    sleep 0.1
+  done
+
+  # This returns as soon as the window is mapped, which is before the
+  # charts are drawn and well before the first chord will land: the first
+  # one a fresh window is sent goes nowhere at all, and spending a bound
+  # accelerator or three on it beforehand does not change that. So send the
+  # key, look at a screenshot, and send it again if nothing moved — which
+  # is what reading the result rather than the exit status means anyway.
+  echo "$pid"
+}
+
+# Every run of wtype brings a keyboard of its own, with a keymap of its own,
+# and the chord has to wait for the far end to have read it: sent straight
+# away it arrives as the bare letter, which in this app opens the symbol
+# search instead of toggling the rail. Hence the pause before the first key
+# and another between the modifier and what it modifies. They cost a third
+# of a second and they are the difference between a key that lands and one
+# that lands four times out of five.
+keys() {
+  local dir; dir="$(session)"
+  local args=(-s 300) chord parts=() key mod
+  for chord in "$@"; do
+    IFS=+ read -ra parts <<< "$chord"
+    key="${parts[-1]}"
+    unset 'parts[-1]'
+    for mod in "${parts[@]}"; do args+=(-M "$mod"); done
+    [ ${#parts[@]} -gt 0 ] && args+=(-s 120)
+    args+=(-k "$key" -s 120)
+    for mod in "${parts[@]}"; do args+=(-m "$mod"); done
+  done
+  load_env "$dir"
+  exec wtype "${args[@]}"
+}
+
+main "$@"

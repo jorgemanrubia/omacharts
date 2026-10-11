@@ -1,0 +1,297 @@
+#!/usr/bin/env python3
+"""Drive a pointer on a Wayland compositor that has no mouse attached.
+
+A nested compositor running on a headless backend starts with no input
+devices at all, so its seat advertises no pointer and every client ignores
+the cursor. `zwlr_virtual_pointer_v1` is how one is added from outside, and
+this speaks that protocol directly over the Wayland socket — some two hundred
+lines of struct packing against a dependency nobody has to install, where the
+alternative was a package from the AUR or a second language in the build.
+
+Two modes, and both are needed:
+
+`hold` creates a pointer and keeps it, doing nothing else. It is what gives
+the seat its pointer capability, which is what makes the client bind
+`wl_pointer` in the first place. A gesture sent to a seat that has no pointer
+yet is simply lost: the device appears, the client is still learning about it,
+and the events are gone before anything is listening.
+
+Every other mode is one gesture inside one connection, sent through a second,
+short-lived pointer. Holding the button down across two processes is not
+possible — the press dies with the device — so a drag has to be a press, the
+motion and the release in a single run, which is also the only way the
+compositor sees it as the one gesture a hand would make.
+
+Coordinates are the compositor's own layout coordinates, the ones
+`swaymsg -t get_tree` reports, so a target read off the window tree can be
+clicked without converting anything. `--extent` says how large that layout is,
+because the protocol carries a fraction of the screen rather than a position
+on it.
+"""
+
+import argparse
+import os
+import socket
+import struct
+import sys
+import time
+
+WL_DISPLAY = 1
+WL_DISPLAY_SYNC = 0
+WL_DISPLAY_GET_REGISTRY = 1
+WL_REGISTRY_BIND = 0
+MANAGER = b"zwlr_virtual_pointer_manager_v1"
+
+# zwlr_virtual_pointer_v1 requests, in the order the protocol declares them.
+MOTION_ABSOLUTE = 1
+BUTTON = 2
+AXIS = 3
+FRAME = 4
+AXIS_SOURCE = 5
+AXIS_DISCRETE = 7
+
+# From linux/input-event-codes.h, which is what the protocol carries.
+BUTTONS = {"left": 0x110, "right": 0x111, "middle": 0x112}
+AXIS_VERTICAL = 0
+AXIS_SOURCE_WHEEL = 0
+
+# One wheel notch, in the units a pointer reports it with.
+WHEEL_STEP = 15.0
+
+
+class Wayland:
+    """The little of the Wayland wire protocol this needs, and no more."""
+
+    def __init__(self, path):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.connect(path)
+        self.incoming = b""
+        self.last_id = WL_DISPLAY
+
+    def new_id(self):
+        self.last_id += 1
+        return self.last_id
+
+    def request(self, obj, opcode, payload=b""):
+        size = 8 + len(payload)
+        self.sock.sendall(struct.pack("=II", obj, (size << 16) | opcode) + payload)
+
+    def event(self):
+        while len(self.incoming) < 8:
+            self._read()
+        obj, word = struct.unpack("=II", self.incoming[:8])
+        size, opcode = word >> 16, word & 0xFFFF
+        while len(self.incoming) < size:
+            self._read()
+        body, self.incoming = self.incoming[8:size], self.incoming[size:]
+        if obj == WL_DISPLAY and opcode == 0:
+            sys.exit(f"virtual-pointer: the compositor refused us: {body!r}")
+        return obj, opcode, body
+
+    def _read(self):
+        chunk = self.sock.recv(4096)
+        if not chunk:
+            sys.exit("virtual-pointer: the compositor closed the connection")
+        self.incoming += chunk
+
+    def roundtrip(self):
+        """Wait until the compositor has processed everything sent so far.
+
+        Without this the process can exit — destroying the pointer with it —
+        while the events it just sent are still in the socket.
+        """
+        callback = self.new_id()
+        self.request(WL_DISPLAY, WL_DISPLAY_SYNC, struct.pack("=I", callback))
+        while True:
+            obj, opcode, _ = self.event()
+            if obj == callback and opcode == 0:
+                return
+
+
+def wl_string(value):
+    padded = value + b"\0"
+    padded += b"\0" * (-len(padded) % 4)
+    return struct.pack("=I", len(value) + 1) + padded
+
+
+def read_string(body, offset):
+    (length,) = struct.unpack_from("=I", body, offset)
+    start = offset + 4
+    return body[start : start + length - 1], start + length + (-length % 4)
+
+
+def fixed(value):
+    """A Wayland `fixed`: 24.8 signed fixed point."""
+    return int(round(value * 256))
+
+
+def create_pointer():
+    """Connect, bind the manager, and return the connection and a pointer."""
+    runtime = os.environ.get("XDG_RUNTIME_DIR", "")
+    display = os.environ.get("WAYLAND_DISPLAY", "wayland-0")
+    path = display if display.startswith("/") else os.path.join(runtime, display)
+    try:
+        conn = Wayland(path)
+    except OSError as error:
+        sys.exit(f"virtual-pointer: cannot reach {path}: {error}")
+
+    registry = conn.new_id()
+    conn.request(WL_DISPLAY, WL_DISPLAY_GET_REGISTRY, struct.pack("=I", registry))
+    done = conn.new_id()
+    conn.request(WL_DISPLAY, WL_DISPLAY_SYNC, struct.pack("=I", done))
+
+    name = version = None
+    while True:
+        obj, opcode, body = conn.event()
+        if obj == registry and opcode == 0:
+            (global_name,) = struct.unpack_from("=I", body, 0)
+            interface, offset = read_string(body, 4)
+            (global_version,) = struct.unpack_from("=I", body, offset)
+            if interface == MANAGER:
+                name, version = global_name, global_version
+        elif obj == done and opcode == 0:
+            break
+
+    if name is None:
+        sys.exit("virtual-pointer: this compositor has no zwlr_virtual_pointer_manager_v1")
+
+    manager = conn.new_id()
+    conn.request(
+        registry,
+        WL_REGISTRY_BIND,
+        struct.pack("=I", name) + wl_string(MANAGER) + struct.pack("=II", version, manager),
+    )
+    pointer = conn.new_id()
+    # A null seat means the only seat there is, which is all a nested
+    # compositor ever has.
+    conn.request(manager, 0, struct.pack("=II", 0, pointer))
+    return conn, pointer
+
+
+class Pointer:
+    def __init__(self, conn, pointer, extent):
+        self.conn = conn
+        self.pointer = pointer
+        self.width, self.height = extent
+        self.started = time.monotonic()
+
+    def _now(self):
+        return int((time.monotonic() - self.started) * 1000) & 0xFFFFFFFF
+
+    def _frame(self):
+        self.conn.request(self.pointer, FRAME)
+        self.conn.roundtrip()
+
+    def move(self, x, y):
+        self.conn.request(
+            self.pointer,
+            MOTION_ABSOLUTE,
+            struct.pack("=IIIII", self._now(), int(x), int(y), self.width, self.height),
+        )
+        self._frame()
+
+    def button(self, name, pressed):
+        self.conn.request(
+            self.pointer,
+            BUTTON,
+            struct.pack("=III", self._now(), BUTTONS[name], 1 if pressed else 0),
+        )
+        self._frame()
+
+    def wheel(self, steps):
+        self.conn.request(self.pointer, AXIS_SOURCE, struct.pack("=I", AXIS_SOURCE_WHEEL))
+        self.conn.request(
+            self.pointer,
+            AXIS_DISCRETE,
+            struct.pack("=IIii", self._now(), AXIS_VERTICAL, fixed(steps * WHEEL_STEP), steps),
+        )
+        self.conn.request(
+            self.pointer,
+            AXIS,
+            struct.pack("=IIi", self._now(), AXIS_VERTICAL, fixed(steps * WHEEL_STEP)),
+        )
+        self._frame()
+
+
+def extent(text):
+    try:
+        width, height = text.lower().split("x")
+        return int(width), int(height)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected WIDTHxHEIGHT, got {text!r}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--extent",
+        type=extent,
+        default=extent(os.environ.get("VIRTUAL_POINTER_EXTENT", "1920x1080")),
+        help="the size of the compositor's layout, as WIDTHxHEIGHT",
+    )
+    parser.add_argument("--button", default="left", choices=sorted(BUTTONS))
+    # A gesture that arrives all at once is not one a widget recognises: GTK
+    # reads a drag as a press, a run of motion and a release, and a press and
+    # a release in the same millisecond is a click wherever it ends up.
+    parser.add_argument("--pause", type=float, default=0.06, help="seconds between steps")
+    parser.add_argument("--steps", type=int, default=24, help="motion events in a drag")
+    sub = parser.add_subparsers(dest="verb", required=True)
+    sub.add_parser("hold", help="keep a pointer on the seat until killed")
+    for verb in ("move", "click"):
+        one = sub.add_parser(verb)
+        one.add_argument("x", type=int)
+        one.add_argument("y", type=int)
+    drag = sub.add_parser("drag")
+    for name in ("x1", "y1", "x2", "y2"):
+        drag.add_argument(name, type=int)
+    scroll = sub.add_parser("scroll", help="notches, negative scrolls up")
+    scroll.add_argument("x", type=int)
+    scroll.add_argument("y", type=int)
+    scroll.add_argument("steps", type=int)
+    args = parser.parse_args()
+
+    conn, pointer = create_pointer()
+    hand = Pointer(conn, pointer, args.extent)
+    conn.roundtrip()
+
+    if args.verb == "hold":
+        print("holding a pointer on the seat", flush=True)
+        while True:
+            conn.event()
+
+    if args.verb == "move":
+        hand.move(args.x, args.y)
+    elif args.verb == "click":
+        hand.move(args.x, args.y)
+        time.sleep(args.pause)
+        hand.button(args.button, True)
+        time.sleep(args.pause)
+        hand.button(args.button, False)
+    elif args.verb == "drag":
+        hand.move(args.x1, args.y1)
+        time.sleep(args.pause)
+        hand.button(args.button, True)
+        time.sleep(args.pause)
+        for step in range(1, args.steps + 1):
+            fraction = step / args.steps
+            hand.move(
+                args.x1 + (args.x2 - args.x1) * fraction,
+                args.y1 + (args.y2 - args.y1) * fraction,
+            )
+            time.sleep(args.pause / 3)
+        time.sleep(args.pause)
+        hand.button(args.button, False)
+    elif args.verb == "scroll":
+        hand.move(args.x, args.y)
+        time.sleep(args.pause)
+        for _ in range(abs(args.steps)):
+            hand.wheel(1 if args.steps > 0 else -1)
+            time.sleep(args.pause)
+
+    # The gesture is only real once the compositor has it: this process is
+    # about to take the pointer down with it.
+    conn.roundtrip()
+
+
+if __name__ == "__main__":
+    main()
