@@ -3,3 +3,5 @@
 *.db-wal
 *.db-shm
 /.claude/worktrees
+/AppDir
+/*.AppImage
