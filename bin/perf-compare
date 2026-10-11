@@ -1,0 +1,222 @@
+#!/usr/bin/env bash
+# Put this branch's performance numbers beside another revision's.
+#
+#   bin/perf-compare                      # against the merge base with origin/main
+#   bin/perf-compare <ref>
+#
+# Why a comparison at all, rather than numbers checked against a table of
+# thresholds kept in the repository: a GitHub runner is a slice of a shared
+# machine, and the same work measured on two of them differs by more than most
+# real regressions do. A stored threshold is therefore a threshold for one
+# runner generation, and the day the fleet changes every pull request starts
+# arguing with the ghost of a machine nobody has. Measuring both revisions in
+# the same job, on the same core, minutes apart, takes the machine out of the
+# comparison — which is the only version of this that is worth reading.
+#
+# Three things make the signal trustworthy, and they are worth saying
+# separately because only one of them is about the clock:
+#
+#   The allocation counts are exact. For a deterministic workload they come
+#   out identical on every machine and every run, so a change in one is a
+#   change in the code. They are what this exits non-zero on. They also catch
+#   the shapes that make this app slow and that a wall-clock number hides in
+#   the noise: an allocation inside a per-bar loop, a map rebuilt in a draw
+#   callback, a vector collected per frame where per redraw would do.
+#
+#   The clock is the cheapest run, not the mean. Another tenant on the core
+#   can only make a sample slower, so the minimum over a few hundred runs
+#   converges on what the work costs while the mean converges on how busy the
+#   machine was. Measured locally under load, the minimum drifts by about 4%
+#   between runs where the mean drifts by 8%.
+#
+#   The clock still only fails the build at a doubling. A check that cries
+#   wolf is ignored inside a week, and one sample of runner noise and one
+#   sample of a small regression are the same number — so the clock is
+#   reported for a person to read, rows that moved more than noise explains
+#   are called out without failing anything, and only a catastrophe is
+#   automatic. The deterministic half is what holds the line.
+#
+# Three other ways of doing this, and why they lose:
+#
+#   Instruction counts under callgrind would be the best number of the lot —
+#   deterministic like the allocation counts and sensitive to work the
+#   allocator never sees. It loses on proportion: valgrind in CI, a
+#   subprocess and an output parser per scenario, and a fifty-fold slowdown
+#   that forces the iteration count so low that first-touch costs start to
+#   dominate. Worth revisiting if the allocation counts turn out to miss
+#   something real.
+#
+#   Hardware counters through `perf` would give the same for less, and are not
+#   available: the runners are virtual machines with no PMU to read.
+#
+#   Running the whole table N times and comparing the means multiplies the CI
+#   bill by N for a signal the minimum already gives for free.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+# The two files the harness lives in, copied onto the older revision before it
+# is built. The harness has to be the same on both sides or the comparison is
+# between two harnesses; the code being measured — the drawing, the store, the
+# indicators, the index — is the revision's own. Which is also why the harness
+# is kept to these two files and why neither of them is in the draw path.
+harness=(examples/perf.rs src/ui/chart/bench.rs)
+
+# What counts as a regression. The allocation thresholds have a floor as well
+# as a percentage because 5% of nine allocations is rounding, and a row that
+# allocates nine times is not where a problem is going to be.
+#
+# `time_pct` is the one number here chosen for the runner rather than for the
+# code, and it is deliberately far out of the noise's reach, so that a red perf
+# check always means something. Measured on ubuntu-latest with both sides the
+# same code, the clock moved between -8.8% and +2.4%, and the frame rows — the
+# ones that matter most — stayed inside ±1.2%. A doubling has ten times that
+# margin. It can come down to something like 30% once a few dozen runs on real
+# pull requests confirm the floor; until then `watch_pct` says in the output
+# which rows moved more than noise explains, without failing anything.
+alloc_pct=5
+alloc_floor=8
+byte_pct=5
+byte_floor=4096
+time_pct=100
+watch_pct=15
+
+base="${1:-}"
+if [[ -z "$base" ]]; then
+  for ref in origin/main main; do
+    if git rev-parse --verify --quiet "$ref" >/dev/null; then
+      base=$(git merge-base HEAD "$ref")
+      break
+    fi
+  done
+fi
+if [[ -z "$base" ]]; then
+  echo "perf-compare: no revision to compare against, and neither origin/main nor main is here" >&2
+  echo "usage: bin/perf-compare <ref>" >&2
+  exit 2
+fi
+base=$(git rev-parse --verify "$base^{commit}")
+
+work=$(mktemp -d)
+tree="$work/base"
+cleanup() {
+  git worktree remove --force "$tree" 2>/dev/null || true
+  rm -rf "$work"
+}
+trap cleanup EXIT
+
+# A target directory each, which is not an optimisation but a correctness
+# requirement. Cargo's artifact and fingerprint names do not carry the source
+# path, and the paths in its dep-info are relative — so two source trees
+# sharing one target directory are the same tree as far as it can tell, and
+# they will share its binary. The second build is reported "fresh", the binary
+# left behind is the first revision's, and the comparison comes out as two
+# identical columns of entirely plausible numbers. Which is the worst way for
+# this to fail, because it looks exactly like a pass. One directory per side
+# costs a dependency build each and cannot do that.
+targets="${PERF_TARGETS:-$PWD/target/perf}"
+
+# Which binary cargo built, asked of cargo rather than assumed, so that a build
+# which produced nothing is an error here instead of an older binary's numbers.
+run_at() {
+  local where="$1" into="$2" out="$3" binary
+  binary=$(
+    cd "$where" &&
+      CARGO_TARGET_DIR="$into" cargo build --release --example perf \
+        --message-format=json-render-diagnostics |
+      sed -n 's/.*"executable":"\([^"]*\)".*/\1/p' | tail -1
+  )
+  if [[ ! -x "$binary" ]]; then
+    echo "perf-compare: cargo built no runnable example in $where" >&2
+    return 1
+  fi
+  "$binary" --tsv > "$out"
+}
+
+echo "comparing $(git rev-parse --short HEAD) against $(git rev-parse --short "$base")" >&2
+
+git worktree add --detach "$tree" "$base" >&2
+for file in "${harness[@]}"; do
+  cp "$file" "$tree/$file"
+done
+if ! run_at "$tree" "$targets/base" "$work/base.tsv"; then
+  cat <<EOF
+$(git rev-parse --short "$base") could not be built with this branch's benchmark, so there is
+nothing to compare against. That happens when the branch changes something the
+harness reaches for — a field on the chart's state, a signature in the engine —
+and it is not by itself a regression. Read the numbers below by hand.
+
+EOF
+  run_at . "$targets/head" "$work/head.tsv"
+  column -s $'\t' -t "$work/head.tsv"
+  exit 0
+fi
+run_at . "$targets/head" "$work/head.tsv"
+
+awk -F'\t' -v alloc_pct="$alloc_pct" -v alloc_floor="$alloc_floor" \
+    -v byte_pct="$byte_pct" -v byte_floor="$byte_floor" -v time_pct="$time_pct" \
+    -v watch_pct="$watch_pct" \
+    -v base="$(git rev-parse --short "$base")" -v head="$(git rev-parse --short HEAD)" '
+function took(ns) {
+  if (ns < 10000) return sprintf("%d ns", ns)
+  if (ns < 10000000) return sprintf("%.1f us", ns / 1000)
+  return sprintf("%.2f ms", ns / 1000000)
+}
+function delta(was, now) {
+  if (was == 0) return now == 0 ? "   --" : "   new"
+  return sprintf("%+.1f%%", (now - was) / was * 100)
+}
+# Worse by more than the percentage *and* by more than the floor.
+function worse(was, now, pct, floor) {
+  return now - was > floor && was > 0 && (now - was) / was * 100 > pct
+}
+NR == FNR {
+  key = $1 "\t" $2
+  was_ns[key] = $3; was_allocs[key] = $4; was_bytes[key] = $5
+  next
+}
+FNR == 1 {
+  printf "%-9s  %-38s  %10s  %10s  %7s  %8s  %7s  %10s  %7s\n",
+    "area", "scenario", base, head, "delta", "allocs", "delta", "bytes", "delta"
+}
+{
+  key = $1 "\t" $2
+  printf "%-9s  %-38s  %10s  %10s  %7s  %8d  %7s  %10d  %7s\n",
+    $1, $2, took(was_ns[key]), took($3), delta(was_ns[key], $3),
+    $4, delta(was_allocs[key], $4), $5, delta(was_bytes[key], $5)
+
+  if (!(key in was_ns)) { new_rows = new_rows sprintf("  %s / %s is new, so there is nothing to compare it with\n", $1, $2); next }
+  if (worse(was_allocs[key], $4, alloc_pct, alloc_floor))
+    bad = bad sprintf("  %s / %s allocates %d times, was %d (%s)\n", $1, $2, $4, was_allocs[key], delta(was_allocs[key], $4))
+  if (worse(was_bytes[key], $5, byte_pct, byte_floor))
+    bad = bad sprintf("  %s / %s allocates %d bytes, was %d (%s)\n", $1, $2, $5, was_bytes[key], delta(was_bytes[key], $5))
+  if (worse(was_ns[key], $3, time_pct, 0))
+    bad = bad sprintf("  %s / %s takes %s, was %s (%s)\n", $1, $2, took($3), took(was_ns[key]), delta(was_ns[key], $3))
+  else if (worse(was_ns[key], $3, watch_pct, 0))
+    look = look sprintf("  %s / %s takes %s, was %s (%s)\n", $1, $2, took($3), took(was_ns[key]), delta(was_ns[key], $3))
+}
+END {
+  print ""
+  if (new_rows != "") printf "%s\n", new_rows
+  if (look != "")
+    printf "More than runner noise usually accounts for, not enough to fail:\n%s\n", look
+  if (bad == "") {
+    print "No regression: nothing allocates more than it did, and nothing takes twice as long."
+    exit 0
+  }
+  printf "Regressions against %s:\n%s\n", base, bad
+  print "The allocation counts are exact and the same on every machine, so a change in"
+  print "one is a change in the code. A time that moved and an allocation count that"
+  print "did not is usually the runner; read it, do not trust it."
+  exit 1
+}
+' "$work/base.tsv" "$work/head.tsv" || status=$?
+
+cat <<EOF
+
+  base $(git rev-parse --short "$base")   head $(git rev-parse --short HEAD)
+  Measured one after the other in the same process-pair on this machine. The
+  times are the cheapest run of each scenario; the allocation counts are exact.
+EOF
+
+exit "${status:-0}"
