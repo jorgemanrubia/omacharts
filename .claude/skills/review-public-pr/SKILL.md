@@ -191,13 +191,12 @@ window no HiDPI scaling, so the screenshot is not what a user sees;
 `xdotool key --window` never arrives at an unfocused GTK4 app; and a
 window that does take focus takes the owner's keystrokes with it.
 
-What it needs from the machine: `sway` (`sudo pacman -S sway` — the only
-thing likely to be missing), plus `wtype`, `grim`, `dbus-daemon` and
-`python3`, all of which are already here. No root, no `uinput`, no seat of
-its own, nothing written outside `$XDG_RUNTIME_DIR/omacharts-window.<pid>`.
-`ydotool` is the wrong tool here twice over: it wants a `uinput` device,
-which is privileged, and it injects into the compositor holding the real
-devices — the owner's.
+What it needs from the machine: `sway` (`sudo pacman -S sway`), plus
+`wtype`, `grim`, `dbus-daemon` and `python3`, all of which are already
+here. No root, no `uinput`, no seat of its own, nothing written outside
+`$XDG_RUNTIME_DIR/omacharts-window.<pid>`. `ydotool` is the wrong tool
+here twice over: it wants a `uinput` device, which is privileged, and it
+injects into the compositor holding the real devices — the owner's.
 
 Things to know before trusting what you see:
 
@@ -208,6 +207,23 @@ Things to know before trusting what you see:
 - **Read the result, do not assume it.** Every claim is a screenshot taken
   afterwards and compared, not a command that exited 0. `compare -metric AE
   before.png after.png null:` is enough to say whether anything moved.
+- **`shot` is a real frame, and the stale-pixmap trap does not apply to
+  it.** `import -window <id>` hands back a stale pixmap for a window on a
+  hidden workspace because nothing is compositing it, and the obvious guard
+  — capture twice, check the frames match — reports "settled" for exactly
+  the same reason; three captures in one review were stale that way and
+  nearly produced a wrong answer about a gridline fix. There is no X11
+  window here and the headless output is composited every frame, so `shot`
+  does not have that failure mode: a symbol changed through `cli` with
+  nothing touching the window showed up in the very next capture (44,129
+  pixels moved), and two captures of a window nobody had touched were
+  identical to the pixel. Which means "nothing moved" is a real answer
+  here, and can be read as one.
+- **`cli chart screenshot --output` is still the one to reach for** when
+  what you want is what the chart drew rather than what the screen shows:
+  it renders inside the app, at the chart's own size, with no compositor
+  and no window chrome in the way. Use `shot` for the window — the rail,
+  the strip, a dialog, anything outside one chart.
 - **The first chord a fresh window is sent is swallowed.** Nothing sent
   beforehand prevents it — a bound accelerator spent on purpose does not
   take its place — so the first `key ctrl+…` after `app` is sent, checked
@@ -221,7 +237,6 @@ Things to know before trusting what you see:
   to drive the pointer: it refuses to deliver motion while a button is
   held, so a drag through it does nothing at all. The `drag` verb goes
   through the virtual-pointer protocol, which does.
-
 ## Ask whether the app already does it
 
 The most useful question in this repo is usually "can you do that today?".
