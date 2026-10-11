@@ -10,7 +10,13 @@ things follow: nothing in the PR's own description counts as evidence until
 you have run it, and the diff gets read as something a stranger wrote, not as
 a favour you are obliged to accept.
 
-## Every review runs in a subagent
+## One PR, one subagent
+
+**Every request about a PR goes to its own subagent. Never two PRs in one
+agent, and never any of it on the main thread.** This is the owner's
+standing instruction and it holds for the small jobs too — closing a PR
+with thanks, posting a comment he dictated, pushing a one-line tweak. Not
+just the reviews.
 
 Never review on the main thread, not even a single small PR. The main
 thread stays free for the owner — it hands the PR to a subagent with this
@@ -26,6 +32,13 @@ mid-run and produced contradictory results. Asked to review several, run
 them in batches of three: three agents at once, the next three when those
 report. More than that and the builds starve each other and the reports
 arrive faster than anyone can read them.
+
+Resist batching PRs that look related — two declines from the same
+contributor, three PRs touching one file. An agent holding two PRs
+confuses their diffs, writes one contributor a comment about the other's
+change, and reports both so tangled the owner cannot act on either.
+Separate agents cost nothing; a crossed-over comment on a stranger's PR
+is posted from the owner's account and cannot be unsent.
 
 The owner's standing instructions travel with the hand-off: whether to
 merge when green, and that the review is done with simplifying in mind.

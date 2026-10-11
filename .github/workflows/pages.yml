@@ -1,0 +1,40 @@
+name: Pages
+
+# Pages' built-in source can only serve the repository root or `/docs`, and
+# the site is neither: it lives in `site/`, beside the rest of the project
+# rather than on top of it. Publishing through Actions is what buys that
+# choice. There is nothing to build — the directory is uploaded as it stands.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time, and a newer push waits rather than cancelling the
+# one in flight: a half-finished deploy is a site that is down.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -202,7 +202,14 @@ fn names_a_target(noun: &str, verb: &str, m: &clap::ArgMatches) -> bool {
         return true;
     }
     // Creating one invents its own target, and listing them all needs none.
+    // The drawing configurations are about every chart rather than one.
     matches!((noun, verb), ("chartbook", "create") | ("chartbook", "list"))
+        || (noun == "chart"
+            && verb == "drawing"
+            && matches!(
+                arg(m, "ACTION").map(String::as_str),
+                Some("configs" | "configure" | "reset-configs")
+            ))
 }
 
 fn help_for(path: Option<Vec<String>>) -> Outcome {
@@ -1232,6 +1239,7 @@ fn chart_verb(
         }
         "set" => return chart_set(store, m, as_json, workspace, at, pane),
         "indicator" => return chart_indicator(store, m, as_json, workspace, at, pane),
+        "drawing" => return chart_drawing(store, m, as_json, workspace, at, pane),
         _ => return Err(Fault::usage(format!("no such command: chart {verb}"))),
     };
 
@@ -1290,6 +1298,16 @@ fn chart_set(
         None => None,
         Some(text) => Some(link_group(text)?),
     };
+    let switch = |id: &str| -> Result<Option<bool>, Fault> {
+        match arg(m, id).map(String::as_str) {
+            None => Ok(None),
+            Some("on") => Ok(Some(true)),
+            Some("off") => Ok(Some(false)),
+            Some(other) => Err(Fault::usage(format!("--{id} is on or off, not {other:?}"))),
+        }
+    };
+    let shows_drawings = switch("show-drawings")?;
+    let sends_drawings = switch("send-drawings")?;
 
     // Which group it was in, read before anything is written: only an actual
     // change leads the group. Re-stating the group a chart is already in is
@@ -1328,6 +1346,18 @@ fn chart_set(
         chart["show_grid"] = json!(grid == "on");
         changed.push(format!("grid {grid}"));
     }
+    if let Some(shows) = shows_drawings {
+        chart["shows_drawings"] = json!(shows);
+        changed.push(format!("shows other charts' drawings {}", on_off(shows)));
+    }
+    if let Some(sends) = sends_drawings {
+        let was = chart["sends_drawings"].as_bool().unwrap_or(true);
+        chart["sends_drawings"] = json!(sends);
+        if was != sends {
+            move_this_chart_s_drawings(store, chart, sends);
+        }
+        changed.push(format!("sends drawings to other charts {}", on_off(sends)));
+    }
     if let Some(auto) = arg(m, "auto-scale") {
         chart["auto_scale"] = json!(auto == "on");
         changed.push(format!("auto-scale {auto}"));
@@ -1340,8 +1370,8 @@ fn chart_set(
 
     if changed.is_empty() {
         return Err(Fault::usage(
-            "nothing to change; pass --symbol, --resolution, --style, --session, --link, --grid \
-             or --auto-scale"
+            "nothing to change; pass --symbol, --resolution, --style, --session, --link, --grid, \
+             --auto-scale, --show-drawings or --send-drawings"
                 .into(),
         ));
     }
@@ -1528,6 +1558,840 @@ fn chart_indicator(
         workspace.name_of(at)
     );
     said(as_json, json!({"chart": pane, "message": where_at}), where_at)
+}
+
+/// What is drawn on a chart's symbol, from a terminal.
+///
+/// Drawings belong to the symbol rather than the chart, so the chart named
+/// here is mostly the way to say which symbol: a line added through `pos:0`
+/// showing AAPL is on every chart of AAPL that shares it, as one drawn by
+/// hand would be. The exception is a local drawing, which stays with the
+/// chart it was made on and is kept in the chart's own record. Anchors are a
+/// moment and a price, the way the chart stores them; a look is either a
+/// configuration number or properties given by hand, and colours are the
+/// nine presets or a hex.
+fn chart_drawing(
+    store: &Store,
+    m: &clap::ArgMatches,
+    as_json: bool,
+    workspace: &mut Workspace,
+    at: usize,
+    pane: u32,
+) -> Result<String, Fault> {
+    use omacharts_engine::drawings::{Drawing, Kind, Scope, CONFIGURATIONS};
+
+    let action = required(m, "ACTION")?.as_str();
+    let kind = match arg(m, "KIND") {
+        None => None,
+        Some(text) => Some(
+            Kind::from_key(text).ok_or_else(|| Fault::usage(format!("{text:?} is not line or rect")))?,
+        ),
+    };
+
+    // The configurations are about every chart, so they come before the
+    // chart is even looked at.
+    if let Some(answer) = configurations_verb(store, m, as_json, action, kind)? {
+        return Ok(answer);
+    }
+
+    let book = workspace.book(at)?.clone();
+    let chart = charts::panes(&book)
+        .iter()
+        .find(|p| p["id"].as_u64() == Some(pane as u64))
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let symbol = chart["symbol"].as_str().unwrap_or("").to_string();
+    let suffix = chart["suffix"].as_str().filter(|s| !s.is_empty()).map(str::to_string);
+    if symbol.is_empty() {
+        return Err(Fault::refused("that chart has no symbol to draw on".into()));
+    }
+    let shows = chart["shows_drawings"].as_bool().unwrap_or(true);
+    let sends = chart["sends_drawings"].as_bool().unwrap_or(true);
+    let configs = store.drawing_configurations();
+
+    // What this chart shows: the symbol's, when it is shown what other
+    // charts send, and its own either way.
+    let locals: Vec<Drawing> = chart["drawings"]
+        .as_array()
+        .map(|list| list.iter().filter_map(|d| serde_json::from_value(d.clone()).ok()).collect())
+        .unwrap_or_default();
+    let shown = |store: &Store, locals: &[Drawing]| -> Vec<Drawing> {
+        let mut all: Vec<Drawing> = match shows {
+            true => store.drawings(&symbol, suffix.as_deref()),
+            false => Vec::new(),
+        };
+        all.extend(locals.iter().cloned());
+        omacharts_engine::drawings::sort_for_painting(&mut all);
+        all
+    };
+
+    if action == "list" {
+        let listed = shown(store, &locals);
+        return match as_json {
+            true => Ok(format!(
+                "{{\"chart\":{pane},\"symbol\":{},\"shows_drawings\":{shows},\"sends_drawings\":{sends},\"drawings\":[{}]}}\n",
+                json!(spell(&symbol, suffix.as_deref())),
+                listed.iter().map(|d| drawing_json(d, &configs).to_string()).collect::<Vec<_>>().join(",")
+            )),
+            false if listed.is_empty() => Ok(format!("nothing drawn on {}\n", spell(&symbol, suffix.as_deref()))),
+            false => Ok(listed.iter().map(|d| describe_drawing(d, &configs)).collect::<Vec<_>>().join("\n") + "\n"),
+        };
+    }
+
+    // Every flag is read and checked before anything is written, so one bad
+    // anchor leaves the symbol's drawings exactly as they were.
+    let from = anchor(m, "from")?;
+    let to = anchor(m, "to")?;
+    let corners = anchors(m, "point")?;
+    if corners.len() == 1 {
+        return Err(Fault::usage(
+            "a zig-zag needs at least two --point corners; one corner is not a drawing".into(),
+        ));
+    }
+    // What a kind that has no corners of its own should hear, rather than
+    // having them quietly dropped: four points on a rectangle is somebody
+    // expecting a polygon.
+    let not_a_path = || {
+        Fault::usage("--point is a zig-zag's corners; every other kind is --from and --to".into())
+    };
+    let config = match arg(m, "config") {
+        None => None,
+        Some(text) => Some(
+            text.parse::<u8>()
+                .ok()
+                .filter(|n| (1..=CONFIGURATIONS).contains(n))
+                .ok_or_else(|| Fault::usage(format!("--config is a number from 1 to {CONFIGURATIONS}, not {text:?}")))?,
+        ),
+    };
+    let style = StyleEdits::read(m)?;
+    let words = TextEdits::read(m)?;
+    let scope = match arg(m, "scope") {
+        None => None,
+        Some(text) => Some(Scope::from_key(text).ok_or_else(|| {
+            Fault::usage(format!("{text:?} is not a scope; try shared or local"))
+        })?),
+    };
+    let order = match arg(m, "order").map(String::as_str) {
+        None => None,
+        Some("front") => Some(true),
+        Some("back") => Some(false),
+        Some(other) => return Err(Fault::usage(format!("{other:?} is not front or back"))),
+    };
+    let id = match arg(m, "id") {
+        None => None,
+        Some(text) => Some(
+            text.parse::<i64>()
+                .map_err(|_| Fault::usage(format!("--id takes a number from `drawing list`, not {text:?}")))?,
+        ),
+    };
+
+    // Where a drawing with this scope is kept, and the id it gets there.
+    let mut locals = locals;
+    let text = match action {
+        "add" => {
+            let kind = kind.ok_or_else(|| {
+                Fault::usage("`drawing add` needs a kind: line, rect, ellipse or text".into())
+            })?;
+            if !corners.is_empty() && !kind.is_path() {
+                return Err(not_a_path());
+            }
+            // Words sit at a point, so a text drawing takes one anchor and
+            // uses it for both. A zig-zag given its corners has its ends
+            // among them and needs no --from and --to of its own. Everything
+            // else spans two.
+            let (from, to) = match (kind.is_text(), corners.first(), corners.last()) {
+                (_, Some(first), Some(last)) => (*first, *last),
+                (true, ..) => {
+                    let Some(at) = from.or(to) else {
+                        return Err(Fault::usage(
+                            "`drawing add text` needs --from WHEN,PRICE: where the words go".into(),
+                        ));
+                    };
+                    (at, at)
+                }
+                (false, ..) => match (from, to) {
+                    (Some(from), Some(to)) => (from, to),
+                    _ if kind.is_path() => {
+                        return Err(Fault::usage(
+                            "`drawing add zigzag` needs --point WHEN,PRICE for each corner, or --from and --to for a single leg".into(),
+                        ))
+                    }
+                    _ => {
+                        return Err(Fault::usage(
+                            "`drawing add` needs --from and --to, each WHEN,PRICE".into(),
+                        ))
+                    }
+                },
+            };
+            if kind.is_text() && words.words.as_deref().unwrap_or_default().is_empty() {
+                return Err(Fault::usage(
+                    "`drawing add text` needs --text: a text drawing with nothing to say draws nothing".into(),
+                ));
+            }
+            let mut drawing = Drawing::new(kind, from, to);
+            if !corners.is_empty() {
+                drawing.set_corners(corners.clone());
+            }
+            drawing.origin = chart["drawing_uid"].as_str().map(str::to_string).filter(|u| !u.is_empty());
+            drawing.follow(config.unwrap_or(1));
+            if !style.is_empty() {
+                drawing.edit_style(&configs, |s| style.apply(s));
+            }
+            if !words.is_empty() {
+                words.apply(&mut drawing);
+            }
+            drawing.scope = scope.unwrap_or(match sends {
+                true => Scope::Shared,
+                false => Scope::Local,
+            });
+            drawing.order = shown(store, &locals).iter().map(|d| d.order).max().unwrap_or(0);
+            if drawing.is_local() {
+                drawing.id = next_local_id(&locals);
+                locals.push(drawing.clone());
+                write_locals(workspace, at, pane, &locals)?;
+            } else {
+                let Some(id) = store.add_drawing(&symbol, suffix.as_deref(), &drawing) else {
+                    return Err(Fault::new(super::EXIT_ERROR, "could not write the drawing down".into()));
+                };
+                drawing.id = id;
+            }
+            format!("drew {}", describe_drawing(&drawing, &configs))
+        }
+        "set" => {
+            let Some(id) = id else {
+                return Err(Fault::usage("`drawing set` needs --id, from `drawing list`".into()));
+            };
+            if from.is_none()
+                && to.is_none()
+                && corners.is_empty()
+                && config.is_none()
+                && style.is_empty()
+                && words.is_empty()
+                && scope.is_none()
+                && order.is_none()
+            {
+                return Err(Fault::usage(
+                    "nothing to set: give --from, --to, --point, --config, --scope, --order, --text, or a property".into(),
+                ));
+            }
+            let mut drawing = find_drawing(store, &symbol, suffix.as_deref(), &locals, id)?;
+            let was_local = drawing.is_local();
+            // Through `move_grip` rather than straight onto the field, so a
+            // text drawing's two anchors stay the one point they are.
+            if let Some(from) = from {
+                drawing.move_grip(omacharts_engine::Grip::From, from);
+            }
+            if let Some(to) = to {
+                drawing.move_grip(omacharts_engine::Grip::To, to);
+            }
+            // Last, so that the path's own corners settle the ends rather
+            // than the other way about.
+            if !corners.is_empty() && !drawing.set_corners(corners.clone()) {
+                return Err(not_a_path());
+            }
+            if let Some(n) = config {
+                drawing.follow(n);
+            }
+            if !style.is_empty() {
+                drawing.edit_style(&configs, |s| style.apply(s));
+            }
+            if !words.is_empty() {
+                words.apply(&mut drawing);
+            }
+            if drawing.kind.is_text() && !drawing.has_text() {
+                return Err(Fault::usage(
+                    "a text drawing with nothing to say draws nothing; `drawing remove` is the way to take it off".into(),
+                ));
+            }
+            if let Some(scope) = scope {
+                drawing.scope = scope;
+            }
+            if let Some(front) = order {
+                let others = shown(store, &locals);
+                let (lo, hi) = others.iter().fold((0i64, 0i64), |(lo, hi), d| (lo.min(d.order), hi.max(d.order)));
+                drawing.order = if front { hi + 1 } else { lo - 1 };
+            }
+            // A drawing that changed sides moves house: out of where it was,
+            // into where its scope now says.
+            match (was_local, drawing.is_local()) {
+                (true, true) => {
+                    if let Some(slot) = locals.iter_mut().find(|d| d.id == id) {
+                        *slot = drawing.clone();
+                    }
+                    write_locals(workspace, at, pane, &locals)?;
+                }
+                (false, false) => store.update_drawing(&drawing),
+                (true, false) => {
+                    locals.retain(|d| d.id != id);
+                    write_locals(workspace, at, pane, &locals)?;
+                    drawing.id = 0;
+                    drawing.id = store
+                        .add_drawing(&symbol, suffix.as_deref(), &drawing)
+                        .ok_or_else(|| Fault::new(super::EXIT_ERROR, "could not write the drawing down".into()))?;
+                }
+                (false, true) => {
+                    store.remove_drawing(id);
+                    drawing.id = next_local_id(&locals);
+                    locals.push(drawing.clone());
+                    write_locals(workspace, at, pane, &locals)?;
+                }
+            }
+            format!("set {}", describe_drawing(&drawing, &configs))
+        }
+        "remove" => {
+            let Some(id) = id else {
+                return Err(Fault::usage("`drawing remove` needs --id, from `drawing list`".into()));
+            };
+            let found = find_drawing(store, &symbol, suffix.as_deref(), &locals, id)?;
+            if found.is_local() {
+                locals.retain(|d| d.id != id);
+                write_locals(workspace, at, pane, &locals)?;
+            } else {
+                store.remove_drawing(id);
+            }
+            format!("removed {}", describe_drawing(&found, &configs))
+        }
+        "clear" => {
+            let count = shown(store, &locals).len();
+            store.clear_drawings(&symbol, suffix.as_deref());
+            locals.clear();
+            write_locals(workspace, at, pane, &locals)?;
+            format!("removed {count} drawing{}", if count == 1 { "" } else { "s" })
+        }
+        other => {
+            return Err(Fault::usage(format!(
+                "{other:?} is not list, add, set, remove, clear, configs, configure or reset-configs"
+            )))
+        }
+    };
+
+    workspace.save(store);
+    let where_at = format!(
+        "{text} on {} in {:?}",
+        chart_label(workspace.book(at)?, pane),
+        workspace.name_of(at)
+    );
+    said(as_json, json!({"chart": pane, "message": where_at}), where_at)
+}
+
+/// The three actions about configurations rather than drawings. `None` when
+/// the action is about drawings.
+fn configurations_verb(
+    store: &Store,
+    m: &clap::ArgMatches,
+    as_json: bool,
+    action: &str,
+    kind: Option<omacharts_engine::DrawingKind>,
+) -> Result<Option<String>, Fault> {
+    use omacharts_engine::drawings::{Kind, CONFIGURATIONS};
+    let kinds: Vec<Kind> = kind.map(|k| vec![k]).unwrap_or_else(|| Kind::ALL.to_vec());
+    match action {
+        "configs" => {
+            let configs = store.drawing_configurations();
+            if as_json {
+                let rows: Vec<String> = kinds
+                    .iter()
+                    .flat_map(|kind| {
+                        let configs = &configs;
+                        (1..=CONFIGURATIONS).map(move |n| {
+                            json!({
+                                "kind": kind.key(),
+                                "config": n,
+                                "style": style_json(configs.of(*kind, n)),
+                                "default": configs.is_default(*kind, n),
+                            })
+                            .to_string()
+                        })
+                    })
+                    .collect();
+                return Ok(Some(wrap_list("configurations", rows)));
+            }
+            let mut out = String::new();
+            for kind in &kinds {
+                for n in 1..=CONFIGURATIONS {
+                    let tag = if configs.is_default(*kind, n) { "" } else { "  (edited)" };
+                    out.push_str(&format!("{} {n}  {}{tag}\n", kind.key(), describe_style(*kind, configs.of(*kind, n))));
+                }
+            }
+            Ok(Some(out))
+        }
+        "configure" => {
+            let kind = kind.ok_or_else(|| Fault::usage("`drawing configure` needs a kind: line or rect".into()))?;
+            let n = arg(m, "config")
+                .ok_or_else(|| Fault::usage("`drawing configure` needs --config N".into()))?
+                .parse::<u8>()
+                .ok()
+                .filter(|n| (1..=CONFIGURATIONS).contains(n))
+                .ok_or_else(|| Fault::usage(format!("--config is a number from 1 to {CONFIGURATIONS}")))?;
+            let edits = StyleEdits::read(m)?;
+            if edits.is_empty() {
+                return Err(Fault::usage("nothing to configure: give --color, --width, --arrow, --head, --border, --fill or --alpha".into()));
+            }
+            let mut configs = store.drawing_configurations();
+            let mut style = configs.of(kind, n).clone();
+            edits.apply(&mut style);
+            configs.set(kind, n, style.clone());
+            store.set_drawing_configurations(&configs);
+            let text = format!("{} configuration {n} is now {}", kind.label(), describe_style(kind, &style));
+            Ok(Some(said(as_json, json!({"kind": kind.key(), "config": n, "style": style_json(&style), "message": text}), text)?))
+        }
+        "reset-configs" => {
+            let mut configs = store.drawing_configurations();
+            for kind in &kinds {
+                configs.reset(*kind);
+            }
+            store.set_drawing_configurations(&configs);
+            let what = kinds.iter().map(|k| k.label().to_lowercase()).collect::<Vec<_>>().join(" and ");
+            let text = format!("restored the default {what} configurations");
+            Ok(Some(said(as_json, json!({"message": text}), text)?))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// A chart's local drawings get negative ids, below everything the store
+/// hands out, so one number names a drawing wherever it lives.
+/// Take back what this chart sent, or send what it has been keeping.
+///
+/// The window does the same thing when the switch is flicked there. Only
+/// this chart's own move: each drawing remembers which chart made it, so a
+/// switch here never withdraws another chart's work, and a drawing made
+/// before charts had names belongs to none of them and stays put.
+fn move_this_chart_s_drawings(store: &Store, chart: &mut Value, sends: bool) {
+    use omacharts_engine::{Drawing, Scope};
+    let symbol = chart["symbol"].as_str().unwrap_or("").to_string();
+    if symbol.is_empty() {
+        return;
+    }
+    let suffix = chart["suffix"].as_str().filter(|s| !s.is_empty()).map(str::to_string);
+    let suffix = suffix.as_deref();
+    let mine = chart["drawing_uid"].as_str().unwrap_or("").to_string();
+    let mut locals: Vec<Drawing> = chart["drawings"]
+        .as_array()
+        .map(|list| list.iter().filter_map(|d| serde_json::from_value(d.clone()).ok()).collect())
+        .unwrap_or_default();
+
+    match sends {
+        true => {
+            for mut drawing in locals.drain(..) {
+                drawing.id = 0;
+                drawing.scope = Scope::Shared;
+                if !mine.is_empty() {
+                    drawing.origin = Some(mine.clone());
+                }
+                store.add_drawing(&symbol, suffix, &drawing);
+            }
+        }
+        false => {
+            if mine.is_empty() {
+                return;
+            }
+            let sent: Vec<Drawing> = store
+                .drawings(&symbol, suffix)
+                .into_iter()
+                .filter(|d| d.origin.as_deref() == Some(mine.as_str()))
+                .collect();
+            for mut drawing in sent {
+                store.remove_drawing(drawing.id);
+                drawing.id = next_local_id(&locals);
+                drawing.scope = Scope::Local;
+                locals.push(drawing);
+            }
+        }
+    }
+    chart["drawings"] = json!(locals);
+}
+
+fn next_local_id(locals: &[omacharts_engine::Drawing]) -> i64 {
+    locals.iter().map(|d| d.id).min().unwrap_or(0).min(0) - 1
+}
+
+/// Put a chart's local drawings back in its record.
+fn write_locals(
+    workspace: &mut Workspace,
+    at: usize,
+    pane: u32,
+    locals: &[omacharts_engine::Drawing],
+) -> Result<(), Fault> {
+    let book = workspace.book_mut(at)?;
+    let Some(target) = charts::pane_mut(book, pane) else {
+        return Err(Fault::not_found(format!("chart {pane} is not in this chartbook")));
+    };
+    target["drawings"] = serde_json::to_value(locals).unwrap_or_else(|_| json!([]));
+    Ok(())
+}
+
+/// A drawing by id, from the store or the chart's own.
+fn find_drawing(
+    store: &Store,
+    symbol: &str,
+    suffix: Option<&str>,
+    locals: &[omacharts_engine::Drawing],
+    id: i64,
+) -> Result<omacharts_engine::Drawing, Fault> {
+    let found = if id < 0 {
+        locals.iter().find(|d| d.id == id).cloned()
+    } else {
+        store.drawings(symbol, suffix).into_iter().find(|d| d.id == id)
+    };
+    found.ok_or_else(|| Fault::not_found(format!("no drawing {id} on {}", spell(symbol, suffix))))
+}
+
+fn drawing_json(d: &omacharts_engine::Drawing, configs: &omacharts_engine::Configurations) -> Value {
+    json!({
+        "id": d.id,
+        "kind": d.kind.key(),
+        "from": {"ts": d.from.ts, "when": spell_moment(d.from.ts), "price": d.from.price},
+        "to": {"ts": d.to.ts, "when": spell_moment(d.to.ts), "price": d.to.price},
+        // Only a zig-zag has corners of its own; for every other kind they
+        // would be `from` and `to` said a second time.
+        "corners": d.kind.is_path().then(|| d.corners().iter().map(|a| json!({
+            "ts": a.ts, "when": spell_moment(a.ts), "price": a.price,
+        })).collect::<Vec<_>>()),
+        "config": d.config,
+        // Where a look of its own came from, for a drawing that has one.
+        "started_from": d.started_from,
+        "style": style_json(d.style(configs)),
+        "scope": d.scope.key(),
+        "order": d.order,
+        "text": d.has_text().then(|| json!({
+            "words": d.text.plain_text(),
+            // The same words as `--text` would take to make them, emphasis
+            // and all, so a label can be read off one drawing and put on
+            // another without going through the runs by hand.
+            "markup": d.text.markup(),
+            "at": d.text.at.key(),
+            // The runs, so a reader can see where the bold is rather than
+            // only that the characters are there. A plain label is one run.
+            "spans": d.text.spans.iter().map(|span| json!({
+                "text": span.text,
+                "bold": span.bold,
+                "italic": span.italic,
+            })).collect::<Vec<_>>(),
+        })),
+    })
+}
+
+fn style_json(style: &omacharts_engine::Style) -> Value {
+    json!({
+        "color": style.colour.spell(),
+        "width": style.width,
+        "arrow": style.arrow.key(),
+        "head": style.head.key(),
+        "border": style.border,
+        "fill": style.fill.spell(),
+        "alpha": style.alpha,
+        "text_color": style.text.colour.spell(),
+        // Null for the desktop's own font, which is a role rather than a
+        // family and resolves differently on another machine.
+        "font": style.text.family_name(),
+        "font_size": style.text.clamped_size(),
+    })
+}
+
+/// A drawing, said back in one line:
+/// `#3 line  2026-09-01 180.50 → 2026-09-19 192.00  configuration 4 · global`.
+fn describe_drawing(drawing: &omacharts_engine::Drawing, configs: &omacharts_engine::Configurations) -> String {
+    let look = match drawing.config {
+        Some(n) => format!("configuration {n}"),
+        None => describe_style(drawing.kind, drawing.style(configs)),
+    };
+    // What it says, in quotes, since a label is the thing somebody is
+    // looking for in a list of six boxes. Trimmed to a line: the whole of a
+    // paragraph belongs in `--json`, not in a line of a listing.
+    let words = match drawing.has_text() {
+        false => String::new(),
+        true => format!("  {:?}", shorten(&drawing.text.markup().replace('\n', " "), 40)),
+    };
+    // A word is at one point, so saying the same moment twice would be noise.
+    let span = match drawing.kind.is_text() {
+        true => format!("{} {:.2}", spell_moment(drawing.from.ts), drawing.from.price),
+        false => format!(
+            "{} {:.2} → {} {:.2}",
+            spell_moment(drawing.from.ts),
+            drawing.from.price,
+            spell_moment(drawing.to.ts),
+            drawing.to.price
+        ),
+    };
+    format!(
+        "#{} {}  {span}{words}  {look} · {}",
+        drawing.id,
+        drawing.kind.key(),
+        drawing.scope.key()
+    )
+}
+
+/// A string cut to `most` characters, with an ellipsis standing for the rest.
+fn shorten(text: &str, most: usize) -> String {
+    match text.chars().count() > most {
+        false => text.to_string(),
+        true => text.chars().take(most.saturating_sub(1)).collect::<String>() + "…",
+    }
+}
+
+/// A look in words: `amber, 2.5px, arrow at the end` for a line; `fill amber
+/// at 0.16, edge amber 1px` for a rectangle.
+fn describe_style(kind: omacharts_engine::DrawingKind, style: &omacharts_engine::Style) -> String {
+    use omacharts_engine::drawings::{Arrow, ArrowHead, Kind};
+    match kind {
+        Kind::Line | Kind::Horizontal | Kind::Arrow | Kind::Zigzag => {
+            let arrow = match (style.arrow, style.head) {
+                (Arrow::None, _) => String::new(),
+                (arrow, ArrowHead::Filled) => format!(", arrow {}", arrow.label().to_lowercase()),
+                (arrow, head) => {
+                    format!(", {} arrow {}", head.label().to_lowercase(), arrow.label().to_lowercase())
+                }
+            };
+            format!("{}, {}px{arrow}", style.colour.spell(), style.width)
+        }
+        Kind::Rect | Kind::Ellipse => {
+            let edge = match style.border {
+                true => format!(", edge {} {}px", style.colour.spell(), style.width),
+                false => ", no edge".to_string(),
+            };
+            format!("fill {} at {:.2}{edge}", style.fill.spell(), style.alpha)
+        }
+        Kind::Text => describe_text_style(style),
+    }
+}
+
+/// How a configuration sets words: the ink, the size, and the face when it is
+/// not the desktop's.
+fn describe_text_style(style: &omacharts_engine::Style) -> String {
+    let face = match style.text.family_name() {
+        Some(family) => format!(", {family}"),
+        None => String::new(),
+    };
+    format!("{} {:.0}px{face}", style.text.colour.spell(), style.text.clamped_size())
+}
+
+/// The properties a command offered for a drawing or a configuration, read
+/// and checked before any is written.
+struct StyleEdits {
+    colour: Option<omacharts_engine::Paint>,
+    width: Option<f64>,
+    arrow: Option<omacharts_engine::Arrow>,
+    head: Option<omacharts_engine::ArrowHead>,
+    border: Option<bool>,
+    fill: Option<omacharts_engine::Paint>,
+    alpha: Option<f64>,
+    text_colour: Option<omacharts_engine::Paint>,
+    /// The face: `Some(Some(family))` for one by name, `Some(None)` for the
+    /// desktop's own, which `--font system` is the way to ask for.
+    font: Option<Option<String>>,
+    font_size: Option<f64>,
+}
+
+impl StyleEdits {
+    fn read(m: &clap::ArgMatches) -> Result<StyleEdits, Fault> {
+        use omacharts_engine::drawings::{Arrow, ArrowHead, Paint, MAX_WIDTH, MIN_WIDTH};
+        let paint = |id: &str| -> Result<Option<Paint>, Fault> {
+            let Some(text) = arg(m, id) else { return Ok(None) };
+            Paint::parse(text).map(Some).ok_or_else(|| {
+                Fault::usage(format!(
+                    "{text:?} is not a drawing colour; try up, down, blue, amber, violet, teal, orange, cyan, ink — or #rrggbb"
+                ))
+            })
+        };
+        let width = match number(m, "width")? {
+            None => None,
+            Some(w) if (MIN_WIDTH..=MAX_WIDTH).contains(&w) => Some(w),
+            Some(w) => {
+                return Err(Fault::usage(format!(
+                    "--width is {w}, which is outside {MIN_WIDTH} to {MAX_WIDTH}"
+                )))
+            }
+        };
+        let arrow = match arg(m, "arrow") {
+            None => None,
+            Some(text) => Some(
+                Arrow::from_key(text)
+                    .ok_or_else(|| Fault::usage(format!("{text:?} is not an arrow; try none, end, start or both")))?,
+            ),
+        };
+        let head = match arg(m, "head") {
+            None => None,
+            Some(text) => Some(
+                ArrowHead::from_key(text)
+                    .ok_or_else(|| Fault::usage(format!("{text:?} is not an arrowhead; try filled, open or barb")))?,
+            ),
+        };
+        let border = match arg(m, "border").map(String::as_str) {
+            None => None,
+            Some("on") => Some(true),
+            Some("off") => Some(false),
+            Some(other) => return Err(Fault::usage(format!("--border is on or off, not {other:?}"))),
+        };
+        let font = arg(m, "font").map(|family| match family.eq_ignore_ascii_case("system") {
+            true => None,
+            false => Some(family.to_string()),
+        });
+        Ok(StyleEdits {
+            colour: paint("color")?,
+            width,
+            arrow,
+            head,
+            border,
+            fill: paint("fill")?,
+            alpha: bounded(m, "alpha", MIN_FILL_ALPHA, MAX_FILL_ALPHA)?,
+            text_colour: paint("text-color")?,
+            font,
+            font_size: bounded(
+                m,
+                "font-size",
+                omacharts_engine::drawings::MIN_TEXT_SIZE,
+                omacharts_engine::drawings::MAX_TEXT_SIZE,
+            )?,
+        })
+    }
+
+    fn is_empty(&self) -> bool {
+        self.colour.is_none()
+            && self.width.is_none()
+            && self.arrow.is_none()
+            && self.head.is_none()
+            && self.border.is_none()
+            && self.fill.is_none()
+            && self.alpha.is_none()
+            && self.text_colour.is_none()
+            && self.font.is_none()
+            && self.font_size.is_none()
+    }
+
+    fn apply(&self, style: &mut omacharts_engine::Style) {
+        if let Some(colour) = &self.colour {
+            style.colour = colour.clone();
+        }
+        if let Some(width) = self.width {
+            style.width = width;
+        }
+        if let Some(arrow) = self.arrow {
+            style.arrow = arrow;
+        }
+        if let Some(head) = self.head {
+            style.head = head;
+        }
+        if let Some(border) = self.border {
+            style.border = border;
+        }
+        if let Some(fill) = &self.fill {
+            style.fill = fill.clone();
+        }
+        if let Some(alpha) = self.alpha {
+            style.alpha = alpha;
+        }
+        if let Some(colour) = &self.text_colour {
+            style.text.colour = colour.clone();
+        }
+        if let Some(font) = &self.font {
+            style.text.family = font.clone();
+        }
+        if let Some(size) = self.font_size {
+            style.text.size = size;
+        }
+    }
+}
+
+/// What a command said about the words themselves, as opposed to how they are
+/// set.
+///
+/// Apart from [`StyleEdits`] because they are not a style: a configuration
+/// says how words are set and never which words, so `--text` edits the
+/// drawing and must not take it off the configuration it follows the way
+/// `--text-color` does.
+struct TextEdits {
+    words: Option<String>,
+    at: Option<omacharts_engine::Place>,
+}
+
+impl TextEdits {
+    fn read(m: &clap::ArgMatches) -> Result<TextEdits, Fault> {
+        let at = match arg(m, "text-at") {
+            None => None,
+            Some(text) => Some(omacharts_engine::Place::from_key(text).ok_or_else(|| {
+                Fault::usage(format!(
+                    "{text:?} is not a place; try center, top, bottom, left, right, or a corner like top-left"
+                ))
+            })?),
+        };
+        Ok(TextEdits { words: arg(m, "text").cloned(), at })
+    }
+
+    fn is_empty(&self) -> bool {
+        self.words.is_none() && self.at.is_none()
+    }
+
+    /// Put them on the drawing. The runs are read back out of the one string
+    /// a terminal can hand over: `**bold**`, `*italic*`, `***both***`, which
+    /// is how emphasis survives a flag.
+    fn apply(&self, drawing: &mut omacharts_engine::Drawing) {
+        let mut text = drawing.text.clone();
+        if let Some(words) = &self.words {
+            text.spans = omacharts_engine::drawings::Text::from_markup(words).spans;
+        }
+        if let Some(at) = self.at {
+            text.at = at;
+        }
+        drawing.set_text(text);
+    }
+}
+
+/// A switch, as a command line says it back.
+fn on_off(on: bool) -> &'static str {
+    match on {
+        true => "on",
+        false => "off",
+    }
+}
+
+/// A moment as a person would write it: the date alone when it is midnight
+/// local time, the minute otherwise.
+fn spell_moment(ts: i64) -> String {
+    use chrono::{Local, TimeZone};
+    match Local.timestamp_opt(ts, 0).single() {
+        Some(at) if at.format("%H:%M").to_string() == "00:00" => at.format("%Y-%m-%d").to_string(),
+        Some(at) => at.format("%Y-%m-%dT%H:%M").to_string(),
+        None => ts.to_string(),
+    }
+}
+
+/// `WHEN,PRICE` as an anchor. The moment is a local date, a local date and
+/// time, or unix seconds; the price is a number.
+fn anchor(m: &clap::ArgMatches, id: &str) -> Result<Option<omacharts_engine::Anchor>, Fault> {
+    match arg(m, id) {
+        None => Ok(None),
+        Some(text) => read_anchor(text, id).map(Some),
+    }
+}
+
+/// The same, for a flag that may be given more than once: a zig-zag's
+/// corners, in the order they were typed.
+fn anchors(m: &clap::ArgMatches, id: &str) -> Result<Vec<omacharts_engine::Anchor>, Fault> {
+    m.get_many::<String>(id)
+        .into_iter()
+        .flatten()
+        .map(|text| read_anchor(text, id))
+        .collect()
+}
+
+fn read_anchor(text: &str, id: &str) -> Result<omacharts_engine::Anchor, Fault> {
+    use chrono::{Local, NaiveDate, NaiveDateTime, TimeZone};
+    let bad = || Fault::usage(format!("--{id} takes WHEN,PRICE — like 2026-09-01,180.5 or 2026-09-01T14:30,180.5 — not {text:?}"));
+    let (when, price) = text.rsplit_once(',').ok_or_else(bad)?;
+    let price: f64 = price.trim().parse().map_err(|_| bad())?;
+    let when = when.trim();
+    let ts = if let Ok(seconds) = when.parse::<i64>() {
+        seconds
+    } else if let Ok(at) = NaiveDateTime::parse_from_str(when, "%Y-%m-%dT%H:%M") {
+        Local.from_local_datetime(&at).single().ok_or_else(bad)?.timestamp()
+    } else if let Ok(day) = NaiveDate::parse_from_str(when, "%Y-%m-%d") {
+        let at = day.and_hms_opt(0, 0, 0).ok_or_else(bad)?;
+        Local.from_local_datetime(&at).single().ok_or_else(bad)?.timestamp()
+    } else {
+        return Err(bad());
+    };
+    Ok(omacharts_engine::Anchor::new(ts, price))
 }
 
 /// Does this stored indicator have that kind?
@@ -1916,6 +2780,8 @@ fn pane_json(pane: &Value) -> String {
         // of those was fitting itself.
         "auto_scale": pane["auto_scale"].as_bool().unwrap_or(true),
         "link": pane["linked"],
+        "shows_drawings": pane["shows_drawings"].as_bool().unwrap_or(true),
+        "sends_drawings": pane["sends_drawings"].as_bool().unwrap_or(true),
         "indicators": pane["indicators"]
             .as_array()
             .map(|all| all.iter().filter_map(|i| i["kind"].as_str()).collect::<Vec<_>>())
@@ -3863,7 +4729,9 @@ mod tests {
                 // because what this test is for — an argument the table
                 // describes and the arm never reads — is exactly as worth
                 // catching there as anywhere else.
-                if verb.flags.iter().any(|flag| flag.long == "to") {
+                // Only `skill`'s `--to` is a place on disk; a drawing's
+                // `--to` is the other end of a line.
+                if noun.name == "skill" && verb.flags.iter().any(|flag| flag.long == "to") {
                     let scratch = std::env::temp_dir()
                         .join(format!("omacharts-example-{}", std::process::id()))
                         .join(verb.name);
@@ -3883,6 +4751,317 @@ mod tests {
         }
     }
 
+    /// A drawing belongs to the symbol: added through one chart, it is listed
+    /// through any chart showing that symbol that shares it, and absent from
+    /// a chart that shows another.
+    #[test]
+    fn a_drawing_is_on_the_symbol_not_the_chart() {
+        let store = Store::memory().unwrap();
+        run("chartbook create Macro --symbol AAPL --switch", &store);
+        run("chart split vertical --book Macro", &store);
+        run("chart set --book Macro --chart pos:1 --symbol NVDA", &store);
+
+        let out = run(
+            "chart drawing add line --book Macro --chart pos:0 --from 2026-09-01,180.5 --to 2026-09-19,192 --config 4",
+            &store,
+        );
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert!(out.out.contains("drew #1 line"), "{}", out.out);
+        assert!(out.out.contains("configuration 4"), "{}", out.out);
+        assert!(out.out.contains("pos:0 AAPL"), "{}", out.out);
+
+        let on_aapl = run("chart drawing list --book Macro --chart pos:0 --json", &store);
+        let parsed: serde_json::Value = serde_json::from_str(&on_aapl.out).unwrap();
+        assert_eq!(parsed["drawings"].as_array().unwrap().len(), 1);
+        assert_eq!(parsed["drawings"][0]["kind"], "line");
+        assert_eq!(parsed["drawings"][0]["config"], 4);
+        assert_eq!(parsed["drawings"][0]["style"]["color"], "amber");
+        assert_eq!(parsed["drawings"][0]["scope"], "shared");
+        assert_eq!(parsed["drawings"][0]["from"]["price"], 180.5);
+        assert_eq!(parsed["drawings"][0]["from"]["when"], "2026-09-01");
+
+        let on_nvda = run("chart drawing list --book Macro --chart pos:1 --json", &store);
+        let parsed: serde_json::Value = serde_json::from_str(&on_nvda.out).unwrap();
+        assert!(parsed["drawings"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_drawing_can_be_moved_restyled_and_removed() {
+        let store = Store::memory().unwrap();
+        run("chartbook create Macro --symbol AAPL --switch", &store);
+        run("chart drawing add rect --book Macro --from 2026-09-01,180 --to 2026-09-19,192", &store);
+        run("chart drawing add line --book Macro --from 2026-09-01,100 --to 2026-09-19,110", &store);
+
+        // A property set by hand takes the drawing off its configuration.
+        let out = run("chart drawing set --book Macro --id 1 --fill ink --alpha 0.3 --to 2026-09-30T14:30,195", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        let listed = run("chart drawing list --book Macro --json", &store);
+        let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+        assert_eq!(parsed["drawings"][0]["config"], serde_json::Value::Null);
+        assert_eq!(parsed["drawings"][0]["style"]["fill"], "ink");
+        assert_eq!(parsed["drawings"][0]["style"]["alpha"], 0.3);
+        assert_eq!(parsed["drawings"][0]["to"]["price"], 195.0);
+        assert_eq!(parsed["drawings"][0]["to"]["when"], "2026-09-30T14:30");
+
+        // And a configuration puts it back on one.
+        run("chart drawing set --book Macro --id 1 --config 2", &store);
+        let listed = run("chart drawing list --book Macro --json", &store);
+        let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+        assert_eq!(parsed["drawings"][0]["config"], 2);
+        assert_eq!(parsed["drawings"][0]["style"]["fill"], "down");
+
+        let out = run("chart drawing remove --book Macro --id 1", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        let listed = run("chart drawing list --book Macro --json", &store);
+        let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+        assert_eq!(parsed["drawings"].as_array().unwrap().len(), 1);
+        assert_eq!(parsed["drawings"][0]["id"], 2);
+
+        let out = run("chart drawing clear --book Macro", &store);
+        assert!(out.out.contains("removed 1 drawing"), "{}", out.out);
+        let listed = run("chart drawing list --book Macro", &store);
+        assert!(listed.out.starts_with("nothing drawn on AAPL"), "{}", listed.out);
+    }
+
+    /// Turning sending off takes back what this chart sent, and turning it
+    /// on sends back what it kept — its own either way, never another
+    /// chart's.
+    #[test]
+    fn sending_takes_back_only_this_chart_s_own() {
+        let store = Store::memory().unwrap();
+        run("chartbook create Macro --symbol AAPL --switch", &store);
+        run("chart split vertical --book Macro", &store);
+        run("chart set --book Macro --chart pos:1 --symbol AAPL", &store);
+
+        run("chart drawing add line --book Macro --chart pos:0 --from 2026-09-01,100 --to 2026-09-19,110", &store);
+        run("chart drawing add rect --book Macro --chart pos:1 --from 2026-09-01,120 --to 2026-09-19,130", &store);
+
+        let seen = |chart: &str| -> Vec<String> {
+            let out = run(&format!("chart drawing list --book Macro --chart {chart} --json"), &store);
+            let parsed: serde_json::Value = serde_json::from_str(&out.out).unwrap();
+            parsed["drawings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|d| d["kind"].as_str().unwrap().to_string())
+                .collect()
+        };
+
+        // Both send, so both see both.
+        assert_eq!(seen("pos:0"), vec!["line", "rect"]);
+        assert_eq!(seen("pos:1"), vec!["line", "rect"]);
+
+        // The second stops sending: it keeps its rectangle and the first
+        // stops seeing it, while the first's line is untouched.
+        run("chart set --book Macro --chart pos:1 --send-drawings off", &store);
+        assert_eq!(seen("pos:0"), vec!["line"], "the first chart kept seeing what the second took back");
+        assert_eq!(seen("pos:1"), vec!["line", "rect"], "the second lost its own");
+
+        // And sending again puts it back.
+        run("chart set --book Macro --chart pos:1 --send-drawings on", &store);
+        assert_eq!(seen("pos:0"), vec!["line", "rect"]);
+        assert_eq!(seen("pos:1"), vec!["line", "rect"]);
+    }
+
+    /// The two switches decide what a chart sees and where what is drawn
+    /// on it goes; a drawing that is not sent lives with the chart and has
+    /// a negative id.
+    #[test]
+    fn the_two_switches_decide_what_a_chart_sees_and_sends() {
+        let store = Store::memory().unwrap();
+        run("chartbook create Macro --symbol AAPL --switch", &store);
+        run("chart split vertical --book Macro", &store);
+        run("chart set --book Macro --chart pos:1 --symbol AAPL --send-drawings off", &store);
+
+        run("chart drawing add line --book Macro --chart pos:0 --from 2026-09-01,100 --to 2026-09-19,110", &store);
+        run("chart drawing add line --book Macro --chart pos:1 --from 2026-09-01,120 --to 2026-09-19,130", &store);
+
+        // The first chart sends, so its line is the symbol's; the second
+        // does not, so its line is its own.
+        let sending = run("chart drawing list --book Macro --chart pos:0 --json", &store);
+        let sending: serde_json::Value = serde_json::from_str(&sending.out).unwrap();
+        assert_eq!(sending["shows_drawings"], true);
+        assert_eq!(sending["sends_drawings"], true);
+        let scopes: Vec<&str> =
+            sending["drawings"].as_array().unwrap().iter().map(|d| d["scope"].as_str().unwrap()).collect();
+        assert_eq!(scopes, vec!["shared"], "a chart sees the symbol's, not another chart's own");
+
+        // The second sees the symbol's as well as its own, since it still
+        // shows what others send.
+        let keeping = run("chart drawing list --book Macro --chart pos:1 --json", &store);
+        let keeping: serde_json::Value = serde_json::from_str(&keeping.out).unwrap();
+        assert_eq!(keeping["sends_drawings"], false);
+        let mut scopes: Vec<&str> =
+            keeping["drawings"].as_array().unwrap().iter().map(|d| d["scope"].as_str().unwrap()).collect();
+        scopes.sort();
+        assert_eq!(scopes, vec!["local", "shared"]);
+        let local =
+            keeping["drawings"].as_array().unwrap().iter().find(|d| d["scope"] == "local").unwrap();
+        assert!(local["id"].as_i64().unwrap() < 0, "a drawing a chart kept is numbered below the store's");
+
+        // Stop showing what others send and only its own is left.
+        run("chart set --book Macro --chart pos:1 --show-drawings off", &store);
+        let alone = run("chart drawing list --book Macro --chart pos:1 --json", &store);
+        let alone: serde_json::Value = serde_json::from_str(&alone.out).unwrap();
+        assert_eq!(alone["shows_drawings"], false);
+        let scopes: Vec<&str> =
+            alone["drawings"].as_array().unwrap().iter().map(|d| d["scope"].as_str().unwrap()).collect();
+        assert_eq!(scopes, vec!["local"]);
+
+        // A drawing a chart kept is removed through it, like any other.
+        let id = local["id"].as_i64().unwrap();
+        let out = run(&format!("chart drawing remove --book Macro --chart pos:1 --id {id}"), &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        let alone = run("chart drawing list --book Macro --chart pos:1 --json", &store);
+        let alone: serde_json::Value = serde_json::from_str(&alone.out).unwrap();
+        assert!(alone["drawings"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_configuration_moves_the_drawings_that_follow_it() {
+        let store = Store::memory().unwrap();
+        run("chartbook create Macro --symbol AAPL --switch", &store);
+        run("chart drawing add line --book Macro --from 2026-09-01,100 --to 2026-09-19,110 --config 3", &store);
+        run("chart drawing add line --book Macro --from 2026-09-01,120 --to 2026-09-19,130 --config 3 --width 4", &store);
+
+        let out = run("chart drawing configure line --config 3 --color teal --arrow end", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        let listed = run("chart drawing list --book Macro --json", &store);
+        let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+        let follows = &parsed["drawings"][0];
+        let own = &parsed["drawings"][1];
+        assert_eq!(follows["style"]["color"], "teal");
+        assert_eq!(follows["style"]["arrow"], "end");
+        assert_eq!(own["style"]["color"], "blue", "a look of its own is not the configuration's");
+        assert_eq!(own["style"]["width"], 4.0);
+
+        let configs = run("chart drawing configs line --json", &store);
+        let parsed: serde_json::Value = serde_json::from_str(&configs.out).unwrap();
+        let third = &parsed["configurations"][2];
+        assert_eq!(third["config"], 3);
+        assert_eq!(third["default"], false);
+
+        run("chart drawing reset-configs line", &store);
+        let configs = run("chart drawing configs line --json", &store);
+        let parsed: serde_json::Value = serde_json::from_str(&configs.out).unwrap();
+        assert_eq!(parsed["configurations"][2]["default"], true);
+        assert_eq!(parsed["configurations"][2]["style"]["color"], "blue");
+        assert_eq!(parsed["configurations"].as_array().unwrap().len(), 9);
+    }
+
+    /// A zig-zag is the one kind that is not two anchors, so it is the one
+    /// kind `--from` and `--to` cannot describe.
+    #[test]
+    fn a_zigzag_is_drawn_through_its_corners() {
+        let store = Store::memory().unwrap();
+        run("chartbook create Macro --symbol AAPL --switch", &store);
+        let out = run(
+            "chart drawing add zigzag --book Macro --point 2026-09-01,100 --point 2026-09-05,120 --point 2026-09-09,110",
+            &store,
+        );
+        assert_eq!(out.code, 0, "{}", out.err);
+
+        let listed = run("chart drawing list --book Macro --json", &store);
+        let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+        let corners = parsed["drawings"][0]["corners"].as_array().unwrap();
+        assert_eq!(corners.len(), 3);
+        assert_eq!(corners[1]["price"], 120.0);
+        // Its ends are the first and the last of them, which is what
+        // everything that only wants a drawing's span reads.
+        assert_eq!(parsed["drawings"][0]["from"]["price"], 100.0);
+        assert_eq!(parsed["drawings"][0]["to"]["price"], 110.0);
+
+        let out = run(
+            "chart drawing set --book Macro --id 1 --point 2026-09-01,100 --point 2026-09-05,130 --point 2026-09-09,105 --point 2026-09-12,140",
+            &store,
+        );
+        assert_eq!(out.code, 0, "{}", out.err);
+        let listed = run("chart drawing list --book Macro --json", &store);
+        let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+        assert_eq!(parsed["drawings"][0]["corners"].as_array().unwrap().len(), 4);
+        assert_eq!(parsed["drawings"][0]["to"]["price"], 140.0);
+
+        // A kind with no corners of its own says so rather than dropping
+        // them, and a single corner is not a drawing.
+        for bad in [
+            "chart drawing add rect --book Macro --point 2026-09-01,100 --point 2026-09-05,120",
+            "chart drawing add zigzag --book Macro --point 2026-09-01,100",
+            "chart drawing set --book Macro --id 1 --point oops,100 --point 2026-09-05,120",
+        ] {
+            let out = run(bad, &store);
+            assert_eq!(out.code, super::super::EXIT_USAGE, "{bad}: {}", out.out);
+        }
+        let listed = run("chart drawing list --book Macro --json", &store);
+        let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+        assert_eq!(parsed["drawings"].as_array().unwrap().len(), 1, "nothing else was drawn");
+        assert_eq!(parsed["drawings"][0]["corners"].as_array().unwrap().len(), 4, "and nothing moved");
+        assert!(parsed["drawings"][0]["corners"].is_array());
+
+        // Every other kind has none, rather than a copy of its two ends.
+        run("chart drawing add line --book Macro --from 2026-09-01,100 --to 2026-09-19,110", &store);
+        let listed = run("chart drawing list --book Macro --json", &store);
+        let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+        assert!(parsed["drawings"][1]["corners"].is_null(), "{}", listed.out);
+    }
+
+    /// Emphasis has to arrive as characters, because a terminal has no
+    /// Ctrl+B — and it goes back out the same way, so a label can be read off
+    /// one drawing and put on another without going through the runs by hand.
+    #[test]
+    fn a_label_keeps_its_bold_through_a_terminal() {
+        let store = Store::memory().unwrap();
+        run("chartbook create Macro --symbol AAPL --switch", &store);
+        let out = run(
+            "chart drawing add rect --book Macro --from 2026-09-01,180 --to 2026-09-19,192 --text buy-**the**-dip --text-at top",
+            &store,
+        );
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert!(out.out.contains("buy-**the**-dip"), "{}", out.out);
+
+        let listed = run("chart drawing list --book Macro --json", &store);
+        let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+        let text = &parsed["drawings"][0]["text"];
+        assert_eq!(text["words"], "buy-the-dip", "the characters, with the asterisks gone");
+        assert_eq!(text["markup"], "buy-**the**-dip");
+        assert_eq!(text["at"], "top");
+        let spans = text["spans"].as_array().unwrap();
+        assert_eq!(spans.len(), 3);
+        assert_eq!(spans[1]["text"], "the");
+        assert_eq!(spans[1]["bold"], true);
+        assert_eq!(spans[1]["italic"], false);
+
+        // What is in a configuration is how words are set, never which
+        // words, so a label is not carried off onto one.
+        let out = run("chart drawing configure --config 1 rect --text nope", &store);
+        assert_eq!(out.code, super::super::EXIT_USAGE, "{}", out.out);
+    }
+
+    /// One bad value refuses the whole command, and names what was wrong.
+    #[test]
+    fn a_bad_anchor_or_colour_leaves_the_drawings_as_they_were() {
+        let store = Store::memory().unwrap();
+        run("chartbook create Macro --symbol AAPL --switch", &store);
+        for bad in [
+            "chart drawing add line --book Macro --from yesterday,180 --to 2026-09-19,192",
+            "chart drawing add line --book Macro --from 2026-09-01,180 --to 2026-09-19,192 --color red",
+            "chart drawing add line --book Macro --from 2026-09-01,180 --to 2026-09-19,192 --config 12",
+            "chart drawing add line --book Macro --from 2026-09-01,180 --to 2026-09-19,192 --scope group-0",
+            "chart drawing add line --book Macro --from 2026-09-01,180",
+            "chart drawing add --book Macro --from 2026-09-01,180 --to 2026-09-19,192",
+            "chart drawing set --book Macro --id 1",
+            "chart drawing remove --book Macro",
+            "chart drawing configure --config 1 --color teal",
+        ] {
+            let out = run(bad, &store);
+            assert_eq!(out.code, super::super::EXIT_USAGE, "{bad}: {}", out.err);
+        }
+        let out = run("chart drawing remove --book Macro --id 9", &store);
+        assert_eq!(out.code, super::super::EXIT_NOT_FOUND, "{}", out.err);
+        let listed = run("chart drawing list --book Macro --json", &store);
+        let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+        assert!(parsed["drawings"].as_array().unwrap().is_empty());
+    }
+
     /// A store holding what the examples name.
     fn seeded() -> Store {
         let store = Store::memory().unwrap();
@@ -3896,6 +5075,53 @@ mod tests {
         run("chartbook create Semis --watchlist Semis --symbol NVDA", &store);
         run("chart indicator add rsi --book Macro", &store);
         store
+    }
+
+    /// A command line split the way a shell splits it: on spaces, except
+    /// inside quotes.
+    ///
+    /// `split_whitespace` was enough while every value was one word, and
+    /// stopped being enough the moment a drawing could carry a label —
+    /// `--text "gap fills here"` is three arguments to a naive splitter and
+    /// fails as one. What a skill shows has to be what somebody can paste,
+    /// so the test reads it the way their shell will.
+    fn words_of(line: &str) -> Vec<String> {
+        let mut words = Vec::new();
+        let mut word = String::new();
+        let mut quote: Option<char> = None;
+        let mut started = false;
+        for c in line.chars() {
+            match (quote, c) {
+                (Some(open), c) if c == open => quote = None,
+                (Some(_), c) => word.push(c),
+                (None, '"') | (None, '\'') => {
+                    quote = Some(c);
+                    // An empty pair of quotes is an empty argument, which is
+                    // how a label is taken off again.
+                    started = true;
+                }
+                (None, c) if c.is_whitespace() => {
+                    if started || !word.is_empty() {
+                        words.push(std::mem::take(&mut word));
+                        started = false;
+                    }
+                }
+                (None, c) => word.push(c),
+            }
+        }
+        if started || !word.is_empty() {
+            words.push(word);
+        }
+        words
+    }
+
+    #[test]
+    fn a_quoted_value_is_one_argument() {
+        assert_eq!(words_of("a b"), vec!["a", "b"]);
+        assert_eq!(words_of("--text \"two words\""), vec!["--text", "two words"]);
+        assert_eq!(words_of("--text \"\""), vec!["--text", ""]);
+        assert_eq!(words_of("  spaced   out  "), vec!["spaced", "out"]);
+        assert_eq!(words_of("--text 'single quoted'"), vec!["--text", "single quoted"]);
     }
 
     /// Every command in the agent skill is a command that runs.
@@ -3927,7 +5153,7 @@ mod tests {
             let store = skill_seed();
             for line in block {
                 let args: Vec<String> = std::iter::once("omacharts".to_string())
-                    .chain(line.split_whitespace().map(String::from))
+                    .chain(words_of(line))
                     .collect();
                 let outcome = dispatch(&args, &store, Some(&NoWindow), &super::super::Here);
                 assert_eq!(

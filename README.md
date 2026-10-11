@@ -1,5 +1,7 @@
 # Omacharts
 
+**[omacharts.org](https://omacharts.org)**
+
 [![CI](https://github.com/jorgemanrubia/omacharts/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jorgemanrubia/omacharts/actions/workflows/ci.yml?query=branch%3Amain)
 
 Fast, beautiful charting software for [Omarchy](https://omarchy.org).
@@ -36,6 +38,13 @@ Fast, beautiful charting software for [Omarchy](https://omarchy.org).
   letter to find a symbol, a number to set a resolution. Press `?` to learn it all.
 - **Indicators.** Moving averages, VWAP with bands, volume, volume profile,
   RSI, ATR and stochastic, each in its own resizable strip. More coming.
+- **Drawings.** Trendlines, levels, arrows, zig-zags, boxes, circles and text,
+  each one key away (`Alt+L`, `H`, `A`, `Z`, `R`, `C`, `T`), with nine
+  configurations per kind on `Alt+1` to `Alt+9`. Those are roles your theme
+  fills rather than fixed colours, held clear of the candles, so a drawing
+  reads on any theme. Any figure takes a label, bold and italic included, and
+  what you draw is on every chart of that symbol.
+  [See how it works](https://www.youtube.com/watch?v=wwMnxI0watk).
 - **Omarchy plugin.** Your watchlist in the bar, with sparklines, live, still
   there after the window closes. It installs itself the first time you run
   Omacharts on an Omarchy desktop, and `omacharts plugin` puts it back, brings
@@ -49,8 +58,8 @@ On Arch, x86_64 or aarch64, install the package attached to the latest
 [release](https://github.com/jorgemanrubia/omacharts/releases/latest):
 
 ```sh
-curl -LO https://github.com/jorgemanrubia/omacharts/releases/latest/download/omacharts-0.1.10-1-$(uname -m).pkg.tar.zst
-sudo pacman -U omacharts-0.1.10-1-$(uname -m).pkg.tar.zst
+curl -LO https://github.com/jorgemanrubia/omacharts/releases/latest/download/omacharts-0.1.11-1-$(uname -m).pkg.tar.zst
+sudo pacman -U omacharts-0.1.11-1-$(uname -m).pkg.tar.zst
 ```
 
 Or build that same package yourself from a clone:
@@ -175,7 +184,7 @@ See `omacharts skill --help`, or
 
 Rough order, and nothing here is a promise.
 
-- [ ] **Beautiful annotations.** Trendlines, levels and notes that stay where
+- [x] **Beautiful drawings.** Trendlines, levels and notes that stay where
       you put them, and look like they belong on the chart rather than on top
       of it.
 - [ ] **More data feeds.** Yahoo is one provider behind one interface. Others

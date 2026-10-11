@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <title>Omacharts</title>
+  <!-- Three candles: a quiet bar, a down bar, a breakout. Cream (#f5f1e8) on
+       near-black (#101010). All three wear the cream rather than red and
+       green: this app shows markets rather than taking a side in them, and
+       direction is the chart's job, not the icon's. -->
+  <rect width="128" height="128" rx="24" fill="#101010"/>
+  <g fill="#f5f1e8" stroke="#f5f1e8" stroke-width="6" stroke-linecap="round">
+    <path d="M30 34v58"/>
+    <rect x="18" y="48" width="24" height="32" rx="5" stroke="none"/>
+  </g>
+  <g fill="#f5f1e8" stroke="#f5f1e8" stroke-width="6" stroke-linecap="round">
+    <path d="M64 44v60"/>
+    <rect x="52" y="56" width="24" height="36" rx="5" stroke="none"/>
+  </g>
+  <g fill="#f5f1e8" stroke="#f5f1e8" stroke-width="6" stroke-linecap="round">
+    <path d="M98 24v62"/>
+    <rect x="86" y="34" width="24" height="42" rx="5" stroke="none"/>
+  </g>
+</svg>
