@@ -165,10 +165,18 @@ binary, so sometimes it has to happen — but it is his app disappearing from
 his screen, so say in the report that you did it.
 
 Driving the window itself, when a claim needs it: launch with
-`GDK_BACKEND=x11` so `xdotool` can reach it, find it with `xdotool search
---pid <pid> --onlyvisible | tail -1`, and capture its own pixels with
-`import -window <id> out.png`, which works whatever is on top and whatever
-workspace it is on. Keyboard reaches it that way; the pointer does not,
+`GDK_BACKEND=x11` so `xdotool` can reach it, and find it with `xdotool
+search --pid <pid> --onlyvisible | tail -1`.
+
+**Screenshot through the app, not the compositor.** `import -window <id>`
+hands back a stale pixmap for a window on a hidden workspace, because
+nothing is being composited — and the obvious guard against that, capturing
+twice and checking the frames match, reports "settled" for exactly the same
+reason. Three captures in one review were stale that way and nearly produced
+a wrong answer about a gridline fix. `omacharts chart screenshot --output`
+renders from inside the app with no compositor in the path, so it is the one
+to trust; keep `import -window` for the case where what is being checked is
+the window's own decoration. Keyboard reaches it that way; the pointer does not,
 so do not rely on clicks. Two things that have gone wrong: a window
 launched on the owner's active workspace takes his focus, and his next
 keystrokes land in your throwaway app — launch it on a special workspace
