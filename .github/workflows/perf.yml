@@ -1,0 +1,81 @@
+name: Performance
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      base:
+        description: 'Revision to compare against (default: the merge base with main)'
+        required: false
+        type: string
+
+# Read the repository and nothing else. The numbers go into the job summary
+# rather than into a comment on the pull request, and that is the whole reason
+# this job needs no write token and no secret: posting a comment would want
+# `pull-requests: write`, and that permission on a workflow which builds code
+# off a branch is a bigger thing to own than a table of timings is worth. The
+# summary sits in the Actions tab beside the check, reads the same, and behaves
+# identically on a pull request from a fork — where the token is read-only
+# whatever this file asks for.
+permissions:
+  contents: read
+
+# A perf run costs two release builds, so a branch that is pushed three times
+# in a minute should not pay for three of them.
+concurrency:
+  group: perf-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compare:
+    name: Against the merge base
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The merge base has to be a commit this clone can check out and
+          # build, which a shallow one cannot promise.
+          fetch-depth: 0
+      - name: Install GTK
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Its own cache. This job builds two revisions in release, into a
+          # target directory each, and none of that looks like what the CI
+          # job's debug build leaves behind.
+          shared-key: perf
+          # Outside `target/`, which rust-cache already looks after: a
+          # directory nested inside one it is caching would go into the
+          # archive twice.
+          cache-directories: ~/perf-target
+      - name: Compare
+        env:
+          # The tip of the branch this pull request will land on, which for a
+          # `pull_request` run is the first parent of the merge commit being
+          # built. Read out of the environment rather than interpolated into
+          # the script, so nothing from the event payload can be read as shell.
+          BASE: ${{ github.event.pull_request.base.sha || inputs.base }}
+        run: |
+          set -o pipefail
+          export PERF_TARGETS="$HOME/perf-target"
+          base="$BASE"
+          if [ -z "$base" ]; then
+            git fetch --no-tags origin main
+            base=$(git merge-base HEAD FETCH_HEAD)
+          fi
+          # The table on stdout, the two builds' own output on stderr, so the
+          # summary below is the numbers and the log is everything else.
+          bin/perf-compare "$base" | tee perf.txt
+      - name: Put the numbers in the summary
+        if: always()
+        run: |
+          {
+            echo '### Performance against the merge base'
+            echo
+            echo '```'
+            cat perf.txt 2>/dev/null || echo 'The comparison produced no table; see the log.'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
