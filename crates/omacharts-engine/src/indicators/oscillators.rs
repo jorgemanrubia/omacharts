@@ -160,10 +160,9 @@ fn mean_of(values: &[Option<f64>], period: usize) -> Vec<Option<f64>> {
 /// The warm-up follows from the seeding and is worth stating, because it is
 /// what a chart compared against another platform is compared on: the line
 /// starts where the longer of the two averages does — bar `slow - 1`, for the
-/// `fast` under `slow` that a MACD means — and
-/// the signal needs `signal` of those before it has a seed of its own, so it
-/// starts at bar `slow + signal - 2`. For the usual 12, 26 and 9 that is bar
-/// 25 and bar 33.
+/// `fast` under `slow` that a MACD means — and the signal needs `signal` of
+/// those before it has a seed of its own, so it starts at bar
+/// `slow + signal - 2`. For the usual 12, 26 and 9 that is bar 25 and bar 33.
 pub fn macd(bars: &[Bar], fast: usize, slow: usize, signal: usize) -> (Series, Series, Series) {
     let blank = || vec![None; bars.len()];
     if fast == 0 || slow == 0 || signal == 0 {
@@ -172,7 +171,7 @@ pub fn macd(bars: &[Bar], fast: usize, slow: usize, signal: usize) -> (Series, S
 
     let quick = super::ema(bars, fast);
     let slower = super::ema(bars, slow);
-    let line: Vec<Option<f64>> = quick
+    let line: Series = quick
         .iter()
         .zip(&slower)
         .map(|pair| match pair {

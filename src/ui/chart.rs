@@ -4470,7 +4470,11 @@ fn draw_histogram(
         let mut any = false;
         for at in 0..columns.len() {
             let Some(Some(value)) = values.get(columns.offset(at)) else { continue };
-            if (*value >= 0.0) != rising || *value == 0.0 {
+            // A bar at nought has no height to draw, and one whose value is
+            // not a figure has neither height nor a side to be on. The engine
+            // does not produce the second, and a rectangle with a NaN corner
+            // is not a thing to find out about from inside a draw callback.
+            if !value.is_finite() || *value == 0.0 || (*value >= 0.0) != rising {
                 continue;
             }
             any = true;

@@ -75,9 +75,12 @@ pub fn compute(bars: &[Bar], period: usize, bands: &[Band]) -> Bands {
     }
 
     // Everything is summed as a distance from here. Any figure near the series
-    // will do — the first close is the cheapest one to hand — and the whole
-    // point is that it is subtracted before squaring rather than after.
-    let anchor = bars[0].close;
+    // will do and the whole point is that it is subtracted before squaring
+    // rather than after — but it has to be a figure: anchoring on a close that
+    // is not a number would make every distance from it one too, and the count
+    // below, which watches the closes, would never notice.
+    let anchor =
+        bars.iter().map(|bar| bar.close).find(|close| close.is_finite()).unwrap_or(0.0);
     let n = period as f64;
     let (mut sum, mut sum_sq) = (0.0f64, 0.0f64);
     // How many bars in the window are not a number. A provider that sends one
@@ -311,6 +314,36 @@ mod tests {
             assert_eq!(out.center[12], Some(10.0), "{nonsense}: and then it recovers");
             assert!(out.center.iter().flatten().all(|v| v.is_finite()));
         }
+    }
+
+    /// The first bar is the one the sums are anchored on, so a figure that is
+    /// not a number there is the case that would poison every window rather
+    /// than its own — the count watches the closes, and every distance from a
+    /// NaN is a NaN without a single close being one.
+    #[test]
+    fn a_first_close_that_is_not_a_number_does_not_poison_the_rest() {
+        for nonsense in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut closes: Vec<f64> = (0..20).map(|i| 48_000.0 + i as f64).collect();
+            closes[0] = nonsense;
+            let out = compute(&bars(&closes), 4, &band(2.0));
+
+            for at in 0..=3 {
+                assert!(out.center[at].is_none(), "{nonsense}: window {at} holds it");
+            }
+            // 48004 to 48007, which averages to 48005.5.
+            assert_eq!(out.center[7], Some(48_005.5), "{nonsense}");
+            assert!(out.center.iter().flatten().all(|v| v.is_finite()));
+            assert!(out.bands[0].upper.iter().flatten().all(|v| v.is_finite()));
+        }
+    }
+
+    /// And a series of nothing but them, which is the case the fallback is
+    /// for: no anchor to be found at all.
+    #[test]
+    fn a_series_of_nothing_but_nonsense_draws_nothing() {
+        let out = compute(&bars(&[f64::NAN; 10]), 4, &band(2.0));
+        assert!(out.center.iter().all(Option::is_none));
+        assert!(out.bands[0].upper.iter().all(Option::is_none));
     }
 
     /// A high below its own low is not this indicator's business — it reads
