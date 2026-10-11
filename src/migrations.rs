@@ -38,7 +38,7 @@ use rusqlite::{params, Connection};
 
 /// How far the migrations go. A database claiming more than this was written
 /// by a newer Omacharts than the one opening it.
-pub const LATEST: i32 = 1;
+pub const LATEST: i32 = 2;
 
 /// What went wrong before the database was usable.
 #[derive(Debug)]
@@ -164,6 +164,26 @@ pub const MIGRATIONS: &[Migration] = &[Migration {
          INSERT INTO watchlist_sections (id, name, position, watchlist_id)
              VALUES (0, '', -1, 1);",
     ),
+},
+Migration {
+    version: 2,
+    name: "drawings",
+    risky: false,
+    // What a person draws on a chart belongs to the symbol, not to the pane
+    // it was drawn in: a trend line on AAPL means nothing on NVDA and
+    // everything on AAPL in another chartbook, at another resolution. So
+    // drawings are keyed the way watchlist entries are, by symbol and
+    // suffix, and the rest is JSON, like a theme — the shape of a drawing
+    // will grow, and a column per field would mean a migration per idea.
+    step: Step::Sql(
+        "CREATE TABLE drawings (
+             id     INTEGER PRIMARY KEY AUTOINCREMENT,
+             symbol TEXT NOT NULL,
+             suffix TEXT NOT NULL DEFAULT '',
+             json   TEXT NOT NULL
+         );
+         CREATE INDEX drawings_by_symbol ON drawings (symbol, suffix);",
+    ),
 }];
 
 /// Bring a database up to [`LATEST`], or say why it cannot be.
@@ -253,6 +273,7 @@ mod tests {
                 "bar_series:key,interval,first_ts,last_ts,count,fetched_at,ts,open,high,low,close,volume",
                 "custom_bar_schemes:id,json",
                 "custom_themes:id,json",
+                "drawings:id,symbol,suffix,json",
                 "meta:key,value",
                 "settings:key,value",
                 "watchlist_entries:section_id,symbol,suffix,position",
