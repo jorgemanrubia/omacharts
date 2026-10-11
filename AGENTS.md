@@ -385,9 +385,9 @@ voice regardless of who typed it.
 bin/release 0.1.3
 ```
 
-That is the whole thing. The script writes the version into the four places a
-tag cannot float — `Cargo.toml`, `Cargo.lock`, the README's download line, and
-the PKGBUILD's `pkgver` — then builds and tests with `--locked` to prove the
+That is the whole thing. The script writes the version into the three places a
+tag cannot float — `Cargo.toml`, `Cargo.lock` and the PKGBUILD's `pkgver` —
+then builds and tests with `--locked` to prove the
 tree agrees with itself, commits, tags and pushes. It refuses to run on a dirty
 tree, off `main`, behind `origin`, or onto a tag that already exists.
 
@@ -443,10 +443,10 @@ release day means writing from memory about work that is already merged.
 
 ### Do not bump the version by hand
 
-Four files have to agree, and `Cargo.lock` is the one everybody forgets: a lock
+Three files have to agree, and `Cargo.lock` is the one everybody forgets: a lock
 file left behind its own `Cargo.toml` makes every `--locked` build refuse, which
 turns CI red on `main` and on everything branched from it. `bin/release` checks
-all four and will not tag if any disagrees.
+all three and will not tag if any disagrees.
 
 ### If something goes wrong
 
