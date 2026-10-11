@@ -5378,6 +5378,9 @@ impl Every {
 /// actually on screen so closed hours and weekends take no room. A tick every
 /// so many bars instead drifts against the calendar: twenty-six weeks is not
 /// six months.
+///
+/// Which round time to use is settled on how many of them there are; what
+/// finally gets drawn is thinned so no two labels sit on top of each other.
 fn axis_ticks(
     total: i64,
     plot_w: f64,
@@ -5404,6 +5407,24 @@ fn axis_ticks(
         }
         ticks
     };
+    // A session's first bar starts a new stretch, and the round time just
+    // after it starts another: 15:30 and 16:00 land two bars apart on a 15m
+    // chart and their labels overprint. The round time is what the axis is
+    // for — the open only earned a tick by being first after the overnight
+    // gap — so it takes the open's place rather than crowding in beside it.
+    let bar_w = plot_w / total.max(1) as f64;
+    let spaced = |columns: Vec<i64>| {
+        let mut kept: Vec<i64> = Vec::with_capacity(columns.len());
+        for column in columns {
+            if kept.last().is_some_and(|last| (column - last) as f64 * bar_w < TIME_LABEL_GAP) {
+                kept.pop();
+            }
+            kept.push(column);
+        }
+        kept
+    };
+    // Counted before thinning: thinning alone would leave every rung looking
+    // like it fits, and the finest one would always win.
     let room = (plot_w / TIME_LABEL_GAP).max(1.0) as usize;
     let mut coarsest = Every::Months(240);
     for every in Every::LADDER {
@@ -5412,11 +5433,11 @@ fn axis_ticks(
         }
         let found = ticks(every);
         if found.len() <= room {
-            return (found, every.seconds());
+            return (spaced(found), every.seconds());
         }
         coarsest = every;
     }
-    (ticks(coarsest), coarsest.seconds())
+    (spaced(ticks(coarsest)), coarsest.seconds())
 }
 
 /// Label an axis tick at the detail the gap between ticks justifies.
@@ -6186,6 +6207,44 @@ mod tests {
         for column in ticks {
             assert_ne!(month(column), month(column - 1), "column {column} is mid-month");
         }
+    }
+
+    /// The bug: an intraday session opens mid-stretch, so its first bar and
+    /// the round time just after it both took a tick — "15:30" and "16:00"
+    /// two bars apart, printed over each other.
+    #[test]
+    fn an_intraday_session_open_does_not_crowd_the_round_time_after_it() {
+        use chrono::{Local, TimeZone};
+        // Regular hours at 15m: 26 bars a session, then an overnight gap.
+        const STEP: i64 = 900;
+        let mut stamps = Vec::new();
+        let mut day =
+            Local.with_ymd_and_hms(2026, 10, 5, 15, 30, 0).single().expect("a session open");
+        for _ in 0..5 {
+            for bar in 0..26 {
+                stamps.push(day.timestamp() + bar * STEP);
+            }
+            day += chrono::Duration::days(1);
+        }
+
+        let total = stamps.len() as i64;
+        let plot_w = 2_400.0;
+        let (ticks, _) = axis_ticks(total, plot_w, STEP, |column| {
+            stamps.get(column as usize).copied()
+        });
+
+        let bar_w = plot_w / total as f64;
+        for pair in ticks.windows(2) {
+            let gap = (pair[1] - pair[0]) as f64 * bar_w;
+            assert!(gap >= TIME_LABEL_GAP, "{gap} px between columns {pair:?}");
+        }
+        // And the one that survives each session open is the round time.
+        let minute = |column: &i64| {
+            let at = Local.timestamp_opt(stamps[*column as usize], 0).unwrap();
+            at.format("%H:%M").to_string()
+        };
+        let at = ticks.iter().map(minute).collect::<Vec<_>>();
+        assert!(at.iter().all(|minute| minute.ends_with(":00")), "{at:?}");
     }
 
     #[test]
