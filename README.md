@@ -53,15 +53,20 @@ Fast, beautiful charting software for [Omarchy](https://omarchy.org).
 
 ## Installing
 
-On Arch, x86_64 or aarch64, install the package attached to the latest
-[release](https://github.com/jorgemanrubia/omacharts/releases/latest):
+Omacharts lives in Omarchy's own package repository, which is already enabled
+on an Omarchy machine:
 
 ```sh
-curl -LO https://github.com/jorgemanrubia/omacharts/releases/latest/download/omacharts-0.1.13-1-$(uname -m).pkg.tar.zst
-sudo pacman -U omacharts-0.1.13-1-$(uname -m).pkg.tar.zst
+omarchy pkg add omacharts
 ```
 
-Or build that same package yourself from a clone:
+That puts the command on your path with the man page, shell completions and
+the agent skill, and `pacman -Syu` carries Omacharts along with the rest of
+the system.
+
+### From source
+
+On Arch, x86_64 or aarch64, you can build the same package from a clone:
 
 ```sh
 git clone https://github.com/jorgemanrubia/omacharts
@@ -69,24 +74,8 @@ cd omacharts/packaging/aur
 makepkg -si
 ```
 
-Either one gets you the command on your path, the man page, shell
-completions and the agent skill. To run it from a working tree instead — it
-rebuilds on every launch — use `./bin/install`.
-
-### Through Omarchy
-
-Omacharts is for Omarchy, so Omarchy's own package repository is where it
-belongs, and it is
-[waiting to be merged there](https://github.com/omacom/omarchy-pkgs/pull/802).
-Once it lands, this is the whole of it:
-
-```sh
-omarchy pkg add omacharts
-```
-
-Nothing to configure, since that repository is already enabled on an Omarchy
-machine, and `pacman -Syu` will carry Omacharts along with the rest of the
-system.
+To run it from a working tree instead — it rebuilds on every launch — use
+`./bin/install`.
 
 ## Data
 
