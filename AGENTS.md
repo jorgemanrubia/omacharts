@@ -225,6 +225,45 @@ building, not of the project, and CI has no cache to hit.
 Before blaming a PR for a slow review, check which of the two kinds of build
 it was.
 
+## A regression is measured, not noticed
+
+Three things are what this app is for: being quick to have a chart on screen,
+being quick to draw one, and answering a hand or a keyboard without a pause.
+All three are measured, and the pull request that breaks one says so rather
+than somebody noticing a month later that the app feels slow.
+
+```sh
+cargo run --release --example perf          # the table, for reading
+bin/perf-compare                            # the table twice, against main
+```
+
+`examples/perf.rs` is the scenarios: a startup budget, frame costs at four
+screenfuls across one and four charts, and the latency of a pointer motion, a
+character typed into the search box, a tick arriving and a command running.
+Offline and deterministic, every row — a synthetic series, a scratch `HOME`,
+no socket. `frame_bench` and `stream_bench` stay what they were: the same
+scenes, drawn through the same `Scene`, printed as a mean for somebody reading
+them.
+
+`.github/workflows/perf.yml` runs the comparison on every pull request, in a job
+of its own so the build and the tests are not behind it, and puts the table in
+the job summary rather than in a comment — which is why it needs no write token
+and no secret. What it
+fails on is the allocation counts, which are exact and the same on every
+machine. The clock is reported and only fails at a doubling, because a GitHub
+runner is a slice of a shared machine and below that a regression and a busy
+neighbour are the same number. `bin/perf-compare`'s header has the whole of the
+reasoning; read it before changing a threshold.
+
+Two things follow for anyone adding to the harness. It must stay inside
+`examples/perf.rs` and `src/ui/chart/bench.rs`, because the comparison copies
+those two files onto the older revision — a harness that reached into a third
+file could not be grafted, and the job would stop comparing and start reporting.
+And a scenario has to be idempotent: its allocation counts are taken from a
+single run after a warm-up, and the two passes of a side have to agree on them
+to the byte. One that leaves something behind measures a different thing the
+second time, and the comparison says so rather than picking a number.
+
 ## Verifying parity
 
 Before calling a feature done:
