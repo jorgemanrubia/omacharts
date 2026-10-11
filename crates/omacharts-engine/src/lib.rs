@@ -6,6 +6,7 @@
 //! keeps the provider boundary honest.
 
 pub mod bars;
+pub mod drawings;
 pub mod frame;
 pub mod indicators;
 pub mod link;
@@ -30,6 +31,10 @@ pub use provider::{
 };
 pub use session::Session;
 pub use symbols::{Instrument, InstrumentKind, SearchHit, SearchIndex};
+pub use drawings::{
+    Align, Anchor, Arrow, ArrowHead, Configurations, Drawing, Grip, Kind as DrawingKind, Paint, Place,
+    Preset, Projected, Scope, Span, Style, Text as DrawingText, TextStyle,
+};
 pub use frame::Frame;
 pub use theme::{
     theme_bars, BarScheme, BarSlot, ColorChoice, Direction, Mode, Source, Swatch, Theme,

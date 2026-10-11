@@ -27,6 +27,10 @@ use std::rc::Rc;
 
 use gtk::cairo;
 use gtk::prelude::*;
+use crate::ui::text_editor;
+use omacharts_engine::drawings::{
+    self, Anchor, Configurations, Drawing, Grip, Kind as DrawingKind, Projected, Scope,
+};
 use omacharts_engine::indicators::{self as indicators, vwap, Output, Profile};
 use omacharts_engine::{
     Bar, BarScheme, BarStyle, Direction, FetchFailure, Indicator, Instrument, Theme, Timeframe,
@@ -149,7 +153,95 @@ struct State {
     /// While true the price scale follows the data and the two values above
     /// are held at their neutral settings.
     price_auto: bool,
+    /// What has been drawn on this symbol, in the order it was drawn. The
+    /// chart draws what it is handed; the store is where they live.
+    drawings: Vec<Drawing>,
+    /// Which of them has the grips, by position in `drawings`.
+    /// The drawings that wear grips, in the order they were taken: the last
+    /// is the one most recently picked, and what a single-drawing question
+    /// is about. Shift with a click adds one or takes one out.
+    selected: Vec<usize>,
+    /// What was selected when a marquee began, kept under it: the box adds
+    /// to the selection rather than starting one, since Shift is held.
+    marquee_base: Vec<usize>,
+    /// Whether the tool stays in hand after a drawing is finished.
+    ///
+    /// Off by default: a tool is normally for the one drawing you reached
+    /// for it to make, and going back to the pointer is what lets you take
+    /// hold of it straight away. On, it is for laying down six of
+    /// something, and Escape is the way out.
+    sticky: bool,
+    /// The tool that is armed: the next press on the plot starts a drawing
+    /// of this kind. `None` is the usual state, where a press pans.
+    tool: Option<DrawingKind>,
+    /// A drawing with its first anchor down and its second following the
+    /// pointer. Drawn on the pointer layer, since it moves with the hand;
+    /// committed to `drawings` on the second press or at the end of a drag.
+    placing: Option<Drawing>,
+    /// The configuration the next drawing gets: Alt+N while a tool is armed
+    /// chooses it, so Alt+R, Alt+2, click, click draws a rectangle in the
+    /// second configuration. Back to the first once the drawing is down or
+    /// the tool is put down: the choice was for that drawing.
+    next_config: u8,
+    /// The nine configurations of each kind, as the window has them: what a
+    /// drawing that follows configuration N looks like.
+    configs: Configurations,
+    /// What this chart shares its drawings with, which is also the scope a
+    /// drawing made on it gets.
+    /// Whether a drawing made here goes to the symbol or stays on this
+    /// chart. The other half of the pair — whether what others send is
+    /// shown — is the window's, since it decides which drawings the chart
+    /// is handed in the first place.
+    sends: bool,
+    /// Every change to the drawings, as the list was before it, so Ctrl+Z
+    /// puts it back; and what Ctrl+Z took away, so Ctrl+Y can put it back
+    /// again. One list rather than one event per kind of change, because a
+    /// drag, a property, a configuration and a deletion all come down to
+    /// "the drawings were this and are now that".
+    undo: Vec<Vec<Drawing>>,
+    redo: Vec<Vec<Drawing>>,
+    /// The drawing whose words are being typed, by position in `drawings`.
+    ///
+    /// Its label is left off the chart while this is set: the editor is
+    /// sitting exactly where the label would be, in the same font and the
+    /// same ink, and drawing both would be drawing it twice.
+    editing: Option<usize>,
+    /// Where that editor is, in pixels, so the chart can put the label's own
+    /// ground under it.
+    ///
+    /// A committed label gets its ground as a halo round each glyph, which a
+    /// text widget cannot draw. So while the caret is in it the ground goes
+    /// down as a plate instead: the same colour, under the whole block, which
+    /// is if anything more readable than the result and never less. The
+    /// editor is told where to sit after every keystroke, and tells the
+    /// chart here.
+    editing_at: Option<(f64, f64, f64, f64)>,
 }
+
+/// Something that happened to a drawing, for whoever keeps them.
+///
+/// The chart owns the hand; the window owns the store. A drawing that was
+/// added needs a row, one that moved needs its row rewritten, and one that
+/// was deleted needs its row gone — and the window, which knows the symbol
+/// and the store, is the one that can do any of that.
+#[derive(Clone, PartialEq, Debug)]
+pub enum DrawingEvent {
+    Added(Drawing),
+    Changed(Drawing),
+    /// Under the hand, between a press and its release: where the drawing
+    /// is at this moment, for the other charts that show it to follow
+    /// along. Nothing is written down until `Changed`.
+    Moving(Drawing),
+    Removed(i64),
+    /// The whole list, after an undo or a redo: whatever is in the store for
+    /// this chart that is not here goes, and whatever is here that is not
+    /// there comes back, ids and all.
+    Replaced(Vec<Drawing>),
+}
+
+/// How many changes back Ctrl+Z can go. Plenty for a session; a bound so
+/// that an afternoon of dragging does not keep an afternoon of lists.
+const HISTORY: usize = 200;
 
 /// What a drag is doing, decided by where it started.
 ///
@@ -164,6 +256,19 @@ enum Drag {
     /// Pulling a line between two rows, to make the pane beside it taller or
     /// shorter.
     PaneEdge { id: u32, share: f64, total_h: f64, grows_downward: bool },
+    /// Laying a drawing down: the second anchor follows the pointer. A press
+    /// that does not travel leaves the drawing waiting for a second press;
+    /// one that does finishes it where the hand let go, so both ways of
+    /// drawing a line — click, click, and press-drag-release — work.
+    Place { moved: bool },
+    /// Moving one of a drawing's grips, or the whole of it. `origin` is where
+    /// the hand took hold, in the chart's own units, and `before` is the
+    /// drawing as it was, so the motion is applied to a fixed starting point
+    /// rather than accumulated.
+    Grip { index: usize, grip: Grip, origin: Anchor },
+    /// Shift and a press on empty chart: a box dragged out from `from`,
+    /// in pixels, that selects every drawing it touches as it goes.
+    Marquee { from: (f64, f64), to: (f64, f64) },
 }
 
 /// One row of the chart's vertical stack: the price plot, or one indicator's
@@ -418,6 +523,77 @@ impl<'a> Columns<'a> {
     }
 }
 
+/// The moment at a fractional bar index, on and off the ends of the series.
+///
+/// Inside the series it is the bar's own timestamp. Beyond either end it
+/// continues at the step the end was taking, so an anchor dropped to the
+/// right of the last candle is a moment later than it by a whole number of
+/// bars — which is what a line drawn into the future has to mean for it to
+/// land on the same bar when the bar arrives.
+fn ts_at(bars: &[Bar], index: f64) -> i64 {
+    let Some(last) = bars.len().checked_sub(1) else { return index as i64 };
+    if index <= 0.0 {
+        let step = if last > 0 { bars[1].ts - bars[0].ts } else { 0 };
+        return bars[0].ts + (index * step as f64).round() as i64;
+    }
+    if index >= last as f64 {
+        let step = if last > 0 { bars[last].ts - bars[last - 1].ts } else { 0 };
+        return bars[last].ts + ((index - last as f64) * step as f64).round() as i64;
+    }
+    let (lo, hi) = (index.floor() as usize, index.ceil() as usize);
+    let within = index - lo as f64;
+    bars[lo].ts + ((bars[hi].ts - bars[lo].ts) as f64 * within).round() as i64
+}
+
+/// Move a drawing by a number of columns and a difference in price.
+///
+/// Through the index and back, rather than by adding to the timestamps,
+/// because the chart's columns are evenly spaced and its timestamps are not:
+/// see the body drag for what that costs.
+fn shift_by_columns(bars: &[Bar], drawing: &mut Drawing, by_index: f64, by_price: f64) {
+    let move_anchor = |anchor: &mut Anchor| {
+        anchor.ts = ts_at(bars, index_of_ts(bars, anchor.ts) + by_index);
+        anchor.price += by_price;
+    };
+    // Every corner, not only the two ends. A zig-zag is drawn from its own
+    // corners, so a shift that moved the ends and left them behind moved
+    // nothing anybody could see — which is exactly what it did.
+    for anchor in drawing.points.iter_mut() {
+        move_anchor(anchor);
+    }
+    move_anchor(&mut drawing.from);
+    move_anchor(&mut drawing.to);
+    // The ends are the ends of the run, and were just moved the same way as
+    // the corners, so they already agree; this is only in case a drawing
+    // ever carries corners that do not reach them.
+    if let (Some(first), Some(last)) = (drawing.points.first(), drawing.points.last()) {
+        drawing.from = *first;
+        drawing.to = *last;
+    }
+}
+
+/// The inverse: where a moment falls among the bars, as a fractional index.
+///
+/// Between two bars it interpolates, so a moment that no bar carries — a
+/// daily drawing seen on an hourly chart has those at the weekend — still
+/// has a place. Off the ends it extrapolates at the end's step, the way
+/// [`ts_at`] does, so the two agree.
+fn index_of_ts(bars: &[Bar], ts: i64) -> f64 {
+    let Some(last) = bars.len().checked_sub(1) else { return 0.0 };
+    let at = bars.partition_point(|b| b.ts < ts);
+    if at == 0 {
+        let step = if last > 0 { (bars[1].ts - bars[0].ts).max(1) } else { 1 };
+        return (ts - bars[0].ts) as f64 / step as f64;
+    }
+    if at > last {
+        let step = if last > 0 { (bars[last].ts - bars[last - 1].ts).max(1) } else { 1 };
+        return last as f64 + (ts - bars[last].ts) as f64 / step as f64;
+    }
+    let (before, after) = (bars[at - 1].ts, bars[at].ts);
+    let gap = (after - before).max(1);
+    (at - 1) as f64 + (ts - before) as f64 / gap as f64
+}
+
 /// The price scale over the visible bars, padded so candles never touch the
 /// edges, and then held to whatever vertical window the user has dragged to.
 ///
@@ -567,7 +743,261 @@ impl State {
             price_zoom: 1.0,
             price_offset: 0.0,
             price_auto: true,
+            drawings: Vec::new(),
+            sticky: false,
+            editing: None,
+            editing_at: None,
+            selected: Vec::new(),
+            marquee_base: Vec::new(),
+            tool: None,
+            placing: None,
+            next_config: 1,
+            configs: Configurations::default(),
+            sends: true,
+            undo: Vec::new(),
+            redo: Vec::new(),
         }
+    }
+
+    /// Remember the drawings as they are, for undo, before they change. A
+    /// new change is a new future, so what was redoable is not any more.
+    /// Drop the step most recently remembered, for a change that turned out
+    /// not to be one: the step is still the top of the stack, because
+    /// nothing else can have been remembered in between.
+    fn forget(&mut self) {
+        self.undo.pop();
+    }
+
+    fn remember(&mut self) {
+        self.undo.push(self.drawings.clone());
+        if self.undo.len() > HISTORY {
+            self.undo.remove(0);
+        }
+        self.redo.clear();
+    }
+
+    /// The drawing most recently taken into the selection.
+    fn primary(&self) -> Option<usize> {
+        self.selected.last().copied()
+    }
+
+    /// The kind the whole selection is, when it is all one kind: what the
+    /// properties and the configurations can be asked about. Mixed, or
+    /// nothing selected, is `None`.
+    fn selection_kind(&self) -> Option<DrawingKind> {
+        let mut kinds = self.selected.iter().filter_map(|i| self.drawings.get(*i)).map(|d| d.kind);
+        let first = kinds.next()?;
+        kinds.all(|k| k == first).then_some(first)
+    }
+
+    /// Keep the selection on the same drawings after the list was rebuilt,
+    /// by id; a drawing with no id yet is the newest row.
+    fn reselect(&mut self, ids: Vec<i64>) {
+        // A drawing with no id yet has only just been made and has not come
+        // back from wherever drawings are kept, so there is nothing to find
+        // it by: it is one of the newest rows. One of those used to mean
+        // *the* newest row, which was right while only one drawing could be
+        // made at a time — and then pasting three of them selected the same
+        // last row three times over, and the dedup below left one selected.
+        // As many as there are, in the order they went down.
+        let fresh = ids.iter().filter(|id| **id == 0).count();
+        let mut next = self.drawings.len().saturating_sub(fresh);
+        self.selected = ids
+            .into_iter()
+            .filter_map(|id| match id {
+                0 => {
+                    let at = (next < self.drawings.len()).then_some(next);
+                    next += 1;
+                    at
+                }
+                id => self.drawings.iter().position(|d| d.id == id),
+            })
+            .collect();
+        self.selected.dedup();
+    }
+
+    fn selected_ids(&self) -> Vec<i64> {
+        self.selected.iter().filter_map(|i| self.drawings.get(*i)).map(|d| d.id).collect()
+    }
+
+    /// Where a pixel is in the chart's own units: the moment of the bar
+    /// under it and the price at that height. `None` when there is nothing
+    /// on the chart to measure against.
+    ///
+    /// The moment snaps to a bar, so a drawing dropped on a candle lands on
+    /// it exactly; past either end of the loaded bars it keeps counting at
+    /// the last bar's step, so a line can be drawn into the future.
+    fn locate(&self, width: f64, height: f64, x: f64, y: f64) -> Option<Anchor> {
+        let (first, visible, lead) = self.view();
+        if visible == 0 {
+            return None;
+        }
+        let plan = layout(self, width, height);
+        let (low, high) = price_range(self, &self.bars[first..first + visible])?;
+        let price = high - (y - plan.price_y) / plan.price_h * (high - low);
+        // A column's width, the room at either end counted: the plot's
+        // first column may stand before the first bar.
+        let bar_w = plan.plot_w / self.columns().max(1) as f64;
+        let index = first as f64 - lead as f64 + (x - plan.plot_x) / bar_w - 0.5;
+        Some(Anchor::new(ts_at(&self.bars, index.round()), price))
+    }
+
+    /// The first press with a tool in hand: a drawing of that kind, in the
+    /// configuration chosen for it and the scope this chart draws into, with
+    /// both anchors where the hand is until the hand moves.
+    fn begin_placing(&mut self, width: f64, height: f64, x: f64, y: f64) -> bool {
+        let Some(kind) = self.tool else { return false };
+        let Some(anchor) = self.locate(width, height, x, y) else { return false };
+        let mut drawing = match kind.is_path() {
+            true => Drawing::zigzag_from(anchor),
+            false => Drawing::new(kind, anchor, anchor),
+        };
+        drawing.follow(self.next_config);
+        drawing.scope = scope_for(self.sends);
+        self.placing = Some(drawing);
+        self.drag = Some(Drag::Place { moved: false });
+        true
+    }
+
+    /// A drawing as pixels, through the same scales the candles use.
+    fn project(&self, plan: &Layout, low: f64, high: f64, drawing: &Drawing) -> Projected {
+        let (first, _, lead) = self.view();
+        let bar_w = plan.plot_w / self.columns().max(1) as f64;
+        // The bar index the plot's left edge stands at, negative when room
+        // was opened before the first bar.
+        let left = first as f64 - lead as f64;
+        let point = |anchor: &Anchor| {
+            let index = index_of_ts(&self.bars, anchor.ts);
+            let x = plan.plot_x + (index - left + 0.5) * bar_w;
+            let y = plan.price_y + plan.price_h * (high - anchor.price) / (high - low);
+            (x, y)
+        };
+        let projected = match drawing.kind.is_path() {
+            true => Projected::through(drawing.kind, drawing.corners().iter().map(point).collect()),
+            false => Projected::new(drawing.kind, point(&drawing.from), point(&drawing.to)),
+        };
+        // Measured here, for every caller, because the words are part of
+        // the drawing and not only part of the picture of it: a label is
+        // what the pointer takes hold of when it sits clear of the stroke,
+        // which on a line it usually does.
+        //
+        // This is a Pango layout per *labelled* drawing per question asked,
+        // and the questions include "what is under the pointer", which is
+        // asked on every motion. A drawing with nothing written on it pays
+        // nothing, which is most of them.
+        match drawing.has_text() {
+            false => projected,
+            true => self.with_words(projected, drawing),
+        }
+    }
+
+    fn with_words(&self, projected: Projected, drawing: &Drawing) -> Projected {
+        match crate::ui::text::block(
+            drawing.kind,
+            projected.bounds(),
+            &drawing.text,
+            drawing.style(&self.configs),
+        ) {
+            Some(words) => projected.with_words(words),
+            None => projected,
+        }
+    }
+
+    /// Put copies down, offset if asked, and take hold of them. Hands back
+    /// what was added, for whoever has to write it down.
+    fn paste(
+        &mut self,
+        copied: &[Drawing],
+        offset: bool,
+        width: f64,
+        height: f64,
+    ) -> Vec<Drawing> {
+        if copied.is_empty() {
+            return Vec::new();
+        }
+        let (first, visible) = self.slice();
+        if visible == 0 {
+            return Vec::new();
+        }
+        let plan = layout(self, width, height);
+        let Some((low, high)) = price_range(self, &self.bars[first..first + visible]) else {
+            return Vec::new();
+        };
+        let bar_w = plan.plot_w / self.columns().max(1) as f64;
+        let (by_index, by_price) = match offset {
+            true => (PASTE_OFFSET / bar_w, -PASTE_OFFSET / plan.price_h * (high - low)),
+            false => (0.0, 0.0),
+        };
+        let order = self.drawings.iter().map(|d| d.order).max().unwrap_or(0);
+        let scope = scope_for(self.sends);
+        self.remember();
+        let mut added = Vec::new();
+        let State { bars, drawings, .. } = self;
+        for copy in copied {
+            let mut copy = copy.clone();
+            copy.id = 0;
+            copy.order = order;
+            copy.scope = scope;
+            shift_by_columns(bars, &mut copy, by_index, by_price);
+            drawings.push(copy.clone());
+            added.push(copy);
+        }
+        // The copies are what is in hand now, which is what lets a paste be
+        // nudged, restyled or pasted on again straight away.
+        let from = self.drawings.len() - added.len();
+        self.selected = (from..self.drawings.len()).collect();
+        added
+    }
+
+    /// Every drawing with any of itself on the plot right now: what Ctrl+A
+    /// takes. One scrolled or zoomed out of view is not part of "all".
+    fn visible_drawings(&self, width: f64, height: f64) -> Vec<usize> {
+        let plan = layout(self, width, height);
+        self.drawings_in(width, height, (plan.plot_x, plan.price_y, plan.plot_w, plan.price_h))
+    }
+
+    /// Every drawing a box in pixels touches, in list order.
+    fn drawings_in(&self, width: f64, height: f64, rect: (f64, f64, f64, f64)) -> Vec<usize> {
+        let (first, visible) = self.slice();
+        if visible == 0 {
+            return Vec::new();
+        }
+        let plan = layout(self, width, height);
+        let Some((low, high)) = price_range(self, &self.bars[first..first + visible]) else {
+            return Vec::new();
+        };
+        (0..self.drawings.len())
+            .filter(|i| self.project(&plan, low, high, &self.drawings[*i]).touches(rect))
+            .collect()
+    }
+
+    /// The drawing under a pixel, topmost first, and which part of it.
+    fn drawing_at(&self, width: f64, height: f64, x: f64, y: f64) -> Option<(usize, Grip)> {
+        let (first, visible) = self.slice();
+        if visible == 0 {
+            return None;
+        }
+        let plan = layout(self, width, height);
+        let (low, high) = price_range(self, &self.bars[first..first + visible])?;
+        // The selected ones first, since their grips are what the hand is
+        // most likely reaching for; then the most recently drawn.
+        let order = self.selected.iter().rev().copied().chain((0..self.drawings.len()).rev());
+        for index in order {
+            let drawing = self.drawings.get(index)?;
+            let projected = self.project(&plan, low, high, drawing);
+            let hit = projected.hit(x, y);
+            // Grips belong to the selected drawing only: on the others the
+            // whole thing is a body, so a press on an unselected line's end
+            // selects it rather than starting to move the end.
+            let hit = match hit {
+                Some(_) if !self.selected.contains(&index) => Some(Grip::Body),
+                other => other,
+            };
+            if let Some(grip) = hit {
+                return Some((index, grip));
+            }
+        }
+        None
     }
 
     /// The price range to draw, after the user's scaling.
@@ -715,6 +1145,54 @@ impl State {
 /// because the chart is constructed before there is a window to tell.
 type Handler<F> = Rc<RefCell<Option<Box<F>>>>;
 
+/// How far a pasted copy lands from what it was copied from, in pixels.
+///
+/// Enough to see that there are two of them and to take hold of the one on
+/// top; little enough that it is plainly the same drawing moved rather than
+/// one somewhere else.
+const PASTE_OFFSET: f64 = 16.0;
+
+/// The cursor for a grip: which way it moves what it is on.
+fn grip_cursor(grip: Grip) -> &'static str {
+    match grip {
+        Grip::Top | Grip::Bottom => "ns-resize",
+        Grip::Left | Grip::Right => "ew-resize",
+        // The two diagonals, each naming the corners it runs between.
+        Grip::From | Grip::To => "nwse-resize",
+        Grip::FromTo | Grip::ToFrom => "nesw-resize",
+        Grip::Corner(_) => "move",
+        Grip::Body => "pointer",
+    }
+}
+
+/// How far the hand has to travel before a press counts as a drag.
+///
+/// The desktop's own number — the one it uses to tell a click from the start
+/// of a drag everywhere else — rather than one of ours. It matters here
+/// because a rectangle can be laid down two ways: press-drag-release, or
+/// click, move, click. A press that travels is the first; a press that does
+/// not is the first half of the second. Four pixels, which this used to be,
+/// is less than a deliberate click moves on a sensitive mouse — so a click
+/// meant as "this corner" was read as a whole drag and committed a
+/// rectangle a few pixels across.
+///
+/// Never under eight, which is GTK's own default. A desktop tuned lower is
+/// tuned for dragging things that have nowhere else to go; here the press
+/// has a second meaning waiting for it, and reading it wrong costs a
+/// drawing.
+fn drag_threshold() -> f64 {
+    gtk::Settings::default().map(|s| s.gtk_dnd_drag_threshold()).unwrap_or(8).max(8) as f64
+}
+
+/// Where a drawing made on a chart goes: to the symbol when the chart sends
+/// what is drawn on it, and no further than the chart when it does not.
+fn scope_for(sends: bool) -> Scope {
+    match sends {
+        true => Scope::Shared,
+        false => Scope::Local,
+    }
+}
+
 /// The CSS class the pointer layer carries, so the one other module that has
 /// an opinion about it — the screenshot, which leaves it out — can say so by
 /// name rather than by walking to the second child of an overlay.
@@ -727,6 +1205,16 @@ pub struct ChartView {
     pub area: gtk::DrawingArea,
     /// The crosshair and the rest of what follows the pointer, over the top.
     pointer: gtk::DrawingArea,
+    /// The editor open on the chart, if any.
+    ///
+    /// It hangs straight off [`root`], placed by its margins, and is there
+    /// only while somebody is typing. A layer of its own over the whole
+    /// chart was the first try and the wrong one: to let the editor inside
+    /// it take a click the layer has to be targetable, and a targetable
+    /// layer the size of the chart takes every click there is.
+    ///
+    /// [`root`]: ChartView::root
+    editing: RefCell<Option<Rc<text_editor::Editing>>>,
     /// The two of them stacked. This is what goes in the layout.
     pub root: gtk::Overlay,
     state: Rc<RefCell<State>>,
@@ -743,6 +1231,20 @@ pub struct ChartView {
     on_pane_move: Handler<dyn Fn(u32, indicators::Move)>,
     /// Right-clicking the price axis, which has its own short menu.
     on_axis_menu: Handler<dyn Fn(f64, f64)>,
+    /// Told when a drawing was added, moved or deleted, so it can be written
+    /// down. The chart never touches the store.
+    on_drawing: Handler<dyn Fn(DrawingEvent)>,
+    /// Right-clicking a drawing, which has a menu of its own: about the
+    /// drawing and nothing else.
+    on_drawing_menu: Handler<dyn Fn(f64, f64)>,
+    /// Enter on a selected drawing: its properties.
+    on_drawing_properties: Handler<dyn Fn()>,
+    /// A caret went into a label, or came out of one. The window lends the
+    /// editor the chords it needs while this is true.
+    on_typing: Handler<dyn Fn(bool)>,
+    /// The tool in hand, or the configuration it will draw with, changed —
+    /// so whatever shows the tool can show it.
+    on_tool: Handler<dyn Fn()>,
     /// Told when a gesture on the chart takes the price scale off automatic
     /// or puts it back — a drag or a wheel on the axis, a double-click to
     /// reset it. Whether the scale is automatic is written down with the
@@ -779,6 +1281,7 @@ impl ChartView {
         let view = Rc::new(ChartView {
             area,
             pointer,
+            editing: RefCell::new(None),
             root,
             state,
             on_hover,
@@ -787,6 +1290,11 @@ impl ChartView {
             on_pane_close: Rc::new(RefCell::new(None)),
             on_pane_move: Rc::new(RefCell::new(None)),
             on_axis_menu: Rc::new(RefCell::new(None)),
+            on_drawing: Rc::new(RefCell::new(None)),
+            on_drawing_menu: Rc::new(RefCell::new(None)),
+            on_drawing_properties: Rc::new(RefCell::new(None)),
+            on_typing: Rc::new(RefCell::new(None)),
+            on_tool: Rc::new(RefCell::new(None)),
             on_price_auto: Rc::new(RefCell::new(None)),
         });
         view.wire_drawing();
@@ -794,7 +1302,1275 @@ impl ChartView {
         view.wire_zoom();
         view.wire_drag();
         view.wire_axis_menu();
+        view.wire_keys();
         view
+    }
+
+    // -- drawings ----------------------------------------------------------
+
+    pub fn set_drawing_handler(&self, handler: impl Fn(DrawingEvent) + 'static) {
+        *self.on_drawing.borrow_mut() = Some(Box::new(handler));
+    }
+
+    pub fn set_drawing_menu_handler(&self, handler: impl Fn(f64, f64) + 'static) {
+        *self.on_drawing_menu.borrow_mut() = Some(Box::new(handler));
+    }
+
+    pub fn set_drawing_properties_handler(&self, handler: impl Fn() + 'static) {
+        *self.on_drawing_properties.borrow_mut() = Some(Box::new(handler));
+    }
+
+    pub fn set_typing_handler(&self, handler: impl Fn(bool) + 'static) {
+        *self.on_typing.borrow_mut() = Some(Box::new(handler));
+    }
+
+    fn tell_typing(&self, typing: bool) {
+        if let Some(handler) = self.on_typing.borrow().as_ref() {
+            handler(typing);
+        }
+    }
+
+    pub fn set_tool_handler(&self, handler: impl Fn() + 'static) {
+        *self.on_tool.borrow_mut() = Some(Box::new(handler));
+    }
+
+    fn tool_changed(&self) {
+        if let Some(handler) = self.on_tool.borrow().as_ref() {
+            handler();
+        }
+    }
+
+    /// The configuration the next drawing gets.
+    pub fn next_config(&self) -> u8 {
+        self.state.borrow().next_config
+    }
+
+    /// A drawing another chart has in hand, where it is now. Shown in
+    /// place of this chart's copy, so the two charts agree while the hand
+    /// is still moving; the written-down version arrives at the release.
+    pub fn follow_moving(&self, moving: &Drawing) {
+        let shown = {
+            let mut state = self.state.borrow_mut();
+            match state.drawings.iter_mut().find(|d| d.id == moving.id) {
+                Some(slot) => {
+                    *slot = moving.clone();
+                    true
+                }
+                None => false,
+            }
+        };
+        if shown {
+            self.redraw();
+        }
+    }
+
+    /// Hand the chart what is drawn on its symbol. The selection survives
+    /// when the same drawing is still in the list, which is the usual case:
+    /// the window hands the list back after writing a change down.
+    pub fn set_drawings(&self, drawings: Vec<Drawing>) {
+        // An open editor is pointed at a position in the list, and the list
+        // is about to be a different list: follow the drawing it is on by
+        // id, and close the editor if that drawing is not in the new list at
+        // all. Without this a reload while somebody is typing would leave
+        // the caret on whatever had moved into that position.
+        let editing_id = self
+            .editing
+            .borrow()
+            .as_ref()
+            .and_then(|editing| self.state.borrow().drawings.get(editing.index.get()).map(|d| d.id));
+        let still_there = {
+            let mut state = self.state.borrow_mut();
+            let ids = state.selected_ids();
+            state.drawings = drawings;
+            state.reselect(ids);
+            match editing_id {
+                // Zero is the drawing that has just been added and not yet
+                // written down, which comes back as the newest row — the
+                // same convention the selection follows, for the same
+                // reason: there is no id to find it by yet.
+                Some(0) => {
+                    let now = state.drawings.len().checked_sub(1);
+                    state.editing = now;
+                    now
+                }
+                Some(id) => {
+                    let now = state.drawings.iter().position(|d| d.id == id);
+                    state.editing = now;
+                    now
+                }
+                None => None,
+            }
+        };
+        match (editing_id.is_some(), still_there) {
+            // It moved: the editor keeps the caret, pointed at the new place.
+            (true, Some(index)) => {
+                if let Some(editing) = self.editing.borrow().as_ref() {
+                    editing.index.set(index);
+                }
+                self.place_editor();
+            }
+            // It went: nothing to type into.
+            (true, None) => self.close_editor(),
+            (false, _) => {}
+        }
+        self.redraw();
+    }
+
+    /// Take the editor off the chart without reading it back: for when the
+    /// drawing it was on is no longer there to read it into.
+    fn close_editor(&self) {
+        let Some(editing) = self.editing.borrow_mut().take() else { return };
+        self.root.remove_overlay(&editing.view);
+        {
+            let mut state = self.state.borrow_mut();
+            state.editing = None;
+            state.editing_at = None;
+        }
+        self.tell_typing(false);
+        self.area.grab_focus();
+    }
+
+    pub fn drawings(&self) -> Vec<Drawing> {
+        self.state.borrow().drawings.clone()
+    }
+
+    /// Arm a tool: the next press on the plot starts a drawing of this kind.
+    /// `None` is the pointer, which Escape goes back to.
+    pub fn arm(&self, kind: Option<DrawingKind>) {
+        self.arm_sticky(kind, false);
+    }
+
+    /// Arm a tool, and say whether it stays in hand after each drawing.
+    pub fn arm_sticky(&self, kind: Option<DrawingKind>, sticky: bool) {
+        {
+            let mut state = self.state.borrow_mut();
+            state.sticky = sticky && kind.is_some();
+            // Putting the tool down abandons the choice; picking one up
+            // keeps it, whichever order the two were asked for in. The
+            // choice belongs to the next drawing, not to the tool that
+            // happens to be in hand when it is made — and it is cleared
+            // where that drawing is committed.
+            if kind.is_none() {
+                state.next_config = 1;
+            }
+            state.tool = kind;
+            state.placing = None;
+            if kind.is_some() {
+                state.selected.clear();
+            }
+        }
+        self.area.set_cursor_from_name(Some(if kind.is_some() { "crosshair" } else { "default" }));
+        self.redraw();
+        self.tool_changed();
+    }
+
+    pub fn armed(&self) -> Option<DrawingKind> {
+        self.state.borrow().tool
+    }
+
+    /// Whether the tool in hand stays there.
+    pub fn is_sticky(&self) -> bool {
+        self.state.borrow().sticky
+    }
+
+    /// Escape: back to the pointer, with nothing in hand and nothing
+    /// selected. A drawing half laid down — even one mid-drag — is dropped
+    /// rather than finished. Says whether there was anything to drop, so a
+    /// key that found nothing can go on to whoever else wants it.
+    pub fn cancel(&self) -> bool {
+        // Typing is the thing Escape ends first, and the editor's own key
+        // handler normally gets there before this does; arriving here with
+        // an editor open means Escape came from somewhere else.
+        if self.is_typing_text() {
+            self.end_text_edit(text_editor::Ended::Cancel);
+            return true;
+        }
+        let busy = {
+            let mut s = self.state.borrow_mut();
+            let busy = s.tool.is_some() || s.placing.is_some() || !s.selected.is_empty();
+            s.selected.clear();
+            // The drag the gesture is still in ends with nothing to commit.
+            if matches!(s.drag, Some(Drag::Place { .. })) {
+                s.drag = None;
+            }
+            busy
+        };
+        self.arm(None);
+        busy
+    }
+
+    /// The drawing most recently taken into the selection, if any has the
+    /// grips: the one a single-drawing question is about.
+    pub fn selected_drawing(&self) -> Option<Drawing> {
+        let state = self.state.borrow();
+        state.primary().and_then(|i| state.drawings.get(i)).cloned()
+    }
+
+    /// Ctrl+A: select every drawing on the plot. Says whether there was
+    /// anything to select, so an empty chart lets the key go on.
+    pub fn select_visible(&self) -> bool {
+        let (w, h) = (self.area.width() as f64, self.area.height() as f64);
+        let mut state = self.state.borrow_mut();
+        let visible = state.visible_drawings(w, h);
+        if visible.is_empty() {
+            return false;
+        }
+        state.selected = visible;
+        drop(state);
+        self.redraw();
+        true
+    }
+
+    /// Everything that wears grips.
+    pub fn selected_drawings(&self) -> Vec<Drawing> {
+        let state = self.state.borrow();
+        state.selected.iter().filter_map(|i| state.drawings.get(*i)).cloned().collect()
+    }
+
+    /// The kind the whole selection is, when it is all one kind: a line's
+    /// properties can be put on every selected line, and on nothing else.
+    pub fn selection_kind(&self) -> Option<DrawingKind> {
+        self.state.borrow().selection_kind()
+    }
+
+    /// Select whatever drawing is under a pixel, for a right-click: the menu
+    /// that opens there should be about the thing under the pointer. A
+    /// drawing already in the selection keeps its company, so the menu is
+    /// about all of them.
+    pub fn select_at(&self, x: f64, y: f64) -> bool {
+        let hit = {
+            let state = self.state.borrow();
+            state.drawing_at(self.area.width() as f64, self.area.height() as f64, x, y)
+        };
+        let changed = {
+            let mut state = self.state.borrow_mut();
+            match hit {
+                Some((index, _)) if state.selected.contains(&index) => false,
+                Some((index, _)) => {
+                    state.selected = vec![index];
+                    true
+                }
+                None => {
+                    let had = !state.selected.is_empty();
+                    state.selected.clear();
+                    had
+                }
+            }
+        };
+        if changed {
+            self.redraw();
+        }
+        hit.is_some()
+    }
+
+    /// Change every selected drawing the same way, and say so for each one
+    /// that changed. One step back, however many there were.
+    pub fn edit_selected(&self, edit: impl Fn(&mut Drawing)) {
+        let changed = {
+            let mut state = self.state.borrow_mut();
+            if state.selected.is_empty() {
+                return;
+            }
+            let before = state.drawings.clone();
+            let mut changed = Vec::new();
+            for index in state.selected.clone() {
+                let Some(drawing) = state.drawings.get_mut(index) else { continue };
+                edit(drawing);
+                if before.get(index) != Some(drawing) {
+                    changed.push(drawing.clone());
+                }
+            }
+            // An edit that changed nothing is not a step back worth having.
+            if changed.is_empty() {
+                return;
+            }
+            state.undo.push(before);
+            if state.undo.len() > HISTORY {
+                state.undo.remove(0);
+            }
+            state.redo.clear();
+            changed
+        };
+        self.redraw();
+        for drawing in changed {
+            self.tell(DrawingEvent::Changed(drawing));
+        }
+    }
+
+    /// Delete everything selected, as one step back.
+    pub fn delete_selected(&self) {
+        let removed = {
+            let mut state = self.state.borrow_mut();
+            let mut indices: Vec<usize> = std::mem::take(&mut state.selected);
+            indices.sort_unstable();
+            indices.dedup();
+            indices.retain(|i| *i < state.drawings.len());
+            if indices.is_empty() {
+                return;
+            }
+            state.remember();
+            // From the back, so the ones still to go keep their places.
+            indices.into_iter().rev().map(|i| state.drawings.remove(i)).collect::<Vec<_>>()
+        };
+        self.redraw();
+        for removed in removed {
+            if removed.id != 0 {
+                self.tell(DrawingEvent::Removed(removed.id));
+            }
+        }
+    }
+
+    /// Delete every drawing this chart shows, as one step back.
+    pub fn delete_all(&self) {
+        let removed = {
+            let mut state = self.state.borrow_mut();
+            if state.drawings.is_empty() {
+                return;
+            }
+            state.selected.clear();
+            state.remember();
+            std::mem::take(&mut state.drawings)
+        };
+        self.redraw();
+        for removed in removed {
+            if removed.id != 0 {
+                self.tell(DrawingEvent::Removed(removed.id));
+            }
+        }
+    }
+
+    fn tell(&self, event: DrawingEvent) {
+        if let Some(handler) = self.on_drawing.borrow().as_ref() {
+            handler(event);
+        }
+    }
+
+    /// Ctrl+Z: the drawings as they were before the last change. `false`
+    /// when there is nothing to go back to, so the key goes on to whoever
+    /// else wants it.
+    pub fn undo(&self) -> bool {
+        self.step(true)
+    }
+
+    /// Ctrl+Y: what the last Ctrl+Z took away.
+    pub fn redo(&self) -> bool {
+        self.step(false)
+    }
+
+    fn step(&self, back: bool) -> bool {
+        let restored = {
+            let mut state = self.state.borrow_mut();
+            let Some(list) = (if back { state.undo.pop() } else { state.redo.pop() }) else {
+                return false;
+            };
+            let now = std::mem::replace(&mut state.drawings, list.clone());
+            if back {
+                state.redo.push(now);
+            } else {
+                state.undo.push(now);
+            }
+            // The selection follows the drawings, those still there.
+            let ids: Vec<i64> = state.selected.iter().filter_map(|i| now_id(&now_list(&list, *i))).collect();
+            state.reselect(ids);
+            state.placing = None;
+            list
+        };
+        self.redraw();
+        self.tell(DrawingEvent::Replaced(restored));
+        true
+    }
+
+    /// Escape and Delete, for the drawing that is selected or being laid
+    /// down. On the chart itself rather than the window, because they only
+    /// mean anything while the chart has the keyboard — and a Delete typed
+    /// into a search box must stay in the box.
+    fn wire_keys(self: &Rc<Self>) {
+        use gtk::gdk::ModifierType;
+        fn ctrl(m: ModifierType) -> bool {
+            m.contains(ModifierType::CONTROL_MASK)
+        }
+        fn shift(m: ModifierType) -> bool {
+            m.contains(ModifierType::SHIFT_MASK)
+        }
+        fn alt(m: ModifierType) -> bool {
+            m.contains(ModifierType::ALT_MASK)
+        }
+
+        let keys = gtk::EventControllerKey::new();
+        let view = Rc::downgrade(self);
+        keys.connect_key_pressed(move |_, key, _, modifiers| {
+            let Some(view) = view.upgrade() else { return glib::Propagation::Proceed };
+            use gtk::gdk::Key;
+            match key {
+                Key::Escape => match view.cancel() {
+                    true => glib::Propagation::Stop,
+                    false => glib::Propagation::Proceed,
+                },
+                Key::Delete | Key::BackSpace | Key::KP_Delete => {
+                    if view.state.borrow().selected.is_empty() {
+                        return glib::Propagation::Proceed;
+                    }
+                    view.delete_selected();
+                    glib::Propagation::Stop
+                }
+                // Alt and Enter opens the properties, which is what it opens
+                // on a selected object in Explorer, Visual Studio, Visio and
+                // AutoCAD. Enter acts on the thing; Alt+Enter asks about it.
+                Key::Return | Key::KP_Enter | Key::ISO_Enter if alt(modifiers) => {
+                    if view.state.borrow().selected.is_empty() {
+                        return glib::Propagation::Proceed;
+                    }
+                    if let Some(handler) = view.on_drawing_properties.borrow().as_ref() {
+                        handler();
+                    }
+                    glib::Propagation::Stop
+                }
+                // Enter and F2 both put the caret in the drawing's text, and
+                // they do it because that is what they do in PowerPoint,
+                // Keynote, Google Slides, draw.io, LibreOffice and Figma.
+                // The pointer's way in is a double-click. Enter used to open
+                // the properties here, which left Enter and F2 meaning two
+                // different things — the one arrangement none of those apps
+                // has.
+                // Enter ends a zig-zag, which is the keyboard's way of
+                // saying "that is the last corner". Tried before the text
+                // keys, since while one is being laid down that is what the
+                // key is for.
+                Key::Return | Key::KP_Enter | Key::ISO_Enter
+                    if view.state.borrow().placing.as_ref().is_some_and(|d| d.kind.is_path()) =>
+                {
+                    view.commit_placing();
+                    glib::Propagation::Stop
+                }
+                Key::F2 | Key::Return | Key::KP_Enter | Key::ISO_Enter => {
+                    match view.edit_selected_text() {
+                        true => glib::Propagation::Stop,
+                        false => glib::Propagation::Proceed,
+                    }
+                }
+                Key::a | Key::A
+                    if modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK)
+                        && !modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK) =>
+                {
+                    match view.select_visible() {
+                        true => glib::Propagation::Stop,
+                        false => glib::Propagation::Proceed,
+                    }
+                }
+                Key::z | Key::Z | Key::y | Key::Y
+                    if modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK) =>
+                {
+                    let redo = matches!(key, Key::y | Key::Y)
+                        || modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK);
+                    let done = if redo { view.redo() } else { view.undo() };
+                    match done {
+                        true => glib::Propagation::Stop,
+                        false => glib::Propagation::Proceed,
+                    }
+                }
+                // Alt+Shift and an arrow: put the selected drawings' labels
+                // against that edge of the shape, and Alt+Shift+. puts them
+                // back in the middle. Four edges and a centre, not nine
+                // places: the corners are a thing to aim at with the picture
+                // in the properties, and a key for each would need two
+                // arrows pressed together to mean one of them.
+                //
+                // Before the nudge arm below, which otherwise takes any
+                // arrow on a selected drawing. It only claims the key when
+                // there is a label to move — on a figure with nothing
+                // written on it the arrows go on nudging, rather than the
+                // chord quietly doing nothing.
+                Key::Left | Key::Right | Key::Up | Key::Down
+                    if alt(modifiers) && shift(modifiers) && !ctrl(modifiers) =>
+                {
+                    let at = match key {
+                        Key::Left => drawings::Place::Left,
+                        Key::Right => drawings::Place::Right,
+                        Key::Up => drawings::Place::Top,
+                        _ => drawings::Place::Bottom,
+                    };
+                    match view.place_text(at) {
+                        true => glib::Propagation::Stop,
+                        false => glib::Propagation::Proceed,
+                    }
+                }
+                // Alt+Shift and the size keys: the stroke of whatever is
+                // selected. Ctrl with the same keys is the text's size, and
+                // bare they are the chart's zoom — three things that all
+                // mean "bigger", kept apart by which modifier is held and
+                // what is selected.
+                Key::plus | Key::equal | Key::KP_Add
+                    if alt(modifiers) && shift(modifiers) && !ctrl(modifiers) =>
+                {
+                    match view.step_width(drawings::WIDTH_STEP) {
+                        true => glib::Propagation::Stop,
+                        false => glib::Propagation::Proceed,
+                    }
+                }
+                Key::minus | Key::underscore | Key::KP_Subtract
+                    if alt(modifiers) && shift(modifiers) && !ctrl(modifiers) =>
+                {
+                    match view.step_width(-drawings::WIDTH_STEP) {
+                        true => glib::Propagation::Stop,
+                        false => glib::Propagation::Proceed,
+                    }
+                }
+                // Alt+Shift+A steps the arrowhead round its four states.
+                // The same hand that holds Alt+Shift to place a label, on
+                // the letter the arrow tool already answers to.
+                Key::a | Key::A if alt(modifiers) && shift(modifiers) && !ctrl(modifiers) => {
+                    match view.cycle_head() {
+                        true => glib::Propagation::Stop,
+                        false => glib::Propagation::Proceed,
+                    }
+                }
+                // The full stop, wherever the layout hides it: Shift makes it
+                // a colon on a Spanish keyboard and a greater-than on a US
+                // one, and the chord is the same chord on both.
+                Key::period | Key::greater | Key::colon | Key::KP_Decimal
+                    if alt(modifiers) && shift(modifiers) && !ctrl(modifiers) =>
+                {
+                    match view.place_text(drawings::Place::Center) {
+                        true => glib::Propagation::Stop,
+                        false => glib::Propagation::Proceed,
+                    }
+                }
+                // Ctrl+Shift with up or down: to the front, or to the back,
+                // among the other drawings. Up is front, the way a stack
+                // reads.
+                Key::Up | Key::Down
+                    if !view.state.borrow().selected.is_empty()
+                        && modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK)
+                        && modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK) =>
+                {
+                    view.restack_selected(key == Key::Up);
+                    glib::Propagation::Stop
+                }
+                Key::Left | Key::Right | Key::Up | Key::Down
+                    if !view.state.borrow().selected.is_empty()
+                        && !modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK) =>
+                {
+                    // A pixel at a time; ten with Shift.
+                    let step = if modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK) {
+                        10.0
+                    } else {
+                        1.0
+                    };
+                    let (dx, dy) = match key {
+                        Key::Left => (-step, 0.0),
+                        Key::Right => (step, 0.0),
+                        Key::Up => (0.0, -step),
+                        _ => (0.0, step),
+                    };
+                    view.nudge_selected(dx, dy);
+                    glib::Propagation::Stop
+                }
+                // Alt+N: configuration N for the selected drawing, or for
+                // the one about to be drawn while a tool is in hand.
+                _ if modifiers.contains(gtk::gdk::ModifierType::ALT_MASK) => {
+                    let Some(number) = preset_number(key) else {
+                        return glib::Propagation::Proceed;
+                    };
+                    match view.apply_configuration(number as u8) {
+                        true => glib::Propagation::Stop,
+                        false => glib::Propagation::Proceed,
+                    }
+                }
+                _ => glib::Propagation::Proceed,
+            }
+        });
+        self.area.add_controller(keys);
+    }
+
+    /// Configuration `n` (1 to 9) for the selected drawing, or, while a tool
+    /// is in hand, for the drawing it is about to make. `false` when neither
+    /// is the case, so the key goes on to whoever else wants it.
+    pub fn apply_configuration(&self, n: u8) -> bool {
+        if !(1..=drawings::CONFIGURATIONS).contains(&n) {
+            return false;
+        }
+        let (armed, selected) = {
+            let s = self.state.borrow();
+            (s.tool.is_some() || s.placing.is_some(), !s.selected.is_empty())
+        };
+        if armed {
+            let mut s = self.state.borrow_mut();
+            s.next_config = n;
+            if let Some(placing) = s.placing.as_mut() {
+                placing.follow(n);
+            }
+            drop(s);
+            self.pointer.queue_draw();
+            self.tool_changed();
+            return true;
+        }
+        if selected {
+            // A configuration is a kind's: the key means something only
+            // when the selection is all lines or all rectangles.
+            if self.selection_kind().is_some() {
+                self.edit_selected(|d| d.follow(n));
+            }
+            return true;
+        }
+        // Nothing in hand and nothing selected: the choice is for whatever
+        // is drawn next. Alt+3 then Alt+L is the same sentence as Alt+L
+        // then Alt+3, and used to be two — the first half said nothing at
+        // all, and arming a tool then threw the choice away.
+        self.state.borrow_mut().next_config = n;
+        self.tool_changed();
+        true
+    }
+
+    /// The configurations every drawing on this chart is read through.
+    pub fn set_configurations(&self, configs: Configurations) {
+        self.state.borrow_mut().configs = configs;
+        self.redraw();
+    }
+
+    pub fn configurations(&self) -> Configurations {
+        self.state.borrow().configs.clone()
+    }
+
+    /// What this chart shares its drawings with.
+    pub fn set_sends(&self, sends: bool) {
+        self.state.borrow_mut().sends = sends;
+    }
+
+    pub fn sends(&self) -> bool {
+        self.state.borrow().sends
+    }
+
+    /// Put the selected drawings in front of, or behind, every other, in
+    /// the order they already have among themselves. Over the candles
+    /// either way: the order is among drawings only.
+    pub fn restack_selected(&self, to_front: bool) {
+        let changed = {
+            let mut state = self.state.borrow_mut();
+            let mut indices = state.selected.clone();
+            indices.sort_unstable();
+            indices.dedup();
+            indices.retain(|i| *i < state.drawings.len());
+            if indices.is_empty() {
+                return;
+            }
+            let (lowest, highest) = state
+                .drawings
+                .iter()
+                .fold((i64::MAX, i64::MIN), |(lo, hi), d| (lo.min(d.order), hi.max(d.order)));
+            state.remember();
+            let count = indices.len() as i64;
+            let mut moved = Vec::new();
+            for (n, index) in indices.into_iter().enumerate() {
+                let Some(drawing) = state.drawings.get_mut(index) else { continue };
+                drawing.order = if to_front { highest + 1 + n as i64 } else { lowest - count + n as i64 };
+                moved.push(drawing.clone());
+            }
+            let ids = state.selected_ids();
+            drawings::sort_for_painting(&mut state.drawings);
+            state.reselect(ids);
+            moved
+        };
+        self.redraw();
+        for drawing in changed {
+            self.tell(DrawingEvent::Changed(drawing));
+        }
+    }
+
+    /// Move the selected drawing by a few pixels, from the arrow keys. The
+    /// pixels become a span of time and a difference in price through the
+    /// chart's own scales, so the nudge is the same size whatever the zoom.
+    pub fn nudge_selected(&self, dx: f64, dy: f64) {
+        let moved = {
+            let mut state = self.state.borrow_mut();
+            if state.selected.is_empty() {
+                return;
+            }
+            let (w, h) = (self.area.width() as f64, self.area.height() as f64);
+            let (first, visible) = state.slice();
+            if visible == 0 {
+                return;
+            }
+            let plan = layout(&state, w, h);
+            let Some((low, high)) = price_range(&state, &state.bars[first..first + visible]) else {
+                return;
+            };
+            let bar_w = plan.plot_w / state.columns().max(1) as f64;
+            let by_price = -dy / plan.price_h * (high - low);
+            state.remember();
+            let mut moved = Vec::new();
+            // By columns, like the drag: a pixel is a fraction of a bar,
+            // and bars are evenly spaced on screen however unevenly they
+            // are spaced in time. Nudging by a span of time instead would
+            // change the shape of anything whose ends sit either side of a
+            // weekend.
+            let by_index = dx / bar_w;
+            let selected = state.selected.clone();
+            let State { bars, drawings, .. } = &mut *state;
+            for index in selected {
+                let Some(drawing) = drawings.get_mut(index) else { continue };
+                shift_by_columns(bars, drawing, by_index, by_price);
+                moved.push(drawing.clone());
+            }
+            moved
+        };
+        self.redraw();
+        for drawing in moved {
+            self.tell(DrawingEvent::Changed(drawing));
+        }
+    }
+
+    /// A drawing is finished: it joins the list, takes the grips, and is
+    /// told about. The tool is put down, since one line at a time is what a
+    /// hand draws; arming it again is one key.
+    fn commit_placing(&self) {
+        let added = {
+            let mut state = self.state.borrow_mut();
+            let Some(mut drawing) = state.placing.take() else { return };
+            // The last corner of a path was only ever following the hand.
+            // Dropping it can leave too little to be a drawing — one press
+            // and Enter — and then there is nothing to commit.
+            if !drawing.finish_path() {
+                if !state.sticky {
+                    state.tool = None;
+                }
+                state.next_config = 1;
+                drop(state);
+                self.area.set_cursor_from_name(Some("default"));
+                self.redraw();
+                self.tool_changed();
+                return;
+            }
+            state.remember();
+            state.drawings.push(drawing.clone());
+            state.selected = vec![state.drawings.len() - 1];
+            if !state.sticky {
+                state.tool = None;
+            }
+            state.next_config = 1;
+            drawing
+        };
+        self.area.set_cursor_from_name(Some(match self.armed().is_some() {
+            true => "crosshair",
+            false => "default",
+        }));
+        self.redraw();
+        self.tool_changed();
+        self.tell(DrawingEvent::Added(added));
+    }
+
+    // -- typing on the chart -----------------------------------------------
+
+    /// A press with the text tool in hand: a word at that point, with the
+    /// caret already in it.
+    ///
+    /// The drawing goes into the list and is told about straight away, so it
+    /// is a real drawing with a real id while it is being typed — undo,
+    /// sharing and the store all see the same thing they see for any other
+    /// drawing. What is special is only that it starts out saying nothing,
+    /// and that saying nothing at the end means it goes away again.
+    fn start_text_at(self: &Rc<Self>, at: Anchor) {
+        let (index, added) = {
+            let mut state = self.state.borrow_mut();
+            let mut drawing = Drawing::text_at(at);
+            drawing.follow(state.next_config);
+            drawing.scope = scope_for(state.sends);
+            drawing.order = state.drawings.iter().map(|d| d.order).max().unwrap_or(0);
+            state.remember();
+            state.drawings.push(drawing.clone());
+            state.selected = vec![state.drawings.len() - 1];
+            if !state.sticky {
+                state.tool = None;
+            }
+            state.next_config = 1;
+            (state.drawings.len() - 1, drawing)
+        };
+        self.area.set_cursor_from_name(Some("default"));
+        self.tool_changed();
+        // Announced before a character is typed, the way a line is announced
+        // the moment it is laid down. Whoever keeps the drawings writes it
+        // and it gets an id; without that it is a drawing with id zero, and
+        // the change that carries the words is an update to a row that was
+        // never written — which the store quietly drops, so the words would
+        // appear under the caret and vanish on Enter.
+        self.tell(DrawingEvent::Added(added));
+        self.begin_text_edit(index, true);
+    }
+
+    /// Whether somebody is typing into a drawing right now.
+    ///
+    /// The window asks, because while this is true the chart's own keys are
+    /// the typist's: Delete deletes a character, Escape ends the edit rather
+    /// than the selection, and a letter is a letter rather than the start of
+    /// a symbol search.
+    pub fn is_typing_text(&self) -> bool {
+        self.editing.borrow().is_some()
+    }
+
+    /// Open the editor on the selected drawing, if one is selected. What
+    /// "Edit text" in the drawing's menu does, and Enter is not: Enter opens
+    /// the properties, which is where it has always gone.
+    pub fn edit_selected_text(self: &Rc<Self>) -> bool {
+        let index = {
+            let state = self.state.borrow();
+            match state.selected.last() {
+                Some(index) if state.drawings.get(*index).is_some() => *index,
+                _ => return false,
+            }
+        };
+        self.begin_text_edit(index, false)
+    }
+
+    /// Put a caret on the drawing at `index` and let the keyboard have it.
+    ///
+    /// `fresh` says the drawing was made for this edit — a click with the
+    /// text tool — so that nothing typed means nothing drawn, and the empty
+    /// drawing goes away again rather than becoming litter nobody can see
+    /// to clear.
+    fn begin_text_edit(self: &Rc<Self>, index: usize, fresh: bool) -> bool {
+        self.end_text_edit(text_editor::Ended::Commit);
+        let (text, style, ink, align) = {
+            let state = self.state.borrow();
+            let Some(drawing) = state.drawings.get(index) else { return false };
+            let style = drawing.style(&state.configs).clone();
+            let ground = drawings::text_ground(drawing.kind, &style, &state.theme);
+            let ink = drawings::text_colour(&style.text.colour, &state.theme, &ground);
+            let align = crate::ui::text::placement(drawing.kind, &drawing.text).alignment();
+            (drawing.text.clone(), style, ink, align)
+        };
+
+        let editing = text_editor::build(
+            text_editor::Opened { index, fresh, text: &text, style: &style.text, ink: &ink, align },
+            {
+                let view = Rc::downgrade(self);
+                move || {
+                    if let Some(view) = view.upgrade() {
+                        view.place_editor();
+                    }
+                }
+            },
+            {
+                let view = Rc::downgrade(self);
+                move |how| {
+                    if let Some(view) = view.upgrade() {
+                        view.end_text_edit(how);
+                    }
+                }
+            },
+        );
+
+        self.state.borrow_mut().editing = Some(index);
+        self.tell_typing(true);
+        // Over the crosshair, since the caret is the thing in front while
+        // somebody is typing, and measured out of the overlay so a long
+        // label cannot make the chart want to be wider than it is.
+        self.root.add_overlay(&editing.view);
+        self.root.set_measure_overlay(&editing.view, false);
+        *self.editing.borrow_mut() = Some(editing.clone());
+        self.place_editor();
+        self.redraw();
+        // After the layout, or the caret lands in a widget that has not been
+        // given a size yet and the first keystroke moves it.
+        let editing = editing.clone();
+        glib::idle_add_local_once(move || {
+            editing.view.grab_focus();
+            // After the focus, which places the caret and would otherwise
+            // drop the selection the moment it is made.
+            editing.select_all();
+        });
+        true
+    }
+
+    /// Put the editor where the words belong, and size it to them.
+    ///
+    /// Called again after every keystroke, because the place depends on the
+    /// size: a label centred in a box moves left as it grows, and one that
+    /// did not would drift away from where it is about to be drawn.
+    fn place_editor(&self) {
+        let Some(editing) = self.editing.borrow().clone() else { return };
+        let (width, height) = (self.area.width() as f64, self.area.height() as f64);
+        let placed = {
+            let state = self.state.borrow();
+            let Some(drawing) = state.drawings.get(editing.index.get()) else { return };
+            let style = drawing.style(&state.configs);
+            let at = crate::ui::text::placement(drawing.kind, &drawing.text);
+            let size = editing.measure(&style.text, at.alignment(), at);
+            let plan = layout(&state, width, height);
+            let (first, visible) = state.slice();
+            let Some((low, high)) = price_range(&state, &state.bars[first..first + visible]) else {
+                return;
+            };
+            let projected = state.project(&plan, low, high, drawing);
+            // The drawing's own box, not the label's: a figure is placed in
+            // by its shape, and a text drawing hangs from its anchor, which
+            // `text_origin` reads off the degenerate box either way.
+            let origin = drawings::text_origin(drawing.kind, projected.bounds(), size, at);
+            (origin, size, style.text.clamped_size())
+        };
+        editing.place(placed.0, placed.1, placed.2);
+        let ((x, y), (w, h), _) = placed;
+        let moved = self.state.borrow().editing_at != Some((x, y, w, h));
+        if moved {
+            self.state.borrow_mut().editing_at = Some((x, y, w, h));
+            self.redraw();
+        }
+    }
+
+    /// Take the editor off the chart, keeping what was typed or throwing it
+    /// away.
+    fn end_text_edit(&self, how: text_editor::Ended) {
+        let Some(editing) = self.editing.borrow_mut().take() else { return };
+        self.root.remove_overlay(&editing.view);
+        {
+            let mut state = self.state.borrow_mut();
+            state.editing = None;
+            state.editing_at = None;
+        }
+        self.tell_typing(false);
+
+        let event = match how {
+            text_editor::Ended::Cancel => {
+                // A drawing made for this edit and abandoned was never
+                // really made: take it away again, and take the undo step
+                // that was pushed for it with it, so Ctrl+Z is not a press
+                // that undoes something nobody saw.
+                match editing.fresh {
+                    true => {
+                        let gone = self.drop_drawing(editing.index.get());
+                        self.state.borrow_mut().forget();
+                        gone
+                    }
+                    false => None,
+                }
+            }
+            text_editor::Ended::Commit | text_editor::Ended::LostFocus => {
+                let at = {
+                    let state = self.state.borrow();
+                    state
+                        .drawings
+                        .get(editing.index.get())
+                        .map(|d| d.text.at)
+                        .unwrap_or_default()
+                };
+                let typed = editing.text(at);
+                // Nothing typed into a drawing that is nothing but its text:
+                // there is no drawing. One that is a figure simply has no
+                // label.
+                let empty_text_drawing = typed.is_empty()
+                    && self
+                        .state
+                        .borrow()
+                        .drawings
+                        .get(editing.index.get())
+                        .is_some_and(|d| d.kind.is_text());
+                if empty_text_drawing {
+                    self.drop_drawing(editing.index.get())
+                } else {
+                    let mut state = self.state.borrow_mut();
+                    let Some(drawing) = state.drawings.get_mut(editing.index.get()) else {
+                        return;
+                    };
+                    if drawing.text == typed {
+                        None
+                    } else {
+                        // One step for a drawing that was made to be typed
+                        // into: putting it down and saying something are
+                        // one action, and its own step was pushed when it
+                        // was made. Two for a label added to a drawing that
+                        // was already there, which are two.
+                        if !editing.fresh {
+                            state.remember();
+                        }
+                        let drawing = &mut state.drawings[editing.index.get()];
+                        drawing.set_text(typed);
+                        Some(DrawingEvent::Changed(drawing.clone()))
+                    }
+                }
+            }
+        };
+        self.redraw();
+        // Only when the edit ended on its own terms. If the keyboard was
+        // moved somewhere else — the key that ended this was the key that
+        // moved it — taking it back to the chart would undo what the hand
+        // just asked for.
+        if !matches!(how, text_editor::Ended::LostFocus) {
+            self.area.grab_focus();
+        }
+        if let Some(event) = event {
+            self.tell(event);
+        }
+    }
+
+    /// Take a drawing out of the list and say so, for the one that was never
+    /// wanted: an empty word.
+    fn drop_drawing(&self, index: usize) -> Option<DrawingEvent> {
+        let mut state = self.state.borrow_mut();
+        if index >= state.drawings.len() {
+            return None;
+        }
+        let gone = state.drawings.remove(index);
+        state.selected.retain(|i| *i != index);
+        for selected in state.selected.iter_mut() {
+            if *selected > index {
+                *selected -= 1;
+            }
+        }
+        // Never written down, so there is nothing to remove from the store
+        // and nothing to tell anybody about.
+        (gone.id != 0).then_some(DrawingEvent::Removed(gone.id))
+    }
+
+    /// Put the selected drawings' labels at `at`, for the placement keys.
+    ///
+    /// Only the drawings it means anything for: a figure that has something
+    /// to say. A text drawing hangs from its own anchor and has no placement
+    /// to set, and a figure with no label has nowhere to put one — moving
+    /// either would be a key that looks like it did nothing. Says whether it
+    /// found any, so the caller can let the key go on to what it otherwise
+    /// does.
+    pub fn place_text(&self, at: drawings::Place) -> bool {
+        let any = {
+            let state = self.state.borrow();
+            state
+                .selected
+                .iter()
+                .filter_map(|i| state.drawings.get(*i))
+                .any(|d| !d.kind.is_text() && d.has_text())
+        };
+        if !any {
+            return false;
+        }
+        self.edit_selected(move |drawing| {
+            if !drawing.kind.is_text() && drawing.has_text() {
+                let mut text = drawing.text.clone();
+                text.at = at;
+                drawing.set_text(text);
+            }
+        });
+        true
+    }
+
+    /// Step the stroke of everything selected, for Alt+Shift+= and
+    /// Alt+Shift+-.
+    ///
+    /// One key for every kind that has one, because they are one property:
+    /// a line's thickness and a box's edge are the same field, and a hand
+    /// that has learned to thicken a line should not have to learn a second
+    /// way to thicken a rectangle. Text has no stroke and lets the key go
+    /// on.
+    pub fn step_width(self: &Rc<Self>, by: f64) -> bool {
+        let any = {
+            let state = self.state.borrow();
+            state
+                .selected
+                .iter()
+                .filter_map(|i| state.drawings.get(*i))
+                .any(|d| !d.kind.is_text())
+        };
+        if !any {
+            return false;
+        }
+        let configs = self.state.borrow().configs.clone();
+        self.edit_selected(move |drawing| {
+            if drawing.kind.is_text() {
+                return;
+            }
+            let now = drawing.style(&configs).width;
+            let next = (now + by).clamp(drawings::MIN_WIDTH, drawings::MAX_WIDTH);
+            if next != now {
+                drawing.edit_style(&configs, |style| style.width = next);
+            }
+        });
+        true
+    }
+
+    /// Put a named arrowhead on everything selected; `None` takes it off.
+    ///
+    /// What the row of four in the drawing's menu does. The key cycles, this
+    /// picks, and both land on the same two fields.
+    pub fn set_head(self: &Rc<Self>, head: Option<omacharts_engine::ArrowHead>) {
+        let configs = self.state.borrow().configs.clone();
+        self.edit_selected(move |drawing| {
+            if !drawing.kind.is_line() {
+                return;
+            }
+            // A line that already points at both ends goes on pointing at
+            // both: this row is about the shape of the head, and the one
+            // choice in it that is not a shape is "none".
+            let keep = drawing.style(&configs).arrow;
+            drawing.edit_style(&configs, |style| match head {
+                Some(shape) => {
+                    style.head = shape;
+                    if keep == omacharts_engine::Arrow::None {
+                        style.arrow = omacharts_engine::Arrow::End;
+                    }
+                }
+                None => style.arrow = omacharts_engine::Arrow::None,
+            });
+        });
+    }
+
+    /// Everything selected, ready to be put down again.
+    ///
+    /// Without ids, because a copy is not the drawing it came from: the id
+    /// is where it lives, and these do not live anywhere until they are
+    /// pasted. Without the chart that made them, for the same reason — a
+    /// pasted drawing belongs to the chart it is pasted on.
+    pub fn copy_selected(&self) -> Vec<Drawing> {
+        let state = self.state.borrow();
+        let mut taken: Vec<Drawing> = state
+            .selected
+            .iter()
+            .filter_map(|i| state.drawings.get(*i))
+            .map(|drawing| Drawing { id: 0, origin: None, ..drawing.clone() })
+            .collect();
+        drawings::sort_for_painting(&mut taken);
+        taken
+    }
+
+    /// Put a copy down on this chart, a little off where it came from, and
+    /// take hold of it.
+    ///
+    /// Offset so that a paste onto the chart it was copied from is a
+    /// drawing you can see rather than one hiding exactly behind another,
+    /// and so that pasting twice gives two. In pixels rather than in
+    /// moments, because what it has to clear is the drawing on screen.
+    ///
+    /// Says whether anything was put down, so the key can go on to whatever
+    /// else it means when there is nothing to paste.
+    pub fn paste(&self, copied: &[Drawing], offset: bool) -> bool {
+        let (width, height) = (self.area.width() as f64, self.area.height() as f64);
+        // One borrow, and nothing called from inside it. The first version
+        // asked a getter for the chart's own sharing while holding this,
+        // and a getter takes the same cell: not an error anybody sees until
+        // the key is pressed, and then not a panic but an abort, because it
+        // happens under a GTK callback.
+        let added = self.state.borrow_mut().paste(copied, offset, width, height);
+        if added.is_empty() {
+            return false;
+        }
+        self.redraw();
+        for drawing in added {
+            self.tell(DrawingEvent::Added(drawing));
+        }
+        true
+    }
+
+    /// Put a width on everything selected: what the row of four in the
+    /// drawing's menu does, where the keys step.
+    pub fn set_width(self: &Rc<Self>, width: f64) {
+        let configs = self.state.borrow().configs.clone();
+        let width = width.clamp(drawings::MIN_WIDTH, drawings::MAX_WIDTH);
+        self.edit_selected(move |drawing| {
+            if drawing.kind.is_text() {
+                return;
+            }
+            drawing.edit_style(&configs, |style| style.width = width);
+        });
+    }
+
+    /// The width the selection shares, if it is all of one mind.
+    pub fn selected_width(&self) -> Option<f64> {
+        let state = self.state.borrow();
+        let mut seen = state
+            .selected
+            .iter()
+            .filter_map(|i| state.drawings.get(*i))
+            .filter(|d| !d.kind.is_text())
+            .map(|d| d.style(&state.configs).width);
+        let first = seen.next()?;
+        seen.all(|other| other == first).then_some(first)
+    }
+
+    /// The arrow and head the selection shares, if it is all of one mind.
+    pub fn selected_head(&self) -> Option<(omacharts_engine::Arrow, omacharts_engine::ArrowHead)> {
+        let state = self.state.borrow();
+        let mut seen = state
+            .selected
+            .iter()
+            .filter_map(|i| state.drawings.get(*i))
+            .filter(|d| d.kind.is_line())
+            .map(|d| {
+                let style = d.style(&state.configs);
+                (style.arrow, style.head)
+            });
+        let first = seen.next()?;
+        seen.all(|other| other == first).then_some(first)
+    }
+
+    /// Step the arrowhead of everything selected round its four states, for
+    /// Alt+Shift+A.
+    ///
+    /// None, then the three shapes, then none again. A line that already
+    /// wears heads at both ends keeps them and only changes their shape —
+    /// quietly demoting it to one end would be the key doing a second thing
+    /// nobody asked for — and one that had none comes back pointing at its
+    /// end, which is where an arrow points.
+    pub fn cycle_head(self: &Rc<Self>) -> bool {
+        let any = {
+            let state = self.state.borrow();
+            state
+                .selected
+                .iter()
+                .filter_map(|i| state.drawings.get(*i))
+                .any(|d| d.kind.is_line())
+        };
+        if !any {
+            return false;
+        }
+        let configs = self.state.borrow().configs.clone();
+        self.edit_selected(move |drawing| {
+            if !drawing.kind.is_line() {
+                return;
+            }
+            let style = drawing.style(&configs);
+            let next = step_head(style.arrow, style.head);
+            drawing.edit_style(&configs, |style| {
+                style.arrow = next.0;
+                style.head = next.1;
+            });
+        });
+        true
+    }
+
+    /// Step the text size of everything selected, for Ctrl+= and Ctrl+-.
+    ///
+    /// On a figure it is the figure's label that grows, not the figure: the
+    /// shape is sized by its grips and a key that quietly resized it would
+    /// be a second way to do what dragging already does.
+    pub fn step_text_size(self: &Rc<Self>, by: f64) -> bool {
+        let changed = {
+            let state = self.state.borrow();
+            !state.selected.is_empty()
+        };
+        if !changed {
+            return false;
+        }
+        let configs = self.state.borrow().configs.clone();
+        self.edit_selected(move |drawing| {
+            let now = drawing.style(&configs).text.clamped_size();
+            let next = (now + by).clamp(drawings::MIN_TEXT_SIZE, drawings::MAX_TEXT_SIZE);
+            if next != now {
+                drawing.edit_style(&configs, |style| style.text.size = next);
+            }
+        });
+        self.restyle_editor();
+        true
+    }
+
+    /// Set an open editor in the style its drawing now has, and put it back
+    /// where the new size belongs.
+    fn restyle_editor(&self) {
+        let Some(editing) = self.editing.borrow().clone() else { return };
+        let (style, ink) = {
+            let state = self.state.borrow();
+            let Some(drawing) = state.drawings.get(editing.index.get()) else { return };
+            let style = drawing.style(&state.configs).clone();
+            let ground = drawings::text_ground(drawing.kind, &style, &state.theme);
+            let ink = drawings::text_colour(&style.text.colour, &state.theme, &ground);
+            (style, ink)
+        };
+        editing.restyle(&style.text, &ink);
+        self.place_editor();
     }
 
     /// Show where another chart's pointer is, in time and in price.
@@ -870,6 +2646,10 @@ impl ChartView {
     pub fn set_show_grid(&self, show: bool) {
         self.state.borrow_mut().show_grid = show;
         self.redraw();
+    }
+
+    pub fn bar_style(&self) -> BarStyle {
+        self.state.borrow().bar_style
     }
 
     pub fn set_bar_style(&self, style: BarStyle) {
@@ -1054,7 +2834,25 @@ impl ChartView {
         let pointer = self.pointer.clone();
         let on_hover = self.on_hover.clone();
         motion.connect_motion(move |_, x, y| {
-            state.borrow_mut().pointer = Some((x, y));
+            {
+                let mut s = state.borrow_mut();
+                s.pointer = Some((x, y));
+                // A drawing with one anchor down follows the pointer with
+                // the other, button or no button: click, move, click is
+                // the way a line is drawn, and the line has to be there
+                // during the move.
+                if s.drag.is_none() && s.placing.is_some() {
+                    let (w, h) = (area.width() as f64, area.height() as f64);
+                    if let Some(anchor) = s.locate(w, h, x, y)
+                        && let Some(placing) = s.placing.as_mut()
+                    {
+                        match placing.kind.is_path() {
+                            true => placing.move_last_corner(anchor),
+                            false => placing.move_grip(Grip::To, anchor),
+                        }
+                    }
+                }
+            }
             // The cursor is the only thing that says a line can be dragged, so
             // it changes the moment the pointer is close enough to grab it.
             let over_edge = {
@@ -1065,9 +2863,21 @@ impl ChartView {
                 let s = state.borrow();
                 layout(&s, area.width() as f64, area.height() as f64).control_at(x, y).is_some()
             };
-            area.set_cursor_from_name(Some(match (over_edge, over_control) {
-                (true, _) => "ns-resize",
-                (_, true) => "pointer",
+            let (armed, over_drawing) = {
+                let s = state.borrow();
+                let over = (s.drag.is_none() && s.tool.is_none())
+                    .then(|| s.drawing_at(area.width() as f64, area.height() as f64, x, y))
+                    .flatten();
+                (s.tool.is_some(), over.map(|(_, grip)| grip))
+            };
+            area.set_cursor_from_name(Some(match (over_edge, over_control, armed, over_drawing) {
+                (true, _, _, _) => "ns-resize",
+                (_, true, _, _) => "pointer",
+                (_, _, true, _) => "crosshair",
+                // What the grip under the pointer will do, said by the
+                // pointer itself. A handle in the middle of an edge that
+                // looks like every other handle is a handle nobody tries.
+                (_, _, _, Some(grip)) => grip_cursor(grip),
                 _ => "default",
             }));
             notify_hover(&state, &on_hover, &area);
@@ -1164,7 +2974,7 @@ impl ChartView {
         self.area.add_controller(scroll);
     }
 
-    fn wire_drag(&self) {
+    fn wire_drag(self: &Rc<Self>) {
         // Before the drag gesture, so clicking a strip's corner acts on the
         // strip rather than starting a pan under the pointer.
         let controls = gtk::GestureClick::new();
@@ -1205,55 +3015,301 @@ impl ChartView {
 
         let state = self.state.clone();
         let area = self.area.clone();
+        let view = Rc::downgrade(self);
         let on_price_auto = self.on_price_auto.clone();
-        drag.connect_drag_begin(move |_, x, y| {
+        let pointer = self.pointer.clone();
+        drag.connect_drag_begin(move |gesture, x, y| {
+        let (width, height) = (area.width() as f64, area.height() as f64);
+        // On a drawing, Shift or Ctrl adds it to the selection: design
+        // tools say Shift and charting tools say Ctrl, and a hand that
+        // learned one should not have to learn the other. On empty chart
+        // only Shift pulls out a box; Ctrl with a drag is left for later.
+        let modifiers = gesture.current_event_state();
+        let shift_only = modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK);
+        let shift = shift_only || modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK);
+        // A drawing being laid down takes the press before anything
+        // else: the second press is the drawing's second anchor.
+        // What this press means for a drawing already being laid down:
+        // nothing, because there is none; another corner, for a zig-zag; or
+        // the end of it, for every other kind.
+        enum Press {
+            Elsewhere,
+            Corner,
+            Finish,
+        }
+        let press = {
             let mut s = state.borrow_mut();
-            let was_auto = s.price_auto;
-            // The edge wins over whatever region it crosses, because that is
-            // what the cursor was already promising.
-            let plan = layout(&s, area.width() as f64, area.height() as f64);
-            if let Some(edge) = plan.edge_at(y) {
-                let share = s
-                    .indicators
-                    .iter()
-                    .find(|d| d.indicator.id == edge.id)
-                    .and_then(|d| d.output.pane_height())
-                    .unwrap_or(0.18);
-                s.drag = Some(Drag::PaneEdge {
-                    id: edge.id,
-                    share,
-                    total_h: plan.total_h,
-                    grows_downward: edge.grows_downward,
-                });
+            if s.placing.is_none() {
+                Press::Elsewhere
+            } else {
+                let anchor = s.locate(width, height, x, y);
+                let path = s.placing.as_ref().is_some_and(|d| d.kind.is_path());
+                if let Some(anchor) = anchor
+                    && let Some(placing) = s.placing.as_mut()
+                {
+                    match path {
+                        // Another corner, and another following the hand.
+                        // A zig-zag ends when it is told to, not when the
+                        // second press lands.
+                        true => {
+                            placing.move_last_corner(anchor);
+                            placing.add_corner(anchor);
+                        }
+                        false => placing.move_grip(Grip::To, anchor),
+                    }
+                }
+                s.drag = None;
+                match path {
+                    true => Press::Corner,
+                    false => Press::Finish,
+                }
+            }
+        };
+        match press {
+            Press::Finish => {
+                if let Some(view) = view.upgrade() {
+                    view.commit_placing();
+                }
                 return;
             }
-            s.drag = Some(
-                match region_at(x, y, area.width() as f64, area.height() as f64) {
-                    Region::PriceAxis => {
-                        // Touching the axis takes the scale off automatic, from
-                        // exactly where it was, so nothing jumps.
-                        if s.price_auto {
-                            s.price_auto = false;
-                            s.price_zoom = 1.0;
-                            s.price_offset = 0.0;
+            // Handled, and nothing below applies — least of all the arm
+            // below, which would otherwise take this press as the start of
+            // a *new* zig-zag and throw away the one being drawn. That is
+            // exactly what it did: every click after the first put a fresh
+            // one-corner path in place of the run so far, so the segments
+            // vanished as they were made.
+            Press::Corner => {
+                area.queue_draw();
+                return;
+            }
+            Press::Elsewhere => {}
+        }
+        let mut s = state.borrow_mut();
+        let was_auto = s.price_auto;
+        // The edge wins over whatever region it crosses, because that is
+        // what the cursor was already promising.
+        let plan = layout(&s, width, height);
+        if let Some(edge) = plan.edge_at(y) {
+            let share = s
+                .indicators
+                .iter()
+                .find(|d| d.indicator.id == edge.id)
+                .and_then(|d| d.output.pane_height())
+                .unwrap_or(0.18);
+            s.drag = Some(Drag::PaneEdge {
+                id: edge.id,
+                share,
+                total_h: plan.total_h,
+                grows_downward: edge.grows_downward,
+            });
+            return;
+        }
+        let region = region_at(x, y, width, height);
+        if region == Region::Plot {
+            // An armed tool: this press is the first anchor. Except the
+            // text tool, which has no second anchor to wait for — a word
+            // is at a point — so one press puts the caret down and the
+            // keyboard takes over from there.
+            if s.tool == Some(DrawingKind::Text) {
+                let anchor = s.locate(width, height, x, y);
+                drop(s);
+                if let (Some(view), Some(anchor)) = (view.upgrade(), anchor) {
+                    view.start_text_at(anchor);
+                }
+                return;
+            }
+            if s.tool.is_some() {
+                s.begin_placing(width, height, x, y);
+                // A zig-zag is laid down by pressing, a corner at a time,
+                // so the drag that would rubber-band a line out of this
+                // press is never started.
+                if s.placing.as_ref().is_some_and(|d| d.kind.is_path()) {
+                    s.drag = None;
+                }
+                return;
+            }
+            // A drawing under the hand: take hold of it. With Shift it
+            // joins the selection, or leaves it, and nothing moves. One
+            // already selected keeps its company, so a drag on it moves
+            // them all. Otherwise a press on the chart lets go of whatever
+            // was selected, and pans as it always did.
+            match s.drawing_at(width, height, x, y) {
+                Some((index, _)) if shift => {
+                    match s.selected.iter().position(|i| *i == index) {
+                        Some(at) => {
+                            s.selected.remove(at);
                         }
-                        Drag::PriceScale { zoom: s.price_zoom }
+                        None => s.selected.push(index),
                     }
-                    Region::TimeAxis => Drag::TimeScale { visible: s.columns() },
-                    Region::Plot => Drag::Pan { left: s.left_edge(), offset: s.price_offset },
-                },
-            );
-            drop(s);
-            notify_price_auto(&state, &on_price_auto, was_auto);
-        });
+                    drop(s);
+                    area.queue_draw();
+                    return;
+                }
+                Some((index, grip)) => {
+                    if let Some(at) = s.selected.iter().position(|i| *i == index) {
+                        s.selected.remove(at);
+                    } else {
+                        s.selected.clear();
+                    }
+                    s.selected.push(index);
+                    if let Some(origin) = s.locate(width, height, x, y) {
+                        // Before the first motion, so a drag is one step
+                        // back however far it went. A press that never
+                        // moves is forgotten at the end.
+                        s.remember();
+                        s.drag = Some(Drag::Grip { index, grip, origin });
+                    }
+                    drop(s);
+                    area.queue_draw();
+                    return;
+                }
+                // Shift on empty chart: a box, which takes what it touches
+                // as it grows and adds it to what was already selected.
+                None if shift_only => {
+                    s.marquee_base = s.selected.clone();
+                    s.drag = Some(Drag::Marquee { from: (x, y), to: (x, y) });
+                    drop(s);
+                    pointer.queue_draw();
+                    return;
+                }
+                None => {
+                    if !s.selected.is_empty() {
+                        s.selected.clear();
+                        area.queue_draw();
+                    }
+                }
+            }
+        }
+        s.drag = Some(
+            match region {
+                Region::PriceAxis => {
+                    // Touching the axis takes the scale off automatic, from
+                    // exactly where it was, so nothing jumps.
+                    if s.price_auto {
+                        s.price_auto = false;
+                        s.price_zoom = 1.0;
+                        s.price_offset = 0.0;
+                    }
+                    Drag::PriceScale { zoom: s.price_zoom }
+                }
+                Region::TimeAxis => Drag::TimeScale { visible: s.columns() },
+                Region::Plot => Drag::Pan { left: s.left_edge(), offset: s.price_offset },
+            },
+        );
+        drop(s);
+        notify_price_auto(&state, &on_price_auto, was_auto);
+    });
 
         let state = self.state.clone();
         let area = self.area.clone();
         let pointer = self.pointer.clone();
-        drag.connect_drag_update(move |_, offset_x, offset_y| {
+        let view = Rc::downgrade(self);
+        drag.connect_drag_update(move |gesture, offset_x, offset_y| {
             let mut s = state.borrow_mut();
             let Some(drag) = s.drag else { return };
             let plot_w = (area.width() as f64 - PRICE_AXIS_W - PAD).max(1.0);
+            let (width, height) = (area.width() as f64, area.height() as f64);
+            let hand = gesture.start_point().map(|(sx, sy)| (sx + offset_x, sy + offset_y));
+
+            match drag {
+                Drag::Place { moved } => {
+                    let Some((x, y)) = hand else { return };
+                    if let Some(anchor) = s.locate(width, height, x, y)
+                        && let Some(placing) = s.placing.as_mut()
+                    {
+                        match placing.kind.is_path() {
+                            true => placing.move_last_corner(anchor),
+                            false => placing.move_grip(Grip::To, anchor),
+                        }
+                    }
+                    if !moved && offset_x.hypot(offset_y) > drag_threshold() {
+                        s.drag = Some(Drag::Place { moved: true });
+                    }
+                    drop(s);
+                    // The drawing in hand is on the pointer layer; the chart
+                    // underneath has not changed.
+                    pointer.queue_draw();
+                    return;
+                }
+                Drag::Marquee { from, .. } => {
+                    let Some((x, y)) = hand else { return };
+                    s.drag = Some(Drag::Marquee { from, to: (x, y) });
+                    let (left, right) = if from.0 <= x { (from.0, x) } else { (x, from.0) };
+                    let (top, bottom) = if from.1 <= y { (from.1, y) } else { (y, from.1) };
+                    let touched = s.drawings_in(width, height, (left, top, right - left, bottom - top));
+                    let mut selected = s.marquee_base.clone();
+                    selected.extend(touched.into_iter().filter(|i| !s.marquee_base.contains(i)));
+                    let changed = selected != s.selected;
+                    s.selected = selected;
+                    drop(s);
+                    pointer.queue_draw();
+                    if changed {
+                        area.queue_draw();
+                    }
+                    return;
+                }
+                Drag::Grip { index, grip, origin } => {
+                    let Some((x, y)) = hand else { return };
+                    let Some(now) = s.locate(width, height, x, y) else { return };
+                    let moving: Vec<Drawing> = match grip {
+                        Grip::Body => {
+                            // The whole selection follows the hand by the
+                            // distance it has travelled since the last
+                            // motion, so a drag past the end of the bars
+                            // keeps moving at the bars' own step.
+                            //
+                            // Moved by *bars*, not by time. Time is where a
+                            // drawing lives, but the chart lays bars out
+                            // evenly however unevenly they are spaced, so
+                            // the same number of seconds is a different
+                            // number of pixels in one gap than in the next —
+                            // a weekend is a column like any other. Shifting
+                            // both anchors by the same span of time
+                            // therefore changed the distance between them on
+                            // screen as the drawing crossed one, and a box
+                            // dragged over a weekend visibly breathed.
+                            // Shifting both by the same number of columns
+                            // cannot: columns are evenly spaced by
+                            // construction.
+                            let by_index = index_of_ts(&s.bars, now.ts)
+                                - index_of_ts(&s.bars, origin.ts);
+                            let by_price = now.price - origin.price;
+                            let indices = s.selected.clone();
+                            let mut moving = Vec::new();
+                            let State { bars, drawings, .. } = &mut *s;
+                            for i in indices {
+                                if let Some(drawing) = drawings.get_mut(i) {
+                                    shift_by_columns(bars, drawing, by_index, by_price);
+                                    moving.push(drawing.clone());
+                                }
+                            }
+                            s.drag = Some(Drag::Grip { index, grip, origin: now });
+                            moving
+                        }
+                        grip => {
+                            // A corner is one drawing's own.
+                            match s.drawings.get_mut(index) {
+                                Some(drawing) => {
+                                    drawing.move_grip(grip, now);
+                                    vec![drawing.clone()]
+                                }
+                                None => Vec::new(),
+                            }
+                        }
+                    };
+                    drop(s);
+                    area.queue_draw();
+                    // The other charts of this symbol follow the hand too,
+                    // not only the release.
+                    if let Some(view) = view.upgrade() {
+                        for drawing in moving {
+                            view.tell(DrawingEvent::Moving(drawing));
+                        }
+                    }
+                    return;
+                }
+                _ => {}
+            }
 
             match drag {
                 Drag::Pan { left, offset } => {
@@ -1302,6 +3358,7 @@ impl ChartView {
                     s.visible = next;
                     s.trim_room(plot_w);
                 }
+                Drag::Place { .. } | Drag::Grip { .. } | Drag::Marquee { .. } => unreachable!("handled above"),
             }
             drop(s);
             redraw(&area, &pointer);
@@ -1309,10 +3366,55 @@ impl ChartView {
 
         let state = self.state.clone();
         let on_resize = self.on_pane_resize.clone();
+        let view = Rc::downgrade(self);
         drag.connect_drag_end(move |_, _, _| {
             let finished = state.borrow_mut().drag.take();
             // Stored when the drag ends rather than on every motion event,
             // which would be a database write per pixel of travel.
+            match finished {
+                // Pressed and released in place: the first anchor is down
+                // and the second waits for the next press.
+                Some(Drag::Place { moved: false }) => return,
+                // The box is gone with the drag; what it took stays taken.
+                Some(Drag::Marquee { .. }) => {
+                    state.borrow_mut().marquee_base.clear();
+                    if let Some(view) = view.upgrade() {
+                        view.pointer.queue_draw();
+                    }
+                    return;
+                }
+                Some(Drag::Place { moved: true }) => {
+                    if let Some(view) = view.upgrade() {
+                        view.commit_placing();
+                    }
+                    return;
+                }
+                Some(Drag::Grip { .. }) => {
+                    let moved: Vec<Drawing> = {
+                        let mut s = state.borrow_mut();
+                        let before = s.undo.last().cloned().unwrap_or_default();
+                        let moved: Vec<Drawing> = s
+                            .drawings
+                            .iter()
+                            .enumerate()
+                            .filter(|(i, d)| before.get(*i) != Some(*d))
+                            .map(|(_, d)| d.clone())
+                            .collect();
+                        // A press that selected and let go moved nothing.
+                        if moved.is_empty() {
+                            s.undo.pop();
+                        }
+                        moved
+                    };
+                    if let Some(view) = view.upgrade() {
+                        for drawing in moved {
+                            view.tell(DrawingEvent::Changed(drawing));
+                        }
+                    }
+                    return;
+                }
+                _ => {}
+            }
             let Some(Drag::PaneEdge { id, .. }) = finished else { return };
             let share = state
                 .borrow()
@@ -1328,17 +3430,45 @@ impl ChartView {
         self.area.add_controller(drag);
 
         // Double-clicking an axis puts it back on automatic, which is the way
-        // out of any scale you have stretched into uselessness.
+        // out of any scale you have stretched into uselessness; double-clicking
+        // a drawing puts the caret in it.
         let click = gtk::GestureClick::new();
         let state = self.state.clone();
         let area = self.area.clone();
         let pointer = self.pointer.clone();
         let on_price_auto = self.on_price_auto.clone();
+        let view = Rc::downgrade(self);
         click.connect_pressed(move |_, presses, x, y| {
             if presses < 2 {
                 return;
             }
+            // A zig-zag being laid down: the second click is the end of it.
+            // Before everything else, because while one is in hand that is
+            // the only thing a double-click can mean.
+            if state.borrow().placing.as_ref().is_some_and(|d| d.kind.is_path()) {
+                if let Some(view) = view.upgrade() {
+                    view.commit_placing();
+                }
+                return;
+            }
             let region = region_at(x, y, area.width() as f64, area.height() as f64);
+            // A drawing under the pointer: the second click puts the caret
+            // in it. This is the shortest way to a label — the way a slide
+            // editor opens a shape's text — and it is free, because a
+            // double-click on the plot has never done anything.
+            if region == Region::Plot {
+                let hit = {
+                    let s = state.borrow();
+                    s.drawing_at(area.width() as f64, area.height() as f64, x, y)
+                };
+                if let Some((index, _)) = hit
+                    && let Some(view) = view.upgrade()
+                {
+                    view.select_at(x, y);
+                    view.begin_text_edit(index, false);
+                    return;
+                }
+            }
             let mut s = state.borrow_mut();
             let was_auto = s.price_auto;
             match region {
@@ -1353,8 +3483,9 @@ impl ChartView {
                     s.overhang = 0;
                     s.lead = 0;
                 }
-                // Double-clicking the chart itself does nothing, the same as
-                // everywhere else. Resetting is Alt+R or the axis menu.
+                // Double-clicking bare chart does nothing, the same as
+                // everywhere else — a drawing was handled above. Resetting
+                // is Ctrl+Esc or the axis menu.
                 Region::Plot => return,
             }
             drop(s);
@@ -1374,7 +3505,7 @@ impl ChartView {
         self.redraw();
     }
 
-    /// Everything back to how the chart opens. Alt+R, and the axis menu.
+    /// Everything back to how the chart opens. Ctrl+Esc, and the axis menu.
     pub fn reset_view(&self) {
         self.state.borrow_mut().reset_view();
         self.redraw();
@@ -1387,9 +3518,25 @@ impl ChartView {
         let area = self.area.clone();
         let on_context_menu = self.on_context_menu.clone();
         let on_axis_menu = self.on_axis_menu.clone();
+        let view = Rc::downgrade(self);
         click.connect_pressed(move |_, _, x, y| {
             let (width, height) = (area.width() as f64, area.height() as f64);
             if region_at(x, y, width, height) != Region::PriceAxis {
+                // The menu is about what is under the pointer: a drawing
+                // there is selected and gets a menu of its own, about the
+                // drawing and nothing else. A right-click while a tool is
+                // armed puts it down.
+                if let Some(view) = view.upgrade() {
+                    if view.armed().is_some() {
+                        view.arm(None);
+                    }
+                    if view.select_at(x, y) {
+                        if let Some(handler) = view.on_drawing_menu.borrow().as_ref() {
+                            handler(x, y);
+                        }
+                        return;
+                    }
+                }
                 // The chart's own menu belongs to whoever owns the chart.
                 if let Some(handler) = on_context_menu.borrow().as_ref() {
                     handler(x, y);
@@ -1533,6 +3680,7 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
     draw_indicator_fills(cr, state, &columns, &to_y);
     draw_candles(cr, state, &columns.bars, bars_x, bar_w, &to_y);
     draw_indicator_lines(cr, state, &columns, &to_y);
+    draw_drawings(cr, state, &plan, low, high);
 
     for (at, row) in plan.rows.iter().enumerate() {
         draw_row_edge(cr, state, &plan, at);
@@ -1604,6 +3752,33 @@ fn draw_pointer(cr: &cairo::Context, width: f64, height: f64, state: &State) {
         if row.pane.is_some() && state.pointer.map(|(_, y)| row.covers(y)).unwrap_or(false) {
             draw_pane_controls(cr, state, &plan, row, at);
         }
+    }
+
+    // The drawing in hand, with its second anchor wherever the pointer is.
+    if let Some(placing) = &state.placing {
+        cr.save().ok();
+        cr.rectangle(plan.plot_x, plan.price_y, plan.plot_w, plan.price_h);
+        cr.clip();
+        let placed = state.project(&plan, low, high, placing);
+        draw_drawing(cr, state, &placed, placing, true, false);
+        cr.restore().ok();
+    }
+
+    // The selection box, while a hand drags one out.
+    if let Some(Drag::Marquee { from, to }) = state.drag {
+        let (x, y) = (from.0.min(to.0), from.1.min(to.1));
+        let (w, h) = ((from.0 - to.0).abs(), (from.1 - to.1).abs());
+        cr.save().ok();
+        cr.rectangle(plan.plot_x, plan.price_y, plan.plot_w, plan.price_h);
+        cr.clip();
+        colors::set_source_alpha(cr, &state.theme.ui.accent, 0.12);
+        cr.rectangle(x, y, w, h);
+        let _ = cr.fill();
+        colors::set_source_alpha(cr, &state.theme.ui.accent, 0.7);
+        cr.set_line_width(1.0);
+        cr.rectangle(x.round() + 0.5, y.round() + 0.5, w.round(), h.round());
+        let _ = cr.stroke();
+        cr.restore().ok();
     }
 
     if let Some((px, py)) = state.pointer {
@@ -1806,11 +3981,28 @@ fn draw_candles(
     bar_w: f64,
     to_y: &impl Fn(f64) -> f64,
 ) {
-    if state.bar_style == BarStyle::Ohlc {
-        draw_ohlc(cr, state, bars, plot_x, bar_w, to_y);
+    candles(cr, state.bar_style, &state.scheme, bars, plot_x, bar_w, to_y);
+}
+
+/// Candles, from nothing but what it takes to draw one: the style, the
+/// scheme, the bars, and where they go.
+///
+/// Split out of the chart's own state so that what draws a candle is a
+/// routine taking what a candle needs, rather than a method reaching into
+/// a `State` for two fields out of thirty.
+fn candles(
+    cr: &cairo::Context,
+    bar_style: BarStyle,
+    scheme: &BarScheme,
+    bars: &[Bar],
+    plot_x: f64,
+    bar_w: f64,
+    to_y: &impl Fn(f64) -> f64,
+) {
+    if bar_style == BarStyle::Ohlc {
+        ohlc(cr, scheme, bars, plot_x, bar_w, to_y);
         return;
     }
-    let scheme = &state.scheme;
     let body_w = (bar_w * 0.68).clamp(1.0, 24.0);
     // Below about three pixels a candle is a line; outlining it just muddies
     // the colour.
@@ -1870,9 +4062,9 @@ fn draw_candles(
 }
 
 /// Open and close as ticks either side of a high-low line.
-fn draw_ohlc(
+fn ohlc(
     cr: &cairo::Context,
-    state: &State,
+    scheme: &BarScheme,
     bars: &[Bar],
     plot_x: f64,
     bar_w: f64,
@@ -1901,7 +4093,7 @@ fn draw_ohlc(
             }
         }
         if any {
-            colors::set_source(cr, state.scheme.outline(direction));
+            colors::set_source(cr, scheme.outline(direction));
             let _ = cr.stroke();
         }
     }
@@ -2481,6 +4673,318 @@ fn draw_echo(
     cr.line_to(plot_x + plot_w, y);
     let _ = cr.stroke();
     cr.restore().ok();
+}
+
+fn now_list(list: &[Drawing], at: usize) -> Option<&Drawing> {
+    list.get(at)
+}
+
+fn now_id(drawing: &Option<&Drawing>) -> Option<i64> {
+    drawing.map(|d| d.id).filter(|id| *id != 0)
+}
+
+/// The configuration a number key names, 1 to 9, from the main row or the
+/// keypad. Zero names nothing: there are nine.
+fn preset_number(key: gtk::gdk::Key) -> Option<usize> {
+    use gtk::gdk::Key;
+    Some(match key {
+        Key::_1 | Key::KP_1 => 1,
+        Key::_2 | Key::KP_2 => 2,
+        Key::_3 | Key::KP_3 => 3,
+        Key::_4 | Key::KP_4 => 4,
+        Key::_5 | Key::KP_5 => 5,
+        Key::_6 | Key::KP_6 => 6,
+        Key::_7 | Key::KP_7 => 7,
+        Key::_8 | Key::KP_8 => 8,
+        Key::_9 | Key::KP_9 => 9,
+        _ => return None,
+    })
+}
+
+/// Half the side of a grip, the small square at a selected drawing's anchor.
+const GRIP_HALF: f64 = 3.5;
+
+/// What has been drawn on the symbol, over the candles and the indicator
+/// lines and under the strips, clipped to the price plot so a line drawn
+/// off the top does not cross an RSI.
+fn draw_drawings(cr: &cairo::Context, state: &State, plan: &Layout, low: f64, high: f64) {
+    if state.drawings.is_empty() {
+        return;
+    }
+    cr.save().ok();
+    cr.rectangle(plan.plot_x, plan.price_y, plan.plot_w, plan.price_h);
+    cr.clip();
+    for (index, drawing) in state.drawings.iter().enumerate() {
+        let projected = state.project(plan, low, high, drawing);
+        let typing = state.editing == Some(index);
+        draw_drawing(cr, state, &projected, drawing, state.selected.contains(&index), typing);
+        if typing {
+            draw_editing_ground(cr, state, drawing);
+        }
+    }
+    cr.restore().ok();
+}
+
+/// One drawing, as its configuration or its own look says, on this theme.
+///
+/// A line is its colour at its width, with an arrowhead at whichever ends
+/// want one. A rectangle is its fill at its alpha under an edge at less than
+/// half strength — the numbers behind the defaults are in the engine,
+/// measured over every theme — so the candles read through it and the edge
+/// is the edge of the shape rather than a line drawn around it. A selected
+/// drawing wears a grip at each of its corners.
+fn draw_drawing(
+    cr: &cairo::Context,
+    state: &State,
+    projected: &Projected,
+    drawing: &Drawing,
+    selected: bool,
+    typing: bool,
+) {
+    let style = drawing.style(&state.configs);
+    let colour = style.colour.hex(&state.theme);
+    match drawing.kind {
+        DrawingKind::Line | DrawingKind::Horizontal | DrawingKind::Arrow | DrawingKind::Zigzag => {
+            colors::set_source(cr, &colour);
+            cr.set_line_width(style.width);
+            cr.set_line_cap(cairo::LineCap::Round);
+            // Every leg, which for all but the zig-zag is one. The ends are
+            // pulled back under any head they wear: a round cap is a
+            // half-disc of the line's own radius centred on the end of the
+            // path, so a leg drawn all the way to the tip puts half its
+            // width *past* the tip — a stub poking out of the arrowhead,
+            // and the thicker the line the worse it looks.
+            cr.set_line_join(cairo::LineJoin::Round);
+            let legs = projected.segments();
+            let last = legs.len().saturating_sub(1);
+            for (n, (a, b)) in legs.iter().enumerate() {
+                let (from, to) = headless_leg(*a, *b, style, n == 0, n == last);
+                cr.move_to(from.0, from.1);
+                cr.line_to(to.0, to.1);
+            }
+            let _ = cr.stroke();
+            if let (Some(first), Some((a, b))) = (legs.first(), legs.last()) {
+                if style.arrow.at_end() {
+                    arrowhead(cr, *a, *b, style.width, style.head);
+                }
+                if style.arrow.at_start() {
+                    arrowhead(cr, first.1, first.0, style.width, style.head);
+                }
+            }
+        }
+        DrawingKind::Rect => {
+            let (x, y, w, h) = projected.bounds();
+            colors::set_source_alpha(cr, &style.fill.hex(&state.theme), style.alpha);
+            cr.rectangle(x, y, w, h);
+            let _ = cr.fill();
+            if style.border {
+                // Inside the shape, not astride its edge. A stroke is
+                // centred on the path it is given, so half of a four-pixel
+                // edge would sit over the fill and half over the chart —
+                // two bands of two different colours, which at that width
+                // reads as two lines rather than one thick one. Pulled in
+                // by half its own width it lands wholly on the fill and is
+                // one colour all the way across. The half-pixel is what
+                // keeps a hairline a hairline.
+                let width = style.width.max(1.0);
+                let half = width / 2.0;
+                colors::set_source_alpha(cr, &colour, drawings::BORDER_ALPHA);
+                cr.set_line_width(width);
+                cr.rectangle(
+                    x.round() + half,
+                    y.round() + half,
+                    (w.round() - width).max(1.0),
+                    (h.round() - width).max(1.0),
+                );
+                let _ = cr.stroke();
+            }
+        }
+        // The same fill under the same edge as a box, in an ellipse drawn
+        // inside the box the two anchors make: a circle scaled to the box
+        // rather than an arc, so an ellipse dragged wide is wide. Not put on
+        // the pixel grid the way a box is — there is no pixel grid for a
+        // curve, and the only honest edge for one is the antialiased one.
+        DrawingKind::Ellipse => {
+            let (x, y, w, h) = projected.bounds();
+            if w <= 0.0 || h <= 0.0 {
+                return;
+            }
+            // `inset` pulls the curve in from the box, for the same reason
+            // a box's edge is pulled in: a stroke straddles its path, and an
+            // edge half over the fill and half over the chart is two
+            // colours.
+            let ellipse = |cr: &cairo::Context, inset: f64| {
+                let (rx, ry) = ((w / 2.0 - inset).max(0.1), (h / 2.0 - inset).max(0.1));
+                cr.save().ok();
+                cr.translate(x + w / 2.0, y + h / 2.0);
+                cr.scale(rx, ry);
+                cr.arc(0.0, 0.0, 1.0, 0.0, std::f64::consts::TAU);
+                // Back before the stroke, or the scale that made the circle
+                // an ellipse would make the hairline an ellipse too: thick
+                // on the flat sides and thin on the ends.
+                cr.restore().ok();
+            };
+            colors::set_source_alpha(cr, &style.fill.hex(&state.theme), style.alpha);
+            ellipse(cr, 0.0);
+            let _ = cr.fill();
+            if style.border {
+                let width = style.width.max(1.0);
+                colors::set_source_alpha(cr, &colour, drawings::BORDER_ALPHA);
+                cr.set_line_width(width);
+                ellipse(cr, width / 2.0);
+                let _ = cr.stroke();
+            }
+        }
+        // Nothing but the words, which the label pass below draws for every
+        // kind. A text drawing with nothing typed into it yet draws nothing
+        // at all, which is the right picture of a caret waiting.
+        DrawingKind::Text => {}
+    }
+    if !typing {
+        draw_label(cr, state, projected, drawing, style);
+    }
+    if selected {
+        // A text drawing wears no grips, so the box its words fill is what
+        // says it is selected: a dashed outline a hair outside the glyphs,
+        // in the drawing's own colour. The same outline would be noise on a
+        // figure, which has grips to say it.
+        if drawing.kind.is_text()
+            && let Some((x, y, w, h)) = projected.words
+        {
+            colors::set_source_alpha(cr, &colour, drawings::BORDER_ALPHA);
+            cr.set_line_width(1.0);
+            cr.set_dash(&[3.0, 3.0], 0.0);
+            let pad = SELECTED_TEXT_PAD;
+            cr.rectangle(
+                (x - pad).round() + 0.5,
+                (y - pad).round() + 0.5,
+                (w + 2.0 * pad).round(),
+                (h + 2.0 * pad).round(),
+            );
+            let _ = cr.stroke();
+            cr.set_dash(&[], 0.0);
+        }
+        for grip in drawing.grips() {
+            let Some((x, y)) = projected.grip(grip) else { continue };
+            colors::set_source(cr, &state.theme.ui.background);
+            cr.rectangle(
+                x - GRIP_HALF - 1.0,
+                y - GRIP_HALF - 1.0,
+                2.0 * GRIP_HALF + 2.0,
+                2.0 * GRIP_HALF + 2.0,
+            );
+            let _ = cr.fill();
+            colors::set_source(cr, &colour);
+            cr.rectangle(x - GRIP_HALF, y - GRIP_HALF, 2.0 * GRIP_HALF, 2.0 * GRIP_HALF);
+            let _ = cr.fill();
+        }
+    }
+}
+
+/// The next of the four states an arrowhead is in: no head, then each
+/// shape in the order the picker offers them, then no head again.
+fn step_head(
+    arrow: omacharts_engine::Arrow,
+    head: omacharts_engine::ArrowHead,
+) -> (omacharts_engine::Arrow, omacharts_engine::ArrowHead) {
+    use omacharts_engine::{Arrow, ArrowHead};
+    if arrow == Arrow::None {
+        return (Arrow::End, ArrowHead::ALL[0]);
+    }
+    let at = ArrowHead::ALL.iter().position(|h| *h == head).unwrap_or(0);
+    match ArrowHead::ALL.get(at + 1) {
+        Some(next) => (arrow, *next),
+        None => (Arrow::None, ArrowHead::ALL[0]),
+    }
+}
+
+/// How far outside the glyphs a selected text drawing's outline sits.
+const SELECTED_TEXT_PAD: f64 = 3.0;
+
+/// How far the plate under the caret reaches past the block it is under.
+///
+/// The same reach the halo has round a committed label, so the footprint of
+/// the ground does not change when the edit ends.
+const EDITING_PAD: f64 = 1.0;
+
+/// The ground under the words being typed: the colour the ink was held
+/// against, put down so that what is on screen while somebody types is as
+/// readable as what they will get. See [`crate::ui::text::draw`] for why a
+/// label needs its ground drawn at all.
+fn draw_editing_ground(cr: &cairo::Context, state: &State, drawing: &Drawing) {
+    let Some((x, y, w, h)) = state.editing_at else { return };
+    let style = drawing.style(&state.configs);
+    let ground = drawings::text_ground(drawing.kind, style, &state.theme);
+    colors::set_source(cr, &ground);
+    let pad = EDITING_PAD;
+    crate::ui::drawing_settings::rounded(cr, x - pad, y - pad, w + 2.0 * pad, h + 2.0 * pad, 3.0);
+    let _ = cr.fill();
+}
+
+/// What the drawing says, where its placement puts it.
+///
+/// Every kind goes through here: for the text kind these are the drawing,
+/// and for a line, a box or an ellipse they are its label. The ink is the
+/// text colour held to the text floor against what it actually lands on —
+/// the composited fill inside a filled figure, the chart's background
+/// anywhere else — so an amber label on an amber box is amber where amber
+/// reads and lifted where it does not.
+fn draw_label(
+    cr: &cairo::Context,
+    state: &State,
+    projected: &Projected,
+    drawing: &Drawing,
+    style: &omacharts_engine::Style,
+) {
+    let Some((x, y, _, _)) = projected.words else { return };
+    let ground = drawings::text_ground(drawing.kind, style, &state.theme);
+    let ink = drawings::text_colour(&style.text.colour, &state.theme, &ground);
+    let at = crate::ui::text::placement(drawing.kind, &drawing.text);
+    crate::ui::text::draw(cr, (x, y), &drawing.text, &style.text, at.alignment(), &ink, &ground);
+}
+
+/// One leg of a stroke, with either end pulled in by half the line's width
+/// where a head is going to sit over it.
+///
+/// Only the outermost legs can wear one: a zig-zag's heads are at the ends
+/// of the whole run, not at every corner.
+fn headless_leg(
+    a: (f64, f64),
+    b: (f64, f64),
+    style: &omacharts_engine::Style,
+    first: bool,
+    last: bool,
+) -> ((f64, f64), (f64, f64)) {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let length = dx.hypot(dy);
+    if length < 1.0 {
+        return (a, b);
+    }
+    // Never more than the leg has to give: a very short one with heads at
+    // both ends keeps a sliver rather than turning inside out.
+    let back = (style.width / 2.0).min(length / 2.0 - 0.5).max(0.0);
+    let (ux, uy) = (dx / length * back, dy / length * back);
+    let from = match first && style.arrow.at_start() {
+        true => (a.0 + ux, a.1 + uy),
+        false => a,
+    };
+    let to = match last && style.arrow.at_end() {
+        true => (b.0 - ux, b.1 - uy),
+        false => b,
+    };
+    (from, to)
+}
+
+/// A filled arrowhead at `tip`, pointing away from `tail`, sized to the
+/// line's width so a thick line gets a head to match.
+fn arrowhead(
+    cr: &cairo::Context,
+    tail: (f64, f64),
+    tip: (f64, f64),
+    width: f64,
+    shape: omacharts_engine::ArrowHead,
+) {
+    crate::ui::drawing_settings::paint_head(cr, tail, tip, width, 6.0 + 3.0 * width, shape);
 }
 
 /// The visible bar closest in time to `ts`, if any is near enough to mean it.
@@ -3583,3 +6087,319 @@ mod tests {
     }
 }
 
+
+#[cfg(test)]
+mod drawing_tests {
+    use super::*;
+
+    fn bars(count: usize) -> Vec<Bar> {
+        (0..count)
+            .map(|i| {
+                let base = 100.0 + (i % 11) as f64;
+                Bar {
+                    ts: 1_700_000_000 + i as i64 * 3600,
+                    open: base,
+                    high: base + 2.0,
+                    low: base - 2.0,
+                    close: base + 0.5,
+                    volume: 1.0,
+                }
+            })
+            .collect()
+    }
+
+    fn charted(count: usize) -> State {
+        let theme = omacharts_engine::theme::builtin_themes()
+            .into_iter()
+            .next()
+            .expect("a built-in theme");
+        let scheme = omacharts_engine::theme::theme_bars(&theme);
+        let mut state = State::blank(theme, scheme);
+        state.bars = bars(count);
+        state
+    }
+
+    /// A moment and its index agree in both directions: on a bar, between
+    /// two, and off either end at the end's step.
+    #[test]
+    fn moments_and_indices_round_trip() {
+        let series = bars(10);
+        for (i, bar) in series.iter().enumerate() {
+            assert_eq!(ts_at(&series, i as f64), bar.ts);
+            assert_eq!(index_of_ts(&series, bar.ts), i as f64);
+        }
+        assert_eq!(ts_at(&series, 2.5), series[2].ts + 1800);
+        assert_eq!(index_of_ts(&series, series[2].ts + 1800), 2.5);
+        // Past the last bar, counting on at the last step.
+        assert_eq!(ts_at(&series, 12.0), series[9].ts + 3 * 3600);
+        assert_eq!(index_of_ts(&series, series[9].ts + 3 * 3600), 12.0);
+        // And before the first.
+        assert_eq!(ts_at(&series, -2.0), series[0].ts - 2 * 3600);
+        assert_eq!(index_of_ts(&series, series[0].ts - 2 * 3600), -2.0);
+    }
+
+    /// Where the hand is becomes an anchor, and the anchor is drawn back
+    /// under the hand: the two conversions share one scale.
+    #[test]
+    fn a_pixel_located_is_projected_back_under_the_pointer() {
+        let state = charted(400);
+        let (w, h) = (800.0, 400.0);
+        let (first, visible) = state.slice();
+        let plan = layout(&state, w, h);
+        let (low, high) = price_range(&state, &state.bars[first..first + visible]).unwrap();
+        let bar_w = plan.plot_w / visible as f64;
+        for (x, y) in [(120.0, 90.0), (400.0, 200.0), (plan.plot_x + plan.plot_w - 3.0, 150.0)] {
+            let anchor = state.locate(w, h, x, y).expect("a chart with bars locates");
+            let drawing = Drawing::new(DrawingKind::Line, anchor, anchor);
+            let projected = state.project(&plan, low, high, &drawing);
+            // The moment snapped to a bar, so x is off by at most half a bar.
+            assert!(
+                (projected.from.0 - x).abs() <= bar_w / 2.0 + 0.01,
+                "x {x} came back as {}",
+                projected.from.0
+            );
+            assert!((projected.from.1 - y).abs() < 0.01, "y {y} came back as {}", projected.from.1);
+        }
+    }
+
+    /// An anchor dropped past the last candle is a whole number of bars
+    /// after it, which is what keeps it on the same bar when that bar
+    /// arrives.
+    #[test]
+    fn an_anchor_past_the_last_bar_lands_on_a_future_bar() {
+        let state = charted(100);
+        let (w, h) = (800.0, 400.0);
+        let plan = layout(&state, w, h);
+        // A hundred bars fill the plot, so the twenty-first slot past the
+        // last one is twenty-one steps after it.
+        let (_, visible) = state.slice();
+        assert_eq!(visible, 100);
+        let bar_w = plan.plot_w / visible as f64;
+        let x = plan.plot_x + 120.5 * bar_w;
+        let anchor = state.locate(w, h, x, 100.0).unwrap();
+        assert_eq!(anchor.ts, state.bars[99].ts + 21 * 3600);
+    }
+
+    /// The configuration chosen for the next drawing survives picking a
+    /// tool, so the two can be asked for in either order.
+    #[test]
+    fn choosing_a_configuration_and_choosing_a_tool_are_one_sentence() {
+        let mut state = charted(400);
+
+        // Tool first, then the number — which always worked.
+        state.tool = Some(DrawingKind::Line);
+        state.next_config = 3;
+        assert!(state.begin_placing(800.0, 400.0, 200.0, 150.0));
+        assert_eq!(state.placing.as_ref().unwrap().config, Some(3));
+
+        // And the other way round: the number is already set when the tool
+        // arrives, and arming must not throw it away.
+        let mut state = charted(400);
+        state.next_config = 3;
+        state.tool = Some(DrawingKind::Rect);
+        assert!(state.begin_placing(800.0, 400.0, 200.0, 150.0));
+        assert_eq!(state.placing.as_ref().unwrap().config, Some(3));
+
+        // Laying one down ends the choice: the next is the usual one.
+        state.placing = None;
+        state.next_config = 1;
+        state.tool = Some(DrawingKind::Ellipse);
+        assert!(state.begin_placing(800.0, 400.0, 200.0, 150.0));
+        assert_eq!(state.placing.as_ref().unwrap().config, Some(1));
+    }
+
+    /// A paste puts the copies down, takes hold of them, and leaves one
+    /// step back on the stack however many were pasted.
+    #[test]
+    fn pasting_puts_the_copies_down_and_takes_hold_of_them() {
+        let mut state = charted(400);
+        let (w, h) = (800.0, 400.0);
+        let a = Anchor::new(state.bars[100].ts, state.bars[100].close);
+        let b = Anchor::new(state.bars[140].ts, state.bars[140].close);
+        let mut one = Drawing::new(DrawingKind::Rect, a, b);
+        one.id = 7;
+        let mut two = Drawing::new(DrawingKind::Line, a, b);
+        two.id = 9;
+
+        let added = state.paste(&[one.clone(), two.clone()], true, w, h);
+        assert_eq!(added.len(), 2, "both copies went down");
+        assert_eq!(state.drawings.len(), 2);
+        assert!(added.iter().all(|d| d.id == 0), "a copy is not the drawing it came from");
+        assert_eq!(state.selected, vec![0, 1], "the copies are what is in hand");
+        assert_eq!(state.undo.len(), 1, "two drawings is still one step back");
+
+        // Offset, so a copy of something on this chart is visible beside it.
+        assert_ne!(state.drawings[0].from, a, "the copy landed exactly on the original");
+        // And the shape is unchanged: both ends moved by the same amount.
+        let moved = &state.drawings[0];
+        assert_eq!(moved.to.ts - moved.from.ts, b.ts - a.ts);
+
+        // Asked not to offset — a paste onto another chart — it lands on
+        // the moment and the price it was copied from.
+        let mut elsewhere = charted(400);
+        elsewhere.paste(&[one.clone()], false, w, h);
+        assert_eq!(elsewhere.drawings[0].from, a);
+        assert_eq!(elsewhere.drawings[0].to, b);
+    }
+
+    /// The selection survives the list being rebuilt — which is what
+    /// happens the moment a paste is written down — with every pasted copy
+    /// still in hand, not just the last of them.
+    #[test]
+    fn every_pasted_copy_is_still_selected_after_the_list_comes_back() {
+        let mut state = charted(400);
+        let a = Anchor::new(state.bars[100].ts, state.bars[100].close);
+        let b = Anchor::new(state.bars[140].ts, state.bars[140].close);
+        // One already written down, and three just pasted.
+        let mut old = Drawing::new(DrawingKind::Line, a, b);
+        old.id = 4;
+        state.drawings.push(old);
+        let copies = vec![
+            Drawing::new(DrawingKind::Rect, a, b),
+            Drawing::new(DrawingKind::Ellipse, a, b),
+            Drawing::new(DrawingKind::Line, a, b),
+        ];
+        state.paste(&copies, true, 800.0, 400.0);
+        assert_eq!(state.selected, vec![1, 2, 3]);
+
+        // The list comes back from the store with the copies still
+        // unnumbered, as it does between the paste and the write.
+        let ids = state.selected_ids();
+        assert_eq!(ids, vec![0, 0, 0], "a copy has no id until it is written down");
+        let same = state.drawings.clone();
+        state.drawings = same;
+        state.reselect(ids);
+        assert_eq!(state.selected, vec![1, 2, 3], "only the last copy stayed in hand");
+
+        // And one on its own still means the newest row.
+        state.reselect(vec![0]);
+        assert_eq!(state.selected, vec![3]);
+    }
+
+    /// A copy belongs to the chart it was pasted on, and goes where that
+    /// chart sends what is drawn on it.
+    #[test]
+    fn a_pasted_copy_takes_the_chart_s_own_sharing() {
+        let (w, h) = (800.0, 400.0);
+        let a = Anchor::new(1, 1.0);
+        let copy = Drawing::new(DrawingKind::Rect, a, Anchor::new(2, 2.0));
+
+        let mut sending = charted(400);
+        sending.sends = true;
+        sending.paste(&[copy.clone()], false, w, h);
+        assert_eq!(sending.drawings[0].scope, drawings::Scope::Shared);
+
+        let mut keeping = charted(400);
+        keeping.sends = false;
+        keeping.paste(&[copy], false, w, h);
+        assert_eq!(keeping.drawings[0].scope, drawings::Scope::Local);
+    }
+
+    /// Nothing copied, nothing pasted — and the caller is told, so the key
+    /// can go on to what it otherwise means.
+    #[test]
+    fn pasting_nothing_does_nothing() {
+        let mut state = charted(400);
+        assert!(state.paste(&[], true, 800.0, 400.0).is_empty());
+        assert!(state.drawings.is_empty());
+        assert!(state.undo.is_empty(), "nothing happened, so there is nothing to undo");
+    }
+
+    /// Alt+R, Alt+3, click: the rectangle laid down follows configuration 3
+    /// and goes where the chart sends what is drawn on it.
+    #[test]
+    fn a_tool_in_hand_draws_in_the_configuration_chosen_for_it() {
+        let mut state = charted(400);
+        state.sends = false;
+        state.tool = Some(DrawingKind::Rect);
+        state.next_config = 3;
+        assert!(state.begin_placing(800.0, 400.0, 200.0, 150.0));
+        let placing = state.placing.clone().expect("a drawing in hand");
+        assert_eq!(placing.kind, DrawingKind::Rect);
+        assert_eq!(placing.config, Some(3));
+        assert_eq!(placing.scope, drawings::Scope::Local, "a chart that does not send keeps it");
+        state.sends = true;
+        assert!(state.begin_placing(800.0, 400.0, 200.0, 150.0));
+        assert_eq!(
+            state.placing.clone().expect("a drawing in hand").scope,
+            drawings::Scope::Shared
+        );
+        assert_eq!(state.drag, Some(Drag::Place { moved: false }));
+        // Nothing in hand, nothing begins.
+        state.tool = None;
+        state.placing = None;
+        assert!(!state.begin_placing(800.0, 400.0, 200.0, 150.0));
+    }
+
+    /// The newest drawing is picked first, and a press on an unselected
+    /// drawing's end selects it rather than taking hold of the end.
+    #[test]
+    fn the_newest_drawing_under_the_hand_is_the_one_picked() {
+        let mut state = charted(400);
+        let (w, h) = (800.0, 400.0);
+        let a = state.locate(w, h, 200.0, 150.0).unwrap();
+        let b = state.locate(w, h, 500.0, 250.0).unwrap();
+        state.drawings.push(Drawing::new(DrawingKind::Line, a, b));
+        state.drawings.push(Drawing::new(DrawingKind::Rect, a, b));
+        assert_eq!(state.drawing_at(w, h, 350.0, 200.0), Some((1, Grip::Body)));
+        assert_eq!(state.drawing_at(w, h, 200.0, 150.0), Some((1, Grip::Body)));
+        state.selected = vec![1];
+        assert_eq!(state.drawing_at(w, h, 200.0, 150.0), Some((1, Grip::From)));
+        assert_eq!(state.drawing_at(w, h, 50.0, 30.0), None);
+    }
+
+    /// A selection of one kind can be asked for its properties; a mixed
+    /// one cannot, and the newest pick is the one a single question is
+    /// about.
+    #[test]
+    fn a_selection_has_a_kind_only_when_it_is_all_one_kind() {
+        let mut state = charted(400);
+        let (w, h) = (800.0, 400.0);
+        let a = state.locate(w, h, 200.0, 150.0).unwrap();
+        let b = state.locate(w, h, 500.0, 250.0).unwrap();
+        state.drawings.push(Drawing::new(DrawingKind::Line, a, b));
+        state.drawings.push(Drawing::new(DrawingKind::Line, a, b));
+        state.drawings.push(Drawing::new(DrawingKind::Rect, a, b));
+        assert_eq!(state.selection_kind(), None);
+        state.selected = vec![0, 1];
+        assert_eq!(state.selection_kind(), Some(DrawingKind::Line));
+        assert_eq!(state.primary(), Some(1));
+        state.selected.push(2);
+        assert_eq!(state.selection_kind(), None);
+        assert_eq!(state.primary(), Some(2));
+    }
+
+    /// The fill a box paints is the engine's alpha and not a solid: the
+    /// candles under it are meant to read through.
+    #[test]
+    fn a_box_is_painted_translucent() {
+        let mut state = charted(400);
+        let (w, h) = (800.0, 400.0);
+        let a = state.locate(w, h, 200.0, 150.0).unwrap();
+        let b = state.locate(w, h, 500.0, 250.0).unwrap();
+        state.drawings.push(Drawing::new(DrawingKind::Rect, a, b));
+        let mut surface =
+            cairo::ImageSurface::create(cairo::Format::ARgb32, w as i32, h as i32).unwrap();
+        {
+            let cr = cairo::Context::new(&surface).unwrap();
+            draw(&cr, w, h, &state);
+        }
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().unwrap();
+        let at = |x: usize, y: usize| {
+            let i = y * stride + x * 4;
+            (data[i + 2], data[i + 1], data[i])
+        };
+        let inside = at(350, 200);
+        let outside = at(50, 30);
+        let colour = colors::rgba(&drawings::colour(&state.theme, drawings::Preset::Blue));
+        let solid = (
+            (colour.0 * 255.0).round() as u8,
+            (colour.1 * 255.0).round() as u8,
+            (colour.2 * 255.0).round() as u8,
+        );
+        assert_ne!(inside, outside, "the box painted nothing");
+        assert_ne!(inside, solid, "the box is opaque");
+    }
+}

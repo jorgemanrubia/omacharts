@@ -10,7 +10,13 @@ things follow: nothing in the PR's own description counts as evidence until
 you have run it, and the diff gets read as something a stranger wrote, not as
 a favour you are obliged to accept.
 
-## Every review runs in a subagent
+## One PR, one subagent
+
+**Every request about a PR goes to its own subagent. Never two PRs in one
+agent, and never any of it on the main thread.** This is the owner's
+standing instruction and it holds for the small jobs too — closing a PR
+with thanks, posting a comment he dictated, pushing a one-line tweak. Not
+just the reviews.
 
 Never review on the main thread, not even a single small PR. The main
 thread stays free for the owner — it hands the PR to a subagent with this
@@ -26,6 +32,13 @@ mid-run and produced contradictory results. Asked to review several, run
 them in batches of three: three agents at once, the next three when those
 report. More than that and the builds starve each other and the reports
 arrive faster than anyone can read them.
+
+Resist batching PRs that look related — two declines from the same
+contributor, three PRs touching one file. An agent holding two PRs
+confuses their diffs, writes one contributor a comment about the other's
+change, and reports both so tangled the owner cannot act on either.
+Separate agents cost nothing; a crossed-over comment on a stranger's PR
+is posted from the owner's account and cannot be unsent.
 
 The owner's standing instructions travel with the hand-off: whether to
 merge when green, and that the review is done with simplifying in mind.
@@ -110,6 +123,23 @@ Then exercise the actual binary. If the PR fixes a bug, reproduce the bug on
 exact commands and output in whatever you write afterwards, and never claim
 to have run something you did not.
 
+**A user-facing change is tested end to end, through the path the user
+takes.** Green tests say the code does what its author thought; they do not
+say the feature works. So if the change shows up in the window, drive the
+window — press the key, open the picker, look at the pixels. If it shows up
+in the CLI, run the command and read its real output. If it changes what is
+saved, restart and see that it came back. Walk the whole path, not the unit
+underneath it: a chart's resolution came back correct from `set_timeframe`
+in every test while the strip beside it still showed the old one, and only
+clicking the dropdown found that. Probe the edges of that path too, and say
+what happened at each one.
+
+The evidence goes in the report as what you did and what you saw —
+the commands, the output, the screenshot — never as "verified" or
+"works as described". A claim with no observation behind it is the one
+thing the owner cannot check, and he reads these reports instead of
+running the PR himself.
+
 Sandboxing the CLI, which is easy to get wrong:
 
 ```
@@ -161,6 +191,38 @@ and offer to merge the documentation hunk alone. That is the real fix.
   when the window already owns a complete index built off-thread. Measure
   before and after rather than guessing, and say the numbers.
 - **No gratuitous reformatting** of code the PR did not otherwise touch.
+
+## A change in the draw path gets measured
+
+Standing instruction from the owner: do not let a performance regression in
+so quietly that nobody notices until the app feels slow. Rendering, the draw
+callbacks, bar geometry, gridlines, the indicator strips, the hit-testing
+that runs on pointer motion — anything on that path runs for every bar of
+every chart on every frame, so a cost that looks trivial per bar is the
+frame budget at 100k bars.
+
+A PR that touches any of it gets numbers, on `main` and on the branch,
+measured the same way on the same data:
+
+- Time the work itself over a synthetic series at 10k and 100k bars, the way
+  the indicator rules above ask for, and quote both sides. An `#[ignore]`d
+  test that prints a duration is enough; it does not have to be a benchmark
+  harness.
+- Watch for the shapes that cause it: work per bar that could be done once
+  per redraw, work per redraw that only changes when the bars do, a fresh
+  allocation inside the loop, a window recomputed for every bar instead of
+  rolled, a sort or a map rebuilt in the callback.
+- Count the redraws too, not just their cost. A change that queues a second
+  `queue_draw` per event doubles the work while every individual frame still
+  looks fast.
+- Scroll and zoom a long series in the real window and say whether it still
+  feels immediate. A number that got worse but stays under a millisecond is
+  worth a line in the report, not a blocker.
+
+A regression that is real and intended — the feature cannot be had any
+cheaper — is the owner's call, so report it with the measurement rather
+than deciding alone. A regression nobody measured is the thing this rule
+exists to prevent.
 
 ## When the PR adds or changes an indicator
 
