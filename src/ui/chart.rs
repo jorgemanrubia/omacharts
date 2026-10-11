@@ -4267,7 +4267,16 @@ fn draw_pane(
     let plot_x = columns.plot_x;
     let (first, visible) = (columns.first, columns.visible);
     let values = on_screen(&pane.values, first, visible);
-    let Some((low, high)) = pane_range(pane, first, visible) else { return };
+    let Some((low, high)) = pane_range(pane, first, visible) else {
+        // Nothing to scale to and so nothing to draw — but the strip is still
+        // a box on the chart, and a box with no name in it is one you have to
+        // count down the stack to identify. An ATR zoomed into its own
+        // warm-up is the case: every other strip has a scale whatever is in
+        // it, because a fixed one is its bounds and a MACD's zero guide is
+        // one on its own.
+        draw_pane_name(cr, state, drawn, plot_x, top);
+        return;
+    };
     let (inner_top, inner_h) = pane_plot(top, height);
     let to_y = |value: f64| inner_top + inner_h * (high - value) / (high - low);
     // Everything drawn in the strip is kept inside it. Nothing fitted falls
@@ -4432,8 +4441,11 @@ fn pane_range(
     }
     // Nothing on screen to scale to, which is what a strip still in its
     // warm-up has — thirty-three bars of it for a MACD. Neither end was ever
-    // written, so `low` is still above `high`, and carrying on from there gave
-    // a scale of plus and minus infinity and an axis labelled "inf".
+    // written, so `low` is still above `high`; carrying on from there made a
+    // scale of plus and minus infinity, and every value drawn on it a NaN.
+    // Cairo absorbs those rather than drawing anything, so it never showed —
+    // but a strip that says it has no scale is the honest answer, and it is
+    // what lets the one thing an empty strip should draw be drawn on purpose.
     if low > high || !low.is_finite() || !high.is_finite() {
         return None;
     }
@@ -6439,6 +6451,61 @@ mod tests {
         let (low, high) = pane_range(&above, 0, 2).expect("a range");
         assert!(low <= 0.0, "the zero line fell off the bottom: {low}");
         assert!(high >= 9.0);
+    }
+
+
+    /// An ATR zoomed into its own warm-up has nothing to scale to and nothing
+    /// to draw, and it is the one strip that can be in that position: a fixed
+    /// scale is its own bounds whatever is in it, and a MACD's zero guide is a
+    /// scale on its own. So it is the one that can come out as a blank band —
+    /// and a blank band with no name in it is a strip you have to count down
+    /// the stack to identify. It draws its name and nothing else.
+    #[test]
+    fn a_strip_with_nothing_to_draw_yet_still_says_which_indicator_it_is() {
+        let (w, h) = (600.0, 400.0);
+        // Fourteen bars of warm-up, and eleven of them on screen.
+        let mut state = charted(11);
+        state.bars = ramp(11);
+        state.visible = 11;
+        let series = state.bars.clone();
+        let indicator = Indicator::new(1, indicators::Kind::Atr);
+        state.indicators = vec![Drawn {
+            color: "#5588ff".to_string(),
+            output: indicators::compute(&indicator, &series, 0, state.timeframe, None),
+            indicator,
+        }];
+
+        let Output::Pane(pane) = &state.indicators[0].output else { panic!("a strip") };
+        assert!(pane.values.iter().all(Option::is_none), "every bar is still warming up");
+        assert_eq!(pane_range(pane, 0, 11), None, "and so there is no scale");
+
+        let pixels = frame(w, h, |cr| draw(cr, w, h, &state));
+        let plan = layout(&state, w, h);
+        let row = plan.rows.iter().find(|row| row.pane == Some(1)).expect("the ATR's own row");
+        // Where the name is written, and the same box at the other end of the
+        // strip, which nothing writes in. Inset so the row's own edge line is
+        // in neither.
+        let left = ink_in(&pixels, w as usize, plan.plot_x + 1.0, row.top + 1.0, 90.0, 14.0);
+        let right =
+            ink_in(&pixels, w as usize, plan.plot_x + plan.plot_w - 91.0, row.top + 1.0, 90.0, 14.0);
+        assert_eq!(right, 0, "something is drawn where nothing should be");
+        assert!(left > 20, "the empty strip has no name in it: {left} pixels of ink");
+    }
+
+    /// How many pixels in this box are not the colour of the box's own
+    /// background, taken as the pixel in its top-right corner.
+    fn ink_in(pixels: &[u8], width: usize, x: f64, y: f64, w: f64, h: f64) -> usize {
+        let at = |x: usize, y: usize| -> &[u8] {
+            let start = (y * width + x) * 4;
+            &pixels[start..start + 4]
+        };
+        let (x0, y0) = (x.round() as usize, y.round() as usize);
+        let (bw, bh) = (w.round() as usize, h.round() as usize);
+        let ground = at(x0 + bw - 1, y0).to_vec();
+        (y0..y0 + bh)
+            .flat_map(|y| (x0..x0 + bw).map(move |x| (x, y)))
+            .filter(|(x, y)| at(*x, *y) != ground.as_slice())
+            .count()
     }
 
     /// Warm-up: a MACD has no value for its first 33 bars, and a strip with

@@ -2556,7 +2556,12 @@ impl Edits {
             // Nought is a band on the line, which is a real if useless answer,
             // so the floor is nought and not the engine's own. The ceiling is
             // the engine's, as the height's and the shading's are.
-            deviations: bounded(m, "deviations", 0.0, MAX_DEVIATIONS)?,
+            //
+            // Adding nought turns a negative nought into a positive one.
+            // `-0.0` is inside the range and is the same band as `0.0`, but it
+            // is written down as it was given and comes back out in the
+            // indicator's own name, so a chart ends up labelled `BB(20,-0)`.
+            deviations: bounded(m, "deviations", 0.0, MAX_DEVIATIONS)?.map(|wanted| wanted + 0.0),
             fast: count(m, "fast")?,
             slow: count(m, "slow")?,
             signal: count(m, "signal")?,
@@ -4469,6 +4474,19 @@ mod tests {
         run("chart indicator add bollinger --book Macro", &store);
 
         assert_eq!(run("chart indicator set bollinger --book Macro --deviations 0", &store).code, 0);
+
+        // A negative nought is the same band as a nought and is inside the
+        // range, so it is not refused — but it is written down as it was
+        // given, and the indicator's own name is built from what is written
+        // down. "BB(20,-0)" is a chart labelled with a figure nobody typed.
+        let out = run("chart indicator set bollinger --book Macro --deviations -0.0", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert!(out.out.contains("BB(20,0)"), "{}", out.out);
+        let listed = run("chart indicator list --book Macro --json", &store);
+        let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+        let stored = &parsed["indicators"][0]["params"]["bands"][0]["deviations"];
+        assert_eq!(stored.as_f64().map(f64::is_sign_positive), Some(true), "{stored}");
+
         for value in ["-2", "51", "wide"] {
             let out =
                 run(&format!("chart indicator set bollinger --book Macro --deviations {value}"), &store);

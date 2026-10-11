@@ -19,9 +19,22 @@
 //! variance taken as `E[x²] - E[x]²` on raw prices subtracts two numbers of
 //! the order of the price squared to get one of the order of the price
 //! movement squared, and at index levels that throws away most of the
-//! significant digits. Shifting by a fixed figure near the series makes the
-//! quantities being squared the size of the movement instead, which is what
-//! keeps a flat window at exactly zero rather than at a hair either side of it.
+//! significant digits. Subtracting a figure near the series before squaring
+//! makes the quantities squared the size of the movement instead.
+//!
+//! How much that buys depends on staying near the anchor, and it is worth
+//! being exact about which claim is which. Near it — where an instrument's own
+//! prices spend a chart — it is several orders of magnitude: over 100,000 bars
+//! around 48,000 the rolled deviation comes out 9e-11 from a fresh
+//! recomputation of the last window, against 3e-5 unshifted, and a flat window
+//! there is exactly nothing. It is not a general guarantee. A series that has
+//! travelled a long way from its first close has lost the advantage and can be
+//! a shade worse than the unshifted form; a flat window out there lands a hair
+//! off nothing rather than on it; and a one-bar window, which is nothing by
+//! construction in exact arithmetic, is a few parts in 10^15 of the price in
+//! practice. All of those are orders of magnitude below a tick at any price
+//! this is drawn at, which is why the anchor is a fixed figure and not a
+//! running one.
 
 use crate::bars::Bar;
 
@@ -74,11 +87,12 @@ pub fn compute(bars: &[Bar], period: usize, bands: &[Band]) -> Bands {
         return out;
     }
 
-    // Everything is summed as a distance from here. Any figure near the series
-    // will do and the whole point is that it is subtracted before squaring
-    // rather than after — but it has to be a figure: anchoring on a close that
-    // is not a number would make every distance from it one too, and the count
-    // below, which watches the closes, would never notice.
+    // Everything is summed as a distance from here. The first close is the
+    // cheapest figure near the series to reach for, and the whole point is
+    // that it is subtracted before squaring rather than after — but it has to
+    // be a figure: anchoring on a close that is not a number would make every
+    // distance from it one too, and the count below, which watches the
+    // closes, would never notice.
     let anchor =
         bars.iter().map(|bar| bar.close).find(|close| close.is_finite()).unwrap_or(0.0);
     let n = period as f64;
@@ -120,7 +134,9 @@ pub fn compute(bars: &[Bar], period: usize, bands: &[Band]) -> Bands {
 
         let mean = sum / n;
         // Σ(x-mean)² written in terms of the two running sums. Clamped at zero
-        // because a window with no movement can land a hair below it.
+        // because a window with no movement can land a hair below it — which
+        // it does whenever the distances above are not exactly representable,
+        // and not only there.
         let variance = ((sum_sq - sum * mean) / n).max(0.0);
         out.set(i, anchor + mean, variance.sqrt());
     }
@@ -249,6 +265,10 @@ mod tests {
     /// A flat window has no dispersion. Zero is the answer, not an error and
     /// not a NaN, and the bands sit on the basis — at the start of a series
     /// and in the middle of one alike.
+    ///
+    /// Exactly zero here because the window sits on the anchor; a flat window
+    /// a long way from it lands a hair off instead, which the module comment
+    /// says and this does not claim otherwise.
     #[test]
     fn a_flat_window_collapses_the_bands_onto_the_average() {
         let mut closes = vec![48_000.125; 30];
@@ -266,11 +286,24 @@ mod tests {
         assert!(out.bands[0].upper.iter().flatten().all(|v| v.is_finite()));
     }
 
+    /// Exactly, at these prices, because the distances from the anchor are
+    /// small whole numbers and the arithmetic above cancels to the bit. At an
+    /// index level it is a few parts in 10^15 of the price rather than nought
+    /// — far below a tick, and the reason the claim here is about these
+    /// prices and not about every price.
     #[test]
     fn a_window_of_one_bar_is_the_price_with_no_width_at_all() {
         let out = compute(&bars(&[10.0, 20.0, 30.0]), 1, &band(2.0));
         assert_eq!(out.center, vec![Some(10.0), Some(20.0), Some(30.0)]);
         assert_eq!(out.bands[0].upper, vec![Some(10.0), Some(20.0), Some(30.0)]);
+
+        // And at an index level it is nothing anybody could see.
+        let index: Vec<f64> = (0..100).map(|i| 48_000.0 + i as f64 * 0.01).collect();
+        let out = compute(&bars(&index), 1, &band(2.0));
+        for (at, upper) in out.bands[0].upper.iter().enumerate() {
+            let width = upper.unwrap() - out.center[at].unwrap();
+            assert!(width.abs() < 1e-6, "bar {at} is {width:e} wide");
+        }
     }
 
     #[test]
