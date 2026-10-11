@@ -23,11 +23,13 @@
 #   the noise: an allocation inside a per-bar loop, a map rebuilt in a draw
 #   callback, a vector collected per frame where per redraw would do.
 #
-#   The clock is the cheapest run, not the mean. Another tenant on the core
-#   can only make a sample slower, so the minimum over a few hundred runs
-#   converges on what the work costs while the mean converges on how busy the
-#   machine was. Measured locally under load, the minimum drifts by about 4%
-#   between runs where the mean drifts by 8%.
+#   The clock is the cheapest run, not the mean, and the cheapest across two
+#   passes of the table rather than one. Another tenant on the core can only
+#   make a sample slower, so a minimum converges on what the work costs while
+#   a mean converges on how busy the machine was. Measured locally under load,
+#   the minimum drifts about 4% between runs where the mean drifts 8%; measured
+#   on a runner with both sides the same code, one pass each showed a block of
+#   consecutive rows 14% out, which is what the second pass is for.
 #
 #   The clock still only fails the build at a doubling. A check that cries
 #   wolf is ignored inside a week, and one sample of runner noise and one
@@ -69,17 +71,19 @@ harness=(examples/perf.rs src/ui/chart/bench.rs)
 # `time_pct` is the one number here chosen for the runner rather than for the
 # code, and it is deliberately far out of the noise's reach, so that a red perf
 # check always means something. Measured on ubuntu-latest with both sides the
-# same code, the clock moved between -8.8% and +2.4%, and the frame rows — the
-# ones that matter most — stayed inside ±1.2%. A doubling has ten times that
-# margin. It can come down to something like 30% once a few dozen runs on real
-# pull requests confirm the floor; until then `watch_pct` says in the output
-# which rows moved more than noise explains, without failing anything.
+# same code, one pass each: the first run moved between -8.8% and +2.4%, the
+# second had a block of adjacent rows at +14% from one busy minute. A doubling
+# has several times the margin on the worse of those, and the second pass added
+# since is there to take that mode out. Both numbers can come down once a few
+# dozen runs on real pull requests have said where the floor really sits; until
+# then `watch_pct` names the rows that moved more than noise explains without
+# failing anything.
 alloc_pct=5
 alloc_floor=8
 byte_pct=5
 byte_floor=4096
 time_pct=100
-watch_pct=15
+watch_pct=25
 
 base="${1:-}"
 if [[ -z "$base" ]]; then
@@ -116,10 +120,11 @@ trap cleanup EXIT
 # costs a dependency build each and cannot do that.
 targets="${PERF_TARGETS:-$PWD/target/perf}"
 
-# Which binary cargo built, asked of cargo rather than assumed, so that a build
-# which produced nothing is an error here instead of an older binary's numbers.
-run_at() {
-  local where="$1" into="$2" out="$3" binary
+# Build one side and say which binary came out, asked of cargo rather than
+# assumed from the path, so that a build which produced nothing is an error here
+# instead of an older binary's numbers.
+build_at() {
+  local where="$1" into="$2" binary
   binary=$(
     cd "$where" &&
       CARGO_TARGET_DIR="$into" cargo build --release --example perf \
@@ -130,7 +135,35 @@ run_at() {
     echo "perf-compare: cargo built no runnable example in $where" >&2
     return 1
   fi
-  "$binary" --tsv > "$out"
+  echo "$binary"
+}
+
+# The cheapest of several runs of the same binary, row by row.
+#
+# One pass of the table is one process, and a busy minute on the machine lands
+# on whichever process is running — which showed up as a block of consecutive
+# rows all about 14% slower on one side and nothing on the other. Two passes a
+# side, taken alternately, mean an episode has to hit the same scenario twice
+# to survive, and the passes cost seconds against the minutes the builds take.
+#
+# The allocation counts of two passes of one binary must agree exactly. If they
+# do not, something in a scenario is not deterministic and every comparison
+# below it is worth less than it looks, so say so rather than pick one.
+cheapest() {
+  awk -F'\t' '
+    { key = $1 "\t" $2 }
+    !(key in ns) { ns[key] = $3; allocs[key] = $4; bytes[key] = $5; order[++n] = key; next }
+    {
+      if ($3 < ns[key]) ns[key] = $3
+      if ($4 != allocs[key] || $5 != bytes[key])
+        printf "perf-compare: %s / %s allocated differently on two runs of the same binary (%d/%d then %d/%d) — it is not deterministic\n",
+          $1, $2, allocs[key], bytes[key], $4, $5 > "/dev/stderr"
+    }
+    END {
+      for (i = 1; i <= n; i++)
+        print order[i] "\t" ns[order[i]] "\t" allocs[order[i]] "\t" bytes[order[i]]
+    }
+  ' "$@"
 }
 
 echo "comparing $(git rev-parse --short HEAD) against $(git rev-parse --short "$base")" >&2
@@ -139,7 +172,9 @@ git worktree add --detach "$tree" "$base" >&2
 for file in "${harness[@]}"; do
   cp "$file" "$tree/$file"
 done
-if ! run_at "$tree" "$targets/base" "$work/base.tsv"; then
+
+if ! base_bin=$(build_at "$tree" "$targets/base"); then
+  head_bin=$(build_at . "$targets/head")
   cat <<EOF
 $(git rev-parse --short "$base") could not be built with this branch's benchmark, so there is
 nothing to compare against. That happens when the branch changes something the
@@ -147,11 +182,19 @@ harness reaches for — a field on the chart's state, a signature in the engine 
 and it is not by itself a regression. Read the numbers below by hand.
 
 EOF
-  run_at . "$targets/head" "$work/head.tsv"
-  column -s $'\t' -t "$work/head.tsv"
+  "$head_bin" --tsv | column -s $'\t' -t
   exit 0
 fi
-run_at . "$targets/head" "$work/head.tsv"
+head_bin=$(build_at . "$targets/head")
+
+# Both binaries exist before either runs, so neither side is measured while a
+# compile is finishing beside it.
+for pass in 1 2; do
+  "$base_bin" --tsv > "$work/base.$pass.tsv"
+  "$head_bin" --tsv > "$work/head.$pass.tsv"
+done
+cheapest "$work"/base.*.tsv > "$work/base.tsv"
+cheapest "$work"/head.*.tsv > "$work/head.tsv"
 
 awk -F'\t' -v alloc_pct="$alloc_pct" -v alloc_floor="$alloc_floor" \
     -v byte_pct="$byte_pct" -v byte_floor="$byte_floor" -v time_pct="$time_pct" \
@@ -215,8 +258,9 @@ END {
 cat <<EOF
 
   base $(git rev-parse --short "$base")   head $(git rev-parse --short HEAD)
-  Measured one after the other in the same process-pair on this machine. The
-  times are the cheapest run of each scenario; the allocation counts are exact.
+  Two passes a side, taken alternately on this machine after both binaries were
+  built. The times are the cheapest run of each scenario across both passes;
+  the allocation counts are exact and the same on any machine.
 EOF
 
 exit "${status:-0}"
