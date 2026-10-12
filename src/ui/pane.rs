@@ -16,7 +16,7 @@ use std::rc::Rc;
 use gtk::prelude::*;
 use omacharts_engine::{BarStyle, Indicator, Instrument, LinkGroup, Session, Theme, Timeframe};
 
-use crate::ui::chart::ChartView;
+use crate::ui::chart::{figures_markup, ChartView, Reading};
 use crate::ui::shortcuts;
 
 /// How a pane follows the others.
@@ -53,10 +53,21 @@ pub struct ChartPane {
     /// one way to change it that fits on any chart, however narrow.
     pub timeframe_menu: gtk::MenuButton,
     timeframe_label: gtk::Label,
+    /// The bar being read — open, high, low, close and the change — under the
+    /// symbol, on a line of its own: beside it, it would widen the row the
+    /// resolution strip measures itself against, and push the strip off every
+    /// chart in a grid.
+    ohlc: gtk::Label,
     /// One row per indicator, under the readout. Shown on the focused chart
     /// only, like the strip: four charts each listing their moving averages
     /// over the drawing is the noise the strip already learned to avoid.
     pub indicator_legend: gtk::Box,
+    /// Where each indicator row writes its value, by indicator id. Filled by
+    /// whoever builds the rows, since the rows are built outside the pane.
+    values: RefCell<Vec<(u32, gtk::Label)>>,
+    /// The last thing the chart said, so rows built after it can be filled in
+    /// without waiting for the pointer to move.
+    reading: RefCell<Option<Reading>>,
     pub gear: gtk::Button,
     pub link: gtk::MenuButton,
     /// Fills the window with this chart, and puts it back. In the top right
@@ -185,6 +196,11 @@ impl ChartPane {
         bar.append(&timeframe_menu);
         bar.append(&gear);
 
+        let ohlc = gtk::Label::new(None);
+        ohlc.add_css_class("legend-ohlc");
+        ohlc.set_xalign(0.0);
+        ohlc.set_visible(false);
+
         let indicator_legend = gtk::Box::new(gtk::Orientation::Vertical, 0);
         indicator_legend.set_halign(gtk::Align::Start);
         indicator_legend.set_visible(false);
@@ -195,6 +211,7 @@ impl ChartPane {
         legend.set_margin_start(12);
         legend.set_margin_top(6);
         legend.append(&bar);
+        legend.append(&ohlc);
         legend.append(&indicator_legend);
 
         // The strip sits across the top of its own chart rather than in the
@@ -274,7 +291,10 @@ impl ChartPane {
             buttons: RefCell::new(Vec::new()),
             timeframe_menu,
             timeframe_label,
+            ohlc,
             indicator_legend,
+            values: RefCell::new(Vec::new()),
+            reading: RefCell::new(None),
             gear,
             link,
             expand,
@@ -401,6 +421,50 @@ impl ChartPane {
         self.write_timeframe();
     }
 
+    /// Write what the chart says about the bar being read, or clear it when
+    /// the chart has no bars to read — a symbol still loading, or one that
+    /// could not be fetched, must not go on showing the last one's prices
+    /// under its name.
+    ///
+    /// The chart hands one over whenever anything under it may have changed,
+    /// so this is where a reading that says the same as the last one stops.
+    pub fn show_reading(&self, reading: Option<&Reading>) {
+        if self.reading.borrow().as_ref() == reading {
+            return;
+        }
+        *self.reading.borrow_mut() = reading.cloned();
+        self.write_reading();
+    }
+
+    /// Hand the pane a fresh set of indicator rows' value labels, and fill
+    /// them from the last reading.
+    pub fn set_value_labels(&self, labels: Vec<(u32, gtk::Label)>) {
+        *self.values.borrow_mut() = labels;
+        self.write_reading();
+    }
+
+    fn write_reading(&self) {
+        let reading = self.reading.borrow();
+        if let Some(reading) = reading.as_ref() {
+            self.ohlc.set_markup(&ohlc_markup(reading));
+        }
+        self.ohlc.set_visible(reading.is_some());
+        for (id, label) in self.values.borrow().iter() {
+            let figures = reading
+                .iter()
+                .flat_map(|reading| &reading.values)
+                .find(|(of, _)| of == id)
+                .map(|(_, figures)| figures.as_slice())
+                .unwrap_or_default();
+            let mut markup = String::new();
+            figures_markup(&mut markup, figures);
+            if label.label() != markup {
+                label.set_markup(&markup);
+            }
+            label.set_visible(!figures.is_empty());
+        }
+    }
+
     /// The resolution, beside the symbol.
     ///
     /// Written from the strip as well as from the readout because the
@@ -413,6 +477,27 @@ impl ChartPane {
     fn write_timeframe(&self) {
         self.timeframe_label.set_text(&self.timeframe.get().label());
     }
+}
+
+/// `O 217.00  H 217.00  L 214.00  C 214.50  -2.50 (-1.15%)`: the letters
+/// faint, the figures as the chart wrote them.
+fn ohlc_markup(reading: &Reading) -> String {
+    use std::fmt::Write;
+
+    let mut out = String::new();
+    for (letter, figure) in ["O", "H", "L", "C"].iter().zip(&reading.ohlc) {
+        let gap = if out.is_empty() { "" } else { "  " };
+        let _ = write!(
+            out,
+            "{gap}<span alpha=\"55%\">{letter}</span>\u{2009}<span foreground=\"{}\">{}</span>",
+            figure.colour, figure.text,
+        );
+    }
+    if let Some(change) = &reading.change {
+        out.push_str("  ");
+        figures_markup(&mut out, std::slice::from_ref(change));
+    }
+    out
 }
 
 /// How far the maximize corner sits in from the chart's right edge. The same
@@ -827,6 +912,33 @@ impl Node {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn reading(change: Option<&str>) -> Reading {
+        let figure = |text: &str, colour: &str| crate::ui::chart::Figure {
+            text: text.to_string(),
+            colour: colour.to_string(),
+        };
+        Reading {
+            ohlc: ["217.00", "217.00", "214.00", "214.50"].map(|text| figure(text, "#00aa00")),
+            change: change.map(|text| figure(text, "#aa0000")),
+            values: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn the_readout_says_the_bar_and_its_change_in_their_own_colours() {
+        let markup = ohlc_markup(&reading(Some("-2.50 (-1.15%)")));
+        assert!(gtk::pango::parse_markup(&markup, '\0').is_ok(), "{markup}");
+        for figure in ["217.00", "214.00", "214.50"] {
+            assert!(markup.contains(&format!("\"#00aa00\">{figure}<")), "{markup}");
+        }
+        assert!(markup.contains("\"#aa0000\">-2.50 (-1.15%)<"), "{markup}");
+    }
+
+    #[test]
+    fn the_first_bar_has_no_change_written() {
+        assert!(!ohlc_markup(&reading(None)).contains('('));
+    }
 
     #[test]
     fn the_strip_shows_only_where_it_clears_both_corners() {

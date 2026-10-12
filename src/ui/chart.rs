@@ -22,7 +22,7 @@
 pub mod bench;
 
 use std::borrow::Cow;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use gtk::cairo;
@@ -95,11 +95,50 @@ pub struct Drawn {
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Hover {
     pub bar: Bar,
-    pub index: usize,
     /// The price the pointer is actually at, read off this chart's scale —
     /// not the bar's close. Between two bars at different resolutions the bar
     /// is a different thing on each chart; the price is the same number.
     pub price: f64,
+}
+
+/// A number as the readout writes it, in the colour it is written in.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Figure {
+    pub text: String,
+    pub colour: String,
+}
+
+/// What the chart says about one bar, for the readout over its top left
+/// corner: the bar under the pointer, or the newest bar while the pointer is
+/// anywhere else — which is the bar a chart nobody is pointing at is about.
+///
+/// Written out already, so that whatever shows it only has to lay it out:
+/// how a price is rounded and which colour a line is drawn in are the chart's
+/// to know, and a second copy of either is a legend that disagrees with the
+/// strip under it.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Reading {
+    /// Open, high, low and close, in that order, in the bar's own colour, so
+    /// the numbers read as the candle they describe.
+    pub ohlc: [Figure; 4],
+    /// The move from the previous close, as an amount and a percentage, in
+    /// the colour of its sign. `None` on the first bar, which has nothing to
+    /// have moved from.
+    pub change: Option<Figure>,
+    /// What each visible indicator says about this bar, by id: a figure per
+    /// line, each in the colour that line is drawn in. Empty for one with
+    /// nothing to say about this bar.
+    pub values: Vec<(u32, Vec<Figure>)>,
+}
+
+/// Figures as markup, each in its colour, a double space between them.
+pub fn figures_markup(out: &mut String, figures: &[Figure]) {
+    use std::fmt::Write;
+
+    for (at, figure) in figures.iter().enumerate() {
+        let gap = if at > 0 { "  " } else { "" };
+        let _ = write!(out, "{gap}<span foreground=\"{}\">{}</span>", figure.colour, figure.text);
+    }
 }
 
 /// Another chart's pointer, in the only terms two charts can both read.
@@ -1243,6 +1282,7 @@ pub struct ChartView {
     pub root: gtk::Overlay,
     state: Rc<RefCell<State>>,
     on_hover: Handler<dyn Fn(Option<Hover>)>,
+    readout: Readout,
     on_context_menu: Handler<dyn Fn(f64, f64)>,
     /// Told when a pane's edge has been dragged, so the indicator it belongs
     /// to can be stored at its new height.
@@ -1300,15 +1340,47 @@ impl ChartView {
         root.add_overlay(&pointer);
 
         let state = Rc::new(RefCell::new(State::blank(theme, scheme)));
+
+        // Each strip's label goes where its strip begins. Asked of the layout
+        // every time the overlay is allocated — which is a resize, or the
+        // readout noticing a strip moved — so a label cannot be left behind.
+        let strips: Rc<RefCell<Vec<(u32, gtk::Label)>>> = Rc::new(RefCell::new(Vec::new()));
+        {
+            let state = state.clone();
+            let strips = strips.clone();
+            root.connect_get_child_position(move |root, child| {
+                let strips = strips.try_borrow().ok()?;
+                let (id, label) =
+                    strips.iter().find(|(_, label)| label.upcast_ref::<gtk::Widget>() == child)?;
+                let state = state.try_borrow().ok()?;
+                let plan = layout(&state, root.width() as f64, root.height() as f64);
+                let row = plan.rows.iter().find(|row| row.pane == Some(*id))?;
+                let (_, natural) = label.preferred_size();
+                Some(gtk::gdk::Rectangle::new(
+                    plan.plot_x as i32,
+                    row.top as i32,
+                    natural.width().min((plan.plot_w as i32).max(0)),
+                    natural.height(),
+                ))
+            });
+        }
         let on_hover: Handler<dyn Fn(Option<Hover>)> = Rc::new(RefCell::new(None));
 
         let view = Rc::new(ChartView {
             area,
             pointer,
             editing: RefCell::new(None),
-            root,
+            root: root.clone(),
             state,
             on_hover,
+            readout: Readout {
+                handler: Rc::new(RefCell::new(None)),
+                index: Rc::new(Cell::new(None)),
+                pending: Rc::new(Cell::new(false)),
+                root: root.clone(),
+                strips: strips.clone(),
+                rows: Rc::new(RefCell::new(Vec::new())),
+            },
             on_context_menu: Rc::new(RefCell::new(None)),
             on_pane_resize: Rc::new(RefCell::new(None)),
             on_pane_close: Rc::new(RefCell::new(None)),
@@ -2622,6 +2694,17 @@ impl ChartView {
         *self.on_hover.borrow_mut() = Some(Box::new(handler));
     }
 
+    /// Be told what the chart says about the bar being read — or that it
+    /// says nothing, with no bars to read — whenever that may have changed.
+    ///
+    /// Not only when it did: whatever redraws the chart hands one over, and
+    /// the receiver drops a reading it already has. Only a pointer moving
+    /// within one bar is known for certain to change nothing, and stays quiet.
+    pub fn set_reading_handler(&self, handler: impl Fn(Option<&Reading>) + 'static) {
+        *self.readout.handler.borrow_mut() = Some(Box::new(handler));
+        self.readout.update(&self.state, &self.area, true);
+    }
+
     /// Replace the series. Resets the view only when the instrument changed,
     /// so a background refresh of the same chart does not throw away a pan.
     pub fn set_series(&self, instrument: Instrument, timeframe: Timeframe, bars: Vec<Bar>) {
@@ -2836,7 +2919,7 @@ impl ChartView {
     /// a crosshair over a zoom it has not been told about would be labelling a
     /// price the axis no longer shows.
     fn redraw(&self) {
-        redraw(&self.area, &self.pointer);
+        redraw(&self.area, &self.pointer, &self.state, &self.readout);
     }
 
     fn wire_drawing(&self) {
@@ -2857,6 +2940,7 @@ impl ChartView {
         let area = self.area.clone();
         let pointer = self.pointer.clone();
         let on_hover = self.on_hover.clone();
+        let readout = self.readout.clone();
         motion.connect_motion(move |_, x, y| {
             {
                 let mut s = state.borrow_mut();
@@ -2905,6 +2989,7 @@ impl ChartView {
                 _ => "default",
             }));
             notify_hover(&state, &on_hover, &area);
+            readout.follow(&state, &area);
             // The chart itself is untouched: nothing under the crosshair has
             // changed, and this is the whole of why the crosshair has a widget
             // of its own.
@@ -2914,11 +2999,16 @@ impl ChartView {
         let state = self.state.clone();
         let pointer = self.pointer.clone();
         let on_hover = self.on_hover.clone();
+        let readout = self.readout.clone();
+        let area = self.area.clone();
         motion.connect_leave(move |_| {
             state.borrow_mut().pointer = None;
             if let Some(handler) = on_hover.borrow().as_ref() {
                 handler(None);
             }
+            // Back to the newest bar, which is what a chart nobody is
+            // pointing at is about.
+            readout.follow(&state, &area);
             pointer.queue_draw();
         });
         self.area.add_controller(motion);
@@ -2947,6 +3037,7 @@ impl ChartView {
         let state = self.state.clone();
         let area = self.area.clone();
         let pointer = self.pointer.clone();
+        let readout = self.readout.clone();
         let on_price_auto = self.on_price_auto.clone();
         scroll.connect_scroll(move |controller, dx, dy| {
             if dx == 0.0 && dy == 0.0 {
@@ -2968,7 +3059,7 @@ impl ChartView {
             if dx != 0.0 && dy == 0.0 {
                 s.pan_by(dx * 2.0, plot_width(&area));
                 drop(s);
-                redraw(&area, &pointer);
+                redraw(&area, &pointer, &state, &readout);
                 return glib::Propagation::Stop;
             }
 
@@ -2991,7 +3082,7 @@ impl ChartView {
                 }
             }
             drop(s);
-            redraw(&area, &pointer);
+            redraw(&area, &pointer, &state, &readout);
             notify_price_auto(&state, &on_price_auto, was_auto);
             glib::Propagation::Stop
         });
@@ -3228,6 +3319,7 @@ impl ChartView {
         let area = self.area.clone();
         let pointer = self.pointer.clone();
         let view = Rc::downgrade(self);
+        let readout = self.readout.clone();
         drag.connect_drag_update(move |gesture, offset_x, offset_y| {
             let mut s = state.borrow_mut();
             let Some(drag) = s.drag else { return };
@@ -3385,7 +3477,7 @@ impl ChartView {
                 Drag::Place { .. } | Drag::Grip { .. } | Drag::Marquee { .. } => unreachable!("handled above"),
             }
             drop(s);
-            redraw(&area, &pointer);
+            redraw(&area, &pointer, &state, &readout);
         });
 
         let state = self.state.clone();
@@ -3460,6 +3552,7 @@ impl ChartView {
         let state = self.state.clone();
         let area = self.area.clone();
         let pointer = self.pointer.clone();
+        let readout = self.readout.clone();
         let on_price_auto = self.on_price_auto.clone();
         let view = Rc::downgrade(self);
         click.connect_pressed(move |_, presses, x, y| {
@@ -3513,7 +3606,7 @@ impl ChartView {
                 Region::Plot => return,
             }
             drop(s);
-            redraw(&area, &pointer);
+            redraw(&area, &pointer, &state, &readout);
             notify_price_auto(&state, &on_price_auto, was_auto);
         });
         self.area.add_controller(click);
@@ -3577,14 +3670,181 @@ impl ChartView {
     }
 }
 
-/// Invalidate both of a chart's layers.
+/// Invalidate both of a chart's layers, and bring the readout up to date.
 ///
 /// A free function because the pointer handlers hold the two widgets and not
 /// the view they belong to, and because leaving them to call `queue_draw`
 /// twice each is how one of them eventually calls it once.
-fn redraw(body: &gtk::DrawingArea, pointer: &gtk::DrawingArea) {
+///
+/// The readout is here for the same reason: whatever changed the chart — a
+/// pan, a zoom, a tick, new indicators — can change which bar is being read
+/// or what is known about it, and a readout updated at only some of the
+/// places that redraw is one that is sometimes describing the last frame.
+fn redraw(
+    body: &gtk::DrawingArea,
+    pointer: &gtk::DrawingArea,
+    state: &Rc<RefCell<State>>,
+    readout: &Readout,
+) {
     body.queue_draw();
     pointer.queue_draw();
+    readout.schedule(state, body);
+}
+
+/// What is told about the bar being read, or that there is none.
+type ReadingHandler = dyn Fn(Option<&Reading>);
+
+/// Hands the window the chart's [`Reading`], and writes each strip's name and
+/// its share of that reading over the strip's top left.
+///
+/// The strips' are labels laid over the chart rather than text drawn on it.
+/// Drawn on the pointer layer they were shaped and rasterised again on every
+/// motion of the pointer — which more than doubled what a crosshair frame
+/// costs — for figures that only change when the pointer crosses into another
+/// bar. A label is set when they change, and costs nothing in between.
+#[derive(Clone)]
+struct Readout {
+    handler: Handler<ReadingHandler>,
+    /// The bar the last reading was about: all that pointer motion needs to
+    /// know whether there is anything new to say.
+    index: Rc<Cell<Option<usize>>>,
+    /// Whether an update is already waiting for the main loop.
+    pending: Rc<Cell<bool>>,
+    /// The overlay the strip labels are children of, which is the chart's
+    /// own: the coordinates the layout answers in are this widget's.
+    root: gtk::Overlay,
+    /// One label per strip, by indicator id.
+    strips: Rc<RefCell<Vec<(u32, gtk::Label)>>>,
+    /// Where the strips were when their labels were last placed, so the
+    /// overlay is asked to place them again only when one has moved.
+    rows: Rc<RefCell<Vec<(u32, f64)>>>,
+}
+
+impl Readout {
+    /// Bring the readout up to date once the main loop is done with whatever
+    /// else it is changing. A drag redraws at the rate the hand moves and a
+    /// gesture can redraw twice in one event; the readout only has to be
+    /// right by the time anybody looks, so all of that is one update.
+    fn schedule(&self, state: &Rc<RefCell<State>>, area: &gtk::DrawingArea) {
+        if self.pending.replace(true) {
+            return;
+        }
+        let (readout, state, area) = (self.clone(), state.clone(), area.clone());
+        glib::idle_add_local_once(move || {
+            readout.pending.set(false);
+            readout.update(&state, &area, true);
+        });
+    }
+
+    /// The pointer moved, and nothing else did.
+    ///
+    /// Everything that changes what a bar says goes through [`redraw`], which
+    /// works the reading out in full. So while the pointer stays on the bar
+    /// it was on there is nothing new to say — and finding that out costs an
+    /// index rather than a reading, on the one path that runs at the rate the
+    /// hand moves. Nor can it have moved a strip, so the labels are written
+    /// and not placed again.
+    fn follow(&self, state: &RefCell<State>, area: &gtk::DrawingArea) {
+        if reading_index(&state.borrow(), area.width() as f64) != self.index.get() {
+            self.update(state, area, false);
+        }
+    }
+
+    /// Work the reading out, write the strips' labels and pass it on — with
+    /// the strips placed again first if `relayout`, because the chart under
+    /// them changed.
+    ///
+    /// Calls the handler with the state not borrowed: the handler is the
+    /// window's, and the window is free to read the chart back. Whoever
+    /// shows the reading is the one who knows whether it is new.
+    fn update(&self, state: &RefCell<State>, area: &gtk::DrawingArea, relayout: bool) {
+        let now = {
+            let state = state.borrow();
+            let index = reading_index(&state, area.width() as f64);
+            self.index.set(index);
+            let now = index.and_then(|index| reading(&state, index));
+            if relayout {
+                self.place_strips(&state, area);
+            }
+            self.write_strips(&state, now.as_ref());
+            now
+        };
+        if let Some(handler) = self.handler.borrow().as_ref() {
+            handler(now.as_ref());
+        }
+    }
+
+    /// A label for each strip on the chart and none for any other, and the
+    /// overlay asked to place them again if a strip moved.
+    ///
+    /// None at all while there are no bars: the chart draws its placeholder
+    /// then and no strips, and a name over a strip that is not there is a
+    /// label floating over "Loading…".
+    fn place_strips(&self, state: &State, area: &gtk::DrawingArea) {
+        let drawing = state.view().1 > 0;
+        let is_strip = |drawn: &Drawn| {
+            drawing && drawn.indicator.visible && drawn.output.pane_height().is_some()
+        };
+        let mut strips = self.strips.borrow_mut();
+        strips.retain(|(id, label)| {
+            let keep = state.indicators.iter().any(|d| is_strip(d) && d.indicator.id == *id);
+            if !keep {
+                self.root.remove_overlay(label);
+            }
+            keep
+        });
+        for drawn in state.indicators.iter().filter(|drawn| is_strip(drawn)) {
+            let id = drawn.indicator.id;
+            if !strips.iter().any(|(of, _)| *of == id) {
+                let label = gtk::Label::new(None);
+                label.add_css_class("strip-label");
+                label.set_can_target(false);
+                self.root.add_overlay(&label);
+                strips.push((id, label));
+            }
+        }
+        let plan = layout(state, area.width() as f64, area.height() as f64);
+        let rows: Vec<(u32, f64)> =
+            plan.rows.iter().filter_map(|row| Some((row.pane?, row.top))).collect();
+        if *self.rows.borrow() != rows {
+            *self.rows.borrow_mut() = rows;
+            self.root.queue_allocate();
+        }
+    }
+
+    /// Each strip's name, faint, and then what it says about the bar being
+    /// read. A label's text is only set when it changed.
+    fn write_strips(&self, state: &State, reading: Option<&Reading>) {
+        for (id, label) in self.strips.borrow().iter() {
+            let Some(drawn) = state.indicators.iter().find(|d| d.indicator.id == *id) else {
+                continue;
+            };
+            let name = glib::markup_escape_text(&drawn.indicator.label_for(state.timeframe));
+            let mut markup = format!("<span alpha=\"70%\">{name}</span>");
+            let figures = reading
+                .and_then(|reading| reading.values.iter().find(|(of, _)| of == id))
+                .map(|(_, figures)| figures.as_slice())
+                .unwrap_or_default();
+            if !figures.is_empty() {
+                markup.push_str("  ");
+                figures_markup(&mut markup, figures);
+            }
+            if label.label() != markup {
+                label.set_markup(&markup);
+            }
+        }
+    }
+}
+
+/// How many places a strip's value is read out to: what its scale is written
+/// to, and never fewer than two.
+///
+/// A scale only has to tell its gridlines apart, so a MACD swinging from -6 to
+/// 12 labels them in whole numbers — and a readout to the same precision says
+/// "-0" for a histogram bar of -0.4, which is a number and the wrong one.
+fn reading_decimals(state: &State, pane: &omacharts_engine::indicators::Pane) -> usize {
+    let (first, visible) = state.slice();
+    pane_range(pane, first, visible).map_or(2, |(low, high)| pane_decimals(pane, low, high).max(2))
 }
 
 /// Tell the window if a gesture just changed whether the price scale is
@@ -3612,37 +3872,145 @@ fn notify_hover(
 ) {
     let hover = {
         let s = state.borrow();
-        let (_, visible) = s.slice();
-        match (s.pointer, visible) {
-            (Some((x, y)), v) if v > 0 => {
-                let plot_w = (area.width() as f64 - PRICE_AXIS_W - PAD).max(1.0);
-                let frac = (x - PAD) / plot_w;
-                if (0.0..=1.0).contains(&frac) {
-                    let (first, visible, lead) = s.view();
-                    let index = (first as f64 - lead as f64 + frac * s.columns() as f64)
-                        .floor()
-                        .max(0.0) as usize;
-                    let plan = layout(&s, area.width() as f64, area.height() as f64);
-                    let range = price_range(&s, &s.bars[first..first + visible]);
-                    s.bars.get(index.min(s.bars.len().saturating_sub(1))).map(|bar| Hover {
-                        bar: *bar,
-                        index,
-                        price: match range {
-                            Some((low, high)) => {
-                                high - (y - plan.price_y) / plan.price_h * (high - low)
-                            }
-                            None => bar.close,
-                        },
-                    })
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        }
+        let (width, height) = (area.width() as f64, area.height() as f64);
+        s.pointer.and_then(|(x, y)| {
+            let column = column_under(&s, x, width)?;
+            // Over the room past either end, the bar at that end: the echo
+            // on a linked chart still wants a moment to point at.
+            let index = column.min(s.bars.len() as i64 - 1).max(0) as usize;
+            let bar = *s.bars.get(index)?;
+            let (first, visible) = s.slice();
+            let plan = layout(&s, width, height);
+            let price = match price_range(&s, &s.bars[first..first + visible]) {
+                Some((low, high)) => high - (y - plan.price_y) / plan.price_h * (high - low),
+                None => bar.close,
+            };
+            Some(Hover { bar, price })
+        })
     };
     if let Some(handler) = on_hover.borrow().as_ref() {
         handler(hover);
+    }
+}
+
+/// The column under `x`, counted in bars from the start of the series: below
+/// zero in the room dragged open before the first bar, and past the last one
+/// in the room after it. `None` off the plot, or with nothing on it.
+///
+/// The one answer to which bar the pointer is over, for the crosshair's
+/// echo and the readout alike, and the same arithmetic the crosshair snaps
+/// with, so the numbers are always about the candle the line is through.
+fn column_under(state: &State, x: f64, width: f64) -> Option<i64> {
+    let columns = state.columns();
+    if columns == 0 {
+        return None;
+    }
+    let plot_w = (width - PRICE_AXIS_W - PAD).max(1.0);
+    let frac = (x - PAD) / plot_w;
+    if !(0.0..1.0).contains(&frac) {
+        return None;
+    }
+    let (first, _, lead) = state.view();
+    Some((first as f64 - lead as f64 + frac * columns as f64).floor() as i64)
+}
+
+/// Which bar the readout is about: the one under the pointer, or the newest
+/// one while the pointer is off the plot or over the empty room at either
+/// end, where there is no bar to describe.
+fn reading_index(state: &State, width: f64) -> Option<usize> {
+    let pointed = state
+        .pointer
+        .and_then(|(x, _)| column_under(state, x, width))
+        .and_then(|column| usize::try_from(column).ok())
+        .filter(|index| *index < state.bars.len());
+    pointed.or_else(|| state.bars.len().checked_sub(1))
+}
+
+/// What the chart says about bar `index`.
+fn reading(state: &State, index: usize) -> Option<Reading> {
+    let bar = *state.bars.get(index)?;
+    let kind = state.instrument.as_ref().map(|i| i.kind);
+    let decimals = omacharts_engine::price_decimals(0.0, bar.close, kind);
+    let tone = state.scheme.outline(Direction::of_bar(bar.open, bar.close));
+    let price =
+        |value: f64| Figure { text: format!("{value:.decimals$}"), colour: tone.to_string() };
+    let change = index.checked_sub(1).and_then(|at| state.bars.get(at)).map(|previous| {
+        let (delta, percent) = omacharts_engine::change(previous.close, bar.close);
+        Figure {
+            text: format!("{delta:+.decimals$} ({percent:+.2}%)"),
+            colour: state.scheme.outline(Direction::of_change(delta)).to_string(),
+        }
+    });
+    Some(Reading {
+        ohlc: [price(bar.open), price(bar.high), price(bar.low), price(bar.close)],
+        change,
+        values: state
+            .indicators
+            .iter()
+            .filter(|drawn| drawn.indicator.visible)
+            .map(|drawn| (drawn.indicator.id, figures(state, drawn, index)))
+            .collect(),
+    })
+}
+
+/// What one indicator says about bar `index`: a figure per line, in the
+/// colour that line is drawn in and to the precision of the scale it is drawn
+/// on — a line over the price to the price's places, a strip's to its own, a
+/// volume shortened.
+///
+/// The colours are paired with [`Output::values_at`]'s slots by position,
+/// which it keeps for a line still warming up for exactly this.
+fn figures(state: &State, drawn: &Drawn, index: usize) -> Vec<Figure> {
+    let kind = state.instrument.as_ref().map(|i| i.kind);
+    let figure = |text: String, colour: &str| Figure { text, colour: colour.to_string() };
+    let price = |value: f64| {
+        let decimals = omacharts_engine::price_decimals(0.0, value, kind);
+        format!("{value:.decimals$}")
+    };
+    let slots = drawn.output.values_at(index);
+    match &drawn.output {
+        Output::Line(_) => {
+            slots.into_iter().flatten().map(|v| figure(price(v), &drawn.color)).collect()
+        }
+        // Coloured as its column is, which is the bar's direction.
+        Output::Volume { .. } => {
+            let tone = state.bars.get(index).map_or(drawn.color.as_str(), |bar| {
+                state.scheme.outline(Direction::of_bar(bar.open, bar.close))
+            });
+            slots.into_iter().flatten().map(|v| figure(format_volume(v), tone)).collect()
+        }
+        // The histogram in the colour of its sign, as its bars are drawn.
+        Output::Pane(pane) => {
+            let decimals = reading_decimals(state, pane);
+            let signal = pane.signal.is_some().then(|| signal_colour(state, drawn));
+            slots
+                .into_iter()
+                .enumerate()
+                .filter_map(|(slot, value)| {
+                    let value = value?;
+                    let colour = match (slot, &signal) {
+                        (0, _) => drawn.color.as_str(),
+                        (1, Some(signal)) => signal.as_str(),
+                        _ => state.scheme.outline(Direction::of_change(value)),
+                    };
+                    Some(figure(format!("{value:.decimals$}"), colour))
+                })
+                .collect()
+        }
+        Output::Bands(bands) => {
+            let colours = std::iter::once(drawn.color.clone()).chain(
+                bands.bands.iter().filter(|band| band.enabled).flat_map(|band| {
+                    let colour = band_colour(band, drawn, &state.theme);
+                    [colour.clone(), colour]
+                }),
+            );
+            slots
+                .into_iter()
+                .zip(colours)
+                .filter_map(|(value, colour)| Some(figure(price(value?), &colour)))
+                .collect()
+        }
+        Output::Profiles(_) => Vec::new(),
     }
 }
 
@@ -3726,9 +4094,6 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
                         max_volume,
                     );
                 }
-                // Named like the others now that it is one strip among several.
-                // Three unlabelled boxes under a chart is a puzzle.
-                draw_pane_name(cr, state, drawn, plot_x, row.top);
             }
             Output::Pane(pane) => {
                 draw_pane(cr, state, pane, drawn, &columns, plot_w, row.top, row.height, width)
@@ -4196,15 +4561,6 @@ fn draw_chevron(cr: &cairo::Context, x: f64, y: f64, up: bool) {
     let _ = cr.stroke();
 }
 
-/// What a strip is, written in its own top-left corner.
-fn draw_pane_name(cr: &cairo::Context, state: &State, drawn: &Drawn, plot_x: f64, top: f64) {
-    cr.select_font_face("sans-serif", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
-    cr.set_font_size(10.0);
-    colors::set_source_alpha(cr, &state.theme.ui.text_muted, 0.8);
-    cr.move_to(plot_x + 2.0, top + 11.0);
-    let _ = cr.show_text(&drawn.indicator.label_for(state.timeframe));
-}
-
 /// Room at the top of a strip for its name, so a line at the top of its scale
 /// runs under the name rather than through it.
 const PANE_NAME_ROOM: f64 = 16.0;
@@ -4267,16 +4623,10 @@ fn draw_pane(
     let plot_x = columns.plot_x;
     let (first, visible) = (columns.first, columns.visible);
     let values = on_screen(&pane.values, first, visible);
-    let Some((low, high)) = pane_range(pane, first, visible) else {
-        // Nothing to scale to and so nothing to draw — but the strip is still
-        // a box on the chart, and a box with no name in it is one you have to
-        // count down the stack to identify. An ATR zoomed into its own
-        // warm-up is the case: every other strip has a scale whatever is in
-        // it, because a fixed one is its bounds and a MACD's zero guide is
-        // one on its own.
-        draw_pane_name(cr, state, drawn, plot_x, top);
-        return;
-    };
+    // Nothing to scale to is nothing to draw. The strip still says what it
+    // is: its name is a label over it, written whatever the series holds —
+    // an ATR zoomed into its own warm-up is still a box you can identify.
+    let Some((low, high)) = pane_range(pane, first, visible) else { return };
     let (inner_top, inner_h) = pane_plot(top, height);
     let to_y = |value: f64| inner_top + inner_h * (high - value) / (high - low);
     // Everything drawn in the strip is kept inside it. Nothing fitted falls
@@ -4330,8 +4680,6 @@ fn draw_pane(
         cr.move_to(plot_x + plot_w + 6.0, (y + 3.0).min(top + height));
         let _ = cr.show_text(&text);
     }
-
-    draw_pane_name(cr, state, drawn, plot_x, top);
 
     // The lines last, over their own furniture.
     let stroke = drawn.indicator.stroke;
@@ -4697,6 +5045,27 @@ fn draw_pane_value(
         width,
         &state.theme.ui.crosshair,
     );
+}
+
+/// A volume short enough to sit beside a name: 1.23M rather than 1234567.
+///
+/// Three significant figures, so the width hardly moves as it is read across
+/// bars of very different sizes. Each step is taken where the figure would
+/// round up into the next, so 999,950 is 1.00M rather than 1000K.
+fn format_volume(volume: f64) -> String {
+    let size = volume.abs();
+    let (scaled, suffix) = match size {
+        s if s >= 999.5e6 => (volume / 1e9, "B"),
+        s if s >= 999.5e3 => (volume / 1e6, "M"),
+        s if s >= 999.5 => (volume / 1e3, "K"),
+        _ => return format!("{volume:.0}"),
+    };
+    let decimals = match scaled.abs() {
+        s if s >= 99.95 => 0,
+        s if s >= 9.995 => 1,
+        _ => 2,
+    };
+    format!("{scaled:.decimals$}{suffix}")
 }
 
 /// A filled chip on the price axis.
@@ -6089,6 +6458,100 @@ mod tests {
         assert!(painted(&crosshair) > 500, "the crosshair drew {} pixels", painted(&crosshair));
     }
 
+    /// Where the pointer is over bar `index` of a `charted` chart drawn
+    /// `width` wide, every bar of it on screen.
+    fn over_bar(state: &State, index: usize, width: f64) -> (f64, f64) {
+        let plot_w = width - PRICE_AXIS_W - PAD;
+        let bar_w = plot_w / state.columns() as f64;
+        (PAD + (index as f64 + 0.5) * bar_w, 100.0)
+    }
+
+    #[test]
+    fn a_chart_nobody_is_pointing_at_reads_its_newest_bar() {
+        let state = charted(200);
+        assert_eq!(reading_index(&state, 600.0), Some(199));
+    }
+
+    #[test]
+    fn the_pointer_reads_the_bar_the_crosshair_is_through() {
+        let mut state = charted(200);
+        state.pointer = Some(over_bar(&state, 42, 600.0));
+        assert_eq!(reading_index(&state, 600.0), Some(42));
+        let reading = reading(&state, 42).expect("a reading");
+        let (bar, previous) = (state.bars[42], state.bars[41]);
+        assert_eq!(reading.ohlc[0].text, format!("{:.2}", bar.open));
+        assert_eq!(reading.ohlc[3].text, format!("{:.2}", bar.close));
+        let (delta, percent) = omacharts_engine::change(previous.close, bar.close);
+        let change = reading.change.expect("a change");
+        assert_eq!(change.text, format!("{delta:+.2} ({percent:+.2}%)"));
+    }
+
+    #[test]
+    fn the_first_bar_has_no_change_to_show() {
+        let state = charted(200);
+        assert_eq!(reading(&state, 0).expect("a reading").change, None);
+    }
+
+    /// Past the last bar there is no bar to describe, and a readout that went
+    /// blank there would flicker every time the pointer crossed the edge.
+    #[test]
+    fn the_room_past_the_last_bar_reads_the_newest_one() {
+        let mut state = charted(200);
+        state.overhang = 40;
+        let plot_w = 600.0 - PRICE_AXIS_W - PAD;
+        state.pointer = Some((PAD + plot_w - 2.0, 100.0));
+        assert_eq!(reading_index(&state, 600.0), Some(199));
+        // Off the plot altogether, over the price axis: the same.
+        state.pointer = Some((600.0 - 10.0, 100.0));
+        assert_eq!(reading_index(&state, 600.0), Some(199));
+    }
+
+    /// Every visible indicator is read into the legend, strips included, each
+    /// in its own scale's terms and its own line's colour.
+    #[test]
+    fn every_indicator_is_read_into_the_legend_in_its_own_terms() {
+        let mut state = charted(200);
+        let sma = Indicator::new(2, indicators::Kind::Sma);
+        let mut hidden = Indicator::new(3, indicators::Kind::Ema);
+        hidden.visible = false;
+        for indicator in [sma, hidden] {
+            state.indicators.push(Drawn {
+                color: "#ff8800".to_string(),
+                output: indicators::compute(&indicator, &state.bars, 0, state.timeframe, None),
+                indicator,
+            });
+        }
+        let reading = reading(&state, 199).expect("a reading");
+        let ids: Vec<u32> = reading.values.iter().map(|(id, _)| *id).collect();
+        assert_eq!(ids, [1, 2], "the volume strip and the average, not the hidden one");
+        // The ramp's last volume is 200: written as a volume, not a price.
+        assert_eq!(reading.values[0].1[0].text, "200");
+        let average = &reading.values[1].1[0];
+        assert!(average.text.contains('.'), "{average:?}");
+        assert_eq!(average.colour, "#ff8800");
+    }
+
+    #[test]
+    fn an_empty_chart_reads_nothing_and_does_not_panic() {
+        let mut state = charted(0);
+        state.pointer = Some((100.0, 100.0));
+        assert_eq!(reading_index(&state, 600.0), None);
+        assert_eq!(reading(&state, 0), None);
+    }
+
+    #[test]
+    fn volume_is_shortened_to_three_figures() {
+        assert_eq!(format_volume(950.0), "950");
+        assert_eq!(format_volume(1_234.0), "1.23K");
+        assert_eq!(format_volume(12_345_678.0), "12.3M");
+        assert_eq!(format_volume(456_000_000.0), "456M");
+        assert_eq!(format_volume(2_100_000_000.0), "2.10B");
+        // Where rounding would carry a figure into a fourth digit.
+        assert_eq!(format_volume(999_950.0), "1.00M");
+        assert_eq!(format_volume(9_999.0), "10.0K");
+        assert_eq!(format_volume(999.7), "1.00K");
+    }
+
     #[test]
     fn a_bar_with_less_than_a_pixel_of_range_still_shows() {
         // Zoomed out, a quiet bar's high and low round to the same row.
@@ -6459,10 +6922,9 @@ mod tests {
     /// scale is its own bounds whatever is in it, and a MACD's zero guide is a
     /// scale on its own. So it is the one that can come out as a blank band —
     /// and a blank band with no name in it is a strip you have to count down
-    /// the stack to identify. It draws its name and nothing else.
+    /// the stack to identify. Its label still names it, with no figure after.
     #[test]
     fn a_strip_with_nothing_to_draw_yet_still_says_which_indicator_it_is() {
-        let (w, h) = (600.0, 400.0);
         // Fourteen bars of warm-up, and eleven of them on screen.
         let mut state = charted(11);
         state.bars = ramp(11);
@@ -6479,33 +6941,32 @@ mod tests {
         assert!(pane.values.iter().all(Option::is_none), "every bar is still warming up");
         assert_eq!(pane_range(pane, 0, 11), None, "and so there is no scale");
 
-        let pixels = frame(w, h, |cr| draw(cr, w, h, &state));
-        let plan = layout(&state, w, h);
-        let row = plan.rows.iter().find(|row| row.pane == Some(1)).expect("the ATR's own row");
-        // Where the name is written, and the same box at the other end of the
-        // strip, which nothing writes in. Inset so the row's own edge line is
-        // in neither.
-        let left = ink_in(&pixels, w as usize, plan.plot_x + 1.0, row.top + 1.0, 90.0, 14.0);
-        let right =
-            ink_in(&pixels, w as usize, plan.plot_x + plan.plot_w - 91.0, row.top + 1.0, 90.0, 14.0);
-        assert_eq!(right, 0, "something is drawn where nothing should be");
-        assert!(left > 20, "the empty strip has no name in it: {left} pixels of ink");
+        // The label still names it — `write_strips` writes the name whatever
+        // the figures — and there is no figure after it.
+        assert!(figures(&state, &state.indicators[0], 10).is_empty(), "a figure nobody computed");
     }
 
-    /// How many pixels in this box are not the colour of the box's own
-    /// background, taken as the pixel in its top-right corner.
-    fn ink_in(pixels: &[u8], width: usize, x: f64, y: f64, w: f64, h: f64) -> usize {
-        let at = |x: usize, y: usize| -> &[u8] {
-            let start = (y * width + x) * 4;
-            &pixels[start..start + 4]
-        };
-        let (x0, y0) = (x.round() as usize, y.round() as usize);
-        let (bw, bh) = (w.round() as usize, h.round() as usize);
-        let ground = at(x0 + bw - 1, y0).to_vec();
-        (y0..y0 + bh)
-            .flat_map(|y| (x0..x0 + bw).map(move |x| (x, y)))
-            .filter(|(x, y)| at(*x, *y) != ground.as_slice())
-            .count()
+    /// A strip reads out each line in that line's colour, and the figures
+    /// parse as markup — or GTK shows them as nothing at all.
+    #[test]
+    fn a_strip_reads_out_in_its_lines_colours() {
+        let mut state = charted(200);
+        let rsi = Indicator::new(2, indicators::Kind::Rsi);
+        state.indicators.push(Drawn {
+            color: "#aa66ff".to_string(),
+            output: indicators::compute(&rsi, &state.bars, 0, state.timeframe, None),
+            indicator: rsi,
+        });
+        let volume = figures(&state, &state.indicators[0], 199);
+        assert_eq!(volume[0].text, "200", "the bar's volume, shortened");
+        let rsi = figures(&state, &state.indicators[1], 199);
+        assert_eq!(rsi[0].colour, "#aa66ff");
+        assert_eq!(rsi[0].text.split('.').nth(1).map(str::len), Some(2), "{rsi:?}");
+        for figures in [&volume, &rsi] {
+            let mut markup = String::new();
+            figures_markup(&mut markup, figures);
+            assert!(gtk::pango::parse_markup(&markup, '\0').is_ok(), "{markup}");
+        }
     }
 
     /// Warm-up: a MACD has no value for its first 33 bars, and a strip with

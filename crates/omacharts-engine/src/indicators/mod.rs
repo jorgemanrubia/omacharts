@@ -673,6 +673,39 @@ impl Output {
             _ => {}
         }
     }
+
+    /// What each of this indicator's lines says about bar `index`, one slot
+    /// per line it draws and always in the same order: the main line, then a
+    /// strip's signal and its histogram where it has them, or a band
+    /// indicator's centre and then each enabled band, upper before lower,
+    /// innermost first. A profile describes a period rather than a bar, and
+    /// has no slots.
+    ///
+    /// A slot is `None` where that line has nothing to say — still warming
+    /// up, or past the end of the series — rather than left out, so a caller
+    /// pairing slots with colours by position never hands one line's colour
+    /// to the next.
+    pub fn values_at(&self, index: usize) -> Vec<Option<f64>> {
+        let at = |series: &[Option<f64>]| series.get(index).copied().flatten();
+        match self {
+            Output::Line(values) => vec![at(values)],
+            Output::Volume { values, .. } => vec![values.get(index).copied()],
+            Output::Pane(pane) => std::iter::once(at(&pane.values))
+                .chain(pane.signal.as_deref().map(at))
+                .chain(pane.histogram.as_deref().map(at))
+                .collect(),
+            Output::Bands(bands) => std::iter::once(at(&bands.center))
+                .chain(
+                    bands
+                        .bands
+                        .iter()
+                        .filter(|band| band.enabled)
+                        .flat_map(|band| [at(&band.upper), at(&band.lower)]),
+                )
+                .collect(),
+            Output::Profiles(_) => Vec::new(),
+        }
+    }
 }
 
 /// Compute an indicator over `bars`.
@@ -1444,5 +1477,60 @@ mod tests {
         let indicator: Indicator = serde_json::from_str(json).expect("an older MACD");
         let Params::Macd { signal_color, .. } = &indicator.params else { panic!("not a MACD") };
         assert_eq!(*signal_color, None);
+    }
+
+    #[test]
+    fn a_line_reads_one_slot_per_bar_and_nothing_while_warming_up() {
+        let out = Output::Line(vec![None, Some(2.0), Some(3.0)]);
+        assert_eq!(out.values_at(0), vec![None]);
+        assert_eq!(out.values_at(2), vec![Some(3.0)]);
+        assert_eq!(out.values_at(3), vec![None], "past the end is nothing, not a panic");
+    }
+
+    /// A slot per line the strip draws, held in place while one warms up:
+    /// pairing them with colours by position must not slide a colour along.
+    #[test]
+    fn a_strip_keeps_a_slot_for_a_line_still_warming_up() {
+        let pane = |signal, histogram| Pane {
+            values: vec![Some(80.0), Some(70.0)],
+            signal,
+            histogram,
+            height: 0.2,
+            bounds: Some((0.0, 100.0)),
+            guides: Vec::new(),
+            band: None,
+        };
+        assert_eq!(Output::Pane(pane(None, None)).values_at(1), vec![Some(70.0)]);
+        let macd =
+            Output::Pane(pane(Some(vec![None, Some(75.0)]), Some(vec![Some(1.0), Some(-5.0)])));
+        assert_eq!(macd.values_at(1), vec![Some(70.0), Some(75.0), Some(-5.0)]);
+        assert_eq!(macd.values_at(0), vec![Some(80.0), None, Some(1.0)]);
+    }
+
+    #[test]
+    fn a_band_indicator_reads_its_enabled_bands_upper_before_lower() {
+        let band = |enabled, upper, lower| BandSeries {
+            deviations: 1.0,
+            enabled,
+            color: None,
+            fill: false,
+            fill_alpha: FILL_ALPHA,
+            stroke: Stroke::default(),
+            upper: vec![Some(upper)],
+            lower: vec![Some(lower)],
+        };
+        let out = Output::Bands(Bands {
+            center: vec![Some(10.0)],
+            bands: vec![band(true, 11.0, 9.0), band(false, 12.0, 8.0), band(true, 13.0, 7.0)],
+        });
+        let read: Vec<f64> = out.values_at(0).into_iter().flatten().collect();
+        assert_eq!(read, vec![10.0, 11.0, 9.0, 13.0, 7.0]);
+    }
+
+    #[test]
+    fn volume_reads_the_bar_and_a_profile_has_no_slots() {
+        let volume = Output::Volume { values: vec![5.0, 6.0], height: 0.2 };
+        assert_eq!(volume.values_at(1), vec![Some(6.0)]);
+        assert!(Output::Profiles(Vec::new()).values_at(0).is_empty());
     }
 }

@@ -2148,6 +2148,16 @@ impl Window {
             echoer.echo_crosshair(id, hover.map(|h| Echo { ts: h.bar.ts, price: h.price }));
         });
 
+        // The bar being read, written over the chart's corner. Weak, because
+        // the chart is the pane's and a handler holding the pane would keep
+        // both alive for ever.
+        let reader = Rc::downgrade(&pane);
+        pane.view.set_reading_handler(move |reading| {
+            if let Some(pane) = reader.upgrade() {
+                pane.show_reading(reading);
+            }
+        });
+
         // Clicking anywhere on a chart focuses it, which is what makes the
         // next keystroke land where you are looking.
         //
@@ -4100,16 +4110,8 @@ impl Window {
             let symbol = provider.symbol_for(instrument)?;
             let bars = store.load_bars(&format!("{}:{symbol}", provider.id()), Timeframe::days(1));
             let (previous, last) = (bars.get(bars.len().checked_sub(2)?)?, bars.last()?);
-            let change = last.close - previous.close;
-            Some(Quote {
-                last: last.close,
-                change,
-                change_pct: if previous.close == 0.0 {
-                    0.0
-                } else {
-                    change / previous.close * 100.0
-                },
-            })
+            let (change, change_pct) = omacharts_engine::change(previous.close, last.close);
+            Some(Quote { last: last.close, change, change_pct })
         });
 
         let this = self.clone();
@@ -5971,6 +5973,7 @@ impl Window {
         let timeframe = pane.timeframe.get();
         let all = pane.indicators.borrow().clone();
         let colors = omacharts_engine::palette_colors(&all, &theme);
+        let mut values = Vec::new();
         for (indicator, colour) in all.iter().zip(colors) {
             let id = indicator.id;
 
@@ -5997,6 +6000,14 @@ impl Window {
             if !indicator.visible {
                 label.add_css_class("legend-indicator-hidden");
             }
+
+            // What the indicator says about the bar being read. Strips too,
+            // although they also write it beside their own name: this is the
+            // one place every number on the chart can be read down a column.
+            let value = gtk::Label::new(None);
+            value.add_css_class("legend-value");
+            value.set_visible(false);
+            values.push((id, value.clone()));
 
             // Double-clicking the name opens its settings, the same as the
             // gear beside it. The name is the bigger target and the one you
@@ -6061,11 +6072,13 @@ impl Window {
             row.add_css_class("legend-row");
             row.append(&dot);
             row.append(&label);
+            row.append(&value);
             row.append(&toggle);
             row.append(&settings);
             row.append(&remove);
             pane.indicator_legend.append(&row);
         }
+        pane.set_value_labels(values);
     }
 
     /// The active theme, for anything that needs to resolve a colour.

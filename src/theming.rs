@@ -679,6 +679,13 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
 .legend-row { padding: 0 0 1px 1px; }
 .legend-indicator { font-size: 0.78em; opacity: 0.75; }
 .legend-indicator-hidden { opacity: 0.35; text-decoration: line-through; }
+/* What the chart says about the bar being read. Figures of one width, so the
+   line does not shuffle sideways as the pointer crosses bars. */
+.legend-ohlc { font-size: 0.82em; font-feature-settings: 'tnum'; padding: 0 4px 2px 5px; }
+.legend-value { font-size: 0.78em; font-feature-settings: 'tnum'; }
+/* A strip's name and values, over its top left: the size the strip's own
+   scale is written at, so it reads as part of the strip and not the legend. */
+.strip-label { font-size: 10px; font-feature-settings: 'tnum'; padding: 1px 2px; }
 .legend-button {
   opacity: 0;
   min-width: 18px;

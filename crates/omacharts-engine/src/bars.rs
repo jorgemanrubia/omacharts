@@ -276,6 +276,19 @@ pub fn price_decimals(step: f64, price: f64, kind: Option<InstrumentKind>) -> us
     from_step.max(from_instrument)
 }
 
+/// How far `close` moved from `previous`: the amount, and the amount as a
+/// percentage of where it started. Nought percent from a previous close of
+/// nought, which has no move to be a share of.
+///
+/// One answer for the rail, the readout over a chart and `quote`, which all
+/// say the same thing about the same two closes and used to work it out
+/// three times.
+pub fn change(previous: f64, close: f64) -> (f64, f64) {
+    let delta = close - previous;
+    let percent = if previous == 0.0 { 0.0 } else { delta / previous * 100.0 };
+    (delta, percent)
+}
+
 /// A bar whose body is this small a fraction of its range is a doji.
 const DOJI: f64 = 0.05;
 /// Above this share of doji-like bars, the opens are not real opens.

@@ -419,13 +419,8 @@ pub fn quote(store: &Store, provider: &dyn Provider, instrument: &Instrument) ->
     let key = cache_key(provider, instrument)?;
     let bars = store.load_bars(&key, Timeframe::days(1));
     let (previous, last) = (bars.get(bars.len().checked_sub(2)?)?, bars.last()?);
-    let change = last.close - previous.close;
-    Some(Quote {
-        last: last.close,
-        change,
-        change_pct: if previous.close == 0.0 { 0.0 } else { change / previous.close * 100.0 },
-        as_of: last.ts,
-    })
+    let (change, change_pct) = omacharts_engine::change(previous.close, last.close);
+    Some(Quote { last: last.close, change, change_pct, as_of: last.ts })
 }
 
 pub fn cache_key(provider: &dyn Provider, instrument: &Instrument) -> Option<String> {
