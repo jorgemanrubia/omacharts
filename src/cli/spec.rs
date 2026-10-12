@@ -715,7 +715,7 @@ pub const SURFACE: &[Noun] = &[
                     Flag::valued("chart", "CHART", CHART_SELECTOR),
                     Flag::valued("symbol", "SYMBOL", "the instrument to chart, such as AAPL or 2330.TW"),
                     Flag::valued("suffix", "S", "its venue suffix, for a listing abroad"),
-                    Flag::valued("resolution", "TF", "such as 5m, 1h, 1D, 1W"),
+                    Flag::valued("resolution", "TF", "such as 5m, 1h, 1D, 1W, 1M, 1Y"),
                     Flag::valued("style", "STYLE", "how bars are drawn").of(STYLES),
                     Flag::valued("session", "SESSION", "which hours to include").of(SESSIONS),
                     Flag::valued("link", "GROUP", "the link group it joins and then leads, or `none` to leave one")

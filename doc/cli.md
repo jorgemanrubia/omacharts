@@ -505,6 +505,13 @@ $ omacharts chartbook list
 Commands act on the focused chart of the open chartbook unless you say
 otherwise.
 
+`--resolution` takes what you would type on the chart: a bare number is
+minutes (`240` is four hours), and a suffix names the unit — `m`, `h`, `D`,
+`W`, `M` for months and `Y` for years. Case does not matter except for the
+month: `1M` is a month and `1m` a minute, and `1mo` is a month in any case.
+Monthly and yearly bars are built from daily ones, on calendar months and
+years in UTC, so `3M` is the calendar quarters.
+
 A `chart set` with one bad value changes nothing at all — everything is
 checked before anything is written, so you never get a half-applied chart.
 

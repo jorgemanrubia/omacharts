@@ -1305,7 +1305,7 @@ fn chart_set(
     let timeframe = match arg(m, "resolution") {
         None => None,
         Some(text) => Some(Timeframe::parse(text).ok_or_else(|| {
-            Fault::usage(format!("{text:?} is not a resolution; try 5m, 1h, 1D or 1W"))
+            Fault::usage(format!("{text:?} is not a resolution; try 5m, 1h, 1D, 1W, 1M or 1Y"))
         })?),
     };
     let style = match arg(m, "style") {

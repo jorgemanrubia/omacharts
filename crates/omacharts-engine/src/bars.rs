@@ -1,5 +1,6 @@
 //! Bars, timeframes, and turning one timeframe into another.
 
+use chrono::{Datelike, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::symbols::InstrumentKind;
@@ -55,6 +56,8 @@ pub enum Unit {
     Hour,
     Day,
     Week,
+    Month,
+    Year,
 }
 
 /// A chart resolution: a count of a unit.
@@ -88,6 +91,12 @@ impl Timeframe {
     pub const fn weeks(count: u32) -> Timeframe {
         Timeframe { count, unit: Unit::Week }
     }
+    pub const fn months(count: u32) -> Timeframe {
+        Timeframe { count, unit: Unit::Month }
+    }
+    pub const fn years(count: u32) -> Timeframe {
+        Timeframe { count, unit: Unit::Year }
+    }
 
     /// What the header strip offers. Everything else is typed.
     pub const PRESETS: [Timeframe; 6] = [
@@ -103,23 +112,30 @@ impl Timeframe {
     /// is folded from one of these.
     const SERVED_MINUTES: [u32; 7] = [1, 2, 5, 15, 30, 60, 90];
 
+    /// How long a bar lasts. Months and years are an average length, since
+    /// no fixed number is right: fine for ordering and spacing, never for
+    /// finding where a bar begins — [`bucket_of`] is for that.
     pub fn seconds(self) -> i64 {
         let unit = match self.unit {
             Unit::Minute => 60,
             Unit::Hour => 3_600,
             Unit::Day => 86_400,
             Unit::Week => 604_800,
+            Unit::Month => 2_629_746,
+            Unit::Year => 31_556_952,
         };
         unit * self.count.max(1) as i64
     }
 
-    /// "5m", "4h", "1D", "1W" — what you type and what is stored.
+    /// "5m", "4h", "1D", "1W", "1M", "1Y" — what you type and what is stored.
     pub fn key(self) -> String {
         let suffix = match self.unit {
             Unit::Minute => 'm',
             Unit::Hour => 'h',
             Unit::Day => 'D',
             Unit::Week => 'W',
+            Unit::Month => 'M',
+            Unit::Year => 'Y',
         };
         format!("{}{suffix}", self.count)
     }
@@ -140,6 +156,8 @@ impl Timeframe {
             Unit::Hour => "hour",
             Unit::Day => "day",
             Unit::Week => "week",
+            Unit::Month => "month",
+            Unit::Year => "year",
         };
         if count == 1 {
             format!("1 {unit}")
@@ -152,8 +170,10 @@ impl Timeframe {
     ///
     /// A bare number means minutes, the way every charting package has worked
     /// since the 80s: "15" is fifteen minutes, "240" is four hours. A suffix
-    /// is honoured when given, and case does not matter except that both "d"
-    /// and "D" mean days.
+    /// is honoured when given, and case does not matter — with one exception:
+    /// "M" alone is a month and "m" a minute, the way every other charting
+    /// package spells them. "mo" is a month in any case, for anyone who would
+    /// rather not lean on the shift key.
     pub fn parse(text: &str) -> Option<Timeframe> {
         let text = text.trim();
         if text.is_empty() {
@@ -161,7 +181,9 @@ impl Timeframe {
         }
         let (digits, suffix): (String, String) =
             text.chars().partition(|c| c.is_ascii_digit());
-        let suffix = suffix.trim().to_lowercase();
+        let suffix = suffix.trim();
+        let month = suffix == "M";
+        let suffix = suffix.to_lowercase();
 
         // "D" and "W" on their own mean one of them.
         let count: u32 = if digits.is_empty() { 1 } else { digits.parse().ok()? };
@@ -170,11 +192,14 @@ impl Timeframe {
         }
 
         let unit = match suffix.as_str() {
+            _ if month => Unit::Month,
             "" => Unit::Minute,
             "m" | "min" | "mins" | "minute" | "minutes" => Unit::Minute,
             "h" | "hr" | "hrs" | "hour" | "hours" => Unit::Hour,
             "d" | "day" | "days" => Unit::Day,
             "w" | "wk" | "week" | "weeks" => Unit::Week,
+            "mo" | "month" | "months" => Unit::Month,
+            "y" | "yr" | "yrs" | "year" | "years" => Unit::Year,
             _ => return None,
         };
         Some(Timeframe { count, unit }.normalised())
@@ -188,6 +213,7 @@ impl Timeframe {
             Unit::Minute if self.count.is_multiple_of(60) => Timeframe::hours(self.count / 60),
             Unit::Hour if self.count.is_multiple_of(24) => Timeframe::days(self.count / 24),
             Unit::Day if self.count.is_multiple_of(7) => Timeframe::weeks(self.count / 7),
+            Unit::Month if self.count.is_multiple_of(12) => Timeframe::years(self.count / 12),
             _ => self,
         }
     }
@@ -217,7 +243,7 @@ impl Timeframe {
                     Timeframe::hours(1)
                 }
             }
-            Unit::Day | Unit::Week => {
+            Unit::Day | Unit::Week | Unit::Month | Unit::Year => {
                 if self.unit == Unit::Day && self.count == 1 {
                     self
                 } else {
@@ -233,6 +259,13 @@ impl Timeframe {
 
     pub fn is_intraday(self) -> bool {
         matches!(self.unit, Unit::Minute | Unit::Hour)
+    }
+
+    /// Does each bar open on the first of a calendar month, 00:00 UTC? Read
+    /// in local time west of Greenwich, that is the evening before — the
+    /// wrong month, and on January the wrong year.
+    pub fn is_calendar(self) -> bool {
+        matches!(self.unit, Unit::Month | Unit::Year)
     }
 }
 
@@ -328,7 +361,8 @@ pub fn opens_are_degenerate(bars: &[Bar]) -> bool {
 /// 18:00 ET, so 4h bars bucketed from midnight disagree with every other tool
 /// on the planet; passing the session offset here is what makes them line up.
 ///
-/// Weekly folds to ISO weeks (Monday) and ignores `origin`.
+/// Weekly folds to ISO weeks (Monday), monthly and yearly to calendar months
+/// and years in UTC, and all three ignore `origin`.
 pub fn resample(src: &[Bar], target: Timeframe, origin: i64) -> Vec<Bar> {
     if src.is_empty() {
         return Vec::new();
@@ -344,6 +378,9 @@ pub fn resample(src: &[Bar], target: Timeframe, origin: i64) -> Vec<Bar> {
 /// asks is the only way the two can agree about where a four-hour bar
 /// begins.
 pub fn bucket_of(ts: i64, target: Timeframe, origin: i64) -> i64 {
+    if matches!(target.unit, Unit::Month | Unit::Year) {
+        return calendar_start(ts, target);
+    }
     if target.unit == Unit::Week {
         let weeks = target.count.max(1) as i64;
         let start = week_start(ts);
@@ -372,6 +409,28 @@ fn fold(src: &[Bar], bucket_of: impl Fn(&i64) -> i64) -> Vec<Bar> {
         }
     }
     out
+}
+
+/// Unix second of the first of the month, 00:00 UTC, that opens the monthly
+/// or yearly bucket `ts` falls in.
+///
+/// Multi-month and multi-year buckets count from 1970 so they are stable
+/// rather than depending on where the data begins: 3M is the calendar
+/// quarters, 6M the halves.
+fn calendar_start(ts: i64, target: Timeframe) -> i64 {
+    let Some(at) = Utc.timestamp_opt(ts, 0).single() else {
+        return ts;
+    };
+    let count = i64::from(target.count.max(1));
+    let months = if target.unit == Unit::Year { 12 * count } else { count };
+    let since_1970 = i64::from(at.year() - 1970) * 12 + i64::from(at.month0());
+    let start = since_1970.div_euclid(months) * months;
+    let (year, month0) = (1970 + start.div_euclid(12), start.rem_euclid(12));
+    i32::try_from(year)
+        .ok()
+        .and_then(|year| Utc.with_ymd_and_hms(year, month0 as u32 + 1, 1, 0, 0, 0).single())
+        .map(|start| start.timestamp())
+        .unwrap_or(ts)
 }
 
 /// Unix second of the Monday 00:00 UTC that `ts` falls in.
@@ -434,10 +493,60 @@ mod tests {
         assert_eq!(Timeframe::parse("d"), Some(Timeframe::days(1)));
         assert_eq!(Timeframe::parse("W"), Some(Timeframe::weeks(1)));
         assert_eq!(Timeframe::parse(" 30 min "), Some(Timeframe::minutes(30)));
+        assert_eq!(Timeframe::parse("3y"), Some(Timeframe::years(3)));
+        assert_eq!(Timeframe::parse("Y"), Some(Timeframe::years(1)));
 
         assert_eq!(Timeframe::parse(""), None);
         assert_eq!(Timeframe::parse("0"), None);
         assert_eq!(Timeframe::parse("banana"), None);
+    }
+
+    /// "M" is the one suffix whose case matters: a capital is a month, as in
+    /// every other charting package, and anything lower is a minute.
+    #[test]
+    fn a_capital_m_is_a_month_and_mo_is_one_in_any_case() {
+        assert_eq!(Timeframe::parse("M"), Some(Timeframe::months(1)));
+        assert_eq!(Timeframe::parse("3M"), Some(Timeframe::months(3)));
+        assert_eq!(Timeframe::parse("3m"), Some(Timeframe::minutes(3)));
+        for month in ["1mo", "1MO", "1Mo", "mo", "1 month", "6 Months"] {
+            assert_eq!(Timeframe::parse(month).map(|t| t.unit), Some(Unit::Month), "{month}");
+        }
+        assert_eq!(Timeframe::parse("12M"), Some(Timeframe::years(1)));
+        assert_eq!(Timeframe::parse("Min"), Some(Timeframe::minutes(1)));
+    }
+
+    #[test]
+    fn monthly_and_yearly_buckets_follow_the_calendar() {
+        // 2024-02-29 12:00 UTC, a leap day.
+        let leap_day = 1_709_208_000;
+        let february = 1_706_745_600; // 2024-02-01
+        let march = 1_709_251_200; // 2024-03-01
+        let january = 1_704_067_200; // 2024-01-01
+        assert_eq!(bucket_of(leap_day, Timeframe::months(1), 0), february);
+        assert_eq!(bucket_of(march, Timeframe::months(1), 0), march);
+        assert_eq!(bucket_of(march - 1, Timeframe::months(1), 0), february);
+        // Quarters and years count from January, whatever the origin.
+        assert_eq!(bucket_of(leap_day, Timeframe::months(3), 3_600), january);
+        assert_eq!(bucket_of(leap_day, Timeframe::years(1), 0), january);
+        assert_eq!(bucket_of(leap_day, Timeframe::years(5), 0), 1_577_836_800); // 2020-01-01
+        // Before the epoch too.
+        assert_eq!(bucket_of(-1, Timeframe::years(1), 0), -31_536_000); // 1969-01-01
+    }
+
+    #[test]
+    fn daily_bars_fold_into_months() {
+        let day = 86_400;
+        let january = 1_704_067_200;
+        let src: Vec<Bar> = (0..60)
+            .map(|i| bar(january + i * day, i as f64, i as f64 + 1.0, i as f64 - 1.0, i as f64, 1.0))
+            .collect();
+        let out = resample(&src, Timeframe::months(1), 0);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].ts, january);
+        assert_eq!(out[0].open, 0.0);
+        assert_eq!(out[0].close, 30.0);
+        assert_eq!(out[0].volume, 31.0);
+        assert_eq!(out[1].volume, 29.0);
     }
 
     #[test]
@@ -457,7 +566,14 @@ mod tests {
         for timeframe in Timeframe::PRESETS {
             assert_eq!(Timeframe::parse(&timeframe.key()), Some(timeframe));
         }
-        for odd in [Timeframe::minutes(3), Timeframe::minutes(7), Timeframe::days(3)] {
+        for odd in [
+            Timeframe::minutes(3),
+            Timeframe::minutes(7),
+            Timeframe::days(3),
+            Timeframe::months(1),
+            Timeframe::months(3),
+            Timeframe::years(1),
+        ] {
             assert_eq!(Timeframe::parse(&odd.key()), Some(odd));
         }
     }
@@ -477,6 +593,8 @@ mod tests {
         assert_eq!(Timeframe::hours(4).native(), Timeframe::hours(1));
         assert_eq!(Timeframe::weeks(1).native(), Timeframe::days(1));
         assert_eq!(Timeframe::days(3).native(), Timeframe::days(1));
+        assert_eq!(Timeframe::months(1).native(), Timeframe::days(1));
+        assert_eq!(Timeframe::years(1).native(), Timeframe::days(1));
     }
 
     #[test]
@@ -512,6 +630,8 @@ mod tests {
         assert_eq!(Timeframe::hours(4).description(), "4 hours");
         assert_eq!(Timeframe::days(1).description(), "1 day");
         assert_eq!(Timeframe::weeks(2).description(), "2 weeks");
+        assert_eq!(Timeframe::months(1).description(), "1 month");
+        assert_eq!(Timeframe::years(2).description(), "2 years");
     }
 
     #[test]
@@ -529,6 +649,10 @@ mod tests {
         assert!(Timeframe::hours(12).is_intraday());
         assert!(!Timeframe::days(1).is_intraday());
         assert!(!Timeframe::weeks(1).is_intraday());
+        assert!(!Timeframe::months(1).is_intraday());
+        assert!(!Timeframe::years(1).is_intraday());
+        assert!(Timeframe::months(1).is_calendar());
+        assert!(!Timeframe::weeks(1).is_calendar());
     }
 
     #[test]

@@ -167,6 +167,8 @@ impl Yahoo {
             Unit::Hour => format!("{}h", timeframe.count),
             Unit::Day => format!("{}d", timeframe.count),
             Unit::Week => format!("{}wk", timeframe.count),
+            Unit::Month => format!("{}mo", timeframe.count),
+            Unit::Year => return None,
         })
     }
 
