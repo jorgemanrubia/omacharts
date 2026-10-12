@@ -17,7 +17,7 @@
 //! does.
 
 use omacharts_engine::theme::{parse_bar_colour, spell_bar_colour, BarLook, Body, ColorChoice, Thickness};
-use omacharts_engine::BarStyle;
+use omacharts_engine::{BarStyle, Direction};
 
 use crate::chart_defaults::{SETTING_BAR_STYLE, SETTING_PRICE_LINE, SETTING_SHOW_GRID};
 use crate::header::{self, Layout};
@@ -59,12 +59,12 @@ impl Default for ChartLook {
 pub enum LookEdit {
     Theme(Option<String>),
     Style(BarStyle),
-    Up(ColorChoice),
-    Down(ColorChoice),
-    UpBody(Body),
-    DownBody(Body),
-    UpThickness(Thickness),
-    DownThickness(Thickness),
+    /// One direction's colour, body or OHLC thickness.
+    Colour(Direction, ColorChoice),
+    Body(Direction, Body),
+    Thickness(Direction, Thickness),
+    /// A header put over the one there: trading's parts, while it is off,
+    /// stay where they were, since nobody could see them to keep them.
     Header(Layout),
     Grid(bool),
     PriceLine(bool),
@@ -89,13 +89,13 @@ impl ChartLook {
         match edit {
             LookEdit::Theme(id) => self.theme = id,
             LookEdit::Style(style) => self.style = style,
-            LookEdit::Up(colour) => self.bars.up = colour,
-            LookEdit::Down(colour) => self.bars.down = colour,
-            LookEdit::UpBody(body) => self.bars.up_body = body,
-            LookEdit::DownBody(body) => self.bars.down_body = body,
-            LookEdit::UpThickness(px) => self.bars.up_thickness = px,
-            LookEdit::DownThickness(px) => self.bars.down_thickness = px,
-            LookEdit::Header(layout) => self.header = layout,
+            LookEdit::Colour(direction, colour) => *self.bars.side_mut(direction).colour = colour,
+            LookEdit::Body(direction, body) => *self.bars.side_mut(direction).body = body,
+            LookEdit::Thickness(direction, px) => *self.bars.side_mut(direction).thickness = px,
+            LookEdit::Header(mut layout) => {
+                layout.keep_hidden(&self.header);
+                self.header = layout;
+            }
             LookEdit::Grid(on) => self.grid = on,
             LookEdit::PriceLine(on) => self.price_line = on,
         }
@@ -127,36 +127,45 @@ impl ChartLook {
             self.spell_bars(),
             on_off(self.grid),
             on_off(self.price_line),
-            header::spell(&self.header.seen(crate::features::trading())),
+            header::spell(&self.header.seen()),
             self.theme.as_deref().map_or(WINDOW_THEME, theming::spell_theme),
         )
     }
 }
 
 impl LookEdit {
-    /// Make this every chart's answer: written to the settings row it is
-    /// kept in, and to no other, so a row nobody chose stays unchosen.
-    pub fn save_global(self, store: &Store) {
-        match self {
-            LookEdit::Theme(Some(id)) => store.set_setting(theming::SETTING_THEME, &id),
-            // Every chart already wears the window's.
-            LookEdit::Theme(None) => {}
-            LookEdit::Style(style) => store.set_setting(SETTING_BAR_STYLE, style.key()),
-            LookEdit::Header(layout) => header::save(store, &layout),
-            LookEdit::Grid(on) => store.set_setting_bool(SETTING_SHOW_GRID, on),
-            LookEdit::PriceLine(on) => store.set_setting_bool(SETTING_PRICE_LINE, on),
-            bars => {
-                let mut look = ChartLook { bars: theming::bar_look(store), ..ChartLook::default() };
-                look.set(bars);
-                theming::save_bar_look(store, &look.bars);
+    /// Make `edits` every chart's answers: each written to the settings row
+    /// it is kept in, and to no other, so a row nobody chose stays
+    /// unchosen. The bars' rows are written once, however many of their
+    /// answers changed.
+    pub fn save_global(edits: impl IntoIterator<Item = LookEdit>, store: &Store) {
+        let mut bars: Option<ChartLook> = None;
+        for edit in edits {
+            match edit {
+                LookEdit::Theme(Some(id)) => store.set_setting(theming::SETTING_THEME, &id),
+                // Every chart already wears the window's.
+                LookEdit::Theme(None) => {}
+                LookEdit::Style(style) => store.set_setting(SETTING_BAR_STYLE, style.key()),
+                LookEdit::Header(mut layout) => {
+                    layout.keep_hidden(&header::load(store));
+                    header::save(store, &layout);
+                }
+                LookEdit::Grid(on) => store.set_setting_bool(SETTING_SHOW_GRID, on),
+                LookEdit::PriceLine(on) => store.set_setting_bool(SETTING_PRICE_LINE, on),
+                edit @ (LookEdit::Colour(..) | LookEdit::Body(..) | LookEdit::Thickness(..)) => bars
+                    .get_or_insert_with(|| ChartLook { bars: theming::bar_look(store), ..ChartLook::default() })
+                    .set(edit),
             }
+        }
+        if let Some(look) = bars {
+            theming::save_bar_look(store, &look.bars);
         }
     }
 
     /// Whether it changes a colour, which the window's own stylesheet and
     /// the rail wear too, rather than only what the charts draw.
     pub fn colours(&self) -> bool {
-        matches!(self, LookEdit::Theme(_) | LookEdit::Up(_) | LookEdit::Down(_) | LookEdit::UpBody(_) | LookEdit::DownBody(_))
+        matches!(self, LookEdit::Theme(_) | LookEdit::Colour(..) | LookEdit::Body(..))
     }
 }
 
@@ -275,26 +284,29 @@ mod tests {
     /// Each answer goes to its own row, so the others stay as they were.
     #[test]
     fn an_edit_for_every_chart_writes_its_row_and_no_other() {
+        // On, so the header typed is the whole header.
+        crate::features::force(crate::features::Feature::Trading, true);
         let store = Store::memory().unwrap();
-        LookEdit::Up(ColorChoice::swatch("Blue")).save_global(&store);
-        LookEdit::Grid(false).save_global(&store);
-        LookEdit::Header(header::parse_for("left=change", true).unwrap()).save_global(&store);
+        LookEdit::save_global([LookEdit::Colour(Direction::Up, ColorChoice::swatch("Blue"))], &store);
+        LookEdit::save_global([LookEdit::Grid(false)], &store);
+        LookEdit::save_global([LookEdit::Header(header::parse("left=change").unwrap())], &store);
         let look = ChartLook::global(&store);
         assert_eq!(look.bars.up, ColorChoice::swatch("Blue"));
         assert_eq!(look.bars.down, BarLook::default().down);
         assert!(!look.grid && look.price_line);
-        assert_eq!(look.header, header::parse_for("left=change", true).unwrap());
+        assert_eq!(look.header, header::parse("left=change").unwrap());
         assert!(!store.has_setting(SETTING_BAR_STYLE));
     }
 
     #[test]
     fn a_look_is_written_down_as_it_is_typed_and_comes_back_whole() {
+        crate::features::force(crate::features::Feature::Trading, true);
         let mut look = ChartLook::default();
         look.set(LookEdit::Style(BarStyle::Ohlc));
-        look.set(LookEdit::Down(ColorChoice::Fixed { hex: "#e66100".to_string() }));
-        look.set(LookEdit::UpBody(Body::Hollow));
-        look.set(LookEdit::DownThickness(Thickness::OneAndAHalf));
-        look.set(LookEdit::Header(header::parse_for("left=symbol,change left2=name", true).unwrap()));
+        look.set(LookEdit::Colour(Direction::Down, ColorChoice::Fixed { hex: "#e66100".to_string() }));
+        look.set(LookEdit::Body(Direction::Up, Body::Hollow));
+        look.set(LookEdit::Thickness(Direction::Down, Thickness::OneAndAHalf));
+        look.set(LookEdit::Header(header::parse("left=symbol,change left2=name").unwrap()));
         look.set(LookEdit::PriceLine(false));
         let json = serde_json::to_value(&look).unwrap();
         assert_eq!(json["style"], "ohlc");
@@ -313,7 +325,7 @@ mod tests {
         assert_eq!(look.style, BarStyle::default());
         assert_eq!(look.bars.up, ColorChoice::swatch("Blue"));
         assert_eq!(look.bars.down, BarLook::default().down);
-        assert_eq!(look.header, header::parse_for("left=change", true).unwrap());
+        assert_eq!(look.header, header::parse("left=change").unwrap());
         assert!(!look.grid && !look.price_line);
     }
 
@@ -358,9 +370,9 @@ mod tests {
     #[test]
     fn a_theme_for_every_chart_is_the_windows() {
         let store = Store::memory().unwrap();
-        LookEdit::Theme(None).save_global(&store);
+        LookEdit::save_global([LookEdit::Theme(None)], &store);
         assert!(!store.has_setting(theming::SETTING_THEME));
-        LookEdit::Theme(Some("nord".to_string())).save_global(&store);
+        LookEdit::save_global([LookEdit::Theme(Some("nord".to_string()))], &store);
         assert_eq!(store.setting(theming::SETTING_THEME).as_deref(), Some("nord"));
         assert_eq!(ChartLook::global(&store).theme, None);
     }
@@ -370,7 +382,7 @@ mod tests {
     #[test]
     fn a_copy_keeps_its_choices_across_a_change_of_theme() {
         let mut look = ChartLook::default();
-        look.set(LookEdit::Up(ColorChoice::swatch("Blue")));
+        look.set(LookEdit::Colour(Direction::Up, ColorChoice::swatch("Blue")));
         let back: ChartLook = serde_json::from_value(serde_json::to_value(&look).unwrap()).unwrap();
         assert_eq!(back.bars.up, ColorChoice::swatch("Blue"));
         let themes = omacharts_engine::theme::builtin_themes();

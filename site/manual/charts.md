@@ -121,17 +121,21 @@ Charts draw their bars in the style picked at the head of Preferences › Appear
 |---|---|
 | **Candles** | A body from open to close and a wick from high to low. The default |
 | **OHLC bars** | A vertical bar from high to low, a tick to the left at the open and one to the right at the close |
+| **Line** | One line through the closes, in the theme's accent. For a series that is only a close: a yield, a spread |
 
 OHLC bars have a thickness, 1, 1.5, 2 or 3 pixels and 2 by default, for rising and falling bars apart. It is part of the bars' look, beside each direction's colour in Preferences › Appearance › [Bars](/manual/themes/#bars), there while the bars are OHLC bars, and `omacharts config bars --up-thickness`, `--down-thickness` sets it too. Where the bars are packed too close for it, they are drawn thinner so neighbours never touch.
 
 <!-- regenerate:
-theme: tokyo-night
-window: 2560x1440 @2, bin/headless-window (HOME sandboxed, theme seeded)
+theme, window: as Preferences › General ([Preferences](/manual/preferences/)): tokyo-night as an Omarchy desktop's,
+  Yaru-purple icons, 2560x2400 @2 from bin/headless-window start --size 2560x2400, HOME sandboxed
 state:
-  omacharts config bars --style ohlc
-  key ctrl+comma; click Appearance in the sidebar
+  omacharts config bars --style ohlc --down-thickness 1.5
+  key ctrl+comma
+  run swaymsg '[title="^Preferences$"] resize set 820 770, move position 230 100'
+  click 313 351          # Appearance in the sidebar
+  click 775 614          # Down's thickness
 capture: bin/headless-window shot /tmp/thickness.png
-crop: the Bars group
+crop: 892,898,1184,706   (the Bars group and the open list, 8px layout margin)
 -->
 {% include figure.html src="/assets/manual/charts/ohlc-thickness.png" alt="The Bars group of Preferences › Appearance on OHLC bars, Down's thickness list open on 1, 1.5, 2 and 3" caption="Each direction's thickness, beside its colour on OHLC bars." %}
 
@@ -524,7 +528,7 @@ crop: 560,262,640,986   (the whole menu, 20px layout margin)
 | Item | Does | Explained in |
 |---|---|---|
 | **Paste** | Puts down the drawings or the indicator last copied. Only there while something has been copied | [Drawings](/manual/drawings/), [Indicators](/manual/indicators/#selecting-an-indicator) |
-| **Bar style** › **Candles**, **OHLC bars**, **None** | How this chart draws its bars, in [a look of its own](#a-charts-own-look), or its bars hidden, with its key | [Bars](#bars) |
+| **Bar style** › **Candles**, **OHLC bars**, **Line**, **None** | How this chart draws its bars, in [a look of its own](#a-charts-own-look), or its bars hidden, with its key | [Bars](#bars) |
 | **Session** › **Extended hours**, **Regular hours only** | The chart's hours | [Sessions](#sessions) |
 | **Template** › **None**, then each chart template | Puts the chart on a template, with its key | [Chart templates](/manual/chart-templates/) |
 | **Template** › **Create new template from chart…** | Saves the chart's indicators as a new template and puts the chart on it. Greyed out on a chart with no indicators | [Chart templates](/manual/chart-templates/#creating-a-template) |

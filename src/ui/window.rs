@@ -662,7 +662,7 @@ mod tests {
     #[test]
     fn one_stored_thickness_is_folded_into_the_look_once() {
         let store = Store::memory().expect("an in-memory store");
-        LookEdit::Up(omacharts_engine::ColorChoice::swatch("Teal")).save_global(&store);
+        LookEdit::save_global([LookEdit::Colour(omacharts_engine::Direction::Up, omacharts_engine::ColorChoice::swatch("Teal"))], &store);
         let mut value = serde_json::json!({"books": [{"panes": [
             {"id": 1, "ohlc_thickness": 2},
             {"id": 2, "ohlc_thickness": 4},
@@ -3892,21 +3892,20 @@ pub(crate) fn upgrade_thicknesses(workspace: &mut serde_json::Value, store: &Sto
     for book in books_in(workspace) {
         let Some(panes) = book.get_mut("panes").and_then(serde_json::Value::as_array_mut) else { continue };
         for pane in panes {
-            let Some(fields) = pane.as_object_mut() else { continue };
-            let Some(stored) = fields.remove("ohlc_thickness") else { continue };
+            let Some(stored) = pane.as_object_mut().and_then(|fields| fields.remove("ohlc_thickness")) else { continue };
             any = true;
             let Some(px) = stored.as_f64().map(omacharts_engine::Thickness::nearest) else { continue };
             let every = every.get_or_insert_with(|| ChartLook::global(store));
-            let own = fields.get("look").and_then(|look| serde_json::from_value::<Option<ChartLook>>(look.clone()).ok());
-            let mut look = match own.flatten() {
+            let mut look = match crate::cli::charts::own_look(pane) {
                 Some(own) => own,
                 None if (every.bars.up_thickness, every.bars.down_thickness) == (px, px) => continue,
                 None => every.clone(),
             };
-            look.set(LookEdit::UpThickness(px));
-            look.set(LookEdit::DownThickness(px));
+            for direction in [omacharts_engine::Direction::Up, omacharts_engine::Direction::Down] {
+                look.set(LookEdit::Thickness(direction, px));
+            }
             if let Ok(look) = serde_json::to_value(&look) {
-                fields.insert("look".to_string(), look);
+                pane["look"] = look;
             }
         }
     }
@@ -11531,7 +11530,7 @@ impl Window {
     pub fn change_look(self: &Rc<Self>, edit: LookEdit, every: bool) {
         if every {
             let colours = edit.colours();
-            edit.save_global(&self.store);
+            LookEdit::save_global([edit], &self.store);
             self.reread_look();
             match colours {
                 // The window's stylesheet and the rail wear every chart's

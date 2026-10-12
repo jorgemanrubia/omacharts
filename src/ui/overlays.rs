@@ -210,14 +210,13 @@ impl HeaderCard {
         // The colours are read here, so a new theme needs only this.
         self.chart.queue_draw();
         let layout = self.layout.borrow().clone();
-        let trading = crate::features::trading();
         for (zone, place) in Zone::ALL.into_iter().zip(&self.zones) {
-            for part in layout.shown(zone, trading) {
+            for part in layout.shown(zone) {
                 place.append(&self.placed(part));
             }
         }
         self.second.set_visible(layout.second_row());
-        let spare: Vec<Part> = Part::every_shown(trading).into_iter().filter(|part| !layout.contains(*part)).collect();
+        let spare: Vec<Part> = Part::every_shown().into_iter().filter(|part| !layout.contains(*part)).collect();
         self.all_shown.set_visible(spare.is_empty());
         self.spare.set_visible(!spare.is_empty());
         for part in spare {
@@ -507,12 +506,11 @@ fn icon(image: gtk::Widget) -> gtk::Widget {
 /// `part` lifted out sits: a drop lands among the parts it can see, and the
 /// hidden ones keep their places around it.
 fn among_all(layout: &Layout, zone: Zone, part: Part, shown: usize) -> usize {
-    let trading = crate::features::trading();
     let others: Vec<Part> = layout.zone(zone).iter().copied().filter(|p| *p != part).collect();
     others
         .iter()
         .enumerate()
-        .filter(|(_, p)| p.shown(trading))
+        .filter(|(_, p)| p.shown())
         .nth(shown)
         .map_or(others.len(), |(at, _)| at)
 }

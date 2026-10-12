@@ -704,7 +704,25 @@ impl Default for BarLook {
     }
 }
 
+/// One direction's answers in a [`BarLook`], to read or change in place.
+pub struct BarSide<'a> {
+    pub colour: &'a mut ColorChoice,
+    pub body: &'a mut Body,
+    pub thickness: &'a mut Thickness,
+}
+
 impl BarLook {
+    /// `direction`'s answers. A flat bar has none of its own: it is drawn
+    /// in the scheme's neutral, and is asked for as a fall.
+    pub fn side_mut(&mut self, direction: Direction) -> BarSide<'_> {
+        match direction {
+            Direction::Up => BarSide { colour: &mut self.up, body: &mut self.up_body, thickness: &mut self.up_thickness },
+            Direction::Down | Direction::Flat => {
+                BarSide { colour: &mut self.down, body: &mut self.down_body, thickness: &mut self.down_thickness }
+            }
+        }
+    }
+
     /// The theme's colours the other way round: red for a rise, green for a
     /// fall, the way Taiwan, mainland China, Japan and Korea read a chart.
     pub fn red_up() -> BarLook {
@@ -770,7 +788,7 @@ pub fn parse_bar_colour(text: &str) -> Option<ColorChoice> {
     if text.starts_with('#') {
         return rgb(text).map(|_| ColorChoice::Fixed { hex: text.to_lowercase() });
     }
-    ColorChoice::named(text, PALETTE_NAMES.into_iter().chain(PAIR_NAMES))
+    ColorChoice::named(text, BAR_COLOUR_NAMES)
 }
 
 /// `theme` with what a bar's colour menu offers beside its palette, the
@@ -859,6 +877,21 @@ pub const SAND: &str = "Sand";
 pub const SILVER: &str = "Silver";
 pub const GRAPHITE: &str = "Graphite";
 const PAIR_NAMES: [&str; 4] = [SLATE, SAND, SILVER, GRAPHITE];
+
+/// Every name a bar's colour is picked or typed by: the palette's, then the
+/// soft and quiet pairs'.
+pub const BAR_COLOUR_NAMES: [&str; PALETTE_NAMES.len() + PAIR_NAMES.len()] = {
+    let mut all = [""; PALETTE_NAMES.len() + PAIR_NAMES.len()];
+    let mut at = 0;
+    while at < all.len() {
+        all[at] = match at < PALETTE_NAMES.len() {
+            true => PALETTE_NAMES[at],
+            false => PAIR_NAMES[at - PALETTE_NAMES.len()],
+        };
+        at += 1;
+    }
+    all
+};
 
 /// [`SLATE`], [`SAND`], [`SILVER`] and [`GRAPHITE`] on `theme`, as the
 /// colour pickers offer them.

@@ -173,14 +173,14 @@ impl Part {
         matches!(self, Part::Account | Part::DayPnl | Part::Trade | Part::Size | Part::Position)
     }
 
-    /// Can it be shown, offered and typed, with trading switched on or not?
-    pub fn shown(self, trading: bool) -> bool {
-        trading || !self.trades()
+    /// Can it be shown, offered and typed, as trading is switched now?
+    pub fn shown(self) -> bool {
+        crate::features::trading() || !self.trades()
     }
 
     /// Every part that can be, in [`Part::ALL`]'s order.
-    pub fn every_shown(trading: bool) -> Vec<Part> {
-        Part::ALL.into_iter().filter(|part| part.shown(trading)).collect()
+    pub fn every_shown() -> Vec<Part> {
+        Part::ALL.into_iter().filter(|part| part.shown()).collect()
     }
 }
 
@@ -268,16 +268,16 @@ impl Layout {
         &self.zones[zone.index()]
     }
 
-    /// What `zone` shows of the parts that can be, with trading on or off.
-    pub fn shown(&self, zone: Zone, trading: bool) -> Vec<Part> {
-        self.zone(zone).iter().copied().filter(|part| part.shown(trading)).collect()
+    /// What `zone` shows of the parts that can be.
+    pub fn shown(&self, zone: Zone) -> Vec<Part> {
+        self.zone(zone).iter().copied().filter(|part| part.shown()).collect()
     }
 
-    /// The header as it can be seen with trading on or off: without
-    /// trading's parts while it is off. What a header is printed as, so
-    /// that what is printed can be typed back.
-    pub fn seen(&self, trading: bool) -> Layout {
-        let mut seen = Layout { zones: std::array::from_fn(|at| self.shown(Zone::ALL[at], trading)) };
+    /// The header as it can be seen: without trading's parts while it is
+    /// off. What a header is printed as, so that what is printed can be
+    /// typed back.
+    pub fn seen(&self) -> Layout {
+        let mut seen = Layout { zones: std::array::from_fn(|at| self.shown(Zone::ALL[at])) };
         seen.settle();
         seen
     }
@@ -304,8 +304,7 @@ impl Layout {
     }
 
     fn shows_other_than(&self, zone: Zone, part: Option<Part>) -> bool {
-        let trading = crate::features::trading();
-        self.zone(zone).iter().any(|p| Some(*p) != part && p.shown(trading))
+        self.zone(zone).iter().any(|p| Some(*p) != part && p.shown())
     }
 
     /// Take `part` out, wherever it is.
@@ -335,10 +334,10 @@ impl Layout {
     /// shown with trading off and this one lacks: a header typed or arranged
     /// while trading is off is typed over what anybody can see, and keeps
     /// trading's parts for when it is on.
-    pub fn keep_hidden(&mut self, old: &Layout, trading: bool) {
+    pub fn keep_hidden(&mut self, old: &Layout) {
         for zone in Zone::ALL {
             for (at, part) in old.zone(zone).iter().copied().enumerate() {
-                if !part.shown(trading) && !self.contains(part) {
+                if !part.shown() && !self.contains(part) {
                     let list = &mut self.zones[zone.index()];
                     list.insert(at.min(list.len()), part);
                 }
@@ -411,20 +410,15 @@ impl Layout {
 ///
 /// Refuses a name it does not know and a part or zone named twice, rather
 /// than dropping either: a header that came out different from the one typed
-/// would look as though the command worked.
+/// would look as though the command worked. With trading switched off, its
+/// parts are not parts of a header at all.
 pub fn parse(text: &str) -> Result<Layout, String> {
-    parse_for(text, crate::features::trading())
-}
-
-/// [`parse`], knowing only the parts that can be shown with trading on or
-/// off: switched off, trading's are not parts of a header at all.
-pub fn parse_for(text: &str, trading: bool) -> Result<Layout, String> {
     let text = text.trim();
     if text.eq_ignore_ascii_case("none") {
         return Ok(Layout::default());
     }
     if !text.contains('=') {
-        return Ok(Layout::from_sections(&parse_list(text, trading)?, None, None, true));
+        return Ok(Layout::from_sections(&parse_list(text)?, None, None, true));
     }
     let mut named: Vec<Part> = Vec::new();
     let mut layout = Layout::default();
@@ -439,7 +433,7 @@ pub fn parse_for(text: &str, trading: bool) -> Result<Layout, String> {
             return Err(format!("{} is named twice", zone.key()));
         }
         zones_named.push(zone);
-        for part in parse_list(list, trading)? {
+        for part in parse_list(list)? {
             if named.contains(&part) {
                 return Err(format!("{} is named twice", part.key()));
             }
@@ -455,17 +449,17 @@ pub fn parse_for(text: &str, trading: bool) -> Result<Layout, String> {
 ///
 /// Refuses a name it does not know, or that is one of trading's while it is
 /// switched off, and a part named twice.
-pub fn parse_list(text: &str, trading: bool) -> Result<Vec<Part>, String> {
+pub fn parse_list(text: &str) -> Result<Vec<Part>, String> {
     let text = text.trim();
     if text.is_empty() || text.eq_ignore_ascii_case("none") {
         return Ok(Vec::new());
     }
     let mut parts = Vec::new();
     for key in text.split(',').map(|key| key.trim().to_lowercase()).filter(|key| !key.is_empty()) {
-        let Some(part) = Part::from_key(&key).filter(|part| part.shown(trading)) else {
+        let Some(part) = Part::from_key(&key).filter(|part| part.shown()) else {
             return Err(format!(
                 "{key:?} is not part of a header; try {}",
-                Part::every_shown(trading).into_iter().map(Part::key).collect::<Vec<_>>().join(", ")
+                Part::every_shown().into_iter().map(Part::key).collect::<Vec<_>>().join(", ")
             ));
         };
         if parts.contains(&part) {
@@ -635,9 +629,12 @@ pub fn change_markup(words: &str, colour: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::features::{force, Feature};
 
+    /// `text` as typed with trading on, so every part is one.
     fn layout(text: &str) -> Layout {
-        parse_for(text, true).unwrap()
+        force(Feature::Trading, true);
+        parse(text).unwrap()
     }
 
     #[test]
@@ -666,12 +663,13 @@ mod tests {
 
     #[test]
     fn what_is_not_a_header_is_refused() {
-        assert!(parse_for("left=symbol,price", true).is_err());
-        assert!(parse_for("left=symbol right=symbol", true).is_err());
-        assert!(parse_for("left=symbol left=change", true).is_err());
-        assert!(parse_for("top=symbol", true).is_err());
-        assert!(parse_for("left=symbol change", true).is_err());
-        assert!(parse_for("symbol,symbol", true).is_err());
+        force(Feature::Trading, true);
+        assert!(parse("left=symbol,price").is_err());
+        assert!(parse("left=symbol right=symbol").is_err());
+        assert!(parse("left=symbol left=change").is_err());
+        assert!(parse("top=symbol").is_err());
+        assert!(parse("left=symbol change").is_err());
+        assert!(parse("symbol,symbol").is_err());
     }
 
     /// A list with no zones is the left, as it was before there were zones:
@@ -716,7 +714,7 @@ mod tests {
     /// them is empty to the place under it, though they stay in it.
     #[test]
     fn trading_s_hidden_parts_hold_no_row_up() {
-        use crate::features::{force, reset, Feature};
+        use crate::features::reset;
         let typed = "left=symbol right=account,trade right2=name";
         force(Feature::Trading, true);
         let header = layout(typed);
@@ -842,22 +840,24 @@ mod tests {
     /// change to the parts that are shown.
     #[test]
     fn trading_s_parts_are_kept_out_of_sight_while_it_is_off() {
-        assert!(parse_list("symbol,trade", false).is_err());
-        let refused = parse_list("banana", false).unwrap_err();
+        force(Feature::Trading, true);
+        assert!(parse_list("symbol,trade").is_ok());
+        assert_eq!(Part::every_shown(), Part::ALL.to_vec());
+        force(Feature::Trading, false);
+        assert!(parse_list("symbol,trade").is_err());
+        let refused = parse_list("banana").unwrap_err();
         assert!(!refused.contains("day_pnl") && refused.contains("symbol"), "{refused}");
-        assert!(parse_list("symbol,trade", true).is_ok());
-        assert!(parse_for("left=account", false).is_err());
-        assert!(Part::every_shown(false).iter().all(|part| !part.trades()));
-        assert_eq!(Part::every_shown(true), Part::ALL.to_vec());
+        assert!(parse("left=account").is_err());
+        assert!(Part::every_shown().iter().all(|part| !part.trades()));
 
         let header = Layout::standard();
-        assert_eq!(header.shown(Zone::Left, false), [Part::Feed, Part::Symbol, Part::Resolution, Part::Change]);
-        let mut typed = parse_for("left=symbol,feed right=link", false).unwrap();
-        typed.keep_hidden(&header, false);
+        assert_eq!(header.shown(Zone::Left), [Part::Feed, Part::Symbol, Part::Resolution, Part::Change]);
+        let mut typed = parse("left=symbol,feed right=link").unwrap();
+        typed.keep_hidden(&header);
         assert_eq!(typed.zone(Zone::Left), [Part::Symbol, Part::Feed]);
         assert_eq!(typed.zone(Zone::Right), [Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::Position, Part::Link]);
         assert!(typed.zone(Zone::Center).is_empty());
-        assert_eq!(spell(&typed.seen(false)), "left=symbol,feed right=link");
+        assert_eq!(spell(&typed.seen()), "left=symbol,feed right=link");
     }
 
     /// A rise in the scheme's up colour and a fall in its down; nothing at

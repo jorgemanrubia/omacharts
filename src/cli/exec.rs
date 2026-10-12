@@ -19,10 +19,10 @@ use omacharts_engine::indicators::{
 };
 use omacharts_engine::providers;
 use omacharts_engine::theme::{
-    ColorChoice, PALETTE_NAMES, SWATCH_NAMES,
+    ColorChoice, BAR_COLOUR_NAMES, PALETTE_NAMES,
 };
 use omacharts_engine::{
-    BarStyle, Indicator, IndicatorKind, LinkMode, Reset, Session, Timeframe,
+    BarStyle, Direction, Indicator, IndicatorKind, LinkMode, Reset, Session, Timeframe,
 };
 
 use super::charts::{self, Workspace};
@@ -4783,9 +4783,8 @@ fn strip(store: &Store, m: &clap::ArgMatches, as_json: bool, live: Option<&dyn L
 /// whole on a misspelling, as `config set chart_header` refuses it.
 fn config_header(store: &Store, m: &clap::ArgMatches, as_json: bool, live: Option<&dyn Live>) -> Result<String, Fault> {
     let given: Vec<String> = m.get_many::<String>("ZONES").map(|zones| zones.cloned().collect()).unwrap_or_default();
-    let trading = crate::features::stored(store, crate::features::Feature::Trading);
     if given.is_empty() {
-        let header = crate::header::spell(&crate::header::load(store).seen(trading));
+        let header = crate::header::spell(&crate::header::load(store).seen());
         return match as_json {
             true => Ok(format!("{}\n", json!({"header": header}))),
             false => Ok(format!("{header}\n")),
@@ -4795,18 +4794,16 @@ fn config_header(store: &Store, m: &clap::ArgMatches, as_json: bool, live: Optio
     if let Some(live) = live {
         live.adopt_header();
     }
-    let header = crate::header::spell(&header.seen(trading));
+    let header = crate::header::spell(&header.seen());
     said(as_json, json!({"header": header}), format!("every chart's header shows {header}"))
 }
 
 /// Every chart's header made the one typed, and saved. Refused whole on a
 /// misspelling; trading's parts, while it is off, stay where they were.
 fn retyped_header(store: &Store, text: &str) -> Result<crate::header::Layout, Fault> {
-    let trading = crate::features::stored(store, crate::features::Feature::Trading);
-    let mut header = crate::header::parse_for(text, trading).map_err(Fault::usage)?;
-    header.keep_hidden(&crate::header::load(store), trading);
-    crate::header::save(store, &header);
-    Ok(header)
+    let typed = crate::header::parse(text).map_err(Fault::usage)?;
+    LookEdit::save_global([LookEdit::Header(typed)], store);
+    Ok(crate::header::load(store))
 }
 
 // -- settings and cache ---------------------------------------------------
@@ -5302,8 +5299,7 @@ fn config_set(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<Stri
     // as a header missing a part.
     if key == crate::header::SETTING {
         let header = retyped_header(store, value)?;
-        let trading = crate::features::stored(store, crate::features::Feature::Trading);
-        let value = crate::header::spell(&header.seen(trading));
+        let value = crate::header::spell(&header.seen());
         let text = format!("every chart's header shows {value}");
         return said(as_json, json!({"key": key, "value": value}), text);
     }
@@ -5503,9 +5499,7 @@ fn read_or_set(
 /// its stylesheet and the rail too when one changes a colour.
 fn change_every_look(store: &Store, live: Option<&dyn Live>, edits: Vec<LookEdit>) {
     let colours = edits.iter().any(LookEdit::colours);
-    for edit in edits {
-        edit.save_global(store);
-    }
+    LookEdit::save_global(edits, store);
     match live {
         Some(live) if colours => live.adopt_theming(),
         Some(live) => live.adopt_chart_look(),
@@ -5535,7 +5529,7 @@ fn config_bars(
             "red-up" => BarLook::red_up(),
             _ => BarLook::default(),
         };
-        edits.extend([LookEdit::Up(colours.up), LookEdit::Down(colours.down)]);
+        edits.extend([LookEdit::Colour(Direction::Up, colours.up), LookEdit::Colour(Direction::Down, colours.down)]);
     }
     // After the preset, so a flag wins over it.
     edits.extend(look_edits(m)?);
@@ -5547,14 +5541,7 @@ fn config_bars(
     }
     let given = !edits.is_empty();
     if given {
-        for edit in edits {
-            edit.save_global(store);
-        }
-        // A candle has no row to reload: an open window paints from the
-        // scheme it read, so it is told to read it again.
-        if let Some(live) = live {
-            live.adopt_theming();
-        }
+        change_every_look(store, live, edits);
     }
     let described = look.spell_bars();
     // Said rather than silently done, because "it was already monochrome"
@@ -5586,22 +5573,21 @@ fn look_edits(m: &clap::ArgMatches) -> Result<Vec<LookEdit>, Fault> {
         let Some(text) = arg(m, flag) else { return Ok(None) };
         parse_bar_colour(text).map(Some).ok_or_else(|| {
             Fault::usage(format!(
-                "no such bar colour: {text:?}; give one of {}, foreground, or a #rrggbb hex",
-                SWATCH_NAMES.map(str::to_lowercase).join(", ")
+                "no such bar colour: {text:?}; give one of {}, or a #rrggbb hex",
+                BAR_COLOUR_NAMES.map(str::to_lowercase).join(", ")
             ))
         })
     };
     let switch = |flag: &str| arg(m, flag).map(|state| state == "on");
     let mut edits = Vec::new();
     edits.extend(arg(m, "style").and_then(|key| BarStyle::from_key(key)).map(LookEdit::Style));
-    edits.extend(colour("up")?.map(LookEdit::Up));
-    edits.extend(colour("down")?.map(LookEdit::Down));
-    edits.extend(arg(m, "up-body").and_then(|key| Body::from_key(key)).map(LookEdit::UpBody));
-    edits.extend(arg(m, "down-body").and_then(|key| Body::from_key(key)).map(LookEdit::DownBody));
-    // The parser has held these to the thicknesses there are.
-    let thickness = |flag: &str| arg(m, flag).and_then(|px| Thickness::parse(px));
-    edits.extend(thickness("up-thickness").map(LookEdit::UpThickness));
-    edits.extend(thickness("down-thickness").map(LookEdit::DownThickness));
+    for (direction, flag) in [(Direction::Up, "up"), (Direction::Down, "down")] {
+        edits.extend(colour(flag)?.map(|colour| LookEdit::Colour(direction, colour)));
+        edits.extend(arg(m, &format!("{flag}-body")).and_then(|key| Body::from_key(key)).map(|body| LookEdit::Body(direction, body)));
+        // The parser has held these to the thicknesses there are.
+        let thickness = arg(m, &format!("{flag}-thickness")).and_then(|px| Thickness::parse(px));
+        edits.extend(thickness.map(|px| LookEdit::Thickness(direction, px)));
+    }
     if let Some(text) = arg(m, "header") {
         edits.push(LookEdit::Header(crate::header::parse(text).map_err(Fault::usage)?));
     }
@@ -7137,6 +7123,19 @@ mod tests {
         assert!(said.ends_with(", theme window\n"), "{said}");
         let look = &panes_of(&store, "Macro")[1]["look"];
         assert!(look.get("theme").is_none() && look["grid"] == json!(false), "{look}");
+    }
+
+    /// A header typed for one chart while trading is off keeps trading's
+    /// parts where they were, as one typed for every chart does.
+    #[test]
+    fn a_charts_header_typed_with_trading_off_keeps_trading_s_parts() {
+        let store = bare();
+        ok("chartbook create Macro --symbol SPY", &store);
+        ok("chart look --book Macro --chart pos:0 --header left=symbol", &store);
+        let stored = panes_of(&store, "Macro")[0]["look"]["header"].as_str().unwrap_or_default().to_string();
+        assert_eq!(stored, "left=symbol right=account,day_pnl,trade,size,position");
+        ok("config header left=symbol", &store);
+        assert_eq!(crate::header::spell(&crate::header::load(&store)), stored);
     }
 
     /// A split copies the chart it divides, and a duplicated chartbook its

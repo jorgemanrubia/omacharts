@@ -265,9 +265,8 @@ pub const CHART_SELECTOR: &str =
     "`pos:N`, counting from 0 in layout order, or a raw id from `chart list` \
      — prefer the position, which survives the window rebuilding";
 
-/// How a chart paints the theme's candle colours, spelled as the scheme ids
-/// the settings store.
-const STYLES: &[&str] = &["candles", "ohlc"];
+/// How a chart draws its bars, spelled as `bar_style` stores them.
+const STYLES: &[&str] = &["candles", "ohlc", "line"];
 const SESSIONS: &[&str] = &["regular", "extended"];
 const CONTINUOUS: &[&str] = &["back-adjusted", "as-traded"];
 const SPLITS: &[&str] = &["horizontal", "vertical"];
@@ -293,10 +292,10 @@ const BODIES: &[&str] = &["filled", "bordered", "hollow"];
 /// An OHLC bar's thickness in pixels: `Thickness::ALL`.
 const THICKNESSES: &[&str] = &["1", "1.5", "2", "3"];
 const BAR_COLOUR: &str = "a theme colour by name (green, rose, blue, amber, violet, teal, orange, cyan), \
-     foreground (the text colour) for none, or #rrggbb";
+     foreground (the text colour) for none, slate, sand, silver or graphite (worked out from the theme), or #rrggbb";
 /// How bars are drawn: the same five flags for every chart's look, `config
 /// bars`, and one chart's own, `chart look`.
-const STYLE_FLAG: Flag = Flag::valued("style", "STYLE", "candles or OHLC bars").of(STYLES);
+const STYLE_FLAG: Flag = Flag::valued("style", "STYLE", "candles, OHLC bars or a line through the closes").of(STYLES);
 const UP_FLAG: Flag = Flag::valued("up", "COLOUR", BAR_COLOUR);
 const DOWN_FLAG: Flag = Flag::valued("down", "COLOUR", BAR_COLOUR);
 const UP_BODY_FLAG: Flag = Flag::valued(
@@ -1320,7 +1319,7 @@ pub const SURFACE: &[Noun] = &[
             },
             Verb {
                 name: "bars",
-                about: "How every chart draws its bars: candles or OHLC bars, a colour for up and for down, how each body is drawn, and how thick each OHLC bar is",
+                about: "How every chart draws its bars: candles, OHLC bars or a line, a colour for up and for down, how each body is drawn, and how thick each OHLC bar is",
                 args: &[Arg::opt("STATE", "sets both colours: the theme's green and rose, swapped, or foreground; omit to read them").of(COLOURING)],
                 flags: &[
                     STYLE_FLAG,
@@ -1832,6 +1831,15 @@ mod tests {
     fn the_colours_the_help_names_are_the_ones_every_theme_carries() {
         for name in omacharts_engine::theme::PALETTE_NAMES {
             assert!(COLOUR.contains(name), "the help does not mention {name}");
+        }
+    }
+
+    /// A bar's colour menu offers more than the palette: the help names
+    /// every colour a bar can be given.
+    #[test]
+    fn the_bar_colours_the_help_names_are_the_ones_there_are() {
+        for name in omacharts_engine::theme::BAR_COLOUR_NAMES {
+            assert!(BAR_COLOUR.contains(&name.to_lowercase()), "the help does not mention {name}");
         }
     }
 

@@ -1194,12 +1194,18 @@ impl PriceScale {
 /// the chart draws that stretch linear rather than drawing nothing; the choice
 /// is kept, so it comes back once the bars on screen allow it.
 ///
+/// A line chart fits its closes, the only price it draws: fitted to the
+/// highs and lows, its line would sit inside a range nothing on screen
+/// reaches.
+///
 /// `None` when the bars carry nothing finite to measure.
 fn price_range(state: &State, bars: &[Bar], plan: &Layout) -> Option<PriceScale> {
     let (mut low, mut high) = (f64::MAX, f64::MIN);
+    let line = state.draws_a_line();
     for b in bars {
-        low = low.min(b.low);
-        high = high.max(b.high);
+        let (bar_low, bar_high) = if line { (b.close, b.close) } else { (b.low, b.high) };
+        low = low.min(bar_low);
+        high = high.max(bar_high);
     }
     // The latest trade the bars leave out, while the chart shows its end:
     // its line would otherwise run off the plot, out of hours, the moment
@@ -1524,6 +1530,21 @@ impl State {
         self.locate_with(width, height, x, y, false)
     }
 
+    /// Whether the price is drawn as one line through the closes.
+    fn draws_a_line(&self) -> bool {
+        self.bar_style == BarStyle::Line
+    }
+
+    /// What a snapped anchor can land on: the prices the chart draws of a
+    /// bar. All four on candles and bars; the close alone on a line chart,
+    /// where the other three are drawn nowhere to be aimed at.
+    fn snap_prices(&self, bar: &Bar) -> [f64; 4] {
+        match self.draws_a_line() {
+            true => [bar.close; 4],
+            false => [bar.open, bar.high, bar.low, bar.close],
+        }
+    }
+
     /// [`locate`](Self::locate), and with `snap` the price is pulled onto
     /// the candle under the pointer: whichever of the prices the chart draws
     /// of it is nearest on screen. That is Ctrl while a drawing is laid down
@@ -1546,7 +1567,7 @@ impl State {
         let price = match snap && index >= 0.0 {
             true => self.bars.get(index as usize).map_or(price, |bar| {
                 let off = |price: f64| (scale.to_y(price, plan.price_y, plan.price_h) - y).abs();
-                [bar.open, bar.high, bar.low, bar.close]
+                self.snap_prices(bar)
                     .into_iter()
                     .min_by(|a, b| off(*a).total_cmp(&off(*b)))
                     .unwrap_or(price)
@@ -6871,7 +6892,32 @@ fn draw_candles(cr: &cairo::Context, state: &State, columns: &Columns, to_y: &im
     if state.bars_hidden {
         return;
     }
+    if state.draws_a_line() {
+        close_line(cr, &state.theme.ui.accent, columns, to_y);
+        return;
+    }
     candles(cr, state.bar_style, &state.scheme, columns, to_y);
+}
+
+/// One line through the closes, in the theme's accent: a line has no up or
+/// down to colour, and green for a yield that rose says nothing.
+fn close_line(cr: &cairo::Context, color: &str, columns: &Columns, to_y: &impl Fn(f64) -> f64) {
+    let mut points = columns.bars.iter().enumerate().map(|(i, bar)| (columns.x(i), to_y(bar.close)));
+    let Some((x, y)) = points.next() else { return };
+    cr.set_line_width(1.5);
+    cr.set_line_join(cairo::LineJoin::Round);
+    cr.move_to(x, y);
+    let mut alone = true;
+    for (x, y) in points {
+        cr.line_to(x, y);
+        alone = false;
+    }
+    if alone {
+        // A single close is a line to nowhere; a dot is what there is.
+        cr.line_to(x + 1.0, y);
+    }
+    colors::set_source(cr, color);
+    let _ = cr.stroke();
 }
 
 /// Candles, from nothing but what it takes to draw one: the style, the
@@ -11892,6 +11938,24 @@ mod tests {
     }
 
 
+    /// A line chart is scaled to its closes, the only price it draws, and
+    /// candles to their highs and lows.
+    #[test]
+    fn a_line_chart_fits_its_closes() {
+        let mut state = charted(100);
+        let plan = layout(&state, 600.0, 400.0);
+        let (first, visible, _) = state.view();
+        let shown = &state.bars[first..first + visible];
+        let reach = |state: &State| price_range(state, shown, &plan).unwrap().prices();
+        let (low, high) = reach(&state);
+        assert!(shown.iter().all(|bar| bar.low >= low && bar.high <= high), "candles fit their wicks");
+        state.bar_style = BarStyle::Line;
+        let (line_low, line_high) = reach(&state);
+        let closes = shown.iter().fold((f64::MAX, f64::MIN), |(lo, hi), bar| (lo.min(bar.close), hi.max(bar.close)));
+        assert!(line_low <= closes.0 && line_high >= closes.1, "the closes fit");
+        assert!(line_low > low && line_high < high, "and nothing wider: {line_low}..{line_high} in {low}..{high}");
+    }
+
     /// A chart of the regular session out of hours: the last price is the
     /// feed's newest trade, not the last close drawn, following each
     /// trade; the scale reaches it while
@@ -13984,6 +14048,27 @@ mod drawing_tests {
         state.magnet = true;
         state.follow_hand(w, h);
         assert_eq!(state.placing.as_ref().unwrap().to.price, bar.high);
+    }
+
+    /// A line chart draws only the closes, so the high, the low and the open
+    /// are nothing on screen to snap to: aimed right at the high, the anchor
+    /// still lands on the close.
+    #[test]
+    fn a_line_chart_snaps_only_to_the_close() {
+        let mut state = charted(100);
+        state.visible = 100;
+        state.overhang = 0;
+        state.bar_style = BarStyle::Line;
+        let (w, h) = (800.0, 400.0);
+        let plan = layout(&state, w, h);
+        let (first, visible) = state.slice();
+        let scale = price_range(&state, &state.bars[first..first + visible], &plan).unwrap();
+        let bar = state.bars[40];
+        let x = plan.plot_x + 40.5 * plan.plot_w / visible as f64;
+        for aim in [bar.high, bar.low, bar.open] {
+            let y = scale.to_y(aim, plan.price_y, plan.price_h);
+            assert_eq!(state.locate_with(w, h, x, y, true).unwrap().price, bar.close);
+        }
     }
 
     /// The configuration chosen for the next drawing survives picking a

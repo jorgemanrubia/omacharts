@@ -498,8 +498,8 @@ omacharts: give --follow or changes to the look, not both
 | Flag | Takes | Does |
 |---|---|---|
 | `--theme THEME` | A theme as `omacharts config theme` lists them, or `window` | The theme the chart is drawn on; `window` puts it back on the window's ([A chart's own look](/manual/charts/#a-charts-own-look)) |
-| `--style STYLE` | `candles`, `ohlc` | How the chart draws its bars ([Style](/manual/charts/#style)) |
-| `--up COLOUR`, `--down COLOUR` | A theme colour by name, `foreground` for the theme's text colour, or `#rrggbb` | One direction's colour |
+| `--style STYLE` | `candles`, `ohlc`, `line` | How the chart draws its bars ([Style](/manual/charts/#style)) |
+| `--up COLOUR`, `--down COLOUR` | A theme colour by name, `foreground` for the theme's text colour, `slate`, `sand`, `silver` or `graphite` ([Themes](/manual/themes/)), or `#rrggbb` | One direction's colour |
 | `--up-body BODY`, `--down-body BODY` | `filled`, `bordered`, `hollow` | One direction's body, as in [`config bars`](#config-bars) |
 | `--up-thickness PX`, `--down-thickness PX` | `1`, `1.5`, `2`, `3` | How many pixels wide one direction's OHLC bars are drawn |
 | `--header PARTS` | Parts in their places, as [`config header`](#config-header) takes them, or `none` | What the header shows, in order ([The header](/manual/charts/#the-header)) |
@@ -536,9 +536,9 @@ bars are now ohlc, up foreground filled 1px, down foreground filled 3px
 
 | Argument or flag | Takes | Does |
 |---|---|---|
-| `--style STYLE` | `candles`, `ohlc` | How every chart draws its bars ([Style](/manual/charts/#style)) |
+| `--style STYLE` | `candles`, `ohlc`, `line` | How every chart draws its bars ([Style](/manual/charts/#style)) |
 | `STATE` | `coloured`, `red-up`, `monochrome` | Sets both colours: the theme's green and rose, the two swapped, or Foreground. Omitted, the command prints the current look |
-| `--up COLOUR`, `--down COLOUR` | A theme colour by name, `foreground` for the theme's text colour, or `#rrggbb` | One direction's colour. Wins over `STATE` |
+| `--up COLOUR`, `--down COLOUR` | A theme colour by name, `foreground` for the theme's text colour, `slate`, `sand`, `silver` or `graphite` ([Themes](/manual/themes/)), or `#rrggbb` | One direction's colour. Wins over `STATE` |
 | `--up-body BODY`, `--down-body BODY` | `filled`, `bordered`, `hollow` | One direction's body. `bordered` draws the wick and the body's edge in the theme's text colour |
 | `--up-thickness PX`, `--down-thickness PX` | `1`, `1.5`, `2`, `3` | How many pixels wide one direction's OHLC bars are drawn, `2` until set. A bar is drawn thinner where bars are too close for it |
 
@@ -1623,15 +1623,15 @@ same.
 | `theme` | `system` (Follow system), or an Omarchy theme by its folder name, such as `tokyo-night` | `system` on Omarchy, `tokyo-night` elsewhere | Appearance › Theme | [Themes](/manual/themes/) |
 | `bar_up`, `bar_down` | a theme colour by name, such as `green` or `rose`; `foreground`; or `#rrggbb` | `green`, `rose` | Appearance › Bars › Up, Down | [Themes](/manual/themes/#bars) |
 | `bar_up_hollow`, `bar_down_hollow`, `bar_up_border`, `bar_down_border` | on, off | off | Appearance › Bars › Up, Down: Hollow or Bordered | [Themes](/manual/themes/#bars) |
-| `bar_style` | `candles`, `ohlc` | `candles` | Appearance › Bars › Style | [Bars](/manual/charts/#bars) |
+| `bar_style` | `candles`, `ohlc`, `line` | `candles` | Appearance › Bars › Style | [Bars](/manual/charts/#bars) |
 | `bar_up_thickness`, `bar_down_thickness` | `1`, `1.5`, `2`, `3` | `2` | Appearance › Bars › Up, Down, under OHLC | [Themes](/manual/themes/#bars) |
-| `chart_session` | `extended`, `regular` | `extended` | Charts › Settings › Hours | [Chart settings](/manual/chart-settings/) |
+| `chart_session` | `extended`, `regular` | `extended` | Charts › Hours | [Chart settings](/manual/chart-settings/) |
 | `show_grid` | on, off | off | Overlays › Gridlines | [Gridlines](/manual/charts/#gridlines) |
 | `price_line` | on, off | on | Overlays › Last price line | [The last price line](/manual/charts/#the-last-price-line) |
-| `chart_log_scale` | on, off | off | Charts › Settings › Logarithmic scale | [Chart settings](/manual/chart-settings/) |
-| `chart_shows_drawings` | on, off | on | Charts › Settings › Show drawings from other charts | [Drawings](/manual/drawings/) |
-| `chart_sends_drawings` | on, off | on | Charts › Settings › Send drawings to other charts | [Drawings](/manual/drawings/) |
-| `chart_template` | a chart template's name or `id:N`, or `none` | `Default` | Charts › Settings › Template | [Chart templates](/manual/chart-templates/) |
+| `chart_log_scale` | on, off | off | Charts › Logarithmic scale | [Chart settings](/manual/chart-settings/) |
+| `chart_shows_drawings` | on, off | on | Charts › Show drawings from other charts | [Drawings](/manual/drawings/) |
+| `chart_sends_drawings` | on, off | on | Charts › Send drawings to other charts | [Drawings](/manual/drawings/) |
+| `chart_template` | a chart template's name or `id:N`, or `none` | `Default` | Charts › Template | [Chart templates](/manual/chart-templates/) |
 | `chart_header` | places as [`config header`](#config-header) takes them, in one quoted value; or `none`. A comma-separated list of parts with no places is the older form: those on the first row's left, `name` on the second | `left=feed,symbol,resolution,change center=title right=account,day_pnl,trade,size,settings,maximize,link` | Overlays › Header | [Charts](/manual/charts/#the-header) |
 | `chart_time_zone` | an IANA name such as `Europe/London` or `America/Chicago`, or `exchange` for each chart's exchange's own | `America/New_York` | General › Time › Time zone | [Preferences](/manual/preferences/#time) |
 | `time_format` | `24h`, `12h` | the desktop's clock format | General › Time › Time format | [Preferences](/manual/preferences/#time) |

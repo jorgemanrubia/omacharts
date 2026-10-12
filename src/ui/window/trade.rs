@@ -3456,8 +3456,8 @@ pub(super) mod tests {
             assert_eq!(held(), Some(BarLook::default().scheme(&theme).up), "a gain in every chart's up");
 
             let red_up = BarLook::red_up();
-            window.change_look(LookEdit::Up(red_up.up.clone()), false);
-            window.change_look(LookEdit::Down(red_up.down.clone()), false);
+            window.change_look(LookEdit::Colour(omacharts_engine::Direction::Up, red_up.up.clone()), false);
+            window.change_look(LookEdit::Colour(omacharts_engine::Direction::Down, red_up.down.clone()), false);
             assert_eq!(held(), Some(red_up.scheme(&theme).up), "a gain in the chart's own up");
         });
     }

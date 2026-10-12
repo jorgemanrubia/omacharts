@@ -16,9 +16,7 @@ use std::rc::{Rc, Weak};
 use adw::prelude::*;
 use gtk::glib;
 use omacharts_engine::BarStyle;
-use omacharts_engine::theme::{
-    bar_palette, BarLook, BarScheme, Body, ColorChoice, Direction, Theme, Thickness,
-};
+use omacharts_engine::theme::{bar_palette, BarScheme, Body, Direction, Theme, Thickness};
 
 use crate::chart_look::{ChartLook, LookEdit};
 use crate::theming::Theming;
@@ -127,7 +125,7 @@ fn choose_theme(context: &Rc<Context>, id: &str) {
 /// each its colour and, beside it, what the style draws of that direction:
 /// a candle's body, an OHLC bar's thickness. What a style does not draw is
 /// not shown, rather than greyed: a body on OHLC bars, a thickness on
-/// candles.
+/// candles, and Up and Down on a line, which has no rise or fall to colour.
 fn bars_group(context: &Rc<Context>) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     group.set_title("Bars");
@@ -136,8 +134,10 @@ fn bars_group(context: &Rc<Context>) -> adw::PreferencesGroup {
 
     let card = Card::default();
     group.add(&style_head(context, &card));
-    for up in [true, false] {
-        group.add(&direction_row(context, &offered, up, &card));
+    for direction in [Direction::Up, Direction::Down] {
+        let row = direction_row(context, &offered, direction, &card);
+        card.shown_under(&row, |style| style != BarStyle::Line);
+        group.add(&row);
     }
     card.show(context.look.borrow().style);
     group
@@ -200,10 +200,7 @@ fn style_head(context: &Rc<Context>, card: &Card) -> adw::PreferencesRow {
         let glyph = style_glyph(context, each);
         card.drawn(&glyph);
         inside.append(&glyph);
-        inside.append(&gtk::Label::new(Some(match each {
-            BarStyle::Candles => "Candles",
-            BarStyle::Ohlc => "OHLC",
-        })));
+        inside.append(&gtk::Label::new(Some(each.label())));
         button.set_child(Some(&inside));
         button.set_group(first.as_ref());
         button.set_active(context.look.borrow().style == each);
@@ -225,57 +222,21 @@ fn style_head(context: &Rc<Context>, card: &Card) -> adw::PreferencesRow {
 /// One direction's row: its body for candles, or its thickness for OHLC
 /// bars, then its colour. The colour last, at the edge, so it does not move
 /// with the style.
-fn direction_row(context: &Rc<Context>, offered: &Theme, up: bool, card: &Card) -> adw::ActionRow {
+fn direction_row(context: &Rc<Context>, offered: &Theme, direction: Direction, card: &Card) -> adw::ActionRow {
     let row = adw::ActionRow::new();
-    row.set_title(if up { "Up" } else { "Down" });
+    row.set_title(if direction == Direction::Up { "Up" } else { "Down" });
     let (colour, body, thickness) = {
-        let look = context.look.borrow();
-        let (colour, body, thickness) = side(&look.bars, up);
-        (colour.clone(), body, thickness)
+        let mut bars = context.look.borrow().bars.clone();
+        let side = bars.side_mut(direction);
+        (side.colour.clone(), *side.body, *side.thickness)
     };
-    let (drawn_by, picked_by) = (context.clone(), context.clone());
-    let repaint = card.clone();
-    let bodies = choice(
-        card,
-        Body::ALL.to_vec(),
-        body,
-        |body| body_word(body).to_string(),
-        move |cr, w, h, body| {
-            let mut bars = drawn_by.look.borrow().bars.clone();
-            match up {
-                true => bars.up_body = body,
-                false => bars.down_body = body,
-            }
-            draw_bar(cr, w, h, &bars.scheme(&theme(&drawn_by)), up, BarStyle::Candles);
-        },
-        move |body| change(&picked_by, if up { LookEdit::UpBody(body) } else { LookEdit::DownBody(body) }, &repaint),
-    );
-    card.shown_under(&bodies, |style| style == BarStyle::Candles);
-    row.add_suffix(&bodies);
-
-    let (drawn_by, picked_by) = (context.clone(), context.clone());
-    let repaint = card.clone();
-    let thicknesses = choice(
-        card,
-        Thickness::ALL.to_vec(),
-        thickness,
-        |px| px.key().to_string(),
-        move |cr, w, h, px| {
-            let mut bars = drawn_by.look.borrow().bars.clone();
-            match up {
-                true => bars.up_thickness = px,
-                false => bars.down_thickness = px,
-            }
-            draw_bar(cr, w, h, &bars.scheme(&theme(&drawn_by)), up, BarStyle::Ohlc);
-        },
-        move |px| change(&picked_by, if up { LookEdit::UpThickness(px) } else { LookEdit::DownThickness(px) }, &repaint),
-    );
-    card.shown_under(&thicknesses, |style| style == BarStyle::Ohlc);
-    row.add_suffix(&thicknesses);
+    for answers in [choice(context, card, direction, body), choice(context, card, direction, thickness)] {
+        row.add_suffix(&answers);
+    }
 
     let (ctx, repaint) = (context.clone(), card.clone());
     let chip = palette::chip(offered, colour, move |choice| {
-        change(&ctx, if up { LookEdit::Up(choice) } else { LookEdit::Down(choice) }, &repaint);
+        change(&ctx, LookEdit::Colour(direction, choice), &repaint);
     });
     // Apart from the dropdown before it, so each chevron is read as its own
     // control's.
@@ -300,26 +261,56 @@ fn body_word(body: Body) -> &'static str {
     }
 }
 
-/// A dropdown of a few answers, each told by a picture and a word, in the
-/// shape of the colour beside it: its face the answer picked, and its list
-/// the app's menu, the answer picked ticked. Every face, a body's or a
-/// thickness's, is held in a [`palette::slot`] as wide as the longest
-/// body, so the row does not move as a word or the style changes; the
-/// picture at its left and the chevron after the word. `draw` paints an
-/// answer's picture when it is drawn, so a change of colour elsewhere
-/// needs only the card's redraw.
-fn choice<T: Copy + PartialEq + 'static>(
-    card: &Card,
-    answers: Vec<T>,
-    current: T,
-    word: fn(T) -> String,
-    draw: impl Fn(&gtk::cairo::Context, f64, f64, T) + 'static,
-    picked: impl Fn(T) + 'static,
-) -> adw::Bin {
-    let words: Vec<String> = answers.iter().map(|answer| word(*answer)).collect();
+/// What a bar choice offers: one direction's body, or its thickness.
+trait Answer: Copy + PartialEq + 'static {
+    const ALL: &'static [Self];
+    /// The style that draws it, and the only one it is shown under.
+    const STYLE: BarStyle;
+    fn word(self) -> String;
+    fn edit(direction: Direction, answer: Self) -> LookEdit;
+}
+
+impl Answer for Body {
+    const ALL: &'static [Body] = &Body::ALL;
+    const STYLE: BarStyle = BarStyle::Candles;
+    fn word(self) -> String {
+        body_word(self).to_string()
+    }
+    fn edit(direction: Direction, body: Body) -> LookEdit {
+        LookEdit::Body(direction, body)
+    }
+}
+
+impl Answer for Thickness {
+    const ALL: &'static [Thickness] = &Thickness::ALL;
+    const STYLE: BarStyle = BarStyle::Ohlc;
+    fn word(self) -> String {
+        self.key().to_string()
+    }
+    fn edit(direction: Direction, px: Thickness) -> LookEdit {
+        LookEdit::Thickness(direction, px)
+    }
+}
+
+/// A dropdown of `direction`'s answers of one kind, each told by a picture
+/// and a word, in the shape of the colour beside it: its face the answer
+/// picked, and its list the app's menu, the answer picked ticked. Every
+/// face, a body's or a thickness's, is held in a [`palette::slot`] as wide
+/// as the longest body, so the row does not move as a word or the style
+/// changes; the picture at its left and the chevron after the word. An
+/// answer's picture is the look in scope with that answer, painted when it
+/// is drawn, so a change of colour elsewhere needs only the card's redraw.
+/// Shown only under the style that draws it.
+fn choice<T: Answer>(context: &Rc<Context>, card: &Card, direction: Direction, current: T) -> adw::Bin {
+    let answers = T::ALL;
+    let drawn_by = context.clone();
+    let draw = Rc::new(move |cr: &gtk::cairo::Context, w: f64, h: f64, answer: T| {
+        let mut look = drawn_by.look.borrow().clone();
+        look.set(T::edit(direction, answer));
+        draw_bar(cr, w, h, &look.bars.scheme(&theme(&drawn_by)), direction, T::STYLE);
+    });
+    let words: Vec<String> = answers.iter().map(|answer| answer.word()).collect();
     let model = gtk::StringList::new(&words.iter().map(String::as_str).collect::<Vec<_>>());
-    let answers = Rc::new(answers);
-    let draw = Rc::new(draw);
     let factory = |listed: bool| {
         let factory = gtk::SignalListItemFactory::new();
         let card = card.clone();
@@ -346,7 +337,7 @@ fn choice<T: Copy + PartialEq + 'static>(
             }
             item.set_child(Some(&inside));
         });
-        let (answers, draw) = (answers.clone(), draw.clone());
+        let draw = draw.clone();
         factory.connect_bind(move |_, item| {
             let Some(item) = item.downcast_ref::<gtk::ListItem>() else { return };
             let Some(&answer) = answers.get(item.position() as usize) else { return };
@@ -355,7 +346,7 @@ fn choice<T: Copy + PartialEq + 'static>(
                 let draw = draw.clone();
                 glyph.set_draw_func(move |_, cr, w, h| draw(cr, f64::from(w), f64::from(h), answer));
                 if let Some(label) = glyph.next_sibling().and_downcast::<gtk::Label>() {
-                    label.set_text(&word(answer));
+                    label.set_text(&answer.word());
                 }
             }
         });
@@ -370,18 +361,20 @@ fn choice<T: Copy + PartialEq + 'static>(
     dropdown.set_factory(Some(&factory(false)));
     dropdown.set_list_factory(Some(&factory(true)));
     dropdown.set_selected(answers.iter().position(|answer| *answer == current).unwrap_or(0) as u32);
-    let picks = answers.clone();
+    let (picked_by, repaint) = (context.clone(), card.clone());
     dropdown.connect_selected_notify(move |dropdown| {
-        if let Some(&answer) = picks.get(dropdown.selected() as usize) {
-            picked(answer);
+        if let Some(&answer) = answers.get(dropdown.selected() as usize) {
+            change(&picked_by, T::edit(direction, answer), &repaint);
         }
     });
     let bodies: Vec<&str> = Body::ALL.iter().map(|body| body_word(*body)).collect();
     let face = dropdown.downgrade();
-    palette::slot(&dropdown, &bodies, move || {
+    let slot = palette::slot(&dropdown, &bodies, move || {
         let selected = face.upgrade().map_or(0, |dropdown| dropdown.selected() as usize);
-        answers.get(selected).map(|answer| word(*answer)).unwrap_or_default()
-    })
+        answers.get(selected).map(|answer| answer.word()).unwrap_or_default()
+    });
+    card.shown_under(&slot, |style| style == T::STYLE);
+    slot
 }
 
 /// A rise and a fall drawn in `style`, in the colours the charts use.
@@ -402,6 +395,15 @@ fn style_glyph(context: &Rc<Context>, style: BarStyle) -> gtk::DrawingArea {
         // (wick x, high, low, body top, body bottom, rising)
         let bars = [(5.0, 2.0, 18.0, 6.0, 14.0, true), (13.0, 4.0, 16.0, 8.0, 13.0, false)];
         match style {
+            BarStyle::Line => {
+                // In the accent, as the line chart draws it: it has no up or down.
+                cr.move_to(1.0, 15.0);
+                cr.line_to(6.0, 9.0);
+                cr.line_to(10.0, 12.0);
+                cr.line_to(17.0, 3.0);
+                colors::set_source(cr, &theme.ui.accent);
+                let _ = cr.stroke();
+            }
             BarStyle::Candles | BarStyle::Ohlc => {
                 for (x, high, low, top, bottom, up) in bars {
                     // The direction's colour, whatever its body: a hollow
@@ -429,17 +431,9 @@ fn style_glyph(context: &Rc<Context>, style: BarStyle) -> gtk::DrawingArea {
     area
 }
 
-/// One direction's half of the look: its colour, its body and its thickness.
-fn side(look: &BarLook, up: bool) -> (&ColorChoice, Body, Thickness) {
-    match up {
-        true => (&look.up, look.up_body, look.up_thickness),
-        false => (&look.down, look.down_body, look.down_thickness),
-    }
-}
-
-/// One bar of this direction as `style` draws it, in `scheme`, `w` by `h`.
-fn draw_bar(cr: &gtk::cairo::Context, w: f64, h: f64, scheme: &BarScheme, up: bool, style: BarStyle) {
-    let direction = if up { Direction::Up } else { Direction::Down };
+/// One bar of `direction` as `style` draws it, in `scheme`, `w` by `h`.
+fn draw_bar(cr: &gtk::cairo::Context, w: f64, h: f64, scheme: &BarScheme, direction: Direction, style: BarStyle) {
+    let up = direction == Direction::Up;
     let x = (w / 2.0).floor() + 0.5;
     // A body of an odd number of pixels round a wick down its middle, and
     // as wide for any box, so it stays a candle's shape.
@@ -447,7 +441,9 @@ fn draw_bar(cr: &gtk::cairo::Context, w: f64, h: f64, scheme: &BarScheme, up: bo
     let (left, top, bottom) = (x - width / 2.0, (h * 0.25).round(), (h * 0.75).round());
     cr.set_line_width(1.0);
     match style {
-        BarStyle::Ohlc => {
+        // A line has no direction, so is never drawn as one; an OHLC bar is
+        // the nearest thing.
+        BarStyle::Ohlc | BarStyle::Line => {
             // As thick as the chart draws it, its edge on a pixel's as the
             // chart's is; the open to the left, the close to the right.
             let px = if up { scheme.up_thickness } else { scheme.down_thickness };

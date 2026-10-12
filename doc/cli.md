@@ -922,7 +922,7 @@ press-and-drag) place a drawing — except the text tool, where one press puts
 the caret down and you type on the chart, and the anchored VWAP, which one
 click on a bar places; hold Ctrl while placing one or
 dragging a corner and the anchor snaps to the nearest open, high, low or
-close of the candle under it, and with a
+close of the candle under it (the close alone on a line chart), and with a
 tool in hand the crosshair snaps with it to show where — a click selects one (Shift+click or Ctrl+click adds or removes
 another, Shift+drag on empty chart takes everything the box touches, and
 Ctrl+A takes every drawing on the plot; what
@@ -1176,8 +1176,8 @@ been written, and `config set` writes any of them.
 
 Some of them have a command of their own, because what the app does with
 them is more than storing a value. How bars look is one. Every chart
-draws its bars one way, candles or OHLC bars, from one look, a colour and a
-body for each direction.
+draws its bars one way, candles, OHLC bars or a line through the closes,
+from one look, a colour and a body for each direction.
 `config bars` reads and sets it, and the window's Preferences › Appearance ›
 Bars is the same answers.
 
@@ -1195,11 +1195,15 @@ bars are now ohlc, up rose hollow 2px, down green filled 2px
   [exit 0]
 ```
 
-`--style` is `candles` or `ohlc`.
+`--style` is `candles`, `ohlc` or `line`. A line runs through the closes and
+nothing else, which is what a series that only has a close — a yield, a
+spread — reads best as.
 
 Each direction has a colour (`--up`, `--down`: a theme colour by name —
 green, rose, blue, amber, violet, teal, orange, cyan — `foreground` for
-the theme's text colour, or a `#rrggbb` hex, which the theme leaves alone) and a
+the theme's text colour, `slate`, `sand`, `silver` or `graphite`, soft and
+quiet colours worked out from the theme, or a `#rrggbb` hex, which the theme
+leaves alone) and a
 body (`--up-body`, `--down-body`): `filled`, `bordered` (its wick and body
 edge in the theme's text colour, as TradingView draws one) or `hollow`,
 and a thickness for its OHLC bars (`--up-thickness`, `--down-thickness`):

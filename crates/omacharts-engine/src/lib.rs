@@ -53,6 +53,6 @@ pub use drawings::{
 pub use frame::Frame;
 pub use ink::{Ink, Tag};
 pub use theme::{
-    theme_bars, theme_trading, BarLook, BarScheme, Body, ColorChoice, Direction, Mode, Source,
+    theme_bars, theme_trading, BarLook, BarScheme, BarSide, Body, ColorChoice, Direction, Mode, Source,
     Swatch, Theme, TradingColour, TradingColours, TradingLine, Thickness, TradingLook, UiColors,
 };

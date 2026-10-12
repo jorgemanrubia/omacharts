@@ -28,15 +28,20 @@ pub enum BarStyle {
     Candles,
     /// Open and close as ticks either side of a high-low line.
     Ohlc,
+    /// One line through the closes. What a series with nothing but a close
+    /// wants — a yield, a rate, an economic release — where a candle is a
+    /// dash with no range to draw.
+    Line,
 }
 
 impl BarStyle {
-    pub const ALL: [BarStyle; 2] = [BarStyle::Candles, BarStyle::Ohlc];
+    pub const ALL: [BarStyle; 3] = [BarStyle::Candles, BarStyle::Ohlc, BarStyle::Line];
 
     pub fn label(self) -> &'static str {
         match self {
             BarStyle::Candles => "Candles",
             BarStyle::Ohlc => "OHLC bars",
+            BarStyle::Line => "Line",
         }
     }
 
@@ -44,6 +49,7 @@ impl BarStyle {
         match self {
             BarStyle::Candles => "candles",
             BarStyle::Ohlc => "ohlc",
+            BarStyle::Line => "line",
         }
     }
 
