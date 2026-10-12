@@ -47,6 +47,10 @@ const PAD: f64 = 10.0;
 /// things about at the edges. Fixed for now; a setting one day, if anyone
 /// wants a different amount.
 const OVERHANG_PX: f64 = 500.0;
+/// Empty columns past the last bar when the chart opens or is reset, so the
+/// live bar is not pressed against the price axis. About what other
+/// charting software leaves.
+const RIGHT_MARGIN: usize = 10;
 /// Space between two rows of the stack.
 const PANE_GAP: f64 = 6.0;
 /// The least of the chart the price keeps, however many panes are stacked
@@ -127,7 +131,7 @@ struct State {
     anchored: bool,
     /// Empty columns past the last bar, at the right edge, while anchored:
     /// the room a hand dragged open. Kept as new bars arrive, so the margin
-    /// stays what it was set to. Zero at rest.
+    /// stays what it was set to. `RIGHT_MARGIN` at rest.
     overhang: usize,
     /// Empty columns before the first bar, at the left edge, when the hand
     /// has dragged past the start of the series. Zero at rest.
@@ -756,7 +760,7 @@ impl State {
             visible: 160,
             pointer: None,
             anchored: true,
-            overhang: 0,
+            overhang: RIGHT_MARGIN,
             lead: 0,
             indicators: Vec::new(),
             bar_style: BarStyle::default(),
@@ -1091,7 +1095,14 @@ impl State {
         if self.bars.is_empty() {
             return 0;
         }
-        self.visible.clamp(MIN_VISIBLE, MAX_VISIBLE).min(self.bars.len())
+        self.visible.clamp(MIN_VISIBLE, MAX_VISIBLE).min(self.span())
+    }
+
+    /// The most columns the view spreads across: the series and the resting
+    /// margin past it, so a short series still opens with room after its
+    /// last bar instead of losing bars to it.
+    fn span(&self) -> usize {
+        self.bars.len() + RIGHT_MARGIN
     }
 
     /// Zoom the time axis about `anchor`, a fraction across the plot. On
@@ -1102,7 +1113,7 @@ impl State {
         let columns = self.columns();
         let next = ((columns as f64 * factor).round() as usize)
             .clamp(MIN_VISIBLE, MAX_VISIBLE)
-            .min(self.bars.len().max(MIN_VISIBLE));
+            .min(self.span().max(MIN_VISIBLE));
         // Anchored to the right edge, zooming reveals history and the last bar
         // stays put — which is what you want when looking at the live edge.
         if !self.anchored {
@@ -1126,14 +1137,15 @@ impl State {
         self.price_zoom = (self.price_zoom * factor).clamp(MIN_PRICE_ZOOM, MAX_PRICE_ZOOM);
     }
 
-    /// Back to fitting the data, at the live edge, with no room past it.
+    /// Back to fitting the data, at the live edge, with the resting margin
+    /// past it.
     fn reset_view(&mut self) {
         self.price_auto = true;
         self.price_zoom = 1.0;
         self.price_offset = 0.0;
         self.visible = 160;
         self.anchored = true;
-        self.overhang = 0;
+        self.overhang = RIGHT_MARGIN;
         self.lead = 0;
     }
 
@@ -2637,7 +2649,7 @@ impl ChartView {
         state.timeframe = timeframe;
         if changed {
             state.anchored = true;
-            state.overhang = 0;
+            state.overhang = RIGHT_MARGIN;
             state.lead = 0;
             state.visible = 160;
         }
@@ -2811,7 +2823,7 @@ impl ChartView {
     pub fn go_to_latest(&self) {
         let mut state = self.state.borrow_mut();
         state.anchored = true;
-        state.overhang = 0;
+        state.overhang = RIGHT_MARGIN;
         state.lead = 0;
         drop(state);
         self.redraw();
@@ -3504,7 +3516,7 @@ impl ChartView {
                 Region::TimeAxis => {
                     s.visible = 160;
                     s.anchored = true;
-                    s.overhang = 0;
+                    s.overhang = RIGHT_MARGIN;
                     s.lead = 0;
                 }
                 // Double-clicking bare chart does nothing, the same as
@@ -5958,13 +5970,18 @@ mod tests {
     /// has corner controls as well as a crosshair.
     /// Panning past either end opens room there — as much as
     /// `OVERHANG_PX` at this zoom, never the whole view — which new bars
-    /// do not close, and which a reset does.
+    /// do not close, and which a reset puts back to the resting margin.
     #[test]
     fn the_view_can_hang_past_the_last_bar() {
         let mut state = charted(400);
         state.visible = 160;
         state.anchored = true;
         let plot_w = 1600.0; // 10px a bar: 500px is 50 columns
+        // A chart opens with the resting margin past its last bar.
+        assert_eq!(state.overhang, RIGHT_MARGIN);
+        assert_eq!(state.slice(), (250, 150));
+        // From flush against the edge.
+        state.overhang = 0;
         assert_eq!(state.slice(), (240, 160));
         assert_eq!(state.columns(), 160);
         // Forward in time, past the end: the room opens and is capped.
@@ -5989,12 +6006,12 @@ mod tests {
         state.pan_by(-10.0, plot_w);
         assert_eq!(state.slice(), (240, 160));
         assert!(!state.anchored);
-        // A reset is the live edge with no room past it.
+        // A reset is the live edge with the resting margin past it.
         state.pan_by(100.0, plot_w);
         assert_eq!(state.overhang, 50);
         state.reset_view();
-        assert_eq!(state.overhang, 0);
-        assert_eq!(state.slice(), (250, 160));
+        assert_eq!(state.overhang, RIGHT_MARGIN);
+        assert_eq!(state.slice(), (260, 150));
         // Zoomed far in, the cap is short of the whole view.
         state.visible = 12;
         state.pan_by(1000.0, 1600.0);
@@ -6020,6 +6037,18 @@ mod tests {
         assert_eq!(state.columns(), 80);
         assert_eq!(state.lead, 0);
         assert_eq!(state.slice(), (20, 80));
+    }
+
+    /// A series shorter than the view still opens with the resting margin
+    /// past it, spread across the series and the margin rather than giving
+    /// up bars to it.
+    #[test]
+    fn a_short_series_opens_with_room_past_it() {
+        let mut state = charted(5);
+        state.reset_view();
+        assert_eq!(state.columns(), 5 + RIGHT_MARGIN);
+        assert_eq!(state.slice(), (0, 5));
+        assert_eq!(state.left_edge(), 0);
     }
 
     fn charted(bars: usize) -> State {
@@ -6638,7 +6667,9 @@ mod drawing_tests {
     /// arrives.
     #[test]
     fn an_anchor_past_the_last_bar_lands_on_a_future_bar() {
-        let state = charted(100);
+        let mut state = charted(100);
+        state.visible = 100;
+        state.overhang = 0;
         let (w, h) = (800.0, 400.0);
         let plan = layout(&state, w, h);
         // A hundred bars fill the plot, so the twenty-first slot past the
