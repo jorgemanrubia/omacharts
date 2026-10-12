@@ -627,9 +627,13 @@ chart can see.
 
 By hand: Ctrl+D shows the tools, Alt+L, Alt+H, Alt+A, Alt+Z, Alt+R, Alt+C and
 Alt+T arm them
-(Escape is the pointer again), a press and a second press (or one
+(Escape is the pointer again; a right-click drops a drawing half laid down
+and keeps the tool), a press and a second press (or one
 press-and-drag) place a drawing — except the text tool, where one press puts
-the caret down and you type on the chart — a click selects one (Shift+click or Ctrl+click adds or removes
+the caret down and you type on the chart; hold Ctrl while placing one or
+dragging a corner and the anchor snaps to the nearest open, high, low or
+close of the candle under it, and with a
+tool in hand the crosshair snaps with it to show where — a click selects one (Shift+click or Ctrl+click adds or removes
 another, Shift+drag on empty chart takes everything the box touches, and
 Ctrl+A takes every drawing on the plot; what
 is done to
