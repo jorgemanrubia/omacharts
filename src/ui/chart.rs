@@ -3701,9 +3701,18 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
     draw_time_axis(cr, state, &columns.bars, plot_x, plot_w, height, bar_w, bars_x);
     // Shaded things go under the candles; lines go over. A band drawn on top
     // of the bars hides the thing it is describing.
+    //
+    // All of it inside the price box, the way drawings are. The scale fits the
+    // bars, not the overlays, so a 200-day average far below them — or any
+    // bar once the scale is dragged — would otherwise run over the time axis
+    // and the strips beneath.
+    cr.save().ok();
+    cr.rectangle(plot_x, price_y, plot_w, price_h);
+    cr.clip();
     draw_indicator_fills(cr, state, &columns, &to_y);
     draw_candles(cr, state, &columns, &to_y);
     draw_indicator_lines(cr, state, &columns, &to_y);
+    cr.restore().ok();
     draw_drawings(cr, state, &plan, low, high);
 
     for (at, row) in plan.rows.iter().enumerate() {
