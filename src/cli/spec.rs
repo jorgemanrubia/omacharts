@@ -727,6 +727,8 @@ pub const SURFACE: &[Noun] = &[
                         .of(SWITCHES),
                     Flag::valued("auto-scale", "BOOL", "fit the price axis to the visible bars, or hold it still")
                         .of(&["on", "off"]),
+                    Flag::valued("log-scale", "BOOL", "draw the price axis logarithmic, or linear")
+                        .of(&["on", "off"]),
                 ],
                 example: "omacharts chart set --symbol NVDA --resolution 1h --style candles",
                 json: true,
@@ -1097,6 +1099,7 @@ const STORED_FIELDS: &[(&str, &str, &str)] = &[
         "identity rather than state: what the chart is called among the drawings it made,          minted once so that turning sending off takes back its own and nobody else's",
     ),
     ("auto_scale", "chart set", "--auto-scale"),
+    ("log_scale", "chart set", "--log-scale"),
     ("name", "chartbook rename", ""),
     ("layout", "chart split", ""),
     ("focused", "chart focus", ""),

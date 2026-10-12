@@ -509,9 +509,19 @@ A `chart set` with one bad value changes nothing at all — everything is
 checked before anything is written, so you never get a half-applied chart.
 
 Besides what a chart shows, `chart set` carries how it shows it — `--style`,
-`--session`, `--grid` and `--auto-scale` — and those are stored with the
-chart, so a price axis held still with `--auto-scale off` is still held the
-next time the app opens.
+`--session`, `--grid`, `--auto-scale` and `--log-scale` — and those are stored
+with the chart, so a price axis held still with `--auto-scale off` is still
+held the next time the app opens.
+
+`--log-scale on` makes the price axis logarithmic: equal heights are equal
+percentage moves, which is what a chart of twenty years wants. Indicators in
+their own strips stay linear. While the bars on screen go to zero or below —
+a spread, a contract that traded negative — there is no logarithm to take, so
+the axis draws linear and turns logarithmic again once they are off screen.
+
+```sh
+omacharts chart set --resolution 1W --log-scale on
+```
 
 ## Drawing on a chart
 

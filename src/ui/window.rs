@@ -537,6 +537,7 @@ mod tests {
                 drawing_uid: String::new(),
                 drawings: Vec::new(),
                 auto_scale: false,
+                log_scale: true,
             }],
             watchlist: Some(4),
             sidebar_shown: Some(false),
@@ -553,6 +554,15 @@ mod tests {
         assert_eq!(back.books[1].name, "Energy");
         assert_eq!(back.books[1].layout.leaves(), vec![7]);
         assert!(!back.books[1].panes[0].auto_scale, "a held price scale is still held");
+        assert!(back.books[1].panes[0].log_scale, "a log axis is still log");
+        assert!(!back.books[0].panes[0].log_scale);
+    }
+
+    /// Every chart written before the axis could be logarithmic was linear.
+    #[test]
+    fn a_chart_written_before_log_scales_is_linear() {
+        let workspace = parse_workspace(ONE_ARRANGEMENT).expect("the old shape should parse");
+        assert!(workspace.books[0].panes.iter().all(|pane| !pane.log_scale));
     }
 
     /// Every chart written before the price scale was remembered was fitting
@@ -597,6 +607,7 @@ mod tests {
             drawing_uid: String::new(),
             drawings: Vec::new(),
             auto_scale: true,
+            log_scale: false,
         }
     }
 
@@ -1280,6 +1291,10 @@ struct StoredPane {
     /// this was remembered, and every one of those was fitting itself.
     #[serde(default = "fits_itself")]
     auto_scale: bool,
+    /// Whether the price axis is logarithmic. Missing from a chart written
+    /// before it could be, and every one of those was linear.
+    #[serde(default)]
+    log_scale: bool,
     /// Whether the chart shows what other charts of its symbol draw, and
     /// whether it sends them what is drawn here. Both on by default, which
     /// is what a book written before either existed gets — and what the
@@ -1570,6 +1585,7 @@ pub struct Window {
     session_action: RefCell<Option<gio::SimpleAction>>,
     grid_action: RefCell<Option<gio::SimpleAction>>,
     auto_scale_action: RefCell<Option<gio::SimpleAction>>,
+    log_scale_action: RefCell<Option<gio::SimpleAction>>,
     drawing_config_action: RefCell<Option<gio::SimpleAction>>,
     drawing_settings_action: RefCell<Option<gio::SimpleAction>>,
     /// What was last copied, waiting to be put down somewhere.
@@ -1731,6 +1747,7 @@ impl Window {
             session_action: RefCell::new(None),
             grid_action: RefCell::new(None),
             auto_scale_action: RefCell::new(None),
+            log_scale_action: RefCell::new(None),
             drawing_config_action: RefCell::new(None),
             drawing_settings_action: RefCell::new(None),
             drawing_clipboard: RefCell::new(Vec::new()),
@@ -2263,6 +2280,9 @@ impl Window {
         if let Some(action) = self.auto_scale_action.borrow().as_ref() {
             action.set_state(&pane.view.price_auto().to_variant());
         }
+        if let Some(action) = self.log_scale_action.borrow().as_ref() {
+            action.set_state(&pane.view.price_log().to_variant());
+        }
     }
 
     /// A gesture on chart `id` just changed whether its price scale is
@@ -2311,6 +2331,7 @@ impl Window {
             from.linked.get(),
         );
         added.view.set_price_auto(from.view.price_auto());
+        added.view.set_price_log(from.view.price_log());
         let next = self.layout.borrow().split(from.id, added.id, horizontal);
         *self.layout.borrow_mut() = next;
         self.rebuild_layout();
@@ -2841,6 +2862,7 @@ impl Window {
                     drawing_uid: pane.uid.borrow().clone(),
                     drawings: pane.local_drawings.borrow().clone(),
                     auto_scale: pane.view.price_auto(),
+                    log_scale: pane.view.price_log(),
                 }
             })
             .collect();
@@ -3013,6 +3035,7 @@ impl Window {
             }
             *pane.local_drawings.borrow_mut() = stored.drawings.clone();
             pane.view.set_price_auto(stored.auto_scale);
+            pane.view.set_price_log(stored.log_scale);
             restored.push((pane, stored));
         }
 
@@ -6123,6 +6146,19 @@ impl Window {
         self.save_workspace();
     }
 
+    pub fn log_scale(&self) -> bool {
+        self.focused_pane().view.price_log()
+    }
+
+    /// The one way the price axis is made logarithmic or linear from inside
+    /// the window — the axis menu, the settings dialog.
+    pub fn set_log_scale(self: &Rc<Self>, log: bool) {
+        let pane = self.focused_pane();
+        pane.view.set_price_log(log);
+        self.sync_chart_actions(&pane);
+        self.save_workspace();
+    }
+
     /// How many rows the profile with this id is drawing right now.
     pub fn profile_rows(&self, id: u32) -> Option<usize> {
         self.focused_pane().view.profile_rows(id)
@@ -6853,8 +6889,8 @@ impl Window {
         popup_menu(&menu, &self.window, wx, wy);
     }
 
-    /// The price axis has its own menu, and its own question: whether the
-    /// scale fits itself to what is on screen.
+    /// The price axis has its own menu, and its own questions: whether the
+    /// scale fits itself to what is on screen, and whether it is logarithmic.
     ///
     /// Shown as a state rather than offered as an action, because it is on
     /// unless you have dragged the axis — "Auto scale price" as a plain item
@@ -6864,8 +6900,12 @@ impl Window {
         if let Some(action) = self.auto_scale_action.borrow().as_ref() {
             action.set_state(&self.focused_pane().view.price_auto().to_variant());
         }
+        if let Some(action) = self.log_scale_action.borrow().as_ref() {
+            action.set_state(&self.focused_pane().view.price_log().to_variant());
+        }
         let menu = gio::Menu::new();
         menu.append(Some("Auto scale price"), Some("chart.auto-scale"));
+        menu.append(Some("Logarithmic scale"), Some("chart.log-scale"));
         let rest = gio::Menu::new();
         shortcuts::append(&rest, "Reset chart", "chart.reset-view");
         menu.append_section(None, &rest);
@@ -6967,6 +7007,13 @@ impl Window {
         auto_scale.connect_activate(move |_, _| this.set_auto_scale(!this.auto_scale()));
         actions.add_action(&auto_scale);
         *self.auto_scale_action.borrow_mut() = Some(auto_scale);
+
+        let log_scale =
+            gio::SimpleAction::new_stateful("log-scale", None, &self.log_scale().to_variant());
+        let this = self.clone();
+        log_scale.connect_activate(move |_, _| this.set_log_scale(!this.log_scale()));
+        actions.add_action(&log_scale);
+        *self.log_scale_action.borrow_mut() = Some(log_scale);
 
         let reset_view = gio::SimpleAction::new("reset-view", None);
         let this = self.clone();

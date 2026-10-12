@@ -302,6 +302,7 @@ pub fn new_pane(id: u32, symbol: &str, suffix: Option<&str>) -> Value {
         "drawing_uid": gtk::glib::uuid_string_random().to_string(),
         "drawings": [],
         "auto_scale": true,
+        "log_scale": false,
     })
 }
 

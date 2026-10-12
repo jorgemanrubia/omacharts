@@ -153,6 +153,10 @@ struct State {
     /// While true the price scale follows the data and the two values above
     /// are held at their neutral settings.
     price_auto: bool,
+    /// Whether the price axis is logarithmic: equal distances on it are equal
+    /// ratios rather than equal differences. Asked for, not promised — see
+    /// [`PriceScale`] for when it is drawn linear anyway.
+    price_log: bool,
     /// What has been drawn on this symbol, in the order it was drawn. The
     /// chart draws what it is handed; the store is where they live.
     drawings: Vec<Drawing>,
@@ -569,15 +573,22 @@ fn ts_at(bars: &[Bar], index: f64) -> i64 {
     bars[lo].ts + ((bars[hi].ts - bars[lo].ts) as f64 * within).round() as i64
 }
 
-/// Move a drawing by a number of columns and a difference in price.
+/// Move a drawing by a number of columns and a distance up the price scale,
+/// in the scale's own units — a ratio, on a log axis.
 ///
 /// Through the index and back, rather than by adding to the timestamps,
 /// because the chart's columns are evenly spaced and its timestamps are not:
 /// see the body drag for what that costs.
-fn shift_by_columns(bars: &[Bar], drawing: &mut Drawing, by_index: f64, by_price: f64) {
+fn shift_by_columns(
+    bars: &[Bar],
+    drawing: &mut Drawing,
+    by_index: f64,
+    scale: &PriceScale,
+    by_price: f64,
+) {
     let move_anchor = |anchor: &mut Anchor| {
         anchor.ts = ts_at(bars, index_of_ts(bars, anchor.ts) + by_index);
-        anchor.price += by_price;
+        anchor.price = scale.shift(anchor.price, by_price);
     };
     // Every corner, not only the two ends. A zig-zag is drawn from its own
     // corners, so a shift that moved the ends and left them behind moved
@@ -618,6 +629,137 @@ fn index_of_ts(bars: &[Bar], ts: i64) -> f64 {
     (at - 1) as f64 + (ts - before) as f64 / gap as f64
 }
 
+/// How prices become heights on the price plot, and back.
+///
+/// `low` and `high` are in the scale's own units: prices on a linear axis,
+/// their natural logarithms on a logarithmic one. Padding, the user's zoom
+/// and the user's drag all work in those units, which is what lets one
+/// gesture code serve both axes — dragging a log axis moves it by a ratio
+/// because a difference of logarithms is one.
+///
+/// One value rather than a `(low, high)` pair beside a flag, because every
+/// place that turned a price into a pixel had its own copy of the formula,
+/// and a second formula is a second copy of each.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PriceScale {
+    low: f64,
+    high: f64,
+    log: bool,
+}
+
+impl PriceScale {
+    /// A price in the scale's own units. A price at or below zero has no
+    /// logarithm; it is taken as the smallest positive number instead, which
+    /// puts it far below the plot, where the clip hides it, rather than at
+    /// NaN, where nothing can be said about it.
+    fn value(self, price: f64) -> f64 {
+        match self.log {
+            true => price.max(f64::MIN_POSITIVE).ln(),
+            false => price,
+        }
+    }
+
+    /// The inverse of [`value`](Self::value).
+    fn price(self, value: f64) -> f64 {
+        match self.log {
+            true => value.exp(),
+            false => value,
+        }
+    }
+
+    fn span(self) -> f64 {
+        self.high - self.low
+    }
+
+    /// The height of a price on a plot `h` tall starting at `top`.
+    fn to_y(self, price: f64, top: f64, h: f64) -> f64 {
+        top + h * (self.high - self.value(price)) / self.span()
+    }
+
+    /// The price at a height on a plot `h` tall starting at `top`.
+    fn price_at(self, y: f64, top: f64, h: f64) -> f64 {
+        self.price(self.high - (y - top) / h * self.span())
+    }
+
+    /// A price moved by a distance in the scale's own units: by a difference
+    /// on a linear axis and by a ratio on a log one, so a drawing dragged up
+    /// a log chart keeps its shape on screen.
+    fn shift(self, price: f64, by: f64) -> f64 {
+        match by == 0.0 {
+            true => price,
+            false => self.price(self.value(price) + by),
+        }
+    }
+
+    /// The lowest and highest prices on the plot.
+    fn prices(self) -> (f64, f64) {
+        (self.price(self.low), self.price(self.high))
+    }
+
+    /// The gap between gridlines, and so how precisely prices are written.
+    ///
+    /// On a log axis the gap in price grows as the price does, so it is
+    /// taken at the bottom of the plot, where it is smallest: precision
+    /// enough to tell the lowest two lines apart is enough for the rest.
+    fn step(self, h: f64) -> f64 {
+        let rows = (h / 52.0).max(2.0);
+        match self.log {
+            false => nice_step(self.span(), rows as usize),
+            true => {
+                let low = self.price(self.low);
+                nice_step(low * ((self.span() / rows).exp() - 1.0), 1)
+            }
+        }
+    }
+
+    /// The prices the axis is labelled at, lowest first.
+    ///
+    /// A linear axis counts up in one round step. A log axis walks up in
+    /// equal heights and rounds each to a step that suits its own magnitude
+    /// — 10, 20, 50, 100, 200 — dropping one that rounds onto the last or
+    /// lands too close to it to be read.
+    fn ticks(self, h: f64, mut each: impl FnMut(f64)) {
+        if self.span().is_nan() || self.span() <= 0.0 {
+            return;
+        }
+        let rows = (h / 52.0).max(2.0);
+        if !self.log {
+            let step = nice_step(self.span(), rows as usize);
+            if step <= 0.0 {
+                return;
+            }
+            let mut price = (self.low / step).ceil() * step;
+            while price <= self.high {
+                each(price);
+                price += step;
+            }
+            return;
+        }
+        let gap = self.span() / rows;
+        let mut last: Option<f64> = None;
+        // Counted rather than walked to the top, so no gap can be too small
+        // to move a float along.
+        for row in 0..=rows.ceil() as usize + 1 {
+            let rough = self.price(self.low + row as f64 * gap);
+            let step = nice_step(rough * (gap.exp() - 1.0), 1);
+            if step <= 0.0 {
+                continue;
+            }
+            let price = (rough / step).round() * step;
+            let at = self.value(price);
+            if price <= 0.0 || at < self.low || at > self.high {
+                continue;
+            }
+            // Half a row apart at the least, measured where it is drawn.
+            if last.is_some_and(|last| at - self.value(last) < gap * 0.5) {
+                continue;
+            }
+            each(price);
+            last = Some(price);
+        }
+    }
+}
+
 /// The price scale over the visible bars, padded so candles never touch the
 /// edges, and then held to whatever vertical window the user has dragged to.
 ///
@@ -625,8 +767,13 @@ fn index_of_ts(bars: &[Bar], ts: i64) -> f64 {
 /// question the drawing does: the price under the crosshair is only the same
 /// number on two charts if both worked it out from the same scale.
 ///
+/// Logarithmic when the chart asks for it and every visible bar is above
+/// zero. A spread or a contract that has traded negative has no logarithm, and
+/// the chart draws that stretch linear rather than drawing nothing; the choice
+/// is kept, so it comes back once the bars on screen allow it.
+///
 /// `None` when the bars carry nothing finite to measure.
-fn price_range(state: &State, bars: &[Bar]) -> Option<(f64, f64)> {
+fn price_range(state: &State, bars: &[Bar]) -> Option<PriceScale> {
     let (mut low, mut high) = (f64::MAX, f64::MIN);
     for b in bars {
         low = low.min(b.low);
@@ -635,14 +782,22 @@ fn price_range(state: &State, bars: &[Bar]) -> Option<(f64, f64)> {
     if !low.is_finite() || !high.is_finite() {
         return None;
     }
+    let log = state.price_log && low > 0.0;
+    if log {
+        (low, high) = (low.ln(), high.ln());
+    }
     if (high - low).abs() < f64::EPSILON {
-        high += 1.0;
-        low -= 1.0;
+        // A flat series: a dollar either side, or a percent on a log axis,
+        // where a whole unit would be a factor of e.
+        let air = if log { 0.01 } else { 1.0 };
+        high += air;
+        low -= air;
     }
     let span = high - low;
     low -= span * 0.04;
     high += span * 0.04;
-    Some(state.price_window(low, high))
+    let (low, high) = state.price_window(low, high);
+    Some(PriceScale { low, high, log })
 }
 
 /// Volume, RSI and ATR each want a strip of their own. They stack in the order
@@ -767,6 +922,7 @@ impl State {
             price_zoom: 1.0,
             price_offset: 0.0,
             price_auto: true,
+            price_log: false,
             drawings: Vec::new(),
             sticky: false,
             editing: None,
@@ -857,8 +1013,8 @@ impl State {
             return None;
         }
         let plan = layout(self, width, height);
-        let (low, high) = price_range(self, &self.bars[first..first + visible])?;
-        let price = high - (y - plan.price_y) / plan.price_h * (high - low);
+        let scale = price_range(self, &self.bars[first..first + visible])?;
+        let price = scale.price_at(y, plan.price_y, plan.price_h);
         // A column's width, the room at either end counted: the plot's
         // first column may stand before the first bar.
         let bar_w = plan.plot_w / self.columns().max(1) as f64;
@@ -884,7 +1040,7 @@ impl State {
     }
 
     /// A drawing as pixels, through the same scales the candles use.
-    fn project(&self, plan: &Layout, low: f64, high: f64, drawing: &Drawing) -> Projected {
+    fn project(&self, plan: &Layout, scale: &PriceScale, drawing: &Drawing) -> Projected {
         let (first, _, lead) = self.view();
         let bar_w = plan.plot_w / self.columns().max(1) as f64;
         // The bar index the plot's left edge stands at, negative when room
@@ -893,7 +1049,7 @@ impl State {
         let point = |anchor: &Anchor| {
             let index = index_of_ts(&self.bars, anchor.ts);
             let x = plan.plot_x + (index - left + 0.5) * bar_w;
-            let y = plan.price_y + plan.price_h * (high - anchor.price) / (high - low);
+            let y = scale.to_y(anchor.price, plan.price_y, plan.price_h);
             (x, y)
         };
         let projected = match drawing.kind.is_path() {
@@ -944,12 +1100,12 @@ impl State {
             return Vec::new();
         }
         let plan = layout(self, width, height);
-        let Some((low, high)) = price_range(self, &self.bars[first..first + visible]) else {
+        let Some(scale) = price_range(self, &self.bars[first..first + visible]) else {
             return Vec::new();
         };
         let bar_w = plan.plot_w / self.columns().max(1) as f64;
         let (by_index, by_price) = match offset {
-            true => (PASTE_OFFSET / bar_w, -PASTE_OFFSET / plan.price_h * (high - low)),
+            true => (PASTE_OFFSET / bar_w, -PASTE_OFFSET / plan.price_h * scale.span()),
             false => (0.0, 0.0),
         };
         let order = self.drawings.iter().map(|d| d.order).max().unwrap_or(0);
@@ -962,7 +1118,7 @@ impl State {
             copy.id = 0;
             copy.order = order;
             copy.scope = scope;
-            shift_by_columns(bars, &mut copy, by_index, by_price);
+            shift_by_columns(bars, &mut copy, by_index, &scale, by_price);
             drawings.push(copy.clone());
             added.push(copy);
         }
@@ -987,11 +1143,11 @@ impl State {
             return Vec::new();
         }
         let plan = layout(self, width, height);
-        let Some((low, high)) = price_range(self, &self.bars[first..first + visible]) else {
+        let Some(scale) = price_range(self, &self.bars[first..first + visible]) else {
             return Vec::new();
         };
         (0..self.drawings.len())
-            .filter(|i| self.project(&plan, low, high, &self.drawings[*i]).touches(rect))
+            .filter(|i| self.project(&plan, &scale, &self.drawings[*i]).touches(rect))
             .collect()
     }
 
@@ -1002,13 +1158,13 @@ impl State {
             return None;
         }
         let plan = layout(self, width, height);
-        let (low, high) = price_range(self, &self.bars[first..first + visible])?;
+        let scale = price_range(self, &self.bars[first..first + visible])?;
         // The selected ones first, since their grips are what the hand is
         // most likely reaching for; then the most recently drawn.
         let order = self.selected.iter().rev().copied().chain((0..self.drawings.len()).rev());
         for index in order {
             let drawing = self.drawings.get(index)?;
-            let projected = self.project(&plan, low, high, drawing);
+            let projected = self.project(&plan, &scale, drawing);
             let hit = projected.hit(x, y);
             // Grips belong to the selected drawing only: on the others the
             // whole thing is a body, so a press on an unselected line's end
@@ -2015,11 +2171,11 @@ impl ChartView {
                 return;
             }
             let plan = layout(&state, w, h);
-            let Some((low, high)) = price_range(&state, &state.bars[first..first + visible]) else {
+            let Some(scale) = price_range(&state, &state.bars[first..first + visible]) else {
                 return;
             };
             let bar_w = plan.plot_w / state.columns().max(1) as f64;
-            let by_price = -dy / plan.price_h * (high - low);
+            let by_price = -dy / plan.price_h * scale.span();
             state.remember();
             let mut moved = Vec::new();
             // By columns, like the drag: a pixel is a fraction of a bar,
@@ -2032,7 +2188,7 @@ impl ChartView {
             let State { bars, drawings, .. } = &mut *state;
             for index in selected {
                 let Some(drawing) = drawings.get_mut(index) else { continue };
-                shift_by_columns(bars, drawing, by_index, by_price);
+                shift_by_columns(bars, drawing, by_index, &scale, by_price);
                 moved.push(drawing.clone());
             }
             moved
@@ -2220,10 +2376,10 @@ impl ChartView {
             let size = editing.measure(&style.text, at.alignment(), at);
             let plan = layout(&state, width, height);
             let (first, visible) = state.slice();
-            let Some((low, high)) = price_range(&state, &state.bars[first..first + visible]) else {
+            let Some(scale) = price_range(&state, &state.bars[first..first + visible]) else {
                 return;
             };
-            let projected = state.project(&plan, low, high, drawing);
+            let projected = state.project(&plan, &scale, drawing);
             // The drawing's own box, not the label's: a figure is placed in
             // by its shape, and a text drawing hangs from its anchor, which
             // `text_origin` reads off the degenerate box either way.
@@ -2728,6 +2884,23 @@ impl ChartView {
                 state.price_offset = 0.0;
             }
         }
+        self.redraw();
+    }
+
+    /// Is the price axis logarithmic? What was asked for, which is what the
+    /// chart remembers: a stretch of bars at or below zero draws linear
+    /// without changing the answer.
+    pub fn price_log(&self) -> bool {
+        self.state.borrow().price_log
+    }
+
+    /// Make the price axis logarithmic or linear.
+    ///
+    /// Leaves the axis automatic or held as it was. A held axis keeps its
+    /// zoom and offset, which are fractions of the fitted range and so mean
+    /// the same window on either scale.
+    pub fn set_price_log(&self, log: bool) {
+        self.state.borrow_mut().price_log = log;
         self.redraw();
     }
 
@@ -3297,13 +3470,20 @@ impl ChartView {
                             // construction.
                             let by_index = index_of_ts(&s.bars, now.ts)
                                 - index_of_ts(&s.bars, origin.ts);
-                            let by_price = now.price - origin.price;
+                            let (first, visible) = s.slice();
+                            let Some(scale) = price_range(&s, &s.bars[first..first + visible])
+                            else {
+                                return;
+                            };
+                            // Up the scale, not up the price: on a log axis
+                            // the hand moves a drawing by a ratio.
+                            let by_price = scale.value(now.price) - scale.value(origin.price);
                             let indices = s.selected.clone();
                             let mut moving = Vec::new();
                             let State { bars, drawings, .. } = &mut *s;
                             for i in indices {
                                 if let Some(drawing) = drawings.get_mut(i) {
-                                    shift_by_columns(bars, drawing, by_index, by_price);
+                                    shift_by_columns(bars, drawing, by_index, &scale, by_price);
                                     moving.push(drawing.clone());
                                 }
                             }
@@ -3628,9 +3808,7 @@ fn notify_hover(
                         bar: *bar,
                         index,
                         price: match range {
-                            Some((low, high)) => {
-                                high - (y - plan.price_y) / plan.price_h * (high - low)
-                            }
+                            Some(scale) => scale.price_at(y, plan.price_y, plan.price_h),
                             None => bar.close,
                         },
                     })
@@ -3682,29 +3860,30 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
     // column keeps the highest high and the lowest low of what it stands for —
     // and the crosshair works the same range out from the same bars on its own
     // layer, where going through the columns would be work for nothing.
-    let Some((low, high)) = price_range(state, bars) else {
+    let Some(scale) = price_range(state, bars) else {
         draw_placeholder(cr, width, height, state);
         return;
     };
 
-    let to_y = |price: f64| price_y + price_h * (high - price) / (high - low);
+    let to_y = |price: f64| scale.to_y(price, price_y, price_h);
     let bar_w = columns.bar_w;
 
     // One answer for how precisely prices are written, used by the gridlines,
     // the last-price chip and the crosshair alike — a chart saying 1.1257 on
     // one label and 1.13 on another is describing two different prices.
-    let step = nice_step(high - low, (price_h / 52.0).max(2.0) as usize);
+    let step = scale.step(price_h);
     let kind = state.instrument.as_ref().map(|i| i.kind);
+    let (low, high) = scale.prices();
     let decimals = omacharts_engine::price_decimals(step, (low + high) / 2.0, kind);
 
-    draw_price_grid(cr, state, plot_x, plot_w, price_y, price_h, low, high, &to_y);
+    draw_price_grid(cr, state, plot_x, plot_w, price_y, price_h, &scale, &to_y);
     draw_time_axis(cr, state, &columns.bars, plot_x, plot_w, height, bar_w, bars_x);
     // Shaded things go under the candles; lines go over. A band drawn on top
     // of the bars hides the thing it is describing.
     draw_indicator_fills(cr, state, &columns, &to_y);
     draw_candles(cr, state, &columns, &to_y);
     draw_indicator_lines(cr, state, &columns, &to_y);
-    draw_drawings(cr, state, &plan, low, high);
+    draw_drawings(cr, state, &plan, &scale);
 
     for (at, row) in plan.rows.iter().enumerate() {
         draw_row_edge(cr, state, &plan, at);
@@ -3763,8 +3942,8 @@ fn draw_pointer(cr: &cairo::Context, width: f64, height: f64, state: &State) {
     }
     let bars = &state.bars[first..first + visible];
     let plan = layout(state, width, height);
-    let Some((low, high)) = price_range(state, bars) else { return };
-    let to_y = |price: f64| plan.price_y + plan.price_h * (high - price) / (high - low);
+    let Some(scale) = price_range(state, bars) else { return };
+    let to_y = |price: f64| scale.to_y(price, plan.price_y, plan.price_h);
     let bar_w = plan.plot_w / state.columns().max(1) as f64;
     // Where the bars begin: after the room before the first, if any.
     let bars_x = plan.plot_x + lead as f64 * bar_w;
@@ -3783,7 +3962,7 @@ fn draw_pointer(cr: &cairo::Context, width: f64, height: f64, state: &State) {
         cr.save().ok();
         cr.rectangle(plan.plot_x, plan.price_y, plan.plot_w, plan.price_h);
         cr.clip();
-        let placed = state.project(&plan, low, high, placing);
+        let placed = state.project(&plan, &scale, placing);
         draw_drawing(cr, state, &placed, placing, true, false);
         cr.restore().ok();
     }
@@ -3808,7 +3987,7 @@ fn draw_pointer(cr: &cairo::Context, width: f64, height: f64, state: &State) {
     if let Some((px, py)) = state.pointer {
         draw_crosshair(
             cr, state, px, py, plan.plot_x, plan.plot_w, plan.top, plan.price_y, plan.price_h,
-            width, height, bar_w, first as i64 - lead as i64, low, high,
+            width, height, bar_w, first as i64 - lead as i64, &scale,
         );
         draw_pane_value(cr, state, &plan, px, py, first, visible, width);
     }
@@ -3870,14 +4049,14 @@ fn draw_price_grid(
     plot_w: f64,
     plot_y: f64,
     price_h: f64,
-    low: f64,
-    high: f64,
+    scale: &PriceScale,
     to_y: &impl Fn(f64) -> f64,
 ) {
-    let step = nice_step(high - low, (price_h / 52.0).max(2.0) as usize);
+    let step = scale.step(price_h);
     if step <= 0.0 {
         return;
     }
+    let (low, high) = scale.prices();
     let decimals = omacharts_engine::price_decimals(
         step,
         (low + high) / 2.0,
@@ -3888,8 +4067,7 @@ fn draw_price_grid(
     cr.select_font_face("sans-serif", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
     cr.set_font_size(11.0);
 
-    let mut price = (low / step).ceil() * step;
-    while price <= high {
+    scale.ticks(price_h, |price| {
         let y = to_y(price).round() + 0.5;
         if y > plot_y && y < plot_y + price_h {
             if state.show_grid {
@@ -3903,8 +4081,7 @@ fn draw_price_grid(
             cr.move_to(plot_x + plot_w + 6.0, y + 3.5);
             let _ = cr.show_text(&format!("{price:.decimals$}"));
         }
-        price += step;
-    }
+    });
 
     // The axis itself.
     colors::set_source(cr, &state.theme.ui.axis);
@@ -4587,8 +4764,7 @@ fn draw_crosshair(
     height: f64,
     bar_w: f64,
     first: i64,
-    low: f64,
-    high: f64,
+    scale: &PriceScale,
 ) {
     if px < plot_x || px > plot_x + plot_w || py < top || py > height - TIME_AXIS_H {
         return;
@@ -4612,8 +4788,8 @@ fn draw_crosshair(
 
     // Price under the pointer, only while it is over the price plot.
     if py >= price_y && py <= price_y + price_h {
-        let price = high - (py - price_y) / price_h * (high - low);
-        let step = nice_step(high - low, (price_h / 52.0).max(2.0) as usize);
+        let price = scale.price_at(py, price_y, price_h);
+        let step = scale.step(price_h);
         let decimals = omacharts_engine::price_decimals(
             step,
             price,
@@ -4800,7 +4976,7 @@ const GRIP_HALF: f64 = 3.5;
 /// What has been drawn on the symbol, over the candles and the indicator
 /// lines and under the strips, clipped to the price plot so a line drawn
 /// off the top does not cross an RSI.
-fn draw_drawings(cr: &cairo::Context, state: &State, plan: &Layout, low: f64, high: f64) {
+fn draw_drawings(cr: &cairo::Context, state: &State, plan: &Layout, scale: &PriceScale) {
     if state.drawings.is_empty() {
         return;
     }
@@ -4808,7 +4984,7 @@ fn draw_drawings(cr: &cairo::Context, state: &State, plan: &Layout, low: f64, hi
     cr.rectangle(plan.plot_x, plan.price_y, plan.plot_w, plan.price_h);
     cr.clip();
     for (index, drawing) in state.drawings.iter().enumerate() {
-        let projected = state.project(plan, low, high, drawing);
+        let projected = state.project(plan, scale, drawing);
         let typing = state.editing == Some(index);
         draw_drawing(cr, state, &projected, drawing, state.selected.contains(&index), typing);
         if typing {
@@ -6617,12 +6793,12 @@ mod drawing_tests {
         let (w, h) = (800.0, 400.0);
         let (first, visible) = state.slice();
         let plan = layout(&state, w, h);
-        let (low, high) = price_range(&state, &state.bars[first..first + visible]).unwrap();
+        let scale = price_range(&state, &state.bars[first..first + visible]).unwrap();
         let bar_w = plan.plot_w / visible as f64;
         for (x, y) in [(120.0, 90.0), (400.0, 200.0), (plan.plot_x + plan.plot_w - 3.0, 150.0)] {
             let anchor = state.locate(w, h, x, y).expect("a chart with bars locates");
             let drawing = Drawing::new(DrawingKind::Line, anchor, anchor);
-            let projected = state.project(&plan, low, high, &drawing);
+            let projected = state.project(&plan, &scale, &drawing);
             // The moment snapped to a bar, so x is off by at most half a bar.
             assert!(
                 (projected.from.0 - x).abs() <= bar_w / 2.0 + 0.01,
@@ -6631,6 +6807,91 @@ mod drawing_tests {
             );
             assert!((projected.from.1 - y).abs() < 0.01, "y {y} came back as {}", projected.from.1);
         }
+    }
+
+    /// The same on a log axis: a pixel located and projected back lands where
+    /// it started, and the price under it is not the linear one.
+    #[test]
+    fn a_pixel_located_on_a_log_axis_is_projected_back_under_the_pointer() {
+        let mut state = charted(400);
+        let (w, h) = (800.0, 400.0);
+        let (first, visible) = state.slice();
+        let plan = layout(&state, w, h);
+        let linear = state.locate(w, h, 400.0, 150.0).unwrap().price;
+        state.price_log = true;
+        let scale = price_range(&state, &state.bars[first..first + visible]).unwrap();
+        assert!(scale.log);
+        let anchor = state.locate(w, h, 400.0, 150.0).unwrap();
+        assert!((anchor.price - linear).abs() > 0.01, "a log axis puts another price there");
+        let drawing = Drawing::new(DrawingKind::Line, anchor, anchor);
+        let projected = state.project(&plan, &scale, &drawing);
+        assert!((projected.from.1 - 150.0).abs() < 0.01, "came back as {}", projected.from.1);
+    }
+
+    /// A log axis maps equal ratios to equal heights, and back.
+    #[test]
+    fn a_log_scale_spaces_ratios_evenly() {
+        let scale = PriceScale { low: 10f64.ln(), high: 1000f64.ln(), log: true };
+        let (top, h) = (0.0, 400.0);
+        assert!((scale.to_y(1000.0, top, h) - 0.0).abs() < 1e-9);
+        assert!((scale.to_y(100.0, top, h) - 200.0).abs() < 1e-9, "100 is halfway");
+        assert!((scale.to_y(10.0, top, h) - 400.0).abs() < 1e-9);
+        for y in [0.0, 37.5, 200.0, 399.0] {
+            let back = scale.to_y(scale.price_at(y, top, h), top, h);
+            assert!((back - y).abs() < 1e-9, "{y} came back as {back}");
+        }
+        // Moved by a ratio: up by ln 2 is doubled, whatever the price.
+        assert!((scale.shift(50.0, 2f64.ln()) - 100.0).abs() < 1e-9);
+        assert!((scale.shift(3.0, 2f64.ln()) - 6.0).abs() < 1e-9);
+        // A price with no logarithm still lands somewhere, below the plot.
+        assert!(scale.to_y(0.0, top, h).is_finite());
+        assert!(scale.to_y(-5.0, top, h) > h);
+    }
+
+    /// The labels on a log axis are round, rising, inside the plot and never
+    /// on top of each other — across a range a linear step could not serve.
+    #[test]
+    fn a_log_axis_is_labelled_at_round_prices() {
+        for (low, high, h) in [(10.0, 10_000.0, 600.0), (0.5, 80.0, 300.0), (95.0, 140.0, 500.0)] {
+            let scale = PriceScale { low: f64::ln(low), high: f64::ln(high), log: true };
+            let mut ticks = Vec::new();
+            scale.ticks(h, |price| ticks.push(price));
+            assert!(ticks.len() >= 3, "{low}..{high}: {ticks:?}");
+            for pair in ticks.windows(2) {
+                let gap = scale.to_y(pair[0], 0.0, h) - scale.to_y(pair[1], 0.0, h);
+                assert!(gap >= 52.0 * 0.5 - 1e-6, "{low}..{high}: {ticks:?} crowd at {pair:?}");
+            }
+            for price in &ticks {
+                assert!((low..=high).contains(price), "{price} is off the plot");
+                // A narrow axis counts in fives like a linear one — 95, 100,
+                // 105 — but nothing is ever written as 97.3.
+                let unit = 10f64.powf(price.log10().floor() - 2.0);
+                assert!(((price / unit).round() - price / unit).abs() < 1e-6, "{price} is not round");
+            }
+        }
+        // Across three decades, the decades themselves are labelled.
+        let scale = PriceScale { low: 10f64.ln(), high: 10_000f64.ln(), log: true };
+        let mut ticks = Vec::new();
+        scale.ticks(600.0, |price| ticks.push(price));
+        for decade in [100.0, 1000.0] {
+            assert!(ticks.iter().any(|t| (t - decade).abs() < 1e-9), "{decade} missing: {ticks:?}");
+        }
+    }
+
+    /// Bars at or below zero have no logarithm: the chart draws linear while
+    /// they are on screen and keeps asking for log.
+    #[test]
+    fn a_log_axis_over_negative_prices_draws_linear() {
+        let mut state = charted(50);
+        state.price_log = true;
+        for bar in state.bars.iter_mut().take(10) {
+            bar.low = -3.0;
+        }
+        let scale = price_range(&state, &state.bars).unwrap();
+        assert!(!scale.log, "no logarithm of a negative price");
+        assert!(state.price_log, "the choice is kept");
+        let scale = price_range(&state, &state.bars[10..]).unwrap();
+        assert!(scale.log, "and comes back once they are off screen");
     }
 
     /// An anchor dropped past the last candle is a whole number of bars

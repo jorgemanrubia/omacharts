@@ -1390,6 +1390,10 @@ fn chart_set(
         chart["auto_scale"] = json!(auto == "on");
         changed.push(format!("auto-scale {auto}"));
     }
+    if let Some(log) = arg(m, "log-scale") {
+        chart["log_scale"] = json!(log == "on");
+        changed.push(format!("log scale {log}"));
+    }
     // What the chart ends up showing, which is what it leads its new group
     // with. Read after the writes above, so `--symbol X --link N` leads with X
     // rather than with whatever the chart had before.
@@ -1399,7 +1403,7 @@ fn chart_set(
     if changed.is_empty() {
         return Err(Fault::usage(
             "nothing to change; pass --symbol, --resolution, --style, --session, --link, --grid, \
-             --auto-scale, --show-drawings or --send-drawings"
+             --auto-scale, --log-scale, --show-drawings or --send-drawings"
                 .into(),
         ));
     }
@@ -2926,6 +2930,8 @@ fn pane_json(pane: &Value) -> String {
         // Missing from a chart stored before it was remembered, and every one
         // of those was fitting itself.
         "auto_scale": pane["auto_scale"].as_bool().unwrap_or(true),
+        // Likewise linear, before an axis could be anything else.
+        "log_scale": pane["log_scale"].as_bool().unwrap_or(false),
         "link": pane["linked"],
         "shows_drawings": pane["shows_drawings"].as_bool().unwrap_or(true),
         "sends_drawings": pane["sends_drawings"].as_bool().unwrap_or(true),
@@ -4196,6 +4202,27 @@ mod tests {
 
         run("chart set --book Macro --auto-scale on", &store);
         assert_eq!(charts(&store)["charts"][0]["auto_scale"], true);
+    }
+
+    /// A log axis is stored with the chart and reported back, and a chart
+    /// stored before there was one is linear.
+    #[test]
+    fn a_charts_price_axis_can_be_made_logarithmic_from_a_command() {
+        let store = Store::memory().unwrap();
+        run("chartbook create Macro --symbol SPY --switch", &store);
+        let charts = |store: &Store| -> serde_json::Value {
+            serde_json::from_str(&run("chart list --book Macro --json", store).out).unwrap()
+        };
+        assert_eq!(charts(&store)["charts"][0]["log_scale"], false, "linear to begin with");
+
+        let log = run("chart set --book Macro --log-scale on", &store);
+        assert_eq!(log.code, 0, "{}", log.err);
+        assert!(log.out.contains("log scale on"), "{}", log.out);
+        assert_eq!(charts(&store)["charts"][0]["log_scale"], true);
+        assert_eq!(charts(&store)["charts"][0]["auto_scale"], true, "and still fits itself");
+
+        run("chart set --book Macro --log-scale off", &store);
+        assert_eq!(charts(&store)["charts"][0]["log_scale"], false);
     }
 
     /// A chart stored before the price scale was remembered says nothing

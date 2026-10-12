@@ -217,6 +217,23 @@ fn scales_group(window: &Rc<Window>) -> adw::PreferencesGroup {
     auto.set_activatable_widget(Some(&switch));
     group.add(&auto);
 
+    let log = adw::ActionRow::new();
+    log.set_title("Logarithmic scale");
+    log.set_subtitle("Equal heights are equal percentage moves, for long histories");
+    let switch = gtk::Switch::new();
+    switch.set_valign(gtk::Align::Center);
+    switch.set_active(window.log_scale());
+    let window_for_log = window.clone();
+    switch.connect_state_set(move |_, on| {
+        if window_for_log.log_scale() != on {
+            window_for_log.set_log_scale(on);
+        }
+        glib::Propagation::Proceed
+    });
+    log.add_suffix(&switch);
+    log.set_activatable_widget(Some(&switch));
+    group.add(&log);
+
     let grid = adw::ActionRow::new();
     grid.set_title("Gridlines");
     grid.set_subtitle("The scales and their labels stay either way");
