@@ -4144,6 +4144,19 @@ mod tests {
         assert_eq!(parsed["charts"].as_array().unwrap().len(), 2);
     }
 
+    /// A chartbook made from a terminal starts the way one made in the window
+    /// does: its chart in the first group. Unlinked, picking in the rail moved
+    /// nothing in it.
+    #[test]
+    fn a_new_chartbooks_chart_starts_in_the_first_group() {
+        let store = Store::memory().unwrap();
+        run("chartbook create Macro --symbol SPY --switch", &store);
+
+        let listed = run("chart list --book Macro --json", &store);
+        let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
+        assert_eq!(parsed["charts"][0]["link"], 1, "{}", listed.out);
+    }
+
     #[test]
     fn the_last_chart_in_a_chartbook_cannot_be_closed() {
         let store = Store::memory().unwrap();

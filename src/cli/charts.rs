@@ -11,6 +11,7 @@
 //! writing it back would silently discard anything added since, and the field
 //! it discarded would be somebody's layout.
 
+use omacharts_engine::LinkGroup;
 use serde_json::{json, Map, Value};
 
 use crate::store::Store;
@@ -294,7 +295,10 @@ pub fn new_pane(id: u32, symbol: &str, suffix: Option<&str>) -> Value {
         "bar_style": "candles",
         "session": "extended",
         "show_grid": true,
-        "linked": 0,
+        // In the first group, which is where the window starts a new
+        // chartbook's chart. Unlinked, a book made from a terminal followed
+        // nothing in the rail until somebody found `chart set --link`.
+        "linked": LinkGroup::Group(1),
         "shows_drawings": true,
         "sends_drawings": true,
         // What the chart is called among the drawings it makes, so it can
