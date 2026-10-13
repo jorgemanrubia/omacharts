@@ -167,9 +167,9 @@ pub fn dispatch(
         }
         ("config", "bars") => config_bars(store, m, json, live),
 
-        ("plugin", "status") => plugin_status(json),
-        ("plugin", "install") => plugin_install(json),
-        ("plugin", "uninstall") => plugin_uninstall(json),
+        ("plugin", "status") => plugin_status(&caller.home(), json),
+        ("plugin", "install") => plugin_install(&caller.home(), json),
+        ("plugin", "uninstall") => plugin_uninstall(&caller.home(), json),
 
         ("cache", "status") => cache_status(store, json),
         ("cache", "clear") => cache_clear(store, json),
@@ -3489,12 +3489,11 @@ fn spell_bars(scheme: &str) -> &'static str {
 /// open, and why a desktop with no bar is reported rather than refused: having
 /// no Omarchy shell is a fact about the machine, not a command that went
 /// wrong. The switch in Preferences writes the same two things.
-fn plugin_status(as_json: bool) -> Result<String, Fault> {
-    let home = crate::store::home();
-    let where_at = crate::bar_plugin::location(&home);
+fn plugin_status(home: &std::path::Path, as_json: bool) -> Result<String, Fault> {
+    let where_at = crate::bar_plugin::location(home);
     let at = where_at.display();
     let (available, installed) =
-        (crate::bar_plugin::available(&home), crate::bar_plugin::installed(&home));
+        (crate::bar_plugin::available(home), crate::bar_plugin::installed(home));
     match as_json {
         true => Ok(format!(
             "{}\n",
@@ -3513,9 +3512,8 @@ fn plugin_status(as_json: bool) -> Result<String, Fault> {
     }
 }
 
-fn plugin_install(as_json: bool) -> Result<String, Fault> {
-    let home = crate::store::home();
-    if !crate::bar_plugin::available(&home) {
+fn plugin_install(home: &std::path::Path, as_json: bool) -> Result<String, Fault> {
+    if !crate::bar_plugin::available(home) {
         return said(
             as_json,
             json!({"omarchy": false, "installed": false}),
@@ -3525,13 +3523,13 @@ fn plugin_install(as_json: bool) -> Result<String, Fault> {
     // Already in the bar means bring it up to date rather than write it again:
     // a widget installed once and never touched runs whichever version shipped
     // the day the switch was flicked.
-    let already = crate::bar_plugin::installed(&home);
+    let already = crate::bar_plugin::installed(home);
     let done = match already {
-        true => crate::bar_plugin::refresh(&home),
-        false => crate::bar_plugin::install(&home),
+        true => crate::bar_plugin::refresh(home),
+        false => crate::bar_plugin::install(home),
     };
     done.map_err(|e| Fault::new(super::EXIT_ERROR, e))?;
-    let at = crate::bar_plugin::location(&home);
+    let at = crate::bar_plugin::location(home);
     said(
         as_json,
         json!({"omarchy": true, "installed": true, "updated": already, "path": at}),
@@ -3542,18 +3540,17 @@ fn plugin_install(as_json: bool) -> Result<String, Fault> {
     )
 }
 
-fn plugin_uninstall(as_json: bool) -> Result<String, Fault> {
-    let home = crate::store::home();
+fn plugin_uninstall(home: &std::path::Path, as_json: bool) -> Result<String, Fault> {
     // Idempotent on purpose: a script that takes the widget out should not
     // have to ask first, and "it was already gone" is the outcome it wanted.
-    if !crate::bar_plugin::installed(&home) {
+    if !crate::bar_plugin::installed(home) {
         return said(
             as_json,
             json!({"installed": false, "removed": false}),
             "not in the bar, so there was nothing to remove".to_string(),
         );
     }
-    crate::bar_plugin::remove(&home).map_err(|e| Fault::new(super::EXIT_ERROR, e))?;
+    crate::bar_plugin::remove(home).map_err(|e| Fault::new(super::EXIT_ERROR, e))?;
     said(as_json, json!({"installed": false, "removed": true}), "taken out of the bar".to_string())
 }
 
@@ -4990,6 +4987,71 @@ mod tests {
         }
     }
 
+    /// A caller whose home is a fresh directory of its own.
+    ///
+    /// For running commands as written: `plugin install` and `uninstall` edit
+    /// `~/.config/omarchy`, and against the real home a test run took the
+    /// widget out of the bar of whoever ran the suite.
+    struct ScratchHome(std::path::PathBuf);
+
+    impl ScratchHome {
+        fn new() -> ScratchHome {
+            static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+            let at = std::env::temp_dir().join(format!(
+                "omacharts-home-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
+            // Drop clears it, but a run that was killed never drops, and a pid
+            // comes round again. A widget left there would make `install` an
+            // update, and an update asks the live shell to reload its plugins.
+            let _ = std::fs::remove_dir_all(&at);
+            ScratchHome(at)
+        }
+    }
+
+    impl Caller for ScratchHome {
+        fn read(&self, path: &str) -> Result<String, Fault> {
+            super::super::Here.read(path)
+        }
+        fn home(&self) -> std::path::PathBuf {
+            self.0.clone()
+        }
+    }
+
+    impl Drop for ScratchHome {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// The widget goes in, and comes out, of the home the caller names and no
+    /// other — which is what lets the examples run without reaching the bar
+    /// of whoever is running them.
+    #[test]
+    fn the_plugin_is_installed_under_the_callers_home() {
+        let home = ScratchHome::new();
+        let config = home.0.join(".config/omarchy");
+        std::fs::create_dir_all(config.join("plugins")).unwrap();
+        std::fs::write(config.join("shell.json"), r#"{"bar": {"layout": {"right": []}}}"#)
+            .unwrap();
+        let store = Store::memory().unwrap();
+        let plugin = |verb: &str| {
+            let args: Vec<String> =
+                ["omacharts", "plugin", verb].into_iter().map(String::from).collect();
+            dispatch(&args, &store, None, &home)
+        };
+        let widget = crate::bar_plugin::location(&home.0);
+
+        assert_eq!(plugin("install").code, super::super::EXIT_OK);
+        assert!(widget.join("Service.qml").is_file(), "written under the scratch home");
+        let shell = std::fs::read_to_string(config.join("shell.json")).unwrap();
+        assert!(shell.contains(crate::bar_plugin::PLUGIN_ID), "{shell}");
+
+        assert_eq!(plugin("uninstall").code, super::super::EXIT_OK);
+        assert!(!widget.exists(), "and taken out of it again");
+    }
+
     /// Where a window would be, so the verbs that default to the focused chart
     /// run rather than refusing. Nothing to flush or redraw: the store is the
     /// only thing a test has.
@@ -5034,6 +5096,9 @@ mod tests {
     /// the example names, which is not what is being tested.
     #[test]
     fn every_example_in_the_table_is_a_command_that_runs() {
+        // `plugin install` and `uninstall` write under the caller's home, and
+        // `skill install` is pointed into it below.
+        let home = ScratchHome::new();
         for noun in super::super::spec::SURFACE {
             for verb in noun.verbs {
                 // The one example that would go to the network. Its shape is
@@ -5054,14 +5119,10 @@ mod tests {
                 // Only `skill`'s `--to` is a place on disk; a drawing's
                 // `--to` is the other end of a line.
                 if noun.name == "skill" && verb.flags.iter().any(|flag| flag.long == "to") {
-                    let scratch = std::env::temp_dir()
-                        .join(format!("omacharts-example-{}", std::process::id()))
-                        .join(verb.name);
-                    let _ = std::fs::remove_dir_all(&scratch);
                     args.push("--to".to_string());
-                    args.push(scratch.to_string_lossy().into_owned());
+                    args.push(home.0.join("skills").join(verb.name).to_string_lossy().into_owned());
                 }
-                let outcome = dispatch(&args, &store, Some(&NoWindow), &super::super::Here);
+                let outcome = dispatch(&args, &store, Some(&NoWindow), &home);
                 assert_ne!(
                     outcome.code,
                     super::super::EXIT_USAGE,
@@ -5469,15 +5530,24 @@ mod tests {
         let blocks = omacharts_commands_in(SKILL);
         assert!(blocks.len() >= 4, "no commands found in the skill: is it still a markdown file?");
 
+        let home = ScratchHome::new();
         for block in &blocks {
             // One store per block. Each is a recipe somebody starts from
             // wherever they are, not a continuation of the one above it.
             let store = skill_seed();
             for line in block {
-                let args: Vec<String> = std::iter::once("omacharts".to_string())
+                let mut args: Vec<String> = std::iter::once("omacharts".to_string())
                     .chain(words_of(line))
                     .collect();
-                let outcome = dispatch(&args, &store, Some(&NoWindow), &super::super::Here);
+                // The skill commands find an agent's configuration for
+                // themselves rather than asking the caller, so a workflow that
+                // ever installs the skill is pointed into the scratch home
+                // the way the table's own example is.
+                if args.get(1).map(String::as_str) == Some("skill") {
+                    args.push("--to".to_string());
+                    args.push(home.0.join("skills").to_string_lossy().into_owned());
+                }
+                let outcome = dispatch(&args, &store, Some(&NoWindow), &home);
                 assert_eq!(
                     outcome.code,
                     super::super::EXIT_OK,
