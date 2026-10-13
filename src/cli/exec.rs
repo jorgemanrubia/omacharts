@@ -319,7 +319,7 @@ fn instrument_json(i: &omacharts_engine::Instrument) -> String {
 // -- watchlists -----------------------------------------------------------
 
 /// Resolve `a name, or id:N` against the watchlists.
-fn find_list(store: &Store, selector: &str) -> Result<(i64, String), Fault> {
+pub(super) fn find_list(store: &Store, selector: &str) -> Result<(i64, String), Fault> {
     let lists = store.watchlists();
     if let Some(rest) = selector.strip_prefix("id:") {
         let id: i64 = rest

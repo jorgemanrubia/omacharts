@@ -259,6 +259,10 @@ pub struct Launched {
     pub args: Vec<String>,
     /// The feed `--provider` named, already checked against the catalogue.
     pub provider: Option<&'static omacharts_engine::providers::Listed>,
+    /// The watchlist `--watchlist` named, as typed. Resolved against the
+    /// store by [`watchlist_named`] where there is one: peeling happens
+    /// before any database is open.
+    pub watchlist: Option<String>,
 }
 
 /// Takes the options in [`spec::LAUNCH`] off a command line.
@@ -278,6 +282,7 @@ pub struct Launched {
 pub fn peel_launch(args: &[String]) -> Result<Launched, Fault> {
     let mut kept: Vec<String> = Vec::with_capacity(args.len());
     let mut provider = None;
+    let mut watchlist = None;
     let mut rest = args.iter();
 
     while let Some(arg) = rest.next() {
@@ -298,13 +303,30 @@ pub fn peel_launch(args: &[String]) -> Result<Launched, Fault> {
         };
         match option.long {
             "provider" => provider = Some(feed_named(&value)?),
-            // Unreachable while LAUNCH has one entry, and the compiler cannot
-            // know that. A new launch option lands here.
+            "watchlist" => watchlist = Some(value),
+            // Unreachable while every entry in LAUNCH has an arm, and the
+            // compiler cannot know that. A new launch option lands here.
             other => return Err(Fault::usage(format!("--{other} is not handled"))),
         }
     }
 
-    Ok(Launched { args: kept, provider })
+    // A list to open things in means nothing to a command, and a command
+    // that ran as if it had been scoped to one is worse than one that was
+    // refused: `--watchlist Tech chart set --symbol NVDA` would act on the
+    // focused chart wherever it is, and exit 0.
+    if watchlist.is_some() && is_command(&kept) {
+        return Err(Fault::usage(
+            "--watchlist says which list to open a symbol in; it does not apply to commands"
+                .into(),
+        ));
+    }
+
+    Ok(Launched { args: kept, provider, watchlist })
+}
+
+/// The id of the watchlist `--watchlist` named: a name, or `id:N`.
+pub fn watchlist_named(store: &Store, selector: &str) -> Result<i64, Fault> {
+    exec::find_list(store, selector).map(|(id, _)| id)
 }
 
 /// `name=value` as a long option's two halves.
@@ -760,6 +782,37 @@ mod tests {
         let peeled = peel_launch(&given).unwrap();
         assert_eq!(peeled.args, given);
         assert!(peeled.provider.is_none());
+    }
+
+    /// The bar widget names the list it shows, so a click moves the window to
+    /// it. Kept as typed: there is no database to resolve it against yet.
+    #[test]
+    fn a_watchlist_comes_off_as_typed_and_leaves_the_symbol() {
+        let peeled =
+            peel_launch(&line(&["omacharts", "--watchlist", "id:1", "SAP", "DE"])).unwrap();
+        assert_eq!(peeled.args, line(&["omacharts", "SAP", "DE"]));
+        assert_eq!(peeled.watchlist.as_deref(), Some("id:1"));
+        assert!(!is_command(&peeled.args));
+    }
+
+    /// A command run as if it were scoped to a list, when it was not, is the
+    /// answer an agent cannot tell from the right one.
+    #[test]
+    fn a_watchlist_in_front_of_a_command_is_refused() {
+        let fault = peel_launch(&line(&["omacharts", "--watchlist", "Tech", "watchlist", "list"]))
+            .unwrap_err();
+        assert_eq!(fault.code, EXIT_USAGE);
+        assert!(fault.message.contains("--watchlist"), "{}", fault.message);
+    }
+
+    #[test]
+    fn a_watchlist_is_found_by_name_or_id_and_refused_when_missing() {
+        let store = Store::memory().expect("an in-memory store");
+        let id = store.add_watchlist("Tech").expect("a watchlist");
+        assert_eq!(watchlist_named(&store, "tech").unwrap(), id);
+        assert_eq!(watchlist_named(&store, &format!("id:{id}")).unwrap(), id);
+        assert_eq!(watchlist_named(&store, "id:1").unwrap(), crate::store::DEFAULT_WATCHLIST);
+        assert_eq!(watchlist_named(&store, "Nowhere").unwrap_err().code, EXIT_NOT_FOUND);
     }
 
     /// Charting from the wrong source because a name was misspelled is worse

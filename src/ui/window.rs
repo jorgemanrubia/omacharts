@@ -7337,7 +7337,26 @@ impl Window {
     ///
     /// `false` when no list holds it, which leaves the caller to do the one
     /// thing that is still right — put the window up.
-    pub fn show_named(self: &Rc<Self>, symbol: &str, suffix: Option<&str>) -> bool {
+    ///
+    /// With `watchlist`, the window moves to that list whatever else holds
+    /// the symbol, and the symbol is picked only there: the bar widget shows
+    /// the default list, and a click there is a click in that list, not in
+    /// whichever one happened to be on screen. `false` then means that list
+    /// does not hold it, and nothing was searched for instead — a list that
+    /// was asked for and quietly swapped for another is the answer a script
+    /// cannot tell from the right one.
+    pub fn show_named(
+        self: &Rc<Self>,
+        symbol: &str,
+        suffix: Option<&str>,
+        watchlist: Option<i64>,
+    ) -> bool {
+        if let Some(wanted) = watchlist {
+            self.show_watchlist(wanted);
+            return self.list_holds(wanted, symbol, suffix)
+                && self.index.find(symbol, suffix).is_some_and(|i| self.pick_in_rail(&i));
+        }
+
         let Some(instrument) = self.index.find(symbol, suffix) else {
             return false;
         };
@@ -7364,6 +7383,40 @@ impl Window {
         // rail is showing, and until it has been rebuilt those are the last
         // book's rows.
         self.pick_in_rail(&instrument)
+    }
+
+    /// Put `watchlist` in the rail: by staying, when it is already there; by
+    /// moving to another chartbook showing it, when one is; and otherwise by
+    /// pointing the book on screen at it.
+    ///
+    /// Not [`book_using`]: that one says the default list is nobody's, which is
+    /// right for handing a list out and wrong here. Several books can show the
+    /// default, and moving to one of them is gentler than taking the book you
+    /// are in off its own list. A list no other book shows is free to take, so
+    /// it is handed straight to the rail rather than through `rail_for_book`.
+    pub fn show_watchlist(self: &Rc<Self>, watchlist: i64) {
+        let rail = self.watchlist.borrow().as_ref().cloned();
+        let Some(rail) = rail else { return };
+        if rail.active_watchlist() == watchlist {
+            return;
+        }
+        let active = self.active.get();
+        let showing = self
+            .books
+            .borrow()
+            .iter()
+            .enumerate()
+            .position(|(at, book)| at != active && book.watchlist == Some(watchlist));
+        match showing {
+            Some(index) => self.activate_book(index),
+            None => rail.set_active_watchlist(watchlist),
+        }
+    }
+
+    /// The database this window reads, for a launch that has to resolve
+    /// something against it.
+    pub fn store(&self) -> &Store {
+        &self.store
     }
 
     fn list_holds(&self, watchlist: i64, symbol: &str, suffix: Option<&str>) -> bool {

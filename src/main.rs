@@ -109,8 +109,8 @@ fn main() -> glib::ExitCode {
         // process: `omacharts --provider tos NVDA` typed at a terminal with a
         // window already open arrives here, and `tos` must not be read as a
         // second symbol.
-        let (args, asked_for) = match cli::peel_launch(&given) {
-            Ok(peeled) => (peeled.args, peeled.provider),
+        let (args, asked_for, in_list) = match cli::peel_launch(&given) {
+            Ok(peeled) => (peeled.args, peeled.provider, peeled.watchlist),
             Err(fault) => {
                 command_line.printerr_literal(&format!("omacharts: {}\n", fault.message));
                 return glib::ExitCode::from(fault.code);
@@ -216,8 +216,38 @@ fn main() -> glib::ExitCode {
 
         let symbols: Vec<String> =
             args.iter().skip(1).filter(|arg| !arg.starts_with('-')).cloned().collect();
-        if let Some(symbol) = symbols.first() {
-            window.show_named(&symbol.to_uppercase(), symbols.get(1).map(String::as_str));
+        // Resolved here rather than when it was peeled, because this is the
+        // first point with a database to resolve it against — the window's
+        // own, since the bar sends one on every click. A list that does not
+        // exist is refused the way a misspelt feed is, with the window still
+        // put up.
+        let mut code = glib::ExitCode::SUCCESS;
+        match in_list.as_deref().map(|list| cli::watchlist_named(window.store(), list)).transpose() {
+            Ok(watchlist) => match symbols.first() {
+                Some(symbol) => {
+                    let shown = window.show_named(
+                        &symbol.to_uppercase(),
+                        symbols.get(1).map(String::as_str),
+                        watchlist,
+                    );
+                    if !shown && let Some(list) = in_list.as_deref() {
+                        command_line.printerr_literal(&format!(
+                            "omacharts: {} is not in watchlist {list:?}\n",
+                            symbols.iter().map(|s| s.to_uppercase()).collect::<Vec<_>>().join(" "),
+                        ));
+                        code = glib::ExitCode::from(cli::EXIT_NOT_FOUND);
+                    }
+                }
+                None => {
+                    if let Some(id) = watchlist {
+                        window.show_watchlist(id);
+                    }
+                }
+            },
+            Err(fault) => {
+                command_line.printerr_literal(&format!("omacharts: {}\n", fault.message));
+                code = glib::ExitCode::from(fault.code);
+            }
         }
 
         window.window.present();
@@ -233,7 +263,7 @@ fn main() -> glib::ExitCode {
             }
         });
 
-        glib::ExitCode::SUCCESS
+        code
     });
 
     // The arguments as typed, launch options included: these travel to

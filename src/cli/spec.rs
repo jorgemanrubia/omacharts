@@ -96,13 +96,22 @@ pub struct Launch {
     pub values: &'static [&'static str],
 }
 
-pub const LAUNCH: &[Launch] = &[Launch {
-    long: "provider",
-    value: "NAME",
-    help: "chart from this data feed for this launch, whatever is stored; \
-           `config set provider` changes the stored default",
-    values: &[],
-}];
+pub const LAUNCH: &[Launch] = &[
+    Launch {
+        long: "provider",
+        value: "NAME",
+        help: "chart from this data feed for this launch, whatever is stored; \
+               `config set provider` changes the stored default",
+        values: &[],
+    },
+    Launch {
+        long: "watchlist",
+        value: "LIST",
+        help: "show this watchlist, switching to the chartbook showing it, and \
+               open the symbol in it; a name or id:N",
+        values: &[],
+    },
+];
 
 /// Everything `--long` accepts, including the sets this table defers on.
 pub fn launch_values(long: &str) -> Vec<&'static str> {

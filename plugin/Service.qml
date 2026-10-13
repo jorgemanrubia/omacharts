@@ -42,13 +42,15 @@ Item {
 
   // The app is single-instance and handles its command line, so this focuses
   // the window that is already open — and switches it to the symbol asked for
-  // rather than leaving it wherever it was. Detached, because with no window
-  // open this launch *is* the window: a Process holding it queues every later
-  // click until the window closes, and dies with the shell.
+  // rather than leaving it wherever it was. In the default watchlist, because
+  // that is the one this panel shows: a click here is a click in that list,
+  // whichever one the window happened to be on. Detached, because with no
+  // window open this launch *is* the window: a Process holding it queues every
+  // later click until the window closes, and dies with the shell.
   function openApp(symbol, suffix) {
     var command = ["omacharts"]
     if (symbol) {
-      command.push(symbol)
+      command.push("--watchlist", "id:1", symbol)
       if (suffix) command.push(suffix)
     }
     Quickshell.execDetached(command)
