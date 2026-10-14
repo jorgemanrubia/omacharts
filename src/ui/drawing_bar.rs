@@ -1,13 +1,12 @@
-//! The drawing tools, on a bar that slides in from the left.
+//! The drawing tools, on a bar down the left edge.
 //!
 //! The rail of watchlists lives on the right; the tools live on the left, the
-//! same way: a key, or a handle in the bottom-left corner, brings them in,
-//! and they take no room when they are out. The handle is the pen glyph,
-//! faint until the pointer is near or the bar is out, with a tooltip that
-//! says what it is and which key does the same. It sits at the left end of
-//! the chartbook strip when there is one, and floats in the corner the
-//! strip would occupy when there is not. Nothing in the window's top
-//! corner, which belongs to the charts.
+//! same way: a key, or a toggle in the window's top-left corner, brings them
+//! in, and they take no room when they are out. The toggle is the mirror of
+//! the rail's in the top-right — the same button, the left-panel glyph, at
+//! the same height — so the two edges of the window open the same way. It
+//! stands over the bar while the bar is out, and over the top-left chart
+//! when it is not.
 //!
 //! One column of buttons, which is the shape a handful of tools wants and
 //! stays the shape as they are added. Each button is a sign the app drew
@@ -23,7 +22,6 @@
 //! the way to put a tool down is to pick another, or the pointer. A
 //! right-click on a tool opens that kind's configurations.
 
-use std::cell::RefCell;
 use std::rc::Rc;
 
 use gtk::prelude::*;
@@ -32,6 +30,9 @@ use omacharts_engine::drawings::Kind;
 
 /// The width of a tool button, which is also the bar's.
 const TOOL: i32 = 36;
+/// The bar's width inside its padding: one tool, and the column's four
+/// pixels either side.
+pub const WIDTH: i32 = TOOL + 8;
 
 /// Which band of the bar a tool belongs to.
 ///
@@ -47,27 +48,12 @@ fn tool_group(kind: Option<Kind>) -> u8 {
     }
 }
 
-/// A rounded rectangle as a path, corner radius `r`.
-fn rounded(cr: &gtk::cairo::Context, x: f64, y: f64, w: f64, h: f64, r: f64) {
-    use std::f64::consts::{FRAC_PI_2, PI};
-    cr.new_sub_path();
-    cr.arc(x + w - r, y + r, r, -FRAC_PI_2, 0.0);
-    cr.arc(x + w - r, y + h - r, r, 0.0, FRAC_PI_2);
-    cr.arc(x + r, y + h - r, r, FRAC_PI_2, PI);
-    cr.arc(x + r, y + r, r, PI, 3.0 * FRAC_PI_2);
-    cr.close_path();
-}
-
-/// The tab on the edge: its width out from the edge, and its height.
-const HANDLE_W: i32 = 22;
-const HANDLE_H: i32 = 26;
-
 pub struct DrawingBar {
-    /// What goes in the layout: the revealer, so the bar can slide.
-    pub root: gtk::Revealer,
-    /// The handles made for this bar, drawn again when it opens or shuts.
-    handles: RefCell<Vec<gtk::DrawingArea>>,
-    on_toggle: Rc<dyn Fn()>,
+    /// What goes in the layout: the bar with its ground, shown and hidden.
+    pub root: gtk::Box,
+    /// The button that opens and shuts this bar, lit while it is out. The
+    /// window puts it in its top-left corner.
+    pub toggle: gtk::ToggleButton,
     /// The pointer first, as `None`, then a button a tool.
     buttons: Vec<(Option<Kind>, gtk::ToggleButton, gtk::DrawingArea)>,
     /// The configuration number worn by the tool in hand, so Alt+R, Alt+3
@@ -90,7 +76,7 @@ impl DrawingBar {
     /// and whether it should stay in hand after each drawing, which is what
     /// Ctrl on the click asks for;
     /// `on_configure` which kind's configurations to open; `on_toggle` that
-    /// the handle was clicked.
+    /// the toggle was pressed.
     pub fn new(
         on_arm: impl Fn(Option<Kind>, bool) + Clone + 'static,
         on_configure: impl Fn(Kind) + Clone + 'static,
@@ -99,7 +85,10 @@ impl DrawingBar {
         let column = gtk::Box::new(gtk::Orientation::Vertical, 4);
         column.add_css_class("drawing-bar");
         column.set_valign(gtk::Align::Start);
-        column.set_margin_top(10);
+        // Under the window's top-left corner, which holds this bar's toggle
+        // while the bar is out: the same step the rail's header takes down
+        // out from under the corner on the right, and eight pixels more.
+        column.set_margin_top(45);
         // The same either side. It was six and two, which put the column a
         // visible two pixels left of centre in its own bar — the kind of
         // thing you cannot name but can see.
@@ -193,18 +182,31 @@ impl DrawingBar {
         }
 
         let bar = Rc::new(DrawingBar {
-            root: gtk::Revealer::new(),
-            handles: RefCell::new(Vec::new()),
-            on_toggle: Rc::new(on_toggle),
+            root: gtk::Box::new(gtk::Orientation::Vertical, 0),
+            toggle: gtk::ToggleButton::new(),
             buttons,
             badges,
             showing: std::cell::Cell::new(false),
             sticky_press: std::cell::Cell::new(false),
         });
-        bar.root.set_transition_type(gtk::RevealerTransitionType::SlideRight);
-        bar.root.set_transition_duration(160);
-        bar.root.set_child(Some(&column));
-        bar.root.set_reveal_child(false);
+        // There at once, the way the rail is. The rail cannot slide without
+        // every chart redrawing at every step, and two edges that open
+        // differently read as two apps.
+        bar.root.add_css_class("drawing-tools");
+        bar.root.append(&column);
+        bar.root.set_visible(false);
+
+        bar.toggle.set_icon_name("sidebar-show-symbolic");
+        bar.toggle.set_tooltip_text(Some(&crate::ui::shortcuts::tooltip("Drawing tools", "win.drawing-tools")));
+        bar.toggle.add_css_class("flat");
+        // `set_shown` lights the button too, which toggles it again; only a
+        // press that disagrees with the bar is somebody asking for a change.
+        let root = bar.root.clone();
+        bar.toggle.connect_toggled(move |toggle| {
+            if toggle.is_active() != root.get_visible() {
+                on_toggle();
+            }
+        });
 
         for (kind, button, _) in &bar.buttons {
             let kind = *kind;
@@ -272,79 +274,12 @@ impl DrawingBar {
     }
 
     pub fn set_shown(&self, shown: bool) {
-        self.root.set_reveal_child(shown);
-        for handle in self.handles.borrow().iter() {
-            if shown {
-                handle.add_css_class("open");
-            } else {
-                handle.remove_css_class("open");
-            }
-        }
+        self.root.set_visible(shown);
+        self.toggle.set_active(shown);
     }
 
     pub fn is_shown(&self) -> bool {
-        self.root.reveals_child()
-    }
-
-    /// A handle that opens and shuts this bar: a small tab stuck to the
-    /// window's left edge, rounded on the side that faces in, with the
-    /// left-panel glyph on it — the mirror of the rail's own toggle on
-    /// the right. Dim until the pointer is near or the bar is out. Made as
-    /// often as the window has a corner to put one in.
-    pub fn handle(&self) -> gtk::DrawingArea {
-        let handle = gtk::DrawingArea::new();
-        handle.set_size_request(HANDLE_W, HANDLE_H);
-        handle.set_halign(gtk::Align::Start);
-        handle.set_valign(gtk::Align::End);
-        handle.add_css_class("drawing-handle");
-        if self.is_shown() {
-            handle.add_css_class("open");
-        }
-        handle.set_cursor_from_name(Some("pointer"));
-        handle.set_tooltip_text(Some(&crate::ui::shortcuts::tooltip("Drawing tools", "win.drawing-tools")));
-        let on_toggle = self.on_toggle.clone();
-        let click = gtk::GestureClick::new();
-        click.connect_released(move |_, _, _, _| on_toggle());
-        handle.add_controller(click);
-        handle.set_draw_func(|area, cr, w, h| {
-            // Everything in the handle's own colour, so the stylesheet
-            // decides how loud it is: the tab is that colour at a whisper,
-            // its edge a little more, the glyph at full strength.
-            let (w, h) = (w as f64, h as f64);
-            let fg = area.color();
-            let (r, g, b, a) = (fg.red() as f64, fg.green() as f64, fg.blue() as f64, fg.alpha() as f64);
-            // The tab: flat against the left edge, rounded on the right.
-            let radius = 7.0;
-            cr.new_sub_path();
-            cr.move_to(0.0, 0.5);
-            cr.line_to(w - radius - 0.5, 0.5);
-            cr.arc(w - radius - 0.5, radius + 0.5, radius, -std::f64::consts::FRAC_PI_2, 0.0);
-            cr.line_to(w - 0.5, h - radius - 0.5);
-            cr.arc(w - radius - 0.5, h - radius - 0.5, radius, 0.0, std::f64::consts::FRAC_PI_2);
-            cr.line_to(0.0, h - 0.5);
-            cr.close_path();
-            // Louder when it floats over the chart, where a whisper of
-            // the ink blends into whatever indicator sits beneath it.
-            let floating = area.has_css_class("floating");
-            cr.set_source_rgba(r, g, b, a * if floating { 0.14 } else { 0.10 });
-            let _ = cr.fill_preserve();
-            cr.set_source_rgba(r, g, b, a * if floating { 0.5 } else { 0.28 });
-            cr.set_line_width(1.0);
-            let _ = cr.stroke();
-            // The glyph: a panel with its left third filled, the mirror of
-            // the rail's toggle on the other side of the window.
-            let (gw, gh) = (13.0, 10.0);
-            let (gx, gy) = (((w - gw) / 2.0).round() + 0.5, ((h - gh) / 2.0).round() + 0.5);
-            cr.set_source_rgba(r, g, b, a);
-            cr.set_line_width(1.2);
-            cr.set_line_join(gtk::cairo::LineJoin::Round);
-            rounded(cr, gx, gy, gw, gh, 2.0);
-            let _ = cr.stroke();
-            cr.rectangle(gx + 0.5, gy + 0.5, 4.0, gh - 1.0);
-            let _ = cr.fill();
-        });
-        self.handles.borrow_mut().push(handle.clone());
-        handle
+        self.root.get_visible()
     }
 
     /// After a theme change: the ink is the button's own colour, read at

@@ -1,4 +1,4 @@
-//! What Ctrl+Enter and Escape mean in a dialog.
+//! What Ctrl+Enter, Escape and a click outside mean in a dialog.
 //!
 //! Anything that creates something has one action that finishes it, and in
 //! this app that action is always a button in a corner you are not looking at:
@@ -57,6 +57,37 @@ pub fn close_on_search_escape(entry: &gtk::SearchEntry, dialog: &adw::Dialog) {
     entry.connect_stop_search(move |_| {
         dialog.close();
     });
+}
+
+/// Close a dialog from a click outside it, with any button.
+///
+/// An `AdwDialog` does not do this on its own: the dimming around it swallows
+/// every click and closes nothing. Right for a form, where a stray click would
+/// throw away what was typed; wrong for a picker, where there is nothing to
+/// lose and a click back on the chart is how a hand says "never mind".
+///
+/// Caught on the dialog itself, on the way down. An open `AdwDialog` is where
+/// every event in the window starts propagating, a click on the chart behind
+/// it included, so a controller on the window never hears one. And the dialog
+/// holds its own sheet and the dimming around it, spanning the whole window,
+/// so "outside" is measured against its content rather than against it.
+pub fn close_on_click_outside(dialog: &adw::Dialog) {
+    let click = gtk::GestureClick::new();
+    click.set_button(0);
+    click.set_propagation_phase(gtk::PropagationPhase::Capture);
+    click.connect_pressed(|gesture, _, x, y| {
+        let Some(dialog) = gesture.widget().and_downcast::<adw::Dialog>() else { return };
+        let Some(content) = dialog.child() else { return };
+        let point = gtk::graphene::Point::new(x as f32, y as f32);
+        if content.compute_bounds(&dialog).is_some_and(|b| b.contains_point(&point)) {
+            // Inside: step aside, so the rows and the box get it untouched.
+            gesture.set_state(gtk::EventSequenceState::Denied);
+            return;
+        }
+        gesture.set_state(gtk::EventSequenceState::Claimed);
+        dialog.close();
+    });
+    dialog.add_controller(click);
 }
 
 /// "Ctrl+Enter", written the way this desktop writes it.

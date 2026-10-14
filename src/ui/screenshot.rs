@@ -77,9 +77,7 @@ pub const FOLDER: &str = "Omacharts";
 /// added to the legend inherits being left out rather than having to be
 /// remembered here.
 ///
-/// - `timeframe-strip` — the segmented resolution buttons. The resolution
-///   itself still appears: it is written beside the symbol as plain text, and
-///   that label is information and stays.
+/// - `timeframe-strip` — the segmented resolution buttons.
 /// - `legend-gear`, `legend-link` — chart settings, and the link group.
 /// - `legend-button` — a row's hide, settings and remove buttons.
 /// - `pane-expand` — the maximize corner.

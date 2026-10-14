@@ -15,7 +15,7 @@ use std::rc::Rc;
 use adw::prelude::*;
 use gtk::gio;
 use gtk::glib;
-use omacharts_engine::{FetchFailure, Instrument, LinkGroup};
+use omacharts_engine::{grouped_decimals, FetchFailure, Instrument, LinkGroup};
 
 use crate::store::{Entry, Section, Store, DEFAULT_WATCHLIST};
 use crate::ui::search::SymbolSearch;
@@ -77,6 +77,14 @@ fn next_in_rotation(ids: &[i64], current: i64, delta: i32) -> Option<i64> {
     Some(ids[next])
 }
 
+/// The watchlist a number key names: 1 is the first the switcher lists.
+///
+/// `None` for zero, which names nothing, and past the last list, which a
+/// keystroke should leave alone rather than clamp to the end.
+fn numbered(ids: &[i64], n: usize) -> Option<i64> {
+    ids.get(n.checked_sub(1)?).copied()
+}
+
 /// The last close and the move onto it, when the cache holds enough to say.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Quote {
@@ -133,8 +141,8 @@ impl Column {
     fn width_chars(self) -> i32 {
         match self {
             Column::Symbol => 0,
-            Column::Last => 9,
-            Column::Change => 8,
+            Column::Last => 10,
+            Column::Change => 9,
             Column::ChangePct => 7,
         }
     }
@@ -351,23 +359,12 @@ pub fn store_sort(store: &Store, watchlist: i64, sort: Option<Sort>) {
     store.set_setting(&sort_setting(watchlist), &sort.map(Sort::key).unwrap_or_default());
 }
 
-/// A key that folds sections.
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum Fold {
-    Close,
-    Open,
-    Toggle,
-}
-
-/// The section a folding key acts on from this row, and whether it ends up
-/// folded; `None` leaves the key to the list.
-fn fold_target(on: &RowKind, key: Fold) -> Option<(i64, bool)> {
-    match (on, key) {
-        (RowKind::Header { section_id, .. }, Fold::Close) => Some((*section_id, true)),
-        (RowKind::Header { section_id, .. }, Fold::Open) => Some((*section_id, false)),
-        (RowKind::Header { section_id, collapsed }, Fold::Toggle) => Some((*section_id, !collapsed)),
-        (RowKind::Entry { section_id, .. }, Fold::Close) => Some((*section_id, true)),
-        _ => None,
+/// The section Enter or Space folds or unfolds from this row, and whether it
+/// ends up folded; `None` leaves the key to the list.
+fn fold_target(on: &RowKind) -> Option<(i64, bool)> {
+    match on {
+        RowKind::Header { section_id, collapsed } => Some((*section_id, !collapsed)),
+        RowKind::Entry { .. } => None,
     }
 }
 
@@ -453,8 +450,21 @@ pub struct Watchlist {
     /// Which watchlist the rail is showing. Not which one the bar widget
     /// shows — that is always the default one.
     active: Cell<i64>,
-    /// Names the watchlist on screen and offers the rest.
-    switcher: gtk::MenuButton,
+    /// Steps out to every watchlist, and back in.
+    switcher: gtk::Button,
+    /// The watchlist on screen by name, or "Watchlists" on the page of them.
+    title: gtk::Label,
+    /// What holds the chain, so it can be put out of the way on the page of
+    /// lists without touching the chain's own look.
+    link_slot: gtk::Box,
+    /// Adds to the page on screen: a symbol or a section, or a list.
+    add: gtk::Button,
+    /// The rail's two pages: one list's symbols, and every list.
+    pages: gtk::Stack,
+    /// Every watchlist, one row each, when the rail has stepped out.
+    lists: gtk::ListBox,
+    /// The watchlist on each of those rows, parallel to them.
+    list_ids: RefCell<Vec<i64>>,
     /// The empty state's first offer, when that is all the rail holds.
     /// Somewhere for the keyboard to land on a list with no rows in it.
     empty_focus: RefCell<Option<gtk::Button>>,
@@ -463,14 +473,25 @@ pub struct Watchlist {
     /// One hook for every way of switching, because a second route to the
     /// same state is a second route that can forget to save.
     on_switch: RefCell<Option<Rc<dyn Fn()>>>,
-    /// Asked which chartbook is using a watchlist, so the switcher can refuse
-    /// one that is spoken for. The chartbooks live in the window; the rail
-    /// only knows how to ask about one list at a time.
+    /// Asked which chartbook is using a watchlist, so the page of lists can
+    /// refuse one that is spoken for. The chartbooks live in the window; the
+    /// rail only knows how to ask about one list at a time.
     using: RefCell<Option<Rc<dyn Fn(i64) -> Option<String>>>>,
 }
 
 const SETTING_COLUMNS: &str = "watchlist_columns";
 const SETTING_ACTIVE: &str = "active_watchlist";
+
+/// The rail's pages: one list's symbols, and every list.
+const PAGE_SYMBOLS: &str = "symbols";
+const PAGE_LISTS: &str = "lists";
+
+/// What the band calls the page of lists.
+const LISTS_TITLE: &str = "Watchlists";
+
+/// What the band's + makes on a list's symbols, and on the page of lists.
+const ADD_TIP: &str = "Add a symbol or a section";
+const NEW_LIST_TIP: &str = "New watchlist";
 
 impl Watchlist {
     pub fn new(
@@ -514,14 +535,32 @@ impl Watchlist {
         let header = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         header.add_css_class("rail-header");
 
-        // The step `.rail-header` takes is thirty pixels of nothing, and the
+        // The step `.rail-header` takes is 37 pixels of nothing, and the
         // corner controls only cover its right-hand end. Naming the watchlist
         // in what is left costs no height at all, which is the only reason
         // the rail can be told what it is showing without giving up a row.
-        let switcher = gtk::MenuButton::new();
+        //
+        // The button before the name steps the rail out to every watchlist,
+        // in place of the symbols, rather than opening a menu over them: a
+        // menu of a dozen lists ran taller than the rail and carried a rename
+        // and a delete on every row, and the rail already knows how to show a
+        // list of rows and walk it with the arrows. A button that looks like
+        // one, because a name that brightened under the pointer was not
+        // something anybody guessed they could click.
+        let switcher = gtk::Button::from_icon_name("view-list-symbolic");
         switcher.add_css_class("flat");
         switcher.add_css_class("rail-switcher");
         switcher.set_valign(gtk::Align::Center);
+        switcher.set_tooltip_text(Some("All watchlists"));
+
+        // Ellipsized at a width that clears the corner controls, instead of
+        // growing under them.
+        let title = gtk::Label::new(None);
+        title.add_css_class("rail-title");
+        title.set_valign(gtk::Align::Center);
+        title.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        title.set_max_width_chars(14);
+        title.set_xalign(0.0);
 
         // The chain beside the name, because the question it answers is about
         // this list: which group of charts does picking a symbol here move.
@@ -533,22 +572,38 @@ impl Watchlist {
         link.set_always_show_arrow(false);
         link.set_valign(gtk::Align::Center);
 
-        // Over the tickers: a row sits 6px in (Adwaita's sidebar row
-        // margin), pads 8px, and its box starts another 12px in, so a
-        // symbol's first letter lands 26px from the rail's edge, and so
-        // does the name's. The switcher wears no horizontal padding (see
-        // `.rail-switcher`), so this margin alone decides it.
-        let named = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+        // The button's edge on the rows' edge: a row sits 6px in, Adwaita's
+        // sidebar row margin. Down the middle of the band below the 7px the
+        // corner controls also step down (see `.window-corner`), which puts
+        // the name on the line a chart's own symbol and resolutions are on.
+        let named = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         named.set_halign(gtk::Align::Start);
-        named.set_valign(gtk::Align::Start);
-        named.set_margin_start(26);
-        named.set_margin_top(1);
+        named.set_valign(gtk::Align::Center);
+        named.set_margin_start(6);
+        named.set_margin_top(7);
         named.append(&switcher);
-        named.append(&link);
+        named.append(&title);
+        let link_slot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        link_slot.append(&link);
+        named.append(&link_slot);
+
+        // Adding, at the other end of the band from the name and clear of
+        // the corner controls, where a sidebar keeps its "new". It used to be
+        // a strip of its own at the foot of the rail, which cost a row's
+        // height and sat where nobody was looking.
+        let add = gtk::Button::from_icon_name("list-add-symbolic");
+        add.add_css_class("flat");
+        add.add_css_class("rail-add");
+        add.set_tooltip_text(Some(ADD_TIP));
+        add.set_halign(gtk::Align::End);
+        add.set_valign(gtk::Align::Center);
+        add.set_margin_top(7);
+        add.set_margin_end(crate::ui::window::RAIL_ADD_END);
 
         let band = gtk::Overlay::new();
         band.set_child(Some(&header));
         band.add_overlay(&named);
+        band.add_overlay(&add);
 
         // A column of dashes with no explanation is the same failure as an
         // empty chart, in a quieter voice — so the rail says why, directly
@@ -567,8 +622,9 @@ impl Watchlist {
         trouble.set_visible(false);
 
         // The column titles, lined up over the cells: a row's box starts 26px
-        // from the rail's edge (see the switcher above) and ends 24px from the
-        // other, 6px of Adwaita's row margin and 8 of padding past its own 10.
+        // from the rail's edge, past Adwaita's 6px row margin, 8 of padding
+        // and its own 12, and ends 24px from the other, past the same 6 and 8
+        // and its own 10.
         let column_header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         // Named so the stylesheet can take GTK's drop outline off this one
         // row without touching the drop feedback on the symbols below.
@@ -596,13 +652,33 @@ impl Watchlist {
         columns_over_rows.set_margin_top(4);
         columns_over_rows.set_margin_bottom(2);
 
+        let symbols = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        symbols.append(&columns_over_rows);
+        symbols.append(&trouble);
+        symbols.append(&scroller);
+
+        // Every watchlist, in the same rows as the symbols, so stepping out
+        // is the same rail one level up rather than a different thing.
+        let lists = gtk::ListBox::new();
+        lists.add_css_class("navigation-sidebar");
+        let lists_scroller = gtk::ScrolledWindow::new();
+        lists_scroller.set_child(Some(&lists));
+        lists_scroller.set_vexpand(true);
+        lists_scroller.set_hscrollbar_policy(gtk::PolicyType::Never);
+        lists_scroller.set_margin_top(6);
+
+        let pages = gtk::Stack::new();
+        pages.add_named(&symbols, Some(PAGE_SYMBOLS));
+        pages.add_named(&lists_scroller, Some(PAGE_LISTS));
+        pages.set_transition_type(gtk::StackTransitionType::SlideLeftRight);
+        pages.set_transition_duration(120);
+        pages.set_vexpand(true);
+
         let widget = gtk::Box::new(gtk::Orientation::Vertical, 0);
         widget.set_size_request(248, -1);
         widget.append(&band);
         widget.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-        widget.append(&columns_over_rows);
-        widget.append(&trouble);
-        widget.append(&scroller);
+        widget.append(&pages);
 
         let columns = parse_columns(store.setting(SETTING_COLUMNS).as_deref());
         // A watchlist deleted in another window, or a setting from a database
@@ -637,39 +713,23 @@ impl Watchlist {
             link_group: Cell::new(LinkGroup::None),
             active: Cell::new(active),
             switcher: switcher.clone(),
+            link_slot,
+            add: add.clone(),
+            title,
+            pages,
+            lists,
+            list_ids: RefCell::new(Vec::new()),
             empty_focus: RefCell::new(None),
             on_switch: RefCell::new(None),
             using: RefCell::new(None),
         });
 
-        let actions = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        actions.set_halign(gtk::Align::Center);
-        actions.set_margin_top(4);
-        actions.set_margin_bottom(4);
-
-        let add_symbol = gtk::Button::from_icon_name("list-add-symbolic");
-        let tip = shortcuts::tooltip_with_key("Add a symbol", shortcuts::ADD_SYMBOL);
-        add_symbol.set_tooltip_text(Some(&tip));
-        add_symbol.add_css_class("flat");
-        let this = watchlist.clone();
-        add_symbol.connect_clicked(move |_| this.add_symbol());
-        actions.append(&add_symbol);
-
-        let add_section = gtk::Button::from_icon_name("folder-new-symbolic");
-        let tip = shortcuts::tooltip_with_key("Add a section", shortcuts::ADD_SECTION);
-        add_section.set_tooltip_text(Some(&tip));
-        add_section.add_css_class("flat");
-        let this = watchlist.clone();
-        add_section.connect_clicked(move |button| this.prompt_new_section(button));
-        actions.append(&add_section);
-
-        watchlist.widget.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-        watchlist.widget.append(&actions);
 
         watchlist.wire_selection();
         watchlist.wire_keys();
         watchlist.wire_click_to_focus();
         watchlist.wire_switcher();
+        watchlist.wire_add();
         watchlist.wire_column_drop();
         watchlist.rebuild();
         watchlist
@@ -767,7 +827,13 @@ impl Watchlist {
     /// than emptying the rail — a chartbook can outlive the watchlist it was
     /// pointed at, and the rail is not the place to find that out.
     pub fn set_active_watchlist(self: &Rc<Self>, id: i64) {
-        if id == self.active.get() || !self.store.watchlist_exists(id) {
+        if !self.store.watchlist_exists(id) {
+            return;
+        }
+        // However it was asked for — a list picked, a number key, a command
+        // — a list asked for is a list to look at.
+        self.show_symbols();
+        if id == self.active.get() {
             return;
         }
         self.active.set(id);
@@ -795,11 +861,11 @@ impl Watchlist {
         group_held_by(&self.store, group, self.active.get())
     }
 
-    /// Answer which chartbook is using a watchlist, for the switcher.
+    /// Answer which chartbook is using a watchlist, for the page of lists.
     ///
     /// Set by the window, because that is where the chartbooks are. Asked
-    /// while the menu is being built rather than remembered, so a chartbook
-    /// renamed since the last time it opened is named as it is called now.
+    /// each time the page is filled rather than remembered, so a chartbook
+    /// renamed since the page last opened is named as it is called now.
     pub fn connect_chartbook_using(&self, using: impl Fn(i64) -> Option<String> + 'static) {
         *self.using.borrow_mut() = Some(Rc::new(using));
     }
@@ -947,6 +1013,17 @@ impl Watchlist {
         }
     }
 
+    /// Show the `n`th watchlist, counting from 1 in the switcher's order.
+    ///
+    /// False when there is no such list, so the key is left for somebody
+    /// else. Through `set_active_watchlist`, like the rotation above.
+    pub fn show_numbered(self: &Rc<Self>, n: usize) -> bool {
+        let ids: Vec<i64> = self.watchlists().into_iter().map(|(id, _)| id).collect();
+        let Some(id) = numbered(&ids, n) else { return false };
+        self.set_active_watchlist(id);
+        true
+    }
+
     /// Every watchlist, in display order, as id and name.
     pub fn watchlists(&self) -> Vec<(i64, String)> {
         self.store.watchlists()
@@ -955,6 +1032,9 @@ impl Watchlist {
     /// Put the keyboard on the rail, landing on something selected so the
     /// arrows have somewhere to go from.
     pub fn grab_focus(self: &Rc<Self>) {
+        if self.showing_lists() {
+            return self.focus_lists();
+        }
         let row = self.list.selected_row().or_else(|| {
             (0..)
                 .map_while(|i| self.list.row_at_index(i))
@@ -980,7 +1060,9 @@ impl Watchlist {
     /// happened is a click on the rail. The shortcuts only need the keyboard
     /// to be in here; they do not need anything selected.
     fn take_focus(self: &Rc<Self>) {
-        if let Some(row) = self.list.selected_row() {
+        if self.showing_lists() {
+            self.focus_lists();
+        } else if let Some(row) = self.list.selected_row() {
             row.grab_focus();
         } else if let Some(offer) = self.empty_focus.borrow().as_ref() {
             offer.grab_focus();
@@ -1037,7 +1119,15 @@ impl Watchlist {
     /// Collapsed sections are excluded: what you cannot see, you cannot arrow
     /// onto, and prefetching it would spend the request budget on rows that
     /// are not there.
+    ///
+    /// The row's own flag, not whether it is on screen: with the rail closed
+    /// every row is off screen, and the chart still walks the list.
     pub fn flat_order(&self) -> Vec<Instrument> {
+        self.walked_rows().into_iter().map(|(_, instrument)| instrument).collect()
+    }
+
+    /// `flat_order`, with the index of the row each symbol is on.
+    fn walked_rows(&self) -> Vec<(usize, Instrument)> {
         self.rows
             .borrow()
             .iter()
@@ -1047,22 +1137,84 @@ impl Watchlist {
                     let visible = self
                         .list
                         .row_at_index(at as i32)
-                        .map(|row| row.is_visible())
+                        .map(|row| row.get_visible())
                         .unwrap_or(false);
-                    visible.then(|| instrument.clone())
+                    visible.then(|| (at, instrument.clone()))
                 }
                 RowKind::Header { .. } => None,
             })
             .collect()
     }
 
+    /// `flat_order`, and which of its symbols a step from the chart starts
+    /// at.
+    ///
+    /// The highlighted row when it holds what the chart shows, so a symbol
+    /// listed twice steps on from the copy the chart reached rather than the
+    /// first; then the first copy of it; then the highlighted row anyway,
+    /// for a symbol picked from search or sitting in a folded section,
+    /// which then steps on from where the list was left instead of from its
+    /// top. `None` only with nothing to go on.
+    pub fn step_order(
+        &self,
+        current: Option<&Instrument>,
+    ) -> (Vec<Instrument>, Option<usize>) {
+        let walked = self.walked_rows();
+        let selected = self.list.selected_row().map(|row| row.index().max(0) as usize);
+        let from = step_from(&walked, selected, current);
+        (walked.into_iter().map(|(_, instrument)| instrument).collect(), from)
+    }
+
+    /// Highlight the `at`th symbol of `flat_order`: the row itself, which
+    /// for a symbol listed twice `highlight` cannot tell apart.
+    pub fn highlight_walked(&self, at: usize) {
+        let Some(&(row, _)) = self.walked_rows().get(at) else { return };
+        let Some(row) = self.list.row_at_index(row as i32) else { return };
+        self.select_quietly(&row);
+    }
+
     /// Highlight a symbol without loading it again.
     pub fn highlight(self: &Rc<Self>, instrument: &Instrument) {
+        // Already on it, perhaps on its second copy: moving to the first
+        // would send the next step back up the list.
+        let on_it = self.list.selected_row().is_some_and(|row| {
+            matches!(
+                self.rows.borrow().get(row.index().max(0) as usize),
+                Some(RowKind::Entry { instrument: i, .. })
+                    if i.symbol == instrument.symbol && i.suffix == instrument.suffix
+            )
+        });
+        if on_it {
+            return;
+        }
         let Some(at) = self.row_of(instrument) else { return };
         let Some(row) = self.list.row_at_index(at as i32) else { return };
+        self.select_quietly(&row);
+    }
+
+    /// Select `row` without loading it again, and scroll it into view.
+    fn select_quietly(&self, row: &gtk::ListBoxRow) {
         self.quiet.set(true);
-        self.list.select_row(Some(&row));
+        self.list.select_row(Some(row));
         self.quiet.set(false);
+        self.reveal(row);
+    }
+
+    /// Scroll the rail until `row` is in view. A row the keyboard is on
+    /// needs nothing, since the viewport follows the focus; a row only
+    /// selected, as a chart moving leaves it, is followed by nothing.
+    fn reveal(&self, row: &gtk::ListBoxRow) {
+        let Some(scroller) =
+            self.list.ancestor(gtk::ScrolledWindow::static_type()).and_downcast::<gtk::ScrolledWindow>()
+        else {
+            return;
+        };
+        // Measured against what the viewport scrolls rather than against the
+        // list, which need not start at its top.
+        let Some(content) = scroller.child().and_then(|viewport| viewport.first_child()) else { return };
+        let Some(bounds) = row.compute_bounds(&content) else { return };
+        let top = f64::from(bounds.y());
+        scroller.vadjustment().clamp_page(top, top + f64::from(bounds.height()));
     }
 
     fn wire_selection(self: &Rc<Self>) {
@@ -1083,8 +1235,9 @@ impl Watchlist {
         });
     }
 
-    /// Plain arrows move a symbol at a time — the list does that itself.
-    /// Ctrl with an arrow jumps a whole section, for a long rail.
+    /// Plain arrows move a symbol at a time, past open sections' headers —
+    /// `step_row`, below. Ctrl with an arrow jumps a whole section, for a
+    /// long rail.
     fn wire_keys(self: &Rc<Self>) {
         let keys = gtk::EventControllerKey::new();
         let this = self.clone();
@@ -1103,9 +1256,9 @@ impl Watchlist {
         });
         self.list.add_controller(keys);
 
-        // ← folds and → unfolds the section header the keyboard is on, and
-        // Enter or Space flips it; ← on a symbol folds the section it is in,
-        // the way a tree folds the branch a leaf is on. Caught on the way down,
+        // ↑ and ↓ step over the headers of open sections, and Enter or Space
+        // flips the section header the keyboard is on. ← and → are left to
+        // pass: they pan the chart wherever the keyboard is. Caught on the way down,
         // before the list's own Enter and Space, which would otherwise spend the
         // key activating a header that does nothing when activated.
         let keys = gtk::EventControllerKey::new();
@@ -1120,13 +1273,14 @@ impl Watchlist {
             if state.intersects(held) {
                 return glib::Propagation::Proceed;
             }
-            let fold = match key {
-                Key::Left | Key::KP_Left => Fold::Close,
-                Key::Right | Key::KP_Right => Fold::Open,
-                Key::Return | Key::KP_Enter | Key::space => Fold::Toggle,
-                _ => return glib::Propagation::Proceed,
-            };
-            glib::Propagation::from(this.fold_from_keyboard(fold))
+            match key {
+                Key::Up | Key::KP_Up => glib::Propagation::from(this.step_row(false)),
+                Key::Down | Key::KP_Down => glib::Propagation::from(this.step_row(true)),
+                Key::Return | Key::KP_Enter | Key::space => {
+                    glib::Propagation::from(this.fold_from_keyboard())
+                }
+                _ => glib::Propagation::Proceed,
+            }
         });
         self.list.add_controller(keys);
 
@@ -1167,22 +1321,51 @@ impl Watchlist {
         self.widget.add_controller(keys);
     }
 
+    /// Up or down a row, past the header of a section that is open: its
+    /// symbols are what the arrows are for, and the header would be a stop
+    /// that charts nothing. A folded section's header is still a stop,
+    /// because it is the only row the section has, and the one Enter unfolds.
+    fn step_row(self: &Rc<Self>, forward: bool) -> bool {
+        // Only when a row itself has the keyboard, as with folding.
+        let Some(row) = self.list.root().and_then(|root| root.focus()).and_downcast::<gtk::ListBoxRow>()
+        else {
+            return false;
+        };
+        let at = row.index().max(0) as usize;
+        let rows = self.rows.borrow();
+        let stop = |i: &usize| {
+            let shown = self.list.row_at_index(*i as i32).is_some_and(|row| row.get_visible());
+            let header = matches!(rows.get(*i), Some(RowKind::Header { collapsed: false, .. }));
+            shown && !header
+        };
+        let target = if forward {
+            (at + 1..rows.len()).find(stop)
+        } else {
+            (0..at).rev().find(stop)
+        };
+        drop(rows);
+        // At either end the key is still the rail's: past the last symbol is
+        // nowhere, not the next widget over.
+        let Some(row) = target.and_then(|at| self.list.row_at_index(at as i32)) else { return true };
+        if row.is_selectable() {
+            self.list.select_row(Some(&row));
+        }
+        row.grab_focus();
+        true
+    }
+
     /// Fold or unfold the section where the keyboard is, and leave the
     /// keyboard on its header. A rebuild makes every row new, so without that
     /// the next arrow key would start from nowhere.
-    fn fold_from_keyboard(self: &Rc<Self>, key: Fold) -> bool {
+    fn fold_from_keyboard(self: &Rc<Self>) -> bool {
         // Only when a row itself has the keyboard: a key in the box renaming a
         // section, or on a button in a header, is that widget's.
         let Some(row) = self.list.root().and_then(|root| root.focus()).and_downcast::<gtk::ListBoxRow>()
         else {
             return false;
         };
-        let on = self.rows.borrow().get(row.index().max(0) as usize).cloned();
-        let Some((id, folded)) = on.and_then(|on| fold_target(&on, key)) else { return false };
-        // The symbols outside any section have no header to fold to.
-        if self.header_row(id).is_none() {
-            return false;
-        }
+        let on = self.rows.borrow().get(row.index().max(0) as usize).and_then(fold_target);
+        let Some((id, folded)) = on else { return false };
         self.fold_section(id, folded);
         if let Some(header) = self.header_row(id) {
             header.grab_focus();
@@ -1336,6 +1519,11 @@ impl Watchlist {
         clear_rows(&self.list);
 
         self.write_switcher();
+        // A list made, renamed or deleted from a terminal shows on the page
+        // of lists as well, if that is the page on screen.
+        if self.showing_lists() {
+            self.fill_lists();
+        }
         self.sort.set(stored_sort(&self.store, self.active.get()));
         self.write_column_header();
 
@@ -1411,6 +1599,7 @@ impl Watchlist {
             "pan-down-symbolic"
         });
         arrow.add_css_class("flat");
+        arrow.add_css_class("section-fold");
         arrow.set_valign(gtk::Align::Center);
         let this = self.clone();
         arrow.connect_clicked(move |_| this.fold_section(id, !collapsed));
@@ -1472,7 +1661,7 @@ impl Watchlist {
         let row = gtk::ListBoxRow::new();
         row.set_child(Some(&header));
         // A header takes the keyboard but never the selection: an arrow key
-        // stops on one without loading anything, and ← → Enter fold it.
+        // stops on one without loading anything, and Enter folds it.
         row.set_selectable(false);
         row.set_activatable(false);
         // Named like the symbols for the same reason: the line says where
@@ -1599,8 +1788,6 @@ impl Watchlist {
     ) -> (gtk::ListBoxRow, Vec<(Column, gtk::Label)>) {
         let quote = (self.quote)(instrument);
         let row_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        row_box.set_margin_top(4);
-        row_box.set_margin_bottom(4);
         row_box.set_margin_start(12);
         row_box.set_margin_end(10);
 
@@ -2194,13 +2381,12 @@ impl Watchlist {
         true
     }
 
-    /// The switcher names the watchlist on screen, in the strip the corner
-    /// controls already reserved.
-    ///
-    /// The chevron is appended here rather than left to the MenuButton so the
-    /// name can ellipsize at a width that clears those controls, instead of
-    /// growing under them.
+    /// Name the watchlist on screen in the band, unless the band is naming
+    /// the page of lists.
     fn write_switcher(&self) {
+        if self.showing_lists() {
+            return;
+        }
         let name = self
             .store
             .watchlists()
@@ -2209,206 +2395,386 @@ impl Watchlist {
             .map(|(_, name)| name)
             .unwrap_or_default();
 
-        let content = gtk::Box::new(gtk::Orientation::Horizontal, 2);
-        let label = gtk::Label::new(Some(&name));
-        label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        label.set_max_width_chars(14);
-        label.set_xalign(0.0);
-        let chevron = gtk::Image::from_icon_name("pan-down-symbolic");
-        chevron.set_pixel_size(12);
-        content.append(&label);
-        content.append(&chevron);
-        self.switcher.set_child(Some(&content));
+        self.title.set_text(&name);
     }
 
-    /// Build the menu every time it opens, because what it lists is what it
-    /// edits: renaming one and opening it again has to show the new name.
+    /// The way out, and the ways back in: a click or Enter on a list. Escape
+    /// goes back to the list on screen without changing it.
     fn wire_switcher(self: &Rc<Self>) {
         let this = self.clone();
-        self.switcher.set_create_popup_func(move |button| {
-            let popover = gtk::Popover::new();
-            popover.add_css_class("menu");
-            popover.set_child(Some(&this.switcher_menu(&popover)));
-            button.set_popover(Some(&popover));
+        // The same button back in, as Escape does: to the list on screen.
+        self.switcher.connect_clicked(move |_| {
+            if this.showing_lists() {
+                this.show_symbols();
+                this.take_focus();
+            } else {
+                this.show_lists();
+            }
+        });
+
+        let this = self.clone();
+        self.lists.connect_row_activated(move |_, row| {
+            let id = this.list_ids.borrow().get(row.index().max(0) as usize).copied();
+            if let Some(id) = id {
+                this.open_list(id);
+            }
+        });
+
+        // Only when a row itself has the keyboard: Escape in the box renaming
+        // or naming a list is that box's.
+        let keys = gtk::EventControllerKey::new();
+        keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let this = self.clone();
+        keys.connect_key_pressed(move |_, key, _, state| {
+            use gtk::gdk::ModifierType;
+            let held = ModifierType::CONTROL_MASK
+                | ModifierType::ALT_MASK
+                | ModifierType::SHIFT_MASK
+                | ModifierType::SUPER_MASK;
+            let row = this.lists.root().and_then(|root| root.focus()).and_downcast::<gtk::ListBoxRow>();
+            if key != gtk::gdk::Key::Escape || state.intersects(held) || row.is_none() {
+                return glib::Propagation::Proceed;
+            }
+            this.show_symbols();
+            this.take_focus();
+            glib::Propagation::Stop
+        });
+        self.lists.add_controller(keys);
+    }
+
+    /// The + in the band. On a list's symbols it offers the two things a
+    /// list holds, the one done all day first; on the page of lists there is
+    /// only one thing to make, so it makes it.
+    fn wire_add(self: &Rc<Self>) {
+        let actions = gio::SimpleActionGroup::new();
+        let symbol = gio::SimpleAction::new("symbol", None);
+        let this = self.clone();
+        symbol.connect_activate(move |_, _| this.add_symbol());
+        actions.add_action(&symbol);
+        let section = gio::SimpleAction::new("section", None);
+        let this = self.clone();
+        section.connect_activate(move |_, _| this.prompt_new_section(&this.add));
+        actions.add_action(&section);
+        self.add.insert_action_group("add", Some(&actions));
+
+        let this = self.clone();
+        self.add.connect_clicked(move |button| {
+            if this.showing_lists() {
+                this.prompt_new_watchlist();
+                return;
+            }
+            let model = gio::Menu::new();
+            for (label, action, accel) in [
+                ("Add a symbol", "add.symbol", shortcuts::ADD_SYMBOL),
+                ("Add a section", "add.section", shortcuts::ADD_SECTION),
+            ] {
+                let item = gio::MenuItem::new(Some(label), Some(action));
+                item.set_attribute_value("accel", Some(&accel.to_variant()));
+                model.append_item(&item);
+            }
+            popup_menu(&model, button, 0.0, button.height() as f64);
         });
     }
 
-    fn switcher_menu(self: &Rc<Self>, popover: &gtk::Popover) -> gtk::Box {
-        let menu = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        menu.set_size_request(200, -1);
-        for (id, name) in self.store.watchlists() {
-            menu.append(&self.switcher_row(id, &name, popover));
-        }
-        menu.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-        menu.append(&self.new_watchlist_row(popover));
-        menu
+    /// Step out to every watchlist, with the one on screen highlighted and
+    /// the keyboard on it.
+    fn show_lists(self: &Rc<Self>) {
+        self.fill_lists();
+        self.pages.set_visible_child_name(PAGE_LISTS);
+        self.switcher.add_css_class("open");
+        self.title.set_text(LISTS_TITLE);
+        self.add.set_tooltip_text(Some(NEW_LIST_TIP));
+        // The chain is about the list on screen, so it has nothing to say
+        // here. Faded out rather than hidden: it is the tallest thing in the
+        // band, and taking it away would move the title up out of line.
+        self.link_slot.set_opacity(0.0);
+        self.link_slot.set_sensitive(false);
+        self.focus_lists();
     }
 
-    /// One watchlist: its name switches to it, the pencil renames it in
-    /// place, and the bin is simply absent on the one that cannot go.
-    fn switcher_row(self: &Rc<Self>, id: i64, name: &str, popover: &gtk::Popover) -> gtk::Box {
-        let row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    /// Back to the symbols of the list on screen.
+    fn show_symbols(&self) {
+        self.pages.set_visible_child_name(PAGE_SYMBOLS);
+        self.switcher.remove_css_class("open");
+        self.write_switcher();
+        self.add.set_tooltip_text(Some(ADD_TIP));
+        self.link_slot.set_opacity(1.0);
+        self.link_slot.set_sensitive(true);
+    }
 
-        let tick = gtk::Image::from_icon_name("object-select-symbolic");
-        tick.set_pixel_size(12);
-        // The space is kept on every row, so the names line up down the menu
-        // however the current one moves.
-        tick.set_opacity(if id == self.active.get() { 1.0 } else { 0.0 });
+    fn showing_lists(&self) -> bool {
+        self.pages.visible_child_name().as_deref() == Some(PAGE_LISTS)
+    }
 
+    fn focus_lists(&self) {
+        match self.lists.selected_row() {
+            Some(row) => row.grab_focus(),
+            None => self.lists.grab_focus(),
+        };
+    }
+
+    /// Show a list's symbols and put the keyboard in them, without picking
+    /// one: a highlight drives the chart, and opening a list is for looking
+    /// at it, not for moving the chart to whatever happens to be first.
+    fn open_list(self: &Rc<Self>, id: i64) {
+        self.set_active_watchlist(id);
+        self.take_focus();
+    }
+
+    /// One row a watchlist, in the order the number keys count them.
+    fn fill_lists(self: &Rc<Self>) {
+        clear_rows(&self.lists);
+        let mut ids = Vec::new();
+        for (id, name) in self.watchlists() {
+            let row = self.list_row(id, &name);
+            self.lists.append(&row);
+            if id == self.active.get() {
+                self.lists.select_row(Some(&row));
+            }
+            ids.push(id);
+        }
+        *self.list_ids.borrow_mut() = ids;
+    }
+
+    /// One watchlist: its name, and how many symbols it holds.
+    ///
+    /// Renaming and deleting are behind a right-click, as a section's are,
+    /// and behind a pencil and a bin that show before the count while the
+    /// pointer is on the row. Only then: on every row at once they were two
+    /// controls a list for things done once a month, beside the one done all
+    /// day. Delete still asks first, so it is not one slip away from a list
+    /// somebody meant to open.
+    ///
+    /// A list another chartbook is using cannot be opened here, and says
+    /// whose it is rather than merely refusing: the same words the chain's
+    /// popover uses for a group another list holds.
+    fn list_row(self: &Rc<Self>, id: i64, name: &str) -> gtk::ListBoxRow {
         let label = gtk::Label::new(Some(name));
         label.set_xalign(0.0);
-        label.set_hexpand(true);
+        label.add_css_class("symbol-row-ticker");
         label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        label.set_max_width_chars(16);
-
-        let content = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        content.append(&tick);
-        content.append(&label);
-
-        let pick = gtk::Button::new();
-        pick.add_css_class("flat");
-        pick.set_hexpand(true);
-
-        // A watchlist is one chartbook's, so one another book is using is not
-        // on offer — and the row names the book that has it rather than merely
-        // refusing, which would leave nothing to understand. The same two
-        // words the chain's popover uses for a group another list holds, so
-        // the app says "taken, and here is by whom" one way.
-        if let Some(book) = self.chartbook_using(id) {
-            let owner = gtk::Label::new(Some(&book));
-            owner.add_css_class("dim-label");
-            owner.add_css_class("caption");
-            owner.set_ellipsize(gtk::pango::EllipsizeMode::End);
-            content.append(&owner);
-            // The button only: the pencil and the bin act on the watchlist
-            // itself, which is nobody's to begin with.
-            pick.set_sensitive(false);
-        }
-        pick.set_child(Some(&content));
 
         let rename = gtk::Entry::new();
         rename.set_text(name);
 
         let stack = gtk::Stack::new();
         stack.set_hexpand(true);
-        stack.add_named(&pick, Some("label"));
+        stack.set_hhomogeneous(false);
+        stack.add_named(&label, Some("label"));
         stack.add_named(&rename, Some("entry"));
-        row.append(&stack);
 
-        let this = self.clone();
-        let popover_weak = popover.downgrade();
-        pick.connect_clicked(move |_| {
-            this.set_active_watchlist(id);
-            if let Some(popover) = popover_weak.upgrade() {
-                popover.popdown();
-            }
-        });
+        let row_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        row_box.set_margin_start(12);
+        row_box.set_margin_end(10);
+        row_box.append(&stack);
 
+        let row = gtk::ListBoxRow::new();
+        row.add_css_class("list-row");
+
+        if let Some(book) = self.chartbook_using(id) {
+            let owner = gtk::Label::new(Some(&book));
+            owner.add_css_class("dim-label");
+            owner.add_css_class("caption");
+            owner.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            row_box.append(&owner);
+            label.add_css_class("dim-label");
+            row.set_activatable(false);
+        }
+
+        let symbols: usize = self.store.watchlist_sections(id).iter().map(|s| s.entries.len()).sum();
+        let count = gtk::Label::new(Some(&symbols.to_string()));
+        count.add_css_class("dim-label");
+        count.add_css_class("caption");
+        count.add_css_class("numeric");
+        count.set_xalign(1.0);
+        // Three digits wide whatever it holds, so the buttons before it stand
+        // in one column down the page rather than stepping with the count.
+        count.set_width_chars(3);
+
+        // Spaced as far apart as a row is tall, so a bin is not hit for a
+        // pencil, and further from the count, which stays where it was.
+        let actions = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        actions.set_margin_end(6);
+        actions.set_visible(false);
         let edit = gtk::Button::from_icon_name("document-edit-symbolic");
         edit.add_css_class("flat");
+        edit.add_css_class("list-row-action");
         edit.set_tooltip_text(Some("Rename"));
         let stack_weak = stack.downgrade();
         let rename_weak = rename.downgrade();
         edit.connect_clicked(move |_| {
             if let (Some(stack), Some(rename)) = (stack_weak.upgrade(), rename_weak.upgrade()) {
-                stack.set_visible_child_name("entry");
-                rename.grab_focus();
-                rename.select_region(0, -1);
+                start_rename(&stack, &rename);
             }
         });
-        row.append(&edit);
+        actions.append(&edit);
+        // The default watchlist has no bin at all, here or in the menu. A
+        // disabled one would be a control that exists to be refused, and the
+        // rule it enforces — something has to be left — is not worth
+        // explaining twice.
+        if id != DEFAULT_WATCHLIST {
+            let remove = gtk::Button::from_icon_name("user-trash-symbolic");
+            remove.add_css_class("flat");
+            remove.add_css_class("list-row-action");
+            remove.set_tooltip_text(Some("Delete…"));
+            let this = self.clone();
+            let list_name = name.to_string();
+            remove.connect_clicked(move |_| this.confirm_remove_watchlist(id, &list_name));
+            actions.append(&remove);
+        }
+        row_box.append(&actions);
+        row_box.append(&count);
+        row.set_child(Some(&row_box));
+
+        let hover = gtk::EventControllerMotion::new();
+        let actions_weak = actions.downgrade();
+        let show = move |on: bool| {
+            if let Some(actions) = actions_weak.upgrade() {
+                actions.set_visible(on);
+            }
+        };
+        let enter = show.clone();
+        hover.connect_enter(move |_, _, _| enter(true));
+        hover.connect_leave(move |_| show(false));
+        row.add_controller(hover);
 
         let this = self.clone();
-        let stack_weak = stack.downgrade();
-        let label_weak = label.downgrade();
         rename.connect_activate(move |entry| {
             let text = entry.text().trim().to_string();
             if !text.is_empty() {
                 this.store.rename_watchlist(id, &text);
-                // The menu is rebuilt the next time it opens, but this one is
-                // still on screen and would otherwise go on showing the name
-                // that has just been changed.
-                if let Some(label) = label_weak.upgrade() {
-                    label.set_text(&text);
-                }
-                this.rebuild();
             }
+            // Refilled once this signal is over: it is the box being typed
+            // in that the refill takes away.
+            let this = this.clone();
+            glib::idle_add_local_once(move || {
+                this.fill_lists();
+                this.focus_lists();
+            });
+        });
+        let focus = gtk::EventControllerFocus::new();
+        let stack_weak = stack.downgrade();
+        focus.connect_leave(move |_| {
             if let Some(stack) = stack_weak.upgrade() {
                 stack.set_visible_child_name("label");
             }
         });
+        rename.add_controller(focus);
 
-        // The default watchlist has no bin at all. A disabled one would be a
-        // control that exists to be refused, and the rule it enforces —
-        // something has to be left — is not worth explaining twice.
-        if id != DEFAULT_WATCHLIST {
-            let remove = gtk::Button::from_icon_name("user-trash-symbolic");
-            remove.add_css_class("flat");
-            remove.set_tooltip_text(Some("Delete"));
-            let this = self.clone();
-            let popover_weak = popover.downgrade();
-            let name = name.to_string();
-            remove.connect_clicked(move |_| {
-                if let Some(popover) = popover_weak.upgrade() {
-                    popover.popdown();
-                }
-                this.confirm_remove_watchlist(id, &name);
-            });
-            row.append(&remove);
-        }
-
+        let menu = gtk::GestureClick::new();
+        menu.set_button(gtk::gdk::BUTTON_SECONDARY);
+        let this = self.clone();
+        let list_name = name.to_string();
+        let row_weak = row.downgrade();
+        let stack_weak = stack.downgrade();
+        let rename_weak = rename.downgrade();
+        menu.connect_pressed(move |_, _, x, y| {
+            let (Some(row), Some(stack), Some(rename)) =
+                (row_weak.upgrade(), stack_weak.upgrade(), rename_weak.upgrade())
+            else {
+                return;
+            };
+            this.list_menu(&row, id, &list_name, (&stack, &rename), x, y);
+        });
+        row.add_controller(menu);
         row
     }
 
-    /// Naming it is making it, so the button becomes the field rather than
-    /// opening a second popover on top of this one.
-    fn new_watchlist_row(self: &Rc<Self>, popover: &gtk::Popover) -> gtk::Stack {
-        let stack = gtk::Stack::new();
+    /// A watchlist's context menu: the row's rename and delete, by the same
+    /// rule as its bin.
+    fn list_menu(
+        self: &Rc<Self>,
+        anchor: &gtk::ListBoxRow,
+        id: i64,
+        name: &str,
+        (stack, rename): (&gtk::Stack, &gtk::Entry),
+        x: f64,
+        y: f64,
+    ) {
+        let actions = gio::SimpleActionGroup::new();
 
-        let add = gtk::Button::new();
-        add.add_css_class("flat");
-        let content = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        let icon = gtk::Image::from_icon_name("list-add-symbolic");
-        icon.set_pixel_size(12);
-        let label = gtk::Label::new(Some("New watchlist"));
-        label.set_xalign(0.0);
-        label.set_hexpand(true);
-        content.append(&icon);
-        content.append(&label);
-        add.set_child(Some(&content));
+        let edit = gio::SimpleAction::new("rename", None);
+        let stack_weak = stack.downgrade();
+        let rename_weak = rename.downgrade();
+        edit.connect_activate(move |_, _| {
+            if let (Some(stack), Some(rename)) = (stack_weak.upgrade(), rename_weak.upgrade()) {
+                start_rename(&stack, &rename);
+            }
+        });
+        actions.add_action(&edit);
 
+        let remove = gio::SimpleAction::new("remove", None);
+        let this = self.clone();
+        let name = name.to_string();
+        remove.connect_activate(move |_, _| this.confirm_remove_watchlist(id, &name));
+        actions.add_action(&remove);
+        anchor.insert_action_group("list", Some(&actions));
+
+        let model = gio::Menu::new();
+        model.append(Some("Rename"), Some("list.rename"));
+        if id != DEFAULT_WATCHLIST {
+            let destructive = gio::Menu::new();
+            destructive.append(Some("Delete…"), Some("list.remove"));
+            model.append_section(None, &destructive);
+        }
+        popup_menu(&model, anchor, x, y);
+    }
+
+    /// Naming it is making it: a row at the foot of the lists becomes the
+    /// box to type the name in, and Enter makes the list and opens it.
+    /// Leaving the box, or Escape, leaves no list behind.
+    fn prompt_new_watchlist(self: &Rc<Self>) {
         let entry = gtk::Entry::new();
         entry.set_placeholder_text(Some("Watchlist name"));
-
-        stack.add_named(&add, Some("button"));
-        stack.add_named(&entry, Some("entry"));
-
-        let stack_weak = stack.downgrade();
-        let entry_weak = entry.downgrade();
-        add.connect_clicked(move |_| {
-            if let (Some(stack), Some(entry)) = (stack_weak.upgrade(), entry_weak.upgrade()) {
-                stack.set_visible_child_name("entry");
-                entry.grab_focus();
-            }
-        });
+        let row = gtk::ListBoxRow::new();
+        row.set_child(Some(&entry));
+        row.set_selectable(false);
+        row.set_activatable(false);
+        self.lists.append(&row);
+        entry.grab_focus();
 
         let this = self.clone();
-        let popover_weak = popover.downgrade();
         entry.connect_activate(move |entry| {
             let name = entry.text().trim().to_string();
-            if !name.is_empty() {
+            let made = if name.is_empty() { None } else { this.store.add_watchlist(&name) };
+            let this = this.clone();
+            glib::idle_add_local_once(move || match made {
                 // A new watchlist is empty, so there is nothing to look at
                 // until the rail is showing it.
-                if let Some(id) = this.store.add_watchlist(&name) {
-                    this.set_active_watchlist(id);
+                Some(id) => this.open_list(id),
+                None => {
+                    this.fill_lists();
+                    this.focus_lists();
                 }
-            }
-            if let Some(popover) = popover_weak.upgrade() {
-                popover.popdown();
-            }
+            });
         });
 
-        stack
+        let gone = {
+            let this = self.clone();
+            let row = row.downgrade();
+            move || {
+                if let Some(row) = row.upgrade().filter(|row| row.parent().is_some()) {
+                    this.lists.remove(&row);
+                }
+            }
+        };
+        // Escape hands the keyboard back; leaving the box takes the row away.
+        let keys = gtk::EventControllerKey::new();
+        let this = self.clone();
+        keys.connect_key_pressed(move |_, key, _, _| {
+            if key != gtk::gdk::Key::Escape {
+                return glib::Propagation::Proceed;
+            }
+            this.focus_lists();
+            glib::Propagation::Stop
+        });
+        entry.add_controller(keys);
+        let focus = gtk::EventControllerFocus::new();
+        focus.connect_leave(move |_| {
+            let gone = gone.clone();
+            glib::idle_add_local_once(gone);
+        });
+        entry.add_controller(focus);
     }
 
     /// Make a section into a watchlist of its own, and show it.
@@ -2518,11 +2884,13 @@ impl Watchlist {
         let this = self.clone();
         self.search.present(&self.widget, &title, move |instrument| {
             this.store.add_to_section(section_id, &instrument.symbol, instrument.suffix.as_deref());
-            // Folded, the symbol arrives where nobody can watch it arrive,
-            // which reads as the add having quietly failed.
+            // Folded, or behind the page of lists, the symbol arrives where
+            // nobody can watch it arrive, which reads as the add having
+            // quietly failed.
             if folded {
                 this.store.set_section_collapsed(section_id, false);
             }
+            this.show_symbols();
             this.changed();
             // Land on what was just added. It goes to the end of its section,
             // which on a full rail is below the fold.
@@ -2534,8 +2902,8 @@ impl Watchlist {
         });
     }
 
-    /// Anchored to whatever asked for it: the control at the foot of the rail
-    /// when it was clicked, and the list itself when it was a key, so the box
+    /// Anchored to whatever asked for it: the + in the band when it was
+    /// clicked, and the list itself when it was a key, so the box
     /// opens where the person pressing it is already looking.
     fn prompt_new_section(self: &Rc<Self>, anchor: &impl IsA<gtk::Widget>) {
         let entry = gtk::Entry::new();
@@ -2757,13 +3125,21 @@ fn row_drop_target(order: &[i64], under: &Section, at: usize) -> Option<(i64, Be
     Some((under.id, side))
 }
 
+/// Turn a list's row into the box its new name is typed in, with the old
+/// one selected to be typed over.
+fn start_rename(stack: &gtk::Stack, rename: &gtk::Entry) {
+    stack.set_visible_child_name("entry");
+    rename.grab_focus();
+    rename.select_region(0, -1);
+}
+
 /// Empty the rail, ready to be filled again.
 ///
 /// Walks the siblings rather than asking for the first child over and over,
 /// and takes off only what it put on. A list holds more than its rows: the
 /// placeholder is a child, and so is any popover anchored on the list itself —
-/// the box for naming a new section is, when a key rather than the button at
-/// the foot of the rail opened it. `gtk_list_box_remove` refuses a child that
+/// the box for naming a new section is, when a key rather than the + in the
+/// band opened it. `gtk_list_box_remove` refuses a child that
 /// is not a row with a warning and takes nothing off, so a loop that re-reads
 /// the first child spins on that popover for ever, which is a frozen app for
 /// anyone who names a section from the keyboard.
@@ -2776,6 +3152,23 @@ fn clear_rows(list: &gtk::ListBox) {
             list.remove(row);
         }
     }
+}
+
+/// Which of `walked` — the symbols a step from the chart walks, each with
+/// the row it is on — a step starts at, given the highlighted row and what
+/// the chart shows. `Watchlist::step_order` has the reasoning.
+fn step_from(
+    walked: &[(usize, Instrument)],
+    selected: Option<usize>,
+    current: Option<&Instrument>,
+) -> Option<usize> {
+    let highlighted = selected.and_then(|row| walked.iter().position(|(at, _)| *at == row));
+    let is_current =
+        |i: &Instrument| current.is_some_and(|c| c.symbol == i.symbol && c.suffix == i.suffix);
+    highlighted
+        .filter(|&at| walked.get(at).is_some_and(|(_, i)| is_current(i)))
+        .or_else(|| walked.iter().position(|(_, i)| is_current(i)))
+        .or(highlighted)
 }
 
 /// Put a quote into one value label, direction colouring included.
@@ -2795,8 +3188,12 @@ fn write_cell(
         return;
     };
     match column {
-        Column::Last => label.set_text(&format!("{:.*}", decimals, q.last)),
-        Column::Change => label.set_text(&format!("{:+.*}", decimals, q.change)),
+        Column::Last => label.set_text(&grouped_decimals(q.last, decimals)),
+        Column::Change => {
+            // The plus `{:+}` would write: on anything not negative or NaN.
+            let plus = if q.change.is_sign_positive() && !q.change.is_nan() { "+" } else { "" };
+            label.set_text(&format!("{plus}{}", grouped_decimals(q.change, decimals)))
+        }
         Column::ChangePct => label.set_text(&format!("{:+.2}%", q.change_pct)),
         Column::Symbol => {}
     }
@@ -3097,13 +3494,11 @@ mod tests {
     /// Everything but the folding keys is the list's, so arrows still walk
     /// the rail and Enter on a symbol is still the symbol's.
     #[test]
-    fn folding_keys_act_on_the_header_or_the_section_a_symbol_is_in() {
+    fn folding_keys_act_on_the_header_only() {
         let open = RowKind::Header { section_id: 3, collapsed: false };
         let folded = RowKind::Header { section_id: 3, collapsed: true };
-        assert_eq!(fold_target(&open, Fold::Close), Some((3, true)));
-        assert_eq!(fold_target(&folded, Fold::Open), Some((3, false)));
-        assert_eq!(fold_target(&folded, Fold::Toggle), Some((3, false)));
-        assert_eq!(fold_target(&open, Fold::Toggle), Some((3, true)));
+        assert_eq!(fold_target(&folded), Some((3, false)));
+        assert_eq!(fold_target(&open), Some((3, true)));
 
         let symbol = RowKind::Entry {
             section_id: 3,
@@ -3123,9 +3518,7 @@ mod tests {
             },
             cells: Vec::new(),
         };
-        assert_eq!(fold_target(&symbol, Fold::Close), Some((3, true)));
-        assert_eq!(fold_target(&symbol, Fold::Open), None);
-        assert_eq!(fold_target(&symbol, Fold::Toggle), None, "Enter stays the symbol's");
+        assert_eq!(fold_target(&symbol), None, "Enter stays the symbol's");
     }
 
     /// A handful of lists, so running off one end should land on the other
@@ -3163,6 +3556,18 @@ mod tests {
             seen.push(at);
         }
         assert_eq!(seen, ids.to_vec(), "display order, not sorted order");
+    }
+
+    /// Ctrl+1 is the first list the switcher shows, not the lowest id, and a
+    /// number with no list behind it is nobody's.
+    #[test]
+    fn a_number_key_counts_down_the_switcher_from_one() {
+        let ids = [3, 1, 2];
+        assert_eq!(numbered(&ids, 1), Some(3), "display order, not sorted order");
+        assert_eq!(numbered(&ids, 3), Some(2));
+        assert_eq!(numbered(&ids, 4), None, "past the last list");
+        assert_eq!(numbered(&ids, 0), None, "zero names nothing");
+        assert_eq!(numbered(&[], 1), None);
     }
 
     /// A section as the store hands one over, for the drop rules that only
@@ -3369,6 +3774,51 @@ mod tests {
             let expected = if descending { ["UP", "DOWN", "NONE"] } else { ["DOWN", "UP", "NONE"] };
             assert_eq!(order, expected);
         }
+    }
+
+    /// A step from the chart starts where the chart is in the list, and
+    /// when it is not in the list, where the list was left: never back at
+    /// the top, which is what the end of a list used to wrap to.
+    #[test]
+    fn a_step_starts_where_the_chart_is_or_where_the_list_was_left() {
+        let named = |symbol: &str| Instrument {
+            symbol: symbol.to_string(),
+            name: symbol.to_string(),
+            kind: omacharts_engine::InstrumentKind::Equity,
+            suffix: None,
+            currency: None,
+            tier: 1,
+            session_origin: 0,
+            overrides: Vec::new(),
+            exchange: None,
+            popularity: 0,
+            local_name: None,
+        };
+        // Row 1 is a section header, so the rows and the walk disagree.
+        let rows = [(0, "SPY"), (2, "EURUSD"), (3, "CCJ"), (4, "EURUSD")];
+        let walked: Vec<(usize, Instrument)> = rows
+            .into_iter()
+            .map(|(row, symbol)| (row, named(symbol)))
+            .collect();
+
+        assert_eq!(step_from(&walked, Some(3), Some(&named("CCJ"))), Some(2));
+        assert_eq!(
+            step_from(&walked, None, Some(&named("CCJ"))),
+            Some(2),
+            "nothing highlighted: found by symbol"
+        );
+        assert_eq!(
+            step_from(&walked, Some(4), Some(&named("EURUSD"))),
+            Some(3),
+            "listed twice: the copy that is highlighted, not the first"
+        );
+        assert_eq!(
+            step_from(&walked, Some(3), Some(&named("URA"))),
+            Some(2),
+            "not in the list: from where the list was left"
+        );
+        assert_eq!(step_from(&walked, None, Some(&named("URA"))), None);
+        assert_eq!(step_from(&walked, Some(1), None), None, "a header is not a place in the walk");
     }
 
     #[test]

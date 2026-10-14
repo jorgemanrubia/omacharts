@@ -276,6 +276,28 @@ pub fn price_decimals(step: f64, price: f64, kind: Option<InstrumentKind>) -> us
     from_step.max(from_instrument)
 }
 
+/// A value to so many decimals with its thousands marked, the way a
+/// spreadsheet's `#,##0.00` shows it: `2,210.40`, `-1,234.5`. Four digits
+/// run together are a misread waiting to happen in a column of prices, and
+/// on an axis. One string, for the labels a frame writes by the dozen.
+///
+/// For what is shown, never for what is stored or printed for a script:
+/// nothing parses a number back with the commas in it.
+pub fn grouped_decimals(value: f64, decimals: usize) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(24 + decimals);
+    let _ = write!(out, "{value:.decimals$}");
+    // Commas into the first run of digits: after the sign, before the point.
+    let Some(from) = out.find(|c: char| c.is_ascii_digit()) else { return out };
+    let to = out[from..].find(|c: char| !c.is_ascii_digit()).map_or(out.len(), |at| from + at);
+    let mut at = to;
+    while at > from + 3 {
+        at -= 3;
+        out.insert(at, ',');
+    }
+    out
+}
+
 /// A bar whose body is this small a fraction of its range is a doji.
 const DOJI: f64 = 0.05;
 /// Above this share of doji-like bars, the opens are not real opens.
@@ -385,6 +407,19 @@ fn week_start(ts: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prices_mark_their_thousands() {
+        assert_eq!(grouped_decimals(2210.4, 2), "2,210.40");
+        assert_eq!(grouped_decimals(112345.67, 2), "112,345.67");
+        assert_eq!(grouped_decimals(-1234.5, 1), "-1,234.5");
+        assert_eq!(grouped_decimals(999.99, 2), "999.99");
+        assert_eq!(grouped_decimals(0.00012, 5), "0.00012");
+        assert_eq!(grouped_decimals(123456.0, 0), "123,456");
+        assert_eq!(grouped_decimals(87435.4, 2), "87,435.40");
+        assert_eq!(grouped_decimals(-1234567.0, 0), "-1,234,567");
+        assert_eq!(grouped_decimals(f64::NAN, 2), "NaN");
+    }
 
     fn bar(ts: i64, o: f64, h: f64, l: f64, c: f64, v: f64) -> Bar {
         Bar { ts, open: o, high: h, low: l, close: c, volume: v }

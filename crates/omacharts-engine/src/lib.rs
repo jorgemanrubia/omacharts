@@ -21,7 +21,7 @@ pub mod symbols;
 pub mod theme;
 
 pub use bars::{
-    bucket_of, price_decimals, repair_continuous_opens, resample, Bar, BarStyle, Timeframe,
+    bucket_of, grouped_decimals, price_decimals, repair_continuous_opens, resample, Bar, BarStyle, Timeframe,
 };
 pub use indicators::{palette_colors, Indicator, Kind as IndicatorKind, Output, Params, Reset};
 pub use link::LinkGroup;

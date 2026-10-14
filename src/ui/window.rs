@@ -121,24 +121,6 @@ fn format_timeframes(listed: &[Timeframe]) -> String {
     listed.iter().map(|t| t.key()).collect::<Vec<_>>().join(",")
 }
 
-/// What Ctrl+B should do next.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum WatchlistAction {
-    Open,
-    Focus,
-    Close,
-}
-
-/// The whole of the Ctrl+B decision, kept separate from the widgets so it can
-/// be read — and tested — without one.
-fn watchlist_action(open: bool, focused: bool) -> WatchlistAction {
-    match (open, focused) {
-        (false, _) => WatchlistAction::Open,
-        (true, false) => WatchlistAction::Focus,
-        (true, true) => WatchlistAction::Close,
-    }
-}
-
 /// Every shortcut the sheet lists, grouped the way it lists them.
 ///
 /// Out here rather than inside the sheet so that the filtering the box at
@@ -176,14 +158,15 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
     (
         "Watchlist",
         &[
-            ("Ctrl+B", "Open, focus, then close"),
+            ("Ctrl+B", "Show or hide the watchlist"),
             ("↑ ↓", "Next or previous symbol"),
             ("Ctrl+↑ ↓", "Next or previous section"),
-            ("← → Enter", "Fold or unfold a section"),
+            ("Enter", "Fold or unfold a section"),
             // The one binding in this grid that is not global, so the
             // row says where it works: pressed over a chart it does
             // nothing, and nothing is hard to ask a question about.
             ("Ctrl+Alt+Shift+↑ ↓", "Previous or next watchlist, in the sidebar"),
+            ("Ctrl+1 … 9", "Watchlist N, in the switcher's order"),
             ("Ctrl+N", "Add a symbol, in the sidebar"),
             ("Ctrl+Shift+N", "Add a section, in the sidebar"),
             ("Delete", "Remove the symbol"),
@@ -206,7 +189,7 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
         "Chart",
         &[
             ("Ctrl+Shift+← →", "Previous or next resolution"),
-            ("Ctrl+Alt+↑ ↓", "Previous or next symbol"),
+            ("↑ ↓ · Ctrl+Alt+↑ ↓", "Previous or next symbol"),
             ("← →", "Pan"),
             ("+ −", "Zoom"),
             ("End", "Jump to the latest bar"),
@@ -395,44 +378,6 @@ mod tests {
         // "60" and "1h" are the same resolution.
         assert_eq!(listed.iter().map(|t| t.key()).collect::<Vec<_>>(), vec!["3m", "1h"]);
         assert_eq!(parse_timeframes(Some(&format_timeframes(&listed))), listed);
-    }
-
-    #[test]
-    fn one_key_walks_the_watchlist_open_focused_closed() {
-        // Closed: open it.
-        assert_eq!(watchlist_action(false, false), WatchlistAction::Open);
-        // Open, keyboard elsewhere: bring the keyboard here.
-        assert_eq!(watchlist_action(true, false), WatchlistAction::Focus);
-        // Open and focused: you are done with it.
-        assert_eq!(watchlist_action(true, true), WatchlistAction::Close);
-    }
-
-    #[test]
-    fn pressing_it_repeatedly_cycles_rather_than_sticking() {
-        // Starting closed and unfocused, three presses return to the start.
-        let mut open = false;
-        let mut focused = false;
-        let mut seen = Vec::new();
-        for _ in 0..3 {
-            let action = watchlist_action(open, focused);
-            seen.push(action);
-            match action {
-                WatchlistAction::Open => {
-                    open = true;
-                    focused = true;
-                }
-                WatchlistAction::Focus => focused = true,
-                WatchlistAction::Close => {
-                    open = false;
-                    focused = false;
-                }
-            }
-        }
-        assert_eq!(
-            seen,
-            vec![WatchlistAction::Open, WatchlistAction::Close, WatchlistAction::Open],
-        );
-        assert!(open && focused, "back where we started");
     }
 
     /// What the setting held before there were chartbooks: one arrangement,
@@ -899,6 +844,16 @@ mod tests {
         assert_eq!(book.sidebar_width, None);
     }
 
+    /// The rail stops at its ceiling on a wide window, at what leaves the
+    /// charts their floor on a narrow one, and at its own floor on one too
+    /// narrow for both.
+    #[test]
+    fn the_rail_cannot_take_the_window_from_the_charts() {
+        assert_eq!(sidebar_room(1914), MAX_SIDEBAR_WIDTH);
+        assert_eq!(sidebar_room(957), 957 - MIN_CHARTS_WIDTH);
+        assert_eq!(sidebar_room(500), MIN_SIDEBAR_WIDTH);
+    }
+
     /// The two shapes have to be told apart by what is in them, because both
     /// arrive as the same string from the same setting.
     #[test]
@@ -1248,6 +1203,15 @@ const DEFAULT_SIDEBAR_WIDTH: i32 = 280;
 /// without showing anything more.
 const MIN_SIDEBAR_WIDTH: i32 = 160;
 const MAX_SIDEBAR_WIDTH: i32 = 900;
+/// How narrow the rail may push the charts. The rail is a list of symbols;
+/// it should not be able to take the window from the charts of them.
+const MIN_CHARTS_WIDTH: i32 = 480;
+
+/// The widest the rail may be in a split this wide: its own ceiling, or
+/// what leaves the charts their floor, and never below its own floor.
+fn sidebar_room(total: i32) -> i32 {
+    (total - MIN_CHARTS_WIDTH).clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH)
+}
 pub const SETTING_BAR_STYLE: &str = "bar_style";
 pub const SETTING_SHOW_GRID: &str = "show_grid";
 const SETTING_TIMEFRAMES: &str = "timeframes";
@@ -1521,9 +1485,24 @@ fn opening_candidates(
     wanted
 }
 
-/// How wide the window's corner controls are, for the one time a chart's own
-/// corner has to step around them before either has been allocated.
-const CORNER_WIDTH: i32 = 78;
+/// How wide the window's corner controls are: the price axis's width, plus
+/// the ring every pane carries inside its edge, so that over a chart the
+/// corner stands exactly on the axis's column and its left edge is the
+/// axis's rule. Held to it, not left to the buttons, which is what keeps the
+/// rule straight.
+pub(crate) const CORNER_WIDTH: i32 =
+    crate::ui::chart::PRICE_AXIS_W as i32 + omacharts_engine::frame::RING_WIDTH as i32;
+
+/// Where the rail's + stands from the window's right edge: against the
+/// toggle, the way the toggle stands against the menu.
+pub(crate) const RAIL_ADD_END: i32 = CORNER_WIDTH - crate::theming::CORNER_PAD_START;
+
+/// How far a chart down the window's left edge steps its name in, past the
+/// drawing tools' corner: one button, as wide as the bar it stands over, 44
+/// pixels with its margin, less the 8 the name tucks back under the
+/// corner's empty right edge, so it reads as the toggle's neighbour rather
+/// than a column of its own.
+const START_CLEARANCE: i32 = 36;
 
 /// Bars already folded to a resolution, keyed by cache key and that
 /// resolution, and shared with every pane drawing them.
@@ -1551,6 +1530,13 @@ pub struct Window {
     /// is the chart you expect to find filling it — and the corner it is put
     /// back from says there is more behind it.
     maximized: Cell<Option<u32>>,
+    /// Where the pointer last was, in the window's own coordinates.
+    pointer_at: Cell<Option<(f64, f64)>>,
+    /// Where the pointer was when the keyboard last moved the focus, while
+    /// it has not moved since. The charts' hover furniture — crosshair,
+    /// link, gear, maximize — belongs to a hand on the mouse, and a pointer
+    /// left resting over some chart is not one.
+    hushed_at: Cell<Option<(f64, f64)>>,
     /// Every chartbook, as it is written down, including the one on screen.
     ///
     /// Only one book is ever built into widgets: `panes` and `layout` above
@@ -1582,9 +1568,9 @@ pub struct Window {
     drawing_clipboard: RefCell<Vec<omacharts_engine::Drawing>>,
     /// The drawing tools, on the left.
     drawing_bar: RefCell<Option<Rc<crate::ui::drawing_bar::DrawingBar>>>,
-    /// The tools' handle floating in the bottom-left corner, shown while
-    /// the chartbook strip is not there to carry one.
-    corner_handle: RefCell<Option<gtk::DrawingArea>>,
+    /// The drawing tools' toggle, floating over the top-left corner the way
+    /// `corner` floats over the top-right, and stepped around the same way.
+    start_corner: RefCell<Option<gtk::WindowHandle>>,
     /// Where the tree of charts is mounted, rebuilt whenever it changes.
     chart_host: gtk::Box,
     /// The row of chartbook tabs under the charts, empty and hidden until
@@ -1607,6 +1593,10 @@ pub struct Window {
     /// A width has been put back, so what the handle says from here on is
     /// somebody's choice rather than a guess from a window with no size yet.
     sidebar_placed: Cell<bool>,
+    /// How wide the rail was last put, which is narrower than it wants when
+    /// the window has no room for the whole of it. The handle reading back
+    /// this width is the window resizing; any other is somebody dragging.
+    sidebar_laid: Cell<i32>,
     store: Rc<Store>,
     index: crate::inventory::Inventory,
     theming: Rc<RefCell<Theming>>,
@@ -1722,6 +1712,8 @@ impl Window {
             layout: RefCell::new(Node::leaf(1)),
             focused: Cell::new(1),
             maximized: Cell::new(None),
+            pointer_at: Cell::new(None),
+            hushed_at: Cell::new(None),
             books: RefCell::new(Vec::new()),
             active: Cell::new(0),
             next_pane: Cell::new(1),
@@ -1735,13 +1727,14 @@ impl Window {
             drawing_settings_action: RefCell::new(None),
             drawing_clipboard: RefCell::new(Vec::new()),
             drawing_bar: RefCell::new(None),
-            corner_handle: RefCell::new(None),
+            start_corner: RefCell::new(None),
             chart_host: chart_host.clone(),
             book_strip: book_strip.clone(),
             corner: RefCell::new(None),
             watchlist_toggle: RefCell::new(None),
             sidebar_width: Cell::new(DEFAULT_SIDEBAR_WIDTH),
             sidebar_placed: Cell::new(false),
+            sidebar_laid: Cell::new(0),
             store: store.clone(),
             index: index.clone(),
             theming: theming.clone(),
@@ -1825,8 +1818,10 @@ impl Window {
         split.set_shrink_end_child(false);
         watchlist.widget.set_visible(store.setting_bool(SHOW_WATCHLIST, true));
 
-        // The tools slide in on the left of the charts, the way the rail
-        // slides in on the right; they are not part of the split, so the
+        // The tools lie over the left of the charts rather than pushing them
+        // aside: pushed, every chart reflowed as they came and went, and the
+        // centred resolutions drifted with it. Over them, nothing on the
+        // charts moves at all. They are not part of the split, so the
         // divider between charts and rail is still the only divider.
         let bar = crate::ui::drawing_bar::DrawingBar::new(
             {
@@ -1847,9 +1842,14 @@ impl Window {
                 move || this.toggle_drawing_tools()
             },
         );
-        let with_tools = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        with_tools.append(&bar.root);
-        with_tools.append(&chart_host);
+        let with_tools = gtk::Overlay::new();
+        with_tools.set_child(Some(&chart_host));
+        // Flush with the window's edges, over the focus ring's left side:
+        // a focused chart down the left closes its ring along the bar
+        // instead (`ChartPane::set_under_tools`), so the bar stands outside
+        // the chart rather than inside its frame.
+        bar.root.set_halign(gtk::Align::Start);
+        with_tools.add_overlay(&bar.root);
         bar.set_shown(store.setting_bool(SHOW_DRAWING_TOOLS, false));
         *this.drawing_bar.borrow_mut() = Some(bar);
         split.set_start_child(Some(&with_tools));
@@ -1870,21 +1870,19 @@ impl Window {
         let overlay = gtk::Overlay::new();
         overlay.set_child(Some(&root));
         overlay.add_overlay(&corner);
-        // The drawing tools' handle, in the bottom-left corner while there
-        // is no chartbook strip to carry it. The strip takes over when it
-        // arrives, so there is one handle at a time and it is always in the
-        // same corner.
+        // The drawing tools' toggle, in the top-left corner: the mirror of
+        // the rail's in the top-right, so both edges open the same way.
         if let Some(bar) = this.drawing_bar.borrow().as_ref() {
-            let handle = bar.handle();
-            // Over the chart rather than in the strip: it wears the
-            // window's own ground and a shadow, so it reads as a tab on
-            // the frame and not a mark on the chart.
-            handle.add_css_class("floating");
-            handle.set_margin_start(0);
-            handle.set_margin_bottom(8);
-            handle.set_visible(!this.book_strip.is_visible());
-            overlay.add_overlay(&handle);
-            *this.corner_handle.borrow_mut() = Some(handle);
+            let cluster = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+            cluster.add_css_class("window-corner");
+            cluster.add_css_class("start");
+            cluster.append(&bar.toggle);
+            let start = gtk::WindowHandle::new();
+            start.set_child(Some(&cluster));
+            start.set_halign(gtk::Align::Start);
+            start.set_valign(gtk::Align::Start);
+            overlay.add_overlay(&start);
+            *this.start_corner.borrow_mut() = Some(start);
         }
         this.watch_sidebar_width();
         window.set_content(Some(&overlay));
@@ -1915,6 +1913,7 @@ impl Window {
         this.install_chart_actions();
 
         this.wire_shortcuts();
+        this.wire_hush();
         this.wire_responses(receiver);
         this.wire_theme_polling();
         this.wire_backfill();
@@ -1933,10 +1932,15 @@ impl Window {
         // Which means the restoration below runs against the curated half and
         // cannot name a listing outside it — the swap happens on the main loop,
         // and the main loop is waiting for this constructor to return. So the
-        // charts that could not be resolved are filled in from here, once.
+        // charts that could not be resolved are filled in from here, once —
+        // and the rail, which left out its symbols outside the curated half.
         let waiting = this.clone();
         crate::inventory::load_in_background(this.index.clone(), move |_| {
             waiting.resolve_pending();
+            let rail = waiting.watchlist.borrow().as_ref().cloned();
+            if let Some(rail) = rail {
+                rail.rebuild();
+            }
         });
 
         if !this.restore_workspace() {
@@ -2154,9 +2158,8 @@ impl Window {
         // The keyboard has to come with it, and GTK does not move it for a
         // drawing area the way it would for a button. Without this the ring
         // moved to the chart you clicked while the keyboard stayed wherever
-        // it was — which made Ctrl+B close the rail you had just clicked
-        // away from, because the rail still held the keyboard and Ctrl+B
-        // reads that to decide between focusing and closing.
+        // it was — so the next key went to the rail you had just clicked
+        // away from, not to the chart the ring was on.
         //
         // Except on the text editor. This runs on the way *down*, before the
         // widget under the pointer sees the press at all, so a click meant
@@ -2226,6 +2229,11 @@ impl Window {
     pub fn focus(self: &Rc<Self>, id: u32) {
         if self.focused.get() == id && self.panes.borrow().iter().any(|p| p.id == id) {
             return;
+        }
+        // The tool in hand goes with the focus, so every chart is drawn on
+        // with the one the bar shows.
+        if let (Some(from), Some(to)) = (self.pane(self.focused.get()), self.pane(id)) {
+            from.view.hand_over(&to.view);
         }
         self.focused.set(id);
         // Maximized, the focus keys still walk the arrangement — they just
@@ -2399,6 +2407,65 @@ impl Window {
         }
         if let Some((_, id)) = best {
             self.focus(id);
+            self.hush_pointer();
+        }
+    }
+
+    /// Put the charts' hover furniture away until the pointer moves: the
+    /// keyboard is driving, and a crosshair and three buttons wherever the
+    /// pointer happens to rest — on the chart just left, or, maximized, on
+    /// the one just swapped in under it — are only in the way.
+    fn hush_pointer(&self) {
+        let Some(at) = self.pointer_at.get() else { return };
+        self.hushed_at.set(Some(at));
+        self.chart_host.add_css_class("hushed");
+        for pane in self.panes.borrow().iter() {
+            pane.view.drop_pointer();
+        }
+    }
+
+    /// Wire the hush's way out. Motion is held back from the charts while
+    /// the pointer stands where it was hushed: GTK repeats the pointer's
+    /// position to whatever is newly under it after a rebuild, and a chart
+    /// would take that for a hand. A real move, or a press, lets it through.
+    fn wire_hush(self: &Rc<Self>) {
+        let legacy = gtk::EventControllerLegacy::new();
+        legacy.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let this = self.clone();
+        legacy.connect_event(move |_, event| {
+            use gtk::gdk::EventType;
+            match event.event_type() {
+                EventType::MotionNotify => {
+                    let Some(at) = event.position() else { return glib::Propagation::Proceed };
+                    this.pointer_at.set(Some(at));
+                    match this.hushed_at.get() {
+                        Some((x, y)) if (at.0 - x).abs() < 1.0 && (at.1 - y).abs() < 1.0 => {
+                            glib::Propagation::Stop
+                        }
+                        Some(_) => {
+                            this.unhush();
+                            glib::Propagation::Proceed
+                        }
+                        None => glib::Propagation::Proceed,
+                    }
+                }
+                EventType::ButtonPress | EventType::Scroll | EventType::TouchBegin => {
+                    this.unhush();
+                    glib::Propagation::Proceed
+                }
+                EventType::LeaveNotify => {
+                    this.pointer_at.set(None);
+                    glib::Propagation::Proceed
+                }
+                _ => glib::Propagation::Proceed,
+            }
+        });
+        self.window.add_controller(legacy);
+    }
+
+    fn unhush(&self) {
+        if self.hushed_at.take().is_some() {
+            self.chart_host.remove_css_class("hushed");
         }
     }
 
@@ -2526,16 +2593,40 @@ impl Window {
 
         // The rects tile the area exactly, so the chart under the window's
         // corner is the one — the only one — holding its top right pixel.
+        // Compared within a millionth of the width rather than half a pixel:
+        // before the window has a size the area is one pixel wide, and half
+        // of it would take the second chart of an even split for the first.
         let rects = self.layout_rects();
         let right = self.chart_host.width().max(1) as f64;
+        let at = |a: f64, b: f64| (a - b).abs() <= right * 1e-6;
         let topmost = self.mounted().leaves().into_iter().find(|id| {
-            rects
-                .get(id)
-                .is_some_and(|(x, y, w, _)| *y <= 0.5 && x + w >= right - 0.5)
+            rects.get(id).is_some_and(|(x, y, w, _)| at(*y, 0.0) && at(x + w, right))
         });
         for pane in self.panes.borrow().iter() {
             let margin = if Some(pane.id) == topmost { clearance } else { 0 };
             pane.set_corner_clearance(margin);
+        }
+
+        // The same on the left, for the drawing tools' toggle and the bar
+        // under it, which is as wide: the bar lies over the charts, so the
+        // names step past it whether it is out or not, and opening it moves
+        // nothing. Every chart down the window's left edge steps its name
+        // over by the same amount, not only the one under the toggle, so the
+        // names stand in one column. A chart further right has nothing to
+        // clear.
+        let tooled = self.drawing_bar.borrow().as_ref().is_some_and(|bar| bar.is_shown());
+        let start = self.start_corner.borrow().as_ref().and_then(|corner| corner.child());
+        let clearance = if start.is_some() { START_CLEARANCE } else { 0 };
+        if let Some(cluster) = &start {
+            match tooled {
+                true => cluster.remove_css_class("over-chart"),
+                false => cluster.add_css_class("over-chart"),
+            }
+        }
+        for pane in self.panes.borrow().iter() {
+            let edge = rects.get(&pane.id).is_some_and(|(x, _, _, _)| at(*x, 0.0));
+            pane.set_start_clearance(if edge { clearance } else { 0 });
+            pane.set_under_tools(edge && tooled);
         }
     }
 
@@ -3542,20 +3633,8 @@ impl Window {
         // naming the only thing there is would be a row of furniture saying
         // nothing. It arrives with the second book and leaves with it.
         self.book_strip.set_visible(count > 1);
-        if let Some(handle) = self.corner_handle.borrow().as_ref() {
-            handle.set_visible(count < 2);
-        }
         if count < 2 {
             return;
-        }
-        // The drawing tools' handle leads the strip, in the corner it
-        // floats in when there is no strip.
-        if let Some(bar) = self.drawing_bar.borrow().as_ref() {
-            let handle = bar.handle();
-            handle.set_valign(gtk::Align::Center);
-            handle.set_margin_start(0);
-            handle.set_margin_end(6);
-            self.book_strip.append(&handle);
         }
         for index in 0..count {
             self.book_strip.append(&self.build_book_tab(index));
@@ -3654,10 +3733,9 @@ impl Window {
         tab.upcast()
     }
 
-    /// The tab sitting at `index` in the strip right now. The first child
-    /// is the tools' handle, not a tab.
+    /// The tab sitting at `index` in the strip right now.
     fn book_tab(&self, index: usize) -> Option<gtk::Box> {
-        let mut child = self.book_strip.first_child()?.next_sibling()?;
+        let mut child = self.book_strip.first_child()?;
         for _ in 0..index {
             child = child.next_sibling()?;
         }
@@ -3884,17 +3962,16 @@ impl Window {
 
         *self.watchlist_toggle.borrow_mut() = Some(toggle.clone());
 
-        // The drawing tools have no button here: the corner is the charts'.
-        // They come in from a handle on the chart's own edge, or by key.
+        // The drawing tools' toggle has a corner of its own, the top-left.
         let action = gio::SimpleAction::new("drawing-tools", None);
         let this = self.clone();
         action.connect_activate(move |_, _| this.toggle_drawing_tools());
         self.window.add_action(&action);
 
-        // Ctrl+B is not a toggle. A rail you can see but cannot drive with the
-        // arrow keys is a rail you still have to reach for the mouse to use, so
-        // the first press puts the keyboard in it and only the second puts it
-        // away. `toggle_watchlist` holds that decision.
+        // Ctrl+B shows the rail with the keyboard in it, and hides it with the
+        // keyboard back on the chart. A plain toggle: it used to focus a rail
+        // that was open but not focused, so after a click on a chart it took
+        // two presses to close what was plainly open.
         let action = gio::SimpleAction::new("watchlist", None);
         let this = self.clone();
         action.connect_activate(move |_, _| this.toggle_watchlist());
@@ -3902,6 +3979,9 @@ impl Window {
 
         let cluster = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         cluster.add_css_class("window-corner");
+        // The axis's width: with the ring's width of margin standing it off
+        // the window's edge (see the stylesheet), it stands on the axis.
+        cluster.set_size_request(crate::ui::chart::PRICE_AXIS_W as i32, -1);
         cluster.append(&toggle);
         cluster.append(&menu_button);
 
@@ -3934,6 +4014,10 @@ impl Window {
             let button = gtk::ToggleButton::with_label(&timeframe.label());
             button.add_css_class("flat");
             button.set_tooltip_text(Some(&timeframe.description()));
+            // A click picks a resolution; it does not move the keyboard. Taking
+            // the focus left a ring on the button that outlived the click, and
+            // the keys meant for the chart went to the strip instead.
+            button.set_focus_on_click(false);
             match &first {
                 Some(anchor) => button.set_group(Some(anchor)),
                 None => first = Some(button.clone()),
@@ -3955,30 +4039,6 @@ impl Window {
             buttons.push((timeframe, button));
         }
         *pane.buttons.borrow_mut() = buttons;
-
-        // The same list behind the resolution beside the symbol, which stays
-        // when the strip has no room — the way a narrow TradingView chart
-        // folds its intervals into one dropdown.
-        let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        let popover = gtk::Popover::new();
-        popover.add_css_class("menu");
-        for timeframe in self.timeframes.borrow().iter().copied() {
-            let item = gtk::Button::with_label(&timeframe.description());
-            item.add_css_class("flat");
-            let this = self.clone();
-            let owner = pane.id;
-            let closing = popover.downgrade();
-            item.connect_clicked(move |_| {
-                if let Some(popover) = closing.upgrade() {
-                    popover.popdown();
-                }
-                this.focus(owner);
-                this.set_timeframe(timeframe);
-            });
-            list.append(&item);
-        }
-        popover.set_child(Some(&list));
-        pane.timeframe_menu.set_popover(Some(&popover));
     }
 
     /// Put a resolution on the strip, in the place its length earns it.
@@ -4192,6 +4252,21 @@ impl Window {
             let alt = state.contains(gtk::gdk::ModifierType::ALT_MASK);
             let shift = state.contains(gtk::gdk::ModifierType::SHIFT_MASK);
 
+            // Ctrl and a digit shows that watchlist, counting down the
+            // switcher from 1. From anywhere, rail open or not: nothing is
+            // typed with Ctrl held, and bare digits are the resolution's and
+            // Alt with one a drawing configuration's, so this is the one
+            // modifier a digit had left.
+            if ctrl
+                && !alt
+                && !shift
+                && let Some(n) = key.to_unicode().and_then(|c| c.to_digit(10))
+                && let Some(rail) = this.watchlist.borrow().clone()
+                && rail.show_numbered(n as usize)
+            {
+                return glib::Propagation::Stop;
+            }
+
             match key {
                 // Ctrl+L: follow the rail, or stop following it.
                 // Ctrl+L: in or out of the neutral group, which is the one a
@@ -4361,19 +4436,34 @@ impl Window {
                     this.open_search();
                     glib::Propagation::Stop
                 }
-                (Key::Left, false) if !on_watchlist => {
+                // Left and right are the chart's wherever the keyboard is: the
+                // rail has nothing sideways to move through that is worth
+                // taking them from the chart for.
+                (Key::Left, false) => {
                     this.focused_pane().view.pan_bars(-5);
                     glib::Propagation::Stop
                 }
-                (Key::Right, false) if !on_watchlist => {
+                (Key::Right, false) => {
                     this.focused_pane().view.pan_bars(5);
                     glib::Propagation::Stop
                 }
-                (Key::plus | Key::equal, false) => {
+                // Up and down walk the watchlist from the chart, the way they
+                // do on the rail, so a list can be read without going to it.
+                // A selected drawing has had them first, as its nudge, and a
+                // box being typed in keeps them for itself.
+                (Key::Up, false) if !on_watchlist && !this.is_typing() => {
+                    this.step_symbol(-1);
+                    glib::Propagation::Stop
+                }
+                (Key::Down, false) if !on_watchlist && !this.is_typing() => {
+                    this.step_symbol(1);
+                    glib::Propagation::Stop
+                }
+                (Key::plus | Key::equal | Key::KP_Add, false) => {
                     this.focused_pane().view.zoom(1.0 / 1.25);
                     glib::Propagation::Stop
                 }
-                (Key::minus, false) => {
+                (Key::minus | Key::KP_Subtract, false) => {
                     this.focused_pane().view.zoom(1.25);
                     glib::Propagation::Stop
                 }
@@ -4643,20 +4733,41 @@ impl Window {
         // window would put it over whichever chart happened to be underneath.
         let popover = gtk::Popover::new();
         popover.set_child(Some(&content));
-        // Or, on a chart too narrow to show the strip, to the resolution
-        // beside the symbol that stands in for it. Mapped rather than
-        // visible: the strip is hidden by its row stepping aside, and only
-        // the map state reaches down through the row to the strip itself.
+        // Or, on a chart too narrow to show the strip, to the chart's symbol.
+        // Mapped rather than visible: the strip is hidden by its row stepping
+        // aside, and only the map state reaches down through the row to the
+        // strip itself.
         let pane = self.focused_pane();
         match pane.strip.is_mapped() {
             true => popover.set_parent(&pane.strip),
-            false => popover.set_parent(&pane.timeframe_menu),
+            false => popover.set_parent(&pane.symbol_button),
         }
         // Every number typed builds a fresh one, so each has to let go of the
         // strip when it closes or they pile up on it.
-        popover.connect_closed(|popover| {
+        //
+        // Closing hands the keyboard to what it hangs from, which put a focus
+        // ring on the strip's first button and sent the chart's keys there.
+        // Back to the chart it was typed on, unless a click outside already
+        // took the keyboard somewhere else.
+        let area = pane.view.area.downgrade();
+        popover.connect_closed(move |popover| {
             let popover = popover.clone();
-            glib::idle_add_local_once(move || popover.unparent());
+            let area = area.clone();
+            glib::idle_add_local_once(move || {
+                let anchor = popover.parent();
+                popover.unparent();
+                let focus = anchor.as_ref().and_then(|a| a.root()).and_then(|root| root.focus());
+                // Still in the entry here: the move to the anchor comes later.
+                let stranded = match (&anchor, &focus) {
+                    (Some(anchor), Some(focus)) => {
+                        focus.is_ancestor(&popover) || focus.is_ancestor(anchor) || focus == anchor
+                    }
+                    _ => true,
+                };
+                if let Some(area) = area.upgrade().filter(|_| stranded) {
+                    area.grab_focus();
+                }
+            });
         });
 
         let this = self.clone();
@@ -4821,6 +4932,7 @@ impl Window {
         // Escape in a search box is otherwise dead; here it means the same
         // thing it means everywhere else in the sheet.
         crate::ui::dialogs::close_on_search_escape(&search, &dialog);
+        crate::ui::dialogs::close_on_click_outside(&dialog);
 
         // The keyboard lands in the box, so the first thing typed is the
         // search. Asked of the dialog rather than grabbed here, because the
@@ -4855,21 +4967,25 @@ impl Window {
     /// Move through the watchlist without going to it.
     fn step_symbol(self: &Rc<Self>, delta: i32) {
         let Some(watchlist) = self.watchlist.borrow().as_ref().cloned() else { return };
-        let order = watchlist.flat_order();
+        let current = self.focused_pane().instrument.borrow().clone();
+        let (order, from) = watchlist.step_order(current.as_ref());
         if order.is_empty() {
             return;
         }
-        let current = self.focused_pane().instrument.borrow().clone();
-        let at = current
-            .and_then(|instrument| {
-                order
-                    .iter()
-                    .position(|i| i.symbol == instrument.symbol && i.suffix == instrument.suffix)
-            })
+        // Nothing to step from, not even a highlight: start at whichever end
+        // the step points away from.
+        let at = from
             .map(|at| at as i32)
             .unwrap_or(if delta > 0 { -1 } else { order.len() as i32 });
         let next = (at + delta).clamp(0, order.len() as i32 - 1) as usize;
-        self.show(order[next].clone());
+        let landed = &order[next];
+        let showing = current
+            .as_ref()
+            .is_some_and(|c| c.symbol == landed.symbol && c.suffix == landed.suffix);
+        if !showing {
+            self.show(landed.clone());
+        }
+        watchlist.highlight_walked(next);
     }
 
     /// Switch to a resolution that may not be on the strip yet.
@@ -6395,12 +6511,14 @@ impl Window {
         self.save_workspace();
     }
 
-    /// Show or hide the drawing tools. Ctrl+D, and the tab on the edge.
+    /// Show or hide the drawing tools. Ctrl+D, and the toggle top-left.
     pub fn toggle_drawing_tools(self: &Rc<Self>) {
         let Some(bar) = self.drawing_bar.borrow().clone() else { return };
         let shown = !bar.is_shown();
         bar.set_shown(shown);
         self.store.set_setting_bool(SHOW_DRAWING_TOOLS, shown);
+        // Putting the tools away drops their toggle onto the top-left chart.
+        self.sync_corner_clearance();
     }
 
     /// Light the tool in hand on the bar, after the chart was told by a key
@@ -7211,9 +7329,10 @@ impl Window {
     /// window was resized.
     fn place_sidebar(&self) {
         let total = self.split.width();
-        let width = self.sidebar_width.get();
+        let width = self.sidebar_width.get().min(sidebar_room(total));
         if total > width + 200 {
             self.sidebar_placed.set(true);
+            self.sidebar_laid.set(width);
             self.split.set_position(total - width);
         }
     }
@@ -7241,11 +7360,28 @@ impl Window {
                 this.place_sidebar();
                 return;
             }
-            if paned.width() <= 0 || paned.position() <= 0 {
+            let total = paned.width();
+            if total <= 0 || paned.position() <= 0 {
                 return;
             }
-            let width =
-                (paned.width() - paned.position()).clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
+            let raw = total - paned.position();
+            // The rail keeps its width when the window resizes, so a handle
+            // still at the width it was put at means the window moved, not
+            // the hand: put back what the rail wants, as far as there is room
+            // for it, and remember nothing.
+            if raw == this.sidebar_laid.get() {
+                if raw != this.sidebar_width.get().min(sidebar_room(total)) {
+                    this.place_sidebar();
+                }
+                return;
+            }
+            // Dragged: held between the bounds, which is the handle stopping
+            // at them rather than the stored width merely being clamped.
+            let width = raw.clamp(MIN_SIDEBAR_WIDTH, sidebar_room(total));
+            this.sidebar_laid.set(width);
+            if width != raw {
+                paned.set_position(total - width);
+            }
             if width == this.sidebar_width.get() {
                 return;
             }
@@ -7271,31 +7407,16 @@ impl Window {
     }
 
     pub fn toggle_watchlist(self: &Rc<Self>) {
-        let focused = self
-            .watchlist
-            .borrow()
-            .as_ref()
-            .map(|w| w.has_focus())
-            .unwrap_or(false);
-
-        match watchlist_action(self.shows_sidebar(), focused) {
-            WatchlistAction::Open => {
-                self.set_rail_shown(true);
-                if let Some(watchlist) = self.watchlist.borrow().as_ref().cloned() {
-                    // The sidebar is not realised until the frame after it is
-                    // revealed, so focus has to wait for it.
-                    glib::idle_add_local_once(move || watchlist.grab_focus());
-                }
-            }
-            WatchlistAction::Focus => {
-                if let Some(watchlist) = self.watchlist.borrow().as_ref() {
-                    watchlist.grab_focus();
-                }
-            }
-            WatchlistAction::Close => {
-                self.set_rail_shown(false);
-                self.focused_pane().view.area.grab_focus();
-            }
+        if self.shows_sidebar() {
+            self.set_rail_shown(false);
+            self.focused_pane().view.area.grab_focus();
+            return;
+        }
+        self.set_rail_shown(true);
+        if let Some(watchlist) = self.watchlist.borrow().as_ref().cloned() {
+            // The sidebar is not realised until the frame after it is
+            // revealed, so focus has to wait for it.
+            glib::idle_add_local_once(move || watchlist.grab_focus());
         }
     }
 

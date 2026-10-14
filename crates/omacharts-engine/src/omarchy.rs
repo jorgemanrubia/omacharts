@@ -182,9 +182,12 @@ pub fn derive(keys: &HashMap<String, String>, name: &str) -> Theme {
         }
     };
 
-    // A panel the same colour as the chart is not a panel.
+    // A panel the same colour as the chart is not a panel. Halfway to the
+    // theme's lighter ground, not all the way: `lighter_background` is a
+    // terminal's selection colour, and a rail and a tool column painted in it
+    // stood out as a slab of grey-blue beside the chart.
     let surface = ensure_distinct(
-        &pick(&["lighter_background", "dark_background"], &background),
+        &mix(&background, &pick(&["lighter_background", "dark_background"], &background), 0.5),
         &background,
         MIN_SURFACE,
         &text,

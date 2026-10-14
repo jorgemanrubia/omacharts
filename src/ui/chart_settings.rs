@@ -2040,6 +2040,7 @@ fn pick_indicator(window: &Rc<Window>, refresh: &Refresh) {
     // Only the box needs saying. Escape on anything else inside the dialog
     // already closes it, which is why there is no controller for it.
     dialogs::close_on_search_escape(&entry, &dialog);
+    dialogs::close_on_click_outside(&dialog);
 
     dialog.present(Some(&window.window));
     entry.grab_focus();

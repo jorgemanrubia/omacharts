@@ -194,6 +194,12 @@ impl Theming {
     }
 }
 
+/// How far in from its left edge the window's corner starts its buttons:
+/// the `padding-left` of `.window-corner` below, which is what centres the
+/// pair on the axis's column, and what the rail's + is placed by. The two
+/// change together.
+pub(crate) const CORNER_PAD_START: i32 = 8;
+
 /// The app's CSS: libadwaita's named colours, redefined from the theme, plus
 /// the few classes we add ourselves.
 pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
@@ -246,6 +252,8 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
     define("omacharts_gutter", &frame.gutter);
     define("omacharts_gutter_hover", &frame.gutter_hover);
     define("omacharts_focus", &frame.focus);
+    // The chart's price-axis rule, for the corner that stands on it.
+    define("omacharts_axis", &ui.axis);
 
     css.push_str(
         "
@@ -313,20 +321,20 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
    you are about to click it. */
 .legend-link,
 .legend-link:checked,
-.legend-link:checked:not(:hover) {
+.legend-link:checked:not(:hover),
+.legend-link > button,
+.legend-link > button:hover,
+.legend-link > button:checked {
   background: none;
   background-image: none;
   border: none;
   box-shadow: none;
   outline: none;
-  min-width: 20px;
-  min-height: 20px;
-  padding: 1px;
 }
-.legend-link:hover {
-  background: alpha(currentColor, 0.12);
-  border-radius: 5px;
-}
+/* A menu button's own button inside it keeps Adwaita's padding, which made
+   the link's hover box half as wide again as its neighbours'. The outer one
+   carries the box; this one only holds the glyph. */
+.legend-link > button { min-width: 0; min-height: 0; padding: 0; }
 
 /* One group in the chain's popover. A menu row rather than a button: the dot
    carries the colour, so the row itself should stay out of the way and let
@@ -351,14 +359,26 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
 }
 .legend-symbol:hover { background: alpha(currentColor, 0.12); }
 
-/* The legend sits over the drawing, and the drawing is the point. Everything
-   here stays faint until the pointer is near it. */
-.legend-gear { opacity: 0.35; min-width: 22px; min-height: 22px; padding: 2px; }
-.legend-gear:hover { opacity: 1; }
+/* The legend sits over the drawing, and the drawing is the point. The gear,
+   and the link while the chart is in no group (the default, so nothing to
+   report), strike the maximize corner's bargain: not there until the pointer
+   is on the chart. A linked chart keeps its link showing, since then the
+   icon is telling you something. The link stays up while its menu is open,
+   when the pointer has left the chart for the menu. */
+.legend-gear,
+.legend-link.quiet {
+  opacity: 0;
+  transition: opacity 120ms ease-out;
+}
+.chart-pane:hover .legend-gear,
+.chart-pane:hover .legend-link.quiet,
+.legend-link.quiet.open { opacity: 0.45; }
+.chart-pane:hover .legend-gear:hover,
+.chart-pane:hover .legend-link.quiet:hover { opacity: 1; }
 
-/* The maximize corner is the same bargain as the gear, struck harder: it is
-   not there at all until the pointer is on the chart, which is also the only
-   moment it could be clicked. Four charts with a permanent button in each
+/* The maximize corner is the bargain the gear strikes: it is not there at
+   all until the pointer is on the chart, which is also the only moment it
+   could be clicked. Four charts with a permanent button in each
    corner is four more things between you and the prices. */
 .pane-expand {
   opacity: 0;
@@ -366,17 +386,19 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
   background-image: none;
   border: none;
   box-shadow: none;
-  min-width: 20px;
-  min-height: 20px;
-  padding: 1px;
   transition: opacity 120ms ease-out;
 }
 .chart-pane:hover .pane-expand { opacity: 0.45; }
-.chart-pane:hover .pane-expand:hover {
-  opacity: 1;
-  background: alpha(currentColor, 0.12);
-  border-radius: 5px;
-}
+.chart-pane:hover .pane-expand:hover { opacity: 1; }
+/* All three wait for a hand on the mouse: after the keyboard moves the
+   focus, the window hushes them until the pointer moves, whatever it
+   happens to be resting over. */
+.hushed .chart-pane:hover .legend-gear,
+.hushed .chart-pane:hover .legend-gear:hover,
+.hushed .chart-pane:hover .legend-link.quiet:not(.open),
+.hushed .chart-pane:hover .legend-link.quiet:not(.open):hover,
+.hushed .chart-pane:hover .pane-expand,
+.hushed .chart-pane:hover .pane-expand:hover { opacity: 0; }
 
 /* The window's own controls — the watchlist toggle and the main menu — sit
    in the top-right corner, over whatever is there, instead of on a header
@@ -386,9 +408,22 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
    that height. This is the HIG's overlaid-controls pattern: controls over
    content, attached to the window's edge, quiet until the pointer is near
    them. The box is also the window's drag handle, so the blank space at its
-   start is what a header bar would have offered to be grabbed by. */
+   start is what a header bar would have offered to be grabbed by.
+
+   Three more pixels on top than below put the buttons on the line a chart
+   writes its symbol and resolutions on, rather than above it. The window
+   holds the box to the price axis's width, so its left edge is the axis's
+   rule; see `CORNER_WIDTH`. Inside it, the two buttons touch and stand
+   centred on the axis's column, more padding at the start than at the end
+   because the end has the box's margin beyond it; the start is
+   `CORNER_PAD_START`, which the rail's + is placed by.
+
+   It stands a focus ring's width in from the window's edges: in a split the
+   chart under it wears that ring, and a ground laid over the ring cut a
+   notch out of the one thing saying which chart keys go to. */
 .window-corner {
-  padding: 3px 6px 3px 12px;
+  margin: 2px 2px 0 0;
+  padding: 8px 4px 7px 8px;
 }
 /* The ground the cluster stands on, for the half of the time it needs one.
    The chart draws its price axis right up into this corner — the last price is
@@ -401,8 +436,12 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
    the corner being cut out of the drawing rather than as a card laid on it.
    Translucent was tried first and is worse — a tenth of a filled price tag is
    a smudge under the icons, which is the same two-things-one-pixel problem in
-   a quieter voice. Rounded only where it meets the drawing; the other two
-   sides are the window's own edges.
+   a quieter voice.
+
+   Square, with the axis's rule down its left edge: it stands exactly on the
+   axis's column, so the rule runs on up to the window's edge instead of
+   stopping short under the buttons, and the corner reads as the top of the
+   axis rather than a card laid across it.
 
    Only while the corner is over a chart. Over the rail there is nothing
    behind it to separate from: the rail's header has already stepped down out
@@ -410,14 +449,27 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
    the wrong grey. The window adds the class, because only it knows which. */
 .window-corner.over-chart {
   background: @view_bg_color;
-  border-bottom-left-radius: 12px;
+  box-shadow: inset 1px 0 @omacharts_axis;
 }
+/* The drawing tools' corner on the left, the mirror of the one on the right:
+   centred over the bar it opens, which is as wide as one of its tools, and
+   at the same height, so beside the chart's name it centres on the name. */
+.window-corner.start {
+  margin: 2px 0 0 2px;
+  padding: 8px 9px 7px 7px;
+}
+.window-corner.start.over-chart {
+  border-bottom-right-radius: 12px;
+  box-shadow: none;
+}
+/* Beside a chart's name it is one more glyph in the row, and the name is
+   what that corner is for: so it stays well under the name until the
+   pointer comes to it. */
+.window-corner.start.over-chart button { opacity: 0.25; }
+.window-corner.start.over-chart:hover button { opacity: 1; }
 /* Quiet until the pointer is near: on the buttons rather than the box, which
    is what leaves the ground at its own strength. */
 .window-corner button {
-  min-width: 24px;
-  min-height: 24px;
-  padding: 3px;
   opacity: 0.75;
   transition: opacity 120ms ease-out;
 }
@@ -426,18 +478,6 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
 /* The drawing tools, down the left edge: a column of two, quiet until one is
    in hand, which lights it in the accent the way a pressed tool should. */
 .drawing-bar { padding: 0; }
-/* The tools' handle in the bottom-left corner: faint enough to be
-   furniture until the pointer is on it or the bar is out, the accent
-   under the pointer, so it reads as a thing that does something. */
-.drawing-handle { color: @window_fg_color; opacity: 0.45; transition: opacity 120ms ease-out, color 120ms ease-out; }
-.drawing-handle.open { opacity: 0.9; }
-.drawing-handle:hover { color: @accent_bg_color; opacity: 1; }
-/* Floating over the chart, with no strip to sit in: the window's own
-   ground under it and a shadow, so the frame reads as a frame and not
-   as part of the indicator beneath. */
-.drawing-handle.floating { background: @window_bg_color; border-radius: 0 8px 8px 0; box-shadow: 0 1px 3px alpha(black, 0.35); opacity: 0.7; }
-.drawing-handle.floating.open { opacity: 1; }
-.drawing-handle.floating:hover { opacity: 1; }
 /* The rules between the bands of tools: present, and no louder than that. */
 .drawing-tool-rule { background: alpha(@window_fg_color, 0.14); min-height: 1px; margin: 3px 7px; }
 .drawing-tool { padding: 2px; border-radius: 8px; opacity: 0.8; }
@@ -501,14 +541,16 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
 
 /* The corner sits over the rail when the rail is open, which is where the
    HIG puts a sidebar's menu (above the sidebar list), so the rail's band
-   steps down out from under it. The step is the corner's height: three
-   pixels of padding either side of a 24px button.
+   steps down out from under it. The band is the corner's height: a 26px
+   button with 8px of padding above and 7px below, two pixels in from the
+   window's edge, 43 in all. The step is 37 of that, to a pixel under the
+   buttons.
 
-   Under the step, a few pixels more, so the separator under the band clears
-   the corner's hover pill and the name's descenders rather than touching
-   them. The column headings used to fill this band; they are gone, and the
+   Under the step, the band's six pixels more, so the separator under the
+   band clears the corner's hover pill and the name's descenders rather than
+   touching them. The column headings used to fill this band; they are gone, and the
    band is as short as it can be without the line crowding what is above. */
-.rail-header { margin-top: 30px; min-height: 6px; }
+.rail-header { margin-top: 37px; min-height: 6px; }
 
 /* The two states of one mark on the heading row: where a column being
    dragged would land, and which boundary the pointer could drag to resize.
@@ -537,6 +579,37 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
   box-shadow: none;
 }
 
+/* One line a symbol. Adwaita's sidebar row is 36px tall, sized for an icon
+   beside a label, and a row here is one line of text; at that height a list
+   of thirty did not fit on a laptop's screen. The radius comes down with the
+   height, or a selected row reads as a pill. */
+.navigation-sidebar > row.symbol-row,
+.navigation-sidebar > row.list-row {
+  min-height: 26px;
+  margin-bottom: 1px;
+  border-radius: 6px;
+}
+
+/* The chart's symbol, in the accent, filled. Adwaita marks it with a tenth
+   of the foreground and lays its keyboard-focus ring on top, the accent at
+   half strength: on a dark theme that is a grey-blue frame round a row
+   barely lighter than its neighbours. Arrows move the selection with the
+   focus, so the fill already says where the keys are and the ring goes —
+   except on a row the focus reached without selecting it. */
+.navigation-sidebar > row.symbol-row:selected {
+  background-color: alpha(@accent_color, 0.22);
+}
+.navigation-sidebar > row.symbol-row:selected:hover {
+  background-color: alpha(@accent_color, 0.28);
+}
+.navigation-sidebar > row.symbol-row:selected:focus-visible {
+  outline: none;
+}
+
+/* The fold arrow on a section's header, at the height of the title beside
+   it, so a header is no longer the tallest row in a rail of one-line rows. */
+.section-fold { min-height: 0; min-width: 0; padding: 2px 4px; }
+
 .symbol-row:drop(active),
 .section-row:drop(active) {
   outline: none;
@@ -555,44 +628,14 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
   background-image: none;
 }
 
-/* The watchlist's name, in the band the corner controls already reserved.
-   Text with a chevron rather than a button: it names what you are looking at,
-   and brightens rather than lighting up a background under the pointer, so the
-   band stays a label and never grows a button in it. The zero min-height is
-   what keeps it inside the band — Adwaita's default would overflow it.
+/* The watchlist's name, in the band the corner controls already reserved,
+   after the button that steps out to every list. Bold at the rail's own size:
+   it is the title of what the rail is showing. */
+.rail-title { font-weight: bold; }
 
-   No horizontal padding, on either node: the name is lined up with the symbol
-   column by the margin of the box it sits in (see the rail's `named`), and
-   any padding here would push its first letter off that line. */
-.rail-switcher {
-  padding: 1px 0;
-  min-height: 0;
-  min-width: 0;
-  opacity: 0.6;
-  background: none;
-  background-image: none;
-  border: none;
-  box-shadow: none;
-  transition: opacity 120ms ease-out;
-}
-.rail-switcher:hover { opacity: 1; }
-/* A GtkMenuButton is a `menubutton` node wrapping a `button` node, and the
-   rules above only reach the outer one. Adwaita still gives the inner button
-   its own 10px of side padding and a hover pill, which is where the name's
-   offset came from and why it did light up. The `.flat` is in the selector
-   only to outweigh Adwaita's `menubutton.flat > button:hover`. */
-.rail-switcher.flat > button,
-.rail-switcher.flat > button:hover,
-.rail-switcher.flat > button:active,
-.rail-switcher.flat > button:checked {
-  padding-left: 0;
-  padding-right: 0;
-  min-width: 0;
-  background: none;
-  background-image: none;
-  box-shadow: none;
-}
-.rail-switcher label { font-size: 0.85em; }
+/* The pencil and the bin a list's row shows under the pointer, held inside
+   the row's height so the row does not grow when they appear. */
+button.list-row-action { min-height: 0; min-width: 0; padding: 3px; }
 
 /* A way back to a default, without shouting about it. */
 .subtle-link {
@@ -688,6 +731,35 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
 }
 .legend-row:hover .legend-button { opacity: 0.55; }
 .legend-button:hover { opacity: 1; }
+
+/* One box for every glyph button along the top of the window: a chart's
+   link, gear and maximize, the window's toggle and menu, the rail's list
+   button and +. They stand in a row and light under the same pointer, so
+   three sizes and three corner radii in it read as three apps. 26px
+   around a 16px icon, the same rounding, the same wash on hover, and a
+   firmer one for the one that is on. Last in the sheet, so it settles each
+   one's size whatever its own rule says. */
+.window-corner button,
+.legend-link,
+.legend-gear,
+.pane-expand,
+button.rail-switcher,
+button.rail-add {
+  min-width: 22px;
+  min-height: 22px;
+  padding: 2px;
+  border-radius: 6px;
+}
+.window-corner button:hover,
+.legend-link:hover,
+.legend-gear:hover,
+.chart-pane:hover .pane-expand:hover,
+button.rail-switcher:hover,
+button.rail-add:hover { background: alpha(currentColor, 0.12); }
+.window-corner button:checked,
+button.rail-switcher.open { background: alpha(currentColor, 0.15); }
+.window-corner button:checked:hover,
+button.rail-switcher.open:hover { background: alpha(currentColor, 0.2); }
 ",
     );
 
@@ -732,6 +804,17 @@ paned.chart-split > separator:active {{ background-color: @omacharts_gutter_hove
   border: {ring}px solid transparent;
 }}
 .chart-split .chart-pane.focused {{ border-color: @omacharts_focus; }}
+.chart-split .chart-pane.focused .ring-cut {{ background: @omacharts_focus; }}
+/* The drawing tools lie flush over the charts' left edge, so they bring
+   their own ground, with the ring's width of it before the tools, so the
+   tools sit where they did when the bar stood inside the ring. Their edge
+   against the charts is the rail's against them: Adwaita's paned separator,
+   a sixth of the text colour over the window's ground. */
+.drawing-tools {{
+  background: @window_bg_color;
+  padding: {ring}px 0 0 {ring}px;
+  box-shadow: inset -1px 0 alpha(@window_fg_color, 0.15);
+}}
 ",
         gutter = GUTTER_WIDTH,
         ring = RING_WIDTH,

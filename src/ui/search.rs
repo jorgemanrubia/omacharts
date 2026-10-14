@@ -142,6 +142,7 @@ impl SymbolSearch {
         // Only the box needs saying. Escape anywhere else in here already
         // closes the dialog, which is why there is no controller for it.
         dialogs::close_on_search_escape(&self.entry, &self.dialog);
+        dialogs::close_on_click_outside(&self.dialog);
 
         // Up and down move the selection while focus stays in the entry.
         let keys = gtk::EventControllerKey::new();
