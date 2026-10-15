@@ -629,9 +629,9 @@ checked before anything is written, so you never get a half-applied chart.
 
 Besides what a chart shows, `chart set` carries how it shows it — `--title`, `--style`,
 `--thickness`, `--bars`, `--session`, `--grid`, `--auto-scale`, `--log-scale`,
-`--indicators`, `--legend` and `--drawings` — and those are stored with the chart,
-so a price axis held still with `--auto-scale off` is still held the next
-time the app opens.
+`--price-line`, `--indicators`, `--legend` and `--drawings` — and those are
+stored with the chart, so a price axis held still with `--auto-scale off` is
+still held the next time the app opens.
 
 `--log-scale on` makes the price axis logarithmic: equal heights are equal
 percentage moves, which is what a chart of twenty years wants. Indicators in
@@ -669,6 +669,13 @@ window it is Ctrl+H.
 
 ```sh
 omacharts chart set --drawings off
+```
+
+`--price-line off` takes away the dashed line drawn across the chart at the
+last price. The price itself stays on the axis.
+
+```sh
+omacharts chart set --price-line off
 ```
 
 ## Chartbook templates

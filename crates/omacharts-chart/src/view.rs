@@ -271,6 +271,9 @@ struct State {
     show_grid: bool,
     /// The clock the time axis and the crosshair read.
     clock: Clock,
+    /// Whether the dashed line runs across the chart at the last close. Its
+    /// label on the price axis stays either way.
+    price_line: bool,
     /// Why the last fetch for this chart came back with nothing, if it did.
     ///
     /// One piece of state for both of the things that used to be separate —
@@ -1392,6 +1395,7 @@ impl State {
             bars_hidden: false,
             show_grid: false,
             clock: Clock::default(),
+            price_line: true,
             drag: None,
             trouble: None,
             trouble_words: None,
@@ -4472,6 +4476,17 @@ impl ChartView {
     pub fn set_show_indicators(&self, show: bool) {
         self.state.borrow_mut().show_indicators = show;
         self.hidden_changed();
+        self.redraw();
+    }
+
+    pub fn price_line(&self) -> bool {
+        self.state.borrow().price_line
+    }
+
+    /// Show or hide the line across the chart at the last price. The price
+    /// stays on the axis: it is the one number the chart is asked most.
+    pub fn set_price_line(&self, show: bool) {
+        self.state.borrow_mut().price_line = show;
         self.redraw();
     }
 
@@ -8673,7 +8688,7 @@ fn last_price(state: &State) -> Option<f64> {
     Some(state.latest.unwrap_or(last.close))
 }
 
-/// The last price's dashed line across the plot.
+/// The last price's dashed line across the plot, unless it was turned off.
 fn draw_last_price_line(
     cr: &cairo::Context,
     state: &State,
@@ -8682,6 +8697,9 @@ fn draw_last_price_line(
     price_y: f64,
     to_y: &impl Fn(f64) -> f64,
 ) {
+    if !state.price_line {
+        return;
+    }
     let Some(price) = last_price(state) else { return };
     let y = to_y(price).round() + 0.5;
     if y < price_y {

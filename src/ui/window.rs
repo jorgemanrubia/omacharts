@@ -737,6 +737,7 @@ mod tests {
                 log_scale: true,
                 indicators_shown: true,
                 drawings_shown: true,
+                price_line: true,
             }],
             watchlist: Some(4),
             sidebar_shown: Some(false),
@@ -873,6 +874,7 @@ mod tests {
             log_scale: false,
             indicators_shown: true,
             drawings_shown: true,
+            price_line: true,
         }
     }
 
@@ -3472,6 +3474,10 @@ struct StoredPane {
     /// hidden, and every one of those drew them.
     #[serde(default = "yes")]
     drawings_shown: bool,
+    /// Whether a line runs across the chart at the last price. Missing from
+    /// a chart written before it could be turned off, and all of those drew it.
+    #[serde(default = "yes")]
+    price_line: bool,
     /// Whether the chart shows what other charts of its symbol draw, and
     /// whether it sends them what is drawn here. Both on by default, which
     /// is what a book written before either existed gets — and what the
@@ -3544,6 +3550,7 @@ impl StoredPane {
             session: String::new(),
             continuous: None,
             show_grid: true,
+            price_line: true,
             link: LinkMode::default(),
             auto_scale: true,
             price_window: None,
@@ -4642,6 +4649,7 @@ impl Window {
         pane.continuous.set(defaults.continuous);
         pane.view.set_price_log(defaults.log_scale);
         pane.set_ohlc_thickness(defaults.ohlc_thickness);
+        pane.view.set_price_line(defaults.price_line);
         pane.shows_drawings.set(defaults.shows_drawings);
         pane.sends_drawings.set(defaults.sends_drawings);
         pane.view.set_sends(defaults.sends_drawings);
@@ -5244,6 +5252,7 @@ impl Window {
         added.view.set_show_indicators(from.view.show_indicators());
         added.view.set_show_drawings(from.view.show_drawings());
         added.shows_legend.set(from.shows_legend.get());
+        added.view.set_price_line(from.view.price_line());
         let next = self.layout.borrow().split(from.id, added.id, horizontal);
         *self.layout.borrow_mut() = next;
         self.rebuild_layout();
@@ -6070,6 +6079,7 @@ impl Window {
                     log_scale: pane.view.price_log(),
                     indicators_shown: pane.view.show_indicators(),
                     drawings_shown: pane.view.show_drawings(),
+                    price_line: pane.view.price_line(),
                 }
             })
             .collect();
@@ -6357,6 +6367,7 @@ impl Window {
             pane.write_title(stored.title.as_deref().unwrap_or(""));
             pane.view.set_show_indicators(stored.indicators_shown);
             pane.view.set_show_drawings(stored.drawings_shown);
+            pane.view.set_price_line(stored.price_line);
             restored.push((pane, stored));
         }
 
@@ -11646,6 +11657,19 @@ impl Window {
         pane.view.set_show_drawings(show);
         self.sync_chart_actions(&pane);
         self.sync_drawing_bar();
+        self.save_workspace();
+    }
+
+    /// Whether the focused chart draws its line at the last price.
+    pub fn price_line(&self) -> bool {
+        self.focused_pane().view.price_line()
+    }
+
+    /// Turn the focused chart's last-price line on or off, the way the
+    /// gridlines are: this chart only. What a new chart opens with is the
+    /// preferences' business.
+    pub fn set_price_line(self: &Rc<Self>, show: bool) {
+        self.focused_pane().view.set_price_line(show);
         self.save_workspace();
     }
 

@@ -44,6 +44,7 @@ crop: 700,84,1160,1276
 | **Scales** › **Auto scale price** | Fits the visible bars vertically. Off, the chart can be dragged up and down ([Scales](/manual/charts/#scales)) |
 | **Scales** › **Logarithmic scale** | Equal heights are equal percentage moves ([Logarithmic scale](/manual/charts/#logarithmic-scale)) |
 | **Scales** › **Gridlines** | Draws the grid. The scales and their labels stay either way |
+| **Scales** › **Last price line** | Draws the dashed line across the chart at the last price. The price stays on the axis either way ([The last price line](/manual/charts/#the-last-price-line)) |
 | **Scales** › **Reset chart** › **Reset** | Both scales back to how the chart opened, at the latest bars. The same as <kbd>Ctrl</kbd> + <kbd>Esc</kbd> |
 | **Session** › **Hours** | **Extended hours** or **Regular hours only** ([Sessions](/manual/charts/#sessions)) |
 | **Drawings** › **Show drawings from other charts** | Off, the chart shows only its own drawings |

@@ -383,6 +383,10 @@ The chart keeps the window until you zoom or pan. A new symbol, new bars and a r
 
 <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>G</kbd> shows or hides the focused chart's gridlines. The scales and their labels stay either way. The same switch is the chart menu's **Gridlines** and the **Gridlines** row of [Chart settings](/manual/chart-settings/).
 
+## The last price line
+
+A dashed line runs across the chart at the last price. **Last price line** in [Chart settings](/manual/chart-settings/) turns it off for that chart, and `omacharts chart set --price-line off` does the same from a terminal. The price itself stays on the price axis either way.
+
 ## The crosshair and the last price
 
 <!-- regenerate:

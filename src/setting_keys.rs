@@ -99,6 +99,7 @@ const SHARED: &[&str] = &[
     "chart_session",
     "chart_continuous",
     "show_grid",
+    "price_line",
     "chart_log_scale",
     "chart_shows_drawings",
     "chart_sends_drawings",

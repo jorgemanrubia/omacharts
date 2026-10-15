@@ -25,6 +25,7 @@ pub const SETTING_HOLLOW_UP: &str = "hollow_up";
 pub const SETTING_OHLC_THICKNESS: &str = "ohlc_thickness";
 /// The range it takes is the chart's own.
 pub use omacharts_chart::{clamp_thickness, DEFAULT_OHLC_THICKNESS, MAX_OHLC_THICKNESS, MIN_OHLC_THICKNESS};
+pub const SETTING_PRICE_LINE: &str = "price_line";
 const SETTING_LOG_SCALE: &str = "chart_log_scale";
 const SETTING_SHOWS_DRAWINGS: &str = "chart_shows_drawings";
 const SETTING_SENDS_DRAWINGS: &str = "chart_sends_drawings";
@@ -50,6 +51,8 @@ pub struct ChartDefaults {
     /// How a root's months are joined, on a feed that stitches them.
     pub continuous: Adjustment,
     pub show_grid: bool,
+    /// The dashed line across the chart at the last price.
+    pub price_line: bool,
     pub log_scale: bool,
     pub shows_drawings: bool,
     pub sends_drawings: bool,
@@ -72,6 +75,7 @@ impl Default for ChartDefaults {
             session: Session::default(),
             continuous: Adjustment::default(),
             show_grid: false,
+            price_line: true,
             log_scale: false,
             shows_drawings: true,
             sends_drawings: true,
@@ -127,6 +131,7 @@ impl ChartDefaults {
                 .and_then(|key| Adjustment::from_key(&key))
                 .unwrap_or(fallback.continuous),
             show_grid: store.setting_bool(SETTING_SHOW_GRID, fallback.show_grid),
+            price_line: store.setting_bool(SETTING_PRICE_LINE, fallback.price_line),
             log_scale: store.setting_bool(SETTING_LOG_SCALE, fallback.log_scale),
             shows_drawings: store.setting_bool(SETTING_SHOWS_DRAWINGS, fallback.shows_drawings),
             sends_drawings: store.setting_bool(SETTING_SENDS_DRAWINGS, fallback.sends_drawings),
@@ -144,6 +149,7 @@ impl ChartDefaults {
         store.set_setting(SETTING_SESSION, self.session.key());
         store.set_setting(SETTING_CONTINUOUS, self.continuous.key());
         store.set_setting_bool(SETTING_SHOW_GRID, self.show_grid);
+        store.set_setting_bool(SETTING_PRICE_LINE, self.price_line);
         store.set_setting_bool(SETTING_LOG_SCALE, self.log_scale);
         store.set_setting_bool(SETTING_SHOWS_DRAWINGS, self.shows_drawings);
         store.set_setting_bool(SETTING_SENDS_DRAWINGS, self.sends_drawings);
@@ -181,6 +187,7 @@ mod tests {
             session: Session::ALL[Session::ALL.len() - 1],
             continuous: Adjustment::AsTraded,
             show_grid: true,
+            price_line: false,
             log_scale: true,
             shows_drawings: false,
             sends_drawings: false,

@@ -378,6 +378,7 @@ pub fn new_pane(
         "log_scale": defaults.log_scale,
         "indicators_shown": true,
         "drawings_shown": true,
+        "price_line": defaults.price_line,
     })
 }
 

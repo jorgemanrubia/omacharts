@@ -963,6 +963,8 @@ pub const SURFACE: &[Noun] = &[
                         .of(SWITCHES),
                     Flag::valued("drawings", "BOOL", "draw the chart's drawings, its own and the shared, or hide them all")
                         .of(&["on", "off"]),
+                    Flag::valued("price-line", "BOOL", "draw the line across the chart at the last price")
+                        .of(&["on", "off"]),
                     Flag::valued(
                         "template",
                         "TEMPLATE",
@@ -1580,6 +1582,7 @@ const STORED_FIELDS: &[(&str, &str, &str)] = &[
         "",
         "exploratory: the suffix of what a chart trades instead, set with its trading symbol",
     ),
+    ("price_line", "chart set", "--price-line"),
     ("name", "chartbook rename", ""),
     ("layout", "chart split", ""),
     ("focused", "chart focus", ""),

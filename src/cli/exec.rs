@@ -1750,6 +1750,10 @@ fn chart_set(
         chart["drawings_shown"] = json!(shown == "on");
         changed.push(format!("drawings {}", if shown == "on" { "shown" } else { "hidden" }));
     }
+    if let Some(line) = arg(m, "price-line") {
+        chart["price_line"] = json!(line == "on");
+        changed.push(format!("price line {line}"));
+    }
     match template {
         None => {}
         // The template's indicators replace the chart's own, which go: the
@@ -1775,7 +1779,7 @@ fn chart_set(
     if changed.is_empty() {
         return Err(Fault::usage(
             "nothing to change; pass --title, --symbol, --resolution, --style, --thickness, --bars, --colouring, --hollow-up, \
-             --swap-colours, --session, --link, --grid, --auto-scale, --log-scale, --indicators, \
+             --swap-colours, --session, --link, --grid, --auto-scale, --log-scale, --price-line, --indicators, \
              --drawings, --show-drawings, --send-drawings or --template"
                 .into(),
         ));
@@ -4334,6 +4338,8 @@ fn pane_json(pane: &Value) -> String {
         "drawings_shown": pane["drawings_shown"].as_bool().unwrap_or(true),
         // And with its legend, before it could be turned off.
         "legend": pane["shows_legend"].as_bool().unwrap_or(true),
+        // And drawn, before it could be turned off.
+        "price_line": pane["price_line"].as_bool().unwrap_or(true),
         "link": stored_mode(pane).key(),
         "shows_drawings": pane["shows_drawings"].as_bool().unwrap_or(true),
         "sends_drawings": pane["sends_drawings"].as_bool().unwrap_or(true),
@@ -7272,6 +7278,26 @@ mod tests {
 
         run("chart set --book Macro --drawings on", &store);
         assert_eq!(charts(&store)["charts"][0]["drawings_shown"], true);
+    }
+
+    /// The line at the last price is stored with the chart and reported
+    /// back, and a chart stored before it could be turned off draws it.
+    #[test]
+    fn a_charts_last_price_line_can_be_turned_off_from_a_command() {
+        let store = Store::memory().unwrap();
+        run("chartbook create Macro --symbol SPY --switch", &store);
+        let charts = |store: &Store| -> serde_json::Value {
+            serde_json::from_str(&run("chart list --book Macro --json", store).out).unwrap()
+        };
+        assert_eq!(charts(&store)["charts"][0]["price_line"], true, "drawn to begin with");
+
+        let off = run("chart set --book Macro --price-line off", &store);
+        assert_eq!(off.code, 0, "{}", off.err);
+        assert!(off.out.contains("price line off"), "{}", off.out);
+        assert_eq!(charts(&store)["charts"][0]["price_line"], false);
+
+        run("chart set --book Macro --price-line on", &store);
+        assert_eq!(charts(&store)["charts"][0]["price_line"], true);
     }
 
     /// A chart stored before the price scale was remembered says nothing

@@ -714,6 +714,21 @@ fn scales_group(window: &Rc<Window>) -> adw::PreferencesGroup {
     grid.set_activatable_widget(Some(&switch));
     group.add(&grid);
 
+    let price_line = adw::ActionRow::new();
+    price_line.set_title("Last price line");
+    price_line.set_subtitle("The price stays on the axis either way");
+    let switch = gtk::Switch::new();
+    switch.set_valign(gtk::Align::Center);
+    switch.set_active(window.price_line());
+    let window_for_line = window.clone();
+    switch.connect_state_set(move |_, on| {
+        window_for_line.set_price_line(on);
+        glib::Propagation::Proceed
+    });
+    price_line.add_suffix(&switch);
+    price_line.set_activatable_widget(Some(&switch));
+    group.add(&price_line);
+
     let reset = adw::ActionRow::new();
     reset.set_title("Reset chart");
     let button = gtk::Button::with_label("Reset");

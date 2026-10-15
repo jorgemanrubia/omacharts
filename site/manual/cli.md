@@ -405,6 +405,7 @@ omacharts: "3x" is not a resolution; try 5m, 1h, 1D, 1W, 1M or 1Y
 | `--swap-colours on` or `off` | Paints the colouring the other way round, red for a rise | [Colouring](/manual/charts/#colouring) |
 | `--session S` | `regular`, `extended` | [Sessions](/manual/charts/#sessions) |
 | `--grid on` or `off` | Draws the grid | [Gridlines](/manual/charts/#gridlines) |
+| `--price-line on` or `off` | Draws the dashed line across the chart at the last price | [The last price line](/manual/charts/#the-last-price-line) |
 | `--auto-scale on` or `off` | Fits the price axis to the visible bars, or holds it still | [Scales](/manual/charts/#scales) |
 | `--log-scale on` or `off` | Logarithmic or linear price axis | [Logarithmic scale](/manual/charts/#logarithmic-scale) |
 | `--indicators on` or `off` | Draws the chart's indicators, or hides them all | [Hiding every indicator](/manual/indicators/#hiding-every-indicator) |
@@ -1075,7 +1076,7 @@ Desk — watchlist "Default"
 ```
 
 `--book` lists another chartbook. `--json` gives each chart in full:
-its chart title, `title` (`null` when it has none), colouring, session, gridlines, both scales, whether it shows and sends
+its chart title, `title` (`null` when it has none), colouring, session, gridlines, the last price line, both scales, whether it shows and sends
 drawings, indicators and template.
 
 ## Chartbooks
