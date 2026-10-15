@@ -74,7 +74,7 @@ pub fn commit_label() -> String {
 /// The keypad's is a different keyval from the main one, and a keyboard laid
 /// out for some other script can send a third. A dialog that commits from one
 /// Return and not another is a dialog that looks broken.
-fn is_enter(key: gtk::gdk::Key) -> bool {
+pub fn is_enter(key: gtk::gdk::Key) -> bool {
     use gtk::gdk::Key;
     matches!(key, Key::Return | Key::KP_Enter | Key::ISO_Enter)
 }
