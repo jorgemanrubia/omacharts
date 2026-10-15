@@ -27,15 +27,13 @@ state:
 capture: bin/headless-window shot /tmp/prefs.png
 crop: 276,16,2008,1008   (the whole dialog, 12px layout margin)
 -->
-{% include figure.html src="/assets/manual/preferences/general.png" alt="The Preferences dialog on General, with the Desktop and Screenshots groups" caption="Preferences on General." %}
+{% include figure.html src="/assets/manual/preferences/general.png" alt="The Preferences dialog on General, with the Desktop and Updates groups" caption="Preferences on General." %}
 
 ### General
 
 | Group › row | Does | Chapter |
 |---|---|---|
 | Desktop › **Show in the Omarchy bar** | Puts the Omarchy plugin in the bar, or takes it out. The group appears only on an Omarchy desktop. | [Omarchy plugin](/manual/bar-widget/) |
-| Screenshots › **Also save a PNG** | Keeps a file as well as copying to the clipboard, which always happens. | [Screenshots](/manual/screenshots/) |
-| Screenshots › **Save to**, **Change…** | The folder the PNG goes to. Greyed out while the switch above is off. | [Screenshots](/manual/screenshots/) |
 | Updates › **Update automatically** | Downloads new releases in the background, to start at the next launch. On by default. | [Installation](/manual/installing/#updates) |
 
 ### Charts
@@ -109,7 +107,7 @@ crop: 276,56,2008,1328   (the whole dialog, 12px layout margin)
 
 ## Settings that stay with this machine
 
-The screenshot folder, the **Keep at most** limit, **Update automatically** and the sidebar width stay with this machine. Restoring another machine's backup leaves them as they were ([Restoring](/manual/your-data/#restoring)).
+The **Keep at most** limit, **Update automatically**, the sidebar width and the screenshot folder (the `screenshot_folder` setting, [Where it goes](/manual/screenshots/#where-it-goes)) stay with this machine. Restoring another machine's backup leaves them as they were ([Restoring](/manual/your-data/#restoring)).
 
 ## See also
 

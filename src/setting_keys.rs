@@ -92,7 +92,6 @@ const SHARED: &[&str] = &[
     "pnl_r_amount",
     "sync_crosshair",
     "drawing_configurations",
-    "screenshot_save_file",
     "watchlist_columns",
     "watchlist_sort_",
     "watchlist_link_",

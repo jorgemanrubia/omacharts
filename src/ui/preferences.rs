@@ -25,7 +25,6 @@ use crate::chart_defaults::ChartDefaults;
 use crate::store::Store;
 use crate::theming::Theming;
 use crate::ui::colors;
-use crate::ui::screenshot;
 use crate::ui::window::Window;
 
 pub struct Preferences;
@@ -1147,7 +1146,6 @@ fn build_general_page(context: &Rc<Context>) {
     }
     context.charts_other_page.add(&time_group(context));
     context.charts_other_page.add(&chart_group(context));
-    context.general_page.add(&screenshots_group(context));
     context.general_page.add(&updates_group(context));
     build_charts_page(context);
     rebuild_templates(context);
@@ -1383,17 +1381,6 @@ fn confirm_delete_template(context: &Rc<Context>, anchor: &gtk::Button, id: u32,
     dialog.present(Some(anchor));
 }
 
-/// Whether a screenshot is kept as a file, and where.
-///
-/// The group says what always happens, because the clipboard is the one part
-/// of this with no control beside it: nothing else here would ever tell you a
-/// screenshot is already waiting to be pasted, and somebody who turns the
-/// switch below off needs to know they are declining the file rather than the
-/// screenshot.
-///
-/// Both rows derive their state rather than reading something written down at
-/// install time: nothing is stored until somebody changes it, so the day the
-/// default folder moves, everyone who never chose moves with it.
 /// Whether newer releases are downloaded behind the window. Off stops the
 /// asking and leaves what is already downloaded in place: it is newer than
 /// what pacman installed, and settings it has migrated would not open in an
@@ -1407,85 +1394,6 @@ fn updates_group(context: &Rc<Context>) -> adw::PreferencesGroup {
     let store = context.store.clone();
     row.connect_active_notify(move |row| store.set_setting_bool(crate::update::SETTING, row.is_active()));
     group.add(&row);
-    group
-}
-
-fn screenshots_group(context: &Rc<Context>) -> adw::PreferencesGroup {
-    let group = adw::PreferencesGroup::new();
-    group.set_title("Screenshots");
-    group.set_description(Some("Screenshots are always copied to the clipboard."));
-
-    let folder = adw::ActionRow::new();
-    folder.set_title("Save to");
-    // The path is the whole point of the row, so it goes in the subtitle where
-    // there is room for it — on one line, because a deep path is wider than
-    // this dialog and a row that stretches it is worse than one that trails
-    // off.
-    folder.set_subtitle(&home_relative(&screenshot::folder(&context.store)));
-    folder.set_subtitle_lines(1);
-    folder.set_activatable(true);
-    folder.set_sensitive(screenshot::save_file(&context.store));
-
-    // "Also", because the line above says what already happened. No subtitle:
-    // the row is one word away from the sentence it continues, and repeating
-    // it underneath would be the third way of saying one thing.
-    let keep = adw::ActionRow::new();
-    keep.set_title("Also save a PNG");
-
-    let switch = gtk::Switch::new();
-    switch.set_valign(gtk::Align::Center);
-    switch.set_active(screenshot::save_file(&context.store));
-    let store = context.store.clone();
-    let folder_row = folder.clone();
-    switch.connect_state_set(move |_, on| {
-        store.set_setting_bool(screenshot::SETTING_SAVE_FILE, on);
-        // Greyed out rather than taken away: a folder nothing is being saved
-        // to is still the folder it would be saved to, and hiding the row
-        // would leave no way to see what turning this back on would do.
-        folder_row.set_sensitive(on);
-        glib::Propagation::Proceed
-    });
-    keep.add_suffix(&switch);
-    group.add(&keep);
-
-    let choose: Rc<dyn Fn(&adw::ActionRow)> = {
-        let store = context.store.clone();
-        Rc::new(move |row: &adw::ActionRow| {
-            let dialog = gtk::FileDialog::new();
-            dialog.set_title("Where screenshots are saved");
-            let current = screenshot::folder(&store);
-            if current.is_dir() {
-                dialog.set_initial_folder(Some(&gio::File::for_path(&current)));
-            }
-            let parent = row.root().and_downcast::<gtk::Window>();
-            let store = store.clone();
-            let row = row.clone();
-            dialog.select_folder(parent.as_ref(), gio::Cancellable::NONE, move |answer| {
-                let Some(path) = answer.ok().and_then(|file| file.path()) else { return };
-                // Choosing the default folder is choosing the default, not
-                // pinning today's answer: stored empty, it keeps following.
-                let chosen = if path == screenshot::default_folder() {
-                    String::new()
-                } else {
-                    path.to_string_lossy().to_string()
-                };
-                store.set_setting(screenshot::SETTING_FOLDER, &chosen);
-                row.set_subtitle(&home_relative(&screenshot::folder(&store)));
-            });
-        })
-    };
-
-    let button = gtk::Button::with_label("Change…");
-    button.set_valign(gtk::Align::Center);
-    let open = choose.clone();
-    let row = folder.clone();
-    button.connect_clicked(move |_| open(&row));
-    folder.add_suffix(&button);
-
-    let open = choose.clone();
-    folder.connect_activated(move |row| open(row));
-
-    group.add(&folder);
     group
 }
 

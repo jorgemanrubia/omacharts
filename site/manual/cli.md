@@ -1422,9 +1422,9 @@ The section with an empty name holds the symbols in no section.
 
 `chart screenshot` captures the focused chart of the open chartbook, and
 `chartbook screenshot` the open chartbook. What a picture holds, the key and
-the Preferences rows are in [Screenshots](/manual/screenshots/). Unlike the
-key, the commands always write a file, whatever **Also save a PNG** says, and
-copy to the clipboard only with `--clipboard`.
+where the file goes are in [Screenshots](/manual/screenshots/). Like the
+key, the commands always write a file. Unlike it, they copy to the clipboard
+only with `--clipboard`.
 
 ```
 $ omacharts chart screenshot
@@ -1446,9 +1446,8 @@ With no window open both exit 6. Neither takes `--book` or `--chart`; a
 chart that is not on screen cannot be captured. Focus the chart first with
 `chart focus`, or open the chartbook with `chartbook switch`.
 
-`screenshot_save_file` does not affect the commands; `screenshot_folder` is
-where they write when `--output` is not given. Both are in
-[Settings](#settings).
+`screenshot_folder` is where they and the key write when `--output` is not
+given ([Settings](#settings)).
 
 ## Market data
 
@@ -1574,8 +1573,7 @@ same.
 | `sync_crosshair` | on, off | on | Charts › Other › Chart › Sync crosshair across charts | [Charts](/manual/charts/#sharing-the-crosshair) |
 | `zoom_sensitivity` | a percentage from `10` to `200`, with or without `%` | `100` | Charts › Other › Chart › Zoom sensitivity | [Charts](/manual/charts/#moving-around) |
 | `provider` | `yahoo`, `tos` | `yahoo` | Data › Data feed | [Market data feeds](/manual/market-data/) |
-| `screenshot_save_file` | on, off | on | General › Also save a PNG | [Screenshots](/manual/screenshots/) |
-| `screenshot_folder` | a folder; `~/` is your home; empty for the default | `<Pictures>/Omacharts` | General › Save to | [Screenshots](/manual/screenshots/) |
+| `screenshot_folder` | a folder; `~/` is your home; empty for the default | where Omarchy saves screenshots; `<Pictures>/Omacharts` without Omarchy | None | [Screenshots](/manual/screenshots/) |
 | `cache_limit` | a size in bytes; `cache limit` takes `512MB` or `2GB` | 1 GB | Data › Keep at most | [Where your data lives](/manual/your-data/) |
 
 ### Theme

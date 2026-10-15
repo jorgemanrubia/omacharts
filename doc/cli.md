@@ -962,12 +962,14 @@ saved pos:0 NVDA 1h in "Macro" to ~/Pictures/Omacharts/NVDA-1h-20261004-143012.p
   [exit 0]
 ```
 
-Without `--output` the file goes to the folder in the settings, named after the
-symbol, the resolution and the time. `--output` naming a directory rather than
+Without `--output` the file goes where the desktop keeps screenshots, named
+after the symbol, the resolution and the time. `--output` naming a directory rather than
 a file puts it there under that same name.
 
-The window's own key copies the image to the clipboard every time. A command
-does not, unless you ask for it:
+The window's own key, Ctrl+O, does what Omarchy's Print key does: it copies
+the image to the clipboard, saves the file, and sends Omarchy's notification,
+which opens the editor when clicked or on Super+Alt+,. A command does not copy
+unless you ask for it:
 
 ```
 omacharts chart screenshot --clipboard
@@ -978,11 +980,10 @@ fifty times on whatever you had copied. Note that a clipboard offer belongs to
 the process that made it — unless a clipboard manager is running to take a copy,
 what Omacharts puts there is gone when Omacharts quits.
 
-Two settings govern the file. `screenshot_folder` is where it goes; unset means
-`<Pictures>/Omacharts`, which is made the first time a screenshot needs it.
-`screenshot_save_file` is whether the window keeps one at all — turning it off
-leaves the keyboard copying to the clipboard and writing nothing. Neither
-setting touches a command: `chart screenshot` always writes a file.
+The folder is `OMARCHY_SCREENSHOT_DIR` when it is set, then the pictures
+directory itself on Omarchy, the same answer Omarchy's own screenshots get,
+and `<Pictures>/Omacharts` anywhere else. `config set screenshot_folder
+<path>` overrides all three, for the window and for commands alike.
 
 ## Preferences
 
