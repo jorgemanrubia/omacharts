@@ -6658,8 +6658,7 @@ impl Window {
         rows.add(&chosen);
 
         let field = name.clone();
-        let dialog = adw::AlertDialog::new(Some("New chartbook"), None);
-        dialog.set_extra_child(Some(&rows));
+        let dialog = crate::ui::dialogs::card("New chartbook", None, Some(rows.upcast_ref()));
         dialog.add_response("cancel", "Cancel");
         dialog.add_response("create", "Create");
         dialog.set_response_appearance("create", adw::ResponseAppearance::Suggested);
@@ -6806,7 +6805,7 @@ impl Window {
             },
         );
 
-        let dialog = adw::AlertDialog::new(Some("Remove chartbook"), Some(&body));
+        let dialog = crate::ui::dialogs::card("Remove chartbook", Some(&body), None);
         dialog.add_response("cancel", "Cancel");
         dialog.add_response("remove", "Remove");
         dialog.set_response_appearance("remove", adw::ResponseAppearance::Destructive);

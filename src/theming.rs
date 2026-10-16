@@ -665,6 +665,45 @@ entry.range-date > image:hover { opacity: 0.9; }
 .range-chip.inert, .range-chip.inert:hover { opacity: 0.5; box-shadow: inset 0 0 0 1px alpha(@window_fg_color, 0.18); }
 .range-caret { font-size: 0.8em; opacity: 0.5; }
 .range-auto { font-family: sans-serif; font-weight: 400; font-size: 0.9em; opacity: 0.55; }
+/* A question is a small card on the menus' surface: the title and the line
+   under it centred (see `dialogs::card`), the answers under them as
+   words, and only the answer that does something stands out: filled in the
+   accent, or, when it takes something away, red on a red tint, as
+   libadwaita draws a destructive button. Two equal slabs across the bottom
+   made Cancel look like as much of a decision as Delete. */
+dialog.alert.floating sheet {
+  background-color: @popover_bg_color;
+  border-radius: 10px;
+  outline: none;
+  box-shadow: 0 0 0 1px alpha(@window_fg_color, 0.10), 0 14px 40px alpha(black, 0.45);
+}
+dialog.alert .message-area { padding: 20px 24px 0; }
+dialog.alert .message-area > .child { padding-left: 0; padding-right: 0; margin-top: 0; }
+dialog.alert .card-title { font-weight: 600; font-size: 1.05em; }
+dialog.alert .card-body { font-size: 0.9em; color: alpha(@popover_fg_color, 0.65); }
+/* libadwaita gives every answer an equal share of the row, and only its
+   padding can be set from here: the start is padded until the shares are
+   about a word wide, which leaves them on the right. */
+dialog.alert .response-area {
+  padding: 12px 12px 10px 180px;
+  border-spacing: 6px;
+}
+dialog.alert .response-area > button {
+  min-height: 0;
+  padding: 4px 12px;
+  border-radius: 6px;
+  background: none;
+  box-shadow: none;
+  font-weight: normal;
+  color: alpha(@popover_fg_color, 0.7);
+}
+dialog.alert .response-area > button:hover { background: alpha(@popover_fg_color, 0.07); color: @popover_fg_color; }
+dialog.alert .response-area > button.suggested-action,
+dialog.alert .response-area > button.destructive-action { font-weight: 600; }
+dialog.alert .response-area > button.suggested-action { background: @accent_bg_color; color: @accent_fg_color; }
+dialog.alert .response-area > button.destructive-action { background: alpha(@destructive_color, 0.15); color: @destructive_color; }
+dialog.alert .response-area > button.suggested-action:hover { background: alpha(@accent_bg_color, 0.85); }
+dialog.alert .response-area > button.destructive-action:hover { background: alpha(@destructive_color, 0.22); }
 
 /* The link toggle is a glyph, not a button: no frame, no fill, not even when
    it is on — a chart that follows the rail says so by the icon being there at

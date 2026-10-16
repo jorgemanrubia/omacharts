@@ -2870,7 +2870,7 @@ impl Watchlist {
             n => format!("Delete \u{201c}{name}\u{201d} and the {n} symbols in it?"),
         };
 
-        let dialog = adw::AlertDialog::new(Some("Delete watchlist"), Some(&body));
+        let dialog = crate::ui::dialogs::card("Delete watchlist", Some(&body), None);
         dialog.add_response("cancel", "Cancel");
         dialog.add_response("delete", "Delete");
         dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
@@ -3024,7 +3024,7 @@ impl Watchlist {
             n => format!("Remove “{name}” and the {n} symbols in it?"),
         };
 
-        let dialog = adw::AlertDialog::new(Some("Remove section"), Some(&body));
+        let dialog = crate::ui::dialogs::card("Remove section", Some(&body), None);
         dialog.add_response("cancel", "Cancel");
         dialog.add_response("remove", "Remove");
         dialog.set_response_appearance("remove", adw::ResponseAppearance::Destructive);

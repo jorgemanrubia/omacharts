@@ -90,6 +90,40 @@ pub fn close_on_click_outside(dialog: &adw::Dialog) {
     dialog.add_controller(click);
 }
 
+/// One question as a small card: a title, a line saying what will happen,
+/// anything to fill in under it, and the answers as words.
+///
+/// The title and the line are the card's own labels rather than the alert's
+/// heading and body, so the stylesheet can size and colour them under
+/// `dialog.alert`.
+pub fn card(title: &str, body: Option<&str>, extra: Option<&gtk::Widget>) -> adw::AlertDialog {
+    let dialog = adw::AlertDialog::new(None, None);
+    // Not drawn, but what a screen reader announces the dialog as.
+    dialog.set_title(title);
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    let heading = gtk::Label::new(Some(title));
+    heading.add_css_class("card-title");
+    heading.set_justify(gtk::Justification::Center);
+    heading.set_wrap(true);
+    content.append(&heading);
+    if let Some(body) = body {
+        let line = gtk::Label::new(Some(body));
+        line.add_css_class("card-body");
+        line.set_justify(gtk::Justification::Center);
+        line.set_wrap(true);
+        content.append(&line);
+    }
+    if let Some(extra) = extra {
+        extra.set_margin_top(6);
+        content.append(extra);
+        // Rows to fill in are a form's rows: flat, on hairlines.
+        dialog.add_css_class("form-window");
+    }
+    dialog.set_extra_child(Some(&content));
+    dialog
+}
+
 /// "Ctrl+Enter", written the way this desktop writes it.
 ///
 /// For the tooltip on the button the key stands in for. A finishing key that
