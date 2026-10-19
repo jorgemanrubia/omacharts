@@ -14,7 +14,7 @@
 <meta property="og:url" content="https://omacharts.org/">
 <meta property="og:title" content="Omacharts">
 <meta property="og:description" content="Beautiful charting software for Omarchy.">
-<meta property="og:image" content="https://omacharts.org/social.jpg?v=2">
+<meta property="og:image" content="https://omacharts.org/social.jpg?v=3">
 <meta name="twitter:card" content="summary_large_image">
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -120,57 +120,122 @@
   }
 
   /* The install line is the one thing on the page a visitor is meant to take
-     away, so it looks like what it is: a prompt, in the terminal's own
-     letterforms. */
+     away, and on Omarchy the way in is the menu rather than a terminal: the
+     keys to press as key caps, then the entries to pick, in order. */
   .install {
     margin: clamp(1.6rem, 3.4vw, 4rem) 0 0;
-    display: inline-flex;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
     align-items: center;
-    gap: .7em;
+    gap: .7em .6em;
+    max-width: 100%;
     padding: .62em 1.1em;
     border: 1px solid rgba(243, 236, 220, .18);
     border-radius: .55rem;
     background: rgba(13, 17, 20, .62);
     color: var(--soft);
-    font-family: var(--mono);
-    font-size: clamp(.82rem, 1.15vw, 1.4rem);
+    font-size: clamp(.95rem, 1.3vw, 1.6rem);
+    font-weight: 600;
     line-height: 1;
-    cursor: pointer;
-    transition: border-color .18s ease, background-color .18s ease;
-  }
-  .install:hover,
-  .install:focus-visible {
-    border-color: rgba(226, 194, 133, .55);
-    background: rgba(13, 17, 20, .78);
-  }
-  .install:focus-visible {
-    outline: 2px solid var(--amber);
-    outline-offset: 4px;
-  }
-  .install .prompt {
-    color: var(--amber);
-    user-select: none;
-  }
-  .install code {
-    font: inherit;
     letter-spacing: .01em;
+  }
+  /* A step keeps its arrow, so a narrow screen breaks the line before an
+     arrow and every new line starts with where to go next. The menu entries
+     hold together after the keys, and part only on the narrowest screens. */
+  .install .path {
+    display: inline-flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: inherit;
+  }
+  .install .step,
+  .install .keys {
+    display: inline-flex;
+    align-items: center;
+    gap: .6em;
     white-space: nowrap;
   }
-  /* Narrow enough and the command wraps rather than overflowing the phone. */
-  @media (max-width: 26rem) {
-    .install { gap: .5em; padding: .6em .8em; }
-    .install code { white-space: normal; }
+  .install .keys { gap: .3em; }
+  .install .then {
+    color: var(--bright);
+    opacity: .35;
+    font-weight: 500;
+  }
+  .install kbd {
+    display: inline-block;
+    padding: .28em .5em .3em;
+    border: 1px solid rgba(226, 194, 133, .45);
+    border-bottom-width: 2px;
+    border-radius: .3rem;
+    background: rgba(226, 194, 133, .07);
+    color: var(--amber);
+    font-family: var(--mono);
+    font-size: .78em;
+    font-weight: 500;
+    line-height: 1;
+  }
+  .sr {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  /* The command is still there for anyone who would rather type it, a step
+     quieter than the menu and copied with a click. */
+  .alt {
+    margin: .2rem 0 0;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    align-items: center;
+    gap: .15em .5em;
+    color: var(--quiet);
+    opacity: .7;
+    font-size: clamp(.8rem, 1.05vw, 1.25rem);
+    font-weight: 500;
+    line-height: 1.4;
+    text-shadow: 0 .02em .1em rgba(0, 0, 0, .65);
+  }
+  .copy {
+    display: inline-flex;
+    align-items: center;
+    gap: .55em;
+    padding: .2em .4em;
+    margin: -.2em -.4em;
+    border: 0;
+    border-radius: .3rem;
+    background: none;
+    color: inherit;
+    font-family: var(--mono);
+    font-size: .95em;
+    line-height: inherit;
+    cursor: pointer;
+    transition: color .18s ease;
+  }
+  .copy:hover,
+  .copy:focus-visible { color: var(--bright); }
+  .copy:focus-visible {
+    outline: 2px solid var(--amber);
+    outline-offset: 2px;
+  }
+  .copy code {
+    font: inherit;
+    white-space: nowrap;
   }
   /* The hint is a glyph rather than a word: a clipboard that turns into a
      tick for a moment once the command is on it. Quiet until the line is
      pointed at, so it reads as an affordance, not a second label. */
-  .install .hint {
+  .copy .hint {
     display: inline-flex;
     color: var(--bright);
-    opacity: .4;
+    opacity: .5;
     transition: opacity .18s ease, color .18s ease;
   }
-  .install .hint svg {
+  .copy .hint svg {
     width: .95em;
     height: .95em;
     fill: none;
@@ -179,12 +244,12 @@
     stroke-linecap: round;
     stroke-linejoin: round;
   }
-  .install:hover .hint,
-  .install:focus-visible .hint { opacity: .7; }
-  .install .done,
-  .install[data-copied] .clip { display: none; }
-  .install[data-copied] .done { display: block; }
-  .install[data-copied] .hint { color: var(--amber); opacity: 1; }
+  .copy:hover .hint,
+  .copy:focus-visible .hint { opacity: .85; }
+  .copy .done,
+  .copy[data-copied] .clip { display: none; }
+  .copy[data-copied] .done { display: block; }
+  .copy[data-copied] .hint { color: var(--amber); opacity: 1; }
 
   /* The repository is a mark in the corner rather than a second button in
      the hero: quiet like the clipboard glyph, brighter when pointed at, and
@@ -216,7 +281,7 @@
 
   @media (prefers-reduced-motion: reduce) {
     .tagline a { transition: none; }
-    .install, .install .hint { transition: none; }
+    .copy, .copy .hint { transition: none; }
     .repo svg { transition: none; }
   }
 </style>
@@ -225,14 +290,25 @@
   <main>
     <h1>Omacharts</h1>
     <p class="tagline">Beautiful charting software for <a href="https://omarchy.org">Omarchy</a></p>
-    <button class="install" type="button" data-command="omarchy pkg add omacharts" title="Copy to clipboard">
-      <span class="prompt" aria-hidden="true">$</span>
-      <code>omarchy pkg add omacharts</code>
-      <span class="hint" role="img" aria-label="Copy to clipboard">
-        <svg class="clip" viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>
-        <svg class="done" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>
+    <p class="install">
+      <span class="sr">Install it from the Omarchy menu:</span>
+      <span class="keys"><kbd>Super</kbd><span class="sr"> + </span><kbd>Space</kbd></span>
+      <span class="path">
+        <span class="step"><span class="then" aria-hidden="true">→</span><span class="sr">, then </span>Install</span>
+        <span class="step"><span class="then" aria-hidden="true">→</span><span class="sr">, then </span>Package</span>
+        <span class="step"><span class="then" aria-hidden="true">→</span><span class="sr">, then </span>omacharts</span>
       </span>
-    </button>
+    </p>
+    <p class="alt">
+      <span>or in a terminal:</span>
+      <button class="copy" type="button" data-command="omarchy pkg add omacharts" title="Copy to clipboard">
+        <code>omarchy pkg add omacharts</code>
+        <span class="hint" role="img" aria-label="Copy to clipboard">
+          <svg class="clip" viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>
+          <svg class="done" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>
+        </span>
+      </button>
+    </p>
   </main>
   <a class="repo" href="https://github.com/jorgemanrubia/omacharts" aria-label="Omacharts on GitHub" title="Omacharts on GitHub">
     <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
@@ -240,18 +316,18 @@
   <script>
     /* Progressive: with no clipboard and no script the command is still there
        to read and select, which is all it has to be. */
-    const install = document.querySelector('.install');
-    const hint = install.querySelector('.hint');
-    install.addEventListener('click', async () => {
+    const copy = document.querySelector('.copy');
+    const hint = copy.querySelector('.hint');
+    copy.addEventListener('click', async () => {
       try {
-        await navigator.clipboard.writeText(install.dataset.command);
+        await navigator.clipboard.writeText(copy.dataset.command);
       } catch {
         return;
       }
-      install.dataset.copied = '';
+      copy.dataset.copied = '';
       hint.setAttribute('aria-label', 'Copied');
       setTimeout(() => {
-        delete install.dataset.copied;
+        delete copy.dataset.copied;
         hint.setAttribute('aria-label', 'Copy to clipboard');
       }, 1600);
     });

@@ -54,13 +54,16 @@ Fast, beautiful charting software for [Omarchy](https://omarchy.org).
 ## Installing
 
 Omacharts lives in Omarchy's own package repository, which is already enabled
-on an Omarchy machine:
+on an Omarchy machine. Open the Omarchy menu with <kbd>Super</kbd> +
+<kbd>Space</kbd>, choose **Install → Package**, and pick **omacharts**.
+
+Or from a terminal:
 
 ```sh
 omarchy pkg add omacharts
 ```
 
-That puts the command on your path with the man page, shell completions and
+Either way, that puts the command on your path with the man page, shell completions and
 the agent skill, and `pacman -Syu` carries Omacharts along with the rest of
 the system.
 
