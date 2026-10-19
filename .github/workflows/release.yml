@@ -35,7 +35,7 @@ jobs:
           generate_release_notes: true
 
   # Everything a tag can carry is already in the tag: bin/release writes the
-  # version into Cargo.toml, Cargo.lock, the README and the PKGBUILD, and
+  # version into Cargo.toml, Cargo.lock and the PKGBUILD, and
   # verifies the tree builds with it, before tagging. The one thing that cannot
   # exist until the tag does is the digest of the tarball GitHub builds for it,
   # so that is the only thing written here.
