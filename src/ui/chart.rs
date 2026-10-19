@@ -5064,7 +5064,9 @@ fn draw_pane_value(
 }
 
 /// A filled chip on the price axis: a [`Tag`](omacharts_engine::Tag), the
-/// same fill and label the bar widget's change pill is drawn in.
+/// same fill and label the bar widget's change pill is drawn in. Painted from
+/// the colour and [`colors::readable_on`] directly, which is all a tag is,
+/// because a frame draws several and building one allocates.
 fn label_on_axis(
     cr: &cairo::Context,
     state: &State,
@@ -5079,11 +5081,10 @@ fn label_on_axis(
     let Ok(extents) = cr.text_extents(text) else { return };
     let h = AXIS_CHIP_H;
     let w = (extents.width() + 10.0).min(width - axis_x - 2.0);
-    let tag = omacharts_engine::Tag::on(colour);
-    colors::set_source(cr, &tag.fill);
+    colors::set_source(cr, colour);
     cr.rectangle(axis_x + 1.0, y - h / 2.0, w, h);
     let _ = cr.fill();
-    colors::set_source(cr, &tag.label);
+    colors::set_source(cr, colors::readable_on(colour));
     cr.move_to(axis_x + 6.0, y + 3.5);
     let _ = cr.show_text(text);
     let _ = state;
