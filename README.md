@@ -175,3 +175,4 @@ Pull requests are welcome.
 ## Licence
 
 MIT. See [LICENSE](LICENSE).
+
