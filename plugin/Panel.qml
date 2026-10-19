@@ -30,12 +30,18 @@ Panel {
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
+  // Gone with the package: the bar gives a hidden module no width, so there
+  // is no gap where it was, the way Omarchy's own update widget disappears.
+  readonly property bool gone: service.missing
+  visible: !gone
+
   // Stands in until the host has built the real one, so every binding below
   // can read the same shape rather than guarding for null.
   QtObject {
     id: dummyService
     property var sections: []
     property string lastError: ""
+    property bool missing: false
     property bool refreshing: false
     property double updatedAt: 0
     function refresh() {}
@@ -80,13 +86,16 @@ Panel {
   }
 
   onOpenedChanged: if (opened) service.refreshIfStale()
+  // A panel left open, or opened from a keybinding, would float over a bar
+  // with nothing in it to point at.
+  onGoneChanged: if (gone) close()
 
   IpcHandler {
     target: "jorgemanrubia.omacharts"
 
-    function open(): void { root.open() }
+    function open(): void { if (!root.gone) root.open() }
     function close(): void { root.close() }
-    function toggle(): void { root.toggle() }
+    function toggle(): void { if (!root.gone || root.opened) root.toggle() }
     function refresh(): void { root.service.refresh() }
   }
 

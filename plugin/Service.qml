@@ -15,6 +15,11 @@ Item {
   property var sections: []
   property var colors: null
   property string lastError: ""
+  // True once a poll could not start omacharts at all: the package has been
+  // removed and this folder outlived it, so the panel hides rather than
+  // reporting an error nobody can fix from the bar. The next poll that does
+  // start clears it, so a reinstall brings the widget back on its own.
+  property bool missing: false
   property double updatedAt: 0
   readonly property bool refreshing: watchlistProcess.running
 
@@ -26,10 +31,12 @@ Item {
 
   property string _output: ""
   property string _error: ""
+  property bool _started: false
 
   function refresh() {
     if (watchlistProcess.running) return
     watchlistProcess.command = ["omacharts", "watchlist", "--refresh"]
+    root._started = false
     watchlistProcess.running = true
   }
 
@@ -77,9 +84,18 @@ Item {
       waitForEnd: true
       onStreamFinished: root._error = text
     }
+    // A binary that is not there never starts: Quickshell emits neither
+    // started nor exited, and only drops running. That, not the wording of
+    // an error, is what tells a removed package apart from a failed refresh,
+    // which starts fine and exits non-zero with its reason on stderr.
+    onStarted: {
+      root._started = true
+      root.missing = false
+    }
+    onRunningChanged: if (!running && !root._started) root.missing = true
     onExited: function (code) {
       if (code !== 0) {
-        root.lastError = root._error.trim() || "omacharts is not on PATH"
+        root.lastError = root._error.trim() || "omacharts exited with code " + code
         return
       }
       var parsed = Model.parse(root._output)
