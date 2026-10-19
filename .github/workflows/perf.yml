@@ -1,7 +1,17 @@
 name: Performance
 
 on:
+  # Two release builds is a lot to spend on a change that cannot move a
+  # number: the website, the documentation and its pictures, the licence.
+  # The Markdown that is compiled in — `doc/cli.md` and the agent skill — is
+  # compiled into tests only, never into the build being measured. Nothing
+  # requires this check, so a pull request it skips is not left waiting on it.
   pull_request:
+    paths-ignore:
+      - 'site/**'
+      - 'doc/**'
+      - '**.md'
+      - 'LICENSE'
   workflow_dispatch:
     inputs:
       base:
