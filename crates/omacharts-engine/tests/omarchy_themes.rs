@@ -269,8 +269,8 @@ fn candles_stand_apart_from_the_furniture_in_every_theme() {
     }
 }
 
-/// Anything painting a label on a direction colour — the bar widget's pill,
-/// the chart's price chip — has to pick its text against that colour.
+/// Anything painting a label on a direction colour — the chart's price chip —
+/// has to pick its text against that colour.
 #[test]
 fn a_label_on_a_direction_colour_is_readable_in_every_theme() {
     use omacharts_engine::theme::{luminance, readable_on};
@@ -575,5 +575,135 @@ fn every_monochrome_bar_is_legible_and_unlike_the_colours_it_replaces() {
             let apart = delta_e(&mono.up, hex);
             assert!(apart > 0.06, "{name}: monochrome {} reads as {what} {hex} ({apart:.3})", mono.up);
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The palette's ink: the text roles the bar widget writes in
+// ---------------------------------------------------------------------------
+
+/// Every scheme a person can pick, built against `theme` the way the window
+/// builds them.
+fn every_scheme(theme: &Theme) -> Vec<omacharts_engine::BarScheme> {
+    use omacharts_engine::theme::{builtin_bar_schemes, theme_red_up_bars};
+    let mut out = vec![theme_bars(theme), theme_red_up_bars(theme), theme_mono_bars(theme)];
+    out.extend(builtin_bar_schemes());
+    out
+}
+
+/// WCAG AA, 4.5:1, for every text role against every surface it can be
+/// written on, in every shipped theme under every scheme. This is the bar
+/// widget's whole guarantee: its names, prices, percentages and section
+/// headers are small text, and nothing it writes is drawn in a colour that
+/// has not passed here.
+#[test]
+fn every_text_role_reads_on_every_surface_in_every_theme() {
+    use omacharts_engine::ink::TEXT_CONTRAST;
+    for (name, theme) in fixtures() {
+        for scheme in every_scheme(&theme) {
+            let ink = theme.ink(&scheme);
+            let ui = &theme.ui;
+            let grounds = [
+                ("chart", &ui.background),
+                ("panel", &ui.surface),
+                ("hovered row", &ink.hover),
+            ];
+            let roles = [
+                ("text", &ink.text),
+                ("muted", &ink.muted),
+                ("up", &ink.up),
+                ("down", &ink.down),
+                ("flat", &ink.flat),
+            ];
+            for (role, colour) in roles {
+                for (surface, ground) in grounds {
+                    let ratio = contrast_ratio(colour, ground);
+                    assert!(
+                        ratio >= TEXT_CONTRAST.floor,
+                        "{name} / {}: {role} {colour} on the {surface} {ground} is {ratio:.2}:1",
+                        scheme.id
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// The ink is the palette's colour wherever that already reads, and the same
+/// hue where it had to move: a theme's red written as text is still that
+/// red, a little lighter or darker, never a different colour.
+#[test]
+fn the_ink_keeps_the_palettes_hues_in_every_theme() {
+    for (name, theme) in fixtures() {
+        let bars = theme_bars(&theme);
+        let ink = theme.ink(&bars);
+        for (role, raw, written) in [("up", &bars.up, &ink.up), ("down", &bars.down, &ink.down)] {
+            let (raw_c, written_c) = (Oklch::of(raw).unwrap(), Oklch::of(written).unwrap());
+            if raw_c.c < 0.04 {
+                continue;
+            }
+            let gap = hue_gap(raw_c.h, written_c.h);
+            assert!(gap < 4.0, "{name}: {role} {raw} became {written}, {gap:.1} degrees away");
+        }
+        assert!(
+            delta_e(&ink.up, &ink.down) > 0.08,
+            "{name}: up {} and down {} written as text can no longer be told apart",
+            ink.up,
+            ink.down
+        );
+    }
+}
+
+/// Muted text stays quieter than text: legibility must not cost the
+/// hierarchy a name under a symbol depends on.
+#[test]
+fn muted_ink_stays_quieter_than_text_in_every_theme() {
+    for (name, theme) in fixtures() {
+        let ink = theme.ink(&theme_bars(&theme));
+        let bg = &theme.ui.background;
+        assert!(
+            contrast_ratio(&ink.muted, bg) < contrast_ratio(&ink.text, bg),
+            "{name}: muted {} is as loud as text {}",
+            ink.muted,
+            ink.text
+        );
+    }
+}
+
+/// The candles are marks, held to WCAG's 3:1 for graphics: the ink moves
+/// text, never them, so they have to clear it on their own.
+#[test]
+fn candles_clear_the_mark_floor_in_every_theme() {
+    use omacharts_engine::ink::MARK_CONTRAST;
+    for (name, theme) in fixtures() {
+        let bars = theme_bars(&theme);
+        for colour in [&bars.up, &bars.down] {
+            let ratio = contrast_ratio(colour, &theme.ui.background);
+            assert!(ratio >= MARK_CONTRAST, "{name}: candle {colour} is {ratio:.2}:1");
+        }
+    }
+}
+
+/// The chart's own text, measured and reported rather than enforced. The
+/// chart keeps its look; this prints where its labels stand against AA so a
+/// change to the palette can be judged by what it does to them. Run with
+/// `--nocapture` to read it.
+#[test]
+fn the_charts_text_is_reported() {
+    use omacharts_engine::theme::{mix, readable_on};
+    for (name, theme) in fixtures() {
+        let ui = &theme.ui;
+        let bars = theme_bars(&theme);
+        // Axis labels are the muted colour at 0.9, pane labels at 0.75.
+        let axis = contrast_ratio(&mix(&ui.background, &ui.text_muted, 0.9), &ui.background);
+        let pane = contrast_ratio(&mix(&ui.background, &ui.text_muted, 0.75), &ui.background);
+        let chip = |fill: &str| contrast_ratio(readable_on(fill), fill);
+        eprintln!(
+            "{name}: text {:.2}, axis labels {axis:.2}, pane labels {pane:.2}, last-price chip up {:.2} down {:.2}, crosshair chip {:.2}",
+            contrast_ratio(&ui.text, &ui.background),
+            chip(&bars.up),
+            chip(&bars.down),
+            chip(&ui.crosshair),
+        );
     }
 }

@@ -593,31 +593,28 @@ fn resolver(live: Option<&dyn Live>) -> Rc<SearchIndex> {
         .unwrap_or_else(|| Rc::new(crate::inventory::everything()))
 }
 
-/// The direction colours, derived exactly as the app derives them.
+/// The colours the widget draws in, from the app's own palette.
 ///
-/// Sent with the data rather than hardcoded in the widget, so the bar and the
-/// window cannot disagree about what up looks like — and so changing the
-/// desktop theme moves both.
+/// Sent with the data rather than worked out in the widget, so there is one
+/// palette and one mapping from the desktop theme to it: the bar and the
+/// window cannot disagree about what up looks like, a bar scheme picked in
+/// the window — red up, monochrome, a custom one — reaches the bar too, and
+/// changing the desktop theme moves both. Every colour is the palette's ink,
+/// already checked as text against the panel and a hovered row.
+///
+/// Cheap enough for a command polled every couple of minutes: two small
+/// files and a handful of settings rows, the same reads the window makes when
+/// it starts.
 fn colors_json(store: &Store) -> String {
-    let home = crate::store::home();
-    let theme = omacharts_engine::omarchy::current(&home)
-        .unwrap_or_else(|| omacharts_engine::theme::builtin_themes()[0].clone());
-    // The theme's colours rather than the chosen scheme's, but the right way
-    // round: a red-up window beside a green-up bar would be two answers to
-    // which way the market went.
-    let red_up = store.setting(crate::theming::SETTING_BARS).as_deref()
-        == Some(omacharts_engine::theme::THEME_RED_UP_ID);
-    let bars = match red_up {
-        true => omacharts_engine::theme::theme_red_up_bars(&theme),
-        false => omacharts_engine::theme_bars(&theme),
-    };
-    use omacharts_engine::Direction;
+    let ink = crate::theming::Theming::load(store).bar_widget_ink();
     format!(
-        "{{\"up\":{},\"down\":{},\"flat\":{},\"foreground\":{}}}",
-        json_string(bars.outline(Direction::Up)),
-        json_string(bars.outline(Direction::Down)),
-        json_string(bars.outline(Direction::Flat)),
-        json_string(&theme.ui.text),
+        "{{\"text\":{},\"muted\":{},\"up\":{},\"down\":{},\"flat\":{},\"hover\":{}}}",
+        json_string(&ink.text),
+        json_string(&ink.muted),
+        json_string(&ink.up),
+        json_string(&ink.down),
+        json_string(&ink.flat),
+        json_string(&ink.hover),
     )
 }
 
@@ -924,10 +921,10 @@ mod tests {
     }
 
     #[test]
-    fn the_payload_carries_the_themes_direction_colours() {
+    fn the_payload_carries_the_palettes_ink() {
         let store = Store::memory().unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&colors_json(&store)).unwrap();
-        for key in ["up", "down", "flat", "foreground"] {
+        for key in ["text", "muted", "up", "down", "flat", "hover"] {
             let value = parsed[key].as_str().unwrap_or_default();
             assert!(value.starts_with('#') && value.len() >= 7, "{key}: {value:?}");
         }
@@ -937,6 +934,22 @@ mod tests {
         store.set_setting(crate::theming::SETTING_BARS, omacharts_engine::theme::THEME_RED_UP_ID);
         let red: serde_json::Value = serde_json::from_str(&colors_json(&store)).unwrap();
         assert_eq!((&red["up"], &red["down"]), (&parsed["down"], &parsed["up"]));
+    }
+
+    /// Any scheme chosen in the window reaches the bar, not only red up: the
+    /// accessible one exists for people who cannot tell green from red, and
+    /// a bar still showing them green and red is the one place it fails them.
+    #[test]
+    fn the_payload_follows_whichever_bar_scheme_was_chosen() {
+        let store = Store::memory().unwrap();
+        let theme: serde_json::Value = serde_json::from_str(&colors_json(&store)).unwrap();
+        store.set_setting(crate::theming::SETTING_BARS, "accessible");
+        let chosen: serde_json::Value = serde_json::from_str(&colors_json(&store)).unwrap();
+        assert_ne!(chosen["up"], theme["up"]);
+        assert_ne!(chosen["down"], theme["down"]);
+        // Surfaces and text are the theme's, whatever the candles wear.
+        assert_eq!(chosen["text"], theme["text"]);
+        assert_eq!(chosen["hover"], theme["hover"]);
     }
 
     #[test]

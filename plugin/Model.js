@@ -11,9 +11,9 @@ function parse(text) {
     var parsed = JSON.parse(text)
     return {
       sections: Array.isArray(parsed.sections) ? parsed.sections : [],
-      // The app derives these from the desktop theme and sends them with the
-      // data, so the bar and the window cannot disagree about what up looks
-      // like.
+      // The app's palette, derived from the desktop theme and the bar scheme
+      // chosen in the window, and sent with the data, so the bar and the
+      // window cannot disagree about what up looks like.
       colors: parsed.colors || null,
       updatedAt: parsed.updatedAt || 0,
       error: parsed.error || ""
@@ -107,39 +107,26 @@ function formatChange(value, price, kind) {
   return sign + Number(value).toFixed(decimals(price, kind))
 }
 
-// Black or white, whichever can be read on `hex`.
+// The colours the panel draws in, by role.
 //
-// The pill takes its colour from the theme, and a theme is free to make its
-// up and down dark. Text painted a fixed near-black on a dark pill is a
-// percentage nobody can read — which is exactly what happened on a theme whose
-// green and red are purple and magenta.
-//
-// Mirrors the app's own readable_on: same weights, same threshold, so a pill
-// in the bar and a label in the window never disagree about which way to go.
-function readableOn(hex) {
-  var rgb = parseHex(hex)
-  if (!rgb) return "#ffffff"
-  var luminance = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]
-  return luminance > 0.55 ? "#000000" : "#ffffff"
-}
-
-function parseHex(hex) {
-  if (typeof hex !== "string") return null
-  var text = hex.trim().replace("#", "")
-  if (text.length === 3) {
-    text = text[0] + text[0] + text[1] + text[1] + text[2] + text[2]
+// Every one comes from the app's palette as it arrived. Nothing is derived
+// here: the app has already checked each as text against the panel and a
+// hovered row, and a second derivation in the widget would be a second
+// palette to drift. Until the first answer arrives there are no rows, and the
+// panel's own text and ground stand in, so not one colour in the widget is
+// its own.
+function palette(colors, text, ground) {
+  var given = colors || {}
+  var pick = function (key, fallback) { return given[key] ? given[key] : fallback }
+  var written = pick("text", text)
+  return {
+    text: written,
+    muted: pick("muted", written),
+    up: pick("up", written),
+    down: pick("down", written),
+    flat: pick("flat", pick("muted", written)),
+    hover: pick("hover", ground)
   }
-  // QML stringifies a colour as #AARRGGBB, so the colour is the last six
-  // digits, not the first.
-  if (text.length === 8) text = text.substring(2)
-  if (text.length < 6) return null
-  var value = parseInt(text.substring(0, 6), 16)
-  if (isNaN(value)) return null
-  return [
-    ((value >> 16) & 255) / 255,
-    ((value >> 8) & 255) / 255,
-    (value & 255) / 255
-  ]
 }
 
 // Up, down, or neither. The panel colours from this rather than comparing

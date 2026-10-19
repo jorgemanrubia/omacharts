@@ -7,9 +7,9 @@ Canvas {
   id: root
 
   property var points: []
-  property color stroke: "white"
+  // Always bound by the row, to the palette's colour for the move.
+  property color stroke
 
-  opacity: 0.9
   antialiasing: true
 
   onPointsChanged: requestPaint()

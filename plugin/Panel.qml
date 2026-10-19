@@ -40,6 +40,7 @@ Panel {
   QtObject {
     id: dummyService
     property var sections: []
+    property var colors: null
     property string lastError: ""
     property bool missing: false
     property bool refreshing: false
@@ -58,22 +59,28 @@ Panel {
   readonly property int quoteCount: Model.quoteCount(rows)
   readonly property var headline: Model.headline(service.sections)
 
+  // The icon in the bar wears the bar's own colour, like every other module
+  // on it: it is part of the bar, and follows it when the bar goes
+  // transparent over a window.
   readonly property color foreground: bar ? bar.foreground : Color.foreground
-  readonly property color dim: Qt.darker(foreground, 1.6)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
 
-  // Up and down come from the app, which derives them from the desktop theme.
-  // Hardcoding them here would leave the bar on last year's palette the moment
-  // anyone changed their theme.
-  readonly property var palette: service.colors
-  readonly property color up: palette && palette.up ? palette.up : "#3fb950"
-  readonly property color down: palette && palette.down ? palette.down : "#f85149"
+  // Everything in the panel is drawn in the app's own palette, which the app
+  // derives from the desktop theme and the bar scheme chosen in the window
+  // and sends with the data. One palette: a name here is the same quiet as a
+  // name in the window's watchlist, and up is the colour the candles are.
+  // Each colour arrives already checked as text against this panel and a
+  // hovered row in it, so nothing here mixes, darkens or guesses.
+  //
+  // Until the first answer there are no rows to colour, and the panel's own
+  // text colour stands in for all of them rather than a colour of our own.
+  readonly property var palette: Model.palette(service.colors, Color.popups.text, Color.popups.background)
+  readonly property color text: palette.text
+  readonly property color muted: palette.muted
+  readonly property color hover: palette.hover
 
   function colorFor(change) {
-    var way = Model.direction(change)
-    if (way === "up") return up
-    if (way === "down") return down
-    return dim
+    return palette[Model.direction(change)]
   }
 
   function moveSelection(delta) {
@@ -175,8 +182,8 @@ Panel {
               anchors.leftMargin: -Style.space(6)
               anchors.rightMargin: -Style.space(6)
               radius: Style.space(6)
-              color: root.foreground
-              opacity: openHover.hovered ? 0.09 : 0
+              color: root.hover
+              opacity: openHover.hovered ? 1 : 0
               Behavior on opacity { NumberAnimation { duration: 90 } }
             }
 
@@ -191,7 +198,7 @@ Panel {
               OmachartsIcon {
                 Layout.alignment: Qt.AlignVCenter
                 iconSize: Style.space(15)
-                color: root.foreground
+                color: root.text
               }
 
               Text {
@@ -200,7 +207,7 @@ Panel {
                 font.family: root.fontFamily
                 font.pixelSize: Style.space(14)
                 font.bold: true
-                color: root.foreground
+                color: root.text
               }
             }
           }
@@ -230,7 +237,7 @@ Panel {
                 width: Style.space(2.5)
                 height: width
                 radius: width / 2
-                color: root.dim
+                color: root.muted
                 opacity: 0.25 + 0.75 * (index / 7)
                 x: spinner.width / 2 - width / 2
                    + Math.cos(index * Math.PI / 4) * (spinner.width / 2 - width / 2)
@@ -256,7 +263,7 @@ Panel {
           wrapMode: Text.WordWrap
           font.family: root.fontFamily
           font.pixelSize: Style.space(11)
-          color: root.dim
+          color: root.muted
         }
 
         Text {
@@ -265,7 +272,7 @@ Panel {
           text: "Nothing on the watchlist yet."
           font.family: root.fontFamily
           font.pixelSize: Style.space(12)
-          color: root.dim
+          color: root.muted
         }
 
         // A watchlist outgrows any panel worth putting on a bar, so the rows
@@ -297,7 +304,7 @@ Panel {
               font.family: root.fontFamily
               font.pixelSize: Style.space(10)
               font.letterSpacing: 0.6
-              color: root.dim
+              color: root.muted
             }
 
             Rectangle {
@@ -306,8 +313,8 @@ Panel {
               anchors.rightMargin: -Style.space(6)
               radius: Style.space(6)
               visible: !!modelData && !modelData.header
-              color: root.foreground
-              opacity: index === root.selectedIndex || hover.hovered ? 0.07 : 0
+              color: root.hover
+              opacity: index === root.selectedIndex || hover.hovered ? 1 : 0
               Behavior on opacity { NumberAnimation { duration: 90 } }
             }
 
@@ -337,7 +344,7 @@ Panel {
               // so it is the only part that gives way. Everything to its right
               // keeps its size and the name elides into whatever is left —
               // otherwise a long one ("CBOE Volatility Index") pushes the
-              // percentage pill off the edge of the panel.
+              // percentage off the edge of the panel.
               ColumnLayout {
                 Layout.fillWidth: true
                 Layout.minimumWidth: 0
@@ -349,7 +356,7 @@ Panel {
                   font.family: root.fontFamily
                   font.pixelSize: Style.space(13)
                   font.bold: true
-                  color: root.foreground
+                  color: root.text
                 }
                 Text {
                   Layout.fillWidth: true
@@ -357,7 +364,7 @@ Panel {
                   elide: Text.ElideRight
                   font.family: root.fontFamily
                   font.pixelSize: Style.space(10)
-                  color: root.dim
+                  color: root.muted
                 }
               }
 
@@ -376,30 +383,25 @@ Panel {
                 text: Model.formatPrice(modelData.last, modelData.kind)
                 font.family: root.fontFamily
                 font.pixelSize: Style.space(13)
-                color: modelData.hasQuote === true ? root.foreground : root.dim
+                color: modelData.hasQuote === true ? root.text : root.muted
               }
 
-              // The pill is the thing you actually read, which is why it is
-              // the only coloured object on the row.
-              Rectangle {
+              // The move, written in the direction's colour the way the
+              // window's watchlist writes it: the same semantics, the same
+              // colour, so a glance at the bar and a glance at the window
+              // agree. Text rather than a filled pill, because the palette's
+              // up and down are text colours, held to the contrast small
+              // figures need; a label on a fill would need a second colour
+              // the window never uses.
+              Text {
                 visible: modelData.hasQuote === true
-                implicitWidth: Math.max(Style.space(58), percent.implicitWidth + Style.space(12))
-                implicitHeight: Style.space(20)
-                radius: Style.space(5)
+                Layout.minimumWidth: Style.space(58)
+                horizontalAlignment: Text.AlignRight
+                text: Model.formatPercent(modelData.changePct)
+                font.family: root.fontFamily
+                font.pixelSize: Style.space(12)
+                font.bold: true
                 color: root.colorFor(modelData.change)
-
-                Text {
-                  id: percent
-                  anchors.centerIn: parent
-                  text: Model.formatPercent(modelData.changePct)
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.space(11)
-                  font.bold: true
-                  // Chosen against the pill, not assumed: a theme is free to
-                  // make its up and down dark, and a fixed near-black on a
-                  // dark pill is a percentage nobody can read.
-                  color: Model.readableOn(String(root.colorFor(modelData.change)))
-                }
               }
             }
           }

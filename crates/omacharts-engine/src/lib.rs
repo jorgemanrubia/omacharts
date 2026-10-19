@@ -9,6 +9,7 @@ pub mod bars;
 pub mod drawings;
 pub mod frame;
 pub mod indicators;
+pub mod ink;
 pub mod link;
 pub mod omarchy;
 pub mod palette;
@@ -36,6 +37,7 @@ pub use drawings::{
     Preset, Projected, Scope, Span, Style, Text as DrawingText, TextStyle,
 };
 pub use frame::Frame;
+pub use ink::Ink;
 pub use theme::{
     theme_bars, BarScheme, BarSlot, ColorChoice, Direction, Mode, Source, Swatch, Theme,
     UiColors, UiSlot,

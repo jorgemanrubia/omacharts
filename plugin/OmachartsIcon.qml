@@ -5,7 +5,9 @@ import QtQuick
 Item {
   id: root
   property real iconSize: 14
-  property color color: "white"
+  // Always bound by the caller: the bar's colour in the bar, the palette's
+  // text colour in the panel.
+  property color color
 
   implicitWidth: iconSize
   implicitHeight: iconSize

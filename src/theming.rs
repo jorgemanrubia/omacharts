@@ -19,6 +19,7 @@ use omacharts_engine::theme::{
     builtin_bar_schemes, builtin_themes, theme_bars, theme_mono_bars, theme_red_up_bars, BarScheme,
     Mode, Theme, FALLBACK_THEME_ID, OMARCHY_ID, THEME_BARS_ID,
 };
+use omacharts_engine::Ink;
 use omacharts_engine::omarchy;
 
 use crate::store::{home, Store};
@@ -81,13 +82,16 @@ impl Theming {
     /// Every bar scheme on offer. The first is built from the active theme, so
     /// candles match the desktop without the user choosing anything.
     pub fn bar_schemes(&self) -> Vec<BarScheme> {
+        self.bar_schemes_for(&self.theme())
+    }
+
+    fn bar_schemes_for(&self, theme: &Theme) -> Vec<BarScheme> {
         // Every theme-derived scheme, because none can come from the fixed
         // built-in list: each is built from whichever theme is active. Leaving
         // one out does not disable it — it makes the setting write an id
         // nothing can resolve, and `bar_scheme` then falls back to colour
         // without saying so.
-        let theme = self.theme();
-        let mut out = vec![theme_bars(&theme), theme_red_up_bars(&theme), theme_mono_bars(&theme)];
+        let mut out = vec![theme_bars(theme), theme_red_up_bars(theme), theme_mono_bars(theme)];
         out.extend(self.builtin_schemes.iter().cloned());
         out.extend(self.custom_schemes.iter().cloned());
         out
@@ -108,12 +112,30 @@ impl Theming {
     }
 
     pub fn bar_scheme(&self) -> BarScheme {
-        let schemes = self.bar_schemes();
+        self.bar_scheme_for(&self.theme())
+    }
+
+    fn bar_scheme_for(&self, theme: &Theme) -> BarScheme {
+        let schemes = self.bar_schemes_for(theme);
         schemes
             .iter()
             .find(|s| s.id == self.scheme_id)
             .cloned()
             .unwrap_or_else(|| schemes[0].clone())
+    }
+
+    /// The ink the bar widget writes in.
+    ///
+    /// The desktop's theme, because the widget is drawn on the desktop's
+    /// surfaces rather than the window's, with the bar scheme chosen here, so
+    /// the panel says up the way the charts do — red, if that is what was
+    /// picked. A scheme built from a theme is built from the desktop's: "the
+    /// theme's colours" in the bar means the theme the bar is wearing. With
+    /// no Omarchy theme there is no bar to draw in, and the window's theme
+    /// stands in.
+    pub fn bar_widget_ink(&self) -> Ink {
+        let theme = self.omarchy.clone().unwrap_or_else(|| self.theme());
+        theme.ink(&self.bar_scheme_for(&theme))
     }
 
     pub fn theme_id(&self) -> &str {
