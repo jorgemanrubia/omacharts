@@ -83,6 +83,10 @@ Panel {
     return palette[Model.direction(change)]
   }
 
+  function tagFor(change) {
+    return palette.tags[Model.direction(change)]
+  }
+
   function moveSelection(delta) {
     var picks = Model.selectableIndexes(rows)
     if (!picks.length) return
@@ -344,7 +348,7 @@ Panel {
               // so it is the only part that gives way. Everything to its right
               // keeps its size and the name elides into whatever is left —
               // otherwise a long one ("CBOE Volatility Index") pushes the
-              // percentage off the edge of the panel.
+              // percentage pill off the edge of the panel.
               ColumnLayout {
                 Layout.fillWidth: true
                 Layout.minimumWidth: 0
@@ -386,22 +390,30 @@ Panel {
                 color: modelData.hasQuote === true ? root.text : root.muted
               }
 
-              // The move, written in the direction's colour the way the
-              // window's watchlist writes it: the same semantics, the same
-              // colour, so a glance at the bar and a glance at the window
-              // agree. Text rather than a filled pill, because the palette's
-              // up and down are text colours, held to the contrast small
-              // figures need; a label on a fill would need a second colour
-              // the window never uses.
-              Text {
+              // The move, as a pill: the chart's last-price tag, filled in
+              // the direction's colour with the figure on it. The pill is the
+              // thing you actually read, which is why it is the only filled
+              // object on the row. Fill and label arrive as a pair from the
+              // app, the label already picked to read on the fill, so a theme
+              // whose up or down is dark, or mid-tone, still gets a percentage
+              // somebody can read.
+              Rectangle {
+                readonly property var tag: root.tagFor(modelData.change)
                 visible: modelData.hasQuote === true
-                Layout.minimumWidth: Style.space(58)
-                horizontalAlignment: Text.AlignRight
-                text: Model.formatPercent(modelData.changePct)
-                font.family: root.fontFamily
-                font.pixelSize: Style.space(12)
-                font.bold: true
-                color: root.colorFor(modelData.change)
+                implicitWidth: Math.max(Style.space(58), percent.implicitWidth + Style.space(12))
+                implicitHeight: Style.space(20)
+                radius: Style.space(5)
+                color: tag.fill
+
+                Text {
+                  id: percent
+                  anchors.centerIn: parent
+                  text: Model.formatPercent(modelData.changePct)
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.space(11)
+                  font.bold: true
+                  color: parent.tag.label
+                }
               }
             }
           }

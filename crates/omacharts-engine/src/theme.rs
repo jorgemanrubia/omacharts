@@ -842,8 +842,19 @@ pub fn luminance(hex: &str) -> f64 {
 /// theme is free to make its up and down dark, and eighteen of the twenty-two
 /// shipped ones do for at least one direction. A fixed near-black label on a
 /// dark pill is a number nobody can read.
+///
+/// Decided by WCAG contrast, the measure the label is held to, not by a
+/// lightness threshold. A threshold sends a mid-tone red the wrong way —
+/// Ristretto's down took white at 2.81:1 where black reads at 7.5:1 — and
+/// there is always a right way: whichever of the two reads better on any
+/// colour reaches at least 4.58:1, so a label chosen here clears AA on every
+/// fill a theme or a scheme can hand it.
 pub fn readable_on(hex: &str) -> &'static str {
-    if luminance(hex) > 0.55 { "#000000" } else { "#ffffff" }
+    if contrast_ratio(hex, "#000000") >= contrast_ratio(hex, "#ffffff") {
+        "#000000"
+    } else {
+        "#ffffff"
+    }
 }
 
 /// Nudge `colour` away from `from` by blending it toward `toward`, until it is
@@ -1517,6 +1528,23 @@ mod tests {
         assert_eq!(readable_on("#c900c4"), "#ffffff");
         // And a pale green takes dark text.
         assert_eq!(readable_on("#a7c080"), "#000000");
+        // Mid-tone reds, which a lightness threshold sent to white: Ristretto's
+        // and Gruvbox's down.
+        assert_eq!(readable_on("#fd6883"), "#000000");
+        assert_eq!(readable_on("#ea6962"), "#000000");
+    }
+
+    #[test]
+    fn a_label_chosen_for_any_fill_clears_aa() {
+        for r in (0..=255).step_by(15) {
+            for g in (0..=255).step_by(15) {
+                for b in (0..=255).step_by(15) {
+                    let fill = format!("#{r:02x}{g:02x}{b:02x}");
+                    let ratio = contrast_ratio(readable_on(&fill), &fill);
+                    assert!(ratio >= 4.5, "{fill}: {ratio:.2}");
+                }
+            }
+        }
     }
 
     #[test]

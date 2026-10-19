@@ -115,11 +115,20 @@ function formatChange(value, price, kind) {
 // palette to drift. Until the first answer arrives there are no rows, and the
 // panel's own text and ground stand in, so not one colour in the widget is
 // its own.
+//
+// The change pill is a tag, the chart's last-price tag: a fill in the
+// direction's colour and a label the app picked to read on it. Both arrive as
+// a pair, so the bar's pill and the chart's tag are the same two colours.
 function palette(colors, text, ground) {
   var given = colors || {}
   var pick = function (key, fallback) { return given[key] ? given[key] : fallback }
   var written = pick("text", text)
-  return {
+  var given_tags = given.tags || {}
+  var tag = function (way, fill) {
+    var t = given_tags[way] || {}
+    return { fill: t.fill ? t.fill : fill, label: t.label ? t.label : ground }
+  }
+  var out = {
     text: written,
     muted: pick("muted", written),
     up: pick("up", written),
@@ -127,6 +136,8 @@ function palette(colors, text, ground) {
     flat: pick("flat", pick("muted", written)),
     hover: pick("hover", ground)
   }
+  out.tags = { up: tag("up", out.up), down: tag("down", out.down), flat: tag("flat", out.flat) }
+  return out
 }
 
 // Up, down, or neither. The panel colours from this rather than comparing

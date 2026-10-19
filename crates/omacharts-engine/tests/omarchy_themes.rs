@@ -269,21 +269,34 @@ fn candles_stand_apart_from_the_furniture_in_every_theme() {
     }
 }
 
-/// Anything painting a label on a direction colour — the chart's price chip —
-/// has to pick its text against that colour.
+/// Anything painting a label on a direction colour — the chart's last-price
+/// tag, the bar widget's change pill — has to pick its text against that
+/// colour, and the pick has to read as text: WCAG AA, 4.5:1, on the fill, in
+/// every shipped theme under every scheme a person can choose. The tag is one
+/// role, so the chart and the bar are held to it together.
 #[test]
-fn a_label_on_a_direction_colour_is_readable_in_every_theme() {
-    use omacharts_engine::theme::{luminance, readable_on};
+fn a_tag_reads_in_every_theme_under_every_scheme() {
+    use omacharts_engine::ink::TEXT_CONTRAST;
     for (name, theme) in fixtures() {
-        let bars = theme_bars(&theme);
-        for direction in [Direction::Up, Direction::Down, Direction::Flat] {
-            let pill = bars.outline(direction);
-            let text = readable_on(pill);
-            let gap = (luminance(pill) - luminance(text)).abs();
-            assert!(
-                gap > 0.35,
-                "{name}: {text} on {pill} ({direction:?}) is {gap:.2} apart"
-            );
+        for scheme in every_scheme(&theme) {
+            let ink = theme.ink(&scheme);
+            for direction in [Direction::Up, Direction::Down, Direction::Flat] {
+                let tag = ink.tag(direction);
+                assert_eq!(
+                    tag.fill,
+                    scheme.outline(direction),
+                    "{name} / {}: a {direction:?} tag is not the candle's colour",
+                    scheme.id
+                );
+                let ratio = contrast_ratio(&tag.label, &tag.fill);
+                assert!(
+                    ratio >= TEXT_CONTRAST.floor,
+                    "{name} / {}: {} on the {direction:?} tag {} is {ratio:.2}:1",
+                    scheme.id,
+                    tag.label,
+                    tag.fill
+                );
+            }
         }
     }
 }

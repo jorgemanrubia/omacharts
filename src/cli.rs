@@ -600,21 +600,28 @@ fn resolver(live: Option<&dyn Live>) -> Rc<SearchIndex> {
 /// window cannot disagree about what up looks like, a bar scheme picked in
 /// the window — red up, monochrome, a custom one — reaches the bar too, and
 /// changing the desktop theme moves both. Every colour is the palette's ink,
-/// already checked as text against the panel and a hovered row.
+/// already checked as text against the panel and a hovered row, and the change
+/// pill's fill and label are the chart's own last-price tag.
 ///
 /// Cheap enough for a command polled every couple of minutes: two small
 /// files and a handful of settings rows, the same reads the window makes when
 /// it starts.
 fn colors_json(store: &Store) -> String {
     let ink = crate::theming::Theming::load(store).bar_widget_ink();
+    let tag = |tag: &omacharts_engine::Tag| {
+        format!("{{\"fill\":{},\"label\":{}}}", json_string(&tag.fill), json_string(&tag.label))
+    };
     format!(
-        "{{\"text\":{},\"muted\":{},\"up\":{},\"down\":{},\"flat\":{},\"hover\":{}}}",
+        "{{\"text\":{},\"muted\":{},\"up\":{},\"down\":{},\"flat\":{},\"hover\":{},\"tags\":{{\"up\":{},\"down\":{},\"flat\":{}}}}}",
         json_string(&ink.text),
         json_string(&ink.muted),
         json_string(&ink.up),
         json_string(&ink.down),
         json_string(&ink.flat),
         json_string(&ink.hover),
+        tag(&ink.up_tag),
+        tag(&ink.down_tag),
+        tag(&ink.flat_tag),
     )
 }
 
@@ -929,11 +936,21 @@ mod tests {
             assert!(value.starts_with('#') && value.len() >= 7, "{key}: {value:?}");
         }
         assert_ne!(parsed["up"], parsed["down"], "up and down must differ");
+        for way in ["up", "down", "flat"] {
+            for part in ["fill", "label"] {
+                let value = parsed["tags"][way][part].as_str().unwrap_or_default();
+                assert!(value.starts_with('#') && value.len() >= 7, "tags.{way}.{part}: {value:?}");
+            }
+        }
 
         // The bar reads a rise the way the window does.
         store.set_setting(crate::theming::SETTING_BARS, omacharts_engine::theme::THEME_RED_UP_ID);
         let red: serde_json::Value = serde_json::from_str(&colors_json(&store)).unwrap();
         assert_eq!((&red["up"], &red["down"]), (&parsed["down"], &parsed["up"]));
+        assert_eq!(
+            (&red["tags"]["up"], &red["tags"]["down"]),
+            (&parsed["tags"]["down"], &parsed["tags"]["up"])
+        );
     }
 
     /// Any scheme chosen in the window reaches the bar, not only red up: the

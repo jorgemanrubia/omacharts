@@ -37,7 +37,7 @@ pub use drawings::{
     Preset, Projected, Scope, Span, Style, Text as DrawingText, TextStyle,
 };
 pub use frame::Frame;
-pub use ink::Ink;
+pub use ink::{Ink, Tag};
 pub use theme::{
     theme_bars, BarScheme, BarSlot, ColorChoice, Direction, Mode, Source, Swatch, Theme,
     UiColors, UiSlot,

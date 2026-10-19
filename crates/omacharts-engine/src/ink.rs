@@ -17,11 +17,18 @@
 //! sparklines and other marks keep the scheme's own colours, which the
 //! palette already holds to the 3:1 a mark needs.
 //!
+//! A move can also be shown as a tag: a pill filled in the direction's colour
+//! with the figure written on it, which is how the chart marks its last price.
+//! A tag's fill is the scheme's own colour, untouched, and its label is
+//! whichever of black and white reads on that fill ([`readable_on`]), which
+//! always clears AA. [`Tag`] carries the pair, so anything drawing one draws
+//! the chart's.
+//!
 //! The bar widget writes in these, read out of `omacharts watchlist`, so the
 //! panel in the bar takes every colour it draws from this one palette rather
 //! than keeping a second idea of what up looks like.
 
-use crate::theme::{held_to, mix, BarScheme, ContrastBand, Direction, Theme};
+use crate::theme::{held_to, mix, readable_on, BarScheme, ContrastBand, Direction, Theme};
 
 /// What text is held to against every surface it sits on: WCAG AA for body
 /// text. The ceiling is the scale's own end, because text cannot be too
@@ -56,6 +63,31 @@ pub struct Ink {
     pub flat: String,
     /// The ground of a hovered or selected row, opaque.
     pub hover: String,
+    /// A rise, shown as a tag.
+    pub up_tag: Tag,
+    /// A fall, shown as a tag.
+    pub down_tag: Tag,
+    /// No change, shown as a tag.
+    pub flat_tag: Tag,
+}
+
+/// A filled pill with a figure on it, in a direction's colours: the chart's
+/// last-price tag, and the bar widget's change.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Tag {
+    /// The pill: the scheme's colour for the direction, exactly as the
+    /// candles wear it.
+    pub fill: String,
+    /// The figure on it, black or white, whichever reads on the fill. Never
+    /// under 4.5:1, whatever the fill.
+    pub label: String,
+}
+
+impl Tag {
+    /// The tag for a pill filled in `fill`.
+    pub fn on(fill: &str) -> Tag {
+        Tag { fill: fill.to_string(), label: readable_on(fill).to_string() }
+    }
 }
 
 impl Ink {
@@ -65,6 +97,15 @@ impl Ink {
             Direction::Up => &self.up,
             Direction::Down => &self.down,
             Direction::Flat => &self.flat,
+        }
+    }
+
+    /// The tag a move in `direction` is shown as.
+    pub fn tag(&self, direction: Direction) -> &Tag {
+        match direction {
+            Direction::Up => &self.up_tag,
+            Direction::Down => &self.down_tag,
+            Direction::Flat => &self.flat_tag,
         }
     }
 }
@@ -83,6 +124,9 @@ impl Theme {
             down: legible(scheme.outline(Direction::Down)),
             flat: legible(scheme.outline(Direction::Flat)),
             hover,
+            up_tag: Tag::on(scheme.outline(Direction::Up)),
+            down_tag: Tag::on(scheme.outline(Direction::Down)),
+            flat_tag: Tag::on(scheme.outline(Direction::Flat)),
         }
     }
 }
@@ -186,6 +230,18 @@ mod tests {
             for (role, colour) in [("text", &ink.text), ("muted", &ink.muted), ("up", &ink.up), ("down", &ink.down), ("flat", &ink.flat)] {
                 assert!(holds(colour, &grounds), "{text:?}: {role} {colour}");
             }
+        }
+    }
+
+    #[test]
+    fn a_tag_is_the_schemes_fill_with_a_label_that_reads_on_it() {
+        let theme = builtin_themes()[0].clone();
+        let scheme = theme_bars(&theme);
+        let ink = theme.ink(&scheme);
+        for direction in [Direction::Up, Direction::Down, Direction::Flat] {
+            let tag = ink.tag(direction);
+            assert_eq!(tag.fill, scheme.outline(direction));
+            assert!(contrast_ratio(&tag.label, &tag.fill) >= TEXT_CONTRAST.floor, "{tag:?}");
         }
     }
 
