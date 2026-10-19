@@ -35,7 +35,7 @@ use omacharts_engine::bars::Unit;
 use omacharts_engine::indicators::{self as indicators, BandSeries, Output, Profile};
 use omacharts_engine::{
     grouped_decimals, Bar, BarScheme, BarStyle, Direction, FetchFailure, Indicator, Instrument,
-    Theme, Timeframe,
+    Tag, Theme, Timeframe,
 };
 
 use crate::ui::colors;
@@ -130,6 +130,9 @@ struct State {
     echo: Option<Echo>,
     theme: Theme,
     scheme: BarScheme,
+    /// The last-price tag for a rise and a fall, worked out from the scheme
+    /// whenever it changes rather than on every frame.
+    price_tags: [Tag; 2],
     instrument: Option<Instrument>,
     timeframe: Timeframe,
     /// Leftmost visible bar.
@@ -933,6 +936,7 @@ impl State {
             bars: Vec::new(),
             echo: None,
             theme,
+            price_tags: price_tags(&scheme),
             scheme,
             instrument: None,
             timeframe: Timeframe::days(1),
@@ -3105,6 +3109,7 @@ impl ChartView {
         {
             let mut state = self.state.borrow_mut();
             state.theme = theme;
+            state.price_tags = price_tags(&scheme);
             state.scheme = scheme;
         }
         self.redraw();
@@ -4916,6 +4921,7 @@ fn draw_last_price(
     }
     let rising = last.close >= last.open;
     let colour = if rising { &state.scheme.up } else { &state.scheme.down };
+    let tag = &state.price_tags[if rising { 0 } else { 1 }];
 
     cr.save().ok();
     cr.set_dash(&[3.0, 3.0], 0.0);
@@ -4926,14 +4932,13 @@ fn draw_last_price(
     let _ = cr.stroke();
     cr.restore().ok();
 
-    label_on_axis(
+    draw_tag(
         cr,
-        state,
         &grouped_decimals(last.close, decimals),
         plot_x + plot_w,
         y,
         width,
-        colour,
+        tag,
     );
 }
 
@@ -5063,10 +5068,28 @@ fn draw_pane_value(
     );
 }
 
-/// A filled chip on the price axis: a [`Tag`](omacharts_engine::Tag), the
-/// same fill and label the bar widget's change pill is drawn in. Painted from
-/// the colour and [`colors::readable_on`] directly, which is all a tag is,
-/// because a frame draws several and building one allocates.
+/// The last-price tag for each direction: the same fill and label the bar
+/// widget's change pill is drawn in, from the one rule in [`Tag::on`].
+fn price_tags(scheme: &BarScheme) -> [Tag; 2] {
+    [Tag::on(&scheme.up), Tag::on(&scheme.down)]
+}
+
+/// The last-price tag on the price axis, the shape of every other chip there.
+fn draw_tag(cr: &cairo::Context, text: &str, axis_x: f64, y: f64, width: f64, tag: &Tag) {
+    cr.select_font_face("sans-serif", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
+    cr.set_font_size(11.0);
+    let Ok(extents) = cr.text_extents(text) else { return };
+    let h = AXIS_CHIP_H;
+    let w = (extents.width() + 10.0).min(width - axis_x - 2.0);
+    colors::set_source(cr, &tag.fill);
+    cr.rectangle(axis_x + 1.0, y - h / 2.0, w, h);
+    let _ = cr.fill();
+    colors::set_source(cr, &tag.label);
+    cr.move_to(axis_x + 6.0, y + 3.5);
+    let _ = cr.show_text(text);
+}
+
+/// A filled chip on the price axis.
 fn label_on_axis(
     cr: &cairo::Context,
     state: &State,

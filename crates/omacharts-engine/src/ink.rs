@@ -18,17 +18,19 @@
 //! palette already holds to the 3:1 a mark needs.
 //!
 //! A move can also be shown as a tag: a pill filled in the direction's colour
-//! with the figure written on it, which is how the chart marks its last price.
-//! A tag's fill is the scheme's own colour, untouched, and its label is
-//! whichever of black and white reads on that fill ([`readable_on`]), which
-//! always clears AA. [`Tag`] carries the pair, so anything drawing one draws
-//! the chart's.
+//! with the figure written on it, which is how the chart marks its last price
+//! and how the bar widget shows a change. [`Tag::on`] is the one rule for the
+//! pair, so the two are always the same colours; see it for how the label is
+//! chosen and when the fill moves.
 //!
 //! The bar widget writes in these, read out of `omacharts watchlist`, so the
 //! panel in the bar takes every colour it draws from this one palette rather
 //! than keeping a second idea of what up looks like.
 
-use crate::theme::{held_to, mix, readable_on, BarScheme, ContrastBand, Direction, Theme};
+use crate::theme::{
+    apca_contrast, contrast_ratio, held_to, mix, BarScheme, ContrastBand, Direction, Oklch, Theme,
+    LIGHTNESS_STEP,
+};
 
 /// What text is held to against every surface it sits on: WCAG AA for body
 /// text. The ceiling is the scale's own end, because text cannot be too
@@ -75,19 +77,61 @@ pub struct Ink {
 /// last-price tag, and the bar widget's change.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Tag {
-    /// The pill: the scheme's colour for the direction, exactly as the
-    /// candles wear it.
+    /// The pill: the scheme's colour for the direction, darkened (or, for a
+    /// light label, lightened) only as far as its label needs.
     pub fill: String,
-    /// The figure on it, black or white, whichever reads on the fill. Never
-    /// under 4.5:1, whatever the fill.
+    /// The figure on it: [`TAG_LIGHT_LABEL`] unless the fill is light.
     pub label: String,
 }
 
+/// The label a tag wears on any fill that is not light.
+pub const TAG_LIGHT_LABEL: &str = "#ffffff";
+/// The label a tag wears on a light fill.
+pub const TAG_DARK_LABEL: &str = "#000000";
+/// The OKLCh lightness from which a fill counts as light and takes the dark
+/// label. Below it a fill is a colour — a red, a green, a blue — and a light
+/// figure on it is what reads, and what the eye expects; at and above it the
+/// fill is a pastel, which a light figure would wash out, and which would stop
+/// looking like itself if it were darkened enough to carry one.
+pub const LIGHT_FILL: f64 = 0.70;
+/// APCA's floor for the figure on a tag, |Lc|: its line for small bold text.
+pub const TAG_APCA: f64 = 60.0;
+
 impl Tag {
-    /// The tag for a pill filled in `fill`.
-    pub fn on(fill: &str) -> Tag {
-        Tag { fill: fill.to_string(), label: readable_on(fill).to_string() }
+    /// The tag for a pill in the direction colour `colour`.
+    ///
+    /// A light label, as the pill was designed, unless the colour is light
+    /// ([`LIGHT_FILL`]). The label must clear both WCAG 2's 4.5:1 and APCA's
+    /// Lc 60 on the fill: WCAG alone favours black on mid-tone reds and
+    /// greens, where white reads better to the eye, and APCA, which models
+    /// polarity, does not. When the label misses either, the label stays and
+    /// the fill moves: its lightness, in OKLCh, away from the label, only as
+    /// far as it has to, keeping the hue — a darker shade of the same red,
+    /// never black on it.
+    pub fn on(colour: &str) -> Tag {
+        let Some(mut fill) = Oklch::of(colour) else {
+            return Tag { fill: colour.to_string(), label: TAG_LIGHT_LABEL.to_string() };
+        };
+        let (label, step) = if fill.l >= LIGHT_FILL {
+            (TAG_DARK_LABEL, LIGHTNESS_STEP)
+        } else {
+            (TAG_LIGHT_LABEL, -LIGHTNESS_STEP)
+        };
+        let mut hex = colour.to_string();
+        for _ in 0..400 {
+            if tag_reads(label, &hex) {
+                break;
+            }
+            fill = fill.with_lightness(fill.l + step);
+            hex = fill.hex();
+        }
+        Tag { fill: hex, label: label.to_string() }
     }
+}
+
+/// Whether `label` reads on `fill` as a tag's figure: WCAG AA and APCA Lc 60.
+pub fn tag_reads(label: &str, fill: &str) -> bool {
+    contrast_ratio(label, fill) >= TEXT_CONTRAST.floor && apca_contrast(label, fill).abs() >= TAG_APCA
 }
 
 impl Ink {
@@ -234,15 +278,29 @@ mod tests {
     }
 
     #[test]
-    fn a_tag_is_the_schemes_fill_with_a_label_that_reads_on_it() {
-        let theme = builtin_themes()[0].clone();
-        let scheme = theme_bars(&theme);
-        let ink = theme.ink(&scheme);
-        for direction in [Direction::Up, Direction::Down, Direction::Flat] {
-            let tag = ink.tag(direction);
-            assert_eq!(tag.fill, scheme.outline(direction));
-            assert!(contrast_ratio(&tag.label, &tag.fill) >= TEXT_CONTRAST.floor, "{tag:?}");
-        }
+    fn a_tag_that_already_reads_keeps_its_fill() {
+        // A deep green carries white as it is.
+        let tag = Tag::on("#1a7f37");
+        assert_eq!((tag.fill.as_str(), tag.label.as_str()), ("#1a7f37", TAG_LIGHT_LABEL));
+    }
+
+    #[test]
+    fn a_mid_tone_fill_keeps_a_light_label_and_darkens() {
+        // Gruvbox's red: WCAG 2 alone would put black on it.
+        let red = "#ea6962";
+        let tag = Tag::on(red);
+        assert_eq!(tag.label, TAG_LIGHT_LABEL);
+        assert!(tag_reads(&tag.label, &tag.fill), "{tag:?}");
+        let (was, now) = (Oklch::of(red).unwrap(), Oklch::of(&tag.fill).unwrap());
+        assert!(now.l < was.l);
+        assert!(crate::theme::hue_gap(was.h, now.h) < 4.0, "{tag:?}");
+    }
+
+    #[test]
+    fn a_pastel_fill_takes_the_dark_label() {
+        let tag = Tag::on("#a6e3a1"); // Catppuccin's green
+        assert_eq!(tag.label, TAG_DARK_LABEL);
+        assert_eq!(tag.fill, "#a6e3a1");
     }
 
     #[test]

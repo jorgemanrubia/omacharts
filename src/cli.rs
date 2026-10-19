@@ -969,6 +969,42 @@ mod tests {
         assert_eq!(chosen["hover"], theme["hover"]);
     }
 
+    /// Every scheme on offer — the theme's, red up, monochrome, the built-in
+    /// ones including the accessible blue and orange, and one of the user's
+    /// own — reaches the widget whole: the change text, the sparklines (which
+    /// are drawn in the same up and down) and the pill all come from the
+    /// chosen scheme's colours, by the same rules the chart applies to them.
+    #[test]
+    fn every_scheme_on_offer_reaches_the_widget() {
+        use omacharts_engine::{ink::legible, Tag};
+        let store = Store::memory().unwrap();
+        let mut custom = omacharts_engine::theme::builtin_bar_schemes()[0].clone();
+        custom.id = "custom-blue-brown".to_string();
+        custom.name = "Blue and brown".to_string();
+        custom.up = "#2f6fdb".to_string();
+        custom.down = "#8b5a2b".to_string();
+        custom.source = omacharts_engine::theme::Source::Custom;
+        store.save_bar_scheme(&custom);
+        let theming = crate::theming::Theming::load(&store);
+        let schemes = theming.bar_schemes();
+        assert!(schemes.iter().any(|s| s.id == "accessible"));
+        assert!(schemes.iter().any(|s| s.id == custom.id));
+        for scheme in schemes {
+            store.set_setting(crate::theming::SETTING_BARS, &scheme.id);
+            let sent: serde_json::Value = serde_json::from_str(&colors_json(&store)).unwrap();
+            let theme = crate::theming::Theming::load(&store);
+            let ui = theme.theme().ui;
+            let hover = sent["hover"].as_str().unwrap().to_string();
+            let grounds = [ui.background.as_str(), ui.surface.as_str(), hover.as_str()];
+            for (way, colour) in [("up", &scheme.up), ("down", &scheme.down)] {
+                assert_eq!(sent[way], legible(colour, &grounds).as_str(), "{}: {way}", scheme.id);
+                let tag = Tag::on(colour);
+                assert_eq!(sent["tags"][way]["fill"], tag.fill.as_str(), "{}: {way} pill", scheme.id);
+                assert_eq!(sent["tags"][way]["label"], tag.label.as_str(), "{}: {way} label", scheme.id);
+            }
+        }
+    }
+
     #[test]
     fn strings_are_escaped() {
         assert_eq!(json_string("plain"), "\"plain\"");
