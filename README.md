@@ -82,18 +82,8 @@ To run it from a working tree instead — it rebuilds on every launch — use
 
 ## Uninstalling
 
-First take the widget out of the bar:
-
-```sh
-omacharts plugin uninstall
-```
-
-Removing the package doesn't do that for you: the widget lives in
-`~/.config/omarchy/plugins`, and pacman never touches your home folder, so
-skip this step and a broken widget stays in the bar.
-
-Then remove the package. Open the Omarchy menu with <kbd>Super</kbd> +
-<kbd>Space</kbd>, choose **Remove → Package**, and pick **omacharts**.
+Open the Omarchy menu with <kbd>Super</kbd> + <kbd>Space</kbd>, choose
+**Remove → Package**, and pick **omacharts**.
 
 Or from a terminal:
 
@@ -101,8 +91,14 @@ Or from a terminal:
 omarchy pkg drop omacharts
 ```
 
-Your charts, watchlists and cached prices stay behind in
-`~/.local/share/omacharts`; delete that folder too for a clean slate.
+Removing the package hides the bar widget. To uninstall the widget too, run
+this before removing the package:
+
+```sh
+omacharts plugin uninstall
+```
+
+Your data stays in `~/.local/share/omacharts`; delete it for a clean slate.
 
 ## Data
 
