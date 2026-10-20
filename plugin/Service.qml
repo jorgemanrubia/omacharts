@@ -1,6 +1,7 @@
 import QtQuick
 import Quickshell
 import Quickshell.Io
+import qs.Commons
 import "Model.js" as Model
 
 // Polling omacharts for the watchlist.
@@ -32,10 +33,26 @@ Item {
   property string _output: ""
   property string _error: ""
   property bool _started: false
+  property bool _recolorPending: false
 
   function refresh() {
     if (watchlistProcess.running) return
     watchlistProcess.command = ["omacharts", "watchlist", "--refresh"]
+    root._started = false
+    watchlistProcess.running = true
+  }
+
+  // The colours, asked for again. The app works them out from the desktop
+  // theme on every run, so a theme switch needs nothing but another answer —
+  // and not the network: `--refresh` would fetch stale quotes first and keep
+  // the old colours on screen while it did. A run already going may have read
+  // the old theme, so this waits for it and asks once more.
+  function recolor() {
+    if (watchlistProcess.running) {
+      root._recolorPending = true
+      return
+    }
+    watchlistProcess.command = ["omacharts", "watchlist"]
     root._started = false
     watchlistProcess.running = true
   }
@@ -65,6 +82,17 @@ Item {
 
   Component.onCompleted: refresh()
 
+  // The shell loads a theme's shell.toml on every switch, whether it arrives
+  // through `omarchy-theme-set` or the background's transition, and replaces
+  // this dict when it does: the one change every switch makes, even between
+  // two themes that happen to share a foreground. Without it the panel kept
+  // the old theme's colours until the next poll, minutes later, or until it
+  // was closed and opened again.
+  Connections {
+    target: Color
+    function onThemeShellValuesChanged() { root.recolor() }
+  }
+
   Timer {
     interval: root.refreshIntervalSec * 1000
     repeat: true
@@ -92,7 +120,14 @@ Item {
       root._started = true
       root.missing = false
     }
-    onRunningChanged: if (!running && !root._started) root.missing = true
+    onRunningChanged: {
+      if (running) return
+      if (!root._started) root.missing = true
+      if (root._recolorPending) {
+        root._recolorPending = false
+        Qt.callLater(root.recolor)
+      }
+    }
     onExited: function (code) {
       if (code !== 0) {
         root.lastError = root._error.trim() || "omacharts exited with code " + code
