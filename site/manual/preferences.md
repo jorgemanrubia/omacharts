@@ -9,7 +9,7 @@ Preferences holds the settings that apply to the whole app. Open it with <kbd>Ct
 
 ## The dialog
 
-The sections down its side are **General**, **Charts**, **Market data** and **Appearance**. In a narrow window the list of sections becomes a page of its own and a section opens over it.
+The sections down its side are **General**, **Charts**, **Market data**, **Appearance** and **Overlays**. In a narrow window the list of sections becomes a page of its own and a section opens over it.
 
 Reopened while the app is running, the dialog comes back on the section and tab you left it on. Opening it from a chart's header still goes to Charts › Header.
 
@@ -57,7 +57,6 @@ crop: 292,76,1976,1288
 | Templates › **Chart templates** | The list. + makes one, a row opens its editor, the pencil renames, the bin deletes. | [Chart templates](/manual/chart-templates/) |
 | Header › **Left**, **Center** | The parts every chart's header shows in each section, in order. | [The header](/manual/charts/#the-header) |
 | Other › Chart › **Preset resolutions**, **Edit…** | Opens the Resolutions dialog. | [The preset resolutions](/manual/charts/#the-preset-resolutions) |
-| Other › Chart › **Sync crosshair across charts** | The pointer on one chart draws the same moment on every other chart of the same symbol. On by default. | [Sharing the crosshair](/manual/charts/#sharing-the-crosshair) |
 | Other › Chart › **Zoom sensitivity** | How far the wheel and a two-finger swipe zoom every chart, from 10% to 200%. 100% by default, where a wheel notch zooms as it always has. | [Moving around](/manual/charts/#moving-around) |
 | Other › Time › **Time zone**, **Time format** | How every chart tells the time. | [Time](#time) |
 
@@ -104,6 +103,16 @@ crop: 276,56,2008,1328   (the whole dialog, 12px layout margin)
 ### Appearance
 
 **Theme** chooses the theme, and **Bars** the colours every chart's bars are painted in ([Themes and colours](/manual/themes/)).
+
+### Overlays
+
+The lines every chart draws, the same on every chart in every chartbook.
+
+| Row | Does | Default |
+|---|---|---|
+| **Gridlines** | The grid behind the bars. The scales and their labels stay either way ([Gridlines](/manual/charts/#gridlines)) | Off |
+| **Last price line** | The dashed line across at the last price. The price stays on the axis either way | On |
+| **Crosshair across Follow charts** | The pointer on one chart draws the same moment on every other chart of the same symbol ([Sharing the crosshair](/manual/charts/#sharing-the-crosshair)) | On |
 
 ## Settings that stay with this machine
 

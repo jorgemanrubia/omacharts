@@ -280,6 +280,9 @@ pub trait Live {
     /// Put in or take out what the feature flags now switch, in place.
     /// Nothing to do without a window.
     fn adopt_features(&self) {}
+    /// Re-read the gridlines and the last-price line, and put them on every
+    /// chart. Nothing to do without a window.
+    fn adopt_chart_look(&self) {}
 
     /// Save a picture of the focused chart, or of the whole open chartbook.
     ///
@@ -1087,6 +1090,10 @@ impl Live for Rc<crate::ui::Window> {
 
     fn adopt_features(&self) {
         crate::ui::Window::adopt_features(self);
+    }
+
+    fn adopt_chart_look(&self) {
+        crate::ui::Window::adopt_chart_look(self);
     }
 
     fn screenshot(

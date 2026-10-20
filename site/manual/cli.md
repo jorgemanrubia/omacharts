@@ -280,7 +280,7 @@ codes](#exit-codes).
 | `chart` | The charts in a chartbook | [Charts](#charts) (`set`, `range`), [Indicators](#indicators), [Drawings](#drawings), [Measuring a move](#measuring-a-move), [Arranging charts](#arranging-charts) (`list`, `split`, `close`, `focus`), [Linking](#linking), [Sharing the crosshair](#sharing-the-crosshair) (`crosshair`), [Screenshots](#screenshots) |
 | `template` | Chart templates | [Chart templates](#chart-templates) |
 | `provider` | The data feed, and signing in to one | [Market data](#market-data) |
-| `config` | Stored preferences | [Preferences](#preferences); `config bars` under [Charts](#config-bars) |
+| `config` | Stored preferences | [Preferences](#preferences); `config bars`, `config grid` and `config price-line` under [Charts](#config-bars) |
 | `cache` | The downloaded prices | [Your data](#cache) |
 | `backup` | Copies of your settings, and putting one back | [Your data](#backup) |
 | `skill` | The agent skill | [`skill`](#skill) |
@@ -360,7 +360,7 @@ omacharts: no instrument called ZZZQX; try `omacharts symbol search ZZZQX`
 ## Charts
 
 `chart set` changes one chart, and `chart range` the days it shows.
-`config bars` and `config set` change every
+`config bars`, `config grid`, `config price-line` and `config set` change every
 chart, or what new charts open with. What each setting looks like on screen
 is in [Charts](/manual/charts/).
 
@@ -374,8 +374,8 @@ $ omacharts chart set --symbol NVDA --resolution 240
 chart 2: symbol NVDA, resolution 4h
   [exit 0]
 
-$ omacharts chart set --style candles --colouring theme-hollow --session regular --grid off --auto-scale off --log-scale on
-chart 4: style candles, colouring theme-hollow, session regular, grid off, auto-scale off, log scale on
+$ omacharts chart set --style candles --colouring theme-hollow --session regular --auto-scale off --log-scale on
+chart 4: style candles, colouring theme-hollow, session regular, auto-scale off, log scale on
   [exit 0]
 
 $ omacharts chart set --title "Semis desk"
@@ -402,8 +402,6 @@ omacharts: "3x" is not a resolution; try 5m, 1h, 1D, 1W, 1M or 1Y
 | `--bars on` or `off` | Shows the bars in the style they had, or hides them | [Hiding the bars](/manual/charts/#hiding-the-bars) |
 | `--colouring C` | `theme` (Filled), `theme-hollow` (Hollow), `theme-red-up` (Red up), `theme-soft` (Soft), `theme-quiet` (Quiet), `theme-mono` (Monochrome) | [Colouring](/manual/charts/#colouring) |
 | `--session S` | `regular`, `extended` | [Sessions](/manual/charts/#sessions) |
-| `--grid on` or `off` | Draws the grid | [Gridlines](/manual/charts/#gridlines) |
-| `--price-line on` or `off` | Draws the dashed line across the chart at the last price | [The last price line](/manual/charts/#the-last-price-line) |
 | `--auto-scale on` or `off` | Fits the price axis to the visible bars, or holds it still | [Scales](/manual/charts/#scales) |
 | `--log-scale on` or `off` | Logarithmic or linear price axis | [Logarithmic scale](/manual/charts/#logarithmic-scale) |
 | `--indicators on` or `off` | Draws the chart's indicators, or hides them all | [Hiding every indicator](/manual/indicators/#hiding-every-indicator) |
@@ -418,6 +416,8 @@ omacharts: "3x" is not a resolution; try 5m, 1h, 1D, 1W, 1M or 1Y
 
 A colouring the style does not offer, such as `theme-hollow` on OHLC bars,
 is accepted and drawn as `theme` until the chart is candles again.
+Gridlines and the last-price line are every chart's, not one chart's:
+`config grid` and `config price-line` below.
 
 `--style none` and `--bars off` both hide the bars and keep their style.
 `--bars on` brings them back in it, and `--style candles` or `--style ohlc`
@@ -502,6 +502,22 @@ bars are now up blue, down orange, filled
 
 A state and the flags can be given together, and the flags win. Each chart
 then paints the look its own way, `chart set --colouring`.
+
+### `config grid` and `config price-line`
+
+Whether every chart draws gridlines, and the dashed line across at the last
+price. The same on every chart, in every chartbook. Without `on` or `off`,
+prints the state.
+
+```
+$ omacharts config grid on
+gridlines on every chart
+  [exit 0]
+
+$ omacharts config price-line
+on
+  [exit 0]
+```
 
 The chart defaults (`bar_style`, `ohlc_thickness`, `chart_colouring`, `chart_session`, `show_grid`,
 `chart_log_scale`, `chart_shows_legend`, `chart_header`, `timeframes`) are set with `config set`;
@@ -1058,7 +1074,7 @@ Desk — watchlist "Default"
 ```
 
 `--book` lists another chartbook. `--json` gives each chart in full:
-its chart title, `title` (`null` when it has none), colouring, session, gridlines, the last price line, both scales, whether it shows and sends
+its chart title, `title` (`null` when it has none), colouring, session, both scales, whether it shows and sends
 drawings, indicators and template.
 
 ## Chartbooks
@@ -1543,7 +1559,8 @@ same.
 | `ohlc_thickness` | `1` to `4` | `2` | Charts › Defaults › Thickness | [Chart settings](/manual/chart-settings/) |
 | `chart_colouring` | `theme` (Filled), `theme-hollow`, `theme-red-up`, `theme-soft`, `theme-quiet`, `theme-mono` | `theme` | Charts › Defaults › Colouring | [Chart settings](/manual/chart-settings/) |
 | `chart_session` | `extended`, `regular` | `extended` | Charts › Defaults › Hours | [Chart settings](/manual/chart-settings/) |
-| `show_grid` | on, off | off | Charts › Defaults › Gridlines | [Chart settings](/manual/chart-settings/) |
+| `show_grid` | on, off | off | Overlays › Gridlines | [Gridlines](/manual/charts/#gridlines) |
+| `price_line` | on, off | on | Overlays › Last price line | [The last price line](/manual/charts/#the-last-price-line) |
 | `chart_log_scale` | on, off | off | Charts › Defaults › Logarithmic scale | [Chart settings](/manual/chart-settings/) |
 | `chart_shows_drawings` | on, off | on | Charts › Defaults › Show drawings from other charts | [Drawings](/manual/drawings/) |
 | `chart_sends_drawings` | on, off | on | Charts › Defaults › Send drawings to other charts | [Drawings](/manual/drawings/) |
@@ -1553,7 +1570,7 @@ same.
 | `chart_time_zone` | an IANA name such as `Europe/London` or `America/Chicago`, or `exchange` for each chart's exchange's own | `America/New_York` | Charts › Other › Time › Time zone | [Preferences](/manual/preferences/#time) |
 | `time_format` | `24h`, `12h` | the desktop's clock format | Charts › Other › Time › Time format | [Preferences](/manual/preferences/#time) |
 | `timeframes` | comma-separated resolutions, such as `5m,15m,1h,4h,1D,1W`; an entry that is not a resolution is skipped | `5m,15m,1h,4h,1D,1W` | Charts › Other › Preset resolutions | [Charts](/manual/charts/) |
-| `sync_crosshair` | on, off | on | Charts › Other › Chart › Sync crosshair across charts | [Charts](/manual/charts/#sharing-the-crosshair) |
+| `sync_crosshair` | on, off | on | Overlays › Crosshair across Follow charts | [Charts](/manual/charts/#sharing-the-crosshair) |
 | `zoom_sensitivity` | a percentage from `10` to `200`, with or without `%` | `100` | Charts › Other › Chart › Zoom sensitivity | [Charts](/manual/charts/#moving-around) |
 | `provider` | `yahoo`, `tos` | `yahoo` | Market data › Data feed | [Market data feeds](/manual/market-data/) |
 | `screenshot_folder` | a folder; `~/` is your home; empty for the default | where Omarchy saves screenshots; `<Pictures>/Omacharts` without Omarchy | None | [Screenshots](/manual/screenshots/) |

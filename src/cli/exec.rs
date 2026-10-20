@@ -226,6 +226,8 @@ pub fn dispatch(
         }
         ("config", "theme") => config_theme(store, m, json, live),
         ("config", "bars") => config_bars(store, m, json, live),
+        ("config", "grid") => config_chart_switch(store, m, json, live, ChartSwitch::Grid),
+        ("config", "price-line") => config_chart_switch(store, m, json, live, ChartSwitch::PriceLine),
 
         ("plugin", "status") => plugin_status(&caller.home(), json),
         ("plugin", "install") => plugin_install(&caller.home(), json),
@@ -1689,10 +1691,6 @@ fn chart_set(
         chart["link"] = json!(mode.key());
         changed.push(format!("link {}", mode.key()));
     }
-    if let Some(grid) = arg(m, "grid") {
-        chart["show_grid"] = json!(grid == "on");
-        changed.push(format!("grid {grid}"));
-    }
     if let Some(shows) = shows_drawings {
         chart["shows_drawings"] = json!(shows);
         changed.push(format!("shows other charts' drawings {}", on_off(shows)));
@@ -1731,10 +1729,6 @@ fn chart_set(
         chart["drawings_shown"] = json!(shown == "on");
         changed.push(format!("drawings {}", if shown == "on" { "shown" } else { "hidden" }));
     }
-    if let Some(line) = arg(m, "price-line") {
-        chart["price_line"] = json!(line == "on");
-        changed.push(format!("price line {line}"));
-    }
     match template {
         None => {}
         // The template's indicators replace the chart's own, which go: the
@@ -1760,7 +1754,7 @@ fn chart_set(
     if changed.is_empty() {
         return Err(Fault::usage(
             "nothing to change; pass --title, --symbol, --resolution, --style, --thickness, --bars, --colouring, \
-             --session, --link, --grid, --auto-scale, --log-scale, --price-line, --indicators, \
+             --session, --link, --auto-scale, --log-scale, --indicators, \
              --drawings, --show-drawings, --send-drawings or --template"
                 .into(),
         ));
@@ -4306,7 +4300,6 @@ fn pane_json(pane: &Value) -> String {
         // Missing from a chart stored before there was a choice, which is
         // drawn as the default says.
         "continuous": pane["continuous"].as_str().map_or_else(|| json!(null), |join| json!(join)),
-        "grid": pane["show_grid"],
         // Missing from a chart stored before it was remembered, and every one
         // of those was fitting itself.
         "auto_scale": pane["auto_scale"].as_bool().unwrap_or(true),
@@ -4317,8 +4310,6 @@ fn pane_json(pane: &Value) -> String {
         "drawings_shown": pane["drawings_shown"].as_bool().unwrap_or(true),
         // And with its legend, before it could be turned off.
         "legend": pane["shows_legend"].as_bool().unwrap_or(true),
-        // And drawn, before it could be turned off.
-        "price_line": pane["price_line"].as_bool().unwrap_or(true),
         "link": stored_mode(pane).key(),
         "shows_drawings": pane["shows_drawings"].as_bool().unwrap_or(true),
         "sends_drawings": pane["sends_drawings"].as_bool().unwrap_or(true),
@@ -5543,6 +5534,63 @@ fn config_theme(
         false => format!("the theme is {name}"),
     };
     said(as_json, json!({"theme": spell(&id), "name": name}), text)
+}
+
+/// The two things every chart draws or does not, the same on all of them.
+#[derive(Clone, Copy)]
+enum ChartSwitch {
+    Grid,
+    PriceLine,
+}
+
+impl ChartSwitch {
+    /// The setting it is kept in: the one the window reads.
+    fn key(self) -> &'static str {
+        match self {
+            ChartSwitch::Grid => crate::chart_defaults::SETTING_SHOW_GRID,
+            ChartSwitch::PriceLine => crate::chart_defaults::SETTING_PRICE_LINE,
+        }
+    }
+
+    fn json_key(self) -> &'static str {
+        match self {
+            ChartSwitch::Grid => "grid",
+            ChartSwitch::PriceLine => "priceLine",
+        }
+    }
+
+    fn said(self, on: bool) -> &'static str {
+        match (self, on) {
+            (ChartSwitch::Grid, true) => "gridlines on every chart",
+            (ChartSwitch::Grid, false) => "no gridlines on any chart",
+            (ChartSwitch::PriceLine, true) => "a last-price line on every chart",
+            (ChartSwitch::PriceLine, false) => "no last-price line on any chart",
+        }
+    }
+}
+
+/// Gridlines or the last-price line: read, or turned on or off for every
+/// chart at once, open or not.
+fn config_chart_switch(
+    store: &Store,
+    m: &clap::ArgMatches,
+    as_json: bool,
+    live: Option<&dyn Live>,
+    switch: ChartSwitch,
+) -> Result<String, Fault> {
+    let Some(state) = arg(m, "STATE") else {
+        let on = store.setting_bool(switch.key(), true);
+        return match as_json {
+            true => Ok(format!("{}\n", json!({switch.json_key(): on}))),
+            false => Ok(format!("{}\n", on_off(on))),
+        };
+    };
+    let on = state == "on";
+    store.set_setting_bool(switch.key(), on);
+    if let Some(live) = live {
+        live.adopt_chart_look();
+    }
+    said(as_json, json!({switch.json_key(): on}), switch.said(on).to_string())
 }
 
 /// How candles look: a colour for each direction, and which are hollow.
@@ -7197,6 +7245,28 @@ mod tests {
         assert_eq!(charts(&store)["charts"][0]["log_scale"], false);
     }
 
+    /// The gridlines and the line at the last price are one answer for every
+    /// chart: drawn to begin with, turned off and read back from a command.
+    #[test]
+    fn gridlines_and_the_last_price_line_are_one_switch_for_every_chart() {
+        let store = Store::memory().unwrap();
+        for verb in ["grid", "price-line"] {
+            assert_eq!(run(&format!("config {verb}"), &store).out, "on\n", "{verb} drawn to begin with");
+
+            let off = run(&format!("config {verb} off"), &store);
+            assert_eq!(off.code, 0, "{}", off.err);
+            assert!(off.out.contains("any chart"), "{}", off.out);
+            assert_eq!(run(&format!("config {verb}"), &store).out, "off\n");
+
+            let json = run(&format!("config {verb} --json"), &store).out;
+            assert!(json.contains("false"), "{json}");
+
+            run(&format!("config {verb} on"), &store);
+            assert_eq!(run(&format!("config {verb}"), &store).out, "on\n");
+        }
+        assert!(run("chart set --price-line off", &store).code != 0, "no longer a chart's own");
+    }
+
     /// Hiding every indicator is stored with the chart and reported back,
     /// leaves the indicators themselves alone, and a chart stored before it
     /// could be shows them.
@@ -7274,26 +7344,6 @@ mod tests {
 
         run("chart set --book Macro --drawings on", &store);
         assert_eq!(charts(&store)["charts"][0]["drawings_shown"], true);
-    }
-
-    /// The line at the last price is stored with the chart and reported
-    /// back, and a chart stored before it could be turned off draws it.
-    #[test]
-    fn a_charts_last_price_line_can_be_turned_off_from_a_command() {
-        let store = Store::memory().unwrap();
-        run("chartbook create Macro --symbol SPY --switch", &store);
-        let charts = |store: &Store| -> serde_json::Value {
-            serde_json::from_str(&run("chart list --book Macro --json", store).out).unwrap()
-        };
-        assert_eq!(charts(&store)["charts"][0]["price_line"], true, "drawn to begin with");
-
-        let off = run("chart set --book Macro --price-line off", &store);
-        assert_eq!(off.code, 0, "{}", off.err);
-        assert!(off.out.contains("price line off"), "{}", off.out);
-        assert_eq!(charts(&store)["charts"][0]["price_line"], false);
-
-        run("chart set --book Macro --price-line on", &store);
-        assert_eq!(charts(&store)["charts"][0]["price_line"], true);
     }
 
     /// A chart stored before the price scale was remembered says nothing

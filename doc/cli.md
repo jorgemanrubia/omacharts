@@ -628,10 +628,12 @@ A `chart set` with one bad value changes nothing at all — everything is
 checked before anything is written, so you never get a half-applied chart.
 
 Besides what a chart shows, `chart set` carries how it shows it — `--title`, `--style`,
-`--thickness`, `--bars`, `--session`, `--grid`, `--auto-scale`, `--log-scale`,
-`--price-line`, `--indicators`, `--legend` and `--drawings` — and those are
-stored with the chart, so a price axis held still with `--auto-scale off` is
-still held the next time the app opens.
+`--thickness`, `--bars`, `--session`, `--auto-scale`, `--log-scale`,
+`--indicators`, `--legend` and `--drawings` — and those are stored with the
+chart, so a price axis held still with `--auto-scale off` is still held the
+next time the app opens. Gridlines and the last-price line are not one chart's:
+they are the same on every chart, and set with `config grid` and `config
+price-line` (see Preferences).
 
 `--log-scale on` makes the price axis logarithmic: equal heights are equal
 percentage moves, which is what a chart of twenty years wants. Indicators in
@@ -669,13 +671,6 @@ window it is Ctrl+H.
 
 ```sh
 omacharts chart set --drawings off
-```
-
-`--price-line off` takes away the dashed line drawn across the chart at the
-last price. The price itself stays on the axis.
-
-```sh
-omacharts chart set --price-line off
 ```
 
 ## Chartbook templates
@@ -1064,6 +1059,21 @@ the theme is Gruvbox
 
 $ omacharts config theme system
 the theme is Tokyo Night
+  [exit 0]
+```
+
+Gridlines and the dashed line across at the last price are the same on every
+chart, in every chartbook, so they are set here rather than with `chart set`.
+The price itself stays on the axis either way. In the window, Ctrl+Shift+G
+turns the gridlines on and off.
+
+```
+$ omacharts config grid off
+no gridlines on any chart
+  [exit 0]
+
+$ omacharts config price-line
+on
   [exit 0]
 ```
 

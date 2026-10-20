@@ -1,4 +1,5 @@
-//! How every chart looks: the theme and what candles look like, on one page.
+//! How every chart looks: the theme and what candles look like on one page,
+//! and the lines every chart draws or does not on a second, Overlays.
 //!
 //! Both are built wherever they are wanted — in Preferences, and beside a
 //! chart's own settings, where you are when you notice the candles are the
@@ -18,6 +19,8 @@ use omacharts_engine::theme::{bar_colour, ink, BarLook, ColorChoice, Swatch, INK
 
 use crate::store::Store;
 use crate::theming::Theming;
+use crate::chart_defaults::{chart_switch, SETTING_PRICE_LINE, SETTING_SHOW_GRID};
+use crate::ui::window::SETTING_SYNC_CROSSHAIR;
 use crate::ui::{palette, theme_picker};
 
 struct Context {
@@ -29,11 +32,17 @@ struct Context {
     groups: RefCell<Vec<adw::PreferencesGroup>>,
 }
 
+/// An Overlays switch on screen, the setting it is, and where that is stored.
+type Switch = (glib::WeakRef<adw::SwitchRow>, &'static str, Rc<Store>);
+
 thread_local! {
     /// Every page built and not yet thrown away, so a desktop theme change
     /// can redraw the card that follows it. More than one: Preferences and
     /// a chart's settings can both be open.
     static SHOWN: RefCell<Vec<Weak<Context>>> = const { RefCell::new(Vec::new()) };
+    /// Every Overlays switch on screen, so a key or a command that changes a
+    /// setting moves its switch with it.
+    static SWITCHES: RefCell<Vec<Switch>> = const { RefCell::new(Vec::new()) };
 }
 
 /// The Appearance page. `on_change` repaints the charts after the theme or
@@ -66,6 +75,24 @@ pub fn restyled() {
         SHOWN.with(|shown| shown.borrow().iter().filter_map(Weak::upgrade).collect());
     for context in shown.iter().filter(|c| c.page.root().is_some()) {
         rebuild(context);
+    }
+}
+
+/// An Overlays setting changed from somewhere else — the key, the chart menu,
+/// a command — so every switch on screen reads what is stored now.
+pub fn charts_changed() {
+    let live: Vec<(adw::SwitchRow, &'static str, Rc<Store>)> = SWITCHES.with(|switches| {
+        let mut switches = switches.borrow_mut();
+        switches.retain(|(row, ..)| row.upgrade().is_some());
+        switches.iter().filter_map(|(row, key, store)| Some((row.upgrade()?, *key, store.clone()))).collect()
+    });
+    for (row, key, store) in live {
+        let on = chart_switch(&store, key);
+        // Only when it differs: setting it runs the handler, which stores it
+        // and repaints the charts again.
+        if row.is_active() != on {
+            row.set_active(on);
+        }
     }
 }
 
@@ -146,6 +173,41 @@ fn bars_group(context: &Rc<Context>) -> adw::PreferencesGroup {
         look.down_hollow = on
     }));
     group
+}
+
+/// The Overlays page: the lines every chart draws, or does not. One
+/// answer for all of them, in every chartbook, rather than a switch per chart
+/// that only decides what the next chart opens with. `on_charts` puts them on
+/// the charts once one is stored.
+pub fn overlays_page(store: Rc<Store>, on_charts: Rc<dyn Fn()>) -> adw::PreferencesPage {
+    let group = adw::PreferencesGroup::new();
+    group.set_description(Some("The same on every chart, in every chartbook."));
+
+    let rows = [
+        ("Gridlines", "The scales and their labels stay either way", SETTING_SHOW_GRID),
+        ("Last price line", "The price stays on the axis either way", SETTING_PRICE_LINE),
+        (
+            "Crosshair across Follow charts",
+            "The pointer on one draws the same moment on the others",
+            SETTING_SYNC_CROSSHAIR,
+        ),
+    ];
+    for (title, subtitle, key) in rows {
+        let row = adw::SwitchRow::new();
+        row.set_title(title);
+        row.set_subtitle(subtitle);
+        row.set_active(chart_switch(&store, key));
+        let (store_for_row, on_charts) = (store.clone(), on_charts.clone());
+        row.connect_active_notify(move |row| {
+            store_for_row.set_setting_bool(key, row.is_active());
+            on_charts();
+        });
+        group.add(&row);
+        SWITCHES.with(|switches| switches.borrow_mut().push((row.downgrade(), key, store.clone())));
+    }
+    let page = adw::PreferencesPage::new();
+    page.add(&group);
+    page
 }
 
 /// Change one of the four answers, store it, and repaint everything.

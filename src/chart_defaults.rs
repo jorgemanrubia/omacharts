@@ -18,6 +18,8 @@ pub const SETTING_SESSION: &str = "chart_session";
 /// How a futures root's months are joined at the rolls, on a feed that
 /// stitches them: back-adjusted or as traded.
 pub const SETTING_CONTINUOUS: &str = "chart_continuous";
+/// Gridlines and the last-price line are every chart's, not a default:
+/// see [`crate::ui::appearance`].
 pub const SETTING_SHOW_GRID: &str = "show_grid";
 pub const SETTING_PRICE_LINE: &str = "price_line";
 /// How many pixels wide an OHLC bar's line and ticks are drawn.
@@ -25,6 +27,15 @@ pub const SETTING_OHLC_THICKNESS: &str = "ohlc_thickness";
 /// The range it takes is the chart's own.
 pub use omacharts_chart::{clamp_thickness, DEFAULT_OHLC_THICKNESS, MAX_OHLC_THICKNESS, MIN_OHLC_THICKNESS};
 const SETTING_LOG_SCALE: &str = "chart_log_scale";
+
+/// Whether one of the switches every chart shares, stored under `key`, is
+/// on: as stored, or before anybody sets it, gridlines off and the rest on.
+/// The window, the Overlays page and `config` all read it here, so none of
+/// them can open to a different answer.
+pub fn chart_switch(store: &Store, key: &str) -> bool {
+    store.setting_bool(key, key != SETTING_SHOW_GRID)
+}
+
 const SETTING_SHOWS_DRAWINGS: &str = "chart_shows_drawings";
 const SETTING_SENDS_DRAWINGS: &str = "chart_sends_drawings";
 /// Whether a chart draws its indicator legend at all.
@@ -44,9 +55,6 @@ pub struct ChartDefaults {
     pub session: Session,
     /// How a root's months are joined, on a feed that stitches them.
     pub continuous: Adjustment,
-    pub show_grid: bool,
-    /// The dashed line across the chart at the last price.
-    pub price_line: bool,
     pub log_scale: bool,
     pub shows_drawings: bool,
     pub sends_drawings: bool,
@@ -66,8 +74,6 @@ impl Default for ChartDefaults {
             ohlc_thickness: DEFAULT_OHLC_THICKNESS,
             session: Session::default(),
             continuous: Adjustment::default(),
-            show_grid: false,
-            price_line: true,
             log_scale: false,
             shows_drawings: true,
             sends_drawings: true,
@@ -101,8 +107,6 @@ impl ChartDefaults {
                 .setting(SETTING_CONTINUOUS)
                 .and_then(|key| Adjustment::from_key(&key))
                 .unwrap_or(fallback.continuous),
-            show_grid: store.setting_bool(SETTING_SHOW_GRID, fallback.show_grid),
-            price_line: store.setting_bool(SETTING_PRICE_LINE, fallback.price_line),
             log_scale: store.setting_bool(SETTING_LOG_SCALE, fallback.log_scale),
             shows_drawings: store.setting_bool(SETTING_SHOWS_DRAWINGS, fallback.shows_drawings),
             sends_drawings: store.setting_bool(SETTING_SENDS_DRAWINGS, fallback.sends_drawings),
@@ -117,8 +121,6 @@ impl ChartDefaults {
         store.set_setting(SETTING_OHLC_THICKNESS, &self.ohlc_thickness.to_string());
         store.set_setting(SETTING_SESSION, self.session.key());
         store.set_setting(SETTING_CONTINUOUS, self.continuous.key());
-        store.set_setting_bool(SETTING_SHOW_GRID, self.show_grid);
-        store.set_setting_bool(SETTING_PRICE_LINE, self.price_line);
         store.set_setting_bool(SETTING_LOG_SCALE, self.log_scale);
         store.set_setting_bool(SETTING_SHOWS_DRAWINGS, self.shows_drawings);
         store.set_setting_bool(SETTING_SENDS_DRAWINGS, self.sends_drawings);
@@ -137,7 +139,6 @@ mod tests {
         let store = Store::memory().unwrap();
         let fresh = ChartDefaults::load(&store);
         assert_eq!(fresh.colouring, BarColouring::Filled);
-        assert!(!fresh.show_grid);
         assert_eq!(fresh.ohlc_thickness, DEFAULT_OHLC_THICKNESS);
         assert!(fresh.shows_drawings && fresh.sends_drawings);
         assert!(fresh.shows_legend, "the legend is shown unless somebody turns it off");
@@ -148,8 +149,6 @@ mod tests {
             ohlc_thickness: 3,
             session: Session::ALL[Session::ALL.len() - 1],
             continuous: Adjustment::AsTraded,
-            show_grid: true,
-            price_line: false,
             log_scale: true,
             shows_drawings: false,
             sends_drawings: false,
@@ -161,6 +160,19 @@ mod tests {
         let on_one = ChartDefaults { template: Some(7), ..chosen };
         on_one.save(&store);
         assert_eq!(ChartDefaults::load(&store), on_one);
+    }
+
+    /// Gridlines are off until somebody turns them on; the last-price line
+    /// is on. What is stored wins either way.
+    #[test]
+    fn a_fresh_store_draws_no_gridlines_and_the_last_price_line() {
+        let store = Store::memory().unwrap();
+        assert!(!chart_switch(&store, SETTING_SHOW_GRID));
+        assert!(chart_switch(&store, SETTING_PRICE_LINE));
+        store.set_setting_bool(SETTING_SHOW_GRID, true);
+        store.set_setting_bool(SETTING_PRICE_LINE, false);
+        assert!(chart_switch(&store, SETTING_SHOW_GRID));
+        assert!(!chart_switch(&store, SETTING_PRICE_LINE));
     }
 
     /// A thickness typed into the settings by hand comes back inside the

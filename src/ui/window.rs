@@ -30,7 +30,7 @@ use crate::live::{Change, Live, Series, Watching, Written};
 use crate::loader::{Loader, Request, Response, BACKFILL, BACKGROUND, FOREGROUND, REFRESH};
 use crate::book_templates;
 use crate::store::{Store, DEFAULT_WATCHLIST};
-use crate::chart_defaults::ChartDefaults;
+use crate::chart_defaults::{ChartDefaults, SETTING_PRICE_LINE, SETTING_SHOW_GRID};
 use crate::theming::Theming;
 use crate::ui::chart::{Drawn, Echo};
 use crate::ui::pane::{self, ChartPane, Hideable, LadderSource, Node};
@@ -734,7 +734,6 @@ mod tests {
                 log_scale: true,
                 indicators_shown: true,
                 drawings_shown: true,
-                price_line: true,
             }],
             watchlist: Some(4),
             sidebar_shown: Some(false),
@@ -869,7 +868,6 @@ mod tests {
             log_scale: false,
             indicators_shown: true,
             drawings_shown: true,
-            price_line: true,
         }
     }
 
@@ -1903,7 +1901,6 @@ mod apply_to_all_tests {
             let mut defaults = ChartDefaults::load(&store);
             defaults.template = Some(default.id);
             defaults.bar_style = BarStyle::Ohlc;
-            defaults.show_grid = !pane.show_grid.get();
             defaults.log_scale = !pane.view.price_log();
             defaults.shows_legend = !pane.shows_legend.get();
             defaults.save(&store);
@@ -1928,7 +1925,6 @@ mod apply_to_all_tests {
             assert_eq!(*pane.indicators.borrow(), mine, "its own indicators, as they were");
             assert_eq!(pane.view.held_strip_windows().get(&3), Some(&(-1500.0, 2500.0)), "its strip as held");
             assert_eq!(pane.bar_style.get(), BarStyle::Ohlc);
-            assert_eq!(pane.show_grid.get(), defaults.show_grid);
             assert_eq!(pane.view.price_log(), defaults.log_scale);
             assert_eq!(pane.shows_legend.get(), defaults.shows_legend);
 
@@ -1941,7 +1937,6 @@ mod apply_to_all_tests {
             assert_eq!(templated.indicators, on_a.indicators);
             for stored in [theirs, templated] {
                 assert_eq!(stored.bar_style, BarStyle::Ohlc.key());
-                assert_eq!(stored.show_grid, defaults.show_grid);
                 assert_eq!(stored.log_scale, defaults.log_scale);
                 assert_eq!(stored.shows_legend, defaults.shows_legend);
             }
@@ -3411,6 +3406,10 @@ struct StoredPane {
     /// choice, which takes the default.
     #[serde(default)]
     continuous: Option<String>,
+    /// Not read: gridlines are the same on every chart, and come from the
+    /// setting. Still written, with that setting's value, because a build
+    /// from before then requires it and would otherwise refuse the whole
+    /// arrangement — somebody going back a version loses every chartbook.
     show_grid: bool,
     /// What the rail does to this chart. Missing from a chart written with
     /// link groups instead, which [`upgrade_link_groups`] turns into this
@@ -3452,10 +3451,6 @@ struct StoredPane {
     /// hidden, and every one of those drew them.
     #[serde(default = "yes")]
     drawings_shown: bool,
-    /// Whether a line runs across the chart at the last price. Missing from
-    /// a chart written before it could be turned off, and all of those drew it.
-    #[serde(default = "yes")]
-    price_line: bool,
     /// Whether the chart shows what other charts of its symbol draw, and
     /// whether it sends them what is drawn here. Both on by default, which
     /// is what a book written before either existed gets — and what the
@@ -3526,7 +3521,6 @@ impl StoredPane {
             session: String::new(),
             continuous: None,
             show_grid: true,
-            price_line: true,
             link: LinkMode::default(),
             auto_scale: true,
             price_window: None,
@@ -4604,7 +4598,6 @@ impl Window {
             defaults.bar_style,
             defaults.colouring,
             defaults.session,
-            defaults.show_grid,
             LinkMode::default(),
         );
         pane.template.set(template.map(|t| t.id));
@@ -4612,7 +4605,6 @@ impl Window {
         pane.continuous.set(defaults.continuous);
         pane.view.set_price_log(defaults.log_scale);
         pane.set_ohlc_thickness(defaults.ohlc_thickness);
-        pane.view.set_price_line(defaults.price_line);
         pane.shows_drawings.set(defaults.shows_drawings);
         pane.sends_drawings.set(defaults.sends_drawings);
         pane.view.set_sends(defaults.sends_drawings);
@@ -4630,7 +4622,6 @@ impl Window {
         bar_style: BarStyle,
         colouring: BarColouring,
         session: Session,
-        show_grid: bool,
         mode: LinkMode,
     ) -> Rc<ChartPane> {
         let id = self.next_pane.get();
@@ -4640,12 +4631,15 @@ impl Window {
         let look = self.theming.borrow().bar_look().clone();
         let scheme = colouring.for_style(bar_style).scheme(&theme, &look);
         let pane = ChartPane::new(
-            id, theme, scheme, timeframe, indicators, bar_style, session, show_grid, mode,
+            id, theme, scheme, timeframe, indicators, bar_style, session, mode,
         );
         pane.colouring.set(colouring);
         pane.view.set_house_look(look);
         pane.view.set_bar_style(bar_style);
-        pane.view.set_show_grid(show_grid);
+        // The same on every chart, so read here rather than handed in: no
+        // chart can be built wearing anything else.
+        pane.view.set_show_grid(self.show_grid());
+        pane.view.set_price_line(self.price_line());
 
         let searcher = self.clone();
         pane.symbol_button.connect_clicked(move |_| {
@@ -5140,7 +5134,7 @@ impl Window {
             action.set_state(&template_state(pane.template.get()));
         }
         if let Some(action) = self.grid_action.borrow().as_ref() {
-            action.set_state(&pane.show_grid.get().to_variant());
+            action.set_state(&self.show_grid().to_variant());
         }
         if let Some(action) = self.indicators_action.borrow().as_ref() {
             action.set_state(&pane.view.show_indicators().to_variant());
@@ -5199,7 +5193,6 @@ impl Window {
             from.bar_style.get(),
             from.colouring.get(),
             from.session.get(),
-            from.show_grid.get(),
             from.mode(),
         );
         added.template.set(from.template.get());
@@ -5213,7 +5206,6 @@ impl Window {
         added.view.set_show_indicators(from.view.show_indicators());
         added.view.set_show_drawings(from.view.show_drawings());
         added.shows_legend.set(from.shows_legend.get());
-        added.view.set_price_line(from.view.price_line());
         let next = self.layout.borrow().split(from.id, added.id, horizontal);
         *self.layout.borrow_mut() = next;
         self.rebuild_layout();
@@ -5993,7 +5985,7 @@ impl Window {
                     ohlc_thickness: Some(pane.ohlc_thickness.get()),
                     session: pane.session.get().key().to_string(),
                     continuous: Some(pane.continuous.get().key().to_string()),
-                    show_grid: pane.show_grid.get(),
+                    show_grid: self.show_grid(),
                     link: pane.mode(),
                     shows_drawings: pane.shows_drawings.get(),
                     sends_drawings: pane.sends_drawings.get(),
@@ -6038,7 +6030,6 @@ impl Window {
                     log_scale: pane.view.price_log(),
                     indicators_shown: pane.view.show_indicators(),
                     drawings_shown: pane.view.show_drawings(),
-                    price_line: pane.view.price_line(),
                 }
             })
             .collect();
@@ -6274,7 +6265,6 @@ impl Window {
                     .and_then(BarColouring::from_key)
                     .unwrap_or(defaults.colouring),
                 Session::from_key(&stored.session).unwrap_or_default(),
-                stored.show_grid,
                 stored.link,
             );
             pane.template.set(template.map(|t| t.id));
@@ -6331,7 +6321,6 @@ impl Window {
             pane.write_title(stored.title.as_deref().unwrap_or(""));
             pane.view.set_show_indicators(stored.indicators_shown);
             pane.view.set_show_drawings(stored.drawings_shown);
-            pane.view.set_price_line(stored.price_line);
             restored.push((pane, stored));
         }
 
@@ -11559,27 +11548,49 @@ impl Window {
             .is_some_and(|routed| omacharts_engine::continuous::offers_choice(routed.feed.provider.as_ref(), &instrument))
     }
 
-    /// Whether the focused chart is drawing gridlines.
-    ///
-    /// Read off the chart rather than off the setting, because the setting is
-    /// only what a chart opens with: two charts in a split are entitled to
-    /// disagree, and the one being asked about is the focused one.
+    /// Whether the charts draw gridlines. Every chart, in every chartbook:
+    /// it is how the app looks, not something one chart is about.
     pub fn show_grid(&self) -> bool {
-        self.focused_pane().show_grid.get()
+        crate::chart_defaults::chart_switch(&self.store, SETTING_SHOW_GRID)
     }
 
     /// The one way the gridlines are turned on and off, so the key, the chart
-    /// menu and the settings dialog cannot come to different conclusions.
+    /// menu and the settings cannot come to different conclusions.
     pub fn set_show_grid(self: &Rc<Self>, show: bool) {
-        let pane = self.focused_pane();
-        pane.show_grid.set(show);
-        pane.view.set_show_grid(show);
-        // The menu's tick, for when the answer came from the key or from the
-        // settings dialog rather than from the menu itself.
-        self.sync_chart_actions(&pane);
-        // Written down with the rest of the arrangement, or the chart comes
-        // back tomorrow with the gridlines it had yesterday.
-        self.save_workspace();
+        self.store.set_setting_bool(SETTING_SHOW_GRID, show);
+        self.adopt_chart_look();
+    }
+
+    /// Whether the charts draw a line across at the last price. Every chart,
+    /// the way the gridlines are.
+    pub fn price_line(&self) -> bool {
+        crate::chart_defaults::chart_switch(&self.store, SETTING_PRICE_LINE)
+    }
+
+    pub fn set_price_line(self: &Rc<Self>, show: bool) {
+        self.store.set_setting_bool(SETTING_PRICE_LINE, show);
+        self.adopt_chart_look();
+    }
+
+    /// Read the gridlines and the last-price line back from the settings and
+    /// put them on every chart on screen. A chartbook not on screen picks
+    /// them up when it is built. Also how a command from a terminal reaches
+    /// an open window.
+    pub fn adopt_chart_look(self: &Rc<Self>) {
+        let (grid, line) = (self.show_grid(), self.price_line());
+        for pane in self.panes.borrow().iter() {
+            pane.view.set_show_grid(grid);
+            pane.view.set_price_line(line);
+        }
+        // The menu's tick, for when the answer came from the key, the
+        // settings or a command rather than from the menu itself.
+        if let Some(action) = self.grid_action.borrow().as_ref() {
+            action.set_state(&grid.to_variant());
+        }
+        if !self.store.setting_bool(SETTING_SYNC_CROSSHAIR, true) {
+            self.clear_echoes();
+        }
+        crate::ui::appearance::charts_changed();
     }
 
     /// Whether the focused chart draws its indicators.
@@ -11630,19 +11641,6 @@ impl Window {
         pane.view.set_show_drawings(show);
         self.sync_chart_actions(&pane);
         self.sync_drawing_bar();
-        self.save_workspace();
-    }
-
-    /// Whether the focused chart draws its line at the last price.
-    pub fn price_line(&self) -> bool {
-        self.focused_pane().view.price_line()
-    }
-
-    /// Turn the focused chart's last-price line on or off, the way the
-    /// gridlines are: this chart only. What a new chart opens with is the
-    /// preferences' business.
-    pub fn set_price_line(self: &Rc<Self>, show: bool) {
-        self.focused_pane().view.set_price_line(show);
         self.save_workspace();
     }
 
@@ -11838,7 +11836,6 @@ impl Window {
                 stored.ohlc_thickness = Some(defaults.ohlc_thickness);
                 stored.session = defaults.session.key().to_string();
                 stored.continuous = Some(defaults.continuous.key().to_string());
-                stored.show_grid = defaults.show_grid;
                 stored.log_scale = defaults.log_scale;
                 stored.shows_drawings = defaults.shows_drawings;
                 stored.shows_legend = defaults.shows_legend;
@@ -11881,8 +11878,6 @@ impl Window {
         self.apply_marks_to(pane);
         pane.session.set(defaults.session);
         pane.continuous.set(defaults.continuous);
-        pane.show_grid.set(defaults.show_grid);
-        pane.view.set_show_grid(defaults.show_grid);
         pane.view.set_price_log(defaults.log_scale);
         self.set_pane_shows_drawings(pane, defaults.shows_drawings);
         self.set_pane_sends_drawings(pane, defaults.sends_drawings);

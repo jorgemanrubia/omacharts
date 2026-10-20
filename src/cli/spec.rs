@@ -943,7 +943,6 @@ pub const SURFACE: &[Noun] = &[
                         "what the watchlist does to it: moves it while focused, always (and it leads the others), or never",
                     )
                     .of(LINKS),
-                    Flag::valued("grid", "BOOL", "draw the grid").of(&["on", "off"]),
                     Flag::valued("show-drawings", "BOOL", "whether the chart shows what other charts of its symbol draw")
                         .of(SWITCHES),
                     Flag::valued("send-drawings", "BOOL", "whether what is drawn here goes to the symbol's other charts")
@@ -957,8 +956,6 @@ pub const SURFACE: &[Noun] = &[
                     Flag::valued("legend", "BOOL", "show the legend naming the chart's indicators, or none of it")
                         .of(SWITCHES),
                     Flag::valued("drawings", "BOOL", "draw the chart's drawings, its own and the shared, or hide them all")
-                        .of(&["on", "off"]),
-                    Flag::valued("price-line", "BOOL", "draw the line across the chart at the last price")
                         .of(&["on", "off"]),
                     Flag::valued(
                         "template",
@@ -1290,6 +1287,26 @@ pub const SURFACE: &[Noun] = &[
                 writes: true,
                 workspace: false,
             },
+            Verb {
+                name: "grid",
+                about: "Whether every chart draws gridlines",
+                args: &[Arg::opt("STATE", "omit to read it").of(SWITCHES)],
+                flags: &[],
+                example: "omacharts config grid off",
+                json: true,
+                writes: true,
+                workspace: false,
+            },
+            Verb {
+                name: "price-line",
+                about: "Whether every chart draws a line across at the last price",
+                args: &[Arg::opt("STATE", "omit to read it").of(SWITCHES)],
+                flags: &[],
+                example: "omacharts config price-line off",
+                json: true,
+                writes: true,
+                workspace: false,
+            },
         ],
     },
     Noun {
@@ -1531,7 +1548,7 @@ const STORED_FIELDS: &[(&str, &str, &str)] = &[
     ("ohlc_thickness", "chart set", "--thickness"),
     ("session", "chart set", "--session"),
     ("continuous", "chart set", "--continuous"),
-    ("show_grid", "chart set", "--grid"),
+    ("show_grid", "config grid", ""),
     ("link", "chart set", "--link"),
     ("shows_drawings", "chart set", "--show-drawings"),
     ("sends_drawings", "chart set", "--send-drawings"),
@@ -1589,7 +1606,7 @@ const STORED_FIELDS: &[(&str, &str, &str)] = &[
         "",
         "exploratory: the suffix of what a chart trades instead, set with its trading symbol",
     ),
-    ("price_line", "chart set", "--price-line"),
+    ("price_line", "config price-line", ""),
     ("name", "chartbook rename", ""),
     ("layout", "chart split", ""),
     ("focused", "chart focus", ""),

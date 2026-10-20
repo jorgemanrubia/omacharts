@@ -294,7 +294,6 @@ pub struct ChartPane {
     /// How a futures root's months are joined at the rolls, on a feed
     /// that stitches them; nothing to any other chart.
     pub continuous: Cell<omacharts_engine::continuous::Adjustment>,
-    pub show_grid: Cell<bool>,
     /// What the rail does to this chart.
     mode: Cell<LinkMode>,
     /// Whether this chart shows the drawings other charts of its symbol
@@ -378,7 +377,6 @@ impl ChartPane {
         indicators: Vec<Indicator>,
         bar_style: BarStyle,
         session: Session,
-        show_grid: bool,
         mode: LinkMode,
     ) -> Rc<ChartPane> {
         let view = ChartView::new(theme, scheme);
@@ -834,7 +832,6 @@ impl ChartPane {
             ohlc_thickness: Cell::new(crate::chart_defaults::DEFAULT_OHLC_THICKNESS),
             session: Cell::new(session),
             continuous: Cell::new(Default::default()),
-            show_grid: Cell::new(show_grid),
             mode: Cell::new(mode),
             shows_drawings: Cell::new(true),
             sends_drawings: Cell::new(true),
@@ -2480,7 +2477,6 @@ mod tests {
             Vec::new(),
             BarStyle::default(),
             Session::default(),
-            true,
             LinkMode::default(),
         )
     }

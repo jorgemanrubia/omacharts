@@ -356,11 +356,11 @@ The chart keeps the window until you zoom or pan. A new symbol, new bars and a r
 
 ## Gridlines
 
-<kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>G</kbd> shows or hides the focused chart's gridlines. The scales and their labels stay either way. The same switch is the chart menu's **Gridlines** and the **Gridlines** row of [Chart settings](/manual/chart-settings/).
+Gridlines are the same on every chart, in every chartbook, and start off. <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>G</kbd> shows or hides them. The scales and their labels stay either way. The same switch is the chart menu's **Gridlines**, the **Gridlines** row of [Chart settings](/manual/chart-settings/), and Preferences › Overlays › **Gridlines**.
 
 ## The last price line
 
-A dashed line runs across the chart at the last price. **Last price line** in [Chart settings](/manual/chart-settings/) turns it off for that chart, and `omacharts chart set --price-line off` does the same from a terminal. The price itself stays on the price axis either way.
+A dashed line runs across every chart at the last price, in every chartbook. Preferences › Overlays › **Last price line**, the row of that name in [Chart settings](/manual/chart-settings/), and `omacharts config price-line off` take it off every chart. The price itself stays on the price axis either way.
 
 ## The crosshair and the last price
 
@@ -389,7 +389,7 @@ The last price is a tag on the price axis, with a dashed line across the chart a
 
 The pointer on one chart draws a dimmed crosshair at the same moment and price on every other chart on screen of the same symbol, each at its own resolution. It does not matter how the charts are linked to the watchlist. Charts of different symbols never share a crosshair.
 
-It is one switch for every chart: Preferences › Charts › Other › Chart › **Sync crosshair across charts** ([Preferences](/manual/preferences/#charts)). It is on by default.
+It is one switch for every chart: Preferences › Overlays › **Crosshair across Follow charts** ([Preferences](/manual/preferences/#overlays)). It is on by default.
 
 ## When a chart is empty or out of date
 
@@ -502,7 +502,7 @@ crop: 560,262,640,986   (the whole menu, 20px layout margin)
 | **Session** › **Extended hours**, **Regular hours only** | The chart's hours | [Sessions](#sessions) |
 | **Template** › **None**, then each chart template | Puts the chart on a template, with its key | [Chart templates](/manual/chart-templates/) |
 | **Template** › **Create new template from chart…** | Saves the chart's indicators as a new template and puts the chart on it. Greyed out on a chart with no indicators | [Chart templates](/manual/chart-templates/#creating-a-template) |
-| **Gridlines** | Ticked while the chart has them | [Gridlines](#gridlines) |
+| **Gridlines** | Ticked while the charts have them. The same on every chart | [Gridlines](#gridlines) |
 | **Indicators** | Ticked while the chart shows its indicators, with its key | [Hiding every indicator](/manual/indicators/#hiding-every-indicator) |
 | **Drawings** | Ticked while the chart shows its drawings, with its key | [Hiding the drawings](/manual/drawings/#hiding-the-drawings) |
 | **Edit chart title…** | Asks for the chart title, with its key. Blank removes it | [Chart titles](#chart-titles) |

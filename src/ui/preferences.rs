@@ -171,6 +171,9 @@ impl Preferences {
         });
 
         let appearance_page = appearance::page(store.clone(), theming.clone(), on_change.clone());
+        let window_for_charts = window.clone();
+        let overlays_page =
+            appearance::overlays_page(store.clone(), Rc::new(move || window_for_charts.adopt_chart_look()));
 
         // General first: what the app does, before what it looks like.
         // Trading's page only while trading is switched on.
@@ -180,6 +183,7 @@ impl Preferences {
             ("charts", "Charts", "utilities-system-monitor-symbolic", charts.upcast()),
             ("data", "Market data", "network-transmit-receive-symbolic", data_page.clone().upcast()),
             ("appearance", "Appearance", "preferences-desktop-appearance-symbolic", appearance_page.upcast()),
+            ("overlays", "Overlays", "view-grid-symbolic", overlays_page.upcast()),
         ];
         if trading {
             sections.push((TRADING, "Trading", "view-list-bullet-symbolic", trading_page.clone().upcast()));
@@ -392,9 +396,9 @@ pub(crate) fn follow_sidebar(
 }
 
 /// A way to the resolution list from the settings, since the other way in is
-/// right-clicking a strip, which you have to know about to find; the one
-/// switch about how the charts behave towards each other; and how far they
-/// zoom to the wheel and the touchpad.
+/// right-clicking a strip, which you have to know about to find; and how far
+/// the charts zoom to the wheel and the touchpad. Whether the crosshair
+/// follows across charts is every chart's look, on Overlays.
 fn chart_group(context: &Rc<Context>) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     group.set_title("Chart");
@@ -413,27 +417,6 @@ fn chart_group(context: &Rc<Context>) -> adw::PreferencesGroup {
     row.connect_activated(move |_| edit());
 
     group.add(&row);
-
-    // One switch for the app rather than one per chart, and nothing to do
-    // with how a chart is linked to the watchlist: two charts of the same
-    // symbol are two looks at the same moment, whichever list moves them.
-    let sync = adw::ActionRow::new();
-    sync.set_title("Sync crosshair across charts");
-    let switch = gtk::Switch::new();
-    switch.set_valign(gtk::Align::Center);
-    switch.set_active(context.store.setting_bool(crate::ui::window::SETTING_SYNC_CROSSHAIR, true));
-    let store = context.store.clone();
-    let window = context.window.clone();
-    switch.connect_state_set(move |_, on| {
-        store.set_setting_bool(crate::ui::window::SETTING_SYNC_CROSSHAIR, on);
-        if !on {
-            window.clear_echoes();
-        }
-        glib::Propagation::Proceed
-    });
-    sync.add_suffix(&switch);
-    sync.set_activatable_widget(Some(&switch));
-    group.add(&sync);
 
     group.add(&zoom_row(context));
 
@@ -645,7 +628,6 @@ fn build_charts_page(context: &Rc<Context>) {
         row
     };
     scales.add(&switch("Logarithmic scale", current.log_scale, |d, on| d.log_scale = on));
-    scales.add(&switch("Gridlines", current.show_grid, |d, on| d.show_grid = on));
     drawings.add(&switch("Show drawings from other charts", current.shows_drawings, |d, on| {
         d.shows_drawings = on
     }));

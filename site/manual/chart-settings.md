@@ -35,8 +35,8 @@ crop: 700,84,1160,1276 (both)
 | **Bars** › **Colouring** | **Filled**, **Hollow**, **Red up**, **Soft**, **Quiet** or **Monochrome** for candles; the same less **Hollow**, with **Coloured** for **Filled**, for OHLC bars ([Colouring](/manual/charts/#colouring)) |
 | **Scales** › **Auto scale price** | Fits the visible bars vertically. Off, the chart can be dragged up and down ([Scales](/manual/charts/#scales)) |
 | **Scales** › **Logarithmic scale** | Equal heights are equal percentage moves ([Logarithmic scale](/manual/charts/#logarithmic-scale)) |
-| **Scales** › **Gridlines** | Draws the grid. The scales and their labels stay either way |
-| **Scales** › **Last price line** | Draws the dashed line across the chart at the last price. The price stays on the axis either way ([The last price line](/manual/charts/#the-last-price-line)) |
+| **Scales** › **Gridlines** | Draws the grid, on every chart. The scales and their labels stay either way ([Gridlines](/manual/charts/#gridlines)) |
+| **Scales** › **Last price line** | The dashed line across at the last price, on every chart. The price stays on the axis either way ([The last price line](/manual/charts/#the-last-price-line)) |
 | **Scales** › **Reset chart** › **Reset** | Both scales back to how the chart opened, at the latest bars. The same as <kbd>Ctrl</kbd> + <kbd>Esc</kbd> |
 | **Session** › **Hours** | **Extended hours** or **Regular hours only** ([Sessions](/manual/charts/#sessions)) |
 | **Drawings** › **Show drawings from other charts** | Off, the chart shows only its own drawings |
@@ -68,7 +68,6 @@ crop: 292,76,1976,1288   (the whole dialog; the Defaults page scrolls inside it)
 | **Bars** › **Thickness** | 1 to 4 pixels. Only there on OHLC bars | 2 |
 | **Bars** › **Colouring** | What the style offers, as in Chart settings | **Filled** |
 | **Scales** › **Logarithmic scale** | On or off | Off |
-| **Scales** › **Gridlines** | On or off | Off |
 | **Session** › **Hours** | **Extended hours**, **Regular hours only** | **Extended hours** |
 | **Indicators** › **Template** | A chart template, or **None** ([Chart templates](/manual/chart-templates/)) | **Default** |
 | **Indicators** › **Show legend for indicators** | On or off ([The legend](/manual/indicators/#the-legend)) | On |
@@ -82,7 +81,7 @@ Once a row has changed, *New charts will use these options.* and **Apply to all 
 
 ### Putting one chart back on the defaults
 
-**Reset to defaults** › **Reset**, at the bottom of the Chart page, puts the focused chart's bars, session, scales, drawing switches, legend and template back on the defaults. It asks first when the chart has indicators of its own, as choosing a template does ([Chart templates](/manual/chart-templates/)).
+**Reset to defaults** › **Reset**, at the bottom of the Chart page, puts the focused chart's bars, session, scales, drawing switches, legend and template back on the defaults. Gridlines and the last-price line are every chart's, and stay as they are. It asks first when the chart has indicators of its own, as choosing a template does ([Chart templates](/manual/chart-templates/)).
 
 ## See also
 

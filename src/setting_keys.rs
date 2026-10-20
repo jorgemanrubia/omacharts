@@ -174,7 +174,7 @@ mod tests {
             ("sort_setting(", "watchlist_sort_"),
             ("cooldown_key(", "cooldown."),
         ];
-        let passed_along = ["key", "&key", "&self", "KEY"];
+        let passed_along = ["key", "&key", "&self", "KEY", "switch.key()"];
 
         let mut unclassified = Vec::new();
         for text in &sources {

@@ -352,7 +352,9 @@ pub fn new_pane(
             "colouring": defaults.colouring.key(),
             "session": defaults.session.key(),
             "continuous": defaults.continuous.key(),
-            "show_grid": defaults.show_grid,
+            // Not read: gridlines are the same on every chart. Written for a
+            // build from before then, which refuses a chart without it.
+            "show_grid": true,
             // Focus, which is where the window starts a new chartbook's
             // chart: it takes a click in the rail while it is focused.
             "link": LinkMode::default().key(),
@@ -367,7 +369,6 @@ pub fn new_pane(
         "log_scale": defaults.log_scale,
         "indicators_shown": true,
         "drawings_shown": true,
-        "price_line": defaults.price_line,
     })
 }
 
