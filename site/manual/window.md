@@ -144,11 +144,11 @@ crop: 490,68,1580,1304   (the whole dialog, 16px layout margin above and below, 
 
 | Key or gesture | In a dialog |
 |---|---|
-| <kbd>Esc</kbd> | Closes it. In a dialog with several pages, such as Preferences, goes back a page first. In a search box, closes the dialog rather than clearing the box. |
+| <kbd>Esc</kbd> | Closes it, and Preferences and Chart settings too. Where a page is open over another, such as an indicator's settings in Chart settings, goes back a page first. In a search box, closes the dialog rather than clearing the box. |
 | <kbd>Ctrl</kbd> + <kbd>Enter</kbd> | Finishes a dialog that makes something (**New chartbook**, adding an indicator, a drawing's **Properties**) from wherever the keyboard is in it. The button it stands for says so in its tooltip. Plain <kbd>Enter</kbd> takes the highlighted row of a list instead. |
 | A click outside | Closes the pickers: the symbol search, **Change resolution**, **Go to**, **Add an indicator** and the Keyboard shortcuts sheet. A dialog you fill in stays open. |
 | Typing | Goes to the search box. Every picker opens with the keyboard in its box. |
-| <kbd>Alt</kbd> + <kbd>←</kbd> <kbd>→</kbd> | Moves between the tabs of a dialog that has them (**Chart settings** and a drawing's **Properties**), wrapping at either end. |
+| <kbd>Alt</kbd> + <kbd>←</kbd> <kbd>→</kbd> | Moves between the sections of **Chart settings** and the tabs of a drawing's **Properties**, wrapping at either end. |
 
 ## Quitting
 

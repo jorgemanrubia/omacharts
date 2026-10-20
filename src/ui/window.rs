@@ -8499,6 +8499,19 @@ impl Window {
 
     /// The store, shared, for a settings window opened from somewhere that
     /// only has the window.
+    /// The Appearance page, for a chart's settings: every chart's look,
+    /// beside the chart you noticed it on.
+    pub fn appearance_page(self: &Rc<Self>) -> adw::PreferencesPage {
+        let this = self.clone();
+        crate::ui::appearance::page(self.store.clone(), self.theming.clone(), Rc::new(move || this.restyle()))
+    }
+
+    /// The Overlays page, likewise.
+    pub fn overlays_page(self: &Rc<Self>) -> adw::PreferencesPage {
+        let this = self.clone();
+        crate::ui::appearance::overlays_page(self.store.clone(), Rc::new(move || this.adopt_chart_look()))
+    }
+
     pub fn shared_store(&self) -> Rc<Store> {
         self.store.clone()
     }

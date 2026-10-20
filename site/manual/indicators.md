@@ -119,7 +119,7 @@ crop: 0,950,1600,250
 
 ## The Indicators page
 
-The Indicators page lists the focused chart's indicators under **On the chart**. Open it with <kbd>Ctrl</kbd> + <kbd>I</kbd> or the chart menu's **Indicators…**. It is also a page of [Chart settings](/manual/chart-settings/); <kbd>Alt</kbd> + <kbd>←</kbd> / <kbd>→</kbd> moves between the **Chart** and **Indicators** pages.
+The Indicators page lists the focused chart's indicators under **On the chart**. Open it with <kbd>Ctrl</kbd> + <kbd>I</kbd> or the chart menu's **Indicators…**. It is also a page of [Chart settings](/manual/chart-settings/); <kbd>Alt</kbd> + <kbd>←</kbd> / <kbd>→</kbd> moves between its sections.
 
 | Row part | Does |
 |---|---|

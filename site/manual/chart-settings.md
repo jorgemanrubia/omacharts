@@ -9,7 +9,7 @@ Each chart has settings of its own. New charts open with the defaults set in Pre
 
 ## The Chart settings dialog
 
-Chart settings is the dialog for the focused chart. Open it with <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>S</kbd>, the gear in the chart's top-right corner, or **Chart settings…** in the chart menu. Every row takes effect at once. It has two pages, **Chart** and **Indicators**, and <kbd>Alt</kbd> + <kbd>←</kbd> <kbd>→</kbd> moves between them.
+Chart settings is the dialog for the focused chart. Open it with <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>S</kbd>, the gear in the chart's top-right corner, or **Chart settings…** in the chart menu. Every row takes effect at once. It has two pages of the chart's own, **Chart** and **Indicators**, and <kbd>Alt</kbd> + <kbd>←</kbd> <kbd>→</kbd> moves between them. Under **Global** come **Appearance** and **Overlays**, the same pages as in [Preferences](/manual/preferences/), which change every chart.
 
 ### The Chart page
 

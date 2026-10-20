@@ -63,10 +63,24 @@ pub(crate) struct Extra {
 }
 
 /// Sections that are every chart's rather than this one's, put under the
-/// chart's own. None yet: Appearance, Overlays and, on a futures chart,
-/// Futures go here.
-fn extra_sections(_window: &Rc<Window>) -> Vec<Extra> {
-    Vec::new()
+/// chart's own beneath a rule headed "Global": Appearance and Overlays.
+fn extra_sections(window: &Rc<Window>) -> Vec<Extra> {
+    vec![
+        Extra {
+            id: "appearance",
+            title: "Appearance",
+            icon: "preferences-desktop-appearance-symbolic",
+            page: window.appearance_page(),
+            rule: Some("GLOBAL"),
+        },
+        Extra {
+            id: "overlays",
+            title: "Overlays",
+            icon: "view-grid-symbolic",
+            page: window.overlays_page(),
+            rule: None,
+        },
+    ]
 }
 
 thread_local! {

@@ -198,8 +198,8 @@ A click elsewhere keeps what was typed.
 | <kbd>Ctrl</kbd> + <kbd>Enter</kbd> | Finishes the dialog with the button in its corner: **Create** in New chartbook, **Add** for an indicator, **Done** in a drawing's properties and in a tool's configurations. In the symbol search and the list of indicators, takes the highlighted row. In **Go to**, goes to what you typed, from anywhere in the card | [The window](/manual/window/) |
 | <kbd>Enter</kbd> | In a search box, takes the highlighted row | [The window](/manual/window/) |
 | <kbd>↑</kbd> <kbd>↓</kbd> | In a search box, moves the highlight while the keyboard stays in the box | [Symbols](/manual/symbols/) |
-| <kbd>Esc</kbd> | Closes the dialog. In Preferences, goes back a page first | [The window](/manual/window/) |
-| <kbd>Alt</kbd> + <kbd>←</kbd> <kbd>→</kbd> | Switches pages: **Chart** and **Indicators** in Chart settings, **General** and **Text** in a drawing's properties | [Chart settings](/manual/chart-settings/), [Drawings](/manual/drawings/) |
+| <kbd>Esc</kbd> | Closes the dialog, Preferences or Chart settings. Where a page is open over another, goes back a page first | [The window](/manual/window/) |
+| <kbd>Alt</kbd> + <kbd>←</kbd> <kbd>→</kbd> | Moves between the sections of Chart settings, and between **General** and **Text** in a drawing's properties | [Chart settings](/manual/chart-settings/), [Drawings](/manual/drawings/) |
 | <kbd>Alt</kbd> + <kbd>1</kbd> … <kbd>9</kbd> | In a drawing's properties, applies configuration N | [Drawings](/manual/drawings/) |
 | <kbd>Enter</kbd> / <kbd>Esc</kbd> | In **Change resolution**, sets the resolution, or closes it | [Charts](/manual/charts/#choosing-a-resolution) |
 | <kbd>Enter</kbd> / <kbd>Esc</kbd> | In **Go to**, goes to what you typed, or closes it | [Charts](/manual/charts/#go-to) |

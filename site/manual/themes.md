@@ -24,7 +24,7 @@ crop: none
 
 ## Choosing a theme
 
-Preferences › Appearance › **Theme** has two cards, each a small picture of the window in its theme.
+Preferences › Appearance › **Theme** has two cards, each a small picture of the window in its theme. The same page is under **Global** in [Chart settings](/manual/chart-settings/).
 
 | Card | What it is |
 |---|---|
