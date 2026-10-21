@@ -663,6 +663,32 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
    it, so a header is no longer the tallest row in a rail of one-line rows. */
 .section-fold { min-height: 0; min-width: 0; padding: 2px 4px; }
 
+/* The lists put in order by dragging one entry onto another — a chart's
+   indicators and header, the chartbook tabs. The frame GTK draws round the
+   entry under the pointer says onto this; the drop puts the dragged one
+   next to it, so the frame goes and a line on the edge it will land against
+   takes its place, in the accent the frame was drawn in. Inset, so it is
+   drawn inside the entry and moves nothing. */
+.drop-marked:drop(active) {
+  outline: none;
+  box-shadow: none;
+  background-image: none;
+}
+row.drop-marked.drop-before { box-shadow: inset 0 2px @accent_bg_color; }
+row.drop-marked.drop-after { box-shadow: inset 0 -2px @accent_bg_color; }
+/* Square on the marked side, or a tab's rounded corners bend the line into
+   a bracket. */
+:not(row).drop-marked.drop-before {
+  box-shadow: inset 2px 0 @accent_bg_color;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+:not(row).drop-marked.drop-after {
+  box-shadow: inset -2px 0 @accent_bg_color;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
 .symbol-row:drop(active),
 .section-row:drop(active) {
   outline: none;

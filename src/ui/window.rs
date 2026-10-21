@@ -32,6 +32,7 @@ use crate::chart_defaults::ChartDefaults;
 use crate::theming::Theming;
 use crate::ui::chart::{Drawn, Echo};
 use crate::ui::pane::{self, ChartPane, Node};
+use crate::ui::drop_line;
 use crate::ui::screenshot;
 use omacharts_engine::link;
 use omacharts_engine::LinkGroup;
@@ -3871,20 +3872,22 @@ impl Window {
         source.connect_drag_end(move |_, _, _| finished.set(false));
         tab.add_controller(source);
 
-        let target = gtk::DropTarget::new(glib::Type::STRING, gtk::gdk::DragAction::MOVE);
+        let from = |value: &glib::Value| value.get::<String>().ok()?.parse::<usize>().ok();
         let mover = self.clone();
-        target.connect_drop(move |_, value, _, _| {
-            let Ok(from) = value.get::<String>().unwrap_or_default().parse::<usize>() else {
-                return false;
-            };
-            // A tab dropped on itself is a click that travelled a few pixels
-            // too far, and means nothing.
-            if from == index {
-                return false;
-            }
-            mover.move_book(from, index);
-            true
-        });
+        let target = drop_line::target(
+            &tab,
+            move |value| drop_line::edge(from(value)?, index),
+            move |value| {
+                let Some(from) = from(value) else { return false };
+                // A tab dropped on itself is a click that travelled a few
+                // pixels too far, and means nothing.
+                if from == index {
+                    return false;
+                }
+                mover.move_book(from, index);
+                true
+            },
+        );
         tab.add_controller(target);
 
         // Right-clicking a tab switches to it first, then offers the menu for

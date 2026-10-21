@@ -19,6 +19,7 @@ use crate::store::Store;
 use crate::ui::colors;
 use crate::ui::controls;
 use crate::ui::dialogs;
+use crate::ui::drop_line;
 use crate::ui::shortcuts;
 use crate::ui::window::Window;
 
@@ -270,27 +271,37 @@ impl HeaderList {
                 Some(gtk::gdk::ContentProvider::for_value(&payload.to_value()))
             });
             row.add_controller(source);
-            let target = gtk::DropTarget::new(glib::Type::STRING, gtk::gdk::DragAction::MOVE);
-            let this = self.clone();
             let onto = *part;
-            target.connect_drop(move |_, value, _, _| {
-                let key = value.get::<String>().unwrap_or_default();
-                let Some(moving) = crate::header::Part::from_key(&key) else { return false };
-                let mut parts = this.parts.borrow().clone();
-                let (Some(from), Some(to)) = (
-                    parts.iter().position(|p| *p == moving),
-                    parts.iter().position(|p| *p == onto),
-                ) else {
-                    return false;
-                };
-                if from == to {
-                    return false;
+            // Where the dragged part is now and where it is going, in the
+            // order as it stands.
+            let places = {
+                let this = self.clone();
+                move |value: &glib::Value| {
+                    let moving = crate::header::Part::from_key(&value.get::<String>().ok()?)?;
+                    let parts = this.parts.borrow();
+                    Some((
+                        parts.iter().position(|p| *p == moving)?,
+                        parts.iter().position(|p| *p == onto)?,
+                    ))
                 }
-                let lifted = parts.remove(from);
-                parts.insert(to, lifted);
-                this.set(parts);
-                true
-            });
+            };
+            let this = self.clone();
+            let landing = places.clone();
+            let target = drop_line::target(
+                &row,
+                move |value| landing(value).and_then(|(from, to)| drop_line::edge(from, to)),
+                move |value| {
+                    let Some((from, to)) = places(value) else { return false };
+                    if from == to {
+                        return false;
+                    }
+                    let mut parts = this.parts.borrow().clone();
+                    let lifted = parts.remove(from);
+                    parts.insert(to, lifted);
+                    this.set(parts);
+                    true
+                },
+            );
             row.add_controller(target);
 
             self.group.add(&row);
@@ -981,23 +992,33 @@ fn price_row(owner: &Rc<Owner>, refresh: &Refresh) -> adw::ActionRow {
     // and a mark here would read as the handle it is not.
     row.add_css_class("dim-label");
 
-    let target = gtk::DropTarget::new(glib::Type::STRING, gtk::gdk::DragAction::MOVE);
+    let moving = |value: &glib::Value| value.get::<String>().ok()?.parse::<u32>().ok();
+    let watched = owner.clone();
     let owner = owner.clone();
     let refresh = refresh.clone();
-    target.connect_drop(move |_, value, _, _| {
-        let Ok(moving) = value.get::<String>().unwrap_or_default().parse::<u32>() else {
-            return false;
-        };
-        let mut all = owner.indicators();
-        // Dropped on the price: the strip changes sides, which is the one thing
-        // dropping it on another row cannot say.
-        if !indicators::cross_price(&mut all, moving) {
-            return false;
-        }
-        owner.set_indicators(all);
-        refresh.run();
-        true
-    });
+    let target = drop_line::target(
+        &row,
+        // A strip from above the price becomes the first below it, and one
+        // from below the last above it: the line goes on the far side.
+        move |value| {
+            let id = moving(value)?;
+            let all = watched.indicators();
+            let strip = all.iter().find(|i| i.id == id && i.kind.in_own_pane())?;
+            Some(if strip.above_price { drop_line::Edge::After } else { drop_line::Edge::Before })
+        },
+        move |value| {
+            let Some(moving) = moving(value) else { return false };
+            let mut all = owner.indicators();
+            // Dropped on the price: the strip changes sides, which is the one
+            // thing dropping it on another row cannot say.
+            if !indicators::cross_price(&mut all, moving) {
+                return false;
+            }
+            owner.set_indicators(all);
+            refresh.run();
+            true
+        },
+    );
     row.add_controller(target);
     row
 }
@@ -1107,43 +1128,52 @@ fn wire_reorder(owner: &Rc<Owner>, refresh: &Refresh, row: &adw::ActionRow, id: 
     });
     row.add_controller(source);
 
-    let target = gtk::DropTarget::new(glib::Type::STRING, gtk::gdk::DragAction::MOVE);
+    // Where the dragged indicator is now and where it is going, in the list
+    // as it stands — which is the order the rows are shown in.
+    let places = {
+        let owner = owner.clone();
+        move |value: &glib::Value| {
+            let moving = value.get::<String>().ok()?.parse::<u32>().ok()?;
+            let indicators = owner.indicators();
+            Some((
+                indicators.iter().position(|i| i.id == moving)?,
+                indicators.iter().position(|i| i.id == id)?,
+            ))
+        }
+    };
+    let landing = places.clone();
     let owner = owner.clone();
     let refresh = refresh.clone();
-    target.connect_drop(move |_, value, _, _| {
-        let Ok(moving) = value.get::<String>().unwrap_or_default().parse::<u32>() else {
-            return false;
-        };
-        if moving == id {
-            return false;
-        }
-        let mut indicators = owner.indicators();
-        let (Some(from), Some(to)) = (
-            indicators.iter().position(|i| i.id == moving),
-            indicators.iter().position(|i| i.id == id),
-        ) else {
-            return false;
-        };
-        // Taken out before the destination is used, so dropping downwards
-        // lands after the row you dropped on and upwards lands in its place —
-        // which is what the pointer was over either way.
-        // A strip dropped next to a strip on the other side of the price has
-        // crossed it: the row it was dropped on says which side that is. Read
-        // before the drag is lifted out, because that shifts everything after
-        // it — the row dropped on included.
-        let landing = indicators
-            .get(to)
-            .filter(|onto| onto.kind.in_own_pane())
-            .map(|onto| onto.above_price);
-        let mut dragged = indicators.remove(from);
-        if let (true, Some(side)) = (dragged.kind.in_own_pane(), landing) {
-            dragged.above_price = side;
-        }
-        indicators.insert(to, dragged);
-        owner.set_indicators(indicators);
-        refresh.run();
-        true
-    });
+    let target = drop_line::target(
+        row,
+        move |value| landing(value).and_then(|(from, to)| drop_line::edge(from, to)),
+        move |value| {
+            let Some((from, to)) = places(value) else { return false };
+            if from == to {
+                return false;
+            }
+            let mut indicators = owner.indicators();
+            // Taken out before the destination is used, so dropping downwards
+            // lands after the row you dropped on and upwards lands in its place —
+            // which is what the pointer was over either way.
+            // A strip dropped next to a strip on the other side of the price has
+            // crossed it: the row it was dropped on says which side that is. Read
+            // before the drag is lifted out, because that shifts everything after
+            // it — the row dropped on included.
+            let landing = indicators
+                .get(to)
+                .filter(|onto| onto.kind.in_own_pane())
+                .map(|onto| onto.above_price);
+            let mut dragged = indicators.remove(from);
+            if let (true, Some(side)) = (dragged.kind.in_own_pane(), landing) {
+                dragged.above_price = side;
+            }
+            indicators.insert(to, dragged);
+            owner.set_indicators(indicators);
+            refresh.run();
+            true
+        },
+    );
     row.add_controller(target);
 }
 
