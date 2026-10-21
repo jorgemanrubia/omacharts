@@ -927,7 +927,6 @@ fn choose_backup(context: &Rc<Context>, anchor: &gtk::Button) {
     for item in &backups {
         let row = adw::ActionRow::new();
         row.set_title(&capitalised(&backup::when(item.taken, now)));
-        row.set_subtitle(&describe_bytes(item.bytes as i64));
         let tick = gtk::CheckButton::new();
         // Grouped even when it is the only one, so it is drawn as the choice
         // it is rather than as a box to tick.
