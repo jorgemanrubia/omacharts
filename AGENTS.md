@@ -129,6 +129,23 @@ Nothing else needs touching. `cargo test` fails if the table and the parser
 disagree, if a verb has no example, if an example names the wrong command, or
 if the enumerated values drift from what the engine actually accepts.
 
+## Every setting says whether it travels
+
+Settings are backed up, and can be restored from another machine's file. So
+every key the app writes is classified in `src/setting_keys.rs`:
+
+- **shared**: somebody's choice. It is backed up, and it comes along when
+  settings arrive from another machine. Most keys are this.
+- **local**: this machine's own (where screenshots go, how big the cache may
+  grow, how wide the sidebar is). It is backed up, but kept as it is when
+  another machine's settings are restored.
+- **bookkeeping**: the app's note to itself, rewritten as it runs (a sweep
+  time, a cooldown, the last symbol). It never makes a backup look necessary.
+
+`every_key_written_is_classified` reads the source for every `set_setting` and
+fails on a key nobody classified. When it fails, decide which of the three the
+new key is and add it there. Do not silence the test.
+
 ## A command must not be able to kill the window
 
 A command runs inside the running instance, and that instance called it from

@@ -303,6 +303,11 @@ impl Store {
         );
     }
 
+    /// Forget a setting, whatever it holds.
+    pub fn remove_setting(&self, key: &str) {
+        let _ = self.conn.execute("DELETE FROM settings WHERE key = ?1", params![key]);
+    }
+
     /// Forget a setting, so it reads as never written — but only while it
     /// still says `value`. A row somebody rewrote after it was read is
     /// theirs, and theirs to clear.

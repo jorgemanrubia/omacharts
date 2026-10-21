@@ -3710,7 +3710,12 @@ fn backup_restore(
     live: Option<&dyn Live>,
 ) -> Result<String, Fault> {
     let name = required(m, "NAME")?;
-    let restored = crate::backup::restore(store, name).map_err(backup_fault)?;
+    // A path is a file brought from elsewhere; anything else names a backup.
+    let restored = match name.contains('/') {
+        true => crate::backup::restore_file(store, std::path::Path::new(name)),
+        false => crate::backup::restore(store, name),
+    }
+    .map_err(backup_fault)?;
     // The window holds the theme, the feed and the rail in memory. The
     // arrangement is reloaded after this returns, like any command that
     // writes it.

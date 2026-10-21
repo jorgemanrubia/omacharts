@@ -13,6 +13,7 @@ pub mod inventory;
 pub mod live;
 pub mod loader;
 pub mod migrations;
+pub mod setting_keys;
 pub mod store;
 pub mod theming;
 pub mod ui;

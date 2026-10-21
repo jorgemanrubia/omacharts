@@ -1102,7 +1102,10 @@ pub const SURFACE: &[Noun] = &[
                 name: "restore",
                 about: "Put a backup's settings back, at once and in an open window too. \
                         What it replaces is backed up first, so this can be undone",
-                args: &[Arg::req("NAME", "a backup's name from `backup list`, with or without .db")],
+                args: &[Arg::req(
+                    "NAME",
+                    "a backup's name from `backup list`, or the full path to a settings file from another machine",
+                )],
                 flags: &[],
                 example: "omacharts backup restore settings-20261021-140307",
                 json: true,

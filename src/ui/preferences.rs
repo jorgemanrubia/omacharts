@@ -855,7 +855,7 @@ fn backups_group(context: &Rc<Context>) -> adw::PreferencesGroup {
     let settings = context.store.path().map(std::path::Path::to_path_buf);
     if let Some(path) = &settings {
         group.set_description(Some(&format!(
-            "Up to {} backups from the past week, in {}.",
+            "Taken when your settings change: up to {} from the past week, in {}.",
             backup::MOST_KEPT,
             home_relative(&backup::dir(path)),
         )));
@@ -945,15 +945,10 @@ fn choose_backup(context: &Rc<Context>, anchor: &gtk::Button) {
     scroller.set_max_content_height(360);
     scroller.set_child(Some(&list));
 
-    let dialog = adw::AlertDialog::new(
-        Some("Restore Settings"),
-        Some(
-            "Watchlists, chartbooks, drawings, themes and settings go back to how they \
-             were then. What is there now is backed up first, so this can be undone. \
-             Cached prices are not touched.",
-        ),
-    );
+    let dialog = adw::AlertDialog::new(Some("Restore Settings"), None);
     dialog.set_extra_child(Some(&scroller));
+    // A backup from another machine is a file somewhere, not a row here.
+    dialog.add_response("file", "Choose a File…");
     dialog.add_response("cancel", "Cancel");
     dialog.add_response("restore", "Restore");
     dialog.set_response_appearance("restore", adw::ResponseAppearance::Destructive);
@@ -975,27 +970,59 @@ fn choose_backup(context: &Rc<Context>, anchor: &gtk::Button) {
     let preferences = anchor.ancestor(adw::Dialog::static_type()).and_downcast::<adw::Dialog>();
     let anchor_kept = anchor.clone();
     dialog.connect_response(None, move |_, response| {
+        if response == "file" {
+            restore_from_file(&ctx, &anchor_kept, preferences.clone());
+            return;
+        }
         let Some(name) = chosen.borrow().clone().filter(|_| response == "restore") else {
             return;
         };
-        match backup::restore(&ctx.store, &name) {
-            Ok(_) => {
-                // Every page of this dialog was built from the settings that
-                // were just replaced, so it goes rather than showing them.
-                if let Some(preferences) = &preferences {
-                    preferences.close();
-                }
-                (ctx.on_restored)();
-            }
-            Err(error) => {
-                let failed =
-                    adw::AlertDialog::new(Some("Not Restored"), Some(&error.to_string()));
-                failed.add_response("close", "Close");
-                failed.present(Some(&anchor_kept));
-            }
-        }
+        finish_restore(&ctx, &anchor_kept, preferences.as_ref(), backup::restore(&ctx.store, &name));
     });
     dialog.present(Some(anchor));
+}
+
+/// Pick a settings file — a backup copied from another machine — and put it
+/// back.
+fn restore_from_file(context: &Rc<Context>, anchor: &gtk::Button, preferences: Option<adw::Dialog>) {
+    let picker = gtk::FileDialog::new();
+    picker.set_title("Restore Settings From a File");
+    let filter = gtk::FileFilter::new();
+    filter.set_name(Some("Omacharts settings"));
+    filter.add_suffix("db");
+    let filters = gio::ListStore::new::<gtk::FileFilter>();
+    filters.append(&filter);
+    picker.set_filters(Some(&filters));
+    let parent = anchor.root().and_downcast::<gtk::Window>();
+    let (ctx, anchor) = (context.clone(), anchor.clone());
+    picker.open(parent.as_ref(), gio::Cancellable::NONE, move |answer| {
+        let Some(path) = answer.ok().and_then(|file| file.path()) else { return };
+        finish_restore(&ctx, &anchor, preferences.as_ref(), backup::restore_file(&ctx.store, &path));
+    });
+}
+
+/// After a restore: the dialog goes, since every page of it was built from
+/// the settings just replaced, and the window reads them back. A refusal
+/// says why and changes nothing.
+fn finish_restore(
+    context: &Rc<Context>,
+    anchor: &gtk::Button,
+    preferences: Option<&adw::Dialog>,
+    result: Result<backup::Restored, backup::Error>,
+) {
+    match result {
+        Ok(_) => {
+            if let Some(preferences) = preferences {
+                preferences.close();
+            }
+            (context.on_restored)();
+        }
+        Err(error) => {
+            let failed = adw::AlertDialog::new(Some("Not Restored"), Some(&error.to_string()));
+            failed.add_response("close", "Close");
+            failed.present(Some(anchor));
+        }
+    }
 }
 
 /// "today at 14:03" as the first words of a row.

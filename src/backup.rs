@@ -25,6 +25,7 @@ use chrono::{Datelike, DateTime, Local, NaiveDate, NaiveDateTime, TimeZone, Utc}
 use rusqlite::Connection;
 
 use crate::migrations;
+use crate::setting_keys;
 use crate::store::Store;
 
 /// How far back the recent ones are kept closely: one in every
@@ -80,6 +81,8 @@ pub enum Error {
     /// An in-memory store, which has no file to copy.
     NoFile,
     NotFound(String),
+    /// A file chosen to restore from that is not an Omacharts settings file.
+    NotSettings(String),
     /// A backup from a newer Omacharts than this one. Refused before
     /// anything is touched: this build cannot know what the newer columns
     /// meant, and half-applying them is worse than not starting.
@@ -94,6 +97,9 @@ impl std::fmt::Display for Error {
             Error::NoFile => write!(f, "these settings are not saved to a file, so there is nothing to back up"),
             Error::NotFound(name) => {
                 write!(f, "no backup called {name:?}; `omacharts backup list` shows them")
+            }
+            Error::NotSettings(name) => {
+                write!(f, "{name} is not an Omacharts settings file; nothing was changed")
             }
             Error::FromTheFuture { name, found, known } => write!(
                 f,
@@ -180,10 +186,11 @@ fn schema_of(path: &Path) -> Option<i32> {
 
 /// Take a backup through `store`'s connection, then prune.
 ///
-/// The second half of the answer is whether it is new. A copy identical to
-/// the newest one is not kept: it would push a real one out
-/// without adding anything, and `VACUUM INTO` writes the same bytes for the
-/// same contents, so comparing them is exact.
+/// The second half of the answer is whether it is new. A copy whose settings
+/// are the newest one's is not kept: it would push a real one out without
+/// adding anything. "The same" leaves out what the app writes as it runs —
+/// [`setting_keys::Kind::Bookkeeping`] — so a cache sweep or a remembered
+/// symbol is not a reason for a backup.
 pub fn take(store: &Store) -> Result<(Backup, bool), Error> {
     let settings = store.path().ok_or(Error::NoFile)?.to_path_buf();
     let taken = write(&settings, |to| store.snapshot_settings(to))?;
@@ -241,7 +248,7 @@ fn write(
     }
 
     if let Some(newest) = list(settings).into_iter().next()
-        && same_contents(&partial, &newest.path)
+        && same_settings(&partial, &newest.path)
     {
         std::fs::remove_file(&partial)?;
         return Ok((newest, false));
@@ -254,13 +261,47 @@ fn write(
     Ok((backup, true))
 }
 
-fn same_contents(a: &Path, b: &Path) -> bool {
-    match (std::fs::metadata(a), std::fs::metadata(b)) {
-        (Ok(x), Ok(y)) if x.len() == y.len() => {
-            matches!((std::fs::read(a), std::fs::read(b)), (Ok(x), Ok(y)) if x == y)
+fn same_settings(a: &Path, b: &Path) -> bool {
+    matches!((fingerprint(a), fingerprint(b)), (Some(x), Some(y)) if x == y)
+}
+
+/// Everything somebody made in a settings file, as one number: every table
+/// but `meta`, every row in a fixed order, with the bookkeeping settings left
+/// out. Read only, and small — the settings file is tens of kilobytes.
+fn fingerprint(path: &Path) -> Option<u64> {
+    use std::hash::Hasher;
+    let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
+    let mut tables: Vec<String> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT name FROM sqlite_master
+                 WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name != 'meta'",
+            )
+            .ok()?;
+        stmt.query_map([], |row| row.get(0)).ok()?.filter_map(Result::ok).collect()
+    };
+    tables.sort();
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    for table in tables {
+        hash.write(table.as_bytes());
+        let mut stmt = conn.prepare(&format!("SELECT * FROM \"{table}\" ORDER BY 1, 2")).ok()?;
+        let width = stmt.column_count();
+        let mut rows = stmt.query([]).ok()?;
+        while let Some(row) = rows.next().ok()? {
+            if table == "settings"
+                && row.get::<_, String>(0).is_ok_and(|key| {
+                    setting_keys::kind(&key) == setting_keys::Kind::Bookkeeping
+                })
+            {
+                continue;
+            }
+            for column in 0..width {
+                hash.write(format!("{:?}", row.get_ref(column).ok()?).as_bytes());
+                hash.write_u8(0);
+            }
         }
-        _ => false,
     }
+    Some(hash.finish())
 }
 
 /// Delete the backups the retention rule does not keep.
@@ -324,8 +365,104 @@ fn doomed<Tz: TimeZone>(taken: &[DateTime<Tz>], now: &DateTime<Tz>) -> Vec<usize
 /// The market data is not touched. Whoever holds a window has to read the
 /// settings back afterwards — see [`crate::cli::Live`].
 pub fn restore(store: &Store, name: &str) -> Result<Restored, Error> {
+    let settings = store.path().ok_or(Error::NoFile)?;
+    let from = find(settings, name)?;
+    restore_backup(store, from)
+}
+
+/// Put back the settings in any file — a backup brought over from another
+/// machine, or that machine's `omacharts.db` itself — the same way.
+///
+/// Checked first for being settings at all: opening any other database the
+/// normal way would migrate it into an empty set of settings, and restoring
+/// that would wipe these.
+pub fn restore_file(store: &Store, path: &Path) -> Result<Restored, Error> {
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    if !is_settings(path) {
+        return Err(Error::NotSettings(name));
+    }
+    let metadata = std::fs::metadata(path)?;
+    let taken = metadata.modified().map(DateTime::<Utc>::from).unwrap_or_else(|_| Utc::now());
+    let from = Backup { schema: schema_of(path), path: path.to_path_buf(), bytes: metadata.len(), taken, name };
+    // From another machine: what is this one's stays this one's.
+    let kept = keep_this_machine(store);
+    let restored = restore_backup(store, from)?;
+    put_back(store, kept);
+    Ok(restored)
+}
+
+/// Whether `path` is a settings file this app wrote: a database at a schema
+/// it has a number for, holding the settings table. Read only.
+fn is_settings(path: &Path) -> bool {
+    if !schema_of(path).is_some_and(|version| version >= 1) {
+        return false;
+    }
+    Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .and_then(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('settings', 'watchlists')",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+        })
+        .is_ok_and(|tables| tables == 2)
+}
+
+/// What this machine keeps when settings arrive from another: its local and
+/// bookkeeping settings, and how wide its sidebar is in each chartbook.
+struct Kept {
+    settings: Vec<(String, String)>,
+    sidebar_width: Option<serde_json::Value>,
+}
+
+fn keep_this_machine(store: &Store) -> Kept {
+    let settings = store
+        .settings()
+        .into_iter()
+        .filter(|(key, _)| setting_keys::kind(key) != setting_keys::Kind::Shared)
+        .collect();
+    let sidebar_width = store
+        .setting(WORKSPACE)
+        .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
+        .and_then(|workspace| {
+            let active = workspace["active"].as_u64().unwrap_or(0) as usize;
+            workspace["books"].get(active).map(|book| book["sidebar_width"].clone())
+        })
+        .filter(|width| !width.is_null());
+    Kept { settings, sidebar_width }
+}
+
+fn put_back(store: &Store, kept: Kept) {
+    for (key, _) in store.settings() {
+        if setting_keys::kind(&key) != setting_keys::Kind::Shared {
+            store.remove_setting(&key);
+        }
+    }
+    for (key, value) in kept.settings {
+        store.set_setting(&key, &value);
+    }
+    // Inside the arrangement rather than a setting of its own: each book
+    // remembers it, and on this screen every one of them gets this one.
+    let Some(width) = kept.sidebar_width else { return };
+    let Some(mut workspace) =
+        store.setting(WORKSPACE).and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
+    else {
+        return;
+    };
+    if let Some(books) = workspace["books"].as_array_mut() {
+        for book in books {
+            book["sidebar_width"] = width.clone();
+        }
+    }
+    store.set_setting(WORKSPACE, &workspace.to_string());
+}
+
+/// The arrangement's setting, which is where each chartbook keeps its
+/// sidebar width.
+const WORKSPACE: &str = "workspace";
+
+fn restore_backup(store: &Store, from: Backup) -> Result<Restored, Error> {
     let settings = store.path().ok_or(Error::NoFile)?.to_path_buf();
-    let from = find(&settings, name)?;
     if let Some(found) = from.schema.filter(|found| *found > migrations::LATEST) {
         return Err(Error::FromTheFuture {
             name: from.name.clone(),
@@ -641,6 +778,92 @@ mod tests {
         restore(&store, "settings-20260101-000000").unwrap();
         assert_eq!(store.setting("theme").as_deref(), Some("ancient"));
         assert!(store.drawings("AAPL", None).is_empty(), "the drawings table is still there");
+        cleanup(&settings);
+    }
+
+    /// What the app writes as it runs is not a change somebody made, so it
+    /// does not make a backup; a choice does.
+    #[test]
+    fn bookkeeping_is_not_a_reason_for_a_backup() {
+        let settings = scratch("bookkeeping");
+        let store = Store::open_at(&settings).unwrap();
+        let (first, _) = take(&store).unwrap();
+        let _ = backdate(&first, 3 * 3600);
+
+        store.set_setting("cache_swept_at", "1792500000");
+        store.set_setting("cooldown.yahoo", "1792500000 120");
+        store.set_setting("last_symbol", "NVDA");
+        let (_, fresh) = take(&store).unwrap();
+        assert!(!fresh, "bookkeeping made a backup");
+
+        store.set_setting("theme", "paper");
+        let (_, fresh) = take(&store).unwrap();
+        assert!(fresh, "a choice did not");
+        cleanup(&settings);
+    }
+
+    /// Settings from another machine bring its choices and leave this one's
+    /// own: where screenshots go, how big the cache may grow, how wide the
+    /// sidebar is on this screen.
+    #[test]
+    fn a_file_from_elsewhere_leaves_this_machines_own_settings() {
+        let book = |width: i64| {
+            format!(r#"{{"books":[{{"name":"A","sidebar_width":{width}}},{{"name":"B","sidebar_width":{width}}}],"active":0}}"#)
+        };
+        let elsewhere = scratch("their-machine");
+        let theirs = Store::open_at(&elsewhere).unwrap();
+        theirs.set_setting("theme", "paper");
+        theirs.set_setting("screenshot_folder", "/their/pictures");
+        theirs.set_setting("workspace", &book(500));
+        drop(theirs);
+
+        let settings = scratch("my-machine");
+        let store = Store::open_at(&settings).unwrap();
+        store.set_setting("theme", "midnight");
+        store.set_setting("screenshot_folder", "/my/pictures");
+        store.set_setting("cache_limit", "2000000000");
+        store.set_setting("workspace", &book(280));
+        restore_file(&store, &elsewhere).unwrap();
+
+        assert_eq!(store.setting("theme").as_deref(), Some("paper"));
+        assert_eq!(store.setting("screenshot_folder").as_deref(), Some("/my/pictures"));
+        assert_eq!(store.setting("cache_limit").as_deref(), Some("2000000000"));
+        let workspace: serde_json::Value =
+            serde_json::from_str(&store.setting("workspace").unwrap()).unwrap();
+        assert_eq!(workspace["books"][1]["sidebar_width"], 280);
+        cleanup(&elsewhere);
+        cleanup(&settings);
+    }
+
+    /// A backup brought from somewhere else restores like one from here.
+    #[test]
+    fn a_file_from_elsewhere_restores_and_anything_else_is_refused() {
+        let elsewhere = scratch("elsewhere");
+        let theirs = Store::open_at(&elsewhere).unwrap();
+        theirs.set_setting("theme", "paper");
+        drop(theirs);
+
+        let settings = scratch("restore-file");
+        let store = Store::open_at(&settings).unwrap();
+        store.set_setting("theme", "midnight");
+        restore_file(&store, &elsewhere).unwrap();
+        assert_eq!(store.setting("theme").as_deref(), Some("paper"));
+
+        // Not settings: a market file, an empty database, not a database.
+        let market = crate::store::market_path(&elsewhere);
+        let empty = settings.with_file_name("empty.db");
+        Connection::open(&empty).unwrap().execute_batch("CREATE TABLE t (x);").unwrap();
+        let text = settings.with_file_name("notes.txt");
+        std::fs::write(&text, "hello").unwrap();
+        for path in [&market, &empty, &text] {
+            assert!(
+                matches!(restore_file(&store, path), Err(Error::NotSettings(_))),
+                "{} was taken for settings",
+                path.display()
+            );
+        }
+        assert_eq!(store.setting("theme").as_deref(), Some("paper"), "a refusal changed things");
+        cleanup(&elsewhere);
         cleanup(&settings);
     }
 
