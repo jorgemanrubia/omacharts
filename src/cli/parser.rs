@@ -32,6 +32,24 @@ Full documentation:  doc/cli.md
 Every command as JSON: omacharts surface --json";
 
 pub fn command() -> Command {
+    build(None)
+}
+
+/// The parser for one command line: every group, with only the one `args`
+/// names built out to its verbs and flags.
+///
+/// A command is parsed on the window's main loop, and the bar widget runs
+/// one every minute or two. Building every verb of every group to parse one
+/// of them made each group added a cost on every command — the chart
+/// templates' alone were a seventh more allocations on `watchlist list`. The
+/// other groups are still there by name, which is all the top-level help and
+/// a "did you mean" ask of them.
+pub fn command_for(args: &[String]) -> Command {
+    build(Some(args.get(1).map(String::as_str).unwrap_or("")))
+}
+
+/// The tree, whole or with only the group called `only` built out.
+fn build(only: Option<&str>) -> Command {
     let mut app = Command::new("omacharts")
         .about(ABOUT)
         .version(env!("CARGO_PKG_VERSION"))
@@ -87,10 +105,12 @@ pub fn command() -> Command {
     }
 
     for noun in SURFACE {
-        let mut group = Command::new(noun.name)
-            .about(noun.about)
-            .subcommand_required(true)
-            .arg_required_else_help(true);
+        let mut group = Command::new(noun.name).about(noun.about);
+        if only.is_some_and(|named| named != noun.name) {
+            app = app.subcommand(group);
+            continue;
+        }
+        group = group.subcommand_required(true).arg_required_else_help(true);
         for verb in noun.verbs {
             group = group.subcommand(build_verb(verb));
         }

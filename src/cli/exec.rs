@@ -49,7 +49,7 @@ pub fn dispatch(
         ));
     }
 
-    let parsed = match parser::command().try_get_matches_from(args) {
+    let parsed = match parser::command_for(args).try_get_matches_from(args) {
         Ok(parsed) => parsed,
         // Clap's own rendering, which is where "did you mean" and the usage
         // line come from. A help or version request is a success that happens
