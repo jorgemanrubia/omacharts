@@ -927,12 +927,12 @@ fn choose_backup(context: &Rc<Context>, anchor: &gtk::Button) {
     for item in &backups {
         let row = adw::ActionRow::new();
         row.set_title(&capitalised(&backup::when(item.taken, now)));
-        row.set_subtitle(&format!("{} · {}", describe_bytes(item.bytes as i64), item.name));
+        row.set_subtitle(&describe_bytes(item.bytes as i64));
         let tick = gtk::CheckButton::new();
-        match &first {
-            Some(leader) => tick.set_group(Some(leader)),
-            None => first = Some(tick.clone()),
-        }
+        // Grouped even when it is the only one, so it is drawn as the choice
+        // it is rather than as a box to tick.
+        let leader = first.get_or_insert_with(gtk::CheckButton::new);
+        tick.set_group(Some(&*leader));
         row.add_prefix(&tick);
         row.set_activatable_widget(Some(&tick));
         list.append(&row);
@@ -945,10 +945,17 @@ fn choose_backup(context: &Rc<Context>, anchor: &gtk::Button) {
     scroller.set_max_content_height(360);
     scroller.set_child(Some(&list));
 
+    // A backup from another machine is a file somewhere, not a row here:
+    // offered under the list, apart from the buttons that answer the dialog.
+    let from_file = gtk::Button::with_label("Choose a File…");
+    from_file.set_margin_top(12);
+    from_file.set_margin_bottom(12);
+    let body = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    body.append(&scroller);
+    body.append(&from_file);
+
     let dialog = adw::AlertDialog::new(Some("Restore Settings"), None);
-    dialog.set_extra_child(Some(&scroller));
-    // A backup from another machine is a file somewhere, not a row here.
-    dialog.add_response("file", "Choose a File…");
+    dialog.set_extra_child(Some(&body));
     dialog.add_response("cancel", "Cancel");
     dialog.add_response("restore", "Restore");
     dialog.set_response_appearance("restore", adw::ResponseAppearance::Destructive);
@@ -969,11 +976,15 @@ fn choose_backup(context: &Rc<Context>, anchor: &gtk::Button) {
     let ctx = context.clone();
     let preferences = anchor.ancestor(adw::Dialog::static_type()).and_downcast::<adw::Dialog>();
     let anchor_kept = anchor.clone();
+    {
+        let (ctx, anchor, preferences, dialog) =
+            (ctx.clone(), anchor_kept.clone(), preferences.clone(), dialog.clone());
+        from_file.connect_clicked(move |_| {
+            dialog.close();
+            restore_from_file(&ctx, &anchor, preferences.clone());
+        });
+    }
     dialog.connect_response(None, move |_, response| {
-        if response == "file" {
-            restore_from_file(&ctx, &anchor_kept, preferences.clone());
-            return;
-        }
         let Some(name) = chosen.borrow().clone().filter(|_| response == "restore") else {
             return;
         };
