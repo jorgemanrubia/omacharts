@@ -958,8 +958,9 @@ fn choose_backup(context: &Rc<Context>, anchor: &gtk::Button) {
 
     let dialog = adw::AlertDialog::new(Some("Restore Settings"), None);
     dialog.set_extra_child(Some(&body));
-    dialog.add_response("file", "Choose a File…");
+    // Stacked, the last response added is drawn first: Cancel last.
     dialog.add_response("cancel", "Cancel");
+    dialog.add_response("file", "Choose a File…");
     dialog.set_default_response(Some("cancel"));
     dialog.set_close_response("cancel");
 
