@@ -5,7 +5,7 @@
 //! painted from those colours — filled, hollow, red up, monochrome — is a
 //! chart setting, and lives under Charts.
 //!
-//! Built-ins and the Omarchy theme are not editable in place. "Duplicate"
+//! Built-ins and the Omarchy theme are not editable in place. "Customize"
 //! makes a copy you own, which is both simpler to reason about and means a
 //! fiddled palette can always be abandoned by switching back.
 
