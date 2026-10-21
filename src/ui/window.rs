@@ -7568,7 +7568,7 @@ impl Window {
             made.append_item(&item);
         }
         templates.append_section(None, &made);
-        menu.append_submenu(Some("Chart template"), &templates);
+        menu.append_submenu(Some("Template"), &templates);
 
         // With the other two choices about how the chart is drawn, and drawn
         // as a tick: "Gridlines" as a plain row could not say whether this
