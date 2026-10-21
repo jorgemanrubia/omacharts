@@ -147,6 +147,8 @@ pub fn dispatch(
             charts_verb(store, noun, verb, m, json)
         }
 
+        ("template", _) => template_verb(store, verb, m, json),
+
         ("provider", "list") => provider_list(store, json),
         ("provider", "status") => provider_status(store, live, json),
         ("provider", "login") => provider_login(store, m, json),
@@ -1158,7 +1160,7 @@ fn charts_verb(
                 "name": name,
                 "layout": {"leaf": id},
                 "focused": id,
-                "panes": [charts::new_pane(id, &symbol, None, &ChartDefaults::load(store))],
+                "panes": [fresh_pane(store, id, &symbol)],
                 "watchlist": watchlist,
             });
             let at = workspace.push(book);
@@ -1231,7 +1233,7 @@ fn chart_verb(
                 .iter()
                 .find(|p| p["id"].as_u64() == Some(pane as u64))
                 .cloned()
-                .unwrap_or_else(|| charts::new_pane(added, "SPY", None, &ChartDefaults::load(store)));
+                .unwrap_or_else(|| fresh_pane(store, added, "SPY"));
             let target = workspace.book_mut(at)?;
             target["layout"] = charts::split_leaf(&target["layout"], pane, added, horizontal);
             charts::panes_mut(target)?.push(charts::copy_pane(&from, added));
@@ -1348,6 +1350,11 @@ fn chart_set(
     };
     let shows_drawings = switch("show-drawings")?;
     let sends_drawings = switch("send-drawings")?;
+    let template = match arg(m, "template") {
+        None => None,
+        Some(text) if text.eq_ignore_ascii_case("none") => Some(None),
+        Some(text) => Some(Some(find_template(store, text)?)),
+    };
 
     // Which group it was in, read before anything is written: only an actual
     // change leads the group. Re-stating the group a chart is already in is
@@ -1410,6 +1417,21 @@ fn chart_set(
         chart["log_scale"] = json!(log == "on");
         changed.push(format!("log scale {log}"));
     }
+    match template {
+        None => {}
+        // The template's indicators replace the chart's own, which go: the
+        // chart shows what the template holds from now on.
+        Some(Some(template)) => {
+            chart["template"] = json!(template.id);
+            chart["indicators"] = to_value(&template.indicators)?;
+            changed.push(format!("chart template {:?}", template.name));
+        }
+        // Letting go keeps what the template was showing, as the chart's own.
+        Some(None) => {
+            chart["template"] = Value::Null;
+            changed.push("no chart template, keeping its indicators".to_string());
+        }
+    }
     // What the chart ends up showing, which is what it leads its new group
     // with. Read after the writes above, so `--symbol X --link N` leads with X
     // rather than with whatever the chart had before.
@@ -1419,7 +1441,7 @@ fn chart_set(
     if changed.is_empty() {
         return Err(Fault::usage(
             "nothing to change; pass --symbol, --resolution, --style, --session, --link, --grid, \
-             --auto-scale, --log-scale, --show-drawings or --send-drawings"
+             --auto-scale, --log-scale, --show-drawings, --send-drawings or --template"
                 .into(),
         ));
     }
@@ -1471,7 +1493,89 @@ fn chart_indicator(
 
     if action == "list" {
         let listed = chart["indicators"].as_array().cloned().unwrap_or_default();
-        let rows: Vec<String> = listed
+        return Ok(list_indicators(&listed, json!({"chart": pane}), as_json));
+    }
+
+    // Everything is read and checked before anything is written, so a command
+    // carrying one bad value leaves the chart exactly as it was.
+    let kind = indicator_kind(m, action)?;
+    let edits = Edits::read(m)?;
+
+    let target = workspace.book_mut(at)?;
+    let Some(chart) = charts::pane_mut(target, pane) else {
+        return Err(Fault::not_found(format!("no chart {pane}")));
+    };
+    // A chart on a template shows the template's indicators, and changing one
+    // of them here would change every chart on it. So the chart lets go of
+    // the template first, keeping what it showed, and says it did — the same
+    // as adding one from the window does. The template itself is changed
+    // with `template indicator`.
+    let left = match chart["template"].as_u64() {
+        Some(id) => {
+            chart["template"] = Value::Null;
+            Some(
+                crate::templates::get(store, id as u32)
+                    .map(|t| t.name)
+                    .unwrap_or_else(|| format!("id:{id}")),
+            )
+        }
+        None => None,
+    };
+    let indicators = chart["indicators"].as_array_mut().ok_or_else(|| {
+        Fault::new(super::EXIT_ERROR, "this chart's indicators are not a list".into())
+    })?;
+    let text = edit_indicators(m, action, kind, &edits, indicators, "this chart")?;
+
+    workspace.save(store);
+
+    // What it actually hit, not just that it worked. A command that named no
+    // chart has to say which one it found, or nobody can catch it reaching
+    // the wrong one.
+    let mut where_at = format!(
+        "{text} on {} in {:?}",
+        chart_label(workspace.book(at)?, pane),
+        workspace.name_of(at)
+    );
+    if let Some(name) = left {
+        where_at.push_str(&format!(
+            "; it no longer uses chart template {name:?}, and keeps the indicators it had"
+        ));
+    }
+    said(as_json, json!({"chart": pane, "message": where_at}), where_at)
+}
+
+/// A chart as a new one opens: the defaults, and the template they name.
+fn fresh_pane(store: &Store, id: u32, symbol: &str) -> Value {
+    let defaults = ChartDefaults::load(store);
+    let mut pane = charts::new_pane(id, symbol, None, &defaults);
+    if let Some(template) = defaults.template.and_then(|id| crate::templates::get(store, id)) {
+        pane["template"] = json!(template.id);
+        pane["indicators"] = serde_json::to_value(&template.indicators).unwrap_or_else(|_| json!([]));
+    }
+    pane
+}
+
+/// The template a selector names, or why there is none.
+fn find_template(store: &Store, selector: &str) -> Result<crate::templates::Template, Fault> {
+    use crate::templates::Lookup;
+    let all = crate::templates::all(store);
+    match crate::templates::find(&all, selector) {
+        Lookup::Found(found) => Ok(found.clone()),
+        Lookup::Missing => Err(Fault::not_found(format!(
+            "no chart template called {selector:?}; see `omacharts template list`"
+        ))),
+        Lookup::Ambiguous(ids) => Err(Fault::ambiguous(format!(
+            "{} chart templates are called {selector:?}; use {}",
+            ids.len(),
+            ids.iter().map(|id| format!("id:{id}")).collect::<Vec<_>>().join(" or ")
+        ))),
+    }
+}
+
+/// Indicators as `indicator list` prints them, for a chart or a template.
+fn list_indicators(listed: &[Value], whose: Value, as_json: bool) -> String {
+    if as_json {
+        let rows: Vec<Value> = listed
             .iter()
             .map(|i| {
                 json!({
@@ -1482,46 +1586,43 @@ fn chart_indicator(
                     "stroke": i["stroke"],
                     "visible": i["visible"],
                 })
-                .to_string()
             })
             .collect();
-        return match as_json {
-            true => Ok(format!("{{\"chart\":{pane},\"indicators\":[{}]}}\n", rows.join(","))),
-            false => Ok(listed
-                .iter()
-                .map(describe_indicator)
-                .collect::<Vec<_>>()
-                .join("\n")
-                + "\n"),
-        };
+        let mut out = whose;
+        out["indicators"] = Value::Array(rows);
+        return format!("{out}\n");
     }
+    listed.iter().map(describe_indicator).collect::<Vec<_>>().join("\n") + "\n"
+}
 
+/// The indicator kind an `indicator` verb names.
+fn indicator_kind(m: &clap::ArgMatches, action: &str) -> Result<IndicatorKind, Fault> {
     let wanted = arg(m, "KIND")
         .ok_or_else(|| Fault::usage(format!("`indicator {action}` needs an indicator to {action}")))?
         .to_lowercase();
-    let kind = IndicatorKind::ALL
-        .into_iter()
-        .find(|k| k.key() == wanted)
-        .ok_or_else(|| {
-            Fault::usage(format!(
-                "{wanted:?} is not an indicator; try {}",
-                IndicatorKind::ALL.map(|k| k.key()).join(", ")
-            ))
-        })?;
+    IndicatorKind::ALL.into_iter().find(|k| k.key() == wanted).ok_or_else(|| {
+        Fault::usage(format!(
+            "{wanted:?} is not an indicator; try {}",
+            IndicatorKind::ALL.map(|k| k.key()).join(", ")
+        ))
+    })
+}
 
-    // Everything is read and checked before anything is written, so a command
-    // carrying one bad value leaves the chart exactly as it was.
-    let edits = Edits::read(m)?;
-
-    let target = workspace.book_mut(at)?;
-    let Some(chart) = charts::pane_mut(target, pane) else {
-        return Err(Fault::not_found(format!("no chart {pane}")));
-    };
-    let indicators = chart["indicators"].as_array_mut().ok_or_else(|| {
-        Fault::new(super::EXIT_ERROR, "this chart's indicators are not a list".into())
-    })?;
-
-    let text = match action {
+/// Add, remove or reconfigure one indicator in a list of them.
+///
+/// One list, whoever it belongs to: a chart's and a template's are the same
+/// shape and take the same flags, so they are changed by the same code and
+/// cannot come to read a flag differently. `whose` is how a refusal names
+/// the list — "this chart has no RSI".
+fn edit_indicators(
+    m: &clap::ArgMatches,
+    action: &str,
+    kind: IndicatorKind,
+    edits: &Edits,
+    indicators: &mut Vec<Value>,
+    whose: &str,
+) -> Result<String, Fault> {
+    Ok(match action {
         "add" => {
             let next = indicators
                 .iter()
@@ -1540,10 +1641,7 @@ fn chart_indicator(
             let before = indicators.len();
             indicators.retain(|i| !is_kind(i, kind));
             if indicators.len() == before {
-                return Err(Fault::not_found(format!(
-                    "this chart has no {}",
-                    kind.short_name()
-                )));
+                return Err(Fault::not_found(format!("{whose} has no {}", kind.short_name())));
             }
             format!("removed {}", kind.short_name())
         }
@@ -1565,17 +1663,14 @@ fn chart_indicator(
             let which = match matching.as_slice() {
                 [one] => *one,
                 [] => {
-                    return Err(Fault::not_found(format!(
-                        "this chart has no {}",
-                        kind.short_name()
-                    )))
+                    return Err(Fault::not_found(format!("{whose} has no {}", kind.short_name())))
                 }
                 many => {
                     return Err(Fault::ambiguous(format!(
-                        "this chart has {} of them; say which with --id {}",
+                        "{whose} has {} of them; say which with --id {}",
                         many.len(),
                         many.iter()
-                            .filter_map(|at| indicators[*at]["id"].as_u64())
+                            .filter_map(|at| indicators.get(*at).and_then(|i| i["id"].as_u64()))
                             .map(|id| id.to_string())
                             .collect::<Vec<_>>()
                             .join(" or ")
@@ -1589,23 +1684,14 @@ fn chart_indicator(
                         .into(),
                 ));
             }
-            edits.apply(&mut indicators[which], kind)?;
-            format!("set {}", describe_indicator(&indicators[which]))
+            let Some(chosen) = indicators.get_mut(which) else {
+                return Err(Fault::not_found(format!("{whose} has no {}", kind.short_name())));
+            };
+            edits.apply(chosen, kind)?;
+            format!("set {}", describe_indicator(chosen))
         }
         other => return Err(Fault::usage(format!("{other:?} is not list, add, remove or set"))),
-    };
-
-    workspace.save(store);
-
-    // What it actually hit, not just that it worked. A command that named no
-    // chart has to say which one it found, or nobody can catch it reaching
-    // the wrong one.
-    let where_at = format!(
-        "{text} on {} in {:?}",
-        chart_label(workspace.book(at)?, pane),
-        workspace.name_of(at)
-    );
-    said(as_json, json!({"chart": pane, "message": where_at}), where_at)
+    })
 }
 
 /// What is drawn on a chart's symbol, from a terminal.
@@ -2977,6 +3063,213 @@ fn pane_json(pane: &Value) -> String {
     .to_string()
 }
 
+// -- chart templates ------------------------------------------------------
+
+/// Named sets of indicators that charts share. See [`crate::templates`].
+///
+/// A template is a setting and the charts using it are in the arrangement, so
+/// a verb that changes one writes both: the charts on a template keep a copy
+/// of what it holds, which is what every other command reading a chart's
+/// indicators reads, and what a chart keeps when it lets go.
+fn template_verb(
+    store: &Store,
+    verb: &str,
+    m: &clap::ArgMatches,
+    as_json: bool,
+) -> Result<String, Fault> {
+    let mut workspace = Workspace::load(store);
+    let text = match verb {
+        "list" => return template_list(store, &workspace, as_json),
+        "indicator" => return template_indicator(store, m, as_json, &mut workspace),
+        "default" => return template_default(store, m, as_json),
+        "create" => {
+            let name = template_name(m, "NAME")?;
+            let made = crate::templates::create(store, &name);
+            format!("created chart template {name:?} (id:{})", made.id)
+        }
+        "rename" => {
+            let template = find_template(store, required(m, "TEMPLATE")?)?;
+            let name = template_name(m, "NAME")?;
+            crate::templates::rename(store, template.id, &name);
+            format!("renamed chart template {:?} to {name:?}", template.name)
+        }
+        "delete" => {
+            let template = find_template(store, required(m, "TEMPLATE")?)?;
+            crate::templates::delete(store, template.id);
+            // Nothing disappears from a chart: each one keeps what the
+            // template was showing it, as its own.
+            let kept = follow_template(&mut workspace, template.id, None);
+            workspace.save(store);
+            match kept {
+                0 => format!("deleted chart template {:?}", template.name),
+                1 => format!(
+                    "deleted chart template {:?}; the chart using it keeps its indicators as its own",
+                    template.name
+                ),
+                n => format!(
+                    "deleted chart template {:?}; the {n} charts using it keep their indicators as their own",
+                    template.name
+                ),
+            }
+        }
+        other => return Err(Fault::usage(format!("no such command: template {other}"))),
+    };
+    said(as_json, json!({"message": text}), text)
+}
+
+/// A name as typed, refusing a blank one: a template nobody can name is one
+/// nobody can pick again.
+fn template_name(m: &clap::ArgMatches, id: &str) -> Result<String, Fault> {
+    let name = required(m, id)?.trim();
+    if name.is_empty() {
+        return Err(Fault::usage("a chart template needs a name".into()));
+    }
+    Ok(name.to_string())
+}
+
+/// Bring every chart on template `id` up to date: showing `indicators`, or,
+/// with none, letting go of a template that has gone. How many there were.
+fn follow_template(workspace: &mut Workspace, id: u32, indicators: Option<&Value>) -> usize {
+    let mut count = 0;
+    workspace.each_pane_mut(|pane| {
+        if pane["template"].as_u64() != Some(u64::from(id)) {
+            return;
+        }
+        count += 1;
+        match indicators {
+            Some(indicators) => pane["indicators"] = indicators.clone(),
+            None => pane["template"] = Value::Null,
+        }
+    });
+    count
+}
+
+/// How many charts, in every chartbook, are on template `id`.
+fn charts_on(workspace: &Workspace, id: u32) -> usize {
+    workspace
+        .books()
+        .iter()
+        .flat_map(charts::panes)
+        .filter(|pane| pane["template"].as_u64() == Some(u64::from(id)))
+        .count()
+}
+
+fn template_list(store: &Store, workspace: &Workspace, as_json: bool) -> Result<String, Fault> {
+    let default = ChartDefaults::load(store).template;
+    let templates = crate::templates::all(store);
+    if as_json {
+        let rows = templates
+            .iter()
+            .map(|t| {
+                json!({
+                    "id": t.id,
+                    "name": t.name,
+                    "indicators": t.indicators.iter().map(Indicator::label).collect::<Vec<_>>(),
+                    "charts": charts_on(workspace, t.id),
+                    "default": default == Some(t.id),
+                })
+                .to_string()
+            })
+            .collect();
+        return Ok(wrap_list("templates", rows));
+    }
+    if templates.is_empty() {
+        return Ok("no chart templates; make one with `omacharts template create NAME`\n".into());
+    }
+    Ok(templates
+        .iter()
+        .map(|t| {
+            let shows = match t.indicators.is_empty() {
+                true => "no indicators".to_string(),
+                false => t.indicators.iter().map(Indicator::label).collect::<Vec<_>>().join(", "),
+            };
+            let charts = match charts_on(workspace, t.id) {
+                1 => "1 chart".to_string(),
+                n => format!("{n} charts"),
+            };
+            format!(
+                "{}{:<5} {:<20} {:<9} {shows}",
+                if default == Some(t.id) { "* " } else { "  " },
+                format!("id:{}", t.id),
+                t.name,
+                charts,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n")
+}
+
+/// `chart indicator`, for a template: the same actions and flags, and every
+/// chart on the template follows.
+fn template_indicator(
+    store: &Store,
+    m: &clap::ArgMatches,
+    as_json: bool,
+    workspace: &mut Workspace,
+) -> Result<String, Fault> {
+    let action = required(m, "ACTION")?.as_str();
+    let template = find_template(store, required(m, "TEMPLATE")?)?;
+    let mut list: Vec<Value> =
+        template.indicators.iter().map(to_value).collect::<Result<_, _>>()?;
+    if action == "list" {
+        return Ok(list_indicators(&list, json!({"template": template.name}), as_json));
+    }
+
+    let kind = indicator_kind(m, action)?;
+    let edits = Edits::read(m)?;
+    let text = edit_indicators(m, action, kind, &edits, &mut list, "this chart template")?;
+    let indicators: Vec<Indicator> = serde_json::from_value(Value::Array(list))
+        .map_err(|e| Fault::new(super::EXIT_ERROR, e.to_string()))?;
+    crate::templates::set_indicators(store, template.id, indicators.clone());
+    let following = follow_template(workspace, template.id, Some(&to_value(&indicators)?));
+    workspace.save(store);
+
+    let text = match following {
+        0 => format!("{text} in chart template {:?}", template.name),
+        1 => format!("{text} in chart template {:?}, and on the chart using it", template.name),
+        n => format!("{text} in chart template {:?}, and on the {n} charts using it", template.name),
+    };
+    said(as_json, json!({"template": template.id, "message": text, "charts": following}), text)
+}
+
+/// What a new chart opens with, read or chosen.
+fn template_default(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<String, Fault> {
+    let Some(selector) = arg(m, "TEMPLATE") else {
+        let current = ChartDefaults::load(store)
+            .template
+            .and_then(|id| crate::templates::get(store, id));
+        let text = match &current {
+            Some(t) => format!("new charts open with chart template {:?}", t.name),
+            None => "new charts open with no chart template".to_string(),
+        };
+        return said(as_json, json!({"template": current.map(|t| t.name)}), text);
+    };
+    let (value, text) = default_template(store, selector)?;
+    store.set_setting(crate::chart_defaults::SETTING_TEMPLATE, &value);
+    said(as_json, json!({"template": value}), text)
+}
+
+/// What to store for "new charts open with `selector`", and how to say so.
+///
+/// Shared by `template default` and `config set chart_template`, so that the
+/// setting only ever holds an id that names a template, or `none`: a name
+/// stored there would read as no template at all, and look as though it
+/// worked.
+fn default_template(store: &Store, selector: &str) -> Result<(String, String), Fault> {
+    if selector.eq_ignore_ascii_case(crate::chart_defaults::NO_TEMPLATE) {
+        return Ok((
+            crate::chart_defaults::NO_TEMPLATE.to_string(),
+            "new charts open with no chart template".to_string(),
+        ));
+    }
+    let template = find_template(store, selector)?;
+    Ok((
+        template.id.to_string(),
+        format!("new charts open with chart template {:?}", template.name),
+    ))
+}
+
 // -- what is open ---------------------------------------------------------
 
 /// The live picture, in one call.
@@ -3433,6 +3726,11 @@ fn config_set(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<Stri
     // somebody who typed `thinkorswimm` would chart from the wrong source
     // and be told it worked. So this one is checked, and stored canonically
     // so that `TOS` and `tos` are the same choice rather than two.
+    if key == crate::chart_defaults::SETTING_TEMPLATE {
+        let (value, text) = default_template(store, value)?;
+        store.set_setting(key, &value);
+        return said(as_json, json!({"key": key, "value": value}), text);
+    }
     let value = match key == crate::feeds::SETTING {
         false => value.to_string(),
         true => providers::listed(value)
@@ -3896,6 +4194,175 @@ mod tests {
         dispatch(&args, store, None, &super::super::Here)
     }
 
+    /// A store whose new charts open with nothing on them.
+    ///
+    /// A fresh profile's charts open on the "Default" chart template, holding
+    /// volume — which the template tests below are about. Everything else
+    /// here counts indicators from an empty chart, and was written when that
+    /// is what a new chart was.
+    fn bare() -> Store {
+        let store = Store::memory().unwrap();
+        store.set_setting(
+            crate::chart_defaults::SETTING_TEMPLATE,
+            crate::chart_defaults::NO_TEMPLATE,
+        );
+        store
+    }
+
+    fn json_of(out: &Outcome) -> Value {
+        assert_eq!(out.code, 0, "{}", out.err);
+        serde_json::from_str(&out.out).unwrap()
+    }
+
+    #[test]
+    fn a_new_chart_opens_on_the_default_template() {
+        let store = Store::memory().unwrap();
+        run("chartbook create Macro --switch", &store);
+        let listed = json_of(&run("chart indicator list --book Macro --json", &store));
+        assert_eq!(listed["indicators"][0]["kind"], "volume");
+        let charts = Workspace::load(&store);
+        let default = crate::templates::all(&store)[0].id;
+        assert_eq!(charts::panes(&charts.books()[0])[0]["template"], json!(default));
+    }
+
+    #[test]
+    fn templates_are_listed_made_renamed_and_deleted() {
+        let store = Store::memory().unwrap();
+        assert_eq!(run("template create Swing", &store).code, 0);
+        assert_eq!(run("template rename swing Swing2", &store).code, 0);
+        let listed = json_of(&run("template list --json", &store));
+        let names: Vec<&str> =
+            listed["templates"].as_array().unwrap().iter().filter_map(|t| t["name"].as_str()).collect();
+        assert_eq!(names, ["Default", "Swing2"]);
+        assert_eq!(listed["templates"][0]["default"], true);
+        assert_eq!(listed["templates"][0]["indicators"][0], "Volume");
+
+        assert_eq!(run("template delete Swing2", &store).code, 0);
+        assert_eq!(run("template delete Swing2", &store).code, super::super::EXIT_NOT_FOUND);
+        assert_ne!(run("template create", &store).code, 0, "a template with no name");
+    }
+
+    /// Changing a template changes what every chart on it shows, in every
+    /// chartbook, and leaves a chart on no template alone.
+    #[test]
+    fn a_template_s_indicators_are_what_its_charts_show() {
+        let store = Store::memory().unwrap();
+        run("chartbook create Macro --switch", &store);
+        run("chart split horizontal --book Macro", &store);
+        run("chartbook create Semis", &store);
+        run("chart set --book Semis --template none", &store);
+
+        let out = run("template indicator add Default rsi --period 9", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert!(out.out.contains("2 charts"), "{}", out.out);
+
+        let kinds = |book: &str| -> Vec<Vec<String>> {
+            let workspace = Workspace::load(&store);
+            let at = workspace.find(book).unwrap();
+            charts::panes(&workspace.books()[at])
+                .iter()
+                .map(|p| {
+                    p["indicators"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|i| i["kind"].as_str().unwrap().to_string())
+                        .collect()
+                })
+                .collect()
+        };
+        assert_eq!(kinds("Macro"), vec![vec!["volume", "rsi"], vec!["volume", "rsi"]]);
+        assert_eq!(kinds("Semis"), vec![vec!["volume"]], "a chart that let go followed anyway");
+
+        run("template indicator set Default rsi --period 21", &store);
+        run("template indicator remove Default volume", &store);
+        let held = json_of(&run("template indicator list Default --json", &store));
+        assert_eq!(held["indicators"][0]["params"]["period"], 21);
+        assert_eq!(kinds("Macro"), vec![vec!["rsi"], vec!["rsi"]]);
+    }
+
+    #[test]
+    fn a_chart_switches_onto_a_template_and_off_it_again() {
+        let store = bare();
+        run("chartbook create Macro --switch", &store);
+        run("chart indicator add sma --book Macro", &store);
+
+        // Onto it: the chart's own indicators give way to the template's.
+        let out = run("chart set --book Macro --template Default", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        let listed = json_of(&run("chart indicator list --book Macro --json", &store));
+        assert_eq!(listed["indicators"].as_array().unwrap().len(), 1);
+        assert_eq!(listed["indicators"][0]["kind"], "volume");
+
+        // Off it: what the template showed stays, as the chart's own.
+        run("chart set --book Macro --template none", &store);
+        run("template indicator add Default rsi", &store);
+        let listed = json_of(&run("chart indicator list --book Macro --json", &store));
+        assert_eq!(listed["indicators"].as_array().unwrap().len(), 1, "still following");
+        assert_eq!(listed["indicators"][0]["kind"], "volume");
+
+        assert_eq!(
+            run("chart set --book Macro --template Nothing", &store).code,
+            super::super::EXIT_NOT_FOUND
+        );
+    }
+
+    /// Adding to a chart on a template lets go of the template first, so the
+    /// template — and every other chart on it — is left as it was.
+    #[test]
+    fn adding_to_a_chart_on_a_template_leaves_the_template_alone() {
+        let store = Store::memory().unwrap();
+        run("chartbook create Macro --switch", &store);
+        run("chart split horizontal --book Macro", &store);
+        let out = run("chart indicator add sma --book Macro --chart pos:0", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert!(out.out.contains("no longer uses chart template \"Default\""), "{}", out.out);
+
+        let workspace = Workspace::load(&store);
+        let panes = charts::panes(&workspace.books()[0]);
+        assert_eq!(panes[0]["template"], Value::Null);
+        assert_eq!(panes[0]["indicators"].as_array().unwrap().len(), 2, "kept volume, added sma");
+        assert_eq!(panes[1]["indicators"].as_array().unwrap().len(), 1);
+        assert_eq!(crate::templates::all(&store)[0].indicators.len(), 1);
+    }
+
+    /// Nothing disappears from a chart when its template goes.
+    #[test]
+    fn deleting_a_template_leaves_its_charts_a_copy() {
+        let store = Store::memory().unwrap();
+        run("chartbook create Macro --switch", &store);
+        run("template indicator add Default ema", &store);
+        let out = run("template delete Default", &store);
+        assert!(out.out.contains("keeps its indicators"), "{}", out.out);
+
+        let workspace = Workspace::load(&store);
+        let pane = &charts::panes(&workspace.books()[0])[0];
+        assert_eq!(pane["template"], Value::Null);
+        assert_eq!(pane["indicators"].as_array().unwrap().len(), 2);
+        assert_eq!(ChartDefaults::load(&store).template, None);
+    }
+
+    #[test]
+    fn the_default_template_is_read_and_chosen_by_name() {
+        let store = Store::memory().unwrap();
+        run("template create Swing", &store);
+        assert!(run("template default", &store).out.contains("\"Default\""));
+        assert_eq!(run("template default swing", &store).code, 0);
+        let swing = crate::templates::all(&store)[1].id;
+        assert_eq!(ChartDefaults::load(&store).template, Some(swing));
+
+        // `config set` reaches the same setting, and stores an id or none.
+        assert_eq!(run("config set chart_template none", &store).code, 0);
+        assert_eq!(store.setting("chart_template").as_deref(), Some("none"));
+        assert_eq!(run("config set chart_template Default", &store).code, 0);
+        assert_eq!(ChartDefaults::load(&store).template, Some(crate::templates::all(&store)[0].id));
+        assert_eq!(
+            run("config set chart_template Nope", &store).code,
+            super::super::EXIT_NOT_FOUND,
+            "a name that is no template was stored"
+        );
+    }
+
     /// A caller who piped this text in, whatever path they named.
     struct Piped(String);
 
@@ -3916,7 +4383,7 @@ mod tests {
 
     /// A machine with a bit of everything an export has to carry.
     fn exporting() -> Store {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("watchlist add Default SPY QQQ", &store);
         run("watchlist rename Default Mine", &store);
         run("watchlist create Semis", &store);
@@ -3933,7 +4400,7 @@ mod tests {
     #[test]
     fn an_export_imported_on_another_machine_comes_back_the_same() {
         let file = run("watchlist export", &exporting()).out;
-        let elsewhere = Store::memory().unwrap();
+        let elsewhere = bare();
         let out = import(&file, "", &elsewhere);
         assert_eq!(out.code, 0, "{}", out.err);
         assert!(out.out.contains("Semis: created, 5 symbols in 1 section"), "{}", out.out);
@@ -3949,7 +4416,7 @@ mod tests {
     #[test]
     fn importing_the_same_file_twice_changes_nothing_the_second_time() {
         let file = run("watchlist export", &exporting()).out;
-        let elsewhere = Store::memory().unwrap();
+        let elsewhere = bare();
         import(&file, "", &elsewhere);
         let before = run("watchlist export", &elsewhere).out;
         let again = import(&file, "", &elsewhere);
@@ -3960,7 +4427,7 @@ mod tests {
     #[test]
     fn a_merge_only_adds_and_a_replace_makes_it_match() {
         let file = run("watchlist export Semis", &exporting()).out;
-        let elsewhere = Store::memory().unwrap();
+        let elsewhere = bare();
         run("watchlist create Semis", &elsewhere);
         run("watchlist add Semis INTC NVDA", &elsewhere);
         run("watchlist create Other", &elsewhere);
@@ -3999,7 +4466,7 @@ mod tests {
     #[test]
     fn a_link_group_already_driven_here_is_left_where_it_is() {
         let file = run("watchlist export Semis", &exporting()).out;
-        let elsewhere = Store::memory().unwrap();
+        let elsewhere = bare();
         run("watchlist create Macro", &elsewhere);
         run("watchlist link Macro 3", &elsewhere);
         let out = import(&file, "", &elsewhere);
@@ -4010,7 +4477,7 @@ mod tests {
 
     #[test]
     fn a_watchlist_can_be_made_filled_and_read_back() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         assert_eq!(run("watchlist create Semis", &store).code, 0);
         let added = run("watchlist add Semis NVDA AMD AVGO", &store);
         assert_eq!(added.code, 0, "{}", added.err);
@@ -4041,7 +4508,7 @@ mod tests {
     /// positioned inside their section, so they go where it goes.
     #[test]
     fn sections_can_be_reordered_and_take_their_symbols_with_them() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("section create Default Energy", &store);
         run("section create Default Metals", &store);
         run("watchlist add Default CL --section Energy", &store);
@@ -4064,7 +4531,7 @@ mod tests {
     /// order the ids happen to be.
     #[test]
     fn sections_left_out_of_an_order_keep_theirs_behind_the_ones_named() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         for name in ["Energy", "Metals", "Crypto"] {
             run(&format!("section create Default {name}"), &store);
         }
@@ -4078,7 +4545,7 @@ mod tests {
     /// would put the loose symbols somewhere no gesture can.
     #[test]
     fn the_section_holding_loose_symbols_cannot_be_ordered() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("watchlist add Default SPY", &store);
         run("section create Default Energy", &store);
         let root = run("section list Default --json", &store);
@@ -4094,7 +4561,7 @@ mod tests {
     /// guessing which of the two places was meant is worse than refusing.
     #[test]
     fn an_order_that_names_a_section_twice_is_refused() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("section create Default Energy", &store);
         run("section create Default Metals", &store);
         assert_eq!(
@@ -4107,7 +4574,7 @@ mod tests {
     /// Dragging a symbol between sections, from a terminal.
     #[test]
     fn a_symbol_moves_between_sections_and_says_where_it_went() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("section create Default Energy", &store);
         run("watchlist add Default CL NG --section Energy", &store);
         run("watchlist add Default SPY", &store);
@@ -4134,7 +4601,7 @@ mod tests {
     /// a row does and needs no destination section at all.
     #[test]
     fn a_symbol_moves_in_front_of_another_in_its_own_section() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("section create Default Energy", &store);
         run("watchlist add Default CL NG BZ --section Energy", &store);
 
@@ -4157,7 +4624,7 @@ mod tests {
     /// a caller cannot act on.
     #[test]
     fn moving_a_symbol_nowhere_is_a_usage_error() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("watchlist add Default SPY", &store);
         assert_eq!(run("watchlist move Default SPY", &store).code, super::super::EXIT_USAGE);
         assert_eq!(
@@ -4171,7 +4638,7 @@ mod tests {
     /// a pointer; this has to ask.
     #[test]
     fn a_symbol_in_two_sections_has_to_be_taken_out_of_the_one_named() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("section create Default Energy", &store);
         run("section create Default Majors", &store);
         run("watchlist add Default CL --section Energy", &store);
@@ -4194,14 +4661,14 @@ mod tests {
     /// has to be distinguishable from a command that was spelled wrongly.
     #[test]
     fn naming_something_that_does_not_exist_says_so_in_the_exit_code() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         assert_eq!(run("watchlist show Nope", &store).code, super::super::EXIT_NOT_FOUND);
         assert_eq!(run("watchlist frobnicate", &store).code, super::super::EXIT_USAGE);
     }
 
     #[test]
     fn the_watchlist_the_bar_widget_shows_cannot_be_deleted() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         let refused = run("watchlist delete id:1", &store);
         assert_eq!(refused.code, super::super::EXIT_REFUSED);
         assert!(refused.err.contains("rename"), "{}", refused.err);
@@ -4209,7 +4676,7 @@ mod tests {
 
     #[test]
     fn adding_the_same_symbol_twice_is_not_an_error() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("watchlist create Semis", &store);
         assert_eq!(run("watchlist add Semis NVDA", &store).code, 0);
         assert_eq!(run("watchlist add Semis NVDA", &store).code, 0);
@@ -4220,7 +4687,7 @@ mod tests {
 
     #[test]
     fn a_taiwan_listing_can_be_named_with_its_venue_or_with_the_flag() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("watchlist create Taiwan", &store);
         let out = run("watchlist add Taiwan 2330.TW 6488.TWO", &store);
         assert_eq!(out.code, 0, "{}", out.err);
@@ -4244,7 +4711,7 @@ mod tests {
 
     #[test]
     fn a_taiwan_listing_shows_both_its_names() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         let out = run("symbol show 2330.TW --json", &store);
         assert_eq!(out.code, 0, "{}", out.err);
         let parsed: serde_json::Value = serde_json::from_str(&out.out).unwrap();
@@ -4259,7 +4726,7 @@ mod tests {
 
     #[test]
     fn a_dot_that_is_not_a_venue_stays_in_the_ticker() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         // FTSEMIB.MI is an index whose canonical symbol has the dot in it.
         let out = run("symbol show FTSEMIB.MI --json", &store);
         assert_eq!(out.code, 0, "{}", out.err);
@@ -4267,7 +4734,7 @@ mod tests {
 
     #[test]
     fn a_ticker_nobody_lists_is_refused_rather_than_stored() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("watchlist create Semis", &store);
         let out = run("watchlist add Semis NOTATICKER", &store);
         assert_eq!(out.code, super::super::EXIT_NOT_FOUND);
@@ -4275,7 +4742,7 @@ mod tests {
 
     #[test]
     fn a_section_can_become_a_watchlist_carrying_its_symbols() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("section create id:1 Energy", &store);
         run("watchlist add id:1 CL --section Energy", &store);
         let out = run("section promote id:1 Energy", &store);
@@ -4288,7 +4755,7 @@ mod tests {
 
     #[test]
     fn a_chartbook_can_be_created_split_and_read_back() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         assert_eq!(run("chartbook create Macro --symbol SPY --switch", &store).code, 0);
         let split = run("chart split horizontal --book Macro", &store);
         assert_eq!(split.code, 0, "{}", split.err);
@@ -4303,7 +4770,7 @@ mod tests {
     /// nothing in it.
     #[test]
     fn a_new_chartbooks_chart_starts_in_the_first_group() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("chartbook create Macro --symbol SPY --switch", &store);
 
         let listed = run("chart list --book Macro --json", &store);
@@ -4313,14 +4780,14 @@ mod tests {
 
     #[test]
     fn the_last_chart_in_a_chartbook_cannot_be_closed() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("chartbook create Macro --switch", &store);
         assert_eq!(run("chart close --book Macro", &store).code, super::super::EXIT_REFUSED);
     }
 
     #[test]
     fn a_charts_symbol_and_resolution_can_be_set_together() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("chartbook create Macro --switch", &store);
         let set = run("chart set --book Macro --symbol NVDA --resolution 1h --style ohlc", &store);
         assert_eq!(set.code, 0, "{}", set.err);
@@ -4335,7 +4802,7 @@ mod tests {
     /// has no way to tell which half.
     #[test]
     fn one_bad_value_leaves_the_chart_exactly_as_it_was() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("chartbook create Macro --symbol SPY --switch", &store);
         let out = run("chart set --book Macro --symbol NVDA --resolution nonsense", &store);
         assert_eq!(out.code, super::super::EXIT_USAGE);
@@ -4349,7 +4816,7 @@ mod tests {
     /// gridlines, and a command can hold it still or let it go.
     #[test]
     fn a_charts_price_scale_can_be_held_and_released_from_a_command() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("chartbook create Macro --symbol SPY --switch", &store);
         let charts = |store: &Store| -> serde_json::Value {
             serde_json::from_str(&run("chart list --book Macro --json", store).out).unwrap()
@@ -4369,7 +4836,7 @@ mod tests {
     /// stored before there was one is linear.
     #[test]
     fn a_charts_price_axis_can_be_made_logarithmic_from_a_command() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("chartbook create Macro --symbol SPY --switch", &store);
         let charts = |store: &Store| -> serde_json::Value {
             serde_json::from_str(&run("chart list --book Macro --json", store).out).unwrap()
@@ -4390,7 +4857,7 @@ mod tests {
     /// about it, and is reported as fitting itself rather than as `null`.
     #[test]
     fn a_chart_stored_before_the_price_scale_was_remembered_is_reported_as_fitting_itself() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         store.set_setting(
             "workspace",
             r#"{"books":[{"name":"Old","layout":{"leaf":1},"focused":1,
@@ -4407,7 +4874,7 @@ mod tests {
     /// a terminal takes the note with it; closing any other leaves it alone.
     #[test]
     fn closing_the_chart_that_filled_the_window_forgets_the_fill() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("chartbook create Macro --symbol SPY --switch", &store);
         run("chart split horizontal --book Macro", &store);
         run("chart split horizontal --book Macro", &store);
@@ -4430,7 +4897,7 @@ mod tests {
     /// not answer it with a usage error.
     #[test]
     fn the_bar_widgets_own_command_still_means_what_it_did() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         // Without `--refresh`, which would go to the network: this is about
         // the shape of the answer, not about fetching one.
         let out = run("watchlist", &store);
@@ -4445,7 +4912,7 @@ mod tests {
     /// correctly — and an agent would act on it.
     #[test]
     fn asking_for_the_focused_chart_with_nothing_open_says_so() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("chartbook create Macro --switch", &store);
         let out = run("chart indicator add rsi", &store);
         assert_eq!(out.code, super::super::EXIT_NO_WINDOW);
@@ -4454,7 +4921,7 @@ mod tests {
 
     #[test]
     fn an_indicator_carries_the_parameters_it_was_given() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("chartbook create Macro --switch", &store);
         let out = run(
             "chart indicator add sma --book Macro --period 200 --color Amber --style dashed --width 2",
@@ -4475,7 +4942,7 @@ mod tests {
     /// the theme's and is. Both have to arrive as what they are.
     #[test]
     fn a_colour_is_either_the_themes_or_the_users_and_the_two_stay_apart() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("chartbook create Macro --switch", &store);
         run("chart indicator add ema --book Macro --color #ff8800", &store);
 
@@ -4490,7 +4957,7 @@ mod tests {
 
     #[test]
     fn the_volume_profile_takes_auto_rows_and_its_own_two_colours() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("chartbook create Macro --switch", &store);
         let out = run(
             "chart indicator add volume_profile --book Macro --rows auto --anchor week \
@@ -4510,7 +4977,7 @@ mod tests {
 
     #[test]
     fn a_bollinger_takes_a_period_and_a_multiple() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("chartbook create Macro --switch", &store);
         let out = run("chart indicator add bollinger --book Macro", &store);
         assert_eq!(out.code, 0, "{}", out.err);
@@ -4536,7 +5003,7 @@ mod tests {
     /// refused rather than quietly switching off the one it has.
     #[test]
     fn the_band_flags_reach_both_indicators_that_have_bands_and_nothing_else() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("chartbook create Macro --switch", &store);
         run("chart indicator add bollinger --book Macro", &store);
         run("chart indicator add vwap --book Macro", &store);
@@ -4569,7 +5036,7 @@ mod tests {
 
     #[test]
     fn a_macd_takes_three_lengths_and_a_colour_for_its_signal() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("chartbook create Macro --switch", &store);
         let out = run("chart indicator add macd --book Macro", &store);
         assert_eq!(out.code, 0, "{}", out.err);
@@ -4599,7 +5066,7 @@ mod tests {
     /// measures it upside down. Either way the chart is left as it was.
     #[test]
     fn a_macd_whose_averages_are_the_wrong_way_round_is_refused() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("chartbook create Macro --switch", &store);
         run("chart indicator add macd --book Macro", &store);
 
@@ -4626,7 +5093,7 @@ mod tests {
     /// to be floored into a period of one and reported as having worked.
     #[test]
     fn a_length_that_is_not_a_number_of_bars_is_refused_rather_than_floored() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("chartbook create Macro --switch", &store);
         run("chart indicator add bollinger --book Macro", &store);
         run("chart indicator add macd --book Macro", &store);
@@ -4657,7 +5124,7 @@ mod tests {
     /// a negative one and one past the engine's own end are neither.
     #[test]
     fn a_band_width_outside_what_a_band_can_be_is_refused() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("chartbook create Macro --switch", &store);
         run("chart indicator add bollinger --book Macro", &store);
 
@@ -4686,7 +5153,7 @@ mod tests {
     /// as the command having worked.
     #[test]
     fn a_parameter_an_indicator_has_no_use_for_is_refused() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("chartbook create Macro --switch", &store);
         let out = run("chart indicator add volume --book Macro --period 50", &store);
         assert_eq!(out.code, super::super::EXIT_USAGE);
@@ -4695,7 +5162,7 @@ mod tests {
 
     #[test]
     fn an_indicator_already_on_a_chart_can_be_reconfigured() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("chartbook create Macro --switch", &store);
         run("chart indicator add rsi --book Macro", &store);
         let out = run("chart indicator set rsi --book Macro --period 21 --overbought 80", &store);
@@ -4709,7 +5176,7 @@ mod tests {
 
     #[test]
     fn a_stochastic_takes_its_smoothings_and_a_d_colour_and_nothing_else_does() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("chartbook create Macro --switch", &store);
         let out = run("chart indicator add stochastic --book Macro", &store);
         assert_eq!(out.code, 0, "{}", out.err);
@@ -4740,7 +5207,7 @@ mod tests {
     /// indicator being added as much as on one being changed.
     #[test]
     fn a_level_off_the_strip_or_a_crossed_pair_is_refused() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("chartbook create Macro --switch", &store);
         run("chart indicator add rsi --book Macro", &store);
         for args in [
@@ -4772,7 +5239,7 @@ mod tests {
 
     #[test]
     fn vwap_bands_can_be_turned_on_and_shaded() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("chartbook create Macro --switch", &store);
         run("chart indicator add vwap --book Macro --anchor month --bands 1,2 --band-alpha 0.3", &store);
 
@@ -4789,7 +5256,7 @@ mod tests {
     /// given is the figure stored — the help says 0-1 and means it.
     #[test]
     fn shading_can_be_asked_for_clear_or_solid() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("chartbook create Macro --switch", &store);
         run("chart indicator add vwap --book Macro --bands 1", &store);
 
@@ -4822,7 +5289,7 @@ mod tests {
     /// or nobody can catch it reaching the wrong chart.
     #[test]
     fn a_command_names_the_chart_it_acted_on() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("chartbook create Macro --symbol AAPL --switch", &store);
         let out = run("chart indicator add rsi --book Macro", &store);
         assert!(out.out.contains("AAPL"), "{}", out.out);
@@ -4831,7 +5298,7 @@ mod tests {
 
     #[test]
     fn status_says_whether_anything_is_actually_open() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("chartbook create Macro --symbol AAPL --switch", &store);
         let out = run("status show --json", &store);
         let parsed: serde_json::Value = serde_json::from_str(&out.out).unwrap();
@@ -4842,7 +5309,7 @@ mod tests {
 
     #[test]
     fn crosshair_syncing_can_be_read_and_set() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         assert_eq!(run("chart crosshair off", &store).code, 0);
         assert_eq!(run("chart crosshair", &store).out.trim(), "off");
         assert_eq!(run("chart crosshair on", &store).code, 0);
@@ -4859,7 +5326,7 @@ mod tests {
 
     #[test]
     fn a_watchlists_group_can_be_read_set_and_cleared() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("watchlist create Semis", &store);
         assert_eq!(run("watchlist link Semis", &store).out.trim(), "none");
 
@@ -4876,7 +5343,7 @@ mod tests {
     /// deliberately, so a command that wanted it has to be told no first.
     #[test]
     fn a_group_another_watchlist_drives_is_refused_rather_than_taken() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("watchlist create Semis", &store);
         run("watchlist create Energy", &store);
         run("watchlist link Semis 5", &store);
@@ -4893,7 +5360,7 @@ mod tests {
     /// key differently in either place and this fails.
     #[test]
     fn the_group_a_command_sets_is_the_one_the_rail_reads() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("watchlist create Semis", &store);
         run("watchlist link Semis 4", &store);
         let owners = crate::ui::watchlist::group_owners(&store);
@@ -4907,13 +5374,13 @@ mod tests {
     /// to say so — it is the one group whose holder nobody chose.
     #[test]
     fn the_default_watchlist_is_reported_driving_the_group_it_starts_in() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         assert_eq!(run("watchlist link id:1", &store).out.trim(), "1");
     }
 
     #[test]
     fn bars_can_turn_red_up_and_get_the_same_scheme_back() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("config set bar_scheme hollow", &store);
         assert_eq!(run("config bars red-up", &store).code, 0);
         assert_eq!(run("config bars", &store).out.trim(), "red-up");
@@ -4928,7 +5395,7 @@ mod tests {
 
     #[test]
     fn bars_can_lose_their_colour_and_get_the_same_scheme_back() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("config set bar_scheme hollow", &store);
         assert_eq!(run("config bars", &store).out.trim(), "coloured");
 
@@ -4946,7 +5413,7 @@ mod tests {
 
     #[test]
     fn a_chart_is_focused_by_its_position_as_well_as_by_its_id() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("chartbook create Macro --symbol AAPL --switch", &store);
         run("chart split horizontal --book Macro", &store);
         run("chart set --book Macro --chart pos:1 --symbol NVDA", &store);
@@ -4967,7 +5434,7 @@ mod tests {
     /// its way to keep.
     #[test]
     fn a_chart_joining_a_group_leads_it_onto_what_that_chart_is_showing() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("chartbook create Macro --symbol AAPL --switch", &store);
         run("chart split horizontal --book Macro", &store);
         run("chart set --book Macro --chart pos:0 --symbol NVDA --link 2", &store);
@@ -4988,7 +5455,7 @@ mod tests {
     /// than before it.
     #[test]
     fn a_symbol_named_alongside_a_group_is_the_one_the_group_follows() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("chartbook create Macro --symbol AAPL --switch", &store);
         run("chart split horizontal --book Macro", &store);
         run("chart set --book Macro --chart pos:0 --symbol NVDA --link 2", &store);
@@ -5007,7 +5474,7 @@ mod tests {
     /// four charts would make the whole control unusable.
     #[test]
     fn re_stating_the_group_a_chart_is_already_in_moves_nobody() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("chartbook create Macro --symbol AAPL --switch", &store);
         run("chart split horizontal --book Macro", &store);
         run("chart set --book Macro --chart pos:0 --symbol NVDA --link 2", &store);
@@ -5030,7 +5497,7 @@ mod tests {
     /// showing, because unlinking is a statement about one chart.
     #[test]
     fn leaving_a_group_leaves_the_charts_still_in_it_alone() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("chartbook create Macro --symbol AAPL --switch", &store);
         run("chart split horizontal --book Macro", &store);
         run("chart set --book Macro --chart pos:0 --symbol NVDA --link 2", &store);
@@ -5050,7 +5517,7 @@ mod tests {
     /// one being left, which are two different sets of charts.
     #[test]
     fn moving_from_one_group_to_another_leads_only_the_group_it_joins() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("chartbook create Macro --symbol AAPL --switch", &store);
         run("chart split horizontal --book Macro", &store);
         run("chart split horizontal --book Macro --chart pos:1", &store);
@@ -5074,7 +5541,7 @@ mod tests {
     /// what somebody was looking at.
     #[test]
     fn a_chart_with_no_symbol_does_not_blank_the_group_it_joins() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("chartbook create Macro --symbol AAPL --switch", &store);
         run("chart split horizontal --book Macro", &store);
         run("chart set --book Macro --chart pos:0 --symbol NVDA --link 2", &store);
@@ -5100,7 +5567,7 @@ mod tests {
     /// switched back to would show a symbol from before the link.
     #[test]
     fn joining_a_group_leads_the_charts_in_the_books_that_are_away() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("chartbook create Macro --symbol AAPL --switch", &store);
         run("chartbook create Chips --symbol MU", &store);
         run("chart set --book Chips --chart pos:0 --link 4", &store);
@@ -5120,7 +5587,7 @@ mod tests {
     /// heals that on display; refusing it is better than relying on the heal.
     #[test]
     fn a_watchlist_one_chartbook_shows_is_not_handed_to_a_second() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("watchlist create Semis", &store);
         run("chartbook create Chips --watchlist Semis --switch", &store);
         run("chartbook create Macro --symbol AAPL", &store);
@@ -5143,7 +5610,7 @@ mod tests {
     /// and every book may show it.
     #[test]
     fn the_default_watchlist_is_not_spoken_for_by_the_book_that_shows_it() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("chartbook create Chips --watchlist Default --switch", &store);
         run("chartbook create Macro --symbol AAPL", &store);
         assert_eq!(run("chartbook watchlist Macro Default", &store).code, 0);
@@ -5154,7 +5621,7 @@ mod tests {
     /// unexpected there used to abort the window rather than fail.
     #[test]
     fn an_arrangement_that_is_not_one_fails_the_command_and_nothing_else() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         store.set_setting(
             "workspace",
             r#"{"books":[{"name":"Odd","layout":{"leaf":1},"focused":1}],"active":0}"#,
@@ -5213,7 +5680,7 @@ mod tests {
         std::fs::create_dir_all(config.join("plugins")).unwrap();
         std::fs::write(config.join("shell.json"), r#"{"bar": {"layout": {"right": []}}}"#)
             .unwrap();
-        let store = Store::memory().unwrap();
+        let store = bare();
         let plugin = |verb: &str| {
             let args: Vec<String> =
                 ["omacharts", "plugin", verb].into_iter().map(String::from).collect();
@@ -5318,7 +5785,7 @@ mod tests {
     /// a chart that shows another.
     #[test]
     fn a_drawing_is_on_the_symbol_not_the_chart() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("chartbook create Macro --symbol AAPL --switch", &store);
         run("chart split vertical --book Macro", &store);
         run("chart set --book Macro --chart pos:1 --symbol NVDA", &store);
@@ -5349,7 +5816,7 @@ mod tests {
 
     #[test]
     fn a_drawing_can_be_moved_restyled_and_removed() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("chartbook create Macro --symbol AAPL --switch", &store);
         run("chart drawing add rect --book Macro --from 2026-09-01,180 --to 2026-09-19,192", &store);
         run("chart drawing add line --book Macro --from 2026-09-01,100 --to 2026-09-19,110", &store);
@@ -5390,7 +5857,7 @@ mod tests {
     /// chart's.
     #[test]
     fn sending_takes_back_only_this_chart_s_own() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("chartbook create Macro --symbol AAPL --switch", &store);
         run("chart split vertical --book Macro", &store);
         run("chart set --book Macro --chart pos:1 --symbol AAPL", &store);
@@ -5430,7 +5897,7 @@ mod tests {
     /// a negative id.
     #[test]
     fn the_two_switches_decide_what_a_chart_sees_and_sends() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("chartbook create Macro --symbol AAPL --switch", &store);
         run("chart split vertical --book Macro", &store);
         run("chart set --book Macro --chart pos:1 --symbol AAPL --send-drawings off", &store);
@@ -5481,7 +5948,7 @@ mod tests {
 
     #[test]
     fn a_configuration_moves_the_drawings_that_follow_it() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("chartbook create Macro --symbol AAPL --switch", &store);
         run("chart drawing add line --book Macro --from 2026-09-01,100 --to 2026-09-19,110 --config 3", &store);
         run("chart drawing add line --book Macro --from 2026-09-01,120 --to 2026-09-19,130 --config 3 --width 4", &store);
@@ -5515,7 +5982,7 @@ mod tests {
     /// kind `--from` and `--to` cannot describe.
     #[test]
     fn a_zigzag_is_drawn_through_its_corners() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("chartbook create Macro --symbol AAPL --switch", &store);
         let out = run(
             "chart drawing add zigzag --book Macro --point 2026-09-01,100 --point 2026-09-05,120 --point 2026-09-09,110",
@@ -5571,7 +6038,7 @@ mod tests {
     /// one drawing and put on another without going through the runs by hand.
     #[test]
     fn a_label_keeps_its_bold_through_a_terminal() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("chartbook create Macro --symbol AAPL --switch", &store);
         let out = run(
             "chart drawing add rect --book Macro --from 2026-09-01,180 --to 2026-09-19,192 --text buy-**the**-dip --text-at top",
@@ -5601,7 +6068,7 @@ mod tests {
     /// One bad value refuses the whole command, and names what was wrong.
     #[test]
     fn a_bad_anchor_or_colour_leaves_the_drawings_as_they_were() {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("chartbook create Macro --symbol AAPL --switch", &store);
         for bad in [
             "chart drawing add line --book Macro --from yesterday,180 --to 2026-09-19,192",
@@ -5626,7 +6093,7 @@ mod tests {
 
     /// A store holding what the examples name.
     fn seeded() -> Store {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("watchlist create Semis", &store);
         run("watchlist add Semis NVDA AMD AVGO TSM MU", &store);
         run("section create Default Energy", &store);
@@ -5763,7 +6230,7 @@ mod tests {
     /// skill's "build a chartbook around this list" would be refused for a
     /// reason that is about the fixture rather than about the skill.
     fn skill_seed() -> Store {
-        let store = Store::memory().unwrap();
+        let store = bare();
         run("watchlist create Semis", &store);
         run("watchlist add Semis NVDA AMD AVGO TSM MU", &store);
         run("chartbook create Macro --symbol AAPL --switch", &store);

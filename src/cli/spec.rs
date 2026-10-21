@@ -181,6 +181,10 @@ pub const IN_THE_CALLER: &[(&str, &str)] = &[("provider", "login"), ("provider",
 pub const SELECTOR: &str =
     "a name, case-insensitive, or `id:N` when two of them share one";
 
+/// How a chart template is named on the command line.
+pub const TEMPLATE_SELECTOR: &str =
+    "a chart template's name, case-insensitive, or `id:N` when two of them share one";
+
 /// How a chart is named on the command line.
 ///
 /// Position, not identity, is the stable way to point at one. Rebuilding an
@@ -271,6 +275,41 @@ const AGENT_FLAGS: &[Flag] = &[
 pub const COLOUR: &str =
     "a palette name — Blue, Amber, Violet, Teal, Rose, Green, Orange, Cyan — \
      which follows the theme, or #rrggbb, which does not";
+
+/// Everything `chart indicator` takes, and `template indicator` after the
+/// first two: one list, so the two verbs cannot come to accept different
+/// flags for the same parameter. The chartbook and the chart come first so a
+/// template's verb can leave them off — it has no chart to name.
+const INDICATOR_FLAGS: &[Flag] = &[
+    Flag::valued("book", "BOOK", "which chartbook (default: the open one)"),
+    Flag::valued("chart", "CHART", CHART_SELECTOR),
+    Flag::valued("id", "N", "which one, when a chart has two of a kind"),
+    Flag::valued("period", "N", "bars averaged: SMA, EMA, RSI, ATR, Bollinger; the stochastic's %K length"),
+    Flag::valued("deviations", "F", "standard deviations the Bollinger bands sit at, 0-50"),
+    Flag::valued("fast", "N", "bars the MACD's quick average covers"),
+    Flag::valued("slow", "N", "bars the MACD's slow average covers; above --fast"),
+    Flag::valued("signal", "N", "bars the MACD line is averaged over"),
+    Flag::valued("signal-color", "COLOUR", "the MACD's signal line"),
+    Flag::valued("k-smooth", "N", "bars the stochastic's %K is smoothed over"),
+    Flag::valued("d-period", "N", "bars the stochastic's %D averages %K over"),
+    Flag::valued("anchor", "WHEN", "what VWAP and the volume profile reset on")
+        .of(ANCHORS),
+    Flag::valued("rows", "N", "volume profile rows, or `auto` to follow the instrument's own increment"),
+    Flag::valued("value-area", "F", "the share of volume the value area covers, 0-1"),
+    Flag::valued("poc-color", "COLOUR", "the volume profile's point of control"),
+    Flag::valued("up-color", "COLOUR", "volume bars of a rising session"),
+    Flag::valued("down-color", "COLOUR", "volume bars of a falling session"),
+    Flag::valued("d-color", "COLOUR", "the stochastic's %D line"),
+    Flag::valued("color", "COLOUR", "the line, or the volume profile's background"),
+    Flag::valued("width", "F", "line thickness; 0 draws no line at all"),
+    Flag::valued("style", "STYLE", "how the line is drawn").of(LINE_STYLES),
+    Flag::valued("height", "F", "share of the chart a pane takes, 0.05-0.95: volume, RSI, MACD, ATR, stochastic"),
+    Flag::valued("overbought", "F", "the RSI or stochastic level drawn across the top, 0-100"),
+    Flag::valued("oversold", "F", "the RSI or stochastic level drawn across the bottom, 0-100 and below overbought"),
+    Flag::valued("bands", "LIST", "which bands are drawn: 1,2,3 for a VWAP, 1 or none for a Bollinger"),
+    Flag::valued("band-alpha", "F", "how solid a band's shading is, 0-1"),
+    Flag::valued("visible", "BOOL", "draw it at all").of(SWITCHES),
+];
 
 pub const SURFACE: &[Noun] = &[
     Noun {
@@ -742,6 +781,12 @@ pub const SURFACE: &[Noun] = &[
                         .of(&["on", "off"]),
                     Flag::valued("log-scale", "BOOL", "draw the price axis logarithmic, or linear")
                         .of(&["on", "off"]),
+                    Flag::valued(
+                        "template",
+                        "TEMPLATE",
+                        "show a chart template's indicators in place of the chart's own, or \
+                         `none` to keep them as its own; a name or id:N",
+                    ),
                 ],
                 example: "omacharts chart set --symbol NVDA --resolution 1h --style candles",
                 json: true,
@@ -755,36 +800,7 @@ pub const SURFACE: &[Noun] = &[
                     Arg::req("ACTION", "what to do").of(&["list", "add", "remove", "set"]),
                     Arg::opt("KIND", "the indicator, for add, remove and set").of(KINDS),
                 ],
-                flags: &[
-                    Flag::valued("book", "BOOK", "which chartbook (default: the open one)"),
-                    Flag::valued("chart", "CHART", CHART_SELECTOR),
-                    Flag::valued("id", "N", "which one, when a chart has two of a kind"),
-                    Flag::valued("period", "N", "bars averaged: SMA, EMA, RSI, ATR, Bollinger; the stochastic's %K length"),
-                    Flag::valued("deviations", "F", "standard deviations the Bollinger bands sit at, 0-50"),
-                    Flag::valued("fast", "N", "bars the MACD's quick average covers"),
-                    Flag::valued("slow", "N", "bars the MACD's slow average covers; above --fast"),
-                    Flag::valued("signal", "N", "bars the MACD line is averaged over"),
-                    Flag::valued("signal-color", "COLOUR", "the MACD's signal line"),
-                    Flag::valued("k-smooth", "N", "bars the stochastic's %K is smoothed over"),
-                    Flag::valued("d-period", "N", "bars the stochastic's %D averages %K over"),
-                    Flag::valued("anchor", "WHEN", "what VWAP and the volume profile reset on")
-                        .of(ANCHORS),
-                    Flag::valued("rows", "N", "volume profile rows, or `auto` to follow the instrument's own increment"),
-                    Flag::valued("value-area", "F", "the share of volume the value area covers, 0-1"),
-                    Flag::valued("poc-color", "COLOUR", "the volume profile's point of control"),
-                    Flag::valued("up-color", "COLOUR", "volume bars of a rising session"),
-                    Flag::valued("down-color", "COLOUR", "volume bars of a falling session"),
-                    Flag::valued("d-color", "COLOUR", "the stochastic's %D line"),
-                    Flag::valued("color", "COLOUR", "the line, or the volume profile's background"),
-                    Flag::valued("width", "F", "line thickness; 0 draws no line at all"),
-                    Flag::valued("style", "STYLE", "how the line is drawn").of(LINE_STYLES),
-                    Flag::valued("height", "F", "share of the chart a pane takes, 0.05-0.95: volume, RSI, MACD, ATR, stochastic"),
-                    Flag::valued("overbought", "F", "the RSI or stochastic level drawn across the top, 0-100"),
-                    Flag::valued("oversold", "F", "the RSI or stochastic level drawn across the bottom, 0-100 and below overbought"),
-                    Flag::valued("bands", "LIST", "which bands are drawn: 1,2,3 for a VWAP, 1 or none for a Bollinger"),
-                    Flag::valued("band-alpha", "F", "how solid a band's shading is, 0-1"),
-                    Flag::valued("visible", "BOOL", "draw it at all").of(SWITCHES),
-                ],
+                flags: INDICATOR_FLAGS,
                 example: "omacharts chart indicator add sma --period 200 --color Amber --style dashed",
                 json: true,
                 writes: true,
@@ -852,6 +868,79 @@ pub const SURFACE: &[Noun] = &[
                 args: &[Arg::opt("STATE", "omit to read it").of(SWITCHES)],
                 flags: &[],
                 example: "omacharts chart crosshair off",
+                json: true,
+                writes: true,
+                workspace: false,
+            },
+        ],
+    },
+    Noun {
+        name: "template",
+        about: "Chart templates: named sets of indicators that charts share",
+        local: false,
+        verbs: &[
+            Verb {
+                name: "list",
+                about: "Every chart template, what it holds, and how many charts use it; \
+                        * marks the one new charts open with",
+                args: &[],
+                flags: &[],
+                example: "omacharts template list --json",
+                json: true,
+                writes: false,
+                workspace: true,
+            },
+            Verb {
+                name: "create",
+                about: "Make an empty chart template",
+                args: &[Arg::req("NAME", "what to call it")],
+                flags: &[],
+                example: "omacharts template create Swing",
+                json: true,
+                writes: true,
+                workspace: true,
+            },
+            Verb {
+                name: "rename",
+                about: "Give a chart template a different name; the charts on it stay on it",
+                args: &[Arg::req("TEMPLATE", TEMPLATE_SELECTOR), Arg::req("NAME", "the new name")],
+                flags: &[],
+                example: "omacharts template rename Default Everyday",
+                json: true,
+                writes: true,
+                workspace: true,
+            },
+            Verb {
+                name: "delete",
+                about: "Remove a chart template; the charts using it keep its indicators as their own",
+                args: &[Arg::req("TEMPLATE", TEMPLATE_SELECTOR)],
+                flags: &[],
+                example: "omacharts template delete Default",
+                json: true,
+                writes: true,
+                workspace: true,
+            },
+            Verb {
+                name: "indicator",
+                about: "Add, remove, list or reconfigure a chart template's indicators; \
+                        every chart using it follows",
+                args: &[
+                    Arg::req("ACTION", "what to do").of(&["list", "add", "remove", "set"]),
+                    Arg::req("TEMPLATE", TEMPLATE_SELECTOR),
+                    Arg::opt("KIND", "the indicator, for add, remove and set").of(KINDS),
+                ],
+                flags: INDICATOR_FLAGS.split_at(2).1,
+                example: "omacharts template indicator add Default rsi --period 14",
+                json: true,
+                writes: true,
+                workspace: true,
+            },
+            Verb {
+                name: "default",
+                about: "The chart template new charts open with",
+                args: &[Arg::opt("TEMPLATE", "a name, id:N, or `none`; omit to read it")],
+                flags: &[],
+                example: "omacharts template default Default",
                 json: true,
                 writes: true,
                 workspace: false,
@@ -1161,6 +1250,7 @@ const STORED_FIELDS: &[(&str, &str, &str)] = &[
     ),
     ("auto_scale", "chart set", "--auto-scale"),
     ("log_scale", "chart set", "--log-scale"),
+    ("template", "chart set", "--template"),
     ("name", "chartbook rename", ""),
     ("layout", "chart split", ""),
     ("focused", "chart focus", ""),

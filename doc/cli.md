@@ -1093,6 +1093,7 @@ story, and adding a manifest would be a second thing to maintain for nothing.
 | `section` | the named groups inside a watchlist |
 | `chartbook` | saved arrangements of charts |
 | `chart` | the charts inside a chartbook |
+| `template` | chart templates: named sets of indicators that charts share |
 | `provider` | the data feed, and signing in to one that needs it |
 | `config` | stored preferences |
 | `cache` | the cached market data |

@@ -51,6 +51,15 @@ impl Workspace {
         }
     }
 
+    /// Every chart in every book, to change.
+    pub fn each_pane_mut(&mut self, mut change: impl FnMut(&mut Value)) {
+        for book in self.books_mut() {
+            if let Some(panes) = book["panes"].as_array_mut() {
+                panes.iter_mut().for_each(&mut change);
+            }
+        }
+    }
+
     pub fn books(&self) -> &[Value] {
         self.value["books"].as_array().map(|b| b.as_slice()).unwrap_or(&[])
     }
