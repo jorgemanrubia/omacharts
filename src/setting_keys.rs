@@ -68,6 +68,7 @@ const SHARED: &[&str] = &[
     "chart_template",
     "chart_templates",
     "chart_header",
+    "chartbook_templates",
 ];
 
 pub fn kind(key: &str) -> Kind {
@@ -99,6 +100,7 @@ mod tests {
         assert_eq!(kind("chart_templates"), Kind::Shared);
         assert_eq!(kind("chart_template"), Kind::Shared);
         assert_eq!(kind("chart_header"), Kind::Shared);
+        assert_eq!(kind("chartbook_templates"), Kind::Shared);
     }
 
     /// Every key the app writes has been given a kind on purpose.

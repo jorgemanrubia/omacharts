@@ -4,6 +4,7 @@
 //! worth testing without a display lives in `omacharts-engine`.
 
 pub mod backup;
+pub mod book_templates;
 pub mod bar_plugin;
 pub mod cache;
 pub mod chart_defaults;
