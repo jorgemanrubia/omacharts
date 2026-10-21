@@ -772,6 +772,8 @@ pub const SURFACE: &[Noun] = &[
                     Flag::valued("rows", "N", "volume profile rows, or `auto` to follow the instrument's own increment"),
                     Flag::valued("value-area", "F", "the share of volume the value area covers, 0-1"),
                     Flag::valued("poc-color", "COLOUR", "the volume profile's point of control"),
+                    Flag::valued("up-color", "COLOUR", "volume bars of a rising session"),
+                    Flag::valued("down-color", "COLOUR", "volume bars of a falling session"),
                     Flag::valued("d-color", "COLOUR", "the stochastic's %D line"),
                     Flag::valued("color", "COLOUR", "the line, or the volume profile's background"),
                     Flag::valued("width", "F", "line thickness; 0 draws no line at all"),

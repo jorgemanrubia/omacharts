@@ -39,6 +39,6 @@ pub use drawings::{
 pub use frame::Frame;
 pub use ink::{Ink, Tag};
 pub use theme::{
-    theme_bars, BarColouring, BarScheme, BarSlot, ColorChoice, Direction, Mode, Source, Swatch, Theme,
+    editable_bars, theme_bars, BarColouring, BarScheme, BarSlot, ColorChoice, Direction, Mode, Source, Swatch, Theme,
     UiColors, UiSlot,
 };

@@ -736,9 +736,18 @@ bars carry their direction again, in the "theme-hollow" scheme
 round, red for a rise and green for a fall, the way charts are read in Taiwan,
 mainland China, Japan and Korea. It remembers the palette in use as well.
 
-`config set bar_scheme theme-mono` reaches the same scheme and is not the same
-command: it does not remember the scheme that was in use, so putting the colour
-back lands on the default rather than on the palette you had picked.
+Bar colours belong to each chart, so `config bars` answers for every chart at
+once — the charts in every chartbook and the ones made next — the way Apply to
+all charts does in the preferences. One chart on its own is
+`chart set --colouring theme|theme-hollow|theme-red-up|theme-mono`.
+
+`config set bar_scheme theme-mono` changes only what new charts open with, and
+does not remember the scheme that was in use.
+
+What a new chart opens with is a handful of settings, the ones the preferences
+show under Charts: `bar_style`, `bar_scheme`, `chart_session`, `show_grid`,
+`chart_log_scale`, `chart_shows_drawings` and `chart_sends_drawings`. Changing
+one chart never changes them.
 
 ## Which data feed the charts come from
 

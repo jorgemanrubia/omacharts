@@ -3130,6 +3130,7 @@ impl Window {
         self.release_all_panes();
         self.panes.borrow_mut().clear();
         let mut restored: Vec<(Rc<ChartPane>, StoredPane)> = Vec::new();
+        let defaults = ChartDefaults::load(&self.store);
         for stored in book.panes {
             if !wanted.contains(&stored.id) {
                 continue;
@@ -3144,7 +3145,7 @@ impl Window {
                     .colouring
                     .as_deref()
                     .and_then(BarColouring::from_key)
-                    .unwrap_or(ChartDefaults::load(&self.store).colouring),
+                    .unwrap_or(defaults.colouring),
                 Session::from_key(&stored.session).unwrap_or_default(),
                 stored.show_grid,
                 stored.linked,
@@ -6284,9 +6285,9 @@ impl Window {
         self.theming.borrow().theme()
     }
 
-    /// The bar scheme the charts are painted in.
+    /// The bar scheme the focused chart is painted in.
     pub fn bar_scheme(&self) -> omacharts_engine::BarScheme {
-        self.theming.borrow().bar_scheme()
+        pane_scheme(&self.focused_pane(), &self.theme())
     }
 
     /// The focused chart's trading hours.
@@ -6365,7 +6366,8 @@ impl Window {
         pane.view.set_bar_style(style);
         // What the colouring paints depends on the style: hollow is coloured
         // on an OHLC bar.
-        pane.view.restyle(self.theme(), pane_scheme(&pane, &self.theme()));
+        let theme = self.theme();
+        pane.view.restyle(theme.clone(), pane_scheme(&pane, &theme));
         self.save_workspace();
     }
 
@@ -6376,7 +6378,8 @@ impl Window {
     pub fn set_bar_colouring(self: &Rc<Self>, colouring: BarColouring) {
         let pane = self.focused_pane();
         pane.colouring.set(colouring);
-        pane.view.restyle(self.theme(), pane_scheme(&pane, &self.theme()));
+        let theme = self.theme();
+        pane.view.restyle(theme.clone(), pane_scheme(&pane, &theme));
         self.save_workspace();
     }
 
@@ -6411,7 +6414,10 @@ impl Window {
                 stored.show_grid = defaults.show_grid;
                 stored.log_scale = defaults.log_scale;
                 stored.shows_drawings = defaults.shows_drawings;
-                stored.sends_drawings = defaults.sends_drawings;
+                // Not sending: turning it on or off moves a chart's drawings
+                // between it and its symbol, which only a chart on screen
+                // can do. It takes the default when its book is next open
+                // and somebody applies again.
             }
         }
         self.sync_chart_actions(&self.focused_pane());
@@ -6425,16 +6431,14 @@ impl Window {
         pane.bar_style.set(defaults.bar_style);
         pane.view.set_bar_style(defaults.bar_style);
         pane.colouring.set(defaults.colouring);
-        pane.view.restyle(self.theme(), pane_scheme(pane, &self.theme()));
+        let theme = self.theme();
+        pane.view.restyle(theme.clone(), pane_scheme(pane, &theme));
         pane.session.set(defaults.session);
         pane.show_grid.set(defaults.show_grid);
         pane.view.set_show_grid(defaults.show_grid);
         pane.view.set_price_log(defaults.log_scale);
-        let focused = self.focused.get();
-        self.focused.set(pane.id);
-        self.set_shows_drawings(defaults.shows_drawings);
-        self.set_sends_drawings(defaults.sends_drawings);
-        self.focused.set(focused);
+        self.set_pane_shows_drawings(pane, defaults.shows_drawings);
+        self.set_pane_sends_drawings(pane, defaults.sends_drawings);
     }
 
     /// Right-clicking the chart offers the things you change most, and a way
@@ -6628,13 +6632,17 @@ impl Window {
     /// draw. It is shown its drawings again, since the answer to "which do
     /// I see" just changed.
     pub fn set_shows_drawings(self: &Rc<Self>, shows: bool) {
-        let pane = self.focused_pane();
+        self.set_pane_shows_drawings(&self.focused_pane(), shows);
+        self.save_workspace();
+    }
+
+    /// The same for any chart, written down by the caller.
+    fn set_pane_shows_drawings(self: &Rc<Self>, pane: &Rc<ChartPane>, shows: bool) {
         pane.shows_drawings.set(shows);
         let instrument = pane.instrument.borrow().clone();
         if let Some(instrument) = instrument {
             self.reload_drawings(&instrument.symbol, instrument.suffix.as_deref());
         }
-        self.save_workspace();
     }
 
     /// Whether what is drawn on the focused chart goes to the symbol.
@@ -6650,7 +6658,12 @@ impl Window {
     /// one — and a drawing made before charts had names belongs to none of
     /// them and stays where it is.
     pub fn set_sends_drawings(self: &Rc<Self>, sends: bool) {
-        let pane = self.focused_pane();
+        self.set_pane_sends_drawings(&self.focused_pane(), sends);
+        self.save_workspace();
+    }
+
+    /// The same for any chart, written down by the caller.
+    fn set_pane_sends_drawings(self: &Rc<Self>, pane: &Rc<ChartPane>, sends: bool) {
         if pane.sends_drawings.get() == sends {
             return;
         }
@@ -6691,7 +6704,6 @@ impl Window {
             }
             self.reload_drawings(&symbol, suffix);
         }
-        self.save_workspace();
     }
 
     /// Show or hide the drawing tools. Ctrl+D, and the toggle top-left.
@@ -7212,7 +7224,7 @@ impl Window {
             let Some(key) = value.and_then(|v| v.str().map(str::to_string)) else { return };
             let Some(chosen) = Session::from_key(&key) else { return };
             action.set_state(&key.to_variant());
-            this.focused_pane().session.set(chosen);
+            this.set_session(chosen);
             this.redraw_current();
         });
         actions.add_action(&session);

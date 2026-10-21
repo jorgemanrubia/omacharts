@@ -25,6 +25,7 @@ use omacharts_engine::{
 
 use super::charts::{self, Workspace};
 use super::{parser, Caller, Fault, Live, Outcome, EXIT_USAGE};
+use crate::chart_defaults::ChartDefaults;
 use crate::store::{Entry, Section, Store, DEFAULT_WATCHLIST};
 
 /// Parse and run.
@@ -1153,7 +1154,7 @@ fn charts_verb(
                 "name": name,
                 "layout": {"leaf": id},
                 "focused": id,
-                "panes": [charts::new_pane(id, &symbol, None)],
+                "panes": [charts::new_pane(id, &symbol, None, &ChartDefaults::load(store))],
                 "watchlist": watchlist,
             });
             let at = workspace.push(book);
@@ -1226,7 +1227,7 @@ fn chart_verb(
                 .iter()
                 .find(|p| p["id"].as_u64() == Some(pane as u64))
                 .cloned()
-                .unwrap_or_else(|| charts::new_pane(added, "SPY", None));
+                .unwrap_or_else(|| charts::new_pane(added, "SPY", None, &ChartDefaults::load(store)));
             let target = workspace.book_mut(at)?;
             target["layout"] = charts::split_leaf(&target["layout"], pane, added, horizontal);
             charts::panes_mut(target)?.push(charts::copy_pane(&from, added));
@@ -2553,6 +2554,8 @@ struct Edits {
     rows: Option<Option<u64>>,
     value_area: Option<f64>,
     poc_color: Option<ColorChoice>,
+    up_color: Option<ColorChoice>,
+    down_color: Option<ColorChoice>,
     color: Option<ColorChoice>,
     width: Option<f64>,
     style: Option<LineStyle>,
@@ -2599,6 +2602,8 @@ impl Edits {
             },
             value_area: bounded(m, "value-area", 0.0, 1.0)?,
             poc_color: colour(m, "poc-color")?,
+            up_color: colour(m, "up-color")?,
+            down_color: colour(m, "down-color")?,
             color: colour(m, "color")?,
             width: number(m, "width")?,
             style: match arg(m, "style") {
@@ -2654,6 +2659,8 @@ impl Edits {
             && self.rows.is_none()
             && self.value_area.is_none()
             && self.poc_color.is_none()
+            && self.up_color.is_none()
+            && self.down_color.is_none()
             && self.color.is_none()
             && self.width.is_none()
             && self.style.is_none()
@@ -2762,6 +2769,17 @@ impl Edits {
             match kind == IndicatorKind::VolumeProfile {
                 true => params["poc_color"] = to_value(colour)?,
                 false => return Err(refuse("point of control")),
+            }
+        }
+        for (colour, key, what) in [
+            (&self.up_color, "up_color", "rising volume colour"),
+            (&self.down_color, "down_color", "falling volume colour"),
+        ] {
+            if let Some(colour) = colour {
+                match kind == IndicatorKind::Volume {
+                    true => params[key] = to_value(colour)?,
+                    false => return Err(refuse(what)),
+                }
             }
         }
         // The pair may not cross: a band whose floor is above its ceiling is
@@ -3470,9 +3488,14 @@ fn config_bars(
         store.set_setting(COLOURED_BARS, &current);
     }
     store.set_setting(crate::theming::SETTING_BARS, &scheme);
-    // A candle has no row to reload: an open window paints from the scheme it
-    // read, so it is told to read it again.
+    // Charts are painted one by one now, so the question asked of the whole
+    // app is answered on every chart as well as for the next one — what
+    // "Apply to all charts" does with the same choice in the preferences.
+    let mut workspace = charts::Workspace::load(store);
+    workspace.set_on_every_pane("colouring", json!(scheme));
+    workspace.save(store);
     if let Some(live) = live {
+        live.reload_workspace();
         live.adopt_theming();
     }
     let text = match (state, scheme == current) {

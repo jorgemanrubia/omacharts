@@ -16,8 +16,8 @@ use std::fmt::Write as _;
 
 use omacharts_engine::frame::{GUTTER_WIDTH, RING_WIDTH};
 use omacharts_engine::theme::{
-    bar_schemes, builtin_themes, BarScheme, Mode, Theme, FALLBACK_THEME_ID, OMARCHY_ID,
-    THEME_BARS_ID, THEME_HOLLOW_ID, THEME_MONO_ID,
+    builtin_themes, BarColouring, BarScheme, Mode, Theme, FALLBACK_THEME_ID, OMARCHY_ID,
+    THEME_BARS_ID,
 };
 use omacharts_engine::Ink;
 use omacharts_engine::omarchy;
@@ -52,7 +52,7 @@ impl Theming {
         // install already matches everything else on screen.
         let default_theme = if omarchy.is_some() { OMARCHY_ID } else { FALLBACK_THEME_ID };
 
-        Theming {
+        let mut theming = Theming {
             theme_id: store.setting(SETTING_THEME).unwrap_or_else(|| default_theme.to_string()),
             scheme_id: store.setting(SETTING_BARS).unwrap_or_else(|| THEME_BARS_ID.to_string()),
             omarchy,
@@ -62,7 +62,33 @@ impl Theming {
             custom_themes: store.custom_themes(),
             home,
             provider: None,
-        }
+        };
+        theming.carry_over_candle_colours(store);
+        theming
+    }
+
+    /// Bar schemes used to carry colours of their own; now a theme does. A
+    /// scheme in use whose colours are not the theme's — the blue and orange
+    /// one, the classic pair, one somebody made — becomes a copy of the theme
+    /// wearing them, so nobody opens the app to different candles. Once: the
+    /// setting then names a colouring, and this finds nothing to do.
+    fn carry_over_candle_colours(&mut self, store: &Store) {
+        let Some(bars) = legacy_bar_colours(&self.scheme_id)
+            .or_else(|| store.legacy_bar_scheme(&self.scheme_id))
+        else {
+            return;
+        };
+        let base = self.theme();
+        let name = format!("{} with {}", base.name, bars.name);
+        let id = format!("custom-{}", self.scheme_id);
+        let hollow = bars.up_fill.len() == 9 && bars.up_fill.ends_with("00");
+        let mut theme = base.duplicate(id.clone(), name);
+        theme.bars = Some(omacharts_engine::BarScheme { mono: String::new(), ..bars });
+        store.save_theme(&theme);
+        self.custom_themes = store.custom_themes();
+        self.select_theme(&id, store);
+        let colouring = if hollow { BarColouring::Hollow } else { BarColouring::Filled };
+        self.select_bar_scheme(colouring.key(), store);
     }
 
     pub fn omarchy_available(&self) -> bool {
@@ -82,14 +108,6 @@ impl Theming {
 
     /// Every bar scheme on offer. The first is built from the active theme, so
     /// candles match the desktop without the user choosing anything.
-    pub fn bar_schemes(&self) -> Vec<BarScheme> {
-        self.bar_schemes_for(&self.theme())
-    }
-
-    fn bar_schemes_for(&self, theme: &Theme) -> Vec<BarScheme> {
-        bar_schemes(theme)
-    }
-
     /// The active theme, owned.
     ///
     /// A theme can vanish — Omarchy uninstalled, a custom one deleted from
@@ -104,24 +122,14 @@ impl Theming {
             .unwrap_or_else(|| self.builtin_themes[0].clone())
     }
 
+    /// What new charts paint their bars in, and what the watchlist and the
+    /// bar widget say up and down in.
     pub fn bar_scheme(&self) -> BarScheme {
         self.bar_scheme_for(&self.theme())
     }
 
     fn bar_scheme_for(&self, theme: &Theme) -> BarScheme {
-        let schemes = self.bar_schemes_for(theme);
-        // Schemes that used to carry colours of their own come back as the
-        // theme's colours painted the same way; the rest as plain filled.
-        let id = match self.scheme_id.as_str() {
-            "hollow" => THEME_HOLLOW_ID,
-            "monochrome" => THEME_MONO_ID,
-            id => id,
-        };
-        schemes
-            .iter()
-            .find(|s| s.id == id)
-            .cloned()
-            .unwrap_or_else(|| schemes[0].clone())
+        BarColouring::from_key(&self.scheme_id).unwrap_or_default().scheme(theme)
     }
 
     /// The ink the bar widget writes in.
@@ -213,6 +221,28 @@ impl Theming {
         });
         provider.load_from_data(&css);
     }
+}
+
+/// The two fixed schemes whose colours were not the theme's, as they shipped.
+fn legacy_bar_colours(id: &str) -> Option<BarScheme> {
+    let (name, up, down, volume_up, volume_down) = match id {
+        "classic" => ("Classic", "#3fb950", "#f85149", "#2d6e3b", "#8c322e"),
+        "accessible" => ("Blue / Orange", "#4493f8", "#ff9b50", "#2a5a8f", "#8f5a2a"),
+        _ => return None,
+    };
+    Some(BarScheme {
+        id: id.to_string(),
+        name: name.to_string(),
+        source: omacharts_engine::theme::Source::Custom,
+        up: up.to_string(),
+        up_fill: up.to_string(),
+        down: down.to_string(),
+        down_fill: down.to_string(),
+        volume_up: volume_up.to_string(),
+        volume_down: volume_down.to_string(),
+        neutral: "#8b949e".to_string(),
+        mono: String::new(),
+    })
 }
 
 /// How far in from its left edge the window's corner starts its buttons:
@@ -849,7 +879,7 @@ mod tests {
     #[test]
     fn the_stylesheet_redefines_the_platform_colours() {
         let theme = &builtin_themes()[0];
-        let css = stylesheet(theme, &bar_schemes(theme)[0]);
+        let css = stylesheet(theme, &omacharts_engine::theme::theme_bars(theme));
         for name in [
             "window_bg_color",
             "view_bg_color",
@@ -878,7 +908,7 @@ mod tests {
     #[test]
     fn the_frame_is_styled_from_the_engines_colours_and_widths() {
         let theme = &builtin_themes()[0];
-        let scheme = bar_schemes(theme)[0].clone();
+        let scheme = omacharts_engine::theme::theme_bars(theme);
         let css = stylesheet(theme, &scheme);
         let frame = theme.frame(&scheme);
         for (name, value) in [
@@ -922,11 +952,32 @@ mod tests {
     }
 
     #[test]
-    fn the_theme_bar_scheme_is_always_offered_first() {
+    fn a_scheme_with_colours_of_its_own_becomes_a_theme_wearing_them() {
         let store = Store::memory().unwrap();
+        store.set_setting(SETTING_BARS, "accessible");
         let theming = Theming::load(&store);
-        let schemes = theming.bar_schemes();
-        assert_eq!(schemes[0].id, THEME_BARS_ID);
-        assert_eq!(schemes.len(), 4);
+        let theme = theming.theme();
+        assert_eq!(theme.source, omacharts_engine::theme::Source::Custom);
+        assert!(theme.name.ends_with("with Blue / Orange"), "{}", theme.name);
+        assert_eq!(theming.bar_scheme().up, "#4493f8");
+        assert_eq!(theming.scheme_id(), THEME_BARS_ID);
+        // And only once: loading again finds a colouring, not a scheme.
+        let again = Theming::load(&store);
+        assert_eq!(again.theme().id, theme.id);
+        assert_eq!(store.custom_themes().len(), 1);
+    }
+
+    #[test]
+    fn schemes_written_before_colourings_come_back_painted_the_same_way() {
+        let store = Store::memory().unwrap();
+        for (stored, read) in [
+            ("hollow", omacharts_engine::theme::THEME_HOLLOW_ID),
+            ("monochrome", omacharts_engine::theme::THEME_MONO_ID),
+            ("theme-red-up", omacharts_engine::theme::THEME_RED_UP_ID),
+            ("no-such-scheme", THEME_BARS_ID),
+        ] {
+            store.set_setting(SETTING_BARS, stored);
+            assert_eq!(Theming::load(&store).bar_scheme().id, read, "{stored}");
+        }
     }
 }

@@ -246,7 +246,7 @@ impl Theme {
             id: id.into(),
             name: name.into(),
             source: Source::Custom,
-            bars: Some(theme_bars(self)),
+            bars: Some(editable_bars(self)),
             ..self.clone()
         }
     }
@@ -678,6 +678,13 @@ pub fn theme_bars(theme: &Theme) -> BarScheme {
         bars.mono = derived_mono(theme, &bars.up, &bars.down);
     }
     bars
+}
+
+/// The candle colours a theme holds as written: its own if somebody set
+/// them, otherwise the palette's. Monochrome stays empty unless it was set,
+/// so it keeps following the theme's text until somebody chooses otherwise.
+pub fn editable_bars(theme: &Theme) -> BarScheme {
+    theme.bars.clone().unwrap_or_else(|| palette_bars(theme))
 }
 
 /// Candles from the palette's green and rose, for a theme nobody has set

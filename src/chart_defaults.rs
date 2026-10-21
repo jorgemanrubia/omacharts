@@ -26,25 +26,41 @@ pub struct ChartDefaults {
     pub sends_drawings: bool,
 }
 
+/// What a chart opens with when nobody has said otherwise.
+impl Default for ChartDefaults {
+    fn default() -> ChartDefaults {
+        ChartDefaults {
+            bar_style: BarStyle::default(),
+            colouring: BarColouring::default(),
+            session: Session::default(),
+            show_grid: true,
+            log_scale: false,
+            shows_drawings: true,
+            sends_drawings: true,
+        }
+    }
+}
+
 impl ChartDefaults {
     pub fn load(store: &Store) -> ChartDefaults {
+        let fallback = ChartDefaults::default();
         ChartDefaults {
             bar_style: store
                 .setting(SETTING_BAR_STYLE)
                 .and_then(|key| BarStyle::from_key(&key))
-                .unwrap_or_default(),
+                .unwrap_or(fallback.bar_style),
             colouring: store
                 .setting(crate::theming::SETTING_BARS)
                 .and_then(|key| BarColouring::from_key(&key))
-                .unwrap_or_default(),
+                .unwrap_or(fallback.colouring),
             session: store
                 .setting(SETTING_SESSION)
                 .and_then(|key| Session::from_key(&key))
-                .unwrap_or_default(),
-            show_grid: store.setting_bool(SETTING_SHOW_GRID, true),
-            log_scale: store.setting_bool(SETTING_LOG_SCALE, false),
-            shows_drawings: store.setting_bool(SETTING_SHOWS_DRAWINGS, true),
-            sends_drawings: store.setting_bool(SETTING_SENDS_DRAWINGS, true),
+                .unwrap_or(fallback.session),
+            show_grid: store.setting_bool(SETTING_SHOW_GRID, fallback.show_grid),
+            log_scale: store.setting_bool(SETTING_LOG_SCALE, fallback.log_scale),
+            shows_drawings: store.setting_bool(SETTING_SHOWS_DRAWINGS, fallback.shows_drawings),
+            sends_drawings: store.setting_bool(SETTING_SENDS_DRAWINGS, fallback.sends_drawings),
         }
     }
 

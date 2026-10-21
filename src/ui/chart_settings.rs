@@ -152,6 +152,9 @@ fn bars_group(window: &Rc<Window>, store: &Rc<Store>) -> adw::PreferencesGroup {
 
     let window_for_colouring = window.clone();
     colouring.connect_selected_notify(move |row| {
+        if filling_colourings(row) {
+            return;
+        }
         let style = window_for_colouring.bar_style();
         let Some(chosen) = BarColouring::offered(style).get(row.selected() as usize).copied()
         else {
@@ -190,12 +193,24 @@ fn bars_group(window: &Rc<Window>, store: &Rc<Store>) -> adw::PreferencesGroup {
 /// Offer the colourings a bar of `style` can be painted in, with `current`
 /// selected — as an OHLC bar draws it, so a hollow chart turned into OHLC
 /// reads as coloured, which is what it shows.
+///
+/// A new model selects its first entry on the way in, which the row's own
+/// handler would take for a choice; [`filling_colourings`] tells it not to.
 pub fn fill_colourings(row: &adw::ComboRow, style: BarStyle, current: BarColouring) {
     let offered = BarColouring::offered(style);
     let names: Vec<&str> = offered.iter().map(|c| c.label(style)).collect();
+    row.set_widget_name(FILLING);
     row.set_model(Some(&gtk::StringList::new(&names)));
     let shown = current.for_style(style);
     row.set_selected(offered.iter().position(|c| *c == shown).unwrap_or(0) as u32);
+    row.set_widget_name("");
+}
+
+const FILLING: &str = "filling-colourings";
+
+/// Whether the row is being refilled rather than chosen from.
+pub fn filling_colourings(row: &adw::ComboRow) -> bool {
+    row.widget_name() == FILLING
 }
 
 /// The way back to what a new chart opens with, for a chart that has wandered.

@@ -1172,7 +1172,7 @@ mod tests {
         use omacharts_engine::{ink::legible, Tag};
         let store = Store::memory().unwrap();
         let theming = crate::theming::Theming::load(&store);
-        let schemes = theming.bar_schemes();
+        let schemes = omacharts_engine::theme::bar_schemes(&theming.theme());
         assert_eq!(schemes.len(), 4);
         for scheme in schemes {
             store.set_setting(crate::theming::SETTING_BARS, &scheme.id);

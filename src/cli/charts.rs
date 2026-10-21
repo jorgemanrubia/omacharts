@@ -40,6 +40,17 @@ impl Workspace {
         store.set_setting(SETTING, &self.value.to_string());
     }
 
+    /// One field, the same on every chart in every book.
+    pub fn set_on_every_pane(&mut self, key: &str, value: Value) {
+        for book in self.books_mut() {
+            if let Some(panes) = book["panes"].as_array_mut() {
+                for pane in panes {
+                    pane[key] = value.clone();
+                }
+            }
+        }
+    }
+
     pub fn books(&self) -> &[Value] {
         self.value["books"].as_array().map(|b| b.as_slice()).unwrap_or(&[])
     }
@@ -285,28 +296,34 @@ pub fn pane_mut(book: &mut Value, id: u32) -> Option<&mut Value> {
 }
 
 /// A fresh chart, carrying the defaults the window would give it.
-pub fn new_pane(id: u32, symbol: &str, suffix: Option<&str>) -> Value {
+pub fn new_pane(
+    id: u32,
+    symbol: &str,
+    suffix: Option<&str>,
+    defaults: &crate::chart_defaults::ChartDefaults,
+) -> Value {
     json!({
         "id": id,
         "symbol": symbol,
         "suffix": suffix,
         "timeframe": "1D",
         "indicators": [],
-        "bar_style": "candles",
-        "session": "extended",
-        "show_grid": true,
+        "bar_style": defaults.bar_style.key(),
+        "colouring": defaults.colouring.key(),
+        "session": defaults.session.key(),
+        "show_grid": defaults.show_grid,
         // In the first group, which is where the window starts a new
         // chartbook's chart. Unlinked, a book made from a terminal followed
         // nothing in the rail until somebody found `chart set --link`.
         "linked": LinkGroup::Group(1),
-        "shows_drawings": true,
-        "sends_drawings": true,
+        "shows_drawings": defaults.shows_drawings,
+        "sends_drawings": defaults.sends_drawings,
         // What the chart is called among the drawings it makes, so it can
         // take them back if it stops sending.
         "drawing_uid": gtk::glib::uuid_string_random().to_string(),
         "drawings": [],
         "auto_scale": true,
-        "log_scale": false,
+        "log_scale": defaults.log_scale,
     })
 }
 
@@ -396,7 +413,7 @@ mod tests {
             "name": "",
             "layout": layout,
             "focused": panes.first().copied().unwrap_or(1),
-            "panes": panes.iter().map(|id| new_pane(*id, "SPY", None)).collect::<Vec<_>>(),
+            "panes": panes.iter().map(|id| new_pane(*id, "SPY", None, &Default::default())).collect::<Vec<_>>(),
         })
     }
 
@@ -458,7 +475,7 @@ mod tests {
         let book = json!({
             "layout": tree,
             "focused": 9,
-            "panes": [new_pane(4, "SPY", None), new_pane(9, "QQQ", None)],
+            "panes": [new_pane(4, "SPY", None, &Default::default()), new_pane(9, "QQQ", None, &Default::default())],
         });
         assert_eq!(resolve_pane(&book, Some("pos:0")).unwrap(), 4);
         assert_eq!(resolve_pane(&book, Some("pos:1")).unwrap(), 9);

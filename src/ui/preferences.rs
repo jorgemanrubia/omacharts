@@ -109,9 +109,7 @@ impl Preferences {
 ///
 /// A sidebar rather than the preferences dialog's own view switcher, because
 /// the dialog fills most of the window and a switcher across its top leaves
-/// that width to margins. The content side is a navigation view so that a
-/// row opening a page of its own — the provider — pushes it there and keeps
-/// the sidebar in place.
+/// that width to margins.
 fn split_view(
     dialog: &adw::Dialog,
     sections: &[(&str, &str, gtk::Widget)],
@@ -375,6 +373,9 @@ fn build_charts_page(context: &Rc<Context>) {
         let changed = changed.clone();
         let defaults = defaults.clone();
         colouring.connect_selected_notify(move |row| {
+            if crate::ui::chart_settings::filling_colourings(row) {
+                return;
+            }
             let style = defaults.get().bar_style;
             let Some(chosen) = BarColouring::offered(style).get(row.selected() as usize).copied()
             else {
@@ -619,7 +620,9 @@ fn bar_colors_group(context: &Rc<Context>) -> adw::PreferencesGroup {
             if !theme.source.is_editable() {
                 return;
             }
-            let mut bars = theme_bars(&theme);
+            // As written rather than as resolved, so a colour nobody set —
+            // monochrome, until somebody does — keeps following the theme.
+            let mut bars = omacharts_engine::editable_bars(&theme);
             BarSlot::set(slot, &mut bars, hex);
             theme.bars = Some(bars);
             ctx.store.save_theme(&theme);

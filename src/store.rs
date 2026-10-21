@@ -1058,6 +1058,14 @@ impl Store {
         let _ = self.conn.execute("DELETE FROM custom_themes WHERE id = ?1", params![id]);
     }
 
+    /// A bar scheme somebody saved before candle colours belonged to themes,
+    /// by id. Read once, to carry the colours of the one in use into a theme.
+    pub fn legacy_bar_scheme(&self, id: &str) -> Option<omacharts_engine::BarScheme> {
+        self.json_rows::<omacharts_engine::BarScheme>("SELECT json FROM custom_bar_schemes")
+            .into_iter()
+            .find(|scheme| scheme.id == id)
+    }
+
     /// A row of JSON that fails to parse is skipped rather than fatal: a theme
     /// saved by a newer version must not stop the app opening.
     fn json_rows<T: serde::de::DeserializeOwned>(&self, sql: &str) -> Vec<T> {
