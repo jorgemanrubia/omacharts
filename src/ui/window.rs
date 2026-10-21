@@ -3105,6 +3105,20 @@ impl Window {
         self.restyle();
     }
 
+    /// Show the settings a backup just put back: everything the window holds
+    /// in memory that came out of them, read again.
+    ///
+    /// The same four things a restore typed in a terminal asks for through
+    /// [`crate::cli::Live`], in the same order. The arrangement goes last and
+    /// without being saved first — what is on screen is exactly what was
+    /// replaced, and saving it would put it back.
+    pub fn adopt_restored(self: &Rc<Self>) {
+        self.adopt_theming();
+        self.adopt_feed();
+        self.reload_watchlists();
+        self.reload_workspace();
+    }
+
     /// Build a chartbook into widgets, replacing whatever is on screen.
     ///
     /// `false` when it cannot be rebuilt — a layout naming panes that are not
@@ -4891,6 +4905,7 @@ impl Window {
         let this = self.clone();
         let editor = self.clone();
         let applier = self.clone();
+        let restorer = self.clone();
         Preferences::present(
             &self.window,
             self.store.clone(),
@@ -4903,6 +4918,7 @@ impl Window {
             }),
             Rc::new(move || editor.edit_timeframes()),
             Rc::new(move || applier.apply_chart_defaults()),
+            Rc::new(move || restorer.adopt_restored()),
         );
     }
 

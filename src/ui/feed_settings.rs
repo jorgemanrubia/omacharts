@@ -49,7 +49,7 @@ struct Panel {
     setup: RefCell<Option<adw::PreferencesGroup>>,
     /// What the page shows below the feeds and their sign-in, kept last as
     /// the sign-in comes and goes.
-    after: Option<adw::PreferencesGroup>,
+    after: Vec<adw::PreferencesGroup>,
     /// True while a browser login is outstanding, so a second press of the
     /// button cannot open a second browser onto the same profile.
     ///
@@ -59,19 +59,19 @@ struct Panel {
 }
 
 /// Fills the settings' data section: the feeds, the chosen one's sign-in
-/// below them, and `after` below that.
+/// below them, and the groups in `after` below that.
 pub fn build(
     page: &adw::PreferencesPage,
     store: Rc<Store>,
     on_change: Rc<dyn Fn()>,
-    after: adw::PreferencesGroup,
+    after: Vec<adw::PreferencesGroup>,
 ) {
     let panel = Rc::new(Panel {
         store,
         on_change,
         page: page.clone(),
         setup: RefCell::new(None),
-        after: Some(after),
+        after,
         signing_in: std::cell::Cell::new(false),
     });
 
@@ -153,7 +153,7 @@ fn rebuild_setup(panel: &Rc<Panel>) {
         panel.page.add(&group);
         *panel.setup.borrow_mut() = Some(group);
     }
-    if let Some(after) = &panel.after {
+    for after in &panel.after {
         if after.parent().is_some() {
             panel.page.remove(after);
         }
@@ -356,7 +356,7 @@ mod tests {
             on_change: Rc::new(|| {}),
             page,
             setup: RefCell::new(None),
-            after: None,
+            after: Vec::new(),
             signing_in: std::cell::Cell::new(false),
         });
         rebuild_setup(&panel);
@@ -429,7 +429,7 @@ mod tests {
             on_change: Rc::new(|| {}),
             page: adw::PreferencesPage::new(),
             setup: RefCell::new(None),
-            after: None,
+            after: Vec::new(),
             signing_in: std::cell::Cell::new(false),
         });
         let tos = providers::listed("tos").expect("thinkorswim is listed");
@@ -474,7 +474,7 @@ mod tests {
             on_change: Rc::new(|| {}),
             page: adw::PreferencesPage::new(),
             setup: RefCell::new(None),
-            after: None,
+            after: Vec::new(),
             signing_in: std::cell::Cell::new(false),
         });
         let group = feeds_group(&panel);
@@ -511,7 +511,7 @@ mod tests {
             on_change: Rc::new(|| {}),
             page: adw::PreferencesPage::new(),
             setup: RefCell::new(None),
-            after: None,
+            after: Vec::new(),
             signing_in: std::cell::Cell::new(false),
         });
         let tos = providers::listed("tos").expect("thinkorswim is listed");

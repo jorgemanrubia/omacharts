@@ -1069,6 +1069,48 @@ pub const SURFACE: &[Noun] = &[
             },
         ],
     },
+    Noun {
+        name: "backup",
+        about: "Copies of your settings, taken automatically, and putting one back",
+        local: false,
+        verbs: &[
+            Verb {
+                name: "list",
+                about: "Every backup, newest first, with when it was taken, its size and \
+                        the schema version it was written at",
+                args: &[],
+                flags: &[],
+                example: "omacharts backup list --json",
+                json: true,
+                writes: false,
+                workspace: false,
+            },
+            Verb {
+                name: "create",
+                about: "Back the settings up now. Nothing new is kept if nothing changed \
+                        since the newest one",
+                args: &[],
+                flags: &[],
+                example: "omacharts backup create",
+                json: true,
+                writes: false,
+                // So the arrangement on screen is in the copy, not the one
+                // written a moment ago.
+                workspace: true,
+            },
+            Verb {
+                name: "restore",
+                about: "Put a backup's settings back, at once and in an open window too. \
+                        What it replaces is backed up first, so this can be undone",
+                args: &[Arg::req("NAME", "a backup's name from `backup list`, with or without .db")],
+                flags: &[],
+                example: "omacharts backup restore settings-20261021-140307",
+                json: true,
+                writes: true,
+                workspace: true,
+            },
+        ],
+    },
 ];
 
 /// The values this table offers have to be the values the engine accepts.

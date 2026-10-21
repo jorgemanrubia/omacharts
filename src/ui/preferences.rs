@@ -19,6 +19,7 @@ use omacharts_engine::theme::{
     theme_bars, BarSlot, UiSlot, FALLBACK_THEME_ID, OMARCHY_ID, SWATCH_NAMES,
 };
 
+use crate::backup;
 use crate::cache;
 use crate::chart_defaults::ChartDefaults;
 use crate::store::Store;
@@ -42,6 +43,8 @@ struct Context {
     on_edit_resolutions: Rc<dyn Fn()>,
     /// Puts every chart to the defaults on the Charts page.
     on_apply_chart_defaults: Rc<dyn Fn()>,
+    /// Has the window read back everything a restored backup changed.
+    on_restored: Rc<dyn Fn()>,
     page: adw::PreferencesPage,
     general_page: adw::PreferencesPage,
     charts_page: adw::PreferencesPage,
@@ -58,6 +61,7 @@ impl Preferences {
         on_change: Rc<dyn Fn()>,
         on_edit_resolutions: Rc<dyn Fn()>,
         on_apply_chart_defaults: Rc<dyn Fn()>,
+        on_restored: Rc<dyn Fn()>,
     ) {
         let dialog = adw::Dialog::new();
         dialog.set_title("Preferences");
@@ -97,6 +101,7 @@ impl Preferences {
             on_change,
             on_edit_resolutions,
             on_apply_chart_defaults,
+            on_restored,
             page,
             general_page,
             charts_page,
@@ -836,8 +841,171 @@ fn build_data_page(context: &Rc<Context>) {
         &context.data_page,
         context.store.clone(),
         context.on_change.clone(),
-        group,
+        vec![group, backups_group(context)],
     );
+}
+
+/// When the settings were last backed up, and the way back to any backup.
+///
+/// Below the cache rather than beside it: the cache is what can be thrown
+/// away, and this is what cannot.
+fn backups_group(context: &Rc<Context>) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::new();
+    group.set_title("Backups");
+    let settings = context.store.path().map(std::path::Path::to_path_buf);
+    group.set_description(Some(&match &settings {
+        Some(path) => format!(
+            "Settings, watchlists, chartbooks, drawings and themes are copied when the \
+             window opens and every hour after, if anything changed, into {}.",
+            home_relative(&backup::dir(path)),
+        ),
+        None => "These settings are not being saved, so there is nothing to back up.".to_string(),
+    }));
+
+    let row = adw::ActionRow::new();
+    row.set_title("Last backup");
+    let restore = gtk::Button::with_label("Restore…");
+    restore.set_valign(gtk::Align::Center);
+
+    // One closure, because taking a backup and restoring one both change the
+    // answer, and the button has nothing to open while there is nothing in it.
+    let refresh: Rc<dyn Fn()> = {
+        let (row, restore, settings) = (row.clone(), restore.clone(), settings.clone());
+        Rc::new(move || {
+            let backups = settings.as_deref().map(backup::list).unwrap_or_default();
+            row.set_subtitle(&match backups.first() {
+                Some(newest) => format!(
+                    "{} · {} kept",
+                    capitalised(&backup::when(newest.taken, chrono::Local::now())),
+                    backups.len()
+                ),
+                None => "None yet".to_string(),
+            });
+            restore.set_sensitive(!backups.is_empty());
+        })
+    };
+    refresh();
+
+    let now = gtk::Button::with_label("Back Up Now");
+    now.set_valign(gtk::Align::Center);
+    now.set_sensitive(settings.is_some());
+    let store = context.store.clone();
+    let refreshed = refresh.clone();
+    let shown = row.clone();
+    now.connect_clicked(move |_| {
+        match backup::take(&store) {
+            Ok(_) => refreshed(),
+            Err(error) => shown.set_subtitle(&error.to_string()),
+        }
+    });
+
+    let ctx = context.clone();
+    restore.connect_clicked(move |button| choose_backup(&ctx, button));
+
+    row.add_suffix(&now);
+    row.add_suffix(&restore);
+    group.add(&row);
+    group
+}
+
+/// The backups, newest first, to pick one to put back.
+///
+/// One dialog that is both the list and the question, with Cancel the
+/// default: a restore replaces everything on screen, and the one thing that
+/// makes that safe — what it replaces is kept — is said where the choice is
+/// made.
+fn choose_backup(context: &Rc<Context>, anchor: &gtk::Button) {
+    let Some(settings) = context.store.path() else { return };
+    let backups = backup::list(settings);
+
+    let list = gtk::ListBox::new();
+    list.add_css_class("boxed-list");
+    list.set_selection_mode(gtk::SelectionMode::None);
+    let chosen: Rc<RefCell<Option<String>>> = Rc::default();
+    let mut first: Option<gtk::CheckButton> = None;
+    let now = chrono::Local::now();
+    let mut ticks = Vec::new();
+    for item in &backups {
+        let row = adw::ActionRow::new();
+        row.set_title(&capitalised(&backup::when(item.taken, now)));
+        row.set_subtitle(&format!("{} · {}", describe_bytes(item.bytes as i64), item.name));
+        let tick = gtk::CheckButton::new();
+        match &first {
+            Some(leader) => tick.set_group(Some(leader)),
+            None => first = Some(tick.clone()),
+        }
+        row.add_prefix(&tick);
+        row.set_activatable_widget(Some(&tick));
+        list.append(&row);
+        ticks.push((tick, item.name.clone()));
+    }
+
+    let scroller = gtk::ScrolledWindow::new();
+    scroller.set_hscrollbar_policy(gtk::PolicyType::Never);
+    scroller.set_propagate_natural_height(true);
+    scroller.set_max_content_height(360);
+    scroller.set_child(Some(&list));
+
+    let dialog = adw::AlertDialog::new(
+        Some("Restore Settings"),
+        Some(
+            "Watchlists, chartbooks, drawings, themes and settings go back to how they \
+             were then. What is there now is backed up first, so this can be undone. \
+             Cached prices are not touched.",
+        ),
+    );
+    dialog.set_extra_child(Some(&scroller));
+    dialog.add_response("cancel", "Cancel");
+    dialog.add_response("restore", "Restore");
+    dialog.set_response_appearance("restore", adw::ResponseAppearance::Destructive);
+    dialog.set_response_enabled("restore", false);
+    dialog.set_default_response(Some("cancel"));
+    dialog.set_close_response("cancel");
+
+    for (tick, name) in ticks {
+        let (chosen, gate) = (chosen.clone(), dialog.clone());
+        tick.connect_toggled(move |tick| {
+            if tick.is_active() {
+                *chosen.borrow_mut() = Some(name.clone());
+                gate.set_response_enabled("restore", true);
+            }
+        });
+    }
+
+    let ctx = context.clone();
+    let preferences = anchor.ancestor(adw::Dialog::static_type()).and_downcast::<adw::Dialog>();
+    let anchor_kept = anchor.clone();
+    dialog.connect_response(None, move |_, response| {
+        let Some(name) = chosen.borrow().clone().filter(|_| response == "restore") else {
+            return;
+        };
+        match backup::restore(&ctx.store, &name) {
+            Ok(_) => {
+                // Every page of this dialog was built from the settings that
+                // were just replaced, so it goes rather than showing them.
+                if let Some(preferences) = &preferences {
+                    preferences.close();
+                }
+                (ctx.on_restored)();
+            }
+            Err(error) => {
+                let failed =
+                    adw::AlertDialog::new(Some("Not Restored"), Some(&error.to_string()));
+                failed.add_response("close", "Close");
+                failed.present(Some(&anchor_kept));
+            }
+        }
+    });
+    dialog.present(Some(anchor));
+}
+
+/// "today at 14:03" as the first words of a row.
+fn capitalised(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
 }
 
 /// The bar widget: one switch, and the truth about what it did.
@@ -1015,7 +1183,7 @@ fn unique_id(name: &str, taken: &[String]) -> String {
         .expect("an unbounded range runs out of nothing")
 }
 
-fn describe_bytes(bytes: i64) -> String {
+pub(crate) fn describe_bytes(bytes: i64) -> String {
     const KB: f64 = 1024.0;
     const MB: f64 = KB * 1024.0;
     const GB: f64 = MB * 1024.0;

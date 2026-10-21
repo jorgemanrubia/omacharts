@@ -927,6 +927,35 @@ the cache will be pruned back under 2.0 GB
 `cache clear` throws every cached series away. Settings, watchlists and
 chartbooks are not cache and are left alone.
 
+## Backups of your settings
+
+Everything you made — settings, watchlists, chartbooks, drawings, themes — is
+copied to `backups/` beside the settings file when the window opens and every
+hour after, whenever something changed. The newest ten are kept, and the newest
+one of each of the last fourteen days. Cached prices are not part of it.
+
+```
+$ omacharts backup list
+settings-20261021-140307.db  2026-10-21 16:03:07     68 kB  schema 4
+settings-20261021-130212.db  2026-10-21 15:02:12     68 kB  schema 4
+  [exit 0]
+
+$ omacharts backup create
+backed up the settings to settings-20261021-141522.db (68 kB)
+  [exit 0]
+
+$ omacharts backup restore settings-20261021-130212
+restored the settings from settings-20261021-130212.db (2026-10-21 15:02:12); what they replaced is kept as settings-20261021-141530.db
+  [exit 0]
+```
+
+Names are the moment in UTC; the listing shows local time. A restore applies at
+once, in a window that is open too: the charts, rail and theme on screen become
+the restored ones. What it replaced is backed up first, so restoring that undoes
+it. A backup written by a newer Omacharts is refused with nothing changed, and
+one from an older one is brought up to date as it is restored. Preferences ›
+Data › Backups does the same from the window.
+
 ## Teaching an agent about this app
 
 Everything above is enough for an agent that has already been pointed here.
@@ -1055,6 +1084,7 @@ story, and adding a manifest would be a second thing to maintain for nothing.
 | `provider` | the data feed, and signing in to one that needs it |
 | `config` | stored preferences |
 | `cache` | the cached market data |
+| `backup` | copies of your settings, and putting one back |
 | `plugin` | the widget in the Omarchy bar |
 | `skill` | the agent skill, installed only when asked |
 

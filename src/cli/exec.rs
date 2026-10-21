@@ -176,6 +176,10 @@ pub fn dispatch(
         ("cache", "clear") => cache_clear(store, json),
         ("cache", "limit") => cache_limit(store, m, json),
 
+        ("backup", "list") => backup_list(store, json),
+        ("backup", "create") => backup_create(store, json),
+        ("backup", "restore") => backup_restore(store, m, json, live),
+
         _ => Err(Fault::usage(format!("no such command: {noun} {verb}"))),
     };
 
@@ -3640,6 +3644,93 @@ fn cache_limit(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<Str
     )
 }
 
+fn backup_fault(error: crate::backup::Error) -> Fault {
+    Fault::new(super::EXIT_ERROR, error.to_string())
+}
+
+fn backup_json(backup: &crate::backup::Backup) -> Value {
+    json!({
+        "name": backup.name,
+        "takenAt": backup.taken.to_rfc3339(),
+        "bytes": backup.bytes,
+        "schema": backup.schema,
+    })
+}
+
+fn backup_list(store: &Store, as_json: bool) -> Result<String, Fault> {
+    let settings = store.path().ok_or_else(|| backup_fault(crate::backup::Error::NoFile))?;
+    let backups = crate::backup::list(settings);
+    if as_json {
+        return Ok(format!(
+            "{}\n",
+            json!({
+                "folder": crate::backup::dir(settings).to_string_lossy(),
+                "backups": backups.iter().map(backup_json).collect::<Vec<_>>(),
+            })
+        ));
+    }
+    if backups.is_empty() {
+        return Ok("no backups yet; one is taken when the window opens\n".to_string());
+    }
+    let mut out = String::new();
+    for backup in &backups {
+        out.push_str(&format!(
+            "{}  {}  {:>8}  schema {}\n",
+            backup.name,
+            crate::backup::local_stamp(backup.taken),
+            crate::ui::preferences::describe_bytes(backup.bytes as i64),
+            backup.schema.map(|v| v.to_string()).unwrap_or_else(|| "?".to_string()),
+        ));
+    }
+    Ok(out)
+}
+
+fn backup_create(store: &Store, as_json: bool) -> Result<String, Fault> {
+    let (backup, fresh) = crate::backup::take(store).map_err(backup_fault)?;
+    let mut value = backup_json(&backup);
+    value["new"] = json!(fresh);
+    said(
+        as_json,
+        value,
+        match fresh {
+            true => format!(
+                "backed up the settings to {} ({})",
+                backup.name,
+                crate::ui::preferences::describe_bytes(backup.bytes as i64)
+            ),
+            false => format!("nothing changed since {}, so nothing new was kept", backup.name),
+        },
+    )
+}
+
+fn backup_restore(
+    store: &Store,
+    m: &clap::ArgMatches,
+    as_json: bool,
+    live: Option<&dyn Live>,
+) -> Result<String, Fault> {
+    let name = required(m, "NAME")?;
+    let restored = crate::backup::restore(store, name).map_err(backup_fault)?;
+    // The window holds the theme, the feed and the rail in memory. The
+    // arrangement is reloaded after this returns, like any command that
+    // writes it.
+    if let Some(live) = live {
+        live.adopt_theming();
+        live.adopt_feed();
+        live.reload_watchlists();
+    }
+    said(
+        as_json,
+        json!({"restored": backup_json(&restored.from), "kept": backup_json(&restored.kept)}),
+        format!(
+            "restored the settings from {} ({}); what they replaced is kept as {}",
+            restored.from.name,
+            crate::backup::local_stamp(restored.from.taken),
+            restored.kept.name,
+        ),
+    )
+}
+
 // -- shared -------------------------------------------------------------
 
 /// Say what happened, in whichever form was asked for.
@@ -5655,5 +5746,77 @@ mod tests {
         run("chartbook create Macro --symbol AAPL --switch", &store);
         run("chart split horizontal --book Macro", &store);
         store
+    }
+
+    /// A window that writes down what it was asked to do.
+    #[derive(Default)]
+    struct Watching(std::cell::RefCell<Vec<&'static str>>);
+
+    impl Live for Watching {
+        fn flush_workspace(&self) {
+            self.0.borrow_mut().push("flush");
+        }
+        fn reload_workspace(&self) {
+            self.0.borrow_mut().push("workspace");
+        }
+        fn reload_watchlists(&self) {
+            self.0.borrow_mut().push("watchlists");
+        }
+        fn adopt_theming(&self) {
+            self.0.borrow_mut().push("theming");
+        }
+        fn adopt_feed(&self) {
+            self.0.borrow_mut().push("feed");
+        }
+        fn warm(&self, _instruments: &[omacharts_engine::Instrument]) {}
+        fn warm_closes(&self, _batches: Vec<Vec<crate::loader::Listing>>) {}
+        fn symbols(&self) -> Option<std::rc::Rc<omacharts_engine::SearchIndex>> {
+            None
+        }
+        fn screenshot(
+            &self,
+            _whole_book: bool,
+            _into: Option<&std::path::Path>,
+            _clipboard: bool,
+        ) -> Result<(String, std::path::PathBuf), Fault> {
+            Err(Fault::new(crate::cli::EXIT_ERROR, "nothing on screen".to_string()))
+        }
+    }
+
+    /// A restore typed at a terminal while the window is open lands in the
+    /// window at once: what is on screen is saved first, so it is in the
+    /// backup the restore keeps, and everything read out of the settings is
+    /// read again afterwards.
+    #[test]
+    fn a_restore_reaches_the_window_that_is_open() {
+        let dir = std::env::temp_dir().join(format!("omacharts-backup-cli-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open_at(&dir.join("omacharts.db")).unwrap();
+
+        assert_eq!(run("backup create", &store).code, 0);
+        let listed: Value = serde_json::from_str(&run("backup list --json", &store).out).unwrap();
+        let name = listed["backups"][0]["name"].as_str().unwrap().to_string();
+        assert_eq!(listed["backups"][0]["schema"], json!(crate::migrations::LATEST));
+        // Out of the way of the backup the restore takes, which would
+        // otherwise land in the same second and replace it.
+        let backups = dir.join("backups");
+        std::fs::rename(backups.join(&name), backups.join("settings-20000101-000000.db")).unwrap();
+        run("watchlist create Later", &store);
+
+        let window = Watching::default();
+        let args: Vec<String> = ["omacharts", "backup", "restore", "settings-20000101-000000"]
+            .map(String::from)
+            .to_vec();
+        let outcome = dispatch(&args, &store, Some(&window), &super::super::Here);
+        assert_eq!(outcome.code, 0, "{}", outcome.err);
+        assert!(outcome.out.contains("what they replaced is kept as settings-"), "{}", outcome.out);
+        assert_eq!(*window.0.borrow(), vec!["flush", "theming", "feed", "watchlists", "workspace"]);
+        assert!(!run("watchlist list", &store).out.contains("Later"));
+
+        let unknown = run("backup restore settings-nope", &store);
+        assert_eq!(unknown.code, crate::cli::EXIT_ERROR);
+        assert!(unknown.err.contains("backup list"), "{}", unknown.err);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

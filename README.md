@@ -98,7 +98,7 @@ this before removing the package:
 omacharts plugin uninstall
 ```
 
-Your data stays in `~/.local/share/omacharts`; delete it for a clean slate. Everything you set up — settings, chartbooks, watchlists, drawings, themes — is in `omacharts.db` there, the file to copy to take it to another machine. Downloaded prices are in `market.db` beside it.
+Your data stays in `~/.local/share/omacharts`; delete it for a clean slate. Everything you set up — settings, chartbooks, watchlists, drawings, themes — is in `omacharts.db` there, the file to copy to take it to another machine. Downloaded prices are in `market.db` beside it. Copies of `omacharts.db` are kept in `backups/` there — taken automatically, the last ten plus one a day for two weeks — and any of them can be put back from Preferences › Data or with `omacharts backup restore`.
 
 ## Data
 

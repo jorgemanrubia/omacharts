@@ -151,6 +151,77 @@ impl Store {
         self.path.as_deref()
     }
 
+    /// Write a consistent copy of the settings file — not the market data —
+    /// to `to`, which must not exist yet. See [`crate::backup`].
+    pub fn snapshot_settings(&self, to: &Path) -> rusqlite::Result<()> {
+        self.conn.execute("VACUUM main INTO ?1", params![to.to_string_lossy()])?;
+        Ok(())
+    }
+
+    /// Replace every row of the settings file with the rows of the settings
+    /// file at `from`, which has to be at this build's schema already.
+    ///
+    /// Row by row in one transaction rather than by swapping files, because
+    /// this runs while other connections — the window's, its loader's — have
+    /// the file open, and they see the new rows on their next read.
+    ///
+    /// Every table but `meta`, which is bookkeeping about the cache rather
+    /// than anything somebody made. Tables are read out of the schema rather
+    /// than named here, so a table added later is restored without anybody
+    /// remembering to add it to a list; columns are named, because a column
+    /// added by `ALTER` sits in a different position than one created with
+    /// its table.
+    pub fn replace_settings(&self, from: &Path) -> rusqlite::Result<()> {
+        self.conn.execute("ATTACH ?1 AS restore", params![from.to_string_lossy()])?;
+        let replaced = self.replace_from_attached();
+        let detached = self.conn.execute("DETACH restore", []);
+        replaced.and(detached.map(|_| ()))
+    }
+
+    fn replace_from_attached(&self) -> rusqlite::Result<()> {
+        let tables: Vec<String> = {
+            let mut stmt = self.conn.prepare(
+                "SELECT name FROM main.sqlite_master
+                 WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name != 'meta'
+                 ORDER BY rowid",
+            )?;
+            stmt.query_map([], |row| row.get(0))?.collect::<Result<_, _>>()?
+        };
+        let columns = |schema: &str, table: &str| -> rusqlite::Result<Vec<String>> {
+            let mut stmt =
+                self.conn.prepare(&format!("PRAGMA {schema}.table_info({})", quoted(table)))?;
+            stmt.query_map([], |row| row.get::<_, String>(1))?.collect()
+        };
+
+        let tx = self.conn.unchecked_transaction()?;
+        // Children before parents on the way out, parents first on the way
+        // in: foreign keys are enforced, and the tables were created in the
+        // order that satisfies them.
+        for table in tables.iter().rev() {
+            tx.execute(&format!("DELETE FROM main.{}", quoted(table)), [])?;
+        }
+        for table in &tables {
+            let theirs = columns("restore", table)?;
+            let shared: Vec<String> = columns("main", table)?
+                .into_iter()
+                .filter(|column| theirs.contains(column))
+                .map(|column| quoted(&column))
+                .collect();
+            if shared.is_empty() {
+                continue;
+            }
+            let list = shared.join(", ");
+            tx.execute(
+                &format!(
+                    "INSERT INTO main.{t} ({list}) SELECT {list} FROM restore.{t}",
+                    t = quoted(table)
+                ),
+                [],
+            )?;
+        }
+        tx.commit()
+    }
+
     /// Bring the database up to date, then decide whether what is cached in
     /// it is still worth believing.
     ///
@@ -1106,7 +1177,11 @@ impl Store {
     }
 }
 
-/// `$XDG_DATA_HOME/omacharts`, falling back to `~/.local/share/omacharts`.
+/// An identifier as SQL, for a table or column name read out of the schema.
+fn quoted(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
 /// The market data file that goes with a settings file: beside it.
 pub fn market_path(settings: &Path) -> PathBuf {
     settings.with_file_name("market.db")
@@ -1159,6 +1234,7 @@ pub fn connect(path: &Path) -> rusqlite::Result<Connection> {
     Ok(conn)
 }
 
+/// `$XDG_DATA_HOME/omacharts`, falling back to `~/.local/share/omacharts`.
 pub fn data_dir() -> PathBuf {
     if let Some(base) = std::env::var_os("XDG_DATA_HOME").filter(|v| !v.is_empty()) {
         return PathBuf::from(base).join("omacharts");
