@@ -116,7 +116,9 @@ mod tests {
 
         let mut unclassified = Vec::new();
         for text in &sources {
-            let live = text.split("#[cfg(test)]").next().unwrap_or("");
+            // Up to the tests module only: a `#[cfg(test)]` helper earlier in
+            // the file must not hide the code after it.
+            let live = text.split("#[cfg(test)]\nmod tests").next().unwrap_or("");
             for argument in written_keys(live) {
                 let argument = argument.trim();
                 if passed_along.contains(&argument) {

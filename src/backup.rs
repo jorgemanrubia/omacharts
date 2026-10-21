@@ -253,9 +253,15 @@ fn write(
         std::fs::remove_file(&partial)?;
         return Ok((newest, false));
     }
-    // Two in one second — a command run twice — are the same moment, and the
-    // later copy replaces the earlier one.
-    let path = folder.join(&name);
+    // Two in one second — commands chained by an agent — must not overwrite
+    // each other: the earlier one is a state that existed. The later is
+    // named a second on, and on until a name is free.
+    let mut at = Utc::now();
+    let mut path = folder.join(&name);
+    while path.exists() {
+        at += chrono::Duration::seconds(1);
+        path = folder.join(format!("{PREFIX}{}{SUFFIX}", at.format(STAMP)));
+    }
     std::fs::rename(&partial, &path)?;
     let backup = describe(&path).ok_or_else(|| std::io::Error::other("the backup vanished"))?;
     Ok((backup, true))
@@ -330,8 +336,16 @@ fn doomed<Tz: TimeZone>(taken: &[DateTime<Tz>], now: &DateTime<Tz>) -> Vec<usize
     let mut days_kept: Vec<NaiveDate> = Vec::new();
     let mut doomed = Vec::new();
     for (at, when) in taken.iter().enumerate() {
+        // From a clock that was ahead and has since been put right: kept, or
+        // every backup taken meanwhile would go at once.
+        if when > now {
+            continue;
+        }
         let hours = (now.clone() - when.clone()).num_hours();
-        let slot = hours / RECENT_EVERY_HOURS;
+        // Slots fixed to the clock, not counted back from now: counted back,
+        // each hourly backup shared the newest's slot and was pruned before
+        // it ever reached a slot of its own.
+        let slot = when.timestamp().div_euclid(RECENT_EVERY_HOURS * 3600);
         let a_slot_kept = (0..RECENT_HOURS).contains(&hours) && !slots_kept.contains(&slot);
         if a_slot_kept {
             slots_kept.push(slot);
@@ -378,6 +392,8 @@ pub fn restore(store: &Store, name: &str) -> Result<Restored, Error> {
 /// that would wipe these.
 pub fn restore_file(store: &Store, path: &Path) -> Result<Restored, Error> {
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    std::fs::metadata(path)
+        .map_err(|error| std::io::Error::new(error.kind(), format!("{}: {error}", path.display())))?;
     if !is_settings(path) {
         return Err(Error::NotSettings(name));
     }
@@ -409,41 +425,27 @@ fn is_settings(path: &Path) -> bool {
 }
 
 /// What this machine keeps when settings arrive from another: its local and
-/// bookkeeping settings, and how wide its sidebar is in each chartbook.
-struct Kept {
-    settings: Vec<(String, String)>,
-    sidebar_width: Option<serde_json::Value>,
-}
-
-fn keep_this_machine(store: &Store) -> Kept {
-    let settings = store
+/// bookkeeping settings.
+fn keep_this_machine(store: &Store) -> Vec<(String, String)> {
+    store
         .settings()
         .into_iter()
         .filter(|(key, _)| setting_keys::kind(key) != setting_keys::Kind::Shared)
-        .collect();
-    let sidebar_width = store
-        .setting(WORKSPACE)
-        .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
-        .and_then(|workspace| {
-            let active = workspace["active"].as_u64().unwrap_or(0) as usize;
-            workspace["books"].get(active).map(|book| book["sidebar_width"].clone())
-        })
-        .filter(|width| !width.is_null());
-    Kept { settings, sidebar_width }
+        .collect()
 }
 
-fn put_back(store: &Store, kept: Kept) {
+fn put_back(store: &Store, kept: Vec<(String, String)>) {
     for (key, _) in store.settings() {
         if setting_keys::kind(&key) != setting_keys::Kind::Shared {
             store.remove_setting(&key);
         }
     }
-    for (key, value) in kept.settings {
+    for (key, value) in kept {
         store.set_setting(&key, &value);
     }
-    // Inside the arrangement rather than a setting of its own: each book
-    // remembers it, and on this screen every one of them gets this one.
-    let Some(width) = kept.sidebar_width else { return };
+    // Each chartbook remembers how wide its sidebar was, on the screen it was
+    // last on. Forgotten, a book takes this machine's own width, which is
+    // the local setting just put back.
     let Some(mut workspace) =
         store.setting(WORKSPACE).and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
     else {
@@ -451,7 +453,7 @@ fn put_back(store: &Store, kept: Kept) {
     };
     if let Some(books) = workspace["books"].as_array_mut() {
         for book in books {
-            book["sidebar_width"] = width.clone();
+            book["sidebar_width"] = serde_json::Value::Null;
         }
     }
     store.set_setting(WORKSPACE, &workspace.to_string());
@@ -486,7 +488,9 @@ fn restore_backup(store: &Store, from: Backup) -> Result<Restored, Error> {
             }
             Err(error) => return Err(error.into()),
         }
-        let (kept, _) = take(store)?;
+        // Not `take`, which prunes: a prune here could remove the very backup
+        // being restored, before it is restored. The next backup prunes.
+        let (kept, _) = write(&settings, |to| store.snapshot_settings(to))?;
         store.replace_settings(&copy)?;
         Ok(Restored { from: from.clone(), kept })
     })();
@@ -590,6 +594,33 @@ mod tests {
         let taken = newest_first((0..24 * 30).map(|h| now - chrono::Duration::hours(h)).collect());
         let kept = taken.len() - doomed(&taken, &now).len();
         assert!(kept <= 20, "{kept}");
+    }
+
+    /// Pruned after every hourly backup, the way the window does, a week
+    /// of changes still leaves one in every two hours of the last day.
+    #[test]
+    fn pruning_after_every_backup_keeps_the_last_day_in_two_hour_steps() {
+        let start = at(1, 0);
+        let mut kept: Vec<DateTime<Utc>> = Vec::new();
+        for hour in 0..24 * 7 {
+            let now = start + chrono::Duration::hours(hour);
+            kept.insert(0, now);
+            let gone = doomed(&kept, &now);
+            kept = kept.iter().enumerate().filter(|(i, _)| !gone.contains(i)).map(|(_, w)| *w).collect();
+        }
+        let now = start + chrono::Duration::hours(24 * 7 - 1);
+        let last_day = kept.iter().filter(|w| (now - **w).num_hours() < 24).count();
+        assert_eq!(last_day, 12, "{kept:?}");
+        assert!(kept.len() <= 20, "{}", kept.len());
+    }
+
+    /// One from a clock that was ahead is not thrown away when the clock is
+    /// put right.
+    #[test]
+    fn a_backup_from_the_future_is_kept() {
+        let now = at(21, 12);
+        let taken = vec![at(28, 12), at(21, 11)];
+        assert!(doomed(&taken, &now).is_empty());
     }
 
     /// Days are the calendar's in the zone given, not UTC's: 21:00 at UTC-5
@@ -830,8 +861,38 @@ mod tests {
         assert_eq!(store.setting("cache_limit").as_deref(), Some("2000000000"));
         let workspace: serde_json::Value =
             serde_json::from_str(&store.setting("workspace").unwrap()).unwrap();
-        assert_eq!(workspace["books"][1]["sidebar_width"], 280);
+        // Forgotten, so each book opens at this machine's own width.
+        assert!(workspace["books"][1]["sidebar_width"].is_null());
         cleanup(&elsewhere);
+        cleanup(&settings);
+    }
+
+    /// Two backups in one second are two states, and both are kept.
+    #[test]
+    fn two_backups_in_one_second_do_not_overwrite_each_other() {
+        let settings = scratch("same-second");
+        let store = Store::open_at(&settings).unwrap();
+        store.set_setting("theme", "paper");
+        let (first, _) = take(&store).unwrap();
+        store.set_setting("theme", "midnight");
+        let (second, fresh) = take(&store).unwrap();
+        assert!(fresh);
+        assert_ne!(first.name, second.name);
+        assert!(first.path.exists() && second.path.exists());
+        cleanup(&settings);
+    }
+
+    /// The backup being restored is still there afterwards, so restoring the
+    /// safety copy and then this one again is always possible.
+    #[test]
+    fn restoring_keeps_the_backup_it_restored() {
+        let settings = scratch("keeps-source");
+        let store = Store::open_at(&settings).unwrap();
+        store.set_setting("theme", "paper");
+        let (then, _) = take(&store).unwrap();
+        store.set_setting("theme", "midnight");
+        restore(&store, &then.name).unwrap();
+        assert!(then.path.exists(), "the restored backup was pruned");
         cleanup(&settings);
     }
 

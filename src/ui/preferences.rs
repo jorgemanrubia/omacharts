@@ -893,7 +893,9 @@ fn backups_group(context: &Rc<Context>) -> adw::PreferencesGroup {
     let shown = row.clone();
     now.connect_clicked(move |_| {
         match backup::take(&store) {
-            Ok(_) => refreshed(),
+            Ok((_, true)) => refreshed(),
+            // Said, or the button looks like it did nothing.
+            Ok((_, false)) => shown.set_subtitle("Nothing changed since the last backup"),
             Err(error) => shown.set_subtitle(&error.to_string()),
         }
     });

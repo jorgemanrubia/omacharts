@@ -3717,9 +3717,21 @@ fn backup_restore(
         Some(rest) => crate::store::home().join(rest),
         None => std::path::PathBuf::from(name),
     };
-    let restored = match path.is_file() || name.contains('/') {
+    // One of this machine's own backups, however it was named, is restored
+    // as that backup: everything in it, this machine's settings included.
+    let own = store
+        .path()
+        .map(crate::backup::dir)
+        .zip(path.parent())
+        .is_some_and(|(folder, parent)| {
+            folder.canonicalize().ok() == parent.canonicalize().ok() && parent.exists()
+        });
+    let restored = match (path.is_file() || name.contains('/')) && !own {
         true => crate::backup::restore_file(store, &path),
-        false => crate::backup::restore(store, name),
+        false => crate::backup::restore(
+            store,
+            path.file_name().and_then(|n| n.to_str()).unwrap_or(name),
+        ),
     }
     .map_err(backup_fault)?;
     // The window holds the theme, the feed and the rail in memory. The
