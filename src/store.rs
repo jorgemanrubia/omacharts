@@ -105,8 +105,10 @@ impl Store {
             Ok(store) => Ok(store),
             // The market file is a cache. One that cannot be read, or that a
             // newer Omacharts wrote, is set aside and started again rather
-            // than allowed to stand between somebody and their settings.
-            Err(_) if !market_usable(path) => {
+            // than allowed to stand between somebody and their settings. Never
+            // when it is the settings file this build cannot read: that
+            // refusal stands, and the cache beside it is somebody's too.
+            Err(_) if !market_usable(path) && settings_usable(path) => {
                 set_aside_market(path);
                 Store::open_both(path)
             }
@@ -1122,6 +1124,14 @@ fn market_usable(settings: &Path) -> bool {
         .is_ok_and(|version| version <= migrations::MARKET_LATEST)
 }
 
+/// Whether this build can read the settings file itself, so that a failure
+/// to open is the market file's alone.
+fn settings_usable(settings: &Path) -> bool {
+    Connection::open(settings)
+        .and_then(|conn| conn.pragma_query_value(None, "user_version", |row| row.get::<_, i32>(0)))
+        .is_ok_and(|version| version <= migrations::LATEST)
+}
+
 /// Move an unusable market file out of the way, kept rather than deleted in
 /// case somebody wants to look at what was in it.
 fn set_aside_market(settings: &Path) {
@@ -1470,6 +1480,37 @@ mod tests {
             assert_eq!(store.cached_series(), 0, "{what}");
             assert!(dir.join("market.db.unreadable").exists(), "{what} was not kept");
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A settings file from a newer build is refused, and the market file
+    /// beside it — newer too, and perfectly good — is left exactly where it
+    /// was for the build that wrote it.
+    #[test]
+    fn a_refused_settings_file_leaves_the_market_file_alone() {
+        let dir = scratch_dir("both-newer");
+        let path = dir.join("omacharts.db");
+        let store = Store::open_at(&path).unwrap();
+        store.write_bars("k", Timeframe::days(1), &[bar(100, 1.0)]);
+        drop(store);
+        for (file, version) in [
+            ("omacharts.db", migrations::LATEST + 1),
+            ("market.db", migrations::MARKET_LATEST + 1),
+        ] {
+            let conn = Connection::open(dir.join(file)).unwrap();
+            conn.pragma_update(None, "user_version", version).unwrap();
+        }
+
+        assert!(matches!(
+            Store::open_at(&path),
+            Err(migrations::Error::FromTheFuture { .. })
+        ));
+        assert!(!dir.join("market.db.unreadable").exists(), "the cache was set aside");
+        let kept: i64 = Connection::open(dir.join("market.db"))
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM bar_series", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(kept, 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
