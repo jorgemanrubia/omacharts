@@ -643,11 +643,16 @@ pub const SURFACE: &[Noun] = &[
             },
             Verb {
                 name: "create",
-                about: "Make a chartbook holding one chart",
+                about: "Make a chartbook holding one chart, or built from a chartbook template",
                 args: &[Arg::req("NAME", "what to call it")],
                 flags: &[
                     Flag::valued("watchlist", "LIST", "the watchlist it shows (default: the current one)"),
                     Flag::valued("symbol", "SYMBOL", "what its first chart opens on"),
+                    Flag::valued(
+                        "template",
+                        "TEMPLATE",
+                        "a chartbook template to build it from and keep it on; every chart opens on --symbol",
+                    ),
                     Flag::switch("switch", "make it the open chartbook"),
                 ],
                 example: "omacharts chartbook create Semis --watchlist Semis --symbol NVDA --switch",

@@ -3641,8 +3641,24 @@ impl Window {
         let picker = chosen.clone();
         fresh.connect_active_notify(move |switch| picker.set_sensitive(!switch.is_active()));
 
+        // What the book is built from, after its name: None, or a chartbook
+        // template it starts on and stays on. Starting on None, the book
+        // this dialog has always made. Not offered at all while there are no
+        // templates, so the dialog is what it was until somebody saves one.
+        let templates = self.book_templates();
+        let template = adw::ComboRow::new();
+        template.set_title("Template");
+        let template_names: Vec<&str> = std::iter::once("None")
+            .chain(templates.iter().map(|t| t.name.as_str()))
+            .collect();
+        template.set_model(Some(&gtk::StringList::new(&template_names)));
+        template.set_selected(0);
+
         let rows = adw::PreferencesGroup::new();
         rows.add(&name);
+        if !templates.is_empty() {
+            rows.add(&template);
+        }
         rows.add(&chosen);
         rows.add(&fresh);
 
@@ -3720,7 +3736,11 @@ impl Window {
             } else {
                 lists.get(chosen.selected() as usize).map(|(id, _)| *id)
             };
-            this.open_chartbook(&label, watchlist);
+            let from = (template.selected() as usize)
+                .checked_sub(1)
+                .and_then(|at| templates.get(at))
+                .cloned();
+            this.open_chartbook(&label, watchlist, from);
         });
         dialog.present(Some(&self.window));
 
@@ -3735,7 +3755,12 @@ impl Window {
         });
     }
 
-    fn open_chartbook(self: &Rc<Self>, name: &str, watchlist: Option<i64>) {
+    fn open_chartbook(
+        self: &Rc<Self>,
+        name: &str,
+        watchlist: Option<i64>,
+        template: Option<book_templates::BookTemplate>,
+    ) {
         self.save_workspace();
         let instrument = self.focused_pane().instrument.borrow().clone();
         let at = self.books.borrow().len();
@@ -3759,6 +3784,12 @@ impl Window {
         self.apply_sidebar(watchlist, None, None);
         self.rebuild_book_strip();
         self.save_workspace();
+        // Built from the one chart, the way taking a template from the menu
+        // builds from the charts there are — with nothing of its own to lose,
+        // so nothing to ask.
+        if let Some(template) = template {
+            self.take_book_template(&template);
+        }
     }
 
     /// Ask before taking a chartbook and its charts away.

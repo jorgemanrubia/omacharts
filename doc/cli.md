@@ -589,6 +589,7 @@ template saved before resolutions were part of one leaves each chart's own.
 ```
 omacharts chartbook template save Corners
 omacharts chartbook template apply Corners --book Energy
+omacharts chartbook create Metals --symbol GLD --template Corners --switch
 omacharts chartbook template list
 omacharts chartbook template rename Corners Quarters
 omacharts chartbook template apply none --book Energy
@@ -607,13 +608,16 @@ others, so each book keeps its symbols where they were.
 It only ever makes a new one: a name a template already has, in any case, is
 refused, and nothing changes. A book on a template needs no saving, since its
 changes are already in it.
-`apply none` takes a book off its template and keeps everything it has.
+`chartbook create NAME --template T` makes a book on a template from the
+start, every chart on `--symbol`. `apply none` takes a book off its template
+and keeps everything it has.
 Deleting a template does the same to every book on it. `list` marks with `*`
 the template the open chartbook is on, and says how many chartbooks use each.
 
 In the window these are the **Template** submenu on a chartbook tab's
 right-click menu: None, the templates and Save as New Template…, then Manage
-Templates….
+Templates…, and the New chartbook dialog's **Template** row, which is there
+once a template exists.
 
 `chartbook duplicate` makes a copy beside a chartbook — the charts, their
 settings and drawings, and its chartbook template — and `--switch` opens it.

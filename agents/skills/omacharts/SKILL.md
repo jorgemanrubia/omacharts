@@ -158,14 +158,14 @@ is a book's layout and each chart's resolution and indicators or chart
 template, without the symbols. Save one book as a template, apply it to
 others, and from then on a split, a close, a resolution or an indicator in any
 of them reaches all of them, at the same position; each keeps its own symbols
-and link modes. `chartbook template apply none`
-takes a book off it, keeping what it has. `chartbook duplicate` is the quick
+and link modes. `chartbook create --template` makes a
+book on one from the start, and `chartbook template apply none` takes a book
+off it, keeping what it has. `chartbook duplicate` is the quick
 way to a second book like this one, on the same template:
 
 ```
 omacharts chartbook template save Quad
-omacharts chartbook create Oil --symbol CL --switch
-omacharts chartbook template apply Quad
+omacharts chartbook create Oil --symbol CL --template Quad --switch
 omacharts chartbook duplicate --name Gas --switch
 omacharts chartbook template list
 ```

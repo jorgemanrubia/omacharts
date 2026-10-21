@@ -1087,18 +1087,38 @@ fn charts_verb(
                 None => None,
             };
             let id = workspace.next_pane();
-            let book = json!({
+            let template = arg(m, "template").map(|t| find_book_template(store, t)).transpose()?;
+            let mut book = json!({
                 "name": name,
                 "layout": {"leaf": id},
                 "focused": id,
                 "panes": [fresh_pane(store, id, &symbol)],
                 "watchlist": watchlist,
             });
+            // Built from its one chart, as taking the template would be.
+            if let Some(template) = &template {
+                let charts = crate::templates::all(store);
+                let mut next = id + 1;
+                if !crate::book_templates::apply(&mut book, &template.shape, &charts, &mut next, None) {
+                    return Err(Fault::new(
+                        super::EXIT_ERROR,
+                        format!("chartbook template {:?} is not an arrangement", template.name),
+                    ));
+                }
+                crate::book_templates::set_link(&mut book, Some(template.id));
+            }
             let at = workspace.push(book);
             if flag(m, "switch") {
                 workspace.set_active(at);
             }
-            format!("created chartbook {name:?} (id:{at}) showing {symbol}")
+            match template {
+                Some(template) => format!(
+                    "created chartbook {name:?} (id:{at}) showing {symbol}, on chartbook template {:?}: {}",
+                    template.name,
+                    charts_counted(template.shape.panes.len())
+                ),
+                None => format!("created chartbook {name:?} (id:{at}) showing {symbol}"),
+            }
         }
         ("chartbook", "rename") => {
             let at = workspace.find(required(m, "BOOK")?)?;
@@ -3117,19 +3137,7 @@ fn book_template_verb(
             .filter(|t| !t.is_empty())
             .ok_or_else(|| Fault::usage(format!("`chartbook template {action}` needs a TEMPLATE")))
     };
-    let found = |selector: &str| -> Result<&bt::BookTemplate, Fault> {
-        match bt::find(&templates, selector) {
-            bt::Lookup::Found(found) => Ok(found),
-            bt::Lookup::Missing => Err(Fault::not_found(format!(
-                "no chartbook template called {selector:?}; see `omacharts chartbook template list`"
-            ))),
-            bt::Lookup::Ambiguous(ids) => Err(Fault::ambiguous(format!(
-                "{} chartbook templates are called {selector:?}; use {}",
-                ids.len(),
-                ids.iter().map(|id| format!("id:{id}")).collect::<Vec<_>>().join(" or ")
-            ))),
-        }
-    };
+    let found = |selector: &str| find_book_template(store, selector);
 
     let (text, value) = match action {
         "list" => return Ok(book_template_list(&templates, workspace, as_json)),
@@ -3235,6 +3243,23 @@ fn charts_counted(count: usize) -> String {
     match count {
         1 => "1 chart".to_string(),
         n => format!("{n} charts"),
+    }
+}
+
+/// The chartbook template a selector names, or why there is none.
+fn find_book_template(store: &Store, selector: &str) -> Result<crate::book_templates::BookTemplate, Fault> {
+    use crate::book_templates::{self as bt, Lookup};
+    let all = bt::all(store);
+    match bt::find(&all, selector) {
+        Lookup::Found(found) => Ok(found.clone()),
+        Lookup::Missing => Err(Fault::not_found(format!(
+            "no chartbook template called {selector:?}; see `omacharts chartbook template list`"
+        ))),
+        Lookup::Ambiguous(ids) => Err(Fault::ambiguous(format!(
+            "{} chartbook templates are called {selector:?}; use {}",
+            ids.len(),
+            ids.iter().map(|id| format!("id:{id}")).collect::<Vec<_>>().join(" or ")
+        ))),
     }
 }
 
@@ -5089,6 +5114,27 @@ mod tests {
         assert_eq!(symbols_of(&store, "Other")[0], "QQQ");
         // And a book on none is left alone.
         assert_eq!(symbols_of(&store, "Loose"), ["IWM"]);
+    }
+
+    #[test]
+    fn a_chartbook_can_be_made_on_a_template() {
+        let store = bare();
+        grid_book(&store, "Grid", "SPY");
+        ok("chartbook template save Corners --book Grid", &store);
+        let made = ok("chartbook create Oil --symbol CL --template corners", &store);
+        assert!(made.contains("on chartbook template \"Corners\": 4 charts"), "{made}");
+        assert_eq!(symbols_of(&store, "Oil"), ["CL"; 4]);
+        assert_eq!(panes_of(&store, "Oil")[1]["template"], swing(&store));
+        assert_eq!(panes_of(&store, "Oil")[2]["timeframe"], "1h");
+        let listed = json_of(&run("chartbook template list --json", &store));
+        assert_eq!(listed["book_templates"][0]["chartbooks"], 2);
+        // And it is on it: a change there reaches the book it came from.
+        ok("chart close --book Oil --chart pos:3", &store);
+        assert_eq!(symbols_of(&store, "Grid").len(), 3);
+
+        let missing = run("chartbook create Gas --template Nope", &store);
+        assert_eq!(missing.code, super::super::EXIT_NOT_FOUND);
+        assert!(Workspace::load(&store).find("Gas").is_err(), "a refused create made a book");
     }
 
     #[test]
