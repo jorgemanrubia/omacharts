@@ -38,7 +38,13 @@ use rusqlite::{params, Connection};
 
 /// How far the migrations go. A database claiming more than this was written
 /// by a newer Omacharts than the one opening it.
-pub const LATEST: i32 = 3;
+pub const LATEST: i32 = 4;
+
+/// How far the market data file's own migrations go.
+pub const MARKET_LATEST: i32 = 1;
+
+/// The schema the market data file is attached as.
+pub const MARKET: &str = "market";
 
 /// What went wrong before the database was usable.
 #[derive(Debug)]
@@ -207,26 +213,99 @@ Migration {
              previous_at INTEGER
          );",
     ),
+},
+Migration {
+    version: 4,
+    name: "market data moves to its own file",
+    // Copied and then dropped: what is cached may be history the provider
+    // will not hand back — a week is all Yahoo keeps of minute bars — so the
+    // file is snapshotted first like any step that drops something.
+    risky: true,
+    step: Step::Rust(move_market_data),
 }];
+
+/// Everything that has ever been true of the market data file.
+///
+/// A file of its own so that everything somebody made — settings, watchlists,
+/// drawings, themes — is one small file to copy, and everything fetched is
+/// another that can be thrown away. The same two tables the settings file
+/// held, in the same shape, so moving them is a copy.
+pub const MARKET_MIGRATIONS: &[Migration] = &[Migration {
+    version: 1,
+    name: "bars and quotes",
+    risky: false,
+    step: Step::Sql(
+        "CREATE TABLE market.bar_series (
+             key        TEXT NOT NULL,
+             interval   TEXT NOT NULL,
+             first_ts   INTEGER NOT NULL,
+             last_ts    INTEGER NOT NULL,
+             count      INTEGER NOT NULL,
+             fetched_at INTEGER NOT NULL,
+             ts         BLOB NOT NULL,
+             open       BLOB NOT NULL,
+             high       BLOB NOT NULL,
+             low        BLOB NOT NULL,
+             close      BLOB NOT NULL,
+             volume     BLOB NOT NULL,
+             PRIMARY KEY (key, interval)
+         );
+         CREATE TABLE market.quotes (
+             key         TEXT PRIMARY KEY,
+             last        REAL,
+             previous    REAL,
+             at          INTEGER,
+             fetched_at  INTEGER NOT NULL,
+             previous_at INTEGER
+         );",
+    ),
+}];
+
+/// Version 4: the bars and quotes over to the market data file, then out of
+/// this one.
+///
+/// Two files commit separately, so a copy that landed in a run that then
+/// failed is copied again over itself rather than refused.
+fn move_market_data(tx: &Connection) -> rusqlite::Result<()> {
+    tx.execute_batch(
+        "INSERT OR REPLACE INTO market.bar_series
+             (key, interval, first_ts, last_ts, count, fetched_at,
+              ts, open, high, low, close, volume)
+         SELECT key, interval, first_ts, last_ts, count, fetched_at,
+                ts, open, high, low, close, volume
+         FROM main.bar_series;
+         INSERT OR REPLACE INTO market.quotes
+             (key, last, previous, at, fetched_at, previous_at)
+         SELECT key, last, previous, at, fetched_at, previous_at
+         FROM main.quotes;
+         DROP TABLE main.bar_series;
+         DROP TABLE main.quotes;",
+    )
+}
 
 /// Bring a database up to [`LATEST`], or say why it cannot be.
 ///
 /// `snapshot_to` is where to leave a copy before anything destructive runs;
 /// `None` for a database with no file behind it, which is every test and the
 /// in-memory fallback.
+///
+/// The market data file goes first, attached as [`MARKET`]: the settings
+/// file's last step moves what it held into it, so it has to exist.
 pub fn run(conn: &Connection, snapshot_to: Option<&Path>) -> Result<(), Error> {
-    apply(conn, MIGRATIONS, LATEST, snapshot_to)
+    apply(conn, MARKET, MARKET_MIGRATIONS, MARKET_LATEST, None)?;
+    apply(conn, "main", MIGRATIONS, LATEST, snapshot_to)
 }
 
 /// What [`run`] does, over any list — so the awkward cases can be tested
 /// without inventing a schema change to do it with.
 fn apply(
     conn: &Connection,
+    schema: &str,
     migrations: &[Migration],
     latest: i32,
     snapshot_to: Option<&Path>,
 ) -> Result<(), Error> {
-    let from = version(conn)?;
+    let from = version_of(conn, schema)?;
     if from > latest {
         return Err(Error::FromTheFuture { found: from, known: latest });
     }
@@ -235,7 +314,8 @@ fn apply(
     if pending.is_empty() {
         return Ok(());
     }
-    if let Some(path) = snapshot_to.filter(|_| pending.iter().any(|m| m.risky)) {
+    // A file at version 0 is a new one, with nothing in it to lose.
+    if let Some(path) = snapshot_to.filter(|_| from > 0 && pending.iter().any(|m| m.risky)) {
         snapshot(conn, path)?;
     }
 
@@ -248,14 +328,18 @@ fn apply(
             Step::Sql(sql) => tx.execute_batch(sql)?,
             Step::Rust(run) => run(&tx)?,
         }
-        tx.pragma_update(None, "user_version", migration.version)?;
+        tx.pragma_update(Some(schema), "user_version", migration.version)?;
         tx.commit()?;
     }
     Ok(())
 }
 
 pub fn version(conn: &Connection) -> rusqlite::Result<i32> {
-    conn.pragma_query_value(None, "user_version", |row| row.get(0))
+    version_of(conn, "main")
+}
+
+fn version_of(conn: &Connection, schema: &str) -> rusqlite::Result<i32> {
+    conn.pragma_query_value(Some(schema), "user_version", |row| row.get(0))
 }
 
 /// Put a consistent copy of the database beside it, to go back to.
@@ -279,6 +363,7 @@ mod tests {
 
     fn fresh() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
+        conn.execute("ATTACH ':memory:' AS market", []).unwrap();
         run(&conn, None).unwrap();
         conn
     }
@@ -290,15 +375,21 @@ mod tests {
     fn a_fresh_database_has_everything_the_app_expects() {
         let conn = fresh();
         assert_eq!(version(&conn).unwrap(), LATEST);
+        assert_eq!(version_of(&conn, MARKET).unwrap(), MARKET_LATEST);
         assert_eq!(
-            schema(&conn),
+            tables(&conn, MARKET),
             vec![
                 "bar_series:key,interval,first_ts,last_ts,count,fetched_at,ts,open,high,low,close,volume",
+                "quotes:key,last,previous,at,fetched_at,previous_at",
+            ]
+        );
+        assert_eq!(
+            tables(&conn, "main"),
+            vec![
                 "custom_bar_schemes:id,json",
                 "custom_themes:id,json",
                 "drawings:id,symbol,suffix,json",
                 "meta:key,value",
-                "quotes:key,last,previous,at,fetched_at,previous_at",
                 "settings:key,value",
                 "watchlist_entries:section_id,symbol,suffix,position",
                 "watchlist_sections:id,name,position,collapsed,watchlist_id",
@@ -344,17 +435,57 @@ mod tests {
         assert_eq!(owner, crate::store::DEFAULT_WATCHLIST);
     }
 
+    /// Both files' tables, one list after the other.
     fn schema(conn: &Connection) -> Vec<String> {
+        let mut all = tables(conn, "main");
+        all.extend(tables(conn, MARKET));
+        all
+    }
+
+    fn tables(conn: &Connection, schema: &str) -> Vec<String> {
         let mut statement = conn
-            .prepare(
+            .prepare(&format!(
                 "SELECT m.name || ':' || group_concat(c.name)
-                 FROM sqlite_master m
-                 JOIN pragma_table_info(m.name) c
+                 FROM {schema}.sqlite_master m
+                 JOIN pragma_table_info(m.name, '{schema}') c
                  WHERE m.type = 'table' AND m.name NOT LIKE 'sqlite_%'
-                 GROUP BY m.name ORDER BY m.name",
-            )
+                 GROUP BY m.name ORDER BY m.name"
+            ))
             .unwrap();
         statement.query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect()
+    }
+
+    /// A settings file from before the split, with bars and a quote in it,
+    /// comes out with them in the market file and nothing else disturbed.
+    #[test]
+    fn bars_written_before_the_split_move_to_the_market_file() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute("ATTACH ':memory:' AS market", []).unwrap();
+        apply(&conn, "main", &MIGRATIONS[..3], 3, None).unwrap();
+        conn.execute_batch(
+            "INSERT INTO settings (key, value) VALUES ('theme', 'midnight');
+             INSERT INTO bar_series VALUES ('AAPL', '1D', 1, 2, 2, 3, x'01', x'02', x'03', x'04', x'05', x'06');
+             INSERT INTO quotes (key, last, previous, at, fetched_at, previous_at)
+                 VALUES ('AAPL', 2.0, 1.0, 2, 3, 1);",
+        )
+        .unwrap();
+
+        run(&conn, None).unwrap();
+
+        let moved: (String, Vec<u8>) = conn
+            .query_row("SELECT key, volume FROM market.bar_series", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(moved, ("AAPL".to_string(), vec![6]));
+        let quote: f64 =
+            conn.query_row("SELECT last FROM market.quotes", [], |r| r.get(0)).unwrap();
+        assert_eq!(quote, 2.0);
+        assert!(!tables(&conn, "main").iter().any(|t| t.starts_with("bar_series")));
+        let theme: String = conn
+            .query_row("SELECT value FROM settings WHERE key = 'theme'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(theme, "midnight");
     }
 
     #[test]
@@ -393,7 +524,7 @@ mod tests {
     #[test]
     fn a_chain_of_steps_runs_in_order_and_stops_at_the_end() {
         let conn = Connection::open_in_memory().unwrap();
-        apply(&conn, &chain(), 3, None).unwrap();
+        apply(&conn, "main", &chain(), 3, None).unwrap();
 
         assert_eq!(version(&conn).unwrap(), 3);
         assert_eq!(trail(&conn), vec!["first", "second", "third"]);
@@ -405,10 +536,10 @@ mod tests {
     #[test]
     fn only_the_steps_a_database_has_not_had_are_applied() {
         let conn = Connection::open_in_memory().unwrap();
-        apply(&conn, &chain()[..1], 1, None).unwrap();
+        apply(&conn, "main", &chain()[..1], 1, None).unwrap();
         assert_eq!(trail(&conn), vec!["first"]);
 
-        apply(&conn, &chain(), 3, None).unwrap();
+        apply(&conn, "main", &chain(), 3, None).unwrap();
         assert_eq!(trail(&conn), vec!["first", "second", "third"], "a step ran twice");
     }
 
@@ -463,7 +594,7 @@ mod tests {
         };
 
         let conn = Connection::open_in_memory().unwrap();
-        assert!(apply(&conn, &broken, 3, None).is_err());
+        assert!(apply(&conn, "main", &broken, 3, None).is_err());
 
         assert_eq!(version(&conn).unwrap(), 1, "the failed step moved the version");
         assert_eq!(trail(&conn), vec!["first"], "the step before it was rolled back too");
@@ -483,7 +614,7 @@ mod tests {
     #[test]
     fn a_risky_step_leaves_a_copy_of_the_file_behind() {
         const RISKY: &[Migration] = &[Migration {
-            version: 1,
+            version: 2,
             name: "rewrites something",
             risky: true,
             step: Step::Sql("CREATE TABLE after (id INTEGER PRIMARY KEY);"),
@@ -496,12 +627,34 @@ mod tests {
         let _ = std::fs::remove_file(&backup);
 
         let conn = Connection::open(&db).unwrap();
-        conn.execute_batch("CREATE TABLE before (id INTEGER PRIMARY KEY);").unwrap();
-        apply(&conn, RISKY, 1, Some(&backup)).unwrap();
+        conn.execute_batch("CREATE TABLE before (id INTEGER PRIMARY KEY); PRAGMA user_version = 1;")
+            .unwrap();
+        apply(&conn, "main", RISKY, 2, Some(&backup)).unwrap();
 
         let restored = Connection::open(&backup).unwrap();
         assert!(table_exists(&restored, "before"), "the snapshot missed what was there");
         assert!(!table_exists(&restored, "after"), "the snapshot was taken too late to help");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_new_file_is_not_snapshotted_however_risky_its_steps() {
+        const RISKY: &[Migration] = &[Migration {
+            version: 1,
+            name: "rewrites something",
+            risky: true,
+            step: Step::Sql("CREATE TABLE after (id INTEGER PRIMARY KEY);"),
+        }];
+        let dir = std::env::temp_dir().join(format!("omacharts-new-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let (db, backup) = (dir.join("omacharts.db"), dir.join("omacharts.db.bak"));
+        let _ = std::fs::remove_file(&db);
+        let _ = std::fs::remove_file(&backup);
+
+        let conn = Connection::open(&db).unwrap();
+        apply(&conn, "main", RISKY, 1, Some(&backup)).unwrap();
+        assert!(!backup.exists(), "a new install has nothing to lose");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -525,7 +678,7 @@ mod tests {
         let _ = std::fs::remove_file(&backup);
 
         let conn = Connection::open(&db).unwrap();
-        apply(&conn, SAFE, 1, Some(&backup)).unwrap();
+        apply(&conn, "main", SAFE, 1, Some(&backup)).unwrap();
 
         assert!(!backup.exists());
         let _ = std::fs::remove_dir_all(&dir);

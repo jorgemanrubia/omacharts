@@ -1,7 +1,11 @@
 //! The local database: settings, cached bars, and themes the user saved.
 //!
-//! One file, `$XDG_DATA_HOME/omacharts/omacharts.db`, and it is pure app
-//! data — never in the repo, safe to delete, rebuilt on demand.
+//! Two files in `$XDG_DATA_HOME/omacharts/`, opened as one. `omacharts.db`
+//! holds everything somebody made — settings, chartbooks, watchlists,
+//! drawings, themes — and is the file to copy to take them elsewhere.
+//! `market.db` beside it holds what was fetched: bars and quotes, attached
+//! as the `market` schema. A query names a table and SQLite finds it in
+//! whichever file has it, so nothing below needs to know there are two.
 //!
 //! Bars are stored columnar: one row per (symbol, timeframe) holding parallel
 //! blobs of timestamps and prices. A row per bar would mean tens of thousands
@@ -97,10 +101,7 @@ impl Store {
     }
 
     pub fn open_at(path: &Path) -> Result<Store, migrations::Error> {
-        let conn = Connection::open(path)?;
-        // WAL so a background fetch writing never blocks the window reading.
-        conn.pragma_update(None, "journal_mode", "WAL")?;
-        conn.pragma_update(None, "synchronous", "NORMAL")?;
+        let conn = connect(path)?;
         let store = Store { conn, path: Some(path.to_path_buf()) };
         // Where a migration that could lose something leaves a copy first.
         // Beside the database rather than in a temp directory, because the
@@ -112,7 +113,9 @@ impl Store {
     /// A database with no file behind it: the tests, and the fallback when
     /// the real one cannot be opened. Nothing to snapshot.
     pub fn memory() -> Result<Store, migrations::Error> {
-        let store = Store { conn: Connection::open_in_memory()?, path: None };
+        let conn = Connection::open_in_memory()?;
+        conn.execute("ATTACH ':memory:' AS market", [])?;
+        let store = Store { conn, path: None };
         store.migrate(None)?;
         Ok(store)
     }
@@ -141,7 +144,14 @@ impl Store {
     /// fetched correctly, which has its own counter because it moves on its
     /// own schedule. A release can change either without touching the other.
     fn migrate(&self, snapshot_to: Option<&Path>) -> Result<(), migrations::Error> {
+        let from = migrations::version(&self.conn)?;
         migrations::run(&self.conn, snapshot_to)?;
+        // The bars just moved out leave their pages behind, and a settings
+        // file the size of the cache it no longer holds is not one anybody
+        // will think to copy. Once, on the launch that moved them.
+        if (1..4).contains(&from) {
+            self.conn.execute_batch("VACUUM main")?;
+        }
         self.invalidate_stale_cache()?;
         Ok(())
     }
@@ -494,7 +504,7 @@ impl Store {
     pub fn clear_market_data(&self) -> rusqlite::Result<()> {
         self.conn.execute("DELETE FROM bar_series", [])?;
         self.conn.execute("DELETE FROM quotes", [])?;
-        self.conn.execute_batch("VACUUM")?;
+        self.conn.execute_batch("VACUUM market")?;
         Ok(())
     }
 
@@ -1082,6 +1092,28 @@ impl Store {
 }
 
 /// `$XDG_DATA_HOME/omacharts`, falling back to `~/.local/share/omacharts`.
+/// The market data file that goes with a settings file: beside it.
+pub fn market_path(settings: &Path) -> PathBuf {
+    settings.with_file_name("market.db")
+}
+
+/// A connection to a settings file with its market data attached, both
+/// written the same way. Not migrated: [`Store::open_at`] does that, and a
+/// second connection to a file the window has opened has nothing to do.
+pub fn connect(path: &Path) -> rusqlite::Result<Connection> {
+    let conn = Connection::open(path)?;
+    conn.execute(
+        "ATTACH ?1 AS market",
+        params![market_path(path).to_string_lossy()],
+    )?;
+    // WAL so a background fetch writing never blocks the window reading.
+    for schema in ["main", "market"] {
+        conn.pragma_update(Some(schema), "journal_mode", "WAL")?;
+        conn.pragma_update(Some(schema), "synchronous", "NORMAL")?;
+    }
+    Ok(conn)
+}
+
 pub fn data_dir() -> PathBuf {
     if let Some(base) = std::env::var_os("XDG_DATA_HOME").filter(|v| !v.is_empty()) {
         return PathBuf::from(base).join("omacharts");

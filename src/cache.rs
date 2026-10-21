@@ -56,7 +56,8 @@ pub struct Swept {
     pub after: i64,
 }
 
-/// What the database occupies, not counting pages it has already freed.
+/// What the market data file occupies, not counting pages it has already
+/// freed. Settings are not the cache, and do not count against its limit.
 ///
 /// Deliberately not the size of the file. Deleting rows hands their pages to
 /// SQLite's freelist to be used again and leaves the file exactly as large as
@@ -64,7 +65,7 @@ pub struct Swept {
 /// read the same number back, and sweep again every six hours for ever.
 pub fn used_bytes(conn: &Connection) -> i64 {
     let read = |name: &str| -> i64 {
-        conn.pragma_query_value(None, name, |row| row.get(0)).unwrap_or(0)
+        conn.pragma_query_value(Some("market"), name, |row| row.get(0)).unwrap_or(0)
     };
     let pages = read("page_count") - read("freelist_count");
     pages.max(0) * read("page_size")
@@ -162,11 +163,9 @@ pub fn sweep_in_background(path: PathBuf, limit: i64, done: impl Fn(Swept) + 'st
     let (sender, receiver) = async_channel::bounded::<Swept>(1);
 
     std::thread::spawn(move || {
-        let Ok(conn) = Connection::open(&path) else { return };
-        // The window has already migrated this file; this connection only has
-        // to agree with it about how the file is written.
-        let _ = conn.pragma_update(None, "journal_mode", "WAL");
-        let _ = conn.pragma_update(None, "synchronous", "NORMAL");
+        // The window has already migrated these files; this connection only
+        // has to agree with it about how they are written.
+        let Ok(conn) = crate::store::connect(&path) else { return };
 
         let Ok(swept) = evict(&conn, limit) else { return };
         let store = Store::adopt(conn);
