@@ -219,6 +219,32 @@ pub fn capture(book: &Value) -> Option<Shape> {
     Some(Shape { layout: layout.relabel(&positions), panes })
 }
 
+/// How far apart two dividers may be and still be the same divider.
+///
+/// A divider is put back in whole pixels, and the window writes down the
+/// share the pixel it landed on gives, so a template opened in a window of
+/// another size comes back a thousandth or two off what it was saved with.
+/// That is not a change anybody made, and carrying it to every other book on
+/// the template would be a write each time one is opened.
+const SAME_DIVIDER: f64 = 0.005;
+
+impl Shape {
+    /// The same arrangement, dividers within [`SAME_DIVIDER`] of each other.
+    pub fn same(&self, other: &Shape) -> bool {
+        fn alike(a: &Node, b: &Node) -> bool {
+            match (a, b) {
+                (Node::Leaf(a), Node::Leaf(b)) => a == b,
+                (
+                    Node::Split { horizontal: ha, ratio: ra, first: fa, second: sa },
+                    Node::Split { horizontal: hb, ratio: rb, first: fb, second: sb },
+                ) => ha == hb && (ra - rb).abs() <= SAME_DIVIDER && alike(fa, fb) && alike(sa, sb),
+                _ => false,
+            }
+        }
+        self.panes == other.panes && alike(&self.layout, &other.layout)
+    }
+}
+
 /// A shape whose tree names exactly the positions it has a slot for.
 fn sound(shape: &Shape) -> bool {
     let mut leaves = shape.layout.leaves();
@@ -229,7 +255,7 @@ fn sound(shape: &Shape) -> bool {
 /// Whether some template already holds this book's arrangement exactly, so
 /// replacing it loses nothing that cannot be had back.
 pub fn kept(book: &Value, templates: &[BookTemplate]) -> bool {
-    capture(book).is_some_and(|shape| templates.iter().any(|t| t.shape == shape))
+    capture(book).is_some_and(|shape| templates.iter().any(|t| t.shape.same(&shape)))
 }
 
 /// The next pane id no book is using, for charts a template adds.
@@ -423,7 +449,7 @@ pub fn carry(store: &Store, books: &mut [Value], at: usize, before: &[u32]) -> u
     let Some(template) = get(store, id) else { return 0 };
     let Some(book) = books.get(at) else { return 0 };
     let Some(shape) = capture(book) else { return 0 };
-    if shape == template.shape {
+    if shape.same(&template.shape) {
         return 0;
     }
     let order = in_order(book).map(|(layout, _)| layout);
@@ -752,6 +778,23 @@ mod tests {
         let before = leaves(&books[0]);
         assert_eq!(carry(&store, &mut books, 0, &before), 0);
         assert_eq!(symbols(&books[1]), ["X", "Y"]);
+    }
+
+    /// A divider put back a pixel off in a window of another size is the
+    /// same divider, and opening the book writes nothing anywhere.
+    #[test]
+    fn a_divider_a_pixel_off_is_not_a_change() {
+        let store = Store::memory().unwrap();
+        let mut books = vec![pair((1, "A"), (2, "B")), pair((3, "X"), (4, "Y"))];
+        books[0]["layout"]["split"]["ratio"] = json!(0.4);
+        let template = create(&store, "Pair", capture(&books[0]).unwrap());
+        set_link(&mut books[0], Some(template.id));
+        set_link(&mut books[1], Some(template.id));
+        books[0]["layout"]["split"]["ratio"] = json!(0.4012);
+        assert_eq!(carry(&store, &mut books, 0, &[1, 2]), 0);
+        assert_eq!(get(&store, template.id).unwrap().shape, template.shape);
+        books[0]["layout"]["split"]["ratio"] = json!(0.43);
+        assert_eq!(carry(&store, &mut books, 0, &[1, 2]), 1);
     }
 
     /// A book on no template, or on one that has gone, carries nothing.
