@@ -931,8 +931,10 @@ chartbooks are not cache and are left alone.
 
 Everything you made — settings, watchlists, chartbooks, drawings, themes — is
 copied to `backups/` beside the settings file when the window opens and every
-hour after, whenever something changed. The newest ten are kept, and the newest
-one of each of the last fourteen days. Cached prices are not part of it.
+hour after, only when something changed: a copy identical to the newest one is
+never kept. One every two hours is kept for the last day, and the newest of each
+day for the week before, so never more than twenty. Cached prices are not part
+of it.
 
 ```
 $ omacharts backup list

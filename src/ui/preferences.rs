@@ -853,6 +853,13 @@ fn backups_group(context: &Rc<Context>) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     group.set_title("Backups");
     let settings = context.store.path().map(std::path::Path::to_path_buf);
+    if let Some(path) = &settings {
+        group.set_description(Some(&format!(
+            "Keeping the last {} backups from the past week in {}.",
+            backup::MOST_KEPT,
+            home_relative(&backup::dir(path)),
+        )));
+    }
 
     let row = adw::ActionRow::new();
     row.set_title("Last backup");

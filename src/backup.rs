@@ -27,18 +27,24 @@ use rusqlite::Connection;
 use crate::migrations;
 use crate::store::Store;
 
-/// How many of the newest are always kept, whatever day they are from.
-pub const KEEP_NEWEST: usize = 10;
+/// How far back the recent ones are kept closely: one in every
+/// [`RECENT_EVERY_HOURS`] hours of this many, which is what undoing this
+/// morning's mistake needs.
+pub const RECENT_HOURS: i64 = 24;
+pub const RECENT_EVERY_HOURS: i64 = 2;
 
-/// How many days back one a day is kept, today included. The newest ten
-/// alone can all be from one busy afternoon, which is no help to somebody
-/// who noticed on Thursday what went wrong on Monday.
-pub const KEEP_DAYS: i64 = 14;
+/// How many days back one a day is kept, today included: a week behind the
+/// last day, for somebody who noticed on Thursday what went wrong on Monday.
+/// With the recent ones, never more than twenty files.
+pub const KEEP_DAYS: i64 = 8;
+
+/// The most that can be kept at once, which is what the preferences quote.
+pub const MOST_KEPT: i64 = RECENT_HOURS / RECENT_EVERY_HOURS + KEEP_DAYS;
 
 /// How often the window takes one, if anything changed.
 ///
-/// An hour, because the newest ten are then most of a working day and the
-/// one-a-day rule covers the rest. A timer, which this app otherwise does not
+/// An hour, so that every two-hour slot of the last day has one to keep if
+/// anything changed in it. A timer, which this app otherwise does not
 /// use to notice things: this one is not watching for anything, it is a
 /// cadence, and an hour of edits is the most a crash can cost.
 pub const CADENCE_SECONDS: u32 = 60 * 60;
@@ -175,7 +181,7 @@ fn schema_of(path: &Path) -> Option<i32> {
 /// Take a backup through `store`'s connection, then prune.
 ///
 /// The second half of the answer is whether it is new. A copy identical to
-/// the newest one is not kept: it would push a real one out of the ten
+/// the newest one is not kept: it would push a real one out
 /// without adding anything, and `VACUUM INTO` writes the same bytes for the
 /// same contents, so comparing them is exact.
 pub fn take(store: &Store) -> Result<(Backup, bool), Error> {
@@ -269,24 +275,32 @@ fn prune(settings: &Path, now: DateTime<Local>) {
     }
 }
 
-/// Which of `taken`, newest first, go: everything but the newest
-/// [`KEEP_NEWEST`] and the newest of each of the last [`KEEP_DAYS`] calendar
-/// days, in the time zone they are given in.
+/// Which of `taken`, newest first, go: everything but the newest in each
+/// [`RECENT_EVERY_HOURS`]-hour slot of the last [`RECENT_HOURS`], and the
+/// newest of each of the last [`KEEP_DAYS`] calendar days, in the time zone
+/// they are given in.
 ///
 /// Calendar days in somebody's own zone rather than UTC's, because "the
 /// backup from Tuesday" means their Tuesday.
 fn doomed<Tz: TimeZone>(taken: &[DateTime<Tz>], now: &DateTime<Tz>) -> Vec<usize> {
     let today = now.date_naive();
     let oldest_day = today - chrono::Duration::days(KEEP_DAYS - 1);
+    let mut slots_kept: Vec<i64> = Vec::new();
     let mut days_kept: Vec<NaiveDate> = Vec::new();
     let mut doomed = Vec::new();
     for (at, when) in taken.iter().enumerate() {
+        let hours = (now.clone() - when.clone()).num_hours();
+        let slot = hours / RECENT_EVERY_HOURS;
+        let a_slot_kept = (0..RECENT_HOURS).contains(&hours) && !slots_kept.contains(&slot);
+        if a_slot_kept {
+            slots_kept.push(slot);
+        }
         let day = when.date_naive();
         let a_day_kept = day >= oldest_day && day <= today && !days_kept.contains(&day);
         if a_day_kept {
             days_kept.push(day);
         }
-        if at >= KEEP_NEWEST && !a_day_kept {
+        if !a_slot_kept && !a_day_kept {
             doomed.push(at);
         }
     }
@@ -405,53 +419,51 @@ mod tests {
         taken
     }
 
+    /// A day of hourly backups keeps one in every two hours: twelve.
     #[test]
-    fn ten_or_fewer_are_all_kept() {
-        let taken = newest_first((0..10).map(|h| at(21, h)).collect());
-        assert!(doomed(&taken, &at(21, 12)).is_empty());
+    fn the_last_day_keeps_one_every_two_hours() {
+        let now = at(21, 23);
+        let taken = newest_first((0..24).map(|h| now - chrono::Duration::hours(h)).collect());
+        let kept = taken.len() - doomed(&taken, &now).len();
+        assert_eq!(kept, 12);
     }
 
-    /// A busy afternoon makes more than ten in a day; past the newest ten,
-    /// only one a day survives, and that one is the day's newest.
+    /// Past the last day, one a day survives — the day's newest — for a week
+    /// behind today, and nothing older.
     #[test]
-    fn past_the_newest_ten_one_a_day_is_kept() {
-        let mut taken: Vec<_> = (0..12).map(|h| at(21, h + 10)).collect();
-        taken.extend((0..3).map(|h| at(20, h + 10)));
-        taken.extend((0..3).map(|h| at(19, h + 10)));
+    fn older_days_keep_their_newest_for_a_week() {
+        let now = at(21, 23);
+        let mut taken = Vec::new();
+        for back in 2..=9 {
+            taken.extend((0..3).map(|h| at(21 - back, 10 + h)));
+        }
         let taken = newest_first(taken);
-        let gone: Vec<_> = doomed(&taken, &at(21, 23)).into_iter().map(|i| taken[i]).collect();
-
-        // The 21st has its newest among the ten, so its two oldest go. The
-        // 20th and 19th keep their newest only.
-        assert_eq!(
-            gone,
-            vec![at(21, 11), at(21, 10), at(20, 11), at(20, 10), at(19, 11), at(19, 10)]
-        );
+        let gone: Vec<_> = doomed(&taken, &now).into_iter().map(|i| taken[i]).collect();
+        // The 14th (7 days back) is the last day kept; the 12th is past it.
+        assert!(!gone.contains(&at(14, 12)));
+        assert!(gone.contains(&at(12, 12)) && gone.contains(&at(13, 12)));
+        assert!(gone.contains(&at(19, 11)) && !gone.contains(&at(19, 12)));
     }
 
+    /// However busy, never more than a slot's worth for the last day plus a
+    /// day's for the week: twenty.
     #[test]
-    fn a_day_older_than_two_weeks_keeps_nothing_past_the_newest_ten() {
-        let mut taken: Vec<_> = (0..10).map(|h| at(21, h)).collect();
-        taken.push(at(8, 12)); // 13 days back: the last day still covered
-        taken.push(at(7, 12)); // 14 days back: not
-        let taken = newest_first(taken);
-        let gone: Vec<_> = doomed(&taken, &at(21, 23)).into_iter().map(|i| taken[i]).collect();
-        assert_eq!(gone, vec![at(7, 12)]);
+    fn a_month_of_hourly_backups_keeps_twenty() {
+        let now = at(30, 23);
+        let taken = newest_first((0..24 * 30).map(|h| now - chrono::Duration::hours(h)).collect());
+        let kept = taken.len() - doomed(&taken, &now).len();
+        assert!(kept <= 20, "{kept}");
     }
 
-    /// Days are the calendar's in the zone given, not UTC's: 23:30 in Madrid
-    /// on the 20th is the 20th there, though it is the 21st nowhere else
-    /// that matters to the person asking.
+    /// Days are the calendar's in the zone given, not UTC's: 21:00 at UTC-5
+    /// on the 20th is the 20th there, though it is the 21st in UTC.
     #[test]
     fn days_are_counted_in_the_zone_given() {
         let zone = chrono::FixedOffset::east_opt(-5 * 3600).unwrap();
-        let mut taken: Vec<_> = (0..10).map(|h| at(21, h + 12).with_timezone(&zone)).collect();
-        // 02:00 UTC on the 21st is 21:00 on the 20th at UTC-5, so these two
-        // are the same local day, and only the newer is kept.
-        taken.push(at(21, 2).with_timezone(&zone));
-        taken.push(at(21, 1).with_timezone(&zone));
-        taken.sort_by(|a, b| b.cmp(a));
-        let now = at(21, 23).with_timezone(&zone);
+        let now = at(23, 23).with_timezone(&zone);
+        // 02:00 and 01:00 UTC on the 21st are both the evening of the 20th at
+        // UTC-5, and well past the last day, so only the newer is kept.
+        let taken = vec![at(21, 2).with_timezone(&zone), at(21, 1).with_timezone(&zone)];
         let gone: Vec<_> = doomed(&taken, &now).into_iter().map(|i| taken[i]).collect();
         assert_eq!(gone, vec![at(21, 1).with_timezone(&zone)]);
     }
@@ -516,7 +528,9 @@ mod tests {
         let settings = scratch("unchanged");
         let store = Store::open_at(&settings).unwrap();
         let (first, _) = take(&store).unwrap();
-        let first = backdate(&first, 5);
+        // Hours back, into a slot of its own: two in one slot keep only the
+        // newer.
+        let first = backdate(&first, 3 * 3600);
 
         let (again, fresh) = take(&store).unwrap();
         assert!(!fresh);
