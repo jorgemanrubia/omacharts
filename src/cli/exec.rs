@@ -3711,8 +3711,21 @@ fn backup_restore(
 ) -> Result<String, Fault> {
     let name = required(m, "NAME")?;
     // A path is a file brought from elsewhere; anything else names a backup.
+    // Full or under `~`, never relative: with a window open this runs in its
+    // process, and `./file.db` would be the window's directory, not yours.
     let restored = match name.contains('/') {
-        true => crate::backup::restore_file(store, std::path::Path::new(name)),
+        true => {
+            let path = match name.strip_prefix("~/") {
+                Some(rest) => crate::store::home().join(rest),
+                None => std::path::PathBuf::from(name),
+            };
+            if !path.is_absolute() {
+                return Err(Fault::usage(format!(
+                    "{name:?} is relative; give the file's full path, such as ~/Downloads/omacharts.db"
+                )));
+            }
+            crate::backup::restore_file(store, &path)
+        }
         false => crate::backup::restore(store, name),
     }
     .map_err(backup_fault)?;

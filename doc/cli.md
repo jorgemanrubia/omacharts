@@ -951,6 +951,16 @@ restored the settings from settings-20261021-130212.db (2026-10-21 15:02:12); wh
   [exit 0]
 ```
 
+Settings from another machine — one of its backups, or its `omacharts.db` —
+restore the same way, given the file's full path or one under `~`. This
+machine keeps its own screenshot folder, cache limit and sidebar width, and a
+file that is not Omacharts settings is refused with nothing changed:
+
+```
+$ omacharts backup restore ~/Downloads/omacharts.db
+restored the settings from omacharts.db (2026-10-21 12:10:21); what they replaced is kept as settings-20261021-101021.db
+```
+
 Names are the moment in UTC; the listing shows local time. A restore applies at
 once, in a window that is open too: the charts, rail and theme on screen become
 the restored ones. What it replaced is backed up first, so restoring that undoes
