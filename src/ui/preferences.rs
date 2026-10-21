@@ -853,14 +853,6 @@ fn backups_group(context: &Rc<Context>) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     group.set_title("Backups");
     let settings = context.store.path().map(std::path::Path::to_path_buf);
-    group.set_description(Some(&match &settings {
-        Some(path) => format!(
-            "Settings, watchlists, chartbooks, drawings and themes are copied when the \
-             window opens and every hour after, if anything changed, into {}.",
-            home_relative(&backup::dir(path)),
-        ),
-        None => "These settings are not being saved, so there is nothing to back up.".to_string(),
-    }));
 
     let row = adw::ActionRow::new();
     row.set_title("Last backup");
