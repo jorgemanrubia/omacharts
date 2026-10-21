@@ -3573,6 +3573,14 @@ impl Window {
         self.release_all_panes();
         self.panes.borrow_mut().clear();
         self.maximized.set(None);
+        // One chart put up in place of a book that would not come up is not
+        // a change anybody made to its chartbook template: carried, it would
+        // take every other book on the template down to one chart too. So the
+        // book lets go of it instead.
+        if let Some(book) = self.books.borrow_mut().get_mut(self.active.get()) {
+            book.book_template = None;
+        }
+        self.template_leaves.borrow_mut().clear();
         // A new chart carries nothing. Splitting copies the chart you split,
         // because two of what you were looking at is the point of splitting —
         // but a new chartbook is a fresh start, and inheriting whatever the
@@ -4021,7 +4029,25 @@ impl Window {
     /// rewritten as data and come up changed when they are opened.
     fn carry_book_template(&self) {
         let active = self.active.get();
-        if self.books.borrow().get(active).and_then(|book| book.book_template).is_none() {
+        let Some(id) = self.books.borrow().get(active).and_then(|book| book.book_template) else {
+            return;
+        };
+        // The book on screen alone first: most saves are a symbol or a
+        // resolution, which leave it its template's, and the other books need
+        // not be written out as data to find that out.
+        let unchanged = {
+            let books = self.books.borrow();
+            let shape = books
+                .get(active)
+                .and_then(|book| serde_json::to_value(book).ok())
+                .and_then(|book| book_templates::capture(&book));
+            match (shape, book_templates::get(&self.store, id)) {
+                (Some(shape), Some(template)) => shape.same(&template.shape),
+                _ => true,
+            }
+        };
+        if unchanged {
+            *self.template_leaves.borrow_mut() = self.layout.borrow().leaves();
             return;
         }
         let mut books: Vec<serde_json::Value> =
@@ -4057,9 +4083,17 @@ impl Window {
             self.take_book_template(&chosen);
             return;
         }
+        // Charts past the template's last go, drawings and all, and saying
+        // only that the rest keep their symbols would hide that.
+        let had = books.get(self.active.get()).map_or(0, |book| book_templates::leaves(book).len());
+        let fewer = match had.saturating_sub(chosen.shape.panes.len()) {
+            0 => String::new(),
+            1 => " The chart past its last one is removed, with its drawings.".to_string(),
+            n => format!(" The {n} charts past its last one are removed, with their drawings."),
+        };
         let body = format!(
             "This chartbook\u{2019}s layout and indicators will be replaced by \
-             \u{201c}{}\u{201d}. Its charts keep their symbols.",
+             \u{201c}{}\u{201d}. Its charts keep their symbols.{fewer}",
             chosen.name
         );
         let dialog = adw::AlertDialog::new(Some("Use Chartbook Template?"), Some(&body));

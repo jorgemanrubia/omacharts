@@ -10,7 +10,7 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 
-use crate::ui::preferences::ask_name;
+use crate::book_templates::refused_name;
 use crate::ui::Window;
 
 /// Ask for a name and save the chartbook on screen as a new template under it,
@@ -21,47 +21,70 @@ use crate::ui::Window;
 /// a template from here would change every chartbook on it, and that is not
 /// what saving a new one sounds like.
 pub fn save_new(window: &Rc<Window>) {
-    let taken: Vec<String> =
-        window.book_templates().iter().map(|t| t.name.trim().to_lowercase()).collect();
+    let this = window.clone();
+    ask_template_name(
+        window,
+        &window.window,
+        "Save as New Chartbook Template",
+        "",
+        "Save",
+        None,
+        move |name| this.save_as_new_book_template(name),
+    );
+}
+
+/// An `ask_name` that also holds back a name no chartbook template may have
+/// — another one's, "None" — and says why in the box. `except` is the
+/// template being renamed, which may keep its own.
+fn ask_template_name(
+    window: &Rc<Window>,
+    anchor: &impl IsA<gtk::Widget>,
+    heading: &str,
+    initial: &str,
+    verb: &str,
+    except: Option<u32>,
+    done: impl Fn(&str) + 'static,
+) {
+    let templates = window.book_templates();
     let name = adw::EntryRow::new();
     name.set_title("Name");
+    name.set_text(initial);
     let rows = adw::PreferencesGroup::new();
     rows.add(&name);
 
-    let dialog = adw::AlertDialog::new(Some("Save as New Chartbook Template"), None);
+    let dialog = adw::AlertDialog::new(Some(heading), None);
     dialog.set_extra_child(Some(&rows));
     dialog.add_response("cancel", "Cancel");
-    dialog.add_response("ok", "Save");
+    dialog.add_response("ok", verb);
     dialog.set_response_appearance("ok", adw::ResponseAppearance::Suggested);
     dialog.set_default_response(Some("ok"));
     dialog.set_close_response("cancel");
-    dialog.set_response_enabled("ok", false);
 
-    let free = move |text: &str| {
-        let text = text.trim().to_lowercase();
-        !text.is_empty() && !taken.contains(&text)
-    };
+    let refused = Rc::new(move |text: &str| refused_name(&templates, text, except));
+    dialog.set_response_enabled("ok", refused(initial).is_none());
     let gate = dialog.clone();
-    let checks = free.clone();
+    let checks = refused.clone();
     name.connect_changed(move |field| {
         let text = field.text();
-        gate.set_response_enabled("ok", checks(&text));
-        // Red only for a name in use: a blank box is not a mistake yet.
-        match !text.trim().is_empty() && !checks(&text) {
-            true => {
+        let why = checks(&text);
+        gate.set_response_enabled("ok", why.is_none());
+        // Red only for a name that cannot be had: a blank box is not a
+        // mistake yet.
+        match why.filter(|_| !text.trim().is_empty()) {
+            Some(why) => {
                 field.add_css_class("error");
-                field.set_tooltip_text(Some("A chartbook template already has this name"));
+                field.set_tooltip_text(Some(&why));
             }
-            false => {
+            None => {
                 field.remove_css_class("error");
                 field.set_tooltip_text(None);
             }
         }
     });
     let finish = dialog.clone();
-    let checks = free.clone();
+    let checks = refused.clone();
     name.connect_entry_activated(move |field| {
-        if checks(&field.text()) {
+        if checks(&field.text()).is_none() {
             finish.emit_by_name::<()>("response", &[&"ok"]);
             finish.close();
         }
@@ -69,16 +92,15 @@ pub fn save_new(window: &Rc<Window>) {
 
     let field = name.clone();
     let answered = std::cell::Cell::new(false);
-    let this = window.clone();
     dialog.connect_response(None, move |_, response| {
         let typed = field.text();
-        if response != "ok" || !free(&typed) || answered.replace(true) {
+        if response != "ok" || refused(&typed).is_some() || answered.replace(true) {
             return;
         }
-        this.save_as_new_book_template(typed.trim());
+        done(typed.trim());
     });
 
-    dialog.present(Some(&window.window));
+    dialog.present(Some(anchor));
     name.grab_focus();
 }
 
@@ -140,9 +162,11 @@ fn rebuild(
             (window.clone(), page.clone(), shown.clone(), template.id, template.name.clone());
         rename.connect_clicked(move |button| {
             let (this, at, list) = (this.clone(), at.clone(), list.clone());
-            ask_name(button, "Rename Chartbook Template", &name, "Rename", move |chosen| {
+            let window = this.clone();
+            let heading = "Rename Chartbook Template";
+            ask_template_name(&window, button, heading, &name, "Rename", Some(id), move |chosen| {
                 // The id stays, so every chartbook on it stays on it.
-                this.rename_book_template(id, &chosen);
+                this.rename_book_template(id, chosen);
                 rebuild(&this, &at, &list);
             });
         });

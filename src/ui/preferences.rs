@@ -1388,8 +1388,8 @@ fn string_list(items: &[String]) -> gtk::StringList {
 /// Asks for a theme's name, offering `initial`, and hands back what was
 /// typed. Blank is not an answer: a theme with no name is one nobody can pick
 /// out of the list again.
-pub(crate) fn ask_name(
-    anchor: &impl IsA<gtk::Widget>,
+fn ask_name(
+    anchor: &gtk::Button,
     heading: &str,
     initial: &str,
     verb: &str,

@@ -163,6 +163,24 @@ pub fn find<'a>(templates: &'a [BookTemplate], selector: &str) -> Lookup<'a> {
     }
 }
 
+/// Why `name` cannot be a chartbook template's, or `None` when it can: a
+/// name another template has, in any case, would make a selector name two,
+/// and "none" or `id:N` already mean something to a selector. `except` is the
+/// template being renamed, which may keep its own name.
+pub fn refused_name(templates: &[BookTemplate], name: &str, except: Option<u32>) -> Option<String> {
+    let wanted = name.trim().to_lowercase();
+    if wanted.is_empty() {
+        return Some("a chartbook template needs a name".into());
+    }
+    if wanted == crate::chart_defaults::NO_TEMPLATE.to_lowercase() || wanted.starts_with("id:") {
+        return Some(format!("{:?} is how a chartbook template is picked, not a name for one", name.trim()));
+    }
+    templates
+        .iter()
+        .find(|t| Some(t.id) != except && t.name.trim().to_lowercase() == wanted)
+        .map(|t| format!("there is already a chartbook template called {:?}", t.name))
+}
+
 pub enum Lookup<'a> {
     Found(&'a BookTemplate),
     Missing,
@@ -443,7 +461,13 @@ pub fn follow(
         if Some(at) == except || linked(book) != Some(id) {
             continue;
         }
+        // Following is not taking: a chart that filled the window, and is
+        // still there, still fills it when the book is opened.
+        let maximized = book["maximized"].clone();
         if apply(book, shape, charts, &mut next_id, origins) {
+            if leaves(book).iter().any(|id| maximized.as_u64() == Some(u64::from(*id))) {
+                book["maximized"] = maximized;
+            }
             changed += 1;
         }
     }
@@ -469,8 +493,14 @@ pub fn carry(store: &Store, books: &mut [Value], at: usize, before: &[u32]) -> u
     if shape.same(&template.shape) {
         return 0;
     }
-    let order = in_order(book).map(|(layout, _)| layout);
-    let origins = order.map(|layout| origins(before, &layout));
+    // With nothing to say what the book was — one just made, or one whose
+    // tree could not be read — the change is read by position. Read by ids
+    // that match nothing, every chart would be new, and every other book
+    // would lose its charts to copies of its focused one.
+    let origins = match before.is_empty() {
+        true => None,
+        false => in_order(book).map(|(layout, _)| origins(before, &layout)),
+    };
     replace(store, id, shape.clone());
     let charts = crate::templates::all(store);
     follow(books, id, &shape, &charts, Some(at), origins.as_deref())
@@ -894,5 +924,62 @@ mod tests {
         set_link(&mut books[1], Some(42));
         assert_eq!(carry(&store, &mut books, 0, &[1, 2]), 0);
         assert_eq!(books[1]["layout"]["split"]["ratio"], json!(0.5));
+    }
+
+    /// A change from a book nothing says the earlier shape of — one just
+    /// made on the template — is read by position, so the other books keep
+    /// their charts rather than each becoming copies of its focused one.
+    #[test]
+    fn a_change_with_no_earlier_shape_is_carried_by_position() {
+        let store = Store::memory().unwrap();
+        let mut books = vec![pair((1, "A"), (2, "B")), pair((3, "X"), (4, "Y"))];
+        let template = create(&store, "Pair", capture(&books[0]).unwrap());
+        set_link(&mut books[0], Some(template.id));
+        set_link(&mut books[1], Some(template.id));
+        books[0]["panes"][1]["indicators"] = rsi();
+        assert_eq!(carry(&store, &mut books, 0, &[]), 1);
+        assert_eq!(symbols(&books[1]), ["X", "Y"]);
+        let (_, ordered) = in_order(&books[1]).unwrap();
+        assert_eq!(ordered.iter().map(|p| p["id"].clone()).collect::<Vec<_>>(), [json!(3), json!(4)]);
+        assert_eq!(ordered[0]["drawings"], json!([{"marker": 3}]), "a chart lost its drawings");
+        assert_eq!(ordered[1]["indicators"][0]["kind"], json!("rsi"));
+    }
+
+    /// A book that follows a change keeps the chart that filled its window
+    /// while that chart is still there, and lets it go once it is not.
+    #[test]
+    fn a_following_book_keeps_its_maximized_chart() {
+        let store = Store::memory().unwrap();
+        let mut books = vec![pair((1, "A"), (2, "B")), pair((3, "X"), (4, "Y"))];
+        let template = create(&store, "Pair", capture(&books[0]).unwrap());
+        set_link(&mut books[0], Some(template.id));
+        set_link(&mut books[1], Some(template.id));
+        books[1]["maximized"] = json!(4);
+        books[0]["layout"]["split"]["ratio"] = json!(0.3);
+        assert_eq!(carry(&store, &mut books, 0, &[1, 2]), 1);
+        assert_eq!(books[1]["maximized"], json!(4));
+
+        books[0]["layout"] = json!({"leaf": 1});
+        books[0]["panes"].as_array_mut().unwrap().retain(|p| p["id"] == json!(1));
+        assert_eq!(carry(&store, &mut books, 0, &[1, 2]), 1);
+        assert!(books[1]["maximized"].is_null());
+    }
+
+    /// No name two templates would share, in any case, and none a selector
+    /// already reads as something else.
+    #[test]
+    fn a_name_is_refused_when_a_selector_could_not_tell_it_apart() {
+        let store = Store::memory().unwrap();
+        let shape = capture(&single("SPY")).unwrap();
+        let corners = create(&store, "Corners", shape.clone());
+        create(&store, "Pair", shape);
+        let all = all(&store);
+        assert!(refused_name(&all, "Grid", None).is_none());
+        assert!(refused_name(&all, " pair ", None).is_some());
+        assert!(refused_name(&all, "Pair", Some(corners.id)).is_some());
+        assert!(refused_name(&all, "CORNERS", Some(corners.id)).is_none());
+        for name in ["None", "id:4", "  "] {
+            assert!(refused_name(&all, name, None).is_some(), "{name}");
+        }
     }
 }

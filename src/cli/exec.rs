@@ -3148,21 +3148,10 @@ fn book_template_verb(
                 Fault::new(super::EXIT_ERROR, format!("chartbook {book:?} names a chart it does not have"))
             })?;
             let wanted = named()?;
-            if wanted.starts_with("id:") {
-                return Err(Fault::usage(format!(
-                    "{wanted:?} is how a chartbook template is picked, not a name for a new one"
-                )));
-            }
             // Only ever a new one: replacing a template would change every
             // chartbook on it, which a word like "save" does not say.
-            if let Some(taken) =
-                templates.iter().find(|t| t.name.trim().eq_ignore_ascii_case(wanted))
-            {
-                return Err(Fault::usage(format!(
-                    "there is already a chartbook template called {:?}; save under a name of \
-                     its own, or delete or rename that one first",
-                    taken.name
-                )));
+            if let Some(why) = bt::refused_name(&templates, wanted, None) {
+                return Err(Fault::usage(why));
             }
             let id = bt::create(store, wanted, shape.clone()).id;
             bt::set_link(workspace.book_mut(at)?, Some(id));
@@ -3211,6 +3200,9 @@ fn book_template_verb(
             let name = arg(m, "NAME").map(|n| n.trim()).filter(|n| !n.is_empty()).ok_or_else(|| {
                 Fault::usage("`chartbook template rename` needs a TEMPLATE and a NAME".into())
             })?;
+            if let Some(why) = bt::refused_name(&templates, name, Some(template.id)) {
+                return Err(Fault::usage(why));
+            }
             bt::rename(store, template.id, name);
             (
                 format!("renamed chartbook template {:?} to {name:?}", template.name),
@@ -5150,6 +5142,7 @@ mod tests {
             "chartbook template save solo --book Grid",
             "chartbook template save Solo --book One",
             "chartbook template save id:1 --book Grid",
+            "chartbook template save None --book Grid",
         ] {
             let refused = run(line, &store);
             assert_eq!(refused.code, EXIT_USAGE, "{line}: {}", refused.err);
@@ -5171,6 +5164,16 @@ mod tests {
         ok("chartbook create Other --symbol QQQ", &store);
         ok("chartbook template apply Corners --book Other", &store);
 
+        // A name another template has, or one a selector reads as something
+        // else, is refused; a template's own name in another case is not.
+        ok("chartbook create Spare --symbol IWM", &store);
+        ok("chartbook template save Solo --book Spare", &store);
+        for line in ["chartbook template rename Corners solo", "chartbook template rename Corners none"] {
+            assert_eq!(run(line, &store).code, EXIT_USAGE, "{line}");
+        }
+        ok("chartbook template rename Corners CORNERS", &store);
+        ok("chartbook template delete Solo", &store);
+        ok("chartbook delete Spare", &store);
         ok("chartbook template rename Corners Quarters", &store);
         assert!(ok("chartbook template list", &store).contains("Quarters"));
         assert_eq!(run("chartbook template rename Corners X", &store).code, super::super::EXIT_NOT_FOUND);
