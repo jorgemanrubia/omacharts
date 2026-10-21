@@ -688,7 +688,7 @@ mod tests {
     #[test]
     fn every_control_left_out_of_a_screenshot_is_one_the_stylesheet_knows_about() {
         let themes = omacharts_engine::theme::builtin_themes();
-        let schemes = omacharts_engine::theme::builtin_bar_schemes();
+        let schemes = omacharts_engine::theme::bar_schemes(&themes[0]);
         let css = crate::theming::stylesheet(&themes[0], &schemes[0]);
         for class in LEFT_OUT.iter().filter(|class| **class != POINTER_LAYER) {
             assert!(css.contains(&format!(".{class}")), "{class} is not styled anywhere");

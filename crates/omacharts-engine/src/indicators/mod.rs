@@ -213,7 +213,7 @@ impl Kind {
                 value_area: 0.70,
                 poc_color: None,
             },
-            Kind::Volume => Params::Volume { height: 0.18 },
+            Kind::Volume => Params::Volume { height: 0.18, up_color: None, down_color: None },
             // Fourteen bars, overbought at seventy, oversold at thirty: the
             // numbers Wilder published and the ones every other chart shows,
             // so a level somebody is watching elsewhere is the same level here.
@@ -281,6 +281,13 @@ pub enum Params {
     Volume {
         /// How much of the chart's height the pane takes.
         height: f64,
+        /// The bars of a rising and a falling session. Unset is the candles'
+        /// own colour dimmed toward the chart, so volume reads as belonging
+        /// to the bar above it without competing with it.
+        #[serde(default)]
+        up_color: Option<ColorChoice>,
+        #[serde(default)]
+        down_color: Option<ColorChoice>,
     },
     Rsi {
         period: usize,
@@ -749,7 +756,7 @@ pub fn compute(
                 band: Some((*oversold, *overbought)),
             })
         }
-        (Kind::Volume, Params::Volume { height }) => Output::Volume {
+        (Kind::Volume, Params::Volume { height, .. }) => Output::Volume {
             values: bars.iter().map(|bar| bar.volume).collect(),
             height: height.clamp(MIN_PANE_SHARE, MAX_PANE_SHARE),
         },
@@ -928,7 +935,7 @@ mod tests {
     #[test]
     fn an_absurd_pane_height_is_brought_back_into_range() {
         let mut volume = Indicator::new(1, Kind::Volume);
-        volume.params = Params::Volume { height: 5.0 };
+        volume.params = Params::Volume { height: 5.0, up_color: None, down_color: None };
         match compute(&volume, &bars(&[1.0, 2.0]), 0, Timeframe::days(1), None) {
             Output::Volume { height, .. } => assert_eq!(height, MAX_PANE_SHARE),
             other => panic!("{other:?}"),

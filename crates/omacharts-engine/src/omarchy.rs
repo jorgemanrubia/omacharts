@@ -65,6 +65,37 @@ pub fn current(home: &Path) -> Option<Theme> {
     Some(derive(&parse(&text), &name))
 }
 
+/// Where Omarchy keeps the themes it ships, and where people install their
+/// own. A theme in the second shadows one of the same name in the first,
+/// the way Omarchy itself resolves them.
+const INSTALLED: [&str; 2] = [".local/share/omarchy/themes", ".config/omarchy/themes"];
+
+/// Every Omarchy theme installed on this machine, each as a fixed theme of
+/// its own, sorted by name.
+///
+/// Offered beside the one that follows the desktop, so a chart can wear a
+/// theme other than the desktop's. Read once rather than polled: a theme
+/// installed while the app is open shows up next time it starts.
+pub fn installed(home: &Path) -> Vec<Theme> {
+    let mut found: HashMap<String, Theme> = HashMap::new();
+    for dir in INSTALLED {
+        let Ok(entries) = std::fs::read_dir(home.join(dir)) else { continue };
+        for entry in entries.flatten() {
+            let slug = entry.file_name().to_string_lossy().into_owned();
+            let Ok(text) = std::fs::read_to_string(entry.path().join("colors.toml")) else {
+                continue;
+            };
+            let mut theme = derive(&parse(&text), &pretty_name(&slug));
+            theme.id = format!("{OMARCHY_ID}:{slug}");
+            theme.source = Source::BuiltIn;
+            found.insert(slug, theme);
+        }
+    }
+    let mut themes: Vec<Theme> = found.into_values().collect();
+    themes.sort_by(|a, b| a.name.cmp(&b.name));
+    themes
+}
+
 /// `key = "value"`, one per line; comments and blanks ignored.
 ///
 /// The file is flat, so a short parser beats a TOML dependency.
@@ -246,6 +277,7 @@ pub fn derive(keys: &HashMap<String, String>, name: &str) -> Theme {
             accent,
         },
         swatches,
+        bars: None,
     }
 }
 
@@ -370,6 +402,30 @@ magenta = "#d699b6"
         assert_eq!(derive(&parse("mode = \"light\""), "x").mode, Mode::Light);
         assert_eq!(derive(&parse("theme_type = \"light\""), "x").mode, Mode::Light);
         assert_eq!(derive(&parse(""), "x").mode, Mode::Dark);
+    }
+
+    #[test]
+    fn every_installed_theme_is_offered_once_and_a_users_own_wins() {
+        let home = std::env::temp_dir().join(format!("omacharts-installed-{}", std::process::id()));
+        let write = |dir: &str, slug: &str, background: &str| {
+            let path = home.join(dir).join(slug);
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(path.join("colors.toml"), format!("background = \"{background}\"\n"))
+                .unwrap();
+        };
+        write(INSTALLED[0], "tokyo-night", "#1a1b26");
+        write(INSTALLED[0], "everforest", "#2d353b");
+        write(INSTALLED[1], "everforest", "#000000");
+        std::fs::create_dir_all(home.join(INSTALLED[0]).join("no-colours")).unwrap();
+
+        let themes = installed(&home);
+        let _ = std::fs::remove_dir_all(&home);
+
+        let names: Vec<&str> = themes.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["Everforest", "Tokyo Night"]);
+        assert_eq!(themes[0].id, "omarchy:everforest");
+        assert_eq!(themes[0].source, Source::BuiltIn);
+        assert_eq!(themes[0].ui.background, derive(&parse("background = \"#000000\""), "").ui.background);
     }
 
     #[test]

@@ -12,7 +12,7 @@
 
 use std::path::{Path, PathBuf};
 
-use omacharts_engine::{Bar, BarScheme, Configurations, Drawing, Indicator, Theme, Timeframe};
+use omacharts_engine::{Bar, Configurations, Drawing, Indicator, Theme, Timeframe};
 
 /// Where the drawing configurations live, as one JSON value.
 pub const SETTING_DRAWING_CONFIGURATIONS: &str = "drawing_configurations";
@@ -1056,26 +1056,6 @@ impl Store {
 
     pub fn delete_theme(&self, id: &str) {
         let _ = self.conn.execute("DELETE FROM custom_themes WHERE id = ?1", params![id]);
-    }
-
-    pub fn custom_bar_schemes(&self) -> Vec<BarScheme> {
-        self.json_rows("SELECT json FROM custom_bar_schemes ORDER BY id")
-    }
-
-    pub fn save_bar_scheme(&self, scheme: &BarScheme) {
-        if let Ok(json) = serde_json::to_string(scheme) {
-            let _ = self.conn.execute(
-                "INSERT INTO custom_bar_schemes (id, json) VALUES (?1, ?2)
-                 ON CONFLICT(id) DO UPDATE SET json = excluded.json",
-                params![scheme.id, json],
-            );
-        }
-    }
-
-    pub fn delete_bar_scheme(&self, id: &str) {
-        let _ = self
-            .conn
-            .execute("DELETE FROM custom_bar_schemes WHERE id = ?1", params![id]);
     }
 
     /// A row of JSON that fails to parse is skipped rather than fatal: a theme

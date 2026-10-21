@@ -2124,7 +2124,7 @@ impl Window {
             let mut indicators = pane.indicators.borrow().clone();
             if let Some(indicator) = indicators.iter_mut().find(|i| i.id == indicator_id) {
                 match &mut indicator.params {
-                    omacharts_engine::Params::Volume { height }
+                    omacharts_engine::Params::Volume { height, .. }
                     | omacharts_engine::Params::Rsi { height, .. }
                     | omacharts_engine::Params::Macd { height, .. }
                     | omacharts_engine::Params::Atr { height, .. }
@@ -3749,7 +3749,7 @@ impl Window {
             let Some(tab) = this.book_tab(this.active.get()) else { return };
             let model = gio::Menu::new();
             shortcuts::append(&model, "Rename", "win.rename-chartbook");
-            shortcuts::append(&model, "Screenshot chartbook", "win.screenshot");
+            shortcuts::append(&model, "Take screenshot", "win.screenshot");
             shortcuts::append(&model, "Remove", "win.close-chartbook");
             popup_menu(&model, &tab, x, y);
         });
@@ -4108,10 +4108,6 @@ impl Window {
     fn edit_timeframes(self: &Rc<Self>) {
         let page = adw::PreferencesPage::new();
         let group = adw::PreferencesGroup::new();
-        group.set_title("Resolutions");
-        group.set_description(Some(
-            "What the strip offers. Typing a resolution on the chart adds it here too.",
-        ));
 
         let rebuild: Rebuild = Rc::new(RefCell::new(None));
 
@@ -6277,6 +6273,11 @@ impl Window {
         self.theming.borrow().theme()
     }
 
+    /// The bar scheme the charts are painted in.
+    pub fn bar_scheme(&self) -> omacharts_engine::BarScheme {
+        self.theming.borrow().bar_scheme()
+    }
+
     /// The focused chart's trading hours.
     pub fn session(&self) -> Session {
         self.focused_pane().session.get()
@@ -7049,7 +7050,7 @@ impl Window {
             groups.append_item(&item);
         }
         rest.append_submenu(Some("Link group"), &groups);
-        shortcuts::append(&rest, "Screenshot chart", "chart.screenshot");
+        shortcuts::append(&rest, "Take screenshot", "chart.screenshot");
         if !self.focused_pane().view.drawings().is_empty() {
             shortcuts::append(&rest, "Remove all drawings", "chart.drawing-clear");
         }

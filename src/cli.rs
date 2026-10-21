@@ -1148,14 +1148,13 @@ mod tests {
         );
     }
 
-    /// Any scheme chosen in the window reaches the bar, not only red up: the
-    /// accessible one exists for people who cannot tell green from red, and
-    /// a bar still showing them green and red is the one place it fails them.
+    /// The scheme chosen in the window reaches the bar: somebody who reads a
+    /// rise as red reads it that way in the bar too.
     #[test]
     fn the_payload_follows_whichever_bar_scheme_was_chosen() {
         let store = Store::memory().unwrap();
         let theme: serde_json::Value = serde_json::from_str(&colors_json(&store)).unwrap();
-        store.set_setting(crate::theming::SETTING_BARS, "accessible");
+        store.set_setting(crate::theming::SETTING_BARS, omacharts_engine::theme::THEME_RED_UP_ID);
         let chosen: serde_json::Value = serde_json::from_str(&colors_json(&store)).unwrap();
         assert_ne!(chosen["up"], theme["up"]);
         assert_ne!(chosen["down"], theme["down"]);
@@ -1164,26 +1163,17 @@ mod tests {
         assert_eq!(chosen["hover"], theme["hover"]);
     }
 
-    /// Every scheme on offer — the theme's, red up, monochrome, the built-in
-    /// ones including the accessible blue and orange, and one of the user's
-    /// own — reaches the widget whole: the change text, the sparklines (which
+    /// Every scheme on offer — filled, hollow, red up and monochrome — reaches
+    /// the widget whole: the change text, the sparklines (which
     /// are drawn in the same up and down) and the pill all come from the
     /// chosen scheme's colours, by the same rules the chart applies to them.
     #[test]
     fn every_scheme_on_offer_reaches_the_widget() {
         use omacharts_engine::{ink::legible, Tag};
         let store = Store::memory().unwrap();
-        let mut custom = omacharts_engine::theme::builtin_bar_schemes()[0].clone();
-        custom.id = "custom-blue-brown".to_string();
-        custom.name = "Blue and brown".to_string();
-        custom.up = "#2f6fdb".to_string();
-        custom.down = "#8b5a2b".to_string();
-        custom.source = omacharts_engine::theme::Source::Custom;
-        store.save_bar_scheme(&custom);
         let theming = crate::theming::Theming::load(&store);
         let schemes = theming.bar_schemes();
-        assert!(schemes.iter().any(|s| s.id == "accessible"));
-        assert!(schemes.iter().any(|s| s.id == custom.id));
+        assert_eq!(schemes.len(), 4);
         for scheme in schemes {
             store.set_setting(crate::theming::SETTING_BARS, &scheme.id);
             let sent: serde_json::Value = serde_json::from_str(&colors_json(&store)).unwrap();

@@ -728,7 +728,7 @@ bars are monochrome; the colours are remembered
   [exit 0]
 
 $ omacharts config bars coloured
-bars carry their direction again, in the "hollow" scheme
+bars carry their direction again, in the "theme-hollow" scheme
   [exit 0]
 ```
 

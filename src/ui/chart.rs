@@ -4076,6 +4076,7 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
                     draw_volume(
                         cr,
                         state,
+                        &drawn.indicator,
                         &columns.bars,
                         bars_x,
                         bar_w,
@@ -4491,6 +4492,7 @@ fn ohlc(cr: &cairo::Context, scheme: &BarScheme, columns: &Columns, to_y: &impl 
 fn draw_volume(
     cr: &cairo::Context,
     state: &State,
+    indicator: &Indicator,
     bars: &[Bar],
     plot_x: f64,
     bar_w: f64,
@@ -4503,8 +4505,9 @@ fn draw_volume(
     // reach the line above it. Bars run under the name, which is short.
     let inner_top = top + height * 0.1;
     let inner_h = height * 0.9;
+    let (up, down) = volume_colours(indicator, &state.theme, &state.scheme);
     for rising in [false, true] {
-        let colour = if rising { &state.scheme.volume_up } else { &state.scheme.volume_down };
+        let colour = if rising { &up } else { &down };
         let mut any = false;
         for (i, bar) in bars.iter().enumerate() {
             if (bar.close >= bar.open) != rising || bar.volume <= 0.0 {
@@ -5671,6 +5674,22 @@ fn time_at_column(state: &State, index: i64) -> Option<i64> {
     } else {
         state.bars.last().map(|b| state.timeframe.shift(b.ts, index - len + 1))
     }
+}
+
+/// The colours a volume pane paints a rising and a falling bar: the
+/// indicator's own when somebody chose them, otherwise the candles' dimmed.
+pub(crate) fn volume_colours(
+    indicator: &Indicator,
+    theme: &omacharts_engine::Theme,
+    scheme: &BarScheme,
+) -> (String, String) {
+    let omacharts_engine::Params::Volume { up_color, down_color, .. } = &indicator.params else {
+        return (scheme.volume_up.clone(), scheme.volume_down.clone());
+    };
+    let pick = |choice: &Option<omacharts_engine::theme::ColorChoice>, fallback: &str| {
+        choice.as_ref().map_or_else(|| fallback.to_string(), |c| c.resolve(theme))
+    };
+    (pick(up_color, &scheme.volume_up), pick(down_color, &scheme.volume_down))
 }
 
 /// One histogram per period, anchored where its period begins.

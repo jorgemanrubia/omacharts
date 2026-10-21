@@ -3418,9 +3418,7 @@ fn config_set(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<Stri
 
 /// Where the scheme to go back to when the colour is put back is remembered.
 ///
-/// The same key the preferences dialog writes, whose own constant is private
-/// to it — `the_scheme_this_remembers_is_the_one_the_dialog_remembers` pins
-/// the spelling. Monochrome is a scheme like any other, so choosing it without
+/// Monochrome is a scheme like any other, so choosing it without
 /// writing this down would throw away a palette somebody had picked and leave
 /// them on the default when they changed their mind.
 const COLOURED_BARS: &str = "coloured_bar_scheme";
@@ -3431,8 +3429,6 @@ const COLOURED_BARS: &str = "coloured_bar_scheme";
 /// `config set bar_scheme theme-mono` reaches the same scheme, and is not the
 /// same command: it does not remember what to go back to, so putting the
 /// colour back lands on the default rather than on the scheme that was in use.
-/// This is the question the preferences dialog asks, so the terminal asks it
-/// too.
 fn config_bars(
     store: &Store,
     m: &clap::ArgMatches,
@@ -4790,19 +4786,6 @@ mod tests {
             run("config get bar_scheme", &store).out.trim(),
             "hollow",
             "the scheme that was in use has to come back, not the default"
-        );
-    }
-
-    /// The preferences dialog remembers the coloured scheme under this key and
-    /// its own constant is private to it, so a rename there would leave the two
-    /// quietly disagreeing: the dialog would put back a scheme the terminal
-    /// never wrote.
-    #[test]
-    fn the_scheme_this_remembers_is_the_one_the_dialog_remembers() {
-        let dialog = include_str!("../ui/preferences.rs");
-        assert!(
-            dialog.contains(&format!("\"{COLOURED_BARS}\"")),
-            "the preferences dialog does not mention {COLOURED_BARS}"
         );
     }
 

@@ -840,11 +840,10 @@ fn appearance_group(
 ) -> Option<adw::PreferencesGroup> {
     let id = indicator.id;
 
-    // Volume is drawn in the bar scheme's own up and down colours, the same
-    // ones the candles use, so there is nothing here to ask about: a colour,
-    // a thickness and a pattern that changed nothing would be three lies.
+    // Volume is bars, not a line: a colour for each direction, and no
+    // thickness or pattern to ask about.
     if indicator.kind == Kind::Volume {
-        return None;
+        return Some(volume_colours(window, refresh, indicator));
     }
 
     // A volume profile is bars and a mark, not a line, so it is asked about
@@ -1173,7 +1172,7 @@ fn parameters_group(
                 },
             ));
         }
-        Params::Volume { height } => {
+        Params::Volume { height, .. } => {
             group.add(&pane_height_row(window, refresh, id, *height));
         }
         Params::Rsi { period, height, overbought, oversold } => {
@@ -1285,6 +1284,53 @@ fn parameters_group(
             );
         }
     }
+    group
+}
+
+/// A rising and a falling session's volume bar. Unset, each is the candle's
+/// own colour dimmed toward the chart.
+fn volume_colours(
+    window: &Rc<Window>,
+    refresh: &Refresh,
+    indicator: &Indicator,
+) -> adw::PreferencesGroup {
+    let id = indicator.id;
+    let group = adw::PreferencesGroup::new();
+    group.set_title("Colours");
+
+    let (up, down) =
+        crate::ui::chart::volume_colours(indicator, &window.theme(), &window.bar_scheme());
+    let Params::Volume { up_color, down_color, .. } = &indicator.params else { return group };
+    // Bars have no line to repaint as a sample.
+    let unused = Ink::new(String::new);
+    group.add(&colour_row(
+        window,
+        refresh,
+        &unused,
+        "Up",
+        &up,
+        up_color.clone(),
+        move |indicator, choice| {
+            if let Params::Volume { up_color, .. } = &mut indicator.params {
+                *up_color = choice;
+            }
+        },
+        id,
+    ));
+    group.add(&colour_row(
+        window,
+        refresh,
+        &unused,
+        "Down",
+        &down,
+        down_color.clone(),
+        move |indicator, choice| {
+            if let Params::Volume { down_color, .. } = &mut indicator.params {
+                *down_color = choice;
+            }
+        },
+        id,
+    ));
     group
 }
 
@@ -1820,7 +1866,7 @@ fn pane_height_row(
         MIN_PANE_SHARE,
         MAX_PANE_SHARE,
         move |indicator, share| match &mut indicator.params {
-            Params::Volume { height }
+            Params::Volume { height, .. }
             | Params::Rsi { height, .. }
             | Params::Macd { height, .. }
             | Params::Atr { height, .. }

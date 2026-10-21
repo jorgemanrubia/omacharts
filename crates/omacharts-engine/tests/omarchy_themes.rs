@@ -601,10 +601,7 @@ fn every_monochrome_bar_is_legible_and_unlike_the_colours_it_replaces() {
 /// Every scheme a person can pick, built against `theme` the way the window
 /// builds them.
 fn every_scheme(theme: &Theme) -> Vec<omacharts_engine::BarScheme> {
-    use omacharts_engine::theme::{builtin_bar_schemes, theme_red_up_bars};
-    let mut out = vec![theme_bars(theme), theme_red_up_bars(theme), theme_mono_bars(theme)];
-    out.extend(builtin_bar_schemes());
-    out
+    omacharts_engine::theme::bar_schemes(theme)
 }
 
 /// WCAG AA, 4.5:1, for every text role against every surface it can be

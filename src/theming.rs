@@ -16,8 +16,8 @@ use std::fmt::Write as _;
 
 use omacharts_engine::frame::{GUTTER_WIDTH, RING_WIDTH};
 use omacharts_engine::theme::{
-    builtin_bar_schemes, builtin_themes, theme_bars, theme_mono_bars, theme_red_up_bars, BarScheme,
-    Mode, Theme, FALLBACK_THEME_ID, OMARCHY_ID, THEME_BARS_ID,
+    bar_schemes, builtin_themes, BarScheme, Mode, Theme, FALLBACK_THEME_ID, OMARCHY_ID,
+    THEME_BARS_ID, THEME_HOLLOW_ID, THEME_MONO_ID,
 };
 use omacharts_engine::Ink;
 use omacharts_engine::omarchy;
@@ -34,9 +34,9 @@ pub struct Theming {
     omarchy: Option<Theme>,
     omarchy_fingerprint: Option<String>,
     builtin_themes: Vec<Theme>,
-    builtin_schemes: Vec<BarScheme>,
+    /// Every Omarchy theme installed, each fixed rather than following.
+    installed_themes: Vec<Theme>,
     custom_themes: Vec<Theme>,
-    custom_schemes: Vec<BarScheme>,
     theme_id: String,
     scheme_id: String,
     provider: Option<gtk::CssProvider>,
@@ -58,9 +58,8 @@ impl Theming {
             omarchy,
             omarchy_fingerprint,
             builtin_themes: builtin_themes(),
-            builtin_schemes: builtin_bar_schemes(),
+            installed_themes: omarchy::installed(&home),
             custom_themes: store.custom_themes(),
-            custom_schemes: store.custom_bar_schemes(),
             home,
             provider: None,
         }
@@ -70,11 +69,13 @@ impl Theming {
         self.omarchy.is_some()
     }
 
-    /// Every theme on offer: the desktop's, then ours, then the user's.
+    /// Every theme on offer: the desktop's, then ours, then every Omarchy
+    /// theme installed, then the user's.
     pub fn themes(&self) -> Vec<&Theme> {
         self.omarchy
             .iter()
             .chain(self.builtin_themes.iter())
+            .chain(self.installed_themes.iter())
             .chain(self.custom_themes.iter())
             .collect()
     }
@@ -86,15 +87,7 @@ impl Theming {
     }
 
     fn bar_schemes_for(&self, theme: &Theme) -> Vec<BarScheme> {
-        // Every theme-derived scheme, because none can come from the fixed
-        // built-in list: each is built from whichever theme is active. Leaving
-        // one out does not disable it — it makes the setting write an id
-        // nothing can resolve, and `bar_scheme` then falls back to colour
-        // without saying so.
-        let mut out = vec![theme_bars(theme), theme_red_up_bars(theme), theme_mono_bars(theme)];
-        out.extend(self.builtin_schemes.iter().cloned());
-        out.extend(self.custom_schemes.iter().cloned());
-        out
+        bar_schemes(theme)
     }
 
     /// The active theme, owned.
@@ -117,9 +110,16 @@ impl Theming {
 
     fn bar_scheme_for(&self, theme: &Theme) -> BarScheme {
         let schemes = self.bar_schemes_for(theme);
+        // Schemes that used to carry colours of their own come back as the
+        // theme's colours painted the same way; the rest as plain filled.
+        let id = match self.scheme_id.as_str() {
+            "hollow" => THEME_HOLLOW_ID,
+            "monochrome" => THEME_MONO_ID,
+            id => id,
+        };
         schemes
             .iter()
-            .find(|s| s.id == self.scheme_id)
+            .find(|s| s.id == id)
             .cloned()
             .unwrap_or_else(|| schemes[0].clone())
     }
@@ -158,7 +158,6 @@ impl Theming {
 
     pub fn reload_custom(&mut self, store: &Store) {
         self.custom_themes = store.custom_themes();
-        self.custom_schemes = store.custom_bar_schemes();
     }
 
     /// Re-read which theme and bar scheme are chosen, for a choice made
@@ -850,7 +849,7 @@ mod tests {
     #[test]
     fn the_stylesheet_redefines_the_platform_colours() {
         let theme = &builtin_themes()[0];
-        let css = stylesheet(theme, &builtin_bar_schemes()[0]);
+        let css = stylesheet(theme, &bar_schemes(theme)[0]);
         for name in [
             "window_bg_color",
             "view_bg_color",
@@ -879,7 +878,7 @@ mod tests {
     #[test]
     fn the_frame_is_styled_from_the_engines_colours_and_widths() {
         let theme = &builtin_themes()[0];
-        let scheme = builtin_bar_schemes()[0].clone();
+        let scheme = bar_schemes(theme)[0].clone();
         let css = stylesheet(theme, &scheme);
         let frame = theme.frame(&scheme);
         for (name, value) in [
@@ -928,6 +927,6 @@ mod tests {
         let theming = Theming::load(&store);
         let schemes = theming.bar_schemes();
         assert_eq!(schemes[0].id, THEME_BARS_ID);
-        assert!(schemes.len() > 4);
+        assert_eq!(schemes.len(), 4);
     }
 }

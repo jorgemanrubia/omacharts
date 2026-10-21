@@ -1,6 +1,6 @@
 //! Choosing a data feed, and signing in to one that needs it.
 //!
-//! A page of its own rather than a row in the settings, because picking a
+//! A section of its own rather than a row in the settings, because picking a
 //! feed is not like picking a colour: one of them charts your brokerage
 //! account, which means a sign-in, a browser, a session that expires, and
 //! four different things that can be true of it. A combo box could hold the
@@ -47,6 +47,9 @@ struct Panel {
     /// the choice or the session state changes. Held so it can be taken off
     /// the page again — a feed that needs nothing must leave nothing behind.
     setup: RefCell<Option<adw::PreferencesGroup>>,
+    /// What the page shows below the feeds and their sign-in, kept last as
+    /// the sign-in comes and goes.
+    after: Option<adw::PreferencesGroup>,
     /// True while a browser login is outstanding, so a second press of the
     /// button cannot open a second browser onto the same profile.
     ///
@@ -55,34 +58,25 @@ struct Panel {
     signing_in: std::cell::Cell<bool>,
 }
 
-/// Opens the feed page over the settings dialog.
-pub fn push(
-    dialog: &adw::PreferencesDialog,
+/// Fills the settings' data section: the feeds, the chosen one's sign-in
+/// below them, and `after` below that.
+pub fn build(
+    page: &adw::PreferencesPage,
     store: Rc<Store>,
     on_change: Rc<dyn Fn()>,
+    after: adw::PreferencesGroup,
 ) {
-    let page = adw::PreferencesPage::new();
-
-    let header = adw::HeaderBar::new();
-    let toolbar = adw::ToolbarView::new();
-    toolbar.add_top_bar(&header);
-    toolbar.set_content(Some(&page));
-
     let panel = Rc::new(Panel {
         store,
         on_change,
-        page,
+        page: page.clone(),
         setup: RefCell::new(None),
+        after: Some(after),
         signing_in: std::cell::Cell::new(false),
     });
 
     panel.page.add(&feeds_group(&panel));
     rebuild_setup(&panel);
-
-    // Nothing packed into the header: a navigation page draws its own back
-    // button, and every choice here applies as it is made, so a Done button
-    // beside it would be a second way to do nothing.
-    dialog.push_subpage(&adw::NavigationPage::new(&toolbar, "Provider"));
 }
 
 /// The feeds, in the order the engine offers them: the first is the default.
@@ -154,12 +148,17 @@ fn rebuild_setup(panel: &Rc<Panel>) {
         panel.page.remove(&old);
     }
     let feed = feeds::stored(&panel.store);
-    if !feed.needs_sign_in() {
-        return;
+    if feed.needs_sign_in() {
+        let group = setup_group(panel, feed);
+        panel.page.add(&group);
+        *panel.setup.borrow_mut() = Some(group);
     }
-    let group = setup_group(panel, feed);
-    panel.page.add(&group);
-    *panel.setup.borrow_mut() = Some(group);
+    if let Some(after) = &panel.after {
+        if after.parent().is_some() {
+            panel.page.remove(after);
+        }
+        panel.page.add(after);
+    }
 }
 
 /// The chosen feed's sign-in, which is one row: the group's title names the
@@ -357,6 +356,7 @@ mod tests {
             on_change: Rc::new(|| {}),
             page,
             setup: RefCell::new(None),
+            after: None,
             signing_in: std::cell::Cell::new(false),
         });
         rebuild_setup(&panel);
@@ -429,6 +429,7 @@ mod tests {
             on_change: Rc::new(|| {}),
             page: adw::PreferencesPage::new(),
             setup: RefCell::new(None),
+            after: None,
             signing_in: std::cell::Cell::new(false),
         });
         let tos = providers::listed("tos").expect("thinkorswim is listed");
@@ -473,6 +474,7 @@ mod tests {
             on_change: Rc::new(|| {}),
             page: adw::PreferencesPage::new(),
             setup: RefCell::new(None),
+            after: None,
             signing_in: std::cell::Cell::new(false),
         });
         let group = feeds_group(&panel);
@@ -509,6 +511,7 @@ mod tests {
             on_change: Rc::new(|| {}),
             page: adw::PreferencesPage::new(),
             setup: RefCell::new(None),
+            after: None,
             signing_in: std::cell::Cell::new(false),
         });
         let tos = providers::listed("tos").expect("thinkorswim is listed");
