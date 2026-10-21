@@ -181,8 +181,9 @@ before the indicator. `template list` marks with `*` the one new charts open
 with, and says how many charts use each.
 
 Putting a chart on a template replaces its own indicators with the template's.
-`chart set --template none` takes it off again and keeps what it was showing,
-as its own: nothing on screen changes, it just stops following the template.
+`chart set --template none` puts it on none, which is the empty set: the chart
+is left with no indicators. To start from a template and make it the chart's
+own, change the chart's indicators instead — that is the next paragraph.
 
 **Changing a chart's indicators takes it off its template.** `chart indicator
 add`, `remove` and `set` on a chart that is on one first let go of the

@@ -785,7 +785,7 @@ pub const SURFACE: &[Noun] = &[
                         "template",
                         "TEMPLATE",
                         "show a chart template's indicators in place of the chart's own, or \
-                         `none` to keep them as its own; a name or id:N",
+                         `none` for no indicators at all; a name or id:N",
                     ),
                 ],
                 example: "omacharts chart set --symbol NVDA --resolution 1h --style candles",

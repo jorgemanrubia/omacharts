@@ -1431,9 +1431,11 @@ fn chart_set(
             changed.push(format!("chart template {:?}", template.name));
         }
         // Letting go keeps what the template was showing, as the chart's own.
+        // None is the empty set: the chart shows no indicators.
         Some(None) => {
             chart["template"] = Value::Null;
-            changed.push("no chart template, keeping its indicators".to_string());
+            chart["indicators"] = json!([]);
+            changed.push("no chart template, and no indicators".to_string());
         }
     }
     // What the chart ends up showing, which is what it leads its new group
@@ -4288,7 +4290,7 @@ mod tests {
                 .collect()
         };
         assert_eq!(kinds("Macro"), vec![vec!["volume", "rsi"], vec!["volume", "rsi"]]);
-        assert_eq!(kinds("Semis"), vec![vec!["volume"]], "a chart that let go followed anyway");
+        assert_eq!(kinds("Semis"), vec![Vec::<String>::new()], "a chart on none followed anyway");
 
         run("template indicator set Default rsi --period 21", &store);
         run("template indicator remove Default volume", &store);
@@ -4298,7 +4300,7 @@ mod tests {
     }
 
     #[test]
-    fn a_chart_switches_onto_a_template_and_off_it_again() {
+    fn a_chart_switches_onto_a_template_and_onto_none() {
         let store = bare();
         run("chartbook create Macro --switch", &store);
         run("chart indicator add sma --book Macro", &store);
@@ -4310,12 +4312,12 @@ mod tests {
         assert_eq!(listed["indicators"].as_array().unwrap().len(), 1);
         assert_eq!(listed["indicators"][0]["kind"], "volume");
 
-        // Off it: what the template showed stays, as the chart's own.
-        run("chart set --book Macro --template none", &store);
+        // Onto none: the empty set, and no longer following.
+        let out = run("chart set --book Macro --template none", &store);
+        assert!(out.out.contains("no indicators"), "{}", out.out);
         run("template indicator add Default rsi", &store);
         let listed = json_of(&run("chart indicator list --book Macro --json", &store));
-        assert_eq!(listed["indicators"].as_array().unwrap().len(), 1, "still following");
-        assert_eq!(listed["indicators"][0]["kind"], "volume");
+        assert_eq!(listed["indicators"].as_array().unwrap().len(), 0, "{listed}");
 
         assert_eq!(
             run("chart set --book Macro --template Nothing", &store).code,

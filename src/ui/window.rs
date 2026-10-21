@@ -6344,11 +6344,13 @@ impl Window {
         self.focused_pane().template.get()
     }
 
-    /// Put the focused chart on a template, or take it off one.
+    /// Put the focused chart on a template, or on none.
     ///
     /// Onto one, the chart shows the template's indicators in place of its
-    /// own, which go. Off one, it keeps what the template was showing it, as
-    /// its own — nothing on screen changes, it just stops following.
+    /// own, which go. Onto none, it shows no indicators at all: None is a
+    /// choice of indicators like the others, the empty one. A chart is taken
+    /// off its template keeping what it showed by changing its indicators,
+    /// not by this.
     pub fn set_template(self: &Rc<Self>, template: Option<u32>) {
         let pane = self.focused_pane();
         self.put_on_template(&pane, template);
@@ -6366,7 +6368,9 @@ impl Window {
                 None => return,
             },
         };
-        if chosen != self.focused_template() {
+        // None again still clears a chart showing indicators of its own,
+        // which is the one thing pressing it there can mean.
+        if chosen.is_none() || chosen != self.focused_template() {
             self.choose_template(chosen, || {});
         }
     }
@@ -6383,47 +6387,59 @@ impl Window {
         self.choose_template(chosen, || {});
     }
 
-    /// Put the focused chart on a template, asking first when that would drop
-    /// indicators of its own, and run `done` once it is settled either way.
+    /// Put the focused chart on a template or on none, asking first when that
+    /// would drop indicators of its own, and run `done` once it is settled
+    /// either way.
     ///
     /// Only then: a chart already on a template has nothing of its own to
     /// lose, one with nothing on it has nothing to lose at all, and one
-    /// showing exactly what some template holds — which is what coming off a
-    /// template leaves — can have it back by choosing that template. Coming
-    /// off a template never asks, because the chart keeps what it was showing.
+    /// showing exactly what some template holds can have it back by choosing
+    /// that template.
     pub fn choose_template(self: &Rc<Self>, template: Option<u32>, done: impl Fn() + 'static) {
         let pane = self.focused_pane();
         let chosen = template.and_then(|id| crate::templates::get(&self.store, id));
         let own = pane.indicators.borrow().len();
         let kept_elsewhere =
             self.templates().iter().any(|t| *pane.indicators.borrow() == t.indicators);
-        let loses = pane.template.get().is_none()
-            && own > 0
-            && !kept_elsewhere
-            && chosen.is_some();
-        let Some(chosen) = chosen.filter(|_| loses) else {
+        let loses = pane.template.get().is_none() && own > 0 && !kept_elsewhere;
+        // Choosing what it already shows loses nothing either.
+        let same = chosen.as_ref().is_some_and(|t| *pane.indicators.borrow() == t.indicators);
+        if !loses || same {
             self.set_template(template);
             done();
             return;
+        }
+        let count = match own {
+            1 => "one".to_string(),
+            n => n.to_string(),
         };
-        let body = format!(
-            "This chart will show the indicators of \u{201c}{}\u{201d} in place of its own {}.",
-            chosen.name,
-            match own {
-                1 => "one".to_string(),
-                n => n.to_string(),
-            }
-        );
-        let dialog = adw::AlertDialog::new(Some("Use Chart Template?"), Some(&body));
+        let (title, body, verb) = match &chosen {
+            Some(chosen) => (
+                "Use Chart Template?",
+                format!(
+                    "This chart will show the indicators of \u{201c}{}\u{201d} in place of its own {count}.",
+                    chosen.name
+                ),
+                "Replace Indicators",
+            ),
+            None => (
+                "Remove Indicators?",
+                format!(
+                    "This chart will show no indicators, and its own {count} will be removed."
+                ),
+                "Remove Indicators",
+            ),
+        };
+        let dialog = adw::AlertDialog::new(Some(title), Some(&body));
         dialog.add_response("cancel", "Cancel");
-        dialog.add_response("replace", "Replace Indicators");
+        dialog.add_response("replace", verb);
         dialog.set_response_appearance("replace", adw::ResponseAppearance::Destructive);
         dialog.set_default_response(Some("cancel"));
         dialog.set_close_response("cancel");
         let this = self.clone();
         dialog.connect_response(None, move |_, response| {
             if response == "replace" {
-                this.set_template(Some(chosen.id));
+                this.set_template(template);
             } else {
                 // Put the menu's mark back on what the chart is still on.
                 this.sync_chart_actions(&this.focused_pane());
@@ -6437,10 +6453,9 @@ impl Window {
         let found = template.and_then(|id| crate::templates::get(&self.store, id));
         pane.template.set(found.as_ref().map(|t| t.id));
         self.write_header_of(pane);
-        if let Some(found) = found
-            && *pane.indicators.borrow() != found.indicators
-        {
-            self.show_indicators(pane, found.indicators);
+        let indicators = found.map(|t| t.indicators).unwrap_or_default();
+        if *pane.indicators.borrow() != indicators {
+            self.show_indicators(pane, indicators);
         }
     }
 
@@ -6841,12 +6856,10 @@ impl Window {
                 continue;
             }
             for stored in &mut book.panes {
-                // Onto the default template, or off any template keeping what
-                // it showed: the same two answers a chart on screen gets.
+                // Onto the default template, or onto none and no indicators:
+                // the same two answers a chart on screen gets.
                 stored.template = template.as_ref().map(|t| t.id);
-                if let Some(template) = &template {
-                    stored.indicators = template.indicators.clone();
-                }
+                stored.indicators = template.as_ref().map(|t| t.indicators.clone()).unwrap_or_default();
                 stored.bar_style = defaults.bar_style.key().to_string();
                 stored.colouring = Some(defaults.colouring.key().to_string());
                 stored.session = defaults.session.key().to_string();

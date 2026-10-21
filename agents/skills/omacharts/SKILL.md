@@ -64,7 +64,9 @@ the template's indicators. `chart indicator add` on such a chart takes it off
 the template first and says so in its reply — right for "put a 200-day on
 this", wrong for "RSI on all my charts", which is `template indicator add` on
 the template they share. `template list` says which template has how many
-charts.
+charts. `chart set --template none` is not a way off a template that keeps the
+indicators: None is the empty set, and the chart is left with none. To keep
+them and tweak, change the chart's indicators instead.
 
 **A feed change is immediate, and a sign-in needs the user.** `config set
 provider tos` switches a window that is open to the other feed on the spot
