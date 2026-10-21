@@ -459,7 +459,6 @@ fn build_charts_page(context: &Rc<Context>) {
     indicators.set_title("Indicators");
     let template = adw::ComboRow::new();
     template.set_title("Template");
-    template.set_subtitle("The chart template a new chart shows");
     let ids: Rc<RefCell<Vec<u32>>> = Rc::new(RefCell::new(Vec::new()));
     let filling = Rc::new(std::cell::Cell::new(false));
     let refill: Rc<dyn Fn()> = {
@@ -747,10 +746,6 @@ fn rebuild_templates(context: &Rc<Context>) {
     }
     let group = adw::PreferencesGroup::new();
     group.set_title("Chart templates");
-    group.set_description(Some(
-        "Named sets of indicators. A chart using one shows its indicators, and \
-         changes with it.",
-    ));
 
     let add = gtk::Button::from_icon_name("list-add-symbolic");
     add.add_css_class("flat");
@@ -773,7 +768,6 @@ fn rebuild_templates(context: &Rc<Context>) {
     if templates.is_empty() {
         let row = adw::ActionRow::new();
         row.set_title("No chart templates");
-        row.set_subtitle("Make one with the + above");
         row.add_css_class("dim-label");
         group.add(&row);
     }

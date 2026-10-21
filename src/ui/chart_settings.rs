@@ -167,7 +167,7 @@ impl TemplateEditor {
         dialog.add(&page);
 
         let owner = Owner::template(window, template);
-        let list = IndicatorList::new(&page, "In the chart template");
+        let list = IndicatorList::new(&page, "Indicators in the template");
         let owner_for_add = owner.clone();
         let refresh_for_add = Refresh::rebuilding(&owner, &dialog, &list);
         list.add.connect_clicked(move |_| {
@@ -225,10 +225,6 @@ fn template_rows(
                 .map(|at| at + 1)
                 .unwrap_or(0);
             choice.set_selected(at as u32);
-            choice.set_subtitle(match current {
-                Some(_) => "Its indicators, shared with every chart using it",
-                None => "This chart's own indicators",
-            });
             {
                 let window = window.clone();
                 let list = list.clone();
@@ -770,16 +766,15 @@ fn rebuild_indicators(
     // reading here, and the rows lose their controls (see `indicator_row`).
     let locked = owner.locked();
     list.add.set_visible(!locked);
-    list.group.set_description(Some(match (locked, owner.template.is_some(), indicators.is_empty()) {
-        (true, _, _) => "From the chart template. Edit the template to change them.",
-        (false, _, true) => "Nothing yet.",
-        (false, true, false) => {
-            "Drag to reorder. Every chart using this template shows these, top to bottom."
-        }
-        (false, false, false) => {
-            "Drag to reorder. The list is the chart, top to bottom; colours come from the theme."
-        }
-    }));
+    // A template's list, and a chart's on a template, say nothing: the
+    // heading and the template row above it already do.
+    list.group.set_description(match (locked || owner.template.is_some(), indicators.is_empty()) {
+        (true, _) => None,
+        (false, true) => Some("Nothing yet."),
+        (false, false) => Some(
+            "Drag to reorder. The list is the chart, top to bottom; colours come from the theme.",
+        ),
+    });
     if locked && indicators.is_empty() {
         return;
     }
