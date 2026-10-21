@@ -110,6 +110,30 @@ impl Fault {
     }
 }
 
+/// A file named on the command line, made absolute where it was typed.
+///
+/// With a window open, the command runs in the window's process, whose
+/// working directory is not the terminal's; `backup restore ./omacharts.db`
+/// has to mean the file beside the person typing it, the way any command
+/// would. So the path is settled here, before it travels. A name that is not
+/// a file here is left alone: `backup restore settings-20261021-140307` names
+/// a backup.
+///
+/// Wherever the command sits, since the line handed to a window still has the
+/// launch options in front of it.
+pub fn caller_paths(mut args: Vec<String>) -> Vec<String> {
+    let at = args.windows(2).position(|pair| pair[0] == "backup" && pair[1] == "restore");
+    if let Some(named) = at.and_then(|at| args.get_mut(at + 2)) {
+        let path = std::path::Path::new(named.as_str());
+        if !path.is_absolute() && path.is_file() {
+            if let Ok(full) = std::path::absolute(path) {
+                *named = full.to_string_lossy().into_owned();
+            }
+        }
+    }
+    args
+}
+
 /// Whoever typed the command, for what a command reads from them rather than
 /// from the database: a file they named, or what they piped in.
 ///
@@ -1108,6 +1132,38 @@ mod tests {
     /// so `CODEX_HOME` came from the window's environment and a relative
     /// `--to` resolved against the window's working directory — never the
     /// directory the person was standing in.
+    /// A relative path to a file is made absolute where it was typed, in
+    /// front of launch options too; a backup's name is left as it is.
+    #[test]
+    fn a_relative_file_to_restore_is_settled_where_it_was_typed() {
+        let dir = std::env::temp_dir().join(format!("omacharts-caller-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("theirs.db");
+        std::fs::write(&file, b"x").unwrap();
+        let here = std::env::current_dir().unwrap();
+        let relative = pathdiff(&file, &here);
+        let line = |tail: &[&str]| {
+            let mut args = vec!["omacharts".to_string(), "--provider".into(), "yahoo".into()];
+            args.extend(tail.iter().map(|s| s.to_string()));
+            args
+        };
+        let settled = caller_paths(line(&["backup", "restore", &relative]));
+        let settled = std::path::Path::new(&settled[5]);
+        assert!(settled.is_absolute(), "{}", settled.display());
+        assert_eq!(settled.canonicalize().unwrap(), file.canonicalize().unwrap());
+        let named = caller_paths(line(&["backup", "restore", "settings-20261021-140307"]));
+        assert_eq!(named[5], "settings-20261021-140307");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `to`, relative to `from`, with as many `..` as it takes.
+    fn pathdiff(to: &std::path::Path, from: &std::path::Path) -> String {
+        let up = from.components().count();
+        let mut out = "../".repeat(up);
+        out.push_str(to.strip_prefix("/").unwrap().to_str().unwrap());
+        out
+    }
+
     #[test]
     fn skill_is_a_caller_local_noun() {
         let skill = spec::SURFACE.iter().find(|noun| noun.name == "skill").expect("a skill noun");

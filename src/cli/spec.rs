@@ -1104,7 +1104,7 @@ pub const SURFACE: &[Noun] = &[
                         What it replaces is backed up first, so this can be undone",
                 args: &[Arg::req(
                     "NAME",
-                    "a backup's name from `backup list`, or the full path (or ~/…) to a settings file from another machine",
+                    "a backup's name from `backup list`, or a settings file from another machine",
                 )],
                 flags: &[],
                 example: "omacharts backup restore settings-20261021-140307",

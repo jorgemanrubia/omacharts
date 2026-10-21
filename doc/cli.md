@@ -952,12 +952,12 @@ restored the settings from settings-20261021-130212.db (2026-10-21 15:02:12); wh
 ```
 
 Settings from another machine — one of its backups, or its `omacharts.db` —
-restore the same way, given the file's full path or one under `~`. This
+restore the same way, given the file's path. This
 machine keeps its own screenshot folder, cache limit and sidebar width, and a
 file that is not Omacharts settings is refused with nothing changed:
 
 ```
-$ omacharts backup restore ~/Downloads/omacharts.db
+$ omacharts backup restore omacharts.db
 restored the settings from omacharts.db (2026-10-21 12:10:21); what they replaced is kept as settings-20261021-101021.db
 ```
 
