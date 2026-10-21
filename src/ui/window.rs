@@ -1213,6 +1213,11 @@ fn step_round(current: usize, count: usize, by: i32) -> usize {
     (current as i32 + by).rem_euclid(len) as usize
 }
 
+/// The key that picks the template at `n` in the list, or none for 0.
+fn template_accel(n: usize) -> String {
+    format!("<Ctrl><Alt><Shift>{n}")
+}
+
 /// A chart template as a menu action's target: its id, or `none`, spelled
 /// the way the default for new charts is written down.
 fn template_state(template: Option<u32>) -> glib::Variant {
@@ -1222,8 +1227,13 @@ fn template_state(template: Option<u32>) -> glib::Variant {
     }
 }
 
-fn popup_menu(model: &gio::Menu, over: &impl IsA<gtk::Widget>, x: f64, y: f64) {
-    popup_menu_with(model, over, x, y, Vec::new());
+fn popup_menu(
+    model: &gio::Menu,
+    over: &impl IsA<gtk::Widget>,
+    x: f64,
+    y: f64,
+) -> gtk::PopoverMenu {
+    popup_menu_with(model, over, x, y, Vec::new())
 }
 
 /// The same, with widgets of our own standing in for the items that name
@@ -1235,7 +1245,7 @@ fn popup_menu_with(
     x: f64,
     y: f64,
     children: Vec<(String, gtk::Widget)>,
-) {
+) -> gtk::PopoverMenu {
     // Sliding submenus, which is GTK's default and not what this used.
     //
     // `NESTED` puts each submenu in a popover of its own, and a popover of
@@ -1271,7 +1281,9 @@ fn popup_menu_with(
     // GtkPopoverMenu absorbs the difference by scrolling, which is why the last
     // item sat under the bottom corner. The separator sync runs at a higher
     // idle priority than this one, so by the time it pops it is whole.
-    glib::idle_add_local_once(move || popover.popup());
+    let shown = popover.clone();
+    glib::idle_add_local_once(move || shown.popup());
+    popover
 }
 
 /// How many symbols either side of the selection to fetch ahead.
@@ -7644,17 +7656,25 @@ impl Window {
 
         // Built from the templates as they are now, every time the menu
         // opens, so one made or renamed a moment ago is already here.
+        //
+        // Each says its key, Ctrl+Alt+Shift and its place in the list, down to
+        // the ninth. The keys themselves are taken by where they are on the
+        // keyboard, by the window and, while it is open, by the menu below.
         let templates = gio::Menu::new();
         let none = gio::MenuItem::new(Some("None"), None);
         none.set_action_and_target_value(Some("chart.template"), Some(&template_state(None)));
+        none.set_attribute_value("accel", Some(&template_accel(0).to_variant()));
         templates.append_item(&none);
         let made = gio::Menu::new();
-        for template in self.templates() {
+        for (at, template) in self.templates().into_iter().enumerate() {
             let item = gio::MenuItem::new(Some(&template.name), None);
             item.set_action_and_target_value(
                 Some("chart.template"),
                 Some(&template_state(Some(template.id))),
             );
+            if at < 9 {
+                item.set_attribute_value("accel", Some(&template_accel(at + 1).to_variant()));
+            }
             made.append_item(&item);
         }
         templates.append_section(None, &made);
@@ -7711,7 +7731,37 @@ impl Window {
         let (wx, wy) = area
             .translate_coordinates(&self.window, x, y)
             .unwrap_or((x, y));
-        popup_menu(&menu, &self.window, wx, wy);
+        let popover = popup_menu(&menu, &self.window, wx, wy);
+
+        // The template rows' keys are drawn, and GTK also binds what they
+        // draw while the menu is open — by what the key types, which on a
+        // layout whose number row types other digits with Shift held picks a
+        // different template than the same key does with the menu closed.
+        // So the menu takes the number row first, by where the key is, the
+        // way the window does.
+        let keys = gtk::EventControllerKey::new();
+        keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let this = self.clone();
+        let closing = popover.downgrade();
+        keys.connect_key_pressed(move |_, _, keycode, state| {
+            use gtk::gdk::ModifierType;
+            let chord = ModifierType::CONTROL_MASK | ModifierType::ALT_MASK | ModifierType::SHIFT_MASK;
+            let Some(n) = number_row(keycode).filter(|_| state.contains(chord)) else {
+                return glib::Propagation::Proceed;
+            };
+            if let Some(popover) = closing.upgrade() {
+                popover.popdown();
+            }
+            this.pick_template(n);
+            // Closing hands the keyboard to the window's first button; back
+            // to the chart the menu was about, once it has.
+            let area = this.focused_pane().view.area.clone();
+            glib::idle_add_local_once(move || {
+                area.grab_focus();
+            });
+            glib::Propagation::Stop
+        });
+        popover.add_controller(keys);
     }
 
     /// The price axis has its own menu, and its own questions: whether the

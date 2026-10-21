@@ -83,7 +83,7 @@ pub fn create(store: &Store, name: &str) -> Template {
 fn create_with(store: &Store, name: &str, indicators: Vec<Indicator>) -> Template {
     let mut stored = read(store);
     let template = Template { id: stored.next_id, name: name.to_string(), indicators };
-    stored.next_id += 1;
+    stored.next_id = stored.next_id.saturating_add(1);
     stored.templates.push(template.clone());
     write(store, &stored);
     template
