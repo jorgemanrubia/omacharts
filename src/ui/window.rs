@@ -27,6 +27,7 @@ use omacharts_engine::{
 
 use crate::live::{Change, Live, Series, Watching, Written};
 use crate::loader::{Loader, Request, Response, BACKFILL, BACKGROUND, FOREGROUND, REFRESH};
+use crate::book_templates;
 use crate::store::{Store, DEFAULT_WATCHLIST};
 use crate::chart_defaults::ChartDefaults;
 use crate::theming::Theming;
@@ -162,7 +163,7 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+Shift+O", "Screenshot this chartbook"),
             ("Ctrl+Alt+← →", "Previous or next chartbook"),
             ("Double-click a tab", "Rename it"),
-            ("Right-click a tab", "Rename or remove it"),
+            ("Right-click a tab", "Rename, duplicate or remove it, or its chartbook template"),
         ],
     ),
     (
@@ -607,6 +608,7 @@ mod tests {
             sidebar_shown: Some(false),
             sidebar_width: Some(330),
             maximized: None,
+            book_template: None,
         };
         let json =
             serde_json::to_string(&Workspace { books: vec![one, two], active: 1 }).unwrap();
@@ -688,6 +690,7 @@ mod tests {
             sidebar_shown: None,
             sidebar_width: None,
             maximized: None,
+            book_template: None,
         }
     }
 
@@ -725,6 +728,62 @@ mod tests {
         store.set_setting(SETTING_WORKSPACE, &json);
         let back = parse_workspace(&store.setting(SETTING_WORKSPACE).unwrap()).unwrap();
         assert_eq!(back.books[0].panes[0].template, Some(3));
+    }
+
+    /// A book written before chartbook templates is on none, and a book on
+    /// none is written down without the field at all, so it is stored
+    /// exactly as it was before there were any.
+    #[test]
+    fn a_book_written_before_chartbook_templates_is_on_none_and_stays_unchanged() {
+        let workspace = parse_workspace(ONE_ARRANGEMENT).expect("the old shape should parse");
+        assert_eq!(workspace.books[0].book_template, None);
+        let json = serde_json::to_string(&workspace.books[0]).unwrap();
+        assert!(!json.contains("book_template"), "{json}");
+
+        let mut linked = book_of("Macro", vec![stored_pane(1, "SPY", LinkMode::Focus)]);
+        linked.book_template = Some(4);
+        let back: Chartbook = serde_json::from_str(&serde_json::to_string(&linked).unwrap()).unwrap();
+        assert_eq!(back.book_template, Some(4));
+    }
+
+    /// What the window does as it writes down a change to the book on
+    /// screen: the books it holds as data, the ones not on screen, take the
+    /// change and read back as books.
+    #[test]
+    fn a_change_to_the_book_on_screen_reaches_the_books_that_are_not() {
+        let store = Store::memory().expect("an in-memory store");
+        let mut open = book_of(
+            "Open",
+            vec![stored_pane(1, "SPY", LinkMode::Focus), stored_pane(2, "QQQ", LinkMode::Follow)],
+        );
+        open.layout = Node::leaf(1).split(1, 2, true);
+        let mut closed = book_of(
+            "Closed",
+            vec![stored_pane(7, "CL", LinkMode::Pinned), stored_pane(8, "NG", LinkMode::Focus)],
+        );
+        closed.layout = Node::leaf(7).split(7, 8, true);
+        let shape = book_templates::capture(&serde_json::to_value(&open).unwrap()).unwrap();
+        let id = book_templates::create(&store, "Pair", shape).id;
+        open.book_template = Some(id);
+        closed.book_template = Some(id);
+
+        // A divider dragged, and an RSI added to the second chart.
+        let before = open.layout.leaves();
+        open.layout = open.layout.with_ratio(&[], 0.3);
+        open.panes[1].indicators = vec![Indicator::new(1, omacharts_engine::IndicatorKind::Rsi)];
+        let mut books: Vec<serde_json::Value> =
+            [&open, &closed].iter().map(|b| serde_json::to_value(b).unwrap()).collect();
+        assert_eq!(book_templates::carry(&store, &mut books, 0, &before), 1);
+
+        let back: Vec<Chartbook> =
+            books.into_iter().map(|b| serde_json::from_value(b).unwrap()).collect();
+        let closed = &back[1];
+        assert!(matches!(closed.layout, Node::Split { ratio, .. } if (ratio - 0.3).abs() < 1e-9));
+        let second = closed.panes.iter().find(|p| p.id == 8).unwrap();
+        assert_eq!(second.indicators.len(), 1);
+        assert_eq!(second.symbol, "NG", "a symbol is the book's own");
+        assert_eq!(second.link, LinkMode::Focus, "a link mode is the book's own");
+        assert_eq!(closed.panes.iter().find(|p| p.id == 7).unwrap().link, LinkMode::Pinned);
     }
 
     /// Something may well have been filling the window when one of these was
@@ -980,6 +1039,7 @@ mod tests {
             sidebar_shown: None,
             sidebar_width: None,
             maximized: None,
+            book_template: None,
         }
     }
 
@@ -1433,6 +1493,12 @@ struct Chartbook {
     /// was remembered, which come back showing the whole arrangement.
     #[serde(default)]
     maximized: Option<u32>,
+    /// The chartbook template it was made from or last saved as, by id. See
+    /// [`crate::book_templates`]. Left out when it is on none, which is every
+    /// book written before there were chartbook templates, so a book that
+    /// never takes one is written down exactly as it was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    book_template: Option<u32>,
 }
 
 /// Everything the window had open, as one stored value.
@@ -1725,6 +1791,10 @@ pub struct Window {
     books: RefCell<Vec<Chartbook>>,
     active: Cell<usize>,
     next_pane: Cell<u32>,
+    /// The charts on screen as the chartbook template they are on last saw
+    /// them, in layout order, so a change can be carried to the other books
+    /// on it the way it was made. Empty for a book on none.
+    template_leaves: RefCell<Vec<u32>>,
     /// A save is already queued, so a drag does not queue one per pixel.
     save_pending: Cell<bool>,
     /// The chart menu's stateful actions, so they can be re-pointed at
@@ -1898,6 +1968,7 @@ impl Window {
             books: RefCell::new(Vec::new()),
             active: Cell::new(0),
             next_pane: Cell::new(1),
+            template_leaves: RefCell::new(Vec::new()),
             save_pending: Cell::new(false),
             linked_action: RefCell::new(None),
             bar_style_action: RefCell::new(None),
@@ -3125,6 +3196,7 @@ impl Window {
             sidebar_shown: Some(self.shows_sidebar()),
             sidebar_width: Some(self.sidebar_width.get()),
             maximized: self.filled(),
+            book_template: None,
         }
     }
 
@@ -3141,13 +3213,16 @@ impl Window {
             let mut books = self.books.borrow_mut();
             let active = self.active.get().min(books.len().saturating_sub(1));
             let name = books.get(active).map(|book| book.name.clone()).unwrap_or_default();
-            let live = self.capture_book(name);
+            let mut live = self.capture_book(name);
+            // Nothing on screen carries it either.
+            live.book_template = books.get(active).and_then(|book| book.book_template);
             match books.get_mut(active) {
                 Some(book) => *book = live,
                 None => books.push(live),
             }
             self.active.set(active);
         }
+        self.carry_book_template();
         let workspace =
             Workspace { books: self.books.borrow().clone(), active: self.active.get() };
         if let Ok(json) = serde_json::to_string(&workspace) {
@@ -3346,6 +3421,12 @@ impl Window {
                 *pane.pending.borrow_mut() = Some((stored.symbol.clone(), stored.suffix.clone()));
             }
         }
+        // Only a book on a template has anything to compare against, so one on
+        // none pays nothing for it.
+        *self.template_leaves.borrow_mut() = match book.book_template {
+            Some(_) => self.layout.borrow().leaves(),
+            None => Vec::new(),
+        };
         self.sync_header();
         self.rebuild_indicator_legend();
         self.apply_sidebar(rail.0, rail.1, rail.2);
@@ -3667,6 +3748,7 @@ impl Window {
             sidebar_shown: None,
             sidebar_width: None,
             maximized: None,
+            book_template: None,
         });
         self.active.set(at);
         self.mount_single_chart(instrument);
@@ -3801,6 +3883,242 @@ impl Window {
         self.save_soon();
     }
 
+    /// Make a copy of the chartbook on screen, put it beside it, open it, and
+    /// offer its name to be typed over.
+    ///
+    /// Everything about the charts comes along: the layout, the symbols,
+    /// resolutions, indicators, chart templates, link modes and each chart's
+    /// own settings and drawings, and the chartbook template it is on. Each
+    /// chart gets a name of its own among the drawings, the way splitting one
+    /// does, so turning sending off on a copy takes back only what the copy
+    /// drew. The watchlist does not come: a list is one chartbook's, so the
+    /// copy shows the default one unless that is what the original shows too.
+    pub fn duplicate_chartbook(self: &Rc<Self>) {
+        self.save_workspace();
+        let at = self.active.get();
+        let Some(mut copy) = self.books.borrow().get(at).cloned() else { return };
+        let mut next = self
+            .books
+            .borrow()
+            .iter()
+            .flat_map(|book| book.panes.iter().map(|pane| pane.id))
+            .max()
+            .unwrap_or(0)
+            .max(self.next_pane.get())
+            + 1;
+        let mut ids = HashMap::new();
+        for pane in &mut copy.panes {
+            ids.insert(pane.id, next);
+            pane.id = next;
+            pane.drawing_uid = glib::uuid_string_random().to_string();
+            next += 1;
+        }
+        self.next_pane.set(next);
+        copy.layout = copy.layout.relabel(&ids);
+        copy.focused = ids.get(&copy.focused).copied().unwrap_or(copy.focused);
+        copy.maximized = copy.maximized.and_then(|id| ids.get(&id).copied());
+        copy.name = format!("{} copy", self.book_label(at));
+        if copy.watchlist.is_some_and(|list| list != DEFAULT_WATCHLIST) {
+            copy.watchlist = Some(DEFAULT_WATCHLIST);
+        }
+        self.books.borrow_mut().insert(at + 1, copy);
+        self.activate_book(at + 1);
+        // Straight into the name, the way a double-click on the tab would:
+        // "copy" is nobody's name for it.
+        self.begin_rename(at + 1);
+    }
+
+    // -- chartbook templates -----------------------------------------------
+
+    pub fn book_templates(&self) -> Vec<book_templates::BookTemplate> {
+        book_templates::all(&self.store)
+    }
+
+    /// The chartbook template the book on screen is on, while it exists.
+    pub fn active_book_template(&self) -> Option<book_templates::BookTemplate> {
+        let id = self.books.borrow().get(self.active.get()).and_then(|book| book.book_template)?;
+        book_templates::get(&self.store, id)
+    }
+
+    /// How many chartbooks, the one on screen included, are on `template`.
+    pub fn books_on_book_template(&self, template: u32) -> usize {
+        self.books.borrow().iter().filter(|book| book.book_template == Some(template)).count()
+    }
+
+    /// Whether the book on screen is on `template`.
+    pub fn on_book_template(&self, template: u32) -> bool {
+        self.books.borrow().get(self.active.get()).and_then(|book| book.book_template)
+            == Some(template)
+    }
+
+    /// Every chartbook as it is stored, the one on screen written down first.
+    fn stored_books(self: &Rc<Self>) -> Vec<serde_json::Value> {
+        self.save_workspace();
+        self.books.borrow().iter().filter_map(|book| serde_json::to_value(book).ok()).collect()
+    }
+
+    /// Take back books changed as stored values. Nothing, when one of them
+    /// will not read back as a book: half a list is worse than the old one.
+    fn adopt_books(&self, values: Vec<serde_json::Value>) -> bool {
+        let Ok(books) = values
+            .into_iter()
+            .map(serde_json::from_value::<Chartbook>)
+            .collect::<Result<Vec<_>, _>>()
+        else {
+            return false;
+        };
+        // The window's ids stay clear of any a template handed out.
+        let highest = books.iter().flat_map(|book| book.panes.iter().map(|pane| pane.id)).max();
+        if let Some(highest) = highest {
+            self.next_pane.set(self.next_pane.get().max(highest + 1));
+        }
+        *self.books.borrow_mut() = books;
+        true
+    }
+
+    /// Carry a change to the chartbook on screen into the template it is on,
+    /// and into every other chartbook on it.
+    ///
+    /// Run as the arrangement is written down, which is what every change to
+    /// it already ends in: a split or a close at once, a dragged divider once
+    /// the drag stops (see [`Window::save_soon`]), an indicator as it lands.
+    /// A book on no template stops at the first line, and one whose
+    /// arrangement is still its template's — a new symbol, a new resolution —
+    /// at the comparison. The other books are not on screen, so they are
+    /// rewritten as data and come up changed when they are opened.
+    fn carry_book_template(&self) {
+        let active = self.active.get();
+        if self.books.borrow().get(active).and_then(|book| book.book_template).is_none() {
+            return;
+        }
+        let mut books: Vec<serde_json::Value> =
+            self.books.borrow().iter().filter_map(|book| serde_json::to_value(book).ok()).collect();
+        let before = self.template_leaves.borrow().clone();
+        if book_templates::carry(&self.store, &mut books, active, &before) > 0 {
+            self.adopt_books(books);
+        }
+        *self.template_leaves.borrow_mut() = self.layout.borrow().leaves();
+    }
+
+    /// Put the chartbook on screen on a template, or on none.
+    ///
+    /// None lets go of the template and keeps everything: a chartbook with
+    /// nothing in it is not a choice anybody makes. A template replaces the
+    /// arrangement, asking first when that would lose one no template holds.
+    pub fn choose_book_template(self: &Rc<Self>, template: Option<u32>) {
+        let Some(id) = template else {
+            let at = self.active.get();
+            if let Some(book) = self.books.borrow_mut().get_mut(at) {
+                book.book_template = None;
+            }
+            self.template_leaves.borrow_mut().clear();
+            self.save_workspace();
+            return;
+        };
+        let Some(chosen) = book_templates::get(&self.store, id) else { return };
+        let books = self.stored_books();
+        let lost = books
+            .get(self.active.get())
+            .is_some_and(|book| !book_templates::kept(book, &self.book_templates()));
+        if !lost {
+            self.take_book_template(&chosen);
+            return;
+        }
+        let body = format!(
+            "This chartbook\u{2019}s layout and indicators will be replaced by \
+             \u{201c}{}\u{201d}. Its charts keep their symbols.",
+            chosen.name
+        );
+        let dialog = adw::AlertDialog::new(Some("Use Chartbook Template?"), Some(&body));
+        dialog.add_response("cancel", "Cancel");
+        dialog.add_response("replace", "Replace Layout");
+        dialog.set_response_appearance("replace", adw::ResponseAppearance::Destructive);
+        dialog.set_default_response(Some("cancel"));
+        dialog.set_close_response("cancel");
+        let this = self.clone();
+        dialog.connect_response(None, move |_, response| {
+            if response == "replace" {
+                this.take_book_template(&chosen);
+            }
+        });
+        dialog.present(Some(&self.window));
+    }
+
+    fn take_book_template(self: &Rc<Self>, chosen: &book_templates::BookTemplate) {
+        let mut books = self.stored_books();
+        let at = self.active.get();
+        let charts = crate::templates::all(&self.store);
+        let mut next = book_templates::next_pane(&books);
+        let Some(book) = books.get_mut(at) else { return };
+        if !book_templates::apply(book, &chosen.shape, &charts, &mut next, None) {
+            return;
+        }
+        book_templates::set_link(book, Some(chosen.id));
+        if !self.adopt_books(books) {
+            return;
+        }
+        if !self.materialise_book(at) {
+            self.mount_single_chart(None);
+        }
+        self.save_workspace();
+    }
+
+    /// Save the chartbook on screen as a new template called `name`, and put
+    /// it on it.
+    pub fn save_as_new_book_template(self: &Rc<Self>, name: &str) {
+        let books = self.stored_books();
+        let Some(shape) = books.get(self.active.get()).and_then(book_templates::capture) else {
+            return;
+        };
+        let made = book_templates::create(&self.store, name, shape);
+        self.link_active_book(made.id);
+    }
+
+    /// Save the chartbook on screen over template `id`, put it on it, and
+    /// bring every other chartbook on it along. How many others changed.
+    pub fn save_over_book_template(self: &Rc<Self>, id: u32) -> usize {
+        let mut books = self.stored_books();
+        let at = self.active.get();
+        let Some(shape) = books.get(at).and_then(book_templates::capture) else { return 0 };
+        if !book_templates::replace(&self.store, id, shape.clone()) {
+            return 0;
+        }
+        let charts = crate::templates::all(&self.store);
+        let changed = book_templates::follow(&mut books, id, &shape, &charts, Some(at), None);
+        if changed > 0 {
+            self.adopt_books(books);
+        }
+        self.link_active_book(id);
+        changed
+    }
+
+    fn link_active_book(self: &Rc<Self>, id: u32) {
+        let at = self.active.get();
+        if let Some(book) = self.books.borrow_mut().get_mut(at) {
+            book.book_template = Some(id);
+        }
+        *self.template_leaves.borrow_mut() = self.layout.borrow().leaves();
+        self.save_workspace();
+    }
+
+    pub fn rename_book_template(&self, id: u32, name: &str) {
+        book_templates::rename(&self.store, id, name);
+    }
+
+    /// Delete a template. The chartbooks on it keep what they have.
+    pub fn delete_book_template(self: &Rc<Self>, id: u32) {
+        book_templates::delete(&self.store, id);
+        if self.on_book_template(id) {
+            self.template_leaves.borrow_mut().clear();
+        }
+        for book in self.books.borrow_mut().iter_mut() {
+            if book.book_template == Some(id) {
+                book.book_template = None;
+            }
+        }
+        self.save_workspace();
+    }
+
     /// Draw the row of chartbook tabs, or no row at all.
     fn rebuild_book_strip(self: &Rc<Self>) {
         while let Some(child) = self.book_strip.first_child() {
@@ -3905,12 +4223,47 @@ impl Window {
             let Some(tab) = this.book_tab(this.active.get()) else { return };
             let model = gio::Menu::new();
             shortcuts::append(&model, "Rename", "win.rename-chartbook");
+            shortcuts::append(&model, "Duplicate", "win.duplicate-chartbook");
+            model.append_submenu(Some("Template"), &this.book_template_menu());
             shortcuts::append(&model, "Take screenshot", "win.screenshot");
             shortcuts::append(&model, "Remove", "win.close-chartbook");
             popup_menu(&model, &tab, x, y);
         });
         tab.add_controller(menu);
         tab.upcast()
+    }
+
+    /// The tab menu's Template submenu: None, the chartbook templates with
+    /// the one this book is on marked, and the two ways to make or tend them.
+    ///
+    /// Built when the menu opens, from the templates as they are then, so one
+    /// made or renamed a moment ago — here or from a terminal — is in it.
+    fn book_template_menu(&self) -> gio::Menu {
+        let current = self.active_book_template().map(|t| t.id);
+        if let Some(action) =
+            self.window.lookup_action("book-template").and_downcast::<gio::SimpleAction>()
+        {
+            action.set_state(&template_state(current));
+        }
+        let menu = gio::Menu::new();
+        let none = gio::MenuItem::new(Some("None"), None);
+        none.set_action_and_target_value(Some("win.book-template"), Some(&template_state(None)));
+        menu.append_item(&none);
+        let made = gio::Menu::new();
+        for template in self.book_templates() {
+            let item = gio::MenuItem::new(Some(&template.name), None);
+            item.set_action_and_target_value(
+                Some("win.book-template"),
+                Some(&template_state(Some(template.id))),
+            );
+            made.append_item(&item);
+        }
+        menu.append_section(None, &made);
+        let tend = gio::Menu::new();
+        tend.append(Some("Save as Template\u{2026}"), Some("win.save-book-template-as"));
+        tend.append(Some("Manage Templates\u{2026}"), Some("win.manage-book-templates"));
+        menu.append_section(None, &tend);
+        menu
     }
 
     /// The tab sitting at `index` in the strip right now.
@@ -4395,6 +4748,36 @@ impl Window {
         let this = self.clone();
         rename_book.connect_activate(move |_, _| this.rename_active_book());
         self.window.add_action(&rename_book);
+
+        let duplicate_book = gio::SimpleAction::new("duplicate-chartbook", None);
+        let this = self.clone();
+        duplicate_book.connect_activate(move |_, _| this.duplicate_chartbook());
+        self.window.add_action(&duplicate_book);
+
+        // Stateful, so the menu marks the template the book is on. The state
+        // is set as the menu opens rather than kept up to date, because
+        // nothing else shows it.
+        let book_template = gio::SimpleAction::new_stateful(
+            "book-template",
+            Some(glib::VariantTy::STRING),
+            &template_state(None),
+        );
+        let this = self.clone();
+        book_template.connect_activate(move |_, value| {
+            let Some(key) = value.and_then(|v| v.get::<String>()) else { return };
+            this.choose_book_template(key.parse().ok());
+        });
+        self.window.add_action(&book_template);
+
+        let save_as = gio::SimpleAction::new("save-book-template-as", None);
+        let this = self.clone();
+        save_as.connect_activate(move |_, _| crate::ui::book_templates::save_as(&this));
+        self.window.add_action(&save_as);
+
+        let manage = gio::SimpleAction::new("manage-book-templates", None);
+        let this = self.clone();
+        manage.connect_activate(move |_, _| crate::ui::book_templates::manage(&this));
+        self.window.add_action(&manage);
 
         let close_book = gio::SimpleAction::new("close-chartbook", None);
         let this = self.clone();
