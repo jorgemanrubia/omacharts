@@ -446,32 +446,43 @@ fn customize_row(context: &Rc<Context>) -> adw::ActionRow {
     let button = gtk::Button::with_label("Customize");
     button.set_valign(gtk::Align::Center);
     let ctx = context.clone();
-    button.connect_clicked(move |button| {
-        let base = ctx.theming.borrow().theme();
-        let suggested = format!("Copy of {}", base.name);
-        let ctx = ctx.clone();
-        ask_name(button, "Customize theme", &suggested, "Create", move |chosen| {
-            let mut theming = ctx.theming.borrow_mut();
-            let taken: Vec<String> = theming.themes().iter().map(|t| t.id.clone()).collect();
-            let id = unique_id(&chosen, &taken);
-            ctx.store.save_theme(&base.duplicate(id.clone(), chosen));
-            theming.reload_custom(&ctx.store);
-            theming.select_theme(&id, &ctx.store);
-            drop(theming);
-            apply(&ctx);
-            rebuild(&ctx);
-        });
-    });
+    button.connect_clicked(move |button| copy_theme(&ctx, button, "Customize theme"));
     row.add_suffix(&button);
     row
 }
 
-/// Rename and Delete for a theme of your own, quiet beneath the picker:
-/// they are things done to a theme now and then, not every time it is open.
+/// A named copy of the theme in use, which becomes the theme in use. The way
+/// to a theme of your own from one that ships, and from one of your own to
+/// another.
+fn copy_theme(context: &Rc<Context>, anchor: &gtk::Button, heading: &str) {
+    let base = context.theming.borrow().theme();
+    let suggested = format!("Copy of {}", base.name);
+    let ctx = context.clone();
+    ask_name(anchor, heading, &suggested, "Create", move |chosen| {
+        let mut theming = ctx.theming.borrow_mut();
+        let taken: Vec<String> = theming.themes().iter().map(|t| t.id.clone()).collect();
+        let id = unique_id(&chosen, &taken);
+        ctx.store.save_theme(&base.duplicate(id.clone(), chosen));
+        theming.reload_custom(&ctx.store);
+        theming.select_theme(&id, &ctx.store);
+        drop(theming);
+        apply(&ctx);
+        rebuild(&ctx);
+    });
+}
+
+/// Duplicate, Rename and Delete for a theme of your own, quiet beneath the
+/// picker: they are things done to a theme now and then, not every time it
+/// is open.
 fn own_theme_actions(context: &Rc<Context>) -> gtk::Box {
     let actions = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     actions.set_halign(gtk::Align::End);
     actions.set_margin_top(6);
+
+    let duplicate = gtk::Button::with_label("Duplicate");
+    duplicate.add_css_class("flat");
+    let ctx = context.clone();
+    duplicate.connect_clicked(move |button| copy_theme(&ctx, button, "Duplicate theme"));
 
     let rename = gtk::Button::with_label("Rename");
     rename.add_css_class("flat");
@@ -497,6 +508,7 @@ fn own_theme_actions(context: &Rc<Context>) -> gtk::Box {
     let ctx = context.clone();
     delete.connect_clicked(move |button| confirm_delete(&ctx, button));
 
+    actions.append(&duplicate);
     actions.append(&rename);
     actions.append(&delete);
     actions
