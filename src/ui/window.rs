@@ -4222,11 +4222,15 @@ impl Window {
             // tab on screen.
             let Some(tab) = this.book_tab(this.active.get()) else { return };
             let model = gio::Menu::new();
-            shortcuts::append(&model, "Rename", "win.rename-chartbook");
-            shortcuts::append(&model, "Duplicate", "win.duplicate-chartbook");
-            model.append_submenu(Some("Template"), &this.book_template_menu());
-            shortcuts::append(&model, "Take screenshot", "win.screenshot");
-            shortcuts::append(&model, "Remove", "win.close-chartbook");
+            let book = gio::Menu::new();
+            shortcuts::append(&book, "Rename", "win.rename-chartbook");
+            shortcuts::append(&book, "Duplicate", "win.duplicate-chartbook");
+            shortcuts::append(&book, "Remove", "win.close-chartbook");
+            shortcuts::append(&book, "Take screenshot", "win.screenshot");
+            model.append_section(None, &book);
+            let template = gio::Menu::new();
+            template.append_submenu(Some("Template"), &this.book_template_menu());
+            model.append_section(None, &template);
             popup_menu(&model, &tab, x, y);
         });
         tab.add_controller(menu);
