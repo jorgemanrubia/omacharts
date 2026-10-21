@@ -14,6 +14,11 @@ pub const SETTING_SHOW_GRID: &str = "show_grid";
 const SETTING_LOG_SCALE: &str = "chart_log_scale";
 const SETTING_SHOWS_DRAWINGS: &str = "chart_shows_drawings";
 const SETTING_SENDS_DRAWINGS: &str = "chart_sends_drawings";
+/// The chart template a new chart opens with, by id, or [`NO_TEMPLATE`].
+pub const SETTING_TEMPLATE: &str = "chart_template";
+/// How "no template" is written down, so that it reads as a choice rather
+/// than as a setting nobody has made yet.
+pub const NO_TEMPLATE: &str = "none";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct ChartDefaults {
@@ -24,6 +29,8 @@ pub struct ChartDefaults {
     pub log_scale: bool,
     pub shows_drawings: bool,
     pub sends_drawings: bool,
+    /// The chart template it shows, if any. See [`crate::templates`].
+    pub template: Option<u32>,
 }
 
 /// What a chart opens with when nobody has said otherwise.
@@ -37,6 +44,7 @@ impl Default for ChartDefaults {
             log_scale: false,
             shows_drawings: true,
             sends_drawings: true,
+            template: None,
         }
     }
 }
@@ -61,6 +69,7 @@ impl ChartDefaults {
             log_scale: store.setting_bool(SETTING_LOG_SCALE, fallback.log_scale),
             shows_drawings: store.setting_bool(SETTING_SHOWS_DRAWINGS, fallback.shows_drawings),
             sends_drawings: store.setting_bool(SETTING_SENDS_DRAWINGS, fallback.sends_drawings),
+            template: store.setting(SETTING_TEMPLATE).and_then(|id| id.parse().ok()),
         }
     }
 
@@ -72,6 +81,8 @@ impl ChartDefaults {
         store.set_setting_bool(SETTING_LOG_SCALE, self.log_scale);
         store.set_setting_bool(SETTING_SHOWS_DRAWINGS, self.shows_drawings);
         store.set_setting_bool(SETTING_SENDS_DRAWINGS, self.sends_drawings);
+        let template = self.template.map(|id| id.to_string());
+        store.set_setting(SETTING_TEMPLATE, template.as_deref().unwrap_or(NO_TEMPLATE));
     }
 }
 
@@ -94,8 +105,12 @@ mod tests {
             log_scale: true,
             shows_drawings: false,
             sends_drawings: false,
+            template: None,
         };
         chosen.save(&store);
         assert_eq!(ChartDefaults::load(&store), chosen);
+        let on_one = ChartDefaults { template: Some(7), ..chosen };
+        on_one.save(&store);
+        assert_eq!(ChartDefaults::load(&store), on_one);
     }
 }

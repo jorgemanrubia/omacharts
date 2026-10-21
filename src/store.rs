@@ -239,6 +239,9 @@ impl Store {
             self.conn.execute_batch("VACUUM main")?;
         }
         self.invalidate_stale_cache()?;
+        // Not a migration: a template is a setting somebody can delete, and
+        // a schema step cannot tell that from never having had one.
+        crate::templates::seed(self);
         Ok(())
     }
 
@@ -279,6 +282,15 @@ impl Store {
             .optional()
             .ok()
             .flatten()
+    }
+
+    /// Whether a setting has been written at all, without reading it.
+    pub fn has_setting(&self, key: &str) -> bool {
+        self.conn
+            .query_row("SELECT EXISTS(SELECT 1 FROM settings WHERE key = ?1)", params![key], |r| {
+                r.get(0)
+            })
+            .unwrap_or(false)
     }
 
     /// Every setting that has been written, in key order.
