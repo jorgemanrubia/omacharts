@@ -58,6 +58,14 @@ to the stored arrangement — you cannot tell last week's from what is on screen
 **Prefer a theme swatch to a hex**, so the indicator goes on following the
 desktop theme. A hex is for when one exact colour was asked for.
 
+**Most charts are on a chart template.** New charts open on one ("Default",
+holding volume unless the user changed it), and a chart on a template shows
+the template's indicators. `chart indicator add` on such a chart takes it off
+the template first and says so in its reply — right for "put a 200-day on
+this", wrong for "RSI on all my charts", which is `template indicator add` on
+the template they share. `template list` says which template has how many
+charts.
+
 **A feed change is immediate, and a sign-in needs the user.** `config set
 provider tos` switches a window that is open to the other feed on the spot
 and stores it; `--provider tos` on a running window switches that window
@@ -98,6 +106,17 @@ omacharts chart indicator add rsi --chart pos:0 --period 14
 omacharts chart indicator add rsi --chart pos:1 --period 14
 omacharts chart indicator add rsi --chart pos:2 --period 14
 omacharts chart indicator add rsi --chart pos:3 --period 14
+```
+
+**The same indicators on several charts, kept in step.** A chart template does
+it once: put the charts on it, and changing it later changes all of them.
+
+```
+omacharts template create Momentum
+omacharts template indicator add Momentum rsi --period 14
+omacharts chart set --chart pos:0 --template Momentum
+omacharts chart set --chart pos:1 --template Momentum
+omacharts template indicator set Momentum rsi --period 21
 ```
 
 **Do not link four charts showing four different symbols.** A group is charts

@@ -38,7 +38,8 @@ Fast, beautiful charting software for [Omarchy](https://omarchy.org).
   letter to find a symbol, a number to set a resolution. Press `?` to learn it all.
 - **Indicators.** Moving averages, VWAP with bands, Bollinger bands, volume,
   volume profile, RSI, MACD, ATR and stochastic, each in its own resizable
-  strip. More coming.
+  strip. Save a set of them as a chart template and put charts on it: change
+  the template and every chart on it follows. More coming.
 - **Drawings.** Trendlines, levels, arrows, zig-zags, boxes, circles and text,
   a keystroke each. Their colours are roles your theme fills, held clear of
   the candles, so a drawing reads on any theme. Figures take labels, and what
