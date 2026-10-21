@@ -39,8 +39,43 @@ impl Workspace {
         Workspace { value }
     }
 
-    pub fn save(&self, store: &Store) {
+    pub fn save(&mut self, store: &Store) {
+        self.carry_book_templates(store);
         store.set_setting(SETTING, &self.value.to_string());
+    }
+
+    /// Carry what a command changed in a chartbook on a chartbook template
+    /// into the template, and into every other chartbook on it — what the
+    /// window does as it writes its own arrangement down. See
+    /// [`crate::book_templates::carry`].
+    ///
+    /// A workspace with no book on a template stops at the first line, which
+    /// is every workspace until somebody saves one.
+    fn carry_book_templates(&mut self, store: &Store) {
+        use crate::book_templates::{carry, leaves, linked};
+        if !self.books().iter().any(|book| linked(book).is_some()) {
+            return;
+        }
+        // What was written before the command, which has not been written
+        // over yet: each book as it was, to say how it changed.
+        let before: Vec<Value> = store
+            .setting(SETTING)
+            .and_then(|json| serde_json::from_str::<Value>(&json).ok())
+            .and_then(|value| value["books"].as_array().cloned())
+            .unwrap_or_default();
+        for at in 0..self.books().len() {
+            if linked(&self.books()[at]).is_none() {
+                continue;
+            }
+            // By position while the books are the books they were, and by a
+            // chart they share when one was added or taken out.
+            let now = leaves(&self.books()[at]);
+            let was = match before.len() == self.books().len() {
+                true => before.get(at).map(leaves),
+                false => before.iter().map(leaves).find(|old| old.iter().any(|id| now.contains(id))),
+            };
+            carry(store, self.books_mut(), at, &was.unwrap_or_default());
+        }
     }
 
     /// One field, the same on every chart in every book.
@@ -73,7 +108,7 @@ impl Workspace {
     /// this puts an empty one back rather than trusting that — a panic here
     /// runs inside the window, where it aborts the process instead of
     /// unwinding, and a command is not worth somebody's arrangement.
-    fn books_mut(&mut self) -> &mut Vec<Value> {
+    pub fn books_mut(&mut self) -> &mut Vec<Value> {
         if !self.value["books"].is_array() {
             self.value["books"] = json!([]);
         }
@@ -218,6 +253,18 @@ impl Workspace {
     pub fn push(&mut self, book: Value) -> usize {
         self.books_mut().push(book);
         self.books().len() - 1
+    }
+
+    /// Put a book in at `index`, keeping the open one open. Where it landed.
+    pub fn insert(&mut self, index: usize, book: Value) -> usize {
+        let index = index.min(self.books().len());
+        let active = self.active();
+        let had = !self.books().is_empty();
+        self.books_mut().insert(index, book);
+        if had && active >= index {
+            self.set_active(active + 1);
+        }
+        index
     }
 
     pub fn remove(&mut self, index: usize) {
@@ -381,6 +428,24 @@ pub fn split_leaf(node: &Value, id: u32, added: u32, horizontal: bool) -> Value 
             let mut inner = split.as_object().cloned().unwrap_or_default();
             inner.insert("first".into(), split_leaf(&split["first"], id, added, horizontal));
             inner.insert("second".into(), split_leaf(&split["second"], id, added, horizontal));
+            Value::Object(Map::from_iter([("split".to_string(), Value::Object(inner))]))
+        }
+    }
+}
+
+/// The same tree with every leaf renamed at once, the way
+/// [`crate::ui::pane::Node::relabel`] does it.
+pub fn relabel(node: &Value, ids: &std::collections::HashMap<u32, u32>) -> Value {
+    if let Some(id) = node.get("leaf").and_then(Value::as_u64) {
+        let id = id as u32;
+        return json!({"leaf": ids.get(&id).copied().unwrap_or(id)});
+    }
+    match node.get("split") {
+        None => node.clone(),
+        Some(split) => {
+            let mut inner = split.as_object().cloned().unwrap_or_default();
+            inner.insert("first".into(), relabel(&split["first"], ids));
+            inner.insert("second".into(), relabel(&split["second"], ids));
             Value::Object(Map::from_iter([("split".to_string(), Value::Object(inner))]))
         }
     }
