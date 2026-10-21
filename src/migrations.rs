@@ -291,7 +291,10 @@ fn move_market_data(tx: &Connection) -> rusqlite::Result<()> {
 ///
 /// The market data file goes first, attached as [`MARKET`]: the settings
 /// file's last step moves what it held into it, so it has to exist.
-pub fn run(conn: &Connection, snapshot_to: Option<&Path>) -> Result<(), Error> {
+///
+/// Returns the version the settings file was at before, so a caller can tell
+/// which steps just ran.
+pub fn run(conn: &Connection, snapshot_to: Option<&Path>) -> Result<i32, Error> {
     apply(conn, MARKET, MARKET_MIGRATIONS, MARKET_LATEST, None)?;
     apply(conn, "main", MIGRATIONS, LATEST, snapshot_to)
 }
@@ -304,7 +307,7 @@ fn apply(
     migrations: &[Migration],
     latest: i32,
     snapshot_to: Option<&Path>,
-) -> Result<(), Error> {
+) -> Result<i32, Error> {
     let from = version_of(conn, schema)?;
     if from > latest {
         return Err(Error::FromTheFuture { found: from, known: latest });
@@ -312,7 +315,7 @@ fn apply(
 
     let pending: Vec<&Migration> = migrations.iter().filter(|m| m.version > from).collect();
     if pending.is_empty() {
-        return Ok(());
+        return Ok(from);
     }
     // A file at version 0 is a new one, with nothing in it to lose.
     if let Some(path) = snapshot_to.filter(|_| from > 0 && pending.iter().any(|m| m.risky)) {
@@ -331,7 +334,7 @@ fn apply(
         tx.pragma_update(Some(schema), "user_version", migration.version)?;
         tx.commit()?;
     }
-    Ok(())
+    Ok(from)
 }
 
 pub fn version(conn: &Connection) -> rusqlite::Result<i32> {

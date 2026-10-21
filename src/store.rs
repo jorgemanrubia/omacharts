@@ -144,8 +144,7 @@ impl Store {
     /// fetched correctly, which has its own counter because it moves on its
     /// own schedule. A release can change either without touching the other.
     fn migrate(&self, snapshot_to: Option<&Path>) -> Result<(), migrations::Error> {
-        let from = migrations::version(&self.conn)?;
-        migrations::run(&self.conn, snapshot_to)?;
+        let from = migrations::run(&self.conn, snapshot_to)?;
         // The bars just moved out leave their pages behind, and a settings
         // file the size of the cache it no longer holds is not one anybody
         // will think to copy. Once, on the launch that moved them.
@@ -1102,15 +1101,13 @@ pub fn market_path(settings: &Path) -> PathBuf {
 /// second connection to a file the window has opened has nothing to do.
 pub fn connect(path: &Path) -> rusqlite::Result<Connection> {
     let conn = Connection::open(path)?;
-    conn.execute(
-        "ATTACH ?1 AS market",
-        params![market_path(path).to_string_lossy()],
-    )?;
+    conn.execute("ATTACH ?1 AS market", [market_path(path).to_string_lossy()])?;
     // WAL so a background fetch writing never blocks the window reading.
-    for schema in ["main", "market"] {
-        conn.pragma_update(Some(schema), "journal_mode", "WAL")?;
-        conn.pragma_update(Some(schema), "synchronous", "NORMAL")?;
-    }
+    // One batch rather than a pragma call each: this runs on every launch.
+    conn.execute_batch(
+        "PRAGMA main.journal_mode = WAL; PRAGMA market.journal_mode = WAL;
+         PRAGMA main.synchronous = NORMAL; PRAGMA market.synchronous = NORMAL;",
+    )?;
     Ok(conn)
 }
 
@@ -1387,9 +1384,8 @@ mod tests {
     /// watchlist on screen over the top of somebody's real one.
     #[test]
     fn a_database_from_a_newer_omacharts_is_refused_rather_than_opened() {
-        let path =
-            std::env::temp_dir().join(format!("omacharts-future-{}.db", std::process::id()));
-        let _ = std::fs::remove_file(&path);
+        let dir = scratch_dir("future");
+        let path = dir.join("omacharts.db");
 
         let store = Store::open_at(&path).unwrap();
         store.add_section(DEFAULT_WATCHLIST, "Mine").unwrap();
@@ -1405,7 +1401,18 @@ mod tests {
             }
             other => panic!("expected a refusal, got {:?}", other.map(|_| "a store")),
         }
-        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A directory of its own for a test that needs files: the market data
+    /// file sits beside the settings one, so two tests sharing a directory
+    /// would share a cache.
+    fn scratch_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir()
+            .join(format!("omacharts-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
     }
 
     #[test]
@@ -1720,8 +1727,8 @@ mod tests {
 
     #[test]
     fn a_cache_written_by_an_older_version_is_discarded_once() {
-        let file = std::env::temp_dir().join(format!("omacharts-cache-{}.db", std::process::id()));
-        let _ = std::fs::remove_file(&file);
+        let dir = scratch_dir("cache");
+        let file = dir.join("omacharts.db");
 
         {
             let store = Store::open_at(&file).unwrap();
@@ -1744,7 +1751,7 @@ mod tests {
         let store = Store::open_at(&file).unwrap();
         assert_eq!(store.cached_series(), 1);
 
-        let _ = std::fs::remove_file(&file);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
 
