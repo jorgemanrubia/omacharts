@@ -265,25 +265,24 @@ fn theme_group(context: &Rc<Context>) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     let theming = context.theming.borrow();
 
-    let ids: Vec<String> = theming.themes().iter().map(|t| t.id.clone()).collect();
+    // System first, then the themes somebody made, then the ones that ship,
+    // each run set apart from the next by a line.
+    let system = omacharts_engine::theme::OMARCHY_ID;
+    let themes = theming.themes();
+    let mut ordered: Vec<&_> = themes.iter().filter(|t| t.id == system).collect();
+    ordered.extend(themes.iter().filter(|t| t.id != system && t.source.is_editable()));
+    let shipped_from = ordered.len();
+    ordered.extend(themes.iter().filter(|t| t.id != system && !t.source.is_editable()));
+    let ids: Vec<String> = ordered.iter().map(|t| t.id.clone()).collect();
     // The entry that tracks the desktop is "System", the way every other
     // setting on this platform spells it. Labelled with the desktop theme's
     // own name it was indistinguishable from a fixed preset, and the
     // difference between them is the whole point: one keeps changing.
-    let names: Vec<String> = theming
-        .themes()
+    let names: Vec<String> = ordered
         .iter()
-        .map(|t| {
-            if t.id == omacharts_engine::theme::OMARCHY_ID {
-                "System".to_string()
-            } else {
-                t.name.clone()
-            }
-        })
+        .map(|t| if t.id == system { "System".to_string() } else { t.name.clone() })
         .collect();
-    // Where the themes somebody made begin: they come last, and a line
-    // above the first sets them apart from the ones that ship.
-    let first_own = theming.themes().iter().position(|t| t.source.is_editable());
+    let splits = vec![1, shipped_from];
     let following = theming.theme().name.clone();
     let is_system = theming.theme_id() == omacharts_engine::theme::OMARCHY_ID;
     let selected = ids.iter().position(|id| id == theming.theme_id()).unwrap_or(0);
@@ -298,7 +297,7 @@ fn theme_group(context: &Rc<Context>) -> adw::PreferencesGroup {
         row.set_subtitle(&format!("Following {following}"));
     }
     row.set_model(Some(&string_list(&names)));
-    row.set_list_factory(Some(&separated_list(first_own)));
+    row.set_list_factory(Some(&separated_list(splits)));
     row.set_selected(selected as u32);
 
     let ctx = context.clone();
@@ -1339,9 +1338,10 @@ fn alpha_dialog() -> gtk::ColorDialog {
     dialog
 }
 
-/// A drop-down list of names with a line above the one at `split`, for a
-/// list that is two lists one after the other.
-fn separated_list(split: Option<usize>) -> gtk::SignalListItemFactory {
+/// A drop-down list of names with a line above each one at `splits`, for a
+/// list that is several lists one after the other. An empty run between two
+/// splits makes them the same place, and that place gets one line.
+fn separated_list(splits: Vec<usize>) -> gtk::SignalListItemFactory {
     let factory = gtk::SignalListItemFactory::new();
     factory.connect_setup(|_, item| {
         let Some(item) = item.downcast_ref::<gtk::ListItem>() else { return };
@@ -1363,7 +1363,8 @@ fn separated_list(split: Option<usize>) -> gtk::SignalListItemFactory {
         };
         let name = item.item().and_downcast::<gtk::StringObject>().map(|s| s.string());
         label.set_label(name.as_deref().unwrap_or(""));
-        line.set_visible(split.is_some_and(|at| at > 0 && item.position() as usize == at));
+        let at = item.position() as usize;
+        line.set_visible(at > 0 && splits.contains(&at));
     });
     factory
 }
