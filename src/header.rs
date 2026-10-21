@@ -1,13 +1,13 @@
 //! What a chart's header shows: the line at its top-left, and in what order.
 //!
-//! Each chart has its own, written down with it; a new chart takes the one
-//! the preferences name. Symbol and resolution are what every chart showed
-//! before there was a choice, so they are what a chart written before then
-//! comes back with.
+//! One for the whole app, every chart in every chartbook showing the same
+//! line, so that changing it changes all of them at once. Symbol and
+//! resolution are what every chart showed before there was a choice, so they
+//! are what it is until somebody chooses.
 
 use crate::store::Store;
 
-/// The header new charts open with.
+/// The header every chart shows.
 pub const SETTING: &str = "chart_header";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -105,12 +105,20 @@ pub fn spell(parts: &[Part]) -> String {
     }
 }
 
-/// The header new charts open with.
-pub fn load_default(store: &Store) -> Vec<Part> {
-    store.setting(SETTING).and_then(|text| parse(&text).ok()).unwrap_or_else(standard)
+/// The header every chart shows.
+///
+/// Read leniently, where [`parse`] is strict: a part only a newer build knows
+/// is left out rather than costing the whole line, since the settings may
+/// have been written by one.
+pub fn load(store: &Store) -> Vec<Part> {
+    match store.setting(SETTING) {
+        None => standard(),
+        Some(text) if text.trim().eq_ignore_ascii_case("none") => Vec::new(),
+        Some(text) => from_keys(&text.split(',').map(str::trim).collect::<Vec<_>>()),
+    }
 }
 
-pub fn save_default(store: &Store, parts: &[Part]) {
+pub fn save(store: &Store, parts: &[Part]) {
     store.set_setting(SETTING, &spell(parts));
 }
 
@@ -135,19 +143,22 @@ mod tests {
     }
 
     #[test]
-    fn what_is_saved_is_what_new_charts_open_with() {
+    fn what_is_saved_is_what_every_chart_shows() {
         let store = Store::memory().unwrap();
-        assert_eq!(load_default(&store), standard());
-        save_default(&store, &[Part::Change, Part::Symbol]);
-        assert_eq!(load_default(&store), vec![Part::Change, Part::Symbol]);
-        save_default(&store, &[]);
-        assert!(load_default(&store).is_empty());
+        assert_eq!(load(&store), standard());
+        save(&store, &[Part::Change, Part::Symbol]);
+        assert_eq!(load(&store), vec![Part::Change, Part::Symbol]);
+        save(&store, &[]);
+        assert!(load(&store).is_empty());
     }
 
     /// A newer build's part is dropped, not the header: the rest still shows.
     #[test]
     fn a_part_this_build_does_not_know_is_left_out() {
         assert_eq!(from_keys(&["symbol", "volume", "symbol", "change"]), vec![Part::Symbol, Part::Change]);
+        let store = Store::memory().unwrap();
+        store.set_setting(SETTING, "volume,change,symbol");
+        assert_eq!(load(&store), vec![Part::Change, Part::Symbol]);
     }
 
     #[test]

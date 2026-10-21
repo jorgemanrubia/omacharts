@@ -201,22 +201,22 @@ Deleting one leaves its charts with a copy of its indicators, as their own.
 The default for new charts is also `config set chart_template NAME|none`,
 which is the same setting `template default` writes.
 
-## A chart's header
+## The header
 
 The line at a chart's top-left shows its symbol and resolution, and can also
 show the day's move — as a percentage, in the chart's own colours for a rise
-and a fall — and the name of its chart template. Each chart has its own, in
-the order given:
+and a fall — and the name of its chart template. It is one line for the whole
+app: every chart in every chartbook shows the same parts, in the order given,
+and a window that is open changes them all at once:
 
 ```
-omacharts chart set --header symbol,resolution,change
-omacharts chart set --header template,symbol --chart pos:1
 omacharts config set chart_header symbol,resolution,change
+omacharts config set chart_header template,symbol
 ```
 
-`config set chart_header` is what new charts open with. `none` is a header
-with nothing in it. The day's move comes from the same cached quotes the
-watchlist shows, so it is as fresh as the rail and fetches nothing of its own.
+`none` is a header with nothing in it. The day's move comes from the same
+cached quotes the watchlist shows, so it is as fresh as the rail and fetches
+nothing of its own.
 
 ## Link groups
 

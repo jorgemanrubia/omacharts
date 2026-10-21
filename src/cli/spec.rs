@@ -787,12 +787,6 @@ pub const SURFACE: &[Noun] = &[
                         "show a chart template's indicators in place of the chart's own, or \
                          `none` to keep them as its own; a name or id:N",
                     ),
-                    Flag::valued(
-                        "header",
-                        "PARTS",
-                        "what the chart's header shows, in order: any of symbol, resolution, \
-                         change and template, comma-separated, or `none`",
-                    ),
                 ],
                 example: "omacharts chart set --symbol NVDA --resolution 1h --style candles",
                 json: true,
@@ -1257,7 +1251,6 @@ const STORED_FIELDS: &[(&str, &str, &str)] = &[
     ("auto_scale", "chart set", "--auto-scale"),
     ("log_scale", "chart set", "--log-scale"),
     ("template", "chart set", "--template"),
-    ("header", "chart set", "--header"),
     ("name", "chartbook rename", ""),
     ("layout", "chart split", ""),
     ("focused", "chart focus", ""),

@@ -487,7 +487,6 @@ mod tests {
                 timeframe: "1h".to_string(),
                 indicators: Vec::new(),
                 template: None,
-                header: standard_header(),
                 bar_style: "candle".to_string(),
                 colouring: None,
                 session: "extended".to_string(),
@@ -560,7 +559,6 @@ mod tests {
             timeframe: "1D".to_string(),
             indicators: Vec::new(),
             template: None,
-            header: standard_header(),
             bar_style: "candle".to_string(),
                 colouring: None,
             session: "extended".to_string(),
@@ -606,13 +604,6 @@ mod tests {
         assert_eq!(step_round(2, 2, 1), 0, "past the last is None");
         assert_eq!(step_round(0, 2, -1), 2, "before None is the last");
         assert_eq!(step_round(0, 0, 1), 0, "with no templates, None stays None");
-    }
-
-    /// A chart written before headers could be chosen shows the standard one.
-    #[test]
-    fn a_chart_written_before_headers_shows_symbol_and_resolution() {
-        let workspace = parse_workspace(ONE_ARRANGEMENT).expect("the old shape should parse");
-        assert!(workspace.books[0].panes.iter().all(|pane| pane.header == standard_header()));
     }
 
     /// A chart written down before there were templates keeps its own
@@ -1342,12 +1333,6 @@ struct StoredPane {
     /// before there were templates, and every one of those had its own.
     #[serde(default)]
     template: Option<u32>,
-    /// What the header shows, in order, by name. Names rather than the parts
-    /// themselves, so a part a newer build added is dropped on its own rather
-    /// than taking the whole arrangement down with it. Missing from a chart
-    /// written before headers could be chosen, which showed the standard one.
-    #[serde(default = "standard_header")]
-    header: Vec<String>,
     bar_style: String,
     /// How the theme's candle colours are painted. Missing from a chart
     /// written before charts were painted one by one.
@@ -1386,10 +1371,6 @@ struct StoredPane {
 
 fn yes() -> bool {
     true
-}
-
-fn standard_header() -> Vec<String> {
-    crate::header::keys(&crate::header::standard())
 }
 
 /// What a chart's price scale does until somebody takes hold of it.
@@ -2103,9 +2084,7 @@ impl Window {
             LinkGroup::Group(1),
         );
         pane.template.set(template.map(|t| t.id));
-        *pane.header.borrow_mut() = crate::header::load_default(&self.store);
-        pane.arrange_header();
-        self.write_header_of(&pane);
+        self.show_header_on(&pane);
         pane.view.set_price_log(defaults.log_scale);
         pane.shows_drawings.set(defaults.shows_drawings);
         pane.sends_drawings.set(defaults.sends_drawings);
@@ -2483,9 +2462,7 @@ impl Window {
             from.linked.get(),
         );
         added.template.set(from.template.get());
-        *added.header.borrow_mut() = from.header.borrow().clone();
-        added.arrange_header();
-        self.write_header_of(&added);
+        self.show_header_on(&added);
         added.view.set_price_auto(from.view.price_auto());
         added.view.set_price_log(from.view.price_log());
         let next = self.layout.borrow().split(from.id, added.id, horizontal);
@@ -3091,7 +3068,6 @@ impl Window {
                     timeframe: pane.timeframe.get().key(),
                     indicators: pane.indicators.borrow().clone(),
                     template: pane.template.get(),
-                    header: crate::header::keys(&pane.header.borrow()),
                     bar_style: pane.bar_style.get().key().to_string(),
                     colouring: Some(pane.colouring.get().key().to_string()),
                     session: pane.session.get().key().to_string(),
@@ -3292,9 +3268,7 @@ impl Window {
                 stored.linked,
             );
             pane.template.set(template.map(|t| t.id));
-            *pane.header.borrow_mut() = crate::header::from_keys(&stored.header);
-            pane.arrange_header();
-            self.write_header_of(&pane);
+            self.show_header_on(&pane);
             pane.shows_drawings.set(stored.shows_drawings);
             pane.sends_drawings.set(stored.sends_drawings);
             pane.view.set_sends(stored.sends_drawings);
@@ -6492,17 +6466,23 @@ impl Window {
 
     // -- the header ------------------------------------------------------
 
-    /// What the focused chart's header shows, in order.
-    pub fn header(&self) -> Vec<crate::header::Part> {
-        self.focused_pane().header.borrow().clone()
+    /// The header as it is set now, on every chart on screen: what follows
+    /// a change to it, from the preferences or a command.
+    ///
+    /// The charts of the other chartbooks are not built until their book is
+    /// open, and they read the setting then.
+    pub fn apply_header(self: &Rc<Self>) {
+        let panes = self.panes.borrow().clone();
+        for pane in &panes {
+            self.show_header_on(pane);
+        }
     }
 
-    pub fn set_header(self: &Rc<Self>, parts: Vec<crate::header::Part>) {
-        let pane = self.focused_pane();
-        *pane.header.borrow_mut() = parts;
+    /// One chart's header, as the setting says.
+    fn show_header_on(self: &Rc<Self>, pane: &Rc<ChartPane>) {
+        *pane.header.borrow_mut() = crate::header::load(&self.store);
         pane.arrange_header();
-        self.write_header_of(&pane);
-        self.save_workspace();
+        self.write_header_of(pane);
     }
 
     /// Fill in the parts of a chart's header only the window knows: the
@@ -6856,7 +6836,6 @@ impl Window {
         // where they are written.
         let active = self.active.get();
         let template = defaults.template.and_then(|id| crate::templates::get(&self.store, id));
-        let header = crate::header::load_default(&self.store);
         for (at, book) in self.books.borrow_mut().iter_mut().enumerate() {
             if at == active {
                 continue;
@@ -6868,7 +6847,6 @@ impl Window {
                 if let Some(template) = &template {
                     stored.indicators = template.indicators.clone();
                 }
-                stored.header = crate::header::keys(&header);
                 stored.bar_style = defaults.bar_style.key().to_string();
                 stored.colouring = Some(defaults.colouring.key().to_string());
                 stored.session = defaults.session.key().to_string();
@@ -6901,9 +6879,6 @@ impl Window {
         self.set_pane_shows_drawings(pane, defaults.shows_drawings);
         self.set_pane_sends_drawings(pane, defaults.sends_drawings);
         self.put_on_template(pane, defaults.template);
-        *pane.header.borrow_mut() = crate::header::load_default(&self.store);
-        pane.arrange_header();
-        self.write_header_of(pane);
     }
 
     /// Right-clicking the chart offers the things you change most, and a way

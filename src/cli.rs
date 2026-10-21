@@ -241,6 +241,9 @@ pub trait Live {
     /// Chart from the feed the settings now name, if it is not the one on
     /// screen. Nothing to do without a window.
     fn adopt_feed(&self) {}
+    /// Show the header the settings now name on every chart on screen.
+    /// Nothing to do without a window.
+    fn adopt_header(&self) {}
 
     /// Save a picture of the focused chart, or of the whole open chartbook.
     ///
@@ -923,6 +926,10 @@ impl Live for Rc<crate::ui::Window> {
 
     fn adopt_feed(&self) {
         crate::ui::Window::adopt_feed(self);
+    }
+
+    fn adopt_header(&self) {
+        crate::ui::Window::apply_header(self);
     }
 
     fn screenshot(

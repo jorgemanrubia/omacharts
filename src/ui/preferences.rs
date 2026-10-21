@@ -89,20 +89,25 @@ impl Preferences {
         let data_page = adw::PreferencesPage::new();
 
         // General first: what the app does, before what it looks like.
-        // Charts is three things: what a new chart opens with, the sets of
-        // indicators charts can share, and the rest.
+        // Charts is four things: what a new chart opens with, the sets of
+        // indicators charts can share, the line every chart's header shows,
+        // and the rest.
         let charts_other_page = adw::PreferencesPage::new();
         let charts_templates_page = adw::PreferencesPage::new();
         let charts = gtk::Stack::new();
         charts.add_titled(&charts_page, Some("defaults"), "Defaults");
         charts.add_titled(&charts_templates_page, Some("templates"), "Templates");
-        // What a new chart's header shows. Each chart then has its own, in
-        // its settings.
+        // What every chart's header shows, changed on all of them as it is
+        // changed here.
         let charts_header_page = adw::PreferencesPage::new();
         let store_for_header = store.clone();
+        let window_for_header = window.clone();
         let header = crate::ui::chart_settings::HeaderList::new(
-            crate::header::load_default(&store),
-            move |parts| crate::header::save_default(&store_for_header, &parts),
+            crate::header::load(&store),
+            move |parts| {
+                crate::header::save(&store_for_header, &parts);
+                window_for_header.apply_header();
+            },
         );
         charts_header_page.add(&header.group);
         charts.add_titled(&charts_header_page, Some("header"), "Header");

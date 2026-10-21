@@ -73,22 +73,12 @@ impl ChartSettings {
         indicators_page.set_icon_name(Some("view-list-symbolic"));
         dialog.add(&indicators_page);
 
-        // What this chart's header shows, and in what order.
-        let header_page = adw::PreferencesPage::new();
-        header_page.set_title("Header");
-        header_page.set_icon_name(Some("format-justify-left-symbolic"));
-        let window_for_header = window.clone();
-        let header = HeaderList::new(window.header(), move |parts| {
-            window_for_header.set_header(parts);
-        });
-        header_page.add(&header.group);
-        dialog.add(&header_page);
         {
             // Alt and an arrow between the pages, and the keyboard goes with
             // it. The pages are named here rather than asked of the dialog: a
             // preferences dialog keeps them in a view stack of its own, and
             // the ones it was given are the ones it has.
-            let pages = [chart_page.clone(), indicators_page.clone(), header_page.clone()];
+            let pages = [chart_page.clone(), indicators_page.clone()];
             let dialog_for_tabs = dialog.clone();
             crate::ui::dialogs::step_tabs_with_alt(&dialog, move |forward| {
                 let shown = dialog_for_tabs.visible_page();
@@ -190,9 +180,8 @@ impl TemplateEditor {
     }
 }
 
-/// The parts of a chart's header, as a list to add to, take from and drag
-/// into order: a chart's own in its settings, and the one new charts open
-/// with in the preferences.
+/// The parts of the charts' header, as a list to add to, take from and drag
+/// into order, for the preferences.
 ///
 /// Every change is handed to `changed` as the whole list, in order, the moment
 /// it is made, as the indicator list applies its changes.
