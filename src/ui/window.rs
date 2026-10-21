@@ -4076,24 +4076,6 @@ impl Window {
         self.link_active_book(made.id);
     }
 
-    /// Save the chartbook on screen over template `id`, put it on it, and
-    /// bring every other chartbook on it along. How many others changed.
-    pub fn save_over_book_template(self: &Rc<Self>, id: u32) -> usize {
-        let mut books = self.stored_books();
-        let at = self.active.get();
-        let Some(shape) = books.get(at).and_then(book_templates::capture) else { return 0 };
-        if !book_templates::replace(&self.store, id, shape.clone()) {
-            return 0;
-        }
-        let charts = crate::templates::all(&self.store);
-        let changed = book_templates::follow(&mut books, id, &shape, &charts, Some(at), None);
-        if changed > 0 {
-            self.adopt_books(books);
-        }
-        self.link_active_book(id);
-        changed
-    }
-
     fn link_active_book(self: &Rc<Self>, id: u32) {
         let at = self.active.get();
         if let Some(book) = self.books.borrow_mut().get_mut(at) {
@@ -4239,8 +4221,9 @@ impl Window {
         tab.upcast()
     }
 
-    /// The tab menu's Template submenu: None, the chartbook templates with
-    /// the one this book is on marked, and the two ways to make or tend them.
+    /// The tab menu's Template submenu: None and the chartbook templates, with
+    /// the one this book is on marked, Save as New Template… after them, and
+    /// Manage Templates… on its own.
     ///
     /// Built when the menu opens, from the templates as they are then, so one
     /// made or renamed a moment ago — here or from a terminal — is in it.
@@ -4253,6 +4236,7 @@ impl Window {
         }
         let menu = gio::Menu::new();
         // None heads the same run as the templates: one choice among them.
+        // And Save as New Template… closes it, as the way to one more.
         let made = gio::Menu::new();
         let none = gio::MenuItem::new(Some("None"), None);
         none.set_action_and_target_value(Some("win.book-template"), Some(&template_state(None)));
@@ -4265,9 +4249,9 @@ impl Window {
             );
             made.append_item(&item);
         }
+        made.append(Some("Save as New Template\u{2026}"), Some("win.save-new-book-template"));
         menu.append_section(None, &made);
         let tend = gio::Menu::new();
-        tend.append(Some("Save as Template\u{2026}"), Some("win.save-book-template-as"));
         tend.append(Some("Manage Templates\u{2026}"), Some("win.manage-book-templates"));
         menu.append_section(None, &tend);
         menu
@@ -4776,10 +4760,10 @@ impl Window {
         });
         self.window.add_action(&book_template);
 
-        let save_as = gio::SimpleAction::new("save-book-template-as", None);
+        let save_new = gio::SimpleAction::new("save-new-book-template", None);
         let this = self.clone();
-        save_as.connect_activate(move |_, _| crate::ui::book_templates::save_as(&this));
-        self.window.add_action(&save_as);
+        save_new.connect_activate(move |_, _| crate::ui::book_templates::save_new(&this));
+        self.window.add_action(&save_new);
 
         let manage = gio::SimpleAction::new("manage-book-templates", None);
         let this = self.clone();

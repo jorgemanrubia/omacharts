@@ -3099,7 +3099,8 @@ fn template_verb(
 ///
 /// A chartbook on one carries every change to its arrangement into it as it
 /// is written down — [`Workspace::save`] does that for every command — so
-/// there is nothing here for saving into the template a book is already on.
+/// there is nothing here for saving into the template a book is already on,
+/// and `save` only ever makes a new one.
 fn book_template_verb(
     store: &Store,
     m: &clap::ArgMatches,
@@ -3129,11 +3130,6 @@ fn book_template_verb(
             ))),
         }
     };
-    let others = |count: usize| match count {
-        0 => String::new(),
-        1 => "; the other chartbook on it changed to match".to_string(),
-        n => format!("; the {n} other chartbooks on it changed to match"),
-    };
 
     let (text, value) = match action {
         "list" => return Ok(book_template_list(&templates, workspace, as_json)),
@@ -3144,39 +3140,30 @@ fn book_template_verb(
                 Fault::new(super::EXIT_ERROR, format!("chartbook {book:?} names a chart it does not have"))
             })?;
             let wanted = named()?;
-            let on = bt::linked(workspace.book(at)?);
-            let id = match bt::find(&templates, wanted) {
-                bt::Lookup::Missing if !wanted.starts_with("id:") => bt::create(store, wanted, shape.clone()).id,
-                _ => {
-                    let over = found(wanted)?;
-                    let using = bt::usage(workspace.books(), over.id);
-                    if on != Some(over.id) && !flag(m, "overwrite") {
-                        return Err(Fault::refused(format!(
-                            "there is already a chartbook template called {:?}, which {}; add --overwrite \
-                             to replace it with {book:?}",
-                            over.name,
-                            match using {
-                                0 => "no chartbook is on".to_string(),
-                                1 => "1 chartbook is on".to_string(),
-                                n => format!("{n} chartbooks are on"),
-                            }
-                        )));
-                    }
-                    bt::replace(store, over.id, shape.clone());
-                    over.id
-                }
-            };
+            if wanted.starts_with("id:") {
+                return Err(Fault::usage(format!(
+                    "{wanted:?} is how a chartbook template is picked, not a name for a new one"
+                )));
+            }
+            // Only ever a new one: replacing a template would change every
+            // chartbook on it, which a word like "save" does not say.
+            if let Some(taken) =
+                templates.iter().find(|t| t.name.trim().eq_ignore_ascii_case(wanted))
+            {
+                return Err(Fault::usage(format!(
+                    "there is already a chartbook template called {:?}; save under a name of \
+                     its own, or delete or rename that one first",
+                    taken.name
+                )));
+            }
+            let id = bt::create(store, wanted, shape.clone()).id;
             bt::set_link(workspace.book_mut(at)?, Some(id));
-            let charts = crate::templates::all(store);
-            let changed = bt::follow(workspace.books_mut(), id, &shape, &charts, Some(at), None);
-            let name = bt::get(store, id).map(|t| t.name).unwrap_or_default();
             (
                 format!(
-                    "saved chartbook {book:?} as chartbook template {name:?} ({}){}",
+                    "saved chartbook {book:?} as new chartbook template {wanted:?} ({})",
                     charts_counted(shape.panes.len()),
-                    others(changed)
                 ),
-                json!({"template": id, "chartbook": book, "changed": changed}),
+                json!({"template": id, "chartbook": book}),
             )
         }
         "apply" => {
@@ -5105,7 +5092,7 @@ mod tests {
     }
 
     #[test]
-    fn saving_over_another_template_has_to_be_asked_for() {
+    fn saving_only_ever_makes_a_new_template() {
         let store = bare();
         grid_book(&store, "Grid", "SPY");
         ok("chartbook create One --symbol QQQ", &store);
@@ -5113,15 +5100,21 @@ mod tests {
         ok("chartbook create Two --symbol IWM", &store);
         ok("chartbook template apply Solo --book Two", &store);
 
-        let refused = run("chartbook template save Solo --book Grid", &store);
-        assert_ne!(refused.code, 0);
-        assert!(refused.err.contains("--overwrite"), "{}", refused.err);
-        assert_eq!(symbols_of(&store, "Two").len(), 1);
+        for line in [
+            "chartbook template save solo --book Grid",
+            "chartbook template save Solo --book One",
+            "chartbook template save id:1 --book Grid",
+        ] {
+            let refused = run(line, &store);
+            assert_eq!(refused.code, EXIT_USAGE, "{line}: {}", refused.err);
+        }
+        assert!(run("chartbook template save SOLO --book Grid", &store).err.contains("already a chartbook template"));
+        assert_eq!(symbols_of(&store, "Two").len(), 1, "a refused save changed a book on the template");
+        assert_eq!(crate::book_templates::all(&store)[0].shape.panes.len(), 1);
 
-        let saved = ok("chartbook template save solo --book Grid --overwrite", &store);
-        assert!(saved.contains("the 2 other chartbooks on it changed"), "{saved}");
-        assert_eq!(symbols_of(&store, "Two"), ["IWM"; 4]);
-        assert_eq!(crate::book_templates::all(&store).len(), 1, "overwriting made a second one");
+        assert!(ok("chartbook template save Corners --book Grid", &store).contains("new chartbook template"));
+        assert_eq!(crate::book_templates::all(&store).len(), 2);
+        assert_eq!(symbols_of(&store, "Two").len(), 1);
     }
 
     #[test]

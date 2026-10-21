@@ -1,5 +1,5 @@
 //! The two dialogs behind a chartbook tab's Template submenu: saving the book
-//! as a template, and the list of templates to rename and delete.
+//! as a new template, and the list of templates to rename and delete.
 //!
 //! In the shape of the Preferences' own lists and name dialogs, because they
 //! are the same things — a name typed into an alert, a list of rows with a
@@ -10,45 +10,26 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 
-use crate::book_templates::{self, BookTemplate};
 use crate::ui::preferences::ask_name;
 use crate::ui::Window;
 
-/// Ask for a name and save the chartbook on screen under it.
+/// Ask for a name and save the chartbook on screen as a new template under it,
+/// putting the book on it.
 ///
-/// The templates there are already are listed under the box, and choosing one
-/// puts its name in it: saving over one is asked about, saying how many other
-/// chartbooks will change with it. A new name makes a new template. Either
-/// way the book is on the template afterwards.
-pub fn save_as(window: &Rc<Window>) {
-    let templates = window.book_templates();
+/// Only ever a new one. A name a template already has, in any case, holds
+/// Save back and marks the box, the way a blank one holds it back: replacing
+/// a template from here would change every chartbook on it, and that is not
+/// what saving a new one sounds like.
+pub fn save_new(window: &Rc<Window>) {
+    let taken: Vec<String> =
+        window.book_templates().iter().map(|t| t.name.trim().to_lowercase()).collect();
     let name = adw::EntryRow::new();
     name.set_title("Name");
     let rows = adw::PreferencesGroup::new();
     rows.add(&name);
 
-    let holder = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    holder.append(&rows);
-    if !templates.is_empty() {
-        let existing = adw::PreferencesGroup::new();
-        existing.set_title("Replace a template");
-        for template in &templates {
-            let row = adw::ActionRow::new();
-            row.set_title(&template.name);
-            row.set_activatable(true);
-            let field = name.clone();
-            let chosen = template.name.clone();
-            row.connect_activated(move |_| {
-                field.set_text(&chosen);
-                field.grab_focus();
-            });
-            existing.add(&row);
-        }
-        holder.append(&existing);
-    }
-
-    let dialog = adw::AlertDialog::new(Some("Save as Chartbook Template"), None);
-    dialog.set_extra_child(Some(&holder));
+    let dialog = adw::AlertDialog::new(Some("Save as New Chartbook Template"), None);
+    dialog.set_extra_child(Some(&rows));
     dialog.add_response("cancel", "Cancel");
     dialog.add_response("ok", "Save");
     dialog.set_response_appearance("ok", adw::ResponseAppearance::Suggested);
@@ -56,13 +37,31 @@ pub fn save_as(window: &Rc<Window>) {
     dialog.set_close_response("cancel");
     dialog.set_response_enabled("ok", false);
 
+    let free = move |text: &str| {
+        let text = text.trim().to_lowercase();
+        !text.is_empty() && !taken.contains(&text)
+    };
     let gate = dialog.clone();
+    let checks = free.clone();
     name.connect_changed(move |field| {
-        gate.set_response_enabled("ok", !field.text().trim().is_empty());
+        let text = field.text();
+        gate.set_response_enabled("ok", checks(&text));
+        // Red only for a name in use: a blank box is not a mistake yet.
+        match !text.trim().is_empty() && !checks(&text) {
+            true => {
+                field.add_css_class("error");
+                field.set_tooltip_text(Some("A chartbook template already has this name"));
+            }
+            false => {
+                field.remove_css_class("error");
+                field.set_tooltip_text(None);
+            }
+        }
     });
     let finish = dialog.clone();
+    let checks = free.clone();
     name.connect_entry_activated(move |field| {
-        if !field.text().trim().is_empty() {
+        if checks(&field.text()) {
             finish.emit_by_name::<()>("response", &[&"ok"]);
             finish.close();
         }
@@ -72,60 +71,15 @@ pub fn save_as(window: &Rc<Window>) {
     let answered = std::cell::Cell::new(false);
     let this = window.clone();
     dialog.connect_response(None, move |_, response| {
-        if response != "ok" || answered.replace(true) {
+        let typed = field.text();
+        if response != "ok" || !free(&typed) || answered.replace(true) {
             return;
         }
-        let typed = field.text().trim().to_string();
-        match book_templates::find(&templates, &typed) {
-            book_templates::Lookup::Found(over) => confirm_overwrite(&this, over),
-            // Two with one name can only come from a rename; the first is the
-            // one the list shows first, and asking still says which.
-            book_templates::Lookup::Ambiguous(ids) => {
-                if let Some(over) = ids.first().and_then(|id| templates.iter().find(|t| t.id == *id)) {
-                    confirm_overwrite(&this, over);
-                }
-            }
-            book_templates::Lookup::Missing => this.save_as_new_book_template(&typed),
-        }
+        this.save_as_new_book_template(typed.trim());
     });
 
     dialog.present(Some(&window.window));
     name.grab_focus();
-}
-
-/// Ask before saving over a template, saying what else will change.
-///
-/// Saving over the one this book is on asks nothing: the book's changes are
-/// already in it, so there is nothing to lose.
-fn confirm_overwrite(window: &Rc<Window>, over: &BookTemplate) {
-    if window.on_book_template(over.id) {
-        window.save_over_book_template(over.id);
-        return;
-    }
-    let others = window.books_on_book_template(over.id);
-    let follow = match others {
-        0 => String::new(),
-        1 => " The chartbook on it will change to match.".to_string(),
-        n => format!(" The {n} chartbooks on it will change to match."),
-    };
-    let body = format!(
-        "\u{201c}{}\u{201d} will hold this chartbook\u{2019}s layout and indicators.{follow}",
-        over.name
-    );
-    let dialog = adw::AlertDialog::new(Some("Replace Chartbook Template?"), Some(&body));
-    dialog.add_response("cancel", "Cancel");
-    dialog.add_response("replace", "Replace");
-    dialog.set_response_appearance("replace", adw::ResponseAppearance::Destructive);
-    dialog.set_default_response(Some("cancel"));
-    dialog.set_close_response("cancel");
-    let this = window.clone();
-    let id = over.id;
-    dialog.connect_response(None, move |_, response| {
-        if response == "replace" {
-            this.save_over_book_template(id);
-        }
-    });
-    dialog.present(Some(&window.window));
 }
 
 /// The chartbook templates, each with a rename and a delete.

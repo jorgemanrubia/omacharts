@@ -598,21 +598,21 @@ omacharts chartbook template delete Quarters
 **A chartbook on a template stays on it, and every change to its arrangement
 goes to the template and to every other chartbook on it** — a split, a closed
 chart, a dragged divider, a resolution, an indicator, a chart template — the
-way a change to
-a chart template reaches every chart on it. A command that changes one is no
+way a change to a chart template reaches every chart on it. A command that changes one is no
 different from the window doing it. A chart that is added in one book is added
 beside the same chart in the others, and one closed in one is closed in the
 others, so each book keeps its symbols where they were.
 
 `save NAME` makes a new template from the chartbook and puts the book on it.
-A name that is already a template's is refused unless the book is on that one,
-or `--overwrite` is given, and then every chartbook on it changes to match.
+It only ever makes a new one: a name a template already has, in any case, is
+refused, and nothing changes. A book on a template needs no saving, since its
+changes are already in it.
 `apply none` takes a book off its template and keeps everything it has.
 Deleting a template does the same to every book on it. `list` marks with `*`
 the template the open chartbook is on, and says how many chartbooks use each.
 
 In the window these are the **Template** submenu on a chartbook tab's
-right-click menu: None, the templates, Save as Template… and Manage
+right-click menu: None, the templates and Save as New Template…, then Manage
 Templates….
 
 `chartbook duplicate` makes a copy beside a chartbook — the charts, their

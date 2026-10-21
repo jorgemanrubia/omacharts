@@ -188,7 +188,7 @@ pub const TEMPLATE_SELECTOR: &str =
 /// How a chartbook template is named on the command line.
 pub const BOOK_TEMPLATE_SELECTOR: &str =
     "a chartbook template's name, case-insensitive, or `id:N` when two of them share one; \
-     saving to a name nobody has makes one";
+     for save, a name no chartbook template has yet";
 
 /// How a chart is named on the command line.
 ///
@@ -714,20 +714,13 @@ pub const SURFACE: &[Noun] = &[
                 about: "Chartbook templates: a chartbook's layout and what each chart draws, under \
                         a name; every change to a chartbook on one reaches the others on it",
                 args: &[
-                    Arg::req("ACTION", "list them; save the chartbook as one; apply one, or \
+                    Arg::req("ACTION", "list them; save the chartbook as a new one; apply one, or \
                                         `none` to let go of it; rename or delete one")
                         .of(&["list", "save", "apply", "rename", "delete"]),
                     Arg::opt("TEMPLATE", BOOK_TEMPLATE_SELECTOR),
                     Arg::opt("NAME", "the new name, for rename"),
                 ],
-                flags: &[
-                    Flag::valued("book", "BOOK", "which chartbook (default: the open one)"),
-                    Flag::switch(
-                        "overwrite",
-                        "save over a chartbook template the chartbook is not on; \
-                         every chartbook on it changes to match",
-                    ),
-                ],
+                flags: &[Flag::valued("book", "BOOK", "which chartbook (default: the open one)")],
                 example: "omacharts chartbook template save Grid",
                 json: true,
                 writes: true,
