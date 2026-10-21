@@ -275,6 +275,8 @@ fn theme_group(context: &Rc<Context>) -> adw::PreferencesGroup {
     let system = omacharts_engine::theme::OMARCHY_ID;
     let themes = theming.themes();
     let mut ordered: Vec<&_> = themes.iter().filter(|t| t.id == system).collect();
+    // Off Omarchy there is no System to set apart.
+    let made_from = ordered.len();
     ordered.extend(themes.iter().filter(|t| t.id != system && t.source.is_editable()));
     let shipped_from = ordered.len();
     ordered.extend(themes.iter().filter(|t| t.id != system && !t.source.is_editable()));
@@ -287,7 +289,7 @@ fn theme_group(context: &Rc<Context>) -> adw::PreferencesGroup {
         .iter()
         .map(|t| if t.id == system { "System".to_string() } else { t.name.clone() })
         .collect();
-    let splits = vec![1, shipped_from];
+    let splits = vec![made_from, shipped_from];
     let following = theming.theme().name.clone();
     let is_system = theming.theme_id() == omacharts_engine::theme::OMARCHY_ID;
     let selected = ids.iter().position(|id| id == theming.theme_id()).unwrap_or(0);
@@ -366,8 +368,8 @@ fn build_charts_page(context: &Rc<Context>) {
     let window = context.window.clone();
     let line = footer.clone();
     apply.connect_clicked(move |_| {
-        window.apply_chart_defaults();
-        offer(&line, false);
+        let line = line.clone();
+        window.apply_chart_defaults(move || offer(&line, false));
     });
 
     // Every row writes through here: the defaults are saved as they change,

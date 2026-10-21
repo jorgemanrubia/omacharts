@@ -527,11 +527,11 @@ fn defaults_group(window: &Rc<Window>, dialog: &adw::PreferencesDialog) -> adw::
     let window = window.clone();
     let dialog = dialog.clone();
     button.connect_clicked(move |_| {
-        window.reset_chart_to_defaults();
         // Every row above was read off the chart as it was; reopening is how
-        // they come to read it as it is.
+        // they come to read it as it is, once it is settled.
         dialog.close();
-        window.open_chart_settings();
+        let again = window.clone();
+        window.reset_chart_to_defaults(move || again.open_chart_settings());
     });
     row.add_suffix(&button);
     row.set_activatable_widget(Some(&button));
@@ -1172,8 +1172,10 @@ enum Panel {
     Subpage(adw::PreferencesDialog),
     /// A dialog of its own, with one button that adds the indicator. Used by
     /// the add path, which can start from the chart with no settings window
-    /// open at all, so there is nothing to push a page onto.
-    Add,
+    /// open at all, so there is nothing to push a page onto. With the
+    /// template the chart was on before the indicator went onto it, to go
+    /// back onto if it is never added.
+    Add(Option<u32>),
 }
 
 /// One indicator's settings.
@@ -1213,7 +1215,7 @@ fn open_indicator_panel_for(owner: &Rc<Owner>, refresh: &Refresh, id: u32, panel
             dialog.push_subpage(&subpage);
             focus_first_parameter(&page);
         }
-        Panel::Add => {
+        Panel::Add(was_on) => {
             let modal = adw::Dialog::new();
             modal.set_title(&indicator.label());
             modal.set_content_width(560);
@@ -1261,9 +1263,16 @@ fn open_indicator_panel_for(owner: &Rc<Owner>, refresh: &Refresh, id: u32, panel
                 if added.get() {
                     return;
                 }
-                let kept: Vec<Indicator> =
-                    owner_for_close.indicators().into_iter().filter(|i| i.id != id).collect();
-                owner_for_close.set_indicators(kept);
+                let back = was_on.filter(|template| {
+                    owner_for_close.app.templates().iter().any(|t| t.id == *template)
+                });
+                if back.is_some() {
+                    owner_for_close.app.set_template(back);
+                } else {
+                    let kept: Vec<Indicator> =
+                        owner_for_close.indicators().into_iter().filter(|i| i.id != id).collect();
+                    owner_for_close.set_indicators(kept);
+                }
                 refresh_for_close.run();
             });
 
@@ -2561,6 +2570,12 @@ fn pick_indicator(owner: &Rc<Owner>, refresh: &Refresh) {
         let at = row.index().max(0) as usize;
         let Some(kind) = shown.borrow().get(at).copied() else { return };
         let id = owner_for_pick.next_indicator_id();
+        // Putting it on takes a chart off its template; not adding it after
+        // all puts the chart back.
+        let was_on = match owner_for_pick.template {
+            None => owner_for_pick.app.focused_template(),
+            Some(_) => None,
+        };
         let mut indicators = owner_for_pick.indicators();
         indicators.push(Indicator::new(id, kind));
         owner_for_pick.set_indicators(indicators);
@@ -2568,7 +2583,7 @@ fn pick_indicator(owner: &Rc<Owner>, refresh: &Refresh) {
         dialog_for_pick.close();
         // Straight into its settings: picking the kind and setting it up are
         // two steps, and the second is where you say whether you meant it.
-        open_indicator_panel_for(&owner_for_pick, &refresh_for_pick, id, Panel::Add);
+        open_indicator_panel_for(&owner_for_pick, &refresh_for_pick, id, Panel::Add(was_on));
     });
 
     // What Enter does in the box, from anywhere in the dialog — including the

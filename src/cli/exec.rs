@@ -147,7 +147,18 @@ pub fn dispatch(
             charts_verb(store, noun, verb, m, json)
         }
 
-        ("template", _) => template_verb(store, verb, m, json),
+        ("template", _) => {
+            let outcome = template_verb(store, verb, m, json);
+            // A new name touches no chart, only the header of one showing it,
+            // so the window is told that rather than rebuilt.
+            if outcome.is_ok()
+                && verb == "rename"
+                && let Some(live) = live
+            {
+                live.adopt_header();
+            }
+            outcome
+        }
 
         ("provider", "list") => provider_list(store, json),
         ("provider", "status") => provider_status(store, live, json),
@@ -1430,7 +1441,6 @@ fn chart_set(
             chart["indicators"] = to_value(&template.indicators)?;
             changed.push(format!("chart template {:?}", template.name));
         }
-        // Letting go keeps what the template was showing, as the chart's own.
         // None is the empty set: the chart shows no indicators.
         Some(None) => {
             chart["template"] = Value::Null;
@@ -3086,10 +3096,9 @@ fn template_verb(
     m: &clap::ArgMatches,
     as_json: bool,
 ) -> Result<String, Fault> {
-    let mut workspace = Workspace::load(store);
     let text = match verb {
-        "list" => return template_list(store, &workspace, as_json),
-        "indicator" => return template_indicator(store, m, as_json, &mut workspace),
+        "list" => return template_list(store, &Workspace::load(store), as_json),
+        "indicator" => return template_indicator(store, m, as_json, &mut Workspace::load(store)),
         "default" => return template_default(store, m, as_json),
         "create" => {
             let name = template_name(m, "NAME")?;
@@ -3107,6 +3116,7 @@ fn template_verb(
             crate::templates::delete(store, template.id);
             // Nothing disappears from a chart: each one keeps what the
             // template was showing it, as its own.
+            let mut workspace = Workspace::load(store);
             let kept = follow_template(&mut workspace, template.id, None);
             workspace.save(store);
             match kept {
@@ -3743,6 +3753,13 @@ fn config_set(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<Stri
         let value = crate::header::spell(&parts);
         let text = format!("every chart's header shows {value}");
         return said(as_json, json!({"key": key, "value": value}), text);
+    }
+    // The templates themselves are a document `template` keeps, with the
+    // charts on them holding copies; written raw, the charts would not follow.
+    if key == crate::templates::SETTING {
+        return Err(Fault::usage(
+            "chart templates are changed with `omacharts template …`, not `config set`".into(),
+        ));
     }
     if key == crate::chart_defaults::SETTING_TEMPLATE {
         let (value, text) = default_template(store, value)?;

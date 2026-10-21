@@ -416,7 +416,7 @@ impl ChartPane {
     /// the same step, so their names line up rather than only the top-left
     /// one moving.
     pub fn set_start_clearance(&self, clearance: i32) {
-        if let Some(legend) = self.symbol_button.parent().and_then(|bar| bar.parent()) {
+        if let Some(legend) = self.header_row.parent() {
             legend.set_margin_start(LEGEND_MARGIN + clearance);
         }
     }

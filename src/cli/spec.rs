@@ -898,7 +898,7 @@ pub const SURFACE: &[Noun] = &[
                 example: "omacharts template create Swing",
                 json: true,
                 writes: true,
-                workspace: true,
+                workspace: false,
             },
             Verb {
                 name: "rename",
@@ -908,7 +908,7 @@ pub const SURFACE: &[Noun] = &[
                 example: "omacharts template rename Default Everyday",
                 json: true,
                 writes: true,
-                workspace: true,
+                workspace: false,
             },
             Verb {
                 name: "delete",

@@ -53,10 +53,10 @@ fn read(store: &Store) -> Stored {
         .setting(SETTING)
         .and_then(|json| serde_json::from_str(&json).ok())
         .unwrap_or_default();
-    // A value written by hand, or by a `config set`, may not carry a counter
+    // A value written by hand, or restored from a backup, may not carry a counter
     // that clears what it holds.
     let highest = stored.templates.iter().map(|t| t.id).max().unwrap_or(0);
-    stored.next_id = stored.next_id.max(highest + 1);
+    stored.next_id = stored.next_id.max(highest.saturating_add(1));
     stored
 }
 

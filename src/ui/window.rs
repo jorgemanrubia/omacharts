@@ -4942,10 +4942,15 @@ impl Window {
         // beside the symbol that stands in for it. Mapped rather than
         // visible: the strip is hidden by its row stepping aside, and only
         // the map state reaches down through the row to the strip itself.
+        // And with neither, on a header that leaves the resolution out, to
+        // the chart itself.
         let pane = self.focused_pane();
-        match pane.strip.is_mapped() {
-            true => popover.set_parent(&pane.strip),
-            false => popover.set_parent(&pane.timeframe_menu),
+        if pane.strip.is_mapped() {
+            popover.set_parent(&pane.strip);
+        } else if pane.timeframe_menu.is_mapped() {
+            popover.set_parent(&pane.timeframe_menu);
+        } else {
+            popover.set_parent(&pane.view.area);
         }
         // Every number typed builds a fresh one, so each has to let go of the
         // strip when it closes or they pile up on it.
@@ -6831,21 +6836,88 @@ impl Window {
     }
 
     /// Put the focused chart back to what a new chart opens with.
-    pub fn reset_chart_to_defaults(self: &Rc<Self>) {
+    /// The template is chosen the way any other choice of it is, asking first
+    /// when that would drop indicators of the chart's own; `done` runs once
+    /// that is settled either way.
+    pub fn reset_chart_to_defaults(self: &Rc<Self>, done: impl Fn() + 'static) {
         let defaults = ChartDefaults::load(&self.store);
         let pane = self.focused_pane();
-        self.adopt_defaults(&pane, &defaults);
+        self.adopt_looks(&pane, &defaults);
         self.sync_chart_actions(&pane);
         self.redraw_current();
         self.save_workspace();
+        self.choose_template(defaults.template, done);
     }
 
-    /// Every chart, in every chartbook, to what a new chart opens with.
-    pub fn apply_chart_defaults(self: &Rc<Self>) {
+    /// Every chart, in every chartbook, to what a new chart opens with,
+    /// asking first when charts would lose indicators of their own; `applied`
+    /// runs only if it went ahead.
+    pub fn apply_chart_defaults(self: &Rc<Self>, applied: impl Fn() + 'static) {
         let defaults = ChartDefaults::load(&self.store);
+        let templates = self.templates();
+        let chosen = defaults.template.and_then(|id| templates.iter().find(|t| t.id == id));
+        // The same test as choosing a template for one chart: a chart on a
+        // template, or showing exactly what some template holds, has nothing
+        // of its own to lose.
+        let loses = |template: Option<u32>, indicators: &[Indicator]| {
+            template.is_none()
+                && !indicators.is_empty()
+                && !templates.iter().any(|t| t.indicators == indicators)
+        };
+        let active = self.active.get();
+        let on_screen = self
+            .panes
+            .borrow()
+            .iter()
+            .filter(|pane| loses(pane.template.get(), &pane.indicators.borrow()))
+            .count();
+        let elsewhere: usize = self
+            .books
+            .borrow()
+            .iter()
+            .enumerate()
+            .filter(|(at, _)| *at != active)
+            .map(|(_, book)| {
+                book.panes.iter().filter(|stored| loses(stored.template, &stored.indicators)).count()
+            })
+            .sum();
+        let count = on_screen + elsewhere;
+        if count == 0 {
+            self.apply_chart_defaults_now(&defaults);
+            applied();
+            return;
+        }
+        let charts = match count {
+            1 => "One chart has indicators of its own".to_string(),
+            n => format!("{n} charts have indicators of their own"),
+        };
+        let body = match chosen {
+            Some(chosen) => format!(
+                "{charts}, which will be replaced by the indicators of \u{201c}{}\u{201d}.",
+                chosen.name
+            ),
+            None => format!("{charts}, which will be removed."),
+        };
+        let dialog = adw::AlertDialog::new(Some("Apply to All Charts?"), Some(&body));
+        dialog.add_response("cancel", "Cancel");
+        dialog.add_response("apply", "Apply to All Charts");
+        dialog.set_response_appearance("apply", adw::ResponseAppearance::Destructive);
+        dialog.set_default_response(Some("cancel"));
+        dialog.set_close_response("cancel");
+        let this = self.clone();
+        dialog.connect_response(None, move |_, response| {
+            if response == "apply" {
+                this.apply_chart_defaults_now(&ChartDefaults::load(&this.store));
+                applied();
+            }
+        });
+        dialog.present(Some(&self.window));
+    }
+
+    fn apply_chart_defaults_now(self: &Rc<Self>, defaults: &ChartDefaults) {
         let panes = self.panes.borrow().clone();
         for pane in &panes {
-            self.adopt_defaults(pane, &defaults);
+            self.adopt_defaults(pane, defaults);
         }
         // The books not on screen are only written down, so they are changed
         // where they are written.
@@ -6880,6 +6952,12 @@ impl Window {
     /// One chart to the defaults, drawn as it now is. Drawings move the way
     /// the switches in its own settings move them.
     fn adopt_defaults(self: &Rc<Self>, pane: &Rc<ChartPane>, defaults: &ChartDefaults) {
+        self.adopt_looks(pane, defaults);
+        self.put_on_template(pane, defaults.template);
+    }
+
+    /// Everything of the defaults but the template.
+    fn adopt_looks(self: &Rc<Self>, pane: &Rc<ChartPane>, defaults: &ChartDefaults) {
         pane.bar_style.set(defaults.bar_style);
         pane.view.set_bar_style(defaults.bar_style);
         pane.colouring.set(defaults.colouring);
@@ -6891,7 +6969,6 @@ impl Window {
         pane.view.set_price_log(defaults.log_scale);
         self.set_pane_shows_drawings(pane, defaults.shows_drawings);
         self.set_pane_sends_drawings(pane, defaults.sends_drawings);
-        self.put_on_template(pane, defaults.template);
     }
 
     /// Right-clicking the chart offers the things you change most, and a way
@@ -8242,11 +8319,6 @@ impl Window {
 
     pub fn indicators(&self) -> Vec<Indicator> {
         self.focused_pane().indicators.borrow().clone()
-    }
-
-    /// An id nothing on the chart is using.
-    pub fn next_indicator_id(&self) -> u32 {
-        self.focused_pane().indicators.borrow().iter().map(|i| i.id).max().unwrap_or(0) + 1
     }
 
     /// Open the chart on the symbol last looked at, or — the first time ever —

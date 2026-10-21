@@ -52,16 +52,31 @@ pub fn target(
     // Read the payload while it is over us rather than only on the drop, so
     // the line can say where this particular thing would land.
     target.set_preload(true);
+    // Where it lands depends on what is dragged and onto what, never on where
+    // over the widget the pointer is, so it is worked out once per hover
+    // rather than on every motion: `landing` may read the store.
+    let landed: std::rc::Rc<std::cell::Cell<Option<Option<Edge>>>> = Default::default();
     let marked = widget.clone();
+    let worked_out = landed.clone();
     target.connect_motion(move |target, _, _| {
-        let at = target.value().as_ref().and_then(&landing);
-        mark(&marked, at);
+        if worked_out.get().is_none()
+            && let Some(value) = target.value()
+        {
+            let at = landing(&value);
+            worked_out.set(Some(at));
+            mark(&marked, at);
+        }
         gtk::gdk::DragAction::MOVE
     });
     let marked = widget.clone();
-    target.connect_leave(move |_| mark(&marked, None));
+    let forgotten = landed.clone();
+    target.connect_leave(move |_| {
+        forgotten.set(None);
+        mark(&marked, None);
+    });
     let marked = widget;
     target.connect_drop(move |_, value, _, _| {
+        landed.set(None);
         mark(&marked, None);
         drop(value)
     });
