@@ -311,7 +311,7 @@ fn build_charts_page(context: &Rc<Context>) {
     // appears.
     let footer = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     footer.set_halign(gtk::Align::End);
-    footer.set_margin_top(24);
+    footer.set_margin_top(36);
     let note = gtk::Label::new(Some("New charts will use these options."));
     note.add_css_class("dim-label");
     let apply = gtk::Button::with_label("Apply to all charts now");
