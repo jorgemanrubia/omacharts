@@ -1315,6 +1315,13 @@ fn chart_set(
                 .ok_or_else(|| Fault::usage(format!("{text:?} is not a bar style")))?,
         ),
     };
+    let colouring = match arg(m, "colouring") {
+        None => None,
+        Some(text) => Some(
+            omacharts_engine::BarColouring::from_key(text)
+                .ok_or_else(|| Fault::usage(format!("{text:?} is not a bar colouring")))?,
+        ),
+    };
     let session = match arg(m, "session") {
         None => None,
         Some(text) => Some(
@@ -1358,6 +1365,10 @@ fn chart_set(
     if let Some(style) = style {
         chart["bar_style"] = json!(style.key());
         changed.push(format!("style {}", style.key()));
+    }
+    if let Some(colouring) = colouring {
+        chart["colouring"] = json!(colouring.key());
+        changed.push(format!("colouring {}", colouring.key()));
     }
     if let Some(session) = session {
         chart["session"] = json!(session.key());
@@ -2925,6 +2936,7 @@ fn pane_json(pane: &Value) -> String {
         "display": spell(pane["symbol"].as_str().unwrap_or(""), pane["suffix"].as_str()),
         "resolution": pane["timeframe"],
         "style": pane["bar_style"],
+        "colouring": pane["colouring"],
         "session": pane["session"],
         "grid": pane["show_grid"],
         // Missing from a chart stored before it was remembered, and every one

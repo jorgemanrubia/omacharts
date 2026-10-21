@@ -5,6 +5,7 @@
 
 pub mod bar_plugin;
 pub mod cache;
+pub mod chart_defaults;
 pub mod cli;
 pub mod feeds;
 pub mod inventory;

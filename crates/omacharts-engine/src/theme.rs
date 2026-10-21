@@ -17,6 +17,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::bars::BarStyle;
+
 /// Which way the platform stylesheet should lean.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -402,6 +404,10 @@ pub struct BarScheme {
     pub volume_down: String,
     /// Used when open == close.
     pub neutral: String,
+    /// The one colour monochrome bars are drawn in. Empty until somebody
+    /// sets it, when it is worked out from the theme's text.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub mono: String,
 }
 
 impl BarScheme {
@@ -449,15 +455,17 @@ pub enum BarSlot {
     Down,
     DownFill,
     Neutral,
+    Mono,
 }
 
 impl BarSlot {
-    pub const ALL: [BarSlot; 5] = [
+    pub const ALL: [BarSlot; 6] = [
         BarSlot::Up,
         BarSlot::UpFill,
         BarSlot::Down,
         BarSlot::DownFill,
         BarSlot::Neutral,
+        BarSlot::Mono,
     ];
 
     pub fn label(self) -> &'static str {
@@ -467,6 +475,7 @@ impl BarSlot {
             BarSlot::Down => "Down outline",
             BarSlot::DownFill => "Down body",
             BarSlot::Neutral => "No change",
+            BarSlot::Mono => "Monochrome",
         }
     }
 
@@ -477,6 +486,7 @@ impl BarSlot {
             BarSlot::Down => &s.down,
             BarSlot::DownFill => &s.down_fill,
             BarSlot::Neutral => &s.neutral,
+            BarSlot::Mono => &s.mono,
         }
     }
 
@@ -487,6 +497,7 @@ impl BarSlot {
             BarSlot::Down => &mut s.down,
             BarSlot::DownFill => &mut s.down_fill,
             BarSlot::Neutral => &mut s.neutral,
+            BarSlot::Mono => &mut s.mono,
         };
         *field = hex;
     }
@@ -649,19 +660,29 @@ fn daylight() -> Theme {
 /// theme supplies green and rose, so candles shift with it instead of staying
 /// a fixed pair of hexes that clash with half the themes available.
 pub fn theme_bars(theme: &Theme) -> BarScheme {
-    if let Some(bars) = &theme.bars {
+    let mut bars = match &theme.bars {
         // Volume follows the candles rather than being stored beside them:
         // its colours belong to the volume indicator, and unset they are
         // these, dimmed.
-        return BarScheme {
+        Some(bars) => BarScheme {
             id: THEME_BARS_ID.to_string(),
             name: "Filled".to_string(),
             source: Source::BuiltIn,
             volume_up: mix(&bars.up, &theme.ui.background, 0.45),
             volume_down: mix(&bars.down, &theme.ui.background, 0.45),
             ..bars.clone()
-        };
+        },
+        None => palette_bars(theme),
+    };
+    if bars.mono.is_empty() {
+        bars.mono = derived_mono(theme, &bars.up, &bars.down);
     }
+    bars
+}
+
+/// Candles from the palette's green and rose, for a theme nobody has set
+/// candle colours on.
+fn palette_bars(theme: &Theme) -> BarScheme {
     let up = theme
         .swatch("Green")
         .map(|s| s.hex.clone())
@@ -681,7 +702,15 @@ pub fn theme_bars(theme: &Theme) -> BarScheme {
         up,
         down,
         neutral: theme.ui.text_muted.clone(),
+        mono: String::new(),
     }
+}
+
+/// The theme's text, held to a contrast a whole price series can be read in
+/// and kept clear of the direction colours.
+fn derived_mono(theme: &Theme, up: &str, down: &str) -> String {
+    let ink = held_to(&theme.ui.text, &theme.ui.background, MONO_CONTRAST, Some(MONO_CHROMA));
+    set_apart(&ink, &[up, down], &theme.ui.background, MONO_CONTRAST, MONO_APART)
 }
 
 /// What a monochrome bar is held to against the chart behind it.
@@ -798,14 +827,7 @@ pub fn theme_red_up_bars(theme: &Theme) -> BarScheme {
 /// which way the bar went without reference to colour.
 pub fn theme_mono_bars(theme: &Theme) -> BarScheme {
     let coloured = theme_bars(theme);
-    let ink = held_to(&theme.ui.text, &theme.ui.background, MONO_CONTRAST, Some(MONO_CHROMA));
-    let ink = set_apart(
-        &ink,
-        &[&coloured.up, &coloured.down],
-        &theme.ui.background,
-        MONO_CONTRAST,
-        MONO_APART,
-    );
+    let ink = coloured.mono.clone();
     BarScheme {
         id: THEME_MONO_ID.to_string(),
         name: "Monochrome".to_string(),
@@ -819,7 +841,83 @@ pub fn theme_mono_bars(theme: &Theme) -> BarScheme {
         up_fill: ink.clone(),
         down: ink.clone(),
         down_fill: ink.clone(),
-        neutral: ink,
+        neutral: ink.clone(),
+        mono: ink,
+    }
+}
+
+/// How a chart paints the theme's candle colours. The colours are the
+/// theme's; this is only what is done with them, and it belongs to the chart.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum BarColouring {
+    #[default]
+    Filled,
+    Hollow,
+    RedUp,
+    Monochrome,
+}
+
+impl BarColouring {
+    pub const ALL: [BarColouring; 4] =
+        [BarColouring::Filled, BarColouring::Hollow, BarColouring::RedUp, BarColouring::Monochrome];
+
+    /// The scheme id it is stored under, the same ids the settings have
+    /// always held.
+    pub fn key(self) -> &'static str {
+        match self {
+            BarColouring::Filled => THEME_BARS_ID,
+            BarColouring::Hollow => THEME_HOLLOW_ID,
+            BarColouring::RedUp => THEME_RED_UP_ID,
+            BarColouring::Monochrome => THEME_MONO_ID,
+        }
+    }
+
+    /// Schemes that used to carry colours of their own come back as the
+    /// theme's colours painted the same way; anything else unknown is not a
+    /// colouring.
+    pub fn from_key(key: &str) -> Option<BarColouring> {
+        match key {
+            "hollow" => Some(BarColouring::Hollow),
+            "monochrome" => Some(BarColouring::Monochrome),
+            key => BarColouring::ALL.into_iter().find(|c| c.key() == key),
+        }
+    }
+
+    /// An OHLC bar has no body to fill or leave hollow, so filled is simply
+    /// "coloured" there.
+    pub fn label(self, style: BarStyle) -> &'static str {
+        match self {
+            BarColouring::Filled if style == BarStyle::Ohlc => "Coloured",
+            BarColouring::Filled => "Filled",
+            BarColouring::Hollow => "Hollow",
+            BarColouring::RedUp => "Red up",
+            BarColouring::Monochrome => "Monochrome",
+        }
+    }
+
+    /// What a bar of this style can be painted as.
+    pub fn offered(style: BarStyle) -> &'static [BarColouring] {
+        match style {
+            BarStyle::Candles => &BarColouring::ALL,
+            BarStyle::Ohlc => {
+                &[BarColouring::Filled, BarColouring::RedUp, BarColouring::Monochrome]
+            }
+        }
+    }
+
+    /// What a bar of this style is actually painted as: hollow means nothing
+    /// to an OHLC bar, which draws it coloured.
+    pub fn for_style(self, style: BarStyle) -> BarColouring {
+        if BarColouring::offered(style).contains(&self) { self } else { BarColouring::Filled }
+    }
+
+    pub fn scheme(self, theme: &Theme) -> BarScheme {
+        match self {
+            BarColouring::Filled => theme_bars(theme),
+            BarColouring::Hollow => theme_hollow_bars(theme),
+            BarColouring::RedUp => theme_red_up_bars(theme),
+            BarColouring::Monochrome => theme_mono_bars(theme),
+        }
     }
 }
 

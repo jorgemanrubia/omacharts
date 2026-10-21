@@ -14,11 +14,13 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
+use omacharts_engine::{BarColouring, BarStyle, Session};
 use omacharts_engine::theme::{
     theme_bars, BarSlot, UiSlot, FALLBACK_THEME_ID, OMARCHY_ID, SWATCH_NAMES,
 };
 
 use crate::cache;
+use crate::chart_defaults::ChartDefaults;
 use crate::store::Store;
 use crate::theming::Theming;
 use crate::ui::colors;
@@ -34,9 +36,12 @@ struct Context {
     /// window — every chart offers the same resolutions — so it is edited
     /// there and merely reached from here.
     on_edit_resolutions: Rc<dyn Fn()>,
+    /// Puts every chart to the defaults on the Charts page.
+    on_apply_chart_defaults: Rc<dyn Fn()>,
     page: adw::PreferencesPage,
     general_page: adw::PreferencesPage,
     charts_page: adw::PreferencesPage,
+    charts_other_page: adw::PreferencesPage,
     data_page: adw::PreferencesPage,
     groups: RefCell<Vec<adw::PreferencesGroup>>,
 }
@@ -48,6 +53,7 @@ impl Preferences {
         theming: Rc<RefCell<Theming>>,
         on_change: Rc<dyn Fn()>,
         on_edit_resolutions: Rc<dyn Fn()>,
+        on_apply_chart_defaults: Rc<dyn Fn()>,
     ) {
         let dialog = adw::Dialog::new();
         dialog.set_title("Preferences");
@@ -65,11 +71,17 @@ impl Preferences {
         let data_page = adw::PreferencesPage::new();
 
         // General first: what the app does, before what it looks like.
-        let sections = [
-            ("General", "preferences-system-symbolic", &general_page),
-            ("Charts", "utilities-system-monitor-symbolic", &charts_page),
-            ("Theme", "applications-graphics-symbolic", &page),
-            ("Data", "network-server-symbolic", &data_page),
+        // Charts is two things: what a new chart opens with, and the rest.
+        let charts_other_page = adw::PreferencesPage::new();
+        let charts = gtk::Stack::new();
+        charts.add_titled(&charts_page, Some("defaults"), "Defaults");
+        charts.add_titled(&charts_other_page, Some("other"), "Other");
+
+        let sections: [(&str, &str, gtk::Widget); 4] = [
+            ("General", "preferences-system-symbolic", general_page.clone().upcast()),
+            ("Charts", "utilities-system-monitor-symbolic", charts.upcast()),
+            ("Theme", "applications-graphics-symbolic", page.clone().upcast()),
+            ("Data", "network-server-symbolic", data_page.clone().upcast()),
         ];
         dialog.set_child(Some(&split_view(&dialog, &sections)));
 
@@ -78,9 +90,11 @@ impl Preferences {
             theming,
             on_change,
             on_edit_resolutions,
+            on_apply_chart_defaults,
             page,
             general_page,
             charts_page,
+            charts_other_page,
             data_page,
             groups: RefCell::new(Vec::new()),
         });
@@ -100,13 +114,23 @@ impl Preferences {
 /// the sidebar in place.
 fn split_view(
     dialog: &adw::Dialog,
-    sections: &[(&str, &str, &adw::PreferencesPage)],
+    sections: &[(&str, &str, gtk::Widget)],
 ) -> adw::NavigationSplitView {
     let content = adw::NavigationView::new();
-    let section_page = |(title, _, page): &(&str, &str, &adw::PreferencesPage)| {
+    // A section with tabs of its own shows them in its header, where the
+    // title would be.
+    let section_page = |(title, _, page): &(&str, &str, gtk::Widget)| {
+        let header = adw::HeaderBar::new();
+        // Words alone: a switcher that insists on an icon per tab draws a
+        // placeholder for every tab that has none.
+        if let Some(stack) = page.downcast_ref::<gtk::Stack>() {
+            let switcher = gtk::StackSwitcher::new();
+            switcher.set_stack(Some(stack));
+            header.set_title_widget(Some(&switcher));
+        }
         let toolbar = adw::ToolbarView::new();
-        toolbar.add_top_bar(&adw::HeaderBar::new());
-        toolbar.set_content(Some(*page));
+        toolbar.add_top_bar(&header);
+        toolbar.set_content(Some(page));
         adw::NavigationPage::new(&toolbar, title)
     };
 
@@ -259,35 +283,151 @@ fn theme_group(context: &Rc<Context>) -> adw::PreferencesGroup {
     group
 }
 
-/// How candles are painted from the theme's colours. The colours themselves
-/// are the theme's, edited on its page.
-fn bars_group(context: &Rc<Context>) -> adw::PreferencesGroup {
-    let group = adw::PreferencesGroup::new();
-    group.set_title("Bars");
+/// One edit to the defaults, as the rows on the Charts page make them.
+type Change = dyn Fn(&dyn Fn(&mut ChartDefaults));
 
-    let theming = context.theming.borrow();
-    let schemes = theming.bar_schemes();
-    let ids: Vec<String> = schemes.iter().map(|s| s.id.clone()).collect();
-    let names: Vec<String> = schemes.iter().map(|s| s.name.clone()).collect();
-    let selected = ids.iter().position(|id| *id == theming.bar_scheme().id).unwrap_or(0);
-    drop(theming);
+/// What a new chart opens with, and a way to give it to every chart there is.
+///
+/// Changing a row changes only what the next chart opens with: charts already
+/// open have settings of their own, and a preference that reached into them
+/// unasked would undo whatever was set on each. Apply to all is the asking.
+fn build_charts_page(context: &Rc<Context>) {
+    let defaults = Rc::new(std::cell::Cell::new(ChartDefaults::load(&context.store)));
 
-    let row = adw::ComboRow::new();
-    row.set_title("Bar style");
-    row.set_model(Some(&string_list(&names)));
-    row.set_selected(selected as u32);
+    // Grouped as a chart's own settings are, so a row is found in the same
+    // place in both.
+    let bars = adw::PreferencesGroup::new();
+    bars.set_title("Bars");
+    let scales = adw::PreferencesGroup::new();
+    scales.set_title("Scales");
+    let hours = adw::PreferencesGroup::new();
+    hours.set_title("Session");
+    let drawings = adw::PreferencesGroup::new();
+    drawings.set_title("Drawings");
 
-    let ctx = context.clone();
-    row.connect_selected_notify(move |row| {
-        let Some(id) = ids.get(row.selected() as usize) else { return };
-        ctx.theming.borrow_mut().select_bar_scheme(id, &ctx.store);
-        apply(&ctx);
+    // Once something has changed: what that did, and the offer to take it
+    // further than new charts, as one line under the last group. Faded rather
+    // than removed while there is nothing to say, so nothing moves when it
+    // appears.
+    let footer = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    footer.set_halign(gtk::Align::End);
+    footer.set_margin_top(24);
+    let note = gtk::Label::new(Some("New charts will use these options."));
+    note.add_css_class("dim-label");
+    let apply = gtk::Button::with_label("Apply to all charts now");
+    footer.append(&note);
+    footer.append(&apply);
+    let offer = |line: &gtk::Box, shown: bool| {
+        line.set_opacity(if shown { 1.0 } else { 0.0 });
+        line.set_sensitive(shown);
+        line.set_can_target(shown);
+    };
+    offer(&footer, false);
+    let on_apply = context.on_apply_chart_defaults.clone();
+    let line = footer.clone();
+    apply.connect_clicked(move |_| {
+        on_apply();
+        offer(&line, false);
     });
-    group.add(&row);
-    group
+
+    // Every row writes through here: the defaults are saved as they change,
+    // and the button to take them further appears.
+    let changed: Rc<Change> = {
+        let store = context.store.clone();
+        let defaults = defaults.clone();
+        let footer = footer.clone();
+        Rc::new(move |change| {
+            let mut next = defaults.get();
+            change(&mut next);
+            // Rows announce their value as they are drawn, too; only a real
+            // change is something to apply.
+            if next == defaults.get() {
+                return;
+            }
+            next.save(&store);
+            defaults.set(next);
+            offer(&footer, true);
+        })
+    };
+
+    let current = defaults.get();
+    let style = adw::ComboRow::new();
+    style.set_title("Style");
+    let names: Vec<&str> = BarStyle::ALL.iter().map(|s| s.label()).collect();
+    style.set_model(Some(&string_list(&names.iter().map(|n| n.to_string()).collect::<Vec<_>>())));
+    style.set_selected(BarStyle::ALL.iter().position(|s| *s == current.bar_style).unwrap_or(0) as u32);
+
+    let colouring = adw::ComboRow::new();
+    colouring.set_title("Colouring");
+    crate::ui::chart_settings::fill_colourings(&colouring, current.bar_style, current.colouring);
+
+    {
+        let changed = changed.clone();
+        let colouring = colouring.clone();
+        let defaults = defaults.clone();
+        style.connect_selected_notify(move |row| {
+            let Some(chosen) = BarStyle::ALL.get(row.selected() as usize).copied() else { return };
+            changed(&|d| d.bar_style = chosen);
+            crate::ui::chart_settings::fill_colourings(&colouring, chosen, defaults.get().colouring);
+        });
+    }
+    {
+        let changed = changed.clone();
+        let defaults = defaults.clone();
+        colouring.connect_selected_notify(move |row| {
+            let style = defaults.get().bar_style;
+            let Some(chosen) = BarColouring::offered(style).get(row.selected() as usize).copied()
+            else {
+                return;
+            };
+            if chosen != defaults.get().colouring.for_style(style) {
+                changed(&|d| d.colouring = chosen);
+            }
+        });
+    }
+    bars.add(&style);
+    bars.add(&colouring);
+
+    let session = adw::ComboRow::new();
+    session.set_title("Hours");
+    let sessions: Vec<String> = Session::ALL.iter().map(|s| s.label().to_string()).collect();
+    session.set_model(Some(&string_list(&sessions)));
+    session.set_selected(Session::ALL.iter().position(|s| *s == current.session).unwrap_or(0) as u32);
+    {
+        let changed = changed.clone();
+        session.connect_selected_notify(move |row| {
+            let Some(chosen) = Session::ALL.get(row.selected() as usize).copied() else { return };
+            changed(&|d| d.session = chosen);
+        });
+    }
+    hours.add(&session);
+
+    let switch = |title: &str, on: bool, set: fn(&mut ChartDefaults, bool)| {
+        let row = adw::SwitchRow::new();
+        row.set_title(title);
+        row.set_active(on);
+        let changed = changed.clone();
+        row.connect_active_notify(move |row| {
+            let on = row.is_active();
+            changed(&|d| set(d, on));
+        });
+        row
+    };
+    scales.add(&switch("Logarithmic scale", current.log_scale, |d, on| d.log_scale = on));
+    scales.add(&switch("Gridlines", current.show_grid, |d, on| d.show_grid = on));
+    drawings.add(&switch("Show drawings from other charts", current.shows_drawings, |d, on| {
+        d.shows_drawings = on
+    }));
+    drawings.add(&switch("Send drawings to other charts", current.sends_drawings, |d, on| {
+        d.sends_drawings = on
+    }));
+
+    drawings.add(&footer);
+    for group in [&bars, &scales, &hours, &drawings] {
+        context.charts_page.add(group);
+    }
 }
 
-/// "Duplicate" for things you cannot edit, "Delete" for the ones you can.
 /// A copy to make your own, for a theme you cannot edit in place.
 fn customize_row(context: &Rc<Context>) -> adw::ActionRow {
     let row = adw::ActionRow::new();
@@ -501,9 +641,9 @@ fn build_general_page(context: &Rc<Context>) {
     if let Some(group) = desktop_group() {
         context.general_page.add(&group);
     }
+    context.charts_other_page.add(&resolutions_group(context));
     context.general_page.add(&screenshots_group(context));
-    context.charts_page.add(&resolutions_group(context));
-    context.charts_page.add(&bars_group(context));
+    build_charts_page(context);
     build_data_page(context);
 }
 

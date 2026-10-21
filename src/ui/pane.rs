@@ -82,6 +82,8 @@ pub struct ChartPane {
     pub timeframe: Cell<Timeframe>,
     pub indicators: RefCell<Vec<Indicator>>,
     pub bar_style: Cell<BarStyle>,
+    /// How the theme's candle colours are painted on this chart.
+    pub colouring: Cell<omacharts_engine::BarColouring>,
     pub session: Cell<Session>,
     pub show_grid: Cell<bool>,
     pub linked: Cell<LinkGroup>,
@@ -302,6 +304,7 @@ impl ChartPane {
             timeframe: Cell::new(timeframe),
             indicators: RefCell::new(indicators),
             bar_style: Cell::new(bar_style),
+            colouring: Cell::new(Default::default()),
             session: Cell::new(session),
             show_grid: Cell::new(show_grid),
             linked: Cell::new(linked),

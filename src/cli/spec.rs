@@ -191,6 +191,9 @@ pub const CHART_SELECTOR: &str =
     "`pos:N`, counting from 0 in layout order, or a raw id from `chart list` \
      — prefer the position, which survives the window rebuilding";
 
+/// How a chart paints the theme's candle colours, spelled as the scheme ids
+/// the settings store.
+const COLOURINGS: &[&str] = &["theme", "theme-hollow", "theme-red-up", "theme-mono"];
 const STYLES: &[&str] = &["candles", "ohlc"];
 const SESSIONS: &[&str] = &["regular", "extended"];
 const SPLITS: &[&str] = &["horizontal", "vertical"];
@@ -726,6 +729,7 @@ pub const SURFACE: &[Noun] = &[
                     Flag::valued("suffix", "S", "its venue suffix, for a listing abroad"),
                     Flag::valued("resolution", "TF", "such as 5m, 1h, 1D, 1W, 1M, 1Y"),
                     Flag::valued("style", "STYLE", "how bars are drawn").of(STYLES),
+                    Flag::valued("colouring", "COLOURING", "how the theme's candle colours are painted").of(COLOURINGS),
                     Flag::valued("session", "SESSION", "which hours to include").of(SESSIONS),
                     Flag::valued("link", "GROUP", "the link group it joins and then leads, or `none` to leave one")
                         .of(LINKS),
@@ -1096,6 +1100,7 @@ const STORED_FIELDS: &[(&str, &str, &str)] = &[
     ("timeframe", "chart set", "--resolution"),
     ("indicators", "chart indicator", ""),
     ("bar_style", "chart set", "--style"),
+    ("colouring", "chart set", "--colouring"),
     ("session", "chart set", "--session"),
     ("show_grid", "chart set", "--grid"),
     ("linked", "chart set", "--link"),

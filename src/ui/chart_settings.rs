@@ -13,7 +13,7 @@ use omacharts_engine::indicators::{
     MIN_PANE_SHARE,
 };
 use omacharts_engine::theme::ColorChoice;
-use omacharts_engine::{BarStyle, Indicator, Session};
+use omacharts_engine::{BarColouring, BarStyle, Indicator, Session};
 
 use crate::store::Store;
 use crate::ui::colors;
@@ -21,8 +21,6 @@ use crate::ui::controls;
 use crate::ui::dialogs;
 use crate::ui::shortcuts;
 use crate::ui::window::Window;
-
-pub const SETTING_SESSION: &str = "chart_session";
 
 /// Where the dialog should land when it opens.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -61,8 +59,9 @@ impl ChartSettings {
         chart_page.set_icon_name(Some("preferences-system-symbolic"));
         chart_page.add(&bars_group(window, &store));
         chart_page.add(&scales_group(window));
-        chart_page.add(&session_group(window, &store));
+        chart_page.add(&session_group(window));
         chart_page.add(&drawings_group(window));
+        chart_page.add(&defaults_group(window, &dialog));
         dialog.add(&chart_page);
 
         let indicators_page = adw::PreferencesPage::new();
@@ -137,13 +136,32 @@ fn bars_group(window: &Rc<Window>, store: &Rc<Store>) -> adw::PreferencesGroup {
         BarStyle::ALL.iter().position(|s| *s == window.bar_style()).unwrap_or(0) as u32
     );
 
+    let colouring = adw::ComboRow::new();
+    colouring.set_title("Colouring");
+    fill_colourings(&colouring, window.bar_style(), window.bar_colouring());
+
     let window_for_style = window.clone();
+    let colouring_for_style = colouring.clone();
     row.connect_selected_notify(move |row| {
         if let Some(style) = BarStyle::ALL.get(row.selected() as usize).copied() {
             window_for_style.set_bar_style(style);
+            fill_colourings(&colouring_for_style, style, window_for_style.bar_colouring());
         }
     });
     group.add(&row);
+
+    let window_for_colouring = window.clone();
+    colouring.connect_selected_notify(move |row| {
+        let style = window_for_colouring.bar_style();
+        let Some(chosen) = BarColouring::offered(style).get(row.selected() as usize).copied()
+        else {
+            return;
+        };
+        if chosen != window_for_colouring.bar_colouring().for_style(style) {
+            window_for_colouring.set_bar_colouring(chosen);
+        }
+    });
+    group.add(&colouring);
 
     // One switch for the window rather than one per chart: it is about how the
     // charts behave towards each other, which is not a property of any one of
@@ -166,6 +184,40 @@ fn bars_group(window: &Rc<Window>, store: &Rc<Store>) -> adw::PreferencesGroup {
     sync.add_suffix(&switch);
     group.add(&sync);
 
+    group
+}
+
+/// Offer the colourings a bar of `style` can be painted in, with `current`
+/// selected — as an OHLC bar draws it, so a hollow chart turned into OHLC
+/// reads as coloured, which is what it shows.
+pub fn fill_colourings(row: &adw::ComboRow, style: BarStyle, current: BarColouring) {
+    let offered = BarColouring::offered(style);
+    let names: Vec<&str> = offered.iter().map(|c| c.label(style)).collect();
+    row.set_model(Some(&gtk::StringList::new(&names)));
+    let shown = current.for_style(style);
+    row.set_selected(offered.iter().position(|c| *c == shown).unwrap_or(0) as u32);
+}
+
+/// The way back to what a new chart opens with, for a chart that has wandered.
+fn defaults_group(window: &Rc<Window>, dialog: &adw::PreferencesDialog) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::new();
+    let row = adw::ActionRow::new();
+    row.set_title("Reset to defaults");
+    row.set_subtitle("Bars, session, scale and drawings as a new chart opens, set in Preferences");
+    let button = gtk::Button::with_label("Reset");
+    button.set_valign(gtk::Align::Center);
+    let window = window.clone();
+    let dialog = dialog.clone();
+    button.connect_clicked(move |_| {
+        window.reset_chart_to_defaults();
+        // Every row above was read off the chart as it was; reopening is how
+        // they come to read it as it is.
+        dialog.close();
+        window.open_chart_settings();
+    });
+    row.add_suffix(&button);
+    row.set_activatable_widget(Some(&button));
+    group.add(&row);
     group
 }
 
@@ -270,7 +322,7 @@ fn scales_group(window: &Rc<Window>) -> adw::PreferencesGroup {
     group
 }
 
-fn session_group(window: &Rc<Window>, store: &Rc<Store>) -> adw::PreferencesGroup {
+fn session_group(window: &Rc<Window>) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     group.set_title("Session");
 
@@ -283,11 +335,9 @@ fn session_group(window: &Rc<Window>, store: &Rc<Store>) -> adw::PreferencesGrou
     row.set_selected(Session::ALL.iter().position(|s| *s == session).unwrap_or(0) as u32);
 
     let window = window.clone();
-    let store = store.clone();
     row.connect_selected_notify(move |row| {
         let Some(chosen) = Session::ALL.get(row.selected() as usize).copied() else { return };
         window.set_session(chosen);
-        store.set_setting(SETTING_SESSION, chosen.key());
         window.refresh();
     });
 

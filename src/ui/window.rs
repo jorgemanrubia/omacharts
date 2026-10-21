@@ -20,7 +20,7 @@ use gtk::glib;
 use omacharts_engine::providers;
 use omacharts_engine::refresh;
 use omacharts_engine::{
-    resample, BarStyle, Delivery, FetchFailure, Indicator, Instrument, Provider, SearchIndex,
+    resample, BarColouring, BarStyle, Delivery, FetchFailure, Indicator, Instrument, Provider, SearchIndex,
     Session,
     Timeframe,
 };
@@ -28,6 +28,7 @@ use omacharts_engine::{
 use crate::live::{Change, Live, Series, Watching, Written};
 use crate::loader::{Loader, Request, Response, BACKFILL, BACKGROUND, FOREGROUND, REFRESH};
 use crate::store::{Store, DEFAULT_WATCHLIST};
+use crate::chart_defaults::ChartDefaults;
 use crate::theming::Theming;
 use crate::ui::chart::{Drawn, Echo};
 use crate::ui::pane::{self, ChartPane, Node};
@@ -482,6 +483,7 @@ mod tests {
                 timeframe: "1h".to_string(),
                 indicators: Vec::new(),
                 bar_style: "candle".to_string(),
+                colouring: None,
                 session: "extended".to_string(),
                 show_grid: true,
                 linked: LinkGroup::None,
@@ -552,6 +554,7 @@ mod tests {
             timeframe: "1D".to_string(),
             indicators: Vec::new(),
             bar_style: "candle".to_string(),
+                colouring: None,
             session: "extended".to_string(),
             show_grid: true,
             linked,
@@ -1231,8 +1234,6 @@ const MIN_CHARTS_WIDTH: i32 = 480;
 fn sidebar_room(total: i32) -> i32 {
     (total - MIN_CHARTS_WIDTH).clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH)
 }
-pub const SETTING_BAR_STYLE: &str = "bar_style";
-pub const SETTING_SHOW_GRID: &str = "show_grid";
 const SETTING_TIMEFRAMES: &str = "timeframes";
 /// The whole arrangement of charts, as one stored value.
 const SETTING_WORKSPACE: &str = "workspace";
@@ -1255,6 +1256,10 @@ struct StoredPane {
     timeframe: String,
     indicators: Vec<Indicator>,
     bar_style: String,
+    /// How the theme's candle colours are painted. Missing from a chart
+    /// written before charts were painted one by one.
+    #[serde(default)]
+    colouring: Option<String>,
     session: String,
     show_grid: bool,
     linked: LinkGroup,
@@ -1341,6 +1346,12 @@ struct Chartbook {
 struct Workspace {
     books: Vec<Chartbook>,
     active: usize,
+}
+
+/// What a chart's bars are painted in: the theme's candle colours, the way
+/// this chart paints them.
+fn pane_scheme(pane: &ChartPane, theme: &omacharts_engine::Theme) -> omacharts_engine::BarScheme {
+    pane.colouring.get().for_style(pane.bar_style.get()).scheme(theme)
 }
 
 /// A chart's local drawings get negative ids, below everything the store
@@ -1908,22 +1919,12 @@ impl Window {
         window.set_content(Some(&overlay));
 
         // The first chart. Everything else is a split of this one.
-        let first = this.new_pane(
+        let first = this.new_default_pane(
             store
                 .setting(LAST_TIMEFRAME)
                 .and_then(|k| Timeframe::parse(&k))
                 .unwrap_or(Timeframe::days(1)),
             store.indicators(),
-            store
-                .setting(SETTING_BAR_STYLE)
-                .and_then(|k| BarStyle::from_key(&k))
-                .unwrap_or_default(),
-            store
-                .setting(crate::ui::chart_settings::SETTING_SESSION)
-                .and_then(|k| Session::from_key(&k))
-                .unwrap_or_default(),
-            store.setting_bool(SETTING_SHOW_GRID, true),
-            LinkGroup::Group(1),
         );
         *this.layout.borrow_mut() = Node::leaf(first.id);
         this.focused.set(first.id);
@@ -1983,6 +1984,29 @@ impl Window {
 
     // -- panes -------------------------------------------------------------
 
+    /// A chart as a new one opens: the defaults from the preferences.
+    fn new_default_pane(
+        self: &Rc<Self>,
+        timeframe: Timeframe,
+        indicators: Vec<Indicator>,
+    ) -> Rc<ChartPane> {
+        let defaults = ChartDefaults::load(&self.store);
+        let pane = self.new_pane(
+            timeframe,
+            indicators,
+            defaults.bar_style,
+            defaults.colouring,
+            defaults.session,
+            defaults.show_grid,
+            LinkGroup::Group(1),
+        );
+        pane.view.set_price_log(defaults.log_scale);
+        pane.shows_drawings.set(defaults.shows_drawings);
+        pane.sends_drawings.set(defaults.sends_drawings);
+        pane.view.set_sends(defaults.sends_drawings);
+        pane
+    }
+
     /// Build a chart and wire it to this window. Not placed in the layout:
     /// the caller decides where it goes.
     #[allow(clippy::too_many_arguments)]
@@ -1991,6 +2015,7 @@ impl Window {
         timeframe: Timeframe,
         indicators: Vec<Indicator>,
         bar_style: BarStyle,
+        colouring: BarColouring,
         session: Session,
         show_grid: bool,
         linked: LinkGroup,
@@ -1998,13 +2023,12 @@ impl Window {
         let id = self.next_pane.get();
         self.next_pane.set(id + 1);
 
-        let (theme, scheme) = {
-            let t = self.theming.borrow();
-            (t.theme(), t.bar_scheme())
-        };
+        let theme = self.theming.borrow().theme();
+        let scheme = colouring.for_style(bar_style).scheme(&theme);
         let pane = ChartPane::new(
             id, theme, scheme, timeframe, indicators, bar_style, session, show_grid, linked,
         );
+        pane.colouring.set(colouring);
         pane.view.set_bar_style(bar_style);
         pane.view.set_show_grid(show_grid);
 
@@ -2337,6 +2361,7 @@ impl Window {
             from.timeframe.get(),
             from.indicators.borrow().clone(),
             from.bar_style.get(),
+            from.colouring.get(),
             from.session.get(),
             from.show_grid.get(),
             from.linked.get(),
@@ -2946,6 +2971,7 @@ impl Window {
                     timeframe: pane.timeframe.get().key(),
                     indicators: pane.indicators.borrow().clone(),
                     bar_style: pane.bar_style.get().key().to_string(),
+                    colouring: Some(pane.colouring.get().key().to_string()),
                     session: pane.session.get().key().to_string(),
                     show_grid: pane.show_grid.get(),
                     linked: pane.linked.get(),
@@ -3112,6 +3138,13 @@ impl Window {
                 Timeframe::parse(&stored.timeframe).unwrap_or(Timeframe::days(1)),
                 stored.indicators.clone(),
                 BarStyle::from_key(&stored.bar_style).unwrap_or_default(),
+                // A chart written before it had a colouring of its own was
+                // wearing the one every chart wore, which is the default's.
+                stored
+                    .colouring
+                    .as_deref()
+                    .and_then(BarColouring::from_key)
+                    .unwrap_or(ChartDefaults::load(&self.store).colouring),
                 Session::from_key(&stored.session).unwrap_or_default(),
                 stored.show_grid,
                 stored.linked,
@@ -3295,9 +3328,8 @@ impl Window {
     /// For a brand new chartbook, and for the one case a stored book cannot
     /// be rebuilt: either way the window has to end up with a chart in it.
     fn mount_single_chart(self: &Rc<Self>, instrument: Option<Instrument>) {
-        // Built like the chart you were looking at, and like the first chart
-        // of a fresh install when there was not one — the window can reach
-        // here with nothing on screen to copy.
+        // At the resolution you were looking at, so a new book does not jump
+        // back to daily; everything else is what a new chart opens with.
         let from = self.panes.borrow().iter().find(|p| p.id == self.focused.get()).cloned();
         let store = &self.store;
         let timeframe = from.as_ref().map(|p| p.timeframe.get()).unwrap_or_else(|| {
@@ -3306,22 +3338,6 @@ impl Window {
                 .and_then(|key| Timeframe::parse(&key))
                 .unwrap_or(Timeframe::days(1))
         });
-        let bar_style = from.as_ref().map(|p| p.bar_style.get()).unwrap_or_else(|| {
-            store
-                .setting(SETTING_BAR_STYLE)
-                .and_then(|key| BarStyle::from_key(&key))
-                .unwrap_or_default()
-        });
-        let session = from.as_ref().map(|p| p.session.get()).unwrap_or_else(|| {
-            store
-                .setting(crate::ui::chart_settings::SETTING_SESSION)
-                .and_then(|key| Session::from_key(&key))
-                .unwrap_or_default()
-        });
-        let show_grid = from
-            .as_ref()
-            .map(|p| p.show_grid.get())
-            .unwrap_or_else(|| store.setting_bool(SETTING_SHOW_GRID, true));
         self.release_all_panes();
         self.panes.borrow_mut().clear();
         self.maximized.set(None);
@@ -3330,14 +3346,7 @@ impl Window {
         // but a new chartbook is a fresh start, and inheriting whatever the
         // last chart happened to be carrying is how a VWAP you set up once
         // follows you around for the rest of the session.
-        let pane = self.new_pane(
-            timeframe,
-            Vec::new(),
-            bar_style,
-            session,
-            show_grid,
-            LinkGroup::Group(1),
-        );
+        let pane = self.new_default_pane(timeframe, Vec::new());
         *self.layout.borrow_mut() = Node::leaf(pane.id);
         self.focused.set(pane.id);
         self.rebuild_layout();
@@ -4686,16 +4695,16 @@ impl Window {
 
     /// Repaint with the current theme and bar scheme.
     pub fn restyle(self: &Rc<Self>) {
-        let (theme, scheme) = {
+        let theme = {
             let mut theming = self.theming.borrow_mut();
             theming.apply();
-            (theming.theme(), theming.bar_scheme())
+            theming.theme()
         };
         if let Some(bar) = self.drawing_bar.borrow().as_ref() {
             bar.restyle();
         }
         for pane in self.panes.borrow().iter() {
-            pane.view.restyle(theme.clone(), scheme.clone());
+            pane.view.restyle(theme.clone(), pane_scheme(pane, &theme));
             // The group is the number and the colour is the theme's answer
             // about it, which has just changed.
             let group = pane.linked.get();
@@ -4879,6 +4888,7 @@ impl Window {
     fn open_preferences(self: &Rc<Self>) {
         let this = self.clone();
         let editor = self.clone();
+        let applier = self.clone();
         Preferences::present(
             &self.window,
             self.store.clone(),
@@ -4890,6 +4900,7 @@ impl Window {
                 this.adopt_feed();
             }),
             Rc::new(move || editor.edit_timeframes()),
+            Rc::new(move || applier.apply_chart_defaults()),
         );
     }
 
@@ -6303,8 +6314,6 @@ impl Window {
         let pane = self.focused_pane();
         pane.show_grid.set(show);
         pane.view.set_show_grid(show);
-        // What this chart is doing now is also what the next one opens with.
-        self.store.set_setting_bool(SETTING_SHOW_GRID, show);
         // The menu's tick, for when the answer came from the key or from the
         // settings dialog rather than from the menu itself.
         self.sync_chart_actions(&pane);
@@ -6351,9 +6360,81 @@ impl Window {
     }
 
     pub fn set_bar_style(self: &Rc<Self>, style: BarStyle) {
-        self.focused_pane().bar_style.set(style);
-        self.store.set_setting(SETTING_BAR_STYLE, style.key());
-        self.focused_pane().view.set_bar_style(style);
+        let pane = self.focused_pane();
+        pane.bar_style.set(style);
+        pane.view.set_bar_style(style);
+        // What the colouring paints depends on the style: hollow is coloured
+        // on an OHLC bar.
+        pane.view.restyle(self.theme(), pane_scheme(&pane, &self.theme()));
+        self.save_workspace();
+    }
+
+    pub fn bar_colouring(&self) -> BarColouring {
+        self.focused_pane().colouring.get()
+    }
+
+    pub fn set_bar_colouring(self: &Rc<Self>, colouring: BarColouring) {
+        let pane = self.focused_pane();
+        pane.colouring.set(colouring);
+        pane.view.restyle(self.theme(), pane_scheme(&pane, &self.theme()));
+        self.save_workspace();
+    }
+
+    /// Put the focused chart back to what a new chart opens with.
+    pub fn reset_chart_to_defaults(self: &Rc<Self>) {
+        let defaults = ChartDefaults::load(&self.store);
+        let pane = self.focused_pane();
+        self.adopt_defaults(&pane, &defaults);
+        self.sync_chart_actions(&pane);
+        self.redraw_current();
+        self.save_workspace();
+    }
+
+    /// Every chart, in every chartbook, to what a new chart opens with.
+    pub fn apply_chart_defaults(self: &Rc<Self>) {
+        let defaults = ChartDefaults::load(&self.store);
+        let panes = self.panes.borrow().clone();
+        for pane in &panes {
+            self.adopt_defaults(pane, &defaults);
+        }
+        // The books not on screen are only written down, so they are changed
+        // where they are written.
+        let active = self.active.get();
+        for (at, book) in self.books.borrow_mut().iter_mut().enumerate() {
+            if at == active {
+                continue;
+            }
+            for stored in &mut book.panes {
+                stored.bar_style = defaults.bar_style.key().to_string();
+                stored.colouring = Some(defaults.colouring.key().to_string());
+                stored.session = defaults.session.key().to_string();
+                stored.show_grid = defaults.show_grid;
+                stored.log_scale = defaults.log_scale;
+                stored.shows_drawings = defaults.shows_drawings;
+                stored.sends_drawings = defaults.sends_drawings;
+            }
+        }
+        self.sync_chart_actions(&self.focused_pane());
+        self.redraw_current();
+        self.save_workspace();
+    }
+
+    /// One chart to the defaults, drawn as it now is. Drawings move the way
+    /// the switches in its own settings move them.
+    fn adopt_defaults(self: &Rc<Self>, pane: &Rc<ChartPane>, defaults: &ChartDefaults) {
+        pane.bar_style.set(defaults.bar_style);
+        pane.view.set_bar_style(defaults.bar_style);
+        pane.colouring.set(defaults.colouring);
+        pane.view.restyle(self.theme(), pane_scheme(pane, &self.theme()));
+        pane.session.set(defaults.session);
+        pane.show_grid.set(defaults.show_grid);
+        pane.view.set_show_grid(defaults.show_grid);
+        pane.view.set_price_log(defaults.log_scale);
+        let focused = self.focused.get();
+        self.focused.set(pane.id);
+        self.set_shows_drawings(defaults.shows_drawings);
+        self.set_sends_drawings(defaults.sends_drawings);
+        self.focused.set(focused);
     }
 
     /// Right-clicking the chart offers the things you change most, and a way
@@ -7132,8 +7213,6 @@ impl Window {
             let Some(chosen) = Session::from_key(&key) else { return };
             action.set_state(&key.to_variant());
             this.focused_pane().session.set(chosen);
-            this.store
-                .set_setting(crate::ui::chart_settings::SETTING_SESSION, chosen.key());
             this.redraw_current();
         });
         actions.add_action(&session);
