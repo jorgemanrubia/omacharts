@@ -855,7 +855,7 @@ fn backups_group(context: &Rc<Context>) -> adw::PreferencesGroup {
     let settings = context.store.path().map(std::path::Path::to_path_buf);
     if let Some(path) = &settings {
         group.set_description(Some(&format!(
-            "Keeping the last {} backups from the past week in {}.",
+            "Up to {} backups from the past week, in {}.",
             backup::MOST_KEPT,
             home_relative(&backup::dir(path)),
         )));
