@@ -134,17 +134,16 @@ impl Theming {
         BarColouring::from_key(&self.scheme_id).unwrap_or_default().scheme(theme)
     }
 
-    /// The ink the bar widget writes in.
+    /// The ink the bar widget's panel writes in, and the ground it paints.
     ///
-    /// The desktop's theme, because the widget is drawn on the desktop's
-    /// surfaces rather than the window's, with the bar scheme chosen here, so
-    /// the panel says up the way the charts do — red, if that is what was
-    /// picked. A scheme built from a theme is built from the desktop's: "the
-    /// theme's colours" in the bar means the theme the bar is wearing. With
-    /// no Omarchy theme there is no bar to draw in, and the window's theme
-    /// stands in.
+    /// The theme chosen here, so the watchlist that drops from the bar is the
+    /// same watchlist as the one in the window — the same colours, tweaked
+    /// ones included. On System that is the desktop's theme, which is what
+    /// the panel wore before it could wear anything else. The icon on the bar
+    /// itself is not drawn from this: it sits on the bar, whose colours are
+    /// the desktop's.
     pub fn bar_widget_ink(&self) -> Ink {
-        let theme = self.omarchy.clone().unwrap_or_else(|| self.theme());
+        let theme = self.theme();
         theme.ink(&self.bar_scheme_for(&theme))
     }
 

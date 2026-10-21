@@ -4702,6 +4702,9 @@ impl Window {
             theming.apply();
             theming.theme()
         };
+        // The bar widget's panel wears the theme chosen here, so it is told
+        // as soon as that or any colour in it moves, not a poll later.
+        crate::bar_plugin::notify_recolored();
         if let Some(bar) = self.drawing_bar.borrow().as_ref() {
             bar.restyle();
         }

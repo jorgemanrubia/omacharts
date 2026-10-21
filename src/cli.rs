@@ -789,13 +789,14 @@ fn colors_json(store: &Store) -> String {
         format!("{{\"fill\":{},\"label\":{}}}", json_string(&tag.fill), json_string(&tag.label))
     };
     format!(
-        "{{\"text\":{},\"muted\":{},\"up\":{},\"down\":{},\"flat\":{},\"hover\":{},\"tags\":{{\"up\":{},\"down\":{},\"flat\":{}}}}}",
+        "{{\"text\":{},\"muted\":{},\"up\":{},\"down\":{},\"flat\":{},\"hover\":{},\"background\":{},\"tags\":{{\"up\":{},\"down\":{},\"flat\":{}}}}}",
         json_string(&ink.text),
         json_string(&ink.muted),
         json_string(&ink.up),
         json_string(&ink.down),
         json_string(&ink.flat),
         json_string(&ink.hover),
+        json_string(&ink.ground),
         tag(&ink.up_tag),
         tag(&ink.down_tag),
         tag(&ink.flat_tag),

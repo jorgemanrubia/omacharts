@@ -44,6 +44,17 @@ pub fn notify_changed() {
         .spawn();
 }
 
+/// Tell the bar widget the colours changed: the theme, or a colour in it.
+/// Best effort, like [`notify_changed`]; it asks again without fetching.
+pub fn notify_recolored() {
+    let _ = std::process::Command::new("omarchy-shell")
+        .args([PLUGIN_ID, "recolor"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+}
+
 /// Is this an Omarchy desktop at all?
 pub fn available(home: &Path) -> bool {
     shell_config(home).is_file() && plugins_dir(home).is_dir()

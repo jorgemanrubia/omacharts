@@ -134,7 +134,8 @@ function palette(colors, text, ground) {
     up: pick("up", written),
     down: pick("down", written),
     flat: pick("flat", pick("muted", written)),
-    hover: pick("hover", ground)
+    hover: pick("hover", ground),
+    ground: pick("background", ground)
   }
   out.tags = { up: tag("up", out.up), down: tag("down", out.down), flat: tag("flat", out.flat) }
   return out
