@@ -3152,8 +3152,14 @@ fn book_template_verb(
                     let using = bt::usage(workspace.books(), over.id);
                     if on != Some(over.id) && !flag(m, "overwrite") {
                         return Err(Fault::refused(format!(
-                            "there is already a chartbook template called {:?}, used by {using}                              chartbook(s); add --overwrite to replace it with {book:?}",
-                            over.name
+                            "there is already a chartbook template called {:?}, which {}; add --overwrite \
+                             to replace it with {book:?}",
+                            over.name,
+                            match using {
+                                0 => "no chartbook is on".to_string(),
+                                1 => "1 chartbook is on".to_string(),
+                                n => format!("{n} chartbooks are on"),
+                            }
                         )));
                     }
                     bt::replace(store, over.id, shape.clone());
@@ -3166,8 +3172,8 @@ fn book_template_verb(
             let name = bt::get(store, id).map(|t| t.name).unwrap_or_default();
             (
                 format!(
-                    "saved chartbook {book:?} as chartbook template {name:?} ({} charts){}",
-                    shape.panes.len(),
+                    "saved chartbook {book:?} as chartbook template {name:?} ({}){}",
+                    charts_counted(shape.panes.len()),
                     others(changed)
                 ),
                 json!({"template": id, "chartbook": book, "changed": changed}),
@@ -3197,9 +3203,9 @@ fn book_template_verb(
                 bt::set_link(target, Some(chosen.id));
                 (
                     format!(
-                        "applied chartbook template {:?} to chartbook {book:?}: {} charts",
+                        "applied chartbook template {:?} to chartbook {book:?}: {}",
                         chosen.name,
-                        chosen.shape.panes.len()
+                        charts_counted(chosen.shape.panes.len())
                     ),
                     json!({"template": chosen.id, "chartbook": book}),
                 )
@@ -3236,6 +3242,13 @@ fn book_template_verb(
     let mut value = value;
     value["message"] = json!(text);
     said(as_json, value, text)
+}
+
+fn charts_counted(count: usize) -> String {
+    match count {
+        1 => "1 chart".to_string(),
+        n => format!("{n} charts"),
+    }
 }
 
 /// Every chartbook template, how many charts it lays out and how many
@@ -3279,7 +3292,7 @@ fn book_template_list(
                 if open == Some(t.id) { "* " } else { "  " },
                 format!("id:{}", t.id),
                 t.name,
-                format!("{} charts", t.shape.panes.len()),
+                charts_counted(t.shape.panes.len()),
             )
         })
         .collect::<Vec<_>>()
