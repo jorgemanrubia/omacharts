@@ -52,7 +52,10 @@ impl ChartSettings {
         let dialog = adw::PreferencesDialog::new();
         dialog.set_title("Chart");
         dialog.set_content_width(560);
-        dialog.set_content_height(620);
+        // Most of the window's height, like the preferences: the indicator
+        // list and an indicator's own page are long, and every row that fits
+        // is a scroll saved. The width stays the column the rows sit in.
+        dialog.set_content_height((window.window.height() * 85 / 100).max(620));
 
         let chart_page = adw::PreferencesPage::new();
         chart_page.set_title("Chart");
@@ -802,7 +805,7 @@ fn open_indicator_panel_for(window: &Rc<Window>, refresh: &Refresh, id: u32, pan
             let modal = adw::Dialog::new();
             modal.set_title(&indicator.label());
             modal.set_content_width(560);
-            modal.set_content_height(620);
+            modal.set_content_height((window.window.height() * 85 / 100).max(620));
             modal.set_child(Some(&toolbar));
 
             // Cancel on the left, the suggested action on the right, and the
