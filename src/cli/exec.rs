@@ -5044,6 +5044,7 @@ mod tests {
         ok("template create Swing", store);
         ok("template indicator add Swing macd", store);
         ok(&format!("chart set --book {name} --chart pos:1 --template Swing"), store);
+        ok(&format!("chart set --book {name} --chart pos:2 --resolution 1h"), store);
     }
 
     #[test]
@@ -5060,6 +5061,8 @@ mod tests {
         ok("chartbook template apply Corners --book Other", &store);
         assert_eq!(symbols_of(&store, "Other"), ["QQQ"; 4], "the chartbook lost its symbol");
         assert_eq!(panes_of(&store, "Other")[1]["template"], swing(&store));
+        assert_eq!(panes_of(&store, "Other")[2]["timeframe"], "1h", "the resolution was not taken");
+        assert_eq!(panes_of(&store, "Other")[0]["timeframe"], "1D");
         let first = json_of(&run("chart indicator list --book Other --chart pos:0 --json", &store));
         assert_eq!(first["indicators"][0]["kind"], "rsi");
         let listed = json_of(&run("chartbook template list --json", &store));
@@ -5088,6 +5091,12 @@ mod tests {
         let templates = crate::book_templates::all(&store);
         assert_eq!(templates[0].shape.panes.len(), 3);
         assert_eq!(templates[0].shape.panes[2].indicators[0].kind, IndicatorKind::Atr);
+        // A resolution goes to the same position, from the open book and to it.
+        ok("chart set --book Grid --chart pos:1 --resolution 15m", &store);
+        assert_eq!(panes_of(&store, "Other")[1]["timeframe"], "15m");
+        ok("chart set --book Other --chart pos:0 --resolution 1W", &store);
+        assert_eq!(panes_of(&store, "Grid")[0]["timeframe"], "1W");
+        assert_eq!(panes_of(&store, "Loose")[0]["timeframe"], "1D");
         // A symbol is the book's own.
         ok("chart set --book Grid --chart pos:0 --symbol AAPL", &store);
         assert_eq!(symbols_of(&store, "Other")[0], "QQQ");

@@ -771,6 +771,7 @@ mod tests {
         let before = open.layout.leaves();
         open.layout = open.layout.with_ratio(&[], 0.3);
         open.panes[1].indicators = vec![Indicator::new(1, omacharts_engine::IndicatorKind::Rsi)];
+        open.panes[1].timeframe = "4h".to_string();
         let mut books: Vec<serde_json::Value> =
             [&open, &closed].iter().map(|b| serde_json::to_value(b).unwrap()).collect();
         assert_eq!(book_templates::carry(&store, &mut books, 0, &before), 1);
@@ -781,6 +782,7 @@ mod tests {
         assert!(matches!(closed.layout, Node::Split { ratio, .. } if (ratio - 0.3).abs() < 1e-9));
         let second = closed.panes.iter().find(|p| p.id == 8).unwrap();
         assert_eq!(second.indicators.len(), 1);
+        assert_eq!(second.timeframe, "4h", "the resolution did not reach the book off screen");
         assert_eq!(second.symbol, "NG", "a symbol is the book's own");
         assert_eq!(second.link, LinkMode::Focus, "a link mode is the book's own");
         assert_eq!(closed.panes.iter().find(|p| p.id == 7).unwrap().link, LinkMode::Pinned);

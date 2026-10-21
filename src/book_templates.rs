@@ -3,16 +3,15 @@
 //!
 //! What a template holds is the shape of a book and what each chart in it
 //! draws — the tree of splits, every divider as a share of its split rather
-//! than in pixels, so it fits a window of any size, and for each chart either
-//! its chart template or its own indicators. What is on the charts is not in
-//! it: a chartbook keeps its own symbols, resolutions and link modes, and
-//! taking a template gives them to the charts by where they sit.
+//! than in pixels, so it fits a window of any size, and for each chart its
+//! resolution and either its chart template or its own indicators. What is on
+//! the charts is not in it: a chartbook keeps its own symbols and link modes,
+//! and taking a template gives them to the charts by where they sit.
 //!
 //! A chartbook remembers the template it was made from or saved as, and stays
-//! on it. Changing the book changes only the book; saving it into its
-//! template is what carries the change to every other book on the template.
-//! A template is one somebody saves on purpose, so a divider nudged in one
-//! book does not move the dividers in five others.
+//! on it. A change to its arrangement goes into the template and from there to
+//! every other book on it, the way a change to a chart template reaches every
+//! chart on it — see [`carry`].
 //!
 //! Kept as one JSON setting, for the reasons [`crate::templates`] gives: no
 //! schema step, read whole, carried by a backup. The ids are handed out once,
@@ -51,7 +50,7 @@ pub struct Shape {
     pub panes: Vec<Slot>,
 }
 
-/// One chart's place in a template.
+/// One chart's place in a template: its resolution and what it draws.
 ///
 /// A chart on a chart template is written down with the template's id and a
 /// copy of what it held, so a book taking this after the chart template has
@@ -62,6 +61,10 @@ pub struct Slot {
     pub template: Option<u32>,
     #[serde(default)]
     pub indicators: Vec<Indicator>,
+    /// The resolution, as a chart stores it. Missing from a template saved
+    /// before resolutions were part of one, which leaves each chart's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeframe: Option<String>,
 }
 
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
@@ -214,6 +217,7 @@ pub fn capture(book: &Value) -> Option<Shape> {
         panes.push(Slot {
             template: pane["template"].as_u64().map(|id| id as u32),
             indicators: serde_json::from_value(pane["indicators"].clone()).unwrap_or_default(),
+            timeframe: pane["timeframe"].as_str().map(str::to_string),
         });
     }
     Some(Shape { layout: layout.relabel(&positions), panes })
@@ -229,8 +233,11 @@ pub fn capture(book: &Value) -> Option<Shape> {
 const SAME_DIVIDER: f64 = 0.005;
 
 impl Shape {
-    /// The same arrangement, dividers within [`SAME_DIVIDER`] of each other.
-    pub fn same(&self, other: &Shape) -> bool {
+    /// Whether this is the arrangement a template `held`: dividers within
+    /// [`SAME_DIVIDER`] of each other, and a resolution the template says
+    /// nothing about — one saved before resolutions were in templates — no
+    /// difference at all.
+    pub fn same(&self, held: &Shape) -> bool {
         fn alike(a: &Node, b: &Node) -> bool {
             match (a, b) {
                 (Node::Leaf(a), Node::Leaf(b)) => a == b,
@@ -241,7 +248,13 @@ impl Shape {
                 _ => false,
             }
         }
-        self.panes == other.panes && alike(&self.layout, &other.layout)
+        let slots = self.panes.len() == held.panes.len()
+            && self.panes.iter().zip(&held.panes).all(|(now, held)| {
+                now.template == held.template
+                    && now.indicators == held.indicators
+                    && (held.timeframe.is_none() || now.timeframe == held.timeframe)
+            });
+        slots && alike(&self.layout, &held.layout)
     }
 }
 
@@ -255,7 +268,7 @@ fn sound(shape: &Shape) -> bool {
 /// Whether some template already holds this book's arrangement exactly, so
 /// replacing it loses nothing that cannot be had back.
 pub fn kept(book: &Value, templates: &[BookTemplate]) -> bool {
-    capture(book).is_some_and(|shape| templates.iter().any(|t| t.shape.same(&shape)))
+    capture(book).is_some_and(|shape| templates.iter().any(|t| shape.same(&t.shape)))
 }
 
 /// The next pane id no book is using, for charts a template adds.
@@ -323,13 +336,14 @@ pub fn origins(before: &[u32], layout: &Node) -> Vec<Origin> {
 
 /// Give a stored chartbook a template's arrangement, in place.
 ///
-/// The book keeps what is on its charts. Each chart keeps its symbol,
-/// resolution, link mode and the rest of its own settings: by `origins` when
-/// they are given, and otherwise by position. A chart the book had nothing for
+/// The book keeps what is on its charts. Each chart keeps its symbol, link
+/// mode and the rest of its own settings: by `origins` when they are given,
+/// and otherwise by position. A chart the book had nothing for
 /// is a copy of the chart it was split off, or of the focused one, with no
-/// drawings of its own. Charts left over go. What each chart draws is the
-/// template's: its chart template when that still exists, read as it is now,
-/// and otherwise the indicators the template was saved with.
+/// drawings of its own. Charts left over go. Its resolution is the template's,
+/// when the template has one, and so is what it draws: its chart template when
+/// that still exists, read as it is now, and otherwise the indicators the
+/// template was saved with.
 ///
 /// Leaves the link alone — taking a template and being on it are the caller's
 /// to put together. `false`, with the book untouched, when either side is not
@@ -388,6 +402,9 @@ pub fn apply(
                 pane["template"] = Value::Null;
                 pane["indicators"] = serde_json::to_value(&slot.indicators).unwrap_or(json!([]));
             }
+        }
+        if let Some(timeframe) = &slot.timeframe {
+            pane["timeframe"] = json!(timeframe);
         }
         let Some(id) = pane["id"].as_u64() else { return false };
         ids.insert(at as u32, id as u32);
@@ -549,7 +566,7 @@ mod tests {
             // Position 1 is on the chart template, and draws it as it is now.
             panes: vec![
                 saved.panes[0].clone(),
-                Slot { template: Some(1), indicators: volume_template().indicators },
+                Slot { template: Some(1), indicators: volume_template().indicators, timeframe: Some("1D".into()) },
                 saved.panes[2].clone(),
                 saved.panes[3].clone(),
             ],
@@ -612,7 +629,7 @@ mod tests {
     #[test]
     fn a_chart_template_that_has_gone_leaves_the_indicators_it_was_saved_with() {
         let mut saved = capture(&single("A")).unwrap();
-        saved.panes[0] = Slot { template: Some(7), indicators: vec![Indicator::new(1, IndicatorKind::Macd)] };
+        saved.panes[0] = Slot { template: Some(7), indicators: vec![Indicator::new(1, IndicatorKind::Macd)], timeframe: None };
         let mut book = single("SPY");
         assert!(apply(&mut book, &saved, &[volume_template()], &mut 10, None));
         let pane = &book["panes"][0];
@@ -624,7 +641,7 @@ mod tests {
     /// naming a chart it does not have, changes nothing.
     #[test]
     fn an_arrangement_that_is_not_one_changes_nothing() {
-        let broken = Shape { layout: Node::leaf(3), panes: vec![Slot { template: None, indicators: vec![] }] };
+        let broken = Shape { layout: Node::leaf(3), panes: vec![Slot { template: None, indicators: vec![], timeframe: None }] };
         let mut book = single("SPY");
         let before = book.clone();
         assert!(!apply(&mut book, &broken, &[], &mut 10, None));
@@ -795,6 +812,75 @@ mod tests {
         assert_eq!(get(&store, template.id).unwrap().shape, template.shape);
         books[0]["layout"]["split"]["ratio"] = json!(0.43);
         assert_eq!(carry(&store, &mut books, 0, &[1, 2]), 1);
+    }
+
+    fn timeframes(book: &Value) -> Vec<String> {
+        let (_, ordered) = in_order(book).unwrap();
+        ordered.iter().map(|p| p["timeframe"].as_str().unwrap().to_string()).collect()
+    }
+
+    /// Each chart's resolution is part of the arrangement: saved, taken, and
+    /// carried to the same position in every other book on the template.
+    #[test]
+    fn a_resolution_is_saved_taken_and_carried_by_position() {
+        let store = Store::memory().unwrap();
+        let mut saved = grid(["A", "B", "C", "D"]);
+        for pane in saved["panes"].as_array_mut().unwrap() {
+            if pane["id"] == json!(12) {
+                pane["timeframe"] = json!("1h");
+            }
+        }
+        let shape = capture(&saved).unwrap();
+        assert_eq!(shape.panes[1].timeframe.as_deref(), Some("1h"));
+        let back: Shape = serde_json::from_str(&serde_json::to_string(&shape).unwrap()).unwrap();
+        assert_eq!(back, shape);
+
+        let mut books = [pair((1, "A"), (2, "B")), pair((3, "X"), (4, "Y"))];
+        let template = create(&store, "Pair", capture(&books[0]).unwrap());
+        set_link(&mut books[0], Some(template.id));
+        set_link(&mut books[1], Some(template.id));
+        assert!(apply(&mut books[1], &shape, &[], &mut 50, None));
+        assert_eq!(timeframes(&books[1]), ["1D", "1h", "1D", "1D"]);
+
+        // A resolution changed on the open book reaches the closed one at the
+        // same position, and its symbols stay.
+        let mut books = vec![pair((1, "A"), (2, "B")), pair((3, "X"), (4, "Y"))];
+        set_link(&mut books[0], Some(template.id));
+        set_link(&mut books[1], Some(template.id));
+        books[0]["panes"][1]["timeframe"] = json!("15m");
+        assert_eq!(carry(&store, &mut books, 0, &[1, 2]), 1);
+        assert_eq!(timeframes(&books[1]), ["1D", "15m"]);
+        assert_eq!(symbols(&books[1]), ["X", "Y"]);
+        // And the other way, from what was the closed one.
+        books[1]["panes"][0]["timeframe"] = json!("1W");
+        assert_eq!(carry(&store, &mut books, 1, &[3, 4]), 1);
+        assert_eq!(timeframes(&books[0]), ["1W", "15m"]);
+        // Carried once: the book it reached has nothing left to carry back.
+        assert_eq!(carry(&store, &mut books, 0, &[1, 2]), 0);
+    }
+
+    /// A template saved before resolutions were part of one leaves every
+    /// chart's resolution as it is, and is not rewritten just for being
+    /// opened.
+    #[test]
+    fn a_template_saved_without_resolutions_leaves_them_alone() {
+        let store = Store::memory().unwrap();
+        let old = r#"{"next_id":2,"templates":[{"id":1,"name":"Old",
+            "layout":{"split":{"horizontal":true,"ratio":0.5,"first":{"leaf":0},"second":{"leaf":1}}},
+            "panes":[{"template":null,"indicators":[]},{"template":null,"indicators":[]}]}]}"#;
+        store.set_setting(SETTING, old);
+        let template = get(&store, 1).unwrap();
+        assert!(template.shape.panes.iter().all(|slot| slot.timeframe.is_none()));
+
+        let mut books = vec![pair((1, "A"), (2, "B")), pair((3, "X"), (4, "Y"))];
+        books[0]["panes"][0]["timeframe"] = json!("1h");
+        assert!(apply(&mut books[0], &template.shape, &[], &mut 50, None));
+        assert_eq!(timeframes(&books[0]), ["1h", "1D"]);
+
+        set_link(&mut books[0], Some(1));
+        set_link(&mut books[1], Some(1));
+        assert_eq!(carry(&store, &mut books, 0, &[1, 2]), 0, "opening an old one rewrote the others");
+        assert_eq!(timeframes(&books[1]), ["1D", "1D"]);
     }
 
     /// A book on no template, or on one that has gone, carries nothing.

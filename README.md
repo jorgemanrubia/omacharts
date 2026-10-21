@@ -29,8 +29,8 @@ Fast, beautiful charting software for [Omarchy](https://omarchy.org).
   keeps its own symbol, resolution, indicators and settings. Keep as many
   arrangements as you want as chartbooks, each with its own watchlist, and
   switch between them from the strip along the bottom. Save one as a
-  chartbook template and put others on it, and a split or an indicator in any
-  of them reaches all of them, each keeping its own symbols. Link charts and
+  chartbook template and put others on it, and a split, a resolution or an
+  indicator in any of them reaches all of them, each keeping its own symbols. Link charts and
   watchlists as you need to. It all comes back the way you left it, and
   `omacharts watchlist export` and `import` carry your watchlists to your
   other machines.

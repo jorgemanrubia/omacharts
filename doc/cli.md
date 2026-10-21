@@ -580,10 +580,11 @@ omacharts chart set --resolution 1W --log-scale on
 
 A chartbook template is a chartbook's arrangement under a name: the splits,
 every divider as a share of its split rather than in pixels so it fits any
-window, and for each chart its chart template, or its own indicators when it
-has none. The symbols are not in it. A chartbook keeps its own symbols,
-resolutions and link modes, and taking a template gives them to the charts by
-where they sit; a chart the template adds is a copy of the focused one.
+window, and for each chart its resolution and its chart template, or its own
+indicators when it has none. The symbols are not in it. A chartbook keeps its
+own symbols and link modes, and taking a template gives them to the charts by
+where they sit; a chart the template adds is a copy of the focused one. A
+template saved before resolutions were part of one leaves each chart's own.
 
 ```
 omacharts chartbook template save Corners
@@ -596,7 +597,8 @@ omacharts chartbook template delete Quarters
 
 **A chartbook on a template stays on it, and every change to its arrangement
 goes to the template and to every other chartbook on it** — a split, a closed
-chart, a dragged divider, an indicator, a chart template — the way a change to
+chart, a dragged divider, a resolution, an indicator, a chart template — the
+way a change to
 a chart template reaches every chart on it. A command that changes one is no
 different from the window doing it. A chart that is added in one book is added
 beside the same chart in the others, and one closed in one is closed in the

@@ -154,10 +154,11 @@ omacharts status show --json
 ```
 
 **One arrangement in several chartbooks, kept in step.** A chartbook template
-is a book's layout and each chart's indicators or chart template, without the
-symbols. Save one book as a template, apply it to others, and from then on a
-split, a close or an indicator in any of them reaches all of them; each keeps
-its own symbols, resolutions and link modes. `chartbook template apply none`
+is a book's layout and each chart's resolution and indicators or chart
+template, without the symbols. Save one book as a template, apply it to
+others, and from then on a split, a close, a resolution or an indicator in any
+of them reaches all of them, at the same position; each keeps its own symbols
+and link modes. `chartbook template apply none`
 takes a book off it, keeping what it has. `chartbook duplicate` is the quick
 way to a second book like this one, on the same template:
 
