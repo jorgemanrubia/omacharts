@@ -17,7 +17,7 @@ use omacharts_engine::indicators::{
 };
 use omacharts_engine::providers;
 use omacharts_engine::theme::{
-    ColorChoice, SWATCH_NAMES, THEME_BARS_ID, THEME_MONO_ID, THEME_RED_UP_ID,
+    ColorChoice, SWATCH_NAMES, THEME_MONO_ID, THEME_RED_UP_ID,
 };
 use omacharts_engine::{
     link, BarStyle, Indicator, IndicatorKind, LinkGroup, Reset, Session, Timeframe,
@@ -3465,8 +3465,15 @@ fn config_bars(
     as_json: bool,
     live: Option<&dyn Live>,
 ) -> Result<String, Fault> {
-    let current =
-        store.setting(crate::theming::SETTING_BARS).unwrap_or_else(|| THEME_BARS_ID.to_string());
+    // Spelled as a colouring, whatever an older version wrote: a scheme id
+    // that is not one names colours that now live in a theme.
+    let colouring = |id: Option<String>| {
+        omacharts_engine::BarColouring::from_key(id.as_deref().unwrap_or(""))
+            .unwrap_or_default()
+            .key()
+            .to_string()
+    };
+    let current = colouring(store.setting(crate::theming::SETTING_BARS));
     let Some(state) = arg(m, "STATE") else {
         return match as_json {
             true => Ok(format!("{}\n", json!({"bars": spell_bars(&current), "scheme": current}))),
@@ -3481,7 +3488,7 @@ fn config_bars(
         // "coloured": stay on the palette in use if it already carries the
         // direction, and otherwise go back to the one it was left from.
         _ if spell_bars(&current) == "coloured" => current.clone(),
-        _ => store.setting(COLOURED_BARS).unwrap_or_else(|| THEME_BARS_ID.to_string()),
+        _ => colouring(store.setting(COLOURED_BARS)),
     };
     // Leaving a palette somebody picked: remember it to come back to.
     if scheme != current && spell_bars(&current) == "coloured" {
@@ -3495,7 +3502,6 @@ fn config_bars(
     workspace.set_on_every_pane("colouring", json!(scheme));
     workspace.save(store);
     if let Some(live) = live {
-        live.reload_workspace();
         live.adopt_theming();
     }
     let text = match (state, scheme == current) {
@@ -4803,7 +4809,7 @@ mod tests {
         // remembered is still the one somebody picked.
         assert_eq!(run("config bars monochrome", &store).code, 0);
         assert_eq!(run("config bars coloured", &store).code, 0);
-        assert_eq!(run("config get bar_scheme", &store).out.trim(), "hollow");
+        assert_eq!(run("config get bar_scheme", &store).out.trim(), "theme-hollow");
     }
 
     #[test]
@@ -4819,7 +4825,7 @@ mod tests {
         assert_eq!(run("config bars coloured", &store).code, 0);
         assert_eq!(
             run("config get bar_scheme", &store).out.trim(),
-            "hollow",
+            "theme-hollow",
             "the scheme that was in use has to come back, not the default"
         );
     }

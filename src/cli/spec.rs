@@ -948,7 +948,7 @@ pub const SURFACE: &[Noun] = &[
                 example: "omacharts config bars monochrome",
                 json: true,
                 writes: true,
-                workspace: false,
+                workspace: true,
             },
         ],
     },

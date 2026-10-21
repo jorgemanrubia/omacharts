@@ -52,7 +52,7 @@ impl Theming {
         // install already matches everything else on screen.
         let default_theme = if omarchy.is_some() { OMARCHY_ID } else { FALLBACK_THEME_ID };
 
-        let mut theming = Theming {
+        let theming = Theming {
             theme_id: store.setting(SETTING_THEME).unwrap_or_else(|| default_theme.to_string()),
             scheme_id: store.setting(SETTING_BARS).unwrap_or_else(|| THEME_BARS_ID.to_string()),
             omarchy,
@@ -63,7 +63,6 @@ impl Theming {
             home,
             provider: None,
         };
-        theming.carry_over_candle_colours(store);
         theming
     }
 
@@ -72,7 +71,10 @@ impl Theming {
     /// one, the classic pair, one somebody made — becomes a copy of the theme
     /// wearing them, so nobody opens the app to different candles. Once: the
     /// setting then names a colouring, and this finds nothing to do.
-    fn carry_over_candle_colours(&mut self, store: &Store) {
+    ///
+    /// Run by the window as it opens, not by every reader: a command that only
+    /// asks for colours should not write a theme.
+    pub fn carry_over_candle_colours(&mut self, store: &Store) {
         let Some(bars) = legacy_bar_colours(&self.scheme_id)
             .or_else(|| store.legacy_bar_scheme(&self.scheme_id))
         else {
@@ -955,14 +957,16 @@ mod tests {
     fn a_scheme_with_colours_of_its_own_becomes_a_theme_wearing_them() {
         let store = Store::memory().unwrap();
         store.set_setting(SETTING_BARS, "accessible");
-        let theming = Theming::load(&store);
+        let mut theming = Theming::load(&store);
+        theming.carry_over_candle_colours(&store);
         let theme = theming.theme();
         assert_eq!(theme.source, omacharts_engine::theme::Source::Custom);
         assert!(theme.name.ends_with("with Blue / Orange"), "{}", theme.name);
         assert_eq!(theming.bar_scheme().up, "#4493f8");
         assert_eq!(theming.scheme_id(), THEME_BARS_ID);
         // And only once: loading again finds a colouring, not a scheme.
-        let again = Theming::load(&store);
+        let mut again = Theming::load(&store);
+        again.carry_over_candle_colours(&store);
         assert_eq!(again.theme().id, theme.id);
         assert_eq!(store.custom_themes().len(), 1);
     }

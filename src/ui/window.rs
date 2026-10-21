@@ -1712,6 +1712,7 @@ impl Window {
 
         let index = crate::inventory::Inventory::curated();
         let theming = Rc::new(RefCell::new(Theming::load(&store)));
+        theming.borrow_mut().carry_over_candle_colours(&store);
         theming.borrow_mut().apply();
 
         let (sender, receiver) = async_channel::unbounded::<Response>();
