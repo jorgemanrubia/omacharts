@@ -1525,6 +1525,10 @@ fn next_local_id(locals: &[omacharts_engine::Drawing]) -> i64 {
     locals.iter().map(|d| d.id).min().unwrap_or(0).min(0) - 1
 }
 
+/// The last choice in the New chartbook dialog's watchlist picker: no list
+/// that exists, but an empty one named after the chartbook.
+const NEW_WATCHLIST: &str = "Create a new watchlist";
+
 /// What a chartbook nobody has renamed is called.
 ///
 /// By where it sits rather than when it was made, so the names in the strip
@@ -3626,20 +3630,17 @@ impl Window {
         if lists.len() < all.len() {
             chosen.set_subtitle("Lists other chartbooks are using are not shown");
         }
-        let names: Vec<&str> = lists.iter().map(|(_, name)| name.as_str()).collect();
+        // The lists there are, and under a line the one there is not yet: an
+        // empty list named after the chartbook, made when it is created.
+        let names: Vec<&str> = lists
+            .iter()
+            .map(|(_, name)| name.as_str())
+            .chain(std::iter::once(NEW_WATCHLIST))
+            .collect();
         chosen.set_model(Some(&gtk::StringList::new(&names)));
+        chosen.set_list_factory(Some(&crate::ui::preferences::separated_list(vec![lists.len()])));
         let at = lists.iter().position(|(id, _)| *id == DEFAULT_WATCHLIST).unwrap_or(0);
         chosen.set_selected(at as u32);
-
-        let fresh = adw::SwitchRow::new();
-        fresh.set_title("Create new watchlist");
-        fresh.set_subtitle("An empty one, named after the chartbook");
-
-        // Disabled rather than hidden while a new list is being made: a
-        // control that greys out still says what the other answer would have
-        // been, and one that vanishes leaves you wondering what moved.
-        let picker = chosen.clone();
-        fresh.connect_active_notify(move |switch| picker.set_sensitive(!switch.is_active()));
 
         // What the book is built from, after its name: None, or a chartbook
         // template it starts on and stays on. Starting on None, the book
@@ -3660,7 +3661,6 @@ impl Window {
             rows.add(&template);
         }
         rows.add(&chosen);
-        rows.add(&fresh);
 
         let field = name.clone();
         let dialog = adw::AlertDialog::new(Some("New chartbook"), None);
@@ -3726,7 +3726,7 @@ impl Window {
             if label.is_empty() {
                 return;
             }
-            let watchlist = if fresh.is_active() {
+            let watchlist = if chosen.selected() as usize == lists.len() {
                 // Made only now, so cancelling leaves no list behind that
                 // nothing points at.
                 match this.store.add_watchlist(&label) {

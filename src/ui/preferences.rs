@@ -1348,7 +1348,7 @@ fn alpha_dialog() -> gtk::ColorDialog {
 /// A drop-down list of names with a line above each one at `splits`, for a
 /// list that is several lists one after the other. An empty run between two
 /// splits makes them the same place, and that place gets one line.
-fn separated_list(splits: Vec<usize>) -> gtk::SignalListItemFactory {
+pub(crate) fn separated_list(splits: Vec<usize>) -> gtk::SignalListItemFactory {
     let factory = gtk::SignalListItemFactory::new();
     factory.connect_setup(|_, item| {
         let Some(item) = item.downcast_ref::<gtk::ListItem>() else { return };
