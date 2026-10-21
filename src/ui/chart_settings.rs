@@ -71,13 +71,23 @@ impl ChartSettings {
         indicators_page.set_title("Indicators");
         indicators_page.set_icon_name(Some("view-list-symbolic"));
         dialog.add(&indicators_page);
+
+        // What this chart's header shows, and in what order.
+        let header_page = adw::PreferencesPage::new();
+        header_page.set_title("Header");
+        header_page.set_icon_name(Some("format-justify-left-symbolic"));
+        let window_for_header = window.clone();
+        let header = HeaderList::new(window.header(), move |parts| {
+            window_for_header.set_header(parts);
+        });
+        header_page.add(&header.group);
+        dialog.add(&header_page);
         {
-            // Alt and an arrow between Chart and Indicators, and the
-            // keyboard goes with it. The pages are named here rather than
-            // asked of the dialog: a preferences dialog keeps them in a
-            // view stack of its own, and the two it was given are the two
-            // it has.
-            let pages = [chart_page.clone(), indicators_page.clone()];
+            // Alt and an arrow between the pages, and the keyboard goes with
+            // it. The pages are named here rather than asked of the dialog: a
+            // preferences dialog keeps them in a view stack of its own, and
+            // the ones it was given are the ones it has.
+            let pages = [chart_page.clone(), indicators_page.clone(), header_page.clone()];
             let dialog_for_tabs = dialog.clone();
             crate::ui::dialogs::step_tabs_with_alt(&dialog, move |forward| {
                 let shown = dialog_for_tabs.visible_page();
@@ -176,6 +186,141 @@ impl TemplateEditor {
         rebuild_indicators(&owner, &dialog, &list);
         dialog.connect_closed(move |_| closed());
         dialog.present(Some(over));
+    }
+}
+
+/// The parts of a chart's header, as a list to add to, take from and drag
+/// into order: a chart's own in its settings, and the one new charts open
+/// with in the preferences.
+///
+/// Every change is handed to `changed` as the whole list, in order, the moment
+/// it is made, as the indicator list applies its changes.
+pub struct HeaderList {
+    pub group: adw::PreferencesGroup,
+    add: gtk::MenuButton,
+    parts: RefCell<Vec<crate::header::Part>>,
+    rows: RefCell<Vec<gtk::Widget>>,
+    changed: Box<dyn Fn(Vec<crate::header::Part>)>,
+}
+
+impl HeaderList {
+    pub fn new(
+        current: Vec<crate::header::Part>,
+        changed: impl Fn(Vec<crate::header::Part>) + 'static,
+    ) -> Rc<HeaderList> {
+        let group = adw::PreferencesGroup::new();
+        group.set_title("In the header");
+        let add = gtk::MenuButton::new();
+        add.set_icon_name("list-add-symbolic");
+        add.add_css_class("flat");
+        add.set_valign(gtk::Align::Center);
+        add.set_tooltip_text(Some("Add to the header"));
+        group.set_header_suffix(Some(&add));
+        let list = Rc::new(HeaderList {
+            group,
+            add,
+            parts: RefCell::new(current),
+            rows: RefCell::new(Vec::new()),
+            changed: Box::new(changed),
+        });
+        list.rebuild();
+        list
+    }
+
+    fn set(self: &Rc<Self>, parts: Vec<crate::header::Part>) {
+        *self.parts.borrow_mut() = parts.clone();
+        (self.changed)(parts);
+        self.rebuild();
+    }
+
+    // The rows hold the list they rebuild, and the list holds the rows: GTK
+    // lets go of a row's handlers when the dialog is disposed, which is what
+    // ends that.
+    fn rebuild(self: &Rc<Self>) {
+        for row in self.rows.borrow_mut().drain(..) {
+            self.group.remove(&row);
+        }
+        let parts = self.parts.borrow().clone();
+        for part in &parts {
+            let row = adw::ActionRow::new();
+            row.set_title(part.label());
+            let handle = gtk::Image::from_icon_name("list-drag-handle-symbolic");
+            handle.add_css_class("dim-label");
+            handle.set_tooltip_text(Some("Drag to reorder"));
+            row.add_prefix(&handle);
+
+            let remove = gtk::Button::from_icon_name("user-trash-symbolic");
+            remove.add_css_class("flat");
+            remove.set_valign(gtk::Align::Center);
+            remove.set_tooltip_text(Some("Remove"));
+            let this = self.clone();
+            let gone = *part;
+            remove.connect_clicked(move |_| {
+                let kept = this.parts.borrow().iter().copied().filter(|p| *p != gone).collect();
+                this.set(kept);
+            });
+            row.add_suffix(&remove);
+
+            // Dragged by name rather than by position, for the reason the
+            // indicator list drags by id: the list is rebuilt under the drag.
+            let source = gtk::DragSource::new();
+            source.set_actions(gtk::gdk::DragAction::MOVE);
+            let payload = part.key().to_string();
+            source.connect_prepare(move |_, _, _| {
+                Some(gtk::gdk::ContentProvider::for_value(&payload.to_value()))
+            });
+            row.add_controller(source);
+            let target = gtk::DropTarget::new(glib::Type::STRING, gtk::gdk::DragAction::MOVE);
+            let this = self.clone();
+            let onto = *part;
+            target.connect_drop(move |_, value, _, _| {
+                let key = value.get::<String>().unwrap_or_default();
+                let Some(moving) = crate::header::Part::from_key(&key) else { return false };
+                let mut parts = this.parts.borrow().clone();
+                let (Some(from), Some(to)) = (
+                    parts.iter().position(|p| *p == moving),
+                    parts.iter().position(|p| *p == onto),
+                ) else {
+                    return false;
+                };
+                if from == to {
+                    return false;
+                }
+                let lifted = parts.remove(from);
+                parts.insert(to, lifted);
+                this.set(parts);
+                true
+            });
+            row.add_controller(target);
+
+            self.group.add(&row);
+            self.rows.borrow_mut().push(row.upcast());
+        }
+
+        // The + offers what is not there yet, and goes when nothing is left.
+        let missing: Vec<crate::header::Part> =
+            crate::header::Part::ALL.into_iter().filter(|p| !parts.contains(p)).collect();
+        self.add.set_visible(!missing.is_empty());
+        let choices = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let popover = gtk::Popover::new();
+        for part in missing {
+            let button = gtk::Button::with_label(part.label());
+            button.add_css_class("flat");
+            if let Some(label) = button.child().and_downcast::<gtk::Label>() {
+                label.set_xalign(0.0);
+            }
+            let this = self.clone();
+            let shut = popover.clone();
+            button.connect_clicked(move |_| {
+                shut.popdown();
+                let mut parts = this.parts.borrow().clone();
+                parts.push(part);
+                this.set(parts);
+            });
+            choices.append(&button);
+        }
+        popover.set_child(Some(&choices));
+        self.add.set_popover(Some(&popover));
     }
 }
 

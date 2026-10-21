@@ -1355,6 +1355,10 @@ fn chart_set(
         Some(text) if text.eq_ignore_ascii_case("none") => Some(None),
         Some(text) => Some(Some(find_template(store, text)?)),
     };
+    let header = match arg(m, "header") {
+        None => None,
+        Some(text) => Some(crate::header::parse(text).map_err(Fault::usage)?),
+    };
 
     // Which group it was in, read before anything is written: only an actual
     // change leads the group. Re-stating the group a chart is already in is
@@ -1432,6 +1436,10 @@ fn chart_set(
             changed.push("no chart template, keeping its indicators".to_string());
         }
     }
+    if let Some(header) = header {
+        chart["header"] = json!(crate::header::keys(&header));
+        changed.push(format!("header {}", crate::header::spell(&header)));
+    }
     // What the chart ends up showing, which is what it leads its new group
     // with. Read after the writes above, so `--symbol X --link N` leads with X
     // rather than with whatever the chart had before.
@@ -1441,7 +1449,7 @@ fn chart_set(
     if changed.is_empty() {
         return Err(Fault::usage(
             "nothing to change; pass --symbol, --resolution, --style, --session, --link, --grid, \
-             --auto-scale, --log-scale, --show-drawings, --send-drawings or --template"
+             --auto-scale, --log-scale, --show-drawings, --send-drawings, --template or --header"
                 .into(),
         ));
     }
@@ -1548,6 +1556,7 @@ fn chart_indicator(
 fn fresh_pane(store: &Store, id: u32, symbol: &str) -> Value {
     let defaults = ChartDefaults::load(store);
     let mut pane = charts::new_pane(id, symbol, None, &defaults);
+    pane["header"] = json!(crate::header::keys(&crate::header::load_default(store)));
     if let Some(template) = defaults.template.and_then(|id| crate::templates::get(store, id)) {
         pane["template"] = json!(template.id);
         pane["indicators"] = serde_json::to_value(&template.indicators).unwrap_or_else(|_| json!([]));
@@ -3059,6 +3068,14 @@ fn pane_json(pane: &Value) -> String {
             .as_array()
             .map(|all| all.iter().filter_map(|i| i["kind"].as_str()).collect::<Vec<_>>())
             .unwrap_or_default(),
+        // The chart template by id, as `template list` names it; none before
+        // there were templates.
+        "template": pane["template"],
+        // And the standard header, before one could be chosen.
+        "header": match pane["header"].as_array() {
+            Some(parts) => Value::Array(parts.clone()),
+            None => json!(crate::header::keys(&crate::header::standard())),
+        },
     })
     .to_string()
 }
@@ -3726,6 +3743,15 @@ fn config_set(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<Stri
     // somebody who typed `thinkorswimm` would chart from the wrong source
     // and be told it worked. So this one is checked, and stored canonically
     // so that `TOS` and `tos` are the same choice rather than two.
+    // Written the way a chart's own header is, so a typo is refused here
+    // rather than read back later as the standard header.
+    if key == crate::header::SETTING {
+        let parts = crate::header::parse(value).map_err(Fault::usage)?;
+        crate::header::save_default(store, &parts);
+        let value = crate::header::spell(&parts);
+        let text = format!("new charts open with the header {value}");
+        return said(as_json, json!({"key": key, "value": value}), text);
+    }
     if key == crate::chart_defaults::SETTING_TEMPLATE {
         let (value, text) = default_template(store, value)?;
         store.set_setting(key, &value);
@@ -4340,6 +4366,28 @@ mod tests {
         assert_eq!(pane["template"], Value::Null);
         assert_eq!(pane["indicators"].as_array().unwrap().len(), 2);
         assert_eq!(ChartDefaults::load(&store).template, None);
+    }
+
+    #[test]
+    fn a_chart_s_header_is_chosen_in_order_and_new_charts_take_the_default() {
+        let store = bare();
+        run("chartbook create Macro --switch", &store);
+        let header = |store: &Store| {
+            let workspace = Workspace::load(store);
+            charts::panes(workspace.books().last().unwrap())[0]["header"].clone()
+        };
+        assert_eq!(header(&store), json!(["symbol", "resolution"]));
+
+        let out = run("chart set --book Macro --header change,symbol,template", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert_eq!(header(&store), json!(["change", "symbol", "template"]));
+        assert_eq!(run("chart set --book Macro --header symbol,price", &store).code, EXIT_USAGE);
+        assert_eq!(header(&store), json!(["change", "symbol", "template"]), "half-applied");
+
+        assert_eq!(run("config set chart_header symbol,change", &store).code, 0);
+        assert_eq!(run("config set chart_header nonsense", &store).code, EXIT_USAGE);
+        run("chartbook create Semis", &store);
+        assert_eq!(header(&store), json!(["symbol", "change"]));
     }
 
     #[test]

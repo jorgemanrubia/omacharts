@@ -96,6 +96,16 @@ impl Preferences {
         let charts = gtk::Stack::new();
         charts.add_titled(&charts_page, Some("defaults"), "Defaults");
         charts.add_titled(&charts_templates_page, Some("templates"), "Templates");
+        // What a new chart's header shows. Each chart then has its own, in
+        // its settings.
+        let charts_header_page = adw::PreferencesPage::new();
+        let store_for_header = store.clone();
+        let header = crate::ui::chart_settings::HeaderList::new(
+            crate::header::load_default(&store),
+            move |parts| crate::header::save_default(&store_for_header, &parts),
+        );
+        charts_header_page.add(&header.group);
+        charts.add_titled(&charts_header_page, Some("header"), "Header");
         charts.add_titled(&charts_other_page, Some("other"), "Other");
 
         let sections: [(&str, &str, gtk::Widget); 4] = [
