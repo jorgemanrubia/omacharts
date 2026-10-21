@@ -4252,10 +4252,11 @@ impl Window {
             action.set_state(&template_state(current));
         }
         let menu = gio::Menu::new();
+        // None heads the same run as the templates: one choice among them.
+        let made = gio::Menu::new();
         let none = gio::MenuItem::new(Some("None"), None);
         none.set_action_and_target_value(Some("win.book-template"), Some(&template_state(None)));
-        menu.append_item(&none);
-        let made = gio::Menu::new();
+        made.append_item(&none);
         for template in self.book_templates() {
             let item = gio::MenuItem::new(Some(&template.name), None);
             item.set_action_and_target_value(
