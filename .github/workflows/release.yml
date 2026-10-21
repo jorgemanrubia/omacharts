@@ -149,5 +149,10 @@ jobs:
         run: |
           set -euo pipefail
           # The debug package is a by-product nobody installs.
+          package=$(ls omacharts-*-${{ matrix.arch }}.pkg.tar.zst | grep -v -- '-debug-')
+          # And a copy under a name with no version in it, so that
+          # releases/latest/download/omacharts-<arch>.pkg.tar.zst is always
+          # the newest package and the README never has to change.
+          cp "$package" omacharts-${{ matrix.arch }}.pkg.tar.zst
           gh release upload "$GITHUB_REF_NAME" \
-            $(ls omacharts-*-${{ matrix.arch }}.pkg.tar.zst | grep -v -- '-debug-') --clobber
+            "$package" omacharts-${{ matrix.arch }}.pkg.tar.zst --clobber

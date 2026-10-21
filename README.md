@@ -67,6 +67,18 @@ Either way, that puts the command on your path with the man page, shell completi
 the agent skill, and `pacman -Syu` carries Omacharts along with the rest of
 the system.
 
+### The latest release
+
+Omarchy's repository can be a release or two behind. To install the newest
+release straight from GitHub, on x86_64 or aarch64, run the same line every
+time — it always fetches the latest:
+
+```sh
+curl -fLo /tmp/omacharts.pkg.tar.zst \
+  https://github.com/jorgemanrubia/omacharts/releases/latest/download/omacharts-$(uname -m).pkg.tar.zst \
+  && sudo pacman -U /tmp/omacharts.pkg.tar.zst
+```
+
 ### From source
 
 On Arch, x86_64 or aarch64, you can build the same package from a clone:
