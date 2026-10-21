@@ -204,6 +204,9 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("End", "Jump to the latest bar"),
             ("Ctrl+Esc", "Reset the view"),
             ("Ctrl+Shift+G", "Show or hide the gridlines"),
+            ("Ctrl+Alt+Shift+1 … 9", "Chart template N, in the order they are listed"),
+            ("Ctrl+Alt+Shift+0", "No chart template"),
+            ("Ctrl+Alt+Shift+PgUp PgDn", "Previous or next chart template"),
             ("Esc", "Back to the chart"),
         ],
     ),
@@ -583,6 +586,25 @@ mod tests {
             sidebar_width: None,
             maximized: None,
         }
+    }
+
+    /// The number row by position: 1 to 9 then 0, whatever it types.
+    #[test]
+    fn the_number_row_is_read_by_where_a_key_is() {
+        assert_eq!(number_row(10), Some(1));
+        assert_eq!(number_row(18), Some(9));
+        assert_eq!(number_row(19), Some(0));
+        assert_eq!(number_row(20), None, "the key after 0 is minus");
+        assert_eq!(number_row(9), None, "escape");
+    }
+
+    /// None and two templates: stepping goes round both ways.
+    #[test]
+    fn stepping_through_templates_wraps_at_either_end() {
+        assert_eq!(step_round(0, 2, 1), 1);
+        assert_eq!(step_round(2, 2, 1), 0, "past the last is None");
+        assert_eq!(step_round(0, 2, -1), 2, "before None is the last");
+        assert_eq!(step_round(0, 0, 1), 0, "with no templates, None stays None");
     }
 
     /// A chart written before headers could be chosen shows the standard one.
@@ -1177,6 +1199,26 @@ fn list_holds(store: &Store, watchlist: i64, symbol: &str, suffix: Option<&str>)
 /// A group as a menu action's target: the number, and zero for unlinked.
 fn group_state(group: LinkGroup) -> glib::Variant {
     (group.number().unwrap_or(0) as i32).to_variant()
+}
+
+/// Which digit of the number row a hardware keycode is, whatever the layout
+/// makes it type.
+///
+/// Evdev's codes, which are what GDK hands over on Linux, offset by the eight
+/// X has always added: the row runs 1 to 9 from code 10, and 0 is after them.
+fn number_row(keycode: u32) -> Option<usize> {
+    match keycode {
+        10..=18 => Some(keycode as usize - 9),
+        19 => Some(0),
+        _ => None,
+    }
+}
+
+/// Where stepping `by` from `current` lands among None and the templates,
+/// wrapping at either end. Positions, with 0 for None.
+fn step_round(current: usize, count: usize, by: i32) -> usize {
+    let len = count as i32 + 1;
+    (current as i32 + by).rem_euclid(len) as usize
 }
 
 /// A chart template as a menu action's target: its id, or `none`, spelled
@@ -4392,11 +4434,35 @@ impl Window {
 
         let keys = gtk::EventControllerKey::new();
         let this = self.clone();
-        keys.connect_key_pressed(move |_, key, _, state| {
+        keys.connect_key_pressed(move |_, key, keycode, state| {
             use gtk::gdk::Key;
             let ctrl = state.contains(gtk::gdk::ModifierType::CONTROL_MASK);
             let alt = state.contains(gtk::gdk::ModifierType::ALT_MASK);
             let shift = state.contains(gtk::gdk::ModifierType::SHIFT_MASK);
+
+            // Ctrl+Alt+Shift and the number row picks the focused chart's
+            // template: 1 to 9 the templates in the order they are listed, 0
+            // none. By where the key is rather than what it types, because
+            // with Shift held the row types "!" and "\"" on one layout, "!"
+            // and "@" on another and digits only on a third — the trap the
+            // note on chart settings in `shortcuts` describes.
+            if ctrl && alt && shift {
+                if let Some(n) = number_row(keycode) {
+                    this.pick_template(n);
+                    return glib::Propagation::Stop;
+                }
+                // Page up and down rather than the arrows, which with these
+                // three resize the chart and rotate the rail's watchlists.
+                let step = match key {
+                    Key::Page_Up | Key::KP_Page_Up => Some(-1),
+                    Key::Page_Down | Key::KP_Page_Down => Some(1),
+                    _ => None,
+                };
+                if let Some(step) = step {
+                    this.step_template(step);
+                    return glib::Propagation::Stop;
+                }
+            }
 
             // Ctrl and a digit shows that watchlist, counting down the
             // switcher from 1. From anywhere, rail open or not: nothing is
@@ -6311,6 +6377,33 @@ impl Window {
         self.put_on_template(&pane, template);
         self.sync_chart_actions(&pane);
         self.save_workspace();
+    }
+
+    /// The template at `n` in the order they are listed, counting from 1, or
+    /// none for 0. A number with no template behind it does nothing.
+    fn pick_template(self: &Rc<Self>, n: usize) {
+        let chosen = match n {
+            0 => None,
+            n => match self.templates().get(n - 1) {
+                Some(template) => Some(template.id),
+                None => return,
+            },
+        };
+        if chosen != self.focused_template() {
+            self.choose_template(chosen, || {});
+        }
+    }
+
+    /// The next or previous of None and the templates, round and round.
+    fn step_template(self: &Rc<Self>, by: i32) {
+        let templates = self.templates();
+        let at = self
+            .focused_template()
+            .and_then(|id| templates.iter().position(|t| t.id == id))
+            .map_or(0, |at| at + 1);
+        let next = step_round(at, templates.len(), by);
+        let chosen = next.checked_sub(1).and_then(|at| templates.get(at)).map(|t| t.id);
+        self.choose_template(chosen, || {});
     }
 
     /// Put the focused chart on a template, asking first when that would drop
