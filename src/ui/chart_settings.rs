@@ -98,33 +98,192 @@ impl ChartSettings {
             });
         }
 
-        let list = IndicatorList::new(&indicators_page);
+        let owner = Owner::chart(window);
+        // Above the list, because it decides what the list is: the chart's
+        // own, or a template's shown here and changed elsewhere.
+        let templates = adw::PreferencesGroup::new();
+        indicators_page.add(&templates);
+        let list = IndicatorList::new(&indicators_page, "On the chart");
         // Wired once here rather than on every rebuild: the button outlives
         // the rows, and reconnecting it each time would stack up handlers.
-        let window_for_add = window.clone();
-        let refresh_for_add = Refresh::rebuilding(window, &dialog, &list);
+        let owner_for_add = owner.clone();
+        let refresh_for_add = Refresh::rebuilding(&owner, &dialog, &list);
         list.add.connect_clicked(move |_| {
-            pick_indicator(&window_for_add, &refresh_for_add);
+            pick_indicator(&owner_for_add, &refresh_for_add);
         });
-        rebuild_indicators(window, &dialog, &list);
+        rebuild_indicators(&owner, &dialog, &list);
+        template_rows(window, &dialog, &templates, &Refresh::rebuilding(&owner, &dialog, &list));
 
         dialog.present(Some(&window.window));
         match focus {
             Focus::Chart => {}
             Focus::Indicators => dialog.set_visible_page(&indicators_page),
+            // One indicator of a template is the template's to change, so the
+            // gear on such a chart lands on the list that says so.
+            Focus::Indicator(_) if owner.locked() => dialog.set_visible_page(&indicators_page),
             Focus::Indicator(id) => {
                 dialog.set_visible_page(&indicators_page);
                 open_indicator_panel_for(
-                    window,
-                    &Refresh::rebuilding(window, &dialog, &list),
+                    &owner,
+                    &Refresh::rebuilding(&owner, &dialog, &list),
                     id,
                     Panel::Subpage(dialog.clone()),
                 );
             }
         }
     }
+}
 
+/// A chart template's indicators, in an editor of their own.
+///
+/// The same list and panels as a chart's Indicators page, over the template
+/// rather than the chart: every change is made to the template and drawn at
+/// once on every chart using it.
+pub struct TemplateEditor;
 
+impl TemplateEditor {
+    /// `closed` runs when it goes, for whatever opened it to read the
+    /// template again.
+    pub fn present(
+        window: &Rc<Window>,
+        template: u32,
+        over: &impl IsA<gtk::Widget>,
+        closed: impl Fn() + 'static,
+    ) {
+        let name = window
+            .templates()
+            .into_iter()
+            .find(|t| t.id == template)
+            .map(|t| t.name)
+            .unwrap_or_default();
+        let dialog = adw::PreferencesDialog::new();
+        dialog.set_title(&name);
+        dialog.set_content_width(560);
+        dialog.set_content_height((window.window.height() * 85 / 100).max(620));
+
+        let page = adw::PreferencesPage::new();
+        page.set_title("Indicators");
+        page.set_icon_name(Some("view-list-symbolic"));
+        dialog.add(&page);
+
+        let owner = Owner::template(window, template);
+        let list = IndicatorList::new(&page, "In the chart template");
+        let owner_for_add = owner.clone();
+        let refresh_for_add = Refresh::rebuilding(&owner, &dialog, &list);
+        list.add.connect_clicked(move |_| {
+            pick_indicator(&owner_for_add, &refresh_for_add);
+        });
+        rebuild_indicators(&owner, &dialog, &list);
+        dialog.connect_closed(move |_| closed());
+        dialog.present(Some(over));
+    }
+}
+
+/// A way to rebuild something, held by what it rebuilds and let go of later.
+type Again = RefCell<Option<Rc<dyn Fn()>>>;
+
+/// Which template the chart is on, and a way into the one it is on.
+///
+/// Rebuilt whole after every choice, because a choice can be refused — the
+/// question about replacing the chart's own indicators can be answered with
+/// Cancel — and the rows have to say what the chart is on, not what was
+/// clicked.
+fn template_rows(
+    window: &Rc<Window>,
+    dialog: &adw::PreferencesDialog,
+    group: &adw::PreferencesGroup,
+    list: &Refresh,
+) {
+    let rows: Rc<RefCell<Vec<gtk::Widget>>> = Rc::new(RefCell::new(Vec::new()));
+    // Holds the function that rebuilds these rows, which the rows themselves
+    // call; let go when the dialog closes, or the two would keep each other.
+    let rebuild: Rc<Again> = Rc::new(RefCell::new(None));
+    let fill = {
+        let window = window.clone();
+        let dialog = dialog.clone();
+        let group = group.clone();
+        let list = list.clone();
+        let rebuild = rebuild.clone();
+        move || {
+            for row in rows.borrow_mut().drain(..) {
+                group.remove(&row);
+            }
+            let templates = window.templates();
+            let current = window.focused_template();
+
+            let choice = adw::ComboRow::new();
+            choice.set_title("Chart template");
+            let mut names = vec!["None".to_string()];
+            names.extend(templates.iter().map(|t| t.name.clone()));
+            let model = gtk::StringList::new(&[]);
+            for name in &names {
+                model.append(name);
+            }
+            choice.set_model(Some(&model));
+            let at = current
+                .and_then(|id| templates.iter().position(|t| t.id == id))
+                .map(|at| at + 1)
+                .unwrap_or(0);
+            choice.set_selected(at as u32);
+            choice.set_subtitle(match current {
+                Some(_) => "Its indicators, shared with every chart using it",
+                None => "This chart's own indicators",
+            });
+            {
+                let window = window.clone();
+                let list = list.clone();
+                let rebuild = rebuild.clone();
+                let ids: Vec<u32> = templates.iter().map(|t| t.id).collect();
+                choice.connect_selected_notify(move |row| {
+                    let chosen = match row.selected() as usize {
+                        0 => None,
+                        at => ids.get(at - 1).copied(),
+                    };
+                    if chosen == window.focused_template() {
+                        return;
+                    }
+                    let list = list.clone();
+                    let rebuild = rebuild.clone();
+                    // Off the row's own signal: the rows are rebuilt by what
+                    // this does, and this row is one of them.
+                    let window = window.clone();
+                    glib::idle_add_local_once(move || {
+                        window.choose_template(chosen, move || {
+                            list.run();
+                            let again = rebuild.borrow().clone();
+                            if let Some(rebuild) = again {
+                                rebuild();
+                            }
+                        });
+                    });
+                });
+            }
+            group.add(&choice);
+            rows.borrow_mut().push(choice.upcast());
+
+            if let Some(id) = current {
+                let edit = adw::ActionRow::new();
+                edit.set_title("Edit Chart Template…");
+                edit.set_activatable(true);
+                edit.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
+                let window = window.clone();
+                let dialog = dialog.clone();
+                let list = list.clone();
+                edit.connect_activated(move |_| {
+                    let list = list.clone();
+                    TemplateEditor::present(&window, id, &dialog, move || list.run());
+                });
+                group.add(&edit);
+                rows.borrow_mut().push(edit.upcast());
+            }
+        }
+    };
+    let fill: Rc<dyn Fn()> = Rc::new(fill);
+    *rebuild.borrow_mut() = Some(fill.clone());
+    dialog.connect_closed(move |_| {
+        rebuild.borrow_mut().take();
+    });
+    fill();
 }
 
 fn bars_group(window: &Rc<Window>, store: &Rc<Store>) -> adw::PreferencesGroup {
@@ -407,6 +566,80 @@ fn drawings_group(window: &Rc<Window>) -> adw::PreferencesGroup {
     group
 }
 
+/// Whose indicators an editor is changing: the focused chart's, or a chart
+/// template's.
+///
+/// The list, an indicator's panel and the picker are one editor whichever it
+/// is, so they are built against this rather than against the window. A
+/// template is edited with exactly the rows a chart is, and the two cannot
+/// drift apart into an editor that offers a parameter the other has lost.
+pub struct Owner {
+    app: Rc<Window>,
+    /// The application window, which panels are sized against and shown over.
+    pub window: adw::ApplicationWindow,
+    /// `None` for the focused chart.
+    template: Option<u32>,
+}
+
+impl Owner {
+    pub fn chart(app: &Rc<Window>) -> Rc<Owner> {
+        Rc::new(Owner { app: app.clone(), window: app.window.clone(), template: None })
+    }
+
+    pub fn template(app: &Rc<Window>, template: u32) -> Rc<Owner> {
+        Rc::new(Owner { app: app.clone(), window: app.window.clone(), template: Some(template) })
+    }
+
+    fn indicators(&self) -> Vec<Indicator> {
+        match self.template {
+            None => self.app.indicators(),
+            Some(id) => self
+                .app
+                .templates()
+                .into_iter()
+                .find(|t| t.id == id)
+                .map(|t| t.indicators)
+                .unwrap_or_default(),
+        }
+    }
+
+    /// Changing a template's redraws every chart on it, as it changes.
+    fn set_indicators(&self, indicators: Vec<Indicator>) {
+        match self.template {
+            None => self.app.set_indicators(indicators),
+            Some(id) => self.app.set_template_indicators(id, indicators),
+        }
+    }
+
+    fn next_indicator_id(&self) -> u32 {
+        self.indicators().iter().map(|i| i.id).max().unwrap_or(0) + 1
+    }
+
+    fn theme(&self) -> omacharts_engine::Theme {
+        self.app.theme()
+    }
+
+    /// The focused chart's, for a template too: it is the chart in front of
+    /// whoever is editing, and a template has no bars of its own.
+    fn bar_scheme(&self) -> omacharts_engine::BarScheme {
+        self.app.bar_scheme()
+    }
+
+    /// How many rows a profile is drawing. A template draws nothing.
+    fn profile_rows(&self, id: u32) -> Option<usize> {
+        match self.template {
+            None => self.app.profile_rows(id),
+            Some(_) => None,
+        }
+    }
+
+    /// A chart on a template shows the template's indicators, which are
+    /// changed in the template's own editor rather than from the chart.
+    fn locked(&self) -> bool {
+        self.template.is_none() && self.app.focused_template().is_some()
+    }
+}
+
 /// The one group the indicator list lives in, and the rows currently in it.
 ///
 /// Tracked explicitly because a preferences page does not hand back the groups
@@ -424,9 +657,9 @@ pub struct IndicatorList {
 }
 
 impl IndicatorList {
-    fn new(page: &adw::PreferencesPage) -> IndicatorList {
+    fn new(page: &adw::PreferencesPage, title: &str) -> IndicatorList {
         let group = adw::PreferencesGroup::new();
-        group.set_title("On the chart");
+        group.set_title(title);
         page.add(&group);
 
         let add = gtk::Button::from_icon_name("list-add-symbolic");
@@ -503,14 +736,14 @@ impl Refresh {
     }
 
     fn rebuilding(
-        window: &Rc<Window>,
+        owner: &Rc<Owner>,
         dialog: &adw::PreferencesDialog,
         list: &IndicatorList,
     ) -> Refresh {
-        let window = window.clone();
+        let owner = owner.clone();
         let dialog = dialog.clone();
         let list = list.clone();
-        Refresh(Rc::new(move || rebuild_indicators(&window, &dialog, &list)))
+        Refresh(Rc::new(move || rebuild_indicators(&owner, &dialog, &list)))
     }
 
     fn run(&self) {
@@ -525,19 +758,31 @@ impl Refresh {
 /// a column of expanders holding every parameter of every indicator is a shape
 /// you cannot read.
 fn rebuild_indicators(
-    window: &Rc<Window>,
+    owner: &Rc<Owner>,
     dialog: &adw::PreferencesDialog,
     list: &IndicatorList,
 ) {
     list.clear();
-    let indicators = window.indicators();
-    let refresh = Refresh::rebuilding(window, dialog, list);
+    let indicators = owner.indicators();
+    let refresh = Refresh::rebuilding(owner, dialog, list);
 
-    list.group.set_description(Some(if indicators.is_empty() {
-        "Nothing yet."
-    } else {
-        "Drag to reorder. The list is the chart, top to bottom; colours come from the theme."
+    // Shown but not editable: what the chart is drawing is still worth
+    // reading here, and the rows lose their controls (see `indicator_row`).
+    let locked = owner.locked();
+    list.add.set_visible(!locked);
+    list.group.set_description(Some(match (locked, owner.template.is_some(), indicators.is_empty()) {
+        (true, _, _) => "From the chart template. Edit the template to change them.",
+        (false, _, true) => "Nothing yet.",
+        (false, true, false) => {
+            "Drag to reorder. Every chart using this template shows these, top to bottom."
+        }
+        (false, false, false) => {
+            "Drag to reorder. The list is the chart, top to bottom; colours come from the theme."
+        }
     }));
+    if locked && indicators.is_empty() {
+        return;
+    }
 
     // The price plot is a row of the list because strips can be stacked above it
     // as well as below, and a list showing only the strips could not say which
@@ -547,12 +792,12 @@ fn rebuild_indicators(
     let price_at = if stacked { price_row_at(&indicators) } else { usize::MAX };
     for (at, indicator) in indicators.iter().enumerate() {
         if at == price_at {
-            list.push(&price_row(window, &refresh));
+            list.push(&price_row(owner, &refresh));
         }
-        list.push(&indicator_row(window, dialog, &refresh, &indicators, indicator));
+        list.push(&indicator_row(owner, dialog, &refresh, &indicators, indicator));
     }
     if price_at == indicators.len() {
-        list.push(&price_row(window, &refresh));
+        list.push(&price_row(owner, &refresh));
     }
 
     if indicators.is_empty() {
@@ -560,10 +805,10 @@ fn rebuild_indicators(
         empty.set_title("Add an indicator");
         empty.set_subtitle("Moving averages, VWAP, volume profile");
         empty.set_activatable(true);
-        let window_for_empty = window.clone();
+        let owner_for_empty = owner.clone();
         let refresh_for_empty = refresh.clone();
         empty.connect_activated(move |_| {
-            pick_indicator(&window_for_empty, &refresh_for_empty);
+            pick_indicator(&owner_for_empty, &refresh_for_empty);
         });
         list.push(&empty);
     }
@@ -587,7 +832,7 @@ fn price_row_at(indicators: &[Indicator]) -> usize {
 /// Not a thing you can configure or remove — it is the chart — so it carries
 /// nothing but its name. It is a place to drop a strip on, which is how a strip
 /// is moved across the price from here.
-fn price_row(window: &Rc<Window>, refresh: &Refresh) -> adw::ActionRow {
+fn price_row(owner: &Rc<Owner>, refresh: &Refresh) -> adw::ActionRow {
     let row = adw::ActionRow::new();
     row.set_title("Price");
     row.set_subtitle("Candles, and everything drawn over them");
@@ -597,19 +842,19 @@ fn price_row(window: &Rc<Window>, refresh: &Refresh) -> adw::ActionRow {
     row.add_css_class("dim-label");
 
     let target = gtk::DropTarget::new(glib::Type::STRING, gtk::gdk::DragAction::MOVE);
-    let window = window.clone();
+    let owner = owner.clone();
     let refresh = refresh.clone();
     target.connect_drop(move |_, value, _, _| {
         let Ok(moving) = value.get::<String>().unwrap_or_default().parse::<u32>() else {
             return false;
         };
-        let mut all = window.indicators();
+        let mut all = owner.indicators();
         // Dropped on the price: the strip changes sides, which is the one thing
         // dropping it on another row cannot say.
         if !indicators::cross_price(&mut all, moving) {
             return false;
         }
-        window.set_indicators(all);
+        owner.set_indicators(all);
         refresh.run();
         true
     });
@@ -619,14 +864,14 @@ fn price_row(window: &Rc<Window>, refresh: &Refresh) -> adw::ActionRow {
 
 /// One line in the list: what it is, whether it is drawn, and a way in.
 fn indicator_row(
-    window: &Rc<Window>,
+    owner: &Rc<Owner>,
     dialog: &adw::PreferencesDialog,
     refresh: &Refresh,
     all: &[Indicator],
     indicator: &Indicator,
 ) -> adw::ActionRow {
     let id = indicator.id;
-    let colour = drawn_colour(window, all, id);
+    let colour = drawn_colour(owner, all, id);
     let row = adw::ActionRow::new();
     row.set_title(&indicator.label());
     row.set_subtitle(indicator.kind.name());
@@ -644,6 +889,14 @@ fn indicator_row(
     });
     row.add_prefix(&swatch);
 
+    // A template's indicators on one of its charts: named, with nothing to
+    // pull, switch or throw away, so the row cannot look like something it
+    // will not do.
+    if owner.locked() {
+        row.set_activatable(false);
+        return row;
+    }
+
     // Order is a property of the list, so its controls sit on the list side of
     // the row. It decides two things at once: which strip is stacked above
     // which under the chart, and which line is drawn over which on it.
@@ -655,15 +908,15 @@ fn indicator_row(
     handle.add_css_class("dim-label");
     handle.set_tooltip_text(Some("Drag to reorder"));
     row.add_prefix(&handle);
-    wire_reorder(window, refresh, &row, id);
+    wire_reorder(owner, refresh, &row, id);
 
     let visible = gtk::Switch::new();
     visible.set_active(indicator.visible);
     visible.set_valign(gtk::Align::Center);
     visible.set_tooltip_text(Some("Show on the chart"));
-    let window_for_visible = window.clone();
+    let owner_for_visible = owner.clone();
     visible.connect_state_set(move |_, state| {
-        update(&window_for_visible, id, |i| i.visible = state);
+        update(&owner_for_visible, id, |i| i.visible = state);
         glib::Propagation::Proceed
     });
     row.add_suffix(&visible);
@@ -672,22 +925,22 @@ fn indicator_row(
     remove.add_css_class("flat");
     remove.set_valign(gtk::Align::Center);
     remove.set_tooltip_text(Some("Remove"));
-    let window_for_remove = window.clone();
+    let owner_for_remove = owner.clone();
     let refresh_for_remove = refresh.clone();
     remove.connect_clicked(move |_| {
         let kept: Vec<Indicator> =
-            window_for_remove.indicators().into_iter().filter(|i| i.id != id).collect();
-        window_for_remove.set_indicators(kept);
+            owner_for_remove.indicators().into_iter().filter(|i| i.id != id).collect();
+        owner_for_remove.set_indicators(kept);
         refresh_for_remove.run();
     });
     row.add_suffix(&remove);
 
-    let window_for_open = window.clone();
+    let owner_for_open = owner.clone();
     let refresh_for_open = refresh.clone();
     let dialog_for_open = dialog.clone();
     row.connect_activated(move |_| {
         open_indicator_panel_for(
-            &window_for_open,
+            &owner_for_open,
             &refresh_for_open,
             id,
             Panel::Subpage(dialog_for_open.clone()),
@@ -705,7 +958,7 @@ fn indicator_row(
 /// The id travels as the payload rather than the position, because the list is
 /// rebuilt while the drag is in flight and a position would by then mean a
 /// different row.
-fn wire_reorder(window: &Rc<Window>, refresh: &Refresh, row: &adw::ActionRow, id: u32) {
+fn wire_reorder(owner: &Rc<Owner>, refresh: &Refresh, row: &adw::ActionRow, id: u32) {
     let source = gtk::DragSource::new();
     source.set_actions(gtk::gdk::DragAction::MOVE);
     let payload = id.to_string();
@@ -715,7 +968,7 @@ fn wire_reorder(window: &Rc<Window>, refresh: &Refresh, row: &adw::ActionRow, id
     row.add_controller(source);
 
     let target = gtk::DropTarget::new(glib::Type::STRING, gtk::gdk::DragAction::MOVE);
-    let window = window.clone();
+    let owner = owner.clone();
     let refresh = refresh.clone();
     target.connect_drop(move |_, value, _, _| {
         let Ok(moving) = value.get::<String>().unwrap_or_default().parse::<u32>() else {
@@ -724,7 +977,7 @@ fn wire_reorder(window: &Rc<Window>, refresh: &Refresh, row: &adw::ActionRow, id
         if moving == id {
             return false;
         }
-        let mut indicators = window.indicators();
+        let mut indicators = owner.indicators();
         let (Some(from), Some(to)) = (
             indicators.iter().position(|i| i.id == moving),
             indicators.iter().position(|i| i.id == id),
@@ -747,7 +1000,7 @@ fn wire_reorder(window: &Rc<Window>, refresh: &Refresh, row: &adw::ActionRow, id
             dragged.above_price = side;
         }
         indicators.insert(to, dragged);
-        window.set_indicators(indicators);
+        owner.set_indicators(indicators);
         refresh.run();
         true
     });
@@ -771,19 +1024,19 @@ enum Panel {
 /// that means the indicator is already drawn while you set it up, and
 /// dismissing the dialog takes it back off again — the Add button is how you
 /// say you meant it.
-fn open_indicator_panel_for(window: &Rc<Window>, refresh: &Refresh, id: u32, panel: Panel) {
-    let indicators = window.indicators();
+fn open_indicator_panel_for(owner: &Rc<Owner>, refresh: &Refresh, id: u32, panel: Panel) {
+    let indicators = owner.indicators();
     let Some(indicator) = indicators.iter().find(|i| i.id == id).cloned() else {
         return;
     };
-    let colour = drawn_colour(window, &indicators, id);
+    let colour = drawn_colour(owner, &indicators, id);
 
     let page = adw::PreferencesPage::new();
-    page.add(&parameters_group(window, refresh, &indicator));
-    if let Some(group) = appearance_group(window, refresh, &colour, &indicator) {
+    page.add(&parameters_group(owner, refresh, &indicator));
+    if let Some(group) = appearance_group(owner, refresh, &colour, &indicator) {
         page.add(&group);
     }
-    for group in band_groups(window, refresh, &colour, &indicator) {
+    for group in band_groups(owner, refresh, &colour, &indicator) {
         page.add(&group);
     }
 
@@ -805,7 +1058,7 @@ fn open_indicator_panel_for(window: &Rc<Window>, refresh: &Refresh, id: u32, pan
             let modal = adw::Dialog::new();
             modal.set_title(&indicator.label());
             modal.set_content_width(560);
-            modal.set_content_height((window.window.height() * 85 / 100).max(620));
+            modal.set_content_height((owner.window.height() * 85 / 100).max(620));
             modal.set_child(Some(&toolbar));
 
             // Cancel on the left, the suggested action on the right, and the
@@ -843,19 +1096,19 @@ fn open_indicator_panel_for(window: &Rc<Window>, refresh: &Refresh, id: u32, pan
 
             // Closed any other way — Escape, the close button, clicking out —
             // means it was never added, so it comes back off the chart.
-            let window_for_close = window.clone();
+            let owner_for_close = owner.clone();
             let refresh_for_close = refresh.clone();
             modal.connect_closed(move |_| {
                 if added.get() {
                     return;
                 }
                 let kept: Vec<Indicator> =
-                    window_for_close.indicators().into_iter().filter(|i| i.id != id).collect();
-                window_for_close.set_indicators(kept);
+                    owner_for_close.indicators().into_iter().filter(|i| i.id != id).collect();
+                owner_for_close.set_indicators(kept);
                 refresh_for_close.run();
             });
 
-            modal.present(Some(&window.window));
+            modal.present(Some(&owner.window));
             focus_first_parameter(&page);
         }
     }
@@ -901,7 +1154,7 @@ fn focus_first_parameter(page: &adw::PreferencesPage) {
 
 /// The indicator's own line: colour, weight, pattern.
 fn appearance_group(
-    window: &Rc<Window>,
+    owner: &Rc<Owner>,
     refresh: &Refresh,
     colour: &str,
     indicator: &Indicator,
@@ -911,25 +1164,25 @@ fn appearance_group(
     // Volume is bars, not a line: a colour for each direction, and no
     // thickness or pattern to ask about.
     if indicator.kind == Kind::Volume {
-        return Some(volume_colours(window, refresh, indicator));
+        return Some(volume_colours(owner, refresh, indicator));
     }
 
     // A volume profile is bars and a mark, not a line, so it is asked about
     // its two colours and nothing about thickness or pattern.
     if indicator.kind == Kind::VolumeProfile {
-        return Some(profile_colours(window, refresh, colour, indicator));
+        return Some(profile_colours(owner, refresh, colour, indicator));
     }
 
     let group = adw::PreferencesGroup::new();
     group.set_title("Line");
 
     let ink = {
-        let window = window.clone();
-        Ink::new(move || drawn_colour(&window, &window.indicators(), id))
+        let owner = owner.clone();
+        Ink::new(move || drawn_colour(&owner, &owner.indicators(), id))
     };
 
     group.add(&colour_row(
-        window,
+        owner,
         refresh,
         &ink,
         "Colour",
@@ -938,7 +1191,7 @@ fn appearance_group(
         move |indicator, choice| indicator.color = choice,
         id,
     ));
-    for row in stroke_rows(window, refresh, &ink, id, "", indicator.stroke, {
+    for row in stroke_rows(owner, refresh, &ink, id, "", indicator.stroke, {
         move |indicator: &mut Indicator, stroke: Stroke| indicator.stroke = stroke
     }) {
         group.add(&row);
@@ -953,9 +1206,9 @@ fn appearance_group(
         _ => None,
     };
     if let Some((title, chosen)) = second {
-        let shown = window.theme().companion_or(chosen.as_ref(), colour);
+        let shown = owner.theme().companion_or(chosen.as_ref(), colour);
         group.add(&colour_row(
-            window,
+            owner,
             refresh,
             &Ink::new(String::new),
             title,
@@ -976,7 +1229,7 @@ fn appearance_group(
 ///
 /// Returns the group they belong to so callers can drop it straight in.
 fn stroke_rows(
-    window: &Rc<Window>,
+    owner: &Rc<Owner>,
     refresh: &Refresh,
     ink: &Ink,
     id: u32,
@@ -991,7 +1244,7 @@ fn stroke_rows(
 
     let apply_width = apply.clone();
     rows.push(picker_row(
-        window,
+        owner,
         refresh,
         ink,
         id,
@@ -1002,7 +1255,7 @@ fn stroke_rows(
     ));
 
     rows.push(picker_row(
-        window,
+        owner,
         refresh,
         ink,
         id,
@@ -1039,7 +1292,7 @@ const LINE_SAMPLE_WIDTH: f64 = 1.5;
 /// options beside each other.
 #[allow(clippy::too_many_arguments)]
 fn picker_row(
-    window: &Rc<Window>,
+    owner: &Rc<Owner>,
     refresh: &Refresh,
     ink: &Ink,
     id: u32,
@@ -1075,7 +1328,7 @@ fn picker_row(
             stroke.style == current.style
         });
 
-        let window_for_pick = window.clone();
+        let owner_for_pick = owner.clone();
         let refresh_for_pick = refresh.clone();
         let apply_for_pick = apply.clone();
         let picked = *stroke;
@@ -1084,7 +1337,7 @@ fn picker_row(
                 return;
             }
             let apply = apply_for_pick.clone();
-            update(&window_for_pick, id, move |indicator| apply(indicator, picked));
+            update(&owner_for_pick, id, move |indicator| apply(indicator, picked));
             refresh_for_pick.run();
         });
         strip.append(&button);
@@ -1131,7 +1384,7 @@ fn stroke_sample(width: f64, style: LineStyle, ink: &Ink) -> gtk::DrawingArea {
 /// following the theme, so there is still something to undo.
 #[allow(clippy::too_many_arguments)]
 fn colour_row(
-    window: &Rc<Window>,
+    owner: &Rc<Owner>,
     refresh: &Refresh,
     ink: &Ink,
     title: &str,
@@ -1154,18 +1407,18 @@ fn colour_row(
     // these two have to keep each other up to date — otherwise Reset stays
     // greyed out until the panel is reopened, right after the one action that
     // gives it something to undo.
-    let window_for_colour = window.clone();
+    let owner_for_colour = owner.clone();
     let refresh_for_colour = refresh.clone();
     let ink_for_colour = ink.clone();
     let apply_for_colour = apply.clone();
     let default_weak = default.downgrade();
     let button = crate::ui::palette::picker(
-        &window.theme(),
+        &owner.theme(),
         choice,
         current,
         move |picked| {
             let apply = apply_for_colour.clone();
-            update(&window_for_colour, id, move |indicator| {
+            update(&owner_for_colour, id, move |indicator| {
                 apply(indicator, Some(picked.clone()))
             });
             if let Some(default) = default_weak.upgrade() {
@@ -1176,20 +1429,20 @@ fn colour_row(
         },
     );
 
-    let window_for_default = window.clone();
+    let owner_for_default = owner.clone();
     let refresh_for_default = refresh.clone();
     let ink_for_default = ink.clone();
     let button_weak = button.downgrade();
     default.connect_clicked(move |default| {
         let apply = apply.clone();
-        update(&window_for_default, id, move |indicator| apply(indicator, None));
+        update(&owner_for_default, id, move |indicator| apply(indicator, None));
         default.set_sensitive(false);
         // Show what it reverted to. The default is not a fixed colour — it is
         // whichever of the palette this indicator's siblings have left free —
         // so it has to be asked for after the change, not guessed before it.
         if let Some(button) = button_weak.upgrade() {
-            let indicators = window_for_default.indicators();
-            crate::ui::palette::show(&button, &drawn_colour(&window_for_default, &indicators, id));
+            let indicators = owner_for_default.indicators();
+            crate::ui::palette::show(&button, &drawn_colour(&owner_for_default, &indicators, id));
         }
         ink_for_default.repaint();
         refresh_for_default.run();
@@ -1201,7 +1454,7 @@ fn colour_row(
 }
 
 fn parameters_group(
-    window: &Rc<Window>,
+    owner: &Rc<Owner>,
     refresh: &Refresh,
     indicator: &Indicator,
 ) -> adw::PreferencesGroup {
@@ -1212,7 +1465,7 @@ fn parameters_group(
     match &indicator.params {
         Params::MovingAverage { period } => {
             group.add(&spin_row(
-                window,
+                owner,
                 refresh,
                 id,
                 "Period",
@@ -1226,13 +1479,13 @@ fn parameters_group(
             ));
         }
         Params::Vwap { reset, .. } => {
-            group.add(&reset_row(window, refresh, id, *reset));
+            group.add(&reset_row(owner, refresh, id, *reset));
         }
         // The multiple the bands sit at is edited with the band itself, below,
         // which is where a VWAP's is edited too.
         Params::Bollinger { period, .. } => {
             group.add(&spin_row(
-                window, refresh, id, "Period", *period as f64, 1.0, 500.0, 1.0,
+                owner, refresh, id, "Period", *period as f64, 1.0, 500.0, 1.0,
                 move |indicator, value| {
                     if let Params::Bollinger { period, .. } = &mut indicator.params {
                         *period = value as usize;
@@ -1241,25 +1494,25 @@ fn parameters_group(
             ));
         }
         Params::Volume { height, .. } => {
-            group.add(&pane_height_row(window, refresh, id, *height));
+            group.add(&pane_height_row(owner, refresh, id, *height));
         }
         Params::Rsi { period, height, overbought, oversold } => {
             group.add(&spin_row(
-                window, refresh, id, "Period", *period as f64, 2.0, 200.0, 1.0,
+                owner, refresh, id, "Period", *period as f64, 2.0, 200.0, 1.0,
                 move |indicator, value| {
                     if let Params::Rsi { period, .. } = &mut indicator.params {
                         *period = value as usize;
                     }
                 },
             ));
-            for row in level_rows(window, refresh, id, *overbought, *oversold) {
+            for row in level_rows(owner, refresh, id, *overbought, *oversold) {
                 group.add(&row);
             }
-            group.add(&pane_height_row(window, refresh, id, *height));
+            group.add(&pane_height_row(owner, refresh, id, *height));
         }
         Params::Stochastic { period, k_smooth, d_period, height, overbought, oversold, .. } => {
             group.add(&spin_row(
-                window, refresh, id, "%K length", *period as f64, 1.0, 200.0, 1.0,
+                owner, refresh, id, "%K length", *period as f64, 1.0, 200.0, 1.0,
                 move |indicator, value| {
                     if let Params::Stochastic { period, .. } = &mut indicator.params {
                         *period = value as usize;
@@ -1267,7 +1520,7 @@ fn parameters_group(
                 },
             ));
             group.add(&spin_row(
-                window, refresh, id, "%K smoothing", *k_smooth as f64, 1.0, 50.0, 1.0,
+                owner, refresh, id, "%K smoothing", *k_smooth as f64, 1.0, 50.0, 1.0,
                 move |indicator, value| {
                     if let Params::Stochastic { k_smooth, .. } = &mut indicator.params {
                         *k_smooth = value as usize;
@@ -1275,26 +1528,26 @@ fn parameters_group(
                 },
             ));
             group.add(&spin_row(
-                window, refresh, id, "%D smoothing", *d_period as f64, 1.0, 50.0, 1.0,
+                owner, refresh, id, "%D smoothing", *d_period as f64, 1.0, 50.0, 1.0,
                 move |indicator, value| {
                     if let Params::Stochastic { d_period, .. } = &mut indicator.params {
                         *d_period = value as usize;
                     }
                 },
             ));
-            for row in level_rows(window, refresh, id, *overbought, *oversold) {
+            for row in level_rows(owner, refresh, id, *overbought, *oversold) {
                 group.add(&row);
             }
-            group.add(&pane_height_row(window, refresh, id, *height));
+            group.add(&pane_height_row(owner, refresh, id, *height));
         }
         Params::Macd { fast, slow, signal, height, .. } => {
-            for row in macd_length_rows(window, refresh, id, *fast as f64, *slow as f64) {
+            for row in macd_length_rows(owner, refresh, id, *fast as f64, *slow as f64) {
                 group.add(&row);
             }
             // The same kind of row as the two above it, rather than the
             // stepper the other strips use: three lengths that look like two
             // and a half read as a mistake.
-            let window_for_signal = window.clone();
+            let owner_for_signal = owner.clone();
             let refresh_for_signal = refresh.clone();
             group.add(
                 &controls::bounded_row(
@@ -1306,7 +1559,7 @@ fn parameters_group(
                     1.0,
                     0,
                     move |length| {
-                        update(&window_for_signal, id, |indicator| {
+                        update(&owner_for_signal, id, |indicator| {
                             if let Params::Macd { signal, .. } = &mut indicator.params {
                                 *signal = length as usize;
                             }
@@ -1316,27 +1569,27 @@ fn parameters_group(
                 )
                 .row,
             );
-            group.add(&pane_height_row(window, refresh, id, *height));
+            group.add(&pane_height_row(owner, refresh, id, *height));
         }
         Params::Atr { period, height } => {
             group.add(&spin_row(
-                window, refresh, id, "Period", *period as f64, 2.0, 200.0, 1.0,
+                owner, refresh, id, "Period", *period as f64, 2.0, 200.0, 1.0,
                 move |indicator, value| {
                     if let Params::Atr { period, .. } = &mut indicator.params {
                         *period = value as usize;
                     }
                 },
             ));
-            group.add(&pane_height_row(window, refresh, id, *height));
+            group.add(&pane_height_row(owner, refresh, id, *height));
         }
         Params::VolumeProfile { reset, rows, value_area, .. } => {
-            group.add(&reset_row(window, refresh, id, *reset));
-            for row in rows_rows(window, refresh, id, *rows) {
+            group.add(&reset_row(owner, refresh, id, *reset));
+            for row in rows_rows(owner, refresh, id, *rows) {
                 group.add(&row);
             }
             group.add(
                 &percent_row(
-                    window,
+                    owner,
                     refresh,
                     id,
                     "Value area %",
@@ -1358,7 +1611,7 @@ fn parameters_group(
 /// A rising and a falling session's volume bar. Unset, each is the candle's
 /// own colour dimmed toward the chart.
 fn volume_colours(
-    window: &Rc<Window>,
+    owner: &Rc<Owner>,
     refresh: &Refresh,
     indicator: &Indicator,
 ) -> adw::PreferencesGroup {
@@ -1367,12 +1620,12 @@ fn volume_colours(
     group.set_title("Colours");
 
     let (up, down) =
-        crate::ui::chart::volume_colours(indicator, &window.theme(), &window.bar_scheme());
+        crate::ui::chart::volume_colours(indicator, &owner.theme(), &owner.bar_scheme());
     let Params::Volume { up_color, down_color, .. } = &indicator.params else { return group };
     // Bars have no line to repaint as a sample.
     let unused = Ink::new(String::new);
     group.add(&colour_row(
-        window,
+        owner,
         refresh,
         &unused,
         "Up",
@@ -1386,7 +1639,7 @@ fn volume_colours(
         id,
     ));
     group.add(&colour_row(
-        window,
+        owner,
         refresh,
         &unused,
         "Down",
@@ -1404,7 +1657,7 @@ fn volume_colours(
 
 /// The two colours a volume profile actually has.
 fn profile_colours(
-    window: &Rc<Window>,
+    owner: &Rc<Owner>,
     refresh: &Refresh,
     colour: &str,
     indicator: &Indicator,
@@ -1416,7 +1669,7 @@ fn profile_colours(
     // Neither row has samples to repaint: a profile has no line to show.
     let unused = Ink::new(String::new);
     group.add(&colour_row(
-        window,
+        owner,
         refresh,
         &unused,
         "Profile",
@@ -1429,10 +1682,10 @@ fn profile_colours(
     let Params::VolumeProfile { poc_color, .. } = &indicator.params else { return group };
     // Unset is not "the same as the profile": it is the next colour along the
     // theme's sequence, which is the pair that sequence keeps far apart in hue.
-    let shown = window.theme().companion_or(poc_color.as_ref(), colour);
+    let shown = owner.theme().companion_or(poc_color.as_ref(), colour);
 
     group.add(&colour_row(
-        window,
+        owner,
         refresh,
         &unused,
         "Point of control",
@@ -1452,7 +1705,7 @@ fn profile_colours(
 /// One group per band, because every band has the same half-dozen choices and
 /// burying them in expanders only hides which are on.
 fn band_groups(
-    window: &Rc<Window>,
+    owner: &Rc<Owner>,
     refresh: &Refresh,
     line_colour: &str,
     indicator: &Indicator,
@@ -1476,10 +1729,10 @@ fn band_groups(
         let switch = gtk::Switch::new();
         switch.set_active(band.enabled);
         switch.set_valign(gtk::Align::Center);
-        let window_for_show = window.clone();
+        let owner_for_show = owner.clone();
         let refresh_for_show = refresh.clone();
         switch.connect_state_set(move |_, on| {
-            update(&window_for_show, id, move |indicator| {
+            update(&owner_for_show, id, move |indicator| {
                 if let Some(band) =
                     indicator.params.bands_mut().and_then(|bands| bands.get_mut(index))
                 {
@@ -1494,7 +1747,7 @@ fn band_groups(
 
         // Tenths, because one, one and a half and two are the figures people
         // reach for, and six is further out than any band is drawn.
-        let window_for_dev = window.clone();
+        let owner_for_dev = owner.clone();
         let refresh_for_dev = refresh.clone();
         let deviations = controls::bounded_row(
             "Standard deviations",
@@ -1505,7 +1758,7 @@ fn band_groups(
             0.1,
             1,
             move |value| {
-                update(&window_for_dev, id, move |indicator| {
+                update(&owner_for_dev, id, move |indicator| {
                     if let Some(band) =
                         indicator.params.bands_mut().and_then(|bands| bands.get_mut(index))
                     {
@@ -1523,10 +1776,10 @@ fn band_groups(
         let fill = gtk::Switch::new();
         fill.set_active(band.fill);
         fill.set_valign(gtk::Align::Center);
-        let window_for_fill = window.clone();
+        let owner_for_fill = owner.clone();
         let refresh_for_fill = refresh.clone();
         fill.connect_state_set(move |_, on| {
-            update(&window_for_fill, id, move |indicator| {
+            update(&owner_for_fill, id, move |indicator| {
                 if let Some(band) =
                     indicator.params.bands_mut().and_then(|bands| bands.get_mut(index))
                 {
@@ -1548,7 +1801,7 @@ fn band_groups(
         // slider and the chart agree about where they are.
         group.add(
             &percent_row(
-                window,
+                owner,
                 refresh,
                 id,
                 "Shading %",
@@ -1568,28 +1821,28 @@ fn band_groups(
         let current = band
             .color
             .as_ref()
-            .map(|c| c.resolve(&window.theme()))
+            .map(|c| c.resolve(&owner.theme()))
             .unwrap_or_else(|| line_colour.clone());
 
         // A band's samples follow the band's own colour, falling back to the
         // line's when it has none of its own — the same answer the chart draws.
         let ink = {
-            let window = window.clone();
+            let owner = owner.clone();
             Ink::new(move || {
-                let indicators = window.indicators();
+                let indicators = owner.indicators();
                 let band_colour = indicators
                     .iter()
                     .find(|i| i.id == id)
                     .and_then(|i| i.params.bands())
                     .and_then(|bands| bands.get(index))
                     .and_then(|band| band.color.clone())
-                    .map(|choice| choice.resolve(&window.theme()));
-                band_colour.unwrap_or_else(|| drawn_colour(&window, &indicators, id))
+                    .map(|choice| choice.resolve(&owner.theme()));
+                band_colour.unwrap_or_else(|| drawn_colour(&owner, &indicators, id))
             })
         };
 
         group.add(&colour_row(
-            window,
+            owner,
             refresh,
             &ink,
             "Colour",
@@ -1605,7 +1858,7 @@ fn band_groups(
             id,
         ));
 
-        for row in stroke_rows(window, refresh, &ink, id, "", band.stroke, {
+        for row in stroke_rows(owner, refresh, &ink, id, "", band.stroke, {
             move |indicator: &mut Indicator, stroke: Stroke| {
                 if let Some(band) =
                     indicator.params.bands_mut().and_then(|bands| bands.get_mut(index))
@@ -1623,7 +1876,7 @@ fn band_groups(
 }
 
 fn reset_row(
-    window: &Rc<Window>,
+    owner: &Rc<Owner>,
     refresh: &Refresh,
     id: u32,
     current: Reset,
@@ -1635,11 +1888,11 @@ fn reset_row(
     row.set_model(Some(&gtk::StringList::new(&names)));
     row.set_selected(Reset::ALL.iter().position(|r| *r == current).unwrap_or(0) as u32);
 
-    let window = window.clone();
+    let owner = owner.clone();
     let refresh = refresh.clone();
     row.connect_selected_notify(move |row| {
         let Some(chosen) = Reset::ALL.get(row.selected() as usize).copied() else { return };
-        update(&window, id, |indicator| match &mut indicator.params {
+        update(&owner, id, |indicator| match &mut indicator.params {
             Params::Vwap { reset, .. } => *reset = chosen,
             Params::VolumeProfile { reset, .. } => *reset = chosen,
             Params::MovingAverage { .. }
@@ -1657,7 +1910,7 @@ fn reset_row(
 
 #[allow(clippy::too_many_arguments)]
 fn spin_row(
-    window: &Rc<Window>,
+    owner: &Rc<Owner>,
     refresh: &Refresh,
     id: u32,
     title: &str,
@@ -1674,11 +1927,11 @@ fn spin_row(
         row.set_digits(1);
     }
 
-    let window = window.clone();
+    let owner = owner.clone();
     let refresh = refresh.clone();
     row.connect_value_notify(move |row| {
         let value = row.value();
-        update(&window, id, |indicator| apply(indicator, value));
+        update(&owner, id, |indicator| apply(indicator, value));
         // The list behind this panel shows the period in its title.
         refresh.run();
     });
@@ -1695,7 +1948,7 @@ fn spin_row(
 /// stops between figures is a slider the box then disagrees with.
 #[allow(clippy::too_many_arguments)]
 fn percent_row(
-    window: &Rc<Window>,
+    owner: &Rc<Owner>,
     refresh: &Refresh,
     id: u32,
     title: &str,
@@ -1704,7 +1957,7 @@ fn percent_row(
     most: f64,
     apply: impl Fn(&mut Indicator, f64) + 'static,
 ) -> adw::ActionRow {
-    let window = window.clone();
+    let owner = owner.clone();
     let refresh = refresh.clone();
     controls::bounded_row(
         title,
@@ -1716,7 +1969,7 @@ fn percent_row(
         0,
         move |percent| {
             let share = as_share(percent);
-            update(&window, id, |indicator| apply(indicator, share));
+            update(&owner, id, |indicator| apply(indicator, share));
             refresh.run();
         },
     )
@@ -1750,7 +2003,7 @@ fn as_share(percent: f64) -> f64 {
 /// Overbought stops a step short of 0 and oversold a step short of 100, which
 /// is what keeps there always being somewhere for the other to go.
 fn level_rows(
-    window: &Rc<Window>,
+    owner: &Rc<Owner>,
     refresh: &Refresh,
     id: u32,
     overbought: f64,
@@ -1761,7 +2014,7 @@ fn level_rows(
     let under: Rc<OnceCell<controls::WeakBounded>> = Rc::new(OnceCell::new());
     let over: Rc<OnceCell<controls::WeakBounded>> = Rc::new(OnceCell::new());
 
-    let window_for_over = window.clone();
+    let owner_for_over = owner.clone();
     let refresh_for_over = refresh.clone();
     let under_for_over = under.clone();
     let overbought = controls::bounded_row(
@@ -1773,7 +2026,7 @@ fn level_rows(
         LEVEL_STEP,
         0,
         move |level| {
-            update(&window_for_over, id, |indicator| {
+            update(&owner_for_over, id, |indicator| {
                 if let Params::Rsi { overbought, .. } | Params::Stochastic { overbought, .. } =
                     &mut indicator.params
                 {
@@ -1789,7 +2042,7 @@ fn level_rows(
         },
     );
 
-    let window_for_under = window.clone();
+    let owner_for_under = owner.clone();
     let refresh_for_under = refresh.clone();
     let over_for_under = over.clone();
     let oversold = controls::bounded_row(
@@ -1801,7 +2054,7 @@ fn level_rows(
         LEVEL_STEP,
         0,
         move |level| {
-            update(&window_for_under, id, |indicator| {
+            update(&owner_for_under, id, |indicator| {
                 if let Params::Rsi { oversold, .. } | Params::Stochastic { oversold, .. } =
                     &mut indicator.params
                 {
@@ -1837,7 +2090,7 @@ const LEVEL_STEP: f64 = 1.0;
 /// pair above do and for the same reason: a slider that stops dead reads as
 /// broken, and one that quietly makes room says what the rule is.
 fn macd_length_rows(
-    window: &Rc<Window>,
+    owner: &Rc<Owner>,
     refresh: &Refresh,
     id: u32,
     fast: f64,
@@ -1848,7 +2101,7 @@ fn macd_length_rows(
     let quick: Rc<OnceCell<controls::WeakBounded>> = Rc::new(OnceCell::new());
     let slower: Rc<OnceCell<controls::WeakBounded>> = Rc::new(OnceCell::new());
 
-    let window_for_fast = window.clone();
+    let owner_for_fast = owner.clone();
     let refresh_for_fast = refresh.clone();
     let slower_for_fast = slower.clone();
     let fast = controls::bounded_row(
@@ -1860,7 +2113,7 @@ fn macd_length_rows(
         1.0,
         0,
         move |length| {
-            update(&window_for_fast, id, |indicator| {
+            update(&owner_for_fast, id, |indicator| {
                 if let Params::Macd { fast, .. } = &mut indicator.params {
                     *fast = length as usize;
                 }
@@ -1874,7 +2127,7 @@ fn macd_length_rows(
         },
     );
 
-    let window_for_slow = window.clone();
+    let owner_for_slow = owner.clone();
     let refresh_for_slow = refresh.clone();
     let quick_for_slow = quick.clone();
     let slow = controls::bounded_row(
@@ -1886,7 +2139,7 @@ fn macd_length_rows(
         1.0,
         0,
         move |length| {
-            update(&window_for_slow, id, |indicator| {
+            update(&owner_for_slow, id, |indicator| {
                 if let Params::Macd { slow, .. } = &mut indicator.params {
                     *slow = length as usize;
                 }
@@ -1920,13 +2173,13 @@ const MAX_MACD_LENGTH: f64 = 200.0;
 /// numbers typed in here, which is the only way the slider and the chart agree
 /// about what the extremes are.
 fn pane_height_row(
-    window: &Rc<Window>,
+    owner: &Rc<Owner>,
     refresh: &Refresh,
     id: u32,
     height: f64,
 ) -> adw::ActionRow {
     percent_row(
-        window,
+        owner,
         refresh,
         id,
         "Pane height %",
@@ -1953,12 +2206,12 @@ fn pane_height_row(
 /// the switch is on the spin still shows the count being drawn, so automatic
 /// is something you can see rather than take on faith.
 fn rows_rows(
-    window: &Rc<Window>,
+    owner: &Rc<Owner>,
     refresh: &Refresh,
     id: u32,
     rows: Option<usize>,
 ) -> Vec<adw::PreferencesRow> {
-    let drawn = window.profile_rows(id);
+    let drawn = owner.profile_rows(id);
 
     let spin = adw::SpinRow::with_range(4.0, 400.0, 1.0);
     spin.set_title("Rows");
@@ -1974,7 +2227,7 @@ fn rows_rows(
     automatic.add_suffix(&switch);
     automatic.set_activatable_widget(Some(&switch));
 
-    let window_for_switch = window.clone();
+    let owner_for_switch = owner.clone();
     let refresh_for_switch = refresh.clone();
     let spin_weak = spin.downgrade();
     switch.connect_active_notify(move |switch| {
@@ -1982,25 +2235,25 @@ fn rows_rows(
         // Turning it off hands over the count that was on screen a moment ago,
         // so taking control does not also change the chart.
         let taken = spin_weak.upgrade().map(|spin| spin.value() as usize).unwrap_or(48);
-        update(&window_for_switch, id, move |indicator| {
+        update(&owner_for_switch, id, move |indicator| {
             if let Params::VolumeProfile { rows, .. } = &mut indicator.params {
                 *rows = if on { None } else { Some(taken) };
             }
         });
         if let Some(spin) = spin_weak.upgrade() {
             spin.set_sensitive(!on);
-            if on && let Some(drawn) = window_for_switch.profile_rows(id) {
+            if on && let Some(drawn) = owner_for_switch.profile_rows(id) {
                 spin.set_value(drawn as f64);
             }
         }
         refresh_for_switch.run();
     });
 
-    let window_for_spin = window.clone();
+    let owner_for_spin = owner.clone();
     let refresh_for_spin = refresh.clone();
     spin.connect_value_notify(move |spin| {
         let value = spin.value() as usize;
-        update(&window_for_spin, id, move |indicator| {
+        update(&owner_for_spin, id, move |indicator| {
             if let Params::VolumeProfile { rows, .. } = &mut indicator.params {
                 *rows = Some(value);
             }
@@ -2016,21 +2269,21 @@ fn rows_rows(
 /// Asked of the whole set rather than of the indicator, because that is where
 /// the answer lives now: an automatic colour is the first one its siblings have
 /// not taken, so a second moving average is a different colour from the first.
-fn drawn_colour(window: &Rc<Window>, indicators: &[Indicator], id: u32) -> String {
-    let colours = omacharts_engine::palette_colors(indicators, &window.theme());
+fn drawn_colour(owner: &Rc<Owner>, indicators: &[Indicator], id: u32) -> String {
+    let colours = omacharts_engine::palette_colors(indicators, &owner.theme());
     indicators
         .iter()
         .position(|i| i.id == id)
         .and_then(|at| colours.get(at).cloned())
-        .unwrap_or_else(|| window.theme().ui.accent.clone())
+        .unwrap_or_else(|| owner.theme().ui.accent.clone())
 }
 
 /// Change one indicator in place and redraw.
-fn update(window: &Rc<Window>, id: u32, change: impl Fn(&mut Indicator)) {
-    let mut indicators = window.indicators();
+fn update(owner: &Rc<Owner>, id: u32, change: impl Fn(&mut Indicator)) {
+    let mut indicators = owner.indicators();
     let Some(indicator) = indicators.iter_mut().find(|i| i.id == id) else { return };
     change(indicator);
-    window.set_indicators(indicators);
+    owner.set_indicators(indicators);
 }
 
 /// Pick the kind of indicator to add.
@@ -2042,10 +2295,10 @@ fn update(window: &Rc<Window>, id: u32, change: impl Fn(&mut Indicator)) {
 /// wearing one name. The symbol search, which has exactly the same two ways
 /// in, has always been a dialog for the same reason.
 pub fn add_indicator(window: &Rc<Window>) {
-    pick_indicator(window, &Refresh::none());
+    pick_indicator(&Owner::chart(window), &Refresh::none());
 }
 
-fn pick_indicator(window: &Rc<Window>, refresh: &Refresh) {
+fn pick_indicator(owner: &Rc<Owner>, refresh: &Refresh) {
     let entry = gtk::SearchEntry::new();
     entry.set_placeholder_text(Some("Indicator"));
 
@@ -2142,21 +2395,21 @@ fn pick_indicator(window: &Rc<Window>, refresh: &Refresh) {
     });
     entry.add_controller(keys);
 
-    let window_for_pick = window.clone();
+    let owner_for_pick = owner.clone();
     let refresh_for_pick = refresh.clone();
     let dialog_for_pick = dialog.clone();
     rows.connect_row_activated(move |_, row| {
         let at = row.index().max(0) as usize;
         let Some(kind) = shown.borrow().get(at).copied() else { return };
-        let id = window_for_pick.next_indicator_id();
-        let mut indicators = window_for_pick.indicators();
+        let id = owner_for_pick.next_indicator_id();
+        let mut indicators = owner_for_pick.indicators();
         indicators.push(Indicator::new(id, kind));
-        window_for_pick.set_indicators(indicators);
+        owner_for_pick.set_indicators(indicators);
         refresh_for_pick.run();
         dialog_for_pick.close();
         // Straight into its settings: picking the kind and setting it up are
         // two steps, and the second is where you say whether you meant it.
-        open_indicator_panel_for(&window_for_pick, &refresh_for_pick, id, Panel::Add);
+        open_indicator_panel_for(&owner_for_pick, &refresh_for_pick, id, Panel::Add);
     });
 
     // What Enter does in the box, from anywhere in the dialog — including the
@@ -2173,7 +2426,7 @@ fn pick_indicator(window: &Rc<Window>, refresh: &Refresh) {
     dialogs::close_on_search_escape(&entry, &dialog);
     dialogs::close_on_click_outside(&dialog);
 
-    dialog.present(Some(&window.window));
+    dialog.present(Some(&owner.window));
     entry.grab_focus();
 }
 

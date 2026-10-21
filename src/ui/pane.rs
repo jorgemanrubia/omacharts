@@ -81,6 +81,10 @@ pub struct ChartPane {
     pub pending: RefCell<Option<(String, Option<String>)>>,
     pub timeframe: Cell<Timeframe>,
     pub indicators: RefCell<Vec<Indicator>>,
+    /// The chart template whose indicators these are, if any. While it has
+    /// one, `indicators` is a copy of the template's, kept current by the
+    /// window; see [`crate::templates`].
+    pub template: Cell<Option<u32>>,
     pub bar_style: Cell<BarStyle>,
     /// How the theme's candle colours are painted on this chart.
     pub colouring: Cell<omacharts_engine::BarColouring>,
@@ -303,6 +307,7 @@ impl ChartPane {
             pending: RefCell::new(None),
             timeframe: Cell::new(timeframe),
             indicators: RefCell::new(indicators),
+            template: Cell::new(None),
             bar_style: Cell::new(bar_style),
             colouring: Cell::new(Default::default()),
             session: Cell::new(session),

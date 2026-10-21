@@ -26,6 +26,7 @@ use crate::store::Store;
 use crate::theming::Theming;
 use crate::ui::colors;
 use crate::ui::screenshot;
+use crate::ui::window::Window;
 
 pub struct Preferences;
 
@@ -41,16 +42,23 @@ struct Context {
     /// window — every chart offers the same resolutions — so it is edited
     /// there and merely reached from here.
     on_edit_resolutions: Rc<dyn Fn()>,
-    /// Puts every chart to the defaults on the Charts page.
-    on_apply_chart_defaults: Rc<dyn Fn()>,
     /// Has the window read back everything a restored backup changed.
     on_restored: Rc<dyn Fn()>,
     page: adw::PreferencesPage,
     general_page: adw::PreferencesPage,
     charts_page: adw::PreferencesPage,
     charts_other_page: adw::PreferencesPage,
+    charts_templates_page: adw::PreferencesPage,
     data_page: adw::PreferencesPage,
     groups: RefCell<Vec<adw::PreferencesGroup>>,
+    /// The window, for the chart templates: they are shown on its charts,
+    /// and only it knows which of its charts are using one.
+    window: Rc<Window>,
+    /// The list on the Templates tab, rebuilt whenever one changes.
+    templates_group: RefCell<Option<adw::PreferencesGroup>>,
+    /// Puts the Defaults tab's template choice back in step with the list,
+    /// after a template is made, renamed or deleted on the tab beside it.
+    refill_default_template: RefCell<Option<Rc<dyn Fn()>>>,
 }
 
 impl Preferences {
@@ -60,8 +68,8 @@ impl Preferences {
         theming: Rc<RefCell<Theming>>,
         on_change: Rc<dyn Fn()>,
         on_edit_resolutions: Rc<dyn Fn()>,
-        on_apply_chart_defaults: Rc<dyn Fn()>,
         on_restored: Rc<dyn Fn()>,
+        window: Rc<Window>,
     ) {
         let dialog = adw::Dialog::new();
         dialog.set_title("Preferences");
@@ -81,10 +89,13 @@ impl Preferences {
         let data_page = adw::PreferencesPage::new();
 
         // General first: what the app does, before what it looks like.
-        // Charts is two things: what a new chart opens with, and the rest.
+        // Charts is three things: what a new chart opens with, the sets of
+        // indicators charts can share, and the rest.
         let charts_other_page = adw::PreferencesPage::new();
+        let charts_templates_page = adw::PreferencesPage::new();
         let charts = gtk::Stack::new();
         charts.add_titled(&charts_page, Some("defaults"), "Defaults");
+        charts.add_titled(&charts_templates_page, Some("templates"), "Templates");
         charts.add_titled(&charts_other_page, Some("other"), "Other");
 
         let sections: [(&str, &str, gtk::Widget); 4] = [
@@ -100,14 +111,17 @@ impl Preferences {
             theming,
             on_change,
             on_edit_resolutions,
-            on_apply_chart_defaults,
             on_restored,
             page,
             general_page,
             charts_page,
             charts_other_page,
+            charts_templates_page,
             data_page,
             groups: RefCell::new(Vec::new()),
+            window,
+            templates_group: RefCell::new(None),
+            refill_default_template: RefCell::new(None),
         });
         rebuild(&context);
         build_general_page(&context);
@@ -335,10 +349,10 @@ fn build_charts_page(context: &Rc<Context>) {
         line.set_can_target(shown);
     };
     offer(&footer, false);
-    let on_apply = context.on_apply_chart_defaults.clone();
+    let window = context.window.clone();
     let line = footer.clone();
     apply.connect_clicked(move |_| {
-        on_apply();
+        window.apply_chart_defaults();
         offer(&line, false);
     });
 
@@ -437,8 +451,64 @@ fn build_charts_page(context: &Rc<Context>) {
         d.sends_drawings = on
     }));
 
+    // Which template a new chart shows, as a choice like the others: "None"
+    // first, then every template. Refilled when the Templates tab changes
+    // the list, which is why the ids are kept beside the row rather than
+    // captured once.
+    let indicators = adw::PreferencesGroup::new();
+    indicators.set_title("Indicators");
+    let template = adw::ComboRow::new();
+    template.set_title("Template");
+    template.set_subtitle("The chart template a new chart shows");
+    let ids: Rc<RefCell<Vec<u32>>> = Rc::new(RefCell::new(Vec::new()));
+    let filling = Rc::new(std::cell::Cell::new(false));
+    let refill: Rc<dyn Fn()> = {
+        let window = context.window.clone();
+        let store = context.store.clone();
+        let template = template.clone();
+        let ids = ids.clone();
+        let filling = filling.clone();
+        let defaults = defaults.clone();
+        Rc::new(move || {
+            let templates = window.templates();
+            // Deleting the default's template puts new charts back on None,
+            // which this has to hear about before it shows a choice.
+            let mut current = defaults.get();
+            current.template = ChartDefaults::load(&store).template;
+            defaults.set(current);
+            let mut names = vec!["None".to_string()];
+            names.extend(templates.iter().map(|t| t.name.clone()));
+            *ids.borrow_mut() = templates.iter().map(|t| t.id).collect();
+            filling.set(true);
+            template.set_model(Some(&string_list(&names)));
+            let at = current
+                .template
+                .and_then(|id| templates.iter().position(|t| t.id == id))
+                .map(|at| at + 1)
+                .unwrap_or(0);
+            template.set_selected(at as u32);
+            filling.set(false);
+        })
+    };
+    refill();
+    {
+        let changed = changed.clone();
+        template.connect_selected_notify(move |row| {
+            if filling.get() {
+                return;
+            }
+            let chosen = match row.selected() as usize {
+                0 => None,
+                at => ids.borrow().get(at - 1).copied(),
+            };
+            changed(&|d| d.template = chosen);
+        });
+    }
+    *context.refill_default_template.borrow_mut() = Some(refill);
+    indicators.add(&template);
+
     drawings.add(&footer);
-    for group in [&bars, &scales, &hours, &drawings] {
+    for group in [&bars, &scales, &hours, &indicators, &drawings] {
         context.charts_page.add(group);
     }
 }
@@ -661,7 +731,153 @@ fn build_general_page(context: &Rc<Context>) {
     context.charts_other_page.add(&resolutions_group(context));
     context.general_page.add(&screenshots_group(context));
     build_charts_page(context);
+    rebuild_templates(context);
     build_data_page(context);
+}
+
+/// The Templates tab: every chart template, and a way to make, edit, rename
+/// and delete them.
+///
+/// Rebuilt whole after any change, as the theme page is. There are a handful,
+/// and a row that patched itself would be a second way to be wrong about what
+/// a template is called or how many charts are using it.
+fn rebuild_templates(context: &Rc<Context>) {
+    if let Some(old) = context.templates_group.borrow_mut().take() {
+        context.charts_templates_page.remove(&old);
+    }
+    let group = adw::PreferencesGroup::new();
+    group.set_title("Chart templates");
+    group.set_description(Some(
+        "Named sets of indicators. A chart using one shows its indicators, and \
+         changes with it.",
+    ));
+
+    let add = gtk::Button::from_icon_name("list-add-symbolic");
+    add.add_css_class("flat");
+    add.set_valign(gtk::Align::Center);
+    add.set_tooltip_text(Some("New chart template"));
+    let ctx = context.clone();
+    add.connect_clicked(move |button| {
+        let ctx = ctx.clone();
+        ask_name(button, "New Chart Template", "", "Create", move |name| {
+            let id = ctx.window.create_template(&name);
+            templates_changed(&ctx);
+            // Straight into it: an empty template is only ever made to be
+            // filled.
+            edit_template(&ctx, id);
+        });
+    });
+    group.set_header_suffix(Some(&add));
+
+    let templates = context.window.templates();
+    if templates.is_empty() {
+        let row = adw::ActionRow::new();
+        row.set_title("No chart templates");
+        row.set_subtitle("Make one with the + above");
+        row.add_css_class("dim-label");
+        group.add(&row);
+    }
+    for template in templates {
+        let row = adw::ActionRow::new();
+        row.set_title(&template.name);
+        let holds = match template.indicators.is_empty() {
+            true => "No indicators".to_string(),
+            false => template.indicators.iter().map(|i| i.label()).collect::<Vec<_>>().join(", "),
+        };
+        let using = match context.window.charts_on_template(template.id) {
+            0 => String::new(),
+            1 => " · 1 chart".to_string(),
+            n => format!(" · {n} charts"),
+        };
+        row.set_subtitle(&format!("{holds}{using}"));
+        row.set_activatable(true);
+        let ctx = context.clone();
+        let id = template.id;
+        row.connect_activated(move |_| edit_template(&ctx, id));
+
+        let rename = gtk::Button::from_icon_name("document-edit-symbolic");
+        rename.add_css_class("flat");
+        rename.set_valign(gtk::Align::Center);
+        rename.set_tooltip_text(Some("Rename"));
+        let ctx = context.clone();
+        let name = template.name.clone();
+        rename.connect_clicked(move |button| {
+            let ctx = ctx.clone();
+            ask_name(button, "Rename Chart Template", &name, "Rename", move |chosen| {
+                // The id stays, so every chart on it stays on it.
+                ctx.window.rename_template(id, &chosen);
+                templates_changed(&ctx);
+            });
+        });
+        row.add_suffix(&rename);
+
+        let delete = gtk::Button::from_icon_name("user-trash-symbolic");
+        delete.add_css_class("flat");
+        delete.set_valign(gtk::Align::Center);
+        delete.set_tooltip_text(Some("Delete"));
+        let ctx = context.clone();
+        let name = template.name.clone();
+        delete.connect_clicked(move |button| confirm_delete_template(&ctx, button, id, &name));
+        row.add_suffix(&delete);
+
+        row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
+        group.add(&row);
+    }
+
+    context.charts_templates_page.add(&group);
+    *context.templates_group.borrow_mut() = Some(group);
+}
+
+/// A template's indicators, in their own editor over the preferences.
+fn edit_template(context: &Rc<Context>, template: u32) {
+    let ctx = context.clone();
+    crate::ui::chart_settings::TemplateEditor::present(
+        &context.window,
+        template,
+        &context.charts_templates_page,
+        move || rebuild_templates(&ctx),
+    );
+}
+
+/// Everything showing the list of templates, read again.
+fn templates_changed(context: &Rc<Context>) {
+    rebuild_templates(context);
+    let refill = context.refill_default_template.borrow().clone();
+    if let Some(refill) = refill {
+        refill();
+    }
+}
+
+/// Asked first when charts are using it, saying how many: deleting takes
+/// nothing off them, but they stop following it, and that is not undone by
+/// making another one with the same name.
+fn confirm_delete_template(context: &Rc<Context>, anchor: &gtk::Button, id: u32, name: &str) {
+    let body = match context.window.charts_on_template(id) {
+        0 => format!("Delete \u{201c}{name}\u{201d}? No chart is using it."),
+        1 => format!(
+            "\u{201c}{name}\u{201d} is used by 1 chart. It keeps the template's indicators \
+             as its own, and stops changing with it."
+        ),
+        n => format!(
+            "\u{201c}{name}\u{201d} is used by {n} charts. They keep the template's \
+             indicators as their own, and stop changing with it."
+        ),
+    };
+    let dialog = adw::AlertDialog::new(Some("Delete Chart Template?"), Some(&body));
+    dialog.add_response("cancel", "Cancel");
+    dialog.add_response("delete", "Delete");
+    dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
+    dialog.set_default_response(Some("cancel"));
+    dialog.set_close_response("cancel");
+    let ctx = context.clone();
+    dialog.connect_response(None, move |_, response| {
+        if response != "delete" {
+            return;
+        }
+        ctx.window.delete_template(id);
+        templates_changed(&ctx);
+    });
+    dialog.present(Some(anchor));
 }
 
 /// Whether a screenshot is kept as a file, and where.
@@ -1180,6 +1396,8 @@ fn ask_name(
     dialog.set_response_appearance("ok", adw::ResponseAppearance::Suggested);
     dialog.set_default_response(Some("ok"));
     dialog.set_close_response("cancel");
+    // Offered blank, for a new name, it cannot be answered until it is not.
+    dialog.set_response_enabled("ok", !initial.trim().is_empty());
 
     let gate = dialog.clone();
     name.connect_changed(move |field| {
