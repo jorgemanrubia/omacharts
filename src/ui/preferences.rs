@@ -28,6 +28,10 @@ use crate::ui::screenshot;
 
 pub struct Preferences;
 
+/// The sidebar plus the column a preferences page lays its rows in, with
+/// room either side of it.
+const MAX_WIDTH: i32 = 980;
+
 struct Context {
     store: Rc<Store>,
     theming: Rc<RefCell<Theming>>,
@@ -59,10 +63,12 @@ impl Preferences {
         dialog.set_title("Preferences");
         // The breakpoint below needs a floor to measure against.
         dialog.set_size_request(360, 360);
-        // Most of the window rather than a fixed box: the appearance page is a
-        // long list of colours, and every row that fits is a scroll saved.
+        // Most of the window's height: the theme page is a long list of
+        // colours, and every row that fits is a scroll saved. Not its width:
+        // the rows sit in a column of their own, and past the sidebar and that
+        // column a wider dialog is only margin.
         let parent = parent.as_ref();
-        dialog.set_content_width((parent.width() * 85 / 100).max(560));
+        dialog.set_content_width((parent.width() * 85 / 100).clamp(560, MAX_WIDTH));
         dialog.set_content_height((parent.height() * 85 / 100).max(640));
 
         let page = adw::PreferencesPage::new();
