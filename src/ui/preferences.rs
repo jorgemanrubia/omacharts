@@ -944,30 +944,31 @@ fn choose_backup(context: &Rc<Context>, anchor: &gtk::Button) {
     scroller.set_max_content_height(360);
     scroller.set_child(Some(&list));
 
-    // A backup from another machine is a file somewhere, not a row here:
-    // offered under the list, apart from the buttons that answer the dialog.
-    let from_file = gtk::Button::with_label("Choose a File…");
-    from_file.set_margin_top(12);
-    from_file.set_margin_bottom(12);
+    // Restore belongs to the list it acts on, so it sits right under it; the
+    // dialog's own buttons, below a gap, are the other ways out of it — a
+    // file from another machine, or nothing at all.
+    let restore = gtk::Button::with_label("Restore");
+    restore.add_css_class("destructive-action");
+    restore.set_margin_top(12);
+    restore.set_margin_bottom(24);
+    restore.set_sensitive(false);
     let body = gtk::Box::new(gtk::Orientation::Vertical, 0);
     body.append(&scroller);
-    body.append(&from_file);
+    body.append(&restore);
 
     let dialog = adw::AlertDialog::new(Some("Restore Settings"), None);
     dialog.set_extra_child(Some(&body));
+    dialog.add_response("file", "Choose a File…");
     dialog.add_response("cancel", "Cancel");
-    dialog.add_response("restore", "Restore");
-    dialog.set_response_appearance("restore", adw::ResponseAppearance::Destructive);
-    dialog.set_response_enabled("restore", false);
     dialog.set_default_response(Some("cancel"));
     dialog.set_close_response("cancel");
 
     for (tick, name) in ticks {
-        let (chosen, gate) = (chosen.clone(), dialog.clone());
+        let (chosen, gate) = (chosen.clone(), restore.clone());
         tick.connect_toggled(move |tick| {
             if tick.is_active() {
                 *chosen.borrow_mut() = Some(name.clone());
-                gate.set_response_enabled("restore", true);
+                gate.set_sensitive(true);
             }
         });
     }
@@ -978,16 +979,16 @@ fn choose_backup(context: &Rc<Context>, anchor: &gtk::Button) {
     {
         let (ctx, anchor, preferences, dialog) =
             (ctx.clone(), anchor_kept.clone(), preferences.clone(), dialog.clone());
-        from_file.connect_clicked(move |_| {
+        restore.connect_clicked(move |_| {
+            let Some(name) = chosen.borrow().clone() else { return };
             dialog.close();
-            restore_from_file(&ctx, &anchor, preferences.clone());
+            finish_restore(&ctx, &anchor, preferences.as_ref(), backup::restore(&ctx.store, &name));
         });
     }
     dialog.connect_response(None, move |_, response| {
-        let Some(name) = chosen.borrow().clone().filter(|_| response == "restore") else {
-            return;
-        };
-        finish_restore(&ctx, &anchor_kept, preferences.as_ref(), backup::restore(&ctx.store, &name));
+        if response == "file" {
+            restore_from_file(&ctx, &anchor_kept, preferences.clone());
+        }
     });
     dialog.present(Some(anchor));
 }
