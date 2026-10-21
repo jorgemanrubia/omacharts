@@ -46,6 +46,9 @@ pub const MARKET_LATEST: i32 = 1;
 /// The schema the market data file is attached as.
 pub const MARKET: &str = "market";
 
+/// The settings version that moved the market data out.
+pub const MARKET_MOVED_OUT: i32 = 4;
+
 /// What went wrong before the database was usable.
 #[derive(Debug)]
 pub enum Error {
@@ -264,17 +267,20 @@ pub const MARKET_MIGRATIONS: &[Migration] = &[Migration {
 /// Version 4: the bars and quotes over to the market data file, then out of
 /// this one.
 ///
-/// Two files commit separately, so a copy that landed in a run that then
-/// failed is copied again over itself rather than refused.
+/// Two files commit separately. If the market file committed and the
+/// settings file did not, the next launch copies again and keeps what is
+/// already there. If it went the other way — the settings file moved on and
+/// the market file never received the rows — the `.bak` is what still holds
+/// them, which is why this step stays risky.
 fn move_market_data(tx: &Connection) -> rusqlite::Result<()> {
     tx.execute_batch(
-        "INSERT OR REPLACE INTO market.bar_series
+        "INSERT OR IGNORE INTO market.bar_series
              (key, interval, first_ts, last_ts, count, fetched_at,
               ts, open, high, low, close, volume)
          SELECT key, interval, first_ts, last_ts, count, fetched_at,
                 ts, open, high, low, close, volume
          FROM main.bar_series;
-         INSERT OR REPLACE INTO market.quotes
+         INSERT OR IGNORE INTO market.quotes
              (key, last, previous, at, fetched_at, previous_at)
          SELECT key, last, previous, at, fetched_at, previous_at
          FROM main.quotes;
@@ -695,5 +701,10 @@ mod tests {
             assert_eq!(migration.version, i as i32 + 1, "{} is misnumbered", migration.name);
         }
         assert_eq!(MIGRATIONS.last().map(|m| m.version), Some(LATEST));
+        for (i, migration) in MARKET_MIGRATIONS.iter().enumerate() {
+            assert_eq!(migration.version, i as i32 + 1, "{} is misnumbered", migration.name);
+        }
+        assert_eq!(MARKET_MIGRATIONS.last().map(|m| m.version), Some(MARKET_LATEST));
+        assert!(MIGRATIONS.iter().any(|m| m.version == MARKET_MOVED_OUT && m.risky));
     }
 }

@@ -101,6 +101,20 @@ impl Store {
     }
 
     pub fn open_at(path: &Path) -> Result<Store, migrations::Error> {
+        match Store::open_both(path) {
+            Ok(store) => Ok(store),
+            // The market file is a cache. One that cannot be read, or that a
+            // newer Omacharts wrote, is set aside and started again rather
+            // than allowed to stand between somebody and their settings.
+            Err(_) if !market_usable(path) => {
+                set_aside_market(path);
+                Store::open_both(path)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn open_both(path: &Path) -> Result<Store, migrations::Error> {
         let conn = connect(path)?;
         let store = Store { conn, path: Some(path.to_path_buf()) };
         // Where a migration that could lose something leaves a copy first.
@@ -148,7 +162,7 @@ impl Store {
         // The bars just moved out leave their pages behind, and a settings
         // file the size of the cache it no longer holds is not one anybody
         // will think to copy. Once, on the launch that moved them.
-        if (1..4).contains(&from) {
+        if (1..migrations::MARKET_MOVED_OUT).contains(&from) {
             self.conn.execute_batch("VACUUM main")?;
         }
         self.invalidate_stale_cache()?;
@@ -1096,6 +1110,29 @@ pub fn market_path(settings: &Path) -> PathBuf {
     settings.with_file_name("market.db")
 }
 
+/// Whether the market file beside `settings` can be read by this build:
+/// absent, or a database at a version it knows.
+fn market_usable(settings: &Path) -> bool {
+    let market = market_path(settings);
+    if !market.exists() {
+        return true;
+    }
+    Connection::open(&market)
+        .and_then(|conn| conn.pragma_query_value(None, "user_version", |row| row.get::<_, i32>(0)))
+        .is_ok_and(|version| version <= migrations::MARKET_LATEST)
+}
+
+/// Move an unusable market file out of the way, kept rather than deleted in
+/// case somebody wants to look at what was in it.
+fn set_aside_market(settings: &Path) {
+    let market = market_path(settings);
+    for suffix in ["", "-wal", "-shm"] {
+        let from = PathBuf::from(format!("{}{suffix}", market.display()));
+        let to = PathBuf::from(format!("{}.unreadable{suffix}", market.display()));
+        let _ = std::fs::rename(&from, &to);
+    }
+}
+
 /// A connection to a settings file with its market data attached, both
 /// written the same way. Not migrated: [`Store::open_at`] does that, and a
 /// second connection to a file the window has opened has nothing to do.
@@ -1104,6 +1141,7 @@ pub fn connect(path: &Path) -> rusqlite::Result<Connection> {
     conn.execute("ATTACH ?1 AS market", [market_path(path).to_string_lossy()])?;
     // WAL so a background fetch writing never blocks the window reading.
     // One batch rather than a pragma call each: this runs on every launch.
+    // `market` is migrations::MARKET, spelled out to keep the batch static.
     conn.execute_batch(
         "PRAGMA main.journal_mode = WAL; PRAGMA market.journal_mode = WAL;
          PRAGMA main.synchronous = NORMAL; PRAGMA market.synchronous = NORMAL;",
@@ -1400,6 +1438,37 @@ mod tests {
                 assert_eq!((found, known), (migrations::LATEST + 1, migrations::LATEST));
             }
             other => panic!("expected a refusal, got {:?}", other.map(|_| "a store")),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A market file that cannot be read, or one from a newer build, is set
+    /// aside rather than costing anybody their settings.
+    #[test]
+    fn an_unusable_market_file_is_set_aside_and_settings_survive() {
+        let dir = scratch_dir("unusable-market");
+        let path = dir.join("omacharts.db");
+        let store = Store::open_at(&path).unwrap();
+        store.set_setting("keep", "me");
+        drop(store);
+
+        for (what, write) in [
+            ("garbage", Box::new(|market: &Path| std::fs::write(market, b"not a database").unwrap())
+                as Box<dyn Fn(&Path)>),
+            ("from the future", Box::new(|market: &Path| {
+                let conn = Connection::open(market).unwrap();
+                conn.pragma_update(None, "user_version", migrations::MARKET_LATEST + 1).unwrap();
+            })),
+        ] {
+            let market = market_path(&path);
+            for suffix in ["", "-wal", "-shm"] {
+                let _ = std::fs::remove_file(format!("{}{suffix}", market.display()));
+            }
+            write(&market);
+            let store = Store::open_at(&path).unwrap_or_else(|e| panic!("{what}: {e}"));
+            assert_eq!(store.setting("keep").as_deref(), Some("me"), "{what}");
+            assert_eq!(store.cached_series(), 0, "{what}");
+            assert!(dir.join("market.db.unreadable").exists(), "{what} was not kept");
         }
         let _ = std::fs::remove_dir_all(&dir);
     }

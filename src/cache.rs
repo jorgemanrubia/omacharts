@@ -65,7 +65,8 @@ pub struct Swept {
 /// read the same number back, and sweep again every six hours for ever.
 pub fn used_bytes(conn: &Connection) -> i64 {
     let read = |name: &str| -> i64 {
-        conn.pragma_query_value(Some("market"), name, |row| row.get(0)).unwrap_or(0)
+        conn.pragma_query_value(Some(crate::migrations::MARKET), name, |row| row.get(0))
+            .unwrap_or(0)
     };
     let pages = read("page_count") - read("freelist_count");
     pages.max(0) * read("page_size")
