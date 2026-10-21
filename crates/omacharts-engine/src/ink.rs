@@ -65,8 +65,6 @@ pub struct Ink {
     pub flat: String,
     /// The ground of a hovered or selected row, opaque.
     pub hover: String,
-    /// The ground everything else here is written on: the theme's panels.
-    pub ground: String,
     /// A rise, shown as a tag.
     pub up_tag: Tag,
     /// A fall, shown as a tag.
@@ -170,7 +168,6 @@ impl Theme {
             down: legible(scheme.outline(Direction::Down)),
             flat: legible(scheme.outline(Direction::Flat)),
             hover,
-            ground: ui.surface.clone(),
             up_tag: Tag::on(scheme.outline(Direction::Up)),
             down_tag: Tag::on(scheme.outline(Direction::Down)),
             flat_tag: Tag::on(scheme.outline(Direction::Flat)),

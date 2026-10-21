@@ -76,7 +76,6 @@ Panel {
   // text colour stands in for all of them rather than a colour of our own.
   readonly property var palette: Model.palette(service.colors, Color.popups.text, Color.popups.background)
   readonly property color text: palette.text
-  readonly property color ground: palette.ground
   readonly property color muted: palette.muted
   readonly property color hover: palette.hover
 
@@ -109,7 +108,6 @@ Panel {
     function close(): void { root.close() }
     function toggle(): void { if (!root.gone || root.opened) root.toggle() }
     function refresh(): void { root.service.refresh() }
-    function recolor(): void { root.service.recolor() }
   }
 
   BarIconButton {
@@ -134,17 +132,6 @@ Panel {
       if (buttonCode === Qt.RightButton || buttonCode === Qt.MiddleButton) root.service.refresh()
       else root.toggle()
     }
-  }
-
-  // The card is the shell's, and offers no way to say what it is painted
-  // in; it is the parent of what the panel is given to hold, so the app's
-  // ground is set on it from here. The frame around it stays the shell's.
-  // Out here rather than inside the panel, which holds items and nothing else.
-  Binding {
-    target: keyCatcher.parent ? keyCatcher.parent.parent : null
-    property: "color"
-    value: root.ground
-    when: keyCatcher.parent !== null && keyCatcher.parent.parent !== null
   }
 
   KeyboardPanel {
