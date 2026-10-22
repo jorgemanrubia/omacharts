@@ -374,8 +374,8 @@ $ omacharts chart set --symbol NVDA --resolution 240
 chart 2: symbol NVDA, resolution 4h
   [exit 0]
 
-$ omacharts chart set --style candles --colouring theme-soft --hollow-up on --session regular --grid off --auto-scale off --log-scale on
-chart 4: style candles, colouring theme-soft, rises hollow, session regular, grid off, auto-scale off, log scale on
+$ omacharts chart set --style candles --colouring theme-hollow --session regular --grid off --auto-scale off --log-scale on
+chart 4: style candles, colouring theme-hollow, session regular, grid off, auto-scale off, log scale on
   [exit 0]
 
 $ omacharts chart set --title "Semis desk"
@@ -400,9 +400,7 @@ omacharts: "3x" is not a resolution; try 5m, 1h, 1D, 1W, 1M or 1Y
 | `--style STYLE` | `candles`, `ohlc`, or `none` to hide the bars | [Bars](/manual/charts/#bars) |
 | `--thickness PX` | How many pixels wide OHLC bars are drawn, `1` to `4` | [Style](/manual/charts/#style) |
 | `--bars on` or `off` | Shows the bars in the style they had, or hides them | [Hiding the bars](/manual/charts/#hiding-the-bars) |
-| `--colouring C` | `theme` (Vivid), `theme-soft`, `theme-quiet`, `theme-mono`; `theme-hollow` and `theme-red-up`, from earlier versions, are `theme` with the matching switch on | [Colouring](/manual/charts/#colouring) |
-| `--hollow-up on` or `off` | Draws a rising candle as an outline | [Colouring](/manual/charts/#colouring) |
-| `--swap-colours on` or `off` | Paints the colouring the other way round, red for a rise | [Colouring](/manual/charts/#colouring) |
+| `--colouring C` | `theme` (Filled), `theme-hollow` (Hollow), `theme-red-up` (Red up), `theme-soft` (Soft), `theme-quiet` (Quiet), `theme-mono` (Monochrome) | [Colouring](/manual/charts/#colouring) |
 | `--session S` | `regular`, `extended` | [Sessions](/manual/charts/#sessions) |
 | `--grid on` or `off` | Draws the grid | [Gridlines](/manual/charts/#gridlines) |
 | `--price-line on` or `off` | Draws the dashed line across the chart at the last price | [The last price line](/manual/charts/#the-last-price-line) |
@@ -418,8 +416,8 @@ omacharts: "3x" is not a resolution; try 5m, 1h, 1D, 1W, 1M or 1Y
 | `--chart CHART` | Which chart: `pos:N`, or a raw id from `chart list`; the focused one when not given | [Which chart a command acts on](#which-chart-a-command-acts-on) |
 | `--json` | The result as JSON | |
 
-`--hollow-up on` on an OHLC chart is accepted and changes nothing you can
-see until the chart is candles again, since OHLC bars have no body.
+A colouring the style does not offer, such as `theme-hollow` on OHLC bars,
+is accepted and drawn as `theme` until the chart is candles again.
 
 `--style none` and `--bars off` both hide the bars and keep their style.
 `--bars on` brings them back in it, and `--style candles` or `--style ohlc`
@@ -477,51 +475,35 @@ over. Run `chart range` last.
 
 ### `config bars`
 
-Sets the colouring of every chart at once, in every chartbook and for the
-charts made next, as **Apply to all charts now** does.
+Sets the look every chart paints its bars from: a colour for a rise, a
+colour for a fall, and which are hollow. It is Preferences › Appearance ›
+**Bars** ([Colouring](/manual/charts/#colouring)).
 
 ```
 $ omacharts config bars
-vivid
+up green, down rose, filled
   [exit 0]
 
-$ omacharts config bars monochrome
-bars are monochrome; the colours are remembered
+$ omacharts config bars monochrome --hollow up
+bars are now up ink, down ink, up hollow
   [exit 0]
 
-$ omacharts config bars red-up
-rising bars are red and falling bars green, in the "theme" scheme
-  [exit 0]
-
-$ omacharts config bars
-vivid, swapped
-  [exit 0]
-
-$ omacharts config bars vivid
-bars carry their direction in colour again, in the "theme" scheme
+$ omacharts config bars --up blue --down orange --hollow none
+bars are now up blue, down orange, filled
   [exit 0]
 ```
 
-| `STATE` | Does |
-|---|---|
-| (none) | Prints the current state: `vivid`, `soft`, `quiet` or `monochrome`, followed by `, hollow` when rises are hollow and `, swapped` when up and down are swapped. With `--json`, the `hollow_up` and `swapped` fields |
-| `vivid` | Every chart back to the remembered colouring, or to `theme` when nothing is remembered |
-| `soft` | Every chart soft: a slate and a sand from the theme's palette instead of its green and red ([Colouring](/manual/charts/#colouring)) |
-| `quiet` | Every chart quiet: two greys made from the theme's text, a rise the lighter and a fall the darker ([Colouring](/manual/charts/#colouring)) |
-| `monochrome` | Every chart monochrome, remembering the colouring in use |
-| `coloured` | The same as `vivid`, from earlier versions |
-| `hollow` | `vivid`, with rises hollow on every chart and for new ones. From earlier versions, when Hollow was a colouring; `chart set --hollow-up` and `config set hollow_up` are the switch itself |
-| `red-up` | `vivid`, with up and down swapped on every chart and for new ones. From earlier versions, when Red up was a colouring; `chart set --swap-colours` and `config set swap_colours` are the switch itself |
+| Argument or flag | Takes | Does |
+|---|---|---|
+| (none) | | Prints the look. With `--json`, the `up`, `down` and `hollow` fields |
+| `STATE` | `coloured`, `red-up`, `monochrome` | Sets both colours: the theme's green up and rose down, the same swapped, or ink both ways |
+| `--up C`, `--down C` | A theme colour by name (`green`, `rose`, `blue`, `amber`, `violet`, `teal`, `orange`, `cyan`), `ink`, or `#rrggbb` | One direction's colour. A name follows the theme; a hex does not |
+| `--hollow WHICH` | `none`, `up`, `down`, `both` | Which candles are drawn as an outline |
 
-The two switches are worn over the palette, not palettes themselves, so the
-other states leave them as they are. `config set hollow_up off` and
-`config set swap_colours off` turn one off for new charts, and
-`chart set --hollow-up off` or `--swap-colours off` for one chart.
+A state and the flags can be given together, and the flags win. Each chart
+then paints the look its own way, `chart set --colouring`.
 
-`config set bar_scheme theme-mono` is different. It changes only what new
-charts open with, and remembers nothing to go back to.
-
-The chart defaults (`bar_style`, `ohlc_thickness`, `bar_scheme`, `hollow_up`, `swap_colours`, `chart_session`, `show_grid`,
+The chart defaults (`bar_style`, `ohlc_thickness`, `chart_colouring`, `chart_session`, `show_grid`,
 `chart_log_scale`, `chart_shows_legend`, `chart_header`, `timeframes`) are set with `config set`;
 see [Settings](#settings).
 
@@ -563,7 +545,7 @@ are in [Indicators](/manual/indicators/) and the page of its family.
 | `--outline-color C` | A colour | Volume profile |
 | `--outline-width F`, `--poc-width F` | 0.5 to 6 | Volume profile |
 | `--up-color C`, `--down-color C` | A colour | Volume |
-| `--colouring C` | `default`, or `theme` (Vivid), `theme-soft`, `theme-quiet` for one of its own. `default` is the chart's colouring for volume (`chart` too, as earlier versions spelled it) and the one chosen in Preferences for a volume profile and a cumulative delta | Volume, volume profile, cumulative delta ([Volume](/manual/indicators/volume/)) |
+| `--colouring C` | `chart` (or `default`) to follow the chart's colouring, or `theme`, `theme-red-up`, `theme-soft`, `theme-quiet`, `theme-mono` for one of its own. A delta volume profile and a cumulative delta take `default`, the look chosen in Preferences, `theme-soft` or `theme-quiet` | Volume, volume profile, cumulative delta ([Volume](/manual/indicators/volume/)) |
 | `--opacity F` | `0.2` to `1`, where `1` is fully opaque | Volume |
 | `--overbought F`, `--oversold F` | 0 to 100 | RSI, stochastic |
 | `--height F` | 0.05 to 0.95; Volume defaults to 0.18, the other strips to 0.16 | Volume, cumulative delta, RSI, MACD, ATR, stochastic |
@@ -1554,12 +1536,12 @@ same.
 
 | Setting | Values | Default | Preferences row | Chapter |
 |---|---|---|---|---|
-| `theme` | `omarchy` (System), `midnight`, `carbon`, `paper`, `daylight`, `omarchy:SLUG` for one installed Omarchy theme, or the id of a theme of your own | `omarchy` on Omarchy, `midnight` elsewhere | Theme › Theme | [Themes](/manual/themes/) |
+| `theme` | `omarchy` (Follow system), or an Omarchy theme by its folder name, such as `tokyo-night` | `omarchy` on Omarchy, `tokyo-night` elsewhere | Appearance › Theme | [Themes](/manual/themes/) |
+| `bar_up`, `bar_down` | a theme colour by name, such as `green` or `rose`; `ink`; or `#rrggbb` | `green`, `rose` | Appearance › Bars › Up colour, Down colour | [Themes](/manual/themes/#bar-colours) |
+| `bar_up_hollow`, `bar_down_hollow` | on, off | off | Appearance › Bars › Hollow up candles, Hollow down candles | [Themes](/manual/themes/#bar-colours) |
 | `bar_style` | `candles`, `ohlc` | `candles` | Charts › Defaults › Style | [Chart settings](/manual/chart-settings/) |
 | `ohlc_thickness` | `1` to `4` | `2` | Charts › Defaults › Thickness | [Chart settings](/manual/chart-settings/) |
-| `bar_scheme` | `theme` (Vivid), `theme-soft`, `theme-quiet`, `theme-mono` | `theme` | Charts › Defaults › Colouring | [Chart settings](/manual/chart-settings/) |
-| `hollow_up` | on, off | off | Charts › Defaults › Hollow up bars | [Chart settings](/manual/chart-settings/) |
-| `swap_colours` | on, off | off | Charts › Defaults › Swap up and down colours | [Chart settings](/manual/chart-settings/) |
+| `chart_colouring` | `theme` (Filled), `theme-hollow`, `theme-red-up`, `theme-soft`, `theme-quiet`, `theme-mono` | `theme` | Charts › Defaults › Colouring | [Chart settings](/manual/chart-settings/) |
 | `chart_session` | `extended`, `regular` | `extended` | Charts › Defaults › Hours | [Chart settings](/manual/chart-settings/) |
 | `show_grid` | on, off | off | Charts › Defaults › Gridlines | [Chart settings](/manual/chart-settings/) |
 | `chart_log_scale` | on, off | off | Charts › Defaults › Logarithmic scale | [Chart settings](/manual/chart-settings/) |
@@ -1573,23 +1555,27 @@ same.
 | `timeframes` | comma-separated resolutions, such as `5m,15m,1h,4h,1D,1W`; an entry that is not a resolution is skipped | `5m,15m,1h,4h,1D,1W` | Charts › Other › Preset resolutions | [Charts](/manual/charts/) |
 | `sync_crosshair` | on, off | on | Charts › Other › Chart › Sync crosshair across charts | [Charts](/manual/charts/#sharing-the-crosshair) |
 | `zoom_sensitivity` | a percentage from `10` to `200`, with or without `%` | `100` | Charts › Other › Chart › Zoom sensitivity | [Charts](/manual/charts/#moving-around) |
-| `provider` | `yahoo`, `tos` | `yahoo` | Data › Data feed | [Market data feeds](/manual/market-data/) |
+| `provider` | `yahoo`, `tos` | `yahoo` | Market data › Data feed | [Market data feeds](/manual/market-data/) |
 | `screenshot_folder` | a folder; `~/` is your home; empty for the default | where Omarchy saves screenshots; `<Pictures>/Omacharts` without Omarchy | None | [Screenshots](/manual/screenshots/) |
-| `cache_limit` | a size in bytes; `cache limit` takes `512MB` or `2GB` | 1 GB | Data › Keep at most | [Where your data lives](/manual/your-data/) |
+| `cache_limit` | a size in bytes; `cache limit` takes `512MB` or `2GB` | 1 GB | Market data › Keep at most | [Where your data lives](/manual/your-data/) |
 
 ### Theme
 
-`config set theme` takes `omarchy` for System, `midnight`, `carbon`, `paper`,
-`daylight`, `omarchy:everforest` for an installed Omarchy theme (its folder
-name after the colon), or the id of one of your own (`config get theme`
-prints it while that theme is chosen). The window picks the theme up when it
-next opens; Preferences changes the window in front of you.
+`config theme` lists the themes, the one in use starred, and `config theme
+NAME` puts the window in one: `system`, which follows the desktop's Omarchy
+theme, or any Omarchy theme on the machine by its folder name. Without
+Omarchy, the list is the Omarchy themes built into the app. A name that is
+not a theme is refused with exit 2, and changes nothing. An open window
+changes at once.
 
 ```
-$ omacharts config set theme midnight
-set theme to midnight
+$ omacharts config theme gruvbox
+the theme is Gruvbox
   [exit 0]
 ```
+
+`config set theme` writes the same setting with no check. There, Follow
+system is `omarchy`.
 
 ### When a setting is checked and takes effect
 

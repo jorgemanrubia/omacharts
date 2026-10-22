@@ -97,6 +97,9 @@ pub struct Panel {
     /// Writes every chart's P&L as the settings now say, money or R.
     pnl_changed: RefCell<Option<Rc<dyn Fn()>>>,
     groups: RefCell<Vec<adw::PreferencesGroup>>,
+    /// A group of the caller's, kept below the page's own as they are
+    /// drawn again.
+    last: RefCell<Option<adw::PreferencesGroup>>,
     /// The latest word from a sign-in, by login, until the next one.
     notes: RefCell<HashMap<String, String>>,
     /// Keeps the desk's call to redraw alive as long as the page is.
@@ -129,6 +132,7 @@ impl Panel {
             labels_moved: RefCell::new(None),
             pnl_changed: RefCell::new(None),
             groups: RefCell::new(Vec::new()),
+            last: RefCell::new(None),
             notes: RefCell::new(HashMap::new()),
             redraw: RefCell::new(None),
         });
@@ -164,6 +168,12 @@ impl Panel {
     /// charts.
     pub fn set_pnl_changed(&self, changed: Rc<dyn Fn()>) {
         *self.pnl_changed.borrow_mut() = Some(changed);
+    }
+
+    /// Put `group` at the foot of the page, where it stays.
+    pub fn set_last(&self, group: &adw::PreferencesGroup) {
+        self.page.add(group);
+        *self.last.borrow_mut() = Some(group.clone());
     }
 
     /// The Data page's redraw, for when a login changes what it says.
@@ -235,6 +245,10 @@ fn rebuild(panel: &Rc<Panel>) {
         panel.page.add(group);
     }
     *panel.groups.borrow_mut() = groups;
+    if let Some(last) = panel.last.borrow().as_ref() {
+        panel.page.remove(last);
+        panel.page.add(last);
+    }
 }
 
 /// How a login stands, in words: progress while a sign-in runs, else its

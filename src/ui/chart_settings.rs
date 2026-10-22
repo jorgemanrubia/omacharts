@@ -425,23 +425,8 @@ fn bars_group(window: &Rc<Window>) -> adw::PreferencesGroup {
 
     let colouring = adw::ComboRow::new();
     colouring.set_title("Colouring");
-    fill_colourings(&colouring, window.bar_colouring());
+    fill_colourings(&colouring, window.bar_style(), window.bar_colouring());
     colouring.set_sensitive(!window.bars_hidden());
-
-    // The two switches worn over the colouring. Greyed with it while the
-    // bars are hidden; the hollow rise also on OHLC bars, which have no
-    // body to leave open, and the swap on a colouring that paints the same
-    // either way.
-    let hollow = adw::SwitchRow::new();
-    hollow.set_title(HOLLOW_LABEL);
-    hollow.set_active(window.bars_hollow_up());
-    let swapped = adw::SwitchRow::new();
-    swapped.set_title(SWAP_LABEL);
-    swapped.set_active(window.bars_swapped());
-    let theme = window.theme();
-    let shown = !window.bars_hidden();
-    hollow.set_sensitive(shown && hollow_applies(window.bar_style()));
-    swapped.set_sensitive(shown && two_toned(&theme, window.bar_colouring()));
 
     // Set while the rows are being brought up to date with a chart changed
     // from elsewhere, so that reading the change is not taken for making it.
@@ -471,8 +456,6 @@ fn bars_group(window: &Rc<Window>) -> adw::PreferencesGroup {
 
     let window_for_style = window.clone();
     let colouring_for_style = colouring.clone();
-    let hollow_for_style = hollow.clone();
-    let swapped_for_style = swapped.clone();
     let syncing_for_style = syncing.clone();
     let thickness_for_style = thickness.row.clone();
     row.connect_selected_notify(move |row| {
@@ -484,64 +467,40 @@ fn bars_group(window: &Rc<Window>) -> adw::PreferencesGroup {
         if row.selected() == hidden_at {
             window_for_style.set_bars_hidden(true);
             colouring_for_style.set_sensitive(false);
-            hollow_for_style.set_sensitive(false);
-            swapped_for_style.set_sensitive(false);
         } else if let Some(style) = BarStyle::ALL.get(row.selected() as usize).copied() {
             window_for_style.set_bar_style(style);
+            fill_colourings(&colouring_for_style, style, window_for_style.bar_colouring());
             colouring_for_style.set_sensitive(true);
-            hollow_for_style.set_sensitive(hollow_applies(style));
-            let theme = window_for_style.theme();
-            swapped_for_style.set_sensitive(two_toned(&theme, window_for_style.bar_colouring()));
         }
     });
     group.add(&row);
     group.add(&thickness.row);
 
     let window_for_colouring = window.clone();
-    let swapped_for_colouring = swapped.clone();
     let syncing_for_colouring = syncing.clone();
     colouring.connect_selected_notify(move |row| {
         if filling_colourings(row) || syncing_for_colouring.get() {
             return;
         }
-        let Some(chosen) = BarColouring::ALL.get(row.selected() as usize).copied() else {
+        let style = window_for_colouring.bar_style();
+        let Some(chosen) = BarColouring::offered(style).get(row.selected() as usize).copied()
+        else {
             return;
         };
-        if chosen != window_for_colouring.bar_colouring() {
+        if chosen != window_for_colouring.bar_colouring().for_style(style) {
             window_for_colouring.set_bar_colouring(chosen);
         }
-        let theme = window_for_colouring.theme();
-        swapped_for_colouring.set_sensitive(two_toned(&theme, chosen));
     });
     group.add(&colouring);
-
-    let window_for_hollow = window.clone();
-    let syncing_for_hollow = syncing.clone();
-    hollow.connect_active_notify(move |row| {
-        if !syncing_for_hollow.get() && row.is_active() != window_for_hollow.bars_hollow_up() {
-            window_for_hollow.set_bars_hollow_up(row.is_active());
-        }
-    });
-    group.add(&hollow);
-
-    let window_for_swapped = window.clone();
-    let syncing_for_swapped = syncing.clone();
-    swapped.connect_active_notify(move |row| {
-        if !syncing_for_swapped.get() && row.is_active() != window_for_swapped.bars_swapped() {
-            window_for_swapped.set_bars_swapped(row.is_active());
-        }
-    });
-    group.add(&swapped);
 
     // A command, or a theme, can change the chart while this is open; the
     // rows read it again rather than go on describing what it was. Weakly,
     // so the window does not keep a closed dialog's rows alive.
     let weak = Rc::downgrade(window);
-    let rows = (row.downgrade(), colouring.downgrade(), hollow.downgrade(), swapped.downgrade());
+    let rows = (row.downgrade(), colouring.downgrade());
     let thickness = (thickness.row.downgrade(), thickness.adjustment.clone());
     window.watch_chart(move || {
-        let (Some(window), Some(row), Some(colouring), Some(hollow), Some(swapped)) =
-            (weak.upgrade(), rows.0.upgrade(), rows.1.upgrade(), rows.2.upgrade(), rows.3.upgrade())
+        let (Some(window), Some(row), Some(colouring)) = (weak.upgrade(), rows.0.upgrade(), rows.1.upgrade())
         else {
             return false;
         };
@@ -549,7 +508,7 @@ fn bars_group(window: &Rc<Window>) -> adw::PreferencesGroup {
             return false;
         }
         syncing.set(true);
-        sync_bars(&window, &row, &colouring, &hollow, &swapped, hidden_at);
+        sync_bars(&window, &row, &colouring, hidden_at);
         if let Some(shown) = thickness.0.upgrade() {
             shown.set_visible(!window.bars_hidden() && window.bar_style() == BarStyle::Ohlc);
             thickness.1.set_value(f64::from(window.ohlc_thickness()));
@@ -562,57 +521,33 @@ fn bars_group(window: &Rc<Window>) -> adw::PreferencesGroup {
 }
 
 /// Bring the Bars rows to what the focused chart is wearing now.
-fn sync_bars(
-    window: &Rc<Window>,
-    row: &adw::ComboRow,
-    colouring: &adw::ComboRow,
-    hollow: &adw::SwitchRow,
-    swapped: &adw::SwitchRow,
-    hidden_at: u32,
-) {
+fn sync_bars(window: &Rc<Window>, row: &adw::ComboRow, colouring: &adw::ComboRow, hidden_at: u32) {
     let hidden = window.bars_hidden();
     row.set_selected(match hidden {
         true => hidden_at,
         false => BarStyle::ALL.iter().position(|s| *s == window.bar_style()).unwrap_or(0) as u32,
     });
-    let current = window.bar_colouring();
-    colouring.set_selected(BarColouring::ALL.iter().position(|c| *c == current).unwrap_or(0) as u32);
+    fill_colourings(colouring, window.bar_style(), window.bar_colouring());
     colouring.set_sensitive(!hidden);
-    hollow.set_active(window.bars_hollow_up());
-    swapped.set_active(window.bars_swapped());
-    hollow.set_sensitive(!hidden && hollow_applies(window.bar_style()));
-    swapped.set_sensitive(!hidden && two_toned(&window.theme(), current));
 }
 
-/// What the two switches over the colouring are called, in a chart's
+/// The row for how many pixels wide OHLC bars are drawn, in a chart's
 /// settings and in the preferences alike.
-pub const HOLLOW_LABEL: &str = "Hollow up bars";
-pub const SWAP_LABEL: &str = "Swap up and down colours";
-/// The row for how many pixels wide OHLC bars are drawn.
 pub const THICKNESS_LABEL: &str = "Thickness";
 
-/// Whether turning `colouring` round would change what it paints, which is
-/// when the switch for it is offered. Monochrome paints a rise and a fall
-/// alike, so there is nothing to turn round.
-pub fn two_toned(theme: &omacharts_engine::Theme, colouring: BarColouring) -> bool {
-    colouring.scheme(theme).is_two_toned()
-}
-
-/// Whether a hollow rise would show on a bar of `style`: a candle has a
-/// body to leave open, an OHLC bar does not.
-pub fn hollow_applies(style: BarStyle) -> bool {
-    style == BarStyle::Candles
-}
-
-/// Offer the four palettes, with `current` selected.
+/// Offer the colourings a bar of `style` can be painted in, with `current`
+/// selected — as an OHLC bar draws it, so a hollow chart turned into OHLC
+/// reads as coloured, which is what it shows.
 ///
 /// A new model selects its first entry on the way in, which the row's own
 /// handler would take for a choice; [`filling_colourings`] tells it not to.
-pub fn fill_colourings(row: &adw::ComboRow, current: BarColouring) {
-    let names: Vec<&str> = BarColouring::ALL.iter().map(|c| c.label()).collect();
+pub fn fill_colourings(row: &adw::ComboRow, style: BarStyle, current: BarColouring) {
+    let offered = BarColouring::offered(style);
+    let names: Vec<&str> = offered.iter().map(|c| c.label(style)).collect();
     row.set_widget_name(FILLING);
     row.set_model(Some(&gtk::StringList::new(&names)));
-    row.set_selected(BarColouring::ALL.iter().position(|c| *c == current).unwrap_or(0) as u32);
+    let shown = current.for_style(style);
+    row.set_selected(offered.iter().position(|c| *c == shown).unwrap_or(0) as u32);
     row.set_widget_name("");
 }
 
@@ -2039,10 +1974,17 @@ fn volume_rows(owner: &Rc<Owner>, refresh: &Refresh, indicator: &Indicator) -> V
             }
         },
     );
-    // The one a delta profile offers. Its Default is what volume always
-    // followed, the chart's own colouring, and Monochrome, which a delta is
-    // not offered, stays on offer to a volume pane already painted in it.
-    let choice = colouring_row(owner, refresh, id, *colouring);
+    // The chart's own colouring first, then the ones a bar with no body
+    // can wear: a volume bar has none to leave hollow, like an OHLC bar.
+    let offered = BarColouring::offered(BarStyle::Ohlc);
+    let mut names = vec![VOLUME_FOLLOWS_CHART];
+    names.extend(offered.iter().map(|c| c.label(BarStyle::Ohlc)));
+    let current = colouring.and_then(|c| offered.iter().position(|o| *o == c)).map(|at| at + 1);
+    let choice = choice_row(owner, refresh, id, "Colouring", &names, current, move |indicator, at| {
+        if let Params::Volume { colouring, .. } = &mut indicator.params {
+            *colouring = at.checked_sub(1).and_then(|at| offered.get(at).copied());
+        }
+    });
     // Bars have no line to repaint as a sample.
     let unused = Ink::new(String::new);
     let up_row = colour_row(
@@ -2076,23 +2018,25 @@ fn volume_rows(owner: &Rc<Owner>, refresh: &Refresh, indicator: &Indicator) -> V
     vec![choice.upcast(), opacity.upcast(), up_row.upcast(), down_row.upcast()]
 }
 
+/// What a volume pane's colouring row offers first: the way the chart
+/// paints its candles, whatever that is.
+const VOLUME_FOLLOWS_CHART: &str = "Same as the chart";
+
 /// The volume row that says how solid its bars are.
 pub const VOLUME_OPACITY_LABEL: &str = "Opacity";
 
-/// The colouring row a volume pane, a delta volume profile and a
-/// cumulative delta share: **Default** first, then the colourings that tell
-/// a rise from a fall, [`DELTA_COLOURINGS`]. Default is the colouring
-/// chosen in Preferences for a delta, and the chart's own for volume, which
-/// is what it always followed. A colouring outside those three that an
-/// indicator already has — a volume pane painted Monochrome before — is
-/// offered last, so the row shows what is drawn.
+/// The colouring row a delta volume profile and a cumulative delta share:
+/// **Default**, the look chosen in Preferences, first, then the pairs of
+/// their own, [`DELTA_COLOURINGS`]. A colouring outside those that an
+/// indicator already has, from a hand-edited chart, is offered last, so the
+/// row shows what is drawn.
 fn colouring_row(owner: &Rc<Owner>, refresh: &Refresh, id: u32, current: Option<BarColouring>) -> adw::ComboRow {
     let mut offered: Vec<BarColouring> = DELTA_COLOURINGS.to_vec();
     if let Some(kept) = current.filter(|c| !offered.contains(c)) {
         offered.push(kept);
     }
     let mut names = vec![PROFILE_FOLLOWS_DEFAULTS];
-    names.extend(offered.iter().map(|c| c.label()));
+    names.extend(offered.iter().map(|c| c.label(BarStyle::Ohlc)));
     let at = current.and_then(|c| offered.iter().position(|o| *o == c)).map(|at| at + 1);
     choice_row(owner, refresh, id, PROFILE_COLOURING_LABEL, &names, at, move |indicator, at| {
         let chosen = at.checked_sub(1).and_then(|at| offered.get(at).copied());
@@ -3216,9 +3160,9 @@ mod tests {
     /// a total offers none.
     #[test]
     fn a_delta_profile_offers_the_two_toned_colourings_after_the_default() {
-        let names: Vec<&str> = DELTA_COLOURINGS.iter().map(|c| c.label()).collect();
-        assert_eq!(names, ["Vivid", "Soft", "Quiet"]);
-        assert!(names.iter().all(|name| BarColouring::ALL.iter().any(|c| c.label() == *name)));
+        let names: Vec<&str> = DELTA_COLOURINGS.iter().map(|c| c.label(BarStyle::Ohlc)).collect();
+        assert_eq!(names, ["Soft", "Quiet"]);
+        assert!(names.iter().all(|name| BarColouring::ALL.iter().any(|c| c.label(BarStyle::Ohlc) == *name)));
         assert_eq!(PROFILE_FOLLOWS_DEFAULTS, "Default");
         assert!(has_colouring(Method::Delta));
         assert!(!has_colouring(Method::Total));

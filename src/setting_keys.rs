@@ -71,9 +71,10 @@ const KEYS: &[(&str, Kind)] = &[
 const SHARED: &[&str] = &[
     "theme",
     "bar_scheme",
-    "swap_colours",
-    "hollow_up",
     "ohlc_thickness",
+    // How orders and positions are drawn: a trader's colours, the same on
+    // every machine they trade from.
+    "trading_look",
     "coloured_bar_scheme",
     "workspace",
     "timeframes",
@@ -96,6 +97,11 @@ const SHARED: &[&str] = &[
     "watchlist_sort_",
     "watchlist_link_",
     "bar_style",
+    "chart_colouring",
+    "bar_up",
+    "bar_down",
+    "bar_up_hollow",
+    "bar_down_hollow",
     "chart_session",
     "chart_continuous",
     "show_grid",

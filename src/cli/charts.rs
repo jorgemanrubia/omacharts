@@ -78,17 +78,6 @@ impl Workspace {
         }
     }
 
-    /// One field, the same on every chart in every book.
-    pub fn set_on_every_pane(&mut self, key: &str, value: Value) {
-        for book in self.books_mut() {
-            if let Some(panes) = book["panes"].as_array_mut() {
-                for pane in panes {
-                    pane[key] = value.clone();
-                }
-            }
-        }
-    }
-
     /// Every chart in every book, to change.
     pub fn each_pane_mut(&mut self, mut change: impl FnMut(&mut Value)) {
         for book in self.books_mut() {

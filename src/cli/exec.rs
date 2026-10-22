@@ -19,7 +19,7 @@ use omacharts_engine::indicators::{
 };
 use omacharts_engine::providers;
 use omacharts_engine::theme::{
-    ColorChoice, PALETTE_NAMES, THEME_QUIET_ID, THEME_MONO_ID, THEME_SOFT_ID,
+    spell_bar_colour, ColorChoice, PALETTE_NAMES, SWATCH_NAMES,
 };
 use omacharts_engine::{
     BarStyle, Indicator, IndicatorKind, LinkMode, Reset, Session, Timeframe,
@@ -224,6 +224,7 @@ pub fn dispatch(
             }
             outcome
         }
+        ("config", "theme") => config_theme(store, m, json, live),
         ("config", "bars") => config_bars(store, m, json, live),
 
         ("plugin", "status") => plugin_status(&caller.home(), json),
@@ -1562,12 +1563,10 @@ fn chart_set(
                 .ok_or_else(|| Fault::usage(format!("{text:?} is not a bar style")))?,
         )),
     };
-    // A scheme a released version offered for a hollow rise or for red up
-    // is the palette with that switch on, for this chart.
     let colouring = match arg(m, "colouring") {
         None => None,
         Some(text) => Some(
-            omacharts_engine::BarColouring::from_stored(text)
+            omacharts_engine::BarColouring::from_key(text)
                 .ok_or_else(|| Fault::usage(format!("{text:?} is not a bar colouring")))?,
         ),
     };
@@ -1607,8 +1606,6 @@ fn chart_set(
     if let (Some(None), Some(true)) = (style, bars) {
         return Err(Fault::usage("--style none hides the bars, and --bars on shows them; pass one".into()));
     }
-    let hollow_up = switch("hollow-up")?;
-    let swapped = switch("swap-colours")?;
     let thickness = arg(m, "thickness").map(|text| parse_thickness(text, "--thickness")).transpose()?;
     // Blank takes the title away, as clearing it in the header does.
     let title = arg(m, "title").map(|text| crate::ui::window::clean_title(text));
@@ -1672,29 +1669,13 @@ fn chart_set(
             false => "bars hidden".to_string(),
         });
     }
-    if let Some(look) = colouring {
-        chart["colouring"] = json!(look.colouring.key());
-        changed.push(format!("colouring {}", look.colouring.key()));
-        if look.hollow_up {
-            chart["hollow_up"] = json!(true);
-            changed.push("rises hollow".to_string());
-        }
-        if look.swapped {
-            chart["swapped"] = json!(true);
-            changed.push("up and down swapped".to_string());
-        }
+    if let Some(colouring) = colouring {
+        chart["colouring"] = json!(colouring.key());
+        changed.push(format!("colouring {}", colouring.key()));
     }
     if let Some(thickness) = thickness {
         chart["ohlc_thickness"] = json!(thickness);
         changed.push(format!("OHLC bars {thickness}px"));
-    }
-    if let Some(hollow_up) = hollow_up {
-        chart["hollow_up"] = json!(hollow_up);
-        changed.push(format!("rises {}", if hollow_up { "hollow" } else { "filled" }));
-    }
-    if let Some(swapped) = swapped {
-        chart["swapped"] = json!(swapped);
-        changed.push(format!("up and down {}", if swapped { "swapped" } else { "as the colouring has them" }));
     }
     if let Some(session) = session {
         chart["session"] = json!(session.key());
@@ -1778,8 +1759,8 @@ fn chart_set(
 
     if changed.is_empty() {
         return Err(Fault::usage(
-            "nothing to change; pass --title, --symbol, --resolution, --style, --thickness, --bars, --colouring, --hollow-up, \
-             --swap-colours, --session, --link, --grid, --auto-scale, --log-scale, --price-line, --indicators, \
+            "nothing to change; pass --title, --symbol, --resolution, --style, --thickness, --bars, --colouring, \
+             --session, --link, --grid, --auto-scale, --log-scale, --price-line, --indicators, \
              --drawings, --show-drawings, --send-drawings or --template"
                 .into(),
         ));
@@ -4319,10 +4300,8 @@ fn pane_json(pane: &Value) -> String {
         "bar_style": pane["bar_style"],
         "bars": !pane["bars_hidden"].as_bool().unwrap_or(false),
         "colouring": pane["colouring"],
-        "hollow_up": stored_look(pane).hollow_up,
         // Missing from a chart stored before OHLC bars could be thicker.
         "ohlc_thickness": pane["ohlc_thickness"].as_u64().unwrap_or(crate::chart_defaults::DEFAULT_OHLC_THICKNESS.into()),
-        "swapped": stored_look(pane).swapped,
         "session": pane["session"],
         // Missing from a chart stored before there was a choice, which is
         // drawn as the default says.
@@ -5498,138 +5477,155 @@ fn config_set(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<Stri
     said(as_json, json!({"key": key, "value": value}), format!("set {key} to {value}"))
 }
 
-/// Where the scheme to go back to when the colour is put back is remembered.
-///
-/// Monochrome is a scheme like any other, so choosing it without
-/// writing this down would throw away a palette somebody had picked and leave
-/// them on the default when they changed their mind.
-const COLOURED_BARS: &str = "coloured_bar_scheme";
+/// What the theme that follows the desktop is called here: the word every
+/// other setting on this platform uses, rather than its stored id.
+const SYSTEM_THEME: &str = "system";
 
-/// Which palette every chart paints from, vivid, soft, quiet or monochrome,
-/// asked the way people arrive at it, and the two switches worn over it.
+/// Which theme, said by name, and the list to choose from.
 ///
-/// `config set bar_scheme theme-mono` reaches the same scheme, and is not the
-/// same command: it does not remember what to go back to, so putting the
-/// colour back lands on the default rather than on the scheme that was in use.
+/// `config set theme` writes the same row, but it cannot say what the names
+/// are, and a window that is open keeps wearing what it started in. This
+/// checks the name against the themes on offer and tells the window.
+fn config_theme(
+    store: &Store,
+    m: &clap::ArgMatches,
+    as_json: bool,
+    live: Option<&dyn Live>,
+) -> Result<String, Fault> {
+    let theming = crate::theming::Theming::load(store);
+    let spell = |id: &str| match id == omacharts_engine::theme::OMARCHY_ID {
+        true => SYSTEM_THEME.to_string(),
+        false => id.to_string(),
+    };
+    let current = theming.theme();
+    let themes = theming.themes();
+
+    let Some(wanted) = arg(m, "THEME") else {
+        if as_json {
+            let rows: Vec<Value> = themes
+                .iter()
+                .map(|t| json!({"id": spell(&t.id), "name": t.name, "current": t.id == current.id}))
+                .collect();
+            return Ok(format!("{}\n", json!({"theme": spell(&current.id), "themes": rows})));
+        }
+        let width = themes.iter().map(|t| spell(&t.id).len()).max().unwrap_or(0);
+        let mut out = String::new();
+        for theme in &themes {
+            let mark = if theme.id == current.id { '*' } else { ' ' };
+            let name = match theme.id == omacharts_engine::theme::OMARCHY_ID {
+                true => format!("follows the desktop, now {}", theme.name),
+                false => theme.name.clone(),
+            };
+            out.push_str(&format!("{mark} {:width$}  {name}\n", spell(&theme.id)));
+        }
+        return Ok(out);
+    };
+
+    let id = match wanted.eq_ignore_ascii_case(SYSTEM_THEME) {
+        true => omacharts_engine::theme::OMARCHY_ID.to_string(),
+        false => wanted.to_ascii_lowercase().replace(' ', "-"),
+    };
+    let Some(theme) = themes.iter().find(|t| t.id == id) else {
+        let names: Vec<String> = themes.iter().map(|t| spell(&t.id)).collect();
+        return Err(Fault::usage(format!(
+            "no such theme: {wanted:?}; the themes are {}",
+            names.join(", ")
+        )));
+    };
+    let name = theme.name.clone();
+    let already = theme.id == current.id && store.setting(crate::theming::SETTING_THEME).is_some();
+    store.set_setting(crate::theming::SETTING_THEME, &id);
+    if let Some(live) = live {
+        live.adopt_theming();
+    }
+    let text = match already {
+        true => format!("the theme was already {name}"),
+        false => format!("the theme is {name}"),
+    };
+    said(as_json, json!({"theme": spell(&id), "name": name}), text)
+}
+
+/// How candles look: a colour for each direction, and which are hollow.
 ///
-/// `coloured`, `hollow` and `red-up` are what a released version took, when
-/// a hollow rise and the colours the other way round were schemes of their
-/// own; a script written then still works. `coloured` is `vivid`, and the
-/// other two are `vivid` with that switch on, on every chart, which
-/// `chart set --hollow-up`, `chart set --swap-colours` and `config set` do
-/// one at a time.
+/// The preset is the question people arrive with — colour or none, and which
+/// way round — and sets the two colours; the flags set any of the four
+/// answers on their own, and win over the preset. Nothing given reports
+/// them.
 fn config_bars(
     store: &Store,
     m: &clap::ArgMatches,
     as_json: bool,
     live: Option<&dyn Live>,
 ) -> Result<String, Fault> {
-    // Spelled as a palette, whatever an older version wrote: a scheme id
-    // that is not one names colours that now live in a theme, or a look that
-    // is now a switch.
-    let colouring = |id: Option<String>| {
-        omacharts_engine::BarColouring::from_key(id.as_deref().unwrap_or(""))
-            .unwrap_or_default()
-            .key()
-            .to_string()
-    };
-    let current = colouring(store.setting(crate::theming::SETTING_BARS));
-    let worn = crate::chart_defaults::stored_colouring(store);
-    let answer = |scheme: &str, hollow_up: bool, swapped: bool| {
-        let mut text = spell_bars(scheme).to_string();
-        if hollow_up {
-            text.push_str(", hollow");
-        }
-        if swapped {
-            text.push_str(", swapped");
-        }
-        text
-    };
-    let Some(state) = arg(m, "STATE") else {
-        return match as_json {
-            true => Ok(format!(
-                "{}\n",
-                json!({"bars": spell_bars(&current), "scheme": current, "hollow_up": worn.hollow_up, "swapped": worn.swapped})
-            )),
-            false => Ok(format!("{}\n", answer(&current, worn.hollow_up, worn.swapped))),
+    use omacharts_engine::theme::{parse_bar_colour, BarLook};
+
+    let current = crate::theming::bar_look(store);
+    let mut look = current.clone();
+    if let Some(preset) = arg(m, "STATE") {
+        let colours = match preset.as_str() {
+            "monochrome" => BarLook::monochrome(),
+            "red-up" => BarLook::red_up(),
+            _ => BarLook::default(),
         };
+        (look.up, look.down) = (colours.up, colours.down);
+    }
+    let colour = |flag: &str| -> Result<Option<ColorChoice>, Fault> {
+        let Some(text) = arg(m, flag) else { return Ok(None) };
+        parse_bar_colour(text).map(Some).ok_or_else(|| {
+            Fault::usage(format!(
+                "no such bar colour: {text:?}; give one of {}, ink, or a #rrggbb hex",
+                SWATCH_NAMES.map(str::to_lowercase).join(", ")
+            ))
+        })
     };
-    let state = state.as_str();
+    if let Some(up) = colour("up")? {
+        look.up = up;
+    }
+    if let Some(down) = colour("down")? {
+        look.down = down;
+    }
+    if let Some(hollow) = arg(m, "hollow") {
+        (look.up_hollow, look.down_hollow) = match hollow.as_str() {
+            "up" => (true, false),
+            "down" => (false, true),
+            "both" => (true, true),
+            _ => (false, false),
+        };
+    }
 
-    let scheme = match state {
-        "monochrome" => THEME_MONO_ID.to_string(),
-        "soft" => THEME_SOFT_ID.to_string(),
-        "quiet" => THEME_QUIET_ID.to_string(),
-        // "vivid", and "coloured", "hollow" and "red-up" with it: stay on the
-        // palette in use if it already carries the direction in colour, and
-        // otherwise go back to the one it was left from.
-        _ if spell_bars(&current) == "vivid" => current.clone(),
-        _ => colouring(store.setting(COLOURED_BARS)),
+    let given = ["STATE", "up", "down", "hollow"].iter().any(|id| arg(m, id).is_some());
+    if given {
+        crate::theming::save_bar_look(store, &look);
+        // A candle has no row to reload: an open window paints from the
+        // scheme it read, so it is told to read it again.
+        if let Some(live) = live {
+            live.adopt_theming();
+        }
+    }
+    let (up, down) = (spell_bar_colour(&look.up), spell_bar_colour(&look.down));
+    let hollow = match (look.up_hollow, look.down_hollow) {
+        (true, true) => "both",
+        (true, false) => "up",
+        (false, true) => "down",
+        (false, false) => "none",
     };
-    let hollow = state == "hollow";
-    let turn_round = state == "red-up";
-    let was = scheme == current && (!hollow || worn.hollow_up) && (!turn_round || worn.swapped);
-    // Leaving a palette somebody picked: remember it to come back to.
-    if scheme != current && spell_bars(&current) == "vivid" {
-        store.set_setting(COLOURED_BARS, &current);
-    }
-    store.set_setting(crate::theming::SETTING_BARS, &scheme);
-    // Charts are painted one by one now, so the question asked of the whole
-    // app is answered on every chart as well as for the next one — what
-    // "Apply to all charts" does with the same choice in the preferences.
-    let mut workspace = charts::Workspace::load(store);
-    workspace.set_on_every_pane("colouring", json!(scheme));
-    if hollow {
-        store.set_setting_bool(crate::chart_defaults::SETTING_HOLLOW_UP, true);
-        workspace.set_on_every_pane("hollow_up", json!(true));
-    }
-    if turn_round {
-        store.set_setting_bool(crate::chart_defaults::SETTING_SWAP_COLOURS, true);
-        workspace.set_on_every_pane("swapped", json!(true));
-    }
-    workspace.save(store);
-    if let Some(live) = live {
-        live.adopt_theming();
-    }
-    let text = match (state, was) {
-        // Said rather than silently done, because "it was already monochrome"
-        // and "it is monochrome now" are different answers to somebody
-        // checking their own work.
-        (_, true) => format!("bars were already {state}"),
-        ("monochrome", _) => "bars are monochrome; the colours are remembered".to_string(),
-        ("soft", _) => "bars carry their direction in two soft colours, a slate and a sand".to_string(),
-        ("quiet", _) => "bars carry their direction in two greys".to_string(),
-        ("hollow", _) => format!("rising bars are hollow, in the {scheme:?} scheme"),
-        ("red-up", _) => format!("rising bars are red and falling bars green, in the {scheme:?} scheme"),
-        _ => format!("bars carry their direction in colour again, in the {scheme:?} scheme"),
+    let described = format!(
+        "up {up}, down {down}, {}",
+        match hollow {
+            "none" => "filled".to_string(),
+            "both" => "hollow".to_string(),
+            side => format!("{side} hollow"),
+        }
+    );
+    // Said rather than silently done, because "it was already monochrome"
+    // and "it is monochrome now" are different answers to somebody checking
+    // their own work.
+    let text = match (given, look == current) {
+        (false, _) => described,
+        (true, true) => format!("bars were already {described}"),
+        (true, false) => format!("bars are now {described}"),
     };
-    let (hollow_up, swapped) = (worn.hollow_up || hollow, worn.swapped || turn_round);
-    said(as_json, json!({"bars": state, "scheme": scheme, "hollow_up": hollow_up, "swapped": swapped}), text)
-}
-
-/// Which of the four answers a scheme is.
-fn spell_bars(scheme: &str) -> &'static str {
-    match scheme {
-        THEME_MONO_ID => "monochrome",
-        THEME_SOFT_ID => "soft",
-        THEME_QUIET_ID => "quiet",
-        _ => "vivid",
-    }
-}
-
-/// The palette a stored chart paints from and the switches it wears: what
-/// it says, or, from before they were switches, whether its colouring was a
-/// scheme an older version wrote for the look.
-fn stored_look(pane: &Value) -> omacharts_engine::theme::StoredColouring {
-    let written = pane["colouring"]
-        .as_str()
-        .and_then(omacharts_engine::BarColouring::from_stored)
-        .unwrap_or_default();
-    omacharts_engine::theme::StoredColouring {
-        colouring: written.colouring,
-        hollow_up: pane["hollow_up"].as_bool().unwrap_or(written.hollow_up),
-        swapped: pane["swapped"].as_bool().unwrap_or(written.swapped),
-    }
+    said(as_json, json!({"up": up, "down": down, "hollow": hollow}), text)
 }
 
 /// The widget in the Omarchy bar.
@@ -7417,6 +7413,50 @@ mod tests {
         assert_eq!(parsed["indicators"][0]["color"]["kind"], "swatch");
         assert_eq!(parsed["indicators"][0]["color"]["name"], "Neutral");
     }
+    #[test]
+    fn a_theme_is_chosen_by_a_name_the_list_gives() {
+        let store = Store::memory().unwrap();
+        let listed = run("config theme --json", &store);
+        assert_eq!(listed.code, 0);
+        let listed: Value = serde_json::from_str(&listed.out).unwrap();
+        let themes = listed["themes"].as_array().unwrap();
+        assert!(themes.len() > 1, "{listed}");
+        let other = themes
+            .iter()
+            .find(|t| t["current"] == false)
+            .and_then(|t| t["id"].as_str())
+            .unwrap()
+            .to_string();
+
+        assert_eq!(run(&format!("config theme {other}"), &store).code, 0);
+        assert_eq!(run("config get theme", &store).out.trim(), other);
+        assert!(run("config theme", &store).out.contains(&format!("* {other}")));
+
+        let typo = run("config theme midnight", &store);
+        assert_eq!(typo.code, crate::cli::EXIT_USAGE);
+        assert_eq!(run("config get theme", &store).out.trim(), other, "a typo changes nothing");
+    }
+    #[test]
+    fn bars_are_four_answers_set_together_or_alone() {
+        let store = Store::memory().unwrap();
+        assert_eq!(run("config bars", &store).out.trim(), "up green, down rose, filled");
+
+        assert_eq!(run("config bars red-up --hollow up", &store).code, 0);
+        assert_eq!(run("config bars", &store).out.trim(), "up rose, down green, up hollow");
+
+        // A flag alone leaves the other three as they were.
+        assert_eq!(run("config bars --down Ink", &store).code, 0);
+        assert_eq!(run("config bars", &store).out.trim(), "up rose, down ink, up hollow");
+        assert_eq!(run("config get bar_down", &store).out.trim(), "ink");
+
+        // A flag wins over the preset it is given with.
+        assert_eq!(run("config bars monochrome --up #336699 --hollow none", &store).code, 0);
+        let json: Value = serde_json::from_str(&run("config bars --json", &store).out).unwrap();
+        assert_eq!(json, json!({"up": "#336699", "down": "ink", "hollow": "none"}));
+
+        let again = run("config bars monochrome --up #336699 --hollow none", &store);
+        assert!(again.out.starts_with("bars were already"), "{}", again.out);
+    }
 
     #[test]
     fn the_volume_profile_takes_auto_rows_and_its_own_two_colours() {
@@ -8214,124 +8254,6 @@ mod tests {
         assert_eq!(crate::chart_defaults::ChartDefaults::load(&store).ohlc_thickness, 4);
     }
 
-    /// `red-up` and `hollow` are what a script wrote when those looks were
-    /// schemes of their own: each still reaches every chart, as vivid bars
-    /// with that switch on, and the answer says so.
-    #[test]
-    fn red_up_and_hollow_are_still_answered_as_vivid_bars_with_the_switch_on_everywhere() {
-        let store = bare();
-        run("chartbook create Macro --symbol AAPL --switch", &store);
-        run("chart split horizontal --book Macro", &store);
-        let out = run("config bars red-up", &store);
-        assert_eq!(out.code, 0, "{}", out.err);
-        assert_eq!(run("config bars", &store).out.trim(), "vivid, swapped");
-        assert_eq!(run("config get bar_scheme", &store).out.trim(), "theme");
-        assert_eq!(run("config get swap_colours", &store).out.trim(), "1");
-        assert_eq!(run("config bars hollow", &store).code, 0);
-        assert_eq!(run("config bars", &store).out.trim(), "vivid, hollow, swapped");
-        assert_eq!(run("config get hollow_up", &store).out.trim(), "1");
-        let read: serde_json::Value = serde_json::from_str(&run("config bars --json", &store).out).unwrap();
-        assert_eq!((&read["bars"], &read["hollow_up"], &read["swapped"]), (&json!("vivid"), &json!(true), &json!(true)));
-        let listed: serde_json::Value = serde_json::from_str(&run("chart list --book Macro --json", &store).out).unwrap();
-        for chart in listed["charts"].as_array().unwrap() {
-            assert_eq!((&chart["colouring"], &chart["hollow_up"], &chart["swapped"]), (&json!("theme"), &json!(true), &json!(true)));
-        }
-        assert_eq!(run("config bars red-up", &store).out.trim(), "bars were already red-up");
-        assert_eq!(run("config bars hollow", &store).out.trim(), "bars were already hollow");
-
-        // The switches stay on through the other answers: they are switches
-        // over the palette, not palettes; and the palette remembered is
-        // still the one somebody picked.
-        assert_eq!(run("config bars monochrome", &store).code, 0);
-        assert_eq!(run("config bars", &store).out.trim(), "monochrome, hollow, swapped");
-        assert_eq!(run("config bars coloured", &store).code, 0);
-        assert_eq!(run("config get bar_scheme", &store).out.trim(), "theme");
-        assert_eq!(run("config set swap_colours off", &store).code, 0);
-        assert_eq!(run("config set hollow_up off", &store).code, 0);
-        assert_eq!(run("config bars", &store).out.trim(), "vivid");
-        // An older version's setting reads the same way.
-        store.set_setting(crate::theming::SETTING_BARS, omacharts_engine::theme::THEME_RED_UP_ID);
-        assert_eq!(run("config bars", &store).out.trim(), "vivid, swapped");
-        store.set_setting(crate::theming::SETTING_BARS, omacharts_engine::theme::THEME_HOLLOW_ID);
-        assert_eq!(run("config bars", &store).out.trim(), "vivid, hollow");
-    }
-
-    #[test]
-    fn a_chart_wears_the_two_switches_on_its_own() {
-        let store = bare();
-        run("chartbook create Macro --symbol AAPL --switch", &store);
-        run("chart split horizontal --book Macro", &store);
-        let out = run("chart set --book Macro --chart pos:1 --swap-colours on --hollow-up on", &store);
-        assert_eq!(out.code, 0, "{}", out.err);
-        assert!(out.out.contains("swapped") && out.out.contains("hollow"), "{}", out.out);
-        let listed = |store: &Store| -> serde_json::Value {
-            serde_json::from_str(&run("chart list --book Macro --json", store).out).unwrap()
-        };
-        let charts = listed(&store);
-        assert_eq!((&charts["charts"][0]["swapped"], &charts["charts"][0]["hollow_up"]), (&json!(false), &json!(false)));
-        assert_eq!((&charts["charts"][1]["swapped"], &charts["charts"][1]["hollow_up"]), (&json!(true), &json!(true)));
-        assert_eq!(run("chart set --book Macro --chart pos:1 --swap-colours off --hollow-up off", &store).code, 0);
-        let charts = listed(&store);
-        assert_eq!((&charts["charts"][1]["swapped"], &charts["charts"][1]["hollow_up"]), (&json!(false), &json!(false)));
-        assert_ne!(run("chart set --book Macro --chart pos:1 --swap-colours sideways", &store).code, 0);
-        assert_ne!(run("chart set --book Macro --chart pos:1 --hollow-up maybe", &store).code, 0);
-
-        // The schemes a released version offered for the looks are the
-        // palette with that switch on, for this chart.
-        assert_eq!(run("chart set --book Macro --chart pos:0 --colouring theme-hollow", &store).code, 0);
-        assert_eq!(run("chart set --book Macro --chart pos:1 --colouring theme-red-up", &store).code, 0);
-        let charts = listed(&store);
-        assert_eq!((&charts["charts"][0]["colouring"], &charts["charts"][0]["hollow_up"]), (&json!("theme"), &json!(true)));
-        assert_eq!((&charts["charts"][1]["colouring"], &charts["charts"][1]["swapped"]), (&json!("theme"), &json!(true)));
-        // And a chart stored by that version, which named the look as its
-        // colouring, is read the same way.
-        let mut workspace = charts::Workspace::load(&store);
-        workspace.set_on_every_pane("colouring", json!("theme-hollow"));
-        workspace.each_pane_mut(|pane| {
-            if let Some(pane) = pane.as_object_mut() {
-                pane.remove("hollow_up");
-            }
-        });
-        workspace.save(&store);
-        assert_eq!(listed(&store)["charts"][0]["hollow_up"], true);
-    }
-
-    #[test]
-    fn bars_can_be_soft_or_quiet_on_every_chart_and_get_the_colour_back() {
-        let store = bare();
-        assert_eq!(run("config bars soft", &store).code, 0);
-        assert_eq!(run("config bars", &store).out.trim(), "soft");
-        assert_eq!(run("config get bar_scheme", &store).out.trim(), "theme-soft");
-        assert_eq!(run("config bars quiet", &store).code, 0);
-        assert_eq!(run("config bars", &store).out.trim(), "quiet");
-        assert_eq!(run("config get bar_scheme", &store).out.trim(), "theme-quiet");
-        assert_eq!(run("config bars vivid", &store).code, 0);
-        assert_eq!(run("config bars", &store).out.trim(), "vivid");
-        assert_eq!(run("config get bar_scheme", &store).out.trim(), "theme");
-    }
-
-    #[test]
-    fn bars_can_lose_their_colour_and_get_the_same_scheme_back() {
-        let store = bare();
-        run("config set bar_scheme theme-soft", &store);
-        assert_eq!(run("config bars", &store).out.trim(), "soft");
-
-        assert_eq!(run("config bars monochrome", &store).code, 0);
-        assert_eq!(run("config bars", &store).out.trim(), "monochrome");
-        assert_eq!(run("config get bar_scheme", &store).out.trim(), "theme-mono");
-
-        // Soft carries the direction in colour, so it is what comes back.
-        assert_eq!(run("config bars coloured", &store).code, 0);
-        assert_eq!(
-            run("config get bar_scheme", &store).out.trim(),
-            "theme",
-            "coloured is vivid, whatever palette was left"
-        );
-        run("config set bar_scheme theme", &store);
-        assert_eq!(run("config bars quiet", &store).code, 0);
-        assert_eq!(run("config bars vivid", &store).code, 0);
-        assert_eq!(run("config get bar_scheme", &store).out.trim(), "theme");
-    }
 
     #[test]
     fn a_chart_is_focused_by_its_position_as_well_as_by_its_id() {

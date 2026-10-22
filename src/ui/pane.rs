@@ -288,10 +288,6 @@ pub struct ChartPane {
     pub bars_hidden: Cell<bool>,
     /// How the theme's candle colours are painted on this chart.
     pub colouring: Cell<omacharts_engine::BarColouring>,
-    /// The two switches worn over that colouring: its up and down
-    /// exchanged, red for a rise, and a rising body drawn as an outline.
-    pub swapped: Cell<bool>,
-    pub hollow_up: Cell<bool>,
     /// How many pixels wide its OHLC bars are drawn.
     pub ohlc_thickness: Cell<u8>,
     pub session: Cell<Session>,
@@ -835,8 +831,6 @@ impl ChartPane {
             bar_style: Cell::new(bar_style),
             bars_hidden: Cell::new(false),
             colouring: Cell::new(Default::default()),
-            swapped: Cell::new(false),
-            hollow_up: Cell::new(false),
             ohlc_thickness: Cell::new(crate::chart_defaults::DEFAULT_OHLC_THICKNESS),
             session: Cell::new(session),
             continuous: Cell::new(Default::default()),

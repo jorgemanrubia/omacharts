@@ -1816,9 +1816,11 @@ impl Window {
         pane.view.set_mark_tick(target.tick);
         let key = target.account.key();
         let theme = self.theming.borrow().theme();
-        // The theme's trading colours, with only the chart's up and down
-        // switch turning profit and loss round; never its candles' colours.
-        let look = omacharts_engine::theme_trading(&theme, pane.swapped.get());
+        // The theme's trading colours, with profit and loss in the chart's
+        // own up and down: a red-up chart turns them round with its bars.
+        let theming = self.theming.borrow();
+        let bars = pane.colouring.get().for_style(pane.bar_style.get()).look(&theme, theming.bar_look());
+        let look = omacharts_engine::theme_trading(&theme, &bars);
         let places = crate::ui::trading_panel::decimals_of(Self::tick_of(pane, &target));
         let price = |price: f64| omacharts_engine::grouped_decimals(price, places);
         let view = self.trading.borrow();
@@ -2168,8 +2170,8 @@ pub(super) mod tests {
     }
 
     /// Every trading setting is in Preferences with no login, ready for
-    /// the first: the Theme page's Trading colours and lines on a theme of
-    /// one's own, the header's P&L, Buy Sell and Quantity in its Right, and
+    /// the first: the Trading page's colours and lines of orders and
+    /// positions, the header's P&L, Buy Sell and Quantity in its Right, and
     /// the Trading page's own groups.
     #[test]
     fn preferences_show_every_trading_setting_without_a_login() {
@@ -2177,15 +2179,8 @@ pub(super) mod tests {
             let store = Rc::new(Store::memory().expect("a store"));
             let window = window(&store);
             assert!(!window.trading.borrow().trades());
-            {
-                let mut theming = window.theming.borrow_mut();
-                let mine = theming.theme().duplicate("custom-mine", "Mine");
-                store.save_theme(&mine);
-                theming.reload_custom(&store);
-                theming.select_theme("custom-mine", &store);
-            }
             window.open_preferences_at(None);
-            let dialog = window.window.visible_dialog().expect("the preferences");
+            let dialog = preferences_of(&window);
             let widgets = |root: gtk::Widget| {
                 let (mut found, mut stack) = (Vec::new(), vec![root]);
                 while let Some(widget) = stack.pop() {
@@ -2217,13 +2212,13 @@ pub(super) mod tests {
                 }
                 index += 1;
             }
-            for group in ["Trading", "Right", "Order entry", "Chart"] {
+            for group in ["Orders and positions", "Right", "Order entry", "Chart"] {
                 assert!(groups.iter().any(|title| title == group), "no {group} group in {groups:?}");
             }
             for row in ["Buy", "Sell", "Long", "Short", "Profit", "Loss", "P&L", "Buy Sell", "Quantity", "Order labels"] {
                 assert!(rows.iter().any(|title| title == row), "no {row} row in {rows:?}");
             }
-            dialog.force_close();
+            dialog.close();
         });
     }
 
@@ -2231,7 +2226,7 @@ pub(super) mod tests {
     /// the Preferences `window` opens.
     fn preferences_words(window: &Rc<Window>) -> (Vec<String>, Vec<String>, Vec<String>) {
         window.open_preferences_at(None);
-        let dialog = window.window.visible_dialog().expect("the preferences");
+        let dialog = preferences_of(window);
         let widgets = |root: gtk::Widget| {
             let (mut found, mut stack) = (Vec::new(), vec![root]);
             while let Some(widget) = stack.pop() {
@@ -2267,7 +2262,7 @@ pub(super) mod tests {
             }
             index += 1;
         }
-        dialog.force_close();
+        dialog.close();
         (sections, groups, rows)
     }
 
@@ -2284,13 +2279,6 @@ pub(super) mod tests {
             let kept = Kept::default();
             let id = trading::add_login(&store, &kept, &typed()).expect("a login");
             let window = bare_window(&store);
-            {
-                let mut theming = window.theming.borrow_mut();
-                let mine = theming.theme().duplicate("custom-mine", "Mine");
-                store.save_theme(&mine);
-                theming.reload_custom(&store);
-                theming.select_theme("custom-mine", &store);
-            }
             let off = |window: &Rc<Window>| {
                 !window.trading.borrow().trades()
                     && window.trade.toggle.borrow().is_none()
@@ -2303,8 +2291,8 @@ pub(super) mod tests {
             assert!(off(&window), "trading built with the flag off");
             assert!(window.order_section(10.0).is_none(), "orders in the chart menu");
             let (sections, groups, rows) = preferences_words(&window);
-            assert_eq!(sections, ["General", "Charts", "Theme", "Data"]);
-            for group in ["Trading", "Trading services", "Order entry"] {
+            assert!(!sections.iter().any(|section| section == "Trading"), "a Trading section in {sections:?}");
+            for group in ["Orders and positions", "Trading services", "Order entry"] {
                 assert!(!groups.iter().any(|title| title == group), "a {group} group in {groups:?}");
             }
             for row in ["Profit", "Loss", "P&L", "Buy Sell", "Quantity", "Account", "Order labels"] {
@@ -2325,7 +2313,7 @@ pub(super) mod tests {
             assert_eq!(charts(&window), before, "the charts were rebuilt");
             assert_eq!(window.focused_pane().id, focused);
             let (sections, _, _) = preferences_words(&window);
-            assert_eq!(sections.last().map(String::as_str), Some("Trading"));
+            assert!(sections.iter().any(|section| section == "Trading"), "no Trading section in {sections:?}");
 
             crate::features::set(&store, crate::features::Feature::Trading, false);
             window.adopt_features();
@@ -3681,6 +3669,14 @@ pub(super) mod tests {
         });
     }
 
+    /// The Preferences window open over `window`.
+    fn preferences_of(window: &Rc<Window>) -> adw::Window {
+        crate::ui::form_window::over(&window.window)
+            .into_iter()
+            .find(|form| form.title().as_deref() == Some("Preferences"))
+            .expect("the preferences")
+    }
+
     /// The titles of every preferences group under `widget`.
     fn group_titles(widget: &gtk::Widget) -> Vec<String> {
         let mut found = Vec::new();
@@ -3695,34 +3691,34 @@ pub(super) mod tests {
         found
     }
 
-    /// The Theme page of a theme of one's own has its Trading group with
-    /// or without a login, and keeps it while one is added and removed.
+    /// The Trading page has its colours and lines of orders and positions
+    /// with or without a login, and keeps them last while one is added and
+    /// removed.
     #[test]
-    fn the_theme_page_has_its_trading_group_with_or_without_a_login() {
+    fn the_trading_page_has_its_look_with_or_without_a_login() {
         crate::ui::on_gtk(|| {
             let store = Rc::new(Store::memory().expect("a store"));
-            let mut mine = omacharts_engine::theme::builtin_themes().remove(0);
-            mine.id = "custom-test".into();
-            mine.name = "Mine".into();
-            mine.source = omacharts_engine::Source::Custom;
-            store.save_theme(&mine);
-            store.set_setting(crate::theming::SETTING_THEME, "custom-test");
             let window = window(&store);
-            crate::ui::preferences::open_next_at_theme();
+            crate::ui::preferences::open_next_at(crate::ui::preferences::TRADING);
             window.open_preferences_at(None);
-            let dialog = window.window.visible_dialog().expect("the preferences");
-            let titles = || group_titles(dialog.upcast_ref());
-            assert!(titles().iter().any(|title| title == "Bars"), "an editable theme: {:?}", titles());
-            assert!(titles().iter().any(|title| title == "Trading"), "no Trading group with no login");
+            let dialog = preferences_of(&window);
+            // Below the accounts, which are drawn again as a login comes and goes.
+            let below = || {
+                let titles = group_titles(dialog.upcast_ref());
+                let at = |name: &str| titles.iter().position(|title| title == name);
+                matches!((at("Trading services"), at("Orders and positions")), (Some(a), Some(b)) if a < b)
+            };
+            assert!(below(), "no look with no login: {:?}", group_titles(dialog.upcast_ref()));
 
             let kept = Kept::default();
             let id = trading::add_login(&store, &kept, &typed()).expect("a login");
             window.desk.tell();
-            assert!(titles().iter().any(|title| title == "Trading"), "no Trading group with a login");
+            assert!(below(), "no look with a login: {:?}", group_titles(dialog.upcast_ref()));
 
             trading::remove_login(&store, &kept, &id, true).expect("removed");
             window.desk.tell();
-            assert!(titles().iter().any(|title| title == "Trading"), "Trading gone with the last login");
+            assert!(below(), "the look gone with the last login: {:?}", group_titles(dialog.upcast_ref()));
+            dialog.close();
         });
     }
 
@@ -4354,7 +4350,7 @@ pub(super) mod tests {
         });
     }
 
-    /// Sierra Chart added on the Data page and set up there: the chart of
+    /// Sierra Chart added on the Market data page and set up there: the chart of
     /// ES is on it at once.
     #[test]
     fn sierra_added_on_the_data_page_takes_the_chart_at_once() {

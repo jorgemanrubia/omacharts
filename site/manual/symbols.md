@@ -86,7 +86,7 @@ A listing outside the US is its ticker plus its venue's suffix. `SAP DE` and `SA
 | `TW` | TWSE, Taiwan |
 | `TWO` | TPEx, Taiwan |
 
-The venue tells two listings of one company apart. `BBVA.MC` is the Madrid listing and `BBVA` the New York one. Not every feed charts every venue ([Market data feeds](/manual/market-data/)). A chart asked for a symbol its feed does not have says **The data feed does not have this symbol.** or **No data feed in Preferences → Data charts this symbol.**
+The venue tells two listings of one company apart. `BBVA.MC` is the Madrid listing and `BBVA` the New York one. Not every feed charts every venue ([Market data feeds](/manual/market-data/)). A chart asked for a symbol its feed does not have says **The data feed does not have this symbol.** or **No data feed in Preferences → Market data charts this symbol.**
 
 ## See also
 

@@ -195,13 +195,14 @@ configurations, on <kbd>Alt</kbd> + <kbd>1</kbd> to <kbd>9</kbd>. See
 ## The theme
 
 Omacharts uses the Omarchy desktop's theme. Change the theme and the window
-changes with it. Candles take the theme's up and down colours, and indicators take their
+changes with it. Candles take the theme's green and rose, and indicators take their
 colours from its palette.
 
 A colour is a name from the theme's palette or a hex value. An indicator
 coloured **Amber** takes the theme's amber and changes with the theme. A hex
-value stays as you set it. Preferences › Theme also has built-in themes, and
-lets you copy one and edit it. See [Themes and colours](/manual/themes/).
+value stays as you set it. Preferences › Appearance can also hold the window
+on any one Omarchy theme, whatever the desktop wears, and sets the colours of
+the bars. See [Themes and colours](/manual/themes/).
 
 ## The CLI
 
@@ -246,7 +247,7 @@ is added on the first launch. Remove it and it stays removed. See [Omarchy plugi
 ## Market data
 
 Prices come from a market data feed. The default feed needs no account.
-Choose another and sign in to it in Preferences › Data. See
+Choose another and sign in to it in Preferences › Market data. See
 [Market data feeds](/manual/market-data/).
 
 ## Your data

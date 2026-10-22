@@ -997,56 +997,75 @@ and `<Pictures>/Omacharts` anywhere else. `config set screenshot_folder
 Settings are read and written by name — `config list` shows every one that has
 been written, and `config set` writes any of them.
 
-Three of them have a command of their own, because what the app does with them
-is more than storing a value. Bar colours is one:
+Some of them have a command of their own, because what the app does with
+them is more than storing a value. Bar colours is one. Every chart paints its
+bars from one look: a colour for a rise, a colour for a fall, and which of the
+two are hollow. `config bars` reads and sets it, and the window's Preferences ›
+Appearance › Bars is the same four answers.
 
 ```
-$ omacharts config bars monochrome
-bars are monochrome; the colours are remembered
+$ omacharts config bars
+up green, down rose, filled
   [exit 0]
 
-$ omacharts config bars vivid
-bars carry their direction in colour again, in the "theme" scheme
+$ omacharts config bars monochrome --hollow up
+bars are now up ink, down ink, up hollow
+  [exit 0]
+
+$ omacharts config bars --up blue --down orange --hollow none
+bars are now up blue, down orange, filled
   [exit 0]
 ```
 
-`config bars soft` and `config bars quiet` are the third and fourth
-answers: a slate and a sand from the theme's palette instead of its green and
-red, and two greys made from the theme's text, a rise the lighter, so the
-price sits back on the chart.
+`coloured` sets the theme's green and rose, `red-up` the same the other way
+round, red for a rise and green for a fall, the way charts are read in
+Taiwan, mainland China, Japan and Korea, and `monochrome` ink both ways.
+`--up` and `--down` set one colour each: a theme colour by name (green, rose,
+blue, amber, violet, teal, orange, cyan), `ink`, the theme's text colour, or
+a `#rrggbb` hex, which the theme leaves alone. `--hollow` is `none`, `up`,
+`down` or `both`. A state and the flags can be given together, and the flags
+win. Stored as `bar_up`, `bar_down`, `bar_up_hollow` and `bar_down_hollow`.
 
-Two switches are worn over whichever palette is chosen rather than being
-palettes themselves. A rising candle drawn as an outline is `chart set
---hollow-up on` for one chart and `config set hollow_up on` for the charts
-made next. Up and down the other way round, red for a rise and green for a
-fall, the way charts are read in Taiwan, mainland China, Japan and Korea, is
-`chart set --swap-colours on` and `config set swap_colours on`. `config bars`
-says `vivid, hollow, swapped` with both on. `config bars coloured`, `config
-bars hollow` and `config bars red-up`, from when Hollow and Red up were
-colourings of their own, still work: `coloured` is `vivid`, and the other two
-are vivid bars with that switch on, on every chart.
+What one chart does with that look is its colouring, `chart set --colouring`:
+`theme` paints it as it is, `theme-hollow` with rising candles hollow,
+`theme-red-up` with up and down swapped, `theme-soft` in a slate against a
+sand from the theme's palette, `theme-quiet` in two greys of its text, and
+`theme-mono` in ink. Soft and quiet keep the look's hollow bodies. A style
+offers what it can draw: OHLC bars have no body to leave hollow, and a
+colouring the style does not offer is drawn as `theme`. A volume pane follows the
+chart's colouring unless given one of its own: `chart indicator set volume
+--colouring theme-mono`, and `--colouring chart` (or `default`) to follow the
+chart again. A delta volume profile and a cumulative delta paint their two
+sides in the look chosen in Preferences unless given `--colouring theme-soft`
+or `theme-quiet`.
+Its bars are always solid, in the candles' colours, drawn at `--opacity`, 0.2
+to 1 and 0.85 unless set.
 
-Bar colours belong to each chart, so `config bars` answers for every chart at
-once — the charts in every chartbook and the ones made next — the way Apply to
-all charts does in the preferences. One chart on its own is
-`chart set --colouring theme|theme-soft|theme-quiet|theme-mono`, and
-`theme-hollow` or `theme-red-up` from an earlier version is `theme` with the
-switch on for that chart. A volume pane follows the chart's colouring, swapped
-or not, unless given one of its own: `chart indicator set volume --colouring
-theme-soft`, which is painted its own way round whatever the chart's switch
-says, and `--colouring default` (or `chart`) to follow the chart again.
-Monochrome is refused for a volume pane, as for a delta. A hollow rise never
-reaches the volume: its bars are solid, with no body to leave open. They are
-the candles' own colours, drawn at `--opacity`, 0.2 to 1 and 0.85 unless set.
-
-`config set bar_scheme theme-mono` changes only what new charts open with, and
-does not remember the scheme that was in use.
+`config set chart_colouring theme-mono` changes only what new charts open
+with.
 
 What a new chart opens with is a handful of settings, the ones the preferences
-show under Charts: `bar_style`, `ohlc_thickness`, `bar_scheme`, `hollow_up`, `swap_colours`,
-`chart_session`, `show_grid`, `chart_log_scale`, `chart_shows_drawings`,
-`chart_sends_drawings` and `chart_shows_legend`. Changing
-one chart never changes them.
+show under Charts › Defaults: `bar_style`, `ohlc_thickness`,
+`chart_colouring`, `chart_session`, `show_grid`, `chart_log_scale`, `chart_template`,
+`chart_shows_drawings`, `chart_sends_drawings` and `chart_shows_legend`.
+Changing one chart never changes them.
+
+The theme is another. `config theme` lists the themes, the one in use
+starred: `system`, which follows the desktop's Omarchy theme as it changes,
+then every Omarchy theme on the machine by its folder name, each fixed
+whatever the desktop does. Without Omarchy there is no `system`, and the
+list is the Omarchy themes built into the app, `tokyo-night` first and the
+default. A name that is not a theme is refused and changes nothing.
+
+```
+$ omacharts config theme gruvbox
+the theme is Gruvbox
+  [exit 0]
+
+$ omacharts config theme system
+the theme is Tokyo Night
+  [exit 0]
+```
 
 ## Which data feed the charts come from
 

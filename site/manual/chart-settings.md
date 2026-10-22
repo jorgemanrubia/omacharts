@@ -22,25 +22,17 @@ state:
 capture: bin/headless-window shot /tmp/chartsettings.png; then scroll 640 500 10 and shot /tmp/chartsettings2.png
 crop: 700,84,1160,1276 (both)
 -->
-{% include figure.html src="/assets/manual/charts/chart-settings.png" alt="The Chart page of the Chart settings dialog, showing the Title row, the Bars group with its Colouring, Hollow up bars and Swap up and down colours rows, and the Scales group" caption="The Chart page, top." %}
+{% include figure.html src="/assets/manual/charts/chart-settings.png" alt="The Chart page of the Chart settings dialog, showing the Title row, the Bars group and the Scales group" caption="The Chart page, top." %}
 
 <!-- regenerate: as the figure above; this is its second capture, /tmp/chartsettings2.png, after scroll 640 500 10 -->
 {% include figure.html src="/assets/manual/charts/chart-settings-lower.png" alt="The Chart page scrolled down, showing the Session, Drawings and Reset to defaults groups" caption="The Chart page, bottom." %}
 
-<!-- regenerate:
-as above, with omacharts chart set --colouring theme-mono run before key ctrl+shift+s
-crop: 700,84,1160,1276
--->
-{% include figure.html src="/assets/manual/charts/chart-settings-monochrome.png" alt="The Chart page with Monochrome chosen, the Swap up and down colours row greyed out" caption="Monochrome paints a rise and a fall alike, so the swap is greyed out; Hollow up bars is how it shows direction." %}
-
 | Group › row | Does |
 |---|---|
 | **Title** | The chart title, shown by the header's **Chart title** part. Blank for none ([Chart titles](/manual/charts/#chart-titles)) |
-| **Bars** › **Style** | **Candles**, **OHLC bars**, or **None** to hide the bars ([Bars](/manual/charts/#bars)). The three rows under it are greyed out while they are hidden |
+| **Bars** › **Style** | **Candles**, **OHLC bars**, or **None** to hide the bars ([Bars](/manual/charts/#bars)). **Colouring** is greyed out while they are hidden |
 | **Bars** › **Thickness** | How many pixels wide OHLC bars are drawn, from 1 to 4. Only there on OHLC bars |
-| **Bars** › **Colouring** | **Vivid**, **Soft**, **Quiet** or **Monochrome** ([Colouring](/manual/charts/#colouring)) |
-| **Bars** › **Hollow up bars** | Draws a rising candle as an outline. Greyed out on OHLC bars, which have no body |
-| **Bars** › **Swap up and down colours** | Paints the colouring the other way round, red for a rise. Greyed out on Monochrome |
+| **Bars** › **Colouring** | **Filled**, **Hollow**, **Red up**, **Soft**, **Quiet** or **Monochrome** for candles; the same less **Hollow**, with **Coloured** for **Filled**, for OHLC bars ([Colouring](/manual/charts/#colouring)) |
 | **Scales** › **Auto scale price** | Fits the visible bars vertically. Off, the chart can be dragged up and down ([Scales](/manual/charts/#scales)) |
 | **Scales** › **Logarithmic scale** | Equal heights are equal percentage moves ([Logarithmic scale](/manual/charts/#logarithmic-scale)) |
 | **Scales** › **Gridlines** | Draws the grid. The scales and their labels stay either way |
@@ -74,9 +66,7 @@ crop: 292,76,1976,1288   (the whole dialog; the Defaults page scrolls inside it)
 |---|---|---|
 | **Bars** › **Style** | **Candles**, **OHLC bars** | **Candles** |
 | **Bars** › **Thickness** | 1 to 4 pixels. Only there on OHLC bars | 2 |
-| **Bars** › **Colouring** | **Vivid**, **Soft**, **Quiet**, **Monochrome** | **Vivid** |
-| **Bars** › **Hollow up bars** | On or off. Greyed out on OHLC bars | Off |
-| **Bars** › **Swap up and down colours** | On or off. Greyed out on Monochrome | Off |
+| **Bars** › **Colouring** | What the style offers, as in Chart settings | **Filled** |
 | **Scales** › **Logarithmic scale** | On or off | Off |
 | **Scales** › **Gridlines** | On or off | Off |
 | **Session** › **Hours** | **Extended hours**, **Regular hours only** | **Extended hours** |

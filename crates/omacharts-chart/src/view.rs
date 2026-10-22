@@ -39,7 +39,7 @@ use omacharts_engine::clock::{ChartZone, TimeFormat};
 use omacharts_engine::indicators::{self as indicators, BandSeries, LineStyle, Output, Profile};
 use omacharts_engine::indicators::profile::DELTA_COLOURINGS;
 use omacharts_engine::{
-    grouped_decimals, Bar, BarColouring, BarScheme, BarStyle, Direction, FetchFailure, Indicator, Instrument,
+    grouped_decimals, Bar, BarColouring, BarLook, BarScheme, BarStyle, Direction, FetchFailure, Indicator, Instrument,
     Range, Tag, Theme, Timeframe,
 };
 
@@ -176,10 +176,9 @@ struct State {
     echo: Option<Echo>,
     theme: Theme,
     scheme: BarScheme,
-    /// The colouring chosen in Preferences, and whether it is worn the
-    /// other way round: what a delta profile with no colouring of its own
-    /// is painted in, rather than this chart's.
-    house: (BarColouring, bool),
+    /// The look chosen in Preferences: what a delta profile with no
+    /// colouring of its own is painted in, rather than this chart's.
+    house: BarLook,
     /// A delta profile's bought and sold colours, for the house colouring
     /// and then each of [`DELTA_COLOURINGS`] in turn, worked out when the
     /// theme or the house colouring changes rather than on every frame.
@@ -187,9 +186,6 @@ struct State {
     /// The last-price tag for a rise and a fall, worked out from the scheme
     /// whenever it changes rather than on every frame.
     price_tags: [Tag; 2],
-    /// The last price's colour and its tag, from the theme, worked out
-    /// whenever the theme changes rather than on every frame.
-    last_ink: LastInk,
     /// The feed's latest trade when the bars drawn leave it out, a chart
     /// of the regular session out of hours: the price is the price,
     /// whatever candles are shown. `None` when the last bar has it.
@@ -1362,9 +1358,8 @@ impl State {
         State {
             bars: Vec::new(),
             echo: None,
-            last_ink: LastInk::of(&theme),
-            delta_inks: delta_inks(&theme, HOUSE_LOOK),
-            house: HOUSE_LOOK,
+            delta_inks: delta_inks(&theme, &BarLook::default()),
+            house: BarLook::default(),
             theme,
             price_tags: price_tags(&scheme),
             scheme,
@@ -4931,8 +4926,7 @@ impl ChartView {
     pub fn restyle(&self, theme: Theme, scheme: BarScheme) {
         {
             let mut state = self.state.borrow_mut();
-            state.last_ink = LastInk::of(&theme);
-            state.delta_inks = delta_inks(&theme, state.house);
+            state.delta_inks = delta_inks(&theme, &state.house);
             state.theme = theme;
             state.price_tags = price_tags(&scheme);
             state.scheme = scheme;
@@ -4940,16 +4934,16 @@ impl ChartView {
         self.redraw();
     }
 
-    /// The colouring chosen in Preferences and whether it is worn swapped,
-    /// which a delta profile with no colouring of its own is painted in.
-    pub fn set_house_look(&self, colouring: BarColouring, swapped: bool) {
+    /// The look chosen in Preferences, which a delta profile with no
+    /// colouring of its own is painted in.
+    pub fn set_house_look(&self, look: BarLook) {
         {
             let mut state = self.state.borrow_mut();
-            if state.house == (colouring, swapped) {
+            if state.house == look {
                 return;
             }
-            state.house = (colouring, swapped);
-            state.delta_inks = delta_inks(&state.theme, state.house);
+            state.delta_inks = delta_inks(&state.theme, &look);
+            state.house = look;
         }
         self.redraw();
     }
@@ -8505,7 +8499,7 @@ fn draw_marks(
             chips.push((y + 0.5, &at.text, Some(chip_look(&mark.colour, at.filled)), mark.dim));
         }
     }
-    let last = last_price(state).map(|price| to_y(price).round() + 0.5).filter(|y| shown(*y));
+    let last = last_price(state).map(|(price, _)| to_y(price).round() + 0.5).filter(|y| shown(*y));
     if let Some(y) = last {
         chips.push((below_cover(state, y), "", None, false));
     }
@@ -8656,14 +8650,12 @@ fn draw_last_price(
     // Where the tag goes when marks' chips on the axis moved it.
     tag_at: Option<f64>,
 ) {
-    let Some(price) = last_price(state) else { return };
+    let Some((price, rising)) = last_price(state) else { return };
     let y = to_y(price).round() + 0.5;
     if y < price_y {
         return;
     }
-    // In the last price's own colour, the line's: one thing on the chart,
-    // whose rise or fall the candles and the header already say.
-    let tag = &state.last_ink.tag;
+    let tag = &state.price_tags[if rising { 0 } else { 1 }];
     // With marks on the chart their boxes drew it already, under them.
     if state.marks.is_empty() {
         draw_last_price_line(cr, state, plot_x, plot_w, price_y, to_y);
@@ -8681,11 +8673,15 @@ fn draw_last_price(
     );
 }
 
-/// The last price: the feed's latest trade when the bars drawn leave it
-/// out, else the last bar's close.
-fn last_price(state: &State) -> Option<f64> {
+/// The last price, and whether it rose: the feed's latest trade when the
+/// bars drawn leave it out, against the session's last close, else the last
+/// bar's close against its open.
+fn last_price(state: &State) -> Option<(f64, bool)> {
     let last = state.bars.last()?;
-    Some(state.latest.unwrap_or(last.close))
+    Some(match state.latest {
+        Some(latest) => (latest, latest >= last.close),
+        None => (last.close, last.close >= last.open),
+    })
 }
 
 /// The last price's dashed line across the plot, unless it was turned off.
@@ -8700,7 +8696,7 @@ fn draw_last_price_line(
     if !state.price_line {
         return;
     }
-    let Some(price) = last_price(state) else { return };
+    let Some((price, rising)) = last_price(state) else { return };
     let y = to_y(price).round() + 0.5;
     if y < price_y {
         return;
@@ -8708,7 +8704,8 @@ fn draw_last_price_line(
     cr.save().ok();
     cr.set_dash(&[3.0, 3.0], 0.0);
     cr.set_line_width(1.0);
-    colors::set_source_alpha(cr, &state.last_ink.line, 0.7);
+    let colour = if rising { &state.scheme.up } else { &state.scheme.down };
+    colors::set_source_alpha(cr, colour, 0.7);
     cr.move_to(plot_x, y);
     cr.line_to(plot_x + plot_w, y);
     let _ = cr.stroke();
@@ -8882,20 +8879,6 @@ fn draw_pane_value(
         width,
         &state.theme.ui.crosshair,
     );
-}
-
-/// The last price's colour on the theme, and its tag filled in it.
-#[derive(Clone)]
-struct LastInk {
-    line: String,
-    tag: Tag,
-}
-
-impl LastInk {
-    fn of(theme: &Theme) -> LastInk {
-        let line = omacharts_engine::theme::theme_last_price(theme);
-        LastInk { tag: Tag::on(&line), line }
-    }
 }
 
 /// The last-price tag for each direction: the same fill and label the bar
@@ -9826,8 +9809,11 @@ pub fn volume_colours(
     };
     let own;
     let scheme = match colouring {
+        // A colouring of its own turns the bars' look as shipped, not the
+        // chart's: the chart is handed its colours, not the look they came
+        // from.
         Some(colouring) => {
-            own = colouring.scheme(theme);
+            own = colouring.scheme(theme, &omacharts_engine::theme::BarLook::default());
             &own
         }
         None => scheme,
@@ -9897,22 +9883,18 @@ fn profile_inks(
     }
 }
 
-/// What a chart is told the house colouring is until it is told otherwise:
-/// the one Preferences opens with.
-const HOUSE_LOOK: (BarColouring, bool) = (BarColouring::Vivid, false);
-
-/// A delta profile's bought and sold colours, for the house colouring and
-/// then each colouring a delta can be given, in the order
-/// [`DELTA_COLOURINGS`] offers them. Each is the colouring's rise and fall,
-/// swapped when the house colouring is: red for a rise is said once, in
-/// Preferences, and a delta reads the way the candles do.
-fn delta_inks(theme: &Theme, (house, swapped): (BarColouring, bool)) -> [(String, String); 1 + DELTA_COLOURINGS.len()] {
+/// A delta profile's bought and sold colours: the house look's rise and
+/// fall, then each colouring a delta can be given, in the order
+/// [`DELTA_COLOURINGS`] offers them, keeping the house look's hollow
+/// bodies and nothing else of it. Red for a rise is said once, in
+/// Preferences, and a delta in the house look reads the way it does.
+fn delta_inks(theme: &Theme, house: &BarLook) -> [(String, String); 1 + DELTA_COLOURINGS.len()] {
     let pair = |colouring: BarColouring| {
-        let scheme = colouring.scheme(theme).worn(swapped, false);
+        let scheme = colouring.scheme(theme, house);
         (scheme.up, scheme.down)
     };
     let mut inks: [(String, String); 1 + DELTA_COLOURINGS.len()] = Default::default();
-    inks[0] = pair(house);
+    inks[0] = pair(BarColouring::Filled);
     for (at, colouring) in DELTA_COLOURINGS.into_iter().enumerate() {
         inks[at + 1] = pair(colouring);
     }
@@ -9920,15 +9902,9 @@ fn delta_inks(theme: &Theme, (house, swapped): (BarColouring, bool)) -> [(String
 }
 
 /// A delta profile's bought and sold colours, as a pair of hex colours: the
-/// house colouring's, or the one the profile chose of
-/// [`DELTA_COLOURINGS`].
-pub fn delta_colours(
-    colouring: Option<BarColouring>,
-    theme: &Theme,
-    house: BarColouring,
-    swapped: bool,
-) -> (String, String) {
-    let inks = delta_inks(theme, (house, swapped));
+/// house look's, or the one the profile chose of [`DELTA_COLOURINGS`].
+pub fn delta_colours(colouring: Option<BarColouring>, theme: &Theme, house: &BarLook) -> (String, String) {
+    let inks = delta_inks(theme, house);
     let at = colouring.and_then(|c| DELTA_COLOURINGS.iter().position(|o| *o == c)).map_or(0, |at| at + 1);
     inks[at].clone()
 }
@@ -11919,14 +11895,15 @@ mod tests {
     #[test]
     fn a_volume_pane_on_default_is_painted_as_the_chart_s_candles() {
         let theme = omacharts_engine::theme::builtin_themes().into_iter().next().expect("a built-in theme");
-        let scheme = BarColouring::Quiet.scheme(&theme);
+        let look = BarLook::default();
+        let scheme = BarColouring::Quiet.scheme(&theme, &look);
         let mut indicator = Indicator::new(1, indicators::Kind::Volume);
         assert_eq!(volume_colours(&indicator, &theme, &scheme), (scheme.up.clone(), scheme.down.clone()));
-        for own in [BarColouring::Vivid, BarColouring::Soft, BarColouring::Quiet, BarColouring::Monochrome] {
+        for own in BarColouring::offered(omacharts_engine::BarStyle::Ohlc).iter().copied() {
             if let omacharts_engine::Params::Volume { colouring, .. } = &mut indicator.params {
                 *colouring = Some(own);
             }
-            let painted = own.scheme(&theme);
+            let painted = own.scheme(&theme, &look);
             assert_eq!(volume_colours(&indicator, &theme, &scheme), (painted.up, painted.down), "{own:?}");
         }
     }
@@ -11939,21 +11916,21 @@ mod tests {
     fn the_last_price_is_the_feed_s_newest_trade_whatever_the_bars_drawn() {
         let mut state = charted(100);
         let last = *state.bars.last().unwrap();
-        assert_eq!(last_price(&state), Some(last.close));
+        assert_eq!(last_price(&state).map(|(price, _)| price), Some(last.close));
 
         let plan = layout(&state, 600.0, 400.0);
         let (first, visible, _) = state.view();
         let (low, high) = price_range(&state, &state.bars[first..first + visible], &plan).unwrap().prices();
         let away = high + (high - low);
         state.latest = Some(away);
-        assert_eq!(last_price(&state), Some(away), "not the close drawn");
+        assert_eq!(last_price(&state), Some((away, true)), "not the close drawn");
         let (_, reach) = price_range(&state, &state.bars[first..first + visible], &plan).unwrap().prices();
         assert!(reach >= away, "the scale reaches it: {reach} for {away}");
         let (_, back) = price_range(&state, &state.bars[..50], &plan).unwrap().prices();
         assert!(back < away, "panned back, the bars alone");
 
         state.latest = Some(last.close - 1.0);
-        assert_eq!(last_price(&state), Some(last.close - 1.0), "the next trade");
+        assert_eq!(last_price(&state), Some((last.close - 1.0, false)), "the next trade");
 
         // The line and the tag stand at it.
         let to_y = |price: f64| 200.0 - (price - (last.close - 1.0));
@@ -11961,30 +11938,6 @@ mod tests {
         let row = (to_y(last.close - 1.0).round() + 0.5) as usize;
         let stride = 600 * 4;
         assert!(lined[row * stride..(row + 1) * stride].iter().any(|byte| *byte != 0), "a line on its row");
-    }
-
-    /// The last price is drawn in the theme's own colour for it, the tag
-    /// and the line alike, and in one somebody set on a theme of their own.
-    #[test]
-    fn the_last_price_is_in_the_theme_s_colour() {
-        let mut theme = omacharts_engine::theme::builtin_themes().remove(0);
-        let state = State::blank(theme.clone(), omacharts_engine::theme::theme_bars(&theme));
-        let derived = omacharts_engine::theme::theme_last_price(&theme);
-        assert_eq!(state.last_ink.line, derived);
-        assert_eq!(state.last_ink.tag, Tag::on(&derived));
-
-        theme.last_price = Some("#ffcc00".into());
-        let mut state = charted(20);
-        state.last_ink = LastInk::of(&theme);
-        assert_eq!(state.last_ink.tag, Tag::on("#ffcc00"));
-        let close = state.bars.last().unwrap().close;
-        let to_y = |price: f64| 100.0 - (price - close);
-        let pixels = frame(200.0, 200.0, |cr| draw_last_price_line(cr, &state, 0.0, 200.0, 0.0, &to_y));
-        let row = &pixels[100 * 200 * 4..101 * 200 * 4];
-        // Cairo's bytes are blue, green, red, alpha: a yellow has no blue.
-        let inked: Vec<&[u8]> = row.chunks(4).filter(|pixel| pixel[3] != 0).collect();
-        assert!(!inked.is_empty(), "a line on the price's row");
-        assert!(inked.iter().all(|pixel| pixel[0] == 0 && pixel[2] > pixel[1]), "in the yellow set: {:?}", inked[0]);
     }
 
     /// Draw something onto a surface of this size and hand back its pixels.
@@ -12189,7 +12142,6 @@ mod tests {
         let mut state = marked();
         state.scheme = omacharts_engine::theme::theme_bars(&theme);
         state.price_tags = price_tags(&state.scheme);
-        state.last_ink = LastInk::of(&theme);
         state.theme = theme;
         let last = state.bars.last().unwrap().close;
         let up = state.scheme.up.clone();
@@ -12387,7 +12339,7 @@ mod tests {
                 let mut state = at_the_last_price(theme);
                 state.mark_labels = side;
                 state.hover_mark = None;
-                let look = omacharts_engine::theme_trading(&state.theme, Default::default());
+                let look = omacharts_engine::theme_trading(&state.theme, &omacharts_engine::theme::BarLook::default());
                 let (first, visible, _) = state.view();
                 let plan = layout(&state, w, h);
                 let scale = price_range(&state, &state.bars[first..first + visible], &plan).unwrap();
@@ -12530,7 +12482,7 @@ mod tests {
         for (theme, name) in [(0, "dark"), (3, "light")] {
             let mut state = at_the_last_price(theme);
             state.hover_mark = None;
-            let look = omacharts_engine::theme_trading(&state.theme, Default::default());
+            let look = omacharts_engine::theme_trading(&state.theme, &omacharts_engine::theme::BarLook::default());
             let (first, visible, _) = state.view();
             let plan = layout(&state, w, h);
             let scale = price_range(&state, &state.bars[first..first + visible], &plan).unwrap();

@@ -2,7 +2,7 @@
 //! Rithmic and OMNE artwork, and their copyright and trademark notices.
 //!
 //! Shown only where somebody connects to Rithmic: in its login dialog, on the
-//! Data page while Rithmic is one of the feeds or there is a Rithmic login, and
+//! Market data page while Rithmic is one of the feeds or there is a Rithmic login, and
 //! in the menu a chart's feed dot opens when Rithmic is one of the feeds it
 //! offers. `sign_in_dialogs` is how the rest of the app reaches it. Nothing
 //! here is drawn on a chart, and with no Rithmic set up the app shows none of
@@ -150,7 +150,7 @@ pub fn logos(height: i32, orientation: gtk::Orientation) -> gtk::Box {
     logos
 }
 
-/// The logos and the notices, for the Data page while Rithmic is set up.
+/// The logos and the notices, for the Market data page while Rithmic is set up.
 pub fn group() -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     let content = gtk::Box::new(gtk::Orientation::Vertical, 4);

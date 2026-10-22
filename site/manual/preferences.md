@@ -9,7 +9,7 @@ Preferences holds the settings that apply to the whole app. Open it with <kbd>Ct
 
 ## The dialog
 
-In a narrow window the list of sections becomes a page of its own and a section opens over it.
+The sections down its side are **General**, **Charts**, **Market data** and **Appearance**. In a narrow window the list of sections becomes a page of its own and a section opens over it.
 
 Reopened while the app is running, the dialog comes back on the section and tab you left it on. Opening it from a chart's header still goes to Charts › Header.
 
@@ -74,11 +74,7 @@ The **Time** group on the **Other** tab sets the clock every chart reads. A chan
 
 Daily and longer bars are dates and read the same in every time zone.
 
-### Theme
-
-**Theme** chooses the theme and **Customize** makes one of your own ([Themes and colours](/manual/themes/)).
-
-### Data
+### Market data
 
 <!-- regenerate:
 theme: tokyo-night
@@ -89,13 +85,13 @@ state:
   omacharts chart set --symbol NVDA --resolution 1D
   omacharts backup create      # and a few changes between, so several are kept
   key ctrl+comma
-  click 214 243          # Data in the sidebar
-  click 214 223          # Data again (clears the keyboard-focus ring)
+  click 214 243          # Market data in the sidebar
+  click 214 223          # Market data again (clears the keyboard-focus ring)
   move 1270 710
 capture: bin/headless-window shot /tmp/data.png
 crop: 276,56,2008,1328   (the whole dialog, 12px layout margin)
 -->
-{% include figure.html src="/assets/manual/preferences/data.png" alt="Preferences on Data, with the Data feed, Storage and Backups groups" caption="Preferences on Data." %}
+{% include figure.html src="/assets/manual/preferences/data.png" alt="Preferences on Market data, with the Data feed, Storage and Backups groups" caption="Preferences on Market data." %}
 
 | Group › row | Does | Chapter |
 |---|---|---|
@@ -104,6 +100,10 @@ crop: 276,56,2008,1328   (the whole dialog, 12px layout margin)
 | Storage › **Cached data**, **Clear** | How much downloaded price data is kept, and a button to delete it all. | [Where your data lives](/manual/your-data/) |
 | Storage › **Keep at most** | 256 MB, 512 MB, 1 GB, 2 GB, 5 GB. | [Where your data lives](/manual/your-data/) |
 | Backups › **Last backup**, **Back Up Now**, **Restore…** | When settings were last backed up, and restoring one. | [Where your data lives](/manual/your-data/) |
+
+### Appearance
+
+**Theme** chooses the theme, and **Bars** the colours every chart's bars are painted in ([Themes and colours](/manual/themes/)).
 
 ## Settings that stay with this machine
 

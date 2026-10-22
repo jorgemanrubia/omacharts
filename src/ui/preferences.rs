@@ -1,13 +1,10 @@
 //! Settings.
 //!
-//! A theme is every colour the app wears, candles included; once it is yours
-//! to edit, every one of them is a row on the Theme page. How candles are
-//! painted from those colours — vivid, soft, quiet, monochrome — is a
-//! chart setting, and lives under Charts.
-//!
-//! Built-ins and the Omarchy theme are not editable in place. "Customize"
-//! makes a copy you own, which is both simpler to reason about and means a
-//! fiddled palette can always be abandoned by switching back.
+//! Appearance asks the two questions people actually arrive with: which
+//! theme, and what candles look like. It is its own module,
+//! [`crate::ui::appearance`], because a chart's settings show it too. How one
+//! chart paints those candles — filled, hollow, red up, monochrome — is that
+//! chart's, and what a new one opens with is under Charts.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -15,36 +12,29 @@ use std::rc::Rc;
 use adw::prelude::*;
 use gtk::{gio, glib};
 use omacharts_engine::{BarColouring, BarStyle, Session};
-use omacharts_engine::theme::{
-    theme_bars, BarSlot, UiSlot, FALLBACK_THEME_ID, OMARCHY_ID, SWATCH_NAMES,
-};
 
 use crate::backup;
 use crate::cache;
 use crate::chart_defaults::ChartDefaults;
 use crate::store::Store;
 use crate::theming::Theming;
-use crate::ui::colors;
+use crate::ui::appearance;
+use crate::ui::form_window;
 use crate::ui::window::Window;
 
 pub struct Preferences;
 
-/// What opens the dialog at the Trading section rather than at a tab of
+/// What opens the window at the Trading section rather than at a tab of
 /// Charts.
 pub const TRADING: &str = "trading";
 
-/// The sidebar plus the column a preferences page lays its rows in, with
-/// room either side of it.
-const MAX_WIDTH: i32 = 980;
-
-/// Where the dialog was when it was last looked at, for this run of the app:
-/// the section down the sidebar, by its place, and the tab shown in Charts.
-/// Opening the dialog again goes back there, so somebody adjusting one row
-/// over and over does not have to find it each time. Not kept across
-/// restarts.
+/// Where the window was when it was last looked at, for this run of the app:
+/// the section down the sidebar, by its id, and the tab shown in Charts.
+/// Opening it again goes back there, so somebody adjusting one row over and
+/// over does not have to find it each time. Not kept across restarts.
 #[derive(Clone, Default)]
 struct Seen {
-    section: usize,
+    section: Option<String>,
     charts_tab: Option<String>,
 }
 
@@ -52,16 +42,18 @@ thread_local! {
     static LAST_SEEN: RefCell<Seen> = RefCell::new(Seen::default());
 }
 
-/// Have the dialog open next at the Theme section, for a test that reads
+/// Have the window open next at the section `id`, for a test that reads
 /// what is on it.
 #[cfg(test)]
-pub(crate) fn open_next_at_theme() {
-    LAST_SEEN.with(|seen| seen.borrow_mut().section = 2);
+pub(crate) fn open_next_at(id: &str) {
+    LAST_SEEN.with(|seen| seen.borrow_mut().section = Some(id.to_string()));
 }
 
 struct Context {
     store: Rc<Store>,
+    /// For the trading look, which is worn over whichever theme is chosen.
     theming: Rc<RefCell<Theming>>,
+    /// Repaints the charts once the feed or the look has been stored.
     on_change: Rc<dyn Fn()>,
     /// Opens the window's own resolution editor. The list belongs to the
     /// window — every chart offers the same resolutions — so it is edited
@@ -69,14 +61,12 @@ struct Context {
     on_edit_resolutions: Rc<dyn Fn()>,
     /// Has the window read back everything a restored backup changed.
     on_restored: Rc<dyn Fn()>,
-    page: adw::PreferencesPage,
     general_page: adw::PreferencesPage,
     charts_page: adw::PreferencesPage,
     charts_other_page: adw::PreferencesPage,
     charts_templates_page: adw::PreferencesPage,
     data_page: adw::PreferencesPage,
     trading_page: adw::PreferencesPage,
-    groups: RefCell<Vec<adw::PreferencesGroup>>,
     /// The window, for the chart templates: they are shown on its charts,
     /// and only it knows which of its charts are using one.
     window: Rc<Window>,
@@ -87,10 +77,26 @@ struct Context {
     refill_default_template: RefCell<Option<Rc<dyn Fn()>>>,
 }
 
+thread_local! {
+    /// The window while it is open, so asking again raises it rather than
+    /// opening a second one beside it.
+    static OPEN: RefCell<glib::WeakRef<adw::Window>> = RefCell::new(glib::WeakRef::new());
+}
+
 impl Preferences {
+    /// A window of its own rather than a sheet over the charts.
+    ///
+    /// A sheet is drawn inside the main window, so the compositor never sees
+    /// it: it cannot be moved, resized, floated beside the chart it is
+    /// changing or sent to another workspace. A toplevel can, and it leaves
+    /// the charts usable while it is open — which matters here, because half
+    /// of what it changes is how they look.
+    ///
+    /// Sections down a sidebar, each a navigation view of its own so a page
+    /// can be pushed inside one without taking the others with it.
     #[allow(clippy::too_many_arguments)]
     pub fn present(
-        parent: &impl IsA<gtk::Widget>,
+        parent: &impl IsA<gtk::Window>,
         store: Rc<Store>,
         theming: Rc<RefCell<Theming>>,
         on_change: Rc<dyn Fn()>,
@@ -99,31 +105,27 @@ impl Preferences {
         window: Rc<Window>,
         charts_tab: Option<&str>,
     ) {
+        if let Some(open) = OPEN.with(|open| open.borrow().upgrade()) {
+            // Asked for a particular tab or section, it opens again there;
+            // changes are already applied, so closing loses nothing.
+            if charts_tab.is_none() {
+                open.present();
+                return;
+            }
+            open.close();
+        }
         // Trading is a section, not a tab of Charts, and is asked for by the
         // same word: from a chart's account list.
         let (charts_tab, at_trading) = match charts_tab {
             Some(TRADING) => (None, true),
             tab => (tab, false),
         };
-        let dialog = adw::Dialog::new();
-        dialog.set_title("Preferences");
-        // The breakpoint below needs a floor to measure against.
-        dialog.set_size_request(360, 360);
-        // Most of the window's height: the theme page is a long list of
-        // colours, and every row that fits is a scroll saved. Not its width:
-        // the rows sit in a column of their own, and past the sidebar and that
-        // column a wider dialog is only margin.
-        let parent = parent.as_ref();
-        dialog.set_content_width((parent.width() * 85 / 100).clamp(560, MAX_WIDTH));
-        dialog.set_content_height((parent.height() * 85 / 100).max(640));
 
-        let page = adw::PreferencesPage::new();
         let general_page = adw::PreferencesPage::new();
         let charts_page = adw::PreferencesPage::new();
         let data_page = adw::PreferencesPage::new();
         let trading_page = adw::PreferencesPage::new();
 
-        // General first: what the app does, before what it looks like.
         // Charts is four things: what a new chart opens with, the sets of
         // indicators charts can share, the line every chart's header shows,
         // and the rest.
@@ -168,23 +170,28 @@ impl Preferences {
             LAST_SEEN.with(|seen| seen.borrow_mut().charts_tab = tab);
         });
 
-        let mut sections: Vec<(&str, &str, gtk::Widget)> = vec![
-            ("General", "preferences-system-symbolic", general_page.clone().upcast()),
-            ("Charts", "utilities-system-monitor-symbolic", charts.upcast()),
-            ("Theme", "applications-graphics-symbolic", page.clone().upcast()),
-            ("Data", "network-server-symbolic", data_page.clone().upcast()),
-        ];
+        let appearance_page = appearance::page(store.clone(), theming.clone(), on_change.clone());
+
+        // General first: what the app does, before what it looks like.
         // Trading's page only while trading is switched on.
         let trading = crate::features::trading();
+        let mut sections: Vec<(&str, &str, &str, gtk::Widget)> = vec![
+            ("general", "General", "preferences-system-symbolic", general_page.clone().upcast()),
+            ("charts", "Charts", "utilities-system-monitor-symbolic", charts.upcast()),
+            ("data", "Market data", "network-transmit-receive-symbolic", data_page.clone().upcast()),
+            ("appearance", "Appearance", "preferences-desktop-appearance-symbolic", appearance_page.upcast()),
+        ];
         if trading {
-            sections.push(("Trading", "view-list-bullet-symbolic", trading_page.clone().upcast()));
+            sections.push((TRADING, "Trading", "view-list-bullet-symbolic", trading_page.clone().upcast()));
         }
+        // Opened from a chart at the section it asked for, else where it was
+        // left.
         let start = match (charts_tab, at_trading && trading) {
-            (_, true) => sections.len() - 1,
-            (Some(_), _) => 1,
-            (None, _) => last.section.min(sections.len() - 1),
+            (_, true) => Some(TRADING.to_string()),
+            (Some(_), _) => Some("charts".to_string()),
+            (None, _) => last.section,
         };
-        dialog.set_child(Some(&split_view(&dialog, &sections, start)));
+        let start = start.and_then(|id| sections.iter().position(|(known, ..)| *known == id)).unwrap_or(0);
 
         let context = Rc::new(Context {
             store,
@@ -192,22 +199,26 @@ impl Preferences {
             on_change,
             on_edit_resolutions,
             on_restored,
-            page,
             general_page,
             charts_page,
             charts_other_page,
             charts_templates_page,
             data_page,
             trading_page,
-            groups: RefCell::new(Vec::new()),
             window,
             templates_group: RefCell::new(None),
             refill_default_template: RefCell::new(None),
         });
-        rebuild(&context);
         build_general_page(&context);
 
-        dialog.present(Some(parent));
+        // A form window, but not one `form_window` keeps: Preferences
+        // remembers its own.
+        let frame = form_window::untracked(parent, "Preferences", (820, 640));
+        frame.add_css_class("preferences-window");
+        frame.set_content(Some(&split_view(&frame, &sections, start)));
+
+        OPEN.with(|open| open.borrow().set(Some(&frame)));
+        frame.present();
     }
 }
 
@@ -289,107 +300,95 @@ fn header_sections(
 
 /// The sections down a sidebar, the selected one beside it.
 ///
-/// A sidebar rather than the preferences dialog's own view switcher, because
-/// the dialog fills most of the window and a switcher across its top leaves
-/// that width to margins.
+/// A section with tabs of its own shows them in its header, where the title
+/// would be.
 fn split_view(
-    dialog: &adw::Dialog,
-    sections: &[(&str, &str, gtk::Widget)],
+    frame: &adw::Window,
+    sections: &[(&str, &str, &str, gtk::Widget)],
     start: usize,
 ) -> adw::NavigationSplitView {
-    let content = adw::NavigationView::new();
-    // A section with tabs of its own shows them in its header, where the
-    // title would be.
-    let section_page = |(title, _, page): &(&str, &str, gtk::Widget)| {
+    let stack = gtk::Stack::new();
+    let sidebar = gtk::ListBox::new();
+    sidebar.add_css_class("navigation-sidebar");
+    let mut titles: Vec<(String, String)> = Vec::new();
+    for (id, title, icon, page) in sections {
         let header = adw::HeaderBar::new();
         // Words alone: a switcher that insists on an icon per tab draws a
         // placeholder for every tab that has none.
-        if let Some(stack) = page.downcast_ref::<gtk::Stack>() {
+        if let Some(tabs) = page.downcast_ref::<gtk::Stack>() {
             let switcher = gtk::StackSwitcher::new();
-            switcher.set_stack(Some(stack));
+            switcher.set_stack(Some(tabs));
             header.set_title_widget(Some(&switcher));
         }
         let toolbar = adw::ToolbarView::new();
         toolbar.add_top_bar(&header);
         toolbar.set_content(Some(page));
-        adw::NavigationPage::new(&toolbar, title)
-    };
-
-    let list = gtk::ListBox::new();
-    list.add_css_class("navigation-sidebar");
-    for (title, icon, _) in sections {
-        let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-        row.append(&gtk::Image::from_icon_name(icon));
-        row.append(&gtk::Label::new(Some(title)));
-        list.append(&row);
+        let view = adw::NavigationView::new();
+        view.add(&adw::NavigationPage::with_tag(&toolbar, title, id));
+        stack.add_named(&view, Some(id));
+        titles.push((id.to_string(), title.to_string()));
+        sidebar.append(&sidebar_row(id, title, icon));
     }
 
-    let sidebar = adw::ToolbarView::new();
-    sidebar.add_top_bar(&adw::HeaderBar::new());
+    let side = adw::ToolbarView::new();
+    side.add_top_bar(&adw::HeaderBar::new());
     let scroller = gtk::ScrolledWindow::new();
     scroller.set_hscrollbar_policy(gtk::PolicyType::Never);
-    scroller.set_child(Some(&list));
-    sidebar.set_content(Some(&scroller));
+    scroller.set_child(Some(&sidebar));
+    side.set_content(Some(&scroller));
 
+    let first = titles.first().map(|(_, title)| title.clone()).unwrap_or_default();
+    let content = adw::NavigationPage::new(&stack, &first);
     let split = adw::NavigationSplitView::new();
-    split.set_sidebar(Some(&adw::NavigationPage::new(&sidebar, "Preferences")));
-    split.set_content(Some(&adw::NavigationPage::new(&content, "")));
+    split.set_sidebar(Some(&adw::NavigationPage::new(&side, "Preferences")));
+    split.set_content(Some(&content));
 
-    let pages: Vec<adw::NavigationPage> = sections.iter().map(section_page).collect();
-    let view = split.clone();
-    list.connect_row_selected(move |_, row| {
-        let Some(page) = row.and_then(|row| pages.get(row.index() as usize)) else {
-            return;
-        };
-        if let Some(row) = row {
-            LAST_SEEN.with(|seen| seen.borrow_mut().section = row.index() as usize);
-        }
-        content.replace(std::slice::from_ref(page));
-        view.set_show_content(true);
+    follow_sidebar(&sidebar, stack, content, &split, titles);
+    sidebar.connect_row_selected(|_, row| {
+        let Some(row) = row else { return };
+        let id = row.widget_name().to_string();
+        LAST_SEEN.with(|seen| seen.borrow_mut().section = Some(id));
     });
-    list.select_row(list.row_at_index(start as i32).as_ref());
+    sidebar.select_row(sidebar.row_at_index(start as i32).as_ref());
 
-    // Too narrow for both side by side, the sidebar becomes a page of its
-    // own and a section is pushed over it.
-    let narrow = adw::Breakpoint::new(adw::BreakpointCondition::new_length(
-        adw::BreakpointConditionLengthType::MaxWidth,
-        560.0,
-        adw::LengthUnit::Sp,
-    ));
-    narrow.add_setter(&split, "collapsed", Some(&true.to_value()));
-    dialog.add_breakpoint(narrow);
-
+    // Narrow enough and the sidebar becomes a page of its own, the way every
+    // split view on this platform folds.
+    if let Ok(narrow) = adw::BreakpointCondition::parse("max-width: 560sp") {
+        let breakpoint = adw::Breakpoint::new(narrow);
+        breakpoint.add_setter(&split, "collapsed", Some(&true.to_value()));
+        frame.add_breakpoint(breakpoint);
+    }
     split
 }
 
-/// Clear and re-add the appearance groups.
-///
-/// Called whenever the selection changes, because which editors belong on the
-/// page depends on whether the selected theme is editable.
-fn rebuild(context: &Rc<Context>) {
-    for group in context.groups.borrow_mut().drain(..) {
-        context.page.remove(&group);
-    }
-    let mut groups = Vec::new();
+/// A section's row in a settings sidebar: its icon and its title, named by
+/// its id.
+pub(crate) fn sidebar_row(id: &str, title: &str, icon: &str) -> gtk::ListBoxRow {
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    row.append(&gtk::Image::from_icon_name(icon));
+    row.append(&gtk::Label::new(Some(title)));
+    gtk::ListBoxRow::builder().child(&row).name(id).build()
+}
 
-    groups.push(theme_group(context));
-    let theme = context.theming.borrow().theme();
-    if theme.source.is_editable() {
-        let [backgrounds, text, other] = UiSlot::GROUPS;
-        groups.push(bar_colors_group(context));
-        if crate::features::trading() {
-            groups.push(trading_look_group(context));
-        }
-        groups.push(theme_colors_group(context, backgrounds));
-        groups.push(theme_colors_group(context, text));
-        groups.push(palette_group(context));
-        groups.push(theme_colors_group(context, other));
-    }
-
-    for group in &groups {
-        context.page.add(group);
-    }
-    *context.groups.borrow_mut() = groups;
+/// A section chosen in `sidebar` shows its page of `stack` as `content`,
+/// under its title from `titles` (id, title), and goes to it when `split` is
+/// folded.
+pub(crate) fn follow_sidebar(
+    sidebar: &gtk::ListBox,
+    stack: gtk::Stack,
+    content: adw::NavigationPage,
+    split: &adw::NavigationSplitView,
+    titles: Vec<(String, String)>,
+) {
+    let shown = split.clone();
+    sidebar.connect_row_selected(move |_, row| {
+        let Some(row) = row else { return };
+        let id = row.widget_name();
+        let Some((_, title)) = titles.iter().find(|(known, _)| *known == id.as_str()) else { return };
+        stack.set_visible_child_name(&id);
+        content.set_title(title);
+        shown.set_show_content(true);
+    });
 }
 
 /// A way to the resolution list from the settings, since the other way in is
@@ -469,65 +468,6 @@ fn zoom_row(context: &Rc<Context>) -> adw::ActionRow {
     row
 }
 
-fn theme_group(context: &Rc<Context>) -> adw::PreferencesGroup {
-    let group = adw::PreferencesGroup::new();
-    let theming = context.theming.borrow();
-
-    // System first, then the themes somebody made, then the ones that ship,
-    // each run set apart from the next by a line.
-    let system = omacharts_engine::theme::OMARCHY_ID;
-    let themes = theming.themes();
-    let mut ordered: Vec<&_> = themes.iter().filter(|t| t.id == system).collect();
-    // Off Omarchy there is no System to set apart.
-    let made_from = ordered.len();
-    ordered.extend(themes.iter().filter(|t| t.id != system && t.source.is_editable()));
-    let shipped_from = ordered.len();
-    ordered.extend(themes.iter().filter(|t| t.id != system && !t.source.is_editable()));
-    let ids: Vec<String> = ordered.iter().map(|t| t.id.clone()).collect();
-    // The entry that tracks the desktop is "System", the way every other
-    // setting on this platform spells it. Labelled with the desktop theme's
-    // own name it was indistinguishable from a fixed preset, and the
-    // difference between them is the whole point: one keeps changing.
-    let names: Vec<String> = ordered
-        .iter()
-        .map(|t| if t.id == system { "System".to_string() } else { t.name.clone() })
-        .collect();
-    let splits = vec![made_from, shipped_from];
-    let following = theming.theme().name.clone();
-    let is_system = theming.theme_id() == omacharts_engine::theme::OMARCHY_ID;
-    let selected = ids.iter().position(|id| id == theming.theme_id()).unwrap_or(0);
-    let source = theming.theme().source;
-    drop(theming);
-
-    let row = adw::ComboRow::new();
-    row.set_title("Theme");
-    // System is the one choice whose colours are not its name, so it says
-    // which desktop theme it is wearing.
-    if is_system {
-        row.set_subtitle(&format!("Following {following}"));
-    }
-    row.set_model(Some(&string_list(&names)));
-    row.set_list_factory(Some(&separated_list(splits)));
-    row.set_selected(selected as u32);
-
-    let ctx = context.clone();
-    let choices = ids.clone();
-    row.connect_selected_notify(move |row| {
-        let Some(id) = choices.get(row.selected() as usize) else { return };
-        ctx.theming.borrow_mut().select_theme(id, &ctx.store);
-        apply(&ctx);
-        rebuild(&ctx);
-    });
-    group.add(&row);
-
-    if source.is_editable() {
-        group.add(&own_theme_actions(context));
-    } else {
-        group.add(&customize_row(context));
-    }
-    group
-}
-
 /// One edit to the defaults, as the rows on the Charts page make them.
 type Change = dyn Fn(&dyn Fn(&mut ChartDefaults));
 
@@ -583,7 +523,6 @@ fn build_charts_page(context: &Rc<Context>) {
         let store = context.store.clone();
         let defaults = defaults.clone();
         let footer = footer.clone();
-        let window = context.window.clone();
         Rc::new(move |change| {
             let mut next = defaults.get();
             change(&mut next);
@@ -592,15 +531,9 @@ fn build_charts_page(context: &Rc<Context>) {
             if next == defaults.get() {
                 return;
             }
-            let look = (next.colouring, next.swapped) != (defaults.get().colouring, defaults.get().swapped);
             next.save(&store);
             defaults.set(next);
             offer(&footer, true);
-            // The colouring is the house's as well as new charts': what a
-            // delta profile that chose none of its own is painted in, now.
-            if look {
-                window.adopt_theming();
-            }
         })
     };
 
@@ -613,20 +546,7 @@ fn build_charts_page(context: &Rc<Context>) {
 
     let colouring = adw::ComboRow::new();
     colouring.set_title("Colouring");
-    crate::ui::chart_settings::fill_colourings(&colouring, current.colouring);
-
-    // The two switches worn over the colouring: the hollow rise greyed on
-    // OHLC bars, which have no body to leave open, and the swap on a
-    // colouring that paints the same either way.
-    let hollow = adw::SwitchRow::new();
-    hollow.set_title(crate::ui::chart_settings::HOLLOW_LABEL);
-    hollow.set_active(current.hollow_up);
-    hollow.set_sensitive(crate::ui::chart_settings::hollow_applies(current.bar_style));
-    let swapped = adw::SwitchRow::new();
-    swapped.set_title(crate::ui::chart_settings::SWAP_LABEL);
-    swapped.set_active(current.swapped);
-    let theme = context.theming.borrow().theme();
-    swapped.set_sensitive(crate::ui::chart_settings::two_toned(&theme, current.colouring));
+    crate::ui::chart_settings::fill_colourings(&colouring, current.bar_style, current.colouring);
 
     // How thick OHLC bars are drawn, offered only while they are the style.
     let thickness = {
@@ -649,51 +569,36 @@ fn build_charts_page(context: &Rc<Context>) {
     thickness.set_visible(current.bar_style == BarStyle::Ohlc);
     {
         let changed = changed.clone();
-        let hollow = hollow.clone();
+        let colouring = colouring.clone();
+        let defaults = defaults.clone();
         let thickness = thickness.clone();
         style.connect_selected_notify(move |row| {
             let Some(chosen) = BarStyle::ALL.get(row.selected() as usize).copied() else { return };
             changed(&|d| d.bar_style = chosen);
-            hollow.set_sensitive(crate::ui::chart_settings::hollow_applies(chosen));
+            crate::ui::chart_settings::fill_colourings(&colouring, chosen, defaults.get().colouring);
             thickness.set_visible(chosen == BarStyle::Ohlc);
         });
     }
     {
         let changed = changed.clone();
         let defaults = defaults.clone();
-        let swapped = swapped.clone();
         colouring.connect_selected_notify(move |row| {
             if crate::ui::chart_settings::filling_colourings(row) {
                 return;
             }
-            let Some(chosen) = BarColouring::ALL.get(row.selected() as usize).copied() else {
+            let style = defaults.get().bar_style;
+            let Some(chosen) = BarColouring::offered(style).get(row.selected() as usize).copied()
+            else {
                 return;
             };
-            if chosen != defaults.get().colouring {
+            if chosen != defaults.get().colouring.for_style(style) {
                 changed(&|d| d.colouring = chosen);
             }
-            swapped.set_sensitive(crate::ui::chart_settings::two_toned(&theme, chosen));
-        });
-    }
-    {
-        let changed = changed.clone();
-        hollow.connect_active_notify(move |row| {
-            let on = row.is_active();
-            changed(&|d| d.hollow_up = on);
-        });
-    }
-    {
-        let changed = changed.clone();
-        swapped.connect_active_notify(move |row| {
-            let on = row.is_active();
-            changed(&|d| d.swapped = on);
         });
     }
     bars.add(&style);
     bars.add(&thickness);
     bars.add(&colouring);
-    bars.add(&hollow);
-    bars.add(&swapped);
 
     let session = adw::ComboRow::new();
     session.set_title("Hours");
@@ -812,247 +717,10 @@ fn build_charts_page(context: &Rc<Context>) {
     }
 }
 
-/// A copy to make your own, for a theme you cannot edit in place.
-fn customize_row(context: &Rc<Context>) -> adw::ActionRow {
-    let row = adw::ActionRow::new();
-    row.set_title("Make it yours");
-
-    let button = gtk::Button::with_label("Customize");
-    button.set_valign(gtk::Align::Center);
-    let ctx = context.clone();
-    button.connect_clicked(move |button| {
-        let base = ctx.theming.borrow().theme();
-        let suggested = format!("Copy of {}", base.name);
-        let ctx = ctx.clone();
-        ask_name(button, "Customize theme", &suggested, "Create", move |chosen| {
-            let mut theming = ctx.theming.borrow_mut();
-            let taken: Vec<String> = theming.themes().iter().map(|t| t.id.clone()).collect();
-            let id = unique_id(&chosen, &taken);
-            ctx.store.save_theme(&base.duplicate(id.clone(), chosen));
-            theming.reload_custom(&ctx.store);
-            theming.select_theme(&id, &ctx.store);
-            drop(theming);
-            apply(&ctx);
-            rebuild(&ctx);
-        });
-    });
-    row.add_suffix(&button);
-    row
-}
-
-/// Rename and Delete for a theme of your own, quiet beneath the picker:
-/// they are things done to a theme now and then, not every time it is open.
-fn own_theme_actions(context: &Rc<Context>) -> gtk::Box {
-    let actions = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    actions.set_halign(gtk::Align::End);
-    actions.set_margin_top(6);
-
-    let rename = gtk::Button::with_label("Rename");
-    rename.add_css_class("flat");
-    let ctx = context.clone();
-    rename.connect_clicked(move |button| {
-        let current = ctx.theming.borrow().theme();
-        let initial = current.name.clone();
-        let ctx = ctx.clone();
-        ask_name(button, "Rename theme", &initial, "Rename", move |chosen| {
-            // The id stays: it is what the setting and every saved reference
-            // point at, and a name is only what the list shows.
-            let mut theme = current.clone();
-            theme.name = chosen;
-            ctx.store.save_theme(&theme);
-            ctx.theming.borrow_mut().reload_custom(&ctx.store);
-            rebuild(&ctx);
-        });
-    });
-
-    let delete = gtk::Button::with_label("Delete");
-    delete.add_css_class("flat");
-    delete.add_css_class("error");
-    let ctx = context.clone();
-    delete.connect_clicked(move |button| confirm_delete(&ctx, button));
-
-    actions.append(&rename);
-    actions.append(&delete);
-    actions
-}
-
-/// Asked first, because the button is small and a theme is an afternoon of
-/// picking colours that no undo brings back.
-fn confirm_delete(context: &Rc<Context>, anchor: &gtk::Button) {
-    let theme = context.theming.borrow().theme();
-    let body = format!("Delete \u{201c}{}\u{201d}? Charts go back to System.", theme.name);
-    let dialog = adw::AlertDialog::new(Some("Delete theme"), Some(&body));
-    dialog.add_response("cancel", "Cancel");
-    dialog.add_response("delete", "Delete");
-    dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
-    dialog.set_default_response(Some("cancel"));
-    dialog.set_close_response("cancel");
-
-    let ctx = context.clone();
-    dialog.connect_response(None, move |_, response| {
-        if response != "delete" {
-            return;
-        }
-        let mut theming = ctx.theming.borrow_mut();
-        ctx.store.delete_theme(&theme.id);
-        theming.reload_custom(&ctx.store);
-        // Back to System, which is where every copy came from. Handing over
-        // to whichever preset happens to sort first would leave the app on a
-        // theme nobody chose.
-        let back = if theming.omarchy_available() { OMARCHY_ID } else { FALLBACK_THEME_ID };
-        theming.select_theme(back, &ctx.store);
-        drop(theming);
-        apply(&ctx);
-        rebuild(&ctx);
-    });
-    dialog.present(Some(anchor));
-}
-
-fn theme_colors_group(context: &Rc<Context>, group_name: &str) -> adw::PreferencesGroup {
-    let group = adw::PreferencesGroup::new();
-    group.set_title(group_name);
-
-    let theme = context.theming.borrow().theme();
-    for slot in UiSlot::ALL.into_iter().filter(|s| s.group() == group_name) {
-        let row = adw::ActionRow::new();
-        row.set_title(slot.label());
-
-        let button = color_button(UiSlot::get(slot, &theme.ui));
-        let ctx = context.clone();
-        button.connect_rgba_notify(move |button| {
-            let hex = colors::to_hex(&button.rgba());
-            let mut theme = ctx.theming.borrow().theme();
-            if !theme.source.is_editable() {
-                return;
-            }
-            UiSlot::set(slot, &mut theme.ui, hex);
-            ctx.store.save_theme(&theme);
-            ctx.theming.borrow_mut().reload_custom(&ctx.store);
-            apply(&ctx);
-        });
-        row.add_suffix(&button);
-        group.add(&row);
-    }
-    if group_name == LAST_PRICE_GROUP {
-        group.add(&last_price_row(context, &theme));
-    }
-    group
-}
-
-/// The group the last price's colour is edited in, with the chart's other
-/// furniture.
-const LAST_PRICE_GROUP: &str = "Other";
-
-/// The last price's tag and line, as the theme draws them: its own colour
-/// once somebody sets one, otherwise the one worked out from its palette.
-fn last_price_row(context: &Rc<Context>, theme: &omacharts_engine::Theme) -> adw::ActionRow {
-    let row = adw::ActionRow::new();
-    row.set_title(LAST_PRICE_LABEL);
-    let button = color_button(&omacharts_engine::theme::theme_last_price(theme));
-    let ctx = context.clone();
-    button.connect_rgba_notify(move |button| {
-        let hex = colors::to_hex(&button.rgba());
-        let mut theme = ctx.theming.borrow().theme();
-        if !theme.source.is_editable() {
-            return;
-        }
-        theme.last_price = Some(hex);
-        ctx.store.save_theme(&theme);
-        ctx.theming.borrow_mut().reload_custom(&ctx.store);
-        apply(&ctx);
-    });
-    row.add_suffix(&button);
-    row
-}
-
-const LAST_PRICE_LABEL: &str = "Last price";
-
-/// The theme's indicator palette. Editing these changes every overlay that
-/// chose a colour by name rather than by hex.
-fn palette_group(context: &Rc<Context>) -> adw::PreferencesGroup {
-    let group = adw::PreferencesGroup::new();
-    group.set_title("Palette");
-    group.set_description(Some(
-        "Offered first when picking a colour for an indicator, so they stay consistent.",
-    ));
-
-    let theme = context.theming.borrow().theme();
-    for name in SWATCH_NAMES {
-        let Some(swatch) = theme.swatch(name) else { continue };
-        let row = adw::ActionRow::new();
-        row.set_title(name);
-
-        let button = color_button(&swatch.hex);
-        let ctx = context.clone();
-        let name = name.to_string();
-        button.connect_rgba_notify(move |button| {
-            let hex = colors::to_hex(&button.rgba());
-            let mut theme = ctx.theming.borrow().theme();
-            if !theme.source.is_editable() {
-                return;
-            }
-            if let Some(swatch) = theme.swatches.iter_mut().find(|s| s.name == name) {
-                swatch.hex = hex;
-            }
-            ctx.store.save_theme(&theme);
-            ctx.theming.borrow_mut().reload_custom(&ctx.store);
-            apply(&ctx);
-        });
-        row.add_suffix(&button);
-        group.add(&row);
-    }
-    group
-}
-
-fn bar_colors_group(context: &Rc<Context>) -> adw::PreferencesGroup {
-    let group = adw::PreferencesGroup::new();
-    group.set_title("Bars");
-
-    // The theme's candles as written, not as the chosen style paints them:
-    // editing an up body under Hollow must not save a transparent one.
-    let scheme = theme_bars(&context.theming.borrow().theme());
-    for slot in BarSlot::ALL {
-        let row = adw::ActionRow::new();
-        row.set_title(slot.label());
-
-        let button = color_button(BarSlot::get(slot, &scheme));
-        button.set_dialog(&alpha_dialog());
-        let ctx = context.clone();
-        button.connect_rgba_notify(move |button| {
-            let rgba = button.rgba();
-            // Alpha is meaningful here: a transparent body is how hollow
-            // candles are expressed, so keep it rather than flattening to
-            // #rrggbb.
-            let hex = format!(
-                "#{:02x}{:02x}{:02x}{:02x}",
-                (rgba.red() * 255.0).round() as u8,
-                (rgba.green() * 255.0).round() as u8,
-                (rgba.blue() * 255.0).round() as u8,
-                (rgba.alpha() * 255.0).round() as u8,
-            );
-            let mut theme = ctx.theming.borrow().theme();
-            if !theme.source.is_editable() {
-                return;
-            }
-            // As written rather than as resolved, so a colour nobody set —
-            // monochrome, until somebody does — keeps following the theme.
-            let mut bars = omacharts_engine::editable_bars(&theme);
-            BarSlot::set(slot, &mut bars, hex);
-            theme.bars = Some(bars);
-            ctx.store.save_theme(&theme);
-            ctx.theming.borrow_mut().reload_custom(&ctx.store);
-            apply(&ctx);
-        });
-        row.add_suffix(&button);
-        group.add(&row);
-    }
-    group
-}
-
 /// How orders and positions are drawn on a chart: a colour for each of buy,
 /// sell, long, short, profit and loss, and a pattern for each kind of line.
-/// Only on a theme of somebody's own, like the bars, and each row saves
-/// only itself: what nobody set keeps following the theme. There while
+/// One look worn over every theme, and each row saves only itself: what
+/// nobody set keeps following the theme. On the Trading page, there while
 /// trading is switched on, with or without a login, as every trading
 /// setting is: without one nothing draws in it.
 fn trading_look_group(context: &Rc<Context>) -> adw::PreferencesGroup {
@@ -1060,40 +728,34 @@ fn trading_look_group(context: &Rc<Context>) -> adw::PreferencesGroup {
     use omacharts_engine::{TradingColour, TradingLine, TradingLook};
 
     let group = adw::PreferencesGroup::new();
-    group.set_title("Trading");
-    let theme = context.theming.borrow().theme();
-    let swapped = context.theming.borrow().swapped();
-    let shown = omacharts_engine::theme_trading(&theme, swapped);
-    // Change the theme's own look by `edit`, and nothing else in it.
+    group.set_title("Orders and positions");
+    let theming = context.theming.borrow();
+    let theme = theming.theme();
+    let shown = omacharts_engine::theme_trading(&theme, theming.bar_look());
+    let mut set = theming.trading_look().clone();
+    drop(theming);
+    // Change the look by `edit`, and nothing else in it.
     let save = |ctx: &Rc<Context>, edit: &dyn Fn(&mut TradingLook)| {
-        let mut theme = ctx.theming.borrow().theme();
-        if !theme.source.is_editable() {
-            return;
-        }
-        let mut look = omacharts_engine::editable_trading(&theme);
+        let mut look = ctx.theming.borrow().trading_look().clone();
         edit(&mut look);
-        theme.trading = Some(Box::new(look));
-        ctx.store.save_theme(&theme);
-        ctx.theming.borrow_mut().reload_custom(&ctx.store);
-        apply(ctx);
+        let mut theming = ctx.theming.borrow_mut();
+        theming.set_trading_look(look, &ctx.store);
+        theming.apply();
+        drop(theming);
+        (ctx.on_change)();
     };
 
+    // From the theme's palette, as every other colour is picked, so a slot
+    // set to a swatch follows the theme from then on.
     for slot in TradingColour::ALL {
         let row = adw::ActionRow::new();
         row.set_title(slot.label());
-        let button = color_button(shown.colour(slot));
         let ctx = context.clone();
-        button.connect_rgba_notify(move |button| {
-            let rgba = button.rgba();
-            let hex = format!(
-                "#{:02x}{:02x}{:02x}",
-                (rgba.red() * 255.0).round() as u8,
-                (rgba.green() * 255.0).round() as u8,
-                (rgba.blue() * 255.0).round() as u8,
-            );
-            save(&ctx, &|look| *look.colour_mut(slot) = Some(omacharts_engine::ColorChoice::Fixed { hex: hex.clone() }));
+        let picker = crate::ui::palette::picker(&theme, set.colour_mut(slot).clone(), shown.colour(slot), move |choice| {
+            save(&ctx, &|look| *look.colour_mut(slot) = Some(choice.clone()));
         });
-        row.add_suffix(&button);
+        row.add_suffix(&picker);
+        row.set_activatable_widget(Some(&picker));
         group.add(&row);
     }
 
@@ -1480,7 +1142,7 @@ fn build_data_page(context: &Rc<Context>) {
     });
     group.add(&limit);
 
-    // Trading switched off has no Trading page, and the Data page adds a
+    // Trading switched off has no Trading page, and the Market data page adds a
     // trading service's data feed through the trading service's own dialog itself.
     if !crate::features::trading() {
         crate::ui::feed_settings::build(
@@ -1504,6 +1166,7 @@ fn build_data_page(context: &Rc<Context>) {
     trading.set_labels_moved(Rc::new(move || window.adopt_order_labels()));
     let window = context.window.clone();
     trading.set_pnl_changed(Rc::new(move || window.adopt_pnl_display()));
+    trading.set_last(&trading_look_group(context));
     let adding = trading.clone();
     let redraw = crate::ui::feed_settings::build(
         &context.data_page,
@@ -1647,7 +1310,7 @@ fn choose_backup(context: &Rc<Context>, anchor: &gtk::Button) {
     }
 
     let ctx = context.clone();
-    let preferences = anchor.ancestor(adw::Dialog::static_type()).and_downcast::<adw::Dialog>();
+    let preferences = anchor.ancestor(adw::Window::static_type()).and_downcast::<adw::Window>();
     let anchor_kept = anchor.clone();
     {
         let (ctx, anchor, preferences, dialog) =
@@ -1668,7 +1331,7 @@ fn choose_backup(context: &Rc<Context>, anchor: &gtk::Button) {
 
 /// Pick a settings file — a backup copied from another machine — and put it
 /// back.
-fn restore_from_file(context: &Rc<Context>, anchor: &gtk::Button, preferences: Option<adw::Dialog>) {
+fn restore_from_file(context: &Rc<Context>, anchor: &gtk::Button, preferences: Option<adw::Window>) {
     let picker = gtk::FileDialog::new();
     picker.set_title("Restore Settings From a File");
     let filter = gtk::FileFilter::new();
@@ -1691,7 +1354,7 @@ fn restore_from_file(context: &Rc<Context>, anchor: &gtk::Button, preferences: O
 fn finish_restore(
     context: &Rc<Context>,
     anchor: &gtk::Button,
-    preferences: Option<&adw::Dialog>,
+    preferences: Option<&adw::Window>,
     result: Result<backup::Restored, backup::Error>,
 ) {
     match result {
@@ -1768,25 +1431,6 @@ fn desktop_group() -> Option<adw::PreferencesGroup> {
     group.add(&row);
 
     Some(group)
-}
-
-fn apply(context: &Rc<Context>) {
-    context.theming.borrow_mut().apply();
-    (context.on_change)();
-}
-
-fn color_button(hex: &str) -> gtk::ColorDialogButton {
-    let button = gtk::ColorDialogButton::new(Some(gtk::ColorDialog::new()));
-    button.set_rgba(&colors::parse(hex));
-    button.set_valign(gtk::Align::Center);
-    button.add_css_class("swatch-button");
-    button
-}
-
-fn alpha_dialog() -> gtk::ColorDialog {
-    let dialog = gtk::ColorDialog::new();
-    dialog.set_with_alpha(true);
-    dialog
 }
 
 /// A drop-down list of names with a line above each one at `splits`, for a
@@ -1898,21 +1542,6 @@ fn ask_for_text(
 
     dialog.present(Some(anchor));
     name.grab_focus();
-}
-
-/// An id for a theme called `name`, clear of every id in `taken`. Two themes
-/// may share a name; they may not share an id.
-fn unique_id(name: &str, taken: &[String]) -> String {
-    let slug: String = name
-        .to_lowercase()
-        .chars()
-        .map(|c| if c.is_alphanumeric() { c } else { '-' })
-        .collect();
-    let slug = format!("custom-{slug}");
-    (1..)
-        .map(|n| if n == 1 { slug.clone() } else { format!("{slug}-{n}") })
-        .find(|id| !taken.contains(id))
-        .expect("an unbounded range runs out of nothing")
 }
 
 pub(crate) fn describe_bytes(bytes: i64) -> String {
@@ -2043,26 +1672,6 @@ mod tests {
             center.set(Vec::new());
             assert_eq!(saved.borrow().last().map(|header| header.left.clone()), Some(Header::standard().left));
         });
-    }
-
-    #[test]
-    fn copies_get_ids_that_are_not_taken() {
-        assert_eq!(unique_id("My Night", &[]), "custom-my-night");
-        assert_eq!(unique_id("My Night", &["custom-my-night".into()]), "custom-my-night-2");
-    }
-
-    /// Prefixed, so a copy named after a theme that ships — "Midnight" — is
-    /// not given the id of the one it was copied from and silently hidden by
-    /// it.
-    #[test]
-    fn a_copy_named_like_a_shipped_theme_does_not_take_its_id() {
-        assert_ne!(unique_id("Midnight", &[]), "midnight");
-    }
-
-    #[test]
-    fn names_with_punctuation_still_make_valid_ids() {
-        let id = unique_id("Blue / Orange", &[]);
-        assert!(id.chars().all(|c| c.is_alphanumeric() || c == '-'), "{id}");
     }
 
     #[test]

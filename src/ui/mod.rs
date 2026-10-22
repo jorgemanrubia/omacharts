@@ -4,6 +4,7 @@
 /// rest of the app has always reached it by.
 pub use omacharts_chart as chart;
 pub use omacharts_chart::{colors, text};
+pub mod appearance;
 pub mod book_templates;
 pub mod chart_settings;
 pub mod controls;
@@ -13,6 +14,7 @@ pub mod notice;
 pub mod drawing_bar;
 pub mod drawing_settings;
 pub mod feed_settings;
+pub mod form_window;
 pub mod pane;
 pub mod palette;
 pub mod part_list;
@@ -26,6 +28,7 @@ pub mod trading_settings;
 pub mod screenshot;
 pub mod search;
 pub mod shortcuts;
+pub mod theme_picker;
 pub mod trading_panel;
 pub mod watchlist;
 pub mod window;

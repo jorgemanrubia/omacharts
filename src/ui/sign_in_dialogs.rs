@@ -29,7 +29,7 @@ use crate::trading::{Login, Typed};
 /// own, numbered apart from the names the other logins have taken.
 pub type LoginDialog = fn(&gtk::Widget, Option<&Login>, &[String], Box<dyn Fn(Typed)>);
 
-/// A dialog of a feed's own, for the Data page: built, not yet shown,
+/// A dialog of a feed's own, for the Market data page: built, not yet shown,
 /// filled in from what the feed was last set up with. It hands what it is
 /// set up with now to `done`, for the page to keep and sign the feed in
 /// with; a secret it asks for goes to the feed's keyring, never into that.
@@ -79,7 +79,7 @@ fn row_titled<Row: IsA<gtk::Widget> + IsA<adw::PreferencesRow>>(widget: &gtk::Wi
     None
 }
 
-/// The dialog of a feed signed in to on the Data page.
+/// The dialog of a feed signed in to on the Market data page.
 pub fn feed_dialog(feed: &Listed) -> Option<FeedDialog> {
     match feed.id {
         id if id == omacharts_engine::providers::sierra::LISTED.id => Some(sierra_setup::dialog),
@@ -90,7 +90,7 @@ pub fn feed_dialog(feed: &Listed) -> Option<FeedDialog> {
 }
 
 /// What a feed has to show while it is set up — its artwork and its
-/// notices, as its terms ask — under the feeds on the Data page.
+/// notices, as its terms ask — under the feeds on the Market data page.
 pub fn credits(feed: &Listed) -> Option<adw::PreferencesGroup> {
     match feed.id {
         id if id == omacharts_engine::providers::rithmic::LISTED.id => Some(rithmic_attribution::group()),

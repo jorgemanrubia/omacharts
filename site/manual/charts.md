@@ -145,43 +145,18 @@ crop: none (resized to 2000 wide)
 
 ### Colouring
 
-The colouring is which of the theme's colours a chart paints its bars from ([Themes and colours](/manual/themes/)). It is one of four palettes, with two switches under it.
+Every chart paints its bars from one look: an up colour, a down colour, and whether rising or falling candles are hollow. The look is set in Preferences › Appearance › **Bars** and is the same on every chart ([Bar colours](/manual/themes/#bar-colours)). A chart's colouring is what it does with that look.
 
 | Colouring | Paints |
 |---|---|
-| **Vivid** | Rises in the theme's up colour, falls in its down colour. The default |
-| **Soft** | Two quiet colours from the theme's palette, a slate for a rise and a sand for a fall, instead of its green and red, so the price sits back behind the chart's drawings and indicators, which keep their colour |
-| **Quiet** | Two greys made from the theme's text, a rise the lighter and a fall the darker, so the price sits back and says nothing about good or bad |
-| **Monochrome** | Every bar in the theme's monochrome colour. An OHLC bar still shows its direction by its ticks; a candle does not, unless its rises are hollow |
+| **Filled** (**Coloured** for OHLC bars) | The look as it is. The default |
+| **Hollow** | The same, with rising candles drawn as outlines. Candles only |
+| **Red up** | The look the other way round, a rise in the down colour and a fall in the up colour, so red reads as a rise, the way charts are read in Taiwan, mainland China, Japan and Korea. The volume strip and a trade's profit and loss turn with the bars |
+| **Soft** | A slate for a rise and a sand for a fall, from the theme's palette, both held quieter than the look's colours so the bars sit back behind indicators and drawings. Keeps the look's hollow candles |
+| **Quiet** | Two greys made from the theme's text, a rise the lighter and a fall the darker, as a black-and-white chart has them. Keeps the look's hollow candles |
+| **Monochrome** | Every bar in Ink, the theme's text colour. An OHLC bar still shows its direction by its ticks; a candle does not, unless the look makes it hollow |
 
-**Hollow up bars** draws a rising candle as an outline, in whichever palette is chosen. It is how a Monochrome candle shows its direction. An OHLC bar has no body to leave open, so the switch is greyed out while the style is OHLC bars, and keeps its setting for when the chart is candles again.
-
-**Swap up and down colours** paints whatever palette is chosen the other way round: a rise in the down colour and a fall in the up colour, so a Vivid chart reads red for a rise, the way charts are read in Taiwan, mainland China, Japan and Korea. It turns the volume strip and a trade's profit and loss round with the bars. A hollow rise is still the rise. It is greyed out on Monochrome, which paints a rise and a fall alike.
-
-Earlier versions offered **Hollow** and **Red up** as colourings of their own. Each is **Vivid** with the matching switch on, and a chart saved with either still looks the same.
-
-<!-- regenerate:
-theme: tokyo-night
-window: 2560x1440 @2, bin/headless-window (HOME sandboxed, theme seeded)
-state:
-  (the daily-candles state above, sidebar hidden)
-  for each cell: omacharts chart set --colouring C --hollow-up H --swap-colours S
-                 omacharts chart range 3m
-capture: bin/headless-window cli chart screenshot --output /tmp/CELL.png, one per cell
-crop: the four cells joined two by two with a 12px gap of the chart background (#1a1b26), resized to 2000 wide, -quality 88
-cells: theme · theme-soft (top); theme-quiet · theme-mono (bottom), switches off
--->
-{% include figure.html src="/assets/manual/charts/palettes.jpg" alt="Four NVDA daily charts of the same three months, one in each palette" caption="Vivid, Soft (top); Quiet, Monochrome (bottom)." %}
-
-<!-- regenerate:
-as the palettes figure, cells: theme-quiet --hollow-up on · theme-mono --hollow-up on (top); theme --swap-colours on · theme with `chart indicator set volume --colouring theme-quiet` (bottom)
--->
-{% include figure.html src="/assets/manual/charts/switches.jpg" alt="Four NVDA daily charts: Quiet and Monochrome with hollow rises, Vivid with up and down swapped, and Vivid over a quiet volume strip" caption="Hollow up bars on Quiet and on Monochrome (top); Vivid with up and down swapped, and Vivid over a volume strip of its own, Quiet (bottom)." %}
-
-<!-- regenerate:
-as the palettes figure, on midnight (top) and paper (bottom): theme-soft · theme-quiet, the two rows joined with a 12px gap
--->
-{% include figure.html src="/assets/manual/charts/soft-quiet.jpg" alt="Soft and Quiet side by side on the Midnight theme and on the Paper theme" caption="Soft (left) and Quiet (right) on Midnight and on Paper." %}
+The **Colouring** row offers only what the style can draw: OHLC bars have no body to leave open. A colouring the style does not offer is kept for when the chart has the style back, and the bars are drawn **Filled** meanwhile.
 
 ### Hiding the bars
 
@@ -404,11 +379,11 @@ state:
 capture: bin/headless-window shot /tmp/max.png
 crop: 1100,500,1460,940
 -->
-{% include figure.html src="/assets/manual/charts/crosshair.jpg" alt="An NVDA hourly chart with the crosshair and its price and time tags, and the last-price tag on its dashed line" caption="The crosshair's tags in the accent colour, and the last price in the theme's last-price colour." %}
+{% include figure.html src="/assets/manual/charts/crosshair.jpg" alt="An NVDA hourly chart with the crosshair and its price and time tags, and the last-price tag on its dashed line" caption="The crosshair's tags in the accent colour, and the last price in the colour of the last bar's direction." %}
 
 The crosshair is a pair of dotted lines that cross at the centre of the bar under the pointer. The price is tagged on the price axis and the bar's time on the time axis (the date alone on daily and coarser bars), in the chosen [time zone and format](/manual/preferences/#time). When each chart reads its exchange's clock, the time ends with the zone, such as **21 Oct 2026 07:30 CT**. Over an indicator strip the price tag shows that strip's value.
 
-The last price is a tag on the price axis with a dashed line across the chart at its level, both in the theme's own last-price colour so that the line is never taken for a candle's: a pale cyan on most dark themes and a deeper one on light themes, from the theme's palette ([Your own themes](/manual/themes/#your-own-themes)).
+The last price is a tag on the price axis, with a dashed line across the chart at its level. Both are in Blue, the default line colour, when the last bar rose, and in the down colour when it fell ([Bars](/manual/themes/#bars)). Out of hours, on a chart of regular hours only, it is the latest trade, coloured by whether it is above or below the session's close.
 
 ### Sharing the crosshair
 
@@ -429,7 +404,7 @@ state:
 capture: bin/headless-window shot /tmp/unserved.png
 crop: 0,0,1998,880, resized to 1400 wide
 -->
-{% include figure.html src="/assets/manual/charts/feed-failure.png" alt="A EURUSD daily chart with no bars and the line: No data feed in Preferences → Data charts this symbol." caption="EURUSD on a feed that cannot chart it." %}
+{% include figure.html src="/assets/manual/charts/feed-failure.png" alt="A EURUSD daily chart with no bars and the line: No data feed in Preferences → Market data charts this symbol." caption="EURUSD on a feed that cannot chart it." %}
 
 | The chart says | What it means | What to do |
 |---|---|---|
@@ -437,12 +412,12 @@ crop: 0,0,1998,880, resized to 1400 wide
 | *Loading…* | The prices are loading. | Nothing. |
 | *No data for this symbol* | The feed has no bars for it, such as a delisted ticker. | Try another symbol, or another feed. |
 | *The data feed does not have this symbol.* | The feed has no such ticker. | Check the spelling and venue suffix ([Symbols](/manual/symbols/)). |
-| *No data feed in Preferences → Data charts this symbol.* | The feed cannot chart this kind of instrument. | Switch feed ([Market data feeds](/manual/market-data/)). |
+| *No data feed in Preferences → Market data charts this symbol.* | The feed cannot chart this kind of instrument. | Switch feed ([Market data feeds](/manual/market-data/)). |
 | *The data feed does not serve this resolution.* | The feed has no bars at this resolution. | Try another resolution. |
-| *This data feed is not signed in. Open Preferences → Data.* | thinkorswim is chosen and is not signed in, or the sign-in has expired. | Preferences › Data › **Sign in…**. |
+| *This data feed is not signed in. Open Preferences → Market data.* | thinkorswim is chosen and is not signed in, or the sign-in has expired. | Preferences › Market data › **Sign in…**. |
 | *Rate limited by the data feed. Prices fill in shortly.* | The feed has stopped sending prices for a while. | Wait. Prices fill in when it allows them again. |
 | *No network connection. Prices fill in when there is one.* | This machine is offline. | Nothing. It fills in when the connection is back. |
-| *The data feed is not answering. Prices fill in when it does.* | The feed is not answering. | Wait. If it persists, check the feed in Preferences › Data. |
+| *The data feed is not answering. Prices fill in when it does.* | The feed is not answering. | Wait. If it persists, check the feed in Preferences › Market data. |
 | *The data feed sent a reply this could not read.* | The feed sent something that was not prices. | Wait for the next refresh. |
 | *Could not open the local price cache.* | The disk is full, or Omacharts cannot write to its data folder. | Check the data folder ([Where your data lives](/manual/your-data/)). |
 

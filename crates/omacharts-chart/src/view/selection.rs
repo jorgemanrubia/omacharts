@@ -1189,40 +1189,40 @@ mod tests {
                 .map(|ink| (ink.side, ink.fill))
                 .collect()
         };
-        let pair = |state: &State, colouring: BarColouring, swapped: bool| {
-            let scheme = colouring.scheme(&state.theme).worn(swapped, false);
+        use omacharts_engine::BarLook;
+        let pair = |state: &State, colouring: BarColouring, house: &BarLook| {
+            let scheme = colouring.scheme(&state.theme, house);
             vec![(Side::Up, scheme.up), (Side::Down, scheme.down)]
         };
+        let shipped = BarLook::default();
         assert_ne!(state.scheme.up, state.scheme.down);
-        assert_eq!(fills(&state, &drawn), pair(&state, BarColouring::Vivid, false), "the house's Vivid to begin with");
+        assert_eq!(fills(&state, &drawn), pair(&state, BarColouring::Filled, &shipped), "the house look to begin with");
 
         // The chart's own candles are not what it follows.
-        state.scheme = BarColouring::Quiet.scheme(&state.theme).worn(true, false);
-        assert_eq!(fills(&state, &drawn), pair(&state, BarColouring::Vivid, false), "not the chart's");
+        state.scheme = BarColouring::Quiet.scheme(&state.theme, &BarLook::red_up());
+        assert_eq!(fills(&state, &drawn), pair(&state, BarColouring::Filled, &shipped), "not the chart's");
 
         for theme in omacharts_engine::theme::builtin_themes() {
             state.theme = theme;
-            for house in BarColouring::ALL {
-                for swapped in [false, true] {
-                    state.house = (house, swapped);
-                    state.delta_inks = super::super::delta_inks(&state.theme, state.house);
-                    drawn.indicator.params = with_colouring(&drawn.indicator.params, None);
-                    assert_eq!(fills(&state, &drawn), pair(&state, house, swapped), "{house:?} {swapped}");
-                    for own in profile::DELTA_COLOURINGS {
-                        drawn.indicator.params = with_colouring(&drawn.indicator.params, Some(own));
-                        assert_eq!(fills(&state, &drawn), pair(&state, own, swapped), "{own:?} over {house:?}");
-                        let (up, down) = super::super::delta_colours(Some(own), &state.theme, house, swapped);
-                        assert_eq!(vec![(Side::Up, up), (Side::Down, down)], pair(&state, own, swapped));
-                    }
+            for house in [BarLook::default(), BarLook::red_up(), BarLook::monochrome()] {
+                state.house = house.clone();
+                state.delta_inks = super::super::delta_inks(&state.theme, &state.house);
+                drawn.indicator.params = with_colouring(&drawn.indicator.params, None);
+                assert_eq!(fills(&state, &drawn), pair(&state, BarColouring::Filled, &house), "{house:?}");
+                for own in profile::DELTA_COLOURINGS {
+                    drawn.indicator.params = with_colouring(&drawn.indicator.params, Some(own));
+                    assert_eq!(fills(&state, &drawn), pair(&state, own, &house), "{own:?} over {house:?}");
+                    let (up, down) = super::super::delta_colours(Some(own), &state.theme, &house);
+                    assert_eq!(vec![(Side::Up, up), (Side::Down, down)], pair(&state, own, &house));
                 }
             }
         }
         // A colouring a delta is not offered, from a hand-edited chart, is
         // the house's.
-        state.house = (BarColouring::Soft, false);
-        state.delta_inks = super::super::delta_inks(&state.theme, state.house);
+        state.house = BarLook::red_up();
+        state.delta_inks = super::super::delta_inks(&state.theme, &state.house);
         drawn.indicator.params = with_colouring(&drawn.indicator.params, Some(BarColouring::Monochrome));
-        assert_eq!(fills(&state, &drawn), pair(&state, BarColouring::Soft, false));
+        assert_eq!(fills(&state, &drawn), pair(&state, BarColouring::Filled, &BarLook::red_up()));
     }
 
     fn with_colouring(

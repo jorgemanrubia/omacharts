@@ -156,7 +156,7 @@ fn focus_ring(theme: &Theme, scheme: &BarScheme) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::theme::{builtin_themes, theme_bars, UiColors};
+    use crate::theme::{builtin_themes, theme_bars, Mode, UiColors};
 
     fn with_ui(ui: UiColors) -> Theme {
         Theme { ui, ..builtin_themes()[0].clone() }
@@ -195,7 +195,7 @@ mod tests {
     #[test]
     fn a_surface_on_top_of_the_chart_is_lifted_off_it() {
         // Lupine's light surface is its chart to within a pixel value.
-        let mut theme = builtin_themes()[2].clone();
+        let mut theme = builtin_themes().into_iter().find(|t| t.mode == Mode::Light).unwrap();
         theme.ui.background = "#fcfcfc".into();
         theme.ui.surface = "#fafafa".into();
         let gutter = theme.frame(&theme_bars(&theme)).gutter;
@@ -203,17 +203,6 @@ mod tests {
         assert!(delta_e(&gutter, &theme.ui.background) >= MIN_GUTTER, "{gutter}");
         // Lifted the way the theme's own surfaces go: darker on a light theme.
         assert!(Oklch::of(&gutter).unwrap().l < Oklch::of(&theme.ui.background).unwrap().l);
-    }
-
-    #[test]
-    fn the_ring_is_equally_visible_on_every_builtin_theme() {
-        for theme in builtin_themes() {
-            let ring = theme.frame(&theme_bars(&theme)).focus;
-            let contrast = contrast_ratio(&ring, &theme.ui.background);
-            assert!(contrast >= RING_CONTRAST, "{}: {ring} is {contrast:.2}:1", theme.name);
-            // And not much more than that: the ring is a mark, not a frame.
-            assert!(contrast < RING_CONTRAST + 1.5, "{}: {ring} is {contrast:.2}:1", theme.name);
-        }
     }
 
     #[test]

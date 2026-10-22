@@ -265,11 +265,9 @@ pub const CHART_SELECTOR: &str =
     "`pos:N`, counting from 0 in layout order, or a raw id from `chart list` \
      — prefer the position, which survives the window rebuilding";
 
-/// The palette a chart paints its bars from, spelled as the scheme ids the
-/// settings store, plus the two a released version offered for a hollow
-/// rise and for red up, which are Vivid with that switch on.
-const COLOURINGS: &[&str] =
-    &["theme", "theme-soft", "theme-quiet", "theme-mono", "theme-hollow", "theme-red-up"];
+/// How a chart paints the theme's candle colours, spelled as the scheme ids
+/// the settings store.
+const COLOURINGS: &[&str] = &["theme", "theme-hollow", "theme-red-up", "theme-soft", "theme-quiet", "theme-mono"];
 const STYLES: &[&str] = &["candles", "ohlc", "none"];
 const SESSIONS: &[&str] = &["regular", "extended"];
 const CONTINUOUS: &[&str] = &["back-adjusted", "as-traded"];
@@ -291,16 +289,16 @@ const PROFILE_METHODS: &[&str] = &["total", "delta"];
 const VWAP_SOURCES: &[&str] = &["hlc3", "hl2", "ohlc4", "close"];
 const SWITCHES: &[&str] = &["on", "off"];
 const LINKS: &[&str] = &["focus", "follow", "pinned"];
-/// The answers `config bars` gives and takes. `coloured`, `hollow` and
-/// `red-up` are what a released version took: `coloured` is `vivid`, and the
-/// other two are `vivid` with that switch on, on every chart.
-const COLOURING: &[&str] = &["vivid", "soft", "quiet", "monochrome", "coloured", "hollow", "red-up"];
 /// What a volume pane's bars may be painted from: the chart's own colouring
-/// (`default`, or `chart` as a released version spelled it), or one of the
-/// three palettes that tell a rise from a fall; and a delta volume profile's
-/// two sides and a cumulative delta's: the colouring chosen in Preferences,
-/// or one of the same three.
-const VOLUME_COLOURINGS: &[&str] = &["default", "chart", "theme", "theme-soft", "theme-quiet"];
+/// (`chart`, or `default` as upstream spells it), or one of its own; and a
+/// delta volume profile's two sides and a cumulative delta's: the look
+/// chosen in Preferences (`default`), `theme-soft` or `theme-quiet`.
+const VOLUME_COLOURINGS: &[&str] =
+    &["chart", "default", "theme", "theme-red-up", "theme-soft", "theme-quiet", "theme-mono"];
+const COLOURING: &[&str] = &["coloured", "red-up", "monochrome"];
+const HOLLOW: &[&str] = &["none", "up", "down", "both"];
+const BAR_COLOUR: &str = "a theme colour by name (green, rose, blue, amber, violet, teal, orange, cyan), \
+     ink for none, or #rrggbb";
 const SORT_COLUMNS: &[&str] = &["symbol", "last", "change", "change_pct", "none"];
 /// The kinds a drawing comes in, plus the one alias.
 ///
@@ -400,7 +398,7 @@ const INDICATOR_FLAGS: &[Flag] = &[
     Flag::valued("poc-width", "F", "a volume profile's point of control thickness in pixels"),
     Flag::valued("up-color", "COLOUR", "volume bars of a rising session"),
     Flag::valued("down-color", "COLOUR", "volume bars of a falling session"),
-    Flag::valued("colouring", "COLOURING", "how volume bars are painted: as the chart paints its candles (default, or chart), or in theme, theme-soft or theme-quiet; and a delta volume profile's bought and sold rows or a cumulative delta's rises and falls: in the colouring chosen in Preferences (default), or theme, theme-soft or theme-quiet").of(VOLUME_COLOURINGS),
+    Flag::valued("colouring", "COLOURING", "how volume bars are painted: as the chart paints its candles (chart, or default), or in theme, theme-red-up, theme-soft, theme-quiet or theme-mono; and a delta volume profile's bought and sold rows or a cumulative delta's rises and falls: in the look chosen in Preferences (default), or theme-soft or theme-quiet").of(VOLUME_COLOURINGS),
     Flag::valued("opacity", "F", "how solid volume bars are drawn, 0.2-1; 1 is fully opaque"),
     Flag::valued("d-color", "COLOUR", "the stochastic's %D line"),
     Flag::valued("color", "COLOUR", "the line, the volume profile's background, or a Session Times range's shading"),
@@ -931,10 +929,7 @@ pub const SURFACE: &[Noun] = &[
                         "hide the bars, or show them again in the style they had",
                     )
                     .of(SWITCHES),
-                    Flag::valued("colouring", "COLOURING", "which of the theme's palettes the bars are painted from").of(COLOURINGS),
-                    Flag::valued("hollow-up", "BOOL", "draw a rising body as an outline").of(SWITCHES),
-                    Flag::valued("swap-colours", "BOOL", "swap the colouring's up and down, red for a rise")
-                        .of(SWITCHES),
+                    Flag::valued("colouring", "COLOURING", "how the theme's candle colours are painted").of(COLOURINGS),
                     Flag::valued("session", "SESSION", "which hours to include").of(SESSIONS),
                     Flag::valued(
                         "continuous",
@@ -1272,14 +1267,28 @@ pub const SURFACE: &[Noun] = &[
                 workspace: false,
             },
             Verb {
-                name: "bars",
-                about: "Which palette every chart paints its bars from: vivid, soft, quiet or monochrome; and whether a rise is hollow or up and down are swapped",
-                args: &[Arg::opt("STATE", "omit to read it").of(COLOURING)],
+                name: "theme",
+                about: "The theme the app wears: system, which follows Omarchy, or an Omarchy theme by name",
+                args: &[Arg::opt("THEME", "omit to list them")],
                 flags: &[],
-                example: "omacharts config bars monochrome",
+                example: "omacharts config theme tokyo-night",
                 json: true,
                 writes: true,
-                workspace: true,
+                workspace: false,
+            },
+            Verb {
+                name: "bars",
+                about: "How candles look: a colour for up and for down, and which are hollow",
+                args: &[Arg::opt("STATE", "sets both colours: the theme's green and rose, swapped, or ink; omit to read them").of(COLOURING)],
+                flags: &[
+                    Flag::valued("up", "COLOUR", BAR_COLOUR),
+                    Flag::valued("down", "COLOUR", BAR_COLOUR),
+                    Flag::valued("hollow", "WHICH", "which candles are drawn as an outline").of(HOLLOW),
+                ],
+                example: "omacharts config bars monochrome --hollow up",
+                json: true,
+                writes: true,
+                workspace: false,
             },
         ],
     },
@@ -1519,8 +1528,6 @@ const STORED_FIELDS: &[(&str, &str, &str)] = &[
     ("bar_style", "chart set", "--style"),
     ("bars_hidden", "chart set", "--bars"),
     ("colouring", "chart set", "--colouring"),
-    ("swapped", "chart set", "--swap-colours"),
-    ("hollow_up", "chart set", "--hollow-up"),
     ("ohlc_thickness", "chart set", "--thickness"),
     ("session", "chart set", "--session"),
     ("continuous", "chart set", "--continuous"),

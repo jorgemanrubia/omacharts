@@ -461,19 +461,15 @@ pub fn change_text(change_pct: f64) -> String {
     format!("{change_pct:+.2}%")
 }
 
-/// The colour a day's move is written in: the theme's own up and down,
-/// its palette's green and rose unless somebody set its candles by hand,
-/// turned round only on a chart whose rises are red. Not the chart's bar
-/// colouring: Monochrome candles still have a green rise here. A move of
-/// exactly nothing has none, and is written in the header's own text.
-pub fn change_colour(theme: &omacharts_engine::Theme, swapped: bool, change: f64) -> Option<String> {
+/// The colour a day's move is written in: `scheme`'s rise or fall, the
+/// chart's look turned only as a red-up chart turns it, so Monochrome or
+/// Quiet candles still have a coloured rise here. A move of exactly
+/// nothing has none, and is written in the header's own text.
+pub fn change_colour(scheme: &omacharts_engine::BarScheme, change: f64) -> Option<String> {
     use omacharts_engine::Direction;
-    let bars = omacharts_engine::theme::theme_bars(theme);
-    let (up, down) = if swapped { (bars.down, bars.up) } else { (bars.up, bars.down) };
     match Direction::of_change(change) {
-        Direction::Up => Some(up),
-        Direction::Down => Some(down),
         Direction::Flat => None,
+        direction => Some(scheme.outline(direction).to_string()),
     }
 }
 
@@ -749,18 +745,15 @@ mod tests {
         assert_eq!(load(&store).left, vec![Part::Change, Part::Symbol]);
     }
 
-    /// Green up and red down, from the palette, whatever the chart's own
-    /// bar colouring; red up turns them round; nothing at all is the text.
+    /// A rise in the scheme's up colour and a fall in its down; nothing at
+    /// all is the text.
     #[test]
-    fn a_change_is_coloured_from_the_palette() {
+    fn a_change_is_coloured_from_the_scheme() {
         let theme = omacharts_engine::theme::builtin_themes().remove(0);
-        let green = theme.swatch("Green").unwrap().hex.clone();
-        let rose = theme.swatch("Rose").unwrap().hex.clone();
-        assert_eq!(change_colour(&theme, false, 0.01), Some(green.clone()), "a cent up");
-        assert_eq!(change_colour(&theme, false, -0.01), Some(rose.clone()), "a cent down");
-        assert_eq!(change_colour(&theme, false, 0.0), None);
-        assert_eq!(change_colour(&theme, true, 1.0), Some(rose));
-        assert_eq!(change_colour(&theme, true, -1.0), Some(green));
+        let scheme = omacharts_engine::theme_bars(&theme);
+        assert_eq!(change_colour(&scheme, 0.01), Some(scheme.up.clone()), "a cent up");
+        assert_eq!(change_colour(&scheme, -0.01), Some(scheme.down.clone()), "a cent down");
+        assert_eq!(change_colour(&scheme, 0.0), None);
     }
 
     #[test]

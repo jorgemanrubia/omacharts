@@ -653,7 +653,7 @@ pub(crate) mod tests {
         forget_login(&store, "sierra");
     }
 
-    /// The feed-only path is as it was: Sierra Chart added on the Data page
+    /// The feed-only path is as it was: Sierra Chart added on the Market data page
     /// adds no trading service login.
     #[test]
     fn a_sierra_feed_added_alone_adds_no_login() {

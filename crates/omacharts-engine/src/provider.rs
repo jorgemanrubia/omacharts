@@ -129,10 +129,10 @@ impl FetchFailure {
             FetchFailure::NoSuchSymbol => "The data feed does not have this symbol.",
             FetchFailure::LocalCache => "Could not open the local price cache.",
             FetchFailure::NeedsSignIn => {
-                "This data feed is not signed in. Open Preferences → Data."
+                "This data feed is not signed in. Open Preferences → Market data."
             }
             FetchFailure::Unserved => {
-                "No data feed in Preferences → Data charts this symbol."
+                "No data feed in Preferences → Market data charts this symbol."
             }
         }
     }
