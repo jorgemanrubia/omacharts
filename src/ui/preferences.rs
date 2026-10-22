@@ -1297,7 +1297,7 @@ fn desktop_group() -> Option<adw::PreferencesGroup> {
         let result = if on {
             crate::bar_plugin::install(&home)
         } else {
-            crate::bar_plugin::remove(&home)
+            crate::bar_plugin::remove(&home).map(|_| ())
         };
         match result {
             Ok(()) => {

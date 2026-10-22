@@ -2,11 +2,19 @@
 # Put omacharts in the application menu, pointed at the working tree.
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-id="com.jorgemanrubia.Omacharts"
+id="org.omacharts.Omacharts"
 
 apps="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 icons="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor"
 mkdir -p "$apps"
+
+# The id it was installed under before it had one of its own. Left behind, it
+# is a second launcher in the menu pointed at the same tree.
+old="com.jorgemanrubia.Omacharts"
+rm -f "$apps/$old.desktop" "$icons/scalable/apps/$old.svg"
+for size in 16 24 32 48 64 128 256 512; do
+  rm -f "$icons/${size}x${size}/apps/$old.png"
+done
 
 for size in 16 24 32 48 64 128 256 512; do
   dir="$icons/${size}x${size}/apps"

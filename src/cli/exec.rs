@@ -4034,7 +4034,14 @@ fn spell_bars(scheme: &str) -> &'static str {
 /// open, and why a desktop with no bar is reported rather than refused: having
 /// no Omarchy shell is a fact about the machine, not a command that went
 /// wrong. The switch in Preferences writes the same two things.
+///
+/// Each moves a widget installed under the old id first, so that what they
+/// report on or change is the widget as it is now. `install` and `uninstall`
+/// report a move that could not be made, as `bar_plugin::install`, `refresh`
+/// and `remove` do; `status` answers regardless, because a move that could
+/// not be made is no reason not to say what is there.
 fn plugin_status(home: &std::path::Path, as_json: bool) -> Result<String, Fault> {
+    let _ = crate::bar_plugin::migrate_in_full(home);
     let where_at = crate::bar_plugin::location(home);
     let at = where_at.display();
     let (available, installed) =
@@ -4067,7 +4074,11 @@ fn plugin_install(home: &std::path::Path, as_json: bool) -> Result<String, Fault
     }
     // Already in the bar means bring it up to date rather than write it again:
     // a widget installed once and never touched runs whichever version shipped
-    // the day the switch was flicked.
+    // the day the switch was flicked. Judged after an old install has been
+    // moved, or the answer would be "installed" for a widget that was in the
+    // bar all along under its old id. `install` and `refresh` move it again
+    // themselves, which finds nothing to do.
+    crate::bar_plugin::migrate_in_full(home).map_err(|e| Fault::new(super::EXIT_ERROR, e))?;
     let already = crate::bar_plugin::installed(home);
     let done = match already {
         true => crate::bar_plugin::refresh(home),
@@ -4088,15 +4099,25 @@ fn plugin_install(home: &std::path::Path, as_json: bool) -> Result<String, Fault
 fn plugin_uninstall(home: &std::path::Path, as_json: bool) -> Result<String, Fault> {
     // Idempotent on purpose: a script that takes the widget out should not
     // have to ask first, and "it was already gone" is the outcome it wanted.
-    if !crate::bar_plugin::installed(home) {
+    // No bar at all is the same outcome, said before `remove` goes looking
+    // for the shell.json it would have edited.
+    if !crate::bar_plugin::available(home) {
         return said(
             as_json,
-            json!({"installed": false, "removed": false}),
-            "not in the bar, so there was nothing to remove".to_string(),
+            json!({"omarchy": false, "installed": false, "removed": false}),
+            "no Omarchy bar on this desktop, so there was nothing to remove".to_string(),
         );
     }
-    crate::bar_plugin::remove(home).map_err(|e| Fault::new(super::EXIT_ERROR, e))?;
-    said(as_json, json!({"installed": false, "removed": true}), "taken out of the bar".to_string())
+    let removed = crate::bar_plugin::remove(home).map_err(|e| Fault::new(super::EXIT_ERROR, e))?;
+    // The same keys whatever happened, so a script reads one shape.
+    said(
+        as_json,
+        json!({"omarchy": true, "installed": false, "removed": removed}),
+        match removed {
+            true => "taken out of the bar".to_string(),
+            false => "not in the bar, so there was nothing to remove".to_string(),
+        },
+    )
 }
 
 fn cache_status(store: &Store, as_json: bool) -> Result<String, Fault> {
@@ -6117,6 +6138,105 @@ mod tests {
 
         assert_eq!(plugin("uninstall").code, super::super::EXIT_OK);
         assert!(!widget.exists(), "and taken out of it again");
+    }
+
+    /// Every outcome of `uninstall --json` has the keys `install` and `status`
+    /// answer with, `omarchy` among them, so a script reads one shape whether
+    /// the widget was there, was already gone, or there is no bar at all.
+    #[test]
+    fn uninstall_json_has_the_same_keys_whatever_it_found() {
+        let home = ScratchHome::new();
+        let config = home.0.join(".config/omarchy");
+        std::fs::create_dir_all(config.join("plugins")).unwrap();
+        std::fs::write(config.join("shell.json"), r#"{"bar": {"layout": {"right": []}}}"#)
+            .unwrap();
+        let store = bare();
+        let plugin = |verb: &str| {
+            let args: Vec<String> =
+                ["omacharts", "plugin", verb, "--json"].into_iter().map(String::from).collect();
+            let out = dispatch(&args, &store, None, &home);
+            assert_eq!(out.code, super::super::EXIT_OK, "{}", out.err);
+            serde_json::from_str::<Value>(&out.out).unwrap()
+        };
+
+        plugin("install");
+        assert_eq!(
+            plugin("uninstall"),
+            json!({"omarchy": true, "installed": false, "removed": true})
+        );
+        assert_eq!(
+            plugin("uninstall"),
+            json!({"omarchy": true, "installed": false, "removed": false})
+        );
+    }
+
+    /// Having no Omarchy shell is a fact about the machine, and `uninstall`
+    /// reports it the way `install` and `status` do — not as a shell.json it
+    /// could not open. A home over ssh, or a machine that is not Omarchy at
+    /// all, has none.
+    #[test]
+    fn uninstalling_where_there_is_no_bar_is_nothing_to_remove() {
+        let home = ScratchHome::new();
+        let store = bare();
+        let uninstall = |extra: &[&str]| {
+            let args: Vec<String> = ["omacharts", "plugin", "uninstall"]
+                .into_iter()
+                .chain(extra.iter().copied())
+                .map(String::from)
+                .collect();
+            dispatch(&args, &store, None, &home)
+        };
+
+        let out = uninstall(&[]);
+        assert_eq!(out.code, super::super::EXIT_OK, "{}", out.err);
+        assert_eq!(out.out, "no Omarchy bar on this desktop, so there was nothing to remove\n");
+
+        let out = uninstall(&["--json"]);
+        assert_eq!(out.code, super::super::EXIT_OK, "{}", out.err);
+        let said: Value = serde_json::from_str(&out.out).unwrap();
+        assert_eq!(said, json!({"omarchy": false, "installed": false, "removed": false}));
+    }
+
+    /// A widget an older version put in the bar is already in the bar, so
+    /// `install` brings it up to date rather than installing it — which is
+    /// what it says, and what it does: moved, with its settings, not added
+    /// beside itself.
+    #[test]
+    fn installing_over_an_old_install_is_an_update() {
+        let home = ScratchHome::new();
+        let config = home.0.join(".config/omarchy");
+        let old = config.join("plugins").join(crate::bar_plugin::OLD_PLUGIN_ID);
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("manifest.json"), r#"{"id": "jorgemanrubia.omacharts"}"#).unwrap();
+        std::fs::write(
+            config.join("shell.json"),
+            json!({ "bar": { "layout": { "right": [
+                { "id": "omarchy.tray" },
+                { "id": crate::bar_plugin::OLD_PLUGIN_ID, "refreshIntervalSec": 300 },
+            ] } } })
+            .to_string(),
+        )
+        .unwrap();
+        let store = bare();
+        let args: Vec<String> =
+            ["omacharts", "plugin", "install", "--json"].into_iter().map(String::from).collect();
+
+        let out = dispatch(&args, &store, None, &home);
+        assert_eq!(out.code, super::super::EXIT_OK, "{}", out.err);
+        let said: Value = serde_json::from_str(&out.out).unwrap();
+        assert_eq!(said["updated"], true, "{said}");
+        assert!(!old.exists(), "moved");
+        let shell: Value =
+            serde_json::from_str(&std::fs::read_to_string(config.join("shell.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            shell["bar"]["layout"]["right"],
+            json!([
+                { "id": "omarchy.tray" },
+                { "id": crate::bar_plugin::PLUGIN_ID, "refreshIntervalSec": 300 },
+            ]),
+            "renamed in place, not added a second time"
+        );
     }
 
     /// Where a window would be, so the verbs that default to the focused chart

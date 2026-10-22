@@ -15,12 +15,12 @@ import "ServiceHost.js" as ServiceHost
 // right. Nothing else — a bar panel is a glance, not a workspace.
 Panel {
   id: root
-  moduleName: "jorgemanrubia.omacharts"
-  ipcTarget: "jorgemanrubia.omacharts"
+  moduleName: "omacharts.watchlist"
+  ipcTarget: "omacharts.watchlist"
   // Its own handler rather than the base one, so the app can push a refresh
   // the moment the watchlist changes instead of leaving the bar a timer
   // behind. Also lets the panel be opened from a keybinding:
-  //   omarchy-shell jorgemanrubia.omacharts toggle
+  //   omarchy-shell omacharts.watchlist toggle
   manageIpc: false
 
   property int selectedIndex: 0
@@ -102,7 +102,7 @@ Panel {
   onGoneChanged: if (gone) close()
 
   IpcHandler {
-    target: "jorgemanrubia.omacharts"
+    target: "omacharts.watchlist"
 
     function open(): void { if (!root.gone) root.open() }
     function close(): void { root.close() }

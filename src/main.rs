@@ -13,7 +13,7 @@ use omacharts::store::Store;
 use omacharts::ui::window::NotShown;
 use omacharts::ui::Window;
 
-const APP_ID: &str = "com.jorgemanrubia.Omacharts";
+const APP_ID: &str = "org.omacharts.Omacharts";
 
 fn main() -> glib::ExitCode {
     let launch = cli::caller_paths(std::env::args().collect::<Vec<String>>());
@@ -62,11 +62,26 @@ fn main() -> glib::ExitCode {
     if let Some(refused) = cli::stdin_is_not_piped(&args) {
         return report(refused);
     }
+
+    // `--version` and `--help` are answered before anything is touched.
+    if !cli::is_command(&args)
+        && let Some(code) = peel_off(&args)
+    {
+        return code;
+    }
+
+    // A bar widget installed by an older version, under the id it had then,
+    // is moved to the new one here: before anything else, in every process
+    // that opens a store or a window, which includes the widget's own polls.
+    // A bar whose window is never opened is still upgraded, and nobody has to
+    // know there was anything to upgrade. Costs one stat when there is
+    // nothing to do, and says nothing when the move fails: this runs in every
+    // process, and the window and the `plugin` commands report that to
+    // somebody who is looking — see `bar_plugin::migrate`.
+    let _ = omacharts::bar_plugin::migrate(&omacharts::store::home());
+
     if cli::is_command(&args) && !app_is_running() {
         return report(cli::run(&args, &open_store(), None, &cli::Here));
-    }
-    if let Some(code) = peel_off(&args).filter(|_| !cli::is_command(&args)) {
-        return code;
     }
 
     // GTK4 picks the Vulkan renderer by default, and bringing up a Vulkan
