@@ -9,7 +9,10 @@ description: >-
   open", "a 2x2 of the majors with RSI on each, linked", "put a 200-day
   average on this", "add AMD to my semis list", "what have I got open". Also
   for indicators (moving average, VWAP, Bollinger bands, volume profile,
-  RSI, MACD, ATR), resolutions and sessions, bar styles and colours, watchlists and their
+  RSI, MACD, ATR), for session times — "shade the overnight", "a line at
+  each day", "mark the London open", "the opening range", "prior day high
+  and low", "overnight high and low" — and for which time zone and 12 or
+  24 hours the charts show, resolutions and sessions, bar styles and colours, watchlists and their
   sections, chartbooks, link modes, the instrument search, and the cached
   price data. Also for marking a chart up — "draw the trendline", "box the
   range", "circle that gap", "mark the breakout", "label this high" — which
@@ -80,6 +83,18 @@ and, for a feed that streams, what the open window holds a subscription to and
 whether anything has ticked. A chart on a streamed feed is never refetched on
 a timer; if it looks still, `provider status` is where to look first.
 
+**Times are the chart's.** A time given to a command — a window's `--from`
+and `--to`, a drawing's `WHEN` — is read in the clock the charts read,
+`config get chart_time_zone` (New York unless set; `exchange` means each
+chart's own exchange). A market named by its city keeps that city's clock
+with `--zone`: London opens at 08:00 `Europe/London` whichever week it is,
+which in New York time moves by an hour twice a year.
+
+**Sessions follow the instrument's exchange.** ES's day starts at five in the
+afternoon in Chicago the evening before; regular hours are the cash session
+for index futures, the pit hours for crude or gold, and the exchange's own
+day for a listing abroad. There is no holiday calendar.
+
 **`watchlist feed --json` is the only command that prints a price**, and only
 for the default watchlist. Otherwise "what's X doing" means putting it on screen.
 
@@ -119,6 +134,19 @@ omacharts template indicator add Momentum rsi --period 14
 omacharts chart set --chart pos:0 --template Momentum
 omacharts chart set --chart pos:1 --template Momentum
 omacharts template indicator set Momentum rsi --period 21
+```
+
+**Set ES up for the open.** Extended hours shaded with a line at each day,
+the London session with its range, the opening range, and the prior regular
+session's high, low and close:
+
+```
+omacharts chart set --symbol ES --resolution 5m --session extended
+omacharts chart indicator add sessions --separators day
+omacharts chart indicator add time_window --name London --from 8am --to 4:30pm --zone Europe/London --mark on --range on
+omacharts chart indicator add time_window --name OR --within regular --minutes 30
+omacharts chart indicator add session_levels --source regular --levels high,low,close
+omacharts chart indicator add session_levels --source extended --levels high,low
 ```
 
 **Each chart has a link mode**, which is what a click in the watchlist does
