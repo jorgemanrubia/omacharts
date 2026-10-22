@@ -82,7 +82,7 @@ pub struct ChartPane {
     pub header: RefCell<Vec<crate::header::Part>>,
     /// The line the header is written on, and the two parts of it only the
     /// window can fill in.
-    header_row: gtk::Box,
+    pub header_row: gtk::Box,
     pub change_label: gtk::Label,
     pub template_label: gtk::Label,
     pub bar_style: Cell<BarStyle>,

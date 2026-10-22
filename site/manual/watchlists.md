@@ -52,9 +52,12 @@ refused, or there is no connection), a line above the first dash says why.
 |---|---|
 | **Symbol** | The ticker, always first. Hover a row for the instrument's full name. |
 | **Last** | The last price. |
+| **Chg** | The move since the previous close, in price. |
 | **Chg %** | The move since the previous close, as a percentage. |
 
-Drag a column's title along the row to move it. **Symbol** doesn't move.
+Out of the box the sidebar shows **Symbol**, **Last** and **Chg %**. Drag a column's title along the row to move it. **Symbol** doesn't move.
+
+To add or remove columns, right-click the column titles and choose **Edit columns…**. In **Watchlist Columns**, **+** adds a column not yet shown, a column's bin removes it, and dragging a column by its handle reorders it. **Symbol** is always shown. The sidebar changes as you edit.
 
 ## Sorting
 

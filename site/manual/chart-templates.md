@@ -31,6 +31,8 @@ crop: 276,16,2008,1008   (the whole dialog, 12px layout margin)
 3. In the template's editor, add indicators with **+**, as on a chart's [Indicators page](/manual/indicators/#the-indicators-page).
 4. Put a chart on it from the chart menu › **Template** ([Choosing a chart's template](#choosing-a-charts-template)).
 
+To make a template from what a chart already shows, right-click the chart › **Template** › **Create new template from chart…**, type a name and click **Create**. The new template holds the chart's indicators, and the chart is put on it. The item is greyed out on a chart with no indicators.
+
 ## How a chart on a template behaves
 
 | Change | What happens |
@@ -52,7 +54,7 @@ With the **Chart template** part of the header on, the header names the template
 
 | Where | How |
 |---|---|
-| The chart menu › **Template** | **None**, then every template in the order they were made. The one the chart is on is marked |
+| The chart menu › **Template** | **None**, then every template in the order they were made. The one the chart is on is marked. **Create new template from chart…** comes last, below a line |
 | Chart settings › **Indicators** › **Chart template** | The same choice, above the list of what the chart shows |
 | <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>1</kbd> … <kbd>9</kbd> | The first to the ninth template, in that order, on the number row, whatever your layout puts on those keys with Shift. A number with no template does nothing |
 | <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>0</kbd> | **None**. On a chart with indicators of its own, it removes them, asking first |
@@ -62,8 +64,8 @@ With the **Chart template** part of the header on, the header names the template
 theme: tokyo-night
 window: 2560x1600 @2, scratchpad kit (fresh session)
 state:
+  omacharts config set theme tokyo-night
   move 1270 790
-  key ctrl+b
   omacharts template create Momentum
   omacharts template indicator add Momentum rsi
   omacharts template indicator add Momentum macd
@@ -73,9 +75,9 @@ state:
   click 675 237        # Template
   move 732 440         # inside the submenu, on no row
 capture: bin/headless-window shot /tmp/menu.png
-crop: 0,0,1778,1090   (the submenu with 24px layout margin right and below)
+crop: 0,0,1830,1092   (the submenu with 24px layout margin right and below)
 -->
-{% include figure.html src="/assets/manual/chart-templates/template-menu.png" alt="The chart menu's Template submenu open over a SPY daily chart, each template with its key" caption="The chart menu's **Template** submenu. The header's last part names the template." %}
+{% include figure.html src="/assets/manual/chart-templates/template-menu.png" alt="The chart menu's Template submenu open over a SPY daily chart, each template with its key, and Create new template from chart below a line" caption="The chart menu's **Template** submenu. The header's last part names the template." %}
 
 ## Editing a template
 

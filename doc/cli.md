@@ -169,6 +169,7 @@ every chart on it at once, in every chartbook. A new profile has one called
 ```
 omacharts template list
 omacharts template create Momentum
+omacharts template create Swing --from-chart
 omacharts template indicator add Momentum rsi --period 14
 omacharts template indicator add Momentum macd --signal-color Amber
 omacharts chart set --template Momentum
@@ -179,6 +180,12 @@ omacharts template default Momentum
 `chart indicator` — the table above applies to both — with the template named
 before the indicator. `template list` marks with `*` the one new charts open
 with, and says how many charts use each.
+
+`template create NAME --from-chart` makes the template out of what a chart
+already shows: the focused chart's indicators, or the one `--book` and
+`--chart` name, which is then put on the new template. A chart with no
+indicators is refused, and with no window open and no `--book` the command
+exits `6`, as a chart verb does.
 
 Putting a chart on a template replaces its own indicators with the template's.
 `chart set --template none` puts it on none, which is the empty set: the chart

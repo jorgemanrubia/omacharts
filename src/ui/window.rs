@@ -1809,6 +1809,9 @@ pub struct Window {
     bar_style_action: RefCell<Option<gio::SimpleAction>>,
     session_action: RefCell<Option<gio::SimpleAction>>,
     template_action: RefCell<Option<gio::SimpleAction>>,
+    /// The chart menu's "Create new template from chart…", turned off while
+    /// the chart it opens on has no indicators.
+    template_from_chart_action: RefCell<Option<gio::SimpleAction>>,
     grid_action: RefCell<Option<gio::SimpleAction>>,
     auto_scale_action: RefCell<Option<gio::SimpleAction>>,
     log_scale_action: RefCell<Option<gio::SimpleAction>>,
@@ -1980,6 +1983,7 @@ impl Window {
             bar_style_action: RefCell::new(None),
             session_action: RefCell::new(None),
             template_action: RefCell::new(None),
+            template_from_chart_action: RefCell::new(None),
             grid_action: RefCell::new(None),
             auto_scale_action: RefCell::new(None),
             log_scale_action: RefCell::new(None),
@@ -2276,6 +2280,22 @@ impl Window {
             popup_menu(&model, &strip, x, y);
         });
         pane.strip.add_controller(strip_menu);
+
+        // And the header, the same way, for what it shows: one line for every
+        // chart, set in the preferences, and reached from here because here
+        // is where somebody is looking when they want it changed.
+        let editor = self.clone();
+        let header_menu = gtk::GestureClick::new();
+        header_menu.set_button(gtk::gdk::BUTTON_SECONDARY);
+        let header = pane.header_row.clone();
+        header_menu.connect_pressed(move |gesture, _, x, y| {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            editor.focus(id);
+            let model = gio::Menu::new();
+            model.append(Some("Edit header…"), Some("chart.edit-header"));
+            popup_menu(&model, &header, x, y);
+        });
+        pane.header_row.add_controller(header_menu);
 
         let axis_owner = self.clone();
         pane.view.set_axis_menu_handler(move |x, y| {
@@ -5473,6 +5493,16 @@ impl Window {
     }
 
     fn open_preferences(self: &Rc<Self>) {
+        self.open_preferences_at(None);
+    }
+
+    /// The preferences at the tab that edits what every chart's header
+    /// shows, from the header itself.
+    pub fn edit_header(self: &Rc<Self>) {
+        self.open_preferences_at(Some("header"));
+    }
+
+    fn open_preferences_at(self: &Rc<Self>, charts_tab: Option<&str>) {
         let this = self.clone();
         let editor = self.clone();
         let restorer = self.clone();
@@ -5489,6 +5519,7 @@ impl Window {
             Rc::new(move || editor.edit_timeframes()),
             Rc::new(move || restorer.adopt_restored()),
             self.clone(),
+            charts_tab,
         );
     }
 
@@ -6897,6 +6928,36 @@ impl Window {
         self.follow_templates();
     }
 
+    /// Ask for a name, and keep what the focused chart shows as a new
+    /// template under it, putting the chart on it.
+    ///
+    /// On it, because that is what keeping it was for: the chart already
+    /// shows exactly what the template holds, so nothing on screen changes,
+    /// and the next change to its indicators is one the template takes too.
+    pub fn new_template_from_chart(self: &Rc<Self>) {
+        let pane = self.focused_pane();
+        let indicators = pane.indicators.borrow().clone();
+        if indicators.is_empty() {
+            return;
+        }
+        let this = self.clone();
+        crate::ui::preferences::ask_name(
+            &self.window,
+            "New Chart Template",
+            "",
+            "Create",
+            move |name| {
+                let id = crate::templates::create_from(&this.store, &name, indicators.clone()).id;
+                // The chart it was asked on, wherever the focus went meanwhile.
+                if this.panes.borrow().iter().any(|p| Rc::ptr_eq(p, &pane)) {
+                    this.put_on_template(&pane, Some(id));
+                    this.sync_chart_actions(&this.focused_pane());
+                    this.save_workspace();
+                }
+            },
+        );
+    }
+
     pub fn create_template(self: &Rc<Self>, name: &str) -> u32 {
         crate::templates::create(&self.store, name).id
     }
@@ -8093,6 +8154,15 @@ impl Window {
             made.append_item(&item);
         }
         templates.append_section(None, &made);
+        // Below a rule, as the way to one more: what this chart shows, kept
+        // under a name. Greyed rather than gone on a chart with nothing to
+        // keep, so the menu does not change shape from one chart to the next.
+        let more = gio::Menu::new();
+        more.append(Some("Create new template from chart\u{2026}"), Some("chart.template-from-chart"));
+        templates.append_section(None, &more);
+        if let Some(action) = self.template_from_chart_action.borrow().as_ref() {
+            action.set_enabled(!self.focused_pane().indicators.borrow().is_empty());
+        }
         menu.append_submenu(Some("Template"), &templates);
 
         // With the other two choices about how the chart is drawn, and drawn
@@ -8356,6 +8426,19 @@ impl Window {
         let this = self.clone();
         resolutions.connect_activate(move |_, _| this.edit_timeframes());
         actions.add_action(&resolutions);
+
+        let header = gio::SimpleAction::new("edit-header", None);
+        let this = self.clone();
+        header.connect_activate(move |_, _| this.edit_header());
+        actions.add_action(&header);
+
+        // Offered only while the chart has indicators: a template made from
+        // none would be an empty one, which the preferences already make.
+        let from_chart = gio::SimpleAction::new("template-from-chart", None);
+        let this = self.clone();
+        from_chart.connect_activate(move |_, _| this.new_template_from_chart());
+        actions.add_action(&from_chart);
+        *self.template_from_chart_action.borrow_mut() = Some(from_chart);
 
         let draw_line = gio::SimpleAction::new("draw-line", None);
         let this = self.clone();

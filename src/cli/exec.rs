@@ -147,6 +147,11 @@ pub fn dispatch(
         }
 
         ("template", _) => {
+            // Made from "the chart I am looking at", which the same rule as
+            // the chart verbs keeps from being answered out of storage.
+            if verb == "create" && flag(m, "from-chart") && live.is_none() && arg(m, "book").is_none() {
+                return Outcome::failed(Fault::no_window("focused chart"));
+            }
             let outcome = template_verb(store, verb, m, json);
             // A new name touches no chart, only the header of one showing it,
             // so the window is told that rather than rebuilt.
@@ -3079,7 +3084,11 @@ fn template_verb(
         "list" => return template_list(store, &Workspace::load(store), as_json),
         "indicator" => return template_indicator(store, m, as_json, &mut Workspace::load(store)),
         "default" => return template_default(store, m, as_json),
+        "create" if flag(m, "from-chart") => return template_from_chart(store, m, as_json),
         "create" => {
+            if arg(m, "book").is_some() || arg(m, "chart").is_some() {
+                return Err(Fault::usage("--book and --chart name the chart for --from-chart".into()));
+            }
             let name = template_name(m, "NAME")?;
             let made = crate::templates::create(store, &name);
             format!("created chart template {name:?} (id:{})", made.id)
@@ -3113,6 +3122,44 @@ fn template_verb(
         other => return Err(Fault::usage(format!("no such command: template {other}"))),
     };
     said(as_json, json!({"message": text}), text)
+}
+
+/// `template create --from-chart`: what a chart shows, kept as a new template
+/// the chart is then on. A chart with no indicators has nothing to keep, and
+/// says so rather than making an empty template `create` alone would make.
+fn template_from_chart(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<String, Fault> {
+    let name = template_name(m, "NAME")?;
+    let mut workspace = Workspace::load(store);
+    let at = workspace.resolve(arg(m, "book").map(String::as_str))?;
+    let book = workspace.book(at)?.clone();
+    let pane = charts::resolve_pane(&book, arg(m, "chart").map(String::as_str))?;
+    let label = chart_label(&book, pane);
+    let chart = charts::panes_mut(workspace.book_mut(at)?)?
+        .iter_mut()
+        .find(|p| p["id"].as_u64() == Some(u64::from(pane)))
+        .ok_or_else(|| Fault::not_found(format!("no chart {pane} in this chartbook")))?;
+    let indicators: Vec<omacharts_engine::Indicator> =
+        serde_json::from_value(chart["indicators"].clone()).unwrap_or_default();
+    if indicators.is_empty() {
+        return Err(Fault::refused(format!(
+            "{label} has no indicators to make a template from; \
+             `omacharts template create {name}` makes an empty one"
+        )));
+    }
+    let count = indicators.len();
+    let made = crate::templates::create_from(store, &name, indicators);
+    chart["template"] = json!(made.id);
+    workspace.save(store);
+    let text = format!(
+        "created chart template {name:?} (id:{}) from {} on {label} in {:?}, and put the chart on it",
+        made.id,
+        match count {
+            1 => "the indicator".to_string(),
+            n => format!("the {n} indicators"),
+        },
+        workspace.name_of(at),
+    );
+    said(as_json, json!({"message": text, "template": made.id, "chart": pane}), text)
 }
 
 /// Chartbook templates, from `chartbook template`. See [`crate::book_templates`].
@@ -4440,6 +4487,41 @@ mod tests {
         assert_eq!(run("template delete Swing2", &store).code, 0);
         assert_eq!(run("template delete Swing2", &store).code, super::super::EXIT_NOT_FOUND);
         assert_ne!(run("template create", &store).code, 0, "a template with no name");
+    }
+
+    /// A chart's indicators kept as a new template, which the chart is then
+    /// on; and nothing made from a chart that has none.
+    #[test]
+    fn a_template_is_made_from_what_a_chart_shows() {
+        let store = Store::memory().unwrap();
+        run("chartbook create Macro --switch", &store);
+        let out = run("template create Bare --from-chart", &store);
+        assert_eq!(out.code, super::super::EXIT_NO_WINDOW, "answered from storage with no window");
+
+        run("chart set --book Macro --template none", &store);
+        let out = run("template create Bare --from-chart --book Macro", &store);
+        assert_ne!(out.code, 0, "made a template from a chart with no indicators");
+        assert!(out.err.contains("no indicators"), "{}", out.err);
+
+        assert_eq!(run("chart indicator add rsi --book Macro --period 9", &store).code, 0);
+        let out = run("template create Swing --from-chart --book Macro --json", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        let id = json_of(&out)["template"].as_u64().unwrap();
+
+        let listed = json_of(&run("template list --json", &store));
+        let swing = listed["templates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "Swing")
+            .unwrap()
+            .clone();
+        assert_eq!(swing["indicators"][0], "RSI 9");
+        let workspace = Workspace::load(&store);
+        let at = workspace.find("Macro").unwrap();
+        assert_eq!(charts::panes(&workspace.books()[at])[0]["template"].as_u64(), Some(id));
+
+        assert_ne!(run("template create Loose --chart 0", &store).code, 0, "--chart without --from-chart");
     }
 
     /// Changing a template changes what every chart on it shows, in every

@@ -62,6 +62,7 @@ struct Context {
 }
 
 impl Preferences {
+    #[allow(clippy::too_many_arguments)]
     pub fn present(
         parent: &impl IsA<gtk::Widget>,
         store: Rc<Store>,
@@ -70,6 +71,7 @@ impl Preferences {
         on_edit_resolutions: Rc<dyn Fn()>,
         on_restored: Rc<dyn Fn()>,
         window: Rc<Window>,
+        charts_tab: Option<&str>,
     ) {
         let dialog = adw::Dialog::new();
         dialog.set_title("Preferences");
@@ -102,7 +104,9 @@ impl Preferences {
         let charts_header_page = adw::PreferencesPage::new();
         let store_for_header = store.clone();
         let window_for_header = window.clone();
-        let header = crate::ui::chart_settings::HeaderList::new(
+        let header = crate::ui::part_list::PartList::new(
+            "In the header",
+            "Add to the header",
             crate::header::load(&store),
             move |parts| {
                 crate::header::save(&store_for_header, &parts);
@@ -112,6 +116,10 @@ impl Preferences {
         charts_header_page.add(&header.group);
         charts.add_titled(&charts_header_page, Some("header"), "Header");
         charts.add_titled(&charts_other_page, Some("other"), "Other");
+        // Opened from something on a chart, at the tab that is about it.
+        if let Some(tab) = charts_tab {
+            charts.set_visible_child_name(tab);
+        }
 
         let sections: [(&str, &str, gtk::Widget); 4] = [
             ("General", "preferences-system-symbolic", general_page.clone().upcast()),
@@ -119,7 +127,8 @@ impl Preferences {
             ("Theme", "applications-graphics-symbolic", page.clone().upcast()),
             ("Data", "network-server-symbolic", data_page.clone().upcast()),
         ];
-        dialog.set_child(Some(&split_view(&dialog, &sections)));
+        let start = if charts_tab.is_some() { 1 } else { 0 };
+        dialog.set_child(Some(&split_view(&dialog, &sections, start)));
 
         let context = Rc::new(Context {
             store,
@@ -153,6 +162,7 @@ impl Preferences {
 fn split_view(
     dialog: &adw::Dialog,
     sections: &[(&str, &str, gtk::Widget)],
+    start: usize,
 ) -> adw::NavigationSplitView {
     let content = adw::NavigationView::new();
     // A section with tabs of its own shows them in its header, where the
@@ -201,7 +211,7 @@ fn split_view(
         content.replace(std::slice::from_ref(page));
         view.set_show_content(true);
     });
-    list.select_row(list.row_at_index(0).as_ref());
+    list.select_row(list.row_at_index(start as i32).as_ref());
 
     // Too narrow for both side by side, the sidebar becomes a page of its
     // own and a section is pushed over it.
@@ -1384,12 +1394,11 @@ fn string_list(items: &[String]) -> gtk::StringList {
     list
 }
 
-/// "Midnight" -> ("midnight-copy", "Midnight copy"), avoiding ids in use.
-/// Asks for a theme's name, offering `initial`, and hands back what was
-/// typed. Blank is not an answer: a theme with no name is one nobody can pick
-/// out of the list again.
-fn ask_name(
-    anchor: &gtk::Button,
+/// Asks for a theme's or a chart template's name, offering `initial`, and
+/// hands back what was typed. Blank is not an answer: a theme with no name is
+/// one nobody can pick out of the list again.
+pub(crate) fn ask_name(
+    anchor: &impl IsA<gtk::Widget>,
     heading: &str,
     initial: &str,
     verb: &str,

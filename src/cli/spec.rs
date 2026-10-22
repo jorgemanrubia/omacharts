@@ -923,13 +923,20 @@ pub const SURFACE: &[Noun] = &[
             },
             Verb {
                 name: "create",
-                about: "Make an empty chart template",
+                about: "Make a chart template, empty or holding a chart's indicators",
                 args: &[Arg::req("NAME", "what to call it")],
-                flags: &[],
-                example: "omacharts template create Swing",
+                flags: &[
+                    Flag::switch(
+                        "from-chart",
+                        "hold the chart's indicators, and put the chart on the new template",
+                    ),
+                    Flag::valued("book", "BOOK", "with --from-chart, which chartbook (default: the open one)"),
+                    Flag::valued("chart", "CHART", CHART_SELECTOR),
+                ],
+                example: "omacharts template create Swing --from-chart",
                 json: true,
                 writes: true,
-                workspace: false,
+                workspace: true,
             },
             Verb {
                 name: "rename",

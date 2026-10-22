@@ -80,6 +80,11 @@ pub fn create(store: &Store, name: &str) -> Template {
     create_with(store, name, Vec::new())
 }
 
+/// A new template holding `indicators`: what a chart shows, kept under a name.
+pub fn create_from(store: &Store, name: &str, indicators: Vec<Indicator>) -> Template {
+    create_with(store, name, indicators)
+}
+
 fn create_with(store: &Store, name: &str, indicators: Vec<Indicator>) -> Template {
     let mut stored = read(store);
     let template = Template { id: stored.next_id, name: name.to_string(), indicators };

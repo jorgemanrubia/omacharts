@@ -138,6 +138,16 @@ impl Column {
         }
     }
 
+    /// What the column is called where there is room to say it in full.
+    fn label(self) -> &'static str {
+        match self {
+            Column::Symbol => "Symbol",
+            Column::Last => "Last price",
+            Column::Change => "Change",
+            Column::ChangePct => "Change %",
+        }
+    }
+
     fn width_chars(self) -> i32 {
         match self {
             Column::Symbol => 0,
@@ -145,6 +155,21 @@ impl Column {
             Column::Change => 9,
             Column::ChangePct => 7,
         }
+    }
+}
+
+impl crate::ui::part_list::Part for Column {
+    fn every() -> Vec<Self> {
+        Column::ALL.to_vec()
+    }
+    fn key(self) -> &'static str {
+        Column::key(self)
+    }
+    fn label(self) -> &'static str {
+        Column::label(self)
+    }
+    fn fixed(self) -> bool {
+        self == Column::Symbol
     }
 }
 
@@ -713,6 +738,7 @@ impl Watchlist {
         watchlist.wire_switcher();
         watchlist.wire_add();
         watchlist.wire_column_drop();
+        watchlist.wire_column_menu();
         watchlist.rebuild();
         watchlist
     }
@@ -1952,6 +1978,51 @@ impl Watchlist {
     /// says where it would land, and nothing else moves until it does.
     /// A motion works out which gap the pointer is in and moves the line only
     /// when that answer changes; that is the whole of the per-motion work.
+    /// A right-click on the titles offers to edit them: a click of the left
+    /// button already sorts by the one under it, and a drag moves it, so
+    /// adding and taking away columns is the thing left to reach.
+    fn wire_column_menu(self: &Rc<Self>) {
+        let menu = gtk::GestureClick::new();
+        menu.set_button(gtk::gdk::BUTTON_SECONDARY);
+        let this = self.clone();
+        menu.connect_pressed(move |gesture, _, x, y| {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            let actions = gio::SimpleActionGroup::new();
+            let edit = gio::SimpleAction::new("edit", None);
+            let editor = this.clone();
+            edit.connect_activate(move |_, _| editor.edit_columns());
+            actions.add_action(&edit);
+            this.column_header.insert_action_group("columns", Some(&actions));
+
+            let model = gio::Menu::new();
+            model.append(Some("Edit columns\u{2026}"), Some("columns.edit"));
+            popup_menu(&model, &this.column_header, x, y);
+        });
+        self.column_header.add_controller(menu);
+    }
+
+    /// The columns, as a list to add to, take from and drag into order, in
+    /// the shape the preferences edit the charts' header in.
+    pub fn edit_columns(self: &Rc<Self>) {
+        let dialog = adw::Dialog::new();
+        dialog.set_title("Watchlist Columns");
+        dialog.set_content_width(400);
+        let page = adw::PreferencesPage::new();
+        let this = self.clone();
+        let list = crate::ui::part_list::PartList::new(
+            "In the watchlist",
+            "Add a column",
+            self.columns(),
+            move |columns| this.set_columns(columns),
+        );
+        page.add(&list.group);
+        let root = adw::ToolbarView::new();
+        root.add_top_bar(&adw::HeaderBar::new());
+        root.set_content(Some(&page));
+        dialog.set_child(Some(&root));
+        dialog.present(Some(&self.widget));
+    }
+
     fn wire_column_drop(self: &Rc<Self>) {
         let marker = self.column_marker.clone();
         let target = gtk::DropTarget::new(ColumnDrag::static_type(), gtk::gdk::DragAction::MOVE);

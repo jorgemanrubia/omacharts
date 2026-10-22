@@ -555,6 +555,7 @@ template and every chart on it changes. How a chart follows a template is in
 |---|---|
 | `omacharts template list` | Every template: its id, name, how many charts use it, and what it holds. `*` marks the one new charts open with |
 | `omacharts template create NAME` | Makes an empty template |
+| `omacharts template create NAME --from-chart` | Makes a template holding the focused chart's indicators, and puts the chart on it. `--book` and `--chart` name another chart. Refused on a chart with no indicators |
 | `omacharts template rename TEMPLATE NAME` | Renames one; its charts stay on it |
 | `omacharts template delete TEMPLATE` | Deletes one; its charts keep its indicators as their own |
 | `omacharts template indicator ACTION TEMPLATE [KIND]` | `list`, `add`, `remove` or `set` the template's indicators, with every flag `chart indicator` takes ([Indicators](#indicators)). Every chart on it follows |
@@ -632,6 +633,21 @@ omacharts: no chart template called "Nope"; see `omacharts template list`
 
 `config get chart_template` prints the template's id, or `none`. `template
 default` with no argument says it by name.
+
+`template create --from-chart` keeps what a chart shows as a new template and
+puts the chart on it. A chart with no indicators is refused:
+
+```
+$ omacharts template create Trend --from-chart
+omacharts: pos:0 SPY 1D has no indicators to make a template from; `omacharts template create Trend` makes an empty one
+  [exit 5]
+$ omacharts chart indicator add rsi
+added RSI(14) on pos:0 SPY 1D in "Chartbook 1"
+  [exit 0]
+$ omacharts template create Trend --from-chart
+created chart template "Trend" (id:5) from the indicator on pos:0 SPY 1D in "Chartbook 1", and put the chart on it
+  [exit 0]
+```
 
 ## Drawings
 

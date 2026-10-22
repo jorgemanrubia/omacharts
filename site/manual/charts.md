@@ -296,7 +296,7 @@ The header is the line at a chart's top-left. It is the same on every chart in e
 
 Out of the box it shows the symbol and the resolution.
 
-Edit it in Preferences › Charts › **Header**, under **In the header**. The **+** beside the title adds a part not yet there, a part's bin removes it, and dragging a part by its handle reorders it.
+Edit it in Preferences › Charts › **Header**, under **In the header**, or right-click the header and choose **Edit header…**, which opens the same tab. The **+** beside the title adds a part not yet there, a part's bin removes it, and dragging a part by its handle reorders it.
 
 ## The chart menu
 
@@ -320,6 +320,7 @@ crop: 70,290,1580,900
 | **Bar style** › **Candles**, **OHLC bars** | The chart's bar style | [Bars](#bars) |
 | **Session** › **Extended hours**, **Regular hours only** | The chart's hours | [Sessions](#sessions) |
 | **Template** › **None**, then each chart template | Puts the chart on a template, with its key | [Chart templates](/manual/chart-templates/) |
+| **Template** › **Create new template from chart…** | Saves the chart's indicators as a new template and puts the chart on it. Greyed out on a chart with no indicators | [Chart templates](/manual/chart-templates/#creating-a-template) |
 | **Gridlines** | Ticked while the chart has them | [Gridlines](#gridlines) |
 | **Split horizontally**, **Split vertically** | Divides the chart in two | [Splitting and arranging charts](/manual/layouts/) |
 | **Maximize** / **Restore** | Gives the chart the window, or puts it back. Only with two charts or more | [Splitting and arranging charts](/manual/layouts/#maximising-a-chart) |
