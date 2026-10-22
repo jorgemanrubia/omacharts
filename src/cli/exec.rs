@@ -1500,25 +1500,43 @@ fn chart_indicator(
     let kind = indicator_kind(m, action)?;
     let edits = Edits::read(m)?;
 
+    // A chart on a template shows the template's indicators, and changing
+    // them from the chart changes the template — and every chart on it — the
+    // same as the window does. Taking a chart off its template is its own
+    // choice: `chart set --template none`.
+    if let Some(id) = chart["template"].as_u64()
+        && let Some(template) = crate::templates::get(store, id as u32)
+    {
+        let mut list: Vec<Value> =
+            template.indicators.iter().map(to_value).collect::<Result<_, _>>()?;
+        let text = edit_indicators(m, action, kind, &edits, &mut list, "this chart's template")?;
+        let indicators: Vec<Indicator> = serde_json::from_value(Value::Array(list))
+            .map_err(|e| Fault::new(super::EXIT_ERROR, e.to_string()))?;
+        crate::templates::set_indicators(store, template.id, indicators.clone());
+        let following = follow_template(workspace, template.id, Some(&to_value(&indicators)?));
+        workspace.save(store);
+        let others = following.saturating_sub(1);
+        let where_at = format!(
+            "{text} on {} in {:?}, in chart template {:?}{}",
+            chart_label(workspace.book(at)?, pane),
+            workspace.name_of(at),
+            template.name,
+            match others {
+                0 => String::new(),
+                1 => ", and on the other chart using it".to_string(),
+                n => format!(", and on the {n} other charts using it"),
+            }
+        );
+        return said(
+            as_json,
+            json!({"chart": pane, "template": template.id, "message": where_at, "charts": following}),
+            where_at,
+        );
+    }
+
     let target = workspace.book_mut(at)?;
     let Some(chart) = charts::pane_mut(target, pane) else {
         return Err(Fault::not_found(format!("no chart {pane}")));
-    };
-    // A chart on a template shows the template's indicators, and changing one
-    // of them here would change every chart on it. So the chart lets go of
-    // the template first, keeping what it showed, and says it did — the same
-    // as adding one from the window does. The template itself is changed
-    // with `template indicator`.
-    let left = match chart["template"].as_u64() {
-        Some(id) => {
-            chart["template"] = Value::Null;
-            Some(
-                crate::templates::get(store, id as u32)
-                    .map(|t| t.name)
-                    .unwrap_or_else(|| format!("id:{id}")),
-            )
-        }
-        None => None,
     };
     let indicators = chart["indicators"].as_array_mut().ok_or_else(|| {
         Fault::new(super::EXIT_ERROR, "this chart's indicators are not a list".into())
@@ -1530,16 +1548,11 @@ fn chart_indicator(
     // What it actually hit, not just that it worked. A command that named no
     // chart has to say which one it found, or nobody can catch it reaching
     // the wrong one.
-    let mut where_at = format!(
+    let where_at = format!(
         "{text} on {} in {:?}",
         chart_label(workspace.book(at)?, pane),
         workspace.name_of(at)
     );
-    if let Some(name) = left {
-        where_at.push_str(&format!(
-            "; it no longer uses chart template {name:?}, and keeps the indicators it had"
-        ));
-    }
     said(as_json, json!({"chart": pane, "message": where_at}), where_at)
 }
 
@@ -1625,6 +1638,15 @@ fn edit_indicators(
     whose: &str,
 ) -> Result<String, Fault> {
     Ok(match action {
+        // One Session Times holds every range; a second would shade the same
+        // ETH twice, which only reads as the shading being too dark.
+        "add" if kind == IndicatorKind::SessionTimes
+            && indicators.iter().any(|i| is_kind(i, kind)) =>
+        {
+            return Err(Fault::usage(format!(
+                "{whose} already has Session Times; add a range to it with `indicator set session_times --add-range`"
+            )));
+        }
         "add" => {
             let next = indicators
                 .iter()
@@ -3086,11 +3108,15 @@ impl Edits {
     /// just added, which is what somebody adding a range and naming it in
     /// the same breath means.
     fn apply_ranges(&self, stored: &mut Value, kind: IndicatorKind) -> Result<(), Fault> {
+        // A colour on Session Times is a range's: it has no line of its own
+        // to give one to, and dropping it would read as having worked.
+        let coloured = self.color.is_some() && kind == IndicatorKind::SessionTimes;
         let edits_a_range = self.name.is_some()
             || self.from.is_some()
             || self.to.is_some()
             || self.zone.is_some()
-            || self.shade_alpha.is_some();
+            || self.shade_alpha.is_some()
+            || coloured;
         let touches = self.add_range.is_some() || self.remove_range.is_some() || self.range.is_some();
         if !(touches || edits_a_range) {
             return Ok(());
@@ -3166,9 +3192,6 @@ impl Edits {
                 *to = self.to.unwrap_or(*to);
                 if let Some(wanted) = &self.zone {
                     *zone = wanted.clone();
-                }
-                if from == to {
-                    return Err(Fault::usage("--from and --to are the same time, which is no range".into()));
                 }
             }
             if let Some(colour) = &colour {
@@ -4826,23 +4849,28 @@ mod tests {
         );
     }
 
-    /// Adding to a chart on a template lets go of the template first, so the
-    /// template — and every other chart on it — is left as it was.
+    /// Adding to a chart on a template adds to the template, as the window
+    /// does: both charts on it take the indicator, and the reply says so.
     #[test]
-    fn adding_to_a_chart_on_a_template_leaves_the_template_alone() {
+    fn adding_to_a_chart_on_a_template_changes_the_template() {
         let store = Store::memory().unwrap();
         run("chartbook create Macro --switch", &store);
         run("chart split horizontal --book Macro", &store);
         let out = run("chart indicator add sma --book Macro --chart pos:0", &store);
         assert_eq!(out.code, 0, "{}", out.err);
-        assert!(out.out.contains("no longer uses chart template \"Default\""), "{}", out.out);
+        assert!(out.out.contains("in chart template \"Default\", and on the other chart using it"), "{}", out.out);
 
         let workspace = Workspace::load(&store);
         let panes = charts::panes(&workspace.books()[0]);
-        assert_eq!(panes[0]["template"], Value::Null);
-        assert_eq!(panes[0]["indicators"].as_array().unwrap().len(), 3, "kept the template's two, added sma");
-        assert_eq!(panes[1]["indicators"].as_array().unwrap().len(), 2);
-        assert_eq!(crate::templates::all(&store)[0].indicators.len(), 2);
+        assert!(panes[0]["template"].is_number(), "still on the template");
+        assert_eq!(panes[0]["indicators"].as_array().unwrap().len(), 3, "the template's two, and the SMA");
+        assert_eq!(panes[1]["indicators"].as_array().unwrap().len(), 3, "the other chart follows");
+        assert_eq!(crate::templates::all(&store)[0].indicators.len(), 3);
+
+        // And a second Session Times is refused rather than shaded twice.
+        let refused = run("chart indicator add session_times --book Macro --chart pos:0", &store);
+        assert_eq!(refused.code, super::super::EXIT_USAGE);
+        assert!(refused.err.contains("already has Session Times"), "{}", refused.err);
     }
 
     /// Nothing disappears from a chart when its template goes.

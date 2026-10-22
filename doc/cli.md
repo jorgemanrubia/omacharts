@@ -190,19 +190,20 @@ exits `6`, as a chart verb does.
 Putting a chart on a template replaces its own indicators with the template's.
 `chart set --template none` puts it on none, which is the empty set: the chart
 is left with no indicators. To start from a template and make it the chart's
-own, change the chart's indicators instead — that is the next paragraph.
+own, make a template from it — that is the next paragraph.
 
-**Changing a chart's indicators takes it off its template.** `chart indicator
-add`, `remove` and `set` on a chart that is on one first let go of the
-template, keeping its indicators, then make the change — and say so, because
-otherwise adding an RSI to one chart would add it to every chart on the
-template. To change all of them, change the template:
+**Changing a chart's indicators changes its template.** `chart indicator
+add`, `remove` and `set` on a chart that is on one change the template, and
+every chart on it, the same as the window's Indicators page does — and say
+so, naming the template and how many charts followed:
 
 ```
 omacharts chart indicator add sma --period 200
-# added SMA(200) on pos:0 SPY 1D in "Macro"; it no longer uses chart
-# template "Default", and keeps the indicators it had
+# added SMA(200) on pos:0 SPY 1D in "Macro", in chart template "Default"
 ```
+
+To give one chart a set of its own, make a template from it (right-click the
+chart › Template › Create new template from chart…) and change that one.
 
 Renaming a template keeps every chart on it, since charts name it by id.
 Deleting one leaves its charts with a copy of its indicators, as their own.

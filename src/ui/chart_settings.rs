@@ -777,9 +777,10 @@ fn rebuild_indicators(
         ),
     };
     list.group.set_description(description.as_deref());
-    list.group.set_title(match &through {
-        Some(name) => format!("On the {name} template"),
-        None => "On the chart".to_string(),
+    list.group.set_title(match (&through, owner.template) {
+        (Some(name), _) => format!("On the {name} template"),
+        (None, Some(_)) => "Indicators in the template".to_string(),
+        (None, None) => "On the chart".to_string(),
     }
     .as_str());
 

@@ -514,7 +514,7 @@ omacharts chart indicator add stochastic --k-smooth 5
 
 ```
 $ omacharts chart indicator add sma --period 200
-added SMA(200) on pos:0 SPY 1D in "Chartbook 1"; it no longer uses chart template "Default", and keeps the indicators it had
+added SMA(200) on pos:0 SPY 1D in "Chartbook 1", in chart template "Default"
   [exit 0]
 $ omacharts chart indicator add sma --period 50 --style dashed
 added SMA(50) on pos:0 SPY 1D in "Chartbook 1"
@@ -604,7 +604,6 @@ Refusals:
 | Hours or a name with several ranges and none named: `--from 9am` | 2 | `this has 2 ranges; say which with --range N` |
 | Hours on ETH or RTH: `--range 1 --from 9am --to 10am` | 2 | `ETH follows the instrument's exchange, so it has no hours of its own` |
 | A time that is not one: `--from 25:00` | 2 | `--from takes a time of day such as 9am, 09:30 or 2130, not "25:00"` |
-| `--from` and `--to` the same time | 2 | `--from and --to are the same time, which is no range` |
 | A zone that is not one: `--zone Mars/X` | 2 | `` "Mars/X" is not a time zone; use an IANA name such as Europe/London, or `chart` `` |
 
 ## Chart templates
@@ -655,13 +654,14 @@ new charts open with chart template "Swing"
   [exit 0]
 ```
 
-Adding, removing, hiding, reordering or reconfiguring a chart's own
-indicators takes it off its template. The chart keeps the indicators it
-showed, then makes the change, and the reply says so:
+On a chart that is on a template, adding, removing, hiding, reordering or
+reconfiguring an indicator changes the template, and every chart on it, the
+same as the window does. The reply names the template and how many other
+charts followed:
 
 ```
 $ omacharts chart indicator add sma --period 200
-added SMA(200) on pos:0 SPY 1D in "Chartbook 1"; it no longer uses chart template "Default", and keeps the indicators it had
+added SMA(200) on pos:0 SPY 1D in "Chartbook 1", in chart template "Default", and on the other chart using it
   [exit 0]
 ```
 

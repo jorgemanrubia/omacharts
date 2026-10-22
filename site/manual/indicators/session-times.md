@@ -73,7 +73,7 @@ The times on the chart are in the time zone chosen in Preferences ([Time](/manua
 
 A range with no colour chosen shades the chart's own background. ETH lifts it slightly towards the theme's text colour, so on a dark theme the extended hours are a touch lighter and the regular session is the darker ground. Every other range darkens it, half as strongly on a light theme. A range with a colour is tinted in that colour.
 
-Asia, London and New York keep their city's clock through its clock changes, so London starts at 08:00 London time in the weeks when London's clocks and New York's disagree. A range that ends before it starts runs past midnight. A day with no bars shades nothing, so there is no weekend shading on a market that is shut.
+Asia, London and New York keep their city's clock through its clock changes, so London starts at 08:00 London time in the weeks when London's clocks and New York's disagree. A range that ends before it starts runs past midnight, and one that ends where it starts shades the whole day. A day with no bars shades nothing, so there is no weekend shading on a market that is shut.
 
 Session Times draws nothing on daily and longer charts. ETH and RTH also need a market with a regular session, so they shade nothing on FX and crypto, which trade round the clock, or on an instrument whose exchange's hours Omacharts does not know. On a chart showing **Regular hours only**, ETH has nothing to shade.
 

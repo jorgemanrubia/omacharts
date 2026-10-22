@@ -612,7 +612,7 @@ pub enum Output {
     Volume { values: Vec<f64>, height: f64 },
     /// A series drawn in a strip of its own, on its own scale.
     Pane(Pane),
-    /// Stretches of time shaded, lines between them, and levels across them.
+    /// Stretches of time shaded behind the bars.
     Time(Time),
 }
 
@@ -805,7 +805,7 @@ pub struct Context<'a> {
     pub kind: Option<crate::symbols::InstrumentKind>,
     /// What is charted, which is where its exchange and its day come from.
     pub instrument: Option<&'a Instrument>,
-    /// The clock the chart reads, which a time window typed in it keeps.
+    /// The clock the chart reads, which a range of hours typed in it keeps.
     pub zone: Tz,
 }
 
@@ -1000,7 +1000,7 @@ pub fn search(query: &str) -> Vec<Kind> {
                 || kind.category().aliases().iter().any(|a| a.starts_with(&q))
             {
                 // Its family's name: "volume" finds both volume indicators,
-                // "time" all three of the session ones.
+                // "time" the session one.
                 30
             } else {
                 return None;

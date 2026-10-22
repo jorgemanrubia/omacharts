@@ -61,14 +61,14 @@ to the stored arrangement — you cannot tell last week's from what is on screen
 desktop theme. A hex is for when one exact colour was asked for.
 
 **Most charts are on a chart template.** New charts open on one ("Default",
-holding volume unless the user changed it), and a chart on a template shows
-the template's indicators. `chart indicator add` on such a chart takes it off
-the template first and says so in its reply — right for "put a 200-day on
-this", wrong for "RSI on all my charts", which is `template indicator add` on
-the template they share. `template list` says which template has how many
-charts. `chart set --template none` is not a way off a template that keeps the
-indicators: None is the empty set, and the chart is left with none. To keep
-them and tweak, change the chart's indicators instead.
+holding volume and Session Times unless the user changed it), and a chart on a template shows
+the template's indicators. `chart indicator add` on such a chart changes the
+template — every chart on it takes the change, and the reply says how many —
+which is right for "RSI on all my charts" and surprising for "put a 200-day on
+this one". Say which it will be before running it on a chart that shares its
+template; `template list` says which template has how many charts.
+`chart set --template none` is not a way off a template that keeps the
+indicators: None is the empty set, and the chart is left with none.
 
 **A feed change is immediate, and a sign-in needs the user.** `config set
 provider tos` switches a window that is open to the other feed on the spot

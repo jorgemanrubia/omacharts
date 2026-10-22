@@ -38,8 +38,7 @@ To make a template from what a chart already shows, right-click the chart › **
 | Change | What happens |
 |---|---|
 | The template's indicators change | Every chart on it, in every chartbook, changes at once |
-| You change an indicator on the chart's [Indicators page](/manual/indicators/#the-indicators-page) or in its settings | The template changes, and so does every chart on it |
-| You hide or remove an indicator with the legend's eye or bin, move or close a strip from its corner, or change the chart's indicators from the CLI | The chart comes off the template, keeping the indicators it showed, then makes the change |
+| You change an indicator from the chart: its [Indicators page](/manual/indicators/#the-indicators-page) or settings, the legend's eye or bin, a strip's corner, or `omacharts chart indicator` | The template changes, and so does every chart on it |
 | You drag a strip's edge on the chart | The template takes the new height, and so does every chart on it |
 | You put the chart on another template | It shows that template's indicators in place of its own |
 | You put the chart on **None** | It shows no indicators |

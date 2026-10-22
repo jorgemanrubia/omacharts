@@ -193,12 +193,9 @@ fn range_group(
     }
 
     // Unset shows as what it paints with: the ground lifted or darkened.
-    let (shown, _) = omacharts_engine::indicators::time::shade(
-        range.color.as_ref(),
-        range.alpha,
-        range.hours.ground(),
-        &owner.theme(),
-    );
+    let theme = owner.theme();
+    let (shown, _) =
+        omacharts_engine::indicators::time::shade(range.color.as_ref(), range.alpha, range.hours.ground(), &theme);
     group.add(&colour_row(
         owner,
         refresh,

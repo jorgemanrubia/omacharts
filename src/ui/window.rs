@@ -2392,7 +2392,7 @@ impl Window {
             let Some(pane) = mover.pane(id) else { return };
             let mut indicators = pane.indicators.borrow().clone();
             if omacharts_engine::indicators::move_pane(&mut indicators, indicator_id, direction) {
-                mover.set_indicators_of(&pane, indicators);
+                mover.change_indicators_of(&pane, indicators);
             }
         });
 
@@ -2407,7 +2407,7 @@ impl Window {
                 .filter(|i| i.id != indicator_id)
                 .cloned()
                 .collect();
-            closer.set_indicators_of(&pane, kept);
+            closer.change_indicators_of(&pane, kept);
         });
 
         // The pointer on a Follow chart draws a crosshair on the other Follow
@@ -6808,16 +6808,26 @@ impl Window {
     /// Indicators belong to one chart, so this is the focused one's.
     pub fn set_indicators(self: &Rc<Self>, indicators: Vec<Indicator>) {
         let pane = self.focused_pane();
-        self.set_indicators_of(&pane, indicators);
+        self.change_indicators_of(&pane, indicators);
     }
 
-    /// Give one chart these indicators as its own.
+    /// Change what a chart shows, from the chart: on a template, the
+    /// template's indicators — and so every chart on it — and otherwise the
+    /// chart's own.
     ///
-    /// A chart on a template lets go of it first, keeping what it showed:
-    /// every way of changing a chart's indicators from the chart itself — the
-    /// picker, the legend, a strip's corner, a command — arrives here, and
-    /// none of them is asking to change every other chart on the template.
-    /// The template's own editor is how that is asked for.
+    /// One rule for every control on the chart — the legend's eye and bin, a
+    /// strip's corner, its settings — so that two buttons side by side cannot
+    /// mean "every chart" and "this chart" between them. A chart is taken off
+    /// its template by choosing None for it, not by touching an indicator.
+    fn change_indicators_of(self: &Rc<Self>, pane: &Rc<ChartPane>, indicators: Vec<Indicator>) {
+        match pane.template.get() {
+            Some(template) => self.set_template_indicators(template, indicators),
+            None => self.set_indicators_of(pane, indicators),
+        }
+    }
+
+    /// Give one chart these indicators as its own, taking it off any
+    /// template first and keeping what it showed.
     fn set_indicators_of(self: &Rc<Self>, pane: &Rc<ChartPane>, indicators: Vec<Indicator>) {
         if pane.template.take().is_some() {
             self.write_header_of(pane);
@@ -7223,12 +7233,13 @@ impl Window {
             toggle.add_css_class("legend-button");
             toggle.set_tooltip_text(Some(if indicator.visible { "Hide" } else { "Show" }));
             let this = self.clone();
+            let shown = pane.clone();
             toggle.connect_clicked(move |_| {
-                let mut indicators = this.indicators();
+                let mut indicators = shown.indicators.borrow().clone();
                 if let Some(found) = indicators.iter_mut().find(|i| i.id == id) {
                     found.visible = !found.visible;
                 }
-                this.set_indicators(indicators);
+                this.change_indicators_of(&shown, indicators);
             });
 
             let settings = gtk::Button::from_icon_name("emblem-system-symbolic");
@@ -7253,7 +7264,7 @@ impl Window {
             remove.connect_clicked(move |_| {
                 let kept: Vec<Indicator> =
                     owner.indicators.borrow().iter().filter(|i| i.id != id).cloned().collect();
-                this.set_indicators_of(&owner, kept);
+                this.change_indicators_of(&owner, kept);
             });
 
             let row = gtk::Box::new(gtk::Orientation::Horizontal, 5);

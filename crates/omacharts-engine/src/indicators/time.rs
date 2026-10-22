@@ -84,21 +84,22 @@ pub enum Ground {
 ///
 /// A darkening is half as strong on a light theme, where the same black reads
 /// twice as dark.
-pub fn shade(
+pub fn shade<'a>(
     color: Option<&ColorChoice>,
     alpha: f64,
     ground: Ground,
-    theme: &crate::theme::Theme,
-) -> (String, f64) {
+    theme: &'a crate::theme::Theme,
+) -> (std::borrow::Cow<'a, str>, f64) {
+    use std::borrow::Cow;
     match (color, ground) {
-        (Some(choice), _) => (choice.resolve(theme), alpha),
-        (None, Ground::Lifted) => (theme.ui.text.clone(), alpha),
+        (Some(choice), _) => (Cow::Owned(choice.resolve(theme)), alpha),
+        (None, Ground::Lifted) => (Cow::Borrowed(theme.ui.text.as_str()), alpha),
         (None, Ground::Darkened) => {
             let strength = match theme.mode {
                 crate::theme::Mode::Dark => 1.0,
                 crate::theme::Mode::Light => 0.5,
             };
-            ("#000000".to_string(), alpha * strength)
+            (Cow::Borrowed("#000000"), alpha * strength)
         }
     }
 }
@@ -470,10 +471,11 @@ mod tests {
     #[test]
     fn unset_ranges_lift_eth_and_darken_the_rest() {
         let theme = crate::theme::builtin_themes().into_iter().find(|t| t.mode == crate::theme::Mode::Dark).unwrap();
-        assert_eq!(shade(None, 0.03, Ground::Lifted, &theme), (theme.ui.text.clone(), 0.03));
-        assert_eq!(shade(None, 0.09, Ground::Darkened, &theme), ("#000000".to_string(), 0.09));
+        let read = |(colour, alpha): (std::borrow::Cow<str>, f64)| (colour.into_owned(), alpha);
+        assert_eq!(read(shade(None, 0.03, Ground::Lifted, &theme)), (theme.ui.text.clone(), 0.03));
+        assert_eq!(read(shade(None, 0.09, Ground::Darkened, &theme)), ("#000000".to_string(), 0.09));
         let blue = ColorChoice::Fixed { hex: "#0000ff".into() };
-        assert_eq!(shade(Some(&blue), 0.2, Ground::Lifted, &theme), ("#0000ff".to_string(), 0.2));
+        assert_eq!(read(shade(Some(&blue), 0.2, Ground::Lifted, &theme)), ("#0000ff".to_string(), 0.2));
     }
 
     #[test]

@@ -187,7 +187,7 @@ A MACD's signal line and a stochastic's %D have a second colour row. Left alone,
 
 ## Indicators on a chart on a template
 
-On a chart that is on a template, the [Indicators page](#the-indicators-page) and every indicator's settings change the template, and every chart on it. The legend's eye and bin, a strip's corner controls and the CLI change the chart alone, so they take it off the template, keeping the indicators it showed ([How a chart on a template behaves](/manual/chart-templates/#how-a-chart-on-a-template-behaves)).
+On a chart that is on a template, every change to its indicators changes the template, and every chart on it: the [Indicators page](#the-indicators-page), every indicator's settings, the legend's eye and bin, a strip's corner controls and the CLI alike ([How a chart on a template behaves](/manual/chart-templates/#how-a-chart-on-a-template-behaves)). To give one chart a set of its own, make a template from it: right-click the chart › **Template** › **Create new template from chart…**.
 
 ## Reset periods
 
