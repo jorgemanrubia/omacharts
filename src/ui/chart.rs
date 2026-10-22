@@ -5847,7 +5847,7 @@ fn draw_time_ground(cr: &cairo::Context, state: &State, columns: &Columns, plan:
         let Output::Time(time) = &drawn.output else { continue };
         for span in time.spans.iter().filter(|s| on_screen_run(columns, s.from, s.to)) {
             let (colour, alpha) =
-                indicators::time::shade(span.color.as_ref(), span.alpha, &state.theme);
+                indicators::time::shade(span.color.as_ref(), span.alpha, span.ground, &state.theme);
             // Whole pixels, so two stretches that meet do not leave a
             // hairline of double shading between them.
             let x0 = bar_left(columns, span.from).max(left).round();

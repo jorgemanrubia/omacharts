@@ -58,22 +58,42 @@ pub struct TimeRange {
     pub alpha: f64,
 }
 
-/// How solid a range starts: barely there. Enough to see where the extended
-/// hours are, and nowhere near enough for the candles inside them to look
-/// dimmed — it is a background, and a background the eye notices first has
-/// stopped being one.
+/// How solid a range starts: enough to tell the stretch apart, nowhere near
+/// enough for the candles inside it to look dimmed. It is a background, and a
+/// background the eye notices first has stopped being one.
 pub const DEFAULT_ALPHA: f64 = 0.09;
 
-/// What a range is painted with: its own colour at its own strength, or, with
-/// none chosen, black — the ground made darker, which sets a stretch back in
-/// a dark theme and a light one alike, where any tint of the theme's own would
-/// lighten a dark chart and draw the eye to exactly what it is meant to quiet.
+/// How solid ETH starts. Its lift is towards the theme's text, which is a
+/// long way from the ground, so the same few levels of difference take a
+/// third of the strength a darkening does.
+pub const ETH_ALPHA: f64 = 0.03;
+
+/// The paint a range with no colour of its own gets.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Ground {
+    /// Lifted towards the theme's text: the extended hours, a shade off the
+    /// ground the regular session sits on. Lighter on a dark theme and greyer
+    /// on a light one — either way, further from the session people trade.
+    Lifted,
+    /// Darkened: anything else, set back from what is around it.
+    Darkened,
+}
+
+/// What a range is painted with: its own colour at its own strength, or with
+/// none chosen, the ground lifted or darkened.
 ///
-/// Half as strong on a light theme, where the same black reads twice as dark.
-pub fn shade(color: Option<&ColorChoice>, alpha: f64, theme: &crate::theme::Theme) -> (String, f64) {
-    match color {
-        Some(choice) => (choice.resolve(theme), alpha),
-        None => {
+/// A darkening is half as strong on a light theme, where the same black reads
+/// twice as dark.
+pub fn shade(
+    color: Option<&ColorChoice>,
+    alpha: f64,
+    ground: Ground,
+    theme: &crate::theme::Theme,
+) -> (String, f64) {
+    match (color, ground) {
+        (Some(choice), _) => (choice.resolve(theme), alpha),
+        (None, Ground::Lifted) => (theme.ui.text.clone(), alpha),
+        (None, Ground::Darkened) => {
             let strength = match theme.mode {
                 crate::theme::Mode::Dark => 1.0,
                 crate::theme::Mode::Light => 0.5,
@@ -82,6 +102,17 @@ pub fn shade(color: Option<&ColorChoice>, alpha: f64, theme: &crate::theme::Them
         }
     }
 }
+
+impl Hours {
+    /// How a range over these hours is painted when nobody chose a colour.
+    pub fn ground(&self) -> Ground {
+        match self {
+            Hours::Eth => Ground::Lifted,
+            _ => Ground::Darkened,
+        }
+    }
+}
+
 /// The least and the most a shading can be: below the one it is not there at
 /// all, and past the other it is no longer a background.
 pub const MIN_ALPHA: f64 = 0.02;
@@ -159,7 +190,11 @@ impl Preset {
             Preset::NewYork => ("New York", clock(9 * 60 + 30, 16 * 60, Some("America/New_York"))),
             Preset::Custom => ("Custom", clock(12 * 60, 13 * 60, None)),
         };
-        TimeRange { name: name.to_string(), hours, color: None, alpha: DEFAULT_ALPHA }
+        let alpha = match hours {
+            Hours::Eth => ETH_ALPHA,
+            _ => DEFAULT_ALPHA,
+        };
+        TimeRange { name: name.to_string(), hours, color: None, alpha }
     }
 }
 
@@ -168,9 +203,10 @@ impl Preset {
 pub struct Span {
     pub from: usize,
     pub to: usize,
-    /// Unset darkens the ground; see [`shade`].
+    /// Unset paints the ground; see [`shade`].
     pub color: Option<ColorChoice>,
     pub alpha: f64,
+    pub ground: Ground,
 }
 
 /// What an indicator of time produces.
@@ -220,6 +256,7 @@ pub fn session_times(
             to: run.end - 1,
             color: range.color.clone(),
             alpha,
+            ground: range.hours.ground(),
         }));
     }
     time
@@ -343,7 +380,9 @@ mod tests {
         // across the break, since no bar sits between them; and Wednesday's
         // post-market, which ends the data.
         assert_eq!(eth.spans.len(), 4);
-        assert!(eth.spans.iter().all(|s| s.color.is_none() && s.alpha == DEFAULT_ALPHA));
+        assert!(eth.spans.iter().all(|s| s.color.is_none() && s.alpha == ETH_ALPHA));
+        assert!(eth.spans.iter().all(|s| s.ground == Ground::Lifted));
+        assert!(rth.spans.iter().all(|s| s.ground == Ground::Darkened));
     }
 
     #[test]
@@ -424,6 +463,17 @@ mod tests {
         assert!(Preset::Eth.is_among(&ranges));
         assert!(!Preset::Rth.is_among(&ranges));
         assert!(!Preset::London.is_among(&ranges), "a second London can be another London");
+    }
+
+    /// The regular session is the ground; the extended hours sit a shade off
+    /// it — lighter on a dark theme — and a range set back is darker.
+    #[test]
+    fn unset_ranges_lift_eth_and_darken_the_rest() {
+        let theme = crate::theme::builtin_themes().into_iter().find(|t| t.mode == crate::theme::Mode::Dark).unwrap();
+        assert_eq!(shade(None, 0.03, Ground::Lifted, &theme), (theme.ui.text.clone(), 0.03));
+        assert_eq!(shade(None, 0.09, Ground::Darkened, &theme), ("#000000".to_string(), 0.09));
+        let blue = ColorChoice::Fixed { hex: "#0000ff".into() };
+        assert_eq!(shade(Some(&blue), 0.2, Ground::Lifted, &theme), ("#0000ff".to_string(), 0.2));
     }
 
     #[test]
