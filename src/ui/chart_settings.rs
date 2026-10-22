@@ -4,6 +4,8 @@
 //! looking when you want them. Two pages: how the bars are read and scaled,
 //! and what is drawn on top of them.
 
+mod time;
+
 use std::cell::{OnceCell, RefCell};
 use std::rc::Rc;
 
@@ -1049,12 +1051,18 @@ fn open_indicator_panel_for(owner: &Rc<Owner>, refresh: &Refresh, id: u32, panel
     let colour = drawn_colour(owner, &indicators, id);
 
     let page = adw::PreferencesPage::new();
-    page.add(&parameters_group(owner, refresh, &indicator));
-    if let Some(group) = appearance_group(owner, refresh, &colour, &indicator) {
-        page.add(&group);
-    }
-    for group in band_groups(owner, refresh, &colour, &indicator) {
-        page.add(&group);
+    if indicator.kind.category() == indicators::Category::Time {
+        for group in time::groups(owner, refresh, &colour, &indicator) {
+            page.add(&group);
+        }
+    } else {
+        page.add(&parameters_group(owner, refresh, &indicator));
+        if let Some(group) = appearance_group(owner, refresh, &colour, &indicator) {
+            page.add(&group);
+        }
+        for group in band_groups(owner, refresh, &colour, &indicator) {
+            page.add(&group);
+        }
     }
 
     let header = adw::HeaderBar::new();
@@ -1628,6 +1636,8 @@ fn parameters_group(
                 ),
             );
         }
+        // Edited on pages of their own; see `time`.
+        Params::Sessions { .. } | Params::TimeWindow { .. } | Params::SessionLevels { .. } => {}
     }
     group
 }
@@ -1925,7 +1935,10 @@ fn reset_row(
             | Params::Rsi { .. }
             | Params::Macd { .. }
             | Params::Atr { .. }
-            | Params::Stochastic { .. } => {}
+            | Params::Stochastic { .. }
+            | Params::Sessions { .. }
+            | Params::TimeWindow { .. }
+            | Params::SessionLevels { .. } => {}
         });
         refresh.run();
     });
@@ -2350,26 +2363,63 @@ fn pick_indicator(owner: &Rc<Owner>, refresh: &Refresh) {
     let dialog = adw::Dialog::new();
     dialog.set_title("Add an indicator");
     dialog.set_content_width(420);
-    dialog.set_content_height(380);
+    // Tall enough for every family under its heading without scrolling.
+    dialog.set_content_height(620);
     dialog.set_child(Some(&content));
 
     let shown: Rc<RefCell<Vec<Kind>>> = Rc::new(RefCell::new(Vec::new()));
+    // Grouped under their families while nothing is typed, which is when the
+    // list is being browsed; once something is, it is a ranked answer, and
+    // headings would scatter the best match away from the top.
+    let grouped = Rc::new(std::cell::Cell::new(true));
+    {
+        let shown = shown.clone();
+        let grouped = grouped.clone();
+        rows.set_header_func(move |row, before| {
+            if !grouped.get() {
+                row.set_header(None::<&gtk::Widget>);
+                return;
+            }
+            let kinds = shown.borrow();
+            let category = |row: &gtk::ListBoxRow| {
+                kinds.get(row.index().max(0) as usize).map(|kind| kind.category())
+            };
+            let this = category(row);
+            if this.is_none() || before.and_then(category) == this {
+                row.set_header(None::<&gtk::Widget>);
+                return;
+            }
+            let heading = gtk::Label::new(this.map(|c| c.label()));
+            heading.set_xalign(0.0);
+            heading.add_css_class("heading");
+            heading.add_css_class("dim-label");
+            heading.set_margin_start(10);
+            heading.set_margin_top(if before.is_some() { 14 } else { 6 });
+            heading.set_margin_bottom(4);
+            row.set_header(Some(&heading));
+        });
+    }
 
     let fill = {
         let rows = rows.clone();
         let shown = shown.clone();
+        let grouped = grouped.clone();
         move |query: &str| {
             while let Some(child) = rows.first_child() {
                 rows.remove(&child);
             }
-            let kinds = indicators::search(query);
+            let browsing = query.trim().is_empty();
+            grouped.set(browsing);
+            let kinds = match browsing {
+                true => indicators::Category::ALL.iter().flat_map(|c| c.kinds()).collect(),
+                false => indicators::search(query),
+            };
+            // Filled before the rows, which the header function reads.
+            *shown.borrow_mut() = kinds.clone();
             for kind in &kinds {
                 let name = gtk::Label::new(Some(kind.name()));
                 name.set_xalign(0.0);
                 name.set_hexpand(true);
-                let short = gtk::Label::new(Some(kind.short_name()));
-                short.add_css_class("symbol-kind");
-                short.set_valign(gtk::Align::Center);
 
                 let row_box = gtk::Box::new(gtk::Orientation::Horizontal, 10);
                 row_box.set_margin_top(7);
@@ -2377,13 +2427,20 @@ fn pick_indicator(owner: &Rc<Owner>, refresh: &Refresh) {
                 row_box.set_margin_start(10);
                 row_box.set_margin_end(10);
                 row_box.append(&name);
-                row_box.append(&short);
+                // The chip is the short name the chart will show; where that
+                // is the name itself, it would be saying it twice.
+                if !kind.short_name().eq_ignore_ascii_case(kind.name()) {
+                    let short = gtk::Label::new(Some(kind.short_name()));
+                    short.add_css_class("symbol-kind");
+                    short.set_valign(gtk::Align::Center);
+                    row_box.append(&short);
+                }
 
                 let row = gtk::ListBoxRow::new();
                 row.set_child(Some(&row_box));
                 rows.append(&row);
             }
-            *shown.borrow_mut() = kinds;
+            rows.invalidate_headers();
             if let Some(first) = rows.row_at_index(0) {
                 rows.select_row(Some(&first));
             }

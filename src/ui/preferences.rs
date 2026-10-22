@@ -753,11 +753,101 @@ fn build_general_page(context: &Rc<Context>) {
     if let Some(group) = desktop_group() {
         context.general_page.add(&group);
     }
+    context.charts_other_page.add(&time_group(context));
     context.charts_other_page.add(&resolutions_group(context));
     context.general_page.add(&screenshots_group(context));
     build_charts_page(context);
     rebuild_templates(context);
     build_data_page(context);
+}
+
+/// The clock every chart reads, and how it writes the time.
+///
+/// Applied the moment it changes, to every chart on screen: it is not a default
+/// for new charts but how the app tells time, and a chart left reading the old
+/// clock would disagree with the one beside it about when a bar was.
+fn time_group(context: &Rc<Context>) -> adw::PreferencesGroup {
+    use omacharts_engine::clock::{ChartZone, TimeFormat, ZONES};
+
+    let group = adw::PreferencesGroup::new();
+    group.set_title("Time");
+    group.set_description(Some(
+        "How the time axis, the crosshair and every time you type into an indicator tell the time.",
+    ));
+
+    // The exchange's own first, then the curated zones in the order the
+    // markets open across a day. A zone set by name from the command line
+    // that is not among them is offered too, so the row can show it.
+    let current = crate::clock::zone(&context.store);
+    let mut zones: Vec<ChartZone> = std::iter::once(ChartZone::Exchange)
+        .chain(ZONES.iter().filter_map(|name| ChartZone::from_key(name)))
+        .collect();
+    if !zones.contains(&current) {
+        zones.push(current);
+    }
+    let now = chrono::Utc::now();
+    let names: Vec<String> = zones
+        .iter()
+        .map(|zone| match zone {
+            ChartZone::Exchange => "Each chart's exchange".to_string(),
+            ChartZone::Fixed(tz) => {
+                use chrono::Offset;
+                let offset = now.with_timezone(tz).offset().fix().local_minus_utc();
+                format!("{} ({})", zone.label(), utc_offset(offset))
+            }
+        })
+        .collect();
+    let zone_row = adw::ComboRow::new();
+    zone_row.set_title("Time zone");
+    zone_row.set_model(Some(&string_list(&names)));
+    zone_row.set_enable_search(true);
+    zone_row.set_selected(zones.iter().position(|z| *z == current).unwrap_or(0) as u32);
+    {
+        let store = context.store.clone();
+        let window = context.window.clone();
+        zone_row.connect_selected_notify(move |row| {
+            let Some(chosen) = zones.get(row.selected() as usize).copied() else { return };
+            if chosen == crate::clock::zone(&store) {
+                return;
+            }
+            crate::clock::save_zone(&store, chosen);
+            window.adopt_clock();
+        });
+    }
+    group.add(&zone_row);
+
+    let format_row = adw::ComboRow::new();
+    format_row.set_title("Time format");
+    let labels: Vec<String> = TimeFormat::ALL.iter().map(|f| f.label().to_string()).collect();
+    format_row.set_model(Some(&string_list(&labels)));
+    let format = crate::clock::format(&context.store);
+    format_row.set_selected(TimeFormat::ALL.iter().position(|f| *f == format).unwrap_or(0) as u32);
+    {
+        let store = context.store.clone();
+        let window = context.window.clone();
+        format_row.connect_selected_notify(move |row| {
+            let Some(chosen) = TimeFormat::ALL.get(row.selected() as usize).copied() else { return };
+            if chosen == crate::clock::format(&store) {
+                return;
+            }
+            crate::clock::save_format(&store, chosen);
+            window.adopt_clock();
+        });
+    }
+    group.add(&format_row);
+    group
+}
+
+/// `UTC−4`, `UTC+5:30`, `UTC`.
+fn utc_offset(seconds: i32) -> String {
+    let minutes = seconds / 60;
+    let sign = if minutes < 0 { "−" } else { "+" };
+    let (hours, rest) = (minutes.abs() / 60, minutes.abs() % 60);
+    match (hours, rest) {
+        (0, 0) => "UTC".to_string(),
+        (h, 0) => format!("UTC{sign}{h}"),
+        (h, m) => format!("UTC{sign}{h}:{m:02}"),
+    }
 }
 
 /// The Templates tab: every chart template, and a way to make, edit, rename

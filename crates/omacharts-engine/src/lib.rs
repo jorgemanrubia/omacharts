@@ -6,7 +6,9 @@
 //! keeps the provider boundary honest.
 
 pub mod bars;
+pub mod clock;
 pub mod drawings;
+pub mod exchanges;
 pub mod frame;
 pub mod indicators;
 pub mod ink;

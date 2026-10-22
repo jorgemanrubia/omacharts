@@ -148,6 +148,74 @@ impl WeakBounded {
     }
 }
 
+/// A time of day, typed however it comes to mind.
+///
+/// `9am`, `0930`, `21:30` and `9:30 p.m.` all go in. Each keystroke that
+/// makes a time is applied as it is typed, the way every other row here
+/// previews what it changes; on Enter, or on leaving the row, the text is
+/// written back the way the app writes times — so the row confirms what it
+/// understood by saying it back. Something that is not a time is left as
+/// typed and marked, and the last good time stays on the chart: the person
+/// can see what they wrote and fix it, and nothing changed behind their back.
+///
+/// `changed` hears each new time, in minutes past midnight; the initial
+/// `minutes` is written before it is connected, so building the row does not
+/// count as changing it.
+pub fn time_row(
+    title: &str,
+    minutes: u32,
+    format: omacharts_engine::clock::TimeFormat,
+    changed: impl Fn(u32) + 'static,
+) -> adw::EntryRow {
+    use omacharts_engine::clock::{format_minutes, parse_time, TimeFormat};
+
+    let row = adw::EntryRow::new();
+    row.set_title(title);
+    row.set_text(&format_minutes(minutes, format));
+    row.set_tooltip_text(Some(match format {
+        TimeFormat::H24 => "A time such as 09:30, 930 or 9:30pm",
+        TimeFormat::H12 => "A time such as 9:30 AM, 930 or 21:30",
+    }));
+
+    let settled = std::rc::Rc::new(std::cell::Cell::new(minutes));
+    {
+        let settled = settled.clone();
+        // Something that is not a time yet is not marked while it is being
+        // typed: "9:3" is on its way to being a time, not a mistake.
+        row.connect_changed(move |row| {
+            if let Some(minutes) = parse_time(&row.text()) {
+                row.remove_css_class("error");
+                if settled.replace(minutes) != minutes {
+                    changed(minutes);
+                }
+            }
+        });
+    }
+    let tidy = move |row: &adw::EntryRow| match parse_time(&row.text()) {
+        Some(minutes) => {
+            let written = format_minutes(minutes, format);
+            if row.text() != written {
+                row.set_text(&written);
+            }
+        }
+        None => row.add_css_class("error"),
+    };
+    let tidy = std::rc::Rc::new(tidy);
+    {
+        let tidy = tidy.clone();
+        row.connect_entry_activated(move |row| tidy(row));
+    }
+    let focus = gtk::EventControllerFocus::new();
+    let weak = row.downgrade();
+    focus.connect_leave(move |_| {
+        if let Some(row) = weak.upgrade() {
+            tidy(&row);
+        }
+    });
+    row.add_controller(focus);
+    row
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

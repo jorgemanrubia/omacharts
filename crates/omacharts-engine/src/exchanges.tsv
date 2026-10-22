@@ -1,0 +1,41 @@
+# code	name	mic	timezone	hours	suffixes	aliases
+# The exchanges this app knows the hours of. Each keeps its own clock: the
+# hours it uses (from trading_hours.tsv) are wall-clock times in its own
+# timezone, so a session keeps its local hours when daylight saving moves its
+# offset from UTC.
+#
+# `suffixes` are the Yahoo-style listing suffixes that name it (`DE` for
+# Xetra), and `aliases` are the other names listings call it by — "NYSE Arca"
+# for ARCA — separated by commas. `-` for none.
+#
+# FX and CRYPTO are not exchanges, but they are markets with a day, and the
+# day is what everything here is for: FX's starts at five in the afternoon in
+# New York, crypto's at midnight UTC.
+NYSE	New York Stock Exchange	XNYS	America/New_York	us_equities	-	-
+NASDAQ	Nasdaq	XNAS	America/New_York	us_equities	-	-
+ARCA	NYSE Arca	ARCX	America/New_York	us_equities	-	NYSE Arca
+AMEX	NYSE American	XASE	America/New_York	us_equities	-	NYSE American,NYSE MKT
+BATS	Cboe BZX	BATS	America/New_York	us_equities	-	Cboe BZX,CBOE
+CME	Chicago Mercantile Exchange	XCME	America/Chicago	cme_equity_index	-	-
+CBOT	Chicago Board of Trade	XCBT	America/Chicago	cme_rates_and_fx	-	-
+NYMEX	New York Mercantile Exchange	XNYM	America/New_York	nymex_energy	-	-
+COMEX	Commodity Exchange	XCEC	America/New_York	comex_metals	-	-
+ICEUS	ICE Futures U.S.	IFUS	America/New_York	ice_us_softs	-	ICE
+TSX	Toronto Stock Exchange	XTSE	America/Toronto	tsx	TO	-
+B3	B3 (Brasil Bolsa Balcão)	BVMF	America/Sao_Paulo	b3	SA	-
+LSE	London Stock Exchange	XLON	Europe/London	lse	L	-
+XETRA	Xetra (Deutsche Börse)	XETR	Europe/Berlin	xetra	DE	-
+EPA	Euronext Paris	XPAR	Europe/Paris	euronext	PA	Euronext
+AMS	Euronext Amsterdam	XAMS	Europe/Amsterdam	euronext	AS	-
+BIT	Borsa Italiana	XMIL	Europe/Rome	euronext	MI	-
+BME	Bolsa de Madrid	XMAD	Europe/Madrid	bme	MC	-
+SIX	SIX Swiss Exchange	XSWX	Europe/Zurich	six	SW	-
+TSE	Tokyo Stock Exchange	XJPX	Asia/Tokyo	tse	T	-
+HKEX	Hong Kong Exchanges	XHKG	Asia/Hong_Kong	hkex	HK	-
+TWSE	Taiwan Stock Exchange	XTAI	Asia/Taipei	taiwan	TW	-
+TPEX	Taipei Exchange	ROCO	Asia/Taipei	taiwan	TWO	TPEx
+KRX	Korea Exchange	XKRX	Asia/Seoul	krx	KS	-
+BSE	BSE (Bombay Stock Exchange)	XBOM	Asia/Kolkata	india	BO	-
+ASX	Australian Securities Exchange	XASX	Australia/Sydney	asx	AX	-
+FX	Foreign exchange	-	America/New_York	fx	-	-
+CRYPTO	Crypto	-	UTC	crypto	-	-

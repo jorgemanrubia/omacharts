@@ -69,6 +69,8 @@ const SHARED: &[&str] = &[
     "chart_templates",
     "chart_header",
     "chartbook_templates",
+    "chart_time_zone",
+    "time_format",
 ];
 
 pub fn kind(key: &str) -> Kind {

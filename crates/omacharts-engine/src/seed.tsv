@@ -16,23 +16,23 @@ index	TYX	US 30 Year Treasury Yield	-	USD	1	0	-
 index	FVX	US 5 Year Treasury Yield	-	USD	1	0	-
 index	NYA	NYSE Composite	-	USD	2	0	-
 index	SOX	PHLX Semiconductor	-	USD	1	0	-
-index	FTSE	FTSE 100	-	GBP	0	0	-
-index	GDAXI	DAX	-	EUR	0	0	-
-index	FCHI	CAC 40	-	EUR	0	0	-
-index	STOXX50E	Euro Stoxx 50	-	EUR	0	0	-
-index	IBEX	IBEX 35	-	EUR	0	0	-
-index	FTSEMIB.MI	FTSE MIB	-	EUR	1	0	FTSEMIB.MI
-index	AEX	AEX	-	EUR	1	0	-
-index	SSMI	Swiss Market Index	-	CHF	1	0	-
-index	N225	Nikkei 225	-	JPY	0	0	-
-index	HSI	Hang Seng	-	HKD	0	0	-
-index	AXJO	ASX 200	-	AUD	1	0	-
-index	GSPTSE	S&P/TSX Composite	-	CAD	1	0	-
-index	BVSP	Bovespa	-	BRL	2	0	-
-index	KS11	KOSPI	-	KRW	2	0	-
-index	TWII	TAIEX (Taiwan Weighted Index)	-	TWD	1	3600	-	-	-	加權指數
-index	BSESN	BSE Sensex	-	INR	2	0	-
-index	DXY	US Dollar Index	-	USD	0	0	DX-Y.NYB
+index	FTSE	FTSE 100	-	GBP	0	0	-	LSE
+index	GDAXI	DAX	-	EUR	0	0	-	XETRA
+index	FCHI	CAC 40	-	EUR	0	0	-	EPA
+index	STOXX50E	Euro Stoxx 50	-	EUR	0	0	-	XETRA
+index	IBEX	IBEX 35	-	EUR	0	0	-	BME
+index	FTSEMIB.MI	FTSE MIB	-	EUR	1	0	FTSEMIB.MI	BIT
+index	AEX	AEX	-	EUR	1	0	-	AMS
+index	SSMI	Swiss Market Index	-	CHF	1	0	-	SIX
+index	N225	Nikkei 225	-	JPY	0	0	-	TSE
+index	HSI	Hang Seng	-	HKD	0	0	-	HKEX
+index	AXJO	ASX 200	-	AUD	1	0	-	ASX
+index	GSPTSE	S&P/TSX Composite	-	CAD	1	0	-	TSX
+index	BVSP	Bovespa	-	BRL	2	0	-	B3
+index	KS11	KOSPI	-	KRW	2	0	-	KRX
+index	TWII	TAIEX (Taiwan Weighted Index)	-	TWD	1	3600	-	TWSE	-	加權指數
+index	BSESN	BSE Sensex	-	INR	2	0	-	BSE
+index	DXY	US Dollar Index	-	USD	0	0	DX-Y.NYB	FX
 future_root	ES	E-mini S&P 500	-	USD	0	79200	-
 future_root	MES	Micro E-mini S&P 500	-	USD	1	79200	-
 future_root	NQ	E-mini Nasdaq 100	-	USD	0	79200	-

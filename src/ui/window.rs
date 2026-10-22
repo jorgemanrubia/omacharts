@@ -6344,6 +6344,7 @@ impl Window {
         } else {
             bars
         };
+        pane.view.set_clock(self.clock_for(instrument));
         self.recompute_indicators(pane, instrument, timeframe, &bars);
         let bars = Rc::new(bars);
         {
@@ -6390,22 +6391,47 @@ impl Window {
         let theme = self.theming.borrow().theme();
         let all = pane.indicators.borrow().clone();
         let colors = omacharts_engine::palette_colors(&all, &theme);
+        let context = omacharts_engine::indicators::Context::of(
+            instrument,
+            timeframe,
+            self.clock_for(instrument).zone,
+        );
         let drawn: Vec<Drawn> = all
             .iter()
             .zip(colors)
             .map(|(indicator, color)| Drawn {
                 color,
-                output: omacharts_engine::indicators::compute(
-                    indicator,
-                    bars,
-                    instrument.session_origin,
-                    timeframe,
-                    Some(instrument.kind),
-                ),
+                output: omacharts_engine::indicators::compute_in(indicator, bars, &context),
                 indicator: indicator.clone(),
             })
             .collect();
         drawn
+    }
+
+    /// The clock a chart of this instrument reads, as the settings say.
+    pub fn clock_for(&self, instrument: &Instrument) -> crate::ui::chart::Clock {
+        let zone = crate::clock::zone(&self.store);
+        crate::ui::chart::Clock {
+            zone: zone.for_instrument(Some(instrument)),
+            format: crate::clock::format(&self.store),
+            named: zone == omacharts_engine::clock::ChartZone::Exchange,
+        }
+    }
+
+    /// Every chart on screen in the time zone and the format the settings now
+    /// name: the axis relabelled, and the indicators of time worked out again,
+    /// since a window typed in the chart's clock moves when the clock does.
+    pub fn adopt_clock(self: &Rc<Self>) {
+        let panes = self.panes.borrow().clone();
+        for pane in &panes {
+            let instrument = pane.instrument.borrow().clone();
+            let Some(instrument) = instrument else { continue };
+            pane.view.set_clock(self.clock_for(&instrument));
+            let timeframe = pane.timeframe.get();
+            let drawn =
+                pane.view.with_bars(|bars| self.drawn_indicators(pane, &instrument, timeframe, bars));
+            pane.view.set_indicators(drawn);
+        }
     }
 
     // -- streaming ---------------------------------------------------------
@@ -8881,6 +8907,15 @@ impl Window {
 
     pub fn indicators(&self) -> Vec<Indicator> {
         self.focused_pane().indicators.borrow().clone()
+    }
+
+    /// What the focused chart is of, and whether it is keeping regular hours
+    /// only: what an editor needs to say what an indicator of time will do
+    /// on it.
+    pub fn focused_market(&self) -> Option<(Instrument, omacharts_engine::Session)> {
+        let pane = self.focused_pane();
+        let instrument = pane.instrument.borrow().clone()?;
+        Some((instrument, pane.session.get()))
     }
 
     /// Open the chart on the symbol last looked at, or — the first time ever —

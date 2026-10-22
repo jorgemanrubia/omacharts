@@ -244,6 +244,9 @@ pub trait Live {
     /// Show the header the settings now name on every chart on screen.
     /// Nothing to do without a window.
     fn adopt_header(&self) {}
+    /// Draw every chart on screen in the time zone and the time format the
+    /// settings now name. Nothing to do without a window.
+    fn adopt_clock(&self) {}
 
     /// Save a picture of the focused chart, or of the whole open chartbook.
     ///
@@ -948,6 +951,10 @@ impl Live for Rc<crate::ui::Window> {
 
     fn adopt_header(&self) {
         crate::ui::Window::apply_header(self);
+    }
+
+    fn adopt_clock(&self) {
+        crate::ui::Window::adopt_clock(self);
     }
 
     fn screenshot(

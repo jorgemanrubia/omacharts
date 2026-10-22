@@ -14,16 +14,21 @@ pub mod bollinger;
 pub mod oscillators;
 pub mod periods;
 pub mod profile;
+pub mod time;
 pub mod vwap;
 
 use serde::{Deserialize, Serialize};
 
+use chrono_tz::Tz;
+
 use crate::bars::{Bar, Timeframe};
+use crate::symbols::Instrument;
 use crate::theme::{ColorChoice, Theme, SWATCH_SEQUENCE};
 
 pub use bands::{Band, BandSeries, Bands, FILL_ALPHA, MAX_FILL_ALPHA, MIN_FILL_ALPHA};
 pub use periods::Reset;
 pub use profile::{Profile, ProfileRow};
+pub use time::{Level, LevelRun, LevelSource, Marker, Preset, Separators, Span, Time, Window, PRESETS};
 
 /// How a line is drawn.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
@@ -98,10 +103,51 @@ pub enum Kind {
     Macd,
     Atr,
     Stochastic,
+    Sessions,
+    TimeWindow,
+    SessionLevels,
+}
+
+/// The families the picker and the manual sort indicators into.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Category {
+    Averages,
+    Volume,
+    Momentum,
+    Time,
+}
+
+impl Category {
+    pub const ALL: [Category; 4] =
+        [Category::Averages, Category::Volume, Category::Momentum, Category::Time];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Category::Averages => "Averages and bands",
+            Category::Volume => "Volume",
+            Category::Momentum => "Momentum and volatility",
+            Category::Time => "Sessions and time",
+        }
+    }
+
+    /// What typing the family's name into the picker should find.
+    fn aliases(self) -> &'static [&'static str] {
+        match self {
+            Category::Averages => &["average", "averages", "bands", "trend", "overlay"],
+            Category::Volume => &["volume"],
+            Category::Momentum => &["momentum", "volatility", "oscillator", "oscillators"],
+            Category::Time => &["session", "sessions", "time", "hours", "rth", "eth"],
+        }
+    }
+
+    /// Its members, in the order the picker lists them.
+    pub fn kinds(self) -> Vec<Kind> {
+        Kind::ALL.into_iter().filter(|kind| kind.category() == self).collect()
+    }
 }
 
 impl Kind {
-    pub const ALL: [Kind; 10] = [
+    pub const ALL: [Kind; 13] = [
         Kind::Volume,
         Kind::Sma,
         Kind::Ema,
@@ -114,7 +160,36 @@ impl Kind {
         Kind::Macd,
         Kind::Atr,
         Kind::Stochastic,
+        Kind::Sessions,
+        Kind::TimeWindow,
+        Kind::SessionLevels,
     ];
+
+    pub fn category(self) -> Category {
+        match self {
+            Kind::Sma | Kind::Ema | Kind::Vwap | Kind::Bollinger => Category::Averages,
+            Kind::Volume | Kind::VolumeProfile => Category::Volume,
+            Kind::Rsi | Kind::Macd | Kind::Atr | Kind::Stochastic => Category::Momentum,
+            Kind::Sessions | Kind::TimeWindow | Kind::SessionLevels => Category::Time,
+        }
+    }
+
+    /// Whether a colour from the palette is handed to it when nobody chose
+    /// one. Session shading and day separators are furniture, not a series:
+    /// given the next sequence colour they would take the blue the first
+    /// moving average was going to get, and shout across the whole chart.
+    pub fn takes_palette_colour(self) -> bool {
+        !matches!(self, Kind::Sessions)
+    }
+
+    /// The line it starts with.
+    pub fn default_stroke(self) -> Stroke {
+        match self {
+            Kind::Sessions | Kind::TimeWindow => Stroke::new(1.0, LineStyle::Dashed),
+            Kind::SessionLevels => Stroke::new(1.0, LineStyle::Solid),
+            _ => Stroke::default(),
+        }
+    }
 
     pub fn name(self) -> &'static str {
         match self {
@@ -130,6 +205,9 @@ impl Kind {
             Kind::Rsi => "Relative Strength Index",
             Kind::Atr => "Average True Range",
             Kind::Stochastic => "Stochastic",
+            Kind::Sessions => "Sessions",
+            Kind::TimeWindow => "Time Window",
+            Kind::SessionLevels => "Session Levels",
         }
     }
 
@@ -148,6 +226,9 @@ impl Kind {
             Kind::Rsi => "RSI",
             Kind::Atr => "ATR",
             Kind::Stochastic => "Stoch",
+            Kind::Sessions => "Sessions",
+            Kind::TimeWindow => "Window",
+            Kind::SessionLevels => "Levels",
         }
     }
 
@@ -169,6 +250,18 @@ impl Kind {
             Kind::Rsi => &["rsi", "relative strength", "oscillator", "momentum", "overbought"],
             Kind::Atr => &["atr", "average true range", "volatility", "range", "stop"],
             Kind::Stochastic => &["stochastic", "stoch", "kd", "%k", "oscillator", "momentum", "overbought"],
+            Kind::Sessions => &[
+                "sessions", "session", "rth", "eth", "extended hours", "regular hours",
+                "separator", "day separator", "overnight", "shading", "background",
+            ],
+            Kind::TimeWindow => &[
+                "time window", "window", "london", "asia", "new york", "opening range",
+                "killzone", "kill zone", "session box", "range", "open",
+            ],
+            Kind::SessionLevels => &[
+                "session levels", "levels", "prior day", "previous day", "pdh", "pdl",
+                "overnight high", "overnight low", "onh", "onl", "high", "low", "close",
+            ],
         }
     }
 
@@ -184,6 +277,9 @@ impl Kind {
             Kind::Rsi => "rsi",
             Kind::Atr => "atr",
             Kind::Stochastic => "stochastic",
+            Kind::Sessions => "sessions",
+            Kind::TimeWindow => "time_window",
+            Kind::SessionLevels => "session_levels",
         }
     }
 
@@ -240,9 +336,35 @@ impl Kind {
                 oversold: 20.0,
                 d_color: None,
             },
+            Kind::Sessions => Params::Sessions {
+                shade: true,
+                shade_color: None,
+                shade_alpha: DEFAULT_SHADE_ALPHA,
+                separators: Separators::Day,
+            },
+            // The opening range: what most people reach for first, and the
+            // one that needs no time zone to mean the same on every chart.
+            Kind::TimeWindow => Params::TimeWindow {
+                name: "Opening range".to_string(),
+                window: Window::Session { part: crate::exchanges::Part::Regular, offset: 0, minutes: 30 },
+                zone: None,
+                weekdays: true,
+                shade: true,
+                shade_alpha: DEFAULT_SHADE_ALPHA,
+                mark: false,
+                range: true,
+            },
+            Kind::SessionLevels => Params::SessionLevels {
+                source: LevelSource::Regular,
+                levels: vec![Level::High, Level::Low, Level::Close],
+            },
         }
     }
 }
+
+/// How solid session shading starts: enough to see where the extended hours
+/// are, not so much that the candles inside them look dimmed.
+pub const DEFAULT_SHADE_ALPHA: f64 = 0.07;
 
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -328,6 +450,41 @@ pub enum Params {
         #[serde(default)]
         d_color: Option<ColorChoice>,
     },
+    Sessions {
+        /// The extended hours shaded.
+        shade: bool,
+        /// Their colour. Unset is the theme's muted text, which reads as a
+        /// quiet change of ground in a dark theme and a light one alike.
+        #[serde(default)]
+        shade_color: Option<ColorChoice>,
+        shade_alpha: f64,
+        /// Where the lines between days go. Their colour and stroke are the
+        /// indicator's own.
+        separators: Separators,
+    },
+    TimeWindow {
+        /// What the window is called, which is what its line and its levels
+        /// are labelled with.
+        name: String,
+        window: Window,
+        /// The clock a window of wall-clock hours keeps, as an IANA name.
+        /// Unset keeps the chart's own, which is the clock its hours were
+        /// typed in.
+        #[serde(default)]
+        zone: Option<String>,
+        /// Leave out the weekend, as the markets it is about do.
+        weekdays: bool,
+        shade: bool,
+        shade_alpha: f64,
+        /// A line where each one begins.
+        mark: bool,
+        /// Its high and low, held until the next one begins.
+        range: bool,
+    },
+    SessionLevels {
+        source: LevelSource,
+        levels: Vec<Level>,
+    },
 }
 
 impl Params {
@@ -386,7 +543,7 @@ impl Indicator {
             kind,
             params: kind.default_params(),
             color: None,
-            stroke: Stroke::default(),
+            stroke: kind.default_stroke(),
             visible: true,
             above_price: false,
         }
@@ -432,6 +589,28 @@ impl Indicator {
             Params::Stochastic { period, k_smooth, d_period, .. } => {
                 format!("Stoch {period} {k_smooth} {d_period}")
             }
+            Params::Sessions { separators, .. } => {
+                let separators = match timeframe {
+                    Some(timeframe) => separators.effective_for(timeframe),
+                    None => *separators,
+                };
+                match separators {
+                    Separators::None => "Sessions".to_string(),
+                    other => format!("Sessions · {}", other.key()),
+                }
+            }
+            Params::TimeWindow { name, .. } => match name.trim() {
+                "" => "Window".to_string(),
+                name => name.to_string(),
+            },
+            Params::SessionLevels { source, .. } => format!(
+                "Levels ({})",
+                match source {
+                    LevelSource::Regular => "RTH",
+                    LevelSource::Extended => "ON",
+                    LevelSource::Day => "Day",
+                }
+            ),
         }
     }
 
@@ -481,6 +660,10 @@ pub fn palette_colors(indicators: &[Indicator], theme: &Theme) -> Vec<String> {
             out[i] = choice.resolve(theme);
             continue;
         }
+        if !indicator.kind.takes_palette_colour() {
+            out[i] = theme.ui.text_muted.clone();
+            continue;
+        }
         let free = (0..SWATCH_SEQUENCE.len())
             .map(|n| theme.series(n))
             .find(|hex| !taken.contains(hex));
@@ -504,6 +687,8 @@ pub enum Output {
     Volume { values: Vec<f64>, height: f64 },
     /// A series drawn in a strip of its own, on its own scale.
     Pane(Pane),
+    /// Stretches of time shaded, lines between them, and levels across them.
+    Time(Time),
 }
 
 /// An indicator that cannot share the price scale, and so gets a strip of its
@@ -682,12 +867,44 @@ impl Output {
     }
 }
 
-/// Compute an indicator over `bars`.
+/// What an indicator is computed against, besides its bars.
+#[derive(Clone, Copy, Debug)]
+pub struct Context<'a> {
+    /// The instrument's session open, which is what makes a session-reset
+    /// VWAP on futures start in the evening rather than at midnight.
+    pub session_origin: i64,
+    /// Lets a reset period that is too fine for the chart be promoted rather
+    /// than drawn as nonsense.
+    pub timeframe: Timeframe,
+    /// What sort of thing is charted, which a volume profile sizes its rows by.
+    pub kind: Option<crate::symbols::InstrumentKind>,
+    /// What is charted, which is where its exchange and its day come from.
+    pub instrument: Option<&'a Instrument>,
+    /// The clock the chart reads, which a time window typed in it keeps.
+    pub zone: Tz,
+}
+
+impl<'a> Context<'a> {
+    /// Everything there is to know about a chart of `instrument`.
+    pub fn of(instrument: &'a Instrument, timeframe: Timeframe, zone: Tz) -> Context<'a> {
+        Context {
+            session_origin: instrument.session_origin,
+            timeframe,
+            kind: Some(instrument.kind),
+            instrument: Some(instrument),
+            zone,
+        }
+    }
+}
+
+/// Compute an indicator over `bars`, knowing nothing of the instrument beyond
+/// its kind.
 ///
 /// `session_origin` is the instrument's session open, which is what makes a
 /// session-reset VWAP on futures start in the evening rather than at midnight.
 /// `timeframe` lets a reset period that is too fine for the chart be promoted
-/// rather than drawn as nonsense.
+/// rather than drawn as nonsense. The indicators of time need the instrument
+/// itself, for its exchange; see [`compute_in`].
 pub fn compute(
     indicator: &Indicator,
     bars: &[Bar],
@@ -695,6 +912,20 @@ pub fn compute(
     timeframe: Timeframe,
     kind: Option<crate::symbols::InstrumentKind>,
 ) -> Output {
+    let context = Context {
+        session_origin,
+        timeframe,
+        kind,
+        instrument: None,
+        zone: crate::clock::ChartZone::default().for_instrument(None),
+    };
+    compute_in(indicator, bars, &context)
+}
+
+/// Compute an indicator over `bars`, on a chart of what `context` says.
+pub fn compute_in(indicator: &Indicator, bars: &[Bar], context: &Context) -> Output {
+    let Context { session_origin, timeframe, kind, .. } = *context;
+    let schedule = || time::schedule_for(context.instrument);
     match (&indicator.kind, &indicator.params) {
         (Kind::Sma, Params::MovingAverage { period }) => Output::Line(sma(bars, *period)),
         (Kind::Ema, Params::MovingAverage { period }) => Output::Line(ema(bars, *period)),
@@ -770,6 +1001,26 @@ pub fn compute(
                 kind,
             ))
         }
+        (Kind::Sessions, Params::Sessions { shade, shade_color, shade_alpha, separators }) => {
+            let mut out = time::sessions(bars, timeframe, schedule(), *shade, *separators);
+            out.fill = shade_color.clone();
+            out.fill_alpha = shade_alpha.clamp(time::MIN_SHADE_ALPHA, time::MAX_SHADE_ALPHA);
+            Output::Time(out)
+        }
+        (
+            Kind::TimeWindow,
+            Params::TimeWindow { name, window, zone, weekdays, shade, shade_alpha, mark, range },
+        ) => {
+            let zone = zone.as_deref().and_then(|z| z.parse::<Tz>().ok()).unwrap_or(context.zone);
+            let mut out = time::window(
+                bars, timeframe, name, window, zone, schedule(), *weekdays, *shade, *mark, *range,
+            );
+            out.fill_alpha = shade_alpha.clamp(time::MIN_SHADE_ALPHA, time::MAX_SHADE_ALPHA);
+            Output::Time(out)
+        }
+        (Kind::SessionLevels, Params::SessionLevels { source, levels }) => {
+            Output::Time(time::levels(bars, timeframe, schedule(), *source, levels))
+        }
         // Params and kind are set together; a mismatch means a stored
         // indicator from a future version. Draw nothing rather than guess.
         _ => Output::Line(vec![None; bars.len()]),
@@ -837,6 +1088,12 @@ pub fn search(query: &str) -> Vec<Kind> {
                 60
             } else if name.contains(&q) || kind.aliases().iter().any(|a| a.contains(&q)) {
                 40
+            } else if kind.category().label().to_lowercase().contains(&q)
+                || kind.category().aliases().iter().any(|a| a.starts_with(&q))
+            {
+                // Its family's name: "volume" finds both volume indicators,
+                // "time" all three of the session ones.
+                30
             } else {
                 return None;
             };

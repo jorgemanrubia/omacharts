@@ -1,0 +1,48 @@
+# root	exchange	hours
+# Which exchange each futures root trades on, and on which of its hours.
+# One exchange keeps different hours for different products: the CME's
+# livestock closes at lunchtime while its equity index contracts trade all
+# night. A root not listed here is taken to be on Globex's equity index hours,
+# which is what most of what gets charted keeps.
+ES	CME	cme_equity_index
+MES	CME	cme_equity_index
+NQ	CME	cme_equity_index
+MNQ	CME	cme_equity_index
+RTY	CME	cme_equity_index
+M2K	CME	cme_equity_index
+YM	CBOT	cme_equity_index
+MYM	CBOT	cme_equity_index
+6E	CME	cme_rates_and_fx
+6J	CME	cme_rates_and_fx
+6B	CME	cme_rates_and_fx
+6A	CME	cme_rates_and_fx
+6C	CME	cme_rates_and_fx
+6S	CME	cme_rates_and_fx
+ZB	CBOT	cme_rates_and_fx
+ZN	CBOT	cme_rates_and_fx
+ZF	CBOT	cme_rates_and_fx
+ZT	CBOT	cme_rates_and_fx
+ZC	CBOT	cme_grains
+ZS	CBOT	cme_grains
+ZW	CBOT	cme_grains
+ZL	CBOT	cme_grains
+ZM	CBOT	cme_grains
+LE	CME	cme_livestock
+HE	CME	cme_livestock
+CL	NYMEX	nymex_energy
+MCL	NYMEX	nymex_energy
+BZ	NYMEX	nymex_energy
+NG	NYMEX	nymex_energy
+RB	NYMEX	nymex_energy
+HO	NYMEX	nymex_energy
+PL	NYMEX	nymex_energy
+PA	NYMEX	nymex_energy
+GC	COMEX	comex_metals
+MGC	COMEX	comex_metals
+SI	COMEX	comex_metals
+SIL	COMEX	comex_metals
+HG	COMEX	comex_metals
+KC	ICEUS	ice_us_softs
+SB	ICEUS	ice_us_sugar
+CC	ICEUS	ice_us_cocoa
+CT	ICEUS	ice_us_cotton

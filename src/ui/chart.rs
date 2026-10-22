@@ -32,6 +32,7 @@ use omacharts_engine::drawings::{
     self, Anchor, Configurations, Drawing, Grip, Kind as DrawingKind, Projected, Scope,
 };
 use omacharts_engine::bars::Unit;
+use omacharts_engine::clock::{ChartZone, TimeFormat};
 use omacharts_engine::indicators::{self as indicators, BandSeries, Output, Profile};
 use omacharts_engine::{
     grouped_decimals, Bar, BarScheme, BarStyle, Direction, FetchFailure, Indicator, Instrument,
@@ -158,6 +159,8 @@ struct State {
     indicators: Vec<Drawn>,
     bar_style: BarStyle,
     show_grid: bool,
+    /// The clock the time axis and the crosshair read.
+    clock: Clock,
     /// Why the last fetch for this chart came back with nothing, if it did.
     ///
     /// One piece of state for both of the things that used to be separate —
@@ -1088,6 +1091,7 @@ impl State {
             indicators: Vec::new(),
             bar_style: BarStyle::default(),
             show_grid: true,
+            clock: Clock::default(),
             drag: None,
             trouble: None,
             loading: false,
@@ -3134,6 +3138,15 @@ impl ChartView {
         self.state.borrow().bar_style
     }
 
+    /// Read the time off this clock, and write it this way.
+    pub fn set_clock(&self, clock: Clock) {
+        if self.state.borrow().clock == clock {
+            return;
+        }
+        self.state.borrow_mut().clock = clock;
+        self.redraw();
+    }
+
     pub fn set_bar_style(&self, style: BarStyle) {
         self.state.borrow_mut().bar_style = style;
         self.redraw();
@@ -4184,6 +4197,10 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
     let (low, high) = scale.prices();
     let decimals = omacharts_engine::price_decimals(step, (low + high) / 2.0, kind);
 
+    // The ground first: sessions shaded and the lines between days, down the
+    // whole stack and under the gridlines, so they read as the chart's
+    // furniture rather than as something drawn on it.
+    draw_time_ground(cr, state, &columns, &plan);
     draw_price_grid(cr, state, plot_x, plot_w, price_y, price_h, &scale, &to_y);
     draw_time_axis(cr, state, &columns.bars, columns.bars_each(), plot_x, plot_w, height, bar_w, bars_x - columns.shift());
     // Shaded things go under the candles; lines go over. A band drawn on top
@@ -4199,6 +4216,7 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
     draw_indicator_fills(cr, state, &columns, &to_y);
     draw_candles(cr, state, &columns, &to_y);
     draw_indicator_lines(cr, state, &columns, &to_y);
+    draw_time_levels(cr, state, &columns, &plan, &to_y);
     cr.restore().ok();
     draw_drawings(cr, state, &plan, &scale);
 
@@ -4442,7 +4460,7 @@ fn draw_time_axis(
     let step = (state.timeframe.seconds() as f64 * per).round() as i64;
     let time_at = |column: i64| axis_time(bars, state.timeframe, per, column - before);
     let utc = state.timeframe.is_calendar();
-    let (ticks, tick_seconds) = axis_ticks(total, plot_w, step, utc, time_at);
+    let (ticks, tick_seconds) = axis_ticks(total, plot_w, step, utc, state.clock, time_at);
     for column in ticks {
         let Some(ts) = time_at(column) else { continue };
         let x = plot_x + nudge + (column as f64 + 0.5) * bar_w;
@@ -4456,7 +4474,7 @@ fn draw_time_axis(
             let _ = cr.stroke();
         }
 
-        let label = format_axis_time(ts, tick_seconds, state.timeframe.is_intraday(), utc);
+        let label = format_axis_time(ts, tick_seconds, state.timeframe.is_intraday(), utc, state.clock);
         colors::set_source_alpha(cr, &state.theme.ui.text_muted, 0.9);
         if let Ok(extents) = cr.text_extents(&label) {
             cr.move_to(x - extents.width() / 2.0, height - 7.0);
@@ -5182,7 +5200,7 @@ fn draw_crosshair(
     // Time under the pointer — over the room past either end as well,
     // where it is the time that column would be.
     if let Some(ts) = time_at_column(state, first + index_in_view.max(0.0) as i64) {
-        let label = format_time_full(ts, state.timeframe);
+        let label = format_time_full(ts, state.timeframe, state.clock);
         cr.select_font_face("sans-serif", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
         cr.set_font_size(11.0);
         if let Ok(extents) = cr.text_extents(&label) {
@@ -5743,8 +5761,9 @@ fn draw_indicator_fills(
                 draw_profiles(cr, state, drawn, profiles, columns, to_y);
             }
             // These draw in a strip of their own, where the price scale does
-            // not reach, so there is nothing to do over the candles.
-            Output::Volume { .. } | Output::Pane(_) | Output::Line(_) => {}
+            // not reach, so there is nothing to do over the candles; and time
+            // has its own ground beneath everything.
+            Output::Volume { .. } | Output::Pane(_) | Output::Line(_) | Output::Time(_) => {}
         }
     }
 }
@@ -5797,8 +5816,154 @@ fn draw_indicator_lines(
                     cr.restore().ok();
                 }
             }
-            Output::Profiles(_) | Output::Volume { .. } | Output::Pane(_) => {}
+            Output::Profiles(_) | Output::Volume { .. } | Output::Pane(_) | Output::Time(_) => {}
         }
+    }
+}
+
+/// Where a bar's column begins, by its index in the series: the arithmetic
+/// the candles are placed with, so a session's shading starts on the same
+/// pixel as its first candle at any zoom.
+fn bar_left(columns: &Columns, bar: usize) -> f64 {
+    columns.start + (bar as f64 - columns.first as f64) * columns.bar_px
+}
+
+/// Whether bars `from..=to` reach the screen at all.
+fn on_screen_run(columns: &Columns, from: usize, to: usize) -> bool {
+    to >= columns.first && from < columns.first + columns.visible
+}
+
+/// Shaded stretches of time and the lines between them, down the whole stack.
+///
+/// Under everything — the gridlines, the bands, the candles — because a
+/// session is the ground a bar stands on, and anything drawn over a candle
+/// hides the thing it is describing.
+fn draw_time_ground(cr: &cairo::Context, state: &State, columns: &Columns, plan: &Layout) {
+    let (left, right) = (plan.plot_x, plan.plot_x + plan.plot_w);
+    let (top, bottom) = (plan.top, plan.top + plan.total_h);
+    cr.save().ok();
+    cr.rectangle(left, top, plan.plot_w, plan.total_h);
+    cr.clip();
+    for drawn in state.indicators.iter().filter(|d| d.indicator.visible) {
+        let Output::Time(time) = &drawn.output else { continue };
+        if !time.spans.is_empty() {
+            let colour = time
+                .fill
+                .as_ref()
+                .map(|choice| choice.resolve(&state.theme))
+                .unwrap_or_else(|| drawn.color.clone());
+            colors::set_source_alpha(cr, &colour, time.fill_alpha);
+            for span in time.spans.iter().filter(|s| on_screen_run(columns, s.from, s.to)) {
+                // Whole pixels, so two stretches that meet do not leave a
+                // hairline of double shading between them.
+                let x0 = bar_left(columns, span.from).max(left).round();
+                let x1 = bar_left(columns, span.to + 1).min(right).round();
+                if x1 > x0 {
+                    cr.rectangle(x0, top, x1 - x0, bottom - top);
+                }
+            }
+            let _ = cr.fill();
+        }
+        let stroke = drawn.indicator.stroke;
+        if time.markers.is_empty() || stroke.is_hidden() {
+            continue;
+        }
+        cr.save().ok();
+        cr.set_dash(&stroke.style.dashes(stroke.width), 0.0);
+        cr.set_line_width(stroke.width);
+        colors::set_source(cr, &drawn.color);
+        let mut labels = Vec::new();
+        for marker in time.markers.iter().filter(|m| on_screen_run(columns, m.bar, m.bar)) {
+            let x = bar_left(columns, marker.bar).round() + 0.5;
+            cr.move_to(x, top);
+            cr.line_to(x, bottom);
+            if let Some(label) = &marker.label {
+                labels.push((x, label));
+            }
+        }
+        let _ = cr.stroke();
+        cr.restore().ok();
+        // At the foot of the price plot rather than its head, which is where
+        // the chart's own name and the resolutions sit.
+        if !labels.is_empty() {
+            cr.select_font_face("sans-serif", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
+            cr.set_font_size(10.0);
+            colors::set_source_alpha(cr, &drawn.color, 0.9);
+            for (x, label) in labels {
+                cr.move_to(x + 4.0, plan.price_y + plan.price_h - 6.0);
+                let _ = cr.show_text(label);
+            }
+        }
+    }
+    cr.restore().ok();
+}
+
+/// The levels a session or a window carries forward, over the bars.
+fn draw_time_levels(
+    cr: &cairo::Context,
+    state: &State,
+    columns: &Columns,
+    plan: &Layout,
+    to_y: &impl Fn(f64) -> f64,
+) {
+    let right = plan.plot_x + plan.plot_w;
+    // Each name once, on its latest stretch on screen — a label on every
+    // past day's line is a column of the same word — and gathered across
+    // every indicator, so two that end at the same bar can make room for
+    // each other.
+    let mut labels: Vec<(f64, f64, &String, &String)> = Vec::new();
+    for drawn in state.indicators.iter().filter(|d| d.indicator.visible) {
+        let Output::Time(time) = &drawn.output else { continue };
+        let stroke = drawn.indicator.stroke;
+        if time.levels.is_empty() || stroke.is_hidden() {
+            continue;
+        }
+        cr.save().ok();
+        cr.set_dash(&stroke.style.dashes(stroke.width), 0.0);
+        cr.set_line_width(stroke.width);
+        colors::set_source(cr, &drawn.color);
+        for level in time.levels.iter().filter(|l| on_screen_run(columns, l.from, l.to)) {
+            let x0 = bar_left(columns, level.from).max(plan.plot_x);
+            let x1 = bar_left(columns, level.to + 1).min(right);
+            let y = to_y(level.price).round() + 0.5;
+            cr.move_to(x0, y);
+            cr.line_to(x1, y);
+            match labels.iter_mut().find(|(.., label, _)| **label == level.label) {
+                Some(kept) if kept.0 <= x1 => *kept = (x1, y, &level.label, &drawn.color),
+                Some(_) => {}
+                None => labels.push((x1, y, &level.label, &drawn.color)),
+            }
+        }
+        let _ = cr.stroke();
+        cr.restore().ok();
+    }
+    if labels.is_empty() {
+        return;
+    }
+    // Named at the end nearest now, just above the line, where the eye
+    // arrives at it from the latest bar. One that would print over another
+    // steps left past it, which keeps it on its own line.
+    cr.select_font_face("sans-serif", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
+    cr.set_font_size(10.0);
+    const LINE: f64 = 12.0;
+    let mut placed: Vec<(f64, f64, f64)> = Vec::new();
+    for (x1, y, label, colour) in labels {
+        let Ok(extents) = cr.text_extents(label) else { continue };
+        let width = extents.width();
+        let mut right_edge = x1 - 4.0;
+        while let Some(clash) = placed
+            .iter()
+            .find(|(left, end, at)| (at - y).abs() < LINE && right_edge > *left && right_edge - width < *end)
+        {
+            right_edge = clash.0 - 6.0;
+        }
+        if right_edge - width < plan.plot_x + 4.0 {
+            continue;
+        }
+        colors::set_source_alpha(cr, colour, 0.9);
+        cr.move_to(right_edge - width, y - 3.0);
+        let _ = cr.show_text(label);
+        placed.push((right_edge - width, right_edge, y));
     }
 }
 
@@ -6083,10 +6248,11 @@ fn axis_ticks(
     plot_w: f64,
     step: i64,
     utc: bool,
+    clock: Clock,
     time_at: impl Fn(i64) -> Option<i64>,
 ) -> (Vec<i64>, i64) {
     let times: Vec<Option<chrono::NaiveDateTime>> =
-        (0..total).map(|column| wall_clock(time_at(column)?, utc)).collect();
+        (0..total).map(|column| clock.read(time_at(column)?, utc)).collect();
     // Lazily, so trying a rung that does not fit allocates nothing.
     let ticks = |every: Every| {
         let mut previous = None;
@@ -6140,16 +6306,17 @@ fn axis_ticks(
 /// fortnight apart, and labelling each of them "Mar 2026" prints the same
 /// thing three times running. What decides the format is how far apart two
 /// neighbouring labels are, because that is what has to tell them apart.
-fn format_axis_time(ts: i64, tick_seconds: i64, intraday: bool, utc: bool) -> String {
-    let Some(dt) = wall_clock(ts, utc) else {
+fn format_axis_time(ts: i64, tick_seconds: i64, intraday: bool, utc: bool, clock: Clock) -> String {
+    let Some(dt) = clock.read(ts, utc) else {
         return String::new();
     };
     const DAY: i64 = 86_400;
+    let time = clock.format.pattern();
     if intraday {
         return match tick_seconds {
-            t if t >= DAY => dt.format("%d %b %H:%M").to_string(),
-            t if t >= 4 * 3_600 => dt.format("%a %H:%M").to_string(),
-            _ => dt.format("%H:%M").to_string(),
+            t if t >= DAY => dt.format(&format!("%d %b {time}")).to_string(),
+            t if t >= 4 * 3_600 => dt.format(&format!("%a {time}")).to_string(),
+            _ => dt.format(time).to_string(),
         };
     }
     match tick_seconds {
@@ -6161,26 +6328,74 @@ fn format_axis_time(ts: i64, tick_seconds: i64, intraday: bool, utc: bool) -> St
 
 /// The crosshair label always carries the year — it is the one place you look
 /// to know exactly which bar you are on.
-fn format_time_full(ts: i64, timeframe: Timeframe) -> String {
-    let Some(dt) = wall_clock(ts, timeframe.is_calendar()) else {
+fn format_time_full(ts: i64, timeframe: Timeframe, clock: Clock) -> String {
+    let Some(dt) = clock.read(ts, timeframe.is_calendar()) else {
         return String::new();
     };
     match timeframe.unit {
-        _ if timeframe.is_intraday() => dt.format("%d %b %Y %H:%M").to_string(),
+        _ if timeframe.is_intraday() => {
+            let written = dt.format(&format!("%d %b %Y {}", clock.format.pattern())).to_string();
+            match clock.named {
+                true => format!("{written} {}", clock.abbreviation(ts)),
+                false => written,
+            }
+        }
         Unit::Month => dt.format("%b %Y").to_string(),
         Unit::Year => dt.format("%Y").to_string(),
         _ => dt.format("%a %d %b %Y").to_string(),
     }
 }
 
-/// What a clock on the wall read at `ts`: the local one, or UTC for bars that
-/// open on a UTC calendar boundary (see [`Timeframe::is_calendar`]).
-fn wall_clock(ts: i64, utc: bool) -> Option<chrono::NaiveDateTime> {
-    use chrono::{Local, TimeZone, Utc};
-    if utc {
-        Some(Utc.timestamp_opt(ts, 0).single()?.naive_utc())
-    } else {
-        Some(Local.timestamp_opt(ts, 0).single()?.naive_local())
+/// The clock a chart reads its times off, and how it writes them.
+///
+/// The app's two settings, resolved for one chart: "the exchange's own"
+/// becomes that chart's exchange's zone before it gets here.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Clock {
+    pub zone: chrono_tz::Tz,
+    pub format: TimeFormat,
+    /// Name the zone on the crosshair. Only when each chart reads its own
+    /// exchange's clock: two linked charts then disagree about the time of
+    /// the same moment, and the abbreviation is what says why.
+    pub named: bool,
+}
+
+impl Default for Clock {
+    fn default() -> Clock {
+        Clock {
+            zone: ChartZone::default().for_instrument(None),
+            format: TimeFormat::default(),
+            named: false,
+        }
+    }
+}
+
+impl Clock {
+    /// What the clock on the wall read at `ts`: this chart's zone, or UTC for
+    /// bars that open on a UTC calendar boundary (see
+    /// [`Timeframe::is_calendar`]) — a daily bar is a date, not a moment, and
+    /// moving it into New York would put Monday's bar on Sunday.
+    /// `CT`, `ET`, `JST`: the zone as the people in it write it, at `ts`.
+    fn abbreviation(self, ts: i64) -> String {
+        use chrono::TimeZone;
+        let Some(at) = self.zone.timestamp_opt(ts, 0).single() else { return String::new() };
+        let written = at.format("%Z").to_string();
+        // Daylight and standard time are one clock to a reader: CDT and CST
+        // are both Chicago time. A zone with no letters of its own comes back
+        // as an offset, which is said as it is.
+        match written.len() == 3 && written.ends_with('T') && matches!(&written[1..2], "D" | "S") {
+            true => format!("{}{}", &written[..1], "T"),
+            false => written,
+        }
+    }
+
+    fn read(self, ts: i64, utc: bool) -> Option<chrono::NaiveDateTime> {
+        use chrono::{TimeZone, Utc};
+        if utc {
+            Some(Utc.timestamp_opt(ts, 0).single()?.naive_utc())
+        } else {
+            Some(self.zone.timestamp_opt(ts, 0).single()?.naive_local())
+        }
     }
 }
 
@@ -7130,17 +7345,17 @@ mod tests {
 
         // Years apart: years only. This is the case that read "01 Jun" for
         // every tick before the spacing was taken into account.
-        let decade = format_axis_time(ts, 400 * DAY, false, false);
+        let decade = format_axis_time(ts, 400 * DAY, false, false, Clock::default());
         assert_eq!(decade.len(), 4, "{decade}");
         assert!(decade.chars().all(|c| c.is_ascii_digit()), "{decade}");
 
         // A year or two: month and year.
-        assert!(format_axis_time(ts, 30 * DAY, false, false).contains("20"), "months get a year");
+        assert!(format_axis_time(ts, 30 * DAY, false, false, Clock::default()).contains("20"), "months get a year");
         // A few days apart: day and month, no year.
-        assert!(!format_axis_time(ts, 5 * DAY, false, false).contains("20"));
+        assert!(!format_axis_time(ts, 5 * DAY, false, false, Clock::default()).contains("20"));
         // Intraday always carries a clock, however far apart the ticks.
-        assert!(format_axis_time(ts, 3600, true, false).contains(':'));
-        assert!(format_axis_time(ts, 30 * DAY, true, false).contains(':'));
+        assert!(format_axis_time(ts, 3600, true, false, Clock::default()).contains(':'));
+        assert!(format_axis_time(ts, 30 * DAY, true, false, Clock::default()).contains(':'));
     }
 
     #[test]
@@ -7149,7 +7364,7 @@ mod tests {
         // date-only label printed the same thing over and over.
         let tick = 6 * 3600;
         let labels: Vec<String> = (0..6)
-            .map(|i| format_axis_time(1_700_000_000 + i * tick, tick, true, false))
+            .map(|i| format_axis_time(1_700_000_000 + i * tick, tick, true, false, Clock::default()))
             .collect();
         let mut unique = labels.clone();
         unique.sort();
@@ -7164,7 +7379,7 @@ mod tests {
         const DAY: i64 = 86_400;
         let tick = 14 * DAY;
         let labels: Vec<String> = (0..18)
-            .map(|i| format_axis_time(1_767_225_600 + i * tick, tick, false, false))
+            .map(|i| format_axis_time(1_767_225_600 + i * tick, tick, false, false, Clock::default()))
             .collect();
         let mut unique = labels.clone();
         unique.sort();
@@ -7177,9 +7392,9 @@ mod tests {
     #[test]
     fn a_monthly_bar_is_named_for_its_own_month_in_any_zone() {
         let february = 1_706_745_600; // 2024-02-01 00:00 UTC
-        assert_eq!(format_time_full(february, Timeframe::months(1)), "Feb 2024");
-        assert_eq!(format_time_full(1_704_067_200, Timeframe::years(1)), "2024");
-        assert_eq!(format_axis_time(february, 31 * 86_400, false, true), "Feb 2024");
+        assert_eq!(format_time_full(february, Timeframe::months(1), Clock::default()), "Feb 2024");
+        assert_eq!(format_time_full(1_704_067_200, Timeframe::years(1), Clock::default()), "2024");
+        assert_eq!(format_axis_time(february, 31 * 86_400, false, true, Clock::default()), "Feb 2024");
     }
 
     #[test]
@@ -7191,7 +7406,7 @@ mod tests {
         };
         let step = Timeframe::months(1).seconds();
         let (ticks, every) =
-            axis_ticks(12, 12.0 * TIME_LABEL_GAP, step, true, |c| Some(month(c).timestamp()));
+            axis_ticks(12, 12.0 * TIME_LABEL_GAP, step, true, Clock::default(), |c| Some(month(c).timestamp()));
         assert_eq!(every, step);
         assert_eq!(ticks.len(), 11, "{ticks:?}");
     }
@@ -7200,14 +7415,15 @@ mod tests {
     fn two_ticks_a_decade_apart_get_different_labels() {
         const DAY: i64 = 86_400;
         let tick = 400 * DAY;
-        let a = format_axis_time(1_200_000_000, tick, false, false);
-        let b = format_axis_time(1_700_000_000, tick, false, false);
+        let a = format_axis_time(1_200_000_000, tick, false, false, Clock::default());
+        let b = format_axis_time(1_700_000_000, tick, false, false, Clock::default());
         assert_ne!(a, b);
     }
 
     #[test]
     fn weekly_gridlines_fall_on_the_first_week_of_a_month() {
-        use chrono::{Datelike, Local, TimeZone};
+        use chrono::{Datelike, TimeZone};
+        use chrono_tz::America::New_York as Local;
         // Every twenty-six bars put "Mar 2024" on whichever week the count
         // reached. Monday noon, so no zone moves a bar across a month.
         const WEEK: i64 = 7 * 86_400;
@@ -7216,7 +7432,7 @@ mod tests {
             let at = Local.timestamp_opt(time_at(column).unwrap(), 0).unwrap();
             (at.year(), at.month())
         };
-        let (ticks, _) = axis_ticks(520, 3_120.0, WEEK, false, time_at);
+        let (ticks, _) = axis_ticks(520, 3_120.0, WEEK, false, Clock::default(), time_at);
         assert!(ticks.len() > 5, "{ticks:?}");
         for column in ticks {
             assert_ne!(month(column), month(column - 1), "column {column} is mid-month");
@@ -7228,7 +7444,8 @@ mod tests {
     /// two bars apart, printed over each other.
     #[test]
     fn an_intraday_session_open_does_not_crowd_the_round_time_after_it() {
-        use chrono::{Local, TimeZone};
+        use chrono::TimeZone;
+        use chrono_tz::America::New_York as Local;
         // Regular hours at 15m: 26 bars a session, then an overnight gap.
         const STEP: i64 = 900;
         let mut stamps = Vec::new();
@@ -7243,7 +7460,7 @@ mod tests {
 
         let total = stamps.len() as i64;
         let plot_w = 2_400.0;
-        let (ticks, _) = axis_ticks(total, plot_w, STEP, false, |column| {
+        let (ticks, _) = axis_ticks(total, plot_w, STEP, false, Clock::default(), |column| {
             stamps.get(column as usize).copied()
         });
 
@@ -7931,7 +8148,7 @@ mod drawing_tests {
         use chrono::{TimeZone, Utc};
         let year = |c: i64| Utc.with_ymd_and_hms(2006 + c as i32, 1, 1, 0, 0, 0).unwrap().timestamp();
         let step = Timeframe::years(1).seconds();
-        let (ticks, _) = axis_ticks(21, 922.0, step, true, |c| Some(year(c)));
+        let (ticks, _) = axis_ticks(21, 922.0, step, true, Clock::default(), |c| Some(year(c)));
         assert!(ticks.len() > 2, "{ticks:?}");
     }
 }

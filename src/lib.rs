@@ -8,6 +8,7 @@ pub mod book_templates;
 pub mod bar_plugin;
 pub mod cache;
 pub mod chart_defaults;
+pub mod clock;
 pub mod cli;
 pub mod feeds;
 pub mod header;

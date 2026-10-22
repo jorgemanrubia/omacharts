@@ -1,0 +1,49 @@
+# id	days	day_starts	segments
+# One shape of trading day, in the wall-clock time of whichever exchange
+# keeps it.
+#
+# `days` are the days a trading day is named for: `mon-fri`, or `mon-sun`
+# for a market that never stops.
+#
+# `day_starts` is where one trading day ends and the next begins. A time
+# after noon means the evening before: Globex's Monday starts at 17:00 on
+# Sunday. That boundary is what a day separator marks and what a "previous
+# day" is counted from, so it sits in the quiet hour between sessions rather
+# than at midnight.
+#
+# `segments` are the parts of the day, in order, each `part=HH:MM-HH:MM`.
+# The parts are `overnight`, `pre`, `regular` and `post`; `regular` is the
+# session regular-hours charts keep, and everything else is extended hours.
+# `open` is a market with no such split, which is trading or not. A part may
+# appear twice — Tokyo breaks for lunch — and a segment ending where it
+# started runs the whole day. Time between segments is closed.
+#
+# The futures hours are each exchange's own electronic session, with
+# "regular" set to the hours traders mean by RTH: the cash session for the
+# equity index contracts, and the old pit hours for the rest.
+us_equities	mon-fri	00:00	pre=04:00-09:30 regular=09:30-16:00 post=16:00-20:00
+cme_equity_index	mon-fri	17:00	overnight=17:00-08:30 regular=08:30-15:00 post=15:00-16:00
+cme_rates_and_fx	mon-fri	17:00	overnight=17:00-07:20 regular=07:20-14:00 post=14:00-16:00
+cme_grains	mon-fri	19:00	overnight=19:00-07:45 regular=08:30-13:20
+cme_livestock	mon-fri	00:00	regular=08:30-13:05
+nymex_energy	mon-fri	18:00	overnight=18:00-09:00 regular=09:00-14:30 post=14:30-17:00
+comex_metals	mon-fri	18:00	overnight=18:00-08:20 regular=08:20-13:30 post=13:30-17:00
+ice_us_softs	mon-fri	00:00	regular=04:15-13:30
+ice_us_sugar	mon-fri	00:00	regular=03:30-13:00
+ice_us_cocoa	mon-fri	00:00	regular=04:45-13:30
+ice_us_cotton	mon-fri	21:00	regular=21:00-14:20
+tsx	mon-fri	00:00	regular=09:30-16:00
+b3	mon-fri	00:00	regular=10:00-17:00
+lse	mon-fri	00:00	regular=08:00-16:30
+xetra	mon-fri	00:00	regular=09:00-17:30
+euronext	mon-fri	00:00	regular=09:00-17:30
+bme	mon-fri	00:00	regular=09:00-17:30
+six	mon-fri	00:00	regular=09:00-17:20
+tse	mon-fri	00:00	regular=09:00-11:30 regular=12:30-15:30
+hkex	mon-fri	00:00	pre=09:00-09:30 regular=09:30-12:00 regular=13:00-16:00
+taiwan	mon-fri	00:00	pre=08:30-09:00 regular=09:00-13:31 post=14:00-14:30
+krx	mon-fri	00:00	regular=09:00-15:30
+india	mon-fri	00:00	pre=09:00-09:15 regular=09:15-15:30
+asx	mon-fri	00:00	regular=10:00-16:00
+fx	mon-fri	17:00	open=17:00-17:00
+crypto	mon-sun	00:00	open=00:00-00:00
