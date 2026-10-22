@@ -4197,9 +4197,9 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
     let (low, high) = scale.prices();
     let decimals = omacharts_engine::price_decimals(step, (low + high) / 2.0, kind);
 
-    // The ground first: sessions shaded and the lines between days, down the
-    // whole stack and under the gridlines, so they read as the chart's
-    // furniture rather than as something drawn on it.
+    // The ground first: session times shaded down the whole stack and under
+    // the gridlines, so they read as the chart's ground rather than as
+    // something drawn on it.
     draw_time_ground(cr, state, &columns, &plan);
     draw_price_grid(cr, state, plot_x, plot_w, price_y, price_h, &scale, &to_y);
     draw_time_axis(cr, state, &columns.bars, columns.bars_each(), plot_x, plot_w, height, bar_w, bars_x - columns.shift());
@@ -4216,7 +4216,6 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
     draw_indicator_fills(cr, state, &columns, &to_y);
     draw_candles(cr, state, &columns, &to_y);
     draw_indicator_lines(cr, state, &columns, &to_y);
-    draw_time_levels(cr, state, &columns, &plan, &to_y);
     cr.restore().ok();
     draw_drawings(cr, state, &plan, &scale);
 
@@ -5833,7 +5832,7 @@ fn on_screen_run(columns: &Columns, from: usize, to: usize) -> bool {
     to >= columns.first && from < columns.first + columns.visible
 }
 
-/// Shaded stretches of time and the lines between them, down the whole stack.
+/// Shaded stretches of time, down the whole stack.
 ///
 /// Under everything — the gridlines, the bands, the candles — because a
 /// session is the ground a bar stands on, and anything drawn over a candle
@@ -5846,133 +5845,24 @@ fn draw_time_ground(cr: &cairo::Context, state: &State, columns: &Columns, plan:
     cr.clip();
     for drawn in state.indicators.iter().filter(|d| d.indicator.visible) {
         let Output::Time(time) = &drawn.output else { continue };
-        if !time.spans.is_empty() {
-            let colour = time
-                .fill
+        for span in time.spans.iter().filter(|s| on_screen_run(columns, s.from, s.to)) {
+            let colour = span
+                .color
                 .as_ref()
                 .map(|choice| choice.resolve(&state.theme))
-                .unwrap_or_else(|| drawn.color.clone());
-            colors::set_source_alpha(cr, &colour, time.fill_alpha);
-            for span in time.spans.iter().filter(|s| on_screen_run(columns, s.from, s.to)) {
-                // Whole pixels, so two stretches that meet do not leave a
-                // hairline of double shading between them.
-                let x0 = bar_left(columns, span.from).max(left).round();
-                let x1 = bar_left(columns, span.to + 1).min(right).round();
-                if x1 > x0 {
-                    cr.rectangle(x0, top, x1 - x0, bottom - top);
-                }
-            }
-            let _ = cr.fill();
-        }
-        let stroke = drawn.indicator.stroke;
-        if time.markers.is_empty() || stroke.is_hidden() {
-            continue;
-        }
-        cr.save().ok();
-        cr.set_dash(&stroke.style.dashes(stroke.width), 0.0);
-        cr.set_line_width(stroke.width);
-        colors::set_source(cr, &drawn.color);
-        let mut labels = Vec::new();
-        for marker in time.markers.iter().filter(|m| on_screen_run(columns, m.bar, m.bar)) {
-            let x = bar_left(columns, marker.bar).round() + 0.5;
-            cr.move_to(x, top);
-            cr.line_to(x, bottom);
-            if let Some(label) = &marker.label {
-                labels.push((x, label));
-            }
-        }
-        let _ = cr.stroke();
-        cr.restore().ok();
-        // At the foot of the price plot rather than its head, which is where
-        // the chart's own name and the resolutions sit.
-        if !labels.is_empty() {
-            cr.select_font_face("sans-serif", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
-            cr.set_font_size(10.0);
-            colors::set_source_alpha(cr, &drawn.color, 0.9);
-            for (x, label) in labels {
-                cr.move_to(x + 4.0, plan.price_y + plan.price_h - 6.0);
-                let _ = cr.show_text(label);
+                .unwrap_or_else(|| state.theme.ui.text_muted.clone());
+            // Whole pixels, so two stretches that meet do not leave a
+            // hairline of double shading between them.
+            let x0 = bar_left(columns, span.from).max(left).round();
+            let x1 = bar_left(columns, span.to + 1).min(right).round();
+            if x1 > x0 {
+                colors::set_source_alpha(cr, &colour, span.alpha);
+                cr.rectangle(x0, top, x1 - x0, bottom - top);
+                let _ = cr.fill();
             }
         }
     }
     cr.restore().ok();
-}
-
-/// The levels a session or a window carries forward, over the bars.
-fn draw_time_levels(
-    cr: &cairo::Context,
-    state: &State,
-    columns: &Columns,
-    plan: &Layout,
-    to_y: &impl Fn(f64) -> f64,
-) {
-    let right = plan.plot_x + plan.plot_w;
-    // Each name once, on its latest stretch on screen — a label on every
-    // past day's line is a column of the same word — and gathered across
-    // every indicator, so two that end at the same bar can make room for
-    // each other.
-    let mut labels: Vec<(f64, f64, &String, &String)> = Vec::new();
-    for drawn in state.indicators.iter().filter(|d| d.indicator.visible) {
-        let Output::Time(time) = &drawn.output else { continue };
-        let stroke = drawn.indicator.stroke;
-        if time.levels.is_empty() || stroke.is_hidden() {
-            continue;
-        }
-        cr.save().ok();
-        cr.set_dash(&stroke.style.dashes(stroke.width), 0.0);
-        cr.set_line_width(stroke.width);
-        colors::set_source(cr, &drawn.color);
-        for level in time.levels.iter().filter(|l| on_screen_run(columns, l.from, l.to)) {
-            let x0 = bar_left(columns, level.from).max(plan.plot_x);
-            let x1 = bar_left(columns, level.to + 1).min(right);
-            let y = to_y(level.price).round() + 0.5;
-            cr.move_to(x0, y);
-            cr.line_to(x1, y);
-            match labels.iter_mut().find(|(.., label, _)| **label == level.label) {
-                Some(kept) if kept.0 <= x1 => *kept = (x1, y, &level.label, &drawn.color),
-                Some(_) => {}
-                None => labels.push((x1, y, &level.label, &drawn.color)),
-            }
-        }
-        let _ = cr.stroke();
-        cr.restore().ok();
-    }
-    if labels.is_empty() {
-        return;
-    }
-    // Named at the end nearest now, just above the line, where the eye
-    // arrives at it from the latest bar. One that would print over another
-    // steps left past it, which keeps it on its own line.
-    cr.select_font_face("sans-serif", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
-    cr.set_font_size(10.0);
-    const LINE: f64 = 12.0;
-    let mut placed: Vec<(f64, f64, f64)> = Vec::new();
-    for (x1, y, label, colour) in labels {
-        let Ok(extents) = cr.text_extents(label) else { continue };
-        let width = extents.width();
-        let mut right_edge = x1 - 4.0;
-        while let Some(clash) = placed
-            .iter()
-            .find(|(left, end, at)| (at - y).abs() < LINE && right_edge > *left && right_edge - width < *end)
-        {
-            right_edge = clash.0 - 6.0;
-        }
-        if right_edge - width < plan.plot_x + 4.0 {
-            continue;
-        }
-        // A halo of the chart's own ground first, so a label that lands on
-        // a candle still reads: the levels are drawn over the bars, and the
-        // latest bar is exactly where they are named.
-        cr.move_to(right_edge - width, y - 3.0);
-        cr.text_path(label);
-        colors::set_source(cr, &state.theme.ui.background);
-        cr.set_line_width(3.0);
-        cr.set_line_join(cairo::LineJoin::Round);
-        let _ = cr.stroke_preserve();
-        colors::set_source_alpha(cr, colour, 0.95);
-        let _ = cr.fill();
-        placed.push((right_edge - width, right_edge, y));
-    }
 }
 
 /// A band's own colour, or the indicator's if it has none.

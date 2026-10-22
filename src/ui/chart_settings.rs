@@ -1051,10 +1051,8 @@ fn open_indicator_panel_for(owner: &Rc<Owner>, refresh: &Refresh, id: u32, panel
     let colour = drawn_colour(owner, &indicators, id);
 
     let page = adw::PreferencesPage::new();
-    if indicator.kind.category() == indicators::Category::Time {
-        for group in time::groups(owner, refresh, &colour, &indicator) {
-            page.add(&group);
-        }
+    if indicator.kind == Kind::SessionTimes {
+        time::fill(owner, refresh, &page, indicator.id);
     } else {
         page.add(&parameters_group(owner, refresh, &indicator));
         if let Some(group) = appearance_group(owner, refresh, &colour, &indicator) {
@@ -1636,8 +1634,8 @@ fn parameters_group(
                 ),
             );
         }
-        // Edited on pages of their own; see `time`.
-        Params::Sessions { .. } | Params::TimeWindow { .. } | Params::SessionLevels { .. } => {}
+        // Edited on a page of its own; see `time`.
+        Params::SessionTimes { .. } => {}
     }
     group
 }
@@ -1936,9 +1934,7 @@ fn reset_row(
             | Params::Macd { .. }
             | Params::Atr { .. }
             | Params::Stochastic { .. }
-            | Params::Sessions { .. }
-            | Params::TimeWindow { .. }
-            | Params::SessionLevels { .. } => {}
+            | Params::SessionTimes { .. } => {}
         });
         refresh.run();
     });

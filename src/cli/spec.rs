@@ -208,14 +208,10 @@ const SESSIONS: &[&str] = &["regular", "extended"];
 const SPLITS: &[&str] = &["horizontal", "vertical"];
 const KINDS: &[&str] = &[
     "volume", "sma", "ema", "vwap", "bollinger", "volume_profile", "rsi", "macd", "atr",
-    "stochastic", "sessions", "time_window", "session_levels",
+    "stochastic", "session_times",
 ];
-/// Where a sessions indicator draws its lines.
-const SEPARATORS: &[&str] = &["none", "day", "week", "month"];
-/// The parts of a trading day a time window can be counted from.
-const PARTS: &[&str] = &["regular", "overnight", "pre", "post"];
-/// Which part of each day session levels are taken from.
-const LEVEL_SOURCES: &[&str] = &["regular", "extended", "day"];
+/// The ranges Session Times offers ready made, and `custom`.
+const RANGE_PRESETS: &[&str] = &["eth", "rth", "asia", "london", "new_york", "custom"];
 const ANCHORS: &[&str] = &["session", "week", "month", "quarter", "year"];
 const LINE_STYLES: &[&str] = &["solid", "dashed", "dotted"];
 const SWITCHES: &[&str] = &["on", "off"];
@@ -310,7 +306,7 @@ const INDICATOR_FLAGS: &[Flag] = &[
     Flag::valued("up-color", "COLOUR", "volume bars of a rising session"),
     Flag::valued("down-color", "COLOUR", "volume bars of a falling session"),
     Flag::valued("d-color", "COLOUR", "the stochastic's %D line"),
-    Flag::valued("color", "COLOUR", "the line, or the volume profile's background"),
+    Flag::valued("color", "COLOUR", "the line, the volume profile's background, or a Session Times range's shading"),
     Flag::valued("width", "F", "line thickness; 0 draws no line at all"),
     Flag::valued("style", "STYLE", "how the line is drawn").of(LINE_STYLES),
     Flag::valued("height", "F", "share of the chart a pane takes, 0.05-0.95: volume, RSI, MACD, ATR, stochastic"),
@@ -318,22 +314,14 @@ const INDICATOR_FLAGS: &[Flag] = &[
     Flag::valued("oversold", "F", "the RSI or stochastic level drawn across the bottom, 0-100 and below overbought"),
     Flag::valued("bands", "LIST", "which bands are drawn: 1,2,3 for a VWAP, 1 or none for a Bollinger"),
     Flag::valued("band-alpha", "F", "how solid a band's shading is, 0-1"),
-    Flag::valued("shade", "BOOL", "shade the extended hours, or the window").of(SWITCHES),
-    Flag::valued("shade-alpha", "F", "how solid the shading is, 0.02-0.6"),
-    Flag::valued("shade-color", "COLOUR", "the sessions' shading; unset is the theme's muted text"),
-    Flag::valued("separators", "WHEN", "where a sessions indicator draws a line").of(SEPARATORS),
-    Flag::valued("name", "TEXT", "what a time window is called, which its line and levels are labelled with"),
-    Flag::valued("from", "TIME", "a time window's start, in the chart's time zone unless --zone: 9am, 09:30, 2130"),
-    Flag::valued("to", "TIME", "a time window's end; before --from runs past midnight"),
-    Flag::valued("zone", "ZONE", "the clock a time window keeps: an IANA name, or `chart` for the chart's own"),
-    Flag::valued("within", "PART", "count a time window from where this part of the day begins").of(PARTS),
-    Flag::valued("offset", "MINUTES", "how long after that part begins the window starts"),
-    Flag::valued("minutes", "MINUTES", "how long a window counted from a session lasts"),
-    Flag::valued("weekdays", "BOOL", "leave out the weekend").of(SWITCHES),
-    Flag::valued("mark", "BOOL", "a line where each window begins").of(SWITCHES),
-    Flag::valued("range", "BOOL", "each window's high and low, held until the next").of(SWITCHES),
-    Flag::valued("source", "PART", "the part of each day session levels come from").of(LEVEL_SOURCES),
-    Flag::valued("levels", "LIST", "which session levels to draw: high,low,close,open,mid"),
+    Flag::valued("add-range", "RANGE", "Session Times: add a range, and set what follows on it").of(RANGE_PRESETS),
+    Flag::valued("remove-range", "N", "Session Times: take away the range with this number, from 1"),
+    Flag::valued("range", "N", "Session Times: which range the flags that follow change, from 1"),
+    Flag::valued("name", "TEXT", "a range's name"),
+    Flag::valued("from", "TIME", "where a range starts, in the chart's time zone unless --zone: 9am, 09:30, 2130"),
+    Flag::valued("to", "TIME", "where a range ends; before --from runs past midnight"),
+    Flag::valued("zone", "ZONE", "the clock a range keeps: an IANA name, or `chart` for the chart's own"),
+    Flag::valued("shade-alpha", "F", "how solid a range's shading is, 0.02-0.6; every range, unless one is named"),
     Flag::valued("visible", "BOOL", "draw it at all").of(SWITCHES),
 ];
 
@@ -1412,16 +1400,10 @@ mod tests {
     }
 
     #[test]
-    fn the_session_choices_on_offer_are_the_ones_that_exist() {
-        use omacharts_engine::exchanges::Part;
-        use omacharts_engine::indicators::{LevelSource, Separators};
-        let separators: Vec<&str> = Separators::ALL.iter().map(|s| s.key()).collect();
-        assert_eq!(SEPARATORS.to_vec(), separators);
-        let sources: Vec<&str> = LevelSource::ALL.iter().map(|s| s.key()).collect();
-        assert_eq!(LEVEL_SOURCES.to_vec(), sources);
-        for part in PARTS {
-            assert!(Part::from_key(part).is_some_and(|p| p.is_extended() || p == Part::Regular));
-        }
+    fn the_session_ranges_on_offer_are_the_ones_that_exist() {
+        use omacharts_engine::indicators::Preset;
+        let engine: Vec<&str> = Preset::ALL.iter().map(|p| p.key()).collect();
+        assert_eq!(RANGE_PRESETS.to_vec(), engine);
     }
 
     #[test]

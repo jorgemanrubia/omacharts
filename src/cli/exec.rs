@@ -12,11 +12,10 @@
 use serde_json::{json, Value};
 
 use chrono_tz::Tz;
-use omacharts_engine::exchanges::Part;
-use omacharts_engine::indicators::time::{MAX_SHADE_ALPHA, MIN_SHADE_ALPHA};
+use omacharts_engine::indicators::time::{MAX_ALPHA, MIN_ALPHA};
 use omacharts_engine::indicators::{
-    bollinger::MAX_DEVIATIONS, Level, LevelSource, LineStyle, Separators, Stroke, Window,
-    MAX_FILL_ALPHA, MAX_PANE_SHARE, MIN_FILL_ALPHA, MIN_PANE_SHARE,
+    bollinger::MAX_DEVIATIONS, Hours, LineStyle, Preset, Stroke, TimeRange, MAX_FILL_ALPHA,
+    MAX_PANE_SHARE, MIN_FILL_ALPHA, MIN_PANE_SHARE,
 };
 use omacharts_engine::providers;
 use omacharts_engine::theme::{
@@ -2683,23 +2682,16 @@ struct Edits {
     oversold: Option<f64>,
     bands: Option<Vec<usize>>,
     band_alpha: Option<f64>,
-    shade: Option<bool>,
-    shade_alpha: Option<f64>,
-    shade_color: Option<ColorChoice>,
-    separators: Option<Separators>,
+    /// Session Times' ranges, counted from one as a command names them.
+    add_range: Option<Preset>,
+    remove_range: Option<usize>,
+    range: Option<usize>,
     name: Option<String>,
     from: Option<u32>,
     to: Option<u32>,
-    /// `Some(None)` puts the window back on the chart's own clock.
+    /// `Some(None)` puts a range back on the chart's own clock.
     zone: Option<Option<String>>,
-    within: Option<Part>,
-    offset: Option<u32>,
-    minutes: Option<u32>,
-    weekdays: Option<bool>,
-    mark: Option<bool>,
-    range: Option<bool>,
-    source: Option<LevelSource>,
-    levels: Option<Vec<Level>>,
+    shade_alpha: Option<f64>,
     visible: Option<bool>,
 }
 
@@ -2713,21 +2705,15 @@ fn time_of_day(m: &clap::ArgMatches, id: &str) -> Result<Option<u32>, Fault> {
     }
 }
 
-/// A whole number of minutes, nought or more.
-fn minutes(m: &clap::ArgMatches, id: &str) -> Result<Option<u32>, Fault> {
+/// A range's place in the list, from one, as a command counts.
+fn place(m: &clap::ArgMatches, id: &str) -> Result<Option<usize>, Fault> {
     match arg(m, id) {
         None => Ok(None),
-        Some(text) => text
-            .parse::<u32>()
-            .ok()
-            .filter(|n| *n <= 24 * 60)
-            .map(Some)
-            .ok_or_else(|| Fault::usage(format!("--{id} takes whole minutes, up to a day, not {text:?}"))),
+        Some(text) => match text.parse::<usize>() {
+            Ok(n) if n >= 1 => Ok(Some(n - 1)),
+            _ => Err(Fault::usage(format!("--{id} takes a range's number, from 1, not {text:?}"))),
+        },
     }
-}
-
-fn switch(m: &clap::ArgMatches, id: &str) -> Option<bool> {
-    arg(m, id).map(|v| v == "on")
 }
 
 impl Edits {
@@ -2804,15 +2790,15 @@ impl Edits {
             // for the same reason as the height above: a figure it would
             // quietly bring back reads as the command having worked.
             band_alpha: bounded(m, "band-alpha", MIN_FILL_ALPHA, MAX_FILL_ALPHA)?,
-            shade: switch(m, "shade"),
-            shade_alpha: bounded(m, "shade-alpha", MIN_SHADE_ALPHA, MAX_SHADE_ALPHA)?,
-            shade_color: colour(m, "shade-color")?,
-            separators: match arg(m, "separators") {
+            add_range: match arg(m, "add-range") {
                 None => None,
-                Some(text) => Some(Separators::from_key(text).ok_or_else(|| {
-                    Fault::usage(format!("{text:?} is not a separator; try day, week, month or none"))
+                Some(text) => Some(Preset::from_key(text).ok_or_else(|| {
+                    Fault::usage(format!("{text:?} is not a range; try eth, rth, london or custom"))
                 })?),
             },
+            remove_range: place(m, "remove-range")?,
+            range: place(m, "range")?,
+            shade_alpha: bounded(m, "shade-alpha", MIN_ALPHA, MAX_ALPHA)?,
             name: arg(m, "name").map(|n| n.trim().to_string()),
             from: time_of_day(m, "from")?,
             to: time_of_day(m, "to")?,
@@ -2829,37 +2815,6 @@ impl Edits {
                         .name()
                         .to_string(),
                 )),
-            },
-            within: match arg(m, "within") {
-                None => None,
-                Some(text) => Some(Part::from_key(text).filter(|p| *p != Part::Open).ok_or_else(|| {
-                    Fault::usage(format!("{text:?} is not a part of the day; try regular or overnight"))
-                })?),
-            },
-            offset: minutes(m, "offset")?,
-            minutes: minutes(m, "minutes")?,
-            weekdays: switch(m, "weekdays"),
-            mark: switch(m, "mark"),
-            range: switch(m, "range"),
-            source: match arg(m, "source") {
-                None => None,
-                Some(text) => Some(LevelSource::from_key(text).ok_or_else(|| {
-                    Fault::usage(format!("{text:?} is not a level source; try regular, extended or day"))
-                })?),
-            },
-            levels: match arg(m, "levels") {
-                None => None,
-                Some(text) => Some(
-                    text.split(',')
-                        .map(|part| Level::from_key(part.trim()))
-                        .collect::<Option<Vec<Level>>>()
-                        .filter(|levels| !levels.is_empty())
-                        .ok_or_else(|| {
-                            Fault::usage(format!(
-                                "{text:?} is not a list of levels; try high,low,close (open and mid too)"
-                            ))
-                        })?,
-                ),
             },
             visible: arg(m, "visible").map(|v| v == "on"),
         })
@@ -2889,22 +2844,14 @@ impl Edits {
             && self.oversold.is_none()
             && self.bands.is_none()
             && self.band_alpha.is_none()
-            && self.shade.is_none()
+            && self.add_range.is_none()
+            && self.remove_range.is_none()
+            && self.range.is_none()
             && self.shade_alpha.is_none()
-            && self.shade_color.is_none()
-            && self.separators.is_none()
             && self.name.is_none()
             && self.from.is_none()
             && self.to.is_none()
             && self.zone.is_none()
-            && self.within.is_none()
-            && self.offset.is_none()
-            && self.minutes.is_none()
-            && self.weekdays.is_none()
-            && self.mark.is_none()
-            && self.range.is_none()
-            && self.source.is_none()
-            && self.levels.is_none()
             && self.visible.is_none()
     }
 
@@ -3097,9 +3044,13 @@ impl Edits {
             }
         }
 
-        self.apply_time(&mut stored["params"], kind)?;
+        self.apply_ranges(stored, kind)?;
 
-        if let Some(colour) = &self.color {
+        // Session Times has no colour of its own: each range carries one,
+        // and `--color` went to them above.
+        if let Some(colour) = &self.color
+            && kind != IndicatorKind::SessionTimes
+        {
             stored["color"] = to_value(colour)?;
         }
         if let Some(width) = self.width {
@@ -3119,112 +3070,100 @@ impl Edits {
 }
 
 impl Edits {
-    /// The flags only the indicators of time take.
-    fn apply_time(&self, params: &mut Value, kind: IndicatorKind) -> Result<(), Fault> {
-        let refuse = |what: &str| Fault::usage(format!("{} has no {what}", kind.short_name()));
-        // Written only where the indicator has such a thing, and refused
-        // otherwise rather than added: `--shade` on a moving average is a
-        // mistake to say so about, not a field to grow.
-        let set = |params: &mut Value, key: &str, value: Value, what: &str| match params.get(key).is_some() {
-            true => {
-                params[key] = value;
-                Ok(())
-            }
-            false => Err(refuse(what)),
-        };
-        if let Some(on) = self.shade {
-            set(params, "shade", json!(on), "shading")?;
+    /// The flags only Session Times takes: its ranges, and what each one is.
+    ///
+    /// In the order a person would do it: take a range away, add one, then
+    /// set what was asked on the range named with `--range` — or on the one
+    /// just added, which is what somebody adding a range and naming it in
+    /// the same breath means.
+    fn apply_ranges(&self, stored: &mut Value, kind: IndicatorKind) -> Result<(), Fault> {
+        let edits_a_range = self.name.is_some()
+            || self.from.is_some()
+            || self.to.is_some()
+            || self.zone.is_some()
+            || self.shade_alpha.is_some();
+        let touches = self.add_range.is_some() || self.remove_range.is_some() || self.range.is_some();
+        if !(touches || edits_a_range) {
+            return Ok(());
         }
-        if let Some(alpha) = self.shade_alpha {
-            set(params, "shade_alpha", json!(alpha), "shading")?;
-        }
-        if let Some(colour) = &self.shade_color {
-            match kind == IndicatorKind::Sessions {
-                true => set(params, "shade_color", to_value(colour)?, "shading colour")?,
-                false => return Err(refuse("shading colour of its own; it shades in its line's")),
-            }
-        }
-        if let Some(separators) = self.separators {
-            set(params, "separators", json!(separators.key()), "separators")?;
-        }
-        if let Some(name) = &self.name {
-            set(params, "name", json!(name), "name")?;
-        }
-        if let Some(zone) = &self.zone {
-            match kind == IndicatorKind::TimeWindow {
-                true => params["zone"] = json!(zone),
-                false => return Err(refuse("time zone")),
-            }
-        }
-        for (on, key, what) in [
-            (self.weekdays, "weekdays", "weekend to leave out"),
-            (self.mark, "mark", "line at its start"),
-            (self.range, "range", "high and low"),
-        ] {
-            if let Some(on) = on {
-                set(params, key, json!(on), what)?;
-            }
-        }
-        // The window's hours. Clock times and a session's open are two ways
-        // of saying where it is, so giving either kind switches it over, and
-        // whatever the other kind left unsaid comes from what it was.
-        let clock = self.from.is_some() || self.to.is_some();
-        let session = self.within.is_some() || self.offset.is_some() || self.minutes.is_some();
-        if clock || session {
-            if kind != IndicatorKind::TimeWindow {
-                return Err(refuse(match clock {
-                    true => "hours",
-                    false => "session to count from",
-                }));
-            }
-            if clock && session {
-                return Err(Fault::usage(
-                    "a window is either clock times (--from, --to) or counted from a session \
-                     (--within, --offset, --minutes), not both"
-                        .into(),
-                ));
-            }
-            let was: Option<Window> = serde_json::from_value(params["window"].clone()).ok();
-            let window = match (clock, was) {
-                (true, Some(Window::Clock { from, to })) => Window::Clock {
-                    from: self.from.unwrap_or(from),
-                    to: self.to.unwrap_or(to),
-                },
-                (true, _) => match (self.from, self.to) {
-                    (Some(from), Some(to)) => Window::Clock { from, to },
-                    _ => {
-                        return Err(Fault::usage(
-                            "a window that was not clock times needs both --from and --to".into(),
-                        ));
-                    }
-                },
-                (false, Some(Window::Session { part, offset, minutes })) => Window::Session {
-                    part: self.within.unwrap_or(part),
-                    offset: self.offset.unwrap_or(offset),
-                    minutes: self.minutes.unwrap_or(minutes),
-                },
-                (false, _) => Window::Session {
-                    part: self.within.unwrap_or(Part::Regular),
-                    offset: self.offset.unwrap_or(0),
-                    minutes: self.minutes.unwrap_or(30),
-                },
+        if kind != IndicatorKind::SessionTimes {
+            let what = match touches {
+                true => "ranges",
+                false if self.shade_alpha.is_some() => "shading",
+                false => "hours",
             };
-            if let Window::Clock { from, to } = window
-                && from == to
-            {
-                return Err(Fault::usage("--from and --to are the same time, which is no window".into()));
+            return Err(Fault::usage(format!("{} has no {what}", kind.short_name())));
+        }
+        let mut ranges: Vec<TimeRange> = serde_json::from_value(stored["params"]["ranges"].clone())
+            .map_err(|e| Fault::new(super::EXIT_ERROR, e.to_string()))?;
+        let numbered = |at: usize, ranges: &[TimeRange]| match at < ranges.len() {
+            true => Ok(at),
+            false => Err(Fault::usage(format!(
+                "there is no range {}; this has {} (see `chart indicator list`)",
+                at + 1,
+                ranges.len()
+            ))),
+        };
+        if let Some(at) = self.remove_range {
+            let at = numbered(at, &ranges)?;
+            ranges.remove(at);
+        }
+        let mut target = match self.range {
+            Some(at) => Some(numbered(at, &ranges)?),
+            None => None,
+        };
+        if let Some(preset) = self.add_range {
+            ranges.push(preset.range());
+            target = target.or(Some(ranges.len() - 1));
+        }
+        // With one range there is no question which is meant; with more,
+        // only the shading may go on all of them at once.
+        let target = match target {
+            Some(at) => Some(at),
+            None if ranges.len() == 1 => Some(0),
+            None if self.name.is_some() || self.from.is_some() || self.to.is_some() || self.zone.is_some() => {
+                return Err(Fault::usage(format!(
+                    "this has {} ranges; say which with --range N",
+                    ranges.len()
+                )));
             }
-            if let Window::Session { minutes: 0, .. } = window {
-                return Err(Fault::usage("--minutes 0 is no window".into()));
+            None => None,
+        };
+        let colour = self.color.clone();
+        let alpha = self.shade_alpha;
+        let indexes: Vec<usize> = match target {
+            Some(at) => vec![at],
+            None => (0..ranges.len()).collect(),
+        };
+        for at in indexes {
+            let Some(range) = ranges.get_mut(at) else { continue };
+            if let Some(name) = &self.name {
+                range.name = name.clone();
             }
-            params["window"] = to_value(&window)?;
+            if self.from.is_some() || self.to.is_some() || self.zone.is_some() {
+                let Hours::Clock { from, to, zone } = &mut range.hours else {
+                    return Err(Fault::usage(format!(
+                        "{} follows the instrument's exchange, so it has no hours of its own",
+                        range.name
+                    )));
+                };
+                *from = self.from.unwrap_or(*from);
+                *to = self.to.unwrap_or(*to);
+                if let Some(wanted) = &self.zone {
+                    *zone = wanted.clone();
+                }
+                if from == to {
+                    return Err(Fault::usage("--from and --to are the same time, which is no range".into()));
+                }
+            }
+            if let Some(colour) = &colour {
+                range.color = Some(colour.clone());
+            }
+            if let Some(alpha) = alpha {
+                range.alpha = alpha;
+            }
         }
-        if let Some(source) = self.source {
-            set(params, "source", json!(source.key()), "source")?;
-        }
-        if let Some(levels) = &self.levels {
-            set(params, "levels", to_value(levels)?, "levels")?;
-        }
+        stored["params"]["ranges"] = to_value(&ranges)?;
         Ok(())
     }
 }
@@ -4831,11 +4770,15 @@ mod tests {
                 })
                 .collect()
         };
-        assert_eq!(kinds("Macro"), vec![vec!["volume", "rsi"], vec!["volume", "rsi"]]);
+        assert_eq!(
+            kinds("Macro"),
+            vec![vec!["volume", "session_times", "rsi"], vec!["volume", "session_times", "rsi"]]
+        );
         assert_eq!(kinds("Semis"), vec![Vec::<String>::new()], "a chart on none followed anyway");
 
         run("template indicator set Default rsi --period 21", &store);
         run("template indicator remove Default volume", &store);
+        run("template indicator remove Default session_times", &store);
         let held = json_of(&run("template indicator list Default --json", &store));
         assert_eq!(held["indicators"][0]["params"]["period"], 21);
         assert_eq!(kinds("Macro"), vec![vec!["rsi"], vec!["rsi"]]);
@@ -4851,8 +4794,9 @@ mod tests {
         let out = run("chart set --book Macro --template Default", &store);
         assert_eq!(out.code, 0, "{}", out.err);
         let listed = json_of(&run("chart indicator list --book Macro --json", &store));
-        assert_eq!(listed["indicators"].as_array().unwrap().len(), 1);
+        assert_eq!(listed["indicators"].as_array().unwrap().len(), 2);
         assert_eq!(listed["indicators"][0]["kind"], "volume");
+        assert_eq!(listed["indicators"][1]["kind"], "session_times");
 
         // Onto none: the empty set, and no longer following.
         let out = run("chart set --book Macro --template none", &store);
@@ -4881,9 +4825,9 @@ mod tests {
         let workspace = Workspace::load(&store);
         let panes = charts::panes(&workspace.books()[0]);
         assert_eq!(panes[0]["template"], Value::Null);
-        assert_eq!(panes[0]["indicators"].as_array().unwrap().len(), 2, "kept volume, added sma");
-        assert_eq!(panes[1]["indicators"].as_array().unwrap().len(), 1);
-        assert_eq!(crate::templates::all(&store)[0].indicators.len(), 1);
+        assert_eq!(panes[0]["indicators"].as_array().unwrap().len(), 3, "kept the template's two, added sma");
+        assert_eq!(panes[1]["indicators"].as_array().unwrap().len(), 2);
+        assert_eq!(crate::templates::all(&store)[0].indicators.len(), 2);
     }
 
     /// Nothing disappears from a chart when its template goes.
@@ -4898,7 +4842,7 @@ mod tests {
         let workspace = Workspace::load(&store);
         let pane = &charts::panes(&workspace.books()[0])[0];
         assert_eq!(pane["template"], Value::Null);
-        assert_eq!(pane["indicators"].as_array().unwrap().len(), 2);
+        assert_eq!(pane["indicators"].as_array().unwrap().len(), 3);
         assert_eq!(ChartDefaults::load(&store).template, None);
     }
 
@@ -5970,88 +5914,61 @@ mod tests {
         }
     }
 
+    /// Session Times is a list of ranges: added by name, changed by number,
+    /// taken away by number, and a colour goes to the range it is said of.
     #[test]
-    fn sessions_take_their_shading_and_their_separators() {
+    fn session_times_holds_ranges_added_changed_and_removed_by_number() {
         let store = bare();
         run("chartbook create Macro --switch", &store);
+        let out = run("chart indicator add session_times --book Macro", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert!(out.out.contains("Sessions · ETH"), "{}", out.out);
+
         let out = run(
-            "chart indicator add sessions --book Macro --separators week --shade-alpha 0.1 \
-             --shade-color Blue",
+            "chart indicator set session_times --book Macro --add-range london --color Blue --shade-alpha 0.1",
             &store,
         );
         assert_eq!(out.code, 0, "{}", out.err);
-        assert!(out.out.contains("Sessions · week"), "{}", out.out);
-        let listed = run("chart indicator list --book Macro --json", &store);
-        let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
-        let params = &parsed["indicators"][0]["params"];
-        assert_eq!(params["separators"], "week");
-        assert_eq!(params["shade_alpha"], 0.1);
-        assert_eq!(params["shade_color"]["name"], "Blue");
-        assert_eq!(parsed["indicators"][0]["stroke"]["style"], "dashed", "a separator is dashed to start");
-    }
-
-    /// A window is clock times or a stretch after a session opens, and the
-    /// flags of each switch it over; the hours are read however they are
-    /// written.
-    #[test]
-    fn a_time_window_is_set_in_clock_times_or_from_a_session() {
-        let store = bare();
-        run("chartbook create Macro --switch", &store);
         let out = run(
-            "chart indicator add time_window --book Macro --name London --from 8am --to 1630 \
-             --zone Europe/London --mark on",
+            "chart indicator set session_times --book Macro --add-range custom --name Lunch --from 12pm --to 1:30pm",
             &store,
         );
         assert_eq!(out.code, 0, "{}", out.err);
         let listed = run("chart indicator list --book Macro --json", &store);
         let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
-        let params = &parsed["indicators"][0]["params"];
-        assert_eq!(params["name"], "London");
-        assert_eq!(params["window"], serde_json::json!({"type": "clock", "from": 480, "to": 990}));
-        assert_eq!(params["zone"], "Europe/London");
-        assert_eq!(params["mark"], true);
+        let ranges = &parsed["indicators"][0]["params"]["ranges"];
+        assert_eq!(ranges[0]["hours"]["type"], "eth");
+        assert!(ranges[0]["color"].is_null(), "ETH kept its muted default");
+        assert_eq!(ranges[1]["name"], "London");
+        assert_eq!(ranges[1]["hours"]["zone"], "Europe/London");
+        assert_eq!(ranges[1]["color"]["name"], "Blue");
+        assert_eq!(ranges[1]["alpha"], 0.1);
+        assert_eq!(ranges[2]["name"], "Lunch");
+        assert_eq!(ranges[2]["hours"], serde_json::json!({"type": "clock", "from": 720, "to": 810}));
 
-        let out = run("chart indicator set time_window --book Macro --within regular --minutes 60 --zone chart", &store);
+        let out = run("chart indicator set session_times --book Macro --range 3 --zone Europe/Madrid", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        let out = run("chart indicator set session_times --book Macro --remove-range 2", &store);
         assert_eq!(out.code, 0, "{}", out.err);
         let listed = run("chart indicator list --book Macro --json", &store);
         let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
-        let params = &parsed["indicators"][0]["params"];
-        assert_eq!(
-            params["window"],
-            serde_json::json!({"type": "session", "part": "regular", "offset": 0, "minutes": 60})
-        );
-        assert!(params["zone"].is_null(), "back on the chart's own clock");
+        let ranges = &parsed["indicators"][0]["params"]["ranges"];
+        assert_eq!(ranges.as_array().map(Vec::len), Some(2));
+        assert_eq!(ranges[1]["hours"]["zone"], "Europe/Madrid");
 
         for (line, says) in [
             ("--from 25:00", "time of day"),
-            ("--from 9am --within regular", "not both"),
-            ("--from 9am", "both --from and --to"),
-            ("--zone Mars/Olympus", "not a time zone"),
+            ("--from 9am", "say which with --range"),
+            ("--range 1 --from 9am", "no hours of its own"),
+            ("--range 9 --shade-alpha 0.1", "no range 9"),
+            ("--add-range tokyo", "invalid value"),
+            ("--range 2 --zone Mars/Olympus", "not a time zone"),
         ] {
-            let out = run(&format!("chart indicator set time_window --book Macro {line}"), &store);
+            let out = run(&format!("chart indicator set session_times --book Macro {line}"), &store);
             assert_eq!(out.code, super::super::EXIT_USAGE, "{line}");
             assert!(out.err.contains(says), "{line}: {}", out.err);
         }
-        let refused = run("chart indicator add sma --book Macro --from 9am --to 10am", &store);
-        assert_eq!(refused.code, super::super::EXIT_USAGE);
-    }
-
-    #[test]
-    fn session_levels_take_their_source_and_which_levels() {
-        let store = bare();
-        run("chartbook create Macro --switch", &store);
-        let out = run(
-            "chart indicator add session_levels --book Macro --source extended --levels high,low",
-            &store,
-        );
-        assert_eq!(out.code, 0, "{}", out.err);
-        assert!(out.out.contains("Levels (ON)"), "{}", out.out);
-        let listed = run("chart indicator list --book Macro --json", &store);
-        let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
-        let params = &parsed["indicators"][0]["params"];
-        assert_eq!(params["source"], "extended");
-        assert_eq!(params["levels"], serde_json::json!(["high", "low"]));
-        let refused = run("chart indicator set session_levels --book Macro --levels high,top", &store);
+        let refused = run("chart indicator add sma --book Macro --add-range eth", &store);
         assert_eq!(refused.code, super::super::EXIT_USAGE);
     }
 

@@ -9,10 +9,9 @@ description: >-
   open", "a 2x2 of the majors with RSI on each, linked", "put a 200-day
   average on this", "add AMD to my semis list", "what have I got open". Also
   for indicators (moving average, VWAP, Bollinger bands, volume profile,
-  RSI, MACD, ATR), for session times — "shade the overnight", "a line at
-  each day", "mark the London open", "the opening range", "prior day high
-  and low", "overnight high and low" — and for which time zone and 12 or
-  24 hours the charts show, resolutions and sessions, bar styles and colours, watchlists and their
+  RSI, MACD, ATR), for session times — "shade the overnight", "shade
+  the London session", "show RTH", "a lunch hour background" — and for
+  which time zone and 12 or 24 hours the charts show, resolutions and sessions, bar styles and colours, watchlists and their
   sections, chartbooks, link modes, the instrument search, and the cached
   price data. Also for marking a chart up — "draw the trendline", "box the
   range", "circle that gap", "mark the breakout", "label this high" — which
@@ -83,7 +82,7 @@ and, for a feed that streams, what the open window holds a subscription to and
 whether anything has ticked. A chart on a streamed feed is never refetched on
 a timer; if it looks still, `provider status` is where to look first.
 
-**Times are the chart's.** A time given to a command — a window's `--from`
+**Times are the chart's.** A time given to a command — a range's `--from`
 and `--to`, a drawing's `WHEN` — is read in the clock the charts read,
 `config get chart_time_zone` (New York unless set; `exchange` means each
 chart's own exchange). A market named by its city keeps that city's clock
@@ -136,18 +135,19 @@ omacharts chart set --chart pos:1 --template Momentum
 omacharts template indicator set Momentum rsi --period 21
 ```
 
-**Set ES up for the open.** Extended hours shaded with a line at each day,
-the London session with its range, the opening range, and the prior regular
-session's high, low and close:
+**Shade the sessions.** Session Times is one indicator holding ranges, each
+shaded behind the bars. New charts get it from the "Default" template with
+the extended hours set back, so changing it there changes every chart on
+it. Add London and a custom lunch hour, then recolour the second range:
 
 ```
-omacharts chart set --symbol ES --resolution 5m --session extended
-omacharts chart indicator add sessions --separators day
-omacharts chart indicator add time_window --name London --from 8am --to 4:30pm --zone Europe/London --mark on --range on
-omacharts chart indicator add time_window --name OR --within regular --minutes 30
-omacharts chart indicator add session_levels --source regular --levels high,low,close
-omacharts chart indicator add session_levels --source extended --levels high,low
+omacharts template indicator set Default session_times --add-range london
+omacharts template indicator set Default session_times --add-range custom --name Lunch --from 12pm --to 1:30pm
+omacharts template indicator set Default session_times --range 2 --color Blue --shade-alpha 0.1
 ```
+
+A chart on no template gets its own with `chart indicator add session_times`,
+which starts with ETH.
 
 **Each chart has a link mode**, which is what a click in the watchlist does
 to it. `focus` (the default) takes the click only while it is the focused

@@ -28,7 +28,7 @@ use crate::theme::{ColorChoice, Theme, SWATCH_SEQUENCE};
 pub use bands::{Band, BandSeries, Bands, FILL_ALPHA, MAX_FILL_ALPHA, MIN_FILL_ALPHA};
 pub use periods::Reset;
 pub use profile::{Profile, ProfileRow};
-pub use time::{Level, LevelRun, LevelSource, Marker, Preset, Separators, Span, Time, Window, PRESETS};
+pub use time::{Hours, Preset, Span, Time, TimeRange};
 
 /// How a line is drawn.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
@@ -103,9 +103,7 @@ pub enum Kind {
     Macd,
     Atr,
     Stochastic,
-    Sessions,
-    TimeWindow,
-    SessionLevels,
+    SessionTimes,
 }
 
 /// The families the picker and the manual sort indicators into.
@@ -147,7 +145,7 @@ impl Category {
 }
 
 impl Kind {
-    pub const ALL: [Kind; 13] = [
+    pub const ALL: [Kind; 11] = [
         Kind::Volume,
         Kind::Sma,
         Kind::Ema,
@@ -160,9 +158,7 @@ impl Kind {
         Kind::Macd,
         Kind::Atr,
         Kind::Stochastic,
-        Kind::Sessions,
-        Kind::TimeWindow,
-        Kind::SessionLevels,
+        Kind::SessionTimes,
     ];
 
     pub fn category(self) -> Category {
@@ -170,25 +166,17 @@ impl Kind {
             Kind::Sma | Kind::Ema | Kind::Vwap | Kind::Bollinger => Category::Averages,
             Kind::Volume | Kind::VolumeProfile => Category::Volume,
             Kind::Rsi | Kind::Macd | Kind::Atr | Kind::Stochastic => Category::Momentum,
-            Kind::Sessions | Kind::TimeWindow | Kind::SessionLevels => Category::Time,
+            Kind::SessionTimes => Category::Time,
         }
     }
 
     /// Whether a colour from the palette is handed to it when nobody chose
-    /// one. Session shading and day separators are furniture, not a series:
-    /// given the next sequence colour they would take the blue the first
-    /// moving average was going to get, and shout across the whole chart.
+    /// one. Session shading is the chart's ground, not a series: given the
+    /// next sequence colour it would take the blue the first moving average
+    /// was going to get, and shout across the whole chart. Its ranges each
+    /// carry a colour of their own instead.
     pub fn takes_palette_colour(self) -> bool {
-        !matches!(self, Kind::Sessions)
-    }
-
-    /// The line it starts with.
-    pub fn default_stroke(self) -> Stroke {
-        match self {
-            Kind::Sessions | Kind::TimeWindow => Stroke::new(1.0, LineStyle::Dashed),
-            Kind::SessionLevels => Stroke::new(1.0, LineStyle::Solid),
-            _ => Stroke::default(),
-        }
+        !matches!(self, Kind::SessionTimes)
     }
 
     pub fn name(self) -> &'static str {
@@ -205,9 +193,7 @@ impl Kind {
             Kind::Rsi => "Relative Strength Index",
             Kind::Atr => "Average True Range",
             Kind::Stochastic => "Stochastic",
-            Kind::Sessions => "Sessions",
-            Kind::TimeWindow => "Time Window",
-            Kind::SessionLevels => "Session Levels",
+            Kind::SessionTimes => "Session Times",
         }
     }
 
@@ -226,9 +212,7 @@ impl Kind {
             Kind::Rsi => "RSI",
             Kind::Atr => "ATR",
             Kind::Stochastic => "Stoch",
-            Kind::Sessions => "Sessions",
-            Kind::TimeWindow => "Window",
-            Kind::SessionLevels => "Levels",
+            Kind::SessionTimes => "Sessions",
         }
     }
 
@@ -250,17 +234,10 @@ impl Kind {
             Kind::Rsi => &["rsi", "relative strength", "oscillator", "momentum", "overbought"],
             Kind::Atr => &["atr", "average true range", "volatility", "range", "stop"],
             Kind::Stochastic => &["stochastic", "stoch", "kd", "%k", "oscillator", "momentum", "overbought"],
-            Kind::Sessions => &[
-                "sessions", "session", "rth", "eth", "extended hours", "regular hours",
-                "separator", "day separator", "overnight", "shading", "background",
-            ],
-            Kind::TimeWindow => &[
-                "time window", "window", "london", "asia", "new york", "opening range",
-                "killzone", "kill zone", "session box", "range", "open",
-            ],
-            Kind::SessionLevels => &[
-                "session levels", "levels", "prior day", "previous day", "pdh", "pdl",
-                "overnight high", "overnight low", "onh", "onl", "high", "low", "close",
+            Kind::SessionTimes => &[
+                "session times", "sessions", "session", "eth", "rth", "extended hours",
+                "regular hours", "overnight", "london", "asia", "new york", "background",
+                "shading", "time range", "hours",
             ],
         }
     }
@@ -277,9 +254,7 @@ impl Kind {
             Kind::Rsi => "rsi",
             Kind::Atr => "atr",
             Kind::Stochastic => "stochastic",
-            Kind::Sessions => "sessions",
-            Kind::TimeWindow => "time_window",
-            Kind::SessionLevels => "session_levels",
+            Kind::SessionTimes => "session_times",
         }
     }
 
@@ -336,35 +311,12 @@ impl Kind {
                 oversold: 20.0,
                 d_color: None,
             },
-            Kind::Sessions => Params::Sessions {
-                shade: true,
-                shade_color: None,
-                shade_alpha: DEFAULT_SHADE_ALPHA,
-                separators: Separators::Day,
-            },
-            // The opening range: what most people reach for first, and the
-            // one that needs no time zone to mean the same on every chart.
-            Kind::TimeWindow => Params::TimeWindow {
-                name: "Opening range".to_string(),
-                window: Window::Session { part: crate::exchanges::Part::Regular, offset: 0, minutes: 30 },
-                zone: None,
-                weekdays: true,
-                shade: true,
-                shade_alpha: DEFAULT_SHADE_ALPHA,
-                mark: false,
-                range: true,
-            },
-            Kind::SessionLevels => Params::SessionLevels {
-                source: LevelSource::Regular,
-                levels: vec![Level::High, Level::Low, Level::Close],
-            },
+            // The extended hours, set back: what most charts of a market with
+            // a regular session want, and the one range that needs no clock.
+            Kind::SessionTimes => Params::SessionTimes { ranges: vec![time::Preset::Eth.range()] },
         }
     }
 }
-
-/// How solid session shading starts: enough to see where the extended hours
-/// are, not so much that the candles inside them look dimmed.
-pub const DEFAULT_SHADE_ALPHA: f64 = 0.07;
 
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -450,40 +402,10 @@ pub enum Params {
         #[serde(default)]
         d_color: Option<ColorChoice>,
     },
-    Sessions {
-        /// The extended hours shaded.
-        shade: bool,
-        /// Their colour. Unset is the theme's muted text, which reads as a
-        /// quiet change of ground in a dark theme and a light one alike.
-        #[serde(default)]
-        shade_color: Option<ColorChoice>,
-        shade_alpha: f64,
-        /// Where the lines between days go. Their colour and stroke are the
-        /// indicator's own.
-        separators: Separators,
-    },
-    TimeWindow {
-        /// What the window is called, which is what its line and its levels
-        /// are labelled with.
-        name: String,
-        window: Window,
-        /// The clock a window of wall-clock hours keeps, as an IANA name.
-        /// Unset keeps the chart's own, which is the clock its hours were
-        /// typed in.
-        #[serde(default)]
-        zone: Option<String>,
-        /// Leave out the weekend, as the markets it is about do.
-        weekdays: bool,
-        shade: bool,
-        shade_alpha: f64,
-        /// A line where each one begins.
-        mark: bool,
-        /// Its high and low, held until the next one begins.
-        range: bool,
-    },
-    SessionLevels {
-        source: LevelSource,
-        levels: Vec<Level>,
+    SessionTimes {
+        /// The stretches of each day it shades, each in its own colour,
+        /// drawn in this order.
+        ranges: Vec<TimeRange>,
     },
 }
 
@@ -543,7 +465,7 @@ impl Indicator {
             kind,
             params: kind.default_params(),
             color: None,
-            stroke: kind.default_stroke(),
+            stroke: Stroke::default(),
             visible: true,
             above_price: false,
         }
@@ -589,28 +511,14 @@ impl Indicator {
             Params::Stochastic { period, k_smooth, d_period, .. } => {
                 format!("Stoch {period} {k_smooth} {d_period}")
             }
-            Params::Sessions { separators, .. } => {
-                let separators = match timeframe {
-                    Some(timeframe) => separators.effective_for(timeframe),
-                    None => *separators,
-                };
-                match separators {
-                    Separators::None => "Sessions".to_string(),
-                    other => format!("Sessions · {}", other.key()),
+            // The ranges by name, which is what tells two of these apart.
+            Params::SessionTimes { ranges } => match ranges.len() {
+                0 => "Sessions".to_string(),
+                _ => {
+                    let names: Vec<&str> = ranges.iter().map(|r| r.name.trim()).collect();
+                    format!("Sessions · {}", names.join(", "))
                 }
-            }
-            Params::TimeWindow { name, .. } => match name.trim() {
-                "" => "Window".to_string(),
-                name => name.to_string(),
             },
-            Params::SessionLevels { source, .. } => format!(
-                "Levels ({})",
-                match source {
-                    LevelSource::Regular => "RTH",
-                    LevelSource::Extended => "ON",
-                    LevelSource::Day => "Day",
-                }
-            ),
         }
     }
 
@@ -1001,25 +909,8 @@ pub fn compute_in(indicator: &Indicator, bars: &[Bar], context: &Context) -> Out
                 kind,
             ))
         }
-        (Kind::Sessions, Params::Sessions { shade, shade_color, shade_alpha, separators }) => {
-            let mut out = time::sessions(bars, timeframe, schedule(), *shade, *separators);
-            out.fill = shade_color.clone();
-            out.fill_alpha = shade_alpha.clamp(time::MIN_SHADE_ALPHA, time::MAX_SHADE_ALPHA);
-            Output::Time(out)
-        }
-        (
-            Kind::TimeWindow,
-            Params::TimeWindow { name, window, zone, weekdays, shade, shade_alpha, mark, range },
-        ) => {
-            let zone = zone.as_deref().and_then(|z| z.parse::<Tz>().ok()).unwrap_or(context.zone);
-            let mut out = time::window(
-                bars, timeframe, name, window, zone, schedule(), *weekdays, *shade, *mark, *range,
-            );
-            out.fill_alpha = shade_alpha.clamp(time::MIN_SHADE_ALPHA, time::MAX_SHADE_ALPHA);
-            Output::Time(out)
-        }
-        (Kind::SessionLevels, Params::SessionLevels { source, levels }) => {
-            Output::Time(time::levels(bars, timeframe, schedule(), *source, levels))
+        (Kind::SessionTimes, Params::SessionTimes { ranges }) => {
+            Output::Time(time::session_times(bars, timeframe, ranges, context.zone, schedule()))
         }
         // Params and kind are set together; a mismatch means a stored
         // indicator from a future version. Draw nothing rather than guess.

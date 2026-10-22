@@ -130,8 +130,8 @@ pub fn delete(store: &Store, id: u32) -> Option<Template> {
 
 /// Give a profile its first template, once.
 ///
-/// A new install gets "Default", holding the volume study, and its charts
-/// open with it. So does a profile from before there were templates — but its
+/// A new install gets "Default", holding the volume study and Session Times
+/// with the extended hours shaded, and its charts open with it. So does a profile from before there were templates — but its
 /// charts are written down without one and keep the indicators they have, so
 /// nothing on screen changes; only the next new chart is different.
 ///
@@ -143,7 +143,11 @@ pub fn seed(store: &Store) {
     if store.has_setting(SETTING) {
         return;
     }
-    let default = create_with(store, DEFAULT_NAME, vec![Indicator::new(1, IndicatorKind::Volume)]);
+    let default = create_with(
+        store,
+        DEFAULT_NAME,
+        vec![Indicator::new(1, IndicatorKind::Volume), Indicator::new(2, IndicatorKind::SessionTimes)],
+    );
     // Only when nobody has chosen: an explicit "none" is a choice.
     if !store.has_setting(SETTING_TEMPLATE) {
         store.set_setting(SETTING_TEMPLATE, &default.id.to_string());
@@ -213,8 +217,17 @@ mod tests {
         let templates = all(&store);
         assert_eq!(templates.len(), 1);
         assert_eq!(templates[0].name, DEFAULT_NAME);
-        assert_eq!(templates[0].indicators.len(), 1);
+        assert_eq!(templates[0].indicators.len(), 2);
         assert_eq!(templates[0].indicators[0].kind, IndicatorKind::Volume);
+        // And the extended hours set back, which is the only range it starts
+        // with.
+        assert_eq!(templates[0].indicators[1].kind, IndicatorKind::SessionTimes);
+        assert_eq!(
+            templates[0].indicators[1].params,
+            omacharts_engine::Params::SessionTimes {
+                ranges: vec![omacharts_engine::indicators::Preset::Eth.range()]
+            }
+        );
         assert_eq!(ChartDefaults::load(&store).template, Some(templates[0].id));
     }
 
