@@ -6,10 +6,11 @@
 //! session, the Asian one, a lunch hour — in the chart's time zone or one of
 //! their own.
 //!
-//! Each range is shaded in its own colour, beneath everything on the chart,
-//! across the price plot and every strip. A muted background is what this is
-//! for: the extended hours set back from the session people trade, so the eye
-//! finds the session without a single line being drawn.
+//! Each range is shaded beneath everything on the chart, across the price plot
+//! and every strip. Unless somebody picks a colour, the shading darkens the
+//! chart's ground rather than tinting it: the extended hours set back from the
+//! session people trade, so the eye finds the session without being shown
+//! anything.
 //!
 //! What it produces is counted in bars rather than in pixels or seconds,
 //! because that is how the chart lays time out — a weekend takes no room —
@@ -50,8 +51,7 @@ pub enum Hours {
 pub struct TimeRange {
     pub name: String,
     pub hours: Hours,
-    /// Unset is the theme's muted text colour: a quiet change of ground that
-    /// reads the same in a dark theme and a light one.
+    /// Unset darkens the chart's ground; see [`shade`].
     #[serde(default)]
     pub color: Option<ColorChoice>,
     /// How solid the shading is.
@@ -62,7 +62,26 @@ pub struct TimeRange {
 /// hours are, and nowhere near enough for the candles inside them to look
 /// dimmed — it is a background, and a background the eye notices first has
 /// stopped being one.
-pub const DEFAULT_ALPHA: f64 = 0.04;
+pub const DEFAULT_ALPHA: f64 = 0.15;
+
+/// What a range is painted with: its own colour at its own strength, or, with
+/// none chosen, black — the ground made darker, which sets a stretch back in
+/// a dark theme and a light one alike, where any tint of the theme's own would
+/// lighten a dark chart and draw the eye to exactly what it is meant to quiet.
+///
+/// Half as strong on a light theme, where the same black reads twice as dark.
+pub fn shade(color: Option<&ColorChoice>, alpha: f64, theme: &crate::theme::Theme) -> (String, f64) {
+    match color {
+        Some(choice) => (choice.resolve(theme), alpha),
+        None => {
+            let strength = match theme.mode {
+                crate::theme::Mode::Dark => 1.0,
+                crate::theme::Mode::Light => 0.5,
+            };
+            ("#000000".to_string(), alpha * strength)
+        }
+    }
+}
 /// The least and the most a shading can be: below the one it is not there at
 /// all, and past the other it is no longer a background.
 pub const MIN_ALPHA: f64 = 0.02;
@@ -149,7 +168,7 @@ impl Preset {
 pub struct Span {
     pub from: usize,
     pub to: usize,
-    /// Unset is the theme's muted text colour.
+    /// Unset darkens the ground; see [`shade`].
     pub color: Option<ColorChoice>,
     pub alpha: f64,
 }

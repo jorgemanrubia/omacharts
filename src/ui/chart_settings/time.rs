@@ -187,11 +187,8 @@ fn range_group(
         group.add(&zone_row(owner, refresh, id, at, (*from, *to), zone.clone(), (chart_zone, format)));
     }
 
-    let shown = range
-        .color
-        .as_ref()
-        .map(|choice| choice.resolve(&owner.theme()))
-        .unwrap_or_else(|| owner.theme().ui.text_muted.clone());
+    // Unset shows as what it paints with: the ground darkened.
+    let (shown, _) = omacharts_engine::indicators::time::shade(range.color.as_ref(), range.alpha, &owner.theme());
     group.add(&colour_row(
         owner,
         refresh,

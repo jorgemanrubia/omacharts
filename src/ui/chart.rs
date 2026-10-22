@@ -5846,17 +5846,14 @@ fn draw_time_ground(cr: &cairo::Context, state: &State, columns: &Columns, plan:
     for drawn in state.indicators.iter().filter(|d| d.indicator.visible) {
         let Output::Time(time) = &drawn.output else { continue };
         for span in time.spans.iter().filter(|s| on_screen_run(columns, s.from, s.to)) {
-            let colour = span
-                .color
-                .as_ref()
-                .map(|choice| choice.resolve(&state.theme))
-                .unwrap_or_else(|| state.theme.ui.text_muted.clone());
+            let (colour, alpha) =
+                indicators::time::shade(span.color.as_ref(), span.alpha, &state.theme);
             // Whole pixels, so two stretches that meet do not leave a
             // hairline of double shading between them.
             let x0 = bar_left(columns, span.from).max(left).round();
             let x1 = bar_left(columns, span.to + 1).min(right).round();
             if x1 > x0 {
-                colors::set_source_alpha(cr, &colour, span.alpha);
+                colors::set_source_alpha(cr, &colour, alpha);
                 cr.rectangle(x0, top, x1 - x0, bottom - top);
                 let _ = cr.fill();
             }
