@@ -1,0 +1,40 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>stack</title>
+<link rel="stylesheet" href="base.css">
+<style>
+  .scene { perspective: 3600px; transform-style: preserve-3d; }
+  .tile { transform-origin: 50% 50%; transform-style: preserve-3d; }
+</style>
+<div class="scene" id="scene"></div>
+<div class="vignette"></div>
+<script>
+  // Floating windows at different depths, the far ones softened as if out of
+  // focus. Nothing sits on the title: the near windows frame it from the
+  // sides and the corners, and a wide dim one lies far behind the middle.
+  const tiles = [
+    // book, theme, x, y (centre, px), width, rotateY, rotateX, rotateZ, depth (0 near .. 1 far)
+    ["desk",   "tokyo-night",  1920, 1080, 2700, -6,  3,  1,   1.0],
+    ["macro",  "nord",          700,  480, 1560, 18,  5, -2.5, 0.42],
+    ["tape",   "gruvbox",      3140,  540, 1620, -20, 5,  2.5, 0.38],
+    ["crypto", "catppuccin",    680, 1660, 1520, 16, -7, -2,   0.34],
+    ["swing",  "everforest",   3160, 1640, 1580, -16, -6, 3,   0.3],
+    ["desk",   "osaka-jade",   1700,  120, 1320, 8,   10, -1,  0.72],
+    ["tape",   "kanagawa",     2300, 2060, 1360, -10, -10, 2,  0.7],
+    ["macro",  "catppuccin-latte", 60, 1080, 1060, 26, 0, 0,  0.82],
+    ["crypto", "ristretto",    3800, 1100, 1060, -26, 0, 0,   0.82],
+  ];
+  const scene = document.getElementById("scene");
+  tiles.forEach(([book, theme, x, y, w, ry, rx, rz, depth]) => {
+    const img = new Image();
+    img.className = "tile";
+    img.src = `captures/${book}-${theme}.png`;
+    const h = w * 9 / 16;
+    img.style.width = w + "px"; img.style.height = h + "px";
+    img.style.left = (x - w / 2) + "px"; img.style.top = (y - h / 2) + "px";
+    img.style.transform = `translateZ(${-depth * 1400}px) rotateY(${ry}deg) rotateX(${rx}deg) rotateZ(${rz}deg)`;
+    img.style.filter = `blur(${(depth * depth) * 7}px) brightness(${1.08 - depth * .4})`;
+    img.style.zIndex = Math.round((1 - depth) * 100);
+    scene.appendChild(img);
+  });
+</script>

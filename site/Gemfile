@@ -1,0 +1,13 @@
+# The site is built by Jekyll, the manual on top of the just-the-docs theme.
+# GitHub Pages does not build it: the Pages workflow runs this bundle and
+# uploads the result, so the versions here are the versions that ship.
+source "https://rubygems.org"
+
+gem "jekyll", "~> 4.3"
+gem "just-the-docs", "~> 0.10"
+
+# Ruby 3.4 no longer bundles these, and Jekyll still asks for them.
+gem "csv"
+gem "base64"
+gem "bigdecimal"
+gem "logger"

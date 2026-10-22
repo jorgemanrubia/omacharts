@@ -1,0 +1,19 @@
+{%- comment -%}
+  The rail: the mark and the word, the menu button phones get, and the
+  manual's table of contents. Replaces the theme's sidebar, which carried a
+  footer crediting itself.
+{%- endcomment -%}
+<header class="side-bar">
+  <div class="site-header">
+    <a href="{{ '/' | relative_url }}" class="site-title" aria-label="Omacharts home">
+      <img class="site-mark" src="{{ '/icon.svg' | relative_url }}" alt="" width="28" height="28">
+      <span class="site-word">Omacharts</span>
+      <span class="site-tag">manual</span>
+    </a>
+    <button id="menu-button" class="site-button btn-reset" aria-label="Menu" aria-expanded="false">
+      <svg viewBox="0 0 24 24" class="icon" aria-hidden="true"><use xlink:href="#svg-menu"></use></svg>
+    </button>
+  </div>
+
+  {% include components/site_nav.html %}
+</header>

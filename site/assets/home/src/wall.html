@@ -1,0 +1,36 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>wall</title>
+<link rel="stylesheet" href="base.css">
+<style>
+  .scene { perspective: 5200px; }
+  .wall {
+    position: absolute; left: 50%; top: 50%;
+    width: 5700px; height: 4320px;
+    transform: translate(-50%, -50%) rotateX(9deg) rotateY(-13deg) rotateZ(3.5deg) translateZ(-420px);
+    transform-style: preserve-3d;
+  }
+  .tile { width: 1840px; height: 1035px; border-radius: 20px; }
+</style>
+<div class="scene"><div class="wall" id="wall"></div></div>
+<div class="vignette"></div>
+<script>
+  // Three rows of three large multi-pane screenshots: close enough to read the
+  // indicators, tilted like the current cover. The middle column sits under
+  // the title, so it takes the quietest two.
+  const tiles = [
+    ["tape", "kanagawa"], ["crypto", "ristretto"], ["macro", "osaka-jade"],
+    ["desk", "tokyo-night"], ["macro", "nord"], ["tape", "catppuccin"],
+    ["crypto", "gruvbox"], ["swing", "everforest"], ["desk", "matte-black"],
+  ];
+  const W = 1840, H = 1035, G = 60;
+  const wall = document.getElementById("wall");
+  tiles.forEach(([book, theme], i) => {
+    const img = new Image();
+    img.className = "tile";
+    img.src = `captures/${book}-${theme}.png`;
+    img.style.left = ((i % 3) * (W + G)) + "px";
+    img.style.top = (Math.floor(i / 3) * (H + G) + 30) + "px";
+    wall.appendChild(img);
+  });
+</script>

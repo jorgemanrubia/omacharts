@@ -1,0 +1,51 @@
+---
+layout: default
+---
+{%- comment -%}
+  A letter, not a chapter: a wider measure, with a dateline and a hand at
+  the end. Front matter it reads besides `title`:
+
+    dateline:  a date or a place and a date  (optional)
+    signature: the name under the last line  (default "Jorge")
+    signature_url: where the name links to     (optional)
+    postscript: a line after the signature   (optional)
+
+  The body starts at the first paragraph; no headings are needed, and `##`
+  headings, if any, are set as section breaks rather than titles.
+{%- endcomment -%}
+<article class="letter">
+  <header class="letter-head">
+    <h1 class="letter-title">{{ page.title }}</h1>
+    {%- if page.dateline %}
+    <p class="letter-dateline">{{ page.dateline }}</p>
+    {%- endif %}
+  </header>
+
+  <div class="letter-body">
+    {{ content }}
+  </div>
+
+  <footer class="letter-foot">
+    <p class="letter-signature">{%- if page.signature_url %}<a href="{{ page.signature_url }}">{{ page.signature | default: "Jorge" }}</a>{%- else %}{{ page.signature | default: "Jorge" }}{%- endif %}</p>
+    {%- if page.postscript %}
+    <p class="letter-postscript">{{ page.postscript }}</p>
+    {%- endif %}
+  </footer>
+</article>
+
+{%- assign manual_pages = site.html_pages
+      | where_exp: "item", "item.url contains '/manual/'"
+      | where_exp: "item", "item.title != nil"
+      | where_exp: "item", "item.nav_exclude != true" -%}
+{%- assign first_section = site.manual.sections | first -%}
+{%- assign first_chapters = manual_pages | where: "section", first_section.key | sort: "nav_order" -%}
+{%- assign next_page = first_chapters | first -%}
+{%- if next_page %}
+<nav class="chapter-nav" aria-label="Neighbouring chapters">
+  <span></span>
+  <a class="chapter-nav-link chapter-nav-next" href="{{ next_page.url | relative_url }}" rel="next">
+    <span class="chapter-nav-label">Next</span>
+    <span class="chapter-nav-title">{{ next_page.title }}</span>
+  </a>
+</nav>
+{%- endif %}

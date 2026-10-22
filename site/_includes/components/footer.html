@@ -1,0 +1,12 @@
+{%- comment -%}
+  The foot of a chapter. Replaces the theme's footer, which credited itself.
+  A section page has no file of its own: its label and description are in
+  _config.yml, so that is what the link opens.
+{%- endcomment -%}
+{%- assign edit_path = page.path -%}
+{%- if page.section_key -%}{%- assign edit_path = "_config.yml" -%}{%- endif -%}
+<footer class="page-footer">
+  <p class="page-footer-line">
+    <a href="https://github.com/jorgemanrubia/omacharts/blob/main/site/{{ edit_path }}">Edit this page on GitHub</a>
+  </p>
+</footer>

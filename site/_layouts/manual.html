@@ -1,0 +1,71 @@
+---
+layout: default
+---
+{%- comment -%}
+  A chapter of the manual. The title comes from the front matter, so the
+  page body starts at `##`. Under the lede, the chapter's own contents
+  (its headings, h2 to h5, from _plugins/manual.rb) when there are enough
+  to be worth it. Below the text, the neighbours in reading order: the
+  letter, then each section's chapters by nav_order. The trail above the
+  title is components/breadcrumbs.html, which the theme's layout places.
+{%- endcomment -%}
+{%- assign manual_pages = site.html_pages
+      | where_exp: "item", "item.url contains '/manual/'"
+      | where_exp: "item", "item.title != nil"
+      | where_exp: "item", "item.nav_exclude != true" -%}
+{%- assign ordered = manual_pages | where_exp: "item", "item.section == nil" | sort: "nav_order" -%}
+{%- for section in site.manual.sections -%}
+  {%- assign chapters = manual_pages | where: "section", section.key | sort: "nav_order" -%}
+  {%- assign ordered = ordered | concat: chapters -%}
+{%- endfor -%}
+{%- assign prev_page = nil -%}
+{%- assign next_page = nil -%}
+{%- for node in ordered -%}
+  {%- if node.url == page.url -%}
+    {%- assign i = forloop.index0 | minus: 1 -%}
+    {%- if forloop.index0 > 0 -%}{%- assign prev_page = ordered[i] -%}{%- endif -%}
+    {%- unless forloop.last -%}{%- assign j = forloop.index0 | plus: 1 -%}{%- assign next_page = ordered[j] -%}{%- endunless -%}
+  {%- endif -%}
+{%- endfor -%}
+
+<header class="chapter-head">
+  <h1 class="chapter-title">{{ page.title }}</h1>
+</header>
+
+{%- comment -%}
+  Fewer than three headings is not a contents. Up to two dozen entries the
+  list is shown open; past that (the CLI chapter) it is a line to unfold,
+  so the text does not start a screen down. Six or more `##` headings
+  flow into two columns on a wide screen.
+{%- endcomment -%}
+{%- assign toc_entries = content | headings_of: 2, 5 -%}
+{%- assign toc_sections = content | headings_of: 2, 2 -%}
+{%- if toc_entries.size >= 3 %}
+{%- assign toc_class = "chapter-toc-list" -%}
+{%- if toc_sections.size >= 6 -%}{%- assign toc_class = "chapter-toc-list chapter-toc-columns" -%}{%- endif %}
+<details class="chapter-toc"{% if toc_entries.size <= 24 %} open{% endif %}>
+  <summary class="chapter-toc-summary">
+    <span class="chapter-toc-label">In this chapter</span>
+  </summary>
+  {{ content | toc_tree: 2, 5, toc_class }}
+</details>
+{%- endif %}
+
+{{ content }}
+
+{%- if prev_page or next_page %}
+<nav class="chapter-nav" aria-label="Neighbouring chapters">
+  {%- if prev_page %}
+  <a class="chapter-nav-link chapter-nav-prev" href="{{ prev_page.url | relative_url }}" rel="prev">
+    <span class="chapter-nav-label">Previous</span>
+    <span class="chapter-nav-title">{{ prev_page.title }}</span>
+  </a>
+  {%- else %}<span></span>{%- endif %}
+  {%- if next_page %}
+  <a class="chapter-nav-link chapter-nav-next" href="{{ next_page.url | relative_url }}" rel="next">
+    <span class="chapter-nav-label">Next</span>
+    <span class="chapter-nav-title">{{ next_page.title }}</span>
+  </a>
+  {%- endif %}
+</nav>
+{%- endif %}

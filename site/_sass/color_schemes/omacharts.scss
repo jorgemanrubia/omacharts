@@ -1,0 +1,34 @@
+// The theme's colour scheme, fed entirely from the shared palette. The theme
+// reads these variables wherever it paints; the rest of the look is in
+// custom/custom.scss.
+@import "omacharts/palette";
+
+$color-scheme: dark;
+
+$body-background-color: $oc-ground;
+$body-heading-color: $oc-bright;
+$body-text-color: $oc-ink;
+$link-color: $oc-amber;
+$nav-child-link-color: $oc-muted;
+$sidebar-color: $oc-ground;
+$base-button-color: $oc-ground-3;
+$btn-primary-color: $oc-amber;
+$code-background-color: $oc-ground-2;
+$code-linenumber-color: $oc-dim;
+$feedback-color: $oc-ground-3;
+$table-background-color: $oc-ground;
+$search-background-color: $oc-ground-2;
+$search-result-preview-color: $oc-muted;
+$border-color: $oc-line;
+
+// The theme's grey ladder is used by a few of its rules (list bullets, the
+// breadcrumb separator); point the ones that show at the palette too.
+$grey-dk-000: $oc-muted;
+$grey-dk-100: $oc-dim;
+$grey-dk-200: $oc-ground-4;
+$grey-dk-250: $oc-ground-3;
+$grey-dk-300: $oc-ground-2;
+$grey-lt-000: $oc-bright;
+$grey-lt-100: $oc-ground-3;
+$grey-lt-200: $oc-ground-3;
+$grey-lt-300: $oc-ink;

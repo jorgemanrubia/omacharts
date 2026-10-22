@@ -1,0 +1,1271 @@
+// The manual's look, on top of the theme's layout. The theme still decides
+// where the rail, the header and the column go and wires the menu and the
+// search; everything that shows is restyled here from the shared palette.
+//
+// Specificity note: the theme sets most type sizes with !important through
+// its fs-* mixins, so the sizes here that fight one of those carry
+// !important too.
+
+@import "omacharts/palette";
+
+// ---------------------------------------------------------------------------
+// Faces
+
+@font-face {
+  font-family: "Cascadia Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/assets/fonts/cascadia-mono-latin-400-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Cascadia Mono";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/assets/fonts/cascadia-mono-latin-700-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Cascadia Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/assets/fonts/cascadia-mono-latin-ext-400-normal.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "Cascadia Mono";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/assets/fonts/cascadia-mono-latin-ext-700-normal.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+// ---------------------------------------------------------------------------
+// Ground
+
+$md: map-get($media-queries, md);
+$lg: map-get($media-queries, lg);
+$xl: map-get($media-queries, xl);
+
+html {
+  scroll-padding-top: 1.5rem;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  font-family: $oc-sans;
+  color: $oc-ink;
+  background: $oc-ground;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: rgba($oc-amber, .28);
+  color: $oc-bright;
+}
+
+:focus-visible {
+  outline: 2px solid $oc-amber;
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+// A short mono utility, used by the kickers, the labels and the captions.
+%mono-label {
+  font-family: $oc-mono;
+  font-size: .72rem;
+  font-weight: 700;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+}
+
+// ---------------------------------------------------------------------------
+// The rail
+
+.side-bar {
+  background: $oc-ground;
+  border-right: 1px solid $oc-line;
+
+  @media (min-width: $md) {
+    border-right-color: $oc-line;
+  }
+}
+
+// Where everything in the rail starts: the mark, the section labels, the
+// entries' text (after the 2px rule an active entry draws) and GitHub.
+$rail-inset: calc(#{$gutter-spacing-sm * 1.6} + 2px);
+
+.site-header {
+  border-bottom: 1px solid $oc-line;
+  min-height: $header-height;
+
+  @media (min-width: $md) {
+    height: $header-height;
+    max-height: $header-height;
+  }
+}
+
+.side-bar .site-title {
+  display: flex;
+  align-items: center;
+  gap: .65rem;
+  padding-top: 0;
+  padding-bottom: 0;
+  color: $oc-bright;
+  text-decoration: none;
+  font-size: 1.05rem !important;
+
+  // The mark starts on the rail's left edge — the line every entry below it
+  // starts on — rather than the theme's wider gutter.
+  @media (min-width: $md) {
+    padding-left: $rail-inset;
+  }
+
+  &:hover {
+    background-image: none;
+    .site-word { color: $oc-bright; }
+    .site-mark { transform: translateY(-1px); }
+  }
+}
+
+.site-mark {
+  width: 1.65rem;
+  height: 1.65rem;
+  border-radius: 7px;
+  flex: none;
+  transition: transform .18s ease;
+}
+
+.site-word {
+  font-weight: 800;
+  letter-spacing: -.03em;
+  font-size: 1.2rem;
+  line-height: 1;
+  color: $oc-bright;
+}
+
+.site-tag {
+  @extend %mono-label;
+  font-weight: 400;
+  color: $oc-amber;
+  margin-left: .1rem;
+  margin-top: .15rem;
+}
+
+.side-bar .site-button {
+  color: $oc-bright;
+  padding: 0 $gutter-spacing-sm;
+
+  .icon { color: $oc-bright; }
+  &:hover { background-image: none; color: $oc-amber; .icon { color: $oc-amber; } }
+}
+
+.site-nav {
+  @media (min-width: $md) {
+    padding-top: 1.75rem;
+    padding-bottom: 2rem;
+  }
+}
+
+// A section's label. It carries the same 2px rule as an entry, so its text
+// starts on the entries' edge, and the rule lights when its page is open.
+.side-bar .nav-category {
+  @extend %mono-label;
+  display: flex;
+  align-items: baseline;
+  gap: .6rem;
+  padding: .4rem $gutter-spacing-sm .4rem;
+  margin-top: 1.6rem;
+  color: $oc-muted;
+  border-bottom: 0;
+  border-left: 2px solid transparent;
+  font-size: .72rem !important;
+
+  @media (min-width: $md) {
+    padding-left: $gutter-spacing-sm * 1.6;
+    padding-right: $gutter-spacing-sm;
+    margin-top: 1.6rem;
+    &:first-child { margin-top: 0; }
+  }
+}
+
+.side-bar a.nav-category-link {
+  text-decoration: none;
+  transition: color .15s ease, border-color .15s ease;
+
+  &:hover {
+    color: $oc-bright;
+    background-image: none;
+  }
+
+  &.active {
+    color: $oc-bright;
+    border-left-color: $oc-amber;
+  }
+}
+
+
+.side-bar .nav-list .nav-list-item {
+  font-size: 1rem !important;
+
+  .nav-list-link {
+    position: relative;
+    display: block;
+    min-height: 0;
+    padding: .38rem $gutter-spacing-sm .38rem $gutter-spacing-sm;
+    line-height: 1.35;
+    color: $oc-muted;
+    text-decoration: none;
+    font-weight: 500;
+    border-left: 2px solid transparent;
+    transition: color .15s ease, border-color .15s ease;
+
+    @media (min-width: $md) {
+      padding-left: $gutter-spacing-sm * 1.6;
+      padding-right: $gutter-spacing-sm;
+    }
+
+    &:hover {
+      color: $oc-bright;
+      background-image: none;
+    }
+
+    &.active {
+      color: $oc-bright;
+      font-weight: 600;
+      border-left-color: $oc-amber;
+      background-image: none;
+    }
+
+    &.external {
+      display: inline-flex;
+      align-items: center;
+      gap: .35rem;
+
+      > svg {
+        width: .8rem;
+        height: .8rem;
+        opacity: .55;
+      }
+    }
+  }
+}
+
+// The letter sits on its own above the sections, a size up from the
+// chapters rather than bolder, so being the current page still shows.
+.side-bar .nav-letter {
+  margin-bottom: .5rem;
+
+  .nav-list-item .nav-list-link {
+    font-size: 1.12rem;
+    letter-spacing: -.005em;
+  }
+}
+
+.side-bar .nav-links {
+  margin-top: 2rem;
+  padding-top: 1rem;
+  border-top: 1px solid $oc-line;
+
+  @media (min-width: $md) {
+    margin-left: $rail-inset;
+    margin-right: $gutter-spacing-sm;
+    .nav-list-item .nav-list-link { padding-left: 0; border-left: 0; }
+  }
+
+  .nav-list-item .nav-list-link {
+    font-family: $oc-mono;
+    font-size: .85rem;
+    font-weight: 400;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The header: search and the way home
+
+.side-bar + .main .main-header {
+  background: $oc-ground;
+  border-bottom: 1px solid $oc-line;
+
+  @media (min-width: $md) {
+    background: $oc-ground;
+    height: $header-height;
+  }
+}
+
+// On a wide screen the field is a bordered pill in the header, with the
+// key that focuses it at its right end; the theme's is an invisible strip.
+@media (min-width: $md) {
+  .search {
+    display: flex;
+    align-items: center;
+    padding-left: $gutter-spacing * .66 !important;
+    padding-right: 1rem !important;
+  }
+
+  .search-input-wrap,
+  .search-active .search-input-wrap {
+    position: relative;
+    width: 100%;
+    max-width: 24rem;
+    height: 2.5rem !important;
+    border: 1px solid $oc-line;
+    border-radius: $border-radius;
+    background: $oc-ground-2;
+    box-shadow: none;
+    transition: border-color .15s ease;
+
+    &:focus-within { border-color: $oc-line-strong; }
+  }
+
+  .search-results {
+    left: $gutter-spacing * .66;
+    width: min($search-results-width, calc(100% - #{$gutter-spacing * .66} - 1rem));
+    border-radius: $border-radius;
+    border-top: 1px solid $oc-line-strong;
+    margin-top: .35rem;
+  }
+}
+
+.search-input,
+.search-active .search-input {
+  font-family: $oc-mono;
+  font-size: .95rem !important;
+  color: $oc-bright;
+  background: $oc-ground-2;
+
+  @media (min-width: $md) {
+    background: transparent;
+    padding-left: 2.5rem !important;
+    padding-right: 2.6rem;
+  }
+
+  &::placeholder {
+    color: $oc-muted;
+    opacity: 1;
+  }
+
+  &:focus {
+    outline: none;
+    background: $oc-ground-2;
+  }
+}
+
+.search-label,
+.search-active .search-label {
+  @media (min-width: $md) { padding-left: .8rem !important; }
+}
+
+.search-label .search-icon {
+  color: $oc-muted;
+  width: 1.1rem;
+  height: 1.1rem;
+}
+
+.search-input:focus + .search-label .search-icon {
+  color: $oc-amber;
+}
+
+.search-hint {
+  position: absolute;
+  right: .55rem;
+  top: 50%;
+  transform: translateY(-50%);
+  display: none;
+  pointer-events: none;
+  opacity: .8;
+
+  @media (min-width: $md) {
+    display: inline-block;
+  }
+}
+
+.search-active .search-hint,
+.search-input:focus ~ .search-hint { display: none; }
+
+.search-results {
+  background: $oc-ground-2;
+  border: 1px solid $oc-line-strong;
+  border-top: 0;
+  border-radius: 0 0 $border-radius $border-radius;
+  box-shadow: 0 30px 60px -20px rgba(0, 0, 0, .7);
+}
+
+.search-results-list { font-size: 1rem !important; }
+
+.search-result {
+  padding: .6rem 1rem;
+  text-decoration: none;
+
+  &:hover, &.active { background: $oc-ground-3; }
+}
+
+// A hit is its title over its previews, not the theme's two columns.
+.search-result-title { display: block; width: 100%; padding: .2rem 0 .1rem; color: $oc-bright; }
+.search-result-previews { display: block; width: 100%; padding: .1rem 0 .3rem 1.6rem; margin: 0; border-left: 0; }
+.search-result-doc { color: $oc-bright; font-weight: 600; }
+.search-result-doc .search-result-icon { color: $oc-amber; }
+.search-result-doc.search-result-doc-parent { opacity: .6; font-weight: 500; }
+.search-result-section { color: $oc-ink; }
+.search-result-previews { color: $oc-muted; border-left-color: $oc-line-strong; font-size: .85rem !important; }
+.search-result-highlight { color: $oc-amber; font-weight: 700; }
+.search-result-rel-url { color: $oc-dim; font-family: $oc-mono; }
+.search-no-result { color: $oc-muted; padding: .8rem 1rem; }
+.search-overlay { background: rgba($oc-ground, .6); }
+
+.aux-nav {
+  display: flex;
+  align-items: center;
+  padding: 0 $gutter-spacing-sm;
+  font-size: .85rem !important;
+
+  @media (min-width: $md) {
+    padding-right: $gutter-spacing * .66;
+  }
+
+  .aux-nav-list {
+    display: flex;
+    align-items: center;
+    gap: 1.25rem;
+    height: 100%;
+  }
+
+  .aux-nav-list-item {
+    display: flex;
+    align-items: center;
+    height: 100%;
+  }
+
+  .aux-link {
+    font-family: $oc-mono;
+    color: $oc-muted;
+    text-decoration: none;
+    transition: color .15s ease;
+
+    &:hover { color: $oc-bright; }
+  }
+
+  .aux-link-icon {
+    display: inline-flex;
+    svg { width: 1.15rem; height: 1.15rem; }
+  }
+}
+
+// On phones the header only shows when the menu is open; give it some air.
+@media (max-width: ($md - 0.01)) {
+  .side-bar + .main .main-header.nav-open {
+    padding: .75rem 0;
+  }
+  .aux-nav { padding-top: .6rem; padding-bottom: .2rem; }
+}
+
+// ---------------------------------------------------------------------------
+// The column
+
+.main-content-wrap {
+  @media (min-width: $md) {
+    padding-top: 3.5rem;
+    padding-bottom: 4rem;
+  }
+}
+
+.main-content {
+  font-size: 1rem;
+  line-height: 1.65;
+  color: $oc-ink;
+
+  p { margin: 0 0 1.15em; }
+
+  > main > p, > main > ul, > main > ol { max-width: 72ch; }
+
+  // The chapter's links; the contents lists have their own quieter ones.
+  a:not(.btn):not(.chapter-nav-link):not(.anchor-heading):not(.page-footer a):not(.chapter-toc a):not(.section-toc a) {
+    color: $oc-amber;
+    text-decoration: underline;
+    text-decoration-color: rgba($oc-amber, .4);
+    text-decoration-thickness: 1px;
+    text-underline-offset: .18em;
+    overflow: visible;
+    transition: color .15s ease, text-decoration-color .15s ease;
+
+    &:hover {
+      color: $oc-amber-2;
+      text-decoration-color: $oc-amber-2;
+    }
+  }
+
+  strong { color: $oc-bright; font-weight: 700; }
+  em { font-style: italic; }
+
+  hr {
+    height: 1px;
+    margin: 3rem 0;
+    background: $oc-line;
+  }
+
+  // Lists: the theme draws its own bullets and counters; recolour them.
+  ul, ol { padding-left: 1.6em; margin: 0 0 1.15em; }
+  li { margin: .3em 0; }
+  li > p { margin-bottom: .5em; }
+  ul > li::before { color: $oc-dim; }
+  ol > li::before {
+    font-family: $oc-mono;
+    color: $oc-muted;
+    font-size: .85rem !important;
+    top: .22em;
+  }
+
+  blockquote:not([class]) {
+    margin: 1.5rem 0;
+    padding: .25rem 0 .25rem 1.25rem;
+    border-left: 2px solid $oc-line-strong;
+    color: $oc-muted;
+    font-size: 1.05rem;
+    > p:last-child { margin-bottom: 0; }
+  }
+
+  dl { grid-template: auto / 9em 1fr; }
+  dt { color: $oc-bright; font-weight: 600; text-align: left; &::after { content: ""; } }
+  dd { color: $oc-ink; }
+}
+
+// Headings: Archivo set tight, like the title on the home.
+.main-content {
+  h1, h2, h3, h4, h5, h6 {
+    color: $oc-bright;
+    font-weight: 700;
+    letter-spacing: -.015em;
+    line-height: 1.2;
+    margin-bottom: .6em;
+  }
+
+  h2 {
+    font-size: 1.5rem !important;
+    margin-top: 2.6em;
+    padding-top: 1.1em;
+    border-top: 1px solid $oc-line;
+  }
+
+  h3 {
+    font-size: 1.18rem !important;
+    margin-top: 2em;
+  }
+
+  h4 {
+    @extend %mono-label;
+    font-size: .72rem !important;
+    letter-spacing: .14em;
+    color: $oc-muted;
+    margin-top: 2em;
+  }
+
+  h5, h6 { font-size: 1rem !important; }
+
+  h2 + p, h3 + p, h4 + p { margin-top: 0; }
+
+  > main > h2:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
+
+  // The link mark sits on the heading's first line, not in the middle of
+  // the whole box: an h2 carries the padding above its rule, and the
+  // theme's full-height mark centred itself in that instead of the words.
+  .anchor-heading {
+    top: 0;
+    height: 1.2em;
+    @media (min-width: $md) {
+      left: -1.9rem;
+      width: 1.5rem;
+    }
+    svg { color: $oc-amber; opacity: .7; }
+  }
+  h2 > .anchor-heading { top: 1.1em; }
+  > main > h2:first-child > .anchor-heading { top: 0; }
+}
+
+// The top of a chapter.
+.chapter-head {
+  margin: 0 0 2.25rem;
+  max-width: 72ch;
+}
+
+// The trail above the title, where the kicker was: the manual's root, then
+// the section, the last crumb lit as the place you are.
+.crumbs {
+  @extend %mono-label;
+  margin: 0 0 1rem;
+}
+
+.crumbs-list {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.crumbs-item {
+  display: flex;
+  align-items: baseline;
+  margin: 0;
+
+  & + &::before {
+    content: "›";
+    margin: 0 .6rem;
+    color: $oc-dim;
+    letter-spacing: 0;
+  }
+
+  a {
+    color: $oc-muted;
+    text-decoration: none;
+    transition: color .15s ease;
+    &:hover { color: $oc-bright; }
+  }
+
+  &:last-child a, [aria-current] { color: $oc-amber; }
+  &:last-child a:hover { color: $oc-amber-2; }
+}
+
+// The chapter's contents, between the lede and the text: a quiet panel of
+// its headings, nested as they nest, that folds to a line.
+.chapter-toc {
+  margin: 0 0 2.75rem;
+  max-width: 72ch;
+  padding: 0 1.35rem;
+  background: $oc-ground-2;
+  border: 1px solid $oc-line;
+  border-radius: $border-radius;
+}
+
+.chapter-toc-summary {
+  @extend %mono-label;
+  display: flex;
+  align-items: center;
+  gap: .7rem;
+  padding: .9rem 0;
+  color: $oc-muted;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  transition: color .15s ease;
+
+  &::-webkit-details-marker { display: none; }
+
+  // The chevron: points right when folded, down when open.
+  &::before {
+    content: "";
+    flex: none;
+    width: .4rem;
+    height: .4rem;
+    margin: 0 .15rem .1rem 0;
+    border-right: 1.5px solid currentColor;
+    border-bottom: 1.5px solid currentColor;
+    transform: rotate(-45deg);
+    transition: transform .15s ease;
+  }
+
+  &:hover { color: $oc-bright; }
+}
+
+.chapter-toc[open] > .chapter-toc-summary::before { transform: rotate(45deg); margin-bottom: .2rem; }
+
+.main-content .chapter-toc {
+  ul {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  li {
+    margin: 0;
+    padding: 0;
+    &::before { content: none; }
+  }
+
+  a {
+    display: inline-block;
+    padding: .2rem 0;
+    color: $oc-ink;
+    font-weight: 500;
+    line-height: 1.4;
+    text-decoration: none;
+    transition: color .15s ease;
+    &:hover { color: $oc-amber; }
+  }
+
+  code { font-size: .82em; }
+
+  // Deeper headings hang off a hairline under their section, smaller and dimmer.
+  ul ul {
+    margin: .1rem 0 .45rem;
+    padding-left: .85rem;
+    border-left: 1px solid $oc-line;
+  }
+
+  li li {
+    font-size: .92rem;
+    a { color: $oc-muted; padding: .15rem 0; }
+  }
+}
+
+.chapter-toc-list {
+  padding: .2rem 0 1.05rem !important;
+}
+
+// Six or more sections flow into two columns, each section kept whole.
+.chapter-toc-columns {
+  @media (min-width: $md) {
+    column-count: 2;
+    column-gap: 2.5rem;
+    > li { break-inside: avoid; }
+  }
+}
+
+// A part's page: its chapters, each with its sections and their
+// subsections hanging beneath on a hairline, like the contents of a book.
+.main-content .section-toc {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-width: 44rem;
+
+  li { margin: 0; &::before { content: none; } }
+
+  a {
+    color: $oc-ink;
+    text-decoration: none;
+    transition: color .15s ease;
+    &:hover { color: $oc-amber; }
+  }
+
+  code { font-size: .85em; }
+
+  // The chapters.
+  > li {
+    padding: 1.15rem 0 1.25rem;
+    border-top: 1px solid $oc-line;
+    &:last-child { border-bottom: 1px solid $oc-line; }
+
+    > a {
+      font-size: 1.2rem;
+      font-weight: 700;
+      letter-spacing: -.01em;
+      color: $oc-bright;
+    }
+  }
+
+  // Their sections, then the subsections, each a step in and a step quieter.
+  ul {
+    margin: .55rem 0 0 .15rem;
+    padding: 0 0 0 1rem;
+    list-style: none;
+    border-left: 1px solid $oc-line;
+    font-size: 1rem;
+    line-height: 1.45;
+
+    li { padding: .2rem 0; }
+
+    ul {
+      margin-top: .2rem;
+      font-size: .9rem;
+      a { color: $oc-muted; }
+    }
+  }
+}
+
+
+.main-content .chapter-title {
+  font-size: clamp(2.1rem, 6.5vw, 2.6rem) !important;
+  font-weight: 800;
+  letter-spacing: -.035em;
+  line-height: 1.02;
+  margin: 0;
+  text-wrap: balance;
+}
+
+// ---------------------------------------------------------------------------
+// Code, the command line being half the app
+
+:not(pre, figure, kbd) > code {
+  font-family: $oc-mono;
+  font-size: .88em;
+  padding: .12em .4em;
+  color: $oc-bright;
+  background: $oc-ground-3;
+  border: 1px solid $oc-line;
+  border-radius: 5px;
+  white-space: nowrap;
+}
+
+a:not([class]) > code { color: inherit; }
+h1 code, h2 code, h3 code { font-size: .9em; padding: .05em .3em; }
+
+.main-content {
+  div.highlighter-rouge,
+  figure.highlight {
+    margin: 1.4rem 0 1.6rem;
+    background: $oc-ground-2;
+    border-radius: $border-radius;
+
+    // The copy button stands on its own ground in the corner, so a long
+    // line scrolling under it stays legible.
+    > button {
+      top: .45rem;
+      right: .45rem;
+      width: 1rem;
+      height: 1rem;
+      padding: .4rem;
+      opacity: 1;
+      color: $oc-dim;
+      background: $oc-ground-3;
+      border: 1px solid $oc-line;
+      border-radius: 6px;
+      transition: color .15s ease, border-color .15s ease;
+      svg { display: block; width: 1rem; height: 1rem; fill: $oc-dim; transition: fill .15s ease; }
+      &:hover { color: $oc-amber; border-color: $oc-line-strong; svg { fill: $oc-amber; } }
+      &:focus { outline-offset: 1px; }
+    }
+    &:hover > button { opacity: 1; svg { fill: $oc-muted; } }
+    &:hover > button:hover svg { fill: $oc-amber; }
+  }
+
+  div.highlighter-rouge div.highlight,
+  figure.highlight pre {
+    padding: 1.05rem 3rem 1.05rem 1.25rem;
+    border: 1px solid $oc-line;
+    border-radius: $border-radius;
+    background: $oc-ground-2;
+    overflow-x: auto;
+    scrollbar-width: thin;
+    scrollbar-color: $oc-ground-4 transparent;
+  }
+
+  pre.highlight, pre.highlight code, figure.highlight code {
+    font-family: $oc-mono;
+    font-size: .9rem;
+    line-height: 1.6;
+    color: $oc-ink;
+    background: transparent;
+    white-space: pre;
+  }
+
+  // A code block right under a heading sits closer to it.
+  h2 + div.highlighter-rouge, h3 + div.highlighter-rouge { margin-top: 1rem; }
+  li > div.highlighter-rouge { margin: .6rem 0 .8rem; }
+}
+
+// Rouge tokens, in the theme's own terminal colours.
+.highlight {
+  .c, .cm, .c1, .cs, .cp, .cd, .gp { color: $oc-dim; font-style: italic; }
+  .k, .kd, .kn, .kp, .kr, .kv, .kc, .nt { color: $oc-red; }
+  .kt, .nc, .nn, .no { color: $oc-amber; }
+  .s, .s1, .s2, .sb, .sc, .sd, .sh, .sx, .sr, .dl { color: $oc-green; }
+  .si, .se { color: $oc-orange; }
+  .m, .mi, .mf, .mh, .mo, .mb, .mx, .il { color: $oc-magenta; }
+  .nb, .nf, .fm, .bp { color: $oc-blue; }
+  .nv, .vg, .vi, .vc { color: $oc-ink; }
+  .o, .ow, .p { color: $oc-ink; }
+  .na { color: $oc-amber; }
+  .ge { font-style: italic; }
+  .gs { font-weight: 700; }
+  .gi { color: $oc-green; }
+  .gd { color: $oc-red; }
+  .gh, .gu { color: $oc-bright; font-weight: 700; }
+  .err { color: $oc-red; }
+  .w { color: inherit; }
+}
+
+// Keys: the app is driven from the keyboard, so a key reads like one.
+kbd {
+  display: inline-block;
+  font-family: $oc-mono;
+  font-size: .8em;
+  font-weight: 400;
+  line-height: 1;
+  color: $oc-bright;
+  background: linear-gradient(180deg, $oc-ground-4, $oc-ground-3);
+  border: 1px solid $oc-line-strong;
+  border-bottom-width: 2px;
+  border-radius: 6px;
+  padding: .3em .55em .28em;
+  margin: 0 .05em;
+  vertical-align: .05em;
+  white-space: nowrap;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, .35);
+}
+
+kbd kbd { border: 0; padding: 0; margin: 0; background: none; box-shadow: none; font-size: 1em; }
+
+// ---------------------------------------------------------------------------
+// Tables: the reference chapters are mostly these
+
+.main-content .table-wrapper {
+  margin: 1.4rem 0 1.8rem;
+  border: 1px solid $oc-line;
+  border-radius: $border-radius;
+  box-shadow: none;
+  background: $oc-ground-2;
+  scrollbar-width: thin;
+  scrollbar-color: $oc-ground-4 transparent;
+}
+
+.main-content table {
+  width: 100%;
+  border-collapse: collapse;
+  border-spacing: 0;
+}
+
+.main-content th,
+.main-content td {
+  min-width: 0;
+  padding: .7rem 1rem;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid $oc-line;
+  text-align: left;
+  vertical-align: top;
+  font-size: .95rem !important;
+  line-height: 1.5;
+
+  &:first-of-type { border-left: 0; }
+}
+
+.main-content thead th {
+  @extend %mono-label;
+  font-size: .68rem !important;
+  color: $oc-muted;
+  padding-top: .8rem;
+  padding-bottom: .6rem;
+  border-bottom: 1px solid $oc-line-strong;
+  background: $oc-ground-2;
+  white-space: nowrap;
+}
+
+.main-content tbody tr:last-of-type td { border-bottom: 0; padding-bottom: .75rem; }
+.main-content tbody tr:hover td { background: rgba($oc-bright, .025); }
+
+.main-content td code, .main-content th code { white-space: nowrap; }
+.main-content td kbd { margin-right: .15em; }
+
+// ---------------------------------------------------------------------------
+// Pictures
+
+.main-content {
+  .figure, p > img {
+    margin: 2rem 0;
+  }
+
+  .figure img, p > img {
+    display: block;
+    width: 100%;
+    margin-inline: auto;
+    height: auto;
+    border-radius: 10px;
+    border: 1px solid $oc-line;
+    background: $oc-ground-2;
+    box-shadow: 0 30px 60px -30px rgba(0, 0, 0, .8);
+  }
+
+  // Centred under the picture, smaller and quieter than the text, so it
+  // reads as a label for the image rather than the next paragraph.
+  .figure figcaption {
+    margin: .9rem auto 0;
+    max-width: 52ch;
+    font-size: .8rem;
+    line-height: 1.5;
+    letter-spacing: .005em;
+    color: $oc-muted;
+    text-align: center;
+    text-wrap: balance;
+  }
+
+  .figure-wide {
+    @media (min-width: $xl) {
+      margin-left: -4rem;
+      margin-right: -4rem;
+      figcaption { margin-left: auto; }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Callouts: {: .note } and friends on a paragraph or a blockquote
+
+$callouts: (
+  note:      ("Note",      $oc-blue),
+  tip:       ("Tip",       $oc-green),
+  warning:   ("Warning",   $oc-amber),
+  important: ("Important", $oc-red),
+);
+
+@each $name, $spec in $callouts {
+  $label: nth($spec, 1);
+  $colour: nth($spec, 2);
+
+  .main-content p.#{$name},
+  .main-content blockquote.#{$name},
+  .main-content div.#{$name},
+  .main-content p.#{$name}-title,
+  .main-content blockquote.#{$name}-title,
+  .main-content div.#{$name}-title {
+    position: relative;
+    margin: 1.6rem 0;
+    padding: .95rem 1.25rem 1rem 1.35rem;
+    max-width: none;
+    color: $oc-ink;
+    background: $oc-ground-2;
+    border: 1px solid $oc-line;
+    border-left: 3px solid $colour;
+    border-radius: $border-radius;
+    box-shadow: none;
+    font-size: 1rem;
+
+    > p:first-child { margin-top: 0; }
+    > p:last-child { margin-bottom: 0; }
+    a { color: $oc-amber; }
+  }
+
+  .main-content p.#{$name}::before,
+  .main-content blockquote.#{$name}::before,
+  .main-content div.#{$name}::before,
+  .main-content p.#{$name}-title > p:first-child,
+  .main-content blockquote.#{$name}-title > p:first-child,
+  .main-content div.#{$name}-title > p:first-child,
+  .main-content .#{$name} > .#{$name}-title {
+    @extend %mono-label;
+    display: block;
+    content: "#{$label}";
+    color: $colour;
+    margin: 0 0 .4rem;
+    padding: 0;
+    font-size: .68rem;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Previous and next
+
+.chapter-nav {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  margin-top: 4rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid $oc-line;
+
+  @media (max-width: 30rem) {
+    grid-template-columns: 1fr;
+    > span:empty { display: none; }
+  }
+}
+
+.chapter-nav-link {
+  display: flex;
+  flex-direction: column;
+  gap: .3rem;
+  padding: .9rem 1.1rem;
+  border: 1px solid $oc-line;
+  border-radius: $border-radius;
+  text-decoration: none;
+  color: $oc-bright;
+  transition: border-color .15s ease, background .15s ease;
+
+  &:hover {
+    border-color: $oc-line-strong;
+    background: $oc-ground-2;
+    .chapter-nav-title { color: $oc-amber; }
+  }
+}
+
+.chapter-nav-next { text-align: right; }
+
+.chapter-nav-label {
+  @extend %mono-label;
+  color: $oc-muted;
+  font-weight: 400;
+}
+
+.chapter-nav-title {
+  font-weight: 600;
+  font-size: 1.02rem;
+  line-height: 1.3;
+  transition: color .15s ease;
+}
+
+.chapter-nav-prev .chapter-nav-title::before { content: "← "; color: $oc-dim; }
+.chapter-nav-next .chapter-nav-title::after { content: " →"; color: $oc-dim; }
+
+// ---------------------------------------------------------------------------
+// Foot
+
+.main-content > hr:last-of-type { display: none; }
+
+.page-footer {
+  margin-top: 3rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid $oc-line;
+  font-family: $oc-mono;
+  font-size: .75rem;
+  color: $oc-dim;
+  text-align: right;
+
+  // Out of the way: the page's links are amber and underlined, this one is
+  // neither until it is pointed at.
+  .page-footer-line a {
+    color: $oc-dim;
+    text-decoration: none;
+    background-image: none;
+    &:hover { color: $oc-muted; text-decoration: underline; }
+  }
+}
+
+.page-footer-line { margin: 0; }
+
+// ---------------------------------------------------------------------------
+// The letter
+
+.letter {
+  max-width: 40rem;
+  font-size: 1.2rem;
+  line-height: 1.65;
+  color: $oc-ink;
+}
+
+.letter-head {
+  margin: 0 0 2.75rem;
+}
+
+.main-content .letter-title {
+  font-weight: 800;
+  font-size: clamp(2.4rem, 7vw, 3.2rem) !important;
+  letter-spacing: -.035em;
+  line-height: 1.02;
+  margin: 0;
+  color: $oc-bright;
+  text-wrap: balance;
+}
+
+.letter-dateline {
+  font-family: $oc-mono;
+  font-size: .82rem;
+  color: $oc-muted;
+  margin: 1.5rem 0 0 !important;
+}
+
+.letter-body {
+  p {
+    margin: 0 0 1.3em;
+    max-width: none;
+    text-wrap: pretty;
+  }
+
+  h2, h3 {
+    font-weight: 800;
+    font-size: 1.5rem !important;
+    letter-spacing: -.02em;
+    border: 0;
+    padding: 0;
+    margin: 2.2em 0 .5em;
+  }
+
+  // Three dots instead of a rule, as a letter breaks its pages.
+  hr {
+    height: auto;
+    margin: 2.5rem 0;
+    background: none;
+    text-align: center;
+    &::after { content: "· · ·"; color: $oc-dim; letter-spacing: .6em; }
+  }
+
+  blockquote:not([class]) {
+    border-left-color: $oc-amber;
+    color: $oc-ink;
+  }
+
+  em { font-style: italic; }
+  strong { font-weight: 600; color: $oc-bright; }
+  code { font-size: .78em; }
+  a { color: $oc-amber; }
+}
+
+.letter-foot {
+  margin-top: 3rem;
+}
+
+.letter-signature {
+  font-style: italic;
+  margin: 0;
+  color: $oc-ink;
+}
+
+.letter-postscript {
+  margin: 1.5rem 0 0;
+  font-size: 1.05rem;
+  color: $oc-muted;
+}
+
+// ---------------------------------------------------------------------------
+// Phones
+
+@media (max-width: ($md - 0.01)) {
+  .side-bar {
+    border-right: 0;
+    border-bottom: 1px solid $oc-line;
+  }
+
+  .site-header { min-height: 3.6rem; }
+
+  .side-bar .nav-list .nav-list-item .nav-list-link {
+    padding-top: .6rem;
+    padding-bottom: .6rem;
+    font-size: 1.05rem;
+  }
+
+  .side-bar .site-nav {
+    padding-top: .75rem;
+    padding-bottom: 1rem;
+  }
+
+  .side-bar .nav-category { margin-top: 1rem; }
+  .side-bar .nav-links {
+    margin-top: 1rem;
+    margin-left: $gutter-spacing-sm;
+    margin-right: $gutter-spacing-sm;
+    .nav-list-item .nav-list-link { padding-left: 0; border-left: 0; }
+  }
+
+  .search { padding: .6rem $gutter-spacing-sm 0; height: auto; }
+  .search-input-wrap { border: 1px solid $oc-line-strong; box-shadow: none; }
+
+  .main-content-wrap { padding-top: 2rem; padding-bottom: 3rem; }
+
+  .main-content .anchor-heading { display: none; }
+
+  .chapter-toc { padding: 0 1rem; margin-bottom: 2.25rem; }
+  .main-content .section-toc > li { padding: 1.3rem 0 1.4rem; }
+  .section-toc-title { font-size: 1.25rem; }
+
+  .main-content div.highlighter-rouge div.highlight { padding: .9rem 2.6rem .9rem 1rem; }
+  .main-content pre.highlight, .main-content pre.highlight code { font-size: .85rem; }
+
+  .letter { font-size: 1.2rem; }
+}
+
+// ---------------------------------------------------------------------------
+// Quiet
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; }
+  html { scroll-behavior: auto; }
+}
+
+@media print {
+  .side-bar, .main-header, .chapter-nav, .page-footer, .search { display: none !important; }
+  .side-bar + .main { margin-left: 0 !important; }
+  body { background: #fff; color: #000; }
+}

@@ -1,0 +1,37 @@
+{%- comment -%}
+  The trail above a manual page's title: the manual's root, then the page's
+  section. A chapter's own title is right underneath, so it is not repeated
+  as a crumb. The last crumb is where you are and does not link.
+
+  Replaces the theme's breadcrumbs, which read `parent:` front matter the
+  chapters do not have; sections come from site.manual.sections and the
+  page a section has is the one _plugins/manual.rb makes for it.
+{%- endcomment -%}
+{%- if page.url contains "/manual/" -%}
+{%- assign crumb_key = page.section | default: page.section_key -%}
+{%- assign crumb_section = nil -%}
+{%- for section in site.manual.sections -%}
+  {%- if section.key == crumb_key -%}{%- assign crumb_section = section -%}{%- endif -%}
+{%- endfor -%}
+{%- assign section_page = site.html_pages | where: "section_key", crumb_key | first -%}
+<nav class="crumbs" aria-label="Breadcrumb">
+  <ol class="crumbs-list">
+    <li class="crumbs-item">
+      {%- if page.url == "/manual/" -%}
+      <span aria-current="page">Manual</span>
+      {%- else -%}
+      <a href="{{ '/manual/' | relative_url }}">Manual</a>
+      {%- endif -%}
+    </li>
+    {%- if crumb_section %}
+    <li class="crumbs-item">
+      {%- if page.section_key or section_page == nil -%}
+      <span aria-current="page">{{ crumb_section.label }}</span>
+      {%- else -%}
+      <a href="{{ section_page.url | relative_url }}">{{ crumb_section.label }}</a>
+      {%- endif -%}
+    </li>
+    {%- endif %}
+  </ol>
+</nav>
+{%- endif -%}

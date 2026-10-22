@@ -3,7 +3,10 @@ name: Pages
 # Pages' built-in source can only serve the repository root or `/docs`, and
 # the site is neither: it lives in `site/`, beside the rest of the project
 # rather than on top of it. Publishing through Actions is what buys that
-# choice. There is nothing to build — the directory is uploaded as it stands.
+# choice, and it also buys the build: the manual is a Jekyll site on the
+# just-the-docs theme, which Pages' own builder does not carry, so Jekyll
+# runs here, from `site/Gemfile`, and what it writes to `site/_site` is
+# what gets uploaded.
 
 on:
   push:
@@ -32,9 +35,21 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+      # The Ruby here is the one the site is developed against; the gems are
+      # pinned by the lockfile and cached between runs.
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.4'
+          bundler-cache: true
+          working-directory: site
       - uses: actions/configure-pages@v5
+      - name: Build the site
+        run: bundle exec jekyll build
+        working-directory: site
+        env:
+          JEKYLL_ENV: production
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: site
+          path: site/_site
       - id: deployment
         uses: actions/deploy-pages@v4

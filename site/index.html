@@ -1,3 +1,10 @@
+---
+# The home is its own page: no theme layout, its own styles, and only the
+# palette shared with the manual. Excluded from the manual's search.
+title: Omacharts
+search_exclude: true
+nav_exclude: true
+---
 <!doctype html>
 <html lang="en">
 <head>
@@ -14,24 +21,40 @@
 <meta property="og:url" content="https://omacharts.org/">
 <meta property="og:title" content="Omacharts">
 <meta property="og:description" content="Beautiful charting software for Omarchy.">
-<meta property="og:image" content="https://omacharts.org/social.jpg?v=5">
+<meta property="og:image" content="https://omacharts.org/assets/og/home.jpg">
+<meta property="og:image:width" content="2400">
+<meta property="og:image:height" content="1260">
+<meta property="og:image:alt" content="Omacharts: beautiful charting software for Omarchy, over a spread of its charts.">
 <meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Omacharts">
+<meta name="twitter:description" content="Beautiful charting software for Omarchy.">
+<meta name="twitter:image" content="https://omacharts.org/assets/og/home.jpg">
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;800&display=swap">
+<link rel="stylesheet" href="/assets/css/palette.css">
 
 <style>
-  /* Every colour is the app's own: Everforest's ground and foreground, and
-     the amber it draws a trendline in. The page commits to the dark look
-     deliberately — it is a picture of the application, and the application
-     is dark here. */
+  /* Every colour is the app's own, and comes from the palette the manual
+     shares (/assets/css/palette.css, written by _sass/omacharts/_palette.scss):
+     Everforest's ground and foreground, and the amber it draws a trendline
+     in. The page commits to the dark look deliberately — it is a picture of
+     the application, and the application is dark here. */
   :root {
-    --ground: #0d1114;
-    --bright: #f3ecdc;
-    --soft:   rgba(243, 236, 220, .92);
-    --amber:  #e2c285;
-    --sans: "Archivo", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --ground: var(--oc-ground);
+    --bright: var(--oc-bright);
+    --soft:   rgba(var(--oc-bright-rgb), .92);
+    --amber:  var(--oc-amber);
+    --sans:   var(--oc-sans);
+    /* The picture behind everything. One line to swap it. */
+    --cover:  url("assets/home/bg-ribbon.jpg");
+    --scrim-rim: .18;
+  }
+  /* A phone or a laptop gets the half-size picture; it is the same
+     composition and nobody can tell at that width. */
+  @media (max-width: 1280px) {
+    :root { --cover: url("assets/home/bg-ribbon-1920.jpg"); }
   }
 
   * { box-sizing: border-box; }
@@ -43,7 +66,7 @@
     place-items: center;
     padding: clamp(1.5rem, 5vw, 4rem);
     background-color: var(--ground);
-    background-image: url("background.jpg");
+    background-image: var(--cover);
     background-size: cover;
     background-position: center;
     background-repeat: no-repeat;
@@ -61,9 +84,9 @@
     position: fixed;
     inset: 0;
     background: radial-gradient(58% 54% at 50% 48%,
-      rgba(13, 17, 20, .93) 0%,
-      rgba(13, 17, 20, .7) 48%,
-      rgba(13, 17, 20, .26) 100%);
+      rgba(var(--oc-ground-rgb), .93) 0%,
+      rgba(var(--oc-ground-rgb), .7) 48%,
+      rgba(var(--oc-ground-rgb), var(--scrim-rim)) 100%);
     pointer-events: none;
   }
 
@@ -101,7 +124,7 @@
   .tagline a {
     color: inherit;
     text-decoration: underline;
-    text-decoration-color: rgba(243, 236, 220, .4);
+    text-decoration-color: rgba(var(--oc-bright-rgb), .4);
     text-underline-offset: .14em;
     text-decoration-thickness: .045em;
     transition: text-decoration-color .18s ease, color .18s ease;
@@ -116,27 +139,39 @@
     border-radius: 2px;
   }
 
-  /* The install line is the one thing on the page a visitor is meant to take
-     away, and on Omarchy the way in is the menu rather than a terminal: the
-     mark that opens it, as it sits in the top bar, then the entries to pick,
-     in order. */
-  .install {
+  /* Two things to take away in one pill: the install line, and the manual
+     beside it behind a hairline, so they read as one object with two parts
+     rather than two buttons competing. On a phone the pill turns into a
+     card: the line on top, the manual as a row under it. */
+  .actions {
     margin: clamp(1.6rem, 3.4vw, 4rem) 0 0;
+    display: flex;
+    justify-content: center;
+    align-items: stretch;
+    border: 1px solid rgba(var(--oc-bright-rgb), .18);
+    border-radius: .55rem;
+    background: rgba(var(--oc-ground-rgb), .62);
+    overflow: hidden;
+    font-size: min(clamp(.95rem, 1.3vw, 1.6rem), 3.8vw);
+    font-weight: 600;
+    line-height: 1;
+    letter-spacing: .01em;
+    color: var(--soft);
+  }
+  .install {
+    margin: 0;
     display: flex;
     justify-content: center;
     align-items: center;
     gap: .6em;
     padding: .62em 1.1em;
-    border: 1px solid rgba(243, 236, 220, .18);
-    border-radius: .55rem;
-    background: rgba(13, 17, 20, .62);
-    color: var(--soft);
-    font-size: min(clamp(.95rem, 1.3vw, 1.6rem), 3.8vw);
-    font-weight: 600;
-    line-height: 1;
-    letter-spacing: .01em;
     white-space: nowrap;
   }
+
+  /* The install line is the one thing on the page a visitor is meant to take
+     away, and on Omarchy the way in is the menu rather than a terminal: the
+     mark that opens it, as it sits in the top bar, then the entries to pick,
+     in order. */
   /* The line never breaks: it is one path through the menu, so on a narrow
      phone the whole line gets smaller instead (the 3.8vw above), and still
      fits inside the page's gutters at 320px. */
@@ -158,6 +193,43 @@
     width: 1.05em;
     height: 1.05em;
     flex: none;
+  }
+  /* The manual is the one thing here that goes somewhere, so it is the one
+     thing in amber: the colour every link in the manual wears, and a breath
+     of it on the ground so the segment reads as something to press. */
+  .manual {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: .62em 1.1em;
+    border-left: 1px solid rgba(var(--oc-bright-rgb), .18);
+    background: rgba(226, 194, 133, .06);
+    color: var(--amber);
+    text-decoration: none;
+    white-space: nowrap;
+    transition: background-color .18s ease, color .18s ease;
+  }
+  .manual:hover,
+  .manual:focus-visible {
+    color: var(--bright);
+    background: rgba(226, 194, 133, .14);
+  }
+  /* The outline sits inside the segment, as the pill clips anything past
+     its corners. */
+  .manual:focus-visible {
+    outline: 2px solid var(--amber);
+    outline-offset: -2px;
+  }
+  /* Where the line and the manual no longer fit side by side within the
+     gutters, the pill stacks: the hairline turns to lie between the rows,
+     and the manual's row grows a little, to be a comfortable tap. */
+  @media (max-width: 520px) {
+    .actions { flex-direction: column; }
+    .manual {
+      padding: .8em 1.1em;
+      border-left: 0;
+      border-top: 1px solid rgba(var(--oc-bright-rgb), .18);
+    }
   }
   .sr {
     position: absolute;
@@ -199,6 +271,7 @@
   @media (prefers-reduced-motion: reduce) {
     .tagline a { transition: none; }
     .repo svg { transition: none; }
+    .manual { transition: none; }
   }
 </style>
 </head>
@@ -206,6 +279,7 @@
   <main>
     <h1>Omacharts</h1>
     <p class="tagline">Beautiful charting software for <a href="https://omarchy.org">Omarchy</a></p>
+    <div class="actions">
     <p class="install">
       <span class="sr">Install it from the Omarchy menu: open the menu</span>
       <svg class="menu" viewBox="0 0 1024 1024" fill="currentColor" aria-hidden="true"><path d="M70 954H549V1024H0V0H1024V1024H626V954H954V70H70ZM884 884H140V140H551V210H210V814H814V210H736V140H884ZM471 884H549V954H471ZM473 70H551V140H473ZM0 473H210V551H0Z"/></svg>
@@ -215,9 +289,21 @@
         <span class="step"><span class="then" aria-hidden="true">→</span><span class="sr">, then </span>omacharts</span>
       </span>
     </p>
+    <a class="manual" href="/manual/">Manual</a>
+    </div>
   </main>
   <a class="repo" href="https://github.com/jorgemanrubia/omacharts" aria-label="Omacharts on GitHub" title="Omacharts on GitHub">
     <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
   </a>
+  <script>
+    // Trying the other covers while one is being chosen: ?bg=wall, mosaic or
+    // stack. Remove once the choice is settled.
+    (function () {
+      var bg = new URLSearchParams(location.search).get("bg");
+      if (!/^(ribbon|wall|mosaic|stack)$/.test(bg || "")) return;
+      var big = innerWidth > 1280 ? "" : "-1920";
+      document.documentElement.style.setProperty("--cover", 'url("assets/home/bg-' + bg + big + '.jpg")');
+    })();
+  </script>
 </body>
 </html>

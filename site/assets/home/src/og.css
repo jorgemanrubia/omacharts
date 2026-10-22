@@ -1,0 +1,107 @@
+/* Shared by the two OpenGraph pictures (og-home.html, og-manual.html).
+   Rendered at 2400x1260 by render-og.sh, twice the 1200x630 a link preview
+   asks for; nothing here is served by the site.
+
+   The ground is the ribbon composition the home wears, re-framed for 1.91:1
+   and pushed further back under a heavier scrim, so the words still read
+   when the picture is a thumbnail the width of a chat bubble. */
+* { box-sizing: border-box; margin: 0; }
+html, body { width: 2400px; height: 1260px; overflow: hidden; background: #0d1114; }
+
+@font-face {
+  font-family: "Cascadia Mono";
+  font-weight: 700;
+  src: url("fonts/cascadia-mono-latin-700-normal.woff2") format("woff2");
+}
+
+/* The ribbon, at 5/8 of the home's numbers. The band is wider than it
+   needs to be so no strip ends inside the frame. */
+.scene { position: absolute; inset: 0; perspective: 3000px; perspective-origin: 50% 50%; }
+.band {
+  position: absolute; left: 50%; top: 50%;
+  width: 5600px; height: 2100px;
+  transform: translate(-50%, -50%) rotateY(-18deg) rotateX(6deg) rotateZ(-11deg) translateZ(-300px);
+  transform-style: preserve-3d;
+}
+.row { position: absolute; left: 0; display: flex; gap: 28px; }
+.tile {
+  display: block; position: relative; flex: none;
+  width: 775px; height: 436px;
+  border-radius: 10px;
+  outline: 1px solid rgba(255, 255, 255, .09);
+  outline-offset: -1px;
+  box-shadow: 0 25px 56px rgba(0, 0, 0, .55), 0 5px 15px rgba(0, 0, 0, .35);
+  background: #111;
+  backface-visibility: hidden;
+  /* A touch brighter than on the home, where the picture is the whole
+     page: here it is a ground behind words, seen small. */
+  filter: brightness(1.12) saturate(1.1);
+}
+
+/* Two layers of scrim: the home's own vignette (dark at the rim), then a
+   wide pool of ground under the words, denser than the page's since there
+   is no hover, no scroll, and no second look at a thumbnail. */
+.scrim { position: absolute; inset: 0; pointer-events: none; }
+.scrim::before {
+  content: ""; position: absolute; inset: 0;
+  background:
+    linear-gradient(180deg, rgba(13,17,20,.3) 0%, rgba(13,17,20,0) 22%, rgba(13,17,20,0) 78%, rgba(13,17,20,.4) 100%),
+    radial-gradient(70% 70% at 50% 50%, rgba(13,17,20,0) 45%, rgba(13,17,20,.35) 80%, rgba(13,17,20,.75) 100%);
+}
+.scrim::after {
+  content: ""; position: absolute; inset: 0;
+  background: radial-gradient(58% 60% at 50% 50%,
+    rgba(13,17,20,.93) 0%,
+    rgba(13,17,20,.84) 34%,
+    rgba(13,17,20,.48) 66%,
+    rgba(13,17,20,0) 100%);
+}
+
+/* The words, locked up as one block: the mark beside the word, with the
+   line under it flush with the word's left edge. Each text box is trimmed
+   to cap top..baseline (Archivo 800 at line-height .86, Archivo 500 and
+   Cascadia at 1), so the mark's edges fall on the word's cap line and the
+   subheading's baseline, and the block is centred on the card without
+   the fonts' own leading and descender room. */
+.copy {
+  position: absolute; inset: 0;
+  display: grid; place-content: center;
+  font-family: "Archivo", system-ui, sans-serif;
+  color: #f3ecdc;
+}
+.lockup { display: flex; align-items: flex-start; gap: 60px; }
+.block { display: flex; flex-direction: column; }
+.mark {
+  display: block; width: 300px; height: 300px;
+  border-radius: 22%;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, .5);
+}
+.wordmark {
+  font-size: 290px;
+  font-weight: 800;
+  line-height: .86;
+  letter-spacing: -.045em;
+  margin: -.077em 0 -.096em;
+  text-shadow: 0 .02em .14em rgba(0, 0, 0, .6);
+}
+/* 48px under the baseline; a hair to the right so the round O hangs just
+   outside the subheading's first stem, as a flush edge should look. */
+.tagline {
+  font-size: 78px;
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: .012em;
+  margin: calc(48px - .148em) 0 -.166em .14em;
+  color: rgba(243, 236, 220, .92);
+  text-shadow: 0 .02em .1em rgba(0, 0, 0, .65);
+}
+.label {
+  font-family: "Cascadia Mono", monospace;
+  font-size: 76px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  margin: calc(48px - .153em) 0 -.153em .14em;
+  color: #e2c285;
+}

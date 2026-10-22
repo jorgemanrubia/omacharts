@@ -1,0 +1,40 @@
+// Variables the theme reads before it lays anything out. Colours live in
+// color_schemes/omacharts.scss; this file is type and measure.
+@import "omacharts/palette";
+
+$body-font-family: $oc-sans;
+$mono-font-family: $oc-mono;
+
+// The theme sets the root font size from $font-size-4 on phones and
+// $font-size-5 from 500px up, and everything else in rem on top of that:
+// 17px, then 18px. Nothing on the page is small.
+$font-size-1: 0.72rem;
+$font-size-1-sm: 0.78rem;
+$font-size-2: 0.78rem;
+$font-size-3: 0.89rem;
+$font-size-4: 1.0625rem;
+$font-size-5: 1.125rem;
+$font-size-6: 1.4rem;
+$font-size-7: 1.7rem;
+$font-size-8: 2.5rem;
+$font-size-9: 2.7rem;
+$font-size-10: 3rem;
+$font-size-10-sm: 3.3rem;
+
+$body-line-height: 1.5;
+$content-line-height: 1.65;
+$body-heading-line-height: 1.15;
+
+$border-radius: 8px;
+
+// A 17rem rail and a reading column that holds about 72 characters of
+// Archivo at 18px, with the gutters on top.
+$nav-width: 17rem;
+$nav-width-md: 16rem;
+$content-width: 50rem;
+$header-height: 4rem;
+$gutter-spacing: 3rem;
+$gutter-spacing-sm: 1.25rem;
+$nav-list-item-height: 2.1rem;
+$nav-list-item-height-sm: 2.6rem;
+$search-results-width: 32rem;

@@ -1,0 +1,25 @@
+/* Shared by the four home-background compositions. Rendered at 3840x2160 by
+   render.sh; nothing here is served by the site. */
+* { box-sizing: border-box; margin: 0; }
+html, body { width: 3840px; height: 2160px; overflow: hidden; background: #0d1114; }
+.scene { position: absolute; inset: 0; perspective-origin: 50% 50%; }
+.tile {
+  display: block; position: absolute;
+  border-radius: 14px;
+  outline: 1.5px solid rgba(255, 255, 255, .09);
+  outline-offset: -1px;
+  box-shadow: 0 40px 90px rgba(0, 0, 0, .55), 0 8px 24px rgba(0, 0, 0, .35);
+  background: #111;
+  backface-visibility: hidden;
+}
+/* The vignette: darkness toward the edges and a soft ground under the
+   title, so the page's own scrim has less to fight. */
+.vignette { position: absolute; inset: 0; pointer-events: none; }
+.vignette::before {
+  content: ""; position: absolute; inset: 0;
+  background: radial-gradient(70% 70% at 50% 50%, rgba(13,17,20,0) 40%, rgba(13,17,20,.55) 80%, rgba(13,17,20,.92) 100%);
+}
+.vignette::after {
+  content: ""; position: absolute; inset: 0;
+  background: linear-gradient(180deg, rgba(13,17,20,.5) 0%, rgba(13,17,20,0) 22%, rgba(13,17,20,0) 78%, rgba(13,17,20,.6) 100%);
+}

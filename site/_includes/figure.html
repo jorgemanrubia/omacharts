@@ -1,0 +1,18 @@
+{%- comment -%}
+  A screenshot with its caption.
+
+    {% include figure.html src="/assets/manual/desk.jpg" alt="Four charts of NVDA" caption="The desk chartbook." %}
+
+  Screenshots are taken at a scale of 2, so each is shown at half its
+  pixel width — the size it is on screen — and never wider than the column.
+
+  `wide` (any value) lets it spill past the text column on big screens.
+  Keep the regeneration comment on the line above the include; Jekyll
+  passes HTML comments through untouched.
+{%- endcomment -%}
+<figure class="figure{% if include.wide %} figure-wide{% endif %}">
+  <img src="{{ include.src | relative_url }}" alt="{{ include.alt | escape }}" loading="lazy">
+  {%- if include.caption %}
+  <figcaption>{{ include.caption | markdownify | remove: '<p>' | remove: '</p>' }}</figcaption>
+  {%- endif %}
+</figure>

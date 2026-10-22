@@ -1,0 +1,10 @@
+---
+# Compiled to /assets/css/palette.css: the palette as custom properties, for
+# the home page and anything else that is not laid out by the theme.
+---
+@import "omacharts/palette";
+
+:root {
+  color-scheme: dark;
+  @include palette;
+}

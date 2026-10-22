@@ -1,0 +1,72 @@
+// The one palette for omacharts.org: the home, the manual and anything added
+// later all draw from here and nowhere else.
+//
+// Every colour is the app's own. The ground and the cream are Everforest's,
+// the theme the cover picture was taken under, pushed to the darker end
+// the window sits at; the amber is the colour the app draws a trendline in;
+// the green, red, blue and magenta are the theme's terminal colours, which
+// is what the charts and the indicator palette are made of.
+//
+// Two shapes of the same thing: Sass variables for the theme's stylesheet,
+// which needs real colours for its arithmetic, and the `palette` mixin, which
+// writes them out as custom properties so a standalone page (the home) can
+// use the very same values without compiling against the theme.
+
+// Ground: the page, then two steps up for panels and for things you can press.
+$oc-ground:    #0d1114;
+$oc-ground-2:  #13191d;
+$oc-ground-3:  #1b2227;
+$oc-ground-4:  #242d33;
+
+// Ink: headings, text, secondary text, and a tone for rules and ornaments.
+$oc-bright:    #f3ecdc;
+$oc-ink:       #dcd5c5;
+$oc-muted:     #a3ab9f;
+$oc-dim:       #6e776f;
+
+// Hairlines, as alphas of the cream, so they sit on any of the grounds.
+$oc-line:        rgba($oc-bright, .12);
+$oc-line-strong: rgba($oc-bright, .24);
+
+// Accent and roles.
+$oc-amber:     #e2c285; // links, the active page, the key you press
+$oc-amber-2:   #f0d8a5; // amber, lit
+$oc-green:     #a7c080; // up, and "tip"
+$oc-red:       #e67e80; // down, and "warning"
+$oc-blue:      #7fbbb3; // "note"
+$oc-magenta:   #d699b6;
+$oc-orange:    #e69875;
+
+// Type. Archivo is the home's face and the manual's; Cascadia is the mono
+// Omarchy ships as CaskaydiaMono, self-hosted so everybody sees it. Two
+// faces and no more: the letter is set in Archivo too.
+$oc-sans:  "Archivo", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+$oc-mono:  "Cascadia Mono", "CaskaydiaMono Nerd Font", "Cascadia Code", ui-monospace, Menlo, Consolas, monospace;
+
+@mixin palette {
+  --oc-ground:      #{$oc-ground};
+  --oc-ground-2:    #{$oc-ground-2};
+  --oc-ground-3:    #{$oc-ground-3};
+  --oc-ground-4:    #{$oc-ground-4};
+  --oc-ground-rgb:  #{red($oc-ground)}, #{green($oc-ground)}, #{blue($oc-ground)};
+
+  --oc-bright:      #{$oc-bright};
+  --oc-ink:         #{$oc-ink};
+  --oc-muted:       #{$oc-muted};
+  --oc-dim:         #{$oc-dim};
+  --oc-bright-rgb:  #{red($oc-bright)}, #{green($oc-bright)}, #{blue($oc-bright)};
+
+  --oc-line:        #{$oc-line};
+  --oc-line-strong: #{$oc-line-strong};
+
+  --oc-amber:       #{$oc-amber};
+  --oc-amber-2:     #{$oc-amber-2};
+  --oc-green:       #{$oc-green};
+  --oc-red:         #{$oc-red};
+  --oc-blue:        #{$oc-blue};
+  --oc-magenta:     #{$oc-magenta};
+  --oc-orange:      #{$oc-orange};
+
+  --oc-sans:        #{$oc-sans};
+  --oc-mono:        #{$oc-mono};
+}

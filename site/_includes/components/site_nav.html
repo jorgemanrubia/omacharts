@@ -1,0 +1,56 @@
+{%- comment -%}
+  The manual's table of contents, in three tiers: the letter on its own at
+  the top, then each section from site.manual.sections with the chapters
+  that name it in `section:`, in nav_order. Chapters are flat pages under
+  manual/; there is no nesting to expand.
+
+  Replaces the theme's site_nav, so the theme's activation stylesheet (which
+  guesses the active link from its own markup) is blanked in
+  _includes/css/activation.scss.liquid and the active page is marked here.
+{%- endcomment -%}
+{%- assign manual_pages = site.html_pages
+      | where_exp: "item", "item.url contains '/manual/'"
+      | where_exp: "item", "item.title != nil"
+      | where_exp: "item", "item.nav_exclude != true" -%}
+{%- assign letters = manual_pages | where_exp: "item", "item.section == nil" | sort: "nav_order" -%}
+
+<nav aria-label="Manual" id="site-nav" class="site-nav">
+  {%- if letters.size > 0 %}
+  <ul class="nav-list nav-letter">
+    {%- for node in letters %}
+    <li class="nav-list-item">
+      <a href="{{ node.url | relative_url }}" class="nav-list-link{% if node.url == page.url %} active{% endif %}"{% if node.url == page.url %} aria-current="page"{% endif %}>{{ node.title }}</a>
+    </li>
+    {%- endfor %}
+  </ul>
+  {%- endif %}
+
+  {%- for section in site.manual.sections %}
+  {%- assign chapters = manual_pages | where: "section", section.key | sort: "nav_order" %}
+  {%- assign section_page = site.html_pages | where: "section_key", section.key | first %}
+  {%- if chapters.size > 0 %}
+  {%- comment -%} The label goes to the section's own page, when the plugin made one. {%- endcomment -%}
+  {%- if section_page %}
+  <a href="{{ section_page.url | relative_url }}" class="nav-category nav-category-link{% if section_page.url == page.url %} active{% endif %}"{% if section_page.url == page.url %} aria-current="page"{% endif %}>{{ section.label }}</a>
+  {%- else %}
+  <div class="nav-category">{{ section.label }}</div>
+  {%- endif %}
+  <ul class="nav-list">
+    {%- for node in chapters %}
+    <li class="nav-list-item">
+      <a href="{{ node.url | relative_url }}" class="nav-list-link{% if node.url == page.url %} active{% endif %}"{% if node.url == page.url %} aria-current="page"{% endif %}>{{ node.title }}</a>
+    </li>
+    {%- endfor %}
+  </ul>
+  {%- endif %}
+  {%- endfor %}
+
+  <ul class="nav-list nav-links">
+    <li class="nav-list-item">
+      <a href="https://github.com/jorgemanrubia/omacharts" class="nav-list-link external">
+        GitHub
+        <svg viewBox="0 0 24 24" aria-hidden="true"><use xlink:href="#svg-external-link"></use></svg>
+      </a>
+    </li>
+  </ul>
+</nav>

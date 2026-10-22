@@ -3,3 +3,11 @@
 *.db-wal
 *.db-shm
 /.claude/worktrees
+
+# The site is built by Jekyll from site/; these are its outputs and its
+# locally installed gems.
+/site/_site
+/site/.jekyll-cache
+/site/.jekyll-metadata
+/site/.bundle
+/site/vendor

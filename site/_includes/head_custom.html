@@ -1,0 +1,40 @@
+{%- comment -%}
+  Added to every themed page's <head>: the icons, the faces, and the one
+  stylesheet the home shares with the manual.
+{%- endcomment -%}
+<link rel="icon" href="{{ '/icon.svg' | relative_url }}" type="image/svg+xml">
+<link rel="icon" href="{{ '/icon.png' | relative_url }}" sizes="32x32" type="image/png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+{%- if page.layout == "letter" %}
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;800&display=swap">
+{%- else %}
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;800&display=swap">
+{%- endif %}
+<link rel="preload" href="{{ '/assets/fonts/cascadia-mono-latin-400-normal.woff2' | relative_url }}" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="{{ '/assets/css/palette.css' | relative_url }}">
+<script>
+  // Screenshots are taken at a scale of 2. Each is shown at half its pixel
+  // width — the size it was on screen — and never wider than the column, so
+  // a small dialog stays small rather than filling the page.
+  document.addEventListener("load", function (event) {
+    var img = event.target;
+    if (img.tagName === "IMG" && img.closest(".main-content") && img.naturalWidth) {
+      img.style.maxWidth = img.naturalWidth / 2 + "px";
+    }
+  }, true);
+</script>
+<script>
+  // "/" alone focuses the search, as the key drawn in the field says. The
+  // theme only listens for Ctrl+/; this leaves "/" alone while typing.
+  document.addEventListener("keydown", function (event) {
+    if (event.key !== "/" || event.ctrlKey || event.metaKey || event.altKey) return;
+    var target = event.target;
+    if (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
+    var input = document.getElementById("search-input");
+    if (!input) return;
+    event.preventDefault();
+    document.getElementById("main-header")?.classList.add("nav-open");
+    input.focus();
+  });
+</script>

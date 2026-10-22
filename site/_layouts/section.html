@@ -1,0 +1,29 @@
+---
+layout: default
+---
+{%- comment -%}
+  A part of the manual, as a table of contents: each chapter that names it
+  in `section:`, in nav_order, with its sections and their subsections
+  beneath: three levels, every one a link. The pages themselves are made
+  from site.manual.sections by _plugins/manual.rb; `section_key` says which
+  part this is. Its description is the page's meta description, not shown.
+{%- endcomment -%}
+{%- assign chapters = site.html_pages
+      | where_exp: "item", "item.url contains '/manual/'"
+      | where_exp: "item", "item.title != nil"
+      | where_exp: "item", "item.nav_exclude != true"
+      | where: "section", page.section_key
+      | sort: "nav_order" -%}
+
+<header class="chapter-head">
+  <h1 class="chapter-title">{{ page.title }}</h1>
+</header>
+
+<ul class="section-toc">
+  {%- for chapter in chapters %}
+  <li>
+    <a href="{{ chapter.url | relative_url }}">{{ chapter.title }}</a>
+    {{- chapter | chapter_tree: 2, 3 }}
+  </li>
+  {%- endfor %}
+</ul>

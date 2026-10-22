@@ -1,0 +1,101 @@
+# omacharts.org. The home is a standalone page; the manual under /manual/ is
+# laid out by the just-the-docs theme, restyled in _sass/custom and
+# _includes/components until nothing of the theme's own look is left.
+title: Omacharts
+description: Beautiful charting software for Omarchy.
+url: https://omacharts.org
+lang: en
+permalink: pretty
+
+theme: just-the-docs
+color_scheme: omacharts
+plugins:
+  - jekyll-seo-tag
+
+# What the manual's sidebar groups pages under, in this order. A page says
+# which it belongs to with `section:` in its front matter; the letter has
+# none and sits above them all. Each section is also a page at
+# /manual/<key>/ (made by _plugins/manual.rb) that lists its chapters, with
+# the description as its lede.
+manual:
+  sections:
+    - key: introduction
+      label: Introduction
+      description: What Omacharts is made of, then a desk of your own in a few minutes.
+    - key: charting
+      label: Charting
+      description: The window, the charts in it, what goes on them, and the arrangements and watchlists that hold them.
+    - key: configuration
+      label: Configuration
+      description: Installing it, the theme, the data feeds, the bar widget, preferences, and where your data lives.
+    - key: agents
+      label: Agents
+      description: The CLI that drives everything the window does, and the skill that lets an agent reach for it.
+    - key: appendices
+      label: Appendices
+      description: Every key in one place.
+
+# The card a link unfolds into (og:image, through jekyll-seo-tag): the home's
+# for any themed page, the manual's for everything under manual/. Both are
+# drawn by assets/home/src/render-og.sh; the home sets its own in index.html.
+# Every page under manual/ is a chapter unless it says otherwise.
+defaults:
+  - scope:
+      path: ""
+    values:
+      image:
+        path: /assets/og/home.jpg
+        width: 2400
+        height: 1260
+        alt: "Omacharts: beautiful charting software for Omarchy, over a spread of its charts."
+  - scope:
+      path: manual
+    values:
+      layout: manual
+      image:
+        path: /assets/og/manual.jpg
+        width: 2400
+        height: 1260
+        alt: "The Omacharts manual."
+
+twitter:
+  card: summary_large_image
+
+search_enabled: true
+search:
+  heading_level: 2
+  previews: 2
+  preview_words_before: 4
+  preview_words_after: 8
+  tokenizer_separator: /[\s/]+/
+  rel_url: false
+  button: false
+  focus_shortcut_key: "/"
+
+enable_copy_code_button: true
+heading_anchors: true
+back_to_top: false
+mermaid: false
+nav_error_report: true
+
+# The home is its own page with its own styles: the theme must not lay it
+# out, and the manual's search must not find it.
+exclude:
+  - Gemfile
+  - Gemfile.lock
+  - vendor
+  - node_modules
+  - README.md
+  - assets/home/src
+
+kramdown:
+  input: GFM
+  syntax_highlighter: rouge
+  syntax_highlighter_opts:
+    block:
+      line_numbers: false
+
+sass:
+  style: compressed
+  quiet_deps: true
+  silence_deprecations: ["import", "global-builtin", "color-functions"]

@@ -1,0 +1,36 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>ribbon</title>
+<link rel="stylesheet" href="base.css">
+<style>
+  .scene { perspective: 4800px; }
+  .band {
+    position: absolute; left: 50%; top: 50%;
+    width: 9000px; height: 3400px;
+    transform: translate(-50%, -50%) rotateY(-18deg) rotateX(6deg) rotateZ(-11deg) translateZ(-500px);
+    transform-style: preserve-3d;
+  }
+  .row { position: absolute; left: 0; display: flex; gap: 44px; }
+  .tile { position: relative; width: 1240px; height: 698px; border-radius: 16px; flex: none; }
+</style>
+<div class="scene"><div class="band" id="band"></div></div>
+<div class="vignette"></div>
+<script>
+  // Three staggered strips of screenshots running diagonally across the
+  // page, every strip its own run of themes, like film pulled past a lamp.
+  const rows = [
+    { top: 120,  shift: 0,    pairs: [["tape","tokyo-night"],["macro","gruvbox"],["desk","nord"],["crypto","everforest"],["swing","catppuccin"],["tape","kanagawa"],["desk","ristretto"]] },
+    { top: 1010, shift: -640, pairs: [["desk","catppuccin"],["crypto","matte-black"],["swing","tokyo-night"],["tape","nord"],["macro","osaka-jade"],["desk","gruvbox"],["crypto","lumon"],["tape","everforest"]] },
+    { top: 1900, shift: -200, pairs: [["macro","everforest"],["tape","ristretto"],["desk","kanagawa"],["swing","nord"],["crypto","tokyo-night"],["macro","catppuccin-latte"],["desk","ethereal"]] },
+  ];
+  const band = document.getElementById("band");
+  rows.forEach(({ top, shift, pairs }) => {
+    const row = document.createElement("div");
+    row.className = "row"; row.style.top = top + "px"; row.style.left = shift + "px";
+    pairs.forEach(([book, theme]) => {
+      const img = new Image(); img.className = "tile";
+      img.src = `captures/${book}-${theme}.png`; row.appendChild(img);
+    });
+    band.appendChild(row);
+  });
+</script>
