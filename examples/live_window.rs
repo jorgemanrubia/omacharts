@@ -39,7 +39,7 @@ fn main() -> glib::ExitCode {
         unsafe { std::env::set_var("GSK_RENDERER", "gl") };
     }
     let app = adw::Application::builder()
-        .application_id("org.omacharts.Omacharts.LiveWindow")
+        .application_id("com.jorgemanrubia.Omacharts.LiveWindow")
         .flags(gio::ApplicationFlags::NON_UNIQUE)
         .build();
     app.connect_activate(move |app| {

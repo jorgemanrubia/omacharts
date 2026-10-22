@@ -39,7 +39,7 @@ check() {
 
 package() {
   cd "$pkgname-$pkgver"
-  local id='org.omacharts.Omacharts'
+  local id='com.jorgemanrubia.Omacharts'
 
   install -Dm755 "target/release/$pkgname" "$pkgdir/usr/bin/$pkgname"
   install -Dm644 "packaging/$id.desktop" "$pkgdir/usr/share/applications/$id.desktop"
