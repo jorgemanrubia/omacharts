@@ -82,9 +82,14 @@ const FILES: &[(&str, &str)] = &[
     ("Sparkline.qml", include_str!("../plugin/Sparkline.qml")),
 ];
 
+/// Where an older version put the widget.
+fn old_location(home: &Path) -> PathBuf {
+    plugins_dir(home).join(OLD_PLUGIN_ID)
+}
+
 /// Write the plugin folder and add it to the bar.
 pub fn install(home: &Path) -> Result<(), String> {
-    migrate(home)?;
+    migrate_in_full(home)?;
     let target = location(home);
     // Replaced rather than merged: a file we stopped shipping left behind is
     // a file the shell will still load.
@@ -96,7 +101,7 @@ pub fn install(home: &Path) -> Result<(), String> {
         std::fs::write(target.join(name), contents)
             .map_err(|e| format!("could not write {name}: {e}"))?;
     }
-    edit_shell(home, add_to_layout)
+    edit_shell(home, add_to_layout).map(|_| ())
 }
 
 /// Bring an already-installed widget up to date with this binary.
@@ -110,7 +115,7 @@ pub fn install(home: &Path) -> Result<(), String> {
 /// the folder and reloads on any change, so rewriting seven identical files
 /// every launch would restart the bar for nothing.
 pub fn refresh(home: &Path) -> Result<(), String> {
-    migrate(home)?;
+    migrate_in_full(home)?;
     if !installed(home) {
         return Ok(());
     }
@@ -140,13 +145,32 @@ pub fn refresh(home: &Path) -> Result<(), String> {
 /// The widget used to be `jorgemanrubia.omacharts`, and every desktop that
 /// switched it on has a folder and a bar entry by that name. Nobody upgrading
 /// should have to know that, or do anything about it, so this runs on its own
-/// from every path that starts: the window, every command, and the widget's
+/// from every process that starts: the window, every command, and the widget's
 /// own polls — which run `omacharts watchlist`, so a bar whose window is never
 /// opened is moved the first time it asks for quotes.
 ///
-/// Which makes it cheap when there is nothing to do, and that is the usual
-/// case: a look for one folder and a read of shell.json that stops at a
-/// substring search. And idempotent, because it runs on every one of them.
+/// Which is why it costs one stat when there is nothing to do, and that is
+/// the usual case: the old folder is looked for, and nothing else is opened
+/// until it is found. shell.json is not read. The one state this cannot see
+/// — an entry in the bar whose folder has already gone — is left to
+/// `migrate_in_full`, which the window and the `plugin` commands run and
+/// which reads shell.json anyway.
+///
+/// Nothing is reported here either way; the caller in `main` is every
+/// process, and a move that cannot be made — a read-only `~/.config/omarchy`,
+/// say — would otherwise be a line on stderr from every poll of the bar
+/// forever. The window and the `plugin` commands report it, once, to somebody
+/// who is looking. And it fails early: the first step is writing the folder,
+/// so a tree that cannot be written costs a stat and one refused mkdir, not
+/// a parse of shell.json every time.
+pub fn migrate(home: &Path) -> Result<(), String> {
+    if !old_location(home).exists() {
+        return Ok(());
+    }
+    migrate_in_full(home)
+}
+
+/// `migrate`, and also the bar entry whose folder has gone.
 ///
 /// After it there is exactly one folder, under the new id, and shell.json
 /// names only the new id — whether it found the old folder, both (a downgrade
@@ -157,18 +181,28 @@ pub fn refresh(home: &Path) -> Result<(), String> {
 /// the widget does not allow two of itself.
 ///
 /// The shell is reloaded afterwards, so the bar draws the widget under its new
-/// name straight away rather than at the next login.
-pub fn migrate(home: &Path) -> Result<(), String> {
+/// name straight away rather than at the next login. Idempotent, because it
+/// runs from every path in, and nothing is reloaded when nothing moved.
+pub fn migrate_in_full(home: &Path) -> Result<(), String> {
     if migrate_files(home)? {
         reload_plugins();
     }
     Ok(())
 }
 
-/// The part of `migrate` that touches files. Says whether it changed any,
-/// which is what decides whether the shell has to be told.
+/// The part of `migrate_in_full` that touches files. Says whether it changed
+/// any, which is what decides whether the shell has to be told.
+///
+/// Several processes run this at once on the day of an upgrade — the bar's
+/// polls, the window, a command typed in a terminal — and none of them knows
+/// about the others. So every step is one that two can take together: the
+/// folder is created with `create_dir_all`, every file lands by rename, and
+/// an old folder another process has already removed counts as removed. The
+/// entry is renamed by whichever gets there first; the others re-read
+/// shell.json inside `edit_shell`, find nothing left to change, and write
+/// nothing.
 fn migrate_files(home: &Path) -> Result<bool, String> {
-    let old = plugins_dir(home).join(OLD_PLUGIN_ID);
+    let old = old_location(home);
     let old_dir = old.exists();
     // Parsed only when the id is in the text at all, and then asked whether a
     // rename would change anything: the id quoted in some other plugin's
@@ -186,6 +220,7 @@ fn migrate_files(home: &Path) -> Result<bool, String> {
     // no point does shell.json name a widget that has no folder. Written in
     // full even when only the entry was left, because an entry in the bar is
     // somebody asking for the widget.
+    let mut changed = false;
     let target = location(home);
     std::fs::create_dir_all(&target).map_err(|e| format!("could not create it: {e}"))?;
     for (name, contents) in FILES {
@@ -193,16 +228,22 @@ fn migrate_files(home: &Path) -> Result<bool, String> {
         if std::fs::read_to_string(&path).is_ok_and(|current| current == *contents) {
             continue;
         }
-        std::fs::write(&path, contents).map_err(|e| format!("could not write {name}: {e}"))?;
+        replace_file(&path, contents).map_err(|e| format!("could not write {name}: {e}"))?;
+        changed = true;
     }
     if old_entry {
-        edit_shell(home, rename_in_config)?;
+        changed |= edit_shell(home, rename_in_config)?;
     }
     if old_dir {
-        std::fs::remove_dir_all(&old)
-            .map_err(|e| format!("could not remove the old widget: {e}"))?;
+        match std::fs::remove_dir_all(&old) {
+            Ok(()) => changed = true,
+            // Gone, or going, under another process — the folder itself or
+            // a file in it that was there a moment ago: the outcome asked for.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("could not remove the old widget: {e}")),
+        }
     }
-    Ok(true)
+    Ok(changed)
 }
 
 /// Rewrite the old id to the new one wherever shell.json names it: the bar's
@@ -281,34 +322,58 @@ fn reload_plugins() {
         .spawn();
 }
 
-/// Take it out of the bar and remove the folder.
-pub fn remove(home: &Path) -> Result<(), String> {
-    migrate(home)?;
-    edit_shell(home, remove_from_layout)?;
+/// Take it out of the bar and remove the folder, under either id. Says whether
+/// there was anything to take out, so `plugin uninstall` can say so too.
+pub fn remove(home: &Path) -> Result<bool, String> {
+    migrate_in_full(home)?;
+    let mut removed = edit_shell(home, remove_from_layout)?;
     let target = location(home);
     if target.exists() {
         std::fs::remove_dir_all(&target).map_err(|e| format!("could not remove it: {e}"))?;
+        removed = true;
     }
-    Ok(())
+    Ok(removed)
 }
 
 /// Read, change, write — atomically, because a half-written shell.json is a
-/// desktop with no bar.
-fn edit_shell(home: &Path, change: impl Fn(&mut serde_json::Value) -> bool) -> Result<(), String> {
+/// desktop with no bar. Says whether anything was written.
+fn edit_shell(home: &Path, change: impl Fn(&mut serde_json::Value) -> bool) -> Result<bool, String> {
     let path = shell_config(home);
     let text = std::fs::read_to_string(&path).map_err(|e| format!("shell.json: {e}"))?;
     let mut config: serde_json::Value =
         serde_json::from_str(&text).map_err(|e| format!("shell.json is not readable: {e}"))?;
 
     if !change(&mut config) {
-        return Ok(());
+        return Ok(false);
     }
 
     let rendered = serde_json::to_string_pretty(&config)
         .map_err(|e| format!("could not write shell.json: {e}"))?;
-    let temp = path.with_extension("json.omacharts-tmp");
-    std::fs::write(&temp, rendered + "\n").map_err(|e| format!("shell.json: {e}"))?;
-    std::fs::rename(&temp, &path).map_err(|e| format!("shell.json: {e}"))
+    replace_file(&path, &(rendered + "\n")).map_err(|e| format!("shell.json: {e}"))?;
+    Ok(true)
+}
+
+/// Write a file so that anything reading it sees the old contents or the new,
+/// never a partial write and never nothing.
+///
+/// Written beside it and renamed over it, under a name no other writer shares:
+/// with one shared temporary name, two processes writing the same file at once
+/// would truncate each other's half-written copy, and the second to rename
+/// would find it already gone. The shell reads shell.json the moment it
+/// changes, and an empty one puts the default layout in the bar.
+fn replace_file(path: &Path, contents: &str) -> std::io::Result<()> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(
+        ".omacharts-tmp.{}.{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let temp = path.with_file_name(name);
+    std::fs::write(&temp, contents)?;
+    std::fs::rename(&temp, path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&temp);
+    })
 }
 
 /// Is our id anywhere in the bar?
@@ -678,8 +743,127 @@ mod tests {
         assert_eq!(right[1]["refreshIntervalSec"], 300);
 
         let home = Home::upgraded_from_old();
-        remove(&home.0).unwrap();
+        assert!(remove(&home.0).unwrap(), "there was a widget to take out");
         assert!(home.folders().is_empty(), "uninstalling takes the old one too");
         assert!(!home.shell().to_string().contains(OLD_PLUGIN_ID));
+        assert!(!remove(&home.0).unwrap(), "and the second time there was not");
+    }
+
+    #[test]
+    fn the_check_every_process_makes_looks_only_for_the_old_folder() {
+        // Nothing to move: no folder, and shell.json is not even opened — it
+        // is unreadable here, and that is not an error.
+        let home = Home::empty();
+        std::fs::create_dir(shell_config(&home.0)).unwrap();
+        migrate(&home.0).unwrap();
+
+        // An entry whose folder has gone is the one state the folder check
+        // cannot see. It is left for the paths that read shell.json anyway.
+        let home = Home::upgraded_from_old();
+        std::fs::remove_dir_all(old_location(&home.0)).unwrap();
+        let before = home.shell();
+        migrate(&home.0).unwrap();
+        assert_eq!(home.shell(), before, "not touched by the cheap check");
+        assert!(home.folders().is_empty());
+
+        migrate_in_full(&home.0).unwrap();
+        assert_eq!(home.folders(), [PLUGIN_ID]);
+        assert!(installed(&home.0));
+
+        // And the folder alone is enough to set the whole move going.
+        let home = Home::upgraded_from_old();
+        migrate(&home.0).unwrap();
+        assert_eq!(home.folders(), [PLUGIN_ID]);
+        assert!(installed(&home.0));
+    }
+
+    #[test]
+    fn many_moving_at_once_leave_one_widget_and_never_an_empty_shell() {
+        // On the day of an upgrade the bar's polls, the window and a command
+        // typed in a terminal can all find the old folder at the same moment.
+        // Every one of them has to come out clean, and the shell — which
+        // re-reads shell.json the moment it changes — must never find it
+        // empty, half-written or missing.
+        let home = Home::upgraded_from_old();
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let reads = std::sync::atomic::AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            let watcher = scope.spawn(|| {
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    let text = std::fs::read_to_string(shell_config(&home.0))
+                        .expect("shell.json is always there");
+                    let shell: serde_json::Value =
+                        serde_json::from_str(&text).expect("and always whole");
+                    let right = shell["bar"]["layout"]["right"].as_array().unwrap();
+                    assert_eq!(right.len(), 3, "{shell}");
+                    assert!(
+                        right[1]["id"] == OLD_PLUGIN_ID || right[1]["id"] == PLUGIN_ID,
+                        "{shell}"
+                    );
+                    assert_eq!(right[1]["refreshIntervalSec"], 300, "{shell}");
+                    reads.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+            });
+            let movers: Vec<_> = (0..24).map(|_| scope.spawn(|| migrate(&home.0))).collect();
+            // The watcher is stopped before any outcome is judged, or a mover
+            // that failed would leave it spinning and the test hanging rather
+            // than failing.
+            let outcomes: Vec<_> = movers.into_iter().map(|mover| mover.join()).collect();
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            watcher.join().unwrap();
+            for outcome in outcomes {
+                outcome.unwrap().unwrap();
+            }
+        });
+        assert!(reads.load(std::sync::atomic::Ordering::Relaxed) > 0, "the watcher looked");
+
+        assert_eq!(home.folders(), [PLUGIN_ID], "one folder, and nothing left over");
+        assert!(installed(&home.0));
+        let shell = home.shell();
+        assert!(!shell.to_string().contains(OLD_PLUGIN_ID), "{shell}");
+        assert_eq!(shell["bar"]["layout"]["right"][1]["refreshIntervalSec"], 300);
+        let leftovers: Vec<_> = std::fs::read_dir(home.0.join(".config/omarchy"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains("omacharts-tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
+        for (name, contents) in FILES {
+            assert_eq!(
+                std::fs::read_to_string(location(&home.0).join(name)).unwrap(),
+                *contents,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_file_is_replaced_whole_whoever_else_is_writing_it() {
+        let home = Home::empty();
+        let path = home.0.join("shared.txt");
+        let bodies = ["a".repeat(50_000), "b".repeat(50_000)];
+        let (path, bodies) = (&path, &bodies);
+        std::thread::scope(|scope| {
+            let writers: Vec<_> = (0..16)
+                .map(|i| {
+                    scope.spawn(move || {
+                        for _ in 0..20 {
+                            replace_file(path, &bodies[i % 2]).unwrap();
+                            let seen = std::fs::read_to_string(path).unwrap();
+                            assert!(bodies.contains(&seen), "a partial write was seen");
+                        }
+                    })
+                })
+                .collect();
+            for writer in writers {
+                writer.join().unwrap();
+            }
+        });
+        let left: Vec<_> = std::fs::read_dir(&home.0)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains("omacharts-tmp"))
+            .collect();
+        assert!(left.is_empty(), "temporaries left behind: {left:?}");
     }
 }
