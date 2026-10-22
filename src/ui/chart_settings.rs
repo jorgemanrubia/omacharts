@@ -123,7 +123,6 @@ impl ChartSettings {
             Focus::Indicators => dialog.set_visible_page(&indicators_page),
             // One indicator of a template is the template's to change, so the
             // gear on such a chart lands on the list that says so.
-            Focus::Indicator(_) if owner.locked() => dialog.set_visible_page(&indicators_page),
             Focus::Indicator(id) => {
                 dialog.set_visible_page(&indicators_page);
                 open_indicator_panel_for(
@@ -203,7 +202,6 @@ fn template_rows(
     let rebuild: Rc<Again> = Rc::new(RefCell::new(None));
     let fill = {
         let window = window.clone();
-        let dialog = dialog.clone();
         let group = group.clone();
         let list = list.clone();
         let rebuild = rebuild.clone();
@@ -259,22 +257,8 @@ fn template_rows(
             }
             group.add(&choice);
             rows.borrow_mut().push(choice.upcast());
-
-            if let Some(id) = current {
-                let edit = adw::ActionRow::new();
-                edit.set_title("Edit Chart Template…");
-                edit.set_activatable(true);
-                edit.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
-                let window = window.clone();
-                let dialog = dialog.clone();
-                let list = list.clone();
-                edit.connect_activated(move |_| {
-                    let list = list.clone();
-                    TemplateEditor::present(&window, id, &dialog, move || list.run());
-                });
-                group.add(&edit);
-                rows.borrow_mut().push(edit.upcast());
-            }
+            // No way into a second editor for the template: the list below
+            // is the template's while the chart is on one, and says so.
         }
     };
     let fill: Rc<dyn Fn()> = Rc::new(fill);
@@ -589,8 +573,27 @@ impl Owner {
         Rc::new(Owner { app: app.clone(), window: app.window.clone(), template: Some(template) })
     }
 
+    /// The template whose indicators these are: the one being edited, or
+    /// the one the focused chart is on. A chart on a template shows the
+    /// template's indicators, so changing them from the chart changes the
+    /// template — and every chart on it — rather than a copy nobody asked
+    /// for.
+    fn target(&self) -> Option<u32> {
+        self.template.or_else(|| self.app.focused_template())
+    }
+
+    /// The name of the template a chart's settings are editing through, when
+    /// they are: what the page says so the change is not a surprise.
+    fn through_template(&self) -> Option<String> {
+        if self.template.is_some() {
+            return None;
+        }
+        let id = self.app.focused_template()?;
+        self.app.templates().into_iter().find(|t| t.id == id).map(|t| t.name)
+    }
+
     fn indicators(&self) -> Vec<Indicator> {
-        match self.template {
+        match self.target() {
             None => self.app.indicators(),
             Some(id) => self
                 .app
@@ -604,7 +607,7 @@ impl Owner {
 
     /// Changing a template's redraws every chart on it, as it changes.
     fn set_indicators(&self, indicators: Vec<Indicator>) {
-        match self.template {
+        match self.target() {
             None => self.app.set_indicators(indicators),
             Some(id) => self.app.set_template_indicators(id, indicators),
         }
@@ -624,18 +627,13 @@ impl Owner {
         self.app.bar_scheme()
     }
 
-    /// How many rows a profile is drawing. A template draws nothing.
+    /// How many rows a profile is drawing. A template draws nothing of its
+    /// own, but the chart in front of whoever is editing it does.
     fn profile_rows(&self, id: u32) -> Option<usize> {
         match self.template {
             None => self.app.profile_rows(id),
             Some(_) => None,
         }
-    }
-
-    /// A chart on a template shows the template's indicators, which are
-    /// changed in the template's own editor rather than from the chart.
-    fn locked(&self) -> bool {
-        self.template.is_none() && self.app.focused_template().is_some()
     }
 }
 
@@ -765,22 +763,26 @@ fn rebuild_indicators(
     let indicators = owner.indicators();
     let refresh = Refresh::rebuilding(owner, dialog, list);
 
-    // Shown but not editable: what the chart is drawing is still worth
-    // reading here, and the rows lose their controls (see `indicator_row`).
-    let locked = owner.locked();
-    list.add.set_visible(!locked);
-    // A template's list, and a chart's on a template, say nothing: the
-    // heading and the template row above it already do.
-    list.group.set_description(match (locked || owner.template.is_some(), indicators.is_empty()) {
-        (true, _) => None,
-        (false, true) => Some("Nothing yet."),
-        (false, false) => Some(
-            "Drag to reorder. The list is the chart, top to bottom; colours come from the theme.",
+    // On a template, what is being edited is the template, and the page says
+    // so before anything is changed: a change here reaches every chart on it.
+    let through = owner.through_template();
+    let description = match (&through, owner.template.is_some(), indicators.is_empty()) {
+        (Some(name), _, _) => Some(format!(
+            "These are the {name} template's indicators: a change here reaches every chart that uses it."
+        )),
+        (None, true, _) => None,
+        (None, false, true) => Some("Nothing yet.".to_string()),
+        (None, false, false) => Some(
+            "Drag to reorder. The list is the chart, top to bottom; colours come from the theme."
+                .to_string(),
         ),
-    });
-    if locked && indicators.is_empty() {
-        return;
+    };
+    list.group.set_description(description.as_deref());
+    list.group.set_title(match &through {
+        Some(name) => format!("On the {name} template"),
+        None => "On the chart".to_string(),
     }
+    .as_str());
 
     // The price plot is a row of the list because strips can be stacked above it
     // as well as below, and a list showing only the strips could not say which
@@ -896,14 +898,6 @@ fn indicator_row(
         let _ = cr.fill();
     });
     row.add_prefix(&swatch);
-
-    // A template's indicators on one of its charts: named, with nothing to
-    // pull, switch or throw away, so the row cannot look like something it
-    // will not do.
-    if owner.locked() {
-        row.set_activatable(false);
-        return row;
-    }
 
     // Order is a property of the list, so its controls sit on the list side of
     // the row. It decides two things at once: which strip is stacked above
@@ -1051,6 +1045,19 @@ fn open_indicator_panel_for(owner: &Rc<Owner>, refresh: &Refresh, id: u32, panel
     let colour = drawn_colour(owner, &indicators, id);
 
     let page = adw::PreferencesPage::new();
+    // Said before anything can be changed, however the panel was reached —
+    // the list, the gear on the chart, the add path — because a change here
+    // reaches charts that are not on screen.
+    if let Some(name) = owner.through_template() {
+        let warning = adw::PreferencesGroup::new();
+        let banner = adw::ActionRow::new();
+        banner.set_title(&format!("Editing the {name} template"));
+        banner.set_subtitle("A change here reaches every chart that uses it.");
+        banner.add_prefix(&gtk::Image::from_icon_name("dialog-information-symbolic"));
+        banner.add_css_class("property");
+        warning.add(&banner);
+        page.add(&warning);
+    }
     if indicator.kind == Kind::SessionTimes {
         time::fill(owner, refresh, &page, indicator.id);
     } else {
@@ -2479,12 +2486,10 @@ fn pick_indicator(owner: &Rc<Owner>, refresh: &Refresh) {
         let at = row.index().max(0) as usize;
         let Some(kind) = shown.borrow().get(at).copied() else { return };
         let id = owner_for_pick.next_indicator_id();
-        // Putting it on takes a chart off its template; not adding it after
-        // all puts the chart back.
-        let was_on = match owner_for_pick.template {
-            None => owner_for_pick.app.focused_template(),
-            Some(_) => None,
-        };
+        // On a template it goes onto the template, like every other change
+        // made here, so there is no template to go back onto if it is not
+        // added after all: it simply comes off again.
+        let was_on = None;
         let mut indicators = owner_for_pick.indicators();
         indicators.push(Indicator::new(id, kind));
         owner_for_pick.set_indicators(indicators);
