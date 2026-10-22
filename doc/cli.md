@@ -968,11 +968,11 @@ switch in Preferences writes both, and so does this:
 
 ```
 $ omacharts plugin status
-not in the bar; it would go in /home/you/.config/omarchy/plugins/jorgemanrubia.omacharts
+not in the bar; it would go in /home/you/.config/omarchy/plugins/omacharts.watchlist
   [exit 0]
 
 $ omacharts plugin install
-installed in the bar, in /home/you/.config/omarchy/plugins/jorgemanrubia.omacharts
+installed in the bar, in /home/you/.config/omarchy/plugins/omacharts.watchlist
   [exit 0]
 ```
 

@@ -10,7 +10,13 @@
 
 use std::path::{Path, PathBuf};
 
-pub const PLUGIN_ID: &str = "jorgemanrubia.omacharts";
+pub const PLUGIN_ID: &str = "omacharts.watchlist";
+
+/// The id the widget was installed under before it had one of its own.
+///
+/// Kept only so that an install made by an older version can be found and
+/// moved — see `migrate`. Nothing is ever written under it.
+pub const OLD_PLUGIN_ID: &str = "jorgemanrubia.omacharts";
 
 /// Where the shell reads its layout from.
 fn shell_config(home: &Path) -> PathBuf {
@@ -78,6 +84,7 @@ const FILES: &[(&str, &str)] = &[
 
 /// Write the plugin folder and add it to the bar.
 pub fn install(home: &Path) -> Result<(), String> {
+    migrate(home)?;
     let target = location(home);
     // Replaced rather than merged: a file we stopped shipping left behind is
     // a file the shell will still load.
@@ -103,6 +110,7 @@ pub fn install(home: &Path) -> Result<(), String> {
 /// the folder and reloads on any change, so rewriting seven identical files
 /// every launch would restart the bar for nothing.
 pub fn refresh(home: &Path) -> Result<(), String> {
+    migrate(home)?;
     if !installed(home) {
         return Ok(());
     }
@@ -127,8 +135,144 @@ pub fn refresh(home: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Move a widget installed under the old id to the new one.
+///
+/// The widget used to be `jorgemanrubia.omacharts`, and every desktop that
+/// switched it on has a folder and a bar entry by that name. Nobody upgrading
+/// should have to know that, or do anything about it, so this runs on its own
+/// from every path that starts: the window, every command, and the widget's
+/// own polls — which run `omacharts watchlist`, so a bar whose window is never
+/// opened is moved the first time it asks for quotes.
+///
+/// Which makes it cheap when there is nothing to do, and that is the usual
+/// case: a look for one folder and a read of shell.json that stops at a
+/// substring search. And idempotent, because it runs on every one of them.
+///
+/// After it there is exactly one folder, under the new id, and shell.json
+/// names only the new id — whether it found the old folder, both (a downgrade
+/// that reinstalled the old one beside the new), or only a bar entry whose
+/// folder has gone. The entry keeps its place and its settings; they live on
+/// the entry itself, so renaming its id carries them over. Where the new id is
+/// already in the bar too, that one is kept and the old one dropped, because
+/// the widget does not allow two of itself.
+///
+/// The shell is reloaded afterwards, so the bar draws the widget under its new
+/// name straight away rather than at the next login.
+pub fn migrate(home: &Path) -> Result<(), String> {
+    if migrate_files(home)? {
+        reload_plugins();
+    }
+    Ok(())
+}
+
+/// The part of `migrate` that touches files. Says whether it changed any,
+/// which is what decides whether the shell has to be told.
+fn migrate_files(home: &Path) -> Result<bool, String> {
+    let old = plugins_dir(home).join(OLD_PLUGIN_ID);
+    let old_dir = old.exists();
+    // Parsed only when the id is in the text at all, and then asked whether a
+    // rename would change anything: the id quoted in some other plugin's
+    // setting is not an entry, and must not have this run on every launch.
+    let old_entry = std::fs::read_to_string(shell_config(home))
+        .ok()
+        .filter(|text| text.contains(OLD_PLUGIN_ID))
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .is_some_and(|mut config| rename_in_config(&mut config));
+    if !old_dir && !old_entry {
+        return Ok(false);
+    }
+
+    // The new folder first, then the bar entry, then the old folder gone: at
+    // no point does shell.json name a widget that has no folder. Written in
+    // full even when only the entry was left, because an entry in the bar is
+    // somebody asking for the widget.
+    let target = location(home);
+    std::fs::create_dir_all(&target).map_err(|e| format!("could not create it: {e}"))?;
+    for (name, contents) in FILES {
+        let path = target.join(name);
+        if std::fs::read_to_string(&path).is_ok_and(|current| current == *contents) {
+            continue;
+        }
+        std::fs::write(&path, contents).map_err(|e| format!("could not write {name}: {e}"))?;
+    }
+    if old_entry {
+        edit_shell(home, rename_in_config)?;
+    }
+    if old_dir {
+        std::fs::remove_dir_all(&old)
+            .map_err(|e| format!("could not remove the old widget: {e}"))?;
+    }
+    Ok(true)
+}
+
+/// Rewrite the old id to the new one wherever shell.json names it: the bar's
+/// sections, its centre anchor, `plugins[]` and `disabledPlugins[]`.
+pub fn rename_in_config(config: &mut serde_json::Value) -> bool {
+    let mut changed = false;
+
+    // Already in the bar under the new id means an old entry is a duplicate,
+    // not something to rename.
+    let mut have_new = in_layout(config);
+    for section in ["left", "center", "right"] {
+        let Some(items) =
+            config.pointer_mut(&format!("/bar/layout/{section}")).and_then(|v| v.as_array_mut())
+        else {
+            continue;
+        };
+        changed |= rename_in_list(items, &mut have_new);
+    }
+
+    // Shell-wide lists: objects with an id in `plugins[]`, bare ids in
+    // `disabledPlugins[]`. Neither should name a bar widget, but a hand-edited
+    // file may, and the old id left there would be the one trace remaining.
+    for list in ["plugins", "disabledPlugins"] {
+        let Some(items) = config.get_mut(list).and_then(|v| v.as_array_mut()) else {
+            continue;
+        };
+        let mut have_new = items.iter().any(|item| names(item, PLUGIN_ID));
+        changed |= rename_in_list(items, &mut have_new);
+    }
+
+    if config["bar"]["centerAnchor"] == OLD_PLUGIN_ID {
+        config["bar"]["centerAnchor"] = serde_json::json!(PLUGIN_ID);
+        changed = true;
+    }
+    changed
+}
+
+/// Does this entry name this id — as an object's `id`, or as a bare string?
+fn names(item: &serde_json::Value, id: &str) -> bool {
+    item == id || item["id"] == id
+}
+
+/// Rename the first old entry in place and drop any after it, or drop them
+/// all when the new id is already there. In place is what keeps its position,
+/// and everything on the entry other than its id.
+fn rename_in_list(items: &mut Vec<serde_json::Value>, have_new: &mut bool) -> bool {
+    let before = items.clone();
+    items.retain_mut(|item| {
+        if !names(item, OLD_PLUGIN_ID) {
+            return true;
+        }
+        if *have_new {
+            return false;
+        }
+        *have_new = true;
+        match item.is_string() {
+            true => *item = serde_json::json!(PLUGIN_ID),
+            false => item["id"] = serde_json::json!(PLUGIN_ID),
+        }
+        true
+    });
+    *items != before
+}
+
 /// Ask the shell to recompile its plugins. Best effort, like `notify_changed`.
 fn reload_plugins() {
+    // A test has no business restarting the bar of whoever is running it.
+    if cfg!(test) {
+        return;
+    }
     let _ = std::process::Command::new("omarchy-shell")
         .args(["-q", "shell", "rescanPlugins"])
         .stdin(std::process::Stdio::null())
@@ -139,6 +283,7 @@ fn reload_plugins() {
 
 /// Take it out of the bar and remove the folder.
 pub fn remove(home: &Path) -> Result<(), String> {
+    migrate(home)?;
     edit_shell(home, remove_from_layout)?;
     let target = location(home);
     if target.exists() {
@@ -316,5 +461,225 @@ mod tests {
             let entry = entry.as_str().unwrap();
             assert!(names.contains(&entry), "entry point {entry} is not shipped");
         }
+    }
+
+    /// A home of its own, so nothing here can reach the bar of whoever runs
+    /// the suite.
+    struct Home(PathBuf);
+
+    impl Home {
+        /// An Omarchy desktop with the widget in the bar the way an older
+        /// version left it: under the old id, with a setting changed, between
+        /// two other widgets.
+        fn upgraded_from_old() -> Home {
+            let home = Home::empty();
+            let old = home.plugins().join(OLD_PLUGIN_ID);
+            std::fs::create_dir_all(&old).unwrap();
+            std::fs::write(old.join("manifest.json"), r#"{"id": "jorgemanrubia.omacharts"}"#)
+                .unwrap();
+            std::fs::write(old.join("Retired.qml"), "Item {}").unwrap();
+            home.write_shell(json!({
+                "bar": {
+                    "layout": {
+                        "left": [{ "id": "omarchy.menu" }],
+                        "right": [
+                            { "id": "omarchy.tray" },
+                            { "id": OLD_PLUGIN_ID, "refreshIntervalSec": 300, "showTicker": false },
+                            { "id": "omarchy.power" }
+                        ]
+                    }
+                },
+                "plugins": [],
+                "version": 1
+            }));
+            home
+        }
+
+        fn empty() -> Home {
+            static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+            let at = std::env::temp_dir().join(format!(
+                "omacharts-bar-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
+            let _ = std::fs::remove_dir_all(&at);
+            std::fs::create_dir_all(plugins_dir(&at)).unwrap();
+            Home(at)
+        }
+
+        fn plugins(&self) -> PathBuf {
+            plugins_dir(&self.0)
+        }
+
+        fn write_shell(&self, config: serde_json::Value) {
+            std::fs::write(shell_config(&self.0), config.to_string()).unwrap();
+        }
+
+        fn shell(&self) -> serde_json::Value {
+            serde_json::from_str(&std::fs::read_to_string(shell_config(&self.0)).unwrap()).unwrap()
+        }
+
+        /// Every plugin folder there is, by name.
+        fn folders(&self) -> Vec<String> {
+            let mut names: Vec<String> = std::fs::read_dir(self.plugins())
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            names
+        }
+    }
+
+    impl Drop for Home {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn an_old_install_moves_to_the_new_id_and_keeps_its_place_and_settings() {
+        let home = Home::upgraded_from_old();
+        assert!(migrate_files(&home.0).unwrap());
+
+        assert_eq!(home.folders(), [PLUGIN_ID], "one folder, under the new id");
+        let manifest = std::fs::read_to_string(location(&home.0).join("manifest.json")).unwrap();
+        assert_eq!(manifest, FILES[0].1, "the widget this binary carries");
+        assert!(!location(&home.0).join("Retired.qml").exists(), "nothing of the old one");
+
+        let shell = home.shell();
+        let right = shell["bar"]["layout"]["right"].as_array().unwrap();
+        assert_eq!(
+            right,
+            &vec![
+                json!({ "id": "omarchy.tray" }),
+                json!({ "id": PLUGIN_ID, "refreshIntervalSec": 300, "showTicker": false }),
+                json!({ "id": "omarchy.power" }),
+            ]
+        );
+        assert!(!shell.to_string().contains(OLD_PLUGIN_ID), "{shell}");
+        assert!(installed(&home.0));
+    }
+
+    #[test]
+    fn migrating_twice_does_nothing_the_second_time() {
+        let home = Home::upgraded_from_old();
+        assert!(migrate_files(&home.0).unwrap());
+        let (shell, folders) = (home.shell(), home.folders());
+
+        assert!(!migrate_files(&home.0).unwrap(), "nothing left to move, so no reload");
+        assert_eq!(home.shell(), shell);
+        assert_eq!(home.folders(), folders);
+    }
+
+    #[test]
+    fn with_no_old_install_nothing_is_touched() {
+        let home = Home::empty();
+        let config = json!({ "bar": { "layout": { "right": [{ "id": "omarchy.tray" }] } } });
+        home.write_shell(config.clone());
+
+        assert!(!migrate_files(&home.0).unwrap());
+        assert!(home.folders().is_empty(), "the widget is not installed for anybody");
+        assert_eq!(home.shell(), config);
+    }
+
+    #[test]
+    fn the_old_id_quoted_somewhere_else_is_not_an_install() {
+        // A substring is how the check stays cheap, not what decides.
+        let home = Home::empty();
+        let config = json!({
+            "bar": { "layout": { "right": [{ "id": "omarchy.notes", "text": OLD_PLUGIN_ID }] } }
+        });
+        home.write_shell(config.clone());
+
+        assert!(!migrate_files(&home.0).unwrap());
+        assert!(home.folders().is_empty());
+        assert_eq!(home.shell(), config);
+    }
+
+    #[test]
+    fn with_both_ids_installed_only_the_new_one_is_left() {
+        // An upgrade, a downgrade that put the old one back, and an upgrade
+        // again: two folders, and the widget in the bar twice.
+        let home = Home::upgraded_from_old();
+        std::fs::create_dir_all(location(&home.0)).unwrap();
+        let mut config = home.shell();
+        config["bar"]["layout"]["left"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({ "id": PLUGIN_ID, "showTicker": true }));
+        home.write_shell(config);
+
+        assert!(migrate_files(&home.0).unwrap());
+        assert_eq!(home.folders(), [PLUGIN_ID]);
+        let shell = home.shell();
+        assert!(!shell.to_string().contains(OLD_PLUGIN_ID), "{shell}");
+        assert_eq!(shell["bar"]["layout"]["right"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            shell["bar"]["layout"]["left"][1],
+            json!({ "id": PLUGIN_ID, "showTicker": true }),
+            "the one already under the new id is the one kept"
+        );
+    }
+
+    #[test]
+    fn an_old_entry_whose_folder_has_gone_gets_the_widget_back_under_the_new_id() {
+        let home = Home::upgraded_from_old();
+        std::fs::remove_dir_all(home.plugins().join(OLD_PLUGIN_ID)).unwrap();
+
+        assert!(migrate_files(&home.0).unwrap());
+        assert_eq!(home.folders(), [PLUGIN_ID]);
+        assert_eq!(home.shell()["bar"]["layout"]["right"][1]["id"], PLUGIN_ID);
+        assert!(installed(&home.0));
+    }
+
+    #[test]
+    fn an_old_folder_with_no_entry_is_moved_too() {
+        let home = Home::upgraded_from_old();
+        home.write_shell(json!({ "bar": { "layout": { "right": [] } } }));
+
+        assert!(migrate_files(&home.0).unwrap());
+        assert_eq!(home.folders(), [PLUGIN_ID]);
+        assert!(!installed(&home.0), "folder moved, but not put in a bar it was not in");
+    }
+
+    #[test]
+    fn the_shell_wide_lists_are_renamed_as_well() {
+        let mut config = json!({
+            "bar": { "centerAnchor": OLD_PLUGIN_ID, "layout": {} },
+            "plugins": [{ "id": OLD_PLUGIN_ID, "enabled": true }, { "id": "other.thing" }],
+            "disabledPlugins": [OLD_PLUGIN_ID, PLUGIN_ID]
+        });
+        assert!(rename_in_config(&mut config));
+        assert_eq!(
+            config,
+            json!({
+                "bar": { "centerAnchor": PLUGIN_ID, "layout": {} },
+                "plugins": [{ "id": PLUGIN_ID, "enabled": true }, { "id": "other.thing" }],
+                "disabledPlugins": [PLUGIN_ID]
+            })
+        );
+        assert!(!rename_in_config(&mut config), "and once is enough");
+    }
+
+    #[test]
+    fn every_way_in_moves_an_old_install_first() {
+        // Refreshing is what the window does at start, and what `plugin
+        // install` does when the widget is already there.
+        let home = Home::upgraded_from_old();
+        refresh(&home.0).unwrap();
+        assert_eq!(home.folders(), [PLUGIN_ID]);
+        assert!(installed(&home.0));
+
+        let home = Home::upgraded_from_old();
+        install(&home.0).unwrap();
+        assert_eq!(home.folders(), [PLUGIN_ID]);
+        let right = home.shell()["bar"]["layout"]["right"].clone();
+        assert_eq!(right.as_array().unwrap().len(), 3, "moved, not added a second time");
+        assert_eq!(right[1]["refreshIntervalSec"], 300);
+
+        let home = Home::upgraded_from_old();
+        remove(&home.0).unwrap();
+        assert!(home.folders().is_empty(), "uninstalling takes the old one too");
+        assert!(!home.shell().to_string().contains(OLD_PLUGIN_ID));
     }
 }

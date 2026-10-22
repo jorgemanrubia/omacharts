@@ -4034,7 +4034,12 @@ fn spell_bars(scheme: &str) -> &'static str {
 /// open, and why a desktop with no bar is reported rather than refused: having
 /// no Omarchy shell is a fact about the machine, not a command that went
 /// wrong. The switch in Preferences writes the same two things.
+///
+/// Each moves a widget installed under the old id first, so that what they
+/// report on or change is the widget as it is now. `status` does it without
+/// failing: a move that could not be made is no reason not to answer.
 fn plugin_status(home: &std::path::Path, as_json: bool) -> Result<String, Fault> {
+    let _ = crate::bar_plugin::migrate(home);
     let where_at = crate::bar_plugin::location(home);
     let at = where_at.display();
     let (available, installed) =
@@ -4065,6 +4070,7 @@ fn plugin_install(home: &std::path::Path, as_json: bool) -> Result<String, Fault
             "no Omarchy bar on this desktop, so there is nowhere to put the widget".to_string(),
         );
     }
+    crate::bar_plugin::migrate(home).map_err(|e| Fault::new(super::EXIT_ERROR, e))?;
     // Already in the bar means bring it up to date rather than write it again:
     // a widget installed once and never touched runs whichever version shipped
     // the day the switch was flicked.
@@ -4088,6 +4094,7 @@ fn plugin_install(home: &std::path::Path, as_json: bool) -> Result<String, Fault
 fn plugin_uninstall(home: &std::path::Path, as_json: bool) -> Result<String, Fault> {
     // Idempotent on purpose: a script that takes the widget out should not
     // have to ask first, and "it was already gone" is the outcome it wanted.
+    crate::bar_plugin::migrate(home).map_err(|e| Fault::new(super::EXIT_ERROR, e))?;
     if !crate::bar_plugin::installed(home) {
         return said(
             as_json,

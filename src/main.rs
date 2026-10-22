@@ -13,7 +13,7 @@ use omacharts::store::Store;
 use omacharts::ui::window::NotShown;
 use omacharts::ui::Window;
 
-const APP_ID: &str = "com.jorgemanrubia.Omacharts";
+const APP_ID: &str = "org.omacharts.Omacharts";
 
 fn main() -> glib::ExitCode {
     let launch = cli::caller_paths(std::env::args().collect::<Vec<String>>());
@@ -62,6 +62,17 @@ fn main() -> glib::ExitCode {
     if let Some(refused) = cli::stdin_is_not_piped(&args) {
         return report(refused);
     }
+
+    // A bar widget installed by an older version, under the id it had then,
+    // is moved to the new one here: before anything else, in every process
+    // that opens a store or a window, which includes the widget's own polls.
+    // A bar whose window is never opened is still upgraded, and nobody has to
+    // know there was anything to upgrade. Costs one stat and a read of
+    // shell.json when there is nothing to do — see `bar_plugin::migrate`.
+    if let Err(error) = omacharts::bar_plugin::migrate(&omacharts::store::home()) {
+        eprintln!("omacharts: bar widget not moved to its new id: {error}");
+    }
+
     if cli::is_command(&args) && !app_is_running() {
         return report(cli::run(&args, &open_store(), None, &cli::Here));
     }
