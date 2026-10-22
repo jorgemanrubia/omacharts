@@ -213,7 +213,7 @@ const KINDS: &[&str] = &[
 const ANCHORS: &[&str] = &["session", "week", "month", "quarter", "year"];
 const LINE_STYLES: &[&str] = &["solid", "dashed", "dotted"];
 const SWITCHES: &[&str] = &["on", "off"];
-const LINKS: &[&str] = &["focus", "follow", "pinned"];
+const LINKS: &[&str] = &["follow", "focus", "pinned"];
 const COLOURING: &[&str] = &["coloured", "red-up", "monochrome"];
 const SORT_COLUMNS: &[&str] = &["symbol", "last", "change", "change_pct", "none"];
 /// The kinds a drawing comes in, plus the one alias.

@@ -307,8 +307,8 @@ mod tests {
         }
     }
 
-    /// Screenshots went on Ctrl+O, and pinning on Ctrl+Shift+P, so that
-    /// Ctrl+P is free for a command palette.
+    /// Screenshots went on Ctrl+O, and link modes on Ctrl+L, so that Ctrl+P
+    /// is free for a command palette.
     #[test]
     fn ctrl_p_is_left_for_a_command_palette() {
         assert!(!BINDINGS.iter().any(|binding| binding.accels.contains(&"<Ctrl>p")));

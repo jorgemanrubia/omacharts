@@ -31,8 +31,9 @@ pub enum LinkMode {
     Pinned,
 }
 
-/// Every mode, in the order a picker offers them.
-pub const MODES: [LinkMode; 3] = [LinkMode::Focus, LinkMode::Follow, LinkMode::Pinned];
+/// Every mode, in the order a picker offers them and Ctrl+L walks them: the
+/// default first.
+pub const MODES: [LinkMode; 3] = [LinkMode::Follow, LinkMode::Focus, LinkMode::Pinned];
 
 impl LinkMode {
     /// What a chart written down with the nine link groups becomes.
@@ -53,13 +54,14 @@ impl LinkMode {
         }
     }
 
-    /// What pinning or unpinning a chart makes it, which is what Ctrl+Shift+P
-    /// does: a pinned chart goes back to the default, and any other is pinned.
-    pub fn pin_toggled(self) -> LinkMode {
-        match self {
-            LinkMode::Pinned => LinkMode::default(),
-            LinkMode::Focus | LinkMode::Follow => LinkMode::Pinned,
-        }
+    /// The mode after this one, or before it when `back`, round the picker's
+    /// order: what Ctrl+L and Ctrl+Shift+L do. One key for all three, so a
+    /// chart is never a modifier away from a mode, and pinned comes round to
+    /// the default.
+    pub fn cycled(self, back: bool) -> LinkMode {
+        let at = MODES.iter().position(|mode| *mode == self).unwrap_or(0);
+        let step = if back { MODES.len() - 1 } else { 1 };
+        MODES[(at + step) % MODES.len()]
     }
 
     /// What the chart's link icon is painted in: nothing of its own for the
@@ -186,13 +188,19 @@ mod tests {
     }
 
     #[test]
-    fn unpinning_goes_back_to_the_default() {
-        for (from, to) in [
+    fn the_default_comes_first() {
+        assert_eq!(MODES[0], LinkMode::default());
+    }
+
+    #[test]
+    fn cycling_walks_all_three_and_comes_round_to_the_default() {
+        for (from, next) in [
+            (LinkMode::Follow, LinkMode::Focus),
             (LinkMode::Focus, LinkMode::Pinned),
             (LinkMode::Pinned, LinkMode::Follow),
-            (LinkMode::Follow, LinkMode::Pinned),
         ] {
-            assert_eq!(from.pin_toggled(), to, "{from:?}");
+            assert_eq!(from.cycled(false), next, "{from:?}");
+            assert_eq!(next.cycled(true), from, "{next:?}");
         }
     }
 

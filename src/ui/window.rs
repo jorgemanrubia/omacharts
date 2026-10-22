@@ -190,7 +190,7 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+Alt+V", "Split vertically"),
             ("Ctrl+Alt+X", "Close this chart"),
             ("Ctrl+M", "Give this chart the window, or put it back"),
-            ("Ctrl+Shift+P", "Pin this chart, or unpin it"),
+            ("Ctrl+L  Ctrl+Shift+L", "Next or previous link mode"),
             ("Ctrl+O", "Screenshot this chart"),
             ("Alt+← → ↑ ↓", "Focus the chart that way"),
             ("Ctrl+Alt+Shift+← → ↑ ↓", "Resize this chart"),
@@ -2985,14 +2985,14 @@ impl Window {
         self.save_workspace();
     }
 
-    /// Pin a chart, or unpin it back to the default.
+    /// Move a chart on to its next link mode, or back to the one before.
     ///
-    /// Unpinned into Follow, it joins the Follow charts rather than leading
-    /// them: it was pinned to hold something they were not showing, so leading
-    /// would put that on every one of them, which is not what a key pressed on
-    /// one chart asks for.
-    fn toggle_pin(self: &Rc<Self>, pane: &Rc<ChartPane>) {
-        let mode = pane.mode().pin_toggled();
+    /// Arriving at Follow, it joins the Follow charts rather than leading
+    /// them: it was pinned or focused to hold something they were not showing,
+    /// so leading would put that on every one of them, which is not what a key
+    /// pressed on one chart asks for.
+    fn cycle_mode(self: &Rc<Self>, pane: &Rc<ChartPane>, back: bool) {
+        let mode = pane.mode().cycled(back);
         let joining = (mode == LinkMode::Follow)
             .then(|| {
                 self.panes
@@ -4917,11 +4917,12 @@ impl Window {
                     this.focus_towards(0, 1);
                     return glib::Propagation::Stop;
                 }
-                // Ctrl+Shift+P: pin the focused chart, or unpin it. A letter,
-                // so it is the same key on every layout; Ctrl+P is kept for a
-                // command palette.
-                Key::p | Key::P if ctrl && shift && !alt => {
-                    this.toggle_pin(&this.focused_pane());
+                // Ctrl+L: the focused chart's next link mode, and with Shift
+                // the one before. A letter, so it is the same key on every
+                // layout, and L for link; Alt+L is the line tool, a different
+                // register.
+                Key::l | Key::L if ctrl && !alt => {
+                    this.cycle_mode(&this.focused_pane(), shift);
                     return glib::Propagation::Stop;
                 }
                 // Back to the chart, from wherever the keyboard ended up —

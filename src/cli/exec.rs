@@ -384,7 +384,7 @@ fn list_or_default(store: &Store, m: &clap::ArgMatches) -> Result<(i64, String),
 /// What the rail does to a chart, as a command spells it.
 fn link_mode(text: &str) -> Result<LinkMode, Fault> {
     LinkMode::from_key(text).ok_or_else(|| {
-        Fault::usage(format!("{text:?} is not a link mode; use focus, follow or pinned"))
+        Fault::usage(format!("{text:?} is not a link mode; use follow, focus or pinned"))
     })
 }
 

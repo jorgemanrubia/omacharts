@@ -242,9 +242,10 @@ omacharts chart list                # the last column is the mode
 
 The chain in a chart's top-right corner picks any of the three once there is a
 second chart to tell apart, and the chart menu has them under Watchlist. A lone
-chart shows its chain only while it is pinned. Ctrl+Shift+P pins the focused
-chart, or unpins it back to `follow`; unpinned, it takes what the other Follow
-charts show rather than moving them to what it had. Following is within the open
+chart shows its chain only while it is pinned. Ctrl+L moves the focused chart
+on to its next mode, round Follow, Focus and Pinned, and Ctrl+Shift+L back the
+other way; arriving at Follow, it takes what the other Follow charts show rather
+than moving them to what it had. Following is within the open
 chartbook: a chartbook you come back to is as you left it.
 
 `omacharts SYMBOL`, which is what a click in the bar widget runs, picks the
