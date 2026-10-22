@@ -2512,11 +2512,16 @@ fn anchors(m: &clap::ArgMatches, id: &str, zone: Tz) -> Result<Vec<omacharts_eng
 }
 
 /// The clock a chart of this symbol reads, as the settings say.
+///
+/// The whole inventory is read only when each chart keeps its exchange's
+/// clock, which is the one case where which instrument it is matters.
 fn chart_zone(store: &Store, symbol: &str, suffix: Option<&str>) -> Tz {
-    let instrument = omacharts_engine::symbols::seed()
-        .into_iter()
-        .find(|i| i.symbol == symbol && i.suffix.as_deref() == suffix);
-    crate::clock::zone(store).for_instrument(instrument.as_ref())
+    let zone = crate::clock::zone(store);
+    if zone != omacharts_engine::clock::ChartZone::Exchange {
+        return zone.for_instrument(None);
+    }
+    let index = crate::inventory::everything();
+    zone.for_instrument(index.find(symbol, suffix))
 }
 
 fn read_anchor(text: &str, id: &str, zone: Tz) -> Result<omacharts_engine::Anchor, Fault> {

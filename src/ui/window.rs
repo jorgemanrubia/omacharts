@@ -1856,6 +1856,10 @@ pub struct Window {
     /// the window has no room for the whole of it. The handle reading back
     /// this width is the window resizing; any other is somebody dragging.
     sidebar_laid: Cell<i32>,
+    /// The clock settings, read once: every streamed tick asks for them, and
+    /// an unset format is the desktop's, which is a GSettings lookup. Read
+    /// again when a preference or a command changes them.
+    clock_settings: Cell<Option<(omacharts_engine::clock::ChartZone, omacharts_engine::clock::TimeFormat)>>,
     store: Rc<Store>,
     index: crate::inventory::Inventory,
     theming: Rc<RefCell<Theming>>,
@@ -1999,6 +2003,7 @@ impl Window {
             sidebar_width: Cell::new(DEFAULT_SIDEBAR_WIDTH),
             sidebar_placed: Cell::new(false),
             sidebar_laid: Cell::new(0),
+            clock_settings: Cell::new(None),
             store: store.clone(),
             index: index.clone(),
             theming: theming.clone(),
@@ -6413,10 +6418,17 @@ impl Window {
 
     /// The clock a chart of this instrument reads, as the settings say.
     pub fn clock_for(&self, instrument: &Instrument) -> crate::ui::chart::Clock {
-        let zone = crate::clock::zone(&self.store);
+        let (zone, format) = match self.clock_settings.get() {
+            Some(settings) => settings,
+            None => {
+                let read = (crate::clock::zone(&self.store), crate::clock::format(&self.store));
+                self.clock_settings.set(Some(read));
+                read
+            }
+        };
         crate::ui::chart::Clock {
             zone: zone.for_instrument(Some(instrument)),
-            format: crate::clock::format(&self.store),
+            format,
             named: zone == omacharts_engine::clock::ChartZone::Exchange,
         }
     }
@@ -6425,6 +6437,7 @@ impl Window {
     /// name: the axis relabelled, and the indicators of time worked out again,
     /// since a window typed in the chart's clock moves when the clock does.
     pub fn adopt_clock(self: &Rc<Self>) {
+        self.clock_settings.set(None);
         let panes = self.panes.borrow().clone();
         for pane in &panes {
             let instrument = pane.instrument.borrow().clone();

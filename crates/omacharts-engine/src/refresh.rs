@@ -48,10 +48,13 @@ pub const CEILING_SECONDS: i64 = 15 * 60;
 ///
 /// The bar that was forming when the market shut is published in pieces like
 /// any other, so stopping dead on the close would leave a part-built bar as
-/// the last thing on the chart until somebody reopened it. One ceiling's
-/// worth of grace is enough for every resolution to come back exactly once
-/// more, which is all it takes to turn that bar into the real one.
-const GRACE_SECONDS: i64 = CEILING_SECONDS;
+/// the last thing on the chart until somebody reopened it. And a free feed
+/// publishes most markets abroad fifteen to twenty minutes late, so the last
+/// twenty minutes of Tokyo's session arrive after Tokyo has shut. Three
+/// ceilings cover both: every resolution comes back at least once after the
+/// delayed close has been published, for the price of a couple of empty
+/// replies on a day nothing was late.
+const GRACE_SECONDS: i64 = 3 * CEILING_SECONDS;
 
 /// How often a chart showing `timeframe` is worth fetching again.
 ///

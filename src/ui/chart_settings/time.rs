@@ -310,30 +310,35 @@ fn window(
     // Rebuilt in place whenever a choice changes which rows it has — a
     // preset, clock times against a session's open — rather than keeping
     // two sets of rows and hiding one. Every row then shows what is stored.
+    //
+    // The rows it builds are what keep it alive: their handlers hold it, to
+    // rebuild again. Everything it holds in turn — itself, the group, the
+    // rows — it holds weakly, so the panel closing lets the whole of it go.
     let hours = adw::PreferencesGroup::new();
     hours.set_title("Window");
-    let rows: Rc<RefCell<Vec<gtk::Widget>>> = Rc::new(RefCell::new(Vec::new()));
-    let rebuild: Rc<OnceCell<Rc<dyn Fn()>>> = Rc::new(OnceCell::new());
-    {
+    let rows: Rc<RefCell<Vec<glib::WeakRef<gtk::Widget>>>> = Rc::new(RefCell::new(Vec::new()));
+    let rebuild: Rc<Box<dyn Fn()>> = {
         let owner = owner.clone();
         let refresh = refresh.clone();
-        let hours = hours.clone();
-        let rows = rows.clone();
-        let again = rebuild.clone();
-        let _ = rebuild.set(Rc::new(move || {
-            for row in rows.borrow_mut().drain(..) {
-                hours.remove(&row);
-            }
-            let Some(again) = again.get().cloned() else { return };
-            for row in window_rows(&owner, &refresh, id, again) {
-                hours.add(&row);
-                rows.borrow_mut().push(row);
-            }
-        }));
-    }
-    if let Some(rebuild) = rebuild.get() {
-        rebuild();
-    }
+        let group = hours.downgrade();
+        Rc::new_cyclic(move |me: &std::rc::Weak<Box<dyn Fn()>>| {
+            let me = me.clone();
+            Box::new(move || {
+                // Held for the length of this call, since the rows about to
+                // be dropped may be the last of its owners.
+                let (Some(this), Some(group)) = (me.upgrade(), group.upgrade()) else { return };
+                for row in rows.borrow_mut().drain(..).filter_map(|row| row.upgrade()) {
+                    group.remove(&row);
+                }
+                let again: Rc<dyn Fn()> = Rc::new(move || this());
+                for row in window_rows(&owner, &refresh, id, again) {
+                    group.add(&row);
+                    rows.borrow_mut().push(row.downgrade());
+                }
+            }) as Box<dyn Fn()>
+        })
+    };
+    rebuild();
 
     let show = adw::PreferencesGroup::new();
     show.set_title("Show");

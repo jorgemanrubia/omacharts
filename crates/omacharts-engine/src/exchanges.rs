@@ -200,8 +200,13 @@ fn hours_row(fields: &[&str]) -> Option<Hours> {
     let [id, days, day_starts, segments, ..] = fields else { return None };
     let day_starts = clock(day_starts)?;
     // A time after noon is the evening before: no trading day starts in the
-    // afternoon of the date it is named for.
+    // afternoon of the date it is named for. A morning one would leave the
+    // hours before it belonging to no day, so it is refused rather than read
+    // wrongly.
     let evening_before = day_starts >= 12 * 60;
+    if day_starts != 0 && !evening_before {
+        return None;
+    }
     let place = |minutes: u32| match evening_before && minutes < day_starts {
         true => minutes + DAY,
         false => minutes,
@@ -508,6 +513,12 @@ mod tests {
         assert!(parsed.rejected.is_empty(), "rows nobody could read: {:#?}", parsed.rejected);
         assert!(parsed.registry.exchanges.len() >= 20);
         assert!(parsed.registry.contracts.len() >= 40);
+    }
+
+    #[test]
+    fn a_day_that_starts_in_the_morning_is_refused() {
+        let parsed = Registry::parse("", "odd\tmon-fri\t06:00\tregular=09:00-17:00\n", "");
+        assert_eq!(parsed.rejected.len(), 1);
     }
 
     #[test]

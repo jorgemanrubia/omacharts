@@ -78,7 +78,7 @@ Its settings open with a row naming the chart's exchange and its day in the char
 
 The legend label names the separators drawn: **Sessions · day**, **Sessions · week**, or **Sessions** with none.
 
-A separator needs at least ten bars between lines. On a chart too coarse for that, the next longer one is drawn and the legend names it: day lines become weekly on a 4h chart and monthly on a daily chart, and a weekly chart has none. The chosen setting is kept, and comes back on a finer resolution.
+A separator needs at least four bars between lines. On a chart too coarse for that, the next longer one is drawn and the legend names it: day lines stay daily on a 4h chart, become weekly on a daily chart and monthly on a weekly chart, and a monthly chart has none. The chosen setting is kept, and comes back on a finer resolution.
 
 Shading is drawn on intraday charts only. It has nothing to shade, and its **Shaded** row says why, in two cases:
 

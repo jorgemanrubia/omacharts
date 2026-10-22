@@ -73,8 +73,9 @@ impl Separators {
     /// reason: a line between every daily bar is not a separator, it is a
     /// grid. Too coarse for even a month's, and nothing is drawn.
     pub fn effective_for(self, timeframe: Timeframe) -> Separators {
-        /// Fewest bars a separated stretch should hold.
-        const MIN_BARS: i64 = 10;
+        /// Fewest bars a separated stretch should hold: a four-hour chart's
+        /// six bars a day still read as days.
+        const MIN_BARS: i64 = 4;
         let ladder = [Separators::Day, Separators::Week, Separators::Month];
         let Some(from) = ladder.iter().position(|s| *s == self) else { return Separators::None };
         ladder[from..]
@@ -664,7 +665,7 @@ mod tests {
     }
 
     #[test]
-    fn a_daily_chart_has_its_separators_promoted_to_months() {
+    fn a_daily_chart_has_its_day_separators_promoted_to_weeks() {
         let bars: Vec<Bar> = (0..40)
             .map(|d| {
                 let ts = chrono::Utc.with_ymd_and_hms(2024, 3, 1, 0, 0, 0).unwrap().timestamp() + d * 86_400;
@@ -672,14 +673,16 @@ mod tests {
             })
             .collect();
         let daily = Timeframe::days(1);
-        // A line between every daily bar, or every fifth, is a grid: both are
-        // promoted to a month's.
-        assert_eq!(Separators::Day.effective_for(daily), Separators::Month);
-        assert_eq!(Separators::Week.effective_for(daily), Separators::Month);
-        assert_eq!(Separators::Day.effective_for(Timeframe::hours(1)), Separators::Day);
-        assert_eq!(Separators::Week.effective_for(Timeframe::hours(4)), Separators::Week);
-        assert_eq!(Separators::Day.effective_for(Timeframe::weeks(1)), Separators::None);
-        assert_eq!(sessions(&bars, daily, es(), true, Separators::Day).markers.len(), 1, "1 April");
+        // A line between every daily bar is a grid: a daily chart's are a
+        // week's.
+        assert_eq!(Separators::Day.effective_for(daily), Separators::Week);
+        assert_eq!(Separators::Month.effective_for(daily), Separators::Month);
+        assert_eq!(Separators::Day.effective_for(Timeframe::hours(4)), Separators::Day);
+        assert_eq!(Separators::Day.effective_for(Timeframe::weeks(1)), Separators::Month);
+        assert_eq!(Separators::Week.effective_for(Timeframe::months(1)), Separators::None);
+        // Mondays the 4th, 11th, 18th and 25th of March, and the 1st and 8th
+        // of April.
+        assert_eq!(sessions(&bars, daily, es(), true, Separators::Day).markers.len(), 6);
         assert!(sessions(&bars, daily, es(), true, Separators::Day).spans.is_empty());
         assert_eq!(sessions(&bars, daily, es(), false, Separators::Month).markers.len(), 1);
     }

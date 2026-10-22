@@ -36,6 +36,7 @@ TWSE	Taiwan Stock Exchange	XTAI	Asia/Taipei	taiwan	TW	-
 TPEX	Taipei Exchange	ROCO	Asia/Taipei	taiwan	TWO	TPEx
 KRX	Korea Exchange	XKRX	Asia/Seoul	krx	KS	-
 BSE	BSE (Bombay Stock Exchange)	XBOM	Asia/Kolkata	india	BO	-
+NSE	National Stock Exchange of India	XNSE	Asia/Kolkata	india	NS	-
 ASX	Australian Securities Exchange	XASX	Australia/Sydney	asx	AX	-
 FX	Foreign exchange	-	America/New_York	fx	-	-
 CRYPTO	Crypto	-	UTC	crypto	-	-
