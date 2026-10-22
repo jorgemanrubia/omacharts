@@ -226,6 +226,30 @@ omacharts config set chart_header template,symbol
 cached quotes the watchlist shows, so it is as fresh as the sidebar and fetches
 nothing of its own.
 
+## The clock
+
+Charts read one time zone and write times one way, for the whole app: the time
+axis, the crosshair, the times typed into an indicator, and the times
+`chart drawing` reads and prints. A window that is open changes at once:
+
+```
+omacharts config set chart_time_zone Europe/London
+omacharts config set chart_time_zone exchange
+omacharts config set time_format 12h
+```
+
+The zone is an IANA name, New York until one is set; `exchange` puts each chart
+in the clock of the exchange its instrument trades on. A name that is not a
+zone is refused rather than read back as New York. The format is `24h` or
+`12h`, and until one is set it follows the desktop's clock.
+
+A time window keeps the chart's clock unless it is given one of its own, which
+is what a market named after a city wants — London opens at eight in London:
+
+```
+omacharts chart indicator add time_window --name London --from 8am --to 4:30pm --zone Europe/London
+```
+
 ## Link modes
 
 Each chart has a link mode: what a click in the watchlist does to it.

@@ -3174,7 +3174,8 @@ impl Edits {
             }
             if clock && session {
                 return Err(Fault::usage(
-                    "a window is either clock times (--from, --to) or counted from a session                      (--within, --offset, --minutes), not both"
+                    "a window is either clock times (--from, --to) or counted from a session \
+                     (--within, --offset, --minutes), not both"
                         .into(),
                 ));
             }
@@ -4226,7 +4227,12 @@ fn config_set(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<Stri
     if key == crate::clock::SETTING_ZONE {
         let zone = crate::clock::parse_zone(value).map_err(Fault::usage)?;
         crate::clock::save_zone(store, zone);
-        let text = format!("charts read the time in {}", zone.label());
+        let text = match zone {
+            omacharts_engine::clock::ChartZone::Exchange => {
+                "each chart reads the time in its own exchange's time zone".to_string()
+            }
+            _ => format!("charts read the time in {}", zone.label()),
+        };
         return said(as_json, json!({"key": key, "value": zone.key()}), text);
     }
     if key == crate::clock::SETTING_FORMAT {

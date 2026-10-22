@@ -185,7 +185,7 @@ impl ChartZone {
 
     pub fn label(self) -> String {
         match self {
-            ChartZone::Exchange => "Exchange's own".to_string(),
+            ChartZone::Exchange => "Each chart's exchange".to_string(),
             ChartZone::Fixed(zone) => zone_label(zone),
         }
     }

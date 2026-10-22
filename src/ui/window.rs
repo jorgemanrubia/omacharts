@@ -6344,7 +6344,6 @@ impl Window {
         } else {
             bars
         };
-        pane.view.set_clock(self.clock_for(instrument));
         self.recompute_indicators(pane, instrument, timeframe, &bars);
         let bars = Rc::new(bars);
         {
@@ -6372,6 +6371,10 @@ impl Window {
         timeframe: Timeframe,
         bars: &[omacharts_engine::Bar],
     ) {
+        // The clock goes with them: every way a chart is handed a series
+        // comes through here, the memo included, and a chart painted from
+        // the memo was left reading the default clock.
+        pane.view.set_clock(self.clock_for(instrument));
         let drawn = self.drawn_indicators(pane, instrument, timeframe, bars);
         pane.view.set_indicators(drawn);
     }

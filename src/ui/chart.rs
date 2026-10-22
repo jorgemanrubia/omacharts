@@ -5960,9 +5960,17 @@ fn draw_time_levels(
         if right_edge - width < plan.plot_x + 4.0 {
             continue;
         }
-        colors::set_source_alpha(cr, colour, 0.9);
+        // A halo of the chart's own ground first, so a label that lands on
+        // a candle still reads: the levels are drawn over the bars, and the
+        // latest bar is exactly where they are named.
         cr.move_to(right_edge - width, y - 3.0);
-        let _ = cr.show_text(label);
+        cr.text_path(label);
+        colors::set_source(cr, &state.theme.ui.background);
+        cr.set_line_width(3.0);
+        cr.set_line_join(cairo::LineJoin::Round);
+        let _ = cr.stroke_preserve();
+        colors::set_source_alpha(cr, colour, 0.95);
+        let _ = cr.fill();
         placed.push((right_edge - width, right_edge, y));
     }
 }
