@@ -277,10 +277,6 @@ impl Registry {
         }
     }
 
-    pub fn exchanges(&self) -> &[Exchange] {
-        &self.exchanges
-    }
-
     /// The exchange this name means: its code, its name, its MIC, or one of
     /// the other names listings use for it.
     pub fn exchange(&self, name: &str) -> Option<&Exchange> {

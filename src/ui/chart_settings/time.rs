@@ -433,17 +433,30 @@ fn window_rows(owner: &Rc<Owner>, refresh: &Refresh, id: u32, rebuild: Rc<dyn Fn
         let owner = owner.clone();
         let refresh = refresh.clone();
         let rebuild = rebuild.clone();
-        let was = name.clone();
         let syncing = syncing.clone();
         preset.connect_selected_notify(move |row| {
             if syncing.get() {
                 return;
             }
-            let Some(chosen) = PRESETS.get(row.selected() as usize) else { return };
+            // Custom is what the row says once the settings stop being a
+            // preset's, not something to choose: chosen while they still are
+            // one, the row goes back to saying which.
+            let Some(chosen) = PRESETS.get(row.selected() as usize) else {
+                let matching = stored_window(&owner, id)
+                    .and_then(|(_, window, zone, _)| Preset::matching(&window, zone.as_deref()))
+                    .and_then(|found| PRESETS.iter().position(|p| p == found));
+                if let Some(at) = matching {
+                    syncing.set(true);
+                    row.set_selected(at as u32);
+                    syncing.set(false);
+                }
+                return;
+            };
             let (picked, picked_zone) = chosen.parts();
             // The name follows the preset unless somebody typed one of their
             // own: "London" stays "London", "My London" is theirs.
-            let named_by_preset = was.is_empty() || PRESETS.iter().any(|p| p.name == was);
+            let was = stored_window(&owner, id).map(|(name, ..)| name).unwrap_or_default();
+            let named_by_preset = was.trim().is_empty() || PRESETS.iter().any(|p| p.name == was);
             set_window(&owner, id, |name, window, zone| {
                 *window = picked.clone();
                 *zone = picked_zone.clone();

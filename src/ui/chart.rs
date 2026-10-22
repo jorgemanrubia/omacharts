@@ -6380,12 +6380,16 @@ impl Clock {
         use chrono::TimeZone;
         let Some(at) = self.zone.timestamp_opt(ts, 0).single() else { return String::new() };
         let written = at.format("%Z").to_string();
-        // Daylight and standard time are one clock to a reader: CDT and CST
-        // are both Chicago time. A zone with no letters of its own comes back
-        // as an offset, which is said as it is.
-        match written.len() == 3 && written.ends_with('T') && matches!(&written[1..2], "D" | "S") {
-            true => format!("{}{}", &written[..1], "T"),
-            false => written,
+        // Daylight and standard time are one clock to an American reader:
+        // CDT and CST are both Central Time, written CT. Everywhere else the
+        // zone's own letters are what people use — BST, CET, JST — and a
+        // zone with none of its own comes back as an offset, said as it is.
+        match written.as_str() {
+            "EDT" | "EST" => "ET".to_string(),
+            "CDT" | "CST" => "CT".to_string(),
+            "MDT" | "MST" => "MT".to_string(),
+            "PDT" | "PST" => "PT".to_string(),
+            _ => written,
         }
     }
 
@@ -7409,6 +7413,19 @@ mod tests {
             axis_ticks(12, 12.0 * TIME_LABEL_GAP, step, true, Clock::default(), |c| Some(month(c).timestamp()));
         assert_eq!(every, step);
         assert_eq!(ticks.len(), 11, "{ticks:?}");
+    }
+
+    #[test]
+    fn the_crosshair_names_a_zone_the_way_people_in_it_do() {
+        let at = |zone| Clock { zone, format: TimeFormat::H24, named: true };
+        // 2024-07-01 12:00 UTC: summer on both sides of the Atlantic.
+        let summer = 1_719_835_200;
+        assert_eq!(at(chrono_tz::America::Chicago).abbreviation(summer), "CT");
+        assert_eq!(at(chrono_tz::America::New_York).abbreviation(summer), "ET");
+        assert_eq!(at(chrono_tz::Europe::London).abbreviation(summer), "BST");
+        assert_eq!(at(chrono_tz::Asia::Tokyo).abbreviation(summer), "JST");
+        let full = format_time_full(summer, Timeframe::minutes(15), at(chrono_tz::America::Chicago));
+        assert_eq!(full, "01 Jul 2024 07:00 CT");
     }
 
     #[test]

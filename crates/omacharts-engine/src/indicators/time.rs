@@ -122,29 +122,6 @@ pub enum Window {
     Session { part: Part, offset: u32, minutes: u32 },
 }
 
-impl Window {
-    /// How the legend writes it.
-    pub fn describe(&self, format: crate::clock::TimeFormat) -> String {
-        match self {
-            Window::Clock { from, to } => format!(
-                "{}–{}",
-                crate::clock::format_minutes(*from, format),
-                crate::clock::format_minutes(*to, format)
-            ),
-            Window::Session { part, offset, minutes } => {
-                let part = match part {
-                    Part::Regular => "RTH",
-                    other => other.label(),
-                };
-                match offset {
-                    0 => format!("first {minutes}m of {part}"),
-                    _ => format!("{minutes}m from {part} +{offset}m"),
-                }
-            }
-        }
-    }
-}
-
 /// The windows people reach for, ready made.
 ///
 /// Each keeps the clock of the market it is named after, so London opens at
