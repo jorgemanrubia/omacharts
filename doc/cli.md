@@ -19,7 +19,7 @@ describe a command that does not exist.
 
 - **With the app open**, a command is handed to the running window and takes
   effect immediately — a watchlist you create in a terminal appears in the
-  rail without a restart. The output and the exit status come back to your
+  sidebar without a restart. The output and the exit status come back to your
   terminal as if it had run locally.
 - **With nothing running**, the same command runs against the stored database.
   No GTK, no display, no window. This works over ssh.
@@ -216,7 +216,7 @@ omacharts config set chart_header template,symbol
 ```
 
 `none` is a header with nothing in it. The day's move comes from the same
-cached quotes the watchlist shows, so it is as fresh as the rail and fetches
+cached quotes the watchlist shows, so it is as fresh as the sidebar and fetches
 nothing of its own.
 
 ## Link modes
@@ -258,7 +258,7 @@ becomes `follow` and any other chart `focus`.
 
 ### Sorting a watchlist
 
-The rail's column headers sort it: click one for low to high, again for high to
+The sidebar's column headers sort it: click one for low to high, again for high to
 low, and a third time to go back to the order the list was written in. The same
 from a terminal, kept per watchlist:
 
@@ -306,7 +306,7 @@ Three changes write nothing, which is what makes the control safe to touch:
   were showing rather than being blanked.
 
 `chart set --symbol` on a Follow chart changes that one chart. Spreading a
-symbol over the Follow charts is the window's business — picking in the rail,
+symbol over the Follow charts is the window's business — picking in the sidebar,
 or typing in the search — and a command names the charts it means.
 
 Whether a pointer on a Follow chart draws a line on the other Follow charts:
@@ -388,7 +388,7 @@ $ omacharts watchlist show Semis --json
 
 ## Putting a watchlist in order
 
-The rail is dragged with a mouse: a section header moves the section, a symbol
+The sidebar is dragged with a mouse: a section header moves the section, a symbol
 row moves the symbol. Both gestures have a command, and the commands are what
 a script or an agent has instead of a pointer.
 
@@ -418,7 +418,7 @@ A section's symbols are positioned inside it, so moving the section moves them
 with it and two sections' symbols can never end up interleaved.
 
 The symbols that are in no section have no header to drag and are always the
-first thing in the rail. They cannot be ordered: name that section and the
+first thing in the sidebar. They cannot be ordered: name that section and the
 command refuses rather than quietly leaving them somewhere no gesture can put
 them. `section list` prints it as `(no section)`, with the id the commands
 below need to move symbols in and out of it.
@@ -1060,7 +1060,7 @@ restored the settings from omacharts.db (2026-10-21 12:10:21); what they replace
 ```
 
 Names are the moment in UTC; the listing shows local time. A restore applies at
-once, in a window that is open too: the charts, rail and theme on screen become
+once, in a window that is open too: the charts, sidebar and theme on screen become
 the restored ones. What it replaced is backed up first, so restoring that undoes
 it. A backup written by a newer Omacharts is refused with nothing changed, and
 one from an older one is brought up to date as it is restored. Preferences ›

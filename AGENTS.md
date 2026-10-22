@@ -375,6 +375,34 @@ parity and does not is worse than none:
   and `config set theme` is the case that does not: it writes the row and the
   running window keeps the theme it started with.
 
+## Every change ships with its manual
+
+A pull request that adds a feature, or changes what a user sees or does,
+updates the manual under `site/manual/` in the same pull request: the
+chapter that owns the topic, the CLI page when a command or flag changes,
+Hotkeys when a key changes, and any screenshot the change makes out of date
+(each one carries the recipe to take it again). Write it following
+`doc/documentation.md`, the manual's style guide. A change is not finished
+until the manual describes it. A manual that lags one release is wrong for
+everybody who reads it, and the next person has no way to know which parts
+to trust.
+
+What needs no manual change: internals a user never meets, and fixes that
+make the app do what the manual already says.
+
+## Documentation is written in one voice, and the guide to it is a record
+
+Before writing or changing anything a person reads — the manual under
+`site/manual/`, the README, `doc/*.md`, the `--help` text — read
+`doc/documentation.md`. It says how documentation here is written, down to
+how a key and a command are spelled and how a screenshot is taken and made
+reproducible, and it is kept in the voice it describes.
+
+It is also where the maintainer's steering on documentation is written down
+as it was given, so the next page starts from what the last one was corrected
+on. Feedback on a page goes into that file in the same change as the fix,
+as the concrete preference rather than a principle distilled from it.
+
 ## An agent writing on GitHub says so
 
 Anything an agent posts to GitHub in the maintainer's name — a pull request
