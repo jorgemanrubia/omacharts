@@ -429,7 +429,8 @@ voice regardless of who typed it.
 bin/release 0.1.3
 ```
 
-That is the whole thing. The script writes the version into the three places a
+That is the whole thing. A release bumps the last number — 0.2.0 is followed
+by 0.2.1, new features or not — unless the maintainer asks for a bigger step. The script writes the version into the three places a
 tag cannot float — `Cargo.toml`, `Cargo.lock` and the PKGBUILD's `pkgver` —
 then builds and tests with `--locked` to prove the
 tree agrees with itself, commits, tags and pushes. It refuses to run on a dirty
