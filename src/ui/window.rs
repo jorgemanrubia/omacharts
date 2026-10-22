@@ -2278,8 +2278,15 @@ mod outside_change_tests {
         found
     }
 
+    /// The rows titled `title` in the window and in every form open over
+    /// it, such as the chart's settings, which are a window of their own.
     fn titled<T: IsA<gtk::Widget> + IsA<adw::PreferencesRow>>(window: &Window, title: &str) -> Vec<T> {
-        rows::<T>(window.window.upcast_ref()).into_iter().filter(|row| row.title() == title).collect()
+        let forms = crate::ui::form_window::over(&window.window).into_iter().map(|form| form.upcast::<gtk::Widget>());
+        std::iter::once(window.window.clone().upcast::<gtk::Widget>())
+            .chain(forms)
+            .flat_map(|root| rows::<T>(&root))
+            .filter(|row| row.title() == title)
+            .collect()
     }
 
     /// A range set on one chart by a command stays on it when another
@@ -5087,6 +5094,23 @@ impl Window {
         }
     }
 
+    /// The focused chart as a command names it back: "pos:0 NVDA 1D".
+    ///
+    /// By position, as everywhere a chart is named, because ids are handed
+    /// out afresh every time the arrangement is rebuilt.
+    pub fn focused_name(&self) -> String {
+        let pane = self.focused_pane();
+        let at = self.layout.borrow().leaves().iter().position(|leaf| *leaf == pane.id).unwrap_or(0);
+        match pane.instrument.borrow().as_ref() {
+            Some(instrument) => format!(
+                "pos:{at} {} {}",
+                instrument.display_symbol(),
+                pane.timeframe.get().label()
+            ),
+            None => format!("pos:{at}"),
+        }
+    }
+
     /// Make `id` the chart the keyboard and the menus act on.
     pub fn focus(self: &Rc<Self>, id: u32) {
         if self.focused.get() == id && self.panes.borrow().iter().any(|p| p.id == id) {
@@ -5165,7 +5189,8 @@ impl Window {
         self.save_soon();
     }
 
-    /// Point the header and the rail at the focused chart.
+    /// Point the header, the rail and the chart settings at the focused
+    /// chart.
     fn sync_header(self: &Rc<Self>) {
         let pane = self.focused_pane();
         pane.sync_strip();
@@ -5176,6 +5201,7 @@ impl Window {
         {
             watchlist.highlight(instrument);
         }
+        crate::ui::chart_settings::follow(self);
     }
 
     /// Divide the focused chart in two, the new one showing the same thing.
@@ -8362,8 +8388,11 @@ impl Window {
     /// charts.
     pub fn find_trading_symbol(self: &Rc<Self>, id: u32) {
         let this = self.clone();
-        // Over the chart settings it is asked from, which hold the keyboard.
-        let from: gtk::Widget = self.window.visible_dialog().map_or_else(|| self.window.clone().upcast(), |dialog| dialog.upcast());
+        // Over the chart settings it is asked from, which hold the keyboard:
+        // a window of their own, so the picker hangs from it, not from the
+        // main window behind it.
+        let from: gtk::Widget = crate::ui::form_window::open(crate::ui::chart_settings::KIND)
+            .map_or_else(|| self.window.clone().upcast(), |settings| settings.upcast());
         let over = Over::window(&from, crate::ui::chart_settings::TRADING_SYMBOL_LABEL);
         // What a trading service takes an order on, futures and their months,
         // whether or not one is signed in to say so yet.
@@ -8465,7 +8494,13 @@ impl Window {
 
     /// The indicator picker, centred like every other picker in the app.
     pub fn add_indicator(self: &Rc<Self>) {
-        crate::ui::chart_settings::add_indicator(self);
+        crate::ui::chart_settings::add_indicator_over(self, self.over_focused());
+    }
+
+    /// The store, shared, for a settings window opened from somewhere that
+    /// only has the window.
+    pub fn shared_store(&self) -> Rc<Store> {
+        self.store.clone()
     }
 
     /// Re-fold and repaint what is on screen, after something that changes
@@ -8948,6 +8983,8 @@ impl Window {
         pane.follow_load(load);
         if pane.id == self.focused.get() {
             self.prefetch_neighbours(&instrument, timeframe);
+            // The chart settings name the chart they are about, symbol and all.
+            crate::ui::chart_settings::follow(self);
         }
     }
 
@@ -10752,6 +10789,19 @@ impl Window {
     /// template's indicators — and so every chart on it — and otherwise the
     /// chart's own.
     ///
+    /// Take one indicator off `pane`, which need not be the focused chart:
+    /// an indicator added and then never confirmed comes back off the chart
+    /// it went on, wherever the focus has gone since — or off its template,
+    /// which is where it went. Nothing, when that chart is no longer on
+    /// screen.
+    pub fn take_indicator_off(self: &Rc<Self>, pane: &Rc<ChartPane>, id: u32) {
+        if !self.panes.borrow().iter().any(|p| Rc::ptr_eq(p, pane)) {
+            return;
+        }
+        let kept: Vec<Indicator> = pane.indicators.borrow().iter().filter(|i| i.id != id).cloned().collect();
+        self.change_indicators_of(pane, kept);
+    }
+
     /// One rule for every control on the chart — the legend's eye and bin, a
     /// strip's corner, its settings — so that two buttons side by side cannot
     /// mean "every chart" and "this chart" between them. A chart is taken off

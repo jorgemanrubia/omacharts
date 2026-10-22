@@ -395,6 +395,28 @@ pub(crate) fn follow_sidebar(
     });
 }
 
+/// A rule across the sidebar with a word on it, over the sections that go
+/// under it.
+pub(crate) fn sidebar_rule(text: &str) -> gtk::Box {
+    let rule = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    rule.set_margin_top(14);
+    rule.set_margin_bottom(4);
+    rule.set_margin_start(12);
+    rule.set_margin_end(12);
+    let label = gtk::Label::new(Some(text));
+    label.add_css_class("caption-heading");
+    label.add_css_class("dim-label");
+    let spaced = gtk::pango::AttrList::new();
+    spaced.insert(gtk::pango::AttrInt::new_letter_spacing(gtk::pango::SCALE));
+    label.set_attributes(Some(&spaced));
+    rule.append(&label);
+    let line = gtk::Separator::new(gtk::Orientation::Horizontal);
+    line.set_hexpand(true);
+    line.set_valign(gtk::Align::Center);
+    rule.append(&line);
+    rule
+}
+
 /// A way to the resolution list from the settings, since the other way in is
 /// right-clicking a strip, which you have to know about to find; and how far
 /// the charts zoom to the wheel and the touchpad. Whether the crosshair

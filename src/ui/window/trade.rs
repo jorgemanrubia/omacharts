@@ -4868,23 +4868,26 @@ pub(super) mod tests {
         found
     }
 
-    /// The titles of the chart settings' pages, and whether a Trading
-    /// symbol row is among their rows, the dialog closed after.
+    /// The chart settings' sections down the sidebar, by their ids, and
+    /// whether a Trading symbol row is among their rows, the dialog closed
+    /// after.
     fn chart_settings_offer(window: &Rc<Window>) -> (Vec<String>, bool) {
         crate::ui::chart_settings::ChartSettings::present(window);
-        let dialog = window.window.visible_dialog().expect("the chart's settings");
+        let dialog = crate::ui::form_window::open(crate::ui::chart_settings::KIND).expect("the chart's settings");
         let widgets = widgets_under(dialog.clone().upcast());
-        let pages: Vec<String> = widgets
+        let sections: Vec<String> = widgets
             .iter()
-            .filter_map(|widget| widget.downcast_ref::<adw::PreferencesPage>().map(|page| page.title().to_string()))
+            .filter_map(|widget| widget.downcast_ref::<gtk::ListBoxRow>())
+            .filter(|row| row.parent().is_some_and(|list| list.has_css_class("navigation-sidebar")))
+            .map(|row| row.widget_name().to_string())
             .collect();
         let row = widgets.iter().any(|widget| {
             widget
                 .downcast_ref::<adw::ActionRow>()
                 .is_some_and(|row| row.title() == crate::ui::chart_settings::TRADING_SYMBOL_LABEL)
         });
-        dialog.force_close();
-        (pages, row)
+        dialog.close();
+        (sections, row)
     }
 
     /// The trading symbol is picked over the chart settings it is asked
@@ -4898,7 +4901,11 @@ pub(super) mod tests {
             let pane = window.focused_pane();
             window.show_in(&pane, window.index.find("ES", None).expect("ES"));
             crate::ui::chart_settings::ChartSettings::present(&window);
-            let dialog = window.window.visible_dialog().expect("the chart's settings");
+            let dialog = crate::ui::form_window::open(crate::ui::chart_settings::KIND).expect("the chart's settings");
+            // A popup hangs only from a window the compositor has shown and
+            // given the keyboard, as a click on its row would have.
+            dialog.present();
+            assert!(settle(&window, || dialog.is_active()), "the chart's settings never took the keyboard");
             window.find_trading_symbol(pane.id);
             let frame = window.search.frame();
             let parent = frame.popover.parent().expect("hung from something");
@@ -4906,7 +4913,7 @@ pub(super) mod tests {
             frame.entry.set_text("MES");
             assert!(settle(&window, || window.search.listed().first().map(String::as_str) == Some("MES")), "{:?}", window.search.listed());
             frame.popover.popdown();
-            dialog.force_close();
+            dialog.close();
         });
     }
 
@@ -4971,8 +4978,8 @@ pub(super) mod tests {
             let pane = window.focused_pane();
             let es = window.index.find("ES", None).expect("ES in the curated half");
             window.show_in(&pane, es);
-            let (pages, row) = chart_settings_offer(&window);
-            assert!(pages.contains(&"Trading".to_string()) && row, "{pages:?}");
+            let (sections, row) = chart_settings_offer(&window);
+            assert!(sections.contains(&"trading".to_string()) && row, "{sections:?}");
             let mes = window.index.find("MES", None).expect("MES in the curated half");
             window.set_trading_symbol(pane.id, Some(mes));
             window.save_workspace();
@@ -4984,8 +4991,8 @@ pub(super) mod tests {
             assert_eq!(pane.trading_symbol.borrow().as_ref().map(|i| i.symbol.clone()).as_deref(), Some("MES"));
             assert_eq!(pane.symbol_button.label().as_deref(), Some("ES"));
             assert_eq!(pane.traded().map(|i| i.symbol), Some("ES".into()));
-            let (pages, row) = chart_settings_offer(&off);
-            assert!(!pages.contains(&"Trading".to_string()) && !row, "{pages:?}");
+            let (sections, row) = chart_settings_offer(&off);
+            assert!(!sections.contains(&"trading".to_string()) && !row, "{sections:?}");
             off.save_workspace();
 
             let on = self::window(&store);

@@ -62,16 +62,20 @@ impl Over {
 /// out yet, and the frame is placed against whatever it hangs from.
 ///
 /// Inside a dialog, the dialog's own content: a frame hung behind a modal
-/// dialog is drawn but never given the keyboard.
+/// dialog is drawn but never given the keyboard. Inside a form window
+/// (chart settings), that window's content: a popover cannot hang from a
+/// toplevel itself.
 fn window_content(from: &impl IsA<gtk::Widget>) -> gtk::Widget {
     let from = from.as_ref();
     let dialog = from.downcast_ref::<adw::Dialog>().cloned().or_else(|| from.ancestor(adw::Dialog::static_type()).and_downcast());
     if let Some(content) = dialog.and_then(|dialog| dialog.child()) {
         return content;
     }
-    from.root()
+    let root = from.root();
+    root.clone()
         .and_downcast::<adw::ApplicationWindow>()
         .and_then(|window| window.content())
+        .or_else(|| root.and_downcast::<adw::Window>().and_then(|window| window.content()))
         .unwrap_or_else(|| from.clone().upcast())
 }
 

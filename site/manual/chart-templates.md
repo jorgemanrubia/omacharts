@@ -93,19 +93,21 @@ Preferences › Charts › **Templates** lists every template with its name, wha
 The editor is the [Indicators page](/manual/indicators/#the-indicators-page) of the template, headed **Indicators in the template**, with the same list, **+** and settings. Every chart on the template changes as you edit.
 
 <!-- regenerate:
-theme: tokyo-night
-window: 2560x1440 @2, bin/headless-window (HOME sandboxed with ~/.local/share/omarchy/themes/tokyo-night copied in)
+theme, window: as the Indicators page in Indicators ([The Indicators page](/manual/indicators/#the-indicators-page)):
+  tokyo-night as an Omarchy desktop's, Yaru-purple icons, 2560x2400 @2, HOME sandboxed
 state:
-  omacharts config set theme omarchy:tokyo-night
+  omacharts chart set --symbol NVDA --resolution 1D
   key ctrl+shift+b
   omacharts template create Momentum
   omacharts template indicator add Momentum rsi
   omacharts template indicator add Momentum macd
   omacharts chart set --template Momentum
+  click 640 900          # the chart, so it has the keyboard
   key ctrl+i
-  move 1270 710
+  run swaymsg '[title="^Chart settings$"] move position 260 100'
+  move 100 1150
 capture: bin/headless-window shot /tmp/on-template.png
-crop: 688,68,1184,1304   (the whole dialog, 16px layout margin)
+crop: 496,176,1568,1328   (the whole window, 12px layout margin)
 -->
 {% include figure.html src="/assets/manual/chart-templates/chart-on-a-template.png" alt="The Indicators page of a chart on the Momentum template, listing RSI 14 and MACD 12 26 9 under On the Momentum template" caption="The Indicators page of a chart on **Momentum**, which edits the template." %}
 

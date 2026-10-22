@@ -17,20 +17,24 @@ The indicators come in families, each with a page that has every indicator in it
 | [Sessions and time](/manual/indicators/session-times/) | Session Times |
 
 <!-- regenerate:
-theme: tokyo-night
-window: 1600x1200 @2, scratchpad kit (bin/headless-window, sandboxed HOME)
+theme, window: as Preferences › General ([Preferences](/manual/preferences/)): tokyo-night as an Omarchy desktop's,
+  Yaru-purple icons, 2560x2400 @2 from bin/headless-window start --size 2560x2400, HOME sandboxed
 state:
-  key ctrl+shift+b
+  omacharts chart set --symbol NVDA --resolution 1D
   omacharts chart set --template none
   omacharts chart indicator add sma --period 50
   omacharts chart indicator add sma --period 200
   omacharts chart indicator add volume
   omacharts chart indicator add rsi
+  key ctrl+shift+b
+  click 640 900          # the chart, so it has the keyboard
   key ctrl+i
+  run swaymsg '[title="^Chart settings$"] move position 260 100'   # its own size, 760x640
+  move 100 1150          # off the window, so no row is hovered
 capture: bin/headless-window shot /tmp/dlg.png
-crop: 240,40,1120,1120
+crop: 496,176,1568,1328   (the whole window, 12px layout margin)
 -->
-{% include figure.html src="/assets/manual/indicators/indicators-dialog.png" alt="The Indicators page of Chart settings" caption="The Indicators page of a chart with two averages, Volume and an RSI." %}
+{% include figure.html src="/assets/manual/indicators/indicators-dialog.png" alt="Chart settings on its Indicators page, listing two averages, Volume and an RSI" caption="The Indicators page of a chart with two averages, Volume and an RSI." %}
 
 ## Adding an indicator
 
@@ -63,27 +67,23 @@ crop: 365,314,870,1272   (the whole search, 16px margin)
 | <kbd>Enter</kbd>, <kbd>Ctrl</kbd> + <kbd>Enter</kbd>, a click | Picks the selected indicator |
 | <kbd>Esc</kbd>, a click outside | Closes the search, adding nothing |
 
-Picking one puts it on the chart at its defaults and opens its settings in a dialog named after it, with **Cancel** and **Add** in the header. The chart changes as you change a setting. **Add** or <kbd>Ctrl</kbd> + <kbd>Enter</kbd> keeps the indicator. **Cancel**, <kbd>Esc</kbd> or a click outside removes it. On a chart on a template, the indicator is added to the template, and **Cancel** takes it off the template again.
+Picking one puts it on the chart at its defaults and opens its settings in the [Chart settings](/manual/chart-settings/) window, on a page named after it with **Cancel** and **Add** at its top. The chart changes as you change a setting. **Add** or <kbd>Ctrl</kbd> + <kbd>Enter</kbd> keeps the indicator. **Cancel**, <kbd>Esc</kbd>, closing the window or focusing another chart removes it. On a chart on a template, the indicator is added to the template, and **Cancel** takes it off the template again.
 
 <!-- regenerate:
-theme: tokyo-night
-window: 1600x2200 @2, bin/headless-window (HOME sandboxed with ~/.local/share/omarchy/themes/tokyo-night copied in; tall enough that the whole dialog fits, Legend included)
+theme, window: as the Indicators page above, HOME sandboxed as an Omarchy desktop's on tokyo-night, 2560x2400 @2
 state:
-  omacharts config set theme omarchy:tokyo-night
-  move 795 1095
-  key ctrl+shift+b
-  omacharts chart set --template none
-  omacharts chart indicator add sma --period 50
-  omacharts chart indicator add sma --period 200
-  omacharts chart indicator add volume
-  omacharts chart indicator add rsi
+  (the state of the Indicators page picture, then)
+  click 100 300          # the chart, so it has the keyboard
   key ctrl+shift+i
   type macd
   key Return
+  run swaymsg '[title="^Chart settings$"] focus'
+  run swaymsg '[title="^Chart settings$"] resize set 760 800, move position 260 100'   # tall enough for the Legend group
+  move 100 1150
 capture: bin/headless-window shot /tmp/macd.png
-crop: 223,150,1152,1902   (the whole dialog, 16px layout margin)
+crop: 496,176,1568,1648   (the whole window, 12px layout margin)
 -->
-{% include figure.html src="/assets/manual/indicators/macd-parameters.png" alt="The settings dialog of a MACD being added" caption="The settings of a MACD being added." %}
+{% include figure.html src="/assets/manual/indicators/macd-parameters.png" alt="The Chart settings window on the page of a MACD being added, with Cancel and Add at its top" caption="The settings of a MACD being added." %}
 
 Every indicator's settings end with a **Legend** group, whose **Show in chart legend** switch says whether the [legend](#the-legend) names it.
 
@@ -137,20 +137,21 @@ Above the list, **Chart template** names the template the chart is on, or **None
 An indicator's settings opened on such a chart, from the list, the legend's gear or after adding one, start with an **Editing the Momentum template** row that says the same.
 
 <!-- regenerate:
-theme: tokyo-night
-window: 2560x1440 @2, bin/headless-window (HOME sandboxed with ~/.local/share/omarchy/themes/tokyo-night copied in)
+theme, window: as the Indicators page above, HOME sandboxed as an Omarchy desktop's on tokyo-night, 2560x2400 @2
 state:
-  omacharts config set theme omarchy:tokyo-night
-  key ctrl+shift+b
+  (the state of the Indicators page picture, then)
+  key Escape             # Chart settings closes
   omacharts template create Momentum
   omacharts template indicator add Momentum rsi
   omacharts template indicator add Momentum macd
   omacharts chart set --template Momentum
+  click 640 900
   key ctrl+i
-  click 500 333          # the RSI 14 row
-  move 1270 710
+  run swaymsg '[title="^Chart settings$"] move position 260 100'
+  click 553 438          # the RSI 14 row
+  move 100 1150
 capture: bin/headless-window shot /tmp/panel.png
-crop: 688,68,1184,1304   (the whole dialog, 16px layout margin)
+crop: 496,176,1568,1328   (the whole window, 12px layout margin)
 -->
 {% include figure.html src="/assets/manual/indicators/panel-on-a-template.png" alt="The settings of an RSI on a chart on the Momentum template, opening with a row that says it is editing the template" caption="An RSI's settings on a chart on the **Momentum** template." %}
 
