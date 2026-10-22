@@ -1,9 +1,26 @@
 name: CI
 
+# A change that only touches the website, its workflow, or prose nothing is
+# built from cannot break the build. doc/cli.md and the agent skill are not
+# here: the tests compile them in and check them against the parser.
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - 'site/**'
+      - '.github/workflows/pages.yml'
+      - 'doc/documentation.md'
+      - 'AGENTS.md'
+      - 'README.md'
+      - 'LICENSE'
   pull_request:
+    paths-ignore:
+      - 'site/**'
+      - '.github/workflows/pages.yml'
+      - 'doc/documentation.md'
+      - 'AGENTS.md'
+      - 'README.md'
+      - 'LICENSE'
 
 jobs:
   check:
