@@ -1030,7 +1030,7 @@ fn confirm_delete_template(context: &Rc<Context>, anchor: &gtk::Button, id: u32,
              indicators as their own, and stop changing with it."
         ),
     };
-    let dialog = adw::AlertDialog::new(Some("Delete Chart Template?"), Some(&body));
+    let dialog = crate::ui::dialogs::card("Delete Chart Template?", Some(&body), None);
     dialog.add_response("cancel", "Cancel");
     dialog.add_response("delete", "Delete");
     dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
@@ -1486,50 +1486,68 @@ pub(crate) fn ask_name(
     verb: &str,
     done: impl Fn(String) + 'static,
 ) {
-    ask_for_text(anchor, heading, "Name", initial, verb, false, done);
+    let blank = |text: &str| text.trim().is_empty().then(String::new);
+    ask_for_text(anchor, heading, "Name", initial, verb, blank, done);
 }
 
 /// A chart's title, asked for the way a name is, under its own word: blank is
 /// an answer, and leaves the chart untitled.
 pub(crate) fn ask_title(anchor: &impl IsA<gtk::Widget>, initial: &str, done: impl Fn(String) + 'static) {
-    ask_for_text(anchor, "Chart title", "Title", initial, "Save", true, done);
+    ask_for_text(anchor, "Chart title", "Title", initial, "Save", |_| None, done);
 }
 
-fn ask_for_text(
+/// A line of text asked for in a card, offering `initial`, and handed back
+/// trimmed. `refused` says why a text is no answer: it holds `verb` back,
+/// and marks the box with the reason, though not while the box is blank,
+/// which is not a mistake yet.
+pub(crate) fn ask_for_text(
     anchor: &impl IsA<gtk::Widget>,
     heading: &str,
     label: &str,
     initial: &str,
     verb: &str,
-    blank_ok: bool,
+    refused: impl Fn(&str) -> Option<String> + 'static,
     done: impl Fn(String) + 'static,
 ) {
-    let answers = move |text: &str| blank_ok || !text.trim().is_empty();
     let name = adw::EntryRow::new();
     name.set_title(label);
     name.set_text(initial);
     let rows = adw::PreferencesGroup::new();
     rows.add(&name);
 
-    let dialog = adw::AlertDialog::new(Some(heading), None);
-    dialog.set_extra_child(Some(&rows));
+    let dialog = crate::ui::dialogs::card(heading, None, Some(rows.upcast_ref()));
     dialog.add_response("cancel", "Cancel");
     dialog.add_response("ok", verb);
     dialog.set_response_appearance("ok", adw::ResponseAppearance::Suggested);
     dialog.set_default_response(Some("ok"));
     dialog.set_close_response("cancel");
     // Offered blank, for a new name, it cannot be answered until it is not.
-    dialog.set_response_enabled("ok", answers(initial));
+    dialog.set_response_enabled("ok", refused(initial).is_none());
 
+    let refused = Rc::new(refused);
     let gate = dialog.clone();
+    let checks = refused.clone();
     name.connect_changed(move |field| {
-        gate.set_response_enabled("ok", answers(&field.text()));
+        let text = field.text();
+        let why = checks(&text);
+        gate.set_response_enabled("ok", why.is_none());
+        match why.filter(|_| !text.trim().is_empty()) {
+            Some(why) => {
+                field.add_css_class("error");
+                field.set_tooltip_text(Some(&why));
+            }
+            None => {
+                field.remove_css_class("error");
+                field.set_tooltip_text(None);
+            }
+        }
     });
     // An entry row keeps Return for itself; typing a name and pressing it is
     // one gesture and should finish the one thing.
     let finish = dialog.clone();
+    let checks = refused.clone();
     name.connect_entry_activated(move |field| {
-        if answers(&field.text()) {
+        if checks(&field.text()).is_none() {
             finish.emit_by_name::<()>("response", &[&"ok"]);
             finish.close();
         }
@@ -1538,10 +1556,11 @@ fn ask_for_text(
     let field = name.clone();
     let answered = std::cell::Cell::new(false);
     dialog.connect_response(None, move |_, response| {
-        if response != "ok" || answered.replace(true) {
+        let typed = field.text();
+        if response != "ok" || refused(&typed).is_some() || answered.replace(true) {
             return;
         }
-        done(field.text().trim().to_string());
+        done(typed.trim().to_string());
     });
 
     dialog.present(Some(anchor));

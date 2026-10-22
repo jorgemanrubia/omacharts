@@ -2456,7 +2456,7 @@ mod outside_change_tests {
             window.edit_chart_title();
             assert!(!pane.editing_title());
             let dialog = window.window.visible_dialog().and_downcast::<adw::AlertDialog>().expect("the dialog");
-            assert_eq!(dialog.heading().as_deref(), Some("Chart title"));
+            assert_eq!(dialog.title(), "Chart title");
             dialog.force_close();
             pane.header_center.set_child_visible(true);
 
@@ -2563,7 +2563,7 @@ mod outside_change_tests {
                     .expect("an Edit chart title… action");
                 let dialog =
                     window.window.visible_dialog().and_downcast::<adw::AlertDialog>().expect("a dialog");
-                assert_eq!(dialog.heading().as_deref(), Some("Chart title"));
+                assert_eq!(dialog.title(), "Chart title");
                 assert_eq!(dialog.response_label("ok"), "Save");
                 let field = rows::<adw::EntryRow>(dialog.upcast_ref()).into_iter().next().expect("a field");
                 assert_eq!(field.title(), "Title");
@@ -7080,7 +7080,7 @@ impl Window {
              \u{201c}{}\u{201d}. Its charts keep their symbols.{fewer}",
             chosen.name
         );
-        let dialog = adw::AlertDialog::new(Some("Use Chartbook Template?"), Some(&body));
+        let dialog = crate::ui::dialogs::card("Use Chartbook Template?", Some(&body), None);
         dialog.add_response("cancel", "Cancel");
         dialog.add_response("replace", "Replace Layout");
         dialog.set_response_appearance("replace", adw::ResponseAppearance::Destructive);
@@ -10937,7 +10937,7 @@ impl Window {
                 "Remove Indicators",
             ),
         };
-        let dialog = adw::AlertDialog::new(Some(title), Some(&body));
+        let dialog = crate::ui::dialogs::card(title, Some(&body), None);
         dialog.add_response("cancel", "Cancel");
         dialog.add_response("replace", verb);
         dialog.set_response_appearance("replace", adw::ResponseAppearance::Destructive);
