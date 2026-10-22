@@ -180,7 +180,7 @@ follows").
 - **Paths through the UI** with ›: Preferences › Charts › Defaults. Labels as
   the UI spells them, in the same case, in bold: **Apply to all charts now**.
 - **Enumerated values** as the command takes them: `regular`, `extended`;
-  `follow`, `focus`, `pinned`.
+  `focus`, `follow`, `pinned`.
 - **The app** is Omacharts; **the command** is `omacharts`. A chart is named
   `pos:N`, counting from 0.
 - **Settings** by key in backticks, with the values they take:

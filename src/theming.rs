@@ -422,9 +422,9 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
 .legend-symbol:hover { background: alpha(currentColor, 0.12); }
 
 /* The legend sits over the drawing, and the drawing is the point. The gear,
-   and the link while the chart is in Follow (the default, so nothing to
+   and the link while the chart is in Focus (the default, so nothing to
    report), strike the maximize corner's bargain: not there until the pointer
-   is on the chart. A Focus or Pinned chart keeps its link showing, since
+   is on the chart. A Follow or Pinned chart keeps its link showing, since
    then the icon is telling you something. The link stays up while its menu is open,
    when the pointer has left the chart for the menu. */
 .legend-gear,

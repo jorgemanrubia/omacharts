@@ -91,7 +91,7 @@ From anywhere:
 | <kbd>Ctrl</kbd> + <kbd>M</kbd> | Gives the focused chart the whole window, or puts it back | [Layouts](/manual/layouts/) |
 | <kbd>Alt</kbd> + <kbd>←</kbd> <kbd>→</kbd> <kbd>↑</kbd> <kbd>↓</kbd> | Focuses the chart in that direction | [Layouts](/manual/layouts/) |
 | <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>←</kbd> <kbd>→</kbd> <kbd>↑</kbd> <kbd>↓</kbd> | Grows the focused chart in that direction, by moving the divider it sits against | [Layouts](/manual/layouts/) |
-| <kbd>Ctrl</kbd> + <kbd>L</kbd> / <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>L</kbd> | The focused chart's next or previous link mode: Follow, Focus, Pinned | [Watchlists](/manual/watchlists/#choosing-a-link-mode) |
+| <kbd>Ctrl</kbd> + <kbd>L</kbd> / <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>L</kbd> | The focused chart's next or previous link mode: Focus, Follow, Pinned | [Watchlists](/manual/watchlists/#choosing-a-link-mode) |
 | <kbd>Ctrl</kbd> + <kbd>O</kbd> | A screenshot of the focused chart, to the clipboard | [Screenshots](/manual/screenshots/) |
 
 ## The focused chart
@@ -213,7 +213,7 @@ On a chart:
 | Double-click an indicator's name in the legend | Its settings. The eye, gear and bin beside it hide it, open its settings, or remove it | [Indicators](/manual/indicators/) |
 | The gear, top-right | Chart settings | [Chart settings](/manual/chart-settings/) |
 | The corner arrows, top-right | Gives the chart the whole window, or puts it back | [Layouts](/manual/layouts/) |
-| The chain, top-right | The link mode: Follow, Focus, Pinned | [Watchlists](/manual/watchlists/#choosing-a-link-mode) |
+| The chain, top-right | The link mode: Focus, Follow, Pinned | [Watchlists](/manual/watchlists/#choosing-a-link-mode) |
 | An indicator strip's ×, and its chevrons | Removes the strip, or moves it up or down the stack | [Indicators](/manual/indicators/) |
 | Drag the edge of an indicator strip | Makes it taller or shorter | [Indicators](/manual/indicators/) |
 | Drag the divider between two charts | Resizes them | [Layouts](/manual/layouts/) |

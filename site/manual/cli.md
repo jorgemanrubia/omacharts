@@ -393,7 +393,7 @@ omacharts: "3x" is not a resolution; try 5m, 1h, 1D, 1W, 1M or 1Y
 | `--grid on` or `off` | Draws the grid | [Gridlines](/manual/charts/#gridlines) |
 | `--auto-scale on` or `off` | Fits the price axis to the visible bars, or holds it still | [Scales](/manual/charts/#scales) |
 | `--log-scale on` or `off` | Logarithmic or linear price axis | [Logarithmic scale](/manual/charts/#logarithmic-scale) |
-| `--link MODE` | `follow`, `focus`, `pinned` | [Linking charts to the watchlist](/manual/watchlists/#linking-charts-to-the-watchlist) |
+| `--link MODE` | `focus`, `follow`, `pinned` | [Linking charts to the watchlist](/manual/watchlists/#linking-charts-to-the-watchlist) |
 | `--template T` | A chart template, or `none` | [Chart templates](/manual/chart-templates/) |
 | `--show-drawings on` or `off`, `--send-drawings on` or `off` | Whether the chart shows other charts' drawings, and whether it sends its own | [Drawings](/manual/drawings/) |
 | `--book BOOK` | Which chartbook, by name or `id:N`; the open one when not given | [Which chart a command acts on](#which-chart-a-command-acts-on) |
@@ -938,7 +938,7 @@ A chart's link mode says whether it follows the symbol picked in the
 watchlist. What each mode does is in [Linking charts to the
 watchlist](/manual/watchlists/#linking-charts-to-the-watchlist).
 
-`chart set --link MODE` takes `follow`, `focus` or `pinned`. `chart list`
+`chart set --link MODE` takes `focus`, `follow` or `pinned`. New charts are `focus`. `chart list`
 prints each chart's mode in its last column.
 
 ```

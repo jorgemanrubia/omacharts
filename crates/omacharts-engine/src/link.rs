@@ -1,11 +1,11 @@
 //! Link modes: what a chart does when a symbol is picked in the watchlist.
 //!
-//! The choice belongs on the chart, not on the list. Charts follow the list
-//! out of the box, because the usual reason to split is one symbol at several
-//! resolutions. A chart for comparing tickers has to be able to take the click
-//! only while it is focused, without taking following away from the rest, and
-//! a chart holding context (SPY beside a stock) has to be able to refuse the
-//! click outright.
+//! The choice belongs on the chart, not on the list. Charts take the list's
+//! click only while they are focused out of the box, so splitting a chart and
+//! picking a symbol puts it on the chart in front of you and leaves the other
+//! where it was. One symbol at several resolutions is a choice to make Follow,
+//! which moves those charts together on every click, and a chart holding
+//! context (SPY beside a stock) has to be able to refuse the click outright.
 //!
 //! So each chart has one of three modes, and every list drives the same
 //! charts: the Follow ones, plus the focused chart when it is a Focus chart.
@@ -22,10 +22,10 @@ use crate::theme::Theme;
 pub enum LinkMode {
     /// Takes the rail's click while it is the focused chart. A symbol typed
     /// on it moves only itself.
+    #[default]
     Focus,
     /// Takes every rail click, and a symbol typed on it moves every other
     /// Follow chart.
-    #[default]
     Follow,
     /// Takes nothing from the rail.
     Pinned,
@@ -33,7 +33,7 @@ pub enum LinkMode {
 
 /// Every mode, in the order a picker offers them and Ctrl+L walks them: the
 /// default first.
-pub const MODES: [LinkMode; 3] = [LinkMode::Follow, LinkMode::Focus, LinkMode::Pinned];
+pub const MODES: [LinkMode; 3] = [LinkMode::Focus, LinkMode::Follow, LinkMode::Pinned];
 
 impl LinkMode {
     /// What a chart written down with the nine link groups becomes.
@@ -70,8 +70,8 @@ impl LinkMode {
     /// across four charts.
     pub fn colour(self, theme: &Theme) -> Option<String> {
         match self {
-            LinkMode::Follow => None,
-            LinkMode::Focus | LinkMode::Pinned => Some(theme.ui.accent.clone()),
+            LinkMode::Focus => None,
+            LinkMode::Follow | LinkMode::Pinned => Some(theme.ui.accent.clone()),
         }
     }
 
@@ -183,7 +183,7 @@ mod tests {
         // recoverable in one click; refusing to parse would take the whole
         // layout down with it.
         for json in ["\"sideways\"", "3", "true", "null", "-1", "1.5"] {
-            assert_eq!(serde_json::from_str::<LinkMode>(json).unwrap(), LinkMode::Follow, "{json}");
+            assert_eq!(serde_json::from_str::<LinkMode>(json).unwrap(), LinkMode::Focus, "{json}");
         }
     }
 
@@ -195,9 +195,9 @@ mod tests {
     #[test]
     fn cycling_walks_all_three_and_comes_round_to_the_default() {
         for (from, next) in [
-            (LinkMode::Follow, LinkMode::Focus),
-            (LinkMode::Focus, LinkMode::Pinned),
-            (LinkMode::Pinned, LinkMode::Follow),
+            (LinkMode::Focus, LinkMode::Follow),
+            (LinkMode::Follow, LinkMode::Pinned),
+            (LinkMode::Pinned, LinkMode::Focus),
         ] {
             assert_eq!(from.cycled(false), next, "{from:?}");
             assert_eq!(next.cycled(true), from, "{next:?}");

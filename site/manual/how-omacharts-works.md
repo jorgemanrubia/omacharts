@@ -15,6 +15,7 @@ theme: tokyo-night
 window: 2560x1440 @2, bin/headless-window
 state:
   omacharts chartbook create Desk --symbol NVDA --switch
+  omacharts chart set --link follow
   omacharts chart split vertical
   omacharts chartbook create Macro --symbol SPY --switch
   omacharts chart indicator add sma --period 50 --color Blue
@@ -97,8 +98,8 @@ symbol of the watchlist without opening the sidebar.
 
 Each chart has a link mode that says whether it changes:
 
-- **Follow** changes with every click in the watchlist. New charts are Follow.
-- **Focus** changes only while the chart is focused.
+- **Focus** changes only while the chart is focused. New charts are Focus.
+- **Follow** changes with every click in the watchlist.
 - **Pinned** never changes from the watchlist.
 
 <!-- regenerate:
@@ -106,6 +107,7 @@ theme: tokyo-night
 window: 2560x1440 @2, bin/headless-window
 state:
   omacharts chartbook create Desk --symbol NVDA --switch
+  omacharts chart set --link follow
   omacharts chart split vertical
   omacharts chart split horizontal --chart pos:0
   omacharts chart split horizontal --chart pos:2

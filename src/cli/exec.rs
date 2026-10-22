@@ -5309,15 +5309,16 @@ mod tests {
     }
 
     /// A chartbook made from a terminal starts the way one made in the window
-    /// does: its chart on Follow, so picking in the rail moves it.
+    /// does: its chart on Focus, so picking in the rail moves it while it is
+    /// the chart in front of you, and a split beside it is not dragged along.
     #[test]
-    fn a_new_chartbooks_chart_starts_on_follow() {
+    fn a_new_chartbooks_chart_starts_on_focus() {
         let store = bare();
         run("chartbook create Macro --symbol SPY --switch", &store);
 
         let listed = run("chart list --book Macro --json", &store);
         let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
-        assert_eq!(parsed["charts"][0]["link"], "follow", "{}", listed.out);
+        assert_eq!(parsed["charts"][0]["link"], "focus", "{}", listed.out);
     }
 
     #[test]

@@ -122,20 +122,20 @@ omacharts template indicator set Momentum rsi --period 21
 ```
 
 **Each chart has a link mode**, which is what a click in the watchlist does
-to it. `follow` (the default) takes every click, so a split shows one symbol at
-two resolutions that walk the watchlist together. `focus` takes the click only
-while it is the focused chart, for charts showing different symbols. `pinned`
-takes none — for context charts like SPY beside a stock. Following is within
-the open chartbook only.
+to it. `focus` (the default) takes the click only while it is the focused
+chart, for charts showing different symbols. `follow` takes every click, so
+charts showing one symbol at two resolutions walk the watchlist together.
+`pinned` takes none — for context charts like SPY beside a stock. Following is
+within the open chartbook only.
 
 **Do not make four charts showing four different symbols `follow`.** Follow
 charts show the *same* instrument, so the four above are made `focus`. Follow
 is for one symbol across several resolutions — a daily and an hourly that move
-together as you walk a watchlist — and it is what a new chart already is, so
-splitting copies the symbol and only the resolution needs setting:
+together as you walk a watchlist. Splitting copies the symbol and the mode, so
+make the chart Follow first and only the new one's resolution needs setting:
 
 ```
-omacharts chart set --chart pos:0 --symbol SPY --resolution 1D
+omacharts chart set --chart pos:0 --symbol SPY --resolution 1D --link follow
 omacharts chart split vertical
 omacharts chart set --chart pos:1 --resolution 1h
 ```

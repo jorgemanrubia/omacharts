@@ -230,13 +230,13 @@ nothing of its own.
 
 Each chart has a link mode: what a click in the watchlist does to it.
 
-* **`follow`** (the default) takes every click. Follow charts show the same
-  instrument: a symbol typed on one moves the others, and a pointer on one draws
-  a crosshair on the rest. Split a chart, change the new one's resolution, and
-  both walk the watchlist together.
-* **`focus`** takes the click while it is the focused chart. Make a split's new
-  chart Focus and click a symbol, and it takes the symbol while the old one
-  keeps what it had.
+* **`focus`** (the default) takes the click while it is the focused chart.
+  Split a chart and click a symbol, and the chart in front of you takes it
+  while the other keeps what it had.
+* **`follow`** takes every click. Follow charts show the same instrument: a
+  symbol typed on one moves the others, and a pointer on one draws a crosshair
+  on the rest. Make a chart Follow, split it, change the new one's resolution,
+  and both walk the watchlist together.
 * **`pinned`** takes none, focused or not — for a context chart such as SPY
   beside a stock. A click that moves nothing, because the focused chart is
   pinned and nothing follows, lights up its pin.
@@ -250,7 +250,7 @@ omacharts chart list                # the last column is the mode
 The chain in a chart's top-right corner picks any of the three once there is a
 second chart to tell apart, and the chart menu has them under Watchlist. A lone
 chart shows its chain only while it is pinned. Ctrl+L moves the focused chart
-on to its next mode, round Follow, Focus and Pinned, and Ctrl+Shift+L back the
+on to its next mode, round Focus, Follow and Pinned, and Ctrl+Shift+L back the
 other way; arriving at Follow, it takes what the other Follow charts show rather
 than moving them to what it had. Following is within the open
 chartbook: a chartbook you come back to is as you left it.

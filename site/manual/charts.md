@@ -325,7 +325,7 @@ crop: 70,290,1580,900
 | **Split horizontally**, **Split vertically** | Divides the chart in two | [Splitting and arranging charts](/manual/layouts/) |
 | **Maximize** / **Restore** | Gives the chart the window, or puts it back. Only with two charts or more | [Splitting and arranging charts](/manual/layouts/#maximising-a-chart) |
 | **Close chart** | Closes it. Only with two charts or more | [Splitting and arranging charts](/manual/layouts/#closing-a-chart) |
-| **Watchlist** › **Follow**, **Focus**, **Pinned** | The chart's link mode | [Choosing a link mode](/manual/watchlists/#choosing-a-link-mode) |
+| **Watchlist** › **Focus**, **Follow**, **Pinned** | The chart's link mode | [Choosing a link mode](/manual/watchlists/#choosing-a-link-mode) |
 | **Take screenshot** | A picture of the chart, to the clipboard | [Screenshots](/manual/screenshots/) |
 | **Remove all drawings** | Deletes every drawing on the chart. Only there while it has some | [Drawings](/manual/drawings/) |
 | **Indicators…** | The Indicators page of Chart settings | [Indicators](/manual/indicators/) |

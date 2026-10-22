@@ -655,8 +655,8 @@ fn expand_icon(maximized: Rc<Cell<bool>>) -> gtk::DrawingArea {
 }
 
 /// A mode's icon for a row of the mode menu, in the colour the chart's button
-/// takes in that mode: the legend's own, dimmed, for Follow, and the accent for
-/// the other two. So the menu shows what the button will look like.
+/// takes in that mode: the legend's own, dimmed, for the default, Focus, and
+/// the accent for the other two. So the menu shows what the button will look like.
 ///
 /// Coloured from CSS rather than handed a hex, because the popover outlives
 /// any one theme and CSS is what follows a change of it.
@@ -666,8 +666,8 @@ pub(crate) fn menu_mode_icon(mode: LinkMode) -> gtk::DrawingArea {
         Rc::new(Cell::new(mode)),
     );
     area.add_css_class(match mode {
-        LinkMode::Follow => "dim-label",
-        LinkMode::Focus | LinkMode::Pinned => "link-mode-set",
+        LinkMode::Focus => "dim-label",
+        LinkMode::Follow | LinkMode::Pinned => "link-mode-set",
     });
     area
 }
@@ -786,15 +786,15 @@ fn rounded(cr: &gtk::cairo::Context, x: f64, y: f64, w: f64, h: f64, r: f64) {
     cr.close_path();
 }
 
-/// The legend stays out of the way, so a Follow chart's button is nearly
-/// invisible: it is the default, and four faint chains say nothing is going on.
-/// Focus and Pinned are not: a chart that moves only while focused, or never,
+/// The legend stays out of the way, so a Focus chart's button is nearly
+/// invisible: it is the default, and four faint links say nothing is going on.
+/// Follow and Pinned are not: a chart that moves on every click, or on none,
 /// is the state worth being able to see across four charts without looking.
 fn set_link_look(link: &gtk::MenuButton, mode: LinkMode) {
     link.set_tooltip_text(Some(&format!("{} — {}", mode.label(), mode.blurb())));
-    match mode {
-        LinkMode::Follow => link.add_css_class("quiet"),
-        _ => link.remove_css_class("quiet"),
+    match mode == LinkMode::default() {
+        true => link.add_css_class("quiet"),
+        false => link.remove_css_class("quiet"),
     }
 }
 

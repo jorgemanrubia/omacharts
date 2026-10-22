@@ -82,10 +82,11 @@ crop: 0,0,2000,1440, resized to 1600 wide
 -->
 {% include figure.html src="/assets/manual/quick-start/split.jpg" alt="Two NVDA charts stacked, the daily above the hourly, with the focus ring on the hourly" caption="NVDA daily above NVDA hourly, with the focus ring on the hourly." %}
 
-Press <kbd>↓</kbd>. Both charts move to the next symbol in the watchlist,
-AAPL, and <kbd>↑</kbd> brings them back to NVDA. New charts are Follow
-charts and change with the watchlist. A chart can also be Focus, which
-changes only while focused, or Pinned, which never changes. See
+Press <kbd>↓</kbd>. The hourly chart, the focused one, moves to the next
+symbol in the watchlist, AAPL, and the daily stays on NVDA. <kbd>↑</kbd>
+brings it back. New charts are Focus charts, which change with the watchlist
+only while focused. Make both Follow, with <kbd>Ctrl</kbd> + <kbd>L</kbd> on
+each, and they change together; a Pinned chart never changes. See
 [Linking charts to the watchlist](/manual/watchlists/#linking-charts-to-the-watchlist).
 
 ## 6. Add an indicator

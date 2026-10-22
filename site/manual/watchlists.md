@@ -170,13 +170,15 @@ From anywhere:
 ## Linking charts to the watchlist
 
 A link mode is a chart's setting for what a click in the watchlist does to
-it. Each chart has its own. Every chart starts as **Follow**.
+it. Each chart has its own. Every chart starts as **Focus**.
 
 <!-- regenerate:
 theme: tokyo-night
 window: 2560x1440 @2, bin/headless-window (HOME sandboxed)
 state:
   (the state of the first picture in Chartbooks, then)
+  omacharts chart set --chart pos:0 --link follow
+  omacharts chart set --chart pos:2 --link follow
   click 915 23                    # the 1h chart's chain
   click 857 140                   # Pinned
   omacharts chart set --chart pos:1 --symbol SPY
@@ -191,8 +193,8 @@ crop: none
 
 | Mode | A click in the watchlist | A symbol typed on the chart |
 |---|---|---|
-| **Follow** | Always moves it. The Follow charts all show one symbol. | Moves it and every other Follow chart. |
 | **Focus** | Moves it while it is the focused chart. | Moves it alone. |
+| **Follow** | Always moves it. The Follow charts all show one symbol. | Moves it and every other Follow chart. |
 | **Pinned** | Never moves it, focused or not. | Moves it alone. |
 
 **Follow** from the chain or the chart menu puts this chart's symbol on every
@@ -214,7 +216,7 @@ A click in a watchlist moves charts in its own chartbook only.
 ### Choosing a link mode
 
 The chain in a chart's top-right corner shows the mode. One link is Focus,
-two links are Follow and a pin is Pinned. Follow is drawn dim, Focus and
+two links are Follow and a pin is Pinned. Focus is drawn dim, Follow and
 Pinned in the theme's accent colour.
 
 <!-- regenerate:
@@ -228,16 +230,17 @@ state:
   omacharts chart focus pos:0
   move 415 24
   click 415 23                    # the 1h chart's chain (left chart, so the menu opens over the chart beside it, not the sidebar)
+  move 400 64                     # over the Focus row
 capture: bin/headless-window shot chain.png
 crop: 0,0,1150,380
 -->
-{% include figure.html src="/assets/manual/linking/chain-menu.png" alt="The chain's menu on the hourly chart: Follow, Always follows watchlist, ticked; Focus, Follows watchlist while focused; Pinned, Never follows watchlist" caption="The chain's menu, open on a Follow chart." %}
+{% include figure.html src="/assets/manual/linking/chain-menu.png" alt="The chain's menu on the hourly chart: Focus, Follows watchlist while focused, ticked; Follow, Always follows watchlist; Pinned, Never follows watchlist" caption="The chain's menu, open on a Focus chart." %}
 
 | Where | How |
 |---|---|
-| The chain | Click it for **Follow**, **Focus** and **Pinned**, the current one ticked. Clicking another chart's chain focuses that chart first. |
-| The chart menu | Right-click the chart › **Watchlist** › **Follow**, **Focus**, **Pinned** ([Charts](/manual/charts/)). |
-| <kbd>Ctrl</kbd> + <kbd>L</kbd> | Moves the focused chart to its next mode: Follow, Focus, Pinned and round to Follow. |
+| The chain | Click it for **Focus**, **Follow** and **Pinned**, the current one ticked. Clicking another chart's chain focuses that chart first. |
+| The chart menu | Right-click the chart › **Watchlist** › **Focus**, **Follow**, **Pinned** ([Charts](/manual/charts/)). |
+| <kbd>Ctrl</kbd> + <kbd>L</kbd> | Moves the focused chart to its next mode: Focus, Follow, Pinned and round to Focus. |
 | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>L</kbd> | The same, the other way round. |
 
 The chain appears once there is a second chart. With one chart, Focus and

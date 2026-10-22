@@ -59,7 +59,7 @@ crop: 1060,0,1500,170
 |---|---|---|
 | Gear | While the pointer is on the chart | Opens **Chart settings** for that chart. See [Chart settings](/manual/chart-settings/). |
 | **Maximize** (two diagonal arrows) | While the pointer is on the chart and the chartbook has two charts or more | Gives the chart the whole window, or puts it back. The arrows point inward while it is maximised. See [Maximising a chart](/manual/layouts/#maximising-a-chart). |
-| Link button | When the chartbook has two charts or more, or always on a Pinned chart | Opens the chart's link modes. A chain on a Follow chart, only under the pointer; one link on a Focus chart and a pin on a Pinned chart, always shown and in the accent colour. See [Linking charts to the watchlist](/manual/watchlists/#linking-charts-to-the-watchlist). |
+| Link button | When the chartbook has two charts or more, or always on a Pinned chart | Opens the chart's link modes. One link on a Focus chart, only under the pointer; a chain on a Follow chart and a pin on a Pinned chart, always shown and in the accent colour. See [Linking charts to the watchlist](/manual/watchlists/#linking-charts-to-the-watchlist). |
 | Watchlist toggle | Always, in the window's corner | Shows or hides the sidebar, like <kbd>Ctrl</kbd> + <kbd>B</kbd>. The key also puts the keyboard in the sidebar, and gives it back to the chart when hiding it. Lit while the sidebar is out. |
 | Main menu | Always, in the window's corner | Opens the [main menu](#the-main-menu). <kbd>F10</kbd> opens it too. |
 | Drawing tools' toggle | Always, in the window's top-left corner | Shows or hides the tools, like <kbd>Ctrl</kbd> + <kbd>D</kbd>. |

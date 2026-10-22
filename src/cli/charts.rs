@@ -363,8 +363,8 @@ pub fn new_pane(
             "colouring": defaults.colouring.key(),
             "session": defaults.session.key(),
             "show_grid": defaults.show_grid,
-            // Follow, which is where the window starts a new chartbook's
-            // chart: it takes every click in the rail.
+            // Focus, which is where the window starts a new chartbook's
+            // chart: it takes a click in the rail while it is focused.
             "link": LinkMode::default().key(),
             "shows_drawings": defaults.shows_drawings,
             "sends_drawings": defaults.sends_drawings,
