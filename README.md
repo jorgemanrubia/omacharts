@@ -43,11 +43,10 @@ Fast, beautiful charting software for [Omarchy](https://omarchy.org).
   strip. Save a set of them as a chart template and put charts on it: change
   the template and every chart on it follows. More coming.
 - **Sessions.** Each instrument keeps its exchange's hours: Globex's evening
-  open, the cash session, a listing abroad in its own clock. Shade the
-  overnight, put a line where each day begins, mark London's session or the
-  opening range with its high and low, and carry the prior day's high, low
-  and close across today. Charts read the time zone and the 12 or 24 hours
-  you choose.
+  open, the cash session, a listing abroad in its own clock. New charts set
+  the extended hours apart from the regular session, and any other stretch of
+  the day — London, Asia, a lunch hour — can be shaded too. Charts read the
+  time zone and the 12 or 24 hours you choose.
 - **Drawings.** Trendlines, levels, arrows, zig-zags, boxes, circles and text,
   a keystroke each. Their colours are roles your theme fills, held clear of
   the candles, so a drawing reads on any theme. Figures take labels, and what

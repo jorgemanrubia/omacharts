@@ -243,11 +243,12 @@ in the clock of the exchange its instrument trades on. A name that is not a
 zone is refused rather than read back as New York. The format is `24h` or
 `12h`, and until one is set it follows the desktop's clock.
 
-A time window keeps the chart's clock unless it is given one of its own, which
-is what a market named after a city wants — London opens at eight in London:
+A Session Times range keeps the chart's clock unless it is given one of its
+own, which is what a market named after a city wants — London opens at eight in
+London:
 
 ```
-omacharts chart indicator add time_window --name London --from 8am --to 4:30pm --zone Europe/London
+omacharts chart indicator set session_times --add-range custom --name London --from 8am --to 4:30pm --zone Europe/London
 ```
 
 ## Link modes
