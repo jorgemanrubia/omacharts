@@ -1053,6 +1053,10 @@ fn open_indicator_panel_for(owner: &Rc<Owner>, refresh: &Refresh, id: u32, panel
         banner.set_title(&format!("Editing the {name} template"));
         banner.set_subtitle("A change here reaches every chart that uses it.");
         banner.add_prefix(&gtk::Image::from_icon_name("dialog-information-symbolic"));
+        // A note, not a control: the keyboard goes past it to the first
+        // setting, which is what a panel opens on.
+        banner.set_focusable(false);
+        banner.set_activatable(false);
         warning.add(&banner);
         page.add(&warning);
     }
