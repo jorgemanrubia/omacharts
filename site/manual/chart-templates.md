@@ -5,7 +5,7 @@ section: charting
 nav_order: 16
 ---
 
-A chart template is a saved set of indicators with a name. Put several charts on the same template and they all show those indicators. Change the template and they all change, in every chartbook. Out of the box there is one template, **Default**, which holds [Volume](/manual/indicators/volume/#volume), and new charts open on it.
+A chart template is a saved set of indicators with a name. Put several charts on the same template and they all show those indicators. Change the template and they all change, in every chartbook. Out of the box there is one template, **Default**, which holds [Volume](/manual/indicators/volume/#volume) and [Session Times](/manual/indicators/session-times/) with ETH, and new charts open on it.
 
 <!-- regenerate:
 theme: tokyo-night
@@ -38,7 +38,8 @@ To make a template from what a chart already shows, right-click the chart › **
 | Change | What happens |
 |---|---|
 | The template's indicators change | Every chart on it, in every chartbook, changes at once |
-| You add, remove, hide, reorder or reconfigure an indicator on the chart | The chart comes off the template, keeping the indicators it showed, then makes the change |
+| You change an indicator on the chart's [Indicators page](/manual/indicators/#the-indicators-page) or in its settings | The template changes, and so does every chart on it |
+| You hide or remove an indicator with the legend's eye or bin, move or close a strip from its corner, or change the chart's indicators from the CLI | The chart comes off the template, keeping the indicators it showed, then makes the change |
 | You drag a strip's edge on the chart | The template takes the new height, and so does every chart on it |
 | You put the chart on another template | It shows that template's indicators in place of its own |
 | You put the chart on **None** | It shows no indicators |
@@ -81,7 +82,7 @@ crop: 0,0,1830,1092   (the submenu with 24px layout margin right and below)
 
 ## Editing a template
 
-Preferences › Charts › **Templates** lists every template with its name, what it holds and how many charts use it. From a chart's own settings, **Edit Chart Template…** under **Chart template** opens the template the chart is on.
+Preferences › Charts › **Templates** lists every template with its name, what it holds and how many charts use it. A template can also be edited from any chart on it, on the chart's [Indicators page](/manual/indicators/#the-indicators-page), which lists the template's indicators under **On the Momentum template** and changes them there.
 
 | Control | Does |
 |---|---|
@@ -94,8 +95,9 @@ The editor is the [Indicators page](/manual/indicators/#the-indicators-page) of 
 
 <!-- regenerate:
 theme: tokyo-night
-window: 2560x1440 @2, scratchpad kit
+window: 2560x1440 @2, bin/headless-window (HOME sandboxed with ~/.local/share/omarchy/themes/tokyo-night copied in)
 state:
+  omacharts config set theme omarchy:tokyo-night
   key ctrl+b
   omacharts template create Momentum
   omacharts template indicator add Momentum rsi
@@ -103,10 +105,10 @@ state:
   omacharts chart set --template Momentum
   key ctrl+i
   move 1270 710
-capture: bin/headless-window shot /tmp/locked.png
+capture: bin/headless-window shot /tmp/on-template.png
 crop: 688,68,1184,1304   (the whole dialog, 16px layout margin)
 -->
-{% include figure.html src="/assets/manual/chart-templates/chart-on-a-template.png" alt="The Indicators page of a chart on the Momentum template" caption="The Indicators page of a chart on **Momentum**, its indicators listed without controls." %}
+{% include figure.html src="/assets/manual/chart-templates/chart-on-a-template.png" alt="The Indicators page of a chart on the Momentum template, listing RSI 14 and MACD 12 26 9 under On the Momentum template" caption="The Indicators page of a chart on **Momentum**, which edits the template." %}
 
 ## The template new charts open with
 

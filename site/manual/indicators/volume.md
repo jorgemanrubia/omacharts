@@ -18,7 +18,7 @@ Its own strip. Each bar's volume, in the candles' up or down colour, dimmed.
 | **Up** colour | The candles' up colour, dimmed | A palette name, or a custom colour |
 | **Down** colour | The candles' down colour, dimmed | A palette name, or a custom colour |
 
-The **Default** [chart template](/manual/chart-templates/) holds Volume.
+The **Default** [chart template](/manual/chart-templates/) holds Volume, with [Session Times](/manual/indicators/session-times/).
 
 <!-- regenerate:
 theme: tokyo-night

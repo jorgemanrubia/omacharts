@@ -445,13 +445,13 @@ see [Settings](#settings).
 `omacharts chart indicator ACTION [KIND]` changes a chart's indicators.
 `--book` and `--chart` pick the chart ([Which chart a command acts
 on](#which-chart-a-command-acts-on)). `KIND` is the indicator's name as the
-command takes it, such as `sma`, `rsi`, `volume_profile` or `time_window`.
+command takes it, such as `sma`, `rsi`, `volume_profile` or `session_times`.
 Each indicator's name, what it draws, and every parameter's default and range
 are in [Indicators](/manual/indicators/) and the page of its family.
 
 | Action | Does |
 |---|---|
-| `list` | One line per indicator, with its lengths: `SMA(50)`, `VWAP · week`, `BB(20,2.5)`. With `--json`, each one's id, kind, parameters, colour, line and visibility |
+| `list` | One line per indicator, with its lengths: `SMA(50)`, `VWAP · week`, `BB(20,2.5)`. With `--json`, each one's id, kind, parameters, colour, line, visibility, and `in_legend`, whether the legend names it |
 | `add KIND` | Adds one, at its defaults plus whatever flags are given |
 | `remove KIND` | Removes every indicator of that kind |
 | `set KIND` | Changes the one of that kind. With two of a kind, `--id N` says which |
@@ -474,13 +474,12 @@ are in [Indicators](/manual/indicators/) and the page of its family.
 | `--height F` | 0.05 to 0.95; Volume defaults to 0.18, the other strips to 0.16 | Volume, RSI, MACD, ATR, stochastic |
 | `--bands LIST` | `1,2,3` or any of them; `none` | VWAP; `1` or `none` for Bollinger |
 | `--band-alpha F` | 0 to 1; 0.16 when not given | VWAP, Bollinger |
-| `--shade B`, `--shade-alpha F`, `--shade-color C`, `--separators WHEN` | See [Sessions and time](#sessions-and-time) | Sessions, time window |
-| `--name`, `--from`, `--to`, `--zone`, `--within`, `--offset`, `--minutes`, `--weekdays`, `--mark`, `--range` | See [Sessions and time](#sessions-and-time) | Time window |
-| `--source PART`, `--levels LIST` | See [Sessions and time](#sessions-and-time) | Session levels |
-| `--color C` | A colour | The line of any indicator; a profile's bars |
+| `--add-range`, `--remove-range`, `--range`, `--name`, `--from`, `--to`, `--zone`, `--shade-alpha` | See [Session Times](#session-times) | Session Times |
+| `--color C` | A colour | The line of any indicator; a profile's bars; a Session Times range's shading |
 | `--width F` | Pixels; `0` draws no line | Any indicator with a line |
 | `--style S` | `solid`, `dashed`, `dotted` | Any indicator with a line |
 | `--visible B` | `on`, `off` | Any |
+| `--legend B` | `on`, `off`; `on` for a new indicator, `off` for Session Times | Any. Whether the chart's legend names it. It is drawn either way |
 
 A colour is a palette name (`Blue`, `Amber`, `Violet`, `Teal`, `Rose`,
 `Green`, `Orange`, `Cyan`, capitals ignored) or `#rrggbb`. A palette name follows
@@ -548,60 +547,50 @@ A chart template's indicators take the same actions and flags, with the
 template named before the kind: `omacharts template indicator add Momentum
 rsi --period 14`. See [Chart templates](#chart-templates).
 
-### Sessions and time
+### Session Times
 
-`sessions`, `time_window` and `session_levels` are the indicators of
-[Sessions and time](/manual/indicators/sessions-and-time/). Besides
-`--color`, `--width`, `--style` and `--visible`, they take these flags. Any
-other indicator refuses them.
+`session_times` is [Session Times](/manual/indicators/session-times/), a
+list of ranges shaded behind the bars. Ranges are numbered from 1, in the
+order `list --json` gives them. These flags change the list, and any other
+indicator refuses them.
 
-| Flag | Takes | For |
+| Flag | Takes | Does |
 |---|---|---|
-| `--shade B` | `on`, `off` | Sessions: the extended hours shaded. Time window: the window shaded |
-| `--shade-alpha F` | 0.02 to 0.6; 0.07 when not given | Sessions, time window |
-| `--shade-color C` | A colour; the theme's muted text colour when not given | Sessions. A time window shades in its line's colour |
-| `--separators WHEN` | `none`, `day`, `week`, `month`; `day` when not given | Sessions |
-| `--name TEXT` | Words | Time window: its name, which its labels carry |
-| `--from TIME`, `--to TIME` | A time of day, written any way the editor takes: `9am`, `0930`, `21h30`, `16:30` | Time window, in clock times. `--to` before `--from` runs past midnight |
-| `--zone ZONE` | An IANA name such as `Europe/London`, or `chart` for the chart's own time zone | Time window in clock times. Without it, `--from` and `--to` are in the chart's time zone |
-| `--within PART` | `regular`, `overnight`, `pre`, `post` | Time window counted from where that part of the day begins |
-| `--offset MINUTES` | 0 to 1440 | How long after that part begins the window starts |
-| `--minutes MINUTES` | 1 to 1440 | How long a window counted from a session lasts |
-| `--weekdays B` | `on`, `off` | Time window: leave out Saturday and Sunday |
-| `--mark B` | `on`, `off` | Time window: a line where each window starts |
-| `--range B` | `on`, `off` | Time window: its high and low, held until the next window |
-| `--source PART` | `regular`, `extended` (overnight and pre-market), `day` | Session levels |
-| `--levels LIST` | Any of `high`, `low`, `close`, `open`, `mid`, comma-separated | Session levels |
+| `--add-range R` | `eth`, `rth`, `asia`, `london`, `new_york`, `custom` | Adds a range at its preset. The flags that follow in the same command change it |
+| `--remove-range N` | A range's number | Removes it, before anything else the command does |
+| `--range N` | A range's number | Which range the other flags change |
+| `--name TEXT` | Words | The range's name, which the legend lists |
+| `--from TIME`, `--to TIME` | A time of day, written any way the editor takes: `9am`, `0930`, `21h30`, `1:30pm` | The range's hours, in the chart's time zone unless it has one of its own. `--to` before `--from` runs past midnight. ETH and RTH have none |
+| `--zone ZONE` | An IANA name such as `Europe/London`, or `chart` for the chart's own time zone | The clock the range's hours keep |
+| `--color C` | A colour | The range's shading. Every range's, when none is named |
+| `--shade-alpha F` | 0.02 to 0.6 | How solid the shading is. Every range's, when none is named |
 
-A window is either clock times (`--from`, `--to`) or counted from a session
-(`--within`, `--offset`, `--minutes`). Giving the flags of the other kind
-switches it over. Switching to clock times needs both `--from` and `--to`;
-switching to a session fills in what is not given with `regular`, `0` and
-`30`. Within the same kind, what is not given stays as it was.
+With one range, the flags change it without `--range`. With more, `--name`,
+`--from`, `--to` and `--zone` need `--range`, or come straight after
+`--add-range`.
 
 ```sh
-omacharts chart indicator add sessions --separators week --shade-alpha 0.1
-omacharts chart indicator add time_window --name London --from 8am --to 1630 --zone Europe/London --mark on
-omacharts chart indicator add time_window --name "Opening range" --within regular --offset 0 --minutes 30
-omacharts chart indicator set time_window --id 3 --zone chart
-omacharts chart indicator add session_levels --source extended --levels high,low
+omacharts chart indicator add session_times
+omacharts template indicator set Default session_times --add-range london
+omacharts template indicator set Default session_times --add-range custom --name Lunch --from 12pm --to 1:30pm
+omacharts template indicator set Default session_times --range 2 --color Blue --shade-alpha 0.1
+omacharts template indicator set Default session_times --remove-range 3
+omacharts template indicator set Default session_times --legend on
 ```
 
 ```
-$ omacharts chart indicator add sessions --separators week --shade-alpha 0.1
-added Sessions · week on pos:0 ES 15m in "Futures"
+$ omacharts template indicator list Default
+Vol
+Sessions · ETH
   [exit 0]
-$ omacharts chart indicator add time_window --name London --from 8am --to 1630 --zone Europe/London --mark on
-added London on pos:0 ES 15m in "Futures"
+$ omacharts template indicator set Default session_times --add-range london
+set Sessions · ETH, London in chart template "Default"
   [exit 0]
-$ omacharts chart indicator add session_levels --source extended --levels high,low
-added Levels (ON) on pos:0 ES 15m in "Futures"
+$ omacharts template indicator set Default session_times --add-range custom --name Lunch --from 12pm --to 1:30pm
+set Sessions · ETH, London, Lunch in chart template "Default"
   [exit 0]
-$ omacharts chart indicator list
-Sessions · week
-London
-Opening range
-Levels (ON)
+$ omacharts template indicator set Default session_times --range 2 --color Blue --shade-alpha 0.1
+set Sessions · ETH, London, Lunch in chart template "Default"
   [exit 0]
 ```
 
@@ -609,13 +598,14 @@ Refusals:
 
 | Refused | Exit | Message |
 |---|---|---|
-| A flag of these on an indicator without it: `add sma --from 9am --to 10am` | 2 | `SMA has no hours` |
+| These flags on another indicator: `add sma --add-range london` | 2 | `SMA has no ranges` |
+| ETH or RTH a second time: `--add-range eth` | 2 | `ETH is already shaded; a second would shade the same bars twice` |
+| A range that is not there: `--range 9` | 2 | `` there is no range 9; this has 2 (see `chart indicator list`) `` |
+| Hours or a name with several ranges and none named: `--from 9am` | 2 | `this has 2 ranges; say which with --range N` |
+| Hours on ETH or RTH: `--range 1 --from 9am --to 10am` | 2 | `ETH follows the instrument's exchange, so it has no hours of its own` |
 | A time that is not one: `--from 25:00` | 2 | `--from takes a time of day such as 9am, 09:30 or 2130, not "25:00"` |
-| Clock times and a session together: `--from 9am --within regular` | 2 | The message says a window is one or the other |
-| Only one of `--from` and `--to` on a window counted from a session | 2 | `a window that was not clock times needs both --from and --to` |
-| `--from` and `--to` the same time, or `--minutes 0` | 2 | The message says it is no window |
-| A zone that is not one: `--zone London` | 2 | `` "London" is not a time zone; use an IANA name such as Europe/London, or `chart` `` |
-| A level that is not one: `--levels high,top` | 2 | `"high,top" is not a list of levels; try high,low,close (open and mid too)` |
+| `--from` and `--to` the same time | 2 | `--from and --to are the same time, which is no range` |
+| A zone that is not one: `--zone Mars/X` | 2 | `` "Mars/X" is not a time zone; use an IANA name such as Europe/London, or `chart` `` |
 
 ## Chart templates
 

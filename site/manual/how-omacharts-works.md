@@ -132,7 +132,7 @@ See [Watchlists](/manual/watchlists/) and
 A chart template is a saved set of indicators that several charts share.
 Add or remove an indicator on the template and every chart on it changes, in
 every chartbook. New charts open on the **Default** template, which holds
-volume.
+volume and the shading of the extended hours.
 
 <!-- regenerate:
 theme: tokyo-night
