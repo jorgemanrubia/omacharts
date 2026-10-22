@@ -7170,7 +7170,7 @@ impl Window {
         let timeframe = pane.timeframe.get();
         let all = pane.indicators.borrow().clone();
         let colors = omacharts_engine::palette_colors(&all, &theme);
-        for (indicator, colour) in all.iter().zip(colors) {
+        for (indicator, colour) in all.iter().zip(colors).filter(|(i, _)| i.in_legend) {
             let id = indicator.id;
 
             let dot = gtk::DrawingArea::new();

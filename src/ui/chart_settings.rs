@@ -1068,6 +1068,7 @@ fn open_indicator_panel_for(owner: &Rc<Owner>, refresh: &Refresh, id: u32, panel
         for group in band_groups(owner, refresh, &colour, &indicator) {
             page.add(&group);
         }
+        page.add(&legend_group(owner, refresh, &indicator));
     }
 
     let header = adw::HeaderBar::new();
@@ -1644,6 +1645,29 @@ fn parameters_group(
         // Edited on a page of its own; see `time`.
         Params::SessionTimes { .. } => {}
     }
+    group
+}
+
+/// Last on every indicator's page: whether the chart's legend names it.
+///
+/// Apart from whether it is drawn at all, which is the switch on its row in
+/// the list: an indicator can be on the chart and not take a line at the top
+/// of it, which is what session shading wants and an average might.
+fn legend_group(owner: &Rc<Owner>, refresh: &Refresh, indicator: &Indicator) -> adw::PreferencesGroup {
+    let id = indicator.id;
+    let group = adw::PreferencesGroup::new();
+    group.set_title("Legend");
+    let row = adw::SwitchRow::new();
+    row.set_title("Show in chart legend");
+    row.set_active(indicator.in_legend);
+    let owner = owner.clone();
+    let refresh = refresh.clone();
+    row.connect_active_notify(move |row| {
+        let on = row.is_active();
+        update(&owner, id, |indicator| indicator.in_legend = on);
+        refresh.run();
+    });
+    group.add(&row);
     group
 }
 

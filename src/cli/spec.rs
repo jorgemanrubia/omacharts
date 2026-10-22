@@ -323,6 +323,7 @@ const INDICATOR_FLAGS: &[Flag] = &[
     Flag::valued("zone", "ZONE", "the clock a range keeps: an IANA name, or `chart` for the chart's own"),
     Flag::valued("shade-alpha", "F", "how solid a range's shading is, 0.02-0.6; every range, unless one is named"),
     Flag::valued("visible", "BOOL", "draw it at all").of(SWITCHES),
+    Flag::valued("legend", "BOOL", "name it in the chart's legend; off by default for session_times").of(SWITCHES),
 ];
 
 pub const SURFACE: &[Noun] = &[

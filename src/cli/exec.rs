@@ -1584,6 +1584,9 @@ fn list_indicators(listed: &[Value], whose: Value, as_json: bool) -> String {
                     "color": i["color"],
                     "stroke": i["stroke"],
                     "visible": i["visible"],
+                    // Absent from an indicator stored before it could be
+                    // left out, which was in the legend.
+                    "in_legend": i.get("in_legend").cloned().unwrap_or(json!(true)),
                 })
             })
             .collect();
@@ -2693,6 +2696,7 @@ struct Edits {
     zone: Option<Option<String>>,
     shade_alpha: Option<f64>,
     visible: Option<bool>,
+    legend: Option<bool>,
 }
 
 /// A time of day as `--from` or `--to` was given it.
@@ -2817,6 +2821,7 @@ impl Edits {
                 )),
             },
             visible: arg(m, "visible").map(|v| v == "on"),
+            legend: arg(m, "legend").map(|v| v == "on"),
         })
     }
 
@@ -2853,6 +2858,7 @@ impl Edits {
             && self.to.is_none()
             && self.zone.is_none()
             && self.visible.is_none()
+            && self.legend.is_none()
     }
 
     /// Write what was given, and refuse what this indicator has no use for.
@@ -3064,6 +3070,9 @@ impl Edits {
         }
         if let Some(visible) = self.visible {
             stored["visible"] = json!(visible);
+        }
+        if let Some(listed) = self.legend {
+            stored["in_legend"] = json!(listed);
         }
         Ok(())
     }
@@ -5977,6 +5986,25 @@ mod tests {
         }
         let refused = run("chart indicator add sma --book Macro --add-range eth", &store);
         assert_eq!(refused.code, super::super::EXIT_USAGE);
+    }
+
+    /// Session shading starts out of the legend and everything else in it,
+    /// and either can be switched.
+    #[test]
+    fn an_indicator_can_be_left_out_of_the_legend() {
+        let store = bare();
+        run("chartbook create Macro --switch", &store);
+        run("chart indicator add sma --book Macro", &store);
+        run("chart indicator add session_times --book Macro", &store);
+        let listed = json_of(&run("chart indicator list --book Macro --json", &store));
+        assert_eq!(listed["indicators"][0]["in_legend"], true);
+        assert_eq!(listed["indicators"][1]["in_legend"], false);
+        let out = run("chart indicator set sma --book Macro --legend off", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        run("chart indicator set session_times --book Macro --legend on", &store);
+        let listed = json_of(&run("chart indicator list --book Macro --json", &store));
+        assert_eq!(listed["indicators"][0]["in_legend"], false);
+        assert_eq!(listed["indicators"][1]["in_legend"], true);
     }
 
     /// The clock every chart reads is a setting, checked as it is written.

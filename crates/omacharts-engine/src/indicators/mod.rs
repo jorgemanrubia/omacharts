@@ -170,6 +170,13 @@ impl Kind {
         }
     }
 
+    /// Whether a new one is named in the chart's legend. Session shading is
+    /// the chart's ground, and a line naming the ground is a line nobody
+    /// needs to read.
+    pub fn in_legend_by_default(self) -> bool {
+        !matches!(self, Kind::SessionTimes)
+    }
+
     /// Whether a colour from the palette is handed to it when nobody chose
     /// one. Session shading is the chart's ground, not a series: given the
     /// next sequence colour it would take the blue the first moving average
@@ -456,6 +463,15 @@ pub struct Indicator {
     /// one below it.
     #[serde(default)]
     pub above_price: bool,
+    /// Whether the chart's legend names it. Drawn or not is `visible`; this
+    /// is only whether it takes a line at the top of the chart.
+    #[serde(default = "listed")]
+    pub in_legend: bool,
+}
+
+/// An indicator stored before the legend could leave one out was in it.
+fn listed() -> bool {
+    true
 }
 
 impl Indicator {
@@ -468,6 +484,7 @@ impl Indicator {
             stroke: Stroke::default(),
             visible: true,
             above_price: false,
+            in_legend: kind.in_legend_by_default(),
         }
     }
 

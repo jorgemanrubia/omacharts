@@ -110,6 +110,11 @@ fn build(owner: &Rc<Owner>, refresh: &Refresh, id: u32, rebuild: Rc<dyn Fn()>) -
         .map(|(at, range)| range_group(owner, refresh, id, at, range, rebuild.clone()))
         .collect();
     groups.push(add_group(owner, refresh, id, &ranges, rebuild));
+    // Last, as on every indicator's page; rebuilt with the rest so it stays
+    // below the ranges however many there are.
+    if let Some(indicator) = owner.indicators().into_iter().find(|i| i.id == id) {
+        groups.push(legend_group(owner, refresh, &indicator));
+    }
     groups
 }
 
