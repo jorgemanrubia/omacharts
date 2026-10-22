@@ -208,6 +208,7 @@ On a chart:
 | Right-click the price axis | **Auto scale price**, **Logarithmic scale**, **Reset chart** | [Charts](/manual/charts/) |
 | Click the symbol in the header | The symbol search | [Symbols](/manual/symbols/) |
 | Click the resolution in the header | The list of resolutions | [Charts](/manual/charts/) |
+| Right-click the header | **Edit header…** | [Charts](/manual/charts/#the-header) |
 | Right-click the resolution strip | **Edit resolutions…** | [Charts](/manual/charts/) |
 | Double-click an indicator's name in the legend | Its settings. The eye, gear and bin beside it hide it, open its settings, or remove it | [Indicators](/manual/indicators/) |
 | The gear, top-right | Chart settings | [Chart settings](/manual/chart-settings/) |
@@ -245,6 +246,7 @@ Around the window:
 | Drag a symbol or a section's name | Moves it, within a section or into another | [Watchlists](/manual/watchlists/) |
 | Click a column's title | Sorts by it, low to high, then high to low, then the list's own order | [Watchlists](/manual/watchlists/) |
 | Drag a column's title | Moves the column | [Watchlists](/manual/watchlists/) |
+| Right-click the column titles | **Edit columns…** | [Watchlists](/manual/watchlists/#columns) |
 | Click the arrow before a section's name | Folds or unfolds it | [Watchlists](/manual/watchlists/) |
 | Double-click a section's name | Renames it | [Watchlists](/manual/watchlists/) |
 | Right-click a section's name | **Add symbol…**, **Turn into a watchlist**, **Remove section…** | [Watchlists](/manual/watchlists/) |
