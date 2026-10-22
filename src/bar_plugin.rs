@@ -377,8 +377,13 @@ pub fn remove(home: &Path) -> Result<bool, String> {
 
 /// Read, change, write — atomically, because a half-written shell.json is a
 /// desktop with no bar. Says whether anything was written.
+///
+/// Written to the file shell.json resolves to, not to its path: a dotfiles
+/// manager leaves a symlink there, and renaming a temporary over the link
+/// would replace it with a plain file and leave the linked one as it was.
 fn edit_shell(home: &Path, change: impl Fn(&mut serde_json::Value) -> bool) -> Result<bool, String> {
     let path = shell_config(home);
+    let path = std::fs::canonicalize(&path).unwrap_or(path);
     let text = std::fs::read_to_string(&path).map_err(|e| format!("shell.json: {e}"))?;
     let mut config: serde_json::Value =
         serde_json::from_str(&text).map_err(|e| format!("shell.json is not readable: {e}"))?;
@@ -698,6 +703,32 @@ mod tests {
     }
 
     #[test]
+    fn a_symlinked_shell_json_stays_a_symlink_and_its_target_is_what_changes() {
+        // A dotfiles manager keeps the real file elsewhere and links it in.
+        // Renaming over the link would leave a plain file in its place and the
+        // linked one, the one the manager tracks, still naming the old id.
+        let home = Home::upgraded_from_old();
+        let link = shell_config(&home.0);
+        let real = home.0.join("dotfiles").join("shell.json");
+        std::fs::create_dir_all(real.parent().unwrap()).unwrap();
+        std::fs::rename(&link, &real).unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        assert!(moved(&home));
+
+        assert!(std::fs::symlink_metadata(&link).unwrap().is_symlink(), "still a link");
+        assert_eq!(std::fs::read_link(&link).unwrap(), real, "to the same file");
+        let target = std::fs::read_to_string(&real).unwrap();
+        assert!(target.contains(PLUGIN_ID), "{target}");
+        assert!(!target.contains(OLD_PLUGIN_ID), "{target}");
+        assert!(installed(&home.0));
+        assert!(
+            std::fs::read_dir(home.0.join("dotfiles")).unwrap().count() == 1,
+            "no temporary left beside the real file"
+        );
+    }
+
+    #[test]
     fn with_no_old_install_nothing_is_touched() {
         let home = Home::empty();
         let config = json!({ "bar": { "layout": { "right": [{ "id": "omarchy.tray" }] } } });
@@ -860,8 +891,9 @@ mod tests {
     #[test]
     fn an_old_folder_that_cannot_be_emptied_is_still_taken_out_of_the_way() {
         // A subfolder nobody can delete from: the widget still moves, the bar
-        // is still told, and the leftover is reported — once, because the old
-        // folder is no longer where the stat every process makes looks.
+        // is still told, and the leftover is reported by the process that set
+        // it aside, if that is a path that reports. No later process sees it:
+        // the old folder is no longer where the stat every process makes looks.
         let home = Home::upgraded_from_old();
         if !modes_are_enforced(&home) {
             return;

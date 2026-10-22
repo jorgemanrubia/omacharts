@@ -4109,9 +4109,10 @@ fn plugin_uninstall(home: &std::path::Path, as_json: bool) -> Result<String, Fau
         );
     }
     let removed = crate::bar_plugin::remove(home).map_err(|e| Fault::new(super::EXIT_ERROR, e))?;
+    // The same keys whatever happened, so a script reads one shape.
     said(
         as_json,
-        json!({"installed": false, "removed": removed}),
+        json!({"omarchy": true, "installed": false, "removed": removed}),
         match removed {
             true => "taken out of the bar".to_string(),
             false => "not in the bar, so there was nothing to remove".to_string(),
@@ -6137,6 +6138,36 @@ mod tests {
 
         assert_eq!(plugin("uninstall").code, super::super::EXIT_OK);
         assert!(!widget.exists(), "and taken out of it again");
+    }
+
+    /// Every outcome of `uninstall --json` has the keys `install` and `status`
+    /// answer with, `omarchy` among them, so a script reads one shape whether
+    /// the widget was there, was already gone, or there is no bar at all.
+    #[test]
+    fn uninstall_json_has_the_same_keys_whatever_it_found() {
+        let home = ScratchHome::new();
+        let config = home.0.join(".config/omarchy");
+        std::fs::create_dir_all(config.join("plugins")).unwrap();
+        std::fs::write(config.join("shell.json"), r#"{"bar": {"layout": {"right": []}}}"#)
+            .unwrap();
+        let store = bare();
+        let plugin = |verb: &str| {
+            let args: Vec<String> =
+                ["omacharts", "plugin", verb, "--json"].into_iter().map(String::from).collect();
+            let out = dispatch(&args, &store, None, &home);
+            assert_eq!(out.code, super::super::EXIT_OK, "{}", out.err);
+            serde_json::from_str::<Value>(&out.out).unwrap()
+        };
+
+        plugin("install");
+        assert_eq!(
+            plugin("uninstall"),
+            json!({"omarchy": true, "installed": false, "removed": true})
+        );
+        assert_eq!(
+            plugin("uninstall"),
+            json!({"omarchy": true, "installed": false, "removed": false})
+        );
     }
 
     /// Having no Omarchy shell is a fact about the machine, and `uninstall`
