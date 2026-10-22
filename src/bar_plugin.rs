@@ -160,9 +160,11 @@ pub fn refresh(home: &Path) -> Result<(), String> {
 /// process, and a move that cannot be made — a read-only `~/.config/omarchy`,
 /// say — would otherwise be a line on stderr from every poll of the bar
 /// forever. The window and the `plugin` commands report it, once, to somebody
-/// who is looking. And it fails early: the first step is writing the folder,
-/// so a tree that cannot be written costs a stat and one refused mkdir, not
-/// a parse of shell.json every time.
+/// who is looking. And it fails early: once the old folder is found, the new
+/// one is made before shell.json is so much as opened, so a tree that cannot
+/// be written costs a stat and one refused mkdir, not a parse of shell.json
+/// every time. An old folder that can be moved but not emptied is taken out
+/// of the way on the first run, so from the next one the stat is negative.
 pub fn migrate(home: &Path) -> Result<(), String> {
     if !old_location(home).exists() {
         return Ok(());
@@ -184,14 +186,21 @@ pub fn migrate(home: &Path) -> Result<(), String> {
 /// name straight away rather than at the next login. Idempotent, because it
 /// runs from every path in, and nothing is reloaded when nothing moved.
 pub fn migrate_in_full(home: &Path) -> Result<(), String> {
-    if migrate_files(home)? {
+    let mut changed = false;
+    let outcome = migrate_files(home, &mut changed);
+    // Told before a failure is reported, not instead: the last step is
+    // removing the old folder, and when that is what failed, shell.json
+    // already names the new id and the new folder is already there. The bar
+    // should draw them, whatever is said about the leftover.
+    if changed {
         reload_plugins();
     }
-    Ok(())
+    outcome
 }
 
-/// The part of `migrate_in_full` that touches files. Says whether it changed
-/// any, which is what decides whether the shell has to be told.
+/// The part of `migrate_in_full` that touches files. Says, through `changed`,
+/// whether it changed any — which is what decides whether the shell has to be
+/// told, and is answered even when a later step failed.
 ///
 /// Several processes run this at once on the day of an upgrade — the bar's
 /// polls, the window, a command typed in a terminal — and none of them knows
@@ -201,9 +210,21 @@ pub fn migrate_in_full(home: &Path) -> Result<(), String> {
 /// entry is renamed by whichever gets there first; the others re-read
 /// shell.json inside `edit_shell`, find nothing left to change, and write
 /// nothing.
-fn migrate_files(home: &Path) -> Result<bool, String> {
+fn migrate_files(home: &Path, changed: &mut bool) -> Result<(), String> {
     let old = old_location(home);
+    let target = location(home);
+    let make_target =
+        || std::fs::create_dir_all(&target).map_err(|e| format!("could not create it: {e}"));
+
+    // The old folder alone is enough to set the move going, so when it is
+    // there the new folder is made before shell.json is opened at all. That
+    // is the step a tree that cannot be written refuses, and `migrate` runs
+    // this from every poll of the bar: one refused mkdir each time is the
+    // whole cost of a read-only ~/.config/omarchy, not a parse as well.
     let old_dir = old.exists();
+    if old_dir {
+        make_target()?;
+    }
     // Parsed only when the id is in the text at all, and then asked whether a
     // rename would change anything: the id quoted in some other plugin's
     // setting is not an entry, and must not have this run on every launch.
@@ -213,37 +234,56 @@ fn migrate_files(home: &Path) -> Result<bool, String> {
         .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
         .is_some_and(|mut config| rename_in_config(&mut config));
     if !old_dir && !old_entry {
-        return Ok(false);
+        return Ok(());
+    }
+    if !old_dir {
+        make_target()?;
     }
 
     // The new folder first, then the bar entry, then the old folder gone: at
     // no point does shell.json name a widget that has no folder. Written in
     // full even when only the entry was left, because an entry in the bar is
     // somebody asking for the widget.
-    let mut changed = false;
-    let target = location(home);
-    std::fs::create_dir_all(&target).map_err(|e| format!("could not create it: {e}"))?;
     for (name, contents) in FILES {
         let path = target.join(name);
         if std::fs::read_to_string(&path).is_ok_and(|current| current == *contents) {
             continue;
         }
         replace_file(&path, contents).map_err(|e| format!("could not write {name}: {e}"))?;
-        changed = true;
+        *changed = true;
     }
     if old_entry {
-        changed |= edit_shell(home, rename_in_config)?;
+        *changed |= edit_shell(home, rename_in_config)?;
     }
     if old_dir {
-        match std::fs::remove_dir_all(&old) {
-            Ok(()) => changed = true,
-            // Gone, or going, under another process — the folder itself or
-            // a file in it that was there a moment ago: the outcome asked for.
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(format!("could not remove the old widget: {e}")),
-        }
+        remove_old(&old, changed)?;
     }
-    Ok(changed)
+    Ok(())
+}
+
+/// Take the old folder away, from under the other processes doing the same.
+///
+/// Moved aside first, under a name of this process's own, and removed from
+/// there. The rename is one step, so it has one winner: the others find the
+/// folder gone, which is the outcome they asked for, rather than each
+/// removing files from under the rest. It also puts a folder that can be
+/// moved but not emptied — a root-owned file, a subfolder with no write bit
+/// — out of the way at once: the stat `migrate` makes goes negative, so the
+/// polls stop paying for it, and the shell stops loading it, because its scan
+/// is `plugins/*/` and a dot-name is outside that. What could not be removed
+/// is reported, by the paths that report.
+fn remove_old(old: &Path, changed: &mut bool) -> Result<(), String> {
+    let aside = old.with_file_name(format!(
+        ".{OLD_PLUGIN_ID}.omacharts-old.{}",
+        std::process::id()
+    ));
+    match std::fs::rename(old, &aside) {
+        Ok(()) => *changed = true,
+        // Gone, or going, under another process.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(format!("could not remove the old widget: {e}")),
+    }
+    std::fs::remove_dir_all(&aside).map_err(|e| format!("could not remove the old widget: {e}"))
 }
 
 /// Rewrite the old id to the new one wherever shell.json names it: the bar's
@@ -437,6 +477,7 @@ pub fn remove_from_layout(config: &mut serde_json::Value) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::os::unix::fs::PermissionsExt;
 
     fn shell() -> serde_json::Value {
         json!({
@@ -601,10 +642,30 @@ mod tests {
         }
     }
 
+    /// `migrate_files`, failing the test when the move did. Says whether it
+    /// changed anything, which is what the shell would be told.
+    fn moved(home: &Home) -> bool {
+        let mut changed = false;
+        migrate_files(&home.0, &mut changed).unwrap();
+        changed
+    }
+
+    /// Can a mode keep this suite out of a folder? Not when it runs as root,
+    /// and a test about a refused write has nothing to say there.
+    fn modes_are_enforced(home: &Home) -> bool {
+        let probe = home.plugins().join("probe");
+        std::fs::create_dir(&probe).unwrap();
+        std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let refused = std::fs::create_dir(probe.join("inside")).is_err();
+        std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::remove_dir_all(&probe).unwrap();
+        refused
+    }
+
     #[test]
     fn an_old_install_moves_to_the_new_id_and_keeps_its_place_and_settings() {
         let home = Home::upgraded_from_old();
-        assert!(migrate_files(&home.0).unwrap());
+        assert!(moved(&home));
 
         assert_eq!(home.folders(), [PLUGIN_ID], "one folder, under the new id");
         let manifest = std::fs::read_to_string(location(&home.0).join("manifest.json")).unwrap();
@@ -628,10 +689,10 @@ mod tests {
     #[test]
     fn migrating_twice_does_nothing_the_second_time() {
         let home = Home::upgraded_from_old();
-        assert!(migrate_files(&home.0).unwrap());
+        assert!(moved(&home));
         let (shell, folders) = (home.shell(), home.folders());
 
-        assert!(!migrate_files(&home.0).unwrap(), "nothing left to move, so no reload");
+        assert!(!moved(&home), "nothing left to move, so no reload");
         assert_eq!(home.shell(), shell);
         assert_eq!(home.folders(), folders);
     }
@@ -642,7 +703,7 @@ mod tests {
         let config = json!({ "bar": { "layout": { "right": [{ "id": "omarchy.tray" }] } } });
         home.write_shell(config.clone());
 
-        assert!(!migrate_files(&home.0).unwrap());
+        assert!(!moved(&home));
         assert!(home.folders().is_empty(), "the widget is not installed for anybody");
         assert_eq!(home.shell(), config);
     }
@@ -656,7 +717,7 @@ mod tests {
         });
         home.write_shell(config.clone());
 
-        assert!(!migrate_files(&home.0).unwrap());
+        assert!(!moved(&home));
         assert!(home.folders().is_empty());
         assert_eq!(home.shell(), config);
     }
@@ -674,7 +735,7 @@ mod tests {
             .push(json!({ "id": PLUGIN_ID, "showTicker": true }));
         home.write_shell(config);
 
-        assert!(migrate_files(&home.0).unwrap());
+        assert!(moved(&home));
         assert_eq!(home.folders(), [PLUGIN_ID]);
         let shell = home.shell();
         assert!(!shell.to_string().contains(OLD_PLUGIN_ID), "{shell}");
@@ -691,7 +752,7 @@ mod tests {
         let home = Home::upgraded_from_old();
         std::fs::remove_dir_all(home.plugins().join(OLD_PLUGIN_ID)).unwrap();
 
-        assert!(migrate_files(&home.0).unwrap());
+        assert!(moved(&home));
         assert_eq!(home.folders(), [PLUGIN_ID]);
         assert_eq!(home.shell()["bar"]["layout"]["right"][1]["id"], PLUGIN_ID);
         assert!(installed(&home.0));
@@ -702,7 +763,7 @@ mod tests {
         let home = Home::upgraded_from_old();
         home.write_shell(json!({ "bar": { "layout": { "right": [] } } }));
 
-        assert!(migrate_files(&home.0).unwrap());
+        assert!(moved(&home));
         assert_eq!(home.folders(), [PLUGIN_ID]);
         assert!(!installed(&home.0), "folder moved, but not put in a bar it was not in");
     }
@@ -778,16 +839,72 @@ mod tests {
     }
 
     #[test]
-    fn many_moving_at_once_leave_one_widget_and_never_an_empty_shell() {
-        // On the day of an upgrade the bar's polls, the window and a command
-        // typed in a terminal can all find the old folder at the same moment.
-        // Every one of them has to come out clean, and the shell — which
-        // re-reads shell.json the moment it changes — must never find it
-        // empty, half-written or missing.
+    fn a_tree_that_cannot_be_written_fails_on_the_folder_and_touches_nothing() {
+        // The bar polls this forever on such a machine, so the refusal has
+        // to be the first step — making the new folder — and the old install
+        // has to be exactly as it was afterwards, shell.json included.
         let home = Home::upgraded_from_old();
+        if !modes_are_enforced(&home) {
+            return;
+        }
+        let (shell, folders) = (home.shell(), home.folders());
+        std::fs::set_permissions(home.plugins(), std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let error = migrate(&home.0).unwrap_err();
+        std::fs::set_permissions(home.plugins(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(error.starts_with("could not create it"), "{error}");
+        assert_eq!(home.shell(), shell);
+        assert_eq!(home.folders(), folders);
+    }
+
+    #[test]
+    fn an_old_folder_that_cannot_be_emptied_is_still_taken_out_of_the_way() {
+        // A subfolder nobody can delete from: the widget still moves, the bar
+        // is still told, and the leftover is reported — once, because the old
+        // folder is no longer where the stat every process makes looks.
+        let home = Home::upgraded_from_old();
+        if !modes_are_enforced(&home) {
+            return;
+        }
+        let keep = old_location(&home.0).join("keep");
+        std::fs::create_dir(&keep).unwrap();
+        std::fs::write(keep.join("file"), "x").unwrap();
+        std::fs::set_permissions(&keep, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let mut changed = false;
+        let error = migrate_files(&home.0, &mut changed).unwrap_err();
+        assert!(error.starts_with("could not remove the old widget"), "{error}");
+        assert!(changed, "the shell is told what did move");
+        assert!(!old_location(&home.0).exists(), "out of the way of the stat");
+        assert!(installed(&home.0), "folder written, entry renamed");
+        assert!(!home.shell().to_string().contains(OLD_PLUGIN_ID));
+        let (shell, folders) = (home.shell(), home.folders());
+        let aside: Vec<_> = folders.iter().filter(|name| name.starts_with('.')).collect();
+        assert_eq!(aside.len(), 1, "set aside under a dot-name the shell skips: {folders:?}");
+
+        // The next process finds nothing to do, and says nothing.
+        migrate(&home.0).unwrap();
+        assert!(!moved(&home));
+        assert_eq!(home.shell(), shell);
+        assert_eq!(home.folders(), folders);
+
+        let keep = home.plugins().join(aside[0]).join("keep");
+        std::fs::set_permissions(&keep, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// Read shell.json as fast as it can be read while `movers` runs, and fail
+    /// the moment it is missing, half-written, or without the entry and its
+    /// settings — which is what the shell, re-reading it on every change,
+    /// must never see. Gives back what `movers` did and how often it looked.
+    ///
+    /// The watcher is stopped before any outcome is judged, so `movers` hands
+    /// its outcomes over rather than asserting on them: a mover that failed
+    /// would otherwise leave the watcher spinning and the test hanging rather
+    /// than failing.
+    fn while_watching_the_shell<T>(home: &Home, movers: impl FnOnce() -> T) -> (T, usize) {
         let stop = std::sync::atomic::AtomicBool::new(false);
         let reads = std::sync::atomic::AtomicUsize::new(0);
-        std::thread::scope(|scope| {
+        let outcome = std::thread::scope(|scope| {
             let watcher = scope.spawn(|| {
                 while !stop.load(std::sync::atomic::Ordering::Relaxed) {
                     let text = std::fs::read_to_string(shell_config(&home.0))
@@ -804,19 +921,18 @@ mod tests {
                     reads.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
             });
-            let movers: Vec<_> = (0..24).map(|_| scope.spawn(|| migrate(&home.0))).collect();
-            // The watcher is stopped before any outcome is judged, or a mover
-            // that failed would leave it spinning and the test hanging rather
-            // than failing.
-            let outcomes: Vec<_> = movers.into_iter().map(|mover| mover.join()).collect();
+            let outcome = movers();
             stop.store(true, std::sync::atomic::Ordering::Relaxed);
             watcher.join().unwrap();
-            for outcome in outcomes {
-                outcome.unwrap().unwrap();
-            }
+            outcome
         });
-        assert!(reads.load(std::sync::atomic::Ordering::Relaxed) > 0, "the watcher looked");
+        (outcome, reads.load(std::sync::atomic::Ordering::Relaxed))
+    }
 
+    /// What is left after everybody has moved at once: one folder, holding
+    /// this binary's files; the entry under the new id with its settings; no
+    /// temporary of anybody's.
+    fn assert_moved_once_and_cleanly(home: &Home) {
         assert_eq!(home.folders(), [PLUGIN_ID], "one folder, and nothing left over");
         assert!(installed(&home.0));
         let shell = home.shell();
@@ -835,6 +951,75 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    #[test]
+    fn many_moving_at_once_leave_one_widget_and_never_an_empty_shell() {
+        // On the day of an upgrade the bar's polls, the window and a command
+        // typed in a terminal can all find the old folder at the same moment.
+        // Every one of them has to come out clean, and the shell — which
+        // re-reads shell.json the moment it changes — must never find it
+        // empty, half-written or missing.
+        let home = Home::upgraded_from_old();
+        let (outcomes, reads) = while_watching_the_shell(&home, || {
+            std::thread::scope(|scope| {
+                let movers: Vec<_> = (0..24).map(|_| scope.spawn(|| migrate(&home.0))).collect();
+                movers.into_iter().map(|mover| mover.join()).collect::<Vec<_>>()
+            })
+        });
+        assert!(reads > 0, "the watcher looked");
+        for outcome in outcomes {
+            outcome.unwrap().unwrap();
+        }
+        assert_moved_once_and_cleanly(&home);
+    }
+
+    /// Where `many_processes_moving_at_once` tells its children which home to
+    /// move. Threads share a pid, so only processes of their own exercise the
+    /// name a temporary is written under.
+    const CHILD_HOME: &str = "OMACHARTS_TEST_MIGRATE_HOME";
+
+    /// One of those children: this test binary run again, on one test. Does
+    /// nothing in the suite proper, where the variable is not set.
+    #[test]
+    fn a_child_process_moves_the_home_it_was_given() {
+        if let Ok(home) = std::env::var(CHILD_HOME) {
+            migrate(Path::new(&home)).unwrap();
+        }
+    }
+
+    #[test]
+    fn many_processes_moving_at_once_leave_one_widget_and_never_an_empty_shell() {
+        let home = Home::upgraded_from_old();
+        let exe = std::env::current_exe().unwrap();
+        let (outcomes, reads) = while_watching_the_shell(&home, || {
+            let children: Vec<_> = (0..16)
+                .map(|_| {
+                    std::process::Command::new(&exe)
+                        .args(["--exact", concat!(
+                            "bar_plugin::tests::",
+                            "a_child_process_moves_the_home_it_was_given"
+                        )])
+                        .env(CHILD_HOME, &home.0)
+                        .stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::piped())
+                        .stderr(std::process::Stdio::piped())
+                        .spawn()
+                        .unwrap()
+                })
+                .collect();
+            children.into_iter().map(|child| child.wait_with_output().unwrap()).collect::<Vec<_>>()
+        });
+        assert!(reads > 0, "the watcher looked");
+        for outcome in outcomes {
+            assert!(
+                outcome.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&outcome.stdout),
+                String::from_utf8_lossy(&outcome.stderr)
+            );
+        }
+        assert_moved_once_and_cleanly(&home);
     }
 
     #[test]
