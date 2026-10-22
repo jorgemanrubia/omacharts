@@ -1053,7 +1053,6 @@ fn open_indicator_panel_for(owner: &Rc<Owner>, refresh: &Refresh, id: u32, panel
         banner.set_title(&format!("Editing the {name} template"));
         banner.set_subtitle("A change here reaches every chart that uses it.");
         banner.add_prefix(&gtk::Image::from_icon_name("dialog-information-symbolic"));
-        banner.add_css_class("property");
         warning.add(&banner);
         page.add(&warning);
     }
