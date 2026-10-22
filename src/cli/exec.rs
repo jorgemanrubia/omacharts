@@ -1538,6 +1538,9 @@ fn chart_indicator(
     let Some(chart) = charts::pane_mut(target, pane) else {
         return Err(Fault::not_found(format!("no chart {pane}")));
     };
+    // A template that is no longer there is no template: what the chart shows
+    // is its own, and it is written down as on none, as the window reads it.
+    chart["template"] = Value::Null;
     let indicators = chart["indicators"].as_array_mut().ok_or_else(|| {
         Fault::new(super::EXIT_ERROR, "this chart's indicators are not a list".into())
     })?;
@@ -3147,6 +3150,11 @@ impl Edits {
             Some(at) => Some(numbered(at, &ranges)?),
             None => None,
         };
+        if ranges.is_empty() && self.add_range.is_none() && edits_a_range {
+            return Err(Fault::usage(
+                "Session Times has no ranges to change; add one with --add-range".into(),
+            ));
+        }
         if let Some(preset) = self.add_range {
             if preset.is_among(&ranges) {
                 return Err(Fault::usage(format!(

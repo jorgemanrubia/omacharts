@@ -517,13 +517,13 @@ $ omacharts chart indicator add sma --period 200
 added SMA(200) on pos:0 SPY 1D in "Chartbook 1", in chart template "Default"
   [exit 0]
 $ omacharts chart indicator add sma --period 50 --style dashed
-added SMA(50) on pos:0 SPY 1D in "Chartbook 1"
+added SMA(50) on pos:0 SPY 1D in "Chartbook 1", in chart template "Default"
   [exit 0]
 $ omacharts chart indicator set sma --period 100
-omacharts: this chart has 2 of them; say which with --id 2 or 3
+omacharts: this chart's template has 2 of them; say which with --id 3 or 4
   [exit 4]
-$ omacharts chart indicator set sma --id 3 --period 100 --color Amber
-set SMA(100) on pos:0 SPY 1D in "Chartbook 1"
+$ omacharts chart indicator set sma --id 4 --period 100 --color Amber
+set SMA(100) on pos:0 SPY 1D in "Chartbook 1", in chart template "Default"
   [exit 0]
 ```
 

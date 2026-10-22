@@ -2372,14 +2372,9 @@ impl Window {
                     | omacharts_engine::Params::Stochastic { height, .. } => *height = share,
                     _ => return,
                 }
-                // A height is geometry rather than a choice of indicators, so
-                // dragging one on a chart that is on a template does not take
-                // it off the template: the template takes the height, and the
+                // On a template, the template takes the height, and the
                 // charts on it keep one shape.
-                match pane.template.get() {
-                    Some(template) => resizer.set_template_indicators(template, indicators),
-                    None => resizer.set_indicators_of(&pane, indicators),
-                }
+                resizer.change_indicators_of(&pane, indicators);
             }
         });
 
@@ -6870,9 +6865,7 @@ impl Window {
     ///
     /// Onto one, the chart shows the template's indicators in place of its
     /// own, which go. Onto none, it shows no indicators at all: None is a
-    /// choice of indicators like the others, the empty one. A chart is taken
-    /// off its template keeping what it showed by changing its indicators,
-    /// not by this.
+    /// choice of indicators like the others, the empty one.
     pub fn set_template(self: &Rc<Self>, template: Option<u32>) {
         let pane = self.focused_pane();
         self.put_on_template(&pane, template);
