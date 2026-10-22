@@ -767,9 +767,8 @@ fn rebuild_indicators(
     // so before anything is changed: a change here reaches every chart on it.
     let through = owner.through_template();
     let description = match (&through, owner.template.is_some(), indicators.is_empty()) {
-        (Some(name), _, _) => Some(format!(
-            "These are the {name} template's indicators: a change here reaches every chart that uses it."
-        )),
+        // The heading names the template; this says only what that means.
+        (Some(_), _, _) => Some("A change here reaches every chart that uses it.".to_string()),
         (None, true, _) => None,
         (None, false, true) => Some("Nothing yet.".to_string()),
         (None, false, false) => Some(
