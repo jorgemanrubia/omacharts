@@ -62,7 +62,7 @@ pub struct TimeRange {
 /// hours are, and nowhere near enough for the candles inside them to look
 /// dimmed — it is a background, and a background the eye notices first has
 /// stopped being one.
-pub const DEFAULT_ALPHA: f64 = 0.15;
+pub const DEFAULT_ALPHA: f64 = 0.06;
 
 /// What a range is painted with: its own colour at its own strength, or, with
 /// none chosen, black — the ground made darker, which sets a stretch back in
