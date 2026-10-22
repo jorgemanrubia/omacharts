@@ -58,9 +58,11 @@ pub struct TimeRange {
     pub alpha: f64,
 }
 
-/// How solid a range starts: enough to see where the extended hours are, not
-/// so much that the candles inside them look dimmed.
-pub const DEFAULT_ALPHA: f64 = 0.07;
+/// How solid a range starts: barely there. Enough to see where the extended
+/// hours are, and nowhere near enough for the candles inside them to look
+/// dimmed — it is a background, and a background the eye notices first has
+/// stopped being one.
+pub const DEFAULT_ALPHA: f64 = 0.04;
 /// The least and the most a shading can be: below the one it is not there at
 /// all, and past the other it is no longer a background.
 pub const MIN_ALPHA: f64 = 0.02;
@@ -94,6 +96,19 @@ impl Preset {
 
     pub fn from_key(key: &str) -> Option<Preset> {
         Preset::ALL.into_iter().find(|p| p.key() == key)
+    }
+
+    /// Whether this preset is already among `ranges`, where a second would
+    /// only shade the same bars twice. True only for ETH and RTH, which are
+    /// the same stretch on every chart; two London ranges can differ in
+    /// everything but their name.
+    pub fn is_among(self, ranges: &[TimeRange]) -> bool {
+        let hours = match self {
+            Preset::Eth => Hours::Eth,
+            Preset::Rth => Hours::Rth,
+            _ => return false,
+        };
+        ranges.iter().any(|range| range.hours == hours)
     }
 
     /// What the menu offering it says.
@@ -382,6 +397,14 @@ mod tests {
         let bars = half_hourly_es();
         let time = session_times(&bars, half_hour(), &[Preset::Eth.range()], New_York, btc);
         assert!(time.spans.is_empty());
+    }
+
+    #[test]
+    fn eth_and_rth_are_offered_once() {
+        let ranges = [Preset::Eth.range(), Preset::London.range()];
+        assert!(Preset::Eth.is_among(&ranges));
+        assert!(!Preset::Rth.is_among(&ranges));
+        assert!(!Preset::London.is_among(&ranges), "a second London can be another London");
     }
 
     #[test]

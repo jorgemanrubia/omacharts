@@ -3113,6 +3113,12 @@ impl Edits {
             None => None,
         };
         if let Some(preset) = self.add_range {
+            if preset.is_among(&ranges) {
+                return Err(Fault::usage(format!(
+                    "{} is already shaded; a second would shade the same bars twice",
+                    preset.range().name
+                )));
+            }
             ranges.push(preset.range());
             target = target.or(Some(ranges.len() - 1));
         }
@@ -5962,6 +5968,7 @@ mod tests {
             ("--range 1 --from 9am", "no hours of its own"),
             ("--range 9 --shade-alpha 0.1", "no range 9"),
             ("--add-range tokyo", "invalid value"),
+            ("--add-range eth", "already shaded"),
             ("--range 2 --zone Mars/Olympus", "not a time zone"),
         ] {
             let out = run(&format!("chart indicator set session_times --book Macro {line}"), &store);

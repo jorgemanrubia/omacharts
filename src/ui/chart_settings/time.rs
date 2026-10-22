@@ -109,7 +109,7 @@ fn build(owner: &Rc<Owner>, refresh: &Refresh, id: u32, rebuild: Rc<dyn Fn()>) -
         .enumerate()
         .map(|(at, range)| range_group(owner, refresh, id, at, range, rebuild.clone()))
         .collect();
-    groups.push(add_group(owner, refresh, id, ranges.is_empty(), rebuild));
+    groups.push(add_group(owner, refresh, id, &ranges, rebuild));
     groups
 }
 
@@ -354,11 +354,11 @@ fn add_group(
     owner: &Rc<Owner>,
     refresh: &Refresh,
     id: u32,
-    empty: bool,
+    ranges: &[TimeRange],
     rebuild: Rc<dyn Fn()>,
 ) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
-    if empty {
+    if ranges.is_empty() {
         group.set_description(Some("No ranges yet: add one to shade it behind the bars."));
     }
     let row = adw::ActionRow::new();
@@ -370,6 +370,12 @@ fn add_group(
     for preset in Preset::ALL {
         let item = gtk::Button::with_label(preset.label());
         item.add_css_class("flat");
+        // ETH twice is the same bars shaded twice, which only reads as the
+        // shading being too dark.
+        if preset.is_among(ranges) {
+            item.set_sensitive(false);
+            item.set_tooltip_text(Some("Already shaded"));
+        }
         if let Some(label) = item.child().and_downcast::<gtk::Label>() {
             label.set_xalign(0.0);
         }
