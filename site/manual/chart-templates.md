@@ -5,7 +5,7 @@ section: charting
 nav_order: 16
 ---
 
-A chart template is a saved set of indicators with a name. Put several charts on the same template and they all show those indicators. Change the template and they all change, in every chartbook. Out of the box there is one template, **Default**, which holds [Volume](/manual/indicators/#volume), and new charts open on it.
+A chart template is a saved set of indicators with a name. Put several charts on the same template and they all show those indicators. Change the template and they all change, in every chartbook. Out of the box there is one template, **Default**, which holds [Volume](/manual/indicators/volume/#volume), and new charts open on it.
 
 <!-- regenerate:
 theme: tokyo-night

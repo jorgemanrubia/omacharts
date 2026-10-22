@@ -56,6 +56,20 @@ crop: 301,122,1958,1356
 | Templates › **Chart templates** | The list. + makes one, a row opens its editor, the pencil renames, the bin deletes. | [Chart templates](/manual/chart-templates/) |
 | Header › **In the header** | The parts every chart's header shows, in order. | [The header](/manual/charts/#the-header) |
 | Other › Chart › **Preset resolutions**, **Edit…** | Opens the Resolutions dialog. | [The preset resolutions](/manual/charts/#the-preset-resolutions) |
+| Other › Time › **Time zone**, **Time format** | How every chart tells the time. | [Time](#time) |
+
+#### Time
+
+The **Time** group on the **Other** tab sets the clock every chart reads. A change applies at once to every chart on screen. It governs the time axis, the crosshair, every time typed into an indicator's settings, and the times `omacharts chart drawing` reads and prints.
+
+| Row | Choices | Default |
+|---|---|---|
+| **Time zone** | **Each chart's exchange**, or a city, each listed with its offset from UTC today, such as **London (UTC+1)** | New York |
+| **Time format** | **24-hour (15:30)**, **12-hour (3:30 PM)** | The desktop's clock format |
+
+**Each chart's exchange** puts each chart in its own exchange's clock: ES in Chicago time, a Madrid listing in Madrid time, crypto in UTC. The crosshair's time then ends with the zone, such as **21 Oct 2026 07:30 CT**, so two linked charts that disagree about the time say why. Any other time zone, by its IANA name such as `Asia/Kolkata`, can be set from the CLI ([Settings](/manual/cli/#settings)); the row then lists it too.
+
+Daily and longer bars are dates and read the same in every time zone.
 
 ### Theme
 

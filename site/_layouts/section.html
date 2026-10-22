@@ -4,7 +4,9 @@ layout: default
 {%- comment -%}
   A part of the manual, as a table of contents: each chapter that names it
   in `section:`, in nav_order, with its sections and their subsections
-  beneath: three levels, every one a link. The pages themselves are made
+  beneath: three levels, every one a link. A chapter's own pages (those
+  naming it in `parent:`) are listed under it with their sections. The
+  pages themselves are made
   from site.manual.sections by _plugins/manual.rb; `section_key` says which
   part this is. Its description is the page's meta description, not shown.
 {%- endcomment -%}
@@ -14,6 +16,8 @@ layout: default
       | where_exp: "item", "item.nav_exclude != true"
       | where: "section", page.section_key
       | sort: "nav_order" -%}
+{%- assign subpages = chapters | where_exp: "item", "item.parent != nil" -%}
+{%- assign chapters = chapters | where_exp: "item", "item.parent == nil" -%}
 
 <header class="chapter-head">
   <h1 class="chapter-title">{{ page.title }}</h1>
@@ -24,6 +28,18 @@ layout: default
   <li>
     <a href="{{ chapter.url | relative_url }}">{{ chapter.title }}</a>
     {{- chapter | chapter_tree: 2, 3 }}
+    {%- assign chapter_key = chapter.url | split: "/" | last %}
+    {%- assign children = subpages | where: "parent", chapter_key | sort: "nav_order" %}
+    {%- if children.size > 0 %}
+    <ul class="section-toc-children">
+      {%- for child in children %}
+      <li>
+        <a href="{{ child.url | relative_url }}">{{ child.title }}</a>
+        {{- child | chapter_tree: 2, 2 }}
+      </li>
+      {%- endfor %}
+    </ul>
+    {%- endif %}
   </li>
   {%- endfor %}
 </ul>

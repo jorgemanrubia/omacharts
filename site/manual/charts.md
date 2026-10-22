@@ -92,9 +92,9 @@ A chart's session is which hours of bars it shows.
 | **Extended hours** | Every bar, overnight included. The default |
 | **Regular hours only** | Only the intraday bars inside regular trading hours |
 
-**Regular hours only** applies to US stocks, ETFs, US indexes and dollar-priced futures (09:30 to 16:00 New York time) and to TWSE and TPEx listings and Taiwan's indexes (09:00 to 13:30 Taipei time). FX, crypto, listings outside the US and Taiwan, and indexes in other currencies show every bar. Daily and coarser bars always show every bar.
+Regular hours are the instrument's exchange's own, in its own clock: 09:30 to 16:00 New York time for US stocks and ETFs and for equity index futures such as ES, 09:00 to 14:30 New York time for crude oil, 09:00 to 17:30 Madrid time for a Madrid listing, and Tokyo's session without its lunch break. The [trading day](/manual/indicators/sessions-and-time/#the-trading-day) has more examples. FX and crypto trade round the clock and have no regular hours, so they show every bar either way. Daily and coarser bars always show every bar.
 
-Set it from the chart menu's **Session** submenu or the **Hours** row of [Chart settings](/manual/chart-settings/).
+Set it from the chart menu's **Session** submenu or the **Hours** row of [Chart settings](/manual/chart-settings/). The [Sessions](/manual/indicators/sessions-and-time/#sessions) indicator shades the extended hours on a chart that shows them.
 
 ## Bars
 
@@ -162,6 +162,8 @@ The price axis fits the bars on screen until you drag it. A chart's scales come 
 | Drag the time axis | Left squeezes more time on screen, right spreads it out |
 | Double-click the time axis | Back to the resting zoom, at the latest bar |
 | <kbd>Ctrl</kbd> + <kbd>Esc</kbd> | **Reset chart**. Both scales back to how the chart opens, at the latest bars |
+
+The time axis is labelled in the time zone and the time format chosen in Preferences › Charts › Other ([Time](/manual/preferences/#time)), New York time unless you change it.
 
 ### Logarithmic scale
 
@@ -245,7 +247,7 @@ crop: 1100,500,1460,940
 -->
 {% include figure.html src="/assets/manual/charts/crosshair.jpg" alt="An NVDA hourly chart with the crosshair and its price and time tags, and the last-price tag on its dashed line" caption="The crosshair's tags in the accent colour, and the last price in the colour of the last bar." %}
 
-The crosshair is a pair of dotted lines that cross at the centre of the bar under the pointer. The price is tagged on the price axis and the bar's time on the time axis (the date alone on daily and coarser bars). Over an indicator strip the price tag shows that strip's value. With [Crosshair across Follow charts](/manual/watchlists/#the-crosshair-across-follow-charts) on, the other Follow charts show the same moment and price, dimmed.
+The crosshair is a pair of dotted lines that cross at the centre of the bar under the pointer. The price is tagged on the price axis and the bar's time on the time axis (the date alone on daily and coarser bars), in the chosen [time zone and format](/manual/preferences/#time). When each chart reads its exchange's clock, the time ends with the zone, such as **21 Oct 2026 07:30 CT**. Over an indicator strip the price tag shows that strip's value. With [Crosshair across Follow charts](/manual/watchlists/#the-crosshair-across-follow-charts) on, the other Follow charts show the same moment and price, dimmed.
 
 The last price is a tag on the price axis, filled in the colour of the last bar's direction, with a dashed line across the chart at its level.
 

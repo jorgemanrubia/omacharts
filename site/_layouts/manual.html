@@ -6,8 +6,9 @@ layout: default
   page body starts at `##`. Under the lede, the chapter's own contents
   (its headings, h2 to h5, from _plugins/manual.rb) when there are enough
   to be worth it. Below the text, the neighbours in reading order: the
-  letter, then each section's chapters by nav_order. The trail above the
-  title is components/breadcrumbs.html, which the theme's layout places.
+  letter, then each section's chapters by nav_order, each followed by the
+  pages that name it as their `parent:`. The trail above the title is
+  components/breadcrumbs.html, which the theme's layout places.
 {%- endcomment -%}
 {%- assign manual_pages = site.html_pages
       | where_exp: "item", "item.url contains '/manual/'"
@@ -15,8 +16,13 @@ layout: default
       | where_exp: "item", "item.nav_exclude != true" -%}
 {%- assign ordered = manual_pages | where_exp: "item", "item.section == nil" | sort: "nav_order" -%}
 {%- for section in site.manual.sections -%}
-  {%- assign chapters = manual_pages | where: "section", section.key | sort: "nav_order" -%}
-  {%- assign ordered = ordered | concat: chapters -%}
+  {%- assign chapters = manual_pages | where: "section", section.key | where_exp: "item", "item.parent == nil" | sort: "nav_order" -%}
+  {%- for chapter in chapters -%}
+    {%- assign ordered = ordered | push: chapter -%}
+    {%- assign chapter_key = chapter.url | split: "/" | last -%}
+    {%- assign children = manual_pages | where: "parent", chapter_key | sort: "nav_order" -%}
+    {%- assign ordered = ordered | concat: children -%}
+  {%- endfor -%}
 {%- endfor -%}
 {%- assign prev_page = nil -%}
 {%- assign next_page = nil -%}

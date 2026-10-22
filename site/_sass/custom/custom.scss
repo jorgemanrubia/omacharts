@@ -256,6 +256,42 @@ $rail-inset: calc(#{$gutter-spacing-sm * 1.6} + 2px);
   }
 }
 
+// A chapter's own pages, indented under it. The theme shows them while the
+// list item is .active (the chapter or one of them is open) and its chevron
+// toggles that; here the chevron is restyled quiet, and the pages a step in
+// and a size down, on the same 2px rule as every other entry.
+.side-bar .nav-list .nav-list-item {
+  > .nav-list-expander {
+    top: 0;
+    right: 0;
+    width: 2rem;
+    height: 2.1rem;
+    padding: .55rem;
+    color: $oc-muted;
+    background-image: none;
+
+    &:hover { color: $oc-bright; background-image: none; }
+  }
+
+  > .nav-list.nav-children {
+    padding-left: 0;
+    margin-bottom: .2rem;
+
+    .nav-list-item .nav-list-link {
+      padding-left: $gutter-spacing-sm + 1rem;
+      font-size: .92rem;
+      color: $oc-muted;
+
+      @media (min-width: $md) {
+        padding-left: $gutter-spacing-sm * 1.6 + 1rem;
+      }
+
+      &:hover { color: $oc-bright; }
+      &.active { color: $oc-bright; border-left-color: $oc-amber; }
+    }
+  }
+}
+
 // The letter sits on its own above the sections, a size up from the
 // chapters rather than bolder, so being the current page still shows.
 .side-bar .nav-letter {
@@ -757,6 +793,12 @@ $rail-inset: calc(#{$gutter-spacing-sm * 1.6} + 2px);
       letter-spacing: -.01em;
       color: $oc-bright;
     }
+  }
+
+  // A chapter's own pages, after its sections, each named as a page is.
+  .section-toc-children > li > a {
+    font-weight: 600;
+    color: $oc-bright;
   }
 
   // Their sections, then the subsections, each a step in and a step quieter.

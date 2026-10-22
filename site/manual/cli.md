@@ -445,9 +445,9 @@ see [Settings](#settings).
 `omacharts chart indicator ACTION [KIND]` changes a chart's indicators.
 `--book` and `--chart` pick the chart ([Which chart a command acts
 on](#which-chart-a-command-acts-on)). `KIND` is the indicator's name as the
-command takes it, such as `sma`, `rsi` or `volume_profile`. Each indicator's
-name, what it draws, and every parameter's default and range are in
-[Indicators](/manual/indicators/).
+command takes it, such as `sma`, `rsi`, `volume_profile` or `time_window`.
+Each indicator's name, what it draws, and every parameter's default and range
+are in [Indicators](/manual/indicators/) and the page of its family.
 
 | Action | Does |
 |---|---|
@@ -474,6 +474,9 @@ name, what it draws, and every parameter's default and range are in
 | `--height F` | 0.05 to 0.95; Volume defaults to 0.18, the other strips to 0.16 | Volume, RSI, MACD, ATR, stochastic |
 | `--bands LIST` | `1,2,3` or any of them; `none` | VWAP; `1` or `none` for Bollinger |
 | `--band-alpha F` | 0 to 1; 0.16 when not given | VWAP, Bollinger |
+| `--shade B`, `--shade-alpha F`, `--shade-color C`, `--separators WHEN` | See [Sessions and time](#sessions-and-time) | Sessions, time window |
+| `--name`, `--from`, `--to`, `--zone`, `--within`, `--offset`, `--minutes`, `--weekdays`, `--mark`, `--range` | See [Sessions and time](#sessions-and-time) | Time window |
+| `--source PART`, `--levels LIST` | See [Sessions and time](#sessions-and-time) | Session levels |
 | `--color C` | A colour | The line of any indicator; a profile's bars |
 | `--width F` | Pixels; `0` draws no line | Any indicator with a line |
 | `--style S` | `solid`, `dashed`, `dotted` | Any indicator with a line |
@@ -544,6 +547,75 @@ Refusals:
 A chart template's indicators take the same actions and flags, with the
 template named before the kind: `omacharts template indicator add Momentum
 rsi --period 14`. See [Chart templates](#chart-templates).
+
+### Sessions and time
+
+`sessions`, `time_window` and `session_levels` are the indicators of
+[Sessions and time](/manual/indicators/sessions-and-time/). Besides
+`--color`, `--width`, `--style` and `--visible`, they take these flags. Any
+other indicator refuses them.
+
+| Flag | Takes | For |
+|---|---|---|
+| `--shade B` | `on`, `off` | Sessions: the extended hours shaded. Time window: the window shaded |
+| `--shade-alpha F` | 0.02 to 0.6; 0.07 when not given | Sessions, time window |
+| `--shade-color C` | A colour; the theme's muted text colour when not given | Sessions. A time window shades in its line's colour |
+| `--separators WHEN` | `none`, `day`, `week`, `month`; `day` when not given | Sessions |
+| `--name TEXT` | Words | Time window: its name, which its labels carry |
+| `--from TIME`, `--to TIME` | A time of day, written any way the editor takes: `9am`, `0930`, `21h30`, `16:30` | Time window, in clock times. `--to` before `--from` runs past midnight |
+| `--zone ZONE` | An IANA name such as `Europe/London`, or `chart` for the chart's own time zone | Time window in clock times. Without it, `--from` and `--to` are in the chart's time zone |
+| `--within PART` | `regular`, `overnight`, `pre`, `post` | Time window counted from where that part of the day begins |
+| `--offset MINUTES` | 0 to 1440 | How long after that part begins the window starts |
+| `--minutes MINUTES` | 1 to 1440 | How long a window counted from a session lasts |
+| `--weekdays B` | `on`, `off` | Time window: leave out Saturday and Sunday |
+| `--mark B` | `on`, `off` | Time window: a line where each window starts |
+| `--range B` | `on`, `off` | Time window: its high and low, held until the next window |
+| `--source PART` | `regular`, `extended` (overnight and pre-market), `day` | Session levels |
+| `--levels LIST` | Any of `high`, `low`, `close`, `open`, `mid`, comma-separated | Session levels |
+
+A window is either clock times (`--from`, `--to`) or counted from a session
+(`--within`, `--offset`, `--minutes`). Giving the flags of the other kind
+switches it over. Switching to clock times needs both `--from` and `--to`;
+switching to a session fills in what is not given with `regular`, `0` and
+`30`. Within the same kind, what is not given stays as it was.
+
+```sh
+omacharts chart indicator add sessions --separators week --shade-alpha 0.1
+omacharts chart indicator add time_window --name London --from 8am --to 1630 --zone Europe/London --mark on
+omacharts chart indicator add time_window --name "Opening range" --within regular --offset 0 --minutes 30
+omacharts chart indicator set time_window --id 3 --zone chart
+omacharts chart indicator add session_levels --source extended --levels high,low
+```
+
+```
+$ omacharts chart indicator add sessions --separators week --shade-alpha 0.1
+added Sessions · week on pos:0 ES 15m in "Futures"
+  [exit 0]
+$ omacharts chart indicator add time_window --name London --from 8am --to 1630 --zone Europe/London --mark on
+added London on pos:0 ES 15m in "Futures"
+  [exit 0]
+$ omacharts chart indicator add session_levels --source extended --levels high,low
+added Levels (ON) on pos:0 ES 15m in "Futures"
+  [exit 0]
+$ omacharts chart indicator list
+Sessions · week
+London
+Opening range
+Levels (ON)
+  [exit 0]
+```
+
+Refusals:
+
+| Refused | Exit | Message |
+|---|---|---|
+| A flag of these on an indicator without it: `add sma --from 9am --to 10am` | 2 | `SMA has no hours` |
+| A time that is not one: `--from 25:00` | 2 | `--from takes a time of day such as 9am, 09:30 or 2130, not "25:00"` |
+| Clock times and a session together: `--from 9am --within regular` | 2 | The message says a window is one or the other |
+| Only one of `--from` and `--to` on a window counted from a session | 2 | `a window that was not clock times needs both --from and --to` |
+| `--from` and `--to` the same time, or `--minutes 0` | 2 | The message says it is no window |
+| A zone that is not one: `--zone London` | 2 | `` "London" is not a time zone; use an IANA name such as Europe/London, or `chart` `` |
+| A level that is not one: `--levels high,top` | 2 | `"high,top" is not a list of levels; try high,low,close (open and mid too)` |
 
 ## Chart templates
 
@@ -677,7 +749,9 @@ chart 46: sends drawings to other charts off
 | `reset-configs [KIND]` | Puts a kind's nine back as shipped, or every kind's |
 
 An anchor is `WHEN,PRICE`: a date (`2026-09-01`), a date and time
-(`2026-09-01T14:30`) or unix seconds, in local time, then the price.
+(`2026-09-01T14:30`) or unix seconds, then the price. A date or a time is
+read in the chart's time zone, the one its time axis is labelled in
+([Time](/manual/preferences/#time)), and `list` prints them the same way.
 
 | Flag | Takes | Does |
 |---|---|---|
@@ -1312,6 +1386,8 @@ same.
 | `chart_sends_drawings` | on, off | on | Charts › Defaults › Send drawings to other charts | [Drawings](/manual/drawings/) |
 | `chart_template` | a chart template's name or `id:N`, or `none` | `Default` | Charts › Defaults › Template | [Chart templates](/manual/chart-templates/) |
 | `chart_header` | comma-separated `symbol`, `resolution`, `change`, `template`; or `none` | `symbol,resolution` | Charts › Header | [Charts](/manual/charts/) |
+| `chart_time_zone` | an IANA name such as `Europe/London` or `America/Chicago`, or `exchange` for each chart's exchange's own | `America/New_York` | Charts › Other › Time › Time zone | [Preferences](/manual/preferences/#time) |
+| `time_format` | `24h`, `12h` | the desktop's clock format | Charts › Other › Time › Time format | [Preferences](/manual/preferences/#time) |
 | `timeframes` | comma-separated resolutions, such as `5m,15m,1h,4h,1D,1W`; an entry that is not a resolution is skipped | `5m,15m,1h,4h,1D,1W` | Charts › Other › Preset resolutions | [Charts](/manual/charts/) |
 | `sync_crosshair` | on, off | on | Chart settings › Crosshair across Follow charts | [Chart settings](/manual/chart-settings/) |
 | `provider` | `yahoo`, `tos` | `yahoo` | Data › Data feed | [Market data feeds](/manual/market-data/) |
@@ -1335,10 +1411,11 @@ set theme to midnight
 
 ### When a setting is checked and takes effect
 
-`provider`, `chart_header` and `chart_template` are checked as they are
-written. A feed that does not exist, a header part that is not one, or a
-header part named twice is refused with exit 2; a template that does not
-exist with exit 3. Every other
+`provider`, `chart_header`, `chart_template`, `chart_time_zone` and
+`time_format` are checked as they are written. A feed that does not exist, a
+header part that is not one, a header part named twice, a time zone that is
+not one or a time format that is not one is refused with exit 2; a template
+that does not exist with exit 3. Every other
 value is accepted as typed, and one the app cannot use counts as the
 default. `config set theme nope` succeeds, and the window opens in the first
 theme on offer, System on an Omarchy desktop.
@@ -1351,10 +1428,23 @@ omacharts: no such data feed: "thinkorswimm"; the feeds are yahoo, tos
 $ omacharts config set chart_header symbol,banana
 omacharts: "banana" is not part of a header; try symbol, resolution, change, template
   [exit 2]
+
+$ omacharts config set chart_time_zone Europe/London
+charts read the time in London
+  [exit 0]
+
+$ omacharts config set chart_time_zone London
+omacharts: "London" is not a time zone; use an IANA name such as Europe/London, or `exchange`
+  [exit 2]
+
+$ omacharts config set time_format 12h
+charts write times as 12-hour (3:30 PM)
+  [exit 0]
 ```
 
-With a window open, a new `provider` switches the charts' feed at once, and a
-new `chart_header` changes every header at once. The chart defaults apply to
+With a window open, a new `provider` switches the charts' feed at once, a
+new `chart_header` changes every header at once, and a new `chart_time_zone`
+or `time_format` redraws every chart's times at once. The chart defaults apply to
 the next chart made, by a split or a new chartbook. `timeframes`
 written from a terminal is read when the window next opens.
 

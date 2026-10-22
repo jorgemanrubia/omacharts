@@ -1,6 +1,7 @@
 {%- comment -%}
   The trail above a manual page's title: the manual's root, then the page's
-  section. A chapter's own title is right underneath, so it is not repeated
+  section, then, for a page under a chapter (`parent:`), that chapter. A
+  chapter's own title is right underneath, so it is not repeated
   as a crumb. The last crumb is where you are and does not link.
 
   Replaces the theme's breadcrumbs, which read `parent:` front matter the
@@ -31,6 +32,15 @@
       <a href="{{ section_page.url | relative_url }}">{{ crumb_section.label }}</a>
       {%- endif -%}
     </li>
+    {%- endif %}
+    {%- if page.parent %}
+    {%- assign parent_url = "/manual/" | append: page.parent | append: "/" %}
+    {%- assign parent_page = site.html_pages | where: "url", parent_url | first %}
+    {%- if parent_page %}
+    <li class="crumbs-item">
+      <a href="{{ parent_page.url | relative_url }}">{{ parent_page.title }}</a>
+    </li>
+    {%- endif %}
     {%- endif %}
   </ol>
 </nav>

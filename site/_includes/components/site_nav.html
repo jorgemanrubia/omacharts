@@ -1,8 +1,14 @@
 {%- comment -%}
   The manual's table of contents, in three tiers: the letter on its own at
   the top, then each section from site.manual.sections with the chapters
-  that name it in `section:`, in nav_order. Chapters are flat pages under
-  manual/; there is no nesting to expand.
+  that name it in `section:`, in nav_order.
+
+  A chapter can have pages of its own beneath it: a page under
+  manual/<chapter>/ that says `parent: <chapter>` in its front matter, with
+  its own nav_order. They are listed indented under the chapter, open while
+  the chapter or one of them is the page being read, and behind the
+  chapter's chevron otherwise (the theme's own expander, which its script
+  toggles).
 
   Replaces the theme's site_nav, so the theme's activation stylesheet (which
   guesses the active link from its own markup) is blanked in
@@ -13,6 +19,7 @@
       | where_exp: "item", "item.title != nil"
       | where_exp: "item", "item.nav_exclude != true" -%}
 {%- assign letters = manual_pages | where_exp: "item", "item.section == nil" | sort: "nav_order" -%}
+{%- assign children_of = manual_pages | where_exp: "item", "item.parent != nil" -%}
 
 <nav aria-label="Manual" id="site-nav" class="site-nav">
   {%- if letters.size > 0 %}
@@ -26,7 +33,7 @@
   {%- endif %}
 
   {%- for section in site.manual.sections %}
-  {%- assign chapters = manual_pages | where: "section", section.key | sort: "nav_order" %}
+  {%- assign chapters = manual_pages | where: "section", section.key | where_exp: "item", "item.parent == nil" | sort: "nav_order" %}
   {%- assign section_page = site.html_pages | where: "section_key", section.key | first %}
   {%- if chapters.size > 0 %}
   {%- comment -%} The label goes to the section's own page, when the plugin made one. {%- endcomment -%}
@@ -37,8 +44,26 @@
   {%- endif %}
   <ul class="nav-list">
     {%- for node in chapters %}
-    <li class="nav-list-item">
+    {%- assign node_key = node.url | split: "/" | last %}
+    {%- assign children = children_of | where: "parent", node_key | sort: "nav_order" %}
+    {%- assign expanded = false %}
+    {%- if children.size > 0 and node.url == page.url or page.parent == node_key %}{% assign expanded = true %}{% endif %}
+    <li class="nav-list-item{% if expanded %} active{% endif %}">
+      {%- if children.size > 0 %}
+      <button class="nav-list-expander btn-reset" aria-label="{{ node.title }} pages" aria-expanded="{{ expanded }}">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><use xlink:href="#svg-arrow-right"></use></svg>
+      </button>
+      {%- endif %}
       <a href="{{ node.url | relative_url }}" class="nav-list-link{% if node.url == page.url %} active{% endif %}"{% if node.url == page.url %} aria-current="page"{% endif %}>{{ node.title }}</a>
+      {%- if children.size > 0 %}
+      <ul class="nav-list nav-children">
+        {%- for child in children %}
+        <li class="nav-list-item">
+          <a href="{{ child.url | relative_url }}" class="nav-list-link{% if child.url == page.url %} active{% endif %}"{% if child.url == page.url %} aria-current="page"{% endif %}>{{ child.title }}</a>
+        </li>
+        {%- endfor %}
+      </ul>
+      {%- endif %}
     </li>
     {%- endfor %}
   </ul>

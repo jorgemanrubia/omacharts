@@ -16,7 +16,9 @@ plugins:
 # which it belongs to with `section:` in its front matter; the letter has
 # none and sits above them all. Each section is also a page at
 # /manual/<key>/ (made by _plugins/manual.rb) that lists its chapters, with
-# the description as its lede.
+# the description as its lede. A chapter can have pages beneath it, under
+# manual/<chapter>/, each naming it with `parent: <chapter>` as well as its
+# `section:`; the sidebar indents them under the chapter.
 manual:
   sections:
     - key: introduction
