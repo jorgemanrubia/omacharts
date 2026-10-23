@@ -158,6 +158,10 @@ struct State {
     lead: usize,
     drag: Option<Drag>,
     indicators: Vec<Drawn>,
+    /// Whether the indicators are drawn at all. Off hides every one of them,
+    /// strips and all, without touching each one's own `visible`, so turning
+    /// it back on brings back what was on screen and no more.
+    show_indicators: bool,
     bar_style: BarStyle,
     bars_hidden: bool,
     show_grid: bool,
@@ -187,6 +191,10 @@ struct State {
     /// What has been drawn on this symbol, in the order it was drawn. The
     /// chart draws what it is handed; the store is where they live.
     drawings: Vec<Drawing>,
+    /// Whether the drawings are drawn. Off hides every one of them, the
+    /// chart's own and the shared, and none answers the pointer or a key;
+    /// they are still held, so turning it back on finds them as they were.
+    show_drawings: bool,
     /// Which of them has the grips, by position in `drawings`.
     /// The drawings that wear grips, in the order they were taken: the last
     /// is the one most recently picked, and what a single-drawing question
@@ -1006,9 +1014,8 @@ fn layout(state: &State, width: f64, height: f64) -> Layout {
 
     let wanted = |above: bool| -> Vec<(u32, f64)> {
         state
-            .indicators
-            .iter()
-            .filter(|drawn| drawn.indicator.visible && drawn.indicator.above_price == above)
+            .shown_indicators()
+            .filter(|drawn| drawn.indicator.above_price == above)
             .filter_map(|drawn| drawn.output.pane_height().map(|share| (drawn.indicator.id, share)))
             .collect()
     };
@@ -1111,6 +1118,7 @@ impl State {
             overhang: RIGHT_MARGIN,
             lead: 0,
             indicators: Vec::new(),
+            show_indicators: true,
             bar_style: BarStyle::default(),
             bars_hidden: false,
             show_grid: true,
@@ -1123,6 +1131,7 @@ impl State {
             price_auto: true,
             price_log: false,
             drawings: Vec::new(),
+            show_drawings: true,
             sticky: false,
             editing: None,
             editing_at: None,
@@ -1145,6 +1154,11 @@ impl State {
     /// Drop the step most recently remembered, for a change that turned out
     /// not to be one: the step is still the top of the stack, because
     /// nothing else can have been remembered in between.
+    /// The indicators on screen: the ones shown, while the chart shows any.
+    fn shown_indicators(&self) -> impl Iterator<Item = &Drawn> {
+        self.indicators.iter().filter(|drawn| self.show_indicators && drawn.indicator.visible)
+    }
+
     fn forget(&mut self) {
         self.undo.pop();
     }
@@ -1387,7 +1401,7 @@ impl State {
     /// Every drawing a box in pixels touches, in list order.
     fn drawings_in(&self, width: f64, height: f64, rect: (f64, f64, f64, f64)) -> Vec<usize> {
         let (first, visible) = self.slice();
-        if visible == 0 {
+        if visible == 0 || !self.show_drawings {
             return Vec::new();
         }
         let plan = layout(self, width, height);
@@ -1402,7 +1416,7 @@ impl State {
     /// The drawing under a pixel, topmost first, and which part of it.
     fn drawing_at(&self, width: f64, height: f64, x: f64, y: f64) -> Option<(usize, Grip)> {
         let (first, visible) = self.slice();
-        if visible == 0 {
+        if visible == 0 || !self.show_drawings {
             return None;
         }
         let plan = layout(self, width, height);
@@ -1581,6 +1595,15 @@ impl State {
 /// because the chart is constructed before there is a window to tell.
 type Handler<F> = Rc<RefCell<Option<Box<F>>>>;
 
+/// What a chart is hiding all of at once, each by its own key, for the
+/// legend to name while it is hidden.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Hidden {
+    pub drawings: bool,
+    pub indicators: bool,
+    pub bars: bool,
+}
+
 /// How far a pasted copy lands from what it was copied from, in pixels.
 ///
 /// Enough to see that there are two of them and to take hold of the one on
@@ -1689,6 +1712,9 @@ pub struct ChartView {
     /// chart, and these are the only ways it changes that nothing outside
     /// the chart can see.
     on_price_auto: Handler<dyn Fn(bool)>,
+    /// Told when the drawings, the indicators or the bars are hidden or
+    /// shown, whatever did it, for the legend's glyphs.
+    on_hidden: Handler<dyn Fn(Hidden)>,
 }
 
 impl ChartView {
@@ -1735,6 +1761,7 @@ impl ChartView {
             on_typing: Rc::new(RefCell::new(None)),
             on_tool: Rc::new(RefCell::new(None)),
             on_price_auto: Rc::new(RefCell::new(None)),
+            on_hidden: Rc::new(RefCell::new(None)),
         });
         view.wire_drawing();
         view.wire_pointer();
@@ -1780,9 +1807,7 @@ impl ChartView {
     /// one thing is selected at a time, and the keys act on that one.
     pub fn pick(&self, id: Option<u32>) {
         let id = id.filter(|id| {
-            self.state.borrow().indicators.iter().any(|d| {
-                d.indicator.id == *id && d.indicator.visible && d.indicator.kind.selectable()
-            })
+            self.state.borrow().shown_indicators().any(|d| d.indicator.id == *id && d.indicator.kind.selectable())
         });
         let changed = {
             let mut s = self.state.borrow_mut();
@@ -1949,8 +1974,12 @@ impl ChartView {
             state.placing = None;
             if kind.is_some() {
                 state.selected.clear();
+                // A tool picked up is a drawing about to be made, and one
+                // made out of sight would read as one that never was.
+                state.show_drawings = true;
             }
         }
+        self.hidden_changed();
         // A tool in hand is about to make a drawing, which is selected once
         // it is down: whatever indicator was selected stops being.
         if kind.is_some() {
@@ -2161,7 +2190,9 @@ impl ChartView {
     pub fn delete_all(&self) {
         let removed = {
             let mut state = self.state.borrow_mut();
-            if state.drawings.is_empty() {
+            // Hidden, there is nothing on screen to delete: the drawings
+            // are kept for when they come back.
+            if state.drawings.is_empty() || !state.show_drawings {
                 return;
             }
             state.selected.clear();
@@ -2197,6 +2228,10 @@ impl ChartView {
     fn step(&self, back: bool) -> bool {
         let restored = {
             let mut state = self.state.borrow_mut();
+            // A step nobody could see taken is not one to take.
+            if !state.show_drawings {
+                return false;
+            }
             let Some(list) = (if back { state.undo.pop() } else { state.redo.pop() }) else {
                 return false;
             };
@@ -3236,6 +3271,19 @@ impl ChartView {
         self.redraw();
     }
 
+    pub fn show_indicators(&self) -> bool {
+        self.state.borrow().show_indicators
+    }
+
+    /// Show or hide every indicator at once, strips included, for a look at
+    /// the bars alone. Each keeps its own `visible`, so they come back as
+    /// they were.
+    pub fn set_show_indicators(&self, show: bool) {
+        self.state.borrow_mut().show_indicators = show;
+        self.hidden_changed();
+        self.redraw();
+    }
+
     pub fn bar_style(&self) -> BarStyle {
         self.state.borrow().bar_style
     }
@@ -3258,7 +3306,28 @@ impl ChartView {
     /// still fits them, and what is drawn from them stays where it was.
     pub fn set_bars_hidden(&self, hidden: bool) {
         self.state.borrow_mut().bars_hidden = hidden;
+        self.hidden_changed();
         self.redraw();
+    }
+
+    /// What the chart is hiding all of.
+    pub fn hidden(&self) -> Hidden {
+        let state = self.state.borrow();
+        Hidden { drawings: !state.show_drawings, indicators: !state.show_indicators, bars: state.bars_hidden }
+    }
+
+    /// What to tell when something is hidden or shown. Called once at once,
+    /// so whatever listens starts out right.
+    pub fn set_hidden_handler(&self, handler: impl Fn(Hidden) + 'static) {
+        handler(self.hidden());
+        *self.on_hidden.borrow_mut() = Some(Box::new(handler));
+    }
+
+    fn hidden_changed(&self) {
+        let hidden = self.hidden();
+        if let Some(handler) = self.on_hidden.borrow().as_ref() {
+            handler(hidden);
+        }
     }
 
     /// What to do when the chart itself is right-clicked. The axis keeps its
@@ -3337,6 +3406,32 @@ impl ChartView {
 
     pub fn set_context_menu_handler(&self, handler: impl Fn(f64, f64) + 'static) {
         *self.on_context_menu.borrow_mut() = Some(Box::new(handler));
+    }
+
+    pub fn show_drawings(&self) -> bool {
+        self.state.borrow().show_drawings
+    }
+
+    /// Show or hide every drawing at once, the chart's own and the shared,
+    /// for a look at the bars. They are kept, not removed: hidden, nothing
+    /// of them is selected or edited, and they come back as they were.
+    pub fn set_show_drawings(&self, show: bool) {
+        if !show {
+            // What was being typed is kept, the way clicking away keeps it.
+            self.end_text_edit(text_editor::Ended::Commit);
+            if self.armed().is_some() {
+                self.arm(None);
+            }
+        }
+        {
+            let mut state = self.state.borrow_mut();
+            state.show_drawings = show;
+            if !show {
+                state.selected.clear();
+            }
+        }
+        self.hidden_changed();
+        self.redraw();
     }
 
     pub fn set_indicators(&self, indicators: Vec<Drawn>) {
@@ -5656,7 +5751,7 @@ const GRIP_HALF: f64 = 3.5;
 /// lines and under the strips, clipped to the price plot so a line drawn
 /// off the top does not cross an RSI.
 fn draw_drawings(cr: &cairo::Context, state: &State, plan: &Layout, scale: &PriceScale) {
-    if state.drawings.is_empty() {
+    if state.drawings.is_empty() || !state.show_drawings {
         return;
     }
     cr.save().ok();
@@ -6009,7 +6104,7 @@ fn draw_indicator_fills(
     columns: &Columns,
     to_y: &impl Fn(f64) -> f64,
 ) {
-    for drawn in state.indicators.iter().filter(|d| d.indicator.visible) {
+    for drawn in state.shown_indicators() {
         match &drawn.output {
             Output::Bands(bands) => {
                 // One shaded region, between the first band's own edges: the
@@ -6042,7 +6137,7 @@ fn draw_indicator_lines(
     columns: &Columns,
     to_y: &impl Fn(f64) -> f64,
 ) {
-    for drawn in state.indicators.iter().filter(|d| d.indicator.visible) {
+    for drawn in state.shown_indicators() {
         let lit = state.picked == Some(drawn.indicator.id);
         match &drawn.output {
             Output::Line(values) => {
@@ -6154,7 +6249,7 @@ fn draw_time_ground(cr: &cairo::Context, state: &State, columns: &Columns, plan:
     cr.save().ok();
     cr.rectangle(left, top, plan.plot_w, plan.total_h);
     cr.clip();
-    for drawn in state.indicators.iter().filter(|d| d.indicator.visible) {
+    for drawn in state.shown_indicators() {
         let Output::Time(time) = &drawn.output else { continue };
         for span in time.spans.iter().filter(|s| on_screen_run(columns, s.from, s.to)) {
             let (colour, alpha) =
@@ -7155,7 +7250,7 @@ mod tests {
     }
 
     /// Draw something onto a surface of this size and hand back its pixels.
-    fn frame(width: f64, height: f64, paint: impl FnOnce(&cairo::Context)) -> Vec<u8> {
+    pub(super) fn frame(width: f64, height: f64, paint: impl FnOnce(&cairo::Context)) -> Vec<u8> {
         let mut surface =
             cairo::ImageSurface::create(cairo::Format::ARgb32, width as i32, height as i32)
                 .expect("a surface to draw on");
@@ -7799,6 +7894,31 @@ mod tests {
     }
 
 
+    /// Hiding every indicator takes their strips away as well, so the price
+    /// gets the height, and leaves each one's own `visible` as it was.
+    #[test]
+    fn hiding_the_indicators_gives_their_strips_back_to_the_price() {
+        let (w, h) = (600.0, 400.0);
+        let mut state = charted(11);
+        state.bars = ramp(40);
+        let series = state.bars.clone();
+        let indicator = Indicator::new(1, indicators::Kind::Atr);
+        state.indicators = vec![Drawn {
+            color: "#5588ff".to_string(),
+            output: indicators::compute(&indicator, &series, 0, state.timeframe, None),
+            indicator,
+        }];
+        let shown = layout(&state, w, h);
+        assert!(shown.rows.iter().any(|row| row.pane == Some(1)), "the ATR has a strip");
+
+        state.show_indicators = false;
+        let hidden = layout(&state, w, h);
+        assert!(hidden.rows.iter().all(|row| row.pane.is_none()), "no strip while hidden");
+        assert!(hidden.price_h > shown.price_h, "the price takes the room");
+        assert!(state.indicators[0].indicator.visible, "the indicator's own switch is untouched");
+        assert_eq!(state.shown_indicators().count(), 0);
+    }
+
     /// An ATR zoomed into its own warm-up has nothing to scale to and nothing
     /// to draw, and it is the one strip that can be in that position: a fixed
     /// scale is its own bounds whatever is in it, and a MACD's zero guide is a
@@ -8314,6 +8434,26 @@ mod drawing_tests {
         state.tool = None;
         state.placing = None;
         assert!(!state.begin_placing(800.0, 400.0, 200.0, 150.0, false));
+    }
+
+    /// A chart that hides its drawings draws none of them, and none answers
+    /// the pointer or a marquee; they are all still held.
+    #[test]
+    fn hidden_drawings_are_neither_drawn_nor_picked() {
+        let mut state = charted(400);
+        let (w, h) = (800.0, 400.0);
+        let a = state.locate(w, h, 200.0, 150.0).unwrap();
+        let b = state.locate(w, h, 500.0, 250.0).unwrap();
+        let bare = super::tests::frame(w, h, |cr| draw(cr, w, h, &state));
+        state.drawings.push(Drawing::new(DrawingKind::Rect, a, b));
+        assert!(state.drawing_at(w, h, 350.0, 200.0).is_some(), "shown, the box answers");
+        assert_ne!(super::tests::frame(w, h, |cr| draw(cr, w, h, &state)), bare, "and is drawn");
+
+        state.show_drawings = false;
+        assert_eq!(state.drawing_at(w, h, 350.0, 200.0), None);
+        assert!(state.drawings_in(w, h, (0.0, 0.0, w, h)).is_empty());
+        assert_eq!(super::tests::frame(w, h, |cr| draw(cr, w, h, &state)), bare, "nothing of it is left on the picture");
+        assert_eq!(state.drawings.len(), 1, "it is still held");
     }
 
     /// The newest drawing is picked first, and a press on an unselected

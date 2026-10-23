@@ -170,6 +170,12 @@ An indicator with **Show in chart legend** off in its settings has no line in th
 
 The label is the indicator's short name and its lengths, in the order its settings list them, such as **SMA 50** or **MACD 12 26 9**. A VWAP or a volume profile shows its period instead, such as **VWAP · Session**. When the period in use differs from the one chosen, the label names the one in use ([Reset periods](#reset-periods)). [Session Times](/manual/indicators/session-times/) names its ranges: **Sessions · ETH, London**.
 
+## Hiding every indicator
+
+<kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>H</kbd> hides every indicator on the focused chart, their strips too, and pressing it again brings them back. **Indicators** in the chart menu does the same. Each keeps its own eye, so what comes back is what was showing. The legend keeps their labels, dimmed. Hidden indicators are kept with the chart.
+
+While they are hidden, a struck-through wave after the chart's resolution says so. Click it to show them again.
+
 ## Selecting an indicator
 
 Click an indicator on the chart to select it: a line, a bar of the volume strip or a MACD's histogram, or a row of a volume profile. A click on its name in the legend selects it too. The pointer is a hand over anything that a click would select.

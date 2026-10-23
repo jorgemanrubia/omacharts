@@ -104,7 +104,9 @@ From anywhere:
 | <kbd>End</kbd> | Jumps to the latest bar | [Charts](/manual/charts/) |
 | <kbd>Ctrl</kbd> + <kbd>Esc</kbd> | Resets zoom, pan and price scale to how the chart opens | [Charts](/manual/charts/) |
 | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>G</kbd> | Shows or hides the gridlines | [Charts](/manual/charts/) |
-| <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>B</kbd> | Hides the bars, or shows them again in the style they had | [Hiding the bars](/manual/charts/#hiding-the-bars) |
+| <kbd>Ctrl</kbd> + <kbd>H</kbd> | Hides every drawing, or shows them again | [Hiding the drawings](/manual/drawings/#hiding-the-drawings) |
+| <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>H</kbd> | Hides every indicator, or shows them again | [Hiding every indicator](/manual/indicators/#hiding-every-indicator) |
+| <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>H</kbd> | Hides the bars, or shows them again in the style they had | [Hiding the bars](/manual/charts/#hiding-the-bars) |
 | <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>1</kbd> … <kbd>9</kbd> | Chart template N, in the order they are listed | [Chart templates](/manual/chart-templates/) |
 | <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>0</kbd> | No chart template | [Chart templates](/manual/chart-templates/) |
 | <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>PgUp</kbd> <kbd>PgDn</kbd> | The previous or next chart template | [Chart templates](/manual/chart-templates/) |

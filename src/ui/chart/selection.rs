@@ -34,7 +34,7 @@ impl State {
     /// cheap is asked first: whether there is anything to pick, and whether
     /// the pointer is on the plot at all, before the frame is worked out.
     pub(super) fn indicator_at(&self, width: f64, height: f64, x: f64, y: f64) -> Option<u32> {
-        if !self.indicators.iter().any(|d| d.indicator.visible && d.indicator.kind.selectable()) {
+        if !self.shown_indicators().any(|d| d.indicator.kind.selectable()) {
             return None;
         }
         let plan = layout(self, width, height);
@@ -53,7 +53,7 @@ impl State {
             self.indicators
                 .iter()
                 .rev()
-                .filter(|d| d.indicator.visible && d.indicator.kind.selectable())
+                .filter(|d| self.show_indicators && d.indicator.visible && d.indicator.kind.selectable())
         };
         match row.pane {
             None => {

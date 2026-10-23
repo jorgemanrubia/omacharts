@@ -437,6 +437,10 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
 .legend-link.quiet.open { opacity: 0.45; }
 .chart-pane:hover .legend-gear:hover,
 .chart-pane:hover .legend-link.quiet:hover { opacity: 1; }
+/* A hidden layer's glyph, on every chart and in every state: a bare chart
+   with nothing saying why reads as one whose data never came. */
+.legend-hidden { opacity: 0.75; }
+.legend-hidden:hover { opacity: 1; }
 
 /* The maximize corner is the bargain the gear strikes: it is not there at
    all until the pointer is on the chart, which is also the only moment it

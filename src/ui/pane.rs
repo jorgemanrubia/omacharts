@@ -18,7 +18,7 @@ use omacharts_engine::{
     BarStyle, Indicator, Instrument, LinkMode, Session, Theme, Timeframe,
 };
 
-use crate::ui::chart::ChartView;
+use crate::ui::chart::{ChartView, Hidden};
 use crate::ui::shortcuts;
 
 /// One chart filling the window, and the way back.
@@ -51,6 +51,11 @@ pub struct ChartPane {
     /// over the drawing is the noise the strip already learned to avoid.
     pub indicator_legend: gtk::Box,
     pub gear: gtk::Button,
+    /// The drawings, the indicators and the bars, one glyph each after the
+    /// header, shown only while that one is hidden: struck through, so a
+    /// bare chart says why it is bare rather than looking like one whose
+    /// data never came. A click brings it back.
+    pub hidden_glyphs: Vec<(Hideable, gtk::Button)>,
     pub link: gtk::MenuButton,
     /// Fills the window with this chart, and puts it back. In the top right
     /// corner, out from under the legend, and only there while the pointer is
@@ -196,6 +201,8 @@ impl ChartPane {
         gear.set_tooltip_text(Some(&shortcuts::tooltip("Chart settings", "chart.settings")));
         gear.set_valign(gtk::Align::Center);
 
+        let hidden_glyphs = hidden_glyphs(&view);
+
         // The symbol and its resolution on the left, as the chart's title:
         // the resolution stays on every chart, focused or not, and in every
         // screenshot, because which bars these are is information. The
@@ -325,6 +332,7 @@ impl ChartPane {
             timeframe_label,
             indicator_legend,
             gear,
+            hidden_glyphs,
             link,
             expand,
             expand_icon,
@@ -509,6 +517,14 @@ impl ChartPane {
                 self.header_row.append(widget);
             }
         }
+        // Last, whatever the header shows: it says what is missing from this
+        // chart, not what it is.
+        for (_, button) in &self.hidden_glyphs {
+            if button.parent().is_some() {
+                self.header_row.remove(button);
+            }
+            self.header_row.append(button);
+        }
     }
 
     /// Whether the header has `part` in it, so the window only works out what
@@ -557,6 +573,164 @@ impl ChartPane {
     fn write_timeframe(&self) {
         self.timeframe_label.set_text(&self.timeframe.get().label());
     }
+}
+
+/// What the legend can say a chart is hiding, in the order of their keys:
+/// Ctrl+H, with Shift, with Alt as well.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Hideable {
+    Drawings,
+    Indicators,
+    Bars,
+}
+
+impl Hideable {
+    const ALL: [Hideable; 3] = [Hideable::Drawings, Hideable::Indicators, Hideable::Bars];
+
+    fn hidden(self, hidden: Hidden) -> bool {
+        match self {
+            Hideable::Drawings => hidden.drawings,
+            Hideable::Indicators => hidden.indicators,
+            Hideable::Bars => hidden.bars,
+        }
+    }
+
+    fn tooltip(self) -> String {
+        let (text, action) = match self {
+            Hideable::Drawings => ("Drawings hidden: show them", "chart.show-drawings"),
+            Hideable::Indicators => ("Indicators hidden: show them", "chart.show-indicators"),
+            Hideable::Bars => ("Bars hidden: show them", "chart.bars"),
+        };
+        shortcuts::tooltip(text, action)
+    }
+
+    /// The glyph, before it is struck through:
+    ///
+    /// - drawings: a pencil. A line, which is what a drawing most often is,
+    ///   is lost among the chart's own lines at this size;
+    /// - indicators: a wave, the moving average every chart starts with;
+    /// - bars: two candles, one filled and one hollow.
+    ///
+    /// On a 16-unit grid. Anything long lies across the slash, not along it.
+    fn shape(self, cr: &gtk::cairo::Context) {
+        match self {
+            Hideable::Drawings => {
+                // Eraser end top-left, point bottom-right.
+                let at = |t: f64, o: f64| {
+                    let d = std::f64::consts::FRAC_1_SQRT_2;
+                    (3.0 + d * t + d * o, 3.0 + d * t - d * o)
+                };
+                let (half, cone, tip) = (1.6, 10.8, 14.6);
+                for (t, o) in [(0.0, -half), (cone, -half), (tip, 0.0), (cone, half), (0.0, half)] {
+                    let (x, y) = at(t, o);
+                    cr.line_to(x, y);
+                }
+                cr.close_path();
+                cr.set_line_width(0.6);
+                let _ = cr.fill_preserve();
+                let _ = cr.stroke();
+            }
+            Hideable::Indicators => {
+                cr.set_line_width(1.4);
+                cr.move_to(1.8, 10.5);
+                cr.curve_to(4.5, 3.0, 6.8, 3.0, 8.0, 8.0);
+                cr.curve_to(9.2, 13.0, 11.5, 13.0, 14.2, 5.5);
+                let _ = cr.stroke();
+            }
+            Hideable::Bars => {
+                // The hollow candle's wick starts below the slash, so the
+                // gap leaves no sliver of it beyond.
+                cr.set_line_width(1.2);
+                cr.move_to(5.0, 2.0);
+                cr.line_to(5.0, 14.0);
+                cr.move_to(11.0, 5.0);
+                cr.line_to(11.0, 12.5);
+                let _ = cr.stroke();
+                cr.rectangle(3.0, 4.5, 4.0, 6.5);
+                let _ = cr.fill();
+                // Hollow: the body is cleared first, so the wick does not
+                // run through it.
+                cr.set_operator(gtk::cairo::Operator::Clear);
+                cr.rectangle(9.1, 6.0, 3.8, 4.5);
+                let _ = cr.fill();
+                cr.set_operator(gtk::cairo::Operator::Over);
+                cr.rectangle(9.1, 6.0, 3.8, 4.5);
+                let _ = cr.stroke();
+            }
+        }
+    }
+}
+
+/// One glyph for each thing the chart can hide, shown only while it is
+/// hidden. A click brings it back.
+fn hidden_glyphs(view: &ChartView) -> Vec<(Hideable, gtk::Button)> {
+    let glyphs: Vec<(Hideable, gtk::Button)> = Hideable::ALL
+        .iter()
+        .map(|&what| {
+            let button = gtk::Button::new();
+            button.set_child(Some(&struck_icon(what)));
+            button.add_css_class("flat");
+            button.add_css_class("legend-hidden");
+            button.set_valign(gtk::Align::Center);
+            button.set_tooltip_text(Some(&what.tooltip()));
+            (what, button)
+        })
+        .collect();
+    let buttons = glyphs.clone();
+    view.set_hidden_handler(move |hidden| {
+        for (what, button) in &buttons {
+            button.set_visible(what.hidden(hidden));
+        }
+    });
+    glyphs
+}
+
+/// A glyph struck through.
+///
+/// The glyph keeps full ink and the slash runs bottom-left to top-right
+/// through a gap it cuts first, the way an "eye-off" icon does, so the slash
+/// reads as a slash rather than one more line of the shape. Kept thin: three
+/// side by side should read as three shapes, not three crosses. Drawn on a
+/// 16-unit grid, scaled to the area.
+fn struck_icon(what: Hideable) -> gtk::DrawingArea {
+    let area = gtk::DrawingArea::new();
+    area.set_content_width(18);
+    area.set_content_height(18);
+    area.set_draw_func(move |area, cr, width, height| {
+        let colour = area.color();
+        cr.set_source_rgba(
+            colour.red() as f64,
+            colour.green() as f64,
+            colour.blue() as f64,
+            colour.alpha() as f64,
+        );
+        cr.push_group();
+        // One scale for both axes, centred: the button can hand the area
+        // more height than width, and scaling each on its own stretches
+        // the glyph upright.
+        let (w, h) = (width as f64, height as f64);
+        // A tenth over the 16 the grid is drawn on, beside the symbol's text.
+        let size = w.min(h).min(17.6);
+        cr.translate((w - size) / 2.0, (h - size) / 2.0);
+        cr.scale(size / 16.0, size / 16.0);
+        cr.set_line_cap(gtk::cairo::LineCap::Round);
+        cr.set_line_join(gtk::cairo::LineJoin::Round);
+        what.shape(cr);
+        let (a, b) = ((2.0, 14.0), (14.0, 2.0));
+        cr.set_operator(gtk::cairo::Operator::Clear);
+        cr.set_line_width(3.0);
+        cr.move_to(a.0, a.1);
+        cr.line_to(b.0, b.1);
+        let _ = cr.stroke();
+        cr.set_operator(gtk::cairo::Operator::Over);
+        cr.set_line_width(1.1);
+        cr.move_to(a.0, a.1);
+        cr.line_to(b.0, b.1);
+        let _ = cr.stroke();
+        let _ = cr.pop_group_to_source();
+        let _ = cr.paint();
+    });
+    area
 }
 
 /// How far the legend sits in from the chart's left edge. The corner on the

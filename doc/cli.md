@@ -596,9 +596,10 @@ A `chart set` with one bad value changes nothing at all — everything is
 checked before anything is written, so you never get a half-applied chart.
 
 Besides what a chart shows, `chart set` carries how it shows it — `--style`,
-`--bars`, `--session`, `--grid`, `--auto-scale` and `--log-scale` — and those are stored
-with the chart, so a price axis held still with `--auto-scale off` is still
-held the next time the app opens.
+`--bars`, `--session`, `--grid`, `--auto-scale`, `--log-scale`,
+`--show-indicators` and `--drawings` — and those are stored with the chart,
+so a price axis held still with `--auto-scale off` is still held the next
+time the app opens.
 
 `--log-scale on` makes the price axis logarithmic: equal heights are equal
 percentage moves, which is what a chart of twenty years wants. Indicators in
@@ -608,6 +609,25 @@ the axis draws linear and turns logarithmic again once they are off screen.
 
 ```sh
 omacharts chart set --resolution 1W --log-scale on
+```
+
+`--show-indicators off` hides every indicator on the chart, the strips under
+it as well, for a look at the bars alone; `on` brings them back. Each keeps
+its own settings and whether it was hidden on its own, so they come back as
+they were. In the window it is Ctrl+Shift+H.
+
+```sh
+omacharts chart set --show-indicators off
+```
+
+`--drawings off` hides every drawing on the chart, its own and those other
+charts of the symbol send it, and none of them can be picked or deleted while
+hidden; `on` brings them back as they were. Nothing is removed, and the other
+charts keep showing theirs. Picking up a drawing tool shows them again. In the
+window it is Ctrl+H.
+
+```sh
+omacharts chart set --drawings off
 ```
 
 ## Chartbook templates
@@ -757,8 +777,9 @@ omacharts chart set --show-drawings off
 `--send-drawings off` keeps what is drawn on that chart to that chart —
 useful for sketching on one view without it appearing on every other.
 `--show-drawings off` keeps the chart clear of what is already drawn on the
-symbol; its own are still there either way. The two are independent: a chart
-that shows but does not send is a reference view.
+symbol; its own are still there either way (`--drawings off` hides both).
+The two are independent: a chart that shows but does not send is a reference
+view.
 
 Both switches are live, not only about what comes next. Turning sending off
 takes back the drawings that chart sent — they stay on it and come off the

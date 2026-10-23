@@ -81,6 +81,9 @@ pub const FOLDER: &str = "Omacharts";
 ///   itself still appears: it is written beside the symbol as plain text, and
 ///   that label is information and stays.
 /// - `legend-gear`, `legend-link` — chart settings, and the link mode.
+/// - `legend-hidden` — the glyphs saying the drawings, the indicators or
+///   the bars are hidden. A picture taken with them hidden was meant to be
+///   bare.
 /// - `legend-button` — a row's hide, settings and remove buttons.
 /// - `pane-expand` — the maximize corner.
 /// - [`POINTER_LAYER`] — the crosshair, its axis labels, and the boxes
@@ -90,6 +93,7 @@ const LEFT_OUT: &[&str] = &[
     "timeframe-strip",
     "legend-gear",
     "legend-link",
+    "legend-hidden",
     "legend-button",
     "pane-expand",
     POINTER_LAYER,
