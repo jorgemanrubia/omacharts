@@ -1276,8 +1276,6 @@ fn template_accel(n: usize) -> String {
     format!("<Ctrl><Alt><Shift>{n}")
 }
 
-/// A chart template as a menu action's target: its id, or `none`, spelled
-/// the way the default for new charts is written down.
 /// What was last copied: drawings, or one indicator, never both, since only
 /// one of them can be selected at a time.
 #[derive(Clone)]
@@ -1287,12 +1285,12 @@ enum Clipboard {
     Indicator(Indicator),
 }
 
-/// What a legend row is named by, so the one for a selected indicator can be
-/// found among them.
 /// The side of a legend row's dot's box: the 8 px dot and room round it for
 /// the ring a selected indicator's dot wears.
 const LEGEND_DOT: i32 = 12;
 
+/// What a legend row is named by, so the one for a selected indicator can be
+/// found among them.
 fn legend_row_name(id: u32) -> String {
     format!("legend-indicator-{id}")
 }
@@ -1308,6 +1306,8 @@ fn bar_style_state(pane: &ChartPane) -> &'static str {
     if pane.bars_hidden.get() { NO_BARS } else { pane.bar_style.get().key() }
 }
 
+/// A chart template as a menu action's target: its id, or `none`, spelled
+/// the way the default for new charts is written down.
 fn template_state(template: Option<u32>) -> glib::Variant {
     match template {
         Some(id) => id.to_string().to_variant(),

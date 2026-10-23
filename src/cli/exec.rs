@@ -1401,7 +1401,8 @@ fn chart_set(
             changed.push("bars hidden".to_string());
         }
     }
-    if let Some(shown) = bars {
+    // Said once: `--style none --bars off` agree, and are one change.
+    if let Some(shown) = bars.filter(|_| style.is_none()) {
         chart["bars_hidden"] = json!(!shown);
         changed.push(match shown {
             true => format!("bars shown, as {}", chart["bar_style"].as_str().unwrap_or("candles")),
@@ -5679,6 +5680,11 @@ mod tests {
         assert_eq!(chart(&store)["style"], "none");
         assert_eq!(run("chart set --book Macro --style candles", &store).code, 0);
         assert_eq!(chart(&store)["style"], "candles", "choosing a style shows the bars");
+
+        // Two flags that agree are one change, and said once.
+        let both = run("chart set --book Macro --style none --bars off", &store);
+        assert_eq!(both.code, 0, "{}", both.err);
+        assert_eq!(both.out.matches("bars hidden").count(), 1, "{}", both.out);
     }
 
     #[test]

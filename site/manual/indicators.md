@@ -196,14 +196,14 @@ crop: 0,0,2440,1150 (resized to 2000 wide)
 | Gesture | Does |
 |---|---|
 | Click it, or its name in the legend | Selects it |
-| Click empty chart, <kbd>Esc</kbd> | Clears the selection |
+| Click or right-click empty chart, <kbd>Esc</kbd> | Clears the selection |
 | Double-click it | Opens its settings |
 | <kbd>Alt</kbd> + <kbd>Enter</kbd> | Opens its settings |
 | <kbd>Delete</kbd> / <kbd>Backspace</kbd> | Removes it |
 | <kbd>Ctrl</kbd> + <kbd>X</kbd>, <kbd>Ctrl</kbd> + <kbd>C</kbd>, <kbd>Ctrl</kbd> + <kbd>V</kbd> | Cuts or copies it, and pastes it on the focused chart |
 | Right-click it | Selects it and opens its menu |
 
-One thing is selected at a time: selecting an indicator clears the selected drawings, and selecting a drawing clears the indicator. Drawings come first. Near a drawing, a click selects the drawing, and the indicator is selected anywhere else along it. A press on an indicator that goes on to drag pans the chart, since an indicator does not move.
+One thing is selected at a time: selecting an indicator clears the selected drawings, and selecting a drawing clears the indicator. Drawings come first. Within a few pixels of a drawing, a click selects the drawing or nothing at all, never the indicator under it, which is selected anywhere else along its length. A press on an indicator that goes on to drag pans the chart, since an indicator does not move.
 
 [Session Times](/manual/indicators/session-times/) is not selected by a click, since it covers the whole chart, and neither is the inside of a band's shading, so a press there pans. A hidden indicator is not selected either.
 

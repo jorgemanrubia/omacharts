@@ -11,7 +11,7 @@ use omacharts_engine::Theme;
 use crate::ui::colors;
 use omacharts_engine::indicators::{Output, Pane, Profile};
 
-use super::{frame, on_screen, pane_plot, pane_range, Columns, Drawn, Frame, Row, State};
+use super::{frame, layout, on_screen, pane_plot, pane_range, Columns, Drawn, Frame, Row, State};
 
 /// How near a line the pointer has to be to pick it: a little less than a
 /// drawing's reach, since a line here is one of several sharing the bars.
@@ -29,7 +29,18 @@ impl State {
     /// Lines before shapes, since a line drawn over a profile is the smaller
     /// target and would otherwise never be reachable; and among each, the
     /// one drawn last first, as it is the one on top.
+    ///
+    /// It runs on every motion of the pointer, for the cursor, so what is
+    /// cheap is asked first: whether there is anything to pick, and whether
+    /// the pointer is on the plot at all, before the frame is worked out.
     pub(super) fn indicator_at(&self, width: f64, height: f64, x: f64, y: f64) -> Option<u32> {
+        if !self.indicators.iter().any(|d| d.indicator.visible && d.indicator.kind.selectable()) {
+            return None;
+        }
+        let plan = layout(self, width, height);
+        if x < plan.plot_x || x > plan.plot_x + plan.plot_w || !plan.rows.iter().any(|row| row.covers(y)) {
+            return None;
+        }
         let frame = frame(self, width, height)?;
         if self.drawing_near(&frame, x, y) {
             return None;

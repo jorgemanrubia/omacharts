@@ -255,12 +255,6 @@ struct State {
     editing_at: Option<(f64, f64, f64, f64)>,
 }
 
-/// Something that happened to a drawing, for whoever keeps them.
-///
-/// The chart owns the hand; the window owns the store. A drawing that was
-/// added needs a row, one that moved needs its row rewritten, and one that
-/// was deleted needs its row gone — and the window, which knows the symbol
-/// and the store, is the one that can do any of that.
 /// What happened to the selected indicator, for the window, which owns the
 /// indicators and the menus about them.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -275,6 +269,12 @@ pub enum IndicatorEvent {
     Remove(u32),
 }
 
+/// Something that happened to a drawing, for whoever keeps them.
+///
+/// The chart owns the hand; the window owns the store. A drawing that was
+/// added needs a row, one that moved needs its row rewritten, and one that
+/// was deleted needs its row gone — and the window, which knows the symbol
+/// and the store, is the one that can do any of that.
 #[derive(Clone, PartialEq, Debug)]
 pub enum DrawingEvent {
     Added(Drawing),
@@ -1786,11 +1786,14 @@ impl ChartView {
         });
         let changed = {
             let mut s = self.state.borrow_mut();
-            let drawings = id.is_some() && !s.selected.is_empty();
-            if id.is_some() {
+            let changed = s.picked != id;
+            // Only when the selection moves onto an indicator: the same one
+            // checked again, as it is whenever the indicators are redrawn,
+            // leaves the drawings be.
+            let drawings = changed && id.is_some() && !s.selected.is_empty();
+            if drawings {
                 s.selected.clear();
             }
-            let changed = s.picked != id;
             s.picked = id;
             changed || drawings
         };
@@ -1947,6 +1950,11 @@ impl ChartView {
             if kind.is_some() {
                 state.selected.clear();
             }
+        }
+        // A tool in hand is about to make a drawing, which is selected once
+        // it is down: whatever indicator was selected stops being.
+        if kind.is_some() {
+            self.pick(None);
         }
         self.area.set_cursor_from_name(Some(if kind.is_some() { "crosshair" } else { "default" }));
         self.redraw();
@@ -2619,6 +2627,7 @@ impl ChartView {
             true => "crosshair",
             false => "default",
         }));
+        self.pick(None);
         self.redraw();
         self.tool_changed();
         self.tell(DrawingEvent::Added(added));
@@ -3014,6 +3023,8 @@ impl ChartView {
         if added.is_empty() {
             return false;
         }
+        // The pasted drawings are the selection now, and only they are.
+        self.pick(None);
         self.redraw();
         for drawing in added {
             self.tell(DrawingEvent::Added(drawing));
@@ -3489,7 +3500,11 @@ impl ChartView {
                 let over = free.then(|| s.drawing_at(w, h, x, y)).flatten();
                 // Only when nothing drawn is under the pointer, which is
                 // also when a click would select the indicator.
-                let indicator = free && over.is_none() && s.indicator_at(w, h, x, y).is_some();
+                let indicator = free
+                    && over.is_none()
+                    && !over_edge
+                    && !over_control
+                    && s.indicator_at(w, h, x, y).is_some();
                 (s.tool.is_some(), over.map(|(_, grip)| grip), indicator)
             };
             area.set_cursor_from_name(Some(match (over_edge, over_control, armed, over_drawing) {
@@ -5115,11 +5130,14 @@ fn draw_pane(
     }
     let signal = pane.signal.as_ref().map(|signal| (signal, signal_colour(state, drawn)));
     // Lit, every line glows under itself, and each gets a dot at its latest
-    // value, in its own colour.
-    let lines: Vec<(&Vec<Option<f64>>, &str)> = [(&pane.values, drawn.color.as_str())]
-        .into_iter()
-        .chain(signal.iter().map(|(series, colour)| (*series, colour.as_str())))
-        .collect();
+    // value, in its own colour. Gathered only then.
+    let lines: Vec<(&Vec<Option<f64>>, &str)> = match lit {
+        false => Vec::new(),
+        true => [(&pane.values, drawn.color.as_str())]
+            .into_iter()
+            .chain(signal.iter().map(|(series, colour)| (*series, colour.as_str())))
+            .collect(),
+    };
     let point = |series: &[Option<f64>], at: usize| {
         series.get(columns.offset(at)).copied().flatten().map(|value| (columns.x(at), strip(value)))
     };
@@ -6049,22 +6067,26 @@ fn draw_indicator_lines(
             }
             Output::Bands(bands) => {
                 // Every line it draws, each in its own colour, lit together:
-                // the band is one thing.
-                let lines: Vec<(&[Option<f64>], String, f64)> = bands
-                    .bands
-                    .iter()
-                    .filter(|band| band.enabled && !band.stroke.is_hidden())
-                    .flat_map(|band| {
-                        let colour = band_colour(band, drawn, &state.theme);
-                        [
-                            (band.upper.as_slice(), colour.clone(), band.stroke.width),
-                            (band.lower.as_slice(), colour, band.stroke.width),
-                        ]
-                    })
-                    .chain((!drawn.indicator.stroke.is_hidden()).then(|| {
-                        (bands.center.as_slice(), drawn.color.clone(), drawn.indicator.stroke.width)
-                    }))
-                    .collect();
+                // the band is one thing. Gathered only while it is selected,
+                // since every other frame has no use for the list.
+                let lines: Vec<(&[Option<f64>], String, f64)> = match lit {
+                    false => Vec::new(),
+                    true => bands
+                        .bands
+                        .iter()
+                        .filter(|band| band.enabled && !band.stroke.is_hidden())
+                        .flat_map(|band| {
+                            let colour = band_colour(band, drawn, &state.theme);
+                            [
+                                (band.upper.as_slice(), colour.clone(), band.stroke.width),
+                                (band.lower.as_slice(), colour, band.stroke.width),
+                            ]
+                        })
+                        .chain((!drawn.indicator.stroke.is_hidden()).then(|| {
+                            (bands.center.as_slice(), drawn.color.clone(), drawn.indicator.stroke.width)
+                        }))
+                        .collect(),
+                };
                 if lit {
                     for (values, colour, width) in &lines {
                         let point = |at: usize| series_point(values, columns, to_y, at);
@@ -6213,17 +6235,12 @@ fn draw_profiles(
     };
     let poc = state.theme.companion_or(chosen, &drawn.color);
 
-    let (first, last) = (columns.first, columns.first + columns.visible);
     for profile in profiles {
-        if profile.last_bar < first || profile.first_bar >= last {
+        // Where a click finds it, too, so the two cannot drift apart.
+        let (left, span) = selection::profile_box(profile, columns);
+        if span <= 0.0 {
             continue;
         }
-        let from = profile.first_bar.max(first);
-        let to = profile.last_bar.min(last - 1) + 1;
-        let left = columns.left_of(from);
-        // A profile may use at most this much of its own period's width, so it
-        // describes the bars rather than burying them.
-        let span = columns.width_of(from, to).max(columns.bar_w) * 0.4;
 
         let (area_low, area_high) = profile.value_area_bounds();
         for row in &profile.rows {
