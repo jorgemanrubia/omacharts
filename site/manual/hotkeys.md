@@ -245,7 +245,7 @@ Drawing with the mouse:
 | Click an indicator, or its name in the legend | Selects it | [Indicators](/manual/indicators/#selecting-an-indicator) |
 | Double-click an indicator | Opens its settings | [Indicators](/manual/indicators/#selecting-an-indicator) |
 | Right-click an indicator | Selects it and opens its menu: **Copy**, **Paste**, **Remove indicator**, **Properties…** | [Indicators](/manual/indicators/#selecting-an-indicator) |
-| Right-click a drawing | Selects it and opens its menu: **Edit text**, **Copy**, **Configuration**, **Thickness**, **Arrowhead**, **Paste**, **Bring to front**, **Send to back**, **Remove drawing**, **Properties…** | [Drawings](/manual/drawings/) |
+| Right-click a drawing | Selects it and opens its menu: **Edit text**, **Copy**, **Paste**, **Configuration**, **Thickness**, **Arrowhead**, **Bring to front**, **Send to back**, **Remove drawing**, **Properties…** | [Drawings](/manual/drawings/) |
 
 Around the window:
 

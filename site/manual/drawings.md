@@ -112,10 +112,10 @@ crop: 1680,336,672,928   (the box above, the menu with 20px layout margin right 
 |---|---|
 | **Edit text** / **Add text** (<kbd>Enter</kbd>) | Puts the caret in the drawing, to type on the chart |
 | **Copy** (<kbd>Ctrl</kbd> + <kbd>C</kbd>) | Copies the selection |
+| **Paste** (<kbd>Ctrl</kbd> + <kbd>V</kbd>) | Only while something is copied: drawings, or an indicator |
 | **Configuration** | Configurations 1 to 4, each drawn as this kind of drawing. 5 to 9 are <kbd>Alt</kbd> + <kbd>5</kbd> … <kbd>9</kbd>, or the picker in the properties |
 | **Thickness** | 1, 1.5, 2.5 or 4 px. Not on text |
 | **Arrowhead** | None, filled, open or barb. On lines, levels, arrows and zig-zags |
-| **Paste** (<kbd>Ctrl</kbd> + <kbd>V</kbd>) | Only while something is copied |
 | **Bring to front**, **Send to back** | As <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>↑</kbd> / <kbd>↓</kbd> |
 | **Remove drawing** (<kbd>Delete</kbd>) | **Remove 3 drawings** with three |
 | **Properties…** (<kbd>Alt</kbd> + <kbd>Enter</kbd>) | Opens the properties |

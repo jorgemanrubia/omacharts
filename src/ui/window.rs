@@ -7391,12 +7391,10 @@ impl Window {
         let menu = gio::Menu::new();
         let edit = gio::Menu::new();
         shortcuts::append_with_key(&edit, "Copy", "chart.copy", "<Ctrl>c");
-        menu.append_section(None, &edit);
         if self.has_copied() {
-            let paste = gio::Menu::new();
-            shortcuts::append_with_key(&paste, "Paste", "chart.paste", "<Ctrl>v");
-            menu.append_section(None, &paste);
+            shortcuts::append_with_key(&edit, "Paste", "chart.paste", "<Ctrl>v");
         }
+        menu.append_section(None, &edit);
 
         let remove = gio::Menu::new();
         shortcuts::append_with_key(&remove, "Remove indicator", "chart.indicator-delete", "Delete");
@@ -8066,9 +8064,13 @@ impl Window {
             false => "Add text",
         };
         shortcuts::append_with_key(&edit, words, "chart.drawing-text", "Return");
-        // Copy and Paste, whatever is selected or was copied: the menu is
-        // already about the drawing under the pointer.
+        // Copy and Paste together, whatever is selected or was copied: the
+        // menu is already about the drawing under the pointer. Paste only
+        // while there is something to put down.
         shortcuts::append_with_key(&edit, "Copy", "chart.copy", "<Ctrl>c");
+        if self.has_copied() {
+            shortcuts::append_with_key(&edit, "Paste", "chart.paste", "<Ctrl>v");
+        }
         menu.append_section(None, &edit);
 
         // The arrowhead, as the four pictures it is, on one row: the three
@@ -8112,12 +8114,6 @@ impl Window {
         }
         if !rows.is_empty() {
             menu.append_section(None, &pictures);
-        }
-
-        if self.has_copied() {
-            let paste = gio::Menu::new();
-            shortcuts::append_with_key(&paste, "Paste", "chart.paste", "<Ctrl>v");
-            menu.append_section(None, &paste);
         }
 
         let edit = gio::Menu::new();
