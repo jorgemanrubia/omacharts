@@ -387,7 +387,8 @@ omacharts: "3x" is not a resolution; try 5m, 1h, 1D, 1W, 1M or 1Y
 | `--symbol SYMBOL` | The instrument, such as `AAPL` or `2330.TW` | [Symbols and search](/manual/symbols/) |
 | `--suffix S` | Its venue suffix, for a listing abroad | [Symbols and search](/manual/symbols/#listings-abroad) |
 | `--resolution TF` | A resolution as typed on the chart | [Resolutions](/manual/charts/#resolutions) |
-| `--style STYLE` | `candles`, `ohlc` | [Bars](/manual/charts/#bars) |
+| `--style STYLE` | `candles`, `ohlc`, or `none` to hide the bars | [Bars](/manual/charts/#bars) |
+| `--bars on` or `off` | Shows the bars in the style they had, or hides them | [Hiding the bars](/manual/charts/#hiding-the-bars) |
 | `--colouring C` | `theme`, `theme-hollow`, `theme-red-up`, `theme-mono` | [Colouring](/manual/charts/#colouring) |
 | `--session S` | `regular`, `extended` | [Sessions](/manual/charts/#sessions) |
 | `--grid on` or `off` | Draws the grid | [Gridlines](/manual/charts/#gridlines) |
@@ -402,6 +403,13 @@ omacharts: "3x" is not a resolution; try 5m, 1h, 1D, 1W, 1M or 1Y
 
 `--colouring theme-hollow` on an OHLC chart is accepted and drawn coloured,
 since OHLC bars have no body.
+
+`--style none` and `--bars off` both hide the bars and keep their style.
+`--bars on` brings them back in it, and `--style candles` or `--style ohlc`
+shows them in that one. A style and `--bars` that disagree, such as
+`--style candles --bars off`, are refused. In JSON, `style` is `none` while
+the bars are hidden, `bar_style` is the style they come back in, and `bars`
+says whether they are shown.
 
 ### `config bars`
 
@@ -875,8 +883,8 @@ omacharts: this chartbook has 3 charts, so there is no pos:7
 
 ### `chart list`
 
-Lists the charts in a chartbook: raw id, symbol, resolution, bar style and
-link mode, with `*` on the focused one. `--chart` takes these raw ids. The
+Lists the charts in a chartbook: raw id, symbol, resolution, bar style
+(`none` while the bars are hidden) and link mode, with `*` on the focused one. `--chart` takes these raw ids. The
 list is by id, not layout order; `status show` gives positions.
 
 ```

@@ -104,6 +104,7 @@ Set it from the chart menu's **Session** submenu or the **Hours** row of [Chart 
 |---|---|
 | **Candles** | A body from open to close and a wick from high to low. The default |
 | **OHLC bars** | A vertical bar from high to low, a tick to the left at the open and one to the right at the close |
+| **None** | Nothing. The bars are hidden |
 
 <!-- regenerate:
 theme: tokyo-night
@@ -146,6 +147,12 @@ capture: bin/headless-window cli chartbook screenshot --output /tmp/colourings.p
 crop: none (resized to 2000 wide)
 -->
 {% include figure.html src="/assets/manual/charts/colourings.jpg" alt="Four NVDA daily charts of the same two months, one in each colouring" caption="Filled, Red up (top); Hollow, Monochrome (bottom)." %}
+
+### Hiding the bars
+
+<kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>B</kbd> hides the focused chart's bars, and pressing it again shows them in the style they had. Choosing **None** does the same. Hiding the bars leaves their style as it was, so they come back as candles or OHLC bars, whichever the chart had. Choosing a style shows them again.
+
+Only the bars go. The price scale still fits them, and the indicators, drawings, last price and crosshair stay. Hidden bars are kept with the chart, and a chart made by splitting it starts with its bars hidden too.
 
 Set them per chart from the chart menu's **Bar style** submenu or the **Style** and **Colouring** rows of Chart settings. To change every chart at once, use **Apply to all charts now** in Preferences ([Chart settings](/manual/chart-settings/#defaults-for-new-charts)).
 
@@ -318,8 +325,8 @@ crop: 70,290,1580,900
 
 | Item | Does | Explained in |
 |---|---|---|
-| **Paste drawing** | Puts down the drawings last copied. Only there while something has been copied | [Drawings](/manual/drawings/) |
-| **Bar style** › **Candles**, **OHLC bars** | The chart's bar style | [Bars](#bars) |
+| **Paste** | Puts down the drawings or the indicator last copied. Only there while something has been copied | [Drawings](/manual/drawings/), [Indicators](/manual/indicators/#selecting-an-indicator) |
+| **Bar style** › **Candles**, **OHLC bars**, **None** | The chart's bar style, or its bars hidden, with its key | [Bars](#bars) |
 | **Session** › **Extended hours**, **Regular hours only** | The chart's hours | [Sessions](#sessions) |
 | **Template** › **None**, then each chart template | Puts the chart on a template, with its key | [Chart templates](/manual/chart-templates/) |
 | **Template** › **Create new template from chart…** | Saves the chart's indicators as a new template and puts the chart on it. Greyed out on a chart with no indicators | [Chart templates](/manual/chart-templates/#creating-a-template) |

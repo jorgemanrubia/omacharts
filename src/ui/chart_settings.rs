@@ -273,24 +273,34 @@ fn bars_group(window: &Rc<Window>, store: &Rc<Store>) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     group.set_title("Bars");
 
-    let names: Vec<&str> = BarStyle::ALL.iter().map(|s| s.label()).collect();
+    // The styles, then None: hiding the bars keeps the style they had, and
+    // the colouring row keeps describing it, greyed until they are back.
+    let mut names: Vec<&str> = BarStyle::ALL.iter().map(|s| s.label()).collect();
+    names.push(crate::ui::window::NO_BARS_LABEL);
+    let hidden_at = BarStyle::ALL.len() as u32;
     let row = adw::ComboRow::new();
     row.set_title("Style");
     row.set_model(Some(&gtk::StringList::new(&names)));
-    row.set_selected(
-        BarStyle::ALL.iter().position(|s| *s == window.bar_style()).unwrap_or(0) as u32
-    );
+    row.set_selected(match window.bars_hidden() {
+        true => hidden_at,
+        false => BarStyle::ALL.iter().position(|s| *s == window.bar_style()).unwrap_or(0) as u32,
+    });
 
     let colouring = adw::ComboRow::new();
     colouring.set_title("Colouring");
     fill_colourings(&colouring, window.bar_style(), window.bar_colouring());
+    colouring.set_sensitive(!window.bars_hidden());
 
     let window_for_style = window.clone();
     let colouring_for_style = colouring.clone();
     row.connect_selected_notify(move |row| {
-        if let Some(style) = BarStyle::ALL.get(row.selected() as usize).copied() {
+        if row.selected() == hidden_at {
+            window_for_style.set_bars_hidden(true);
+            colouring_for_style.set_sensitive(false);
+        } else if let Some(style) = BarStyle::ALL.get(row.selected() as usize).copied() {
             window_for_style.set_bar_style(style);
             fill_colourings(&colouring_for_style, style, window_for_style.bar_colouring());
+            colouring_for_style.set_sensitive(true);
         }
     });
     group.add(&row);

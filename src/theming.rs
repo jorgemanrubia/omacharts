@@ -810,6 +810,9 @@ button.list-row-action { min-height: 0; min-width: 0; padding: 3px; }
 .legend-row { padding: 0 0 1px 1px; }
 .legend-indicator { font-size: 0.78em; opacity: 0.75; }
 .legend-indicator-hidden { opacity: 0.35; text-decoration: line-through; }
+/* The indicator selected on the chart: its name at full strength. Its dot
+   wears a ring, which the dot draws. */
+.legend-row.selected .legend-indicator { opacity: 1; }
 .legend-button {
   opacity: 0;
   min-width: 18px;

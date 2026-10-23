@@ -90,7 +90,9 @@ Whatever you do to a selection is done to every drawing in it. Configurations an
 
 ## The drawing's menu
 
-Right-click a drawing for its menu. It acts on the selected drawings. A right-click on empty chart opens the chart's own menu, which has **Paste drawing** and **Remove all drawings** ([Charts](/manual/charts/)).
+Right-click a drawing for its menu. It acts on the selected drawings. A right-click on empty chart opens the chart's own menu, which has **Paste** and **Remove all drawings** ([Charts](/manual/charts/)).
+
+Copy and paste take an indicator as well as drawings. **Paste** puts down whichever was copied last ([Selecting an indicator](/manual/indicators/#selecting-an-indicator)).
 
 <!-- regenerate:
 theme: tokyo-night
@@ -109,7 +111,7 @@ crop: 1680,336,672,928   (the box above, the menu with 20px layout margin right 
 | Item | Does |
 |---|---|
 | **Edit text** / **Add text** (<kbd>Enter</kbd>) | Puts the caret in the drawing, to type on the chart |
-| **Copy drawing** (<kbd>Ctrl</kbd> + <kbd>C</kbd>) | Copies the selection. **Copy 3 drawings** with three |
+| **Copy** (<kbd>Ctrl</kbd> + <kbd>C</kbd>) | Copies the selection |
 | **Configuration** | Configurations 1 to 4, each drawn as this kind of drawing. 5 to 9 are <kbd>Alt</kbd> + <kbd>5</kbd> … <kbd>9</kbd>, or the picker in the properties |
 | **Thickness** | 1, 1.5, 2.5 or 4 px. Not on text |
 | **Arrowhead** | None, filled, open or barb. On lines, levels, arrows and zig-zags |

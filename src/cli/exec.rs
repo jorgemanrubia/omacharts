@@ -1065,7 +1065,7 @@ fn charts_verb(
                                     pane["suffix"].as_str()
                                 ),
                                 pane["timeframe"].as_str().unwrap_or(""),
-                                pane["bar_style"].as_str().unwrap_or(""),
+                                shown_style(pane),
                                 stored_mode(pane).key(),
                             )
                             .trim_end(),
@@ -1317,12 +1317,15 @@ fn chart_set(
             Fault::usage(format!("{text:?} is not a resolution; try 5m, 1h, 1D, 1W, 1M or 1Y"))
         })?),
     };
-    let style = match arg(m, "style") {
+    // None is not a style but the bars hidden, which keeps the style they
+    // had for showing them again.
+    let style = match arg(m, "style").map(String::as_str) {
         None => None,
-        Some(text) => Some(
+        Some("none") => Some(None),
+        Some(text) => Some(Some(
             BarStyle::from_key(text)
                 .ok_or_else(|| Fault::usage(format!("{text:?} is not a bar style")))?,
-        ),
+        )),
     };
     let colouring = match arg(m, "colouring") {
         None => None,
@@ -1350,6 +1353,16 @@ fn chart_set(
             Some(other) => Err(Fault::usage(format!("--{id} is on or off, not {other:?}"))),
         }
     };
+    let bars = switch("bars")?;
+    if let (Some(Some(style)), Some(false)) = (style, bars) {
+        return Err(Fault::usage(format!(
+            "--style {} shows the bars, and --bars off hides them; pass one",
+            style.key()
+        )));
+    }
+    if let (Some(None), Some(true)) = (style, bars) {
+        return Err(Fault::usage("--style none hides the bars, and --bars on shows them; pass one".into()));
+    }
     let shows_drawings = switch("show-drawings")?;
     let sends_drawings = switch("send-drawings")?;
     let template = match arg(m, "template") {
@@ -1376,9 +1389,24 @@ fn chart_set(
         chart["timeframe"] = json!(timeframe.key());
         changed.push(format!("resolution {}", timeframe.key()));
     }
-    if let Some(style) = style {
-        chart["bar_style"] = json!(style.key());
-        changed.push(format!("style {}", style.key()));
+    match style {
+        None => {}
+        Some(Some(style)) => {
+            chart["bar_style"] = json!(style.key());
+            chart["bars_hidden"] = json!(false);
+            changed.push(format!("style {}", style.key()));
+        }
+        Some(None) => {
+            chart["bars_hidden"] = json!(true);
+            changed.push("bars hidden".to_string());
+        }
+    }
+    if let Some(shown) = bars {
+        chart["bars_hidden"] = json!(!shown);
+        changed.push(match shown {
+            true => format!("bars shown, as {}", chart["bar_style"].as_str().unwrap_or("candles")),
+            false => "bars hidden".to_string(),
+        });
     }
     if let Some(colouring) = colouring {
         chart["colouring"] = json!(colouring.key());
@@ -1440,7 +1468,7 @@ fn chart_set(
 
     if changed.is_empty() {
         return Err(Fault::usage(
-            "nothing to change; pass --symbol, --resolution, --style, --session, --link, --grid, \
+            "nothing to change; pass --symbol, --resolution, --style, --bars, --session, --link, --grid, \
              --auto-scale, --log-scale, --show-drawings, --send-drawings or --template"
                 .into(),
         ));
@@ -3280,6 +3308,14 @@ fn colour(m: &clap::ArgMatches, id: &str) -> Result<Option<ColorChoice>, Fault> 
         })
 }
 
+/// The style a chart's bars are drawn in, or `none` while they are hidden.
+fn shown_style(pane: &Value) -> &str {
+    match pane["bars_hidden"].as_bool().unwrap_or(false) {
+        true => "none",
+        false => pane["bar_style"].as_str().unwrap_or(""),
+    }
+}
+
 fn pane_json(pane: &Value) -> String {
     json!({
         "id": pane["id"],
@@ -3287,7 +3323,10 @@ fn pane_json(pane: &Value) -> String {
         "suffix": pane["suffix"],
         "display": spell(pane["symbol"].as_str().unwrap_or(""), pane["suffix"].as_str()),
         "resolution": pane["timeframe"],
-        "style": pane["bar_style"],
+        "style": shown_style(pane),
+        // The style hidden bars come back in, so `none` above does not lose it.
+        "bar_style": pane["bar_style"],
+        "bars": !pane["bars_hidden"].as_bool().unwrap_or(false),
         "colouring": pane["colouring"],
         "session": pane["session"],
         "grid": pane["show_grid"],
@@ -5612,6 +5651,44 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
         assert_eq!(parsed["charts"][0]["symbol"], "NVDA");
         assert_eq!(parsed["charts"][0]["resolution"], "1h");
+    }
+
+    /// Hiding the bars is a look at what is under them, so it must not cost
+    /// the style they come back in.
+    #[test]
+    fn hidden_bars_come_back_in_the_style_they_had() {
+        let store = bare();
+        run("chartbook create Macro --symbol SPY --switch", &store);
+        let chart = |store: &Store| -> serde_json::Value {
+            let listed = run("chart list --book Macro --json", store);
+            serde_json::from_str::<serde_json::Value>(&listed.out).unwrap()["charts"][0].clone()
+        };
+        assert_eq!(run("chart set --book Macro --style ohlc", &store).code, 0);
+
+        assert_eq!(run("chart set --book Macro --style none", &store).code, 0);
+        assert_eq!(chart(&store)["style"], "none");
+        assert_eq!(chart(&store)["bar_style"], "ohlc");
+        assert_eq!(chart(&store)["bars"], false);
+
+        let shown = run("chart set --book Macro --bars on", &store);
+        assert_eq!(shown.code, 0, "{}", shown.err);
+        assert_eq!(chart(&store)["style"], "ohlc");
+        assert_eq!(chart(&store)["bars"], true);
+
+        assert_eq!(run("chart set --book Macro --bars off", &store).code, 0);
+        assert_eq!(chart(&store)["style"], "none");
+        assert_eq!(run("chart set --book Macro --style candles", &store).code, 0);
+        assert_eq!(chart(&store)["style"], "candles", "choosing a style shows the bars");
+    }
+
+    #[test]
+    fn a_style_and_the_bars_saying_opposite_things_are_refused() {
+        let store = bare();
+        run("chartbook create Macro --symbol SPY --switch", &store);
+        for both in ["--style candles --bars off", "--style none --bars on"] {
+            let out = run(&format!("chart set --book Macro {both}"), &store);
+            assert_eq!(out.code, super::super::EXIT_USAGE, "{both}");
+        }
     }
 
     /// A command that half-worked is worse than one that refused: the caller

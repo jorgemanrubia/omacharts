@@ -186,6 +186,13 @@ impl Kind {
         !matches!(self, Kind::SessionTimes)
     }
 
+    /// Whether a click on the chart can select it. Session shading is the
+    /// ground every bar stands on: a click anywhere would land on it, so it
+    /// is reached from the Indicators page instead.
+    pub fn selectable(self) -> bool {
+        !matches!(self, Kind::SessionTimes)
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             // Spelled out. The short form is beside it in its own column, so

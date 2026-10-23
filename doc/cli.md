@@ -596,7 +596,7 @@ A `chart set` with one bad value changes nothing at all — everything is
 checked before anything is written, so you never get a half-applied chart.
 
 Besides what a chart shows, `chart set` carries how it shows it — `--style`,
-`--session`, `--grid`, `--auto-scale` and `--log-scale` — and those are stored
+`--bars`, `--session`, `--grid`, `--auto-scale` and `--log-scale` — and those are stored
 with the chart, so a price axis held still with `--auto-scale off` is still
 held the next time the app opens.
 

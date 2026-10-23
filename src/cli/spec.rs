@@ -203,7 +203,7 @@ pub const CHART_SELECTOR: &str =
 /// How a chart paints the theme's candle colours, spelled as the scheme ids
 /// the settings store.
 const COLOURINGS: &[&str] = &["theme", "theme-hollow", "theme-red-up", "theme-mono"];
-const STYLES: &[&str] = &["candles", "ohlc"];
+const STYLES: &[&str] = &["candles", "ohlc", "none"];
 const SESSIONS: &[&str] = &["regular", "extended"];
 const SPLITS: &[&str] = &["horizontal", "vertical"];
 const KINDS: &[&str] = &[
@@ -805,7 +805,13 @@ pub const SURFACE: &[Noun] = &[
                     Flag::valued("symbol", "SYMBOL", "the instrument to chart, such as AAPL or 2330.TW"),
                     Flag::valued("suffix", "S", "its venue suffix, for a listing abroad"),
                     Flag::valued("resolution", "TF", "such as 5m, 1h, 1D, 1W, 1M, 1Y"),
-                    Flag::valued("style", "STYLE", "how bars are drawn").of(STYLES),
+                    Flag::valued("style", "STYLE", "how bars are drawn, or `none` to hide them").of(STYLES),
+                    Flag::valued(
+                        "bars",
+                        "BOOL",
+                        "hide the bars, or show them again in the style they had",
+                    )
+                    .of(SWITCHES),
                     Flag::valued("colouring", "COLOURING", "how the theme's candle colours are painted").of(COLOURINGS),
                     Flag::valued("session", "SESSION", "which hours to include").of(SESSIONS),
                     Flag::valued(
@@ -1285,6 +1291,7 @@ const STORED_FIELDS: &[(&str, &str, &str)] = &[
     ("timeframe", "chart set", "--resolution"),
     ("indicators", "chart indicator", ""),
     ("bar_style", "chart set", "--style"),
+    ("bars_hidden", "chart set", "--bars"),
     ("colouring", "chart set", "--colouring"),
     ("session", "chart set", "--session"),
     ("show_grid", "chart set", "--grid"),
@@ -1339,7 +1346,8 @@ mod tests {
 
     #[test]
     fn the_bar_styles_on_offer_are_the_ones_that_exist() {
-        let engine: Vec<&str> = BarStyle::ALL.iter().map(|s| s.key()).collect();
+        let mut engine: Vec<&str> = BarStyle::ALL.iter().map(|s| s.key()).collect();
+        engine.push("none");
         assert_eq!(STYLES, engine.as_slice());
     }
 

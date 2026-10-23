@@ -20,6 +20,7 @@
 //! drag at the frame rate.
 
 pub mod bench;
+mod selection;
 
 use std::borrow::Cow;
 use std::cell::RefCell;
@@ -158,6 +159,7 @@ struct State {
     drag: Option<Drag>,
     indicators: Vec<Drawn>,
     bar_style: BarStyle,
+    bars_hidden: bool,
     show_grid: bool,
     /// The clock the time axis and the crosshair read.
     clock: Clock,
@@ -190,6 +192,12 @@ struct State {
     /// is the one most recently picked, and what a single-drawing question
     /// is about. Shift with a click adds one or takes one out.
     selected: Vec<usize>,
+    /// The indicator selected, by id: one at a time, and never together with
+    /// a drawing. Not kept anywhere, as a drawing's selection is not.
+    picked: Option<u32>,
+    /// An indicator to select once it arrives: one just put on the chart,
+    /// which is computed on its way here.
+    pending_pick: Option<u32>,
     /// What was selected when a marquee began, kept under it: the box adds
     /// to the selection rather than starting one, since Shift is held.
     marquee_base: Vec<usize>,
@@ -253,6 +261,20 @@ struct State {
 /// added needs a row, one that moved needs its row rewritten, and one that
 /// was deleted needs its row gone — and the window, which knows the symbol
 /// and the store, is the one that can do any of that.
+/// What happened to the selected indicator, for the window, which owns the
+/// indicators and the menus about them.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum IndicatorEvent {
+    /// The selection moved to this indicator, or off every one.
+    Picked(Option<u32>),
+    /// Right-clicked, at a pixel of the chart: its menu.
+    Menu(u32, f64, f64),
+    /// Alt+Enter, or a double-click: its properties.
+    Properties(u32),
+    /// Delete.
+    Remove(u32),
+}
+
 #[derive(Clone, PartialEq, Debug)]
 pub enum DrawingEvent {
     Added(Drawing),
@@ -1090,6 +1112,7 @@ impl State {
             lead: 0,
             indicators: Vec::new(),
             bar_style: BarStyle::default(),
+            bars_hidden: false,
             show_grid: true,
             clock: Clock::default(),
             drag: None,
@@ -1104,6 +1127,8 @@ impl State {
             editing: None,
             editing_at: None,
             selected: Vec::new(),
+            picked: None,
+            pending_pick: None,
             marquee_base: Vec::new(),
             tool: None,
             placing: None,
@@ -1650,6 +1675,8 @@ pub struct ChartView {
     on_drawing_menu: Handler<dyn Fn(f64, f64)>,
     /// Enter on a selected drawing: its properties.
     on_drawing_properties: Handler<dyn Fn()>,
+    /// The selected indicator: picked, asked about, or removed.
+    on_indicator: Handler<dyn Fn(IndicatorEvent)>,
     /// A caret went into a label, or came out of one. The window lends the
     /// editor the chords it needs while this is true.
     on_typing: Handler<dyn Fn(bool)>,
@@ -1704,6 +1731,7 @@ impl ChartView {
             on_drawing: Rc::new(RefCell::new(None)),
             on_drawing_menu: Rc::new(RefCell::new(None)),
             on_drawing_properties: Rc::new(RefCell::new(None)),
+            on_indicator: Rc::new(RefCell::new(None)),
             on_typing: Rc::new(RefCell::new(None)),
             on_tool: Rc::new(RefCell::new(None)),
             on_price_auto: Rc::new(RefCell::new(None)),
@@ -1729,6 +1757,56 @@ impl ChartView {
 
     pub fn set_drawing_properties_handler(&self, handler: impl Fn() + 'static) {
         *self.on_drawing_properties.borrow_mut() = Some(Box::new(handler));
+    }
+
+    // -- indicators --------------------------------------------------------
+
+    pub fn set_indicator_handler(&self, handler: impl Fn(IndicatorEvent) + 'static) {
+        *self.on_indicator.borrow_mut() = Some(Box::new(handler));
+    }
+
+    fn tell_indicator(&self, event: IndicatorEvent) {
+        if let Some(handler) = self.on_indicator.borrow().as_ref() {
+            handler(event);
+        }
+    }
+
+    /// The indicator selected, if any.
+    pub fn picked(&self) -> Option<u32> {
+        self.state.borrow().picked
+    }
+
+    /// Select an indicator, or none. Taking one lets go of every drawing:
+    /// one thing is selected at a time, and the keys act on that one.
+    pub fn pick(&self, id: Option<u32>) {
+        let id = id.filter(|id| {
+            self.state.borrow().indicators.iter().any(|d| {
+                d.indicator.id == *id && d.indicator.visible && d.indicator.kind.selectable()
+            })
+        });
+        let changed = {
+            let mut s = self.state.borrow_mut();
+            let drawings = id.is_some() && !s.selected.is_empty();
+            if id.is_some() {
+                s.selected.clear();
+            }
+            let changed = s.picked != id;
+            s.picked = id;
+            changed || drawings
+        };
+        if changed {
+            self.redraw();
+            self.tell_indicator(IndicatorEvent::Picked(id));
+        }
+    }
+
+    /// The indicator under a pixel that a click there would select.
+    fn indicator_at(&self, x: f64, y: f64) -> Option<u32> {
+        let s = self.state.borrow();
+        if s.tool.is_some() || s.placing.is_some() {
+            return None;
+        }
+        s.indicator_at(self.area.width() as f64, self.area.height() as f64, x, y)
     }
 
     pub fn set_typing_handler(&self, handler: impl Fn(bool) + 'static) {
@@ -1921,8 +1999,9 @@ impl ChartView {
             if matches!(s.drag, Some(Drag::Place { .. })) {
                 s.drag = None;
             }
-            busy
+            busy || s.picked.is_some()
         };
+        self.pick(None);
         self.arm(None);
         busy
     }
@@ -1963,6 +2042,7 @@ impl ChartView {
         }
         state.selected = visible;
         drop(state);
+        self.pick(None);
         self.redraw();
         true
     }
@@ -2005,6 +2085,9 @@ impl ChartView {
         };
         if changed {
             self.redraw();
+        }
+        if hit.is_some() {
+            self.pick(None);
         }
         hit.is_some()
     }
@@ -2161,6 +2244,10 @@ impl ChartView {
                     false => glib::Propagation::Proceed,
                 },
                 Key::Delete | Key::BackSpace | Key::KP_Delete => {
+                    if let Some(id) = view.picked() {
+                        view.tell_indicator(IndicatorEvent::Remove(id));
+                        return glib::Propagation::Stop;
+                    }
                     if view.state.borrow().selected.is_empty() {
                         return glib::Propagation::Proceed;
                     }
@@ -2171,6 +2258,10 @@ impl ChartView {
                 // on a selected object in Explorer, Visual Studio, Visio and
                 // AutoCAD. Enter acts on the thing; Alt+Enter asks about it.
                 Key::Return | Key::KP_Enter | Key::ISO_Enter if alt(modifiers) => {
+                    if let Some(id) = view.picked() {
+                        view.tell_indicator(IndicatorEvent::Properties(id));
+                        return glib::Propagation::Stop;
+                    }
                     if view.state.borrow().selected.is_empty() {
                         return glib::Propagation::Proceed;
                     }
@@ -3152,6 +3243,13 @@ impl ChartView {
         self.redraw();
     }
 
+    /// Stop drawing the bars, or start again. Only the bars go: the scale
+    /// still fits them, and what is drawn from them stays where it was.
+    pub fn set_bars_hidden(&self, hidden: bool) {
+        self.state.borrow_mut().bars_hidden = hidden;
+        self.redraw();
+    }
+
     /// What to do when the chart itself is right-clicked. The axis keeps its
     /// own menu.
     pub fn set_pane_resize_handler(&self, handler: impl Fn(u32, f64) + 'static) {
@@ -3231,8 +3329,29 @@ impl ChartView {
     }
 
     pub fn set_indicators(&self, indicators: Vec<Drawn>) {
-        self.state.borrow_mut().indicators = indicators;
+        let wanted = {
+            let mut s = self.state.borrow_mut();
+            s.indicators = indicators;
+            let arrived = s.pending_pick.filter(|id| s.indicators.iter().any(|d| d.indicator.id == *id));
+            if arrived.is_some() {
+                s.pending_pick = None;
+            }
+            arrived.or(s.picked)
+        };
         self.redraw();
+        // One removed or hidden is no longer selected.
+        if wanted.is_some() {
+            self.pick(wanted);
+        }
+    }
+
+    /// Select an indicator now, or as soon as it is drawn.
+    pub fn pick_when_shown(&self, id: u32) {
+        let shown = self.state.borrow().indicators.iter().any(|d| d.indicator.id == id);
+        match shown {
+            true => self.pick(Some(id)),
+            false => self.state.borrow_mut().pending_pick = Some(id),
+        }
     }
 
     /// Say why the last fetch brought nothing back, or `None` once one works.
@@ -3363,12 +3482,15 @@ impl ChartView {
                 let s = state.borrow();
                 layout(&s, area.width() as f64, area.height() as f64).control_at(x, y).is_some()
             };
-            let (armed, over_drawing) = {
+            let (armed, over_drawing, over_indicator) = {
                 let s = state.borrow();
-                let over = (s.drag.is_none() && s.tool.is_none())
-                    .then(|| s.drawing_at(area.width() as f64, area.height() as f64, x, y))
-                    .flatten();
-                (s.tool.is_some(), over.map(|(_, grip)| grip))
+                let (w, h) = (area.width() as f64, area.height() as f64);
+                let free = s.drag.is_none() && s.tool.is_none();
+                let over = free.then(|| s.drawing_at(w, h, x, y)).flatten();
+                // Only when nothing drawn is under the pointer, which is
+                // also when a click would select the indicator.
+                let indicator = free && over.is_none() && s.indicator_at(w, h, x, y).is_some();
+                (s.tool.is_some(), over.map(|(_, grip)| grip), indicator)
             };
             area.set_cursor_from_name(Some(match (over_edge, over_control, armed, over_drawing) {
                 (true, _, _, _) => "ns-resize",
@@ -3378,6 +3500,10 @@ impl ChartView {
                 // pointer itself. A handle in the middle of an edge that
                 // looks like every other handle is a handle nobody tries.
                 (_, _, _, Some(grip)) => grip_cursor(grip),
+                // A hand over an indicator: a click there selects it. No
+                // highlight on hover, which across a dense chart would
+                // flicker on every line the pointer crossed.
+                _ if over_indicator => "pointer",
                 _ => "default",
             }));
             notify_hover(&state, &on_hover, &area);
@@ -3608,6 +3734,9 @@ impl ChartView {
             return;
         }
         let region = region_at(x, y, width, height);
+        // The indicator the press selects, if it lands on no drawing: chosen
+        // under the borrow, said once it is let go.
+        let mut pick = None;
         if region == Region::Plot {
             // An armed tool: this press is the first anchor. Except the
             // text tool, which has no second anchor to wait for — a word
@@ -3638,7 +3767,17 @@ impl ChartView {
             // was selected, and pans as it always did.
             // Except Ctrl on a corner, which takes hold of it so the
             // drag that follows snaps it to a candle; Shift still adds.
-            match s.drawing_at(width, height, x, y) {
+            let drawing = s.drawing_at(width, height, x, y);
+            // A drawing taken lets go of the indicator selected, which the
+            // window is told once the state is free again.
+            let unpicked = drawing.is_some() && s.picked.take().is_some();
+            let told = view.clone();
+            let unpicked = move || {
+                if unpicked && let Some(view) = told.upgrade() {
+                    view.tell_indicator(IndicatorEvent::Picked(None));
+                }
+            };
+            match drawing {
                 Some((index, grip)) if shift && (shift_only || grip == Grip::Body) => {
                     match s.selected.iter().position(|i| *i == index) {
                         Some(at) => {
@@ -3648,6 +3787,7 @@ impl ChartView {
                     }
                     drop(s);
                     area.queue_draw();
+                    unpicked();
                     return;
                 }
                 Some((index, grip)) => {
@@ -3666,6 +3806,7 @@ impl ChartView {
                     }
                     drop(s);
                     area.queue_draw();
+                    unpicked();
                     return;
                 }
                 // Shift on empty chart: a box, which takes what it touches
@@ -3675,13 +3816,20 @@ impl ChartView {
                     s.drag = Some(Drag::Marquee { from: (x, y), to: (x, y) });
                     drop(s);
                     pointer.queue_draw();
+                    if let Some(view) = view.upgrade() {
+                        view.pick(None);
+                    }
                     return;
                 }
+                // Nothing drawn here: an indicator under the press is
+                // selected, and the press goes on to pan, since an
+                // indicator is not a thing that moves.
                 None => {
                     if !s.selected.is_empty() {
                         s.selected.clear();
                         area.queue_draw();
                     }
+                    pick = Some(s.indicator_at(width, height, x, y));
                 }
             }
         }
@@ -3703,6 +3851,9 @@ impl ChartView {
         );
         drop(s);
         notify_price_auto(&state, &on_price_auto, was_auto);
+        if let (Some(hit), Some(view)) = (pick, view.upgrade()) {
+            view.pick(hit);
+        }
     });
 
         let state = self.state.clone();
@@ -3987,6 +4138,16 @@ impl ChartView {
                     view.begin_text_edit(index, false);
                     return;
                 }
+                // An indicator has no words to type, so its second click
+                // opens what can be changed about it, as a double-click on
+                // its name in the legend does.
+                if let Some(view) = view.upgrade()
+                    && let Some(id) = view.indicator_at(x, y)
+                {
+                    view.pick(Some(id));
+                    view.tell_indicator(IndicatorEvent::Properties(id));
+                    return;
+                }
             }
             let mut s = state.borrow_mut();
             let was_auto = s.price_auto;
@@ -4061,6 +4222,16 @@ impl ChartView {
                         handler(x, y);
                     }
                     return;
+                }
+                // Then an indicator, which gets a menu about itself the
+                // same way.
+                if let Some(view) = view.upgrade() {
+                    let hit = view.indicator_at(x, y);
+                    view.pick(hit);
+                    if let Some(id) = hit {
+                        view.tell_indicator(IndicatorEvent::Menu(id, x, y));
+                        return;
+                    }
                 }
                 // The chart's own menu belongs to whoever owns the chart.
                 if let Some(handler) = on_context_menu.borrow().as_ref() {
@@ -4149,42 +4320,54 @@ fn notify_hover(
 // Drawing
 // ---------------------------------------------------------------------------
 
+/// Where everything goes in one frame: the stack of rows, the columns the
+/// bars are drawn in, and the price scale. Worked out once here, so what a
+/// click lands on is what was drawn there.
+struct Frame<'a> {
+    plan: Layout,
+    columns: Columns<'a>,
+    scale: PriceScale,
+    /// The tallest bar of the volume strip.
+    max_volume: f64,
+}
+
+fn frame(state: &State, width: f64, height: f64) -> Option<Frame<'_>> {
+    let (first, visible, lead) = state.view();
+    if visible == 0 {
+        return None;
+    }
+    let bars = &state.bars[first..first + visible];
+    let plan = layout(state, width, height);
+
+    // What will actually be drawn: the visible bars themselves at any normal
+    // zoom, and one aggregate per pixel column past that. They take their
+    // own columns of the plot, after whatever room was dragged open before
+    // the first bar and leaving empty what was opened past the last.
+    let column_w = plan.plot_w / state.columns().max(1) as f64;
+    let bars_x = plan.plot_x + lead as f64 * column_w;
+    let columns = Columns::of(bars, first, visible, bars_x, column_w * visible as f64);
+
+    let max_volume = columns.bars.iter().fold(0.0_f64, |most, b| most.max(b.volume));
+    // Off the real bars rather than the columns. The two agree, because a
+    // column keeps the highest high and the lowest low of what it stands for —
+    // and the crosshair works the same range out from the same bars on its own
+    // layer, where going through the columns would be work for nothing.
+    let scale = price_range(state, bars, &plan)?;
+    Some(Frame { plan, columns, scale, max_volume })
+}
+
 fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
     let ui = &state.theme.ui;
 
     colors::set_source(cr, &ui.background);
     let _ = cr.paint();
 
-    let (first, visible, lead) = state.view();
-    if visible == 0 {
-        draw_placeholder(cr, width, height, state);
-        return;
-    }
-    let bars = &state.bars[first..first + visible];
-
-    let plan = layout(state, width, height);
-    let (plot_x, plot_w, price_y, price_h) = (plan.plot_x, plan.plot_w, plan.price_y, plan.price_h);
-
-    // What will actually be drawn: the visible bars themselves at any normal
-    // zoom, and one aggregate per pixel column past that. They take their
-    // own columns of the plot, after whatever room was dragged open before
-    // the first bar and leaving empty what was opened past the last.
-    let column_w = plot_w / state.columns().max(1) as f64;
-    let bars_x = plot_x + lead as f64 * column_w;
-    let columns = Columns::of(bars, first, visible, bars_x, column_w * visible as f64);
-
-    let mut max_volume: f64 = 0.0;
-    for b in columns.bars.iter() {
-        max_volume = max_volume.max(b.volume);
-    }
-    // Off the real bars rather than the columns. The two agree, because a
-    // column keeps the highest high and the lowest low of what it stands for —
-    // and the crosshair works the same range out from the same bars on its own
-    // layer, where going through the columns would be work for nothing.
-    let Some(scale) = price_range(state, bars, &plan) else {
+    let Some(Frame { plan, columns, scale, max_volume }) = frame(state, width, height) else {
         draw_placeholder(cr, width, height, state);
         return;
     };
+    let (plot_x, plot_w, price_y, price_h) = (plan.plot_x, plan.plot_w, plan.price_y, plan.price_h);
+    let bars_x = columns.plot_x;
 
     let to_y = |price: f64| scale.to_y(price, price_y, price_h);
     let bar_w = columns.bar_w;
@@ -4509,6 +4692,9 @@ fn axis_time(bars: &[Bar], timeframe: Timeframe, per: f64, at: i64) -> Option<i6
 /// Up and down candles in two passes, each building one path for wicks and one
 /// for bodies.
 fn draw_candles(cr: &cairo::Context, state: &State, columns: &Columns, to_y: &impl Fn(f64) -> f64) {
+    if state.bars_hidden {
+        return;
+    }
     candles(cr, state.bar_style, &state.scheme, columns, to_y);
 }
 
@@ -4679,23 +4865,38 @@ fn draw_volume(
     let inner_top = top + height * 0.1;
     let inner_h = height * 0.9;
     let (up, down) = volume_colours(indicator, &state.theme, &state.scheme);
-    for rising in [false, true] {
-        let colour = if rising { &up } else { &down };
-        let mut any = false;
-        for (i, bar) in columns.bars.iter().enumerate() {
-            if (bar.close >= bar.open) != rising || bar.volume <= 0.0 {
-                continue;
+    let lit = state.picked == Some(indicator.id);
+    // Lit, the glow goes down first, under every bar, and the bars over it
+    // at full strength.
+    let passes: &[bool] = if lit { &[true, false] } else { &[false] };
+    for glow in passes.iter().copied() {
+        for rising in [false, true] {
+            let colour = if rising { &up } else { &down };
+            let mut any = false;
+            for (i, bar) in columns.bars.iter().enumerate() {
+                if (bar.close >= bar.open) != rising || bar.volume <= 0.0 {
+                    continue;
+                }
+                any = true;
+                let h = (bar.volume / max_volume * inner_h).max(1.0);
+                // A column's own pixel once it holds several bars, for the
+                // reason the wicks take it.
+                let (x, w) = columns.tile(i).unwrap_or_else(|| columns.body(i));
+                let (top, h) = ((inner_top + inner_h - h).round(), h.round());
+                match glow {
+                    true => selection::glow_bar(cr, (x, top, w, h), false),
+                    false => cr.rectangle(x, top, w, h),
+                }
             }
-            any = true;
-            let h = (bar.volume / max_volume * inner_h).max(1.0);
-            // A column's own pixel once it holds several bars, for the
-            // reason the wicks take it.
-            let (x, w) = columns.tile(i).unwrap_or_else(|| columns.body(i));
-            cr.rectangle(x, (inner_top + inner_h - h).round(), w, h.round());
-        }
-        if any {
-            colors::set_source_alpha(cr, colour, 0.85);
-            let _ = cr.fill();
+            if any {
+                let alpha = match (glow, lit) {
+                    (true, _) => selection::glow_alpha(&state.theme),
+                    (false, true) => 1.0,
+                    (false, false) => 0.85,
+                };
+                colors::set_source_alpha(cr, colour, alpha);
+                let _ = cr.fill();
+            }
         }
     }
 }
@@ -4767,7 +4968,12 @@ fn draw_chevron(cr: &cairo::Context, x: f64, y: f64, up: bool) {
 fn draw_pane_name(cr: &cairo::Context, state: &State, drawn: &Drawn, plot_x: f64, top: f64) {
     cr.select_font_face("sans-serif", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
     cr.set_font_size(10.0);
-    colors::set_source_alpha(cr, &state.theme.ui.text_muted, 0.8);
+    // In the indicator's colour while it is selected: the one mark that is
+    // there whatever is on screen, when its line is scrolled out of view.
+    match state.picked == Some(drawn.indicator.id) {
+        true => colors::set_source(cr, &drawn.color),
+        false => colors::set_source_alpha(cr, &state.theme.ui.text_muted, 0.8),
+    }
     cr.move_to(plot_x + 2.0, top + 11.0);
     let _ = cr.show_text(&drawn.indicator.label_for(state.timeframe));
 }
@@ -4835,6 +5041,7 @@ fn draw_pane(
     let plot_x = columns.plot_x;
     let (first, visible) = (columns.first, columns.visible);
     let values = on_screen(&pane.values, first, visible);
+    let lit = state.picked == Some(drawn.indicator.id);
     let Some((low, high)) = pane_range(pane, first, visible) else {
         // Nothing to scale to and so nothing to draw — but the strip is still
         // a box on the chart, and a box with no name in it is one you have to
@@ -4864,7 +5071,7 @@ fn draw_pane(
     // against — the same order the volume strip's bars and the price plot's
     // band shading are drawn in.
     if let Some(histogram) = &pane.histogram {
-        draw_histogram(cr, state, on_screen(histogram, first, visible), columns, &strip);
+        draw_histogram(cr, state, on_screen(histogram, first, visible), columns, &strip, lit);
     }
 
     cr.save().ok();
@@ -4906,10 +5113,39 @@ fn draw_pane(
     if stroke.is_hidden() {
         return;
     }
-    stroke_pane_line(cr, stroke, &drawn.color, values, columns, &strip);
     let signal = pane.signal.as_ref().map(|signal| (signal, signal_colour(state, drawn)));
+    // Lit, every line glows under itself, and each gets a dot at its latest
+    // value, in its own colour.
+    let lines: Vec<(&Vec<Option<f64>>, &str)> = [(&pane.values, drawn.color.as_str())]
+        .into_iter()
+        .chain(signal.iter().map(|(series, colour)| (*series, colour.as_str())))
+        .collect();
+    let point = |series: &[Option<f64>], at: usize| {
+        series.get(columns.offset(at)).copied().flatten().map(|value| (columns.x(at), strip(value)))
+    };
+    if lit {
+        // Inside the strip, as its lines are: a glow past its edge would be
+        // drawn over the strip next to it.
+        cr.save().ok();
+        cr.rectangle(plot_x, top, plot_w, height);
+        cr.clip();
+        for (series, colour) in &lines {
+            let shown = on_screen(series, first, visible);
+            selection::glow_line(cr, &state.theme, colour, stroke.width, columns, |at| point(shown, at));
+        }
+        cr.restore().ok();
+    }
+    stroke_pane_line(cr, stroke, &drawn.color, values, columns, &strip);
     if let Some((signal, colour)) = &signal {
         stroke_pane_line(cr, stroke, colour, on_screen(signal, first, visible), columns, &strip);
+    }
+    if lit {
+        for (series, colour) in &lines {
+            let shown = on_screen(series, first, visible);
+            let latest = selection::latest(series).map(|bar| bar.saturating_sub(first));
+            let source = |at: usize| columns.offset(at);
+            selection::end_dot(cr, &state.theme, colour, columns, latest, |at| point(shown, at), source);
+        }
     }
 
     // Each line's latest value on the axis, in the line's own colour, as the
@@ -5042,29 +5278,43 @@ fn draw_histogram(
     values: &[Option<f64>],
     columns: &Columns,
     to_y: &impl Fn(f64) -> f64,
+    lit: bool,
 ) {
     let base = to_y(0.0);
-    for rising in [false, true] {
-        let colour = state.scheme.volume(if rising { Direction::Up } else { Direction::Down });
-        let mut any = false;
-        for at in 0..columns.len() {
-            let Some(Some(value)) = values.get(columns.offset(at)) else { continue };
-            // A bar at nought has no height to draw, and one whose value is
-            // not a figure has neither height nor a side to be on. The engine
-            // does not produce the second, and a rectangle with a NaN corner
-            // is not a thing to find out about from inside a draw callback.
-            if !value.is_finite() || *value == 0.0 || (*value >= 0.0) != rising {
-                continue;
+    let passes: &[bool] = if lit { &[true, false] } else { &[false] };
+    for glow in passes.iter().copied() {
+        for rising in [false, true] {
+            let colour = state.scheme.volume(if rising { Direction::Up } else { Direction::Down });
+            let mut any = false;
+            for at in 0..columns.len() {
+                let Some(Some(value)) = values.get(columns.offset(at)) else { continue };
+                // A bar at nought has no height to draw, and one whose value
+                // is not a figure has neither height nor a side to be on. The
+                // engine does not produce the second, and a rectangle with a
+                // NaN corner is not a thing to find out about from inside a
+                // draw callback.
+                if !value.is_finite() || *value == 0.0 || (*value >= 0.0) != rising {
+                    continue;
+                }
+                any = true;
+                let y = to_y(*value);
+                let (top, h) = (y.min(base).round(), (y - base).abs().max(1.0).round());
+                let (x, w) = columns.tile(at).unwrap_or_else(|| columns.body(at));
+                match glow {
+                    // Away from the baseline, whichever side of it the bar is.
+                    true => selection::glow_bar(cr, (x, top, w, h), !rising),
+                    false => cr.rectangle(x, top, w, h),
+                }
             }
-            any = true;
-            let y = to_y(*value);
-            let (top, h) = (y.min(base), (y - base).abs().max(1.0));
-            let (x, w) = columns.tile(at).unwrap_or_else(|| columns.body(at));
-            cr.rectangle(x, top.round(), w, h.round());
-        }
-        if any {
-            colors::set_source_alpha(cr, colour, 0.85);
-            let _ = cr.fill();
+            if any {
+                let alpha = match (glow, lit) {
+                    (true, _) => selection::glow_alpha(&state.theme),
+                    (false, true) => 1.0,
+                    (false, false) => 0.85,
+                };
+                colors::set_source_alpha(cr, colour, alpha);
+                let _ = cr.fill();
+            }
         }
     }
 }
@@ -5775,11 +6025,16 @@ fn draw_indicator_lines(
     to_y: &impl Fn(f64) -> f64,
 ) {
     for drawn in state.indicators.iter().filter(|d| d.indicator.visible) {
+        let lit = state.picked == Some(drawn.indicator.id);
         match &drawn.output {
             Output::Line(values) => {
                 let stroke = drawn.indicator.stroke;
                 if stroke.is_hidden() {
                     continue;
+                }
+                let point = |at: usize| series_point(values, columns, to_y, at);
+                if lit {
+                    selection::glow_line(cr, &state.theme, &drawn.color, stroke.width, columns, point);
                 }
                 cr.save().ok();
                 cr.set_dash(&stroke.style.dashes(stroke.width), 0.0);
@@ -5787,8 +6042,35 @@ fn draw_indicator_lines(
                 cr.set_line_width(stroke.width);
                 stroke_series(cr, values, columns, to_y);
                 cr.restore().ok();
+                if lit {
+                    let latest = selection::latest(values);
+                    selection::end_dot(cr, &state.theme, &drawn.color, columns, latest, point, |at| columns.source(at));
+                }
             }
             Output::Bands(bands) => {
+                // Every line it draws, each in its own colour, lit together:
+                // the band is one thing.
+                let lines: Vec<(&[Option<f64>], String, f64)> = bands
+                    .bands
+                    .iter()
+                    .filter(|band| band.enabled && !band.stroke.is_hidden())
+                    .flat_map(|band| {
+                        let colour = band_colour(band, drawn, &state.theme);
+                        [
+                            (band.upper.as_slice(), colour.clone(), band.stroke.width),
+                            (band.lower.as_slice(), colour, band.stroke.width),
+                        ]
+                    })
+                    .chain((!drawn.indicator.stroke.is_hidden()).then(|| {
+                        (bands.center.as_slice(), drawn.color.clone(), drawn.indicator.stroke.width)
+                    }))
+                    .collect();
+                if lit {
+                    for (values, colour, width) in &lines {
+                        let point = |at: usize| series_point(values, columns, to_y, at);
+                        selection::glow_line(cr, &state.theme, colour, *width, columns, point);
+                    }
+                }
                 cr.save().ok();
                 for band in bands.bands.iter() {
                     // A width of zero means no line, which is how a shaded
@@ -5813,6 +6095,13 @@ fn draw_indicator_lines(
                     cr.set_line_width(stroke.width);
                     stroke_series(cr, &bands.center, columns, to_y);
                     cr.restore().ok();
+                }
+                if lit {
+                    for (values, colour, _) in &lines {
+                        let point = |at: usize| series_point(values, columns, to_y, at);
+                        let latest = selection::latest(values);
+                        selection::end_dot(cr, &state.theme, colour, columns, latest, point, |at| columns.source(at));
+                    }
                 }
             }
             Output::Profiles(_) | Output::Volume { .. } | Output::Pane(_) | Output::Time(_) => {}
@@ -5959,7 +6248,22 @@ fn draw_profiles(
         cr.move_to(left, y);
         cr.line_to(left + span, y);
         let _ = cr.stroke();
+
+        if state.picked == Some(drawn.indicator.id) {
+            selection::outline_profile(cr, &state.theme, &drawn.color, profile, columns, to_y);
+        }
     }
+}
+
+/// Where a series indexed by bar is drawn in one column, if it has a value
+/// there: the point `stroke_series` draws through.
+fn series_point(
+    values: &[Option<f64>],
+    columns: &Columns,
+    to_y: &impl Fn(f64) -> f64,
+    at: usize,
+) -> Option<(f64, f64)> {
+    values.get(columns.source(at)).copied().flatten().map(|value| (columns.x(at), to_y(value)))
 }
 
 /// Stroke a series, breaking the path wherever it has no value.
@@ -6911,6 +7215,20 @@ mod tests {
         assert_eq!(alpha(50), 0, "the inside of a hollow body is left empty");
         assert!((11..40).all(|y| alpha(y) != 0), "the upper wick reaches the body");
         assert!((61..90).all(|y| alpha(y) != 0), "the lower wick reaches the body");
+    }
+
+    #[test]
+    fn hidden_bars_draw_nothing() {
+        let mut state = charted(1);
+        state.bars_hidden = true;
+        let bars = [Bar { ts: 0, open: 40.0, high: 90.0, low: 10.0, close: 60.0, volume: 0.0 }];
+        let to_y = |price: f64| 100.0 - price;
+        let columns = Columns::of(&bars, 0, 1, 0.0, 20.0);
+        for style in BarStyle::ALL {
+            state.bar_style = style;
+            let drawn = frame(20.0, 100.0, |cr| draw_candles(cr, &state, &columns, &to_y));
+            assert_eq!(painted(&drawn), 0, "{style:?} drew a hidden bar");
+        }
     }
 
     #[test]

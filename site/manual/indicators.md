@@ -163,11 +163,43 @@ The legend lists the chart's indicators under the symbol, faint until the pointe
 | Eye | Hides it, or shows it again. A hidden indicator's label stays, dimmed |
 | Gear | Opens its settings in Chart settings |
 | Bin | Removes it |
+| Click the label | Selects it on the chart ([Selecting an indicator](#selecting-an-indicator)) |
 | Double-click the label | Opens its settings, as the gear does |
 
 An indicator with **Show in chart legend** off in its settings has no line in the legend, and is still drawn. Hiding it is the switch on its row in the [Indicators page](#the-indicators-page). [Session Times](/manual/indicators/session-times/) starts out of the legend, and every other indicator in it.
 
 The label is the indicator's short name and its lengths, in the order its settings list them, such as **SMA 50** or **MACD 12 26 9**. A VWAP or a volume profile shows its period instead, such as **VWAP · Session**. When the period in use differs from the one chosen, the label names the one in use ([Reset periods](#reset-periods)). [Session Times](/manual/indicators/session-times/) names its ranges: **Sessions · ETH, London**.
+
+## Selecting an indicator
+
+Click an indicator on the chart to select it: a line, a bar of the volume strip or a MACD's histogram, or a row of a volume profile. A click on its name in the legend selects it too. The pointer is a hand over anything that a click would select.
+
+A selected indicator glows in its own colour, under the lines and bars it draws, and each of its lines wears a dot at its latest value. A volume profile is outlined instead. Its name in the legend is at full strength with a ring round its dot, and a strip's name takes its colour.
+
+| Gesture | Does |
+|---|---|
+| Click it, or its name in the legend | Selects it |
+| Click empty chart, <kbd>Esc</kbd> | Clears the selection |
+| Double-click it | Opens its settings |
+| <kbd>Alt</kbd> + <kbd>Enter</kbd> | Opens its settings |
+| <kbd>Delete</kbd> / <kbd>Backspace</kbd> | Removes it |
+| <kbd>Ctrl</kbd> + <kbd>C</kbd>, <kbd>Ctrl</kbd> + <kbd>V</kbd> | Copies it, and pastes it on the focused chart |
+| Right-click it | Selects it and opens its menu |
+
+One thing is selected at a time: selecting an indicator clears the selected drawings, and selecting a drawing clears the indicator. Drawings come first. Near a drawing, a click selects the drawing, and the indicator is selected anywhere else along it. A press on an indicator that goes on to drag pans the chart, since an indicator does not move.
+
+[Session Times](/manual/indicators/session-times/) is not selected by a click, since it covers the whole chart, and neither is the inside of a band's shading, so a press there pans. A hidden indicator is not selected either.
+
+A paste is a new indicator with the same settings, on the chart that has the keyboard, which can be the chart it was copied from or any other. On a chart on a template, it goes on the template. One whose colour was left to the theme takes the next free colour there. The pasted indicator is selected.
+
+### Its menu
+
+| Item | Does |
+|---|---|
+| **Copy** (<kbd>Ctrl</kbd> + <kbd>C</kbd>) | Copies it |
+| **Paste** (<kbd>Ctrl</kbd> + <kbd>V</kbd>) | Only while something is copied: an indicator, or drawings |
+| **Remove indicator** (<kbd>Delete</kbd>) | Removes it, from the template on a chart on one |
+| **Properties…** (<kbd>Alt</kbd> + <kbd>Enter</kbd>) | Opens its settings |
 
 ## Colours and lines
 

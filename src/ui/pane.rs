@@ -85,7 +85,10 @@ pub struct ChartPane {
     pub header_row: gtk::Box,
     pub change_label: gtk::Label,
     pub template_label: gtk::Label,
+    /// The style its bars are drawn in when they are drawn: hiding them
+    /// leaves it alone, so showing them again brings back the same one.
     pub bar_style: Cell<BarStyle>,
+    pub bars_hidden: Cell<bool>,
     /// How the theme's candle colours are painted on this chart.
     pub colouring: Cell<omacharts_engine::BarColouring>,
     pub session: Cell<Session>,
@@ -336,6 +339,7 @@ impl ChartPane {
             change_label,
             template_label,
             bar_style: Cell::new(bar_style),
+            bars_hidden: Cell::new(false),
             colouring: Cell::new(Default::default()),
             session: Cell::new(session),
             show_grid: Cell::new(show_grid),

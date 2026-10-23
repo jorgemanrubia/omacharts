@@ -206,6 +206,7 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("End", "Jump to the latest bar"),
             ("Ctrl+Esc", "Reset the view"),
             ("Ctrl+Shift+G", "Show or hide the gridlines"),
+            ("Ctrl+Shift+B", "Hide the bars, or show them as they were"),
             ("Ctrl+Alt+Shift+1 … 9", "Chart template N, in the order they are listed"),
             ("Ctrl+Alt+Shift+0", "No chart template"),
             ("Ctrl+Alt+Shift+PgUp PgDn", "Previous or next chart template"),
@@ -220,14 +221,14 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Alt+A", "Draw an arrow"),
             ("Alt+Z", "Draw a zig-zag: click each corner, double-click or Enter to end it"),
             ("Ctrl+click a tool", "Keep it in hand for drawing after drawing; Esc puts it down"),
-            ("Ctrl+C / Ctrl+V", "Copy the selected drawings, and put them down again"),
+            ("Ctrl+C / Ctrl+V", "Copy the selected drawings or indicator, and put them down again"),
             ("Alt+R", "Draw a rectangle over a run of bars"),
             ("Alt+C", "Draw a circle, dragged to any shape"),
             ("Alt+T", "Write on the chart: click, then type"),
             ("Ctrl+D", "Show or hide the drawing tools"),
             ("Alt+1 … 9", "Configuration N, for the selected drawing or the one about to be drawn"),
             ("Enter / F2", "Put the caret in the selected drawing's text"),
-            ("Alt+Enter", "The selected drawing's properties"),
+            ("Alt+Enter", "The selected drawing's or indicator's properties"),
             ("Double-click", "Put the caret in a drawing and type on it"),
             ("Ctrl++ / Ctrl+−", "Grow or shrink the selected drawing's text"),
             ("Shift+Enter", "A new line, while typing on the chart"),
@@ -593,6 +594,7 @@ mod tests {
                 indicators: Vec::new(),
                 template: None,
                 bar_style: "candle".to_string(),
+                bars_hidden: false,
                 colouring: None,
                 session: "extended".to_string(),
                 show_grid: true,
@@ -666,6 +668,7 @@ mod tests {
             indicators: Vec::new(),
             template: None,
             bar_style: "candle".to_string(),
+            bars_hidden: false,
                 colouring: None,
             session: "extended".to_string(),
             show_grid: true,
@@ -1275,6 +1278,36 @@ fn template_accel(n: usize) -> String {
 
 /// A chart template as a menu action's target: its id, or `none`, spelled
 /// the way the default for new charts is written down.
+/// What was last copied: drawings, or one indicator, never both, since only
+/// one of them can be selected at a time.
+#[derive(Clone)]
+enum Clipboard {
+    Empty,
+    Drawings(Vec<omacharts_engine::Drawing>),
+    Indicator(Indicator),
+}
+
+/// What a legend row is named by, so the one for a selected indicator can be
+/// found among them.
+/// The side of a legend row's dot's box: the 8 px dot and room round it for
+/// the ring a selected indicator's dot wears.
+const LEGEND_DOT: i32 = 12;
+
+fn legend_row_name(id: u32) -> String {
+    format!("legend-indicator-{id}")
+}
+
+/// The bar style choice that hides the bars, among the styles that draw
+/// them.
+pub const NO_BARS: &str = "none";
+pub const NO_BARS_LABEL: &str = "None";
+
+/// What the Bar style menu marks: the style, or None while the bars are
+/// hidden.
+fn bar_style_state(pane: &ChartPane) -> &'static str {
+    if pane.bars_hidden.get() { NO_BARS } else { pane.bar_style.get().key() }
+}
+
 fn template_state(template: Option<u32>) -> glib::Variant {
     match template {
         Some(id) => id.to_string().to_variant(),
@@ -1411,6 +1444,11 @@ struct StoredPane {
     #[serde(default)]
     template: Option<u32>,
     bar_style: String,
+    /// Whether the bars are hidden, which leaves `bar_style` as the style
+    /// showing them again brings back. Missing from a chart written before
+    /// they could be, and every one of those was drawing them.
+    #[serde(default)]
+    bars_hidden: bool,
     /// How the theme's candle colours are painted. Missing from a chart
     /// written before charts were painted one by one.
     #[serde(default)]
@@ -1813,6 +1851,9 @@ pub struct Window {
     /// the chart it opens on has no indicators.
     template_from_chart_action: RefCell<Option<gio::SimpleAction>>,
     grid_action: RefCell<Option<gio::SimpleAction>>,
+    bars_action: RefCell<Option<gio::SimpleAction>>,
+    /// The indicator the open indicator menu is about.
+    menu_indicator: RefCell<Option<u32>>,
     auto_scale_action: RefCell<Option<gio::SimpleAction>>,
     log_scale_action: RefCell<Option<gio::SimpleAction>>,
     drawing_config_action: RefCell<Option<gio::SimpleAction>>,
@@ -1823,8 +1864,8 @@ pub struct Window {
     /// price and a look, and the only thing that can read one back is this
     /// application. Being the window's also means a copy carries between
     /// charts and chartbooks, which is most of what copying a drawing is
-    /// for.
-    drawing_clipboard: RefCell<Vec<omacharts_engine::Drawing>>,
+    /// for. An indicator is copied the same way, with its settings.
+    clipboard: RefCell<Clipboard>,
     /// The drawing tools, on the left.
     drawing_bar: RefCell<Option<Rc<crate::ui::drawing_bar::DrawingBar>>>,
     /// The drawing tools' toggle, floating over the top-left corner the way
@@ -1989,11 +2030,13 @@ impl Window {
             template_action: RefCell::new(None),
             template_from_chart_action: RefCell::new(None),
             grid_action: RefCell::new(None),
+            bars_action: RefCell::new(None),
+            menu_indicator: RefCell::new(None),
             auto_scale_action: RefCell::new(None),
             log_scale_action: RefCell::new(None),
             drawing_config_action: RefCell::new(None),
             drawing_settings_action: RefCell::new(None),
-            drawing_clipboard: RefCell::new(Vec::new()),
+            clipboard: RefCell::new(Clipboard::Empty),
             drawing_bar: RefCell::new(None),
             start_corner: RefCell::new(None),
             chart_host: chart_host.clone(),
@@ -2340,6 +2383,9 @@ impl Window {
             });
         }
 
+        let picker = self.clone();
+        pane.view.set_indicator_handler(move |event| picker.indicator_event(id, event));
+
         pane.view.set_drawing_properties_handler(move || {
             opener.focus(id);
             opener.open_drawing_settings();
@@ -2523,7 +2569,10 @@ impl Window {
             action.set_state(&pane.mode().key().to_variant());
         }
         if let Some(action) = self.bar_style_action.borrow().as_ref() {
-            action.set_state(&pane.bar_style.get().key().to_variant());
+            action.set_state(&bar_style_state(pane).to_variant());
+        }
+        if let Some(action) = self.bars_action.borrow().as_ref() {
+            action.set_state(&(!pane.bars_hidden.get()).to_variant());
         }
         if let Some(action) = self.session_action.borrow().as_ref() {
             action.set_state(&pane.session.get().key().to_variant());
@@ -2592,6 +2641,8 @@ impl Window {
         self.show_header_on(&added);
         added.view.set_price_auto(from.view.price_auto());
         added.view.set_price_log(from.view.price_log());
+        added.bars_hidden.set(from.bars_hidden.get());
+        added.view.set_bars_hidden(from.bars_hidden.get());
         let next = self.layout.borrow().split(from.id, added.id, horizontal);
         *self.layout.borrow_mut() = next;
         self.rebuild_layout();
@@ -3200,6 +3251,7 @@ impl Window {
                     indicators: pane.indicators.borrow().clone(),
                     template: pane.template.get(),
                     bar_style: pane.bar_style.get().key().to_string(),
+                    bars_hidden: pane.bars_hidden.get(),
                     colouring: Some(pane.colouring.get().key().to_string()),
                     session: pane.session.get().key().to_string(),
                     show_grid: pane.show_grid.get(),
@@ -3407,6 +3459,8 @@ impl Window {
             *pane.local_drawings.borrow_mut() = stored.drawings.clone();
             pane.view.set_price_auto(stored.auto_scale);
             pane.view.set_price_log(stored.log_scale);
+            pane.bars_hidden.set(stored.bars_hidden);
+            pane.view.set_bars_hidden(stored.bars_hidden);
             restored.push((pane, stored));
         }
 
@@ -5188,9 +5242,9 @@ impl Window {
                 // the vertical split, which is a key that can only ever
                 // mean one thing to the hand that presses it; the split is
                 // on Ctrl+Alt+V now.
-                Key::c | Key::C => this.copy_drawings(),
+                Key::c | Key::C => this.copy(),
                 Key::v | Key::V => {
-                    this.paste_drawings();
+                    this.paste();
                 }
                 _ => return glib::Propagation::Proceed,
             }
@@ -7176,21 +7230,24 @@ impl Window {
         for (indicator, colour) in all.iter().zip(colors).filter(|(i, _)| i.in_legend) {
             let id = indicator.id;
 
+            // The dot in its colour, ringed in it too while the indicator
+            // is selected on the chart. Drawn in room the ring already has,
+            // so selecting one moves nothing in the row.
             let dot = gtk::DrawingArea::new();
-            dot.set_size_request(8, 8);
+            dot.set_size_request(LEGEND_DOT, LEGEND_DOT);
             dot.set_valign(gtk::Align::Center);
             let dot_colour = colour.clone();
+            let dot_pane = Rc::downgrade(pane);
             dot.set_draw_func(move |_, cr, width, height| {
+                let (x, y) = (width as f64 / 2.0, height as f64 / 2.0);
                 colors::set_source(cr, &dot_colour);
-                let radius = (width.min(height) as f64) / 2.0;
-                cr.arc(
-                    width as f64 / 2.0,
-                    height as f64 / 2.0,
-                    radius,
-                    0.0,
-                    std::f64::consts::TAU,
-                );
+                cr.arc(x, y, 4.0, 0.0, std::f64::consts::TAU);
                 let _ = cr.fill();
+                if dot_pane.upgrade().is_some_and(|p| p.view.picked() == Some(id)) {
+                    cr.set_line_width(1.5);
+                    cr.arc(x, y, (width.min(height) as f64) / 2.0 - 0.75, 0.0, std::f64::consts::TAU);
+                    let _ = cr.stroke();
+                }
             });
 
             let label = gtk::Label::new(Some(&indicator.label_for(timeframe)));
@@ -7200,13 +7257,17 @@ impl Window {
                 label.add_css_class("legend-indicator-hidden");
             }
 
-            // Double-clicking the name opens its settings, the same as the
-            // gear beside it. The name is the bigger target and the one you
-            // are already looking at.
+            // A click on the name selects the indicator on the chart, as a
+            // click on its line does. Double-clicking opens its settings, the
+            // same as the gear beside it: the name is the bigger target and
+            // the one you are already looking at.
             let open_settings = gtk::GestureClick::new();
             let this = self.clone();
+            let picker = pane.clone();
             open_settings.connect_pressed(move |_, presses, _, _| {
+                this.focus(picker.id);
                 if presses < 2 {
+                    picker.view.pick(Some(id));
                     return;
                 }
                 crate::ui::chart_settings::ChartSettings::present_indicator(
@@ -7216,6 +7277,7 @@ impl Window {
                 );
             });
             label.add_controller(open_settings);
+
 
             let toggle = gtk::Button::from_icon_name(if indicator.visible {
                 "view-reveal-symbolic"
@@ -7262,6 +7324,10 @@ impl Window {
 
             let row = gtk::Box::new(gtk::Orientation::Horizontal, 5);
             row.add_css_class("legend-row");
+            row.set_widget_name(&legend_row_name(id));
+            if pane.view.picked() == Some(id) {
+                row.add_css_class("selected");
+            }
             row.append(&dot);
             row.append(&label);
             row.append(&toggle);
@@ -7269,6 +7335,80 @@ impl Window {
             row.append(&remove);
             pane.indicator_legend.append(&row);
         }
+    }
+
+    /// Mark the legend row of the indicator selected on a chart, and only
+    /// that one.
+    fn show_picked_in_legend(&self, pane: &ChartPane, picked: Option<u32>) {
+        let mut child = pane.indicator_legend.first_child();
+        while let Some(row) = child {
+            let selected = picked.is_some_and(|id| row.widget_name() == legend_row_name(id));
+            if selected {
+                row.add_css_class("selected");
+            } else {
+                row.remove_css_class("selected");
+            }
+            if let Some(dot) = row.first_child() {
+                dot.queue_draw();
+            }
+            child = row.next_sibling();
+        }
+    }
+
+    /// What one indicator wants doing, from the chart: its menu, its
+    /// properties, its removal, or the legend to say it is selected.
+    fn indicator_event(self: &Rc<Self>, id: u32, event: crate::ui::chart::IndicatorEvent) {
+        use crate::ui::chart::IndicatorEvent;
+        let Some(pane) = self.panes.borrow().iter().find(|p| p.id == id).cloned() else { return };
+        match event {
+            IndicatorEvent::Picked(picked) => self.show_picked_in_legend(&pane, picked),
+            IndicatorEvent::Menu(indicator, x, y) => {
+                self.focus(id);
+                self.indicator_menu(indicator, x, y);
+            }
+            IndicatorEvent::Properties(indicator) => {
+                self.focus(id);
+                crate::ui::chart_settings::ChartSettings::present_indicator(self, self.store.clone(), indicator);
+            }
+            IndicatorEvent::Remove(indicator) => self.remove_indicator(&pane, indicator),
+        }
+    }
+
+    /// Take one indicator off a chart, or off the template it is on.
+    fn remove_indicator(self: &Rc<Self>, pane: &Rc<ChartPane>, id: u32) {
+        let kept: Vec<Indicator> = pane.indicators.borrow().iter().filter(|i| i.id != id).cloned().collect();
+        self.change_indicators_of(pane, kept);
+    }
+
+    /// The menu of the indicator selected on the focused chart, laid out as a
+    /// drawing's is: what is done to it, then removing it, then its
+    /// properties, last and alone. What only some indicators can do goes
+    /// above the removal, as a drawing's own errands do.
+    fn indicator_menu(self: &Rc<Self>, indicator: u32, x: f64, y: f64) {
+        let pane = self.focused_pane();
+        *self.menu_indicator.borrow_mut() = Some(indicator);
+
+        let menu = gio::Menu::new();
+        let edit = gio::Menu::new();
+        shortcuts::append_with_key(&edit, "Copy", "chart.copy", "<Ctrl>c");
+        menu.append_section(None, &edit);
+        if self.has_copied() {
+            let paste = gio::Menu::new();
+            shortcuts::append_with_key(&paste, "Paste", "chart.paste", "<Ctrl>v");
+            menu.append_section(None, &paste);
+        }
+
+        let remove = gio::Menu::new();
+        shortcuts::append_with_key(&remove, "Remove indicator", "chart.indicator-delete", "Delete");
+        menu.append_section(None, &remove);
+
+        let properties = gio::Menu::new();
+        shortcuts::append_with_key(&properties, "Properties…", "chart.indicator-settings", "<Alt>Return");
+        menu.append_section(None, &properties);
+
+        let area = pane.view.area.clone();
+        let (wx, wy) = area.translate_coordinates(&self.window, x, y).unwrap_or((x, y));
+        popup_menu(&menu, &self.window, wx, wy);
     }
 
     /// The active theme, for anything that needs to resolve a colour.
@@ -7351,10 +7491,30 @@ impl Window {
         self.focused_pane().bar_style.get()
     }
 
+    /// Whether the focused chart's bars are hidden.
+    pub fn bars_hidden(&self) -> bool {
+        self.focused_pane().bars_hidden.get()
+    }
+
+    /// The one way the bars are hidden and shown, so the key, the chart menu
+    /// and the settings dialog cannot come to different conclusions. The
+    /// style is left alone: showing them again is showing them as they were.
+    pub fn set_bars_hidden(self: &Rc<Self>, hidden: bool) {
+        let pane = self.focused_pane();
+        pane.bars_hidden.set(hidden);
+        pane.view.set_bars_hidden(hidden);
+        self.sync_chart_actions(&pane);
+        self.save_workspace();
+    }
+
+    /// Choosing a style is choosing to see it, so it shows hidden bars.
     pub fn set_bar_style(self: &Rc<Self>, style: BarStyle) {
         let pane = self.focused_pane();
         pane.bar_style.set(style);
         pane.view.set_bar_style(style);
+        pane.bars_hidden.set(false);
+        pane.view.set_bars_hidden(false);
+        self.sync_chart_actions(&pane);
         // What the colouring paints depends on the style: hollow is coloured
         // on an OHLC bar.
         let theme = self.theme();
@@ -7472,6 +7632,7 @@ impl Window {
                 stored.template = template.as_ref().map(|t| t.id);
                 stored.indicators = template.as_ref().map(|t| t.indicators.clone()).unwrap_or_default();
                 stored.bar_style = defaults.bar_style.key().to_string();
+                stored.bars_hidden = false;
                 stored.colouring = Some(defaults.colouring.key().to_string());
                 stored.session = defaults.session.key().to_string();
                 stored.show_grid = defaults.show_grid;
@@ -7499,6 +7660,8 @@ impl Window {
     fn adopt_looks(self: &Rc<Self>, pane: &Rc<ChartPane>, defaults: &ChartDefaults) {
         pane.bar_style.set(defaults.bar_style);
         pane.view.set_bar_style(defaults.bar_style);
+        pane.bars_hidden.set(false);
+        pane.view.set_bars_hidden(false);
         pane.colouring.set(defaults.colouring);
         let theme = self.theme();
         pane.view.restyle(theme.clone(), pane_scheme(pane, &theme));
@@ -7808,17 +7971,52 @@ impl Window {
         self.sync_drawing_bar();
     }
 
-    /// Take a copy of whatever is selected on the focused chart.
-    pub fn copy_drawings(self: &Rc<Self>) {
-        let copied = self.focused_pane().view.copy_selected();
+    /// Take a copy of whatever is selected on the focused chart: the
+    /// indicator, or the drawings. Nothing selected leaves the clipboard as
+    /// it was.
+    pub fn copy(self: &Rc<Self>) {
+        let pane = self.focused_pane();
+        if let Some(id) = pane.view.picked() {
+            if let Some(indicator) = pane.indicators.borrow().iter().find(|i| i.id == id) {
+                *self.clipboard.borrow_mut() = Clipboard::Indicator(indicator.clone());
+            }
+            return;
+        }
+        let copied = pane.view.copy_selected();
         if !copied.is_empty() {
-            *self.drawing_clipboard.borrow_mut() = copied;
+            *self.clipboard.borrow_mut() = Clipboard::Drawings(copied);
         }
     }
 
     /// Put the copy down on the focused chart. Says whether there was one.
-    pub fn paste_drawings(self: &Rc<Self>) -> bool {
-        let copied = self.drawing_clipboard.borrow().clone();
+    pub fn paste(self: &Rc<Self>) -> bool {
+        let copied = self.clipboard.borrow().clone();
+        match copied {
+            Clipboard::Empty => false,
+            Clipboard::Drawings(drawings) => self.paste_drawings(&drawings),
+            Clipboard::Indicator(indicator) => {
+                self.paste_indicator(indicator);
+                true
+            }
+        }
+    }
+
+    /// Another of the indicator copied, on the focused chart, or on the
+    /// template it is on, as adding one there does. Selected once it is
+    /// down, so a paste can be followed at once by its properties.
+    fn paste_indicator(self: &Rc<Self>, mut indicator: Indicator) {
+        let pane = self.focused_pane();
+        let mut indicators = pane.indicators.borrow().clone();
+        indicator.id = indicators.iter().map(|i| i.id).max().unwrap_or(0) + 1;
+        let id = indicator.id;
+        indicators.push(indicator);
+        self.change_indicators_of(&pane, indicators);
+        pane.view.area.grab_focus();
+        pane.view.pick_when_shown(id);
+    }
+
+    /// Put copied drawings down on the focused chart.
+    fn paste_drawings(self: &Rc<Self>, copied: &[omacharts_engine::Drawing]) -> bool {
         let pane = self.focused_pane();
         // Offset only where it would otherwise land exactly on what it was
         // copied from. Pasted onto another chart — another symbol, another
@@ -7829,11 +8027,11 @@ impl Window {
             .drawings()
             .iter()
             .any(|there| copied.iter().any(|copy| there.from == copy.from && there.to == copy.to));
-        pane.view.paste(&copied, same)
+        pane.view.paste(copied, same)
     }
 
-    fn has_copied_drawings(&self) -> bool {
-        !self.drawing_clipboard.borrow().is_empty()
+    fn has_copied(&self) -> bool {
+        !matches!(*self.clipboard.borrow(), Clipboard::Empty)
     }
 
     fn open_drawing_settings(self: &Rc<Self>) {
@@ -7868,11 +8066,9 @@ impl Window {
             false => "Add text",
         };
         shortcuts::append_with_key(&edit, words, "chart.drawing-text", "Return");
-        let copy = match count {
-            1 => "Copy drawing".to_string(),
-            n => format!("Copy {n} drawings"),
-        };
-        shortcuts::append_with_key(&edit, &copy, "chart.drawing-copy", "<Ctrl>c");
+        // Copy and Paste, whatever is selected or was copied: the menu is
+        // already about the drawing under the pointer.
+        shortcuts::append_with_key(&edit, "Copy", "chart.copy", "<Ctrl>c");
         menu.append_section(None, &edit);
 
         // The arrowhead, as the four pictures it is, on one row: the three
@@ -7918,9 +8114,9 @@ impl Window {
             menu.append_section(None, &pictures);
         }
 
-        if self.has_copied_drawings() {
+        if self.has_copied() {
             let paste = gio::Menu::new();
-            shortcuts::append_with_key(&paste, "Paste", "chart.drawing-paste", "<Ctrl>v");
+            shortcuts::append_with_key(&paste, "Paste", "chart.paste", "<Ctrl>v");
             menu.append_section(None, &paste);
         }
 
@@ -8143,9 +8339,9 @@ impl Window {
         // Paste first: it is the one thing in this menu that puts something
         // on the chart rather than changing how the chart is drawn, and it
         // is only here while there is something to put down.
-        if self.has_copied_drawings() {
+        if self.has_copied() {
             let paste = gio::Menu::new();
-            shortcuts::append_with_key(&paste, "Paste drawing", "chart.drawing-paste", "<Ctrl>v");
+            shortcuts::append_with_key(&paste, "Paste", "chart.paste", "<Ctrl>v");
             menu.append_section(None, &paste);
         }
 
@@ -8168,6 +8364,14 @@ impl Window {
             );
             bars.append_item(&item);
         }
+        // Last, and carrying the key: the key goes between this and the
+        // style above, so it is the row that says what the key does.
+        let none = gio::MenuItem::new(Some(NO_BARS_LABEL), None);
+        none.set_action_and_target_value(Some("chart.bar-style"), Some(&NO_BARS.to_variant()));
+        if let Some(accel) = shortcuts::accel("chart.bars") {
+            none.set_attribute_value("accel", Some(&accel.to_variant()));
+        }
+        bars.append_item(&none);
         menu.append_submenu(Some("Bar style"), &bars);
 
         let sessions = gio::Menu::new();
@@ -8333,17 +8537,45 @@ impl Window {
         let bar_style = gio::SimpleAction::new_stateful(
             "bar-style",
             Some(glib::VariantTy::STRING),
-            &self.bar_style().key().to_variant(),
+            &bar_style_state(&self.focused_pane()).to_variant(),
         );
         let this = self.clone();
-        bar_style.connect_activate(move |action, value| {
+        bar_style.connect_activate(move |_, value| {
             let Some(key) = value.and_then(|v| v.str().map(str::to_string)) else { return };
-            let Some(style) = BarStyle::from_key(&key) else { return };
-            action.set_state(&key.to_variant());
-            this.set_bar_style(style);
+            if key == NO_BARS {
+                this.set_bars_hidden(true);
+            } else if let Some(style) = BarStyle::from_key(&key) {
+                this.set_bar_style(style);
+            }
         });
         actions.add_action(&bar_style);
         *self.bar_style_action.borrow_mut() = Some(bar_style);
+
+        // The indicator menu's two rows, about the indicator it was opened on.
+        let delete = gio::SimpleAction::new("indicator-delete", None);
+        let this = self.clone();
+        delete.connect_activate(move |_, _| {
+            if let Some(id) = this.menu_indicator.borrow_mut().take() {
+                this.remove_indicator(&this.focused_pane(), id);
+            }
+        });
+        actions.add_action(&delete);
+        let settings = gio::SimpleAction::new("indicator-settings", None);
+        let this = self.clone();
+        settings.connect_activate(move |_, _| {
+            if let Some(id) = this.menu_indicator.borrow_mut().take() {
+                crate::ui::chart_settings::ChartSettings::present_indicator(&this, this.store.clone(), id);
+            }
+        });
+        actions.add_action(&settings);
+
+        // What Ctrl+Shift+B flips: None and the style the bars had, which
+        // hiding them never forgets.
+        let bars = gio::SimpleAction::new_stateful("bars", None, &(!self.bars_hidden()).to_variant());
+        let this = self.clone();
+        bars.connect_activate(move |_, _| this.set_bars_hidden(!this.bars_hidden()));
+        actions.add_action(&bars);
+        *self.bars_action.borrow_mut() = Some(bars);
 
         let session = gio::SimpleAction::new_stateful(
             "session",
@@ -8570,17 +8802,17 @@ impl Window {
         });
         actions.add_action(&drawing_head);
 
-        let drawing_copy = gio::SimpleAction::new("drawing-copy", None);
+        let copy = gio::SimpleAction::new("copy", None);
         let this = self.clone();
-        drawing_copy.connect_activate(move |_, _| this.copy_drawings());
-        actions.add_action(&drawing_copy);
+        copy.connect_activate(move |_, _| this.copy());
+        actions.add_action(&copy);
 
-        let drawing_paste = gio::SimpleAction::new("drawing-paste", None);
+        let paste = gio::SimpleAction::new("paste", None);
         let this = self.clone();
-        drawing_paste.connect_activate(move |_, _| {
-            this.paste_drawings();
+        paste.connect_activate(move |_, _| {
+            this.paste();
         });
-        actions.add_action(&drawing_paste);
+        actions.add_action(&paste);
 
         let drawing_settings = gio::SimpleAction::new("drawing-settings", None);
         let this = self.clone();

@@ -1845,16 +1845,33 @@ impl Projected {
                 return Some(grip);
             }
         }
-        let reach = PICK_REACH;
+        self.on_body(x, y, PICK_REACH).then_some(Grip::Body)
+    }
+
+    /// Whether the pointer is within `reach` of any part of it, grips and
+    /// words included. What lies under a drawing keeps clear of it by more
+    /// than the drawing's own reach, so a near miss on a drawing is never
+    /// taken as a hit on whatever is under it.
+    pub fn near(&self, x: f64, y: f64, reach: f64) -> bool {
+        let corners = (0..self.corners.len()).map(Grip::Corner);
+        let fixed = [Grip::From, Grip::To, Grip::FromTo, Grip::ToFrom];
+        let grips = fixed.into_iter().chain(corners).filter_map(|grip| self.grip(grip));
+        let reach_grip = reach.max(GRIP_REACH);
+        grips.into_iter().any(|at| distance(at, (x, y)) <= reach_grip) || self.on_body(x, y, reach)
+    }
+
+    /// Whether the pointer is on the drawing itself, or its words, within
+    /// `reach`.
+    fn on_body(&self, x: f64, y: f64, reach: f64) -> bool {
         // A label is part of the drawing it is on. Clicking the words picks
         // the drawing — which on a box or an ellipse happens anyway, since
         // the words are inside the shape, but on a line they can sit well
         // clear of the stroke and used to be the one part of a drawing you
         // could not take hold of.
         if self.words.is_some_and(|box_| within(box_, (x, y), reach)) {
-            return Some(Grip::Body);
+            return true;
         }
-        let on_body = match self.kind {
+        match self.kind {
             // Every kind that is a stroke is picked the same way: near the
             // segment. What differs between them is what is drawn on it, not
             // where it is.
@@ -1877,8 +1894,7 @@ impl Projected {
             // a miss.
             // Nothing but its words, which were tried above.
             Kind::Text => false,
-        };
-        on_body.then_some(Grip::Body)
+        }
     }
 
     /// Whether any of the drawing lies inside a box: the box a hand drags

@@ -60,6 +60,9 @@ pub const BINDINGS: &[Binding] = &[
     // Shift as well, because Ctrl+G on its own is "find the next one" to
     // everything with a box you can type in, and this window has one.
     global("chart.grid", &["<Ctrl><Shift>g"]),
+    // The gridlines' neighbour: both take a layer off the chart for a look
+    // at what is under it. Ctrl+B alone is the watchlist.
+    global("chart.bars", &["<Ctrl><Shift>b"]),
     // O, not P: Ctrl+P is kept for a command palette. A screenshot of the
     // chartbook is the same key with Shift, the way closing one already is.
     global("chart.screenshot", &["<Ctrl>o"]),

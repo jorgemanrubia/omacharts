@@ -104,6 +104,7 @@ From anywhere:
 | <kbd>End</kbd> | Jumps to the latest bar | [Charts](/manual/charts/) |
 | <kbd>Ctrl</kbd> + <kbd>Esc</kbd> | Resets zoom, pan and price scale to how the chart opens | [Charts](/manual/charts/) |
 | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>G</kbd> | Shows or hides the gridlines | [Charts](/manual/charts/) |
+| <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>B</kbd> | Hides the bars, or shows them again in the style they had | [Hiding the bars](/manual/charts/#hiding-the-bars) |
 | <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>1</kbd> … <kbd>9</kbd> | Chart template N, in the order they are listed | [Chart templates](/manual/chart-templates/) |
 | <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>0</kbd> | No chart template | [Chart templates](/manual/chart-templates/) |
 | <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>PgUp</kbd> <kbd>PgDn</kbd> | The previous or next chart template | [Chart templates](/manual/chart-templates/) |
@@ -142,9 +143,18 @@ With drawings selected:
 | <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>←</kbd> <kbd>→</kbd> <kbd>↑</kbd> <kbd>↓</kbd> | Puts its label against that edge | [Drawings](/manual/drawings/) |
 | <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>.</kbd> | Puts its label back in the middle | [Drawings](/manual/drawings/) |
 | <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>A</kbd> | Steps its arrowhead: none, filled, open, barb | [Drawings](/manual/drawings/) |
-| <kbd>Ctrl</kbd> + <kbd>C</kbd> / <kbd>Ctrl</kbd> + <kbd>V</kbd> | Copies the selected drawings, and pastes them | [Drawings](/manual/drawings/) |
+| <kbd>Ctrl</kbd> + <kbd>C</kbd> / <kbd>Ctrl</kbd> + <kbd>V</kbd> | Copies the selected drawings, or the selected indicator, and pastes them | [Drawings](/manual/drawings/) |
 | <kbd>Delete</kbd> / <kbd>Backspace</kbd> | Deletes them | [Drawings](/manual/drawings/) |
 | <kbd>Esc</kbd> | Clears the selection | [Drawings](/manual/drawings/) |
+
+With an indicator selected:
+
+| Key | Does | See |
+|---|---|---|
+| <kbd>Alt</kbd> + <kbd>Enter</kbd> | Its settings | [Indicators](/manual/indicators/#selecting-an-indicator) |
+| <kbd>Ctrl</kbd> + <kbd>C</kbd> / <kbd>Ctrl</kbd> + <kbd>V</kbd> | Copies it, and pastes it on the focused chart | [Indicators](/manual/indicators/#selecting-an-indicator) |
+| <kbd>Delete</kbd> / <kbd>Backspace</kbd> | Removes it | [Indicators](/manual/indicators/#selecting-an-indicator) |
+| <kbd>Esc</kbd> | Clears the selection | [Indicators](/manual/indicators/#selecting-an-indicator) |
 
 On the chart, whatever is selected:
 
@@ -232,7 +242,10 @@ Drawing with the mouse:
 | <kbd>Shift</kbd> + drag the empty chart | Selects every drawing the box touches | [Drawings](/manual/drawings/) |
 | <kbd>Ctrl</kbd> + drag a corner | Snaps it to the candle under it | [Drawings](/manual/drawings/) |
 | Double-click a drawing | Puts the caret in it, to type | [Drawings](/manual/drawings/) |
-| Right-click a drawing | Selects it and opens its menu: **Edit text**, **Copy drawing**, **Configuration**, **Thickness**, **Arrowhead**, **Paste**, **Bring to front**, **Send to back**, **Remove drawing**, **Properties…** | [Drawings](/manual/drawings/) |
+| Click an indicator, or its name in the legend | Selects it | [Indicators](/manual/indicators/#selecting-an-indicator) |
+| Double-click an indicator | Opens its settings | [Indicators](/manual/indicators/#selecting-an-indicator) |
+| Right-click an indicator | Selects it and opens its menu: **Copy**, **Paste**, **Remove indicator**, **Properties…** | [Indicators](/manual/indicators/#selecting-an-indicator) |
+| Right-click a drawing | Selects it and opens its menu: **Edit text**, **Copy**, **Configuration**, **Thickness**, **Arrowhead**, **Paste**, **Bring to front**, **Send to back**, **Remove drawing**, **Properties…** | [Drawings](/manual/drawings/) |
 
 Around the window:
 
