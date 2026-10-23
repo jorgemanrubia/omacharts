@@ -176,6 +176,23 @@ Click an indicator on the chart to select it: a line, a bar of the volume strip 
 
 A selected indicator glows in its own colour, under the lines and bars it draws, and each of its lines wears a dot at its latest value. A volume profile is outlined instead. Its name in the legend is at full strength with a ring round its dot, and a strip's name takes its colour.
 
+<!-- regenerate:
+theme: tokyo-night
+window: 2560x1440 @2, bin/headless-window (HOME sandboxed with ~/.local/share/omarchy/themes/tokyo-night copied in)
+state:
+  omacharts config set theme omarchy:tokyo-night      # then restart the app: a theme is read as it opens
+  omacharts chart set --template none --symbol SPY --resolution 1D
+  omacharts chart indicator add sma --period 50
+  omacharts chart indicator add bollinger
+  omacharts chart indicator add volume
+  key ctrl+b               # the rail away
+  click 300 262            # on the band's middle line
+  move 1270 300            # off the plot, so no crosshair
+capture: bin/headless-window shot /tmp/selected.png
+crop: 0,0,2440,1150 (resized to 2000 wide)
+-->
+{% include figure.html src="/assets/manual/indicators/selected-indicator.jpg" alt="SPY daily with a Bollinger band selected: its three lines glow in its colour, each with a dot at its latest value, and its legend dot is ringed" caption="A selected Bollinger band." %}
+
 | Gesture | Does |
 |---|---|
 | Click it, or its name in the legend | Selects it |
