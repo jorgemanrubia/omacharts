@@ -221,7 +221,7 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Alt+A", "Draw an arrow"),
             ("Alt+Z", "Draw a zig-zag: click each corner, double-click or Enter to end it"),
             ("Ctrl+click a tool", "Keep it in hand for drawing after drawing; Esc puts it down"),
-            ("Ctrl+C / Ctrl+V", "Copy the selected drawings or indicator, and put them down again"),
+            ("Ctrl+X / Ctrl+C / Ctrl+V", "Cut or copy the selected drawings or indicator, and put them down again"),
             ("Alt+R", "Draw a rectangle over a run of bars"),
             ("Alt+C", "Draw a circle, dragged to any shape"),
             ("Alt+T", "Write on the chart: click, then type"),
@@ -5242,6 +5242,7 @@ impl Window {
                 // the vertical split, which is a key that can only ever
                 // mean one thing to the hand that presses it; the split is
                 // on Ctrl+Alt+V now.
+                Key::x | Key::X => this.cut(),
                 Key::c | Key::C => this.copy(),
                 Key::v | Key::V => {
                     this.paste();
@@ -7380,25 +7381,33 @@ impl Window {
         self.change_indicators_of(pane, kept);
     }
 
+    /// Cut, Copy, Paste and Remove, in the order and the one section GTK's
+    /// own context menus give Cut, Copy, Paste and Delete. Paste only while there
+    /// is something to put down. Remove is this selection's, and not every
+    /// drawing or indicator: clearing the chart is a thing done to the chart,
+    /// in the chart's own menu. Plain words, since the menu is already about
+    /// what is selected.
+    fn clipboard_section(&self, remove: &str) -> gio::Menu {
+        let section = gio::Menu::new();
+        shortcuts::append_with_key(&section, "Cut", "chart.cut", "<Ctrl>x");
+        shortcuts::append_with_key(&section, "Copy", "chart.copy", "<Ctrl>c");
+        if self.has_copied() {
+            shortcuts::append_with_key(&section, "Paste", "chart.paste", "<Ctrl>v");
+        }
+        shortcuts::append_with_key(&section, "Remove", remove, "Delete");
+        section
+    }
+
     /// The menu of the indicator selected on the focused chart, laid out as a
-    /// drawing's is: what is done to it, then removing it, then its
-    /// properties, last and alone. What only some indicators can do goes
-    /// above the removal, as a drawing's own errands do.
+    /// drawing's is: copying and removing it, then its properties, last and
+    /// alone. What only some indicators can do goes above, as a drawing's own
+    /// errands do.
     fn indicator_menu(self: &Rc<Self>, indicator: u32, x: f64, y: f64) {
         let pane = self.focused_pane();
         *self.menu_indicator.borrow_mut() = Some(indicator);
 
         let menu = gio::Menu::new();
-        let edit = gio::Menu::new();
-        shortcuts::append_with_key(&edit, "Copy", "chart.copy", "<Ctrl>c");
-        if self.has_copied() {
-            shortcuts::append_with_key(&edit, "Paste", "chart.paste", "<Ctrl>v");
-        }
-        menu.append_section(None, &edit);
-
-        let remove = gio::Menu::new();
-        shortcuts::append_with_key(&remove, "Remove indicator", "chart.indicator-delete", "Delete");
-        menu.append_section(None, &remove);
+        menu.append_section(None, &self.clipboard_section("chart.indicator-delete"));
 
         let properties = gio::Menu::new();
         shortcuts::append_with_key(&properties, "Properties…", "chart.indicator-settings", "<Alt>Return");
@@ -7986,6 +7995,22 @@ impl Window {
         }
     }
 
+    /// Copy what is selected, and take it off the chart: the indicator, from
+    /// the template on a chart on one, or the drawings, as one step back.
+    pub fn cut(self: &Rc<Self>) {
+        let pane = self.focused_pane();
+        let picked = pane.view.picked();
+        let drawings = !pane.view.selected_drawings().is_empty();
+        if picked.is_none() && !drawings {
+            return;
+        }
+        self.copy();
+        match picked {
+            Some(id) => self.remove_indicator(&pane, id),
+            None => pane.view.delete_selected(),
+        }
+    }
+
     /// Put the copy down on the focused chart. Says whether there was one.
     pub fn paste(self: &Rc<Self>) -> bool {
         let copied = self.clipboard.borrow().clone();
@@ -8041,7 +8066,6 @@ impl Window {
     fn drawing_menu(self: &Rc<Self>, x: f64, y: f64) {
         let pane = self.focused_pane();
         let Some(drawing) = pane.view.selected_drawing() else { return };
-        let count = pane.view.selected_drawings().len();
         // Properties and configurations are a kind's: with lines and
         // rectangles selected together, neither can be asked for.
         let one_kind = pane.view.selection_kind().is_some();
@@ -8064,14 +8088,8 @@ impl Window {
             false => "Add text",
         };
         shortcuts::append_with_key(&edit, words, "chart.drawing-text", "Return");
-        // Copy and Paste together, whatever is selected or was copied: the
-        // menu is already about the drawing under the pointer. Paste only
-        // while there is something to put down.
-        shortcuts::append_with_key(&edit, "Copy", "chart.copy", "<Ctrl>c");
-        if self.has_copied() {
-            shortcuts::append_with_key(&edit, "Paste", "chart.paste", "<Ctrl>v");
-        }
         menu.append_section(None, &edit);
+        menu.append_section(None, &self.clipboard_section("chart.drawing-delete"));
 
         // The arrowhead, as the four pictures it is, on one row: the three
         // shapes and the one that is no shape. A row of four rather than a
@@ -8138,17 +8156,6 @@ impl Window {
         shortcuts::append_with_key(&order, "Send to back", "chart.drawing-back", "<Ctrl><Shift>Down");
         menu.append_section(None, &order);
 
-        let remove = gio::Menu::new();
-        let label = match count {
-            1 => "Remove drawing".to_string(),
-            n => format!("Remove {n} drawings"),
-        };
-        // This drawing, and not every drawing. Clearing the chart is a
-        // thing done to the chart, and it lives in the chart's own menu —
-        // sitting it under "Remove drawing" put the widest action on the
-        // screen one row below the narrowest, with nothing between them.
-        shortcuts::append_with_key(&remove, &label, "chart.drawing-delete", "Delete");
-        menu.append_section(None, &remove);
 
         // Last, and alone. Everything above is a thing to do to the drawing;
         // this opens a window about it, which is the heavier choice and the
@@ -8797,6 +8804,11 @@ impl Window {
             this.focused_pane().view.set_head(shape);
         });
         actions.add_action(&drawing_head);
+
+        let cut = gio::SimpleAction::new("cut", None);
+        let this = self.clone();
+        cut.connect_activate(move |_, _| this.cut());
+        actions.add_action(&cut);
 
         let copy = gio::SimpleAction::new("copy", None);
         let this = self.clone();

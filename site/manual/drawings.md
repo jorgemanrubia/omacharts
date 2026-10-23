@@ -79,7 +79,7 @@ A finished drawing is left selected.
 | Drag the body | Moves the whole drawing, and every other selected drawing with it |
 | <kbd>←</kbd> <kbd>→</kbd> <kbd>↑</kbd> <kbd>↓</kbd> | Nudges the selection a pixel; ten with <kbd>Shift</kbd> |
 | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>↑</kbd> / <kbd>↓</kbd> | Brings it to the front or sends it to the back among the drawings. Every drawing sits over the candles |
-| <kbd>Ctrl</kbd> + <kbd>C</kbd>, <kbd>Ctrl</kbd> + <kbd>V</kbd> | Copies the selection, and pastes it on the focused chart at the same times and prices. A paste that would land exactly on its source is moved off it a little |
+| <kbd>Ctrl</kbd> + <kbd>X</kbd>, <kbd>Ctrl</kbd> + <kbd>C</kbd>, <kbd>Ctrl</kbd> + <kbd>V</kbd> | Cuts or copies the selection, and pastes it on the focused chart at the same times and prices. A paste that would land exactly on its source is moved off it a little |
 | <kbd>Delete</kbd> / <kbd>Backspace</kbd> | Removes the selection |
 | <kbd>Ctrl</kbd> + <kbd>Z</kbd>; <kbd>Ctrl</kbd> + <kbd>Y</kbd> or <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>Z</kbd> | Undo and redo, on this chart's drawings |
 | <kbd>Alt</kbd> + <kbd>1</kbd> … <kbd>9</kbd> | Puts the selection on that configuration |
@@ -92,7 +92,7 @@ Whatever you do to a selection is done to every drawing in it. Configurations an
 
 Right-click a drawing for its menu. It acts on the selected drawings. A right-click on empty chart opens the chart's own menu, which has **Paste** and **Remove all drawings** ([Charts](/manual/charts/)).
 
-Copy and paste take an indicator as well as drawings. **Paste** puts down whichever was copied last ([Selecting an indicator](/manual/indicators/#selecting-an-indicator)).
+Cut, copy and paste take an indicator as well as drawings. **Paste** puts down whichever was copied last ([Selecting an indicator](/manual/indicators/#selecting-an-indicator)).
 
 <!-- regenerate:
 theme: tokyo-night
@@ -104,20 +104,21 @@ state:
   click 900 300          # the range box, nearer its left edge so the menu has room
   run bin/virtual-pointer --button right click 900 300
 capture: bin/headless-window shot /tmp/dmenu.png
-crop: 1680,336,672,928   (the box above, the menu with 20px layout margin right and below)
+crop: 1680,336,672,1048   (the box above, the menu with 20px layout margin right and below)
 -->
 {% include figure.html src="/assets/manual/drawings/drawing-menu.png" alt="A selected teal box with grips at its corners and edges, and its right-click menu" caption="A selected box and its menu." %}
 
 | Item | Does |
 |---|---|
 | **Edit text** / **Add text** (<kbd>Enter</kbd>) | Puts the caret in the drawing, to type on the chart |
+| **Cut** (<kbd>Ctrl</kbd> + <kbd>X</kbd>) | Copies the selection and removes it |
 | **Copy** (<kbd>Ctrl</kbd> + <kbd>C</kbd>) | Copies the selection |
 | **Paste** (<kbd>Ctrl</kbd> + <kbd>V</kbd>) | Only while something is copied: drawings, or an indicator |
+| **Remove** (<kbd>Delete</kbd>) | Removes the selection |
 | **Configuration** | Configurations 1 to 4, each drawn as this kind of drawing. 5 to 9 are <kbd>Alt</kbd> + <kbd>5</kbd> … <kbd>9</kbd>, or the picker in the properties |
 | **Thickness** | 1, 1.5, 2.5 or 4 px. Not on text |
 | **Arrowhead** | None, filled, open or barb. On lines, levels, arrows and zig-zags |
 | **Bring to front**, **Send to back** | As <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>↑</kbd> / <kbd>↓</kbd> |
-| **Remove drawing** (<kbd>Delete</kbd>) | **Remove 3 drawings** with three |
 | **Properties…** (<kbd>Alt</kbd> + <kbd>Enter</kbd>) | Opens the properties |
 
 ## Properties

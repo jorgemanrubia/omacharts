@@ -200,7 +200,7 @@ crop: 0,0,2440,1150 (resized to 2000 wide)
 | Double-click it | Opens its settings |
 | <kbd>Alt</kbd> + <kbd>Enter</kbd> | Opens its settings |
 | <kbd>Delete</kbd> / <kbd>Backspace</kbd> | Removes it |
-| <kbd>Ctrl</kbd> + <kbd>C</kbd>, <kbd>Ctrl</kbd> + <kbd>V</kbd> | Copies it, and pastes it on the focused chart |
+| <kbd>Ctrl</kbd> + <kbd>X</kbd>, <kbd>Ctrl</kbd> + <kbd>C</kbd>, <kbd>Ctrl</kbd> + <kbd>V</kbd> | Cuts or copies it, and pastes it on the focused chart |
 | Right-click it | Selects it and opens its menu |
 
 One thing is selected at a time: selecting an indicator clears the selected drawings, and selecting a drawing clears the indicator. Drawings come first. Near a drawing, a click selects the drawing, and the indicator is selected anywhere else along it. A press on an indicator that goes on to drag pans the chart, since an indicator does not move.
@@ -213,9 +213,10 @@ A paste is a new indicator with the same settings, on the chart that has the key
 
 | Item | Does |
 |---|---|
+| **Cut** (<kbd>Ctrl</kbd> + <kbd>X</kbd>) | Copies it and removes it |
 | **Copy** (<kbd>Ctrl</kbd> + <kbd>C</kbd>) | Copies it |
 | **Paste** (<kbd>Ctrl</kbd> + <kbd>V</kbd>) | Only while something is copied: an indicator, or drawings |
-| **Remove indicator** (<kbd>Delete</kbd>) | Removes it, from the template on a chart on one |
+| **Remove** (<kbd>Delete</kbd>) | Removes it, from the template on a chart on one |
 | **Properties…** (<kbd>Alt</kbd> + <kbd>Enter</kbd>) | Opens its settings |
 
 ## Colours and lines

@@ -143,7 +143,7 @@ With drawings selected:
 | <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>←</kbd> <kbd>→</kbd> <kbd>↑</kbd> <kbd>↓</kbd> | Puts its label against that edge | [Drawings](/manual/drawings/) |
 | <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>.</kbd> | Puts its label back in the middle | [Drawings](/manual/drawings/) |
 | <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>A</kbd> | Steps its arrowhead: none, filled, open, barb | [Drawings](/manual/drawings/) |
-| <kbd>Ctrl</kbd> + <kbd>C</kbd> / <kbd>Ctrl</kbd> + <kbd>V</kbd> | Copies the selected drawings, or the selected indicator, and pastes them | [Drawings](/manual/drawings/) |
+| <kbd>Ctrl</kbd> + <kbd>X</kbd> / <kbd>Ctrl</kbd> + <kbd>C</kbd> / <kbd>Ctrl</kbd> + <kbd>V</kbd> | Cuts or copies the selected drawings, or the selected indicator, and pastes them | [Drawings](/manual/drawings/) |
 | <kbd>Delete</kbd> / <kbd>Backspace</kbd> | Deletes them | [Drawings](/manual/drawings/) |
 | <kbd>Esc</kbd> | Clears the selection | [Drawings](/manual/drawings/) |
 
@@ -152,7 +152,7 @@ With an indicator selected:
 | Key | Does | See |
 |---|---|---|
 | <kbd>Alt</kbd> + <kbd>Enter</kbd> | Its settings | [Indicators](/manual/indicators/#selecting-an-indicator) |
-| <kbd>Ctrl</kbd> + <kbd>C</kbd> / <kbd>Ctrl</kbd> + <kbd>V</kbd> | Copies it, and pastes it on the focused chart | [Indicators](/manual/indicators/#selecting-an-indicator) |
+| <kbd>Ctrl</kbd> + <kbd>X</kbd> / <kbd>Ctrl</kbd> + <kbd>C</kbd> / <kbd>Ctrl</kbd> + <kbd>V</kbd> | Cuts or copies it, and pastes it on the focused chart | [Indicators](/manual/indicators/#selecting-an-indicator) |
 | <kbd>Delete</kbd> / <kbd>Backspace</kbd> | Removes it | [Indicators](/manual/indicators/#selecting-an-indicator) |
 | <kbd>Esc</kbd> | Clears the selection | [Indicators](/manual/indicators/#selecting-an-indicator) |
 
@@ -244,8 +244,8 @@ Drawing with the mouse:
 | Double-click a drawing | Puts the caret in it, to type | [Drawings](/manual/drawings/) |
 | Click an indicator, or its name in the legend | Selects it | [Indicators](/manual/indicators/#selecting-an-indicator) |
 | Double-click an indicator | Opens its settings | [Indicators](/manual/indicators/#selecting-an-indicator) |
-| Right-click an indicator | Selects it and opens its menu: **Copy**, **Paste**, **Remove indicator**, **Properties…** | [Indicators](/manual/indicators/#selecting-an-indicator) |
-| Right-click a drawing | Selects it and opens its menu: **Edit text**, **Copy**, **Paste**, **Configuration**, **Thickness**, **Arrowhead**, **Bring to front**, **Send to back**, **Remove drawing**, **Properties…** | [Drawings](/manual/drawings/) |
+| Right-click an indicator | Selects it and opens its menu: **Cut**, **Copy**, **Paste**, **Remove**, **Properties…** | [Indicators](/manual/indicators/#selecting-an-indicator) |
+| Right-click a drawing | Selects it and opens its menu: **Edit text**, **Cut**, **Copy**, **Paste**, **Remove**, **Configuration**, **Thickness**, **Arrowhead**, **Bring to front**, **Send to back**, **Properties…** | [Drawings](/manual/drawings/) |
 
 Around the window:
 
