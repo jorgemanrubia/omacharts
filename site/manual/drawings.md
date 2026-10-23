@@ -36,7 +36,7 @@ crop: none
 | Line | <kbd>Alt</kbd> + <kbd>L</kbd> | Press where it starts, then where it ends |
 | Horizontal line | <kbd>Alt</kbd> + <kbd>H</kbd> | A level. It stays flat however you drag it and spans the time between its two ends |
 | Arrow | <kbd>Alt</kbd> + <kbd>A</kbd> | A line with a head at the end |
-| Zig-zag | <kbd>Alt</kbd> + <kbd>Z</kbd> | Press at each corner. A double-click or <kbd>Enter</kbd> ends it on the last corner; <kbd>Esc</kbd> drops it |
+| Zig-zag | <kbd>Alt</kbd> + <kbd>Z</kbd> | Press at each corner. A press on the last corner again, a double-click or <kbd>Enter</kbd> ends it there; the last corner lights up when a press would. <kbd>Esc</kbd> drops it |
 | Rectangle | <kbd>Alt</kbd> + <kbd>R</kbd> | Press at one corner, release at the other |
 | Circle | <kbd>Alt</kbd> + <kbd>C</kbd> | Placed like a rectangle; the ellipse fills it |
 | Text | <kbd>Alt</kbd> + <kbd>T</kbd> | Click where the text goes, then type |
@@ -75,7 +75,7 @@ A finished drawing is left selected.
 | <kbd>Shift</kbd> + drag on empty chart | Adds every drawing the box touches to the selection |
 | <kbd>Ctrl</kbd> + <kbd>A</kbd> | Selects every drawing on the chart |
 | Click empty chart, <kbd>Esc</kbd> | Clears the selection |
-| Drag an end or a corner | Moves that point. With <kbd>Ctrl</kbd> held it snaps to the candle, as when placing |
+| Drag an end or a corner | Moves that point. With <kbd>Ctrl</kbd> held it snaps to the candle, as when placing. The point under the pointer is ringed in the drawing's colour, and the ring grows while you drag it. While you drag, the price and time on the axes are the point's, in the drawing's colour |
 | Drag the body | Moves the whole drawing, and every other selected drawing with it |
 | <kbd>←</kbd> <kbd>→</kbd> <kbd>↑</kbd> <kbd>↓</kbd> | Nudges the selection a pixel; ten with <kbd>Shift</kbd> |
 | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>↑</kbd> / <kbd>↓</kbd> | Brings it to the front or sends it to the back among the drawings. Every drawing sits over the candles |
