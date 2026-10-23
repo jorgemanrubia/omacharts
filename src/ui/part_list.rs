@@ -100,7 +100,6 @@ impl<P: Part> PartList<P> {
                 let blank = gtk::Image::from_icon_name("list-drag-handle-symbolic");
                 blank.set_opacity(0.0);
                 row.add_prefix(&blank);
-                row.set_subtitle("Always shown");
                 self.group.add(&row);
                 self.rows.borrow_mut().push(row.upcast());
                 continue;

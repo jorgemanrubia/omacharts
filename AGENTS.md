@@ -403,6 +403,20 @@ as it was given, so the next page starts from what the last one was corrected
 on. Feedback on a page goes into that file in the same change as the fix,
 as the concrete preference rather than a principle distilled from it.
 
+## A row's subtitle is the exception
+
+A settings row is its title and its control. Add a subtitle, or any other
+line of explanatory text under a title, only when the row is ambiguous
+without it: when a reasonable person would otherwise set it wrong, or
+misread what it does. A subtitle that restates the title, describes the
+control the row already shows, or says something the layout makes plain
+(such as "Always shown" on a row with no handle and no bin) is noise. Leave
+it out.
+
+Agents add these by reflex, and the maintainer removes them. Before adding
+one, delete it and look at the row again. If the row still reads right, it
+stays out. When unsure, leave it out and let the maintainer ask for it.
+
 ## An agent writing on GitHub says so
 
 Anything an agent posts to GitHub in the maintainer's name — a pull request
