@@ -283,6 +283,7 @@ fn main() -> glib::ExitCode {
         // sit in front of the first frame.
         glib::idle_add_local_once(|| {
             if let Some(home) = glib::home_dir().to_str().map(std::path::PathBuf::from)
+                && omacharts::bar_plugin::launch_owns_widget(&home)
                 && let Err(error) = omacharts::bar_plugin::refresh(&home)
             {
                 eprintln!("omacharts: bar widget not updated: {error}");

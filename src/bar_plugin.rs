@@ -127,6 +127,19 @@ pub fn refresh(home: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Should a window starting up bring the widget up to date, or put it in
+/// the bar the first time?
+///
+/// Only one on the default store. That is the store the widget reads, through
+/// `omacharts watchlist`, so a window on any other is not the app it belongs
+/// to: a test window on a throwaway `XDG_DATA_HOME`, built from some older
+/// branch, would otherwise put its own copy of the QML in the bar on every
+/// start, over the one the installed app wrote — and, on a store that has
+/// never offered the widget, put it back in a bar somebody took it out of.
+pub fn launch_owns_widget(home: &Path) -> bool {
+    crate::store::data_dir() == home.join(".local/share/omacharts")
+}
+
 /// Ask the shell to recompile its plugins. Best effort, like `notify_changed`.
 fn reload_plugins() {
     let _ = std::process::Command::new("omarchy-shell")

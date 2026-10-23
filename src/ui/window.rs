@@ -5330,9 +5330,14 @@ impl Window {
     /// that undid itself on the next launch would not be one — so the question
     /// is recorded as asked, rather than inferred from whether the widget
     /// happens to be there.
+    ///
+    /// Only from the default store, like the refresh at launch: a test
+    /// window on a throwaway store has never been asked, and would put the
+    /// widget back in a bar somebody took it out of.
     fn offer_bar_widget(self: &Rc<Self>) {
         let home = crate::store::home();
         if self.store.setting_bool(SETTING_WIDGET_OFFERED, false)
+            || !crate::bar_plugin::launch_owns_widget(&home)
             || !crate::bar_plugin::available(&home)
         {
             return;

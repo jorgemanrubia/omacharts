@@ -1014,6 +1014,11 @@ writing it again, which matters because the widget is installed once and then
 never touched: without that, the bar keeps running whichever version shipped
 the day the switch was flicked.
 
+A window brings it up to date too, when it starts, and the first window ever
+puts it in the bar, but only a window on the default store: that is the store
+the widget reads, so a test window on a throwaway `XDG_DATA_HOME` leaves the
+bar as the installed app left it, in it or out of it.
+
 `uninstall` is idempotent, and a desktop with no Omarchy shell is reported
 rather than refused — having no bar is a fact about the machine, not a command
 that went wrong. Both exit 0:
