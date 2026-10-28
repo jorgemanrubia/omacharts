@@ -121,7 +121,30 @@ pub fn card(title: &str, body: Option<&str>, extra: Option<&gtk::Widget>) -> adw
         dialog.add_css_class("form-window");
     }
     dialog.set_extra_child(Some(&content));
+    // The answers sit centred at their own width. libadwaita gives each an
+    // equal share of the row and stacks them full width the moment one
+    // outgrows its share; held centred, the row is only as wide as the
+    // answers need, so they stack only when the card itself is too narrow.
+    if let Some(row) = dialog.child().and_then(|c| descendant_with_class(&c, "response-area")) {
+        row.set_halign(gtk::Align::Center);
+        row.set_hexpand(false);
+    }
     dialog
+}
+
+/// The first widget under `root`, depth first, wearing `class`.
+fn descendant_with_class(root: &gtk::Widget, class: &str) -> Option<gtk::Widget> {
+    let mut child = root.first_child();
+    while let Some(c) = child {
+        if c.has_css_class(class) {
+            return Some(c);
+        }
+        if let Some(found) = descendant_with_class(&c, class) {
+            return Some(found);
+        }
+        child = c.next_sibling();
+    }
+    None
 }
 
 /// "Ctrl+Enter", written the way this desktop writes it.

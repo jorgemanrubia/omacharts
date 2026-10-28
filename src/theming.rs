@@ -681,11 +681,9 @@ dialog.alert .message-area { padding: 20px 24px 0; }
 dialog.alert .message-area > .child { padding-left: 0; padding-right: 0; margin-top: 0; }
 dialog.alert .card-title { font-weight: 600; font-size: 1.05em; }
 dialog.alert .card-body { font-size: 0.9em; color: alpha(@popover_fg_color, 0.65); }
-/* libadwaita gives every answer an equal share of the row, and only its
-   padding can be set from here: the start is padded until the shares are
-   about a word wide, which leaves them on the right. */
+/* `dialogs::card` holds the row centred at its own width. */
 dialog.alert .response-area {
-  padding: 12px 12px 10px 180px;
+  padding: 16px 16px 14px 16px;
   border-spacing: 6px;
 }
 dialog.alert .response-area > button {
