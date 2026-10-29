@@ -2144,6 +2144,15 @@ impl Window {
                 let this = this.clone();
                 move || this.toggle_drawing_tools()
             },
+            {
+                let this = this.clone();
+                move || {
+                    let pane = this.focused_pane();
+                    pane.view.arm_ruler();
+                    pane.view.area.grab_focus();
+                    this.sync_drawing_bar();
+                }
+            },
         );
         let with_tools = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         with_tools.append(&bar.root);
@@ -7796,6 +7805,40 @@ impl Window {
         self.set_pane_sends_drawings(pane, defaults.sends_drawings);
     }
 
+    pub fn measurement_zone(&self) -> chrono_tz::Tz {
+        let pane = self.focused_pane();
+        crate::clock::zone(&self.store).for_instrument(pane.instrument.borrow().as_ref())
+    }
+
+    /// A temporary measurement belongs to the live focused chart, never the store.
+    pub fn measure(
+        &self,
+        anchors: Option<(omacharts_engine::Anchor, omacharts_engine::Anchor)>,
+    ) -> (String, Option<omacharts_engine::measurement::Measurement>) {
+        let pane = self.focused_pane();
+        let at = self
+            .layout
+            .borrow()
+            .leaves()
+            .iter()
+            .position(|id| *id == pane.id)
+            .unwrap_or(0);
+        let symbol = pane
+            .instrument
+            .borrow()
+            .as_ref()
+            .map(|i| i.display_symbol())
+            .unwrap_or_default();
+        let label = format!(
+            "pos:{at} {symbol} {} in \"{}\"",
+            pane.timeframe.get().label(),
+            self.book_label(self.active.get())
+        );
+        let result = pane.view.measure(anchors);
+        self.sync_drawing_bar();
+        (label, result)
+    }
+
     /// Right-clicking the chart offers the things you change most, and a way
     /// to everything else.
     /// A picture of what is on screen, for a command.
@@ -8077,6 +8120,7 @@ impl Window {
         if let Some(bar) = self.drawing_bar.borrow().as_ref() {
             let view = &self.focused_pane().view;
             bar.show_armed(view.armed(), view.next_config(), view.is_sticky());
+            bar.show_ruler(view.ruler_armed());
         }
     }
 

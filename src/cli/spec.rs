@@ -915,6 +915,20 @@ pub const SURFACE: &[Noun] = &[
                 workspace: true,
             },
             Verb {
+                name: "measure",
+                about: "Show a temporary price/time measurement on the focused chart, or clear it; requires a window",
+                args: &[],
+                flags: &[
+                    Flag::valued("from", "ANCHOR", ANCHOR),
+                    Flag::valued("to", "ANCHOR", ANCHOR),
+                    Flag::switch("clear", "clear the temporary measurement"),
+                ],
+                example: "omacharts chart measure --from 2026-09-01,180.5 --to 2026-09-19,192",
+                json: true,
+                writes: true,
+                workspace: false,
+            },
+            Verb {
                 name: "crosshair",
                 about: "Whether a pointer on a Follow chart draws a line on the other Follow charts",
                 args: &[Arg::opt("STATE", "omit to read it").of(SWITCHES)],

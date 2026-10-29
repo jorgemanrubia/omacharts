@@ -47,6 +47,10 @@ Fast, beautiful charting software for [Omarchy](https://omarchy.org).
   the extended hours apart from the regular session, and any other stretch of
   the day — London, Asia, a lunch hour — can be shaded too. Charts read the
   time zone and the 12 or 24 hours you choose.
+- **Ruler.** In the drawing toolbar, choose Measure: click to start, move the
+  mouse to read price and percentage change, bar distance and elapsed time, then
+  click to finish. Escape clears the temporary range. `omacharts chart measure`
+  shows the same measurement from a terminal while the window is open.
 - **Drawings.** Trendlines, levels, arrows, zig-zags, boxes, circles and text,
   a keystroke each. Their colours are roles your theme fills, held clear of
   the candles, so a drawing reads on any theme. Figures take labels, and what

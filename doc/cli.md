@@ -1261,3 +1261,21 @@ story, and adding a manifest would be a second thing to maintain for nothing.
 
 `omacharts <group> --help` and `omacharts <group> <command> --help` both work,
 as does `omacharts help <group> <command>`.
+
+## Measuring a range
+
+With a window open, measure two time/price anchors on the focused chart:
+
+```sh
+omacharts chart measure --from 2026-09-01,180.5 --to 2026-09-19,192 --json
+omacharts chart measure --clear
+```
+
+Dates and times use the focused chart's time zone. The command displays a
+temporary ruler and returns the chart position, price
+change, percentage change, bar distance and elapsed seconds. Bar distance counts
+column intervals, not candles inclusively; elapsed time includes market closures.
+With fewer than two loaded bars the bar distance is `null`; a zero starting price
+has a `null` percentage. Empty columns use the chart's extrapolated cadence,
+not a forecast of exchange opening times. The ruler is not saved or shared.
+In the toolbar, Measure uses click, move, click; Escape clears it.

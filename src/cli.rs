@@ -232,6 +232,17 @@ pub trait Live {
     /// Write the arrangement out now, so a command about to read or change it
     /// sees what is on screen.
     fn flush_workspace(&self);
+    /// The focused chart's clock, used to read ruler anchors as the chart reads time.
+    fn measurement_zone(&self) -> chrono_tz::Tz { chrono_tz::UTC }
+
+    /// Show or clear a temporary ruler on the focused chart, using its live bars.
+    fn measure(
+        &self,
+        _anchors: Option<(omacharts_engine::Anchor, omacharts_engine::Anchor)>,
+    ) -> Result<(String, Option<omacharts_engine::measurement::Measurement>), Fault> {
+        Err(Fault::no_window("focused chart"))
+    }
+
     /// Read the arrangement back and rebuild from it.
     fn reload_workspace(&self);
     /// Draw the rail again, after a command changed a watchlist.
@@ -929,6 +940,17 @@ pub fn usage() -> String {
 /// that cannot be handed a bare reference. The alternative, recovering an `Rc`
 /// from a `&Window`, is a use-after-free waiting to happen.
 impl Live for Rc<crate::ui::Window> {
+    fn measurement_zone(&self) -> chrono_tz::Tz {
+        crate::ui::Window::measurement_zone(self)
+    }
+
+    fn measure(
+        &self,
+        anchors: Option<(omacharts_engine::Anchor, omacharts_engine::Anchor)>,
+    ) -> Result<(String, Option<omacharts_engine::measurement::Measurement>), Fault> {
+        Ok(crate::ui::Window::measure(self, anchors))
+    }
+
     fn flush_workspace(&self) {
         crate::ui::Window::save_workspace(self);
     }

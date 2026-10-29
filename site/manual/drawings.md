@@ -40,20 +40,22 @@ crop: none
 | Rectangle | <kbd>Alt</kbd> + <kbd>R</kbd> | Press at one corner, release at the other |
 | Circle | <kbd>Alt</kbd> + <kbd>C</kbd> | Placed like a rectangle; the ellipse fills it |
 | Text | <kbd>Alt</kbd> + <kbd>T</kbd> | Click where the text goes, then type |
+| Measure | — | Click the start, move the mouse, then click the end |
 
 After one drawing the tool is deselected. <kbd>Ctrl</kbd> + click a tool to keep it selected until <kbd>Esc</kbd> or another tool. The selected tool draws on whichever chart you press. A configuration is a saved look for a tool's drawings, numbered 1 to 9 ([Configurations](#configurations)).
 
 <!-- regenerate:
-theme: tokyo-night
-window: 2560x1600 @2, scratchpad kit
+theme: nord
+window: 2560x1600 @2, bin/headless-window
 state:
-  (the state of the first figure)
+  omacharts config set theme nord
+  omacharts chart set --symbol NVDA --resolution 1D --template none
   key ctrl+d
   key alt+r
   key alt+6
   move 1275 795
-capture: bin/headless-window shot /tmp/bar.png
-crop: 0,0,760,840
+capture: bin/headless-window shot /tmp/bar.png; magick /tmp/bar.png -crop 760x920+0+0 +repage site/assets/manual/drawings/tools-bar.png
+crop: 0,0,760,920
 -->
 {% include figure.html src="/assets/manual/drawings/tools-bar.png" alt="The drawing tools down the left edge, with the rectangle lit and a small 6 on it" caption="The tools, with the rectangle selected and configuration 6 chosen for it." %}
 
@@ -65,6 +67,37 @@ crop: 0,0,760,840
 | <kbd>Esc</kbd> | Drops the drawing and deselects the tool |
 
 A finished drawing is left selected.
+
+## Measuring a range
+
+The ruler measures the change between two points. Choose **Measure** at the
+bottom of the tools, click the starting point, move the mouse, then click the
+end point. The label shows price change, percentage change, bar distance and
+elapsed time. The range stays fixed after the second click. Click again to
+start another, or press <kbd>Esc</kbd> to clear it and return to the pointer.
+
+<!-- regenerate:
+theme: nord
+window: 2560x1600 @2, bin/headless-window
+state:
+  omacharts config set theme nord
+  omacharts chart set --symbol NVDA --resolution 1D --template none
+  key ctrl+d
+  click 23 410
+  click 400 340
+  move 600 200
+  click 600 200
+  move 700 350
+capture: bin/headless-window shot /tmp/ruler.png; magick /tmp/ruler.png -crop 1950x1600+0+0 +repage -resize 1600x site/assets/manual/drawings/ruler.png
+crop: 0,0,1950,1600
+-->
+{% include figure.html src="/assets/manual/drawings/ruler.png" alt="A measured range on NVDA with price change, percentage change, bar distance and elapsed time above it" caption="A range left fixed by the second click." %}
+
+Bar distance counts the spaces between candles. Elapsed time includes weekends
+and market closures. With fewer than two loaded candles the bar distance reads
+`n/a`; a zero starting price has no percentage. Points beyond the loaded candles
+use the chart's estimated times. The range is not saved or shared with other
+charts. Choosing another tool or changing the symbol or resolution clears it.
 
 ## Selecting and moving
 
@@ -277,3 +310,4 @@ New charts take their defaults from Preferences › Charts › Defaults › **Dr
 ## See also
 
 - [Drawing from the CLI](/manual/cli/#drawings)
+- [Measuring with the CLI](/manual/cli/#measuring-a-range)

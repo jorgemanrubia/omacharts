@@ -277,7 +277,7 @@ codes](#exit-codes).
 | `watchlist` | Watchlists and the symbols in them | [Watchlists and sections](#watchlists-and-sections); `watchlist feed` under [The Omarchy plugin](#watchlist-feed) |
 | `section` | The sections inside a watchlist | [Watchlists and sections](#watchlists-and-sections) |
 | `chartbook` | Chartbooks | [Chartbooks](#chartbooks); `chartbook template` under [Chartbook templates](#chartbook-templates); `chartbook screenshot` under [Screenshots](#screenshots) |
-| `chart` | The charts in a chartbook | [Charts](#charts) (`set`), [Indicators](#indicators), [Drawings](#drawings), [Arranging charts](#arranging-charts) (`list`, `split`, `close`, `focus`), [Linking](#linking) (`crosshair`), [Screenshots](#screenshots) |
+| `chart` | The charts in a chartbook | [Charts](#charts) (`set`), [Indicators](#indicators), [Drawings](#drawings), [Measuring a range](#measuring-a-range), [Arranging charts](#arranging-charts) (`list`, `split`, `close`, `focus`), [Linking](#linking) (`crosshair`), [Screenshots](#screenshots) |
 | `template` | Chart templates | [Chart templates](#chart-templates) |
 | `provider` | The data feed, and signing in to one | [Market data](#market-data) |
 | `config` | Stored preferences | [Preferences](#preferences); `config bars` under [Charts](#config-bars) |
@@ -720,6 +720,23 @@ $ omacharts template create Trend --from-chart
 created chart template "Trend" (id:5) from the indicator on pos:0 SPY 1D in "Chartbook 1", and put the chart on it
   [exit 0]
 ```
+
+## Measuring a range
+
+`omacharts chart measure` displays a temporary ruler on the focused chart and
+returns its measurements. A window must be open; otherwise it exits 6.
+
+| Flag | Does |
+|---|---|
+| `--from WHEN,PRICE` | Starting point, with the date or time read in the chart's time zone. Unix seconds are accepted too |
+| `--to WHEN,PRICE` | End point; required with `--from` |
+| `--clear` | Clears the ruler. Use it alone |
+| `--json` | Returns the chart position and the measurement: `from`, `to`, `price_change`, `percent_change`, `bars` and `elapsed_seconds` |
+
+Bar distance counts column intervals; elapsed seconds include market closures.
+With fewer than two loaded candles, `bars` is `null`. A zero starting price has
+`null` for `percent_change`. The range is not saved or shared. The mouse tool is
+in [Measuring a range](/manual/drawings/#measuring-a-range).
 
 ## Drawings
 

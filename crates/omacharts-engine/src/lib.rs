@@ -13,6 +13,7 @@ pub mod frame;
 pub mod indicators;
 pub mod ink;
 pub mod link;
+pub mod measurement;
 pub mod omarchy;
 pub mod palette;
 pub mod provider;

@@ -134,6 +134,7 @@ pub fn dispatch(
         ("chart", "screenshot") => screenshot(live, m, json, false),
         ("chartbook", "screenshot") => screenshot(live, m, json, true),
         ("chart", "crosshair") => crosshair(store, m, json),
+        ("chart", "measure") => chart_measure(live, m, json),
         ("chartbook", _) | ("chart", _) => {
             // "The one I am looking at" needs something to be looking at. The
             // stored arrangement is what the window had when it last closed,
@@ -215,7 +216,10 @@ pub fn dispatch(
             // Only after it worked, and only what it touched. Rebuilding the
             // window because a setting changed would be the kind of thing
             // that is fine with five symbols and stutters with five hundred.
-            if let Some(live) = live.filter(|_| spec.writes) {
+            // The ruler already updated its pointer layer through Live;
+            // reloading stored content would erase this temporary range.
+            if let Some(live) = live.filter(|_| spec.writes && (noun, verb) != ("chart", "measure"))
+            {
                 match spec.workspace {
                     true => live.reload_workspace(),
                     false => live.reload_watchlists(),
@@ -1212,6 +1216,48 @@ fn charts_verb(
 
     workspace.save(store);
     said(as_json, json!({"message": text}), text)
+}
+
+fn chart_measure(
+    live: Option<&dyn Live>,
+    m: &clap::ArgMatches,
+    as_json: bool,
+) -> Result<String, Fault> {
+    let live = live.ok_or_else(|| Fault::no_window("focused chart"))?;
+    let zone = live.measurement_zone();
+    let from = anchor(m, "from", zone)?;
+    let to = anchor(m, "to", zone)?;
+    let clear = flag(m, "clear");
+    let anchors = match (clear, from, to) {
+        (true, None, None) => None,
+        (false, Some(a), Some(b))
+            if a.price.is_finite()
+                && b.price.is_finite()
+                && (b.price - a.price).is_finite()
+                && chrono::DateTime::from_timestamp(a.ts, 0).is_some()
+                && chrono::DateTime::from_timestamp(b.ts, 0).is_some() =>
+        {
+            Some((a, b))
+        }
+        _ => {
+            return Err(Fault::usage(
+                "provide finite --from and --to anchors together, or --clear alone".into(),
+            ));
+        }
+    };
+    let (chart, measured) = live.measure(anchors)?;
+    let text = match measured {
+        Some(m) => {
+            let [change, span] = m.lines();
+            format!("{change}; {span} on {chart}")
+        }
+        None => format!("cleared measurement on {chart}"),
+    };
+    said(
+        as_json,
+        json!({"chart": chart, "measurement": measured}),
+        text,
+    )
 }
 
 fn chart_verb(
@@ -6713,6 +6759,17 @@ mod tests {
     struct NoWindow;
 
     impl Live for NoWindow {
+        fn measurement_zone(&self) -> chrono_tz::Tz { chrono_tz::America::New_York }
+        fn measure(
+            &self,
+            anchors: Option<(omacharts_engine::Anchor, omacharts_engine::Anchor)>,
+        ) -> Result<(String, Option<omacharts_engine::measurement::Measurement>), Fault> {
+            Ok((
+                "pos:0 SPY 1D in Main".into(),
+                anchors
+                    .map(|(a, b)| omacharts_engine::measurement::Measurement::between(a, b, &[])),
+            ))
+        }
         fn flush_workspace(&self) {}
         fn reload_workspace(&self) {}
         fn reload_watchlists(&self) {}
@@ -6736,6 +6793,44 @@ mod tests {
         ) -> Result<(String, std::path::PathBuf), Fault> {
             Err(Fault::new(crate::cli::EXIT_ERROR, "a test has nothing on screen".to_string()))
         }
+    }
+
+    #[test]
+    fn ruler_requires_live_chart_and_validates_before_changing_it() {
+        let store = seeded();
+        let invoke = |tail: &[&str], live: Option<&dyn Live>| {
+            let args = ["omacharts", "chart", "measure"]
+                .into_iter()
+                .chain(tail.iter().copied())
+                .map(str::to_string)
+                .collect::<Vec<_>>();
+            dispatch(&args, &store, live, &super::super::Here)
+        };
+        let valid = ["--from", "100,100", "--to", "200,110", "--json"];
+        assert_eq!(invoke(&valid, None).code, crate::cli::EXIT_NO_WINDOW);
+        let result = invoke(&valid, Some(&NoWindow));
+        assert_eq!(result.code, 0, "{}", result.err);
+        let value: Value = serde_json::from_str(&result.out).unwrap();
+        assert_eq!(value["measurement"]["price_change"], 10.0);
+        assert_eq!(value["measurement"]["percent_change"], 10.0);
+        assert_eq!(value["measurement"]["elapsed_seconds"], 100);
+        assert!(value["chart"].as_str().unwrap().contains("pos:0"));
+        let timed = invoke(&["--from", "2026-09-01T09:30,100", "--to", "2026-09-01T10:30,110", "--json"], Some(&NoWindow));
+        assert_eq!(timed.code, 0, "{}", timed.err);
+        let timed: Value = serde_json::from_str(&timed.out).unwrap();
+        let expected = chrono::DateTime::parse_from_rfc3339("2026-09-01T13:30:00Z").unwrap().timestamp();
+        assert_eq!(timed["measurement"]["from"]["ts"], expected, "read the anchors in the focused chart's clock");
+        assert_eq!(timed["measurement"]["elapsed_seconds"], 3600);
+        for bad in [
+            vec![],
+            vec!["--from", "100,100"],
+            vec!["--from", "100,NaN", "--to", "200,110"],
+            vec!["--from", "9223372036854775807,100", "--to", "200,110"],
+            vec!["--clear", "--from", "100,100", "--to", "200,110"],
+        ] {
+            assert_eq!(invoke(&bad, Some(&NoWindow)).code, crate::cli::EXIT_USAGE);
+        }
+        assert_eq!(invoke(&["--clear"], Some(&NoWindow)).code, 0);
     }
 
     /// Every example in the table is a command that runs.
