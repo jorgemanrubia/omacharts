@@ -57,6 +57,7 @@ pub struct DrawingBar {
     /// shows a 3 on the rectangle before anything is drawn. One per button,
     /// the pointer's never shown.
     badges: Vec<gtk::Label>,
+    ruler: gtk::ToggleButton,
     /// Set while the buttons are being shown a state, so their own signal
     /// does not read as a click.
     showing: std::cell::Cell<bool>,
@@ -69,6 +70,12 @@ pub struct DrawingBar {
 }
 
 impl DrawingBar {
+    pub fn show_ruler(&self, armed: bool) {
+        self.showing.set(true);
+        self.ruler.set_active(armed);
+        self.showing.set(false);
+    }
+
     /// `on_arm` is told which tool was picked — `None` for the pointer —
     /// and whether it should stay in hand after each drawing, which is what
     /// Ctrl on the click asks for;
@@ -78,6 +85,7 @@ impl DrawingBar {
         on_arm: impl Fn(Option<Kind>, bool) + Clone + 'static,
         on_configure: impl Fn(Kind) + Clone + 'static,
         on_toggle: impl Fn() + 'static,
+        on_ruler: impl Fn() + 'static,
     ) -> Rc<DrawingBar> {
         let column = gtk::Box::new(gtk::Orientation::Vertical, 4);
         column.add_css_class("drawing-bar");
@@ -178,11 +186,49 @@ impl DrawingBar {
             buttons.push((Some(kind), button, icon));
         }
 
+        let ruler = gtk::ToggleButton::new();
+        ruler.add_css_class("drawing-tool");
+        ruler.add_css_class("flat");
+        ruler.set_size_request(TOOL, TOOL);
+        ruler.set_tooltip_text(Some(
+            "Measure: click to start, move to measure, click to finish; Esc clears",
+        ));
+        let icon = gtk::DrawingArea::new();
+        icon.set_size_request(TOOL - 10, TOOL - 10);
+        icon.set_draw_func(|area, cr, _, _| {
+            let fg = area.color();
+            cr.set_source_rgba(
+                fg.red() as f64,
+                fg.green() as f64,
+                fg.blue() as f64,
+                fg.alpha() as f64,
+            );
+            cr.set_line_width(1.3);
+            cr.move_to(4.0, 20.0);
+            cr.line_to(20.0, 4.0);
+            cr.line_to(24.0, 8.0);
+            cr.line_to(8.0, 24.0);
+            cr.close_path();
+            for n in 0..5 {
+                let x = 7.0 + n as f64 * 3.0;
+                cr.move_to(x, 23.0 - x);
+                cr.line_to(x + 2.5, 25.5 - x);
+            }
+            cr.stroke().ok();
+        });
+        ruler.set_child(Some(&icon));
+        if let Some((_, first, _)) = buttons.first() {
+            ruler.set_group(Some(first));
+        }
+        column.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        column.append(&ruler);
+
         let bar = Rc::new(DrawingBar {
             root: gtk::Box::new(gtk::Orientation::Vertical, 0),
             toggle: gtk::ToggleButton::new(),
             buttons,
             badges,
+            ruler,
             showing: std::cell::Cell::new(false),
             sticky_press: std::cell::Cell::new(false),
         });
@@ -204,6 +250,17 @@ impl DrawingBar {
                 on_toggle();
             }
         });
+
+        {
+            let weak = Rc::downgrade(&bar);
+            bar.ruler.connect_toggled(move |button| {
+                if let Some(bar) = weak.upgrade() {
+                    if button.is_active() && !bar.showing.get() {
+                        on_ruler();
+                    }
+                }
+            });
+        }
 
         for (kind, button, _) in &bar.buttons {
             let kind = *kind;
