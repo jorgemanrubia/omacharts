@@ -195,7 +195,9 @@ impl DrawingBar {
         ));
         let icon = gtk::DrawingArea::new();
         icon.set_size_request(TOOL - 10, TOOL - 10);
-        icon.set_draw_func(|area, cr, _, _| {
+        icon.set_draw_func(|area, cr, w, h| {
+            // GTK may give the icon more than its requested 26 pixels.
+            cr.translate(w as f64 / 2.0 - 14.0, h as f64 / 2.0 - 14.0);
             let fg = area.color();
             cr.set_source_rgba(
                 fg.red() as f64,
@@ -211,8 +213,8 @@ impl DrawingBar {
             cr.close_path();
             for n in 0..5 {
                 let x = 7.0 + n as f64 * 3.0;
-                cr.move_to(x, 23.0 - x);
-                cr.line_to(x + 2.5, 25.5 - x);
+                cr.move_to(x, 24.0 - x);
+                cr.line_to(x + 2.5, 26.5 - x);
             }
             cr.stroke().ok();
         });

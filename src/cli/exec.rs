@@ -1279,7 +1279,10 @@ fn chart_measure(
     };
     let (chart, measured) = live.measure(anchors)?;
     let text = match measured {
-        Some(m) => format!("{}; {} on {chart}", m.lines()[0], m.lines()[1]),
+        Some(m) => {
+            let [change, span] = m.lines();
+            format!("{change}; {span} on {chart}")
+        }
         None => format!("cleared measurement on {chart}"),
     };
     said(

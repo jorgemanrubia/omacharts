@@ -1332,6 +1332,16 @@ impl State {
         true
     }
 
+    fn ruler_anchor(&self, width: f64, height: f64, x: f64, y: f64) -> Option<Anchor> {
+        let plan = layout(self, width, height);
+        if !(plan.plot_x..=plan.plot_x + plan.plot_w).contains(&x)
+            || !(plan.price_y..=plan.price_y + plan.price_h).contains(&y)
+        {
+            return None;
+        }
+        self.locate(width, height, x, y)
+    }
+
     fn ruler_click(&mut self, anchor: Anchor) {
         self.ruler = Some(match self.ruler {
             Some((from, _, false)) => (from, anchor, true),
@@ -1346,19 +1356,20 @@ impl State {
         }
     }
 
-    /// A drawing as pixels, through the same scales the candles use.
-    fn project(&self, plan: &Layout, scale: &PriceScale, drawing: &Drawing) -> Projected {
+    fn project_anchor(&self, plan: &Layout, scale: &PriceScale, anchor: Anchor) -> (f64, f64) {
         let (first, _, lead) = self.view();
         let bar_w = plan.plot_w / self.columns().max(1) as f64;
-        // The bar index the plot's left edge stands at, negative when room
-        // was opened before the first bar.
         let left = first as f64 - lead as f64;
-        let point = |anchor: &Anchor| {
-            let index = index_of_ts(&self.bars, anchor.ts);
-            let x = plan.plot_x + (index - left + 0.5) * bar_w;
-            let y = scale.to_y(anchor.price, plan.price_y, plan.price_h);
-            (x, y)
-        };
+        let index = index_of_ts(&self.bars, anchor.ts);
+        (
+            plan.plot_x + (index - left + 0.5) * bar_w,
+            scale.to_y(anchor.price, plan.price_y, plan.price_h),
+        )
+    }
+
+    /// A drawing as pixels, through the same scales the candles use.
+    fn project(&self, plan: &Layout, scale: &PriceScale, drawing: &Drawing) -> Projected {
+        let point = |anchor: &Anchor| self.project_anchor(plan, scale, *anchor);
         let projected = match drawing.kind.is_path() {
             true => Projected::through(drawing.kind, drawing.corners().iter().map(point).collect()),
             false => Projected::new(drawing.kind, point(&drawing.from), point(&drawing.to)),
@@ -2255,13 +2266,19 @@ impl ChartView {
         &self,
         anchors: Option<(Anchor, Anchor)>,
     ) -> Option<omacharts_engine::measurement::Measurement> {
-        self.arm(None);
+        if anchors.is_some() {
+            self.arm(None);
+        }
         let mut state = self.state.borrow_mut();
+        state.ruler_armed = false;
         state.ruler = anchors.map(|(a, b)| (a, b, true));
         let measured = anchors
             .map(|(a, b)| omacharts_engine::measurement::Measurement::between(a, b, &state.bars));
+        let drawing_armed = state.tool.is_some();
         drop(state);
+        self.area.set_cursor_from_name(Some(if drawing_armed { "crosshair" } else { "default" }));
         self.pointer.queue_draw();
+        self.tool_changed();
         measured
     }
 
@@ -3879,7 +3896,7 @@ impl ChartView {
                 s.pointer = Some((x, y));
                 s.follow_hand(area.width() as f64, area.height() as f64);
                 if s.ruler.is_some_and(|(_, _, finished)| !finished) {
-                    if let Some(to) = s.locate(area.width() as f64, area.height() as f64, x, y) {
+                    if let Some(to) = s.ruler_anchor(area.width() as f64, area.height() as f64, x, y) {
                         s.ruler_motion(to);
                     }
                 }
@@ -4092,11 +4109,8 @@ impl ChartView {
         let (width, height) = (area.width() as f64, area.height() as f64);
         {
             let mut s = state.borrow_mut();
-            if s.ruler_armed {
-                if let Some(anchor) = s.locate(width, height, x, y) {
-                    s.ruler_click(anchor);
-                }
-                s.drag = None;
+            if s.ruler_armed && let Some(anchor) = s.ruler_anchor(width, height, x, y) {
+                s.ruler_click(anchor);
                 pointer.queue_draw();
                 return;
             }
@@ -6175,8 +6189,10 @@ fn draw_ruler(
     from: Anchor,
     to: Anchor,
 ) {
-    let projected = state.project(plan, scale, &Drawing::new(DrawingKind::Rect, from, to));
-    let (x, y, w, h) = projected.bounds();
+    let a = state.project_anchor(plan, scale, from);
+    let b = state.project_anchor(plan, scale, to);
+    let (x, y) = (a.0.min(b.0), a.1.min(b.1));
+    let (w, h) = ((b.0 - a.0).abs(), (b.1 - a.1).abs());
     let measured = omacharts_engine::measurement::Measurement::between(from, to, &state.bars);
     let colour = &state.theme.ui.accent;
     cr.save().ok();
@@ -8741,6 +8757,26 @@ mod drawing_tests {
         // And before the first.
         assert_eq!(ts_at(&series, -2.0), series[0].ts - 2 * 3600);
         assert_eq!(index_of_ts(&series, series[0].ts - 2 * 3600), -2.0);
+    }
+
+    #[test]
+    fn ruler_ignores_the_header_axes_and_indicator_strips() {
+        let mut state = charted(400);
+        let indicator = Indicator::new(1, indicators::Kind::Rsi);
+        state.indicators.push(Drawn {
+            color: "#5588ff".into(),
+            output: indicators::compute(&indicator, &state.bars, 0, state.timeframe, None),
+            indicator,
+        });
+        let (w, h) = (800.0, 400.0);
+        let plan = layout(&state, w, h);
+        let x = plan.plot_x + plan.plot_w / 2.0;
+        let y = plan.price_y + plan.price_h / 2.0;
+        assert!(state.ruler_anchor(w, h, x, y).is_some());
+        for (x, y) in [(x, 0.0), (w - 1.0, y), (x, h - 1.0),
+            (x, plan.price_y + plan.price_h + 10.0)] {
+            assert!(state.ruler_anchor(w, h, x, y).is_none(), "accepted ({x}, {y})");
+        }
     }
 
     #[test]
