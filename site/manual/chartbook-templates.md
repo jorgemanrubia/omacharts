@@ -51,10 +51,10 @@ state:
   omacharts chart split vertical --book Macro
   omacharts chartbook template save Pair --book Macro
   bin/virtual-pointer --button right click 104 708   # the Semis tab
-  click 154 685                                       # Template
+  click 147 690                                       # Template
   move 420 560
 capture: bin/headless-window shot submenu.png
-crop: 0,960,760,480
+crop: 0,1028,720,412   (the submenu with 20px layout margin, the strip under it)
 -->
 {% include figure.html src="/assets/manual/chartbook-templates/template-submenu.png" alt="The tab menu's Template submenu, with Desk chosen" caption="The **Template** submenu of a chartbook on *Desk*." %}
 

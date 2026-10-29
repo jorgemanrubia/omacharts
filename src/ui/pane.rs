@@ -62,6 +62,9 @@ pub struct ChartPane {
     /// on the chart: with four charts open, four of these drawn all the time
     /// is four more things between you and the prices.
     pub expand: gtk::Button,
+    /// Dims the chart while a picker is open over it, so the chart a pick
+    /// will change is the one that looks different from the rest.
+    pub shade: gtk::Box,
     expand_icon: gtk::DrawingArea,
     /// Which way the expand glyph points, and which word its tooltip uses.
     expand_state: Rc<Cell<bool>>,
@@ -284,6 +287,13 @@ impl ChartPane {
         // The chart's own two layers, stacked, rather than the drawing area
         // alone: the crosshair is a widget over the bars now.
         overlay.set_child(Some(&view.root));
+        // Over the bars, under the legend: the chart dims and its name
+        // stays readable, which is half of saying which chart it is.
+        let shade = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        shade.add_css_class("pick-shade");
+        shade.set_can_target(false);
+        shade.set_visible(false);
+        overlay.add_overlay(&shade);
         overlay.add_overlay(&legend);
         overlay.add_overlay(&top);
         overlay.add_overlay(&corner);
@@ -335,6 +345,7 @@ impl ChartPane {
             hidden_glyphs,
             link,
             expand,
+            shade,
             expand_icon,
             expand_state,
             instrument: RefCell::new(None),

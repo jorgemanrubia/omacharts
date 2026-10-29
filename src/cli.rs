@@ -284,6 +284,17 @@ pub trait Live {
     /// catalogue has to build one then, and had better say so.
     fn symbols(&self) -> Option<Rc<SearchIndex>>;
 
+    /// Lay the focused chart across `range`, at `resolution` when one is
+    /// given, and say which chart that was. Held by the chart on screen and
+    /// not stored, so without a window there is nothing to set.
+    fn show_range(
+        &self,
+        _range: omacharts_engine::Range,
+        _resolution: Option<omacharts_engine::Timeframe>,
+    ) -> Result<String, Fault> {
+        Err(Fault::new(EXIT_NO_WINDOW, "no window is open, and a range is of the chart on screen".into()))
+    }
+
     /// What the window holds a stream subscription to, for a provider that
     /// streams. Empty for one that does not, and with no window at all.
     fn streaming(&self) -> Vec<crate::live::Report> {
@@ -981,6 +992,14 @@ impl Live for Rc<crate::ui::Window> {
 
     fn streaming(&self) -> Vec<crate::live::Report> {
         crate::ui::Window::streaming(self)
+    }
+
+    fn show_range(
+        &self,
+        range: omacharts_engine::Range,
+        resolution: Option<omacharts_engine::Timeframe>,
+    ) -> Result<String, Fault> {
+        Ok(crate::ui::Window::show_range_at(self, range, resolution))
     }
 }
 

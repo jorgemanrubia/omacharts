@@ -39,6 +39,7 @@ use omacharts_engine::link;
 use omacharts_engine::LinkMode;
 use crate::ui::colors;
 use crate::ui::preferences::Preferences;
+use crate::ui::pick_frame::Over;
 use crate::ui::search::SymbolSearch;
 use crate::ui::shortcuts;
 use crate::ui::watchlist::{Quote, Watchlist, DEFAULTS};
@@ -205,6 +206,7 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("+ −", "Zoom"),
             ("End", "Jump to the latest bar"),
             ("Ctrl+Esc", "Reset the view"),
+            ("Ctrl+G", "Go to a stretch of time: 6m, 3y, Y, 2Y, 2025, all"),
             ("Ctrl+Shift+G", "Show or hide the gridlines"),
             ("Ctrl+H", "Show or hide the drawings"),
             ("Ctrl+Shift+H", "Show or hide the indicators"),
@@ -338,6 +340,13 @@ fn key_synonyms(part: &str) -> &'static [&'static str] {
         "-" => &["minus"],
         _ => &[],
     }
+}
+
+thread_local! {
+    /// Built once, the first time each is wanted, like the symbol picker.
+    static RANGE_CARD: std::cell::OnceCell<Rc<crate::ui::range_card::RangeCard>> = const { std::cell::OnceCell::new() };
+    static RESOLUTION_CARD: std::cell::OnceCell<Rc<crate::ui::range_card::ResolutionCard>> =
+        const { std::cell::OnceCell::new() };
 }
 
 #[cfg(test)]
@@ -4656,6 +4665,9 @@ impl Window {
         let menu_button = gtk::MenuButton::new();
         menu_button.set_icon_name("open-menu-symbolic");
         menu_button.set_menu_model(Some(&menu));
+        if let Some(popover) = menu_button.popover() {
+            popover.set_has_arrow(false);
+        }
         let tip = shortcuts::tooltip_with_key("Main Menu", shortcuts::MAIN_MENU);
         menu_button.set_tooltip_text(Some(&tip));
         // F10 opens the primary menu, and the header bar used to be the only
@@ -5055,6 +5067,12 @@ impl Window {
             }
 
             match key {
+                // Ctrl+G: go to a stretch of time. Only off a box: in one,
+                // Ctrl+G is the box's.
+                Key::g | Key::G if ctrl && !alt && !shift && !this.is_typing() => {
+                    this.prompt_range();
+                    return glib::Propagation::Stop;
+                }
                 Key::Left if alt && !ctrl => {
                     this.focus_towards(-1, 0);
                     return glib::Propagation::Stop;
@@ -5470,11 +5488,20 @@ impl Window {
         self.open_search_with("");
     }
 
+    /// Over the focused chart, which is the one a pick changes.
     fn open_search_with(self: &Rc<Self>, query: &str) {
         let this = self.clone();
-        self.search.present_with(&self.window, "Find symbol", query, move |instrument| {
-            this.show(instrument)
-        });
+        self.search.present_with(self.over_focused(), query, move |instrument| this.show(instrument));
+    }
+
+    /// Where a picker opens: over the focused chart, which is the one a pick
+    /// changes, named by its position.
+    fn over_focused(&self) -> Over {
+        let pane = self.focused_pane();
+        let leaves = self.layout.borrow().leaves();
+        let at = leaves.iter().position(|leaf| *leaf == pane.id).unwrap_or(0);
+        let panes = self.panes.borrow();
+        Over::chart(&pane, panes.iter().map(|pane| pane.as_ref()), at)
     }
 
     /// The resolution box: type "3", "15", "4h", "1D".
@@ -5482,128 +5509,58 @@ impl Window {
     /// A bare number means minutes, so the digit that opened this is already
     /// the start of an answer.
     fn prompt_resolution(self: &Rc<Self>, start: &str) {
-        let entry = gtk::Entry::new();
-        entry.set_text(start);
-        entry.set_position(-1);
-        entry.set_placeholder_text(Some("3, 15, 4h, 1D"));
-        entry.set_width_chars(10);
+        let card = RESOLUTION_CARD.with(|card| card.get_or_init(crate::ui::range_card::ResolutionCard::new).clone());
+        card.open(&self.over_focused(), self.range_context(), start);
+    }
 
-        let hint = gtk::Label::new(Some("Resolution"));
-        hint.add_css_class("dim-label");
-        hint.add_css_class("caption");
-        hint.set_xalign(0.0);
+    /// Ctrl+G: how much of the past the focused chart shows. Type `6m`,
+    /// `Y`, `2025`, `2025:`, or Tab into the days it lands on and set them;
+    /// Space on an empty box lists the common ones.
+    fn prompt_range(self: &Rc<Self>) {
+        let card = RANGE_CARD.with(|card| card.get_or_init(crate::ui::range_card::RangeCard::new).clone());
+        card.open(&self.over_focused(), self.range_context());
+    }
 
-        // Says what is about to happen, as it is typed. "240" reading back as
-        // "4 hours" is the whole reason this is here.
-        let preview = gtk::Label::new(None);
-        preview.add_css_class("caption");
-        preview.set_xalign(0.0);
-
-        let content = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        content.append(&hint);
-        content.append(&entry);
-        content.append(&preview);
-
-        let describe = |text: &str, preview: &gtk::Label| {
-            preview.remove_css_class("dim-label");
-            preview.remove_css_class("error");
-            match Timeframe::parse(text) {
-                Some(timeframe) => preview.set_text(&timeframe.description()),
-                None if text.trim().is_empty() => {
-                    preview.set_text("3, 15, 4h, 1D");
-                    preview.add_css_class("dim-label");
-                }
-                None => {
-                    preview.set_text("not a resolution");
-                    preview.add_css_class("error");
-                }
+    /// What the range and resolution cards need from the focused chart.
+    fn range_context(self: &Rc<Self>) -> crate::ui::range_card::Context {
+        let pane = self.focused_pane();
+        let today = chrono::Local::now().date_naive();
+        let showing = pane.view.days_shown().unwrap_or((today, today));
+        let first = pane.view.first_day().unwrap_or(showing.0);
+        let mut ladder = self.timeframes.borrow().clone();
+        ladder.sort_by_key(|tf| tf.seconds());
+        ladder.dedup();
+        let weak = Rc::downgrade(self);
+        let plan = move |range, forced| match weak.upgrade() {
+            Some(this) => this.plan_range(range, forced),
+            None => crate::ui::range_card::Plan {
+                timeframe: forced.unwrap_or(Timeframe::days(1)),
+                auto: false,
+                fits: true,
+            },
+        };
+        let weak = Rc::downgrade(self);
+        let apply = move |range, forced| {
+            if let Some(this) = weak.upgrade() {
+                this.show_range_at(range, forced);
             }
         };
-        describe(&entry.text(), &preview);
-
-        let preview_weak = preview.downgrade();
-        entry.connect_changed(move |entry| {
-            if let Some(preview) = preview_weak.upgrade() {
-                describe(&entry.text(), &preview);
-            }
-        });
-
-        // Anchored to the focused chart's own resolution strip, which is what
-        // it is about and where the answer will appear. Hanging it off the
-        // window would put it over whichever chart happened to be underneath.
-        let popover = gtk::Popover::new();
-        popover.set_child(Some(&content));
-        // Or, on a chart too narrow to show the strip, to the resolution
-        // beside the symbol that stands in for it. Mapped rather than
-        // visible: the strip is hidden by its row stepping aside, and only
-        // the map state reaches down through the row to the strip itself.
-        // And with neither, on a header that leaves the resolution out, to
-        // the chart itself.
-        let pane = self.focused_pane();
-        if pane.strip.is_mapped() {
-            popover.set_parent(&pane.strip);
-        } else if pane.timeframe_menu.is_mapped() {
-            popover.set_parent(&pane.timeframe_menu);
-        } else {
-            popover.set_parent(&pane.view.area);
-        }
-        // Every number typed builds a fresh one, so each has to let go of the
-        // strip when it closes or they pile up on it.
-        //
-        // Closing hands the keyboard to what it hangs from, which put a focus
-        // ring on the strip's first button and sent the chart's keys there.
-        // Back to the chart it was typed on, unless a click outside already
-        // took the keyboard somewhere else.
-        let area = pane.view.area.downgrade();
-        popover.connect_closed(move |popover| {
-            let popover = popover.clone();
-            let area = area.clone();
-            glib::idle_add_local_once(move || {
-                let anchor = popover.parent();
-                popover.unparent();
-                let focus = anchor.as_ref().and_then(|a| a.root()).and_then(|root| root.focus());
-                // Still in the entry here: the move to the anchor comes later.
-                let stranded = match (&anchor, &focus) {
-                    (Some(anchor), Some(focus)) => {
-                        focus.is_ancestor(&popover) || focus.is_ancestor(anchor) || focus == anchor
-                    }
-                    _ => true,
-                };
-                if let Some(area) = area.upgrade().filter(|_| stranded) {
-                    area.grab_focus();
-                }
-            });
-        });
-
-        let this = self.clone();
-        let popover_weak = popover.downgrade();
-        entry.connect_activate(move |entry| {
-            if let Some(timeframe) = Timeframe::parse(&entry.text()) {
+        let weak = Rc::downgrade(self);
+        let resolution = move |timeframe| {
+            if let Some(this) = weak.upgrade() {
                 this.apply_timeframe(timeframe);
             }
-            if let Some(popover) = popover_weak.upgrade() {
-                popover.popdown();
-            }
-        });
-
-        // The window's key controller would otherwise take Escape to move
-        // focus back to the chart, leaving this open behind it.
-        let popover_weak = popover.downgrade();
-        let escape = gtk::EventControllerKey::new();
-        escape.connect_key_pressed(move |_, key, _, _| {
-            if key == gtk::gdk::Key::Escape {
-                if let Some(popover) = popover_weak.upgrade() {
-                    popover.popdown();
-                }
-                return glib::Propagation::Stop;
-            }
-            glib::Propagation::Proceed
-        });
-        entry.add_controller(escape);
-
-        popover.popup();
-        entry.grab_focus();
-        entry.set_position(-1);
+        };
+        crate::ui::range_card::Context {
+            today,
+            showing,
+            first,
+            current: pane.timeframe.get(),
+            ladder,
+            plan: Rc::new(plan),
+            apply: Rc::new(apply),
+            resolution: Rc::new(resolution),
+        }
     }
 
     pub fn open_chart_settings(self: &Rc<Self>) {
@@ -7839,6 +7796,98 @@ impl Window {
             pane.timeframe.get().label()
         );
         Ok((what, path))
+    }
+
+    /// Show `range` on the focused chart, at `forced` when it is given, else
+    /// at its resolution when the range fits it and at the nearest on the
+    /// strip that does when not. Answers with the chart named, for a command.
+    pub fn show_range_at(self: &Rc<Self>, range: omacharts_engine::Range, forced: Option<Timeframe>) -> String {
+        let pane = self.focused_pane();
+        let current = pane.timeframe.get();
+        let target = self.plan_range(range, forced).timeframe;
+        // Held before the resolution changes, so the series that arrives for
+        // the new one is laid across the range rather than at rest.
+        pane.view.show_range(range);
+        if target != current {
+            self.set_timeframe(target);
+        }
+        format!("showing {} on {}", range.description(), self.chart_named(&pane))
+    }
+
+    /// The resolution `range` would show at on the focused chart — `forced`,
+    /// or the window's pick — and how many bars that makes.
+    pub fn plan_range(&self, range: omacharts_engine::Range, forced: Option<Timeframe>) -> crate::ui::range_card::Plan {
+        use omacharts_engine::range::{bars_in, resolution_for, Fit, AIM_BARS};
+        let pane = self.focused_pane();
+        let current = pane.timeframe.get();
+        let today = chrono::Local::now().date_naive();
+        let instrument = pane.instrument.borrow().clone();
+        let Some(instrument) = instrument else {
+            return crate::ui::range_card::Plan {
+                timeframe: forced.unwrap_or(current),
+                auto: forced.is_none(),
+                fits: true,
+            };
+        };
+        let provider = self.provider();
+        let (intraday, daily) = omacharts_engine::session::week_share(&instrument, omacharts_engine::Session::Regular);
+        // What the feed actually delivers beats the guess, when the chart
+        // already holds intraday bars to measure it on.
+        let measured = current.is_intraday().then(|| {
+            pane.view.with_bars(|bars| match (bars.first(), bars.last()) {
+                (Some(first), Some(last)) if bars.len() > 50 => {
+                    let span = (last.ts - first.ts + current.seconds()) as f64;
+                    Some(bars.len() as f64 * current.seconds() as f64 / span)
+                }
+                _ => None,
+            })
+        });
+        let share = (measured.flatten().unwrap_or(intraday), daily);
+        let ladder = self.timeframes.borrow().clone();
+        // Every feed charts every symbol at every resolution on the strip.
+        let offers = |_: Timeframe| true;
+        let reach = |tf: Timeframe| {
+            let native = tf.native();
+            provider.capabilities().iter().find(|c| c.timeframe == native).and_then(|c| c.history_days)
+        };
+        let fit = Fit { ladder: &ladder, bars: AIM_BARS, share, offers: &offers, reach: &reach };
+        let timeframe = forced.unwrap_or_else(|| resolution_for(range, today, current, &fit));
+        // A range from the first bar counts from the first bar the chart has.
+        let counted = match range.start(today) {
+            Some(_) => range,
+            None => match pane.view.first_day() {
+                Some(first) => omacharts_engine::Range::Slice(
+                    Some(omacharts_engine::range::End::Day(first)),
+                    range.end(today).map(omacharts_engine::range::End::Day),
+                ),
+                None => range,
+            },
+        };
+        let bars = bars_in(counted, today, timeframe, share);
+        let reaches = match (reach(timeframe), counted.reach(today)) {
+            (Some(limit), Some(back)) => i64::from(limit) >= back,
+            _ => true,
+        };
+        let (fewest, most) = crate::ui::chart::VISIBLE_BARS;
+        let readable = bars.is_none_or(|bars| (fewest as f64..=most as f64).contains(&bars.round()));
+        crate::ui::range_card::Plan {
+            timeframe,
+            auto: forced.is_none(),
+            fits: offers(timeframe) && reaches && readable,
+        }
+    }
+
+    /// A chart named the way a command's answer names it:
+    /// `pos:0 MES 1D in "Macro"`.
+    fn chart_named(&self, pane: &ChartPane) -> String {
+        let symbol = pane.instrument.borrow().as_ref().map(|i| i.display_symbol()).unwrap_or_default();
+        let at = self.layout.borrow().leaves().iter().position(|leaf| *leaf == pane.id);
+        format!(
+            "pos:{} {symbol} {} in \"{}\"",
+            at.unwrap_or(0),
+            pane.timeframe.get().label(),
+            self.book_label(self.active.get())
+        )
     }
 
     /// Write a drawing's change down, and hand every chart of the symbol

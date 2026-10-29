@@ -19,6 +19,7 @@ pub mod provider;
 pub mod refresh;
 pub mod session;
 pub mod providers;
+pub mod range;
 pub mod stream;
 pub mod symbols;
 pub mod theme;
@@ -33,6 +34,7 @@ pub use provider::{
     Capability, Closes, Delivery, FetchFailure, Pacing, Provider, ProviderError, SharedCooldown,
     Sink, Stream, Subscription, Update,
 };
+pub use range::Range;
 pub use session::Session;
 pub use symbols::{Instrument, InstrumentKind, SearchHit, SearchIndex};
 pub use drawings::{

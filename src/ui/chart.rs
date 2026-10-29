@@ -37,7 +37,7 @@ use omacharts_engine::clock::{ChartZone, TimeFormat};
 use omacharts_engine::indicators::{self as indicators, BandSeries, Output, Profile};
 use omacharts_engine::{
     grouped_decimals, Bar, BarScheme, BarStyle, Direction, FetchFailure, Indicator, Instrument,
-    Tag, Theme, Timeframe,
+    Range, Tag, Theme, Timeframe,
 };
 
 use crate::ui::colors;
@@ -89,6 +89,9 @@ const CONTROL_PITCH: f64 = PANE_CONTROL + 2.0;
 /// view is zoomed.
 const MIN_VISIBLE: usize = 12;
 const MAX_VISIBLE: usize = 3000;
+/// The fewest and the most bars a chart spreads across its width, for
+/// whoever has to choose a resolution a stretch of time fits.
+pub const VISIBLE_BARS: (usize, usize) = (MIN_VISIBLE, MAX_VISIBLE);
 
 /// How far the price scale may be stretched either way.
 const MIN_PRICE_ZOOM: f64 = 0.05;
@@ -156,6 +159,12 @@ struct State {
     /// Empty columns before the first bar, at the left edge, when the hand
     /// has dragged past the start of the series. Zero at rest.
     lead: usize,
+    /// The stretch of the calendar the view was told to show — the year to
+    /// date, the last month — held until a hand moves the view. Held rather
+    /// than turned into a bar count once, because the count is the series':
+    /// a year is 250 bars of a stock and 365 of bitcoin, and the month to
+    /// date grows a bar a day.
+    range: Option<Range>,
     drag: Option<Drag>,
     /// The grip of a selected drawing the pointer rests on, lit so the hand
     /// can see what a press would take hold of. Not while anything is being
@@ -1132,6 +1141,7 @@ impl State {
             anchored: true,
             overhang: RIGHT_MARGIN,
             lead: 0,
+            range: None,
             indicators: Vec::new(),
             show_indicators: true,
             covered_axis_top: 0.0,
@@ -1571,13 +1581,19 @@ impl State {
         let room = self.max_overhang(plot_w) as i64;
         // The left edge as a column index: negative is room before the
         // first bar.
-        let left = self.left_edge() + bars.round() as i64;
+        let was = self.left_edge();
+        let left = was + bars.round() as i64;
         let left = left.clamp(-room, (len - columns as i64 + room).max(-room));
         let right = left + columns as i64;
         self.lead = (-left).max(0) as usize;
         self.overhang = (right - len).max(0) as usize;
         self.first = left.max(0) as usize;
         self.anchored = right >= len;
+        // Moving the view is choosing where to look: whatever range it was
+        // holding to, this is it now.
+        if left != was {
+            self.range = None;
+        }
     }
 
     /// The column index of the view's left edge, negative when there is
@@ -1639,6 +1655,7 @@ impl State {
             self.first = left.max(0) as usize;
         }
         self.visible = next;
+        self.range = None;
         // The room is so many pixels, which is fewer columns zoomed in.
         self.trim_room(plot_w);
     }
@@ -1656,6 +1673,7 @@ impl State {
     /// Back to fitting the data, at the live edge, with the resting margin
     /// past it.
     fn reset_view(&mut self) {
+        self.range = None;
         self.price_auto = true;
         self.price_zoom = 1.0;
         self.price_offset = 0.0;
@@ -1663,6 +1681,71 @@ impl State {
         self.anchored = true;
         self.overhang = RIGHT_MARGIN;
         self.lead = 0;
+    }
+
+    /// Take on a series, starting the view over when the instrument or the
+    /// resolution changed. A range it is holding to is laid across the new
+    /// series rather than let go of.
+    fn replace_series(&mut self, instrument: Instrument, timeframe: Timeframe, bars: Vec<Bar>) {
+        let changed = self
+            .instrument
+            .as_ref()
+            .map(|i| i.symbol != instrument.symbol || i.suffix != instrument.suffix)
+            .unwrap_or(true)
+            || self.timeframe != timeframe;
+        self.bars = bars;
+        self.instrument = Some(instrument);
+        self.timeframe = timeframe;
+        if changed {
+            self.anchored = true;
+            self.overhang = RIGHT_MARGIN;
+            self.lead = 0;
+            self.visible = 160;
+        }
+        self.fit_range();
+    }
+
+    /// Show `range`, and keep showing it as the series changes.
+    fn show_range(&mut self, range: Range) {
+        self.range = Some(range);
+        self.fit_range();
+    }
+
+    /// Lay the view across the range it holds, if it holds one: from the
+    /// first bar on or after the range's first day to the live edge, with
+    /// the resting margin past it, or to its last day's bar for one that
+    /// ends before then. "Today" is the last bar's day, on the same clock
+    /// the time axis reads.
+    fn fit_range(&mut self) {
+        let Some(range) = self.range else { return };
+        let Some(last) = self.bars.last() else { return };
+        let utc = self.timeframe.is_calendar();
+        let clock = self.clock;
+        let date = |ts: i64| clock.read(ts, utc).map(|at| at.date());
+        let Some(today) = date(last.ts) else { return };
+        let first = match range.start(today) {
+            None => 0,
+            Some(start) => self.bars.partition_point(|bar| date(bar.ts).is_some_and(|d| d < start)),
+        };
+        let len = self.bars.len();
+        let first = first.min(len);
+        let end = match range.end(today) {
+            None => len,
+            Some(end) => self.bars.partition_point(|bar| date(bar.ts).is_some_and(|d| d <= end)),
+        };
+        self.lead = 0;
+        if end >= len {
+            self.visible = (len - first + RIGHT_MARGIN).clamp(MIN_VISIBLE, MAX_VISIBLE);
+            self.anchored = true;
+            self.overhang = RIGHT_MARGIN;
+            return;
+        }
+        // Over before the last bar: its own bars edge to edge, from the
+        // first of them, and new bars arriving move nothing.
+        self.visible = end.saturating_sub(first).clamp(MIN_VISIBLE, MAX_VISIBLE);
+        self.anchored = false;
+        self.overhang = 0;
+        self.first = first.min(len.saturating_sub(self.visible));
     }
 
     /// The bars in view: the first, and how many. Fewer than the columns
@@ -3313,23 +3396,7 @@ impl ChartView {
     /// Replace the series. Resets the view only when the instrument changed,
     /// so a background refresh of the same chart does not throw away a pan.
     pub fn set_series(&self, instrument: Instrument, timeframe: Timeframe, bars: Vec<Bar>) {
-        let mut state = self.state.borrow_mut();
-        let changed = state
-            .instrument
-            .as_ref()
-            .map(|i| i.symbol != instrument.symbol || i.suffix != instrument.suffix)
-            .unwrap_or(true)
-            || state.timeframe != timeframe;
-        state.bars = bars;
-        state.instrument = Some(instrument);
-        state.timeframe = timeframe;
-        if changed {
-            state.anchored = true;
-            state.overhang = RIGHT_MARGIN;
-            state.lead = 0;
-            state.visible = 160;
-        }
-        drop(state);
+        self.state.borrow_mut().replace_series(instrument, timeframe, bars);
         self.redraw();
     }
 
@@ -3363,6 +3430,8 @@ impl ChartView {
             }
             state.trouble = None;
             state.loading = false;
+            // A new day can start a new month, and the month to date with it.
+            state.fit_range();
         }
         self.redraw();
     }
@@ -3632,6 +3701,29 @@ impl ChartView {
         state.lead = 0;
         drop(state);
         self.redraw();
+    }
+
+    /// Show a stretch of the calendar, and keep showing it — across a new
+    /// symbol, new bars and a new day — until a hand moves the view.
+    pub fn show_range(&self, range: Range) {
+        self.state.borrow_mut().show_range(range);
+        self.redraw();
+    }
+
+    /// The first and last day on screen, on the clock the time axis reads.
+    pub fn days_shown(&self) -> Option<(chrono::NaiveDate, chrono::NaiveDate)> {
+        let state = self.state.borrow();
+        let (first, visible, _) = state.view();
+        let utc = state.timeframe.is_calendar();
+        let day = |at: usize| state.bars.get(at).and_then(|bar| state.clock.read(bar.ts, utc)).map(|at| at.date());
+        Some((day(first)?, day((first + visible).checked_sub(1)?)?))
+    }
+
+    /// The day of the first bar the chart holds.
+    pub fn first_day(&self) -> Option<chrono::NaiveDate> {
+        let state = self.state.borrow();
+        let utc = state.timeframe.is_calendar();
+        state.bars.first().and_then(|bar| state.clock.read(bar.ts, utc)).map(|at| at.date())
     }
 
     pub fn zoom(&self, factor: f64) {
@@ -4275,6 +4367,7 @@ impl ChartView {
                     let next = ((visible as f64 * factor).round() as usize)
                         .clamp(MIN_VISIBLE, MAX_VISIBLE);
                     s.visible = next;
+                    s.range = None;
                     s.trim_room(plot_w);
                 }
                 Drag::Place { .. } | Drag::Grip { .. } | Drag::Marquee { .. } => unreachable!("handled above"),
@@ -4692,6 +4785,23 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
     if state.trouble.is_some() {
         draw_trouble_dot(cr, state, width);
     }
+    draw_range(cr, state, width, height);
+}
+
+/// The range the view is holding to, in the corner under the price axis,
+/// for as long as it holds: "YTD" there is what tells a chart showing the
+/// year to date from one that happens to be zoomed to about that much. It
+/// goes when a hand moves the view, which is when it stops being true.
+fn draw_range(cr: &cairo::Context, state: &State, width: f64, height: f64) {
+    let Some(range) = state.range else { return };
+    let text = range.key();
+    cr.select_font_face("sans-serif", cairo::FontSlant::Normal, cairo::FontWeight::Bold);
+    cr.set_font_size(11.0);
+    let Ok(extents) = cr.text_extents(&text) else { return };
+    let x = width - PRICE_AXIS_W / 2.0 - extents.width() / 2.0 - extents.x_bearing();
+    colors::set_source(cr, &state.theme.ui.accent);
+    cr.move_to(x.round(), height - 7.0);
+    let _ = cr.show_text(&text);
 }
 
 /// The layer over the chart: the crosshair and its labels, another chart's
@@ -7449,6 +7559,126 @@ mod tests {
         assert_eq!(state.columns(), 80);
         assert_eq!(state.lead, 0);
         assert_eq!(state.slice(), (20, 80));
+    }
+
+    fn named(symbol: &str) -> Instrument {
+        Instrument {
+            symbol: symbol.into(),
+            name: symbol.into(),
+            kind: omacharts_engine::symbols::InstrumentKind::Equity,
+            suffix: None,
+            currency: None,
+            tier: 0,
+            session_origin: 0,
+            overrides: Vec::new(),
+            exchange: None,
+            popularity: 0,
+            local_name: None,
+        }
+    }
+
+    /// Every day from `from` to `to`, or only the weekdays, stamped at noon
+    /// UTC so the day is the same on any machine's clock.
+    fn days(from: chrono::NaiveDate, to: chrono::NaiveDate, weekends: bool) -> Vec<Bar> {
+        use chrono::Datelike;
+        from.iter_days()
+            .take_while(|day| *day <= to)
+            .filter(|day| weekends || day.weekday().number_from_monday() <= 5)
+            .map(|day| {
+                let ts = day.and_hms_opt(12, 0, 0).expect("noon").and_utc().timestamp();
+                Bar { ts, open: 100.0, high: 101.0, low: 99.0, close: 100.0, volume: 1.0 }
+            })
+            .collect()
+    }
+
+    fn ymd(y: i32, m: u32, d: u32) -> chrono::NaiveDate {
+        chrono::NaiveDate::from_ymd_opt(y, m, d).expect("a day")
+    }
+
+    /// The year to date is so many days, not so many bars: bitcoin's year
+    /// has its weekends in it and a stock's does not, and flipping from one
+    /// to the other counts again rather than keeping the first one's zoom.
+    #[test]
+    fn a_range_is_counted_again_for_every_series() {
+        use omacharts_engine::range::Period;
+        let theme = omacharts_engine::theme::builtin_themes().into_iter().next().expect("a theme");
+        let scheme = omacharts_engine::theme::theme_bars(&theme);
+        let mut state = State::blank(theme, scheme);
+        let (start, today) = (ymd(2025, 1, 1), ymd(2026, 10, 19));
+        state.replace_series(named("BTC"), Timeframe::days(1), days(start, today, true));
+        state.show_range(Range::ToDate(1, Period::Year));
+        assert_eq!(state.slice().1, 292, "1 January to 19 October, every day");
+        assert_eq!(state.columns(), 292 + RIGHT_MARGIN);
+
+        let stock = days(start, today, false);
+        let weekdays = stock.iter().filter(|bar| bar.ts >= days(ymd(2026, 1, 1), today, true)[0].ts).count();
+        state.replace_series(named("AAPL"), Timeframe::days(1), stock);
+        assert_eq!(state.slice().1, weekdays, "the stock's year to date, weekdays only");
+        assert_eq!(state.range, Some(Range::ToDate(1, Period::Year)));
+    }
+
+    /// The month to date grows a bar a day.
+    #[test]
+    fn a_range_follows_new_bars() {
+        use omacharts_engine::range::Period;
+        let theme = omacharts_engine::theme::builtin_themes().into_iter().next().expect("a theme");
+        let scheme = omacharts_engine::theme::theme_bars(&theme);
+        let mut state = State::blank(theme, scheme);
+        state.replace_series(named("BTC"), Timeframe::days(1), days(ymd(2026, 6, 1), ymd(2026, 10, 19), true));
+        state.show_range(Range::ToDate(1, Period::Month));
+        assert_eq!(state.slice().1, 19);
+
+        let next = days(ymd(2026, 10, 20), ymd(2026, 10, 20), true)[0];
+        omacharts_engine::stream::upsert(&mut state.bars, next);
+        state.fit_range();
+        assert_eq!(state.slice().1, 20);
+    }
+
+    /// A year or a month that is over shows just its own bars, and stays
+    /// on them as new ones come in.
+    #[test]
+    fn a_range_that_has_ended_stops_on_its_last_day() {
+        let theme = omacharts_engine::theme::builtin_themes().into_iter().next().expect("a theme");
+        let scheme = omacharts_engine::theme::theme_bars(&theme);
+        let mut state = State::blank(theme, scheme);
+        state.replace_series(named("BTC"), Timeframe::days(1), days(ymd(2025, 1, 1), ymd(2026, 10, 19), true));
+        let shown = |state: &State| {
+            let (first, visible, _) = state.view();
+            let date = |at: usize| chrono::DateTime::from_timestamp(state.bars[at].ts, 0).map(|t| t.date_naive());
+            (date(first), date(first + visible - 1), visible)
+        };
+        state.show_range(Range::Month(2026, 9));
+        assert_eq!(shown(&state), (Some(ymd(2026, 9, 1)), Some(ymd(2026, 9, 30)), 30));
+
+        let next = days(ymd(2026, 10, 20), ymd(2026, 10, 20), true)[0];
+        omacharts_engine::stream::upsert(&mut state.bars, next);
+        state.fit_range();
+        assert_eq!(shown(&state), (Some(ymd(2026, 9, 1)), Some(ymd(2026, 9, 30)), 30));
+
+        state.show_range(Range::Year(2025));
+        assert_eq!(shown(&state), (Some(ymd(2025, 1, 1)), Some(ymd(2025, 12, 31)), 365));
+    }
+
+    /// A hand moving the view is choosing where to look, and the range
+    /// stops being true the moment it does.
+    #[test]
+    fn a_zoom_or_a_pan_lets_go_of_the_range() {
+        use omacharts_engine::range::Span;
+        let theme = omacharts_engine::theme::builtin_themes().into_iter().next().expect("a theme");
+        let scheme = omacharts_engine::theme::theme_bars(&theme);
+        let mut state = State::blank(theme, scheme);
+        state.replace_series(named("BTC"), Timeframe::days(1), days(ymd(2025, 1, 1), ymd(2026, 10, 19), true));
+        state.show_range(Range::Back(3, Span::Month));
+        state.zoom_time(2.0, 0.5, 800.0);
+        assert_eq!(state.range, None);
+
+        state.show_range(Range::Back(3, Span::Month));
+        state.pan_by(-20.0, 800.0);
+        assert_eq!(state.range, None);
+
+        state.show_range(Range::Back(3, Span::Month));
+        state.reset_view();
+        assert_eq!(state.range, None);
     }
 
     /// A series shorter than the view still opens with the resting margin

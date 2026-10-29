@@ -290,7 +290,11 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
     define("card_fg_color", &ui.text);
     define("dialog_bg_color", &ui.surface);
     define("dialog_fg_color", &ui.text);
-    define("popover_bg_color", &ui.surface_variant);
+    // Menus, popovers, the picker and the question cards on the rail's own
+    // ground: a lighter slab read as something pasted on from another app.
+    // The hairline and the shadow set them apart, and a breath of the text
+    // colour lifts them off it just enough to read as on top.
+    define("popover_bg_color", &format!("mix({}, {}, 0.03)", ui.surface, ui.text));
     define("popover_fg_color", &ui.text);
     define("borders", &ui.border);
 
@@ -350,15 +354,15 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
 .timeframe-strip button { min-width: 34px; padding: 2px 6px; }
 
 /* Where a symbol trades: quieter than its name, beside what it is. */
-.symbol-venue {
-  font-size: 0.8em;
+.pick-venue {
+  font-family: monospace;
+  font-size: 0.78em;
   opacity: 0.45;
-  font-feature-settings: 'tnum';
 }
 
 /* The row offering a symbol nobody listed. Quieter than a real match, because
    it is a guess rather than an answer. */
-.symbol-row-unlisted .symbol-row-name { opacity: 0.55; font-style: italic; }
+.symbol-row-unlisted .pick-name { font-style: italic; }
 .symbol-row-unlisted .symbol-kind { opacity: 0.4; }
 
 /* Thickness and line style, picked by looking rather than by naming a number.
@@ -371,6 +375,217 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
 }
 
 .swatch-button { min-width: 26px; min-height: 26px; padding: 0; border-radius: 6px; }
+
+/* Menus and popovers are one surface. A right-click menu and the link
+   popover open beside each other often enough that two looks for one kind
+   of thing read as two apps. The window's own ground, a hairline edge, a
+   soft shadow, and no arrow — that one is set where each popover is built,
+   since GTK sizes the arrow in code — because a menu opens at the pointer
+   and has nothing to point at. */
+popover.menu > contents,
+popover.background > contents {
+  background-color: @popover_bg_color;
+  border: 1px solid alpha(@window_fg_color, 0.10);
+  border-radius: 10px;
+  box-shadow: 0 6px 18px alpha(black, 0.35), 0 1px 3px alpha(black, 0.2);
+}
+popover.background:not(.menu) > contents { padding: 6px; }
+popover.menu > contents > stack > box,
+popover.menu > contents > scrolledwindow > viewport > stack > box { padding: 4px; }
+/* A menu row is a rail row: 26px, where Adwaita's 32px and its padding made
+   the chart's menu taller than a laptop's chart. The hover is the rail's
+   selection, so the row under the pointer reads the way a chosen symbol
+   does. */
+popover.menu modelbutton {
+  min-height: 26px;
+  padding: 0 8px 0 6px;
+  border-radius: 6px;
+}
+popover.menu modelbutton:hover,
+popover.menu modelbutton:selected { background-color: alpha(@accent_color, 0.22); }
+popover.menu modelbutton:active { background-color: alpha(@accent_color, 0.30); }
+/* Sections part on a hairline, the one the settings rows use. */
+popover.menu separator {
+  margin: 4px 6px;
+  min-height: 1px;
+  background: alpha(@window_fg_color, 0.08);
+}
+/* The key is a reminder, not part of the name: dim, small, and in the face
+   keys are written in, so a column of them lines up. */
+popover.menu accelerator {
+  font-family: monospace;
+  font-size: 0.8em;
+  color: alpha(@popover_fg_color, 0.55);
+}
+/* A choice is a tick in the accent, whether the item is a toggle or one of
+   several: a ring beside every option in a submenu is a column of noise
+   round the one that matters. */
+popover.menu check:checked,
+popover.menu radio:checked { color: @accent_color; }
+popover.menu radio { border: none; padding: 2px; }
+popover.menu radio:checked { -gtk-icon-source: -gtk-icontheme('object-select-symbolic'); }
+popover.menu radio:not(:checked) { -gtk-icon-source: none; }
+
+/* A picker over a chart (see `pick_frame`) is the same surface with no title
+   bar: the search box is its top edge, on a hairline, and the chart it will
+   change is named at the end of it. The box takes no frame of its own, the
+   surface already being one. */
+popover.pick-frame > contents { padding: 0; }
+.pick-query {
+  padding: 4px 12px 4px 4px;
+  border-bottom: 1px solid alpha(@window_fg_color, 0.08);
+}
+.pick-query entry,
+.pick-query entry:focus-within {
+  background: none;
+  box-shadow: none;
+  outline: none;
+  font-size: 1.08em;
+}
+.pick-target { font-family: monospace; font-size: 0.78em; opacity: 0.55; }
+.pick-list { padding: 4px; background: none; }
+/* A picker's rows are the rail's: 26px, the ticker in the face numbers and
+   keys are written in, the name a dim reminder beside it, and the rail's
+   tint for the one Enter would take. */
+.pick-list.navigation-sidebar > row {
+  min-height: 26px;
+  padding: 0 8px;
+  margin: 0 0 1px 0;
+  border-radius: 6px;
+}
+.pick-list.navigation-sidebar > row:selected { background-color: alpha(@accent_color, 0.22); }
+.pick-list.navigation-sidebar > row:selected:hover { background-color: alpha(@accent_color, 0.28); }
+.pick-list.navigation-sidebar > row:selected:focus-visible { outline: none; }
+.pick-ticker { font-family: monospace; font-weight: 700; font-size: 0.9em; }
+.pick-name { font-size: 0.9em; opacity: 0.55; }
+/* Every chart while a picker is open, faded under it; the one it will
+   change wears the wide ring. */
+.pick-shade { background-color: alpha(black, 0.4); }
+
+/* A picker that takes something typed — Ctrl+G's range, a digit's resolution:
+   a centred title with an ⓘ for the syntax, a framed box with the text
+   centred, and under it what the answer comes to. Nothing under the box
+   comes or goes with typing; the list drops down over it in a popover of
+   its own. */
+popover.pick-bare > contents { padding: 0; }
+popover.pick-bare > contents > box { padding-bottom: 22px; }
+popover.pick-bare .pick-header { padding: 14px 20px 0 20px; }
+popover.pick-bare .pick-title { font-weight: 700; font-size: 1.2em; }
+popover.pick-bare .pick-info { opacity: 0.35; -gtk-icon-size: 14px; }
+popover.pick-bare .pick-info:hover { opacity: 0.8; }
+popover.pick-bare .pick-query { padding: 14px 20px 0 20px; border-bottom: none; }
+popover.pick-bare .pick-query entry {
+  min-height: 42px;
+  border-radius: 7px;
+  font-family: monospace;
+  font-size: 1.1em;
+  background: alpha(@window_fg_color, 0.05);
+  box-shadow: inset 0 0 0 1px alpha(@window_fg_color, 0.14);
+}
+popover.pick-bare .pick-query entry:focus-within { box-shadow: inset 0 0 0 2px @accent_color; }
+popover.pick-bare .pick-query entry.error { box-shadow: inset 0 0 0 2px @error_color; }
+popover.range-goto .pick-query entry { min-height: 48px; }
+popover.pick-drop > contents { padding: 0; }
+/* The month under the Go to card, as wide as it: one header between two
+   arrows, From to To shaded, the end being set filled and the other ringed.
+   The band stops under the two ends' squares rather than past them. */
+popover.range-month-pop > contents { padding: 12px 14px 14px 14px; }
+.range-month-title { font-weight: 700; padding: 4px 10px; min-height: 0; border-radius: 7px; }
+.range-month-step { min-width: 30px; min-height: 30px; padding: 0; border-radius: 7px; -gtk-icon-size: 16px; }
+.range-month-pick { min-height: 40px; padding: 0; border-radius: 8px; font-size: 0.9em; font-weight: 400; font-feature-settings: 'tnum'; }
+.range-month-pick.today { box-shadow: inset 0 0 0 1px alpha(currentColor, 0.35); }
+.range-month-pick.setting { background: @accent_color; color: @accent_fg_color; font-weight: 700; }
+.range-month-name { font-size: 0.78em; opacity: 0.55; min-height: 22px; }
+.range-month-cell.between { background: alpha(@accent_color, 0.14); }
+.range-month-cell.start { background-image: linear-gradient(to right, transparent 50%, alpha(@accent_color, 0.14) 50%); }
+.range-month-cell.end { background-image: linear-gradient(to left, transparent 50%, alpha(@accent_color, 0.14) 50%); }
+.range-month-day {
+  min-width: 30px;
+  min-height: 30px;
+  padding: 0;
+  border-radius: 8px;
+  font-size: 0.9em;
+  font-weight: 400;
+  font-feature-settings: 'tnum';
+}
+.range-month-day.out { opacity: 0.3; }
+.range-month-day.today { box-shadow: inset 0 0 0 1px alpha(currentColor, 0.35); }
+/* The ringed end is filled with the band's own colour, opaque, so the band
+   seems to end under it rather than cut through its middle. */
+.range-month-day.other {
+  background-color: mix(@popover_bg_color, @accent_color, 0.14);
+  box-shadow: inset 0 0 0 1.5px @accent_color;
+  font-weight: 600;
+}
+.range-month-day.setting { background: @accent_color; color: @accent_fg_color; font-weight: 700; }
+
+/* The ⓘ's help, beside the card on its own ground: examples as key caps in
+   the accent, what they mean right-aligned. */
+popover.background.pick-help-pop > contents { padding: 14px 16px; }
+.pick-help { min-width: 268px; }
+.pick-help-section { font-size: 0.78em; letter-spacing: 0.06em; color: alpha(currentColor, 0.5); }
+.pick-help-group.later,
+.pick-help-foot { margin-top: 9px; padding-top: 9px; border-top: 1px solid alpha(currentColor, 0.13); }
+.pick-help-key,
+.pick-help-cap {
+  font-family: monospace;
+  font-weight: 700;
+  font-size: 0.85em;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: alpha(@window_fg_color, 0.07);
+  box-shadow: inset 0 -1px 0 alpha(@window_fg_color, 0.18), inset 0 0 0 1px alpha(@window_fg_color, 0.12);
+}
+.pick-help-key { color: @accent_color; }
+.pick-help-what { color: alpha(currentColor, 0.75); font-size: 0.9em; }
+.pick-help-foot { font-size: 0.85em; color: alpha(currentColor, 0.5); }
+.pick-help-cap { color: @window_fg_color; }
+
+.range-hint { padding: 8px 20px 0 20px; font-size: 0.9em; opacity: 0.6; }
+.range-hint.error { color: @error_color; opacity: 1; }
+.range-dates { padding: 12px 20px 0 20px; }
+.range-cell-name { font-size: 0.78em; opacity: 0.45; }
+.range-today { font-size: 0.78em; color: @success_color; }
+.range-arrow { opacity: 0.4; margin-bottom: 8px; }
+/* From and To: plain boxes a day is typed into, with GTK's calendar in the
+   corner for the pointer. */
+entry.range-date {
+  min-height: 0;
+  padding: 0 6px 0 9px;
+  font-family: monospace;
+  font-size: 0.88em;
+  font-feature-settings: 'tnum';
+  border-radius: 7px;
+  background: alpha(@window_fg_color, 0.05);
+  box-shadow: inset 0 0 0 1px alpha(@window_fg_color, 0.14);
+  outline: none;
+}
+entry.range-date > text { padding: 7px 0; }
+entry.range-date:focus-within { box-shadow: inset 0 0 0 2px @accent_color; outline: none; }
+entry.range-date.idle { color: alpha(@window_fg_color, 0.7); }
+entry.range-date.error { box-shadow: inset 0 0 0 2px @error_color; }
+entry.range-date.unread { color: @error_color; }
+entry.range-date > image { opacity: 0.45; -gtk-icon-size: 13px; }
+entry.range-date > image:hover { opacity: 0.9; }
+
+/* The resolution, pinned in the range box's bottom-right corner. */
+.range-chip-row { padding: 8px 20px 0 20px; }
+.range-chip {
+  margin: 0;
+  padding: 1px 6px;
+  border-radius: 5px;
+  font-family: monospace;
+  font-size: 0.78em;
+  font-weight: 700;
+  background: alpha(@window_fg_color, 0.05);
+  box-shadow: inset 0 0 0 1px alpha(@window_fg_color, 0.18);
+}
+.range-chip:focus { box-shadow: inset 0 0 0 2px @accent_color; outline: none; }
+.range-chip:hover { box-shadow: inset 0 0 0 1px alpha(@window_fg_color, 0.35); }
+/* Nothing typed: just `auto`, faded, with nothing to open and no hover. */
+.range-chip.inert, .range-chip.inert:hover { opacity: 0.5; box-shadow: inset 0 0 0 1px alpha(@window_fg_color, 0.18); }
+.range-caret { font-size: 0.8em; opacity: 0.5; }
+.range-auto { font-family: sans-serif; font-weight: 400; font-size: 0.9em; opacity: 0.55; }
 
 /* The link toggle is a glyph, not a button: no frame, no fill, not even when
    it is on — a chart that follows the rail says so by the icon being there at
@@ -523,6 +738,9 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
   background: @view_bg_color;
   box-shadow: inset 1px 0 @omacharts_axis;
 }
+/* While a picker dims a chart, no ground: it is the chart's colour undimmed,
+   and over the shade it was a lit square in the corner. */
+.picking .window-corner.over-chart { background: none; }
 /* The drawing tools' corner on the left, the mirror of the one on the right:
    centred over the bar it opens, which is as wide as one of its tools, and
    at the same height, so beside the chart's name it centres on the name. */
@@ -905,6 +1123,14 @@ paned.chart-split > separator:active {{ background-color: @omacharts_gutter_hove
   border: {ring}px solid transparent;
 }}
 .chart-split .chart-pane.focused {{ border-color: @omacharts_focus; }}
+/* While a picker is open every chart fades, and the one it will change
+   wears the ring twice as wide: a second ring inside the border, as an
+   outline, so nothing inside the pane moves. */
+.chart-split .chart-pane.picked {{
+  border-color: @omacharts_focus;
+  outline: {ring}px solid @omacharts_focus;
+  outline-offset: -{double}px;
+}}
 /* The drawing tools stand beside the charts on the window's own ground,
    with the ring's width of it before the tools, so the toggle above stands
    centred over them. Their edge against the charts is the rail's against
@@ -918,6 +1144,7 @@ paned.chart-split > separator:active {{ background-color: @omacharts_gutter_hove
 ",
         gutter = GUTTER_WIDTH,
         ring = RING_WIDTH,
+        double = 2 * RING_WIDTH,
     );
     css
 }
@@ -974,6 +1201,16 @@ mod tests {
         assert!(css.contains(".chart-split .chart-pane.focused { border-color: @omacharts_focus; }"));
         // And the wide handle's two hairlines are gone.
         assert!(css.contains("box-shadow: none;"));
+    }
+
+    /// A menu and a popover are one surface, and a menu row is a rail row.
+    #[test]
+    fn menus_and_popovers_share_one_surface() {
+        let theme = &builtin_themes()[0];
+        let css = stylesheet(theme, &omacharts_engine::theme::theme_bars(theme));
+        assert!(css.contains("popover.menu > contents,\npopover.background > contents {"));
+        assert!(css.contains("popover.menu modelbutton {\n  min-height: 26px;"));
+        assert!(css.contains("popover.menu accelerator {\n  font-family: monospace;"));
     }
 
     #[test]

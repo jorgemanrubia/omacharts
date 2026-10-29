@@ -35,7 +35,7 @@ Preferences › Theme › **Theme** lists the themes in groups, separated by a l
 
 <!-- regenerate:
 theme: tokyo-night
-window: 2560x1600 @2, $SP/kit/hw, with the desktop's themes' colors.toml copied into $HOME/.local/share/omarchy/themes
+window: 2560x1600 @2, bin/headless-window start --size 2560x1600, with the desktop's themes' colors.toml copied into $HOME/.local/share/omarchy/themes
 state:
   move 1270 790
   omacharts config set theme omarchy
@@ -43,7 +43,7 @@ state:
   click 214 205          # Theme in the sidebar
   click 985 157          # the Theme row's drop-down
 capture: bin/headless-window shot /tmp/theme-list.png
-crop: 934,228,1292,958   (the Theme group and the drop-down, 16px layout margin)
+crop: 934,228,1294,962   (the Theme group and the drop-down, 16px layout margin)
 -->
 {% include figure.html src="/assets/manual/themes/theme-list.png" alt="The Theme drop-down open, with System first and the shipped and installed themes below" caption="The Theme drop-down." %}
 
@@ -108,17 +108,17 @@ A colour button in the indicator and drawing dialogs opens the theme's palette f
 
 <!-- regenerate:
 theme: tokyo-night
-window: 2560x1600 @2, $SP/kit/hw (fresh session)
+window: 2560x1600 @2, bin/headless-window start --size 2560x1600 (fresh session, HOME sandboxed)
 state:
   move 1270 790
   omacharts chart set --symbol NVDA --resolution 1D
   omacharts chart indicator add sma --period 50 --color Amber
   key ctrl+i
-  click 512 422          # the SMA 50 row
-  click 849 314          # its Colour swatch
+  click 480 456          # the SMA 50 row
+  click 849 392          # its Colour swatch
   move 1270 790
 capture: bin/headless-window shot /tmp/picker.png
-crop: 750,544,1207,494   (the Line group and the palette, 16px layout margin round both)
+crop: 750,656,1206,520   (the Line group and the palette, 16px layout margin round both)
 -->
 {% include figure.html src="/assets/manual/themes/palette-picker.png" alt="The palette picker open under an indicator's Colour row, with the colour in use ringed and Custom… below" caption="The palette picker." %}
 

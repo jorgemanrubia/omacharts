@@ -15,22 +15,29 @@ Start typing over a chart to find a symbol. Results show up as you type, and <kb
 | <kbd>Ctrl</kbd> + <kbd>K</kbd>, <kbd>Ctrl</kbd> + <kbd>F</kbd> or <kbd>/</kbd> | Empty |
 | Click the symbol in a chart's header | Empty, for that chart, which the click focuses first |
 
-A digit typed over the chart opens the resolution box instead ([Charts](/manual/charts/#resolutions)). A letter typed while a drawing's text is being edited goes into the text.
+A digit typed over the chart opens **Change resolution** instead ([Charts](/manual/charts/#choosing-a-resolution)). A letter typed while a drawing's text is being edited goes into the text.
+
+## The search
+
+The search opens near the top of the window, in the same place whichever chart is focused. Every chart fades, the one a pick will change wears its focus ring twice as wide, and the end of the search row names it, such as **→ pos:1**. Adding a symbol to a watchlist changes no chart, so nothing fades and the row names the list instead ([Watchlists](/manual/watchlists/#symbols)).
 
 <!-- regenerate:
 theme: tokyo-night
 window: 2560x1440 @2, bin/headless-window (HOME sandboxed, theme seeded)
 state:
-  (two NVDA charts side by side, sidebar open; any chart will do)
-  key Escape
+  omacharts chartbook create Manual --symbol NVDA --switch
+  omacharts chartbook delete "Chartbook 1"
+  omacharts chart set --resolution 1D
+  click 400 400
+  key ctrl+b                          # sidebar hidden
+  omacharts chart split horizontal    # pos:1, on the right, is focused
+  move 1100 650
   key s
   type emi
 capture: bin/headless-window shot /tmp/search.png
-crop: 712,244,1136,954   (the search popover, 24px layout margin)
+crop: none (resized to 2000 wide, JPEG)
 -->
-{% include figure.html src="/assets/manual/symbols/search-semi.png" alt="The symbol search with semi typed, listing SEMI, SMH, SOXX, TSM and other matches with their names, venues and kinds" caption="The search with semi typed." %}
-
-## The search dialog
+{% include figure.html src="/assets/manual/symbols/search-semi.jpg" alt="The symbol search with semi typed over two NVDA daily charts, listing SEMI, SMH, SOXX, TSM and other matches with their names, venues and kinds; the right-hand chart is dimmed and the search row ends in → pos:1" caption="The search with semi typed. It will change the dimmed chart, pos:1." %}
 
 The box reads **Symbol or name**. It matches a ticker or any part of a name, in the instrument's own language too. `台積` finds 2330.TW. Empty, it lists the majors.
 
@@ -41,7 +48,7 @@ The box reads **Symbol or name**. It matches a ticker or any part of a name, in 
 | <kbd>Enter</kbd> or <kbd>Ctrl</kbd> + <kbd>Enter</kbd> | Charts the highlighted row. The best match is highlighted until you move the highlight |
 | <kbd>Esc</kbd>, or a click outside | Closes it, changing nothing |
 
-Each row shows the ticker, the name, the venue (NASDAQ, NYSE Arca, TWSE, BME and so on) and the kind, one of **Index**, **Futures**, **Stock**, **ETF**, **FX** or **Crypto**. The list stops at 24 rows. Type more to narrow it.
+Each row shows the ticker, the name, the venue (NASDAQ, NYSE Arca, TWSE, BME and so on) and the kind, one of **Index**, **Futures**, **Stock**, **ETF**, **FX** or **Crypto**. Ten rows show at a time and the list scrolls to 24. Type more to narrow it. Once something is typed, a button in the search row clears it.
 
 Something that looks like a ticker, such as `XYZ` or `2330.TW`, is offered even when it matches nothing, as **Not in the list — look it up anyway**. Pick it and the chart asks the [feed](/manual/market-data/); if the feed does not have the symbol, the chart says so. A name that matches nothing is not offered.
 

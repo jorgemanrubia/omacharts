@@ -71,6 +71,34 @@ pub fn filter(bars: &[Bar], session: Session, instrument: &Instrument, intraday:
     }
 }
 
+/// Roughly how much of a calendar week brings bars, intraday and daily, for
+/// guessing how many bars a stretch of time holds before they are fetched.
+///
+/// A guess on purpose: no holidays, and FX counted as never closing. It
+/// only has to tell 1,800 hourly bars from 8,000, which is the difference
+/// between a year that fits on a chart and one that does not.
+pub fn week_share(instrument: &Instrument, session: Session) -> (f64, f64) {
+    use chrono::Weekday::{Fri, Mon, Sat, Sun, Thu, Tue, Wed};
+    // FX and crypto, and a market nothing here knows the hours of: bars all
+    // week, which is the guess that never says a stretch is too short.
+    if instrument.kind.is_continuous() {
+        return (1.0, 1.0);
+    }
+    let Some(schedule) = registry().for_instrument(instrument) else {
+        return (1.0, 1.0);
+    };
+    let hours = schedule.hours;
+    let week = [Mon, Tue, Wed, Thu, Fri, Sat, Sun].into_iter().filter(|d| hours.trades_on(*d)).count() as f64 / 7.0;
+    let regular = session == Session::Regular && hours.has_regular();
+    let minutes: u32 = hours
+        .segments
+        .iter()
+        .filter(|s| !regular || s.part == crate::exchanges::Part::Regular)
+        .map(|s| s.end.saturating_sub(s.start))
+        .sum();
+    (f64::from(minutes) / 1440.0 * week, week)
+}
+
 /// Could another bar still arrive for this instrument at `ts`?
 ///
 /// The question a chart left open has to answer before fetching itself again.

@@ -177,7 +177,7 @@ impl Timeframe {
     /// is honoured when given, and case does not matter — with one exception:
     /// "M" alone is a month and "m" a minute, the way every other charting
     /// package spells them. "mo" is a month in any case, for anyone who would
-    /// rather not lean on the shift key.
+    /// rather not lean on the shift key. "Q" is a quarter, three months.
     pub fn parse(text: &str) -> Option<Timeframe> {
         let text = text.trim();
         if text.is_empty() {
@@ -203,6 +203,10 @@ impl Timeframe {
             "d" | "day" | "days" => Unit::Day,
             "w" | "wk" | "week" | "weeks" => Unit::Week,
             "mo" | "month" | "months" => Unit::Month,
+            // A quarter is three months, so 1Q is 3M and keeps that key.
+            "q" | "qtr" | "quarter" | "quarters" => {
+                return Some(Timeframe { count: count.checked_mul(3)?, unit: Unit::Month }.normalised());
+            }
             "y" | "yr" | "yrs" | "year" | "years" => Unit::Year,
             _ => return None,
         };
@@ -1021,6 +1025,9 @@ mod tests {
         assert_eq!(Timeframe::parse("M"), Some(Timeframe::months(1)));
         assert_eq!(Timeframe::parse("3M"), Some(Timeframe::months(3)));
         assert_eq!(Timeframe::parse("3m"), Some(Timeframe::minutes(3)));
+        for (quarter, months) in [("Q", 3), ("1Q", 3), ("1q", 3), ("2Q", 6), ("4q", 12), ("1 quarter", 3)] {
+            assert_eq!(Timeframe::parse(quarter), Some(Timeframe::months(months).normalised()), "{quarter}");
+        }
         for month in ["1mo", "1MO", "1Mo", "mo", "1 month", "6 Months"] {
             assert_eq!(Timeframe::parse(month).map(|t| t.unit), Some(Unit::Month), "{month}");
         }

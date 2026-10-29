@@ -134,6 +134,8 @@ pub fn dispatch(
         ("chart", "screenshot") => screenshot(live, m, json, false),
         ("chartbook", "screenshot") => screenshot(live, m, json, true),
         ("chart", "crosshair") => crosshair(store, m, json),
+        // A range is held by the chart on screen and nowhere else.
+        ("chart", "range") => chart_range(live, m),
         ("chartbook", _) | ("chart", _) => {
             // "The one I am looking at" needs something to be looking at. The
             // stored arrangement is what the window had when it last closed,
@@ -981,6 +983,30 @@ fn screenshot(
         false if clipboard => format!("saved {of} to {}, and copied it\n", path.display()),
         false => format!("saved {of} to {}\n", path.display()),
     })
+}
+
+/// Lay the focused chart across a stretch of the calendar.
+fn chart_range(live: Option<&dyn Live>, m: &clap::ArgMatches) -> Result<String, Fault> {
+    let text = required(m, "RANGE")?;
+    let range = omacharts_engine::Range::parse(text)
+        .ok_or_else(|| Fault::usage(format!("{text} is not a range; try ytd, 1y, 2025: or all")))?;
+    if !range.holds_days(chrono::Local::now().date_naive()) {
+        return Err(Fault::usage(format!("{text} holds no days up to today")));
+    }
+    let resolution = match m.get_one::<String>("resolution") {
+        None => None,
+        Some(text) => Some(
+            Timeframe::parse(text)
+                .ok_or_else(|| Fault::usage(format!("{text} is not a resolution; try 5m, 1h, 1D or 1W")))?,
+        ),
+    };
+    let live = live.ok_or_else(|| {
+        Fault::new(
+            crate::cli::EXIT_NO_WINDOW,
+            "no window is open, and a range is of the chart on screen; start Omacharts, then set it".into(),
+        )
+    })?;
+    Ok(format!("{}\n", live.show_range(range, resolution)?))
 }
 
 fn charts_verb(

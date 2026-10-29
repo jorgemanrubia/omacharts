@@ -40,7 +40,7 @@ Omarchy plugin's panel has keys of its own, in
 |---|---|---|
 | Type a letter | Opens the symbol search with that letter in it | [Symbols](/manual/symbols/) |
 | <kbd>Ctrl</kbd> + <kbd>K</kbd> / <kbd>Ctrl</kbd> + <kbd>F</kbd> / <kbd>/</kbd> | Opens the symbol search empty | [Symbols](/manual/symbols/) |
-| Type a number | Opens the resolution box with that digit in it. A bare number is minutes | [Charts](/manual/charts/) |
+| Type a number | Opens **Change resolution** with that digit in it. A bare number is minutes | [Charts](/manual/charts/#choosing-a-resolution) |
 | <kbd>Ctrl</kbd> + <kbd>I</kbd> | The focused chart's indicators | [Indicators](/manual/indicators/) |
 | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>I</kbd> | The list of indicators to add | [Indicators](/manual/indicators/) |
 | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>S</kbd> | The focused chart's settings | [Chart settings](/manual/chart-settings/) |
@@ -103,6 +103,7 @@ From anywhere:
 | <kbd>+</kbd> <kbd>−</kbd> | Zooms in or out | [Charts](/manual/charts/) |
 | <kbd>End</kbd> | Jumps to the latest bar | [Charts](/manual/charts/) |
 | <kbd>Ctrl</kbd> + <kbd>Esc</kbd> | Resets zoom, pan and price scale to how the chart opens | [Charts](/manual/charts/) |
+| <kbd>Ctrl</kbd> + <kbd>G</kbd> | **Go to**: shows a stretch of time, such as `ytd` or `2025` | [Charts](/manual/charts/#showing-a-stretch-of-time) |
 | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>G</kbd> | Shows or hides the gridlines | [Charts](/manual/charts/) |
 | <kbd>Ctrl</kbd> + <kbd>H</kbd> | Hides every drawing, or shows them again | [Hiding the drawings](/manual/drawings/#hiding-the-drawings) |
 | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>H</kbd> | Hides every indicator, or shows them again | [Hiding every indicator](/manual/indicators/#hiding-every-indicator) |
@@ -187,18 +188,22 @@ A click elsewhere keeps what was typed.
 
 | Key | Does | See |
 |---|---|---|
-| <kbd>Ctrl</kbd> + <kbd>Enter</kbd> | Finishes the dialog with the button in its corner: **Create** in New chartbook, **Add** for an indicator, **Done** in a drawing's properties and in a tool's configurations. In the symbol search and the list of indicators, takes the highlighted row | [The window](/manual/window/) |
+| <kbd>Ctrl</kbd> + <kbd>Enter</kbd> | Finishes the dialog with the button in its corner: **Create** in New chartbook, **Add** for an indicator, **Done** in a drawing's properties and in a tool's configurations. In the symbol search and the list of indicators, takes the highlighted row. In **Go to**, shows the range from anywhere in it | [The window](/manual/window/) |
 | <kbd>Enter</kbd> | In a search box, takes the highlighted row | [The window](/manual/window/) |
 | <kbd>↑</kbd> <kbd>↓</kbd> | In a search box, moves the highlight while the keyboard stays in the box | [Symbols](/manual/symbols/) |
 | <kbd>Esc</kbd> | Closes the dialog. In Preferences, goes back a page first | [The window](/manual/window/) |
 | <kbd>Alt</kbd> + <kbd>←</kbd> <kbd>→</kbd> | Switches pages: **Chart** and **Indicators** in Chart settings, **General** and **Text** in a drawing's properties | [Chart settings](/manual/chart-settings/), [Drawings](/manual/drawings/) |
 | <kbd>Alt</kbd> + <kbd>1</kbd> … <kbd>9</kbd> | In a drawing's properties, applies configuration N | [Drawings](/manual/drawings/) |
-| <kbd>Enter</kbd> / <kbd>Esc</kbd> | In the resolution box, sets the resolution, or closes the box | [Charts](/manual/charts/) |
+| <kbd>Enter</kbd> / <kbd>Esc</kbd> | In **Change resolution**, sets the resolution, or closes it | [Charts](/manual/charts/#choosing-a-resolution) |
+| <kbd>Enter</kbd> / <kbd>Esc</kbd> | In **Go to**, shows the range, or closes it | [Charts](/manual/charts/#showing-a-stretch-of-time) |
+| <kbd>Space</kbd> / <kbd>↓</kbd> | In **Go to**, drops the list of ranges. <kbd>Space</kbd> only while the box is empty | [Charts](/manual/charts/#showing-a-stretch-of-time) |
+| <kbd>Tab</kbd> | In **Go to**, moves to the resolution, then to **From** and **To** | [Charts](/manual/charts/#the-resolution-in-go-to) |
 | <kbd>Enter</kbd> / <kbd>Esc</kbd> | Renaming a tab or a section, keeps the name, or puts the old one back | [Chartbooks](/manual/chartbooks/), [Watchlists](/manual/watchlists/) |
 
-A click outside the symbol search, the list of indicators or the Keyboard
-shortcuts sheet closes it. A form (New chartbook, a drawing's properties)
-closes only on <kbd>Esc</kbd> or its own buttons.
+A click outside the symbol search, **Change resolution**, **Go to**, the list
+of indicators or the Keyboard shortcuts sheet closes it. A form (New
+chartbook, a drawing's properties) closes only on <kbd>Esc</kbd> or its own
+buttons.
 
 ## Mouse
 

@@ -587,7 +587,7 @@ otherwise.
 
 `--resolution` takes what you would type on the chart: a bare number is
 minutes (`240` is four hours), and a suffix names the unit — `m`, `h`, `D`,
-`W`, `M` for months and `Y` for years. Case does not matter except for the
+`W`, `M` for months, `Q` for quarters (`1Q` is `3M`) and `Y` for years. Case does not matter except for the
 month: `1M` is a month and `1m` a minute, and `1mo` is a month in any case.
 Monthly and yearly bars are built from daily ones, on calendar months and
 years in UTC, so `3M` is the calendar quarters.
@@ -944,6 +944,109 @@ yahoo    Yahoo Finance · Every listing the symbol search covers · delayed 15 m
 tos      thinkorswim · US listings, from your thinkorswim account · live, as each print arrives · experimental   (in use, not stored · not signed in)
   [exit 0]
 ```
+
+## Showing a stretch of the calendar
+
+```
+$ omacharts chart range ytd
+showing year to date on pos:0 AAPL 1D in "Macro"
+  [exit 0]
+```
+
+`chart range` lays the focused chart across a stretch of time, written as a
+count and a unit the way vim takes a motion, and no count is one. The case of
+the unit says which sort:
+
+- small letters roll back from today: `6m` six months, `3y` three years,
+  `2w` two weeks, `10d` ten days, `q` three months;
+- capitals count whole periods to date: `Y` the year to date, `2Y` that and
+  the year before, so from 1 January last year, and `W`, `M` and `Q` the
+  same. `ytd`, `mtd`, `qtd` and `wtd`, and `2ytd`, say it in any case;
+- four digits are a calendar year, `2025`, and a year and a month one month,
+  `2026-09`. These are the ones that stop before today: the chart shows that
+  year or that month edge to edge, and new bars do not move it;
+- a day is that day alone: `2026-03-12` or `2026/3/12`; `10/12` or `12 mar`
+  with no year, the latest one that has passed, so this year's unless it is
+  still to come; `mon` this week's Monday, today on a Monday, and `2mon` the
+  one before, with every day of the week from `mon` to `sun` and any count;
+  `today` and `yesterday`. A day ends a slice too: `mon:` is since Monday;
+- a dash in front of a count or a day of the week changes nothing, so `-2w`
+  is `2w` and `-2mon` is `2mon` (on the command line, after `--`);
+- a colon slices, the way pandas slices dates, with both ends included:
+  `2025:` from 1 January 2025 to today, `2024:2025-06` from the start of 2024
+  to the end of June 2025, `:2020` from the first bar to the end of 2020, and
+  `2026-03-21:2026-09-30` between two days, which `2026/03/21:2026/09/30`
+  also says. An end can be an offset back from today, `-2y:-1y` being the
+  year before last; on the command line it starts with a minus, so it goes
+  after `--`: `omacharts chart range -- -2y:-1y`. Two dots, the way Ruby writes a range, slice the same:
+  `2025..`, `2024..2025-06`. A slice open at the end stays live, so new bars
+  still arrive in it;
+- `all`, or `:` alone, is the whole series.
+
+Today is the day of the last bar, so a series that stopped trading still has a
+year before its end, and the week to date on a Sunday is the week that just
+traded.
+
+The chart holds the range until the view is moved by hand: a new symbol, new
+bars and a new day are laid across it again, so the year to date stays the
+year to date whether the chart shows a stock with 200 bars in it or bitcoin
+with 290. The range shows in the corner under the price axis while it holds,
+and goes when a zoom or a pan ends it. It is not stored, so a window opened
+again, or a command that rewrites the arrangement such as `chart set`, starts
+the view over: set the range last.
+
+The resolution stays unless the range does not fit it: between 50 and 400
+bars, and within what the feed keeps. Otherwise it moves to the best fit on
+the strip, the one with the bars nearest the middle of that band, however
+far it is from the chart's own: a year to date from 5m is daily, not 4h. A year of five-minute bars is past what the feed keeps and
+an hour makes 1,700, so it moves to daily; a month from last spring is short,
+but the feed keeps five-minute bars for sixty days, so it moves too; a month
+of daily bars is 21 candles, so it moves to hourly. Nothing on the strip
+fitting looks off it, at 1m, 5m, 10m, 15m, 30m, 1h, 4h, 1D, 1W and 1M, so a
+single day on a strip that starts at an hour shows at five minutes; nothing
+there either takes the one on the strip closest to fitting. `--resolution` names one instead, and the range is shown at it whether
+it fits or not:
+
+```
+$ omacharts chart range 2025: --resolution 1W
+showing from 2025 to today on pos:0 AAPL 1W in "Macro"
+  [exit 0]
+```
+
+In the window, Ctrl+G opens a card over the chart, where the symbol picker
+opens: a box with the resolution under it at its right, `1D auto`, or `auto` alone
+while nothing is typed (with nothing to open then, and Tab passes it by), and under it the
+first and last day the range lands on, `2026/03/21`. Every chart fades while
+it is open, and the one it acts on wears its focus ring twice as wide. The ⓘ
+beside the title lists what can be typed. The card keeps that shape whatever
+is typed, and the box turns red only for text no further key could make a
+range.
+Space or `?` on an empty box, or Down, drops a list over it: the common ranges
+with nothing typed, what the text could mean once something is, each with the
+day it starts. Tab goes first to the resolution under the box: Up and
+Down count it up or down, and Left and Right move it along minutes, hours,
+days, weeks, months, quarters and years keeping the count, so `3D` becomes
+`3W`, whether or not the strip offers it; where the count does not fit, they
+take the nearest that does, the strip's first, so `1D` on a year of bitcoin
+goes left to `4h`. The wheel steps along the strip, a
+key such as `4h` or `W` sets it, and Backspace or Delete sets the chart's own
+resolution, then pressed again hands back to the window's pick. Only a
+resolution the range can be shown at is ever set: the feed reaches back far
+enough at it, and it makes between 12 and 3,000 bars. The rest are stepped
+over, and one set by hand goes back to the window's pick when the range moves
+past it. A click on it or Space lists auto, then the chart's own resolution
+and the rest of the strip and of those common ones that fit; Enter shows the
+range. Tab again goes into From
+and To, plain boxes that take a day the way the box does, `2026/03/21`,
+`23 nov`, `yesterday`, `mon`, or a month or year (From its first day, To its
+last); Up and Down step a day, Shift ten, and a calendar in each one's corner
+opens the month under the card, From to To shaded, to pick a day with the
+pointer; its title zooms out to the months of the year, then to a dozen
+years. The box then says the slice that makes,
+`2026/03/21:`. Enter from the box or a date shows it, and Ctrl+Enter
+from anywhere in the card. A digit typed on a chart opens the same card for the
+resolution alone, which says what it read, `4 hours`. A range is
+of the chart on screen, so with nothing running the command exits `6`.
 
 ## Signing in to a feed that charts your own account
 
