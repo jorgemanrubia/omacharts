@@ -4919,6 +4919,9 @@ fn draw_time_axis(
     let time_at = |column: i64| axis_time(bars, state.timeframe, per, column - before);
     let utc = state.timeframe.is_calendar();
     let (ticks, tick_seconds) = axis_ticks(total, plot_w, step, utc, state.clock, time_at);
+    // Where the last label drawn ends, so a label pushed in from an edge
+    // never lands on its neighbour.
+    let mut drawn_to = f64::MIN;
     for column in ticks {
         let Some(ts) = time_at(column) else { continue };
         let x = plot_x + nudge + (column as f64 + 0.5) * bar_w;
@@ -4935,7 +4938,16 @@ fn draw_time_axis(
         let label = format_axis_time(ts, tick_seconds, state.timeframe.is_intraday(), utc, state.clock);
         colors::set_source_alpha(cr, &state.theme.ui.text_muted, 0.9);
         if let Ok(extents) = cr.text_extents(&label) {
-            cr.move_to(x - extents.width() / 2.0, height - 7.0);
+            // Centred on its tick, but kept inside the chart: on a narrow
+            // chart a long intraday label centred near the left edge ran
+            // off it and was cut in half.
+            let w = extents.width();
+            let left = (x - w / 2.0).min(plot_x + plot_w - w).max(2.0);
+            if left < drawn_to + 8.0 {
+                continue;
+            }
+            drawn_to = left + w;
+            cr.move_to(left, height - 7.0);
             let _ = cr.show_text(&label);
         }
     }
