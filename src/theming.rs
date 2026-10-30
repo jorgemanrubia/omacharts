@@ -861,6 +861,11 @@ button.rail-add:hover { background: alpha(currentColor, 0.12); }
 button.rail-switcher.open { background: alpha(currentColor, 0.15); }
 .window-corner button:checked:hover,
 button.rail-switcher.open:hover { background: alpha(currentColor, 0.2); }
+/* The link is a menu button, and only the button inside it opens the menu:
+   padding on the outer one drew a box whose rim did nothing when clicked.
+   The outer keeps the size and the wash; the inner fills all of it. */
+.legend-link { padding: 0; }
+.legend-link > button { min-width: 22px; min-height: 22px; padding: 2px; }
 ",
     );
 

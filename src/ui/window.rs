@@ -5784,9 +5784,18 @@ impl Window {
     }
 
     /// Move through the watchlist without going to it.
+    ///
+    /// On a Pinned chart this is a rail click, not a change to the chart: the
+    /// walk starts from the rail's highlight rather than from the chart's
+    /// symbol, the Follow charts take each step, and with none of them the
+    /// pin lights and nothing moves.
     fn step_symbol(self: &Rc<Self>, delta: i32) {
         let Some(watchlist) = self.watchlist.borrow().as_ref().cloned() else { return };
-        let current = self.focused_pane().instrument.borrow().clone();
+        let pinned = self.focused_pane().mode() == LinkMode::Pinned;
+        let current = match pinned {
+            true => None,
+            false => self.focused_pane().instrument.borrow().clone(),
+        };
         let (order, from) = watchlist.step_order(current.as_ref());
         if order.is_empty() {
             return;
@@ -5798,6 +5807,12 @@ impl Window {
             .unwrap_or(if delta > 0 { -1 } else { order.len() as i32 });
         let next = (at + delta).clamp(0, order.len() as i32 - 1) as usize;
         let landed = &order[next];
+        if pinned {
+            if self.show_from_rail(landed.clone()) {
+                watchlist.highlight_walked(next);
+            }
+            return;
+        }
         let showing = current
             .as_ref()
             .is_some_and(|c| c.symbol == landed.symbol && c.suffix == landed.suffix);
