@@ -17,7 +17,7 @@ use std::fmt::Write as _;
 
 use omacharts_engine::frame::{GUTTER_WIDTH, RING_WIDTH};
 use omacharts_engine::theme::{
-    builtin_themes, parse_bar_colour, spell_bar_colour, BarLook, BarScheme, Mode, Theme, TradingLook,
+    builtin_themes, parse_bar_colour, spell_bar_colour, BarLook, BarScheme, Body, Mode, Theme, TradingLook,
     FALLBACK_THEME_ID, OMARCHY_ID,
 };
 use omacharts_engine::Ink;
@@ -27,12 +27,17 @@ use crate::store::{home, Store};
 use crate::ui::colors;
 
 pub const SETTING_THEME: &str = "theme";
-/// The four answers a candle's look is made of. The window and `config bars`
+/// The answers a candle's look is made of. The window and `config bars`
 /// both write these, so there is no second spelling to drift.
 pub const SETTING_BAR_UP: &str = "bar_up";
 pub const SETTING_BAR_DOWN: &str = "bar_down";
-pub const SETTING_BAR_UP_HOLLOW: &str = "bar_up_hollow";
-pub const SETTING_BAR_DOWN_HOLLOW: &str = "bar_down_hollow";
+/// A body is stored as two switches, hollow and bordered, so the hollow
+/// one an older version wrote still reads. Hollow wins where both are on,
+/// which only a hand-edited row can make.
+const SETTING_BAR_UP_HOLLOW: &str = "bar_up_hollow";
+const SETTING_BAR_DOWN_HOLLOW: &str = "bar_down_hollow";
+const SETTING_BAR_UP_BORDER: &str = "bar_up_border";
+const SETTING_BAR_DOWN_BORDER: &str = "bar_down_border";
 /// Where an older version stored a named bar scheme, read when none of the
 /// four has been written yet, so an upgrade keeps the bars somebody chose.
 const LEGACY_BAR_SCHEME: &str = "bar_scheme";
@@ -52,21 +57,30 @@ pub fn bar_look(store: &Store) -> BarLook {
     let colour = |key: &str, fallback: omacharts_engine::ColorChoice| {
         store.setting(key).and_then(|text| parse_bar_colour(&text)).unwrap_or(fallback)
     };
+    let body = |hollow: &str, border: &str, fallback: Body| {
+        match (store.setting_bool(hollow, fallback == Body::Hollow), store.setting_bool(border, false)) {
+            (true, _) => Body::Hollow,
+            (false, true) => Body::Bordered,
+            (false, false) => Body::Filled,
+        }
+    };
     BarLook {
         up: colour(SETTING_BAR_UP, legacy.up),
         down: colour(SETTING_BAR_DOWN, legacy.down),
-        up_hollow: store.setting_bool(SETTING_BAR_UP_HOLLOW, legacy.up_hollow),
-        down_hollow: store.setting_bool(SETTING_BAR_DOWN_HOLLOW, legacy.down_hollow),
+        up_body: body(SETTING_BAR_UP_HOLLOW, SETTING_BAR_UP_BORDER, legacy.up_body),
+        down_body: body(SETTING_BAR_DOWN_HOLLOW, SETTING_BAR_DOWN_BORDER, legacy.down_body),
     }
 }
 
-/// Write all four, so what is stored is what is on screen whatever an older
+/// Write them all, so what is stored is what is on screen whatever an older
 /// version left behind.
 pub fn save_bar_look(store: &Store, look: &BarLook) {
     store.set_setting(SETTING_BAR_UP, &spell_bar_colour(&look.up));
     store.set_setting(SETTING_BAR_DOWN, &spell_bar_colour(&look.down));
-    store.set_setting_bool(SETTING_BAR_UP_HOLLOW, look.up_hollow);
-    store.set_setting_bool(SETTING_BAR_DOWN_HOLLOW, look.down_hollow);
+    store.set_setting_bool(SETTING_BAR_UP_HOLLOW, look.up_body == Body::Hollow);
+    store.set_setting_bool(SETTING_BAR_DOWN_HOLLOW, look.down_body == Body::Hollow);
+    store.set_setting_bool(SETTING_BAR_UP_BORDER, look.up_body == Body::Bordered);
+    store.set_setting_bool(SETTING_BAR_DOWN_BORDER, look.down_body == Body::Bordered);
 }
 
 /// The look an older version's named scheme stood for. A scheme somebody
@@ -81,8 +95,8 @@ fn legacy_bar_look(scheme: Option<&str>) -> BarLook {
     match scheme {
         Some("theme-red-up") => BarLook::red_up(),
         Some("theme-mono") => BarLook::monochrome(),
-        Some("monochrome") => BarLook { up_hollow: true, ..BarLook::monochrome() },
-        Some("hollow") => BarLook { up_hollow: true, ..BarLook::default() },
+        Some("monochrome") => BarLook { up_body: Body::Hollow, ..BarLook::monochrome() },
+        Some("hollow") => BarLook { up_body: Body::Hollow, ..BarLook::default() },
         Some("accessible") => swatches("Blue", "Orange"),
         _ => BarLook::default(),
     }
@@ -470,6 +484,23 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
 .form-window row button.text-button.destructive-action:hover {
   background: alpha(@destructive_color, 0.12);
 }
+/* A candle's body, as one slab of three candles with the chosen one lit and
+   the others faded, rather than a switch per property. */
+.form-window row box.segmented {
+  background: alpha(@window_fg_color, 0.08);
+  border-radius: 9px;
+  padding: 3px;
+}
+.form-window row box.segmented > button.body-tile {
+  background: none;
+  border-radius: 7px;
+  padding: 5px 10px;
+  min-height: 0;
+  min-width: 0;
+}
+.form-window row box.segmented > button.body-tile:hover { background: alpha(@window_fg_color, 0.06); }
+.form-window row box.segmented > button.body-tile:checked { background: alpha(@window_fg_color, 0.16); }
+.form-window row box.segmented > button.body-tile:not(:checked) > * { opacity: 0.55; }
 /* The sidebar sits on the charts' own ground, a step darker than the page. */
 .form-window .sidebar-pane { background-color: @view_bg_color; }
 /* The two theme cards, and the catalogue's tiles. */
@@ -1556,7 +1587,7 @@ mod tests {
     fn the_bars_an_older_version_stored_are_the_bars_this_one_draws() {
         let store = Store::memory().unwrap();
         store.set_setting(LEGACY_BAR_SCHEME, "hollow");
-        assert_eq!(bar_look(&store), BarLook { up_hollow: true, ..BarLook::default() });
+        assert_eq!(bar_look(&store), BarLook { up_body: Body::Hollow, ..BarLook::default() });
 
         // Once anything is written in the new terms, those win.
         store.set_setting_bool(SETTING_BAR_UP_HOLLOW, false);
@@ -1572,8 +1603,8 @@ mod tests {
         let look = BarLook {
             up: parse_bar_colour("ink").unwrap(),
             down: parse_bar_colour("#123456").unwrap(),
-            up_hollow: true,
-            down_hollow: false,
+            up_body: Body::Hollow,
+            down_body: Body::Bordered,
         };
         save_bar_look(&store, &look);
         assert_eq!(bar_look(&store), look);

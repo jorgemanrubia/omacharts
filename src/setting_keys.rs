@@ -102,6 +102,8 @@ const SHARED: &[&str] = &[
     "bar_down",
     "bar_up_hollow",
     "bar_down_hollow",
+    "bar_up_border",
+    "bar_down_border",
     "chart_session",
     "chart_continuous",
     "show_grid",

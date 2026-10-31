@@ -6,7 +6,8 @@
 //! * a **[`Theme`]** — the whole app's look: surfaces, text, chart structure,
 //!   accent. On Omarchy this follows the desktop by default.
 //! * a **[`BarLook`]** — what candles look like: a colour for each direction,
-//!   from the theme's palette, and whether each is hollow.
+//!   from the theme's palette, and whether its body is filled, bordered or
+//!   hollow.
 //! * a **[`Swatch`]** from the active theme's palette, whenever a colour is
 //!   picked for an indicator or overlay.
 //!
@@ -548,13 +549,19 @@ impl Direction {
 /// The colours candles are drawn in, resolved against a theme from a
 /// [`BarLook`].
 ///
-/// Outline and body are separate so a candle can be hollow (a transparent
-/// body) or solid (body == outline) with no other machinery.
+/// Colour, edge and body are separate so a candle can be hollow (a
+/// transparent body), solid (body == edge), or bordered (edge != body) with
+/// no other machinery.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct BarScheme {
+    /// The direction's colour: what an OHLC bar, a line or a price tag is
+    /// drawn in.
     pub up: String,
+    /// A candle's wick and the edge of its body.
+    pub up_edge: String,
     pub up_fill: String,
     pub down: String,
+    pub down_edge: String,
     pub down_fill: String,
     /// Used when open == close.
     pub neutral: String,
@@ -566,6 +573,15 @@ impl BarScheme {
         match direction {
             Direction::Up => &self.up,
             Direction::Down => &self.down,
+            Direction::Flat => &self.neutral,
+        }
+    }
+
+    /// A candle's wick and body edge for a direction.
+    pub fn edge(&self, direction: Direction) -> &str {
+        match direction {
+            Direction::Up => &self.up_edge,
+            Direction::Down => &self.down_edge,
             Direction::Flat => &self.neutral,
         }
     }
@@ -610,19 +626,52 @@ pub fn theme_bars(theme: &Theme) -> BarScheme {
     BarLook::default().scheme(theme)
 }
 
-/// What somebody chose candles to look like: a colour for each direction,
-/// and whether its body is hollow.
+/// What somebody chose candles to look like, per direction: a colour, and
+/// how the body is drawn in it.
 ///
-/// Four answers rather than a list of schemes, because they are the four
-/// questions people arrive with — red for up, no colour at all, hollow rises —
-/// and a list can only answer the combinations somebody thought to put in it.
-/// The colours are roles the theme fills, so candles follow the theme.
+/// Separate answers rather than a list of schemes, because they are the
+/// questions people arrive with — red for up, no colour at all, hollow rises,
+/// TradingView's outline — and a list can only answer the combinations
+/// somebody thought to put in it. The colours are roles the theme fills, so
+/// candles follow the theme.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct BarLook {
     pub up: ColorChoice,
     pub down: ColorChoice,
-    pub up_hollow: bool,
-    pub down_hollow: bool,
+    pub up_body: Body,
+    pub down_body: Body,
+}
+
+/// How a candle's body is drawn in its colour.
+///
+/// One answer of three rather than a hollow and a border switch: a hollow
+/// candle with a border is an outline in the border colour, which is the
+/// colour [`INK`] already offers.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Body {
+    #[default]
+    Filled,
+    /// The wick and the body's edge in [`ink`], the theme's text, the way
+    /// TradingView outlines a candle.
+    Bordered,
+    Hollow,
+}
+
+impl Body {
+    pub const ALL: [Body; 3] = [Body::Filled, Body::Bordered, Body::Hollow];
+
+    /// As it is stored and typed.
+    pub fn key(self) -> &'static str {
+        match self {
+            Body::Filled => "filled",
+            Body::Bordered => "bordered",
+            Body::Hollow => "hollow",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Body> {
+        Body::ALL.into_iter().find(|body| body.key().eq_ignore_ascii_case(key))
+    }
 }
 
 /// The neutral a bar can be drawn in when it should carry no direction: the
@@ -640,8 +689,8 @@ impl Default for BarLook {
         BarLook {
             up: ColorChoice::swatch("Green"),
             down: ColorChoice::swatch("Rose"),
-            up_hollow: false,
-            down_hollow: false,
+            up_body: Body::Filled,
+            down_body: Body::Filled,
         }
     }
 }
@@ -664,13 +713,19 @@ impl BarLook {
     pub fn scheme(&self, theme: &Theme) -> BarScheme {
         let up = bar_colour(theme, &self.up);
         let down = bar_colour(theme, &self.down);
-        let body = |colour: &String, hollow: bool| match hollow {
-            true => HOLLOW.to_string(),
-            false => colour.clone(),
+        let fill = |colour: &String, body: Body| match body {
+            Body::Hollow => HOLLOW.to_string(),
+            _ => colour.clone(),
+        };
+        let edge = |colour: &String, body: Body| match body {
+            Body::Bordered => ink(theme),
+            _ => colour.clone(),
         };
         BarScheme {
-            up_fill: body(&up, self.up_hollow),
-            down_fill: body(&down, self.down_hollow),
+            up_edge: edge(&up, self.up_body),
+            down_edge: edge(&down, self.down_body),
+            up_fill: fill(&up, self.up_body),
+            down_fill: fill(&down, self.down_body),
             // An unchanged bar between two directions that look the same
             // would otherwise be the one bar with a colour.
             neutral: match up == down {
@@ -893,12 +948,12 @@ impl BarColouring {
             BarColouring::Soft => pair(slate_and_sand(theme)),
             BarColouring::Quiet => pair(quiet_greys(theme)),
             BarColouring::Filled => look.clone(),
-            BarColouring::Hollow => BarLook { up_hollow: true, ..look.clone() },
+            BarColouring::Hollow => BarLook { up_body: Body::Hollow, ..look.clone() },
             BarColouring::RedUp => BarLook {
                 up: look.down.clone(),
                 down: look.up.clone(),
-                up_hollow: look.down_hollow,
-                down_hollow: look.up_hollow,
+                up_body: look.down_body,
+                down_body: look.up_body,
             },
             BarColouring::Monochrome => {
                 BarLook { up: ColorChoice::swatch(INK), down: ColorChoice::swatch(INK), ..look.clone() }
@@ -1836,12 +1891,30 @@ mod tests {
     #[test]
     fn a_hollow_direction_keeps_its_outline_and_loses_its_body() {
         let theme = dark();
-        let look = BarLook { up_hollow: true, ..BarLook::default() };
+        let look = BarLook { up_body: Body::Hollow, ..BarLook::default() };
         let (hollow, filled) = (look.scheme(&theme), theme_bars(&theme));
         assert_eq!(hollow.up, filled.up);
         assert_eq!(rgba_alpha(&hollow.up_fill), 0);
         assert_eq!(hollow.down_fill, filled.down_fill, "the other direction is untouched");
         assert_eq!(hollow.volume(Direction::Up), filled.volume(Direction::Up), "volume is never hollow");
+    }
+
+    #[test]
+    fn a_border_is_the_colour_a_bar_in_ink_is_drawn_in() {
+        let look = BarLook { up_body: Body::Bordered, ..BarLook::default() };
+        let theme = dark();
+        let scheme = look.scheme(&theme);
+        assert_eq!(scheme.up_edge, ink(&theme));
+        assert_eq!(scheme.up, theme_bars(&theme).up, "the colour stays for everything but the candle");
+        assert_eq!(scheme.up_fill, scheme.up, "a border leaves the body filled");
+        assert_eq!(scheme.down_edge, scheme.down, "the other direction is untouched");
+    }
+
+    #[test]
+    fn red_up_swaps_the_bodies_with_the_colours() {
+        let look = BarLook { up_body: Body::Bordered, ..BarLook::default() };
+        let turned = BarColouring::RedUp.look(&dark(), &look);
+        assert_eq!((turned.up_body, turned.down_body), (Body::Filled, Body::Bordered));
     }
 
     #[test]

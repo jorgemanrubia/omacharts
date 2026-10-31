@@ -993,33 +993,35 @@ Settings are read and written by name — `config list` shows every one that has
 been written, and `config set` writes any of them.
 
 Some of them have a command of their own, because what the app does with
-them is more than storing a value. Bar colours is one. Every chart paints its
-bars from one look: a colour for a rise, a colour for a fall, and which of the
-two are hollow. `config bars` reads and sets it, and the window's Preferences ›
-Appearance › Bars is the same four answers.
+them is more than storing a value. How candles look is one. Every chart
+paints its bars from one look, a colour and a body for each direction.
+`config bars` reads and sets it, and the window's Preferences › Appearance ›
+Bars is the same answers.
 
 ```
 $ omacharts config bars
-up green, down rose, filled
+up green filled, down rose filled
   [exit 0]
 
-$ omacharts config bars monochrome --hollow up
-bars are now up ink, down ink, up hollow
+$ omacharts config bars red-up --up-body hollow
+bars are now up rose hollow, down green filled
   [exit 0]
 
-$ omacharts config bars --up blue --down orange --hollow none
-bars are now up blue, down orange, filled
+$ omacharts config bars --down-body bordered
+bars are now up rose hollow, down green bordered
   [exit 0]
 ```
 
-`coloured` sets the theme's green and rose, `red-up` the same the other way
-round, red for a rise and green for a fall, the way charts are read in
-Taiwan, mainland China, Japan and Korea, and `monochrome` ink both ways.
-`--up` and `--down` set one colour each: a theme colour by name (green, rose,
-blue, amber, violet, teal, orange, cyan), `ink`, the theme's text colour, or
-a `#rrggbb` hex, which the theme leaves alone. `--hollow` is `none`, `up`,
-`down` or `both`. A state and the flags can be given together, and the flags
-win. Stored as `bar_up`, `bar_down`, `bar_up_hollow` and `bar_down_hollow`.
+Each direction has a colour (`--up`, `--down`: a theme colour by name —
+green, rose, blue, amber, violet, teal, orange, cyan — `ink` for the
+theme's text colour, or a `#rrggbb` hex, which the theme leaves alone) and a
+body (`--up-body`, `--down-body`): `filled`, `bordered` (its wick and body
+edge in the theme's text colour, as TradingView draws one) or `hollow`.
+`STATE` sets both colours at once: `coloured`, `red-up` (the theme's colours
+the other way round, red for a rise, the way charts are read in Taiwan,
+mainland China, Japan and Korea) or `monochrome`. A flag changes only its own
+answer, and wins over `STATE`. Stored as `bar_up`, `bar_down`,
+`bar_up_hollow`, `bar_down_hollow`, `bar_up_border` and `bar_down_border`.
 
 What one chart does with that look is its colouring, `chart set --colouring`:
 `theme` paints it as it is, `theme-hollow` with rising candles hollow,

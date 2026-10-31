@@ -5593,10 +5593,11 @@ fn config_chart_switch(
     said(as_json, json!({switch.json_key(): on}), switch.said(on).to_string())
 }
 
-/// How candles look: a colour for each direction, and which are hollow.
+/// How candles look: a colour for each direction, and how each body is
+/// drawn.
 ///
 /// The preset is the question people arrive with — colour or none, and which
-/// way round — and sets the two colours; the flags set any of the four
+/// way round — and sets the two colours; the flags set any of the other
 /// answers on their own, and win over the preset. Nothing given reports
 /// them.
 fn config_bars(
@@ -5605,7 +5606,7 @@ fn config_bars(
     as_json: bool,
     live: Option<&dyn Live>,
 ) -> Result<String, Fault> {
-    use omacharts_engine::theme::{parse_bar_colour, BarLook};
+    use omacharts_engine::theme::{parse_bar_colour, BarLook, Body};
 
     let current = crate::theming::bar_look(store);
     let mut look = current.clone();
@@ -5632,16 +5633,15 @@ fn config_bars(
     if let Some(down) = colour("down")? {
         look.down = down;
     }
-    if let Some(hollow) = arg(m, "hollow") {
-        (look.up_hollow, look.down_hollow) = match hollow.as_str() {
-            "up" => (true, false),
-            "down" => (false, true),
-            "both" => (true, true),
-            _ => (false, false),
-        };
+    // The parser has already held both to the bodies there are.
+    if let Some(body) = arg(m, "up-body").and_then(|key| Body::from_key(key)) {
+        look.up_body = body;
+    }
+    if let Some(body) = arg(m, "down-body").and_then(|key| Body::from_key(key)) {
+        look.down_body = body;
     }
 
-    let given = ["STATE", "up", "down", "hollow"].iter().any(|id| arg(m, id).is_some());
+    let given = ["STATE", "up", "down", "up-body", "down-body"].iter().any(|id| arg(m, id).is_some());
     if given {
         crate::theming::save_bar_look(store, &look);
         // A candle has no row to reload: an open window paints from the
@@ -5651,20 +5651,8 @@ fn config_bars(
         }
     }
     let (up, down) = (spell_bar_colour(&look.up), spell_bar_colour(&look.down));
-    let hollow = match (look.up_hollow, look.down_hollow) {
-        (true, true) => "both",
-        (true, false) => "up",
-        (false, true) => "down",
-        (false, false) => "none",
-    };
-    let described = format!(
-        "up {up}, down {down}, {}",
-        match hollow {
-            "none" => "filled".to_string(),
-            "both" => "hollow".to_string(),
-            side => format!("{side} hollow"),
-        }
-    );
+    let (up_body, down_body) = (look.up_body.key(), look.down_body.key());
+    let described = format!("up {up} {up_body}, down {down} {down_body}");
     // Said rather than silently done, because "it was already monochrome"
     // and "it is monochrome now" are different answers to somebody checking
     // their own work.
@@ -5673,7 +5661,7 @@ fn config_bars(
         (true, true) => format!("bars were already {described}"),
         (true, false) => format!("bars are now {described}"),
     };
-    said(as_json, json!({"up": up, "down": down, "hollow": hollow}), text)
+    said(as_json, json!({"up": up, "down": down, "up_body": up_body, "down_body": down_body}), text)
 }
 
 /// The widget in the Omarchy bar.
@@ -7487,25 +7475,29 @@ mod tests {
         assert_eq!(run("config get theme", &store).out.trim(), other, "a typo changes nothing");
     }
     #[test]
-    fn bars_are_four_answers_set_together_or_alone() {
+    fn bars_are_answers_set_together_or_alone() {
         let store = Store::memory().unwrap();
-        assert_eq!(run("config bars", &store).out.trim(), "up green, down rose, filled");
+        assert_eq!(run("config bars", &store).out.trim(), "up green filled, down rose filled");
 
-        assert_eq!(run("config bars red-up --hollow up", &store).code, 0);
-        assert_eq!(run("config bars", &store).out.trim(), "up rose, down green, up hollow");
+        assert_eq!(run("config bars red-up --up-body hollow", &store).code, 0);
+        assert_eq!(run("config bars", &store).out.trim(), "up rose hollow, down green filled");
 
-        // A flag alone leaves the other three as they were.
+        // A flag alone leaves the others as they were.
         assert_eq!(run("config bars --down Ink", &store).code, 0);
-        assert_eq!(run("config bars", &store).out.trim(), "up rose, down ink, up hollow");
+        assert_eq!(run("config bars", &store).out.trim(), "up rose hollow, down ink filled");
         assert_eq!(run("config get bar_down", &store).out.trim(), "ink");
 
         // A flag wins over the preset it is given with.
-        assert_eq!(run("config bars monochrome --up #336699 --hollow none", &store).code, 0);
+        assert_eq!(run("config bars monochrome --up #336699 --up-body filled", &store).code, 0);
         let json: Value = serde_json::from_str(&run("config bars --json", &store).out).unwrap();
-        assert_eq!(json, json!({"up": "#336699", "down": "ink", "hollow": "none"}));
+        assert_eq!(json, json!({"up": "#336699", "down": "ink", "up_body": "filled", "down_body": "filled"}));
 
-        let again = run("config bars monochrome --up #336699 --hollow none", &store);
+        let again = run("config bars monochrome --up #336699 --up-body filled", &store);
         assert!(again.out.starts_with("bars were already"), "{}", again.out);
+
+        assert_eq!(run("config bars --down-body bordered", &store).code, 0);
+        assert_eq!(run("config bars", &store).out.trim(), "up #336699 filled, down ink bordered");
+        assert_ne!(run("config bars --up-body outlined", &store).code, 0, "a body that does not exist is refused");
     }
 
     #[test]

@@ -35,18 +35,20 @@ Without Omarchy there is no **Follow system**, and the catalogue holds a set of 
 
 A theme of your own is made with Omarchy's tools, and then appears in the catalogue like any other.
 
-## Bar colours
+## Bars
 
-Preferences › Appearance › **Bars** is the look every chart paints its bars from.
+Preferences › Appearance › **Bars** sets how candles look on every chart. **Up** and **Down** each have a row: a colour, and three candles to pick the body from.
 
-| Row | Does | Default |
-|---|---|---|
-| **Up colour** | A rising bar's colour: one of the theme's palette, or Ink, its text colour | Green |
-| **Down colour** | A falling bar's colour, the same way | Rose |
-| **Hollow up candles** | Draws a rising candle as an outline | Off |
-| **Hollow down candles** | Draws a falling candle as an outline | Off |
+| Control | Does |
+|---|---|
+| Colour | A colour from the theme's palette, or **Ink**, the theme's text colour, for bars with no colour |
+| Filled | The whole candle in its colour |
+| Bordered | The wick and the body's edge in the theme's text colour, as TradingView draws one. It follows the theme, so it is light on a dark theme and dark on a light one |
+| Hollow | The body as an outline in the candle's colour. Ink and Hollow make a hollow candle in the text colour |
 
-The colours are the theme's, so they change with it. Red for a rise is the two colours swapped; monochrome is Ink both ways. Each chart then paints the look its own way, with its **Colouring**: as it is, hollow rises, red up, soft, quiet, or monochrome ([Colouring](/manual/charts/#colouring)). Soft is a slate against a sand from the theme's palette, quiet two greys made from its text; both keep the look's hollow bodies. Volume bars take the candle colours unless the volume indicator was given a colouring of its own ([Volume](/manual/indicators/volume/)).
+A border needs room: a candle whose body is under five pixels wide keeps its own colour throughout, and one too narrow for a body is drawn as a line in its colour. `omacharts config bars` sets the same answers ([`config bars`](/manual/cli/#config-bars)).
+
+The colours are the theme's, so they change with it. Red for a rise is the two colours swapped; monochrome is Ink both ways. Each chart then paints the look its own way, with its **Colouring**: as it is, hollow rises, red up, soft, quiet, or monochrome ([Colouring](/manual/charts/#colouring)). Soft is a slate against a sand from the theme's palette, quiet two greys made from its text; both keep the look's bodies. Volume bars take the candle colours unless the volume indicator was given a colouring of its own ([Volume](/manual/indicators/volume/)).
 
 ## The palette
 

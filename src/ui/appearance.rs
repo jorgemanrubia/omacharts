@@ -15,13 +15,13 @@ use std::rc::{Rc, Weak};
 
 use adw::prelude::*;
 use gtk::glib;
-use omacharts_engine::theme::{bar_colour, ink, BarLook, ColorChoice, Swatch, INK};
+use omacharts_engine::theme::{bar_colour, ink, BarLook, Body, ColorChoice, Direction, Swatch, INK};
 
 use crate::store::Store;
 use crate::theming::Theming;
 use crate::chart_defaults::{chart_switch, SETTING_PRICE_LINE, SETTING_SHOW_GRID};
 use crate::ui::window::SETTING_SYNC_CROSSHAIR;
-use crate::ui::{palette, theme_picker};
+use crate::ui::{colors, palette, theme_picker};
 
 struct Context {
     store: Rc<Store>,
@@ -147,9 +147,10 @@ fn choose_theme(context: &Rc<Context>, id: &str) {
     glib::idle_add_local_once(restyled);
 }
 
-/// Four answers, each a row: a colour for each direction, and whether its
-/// body is hollow. Red for a rise is the two colours swapped; monochrome is
-/// Ink both ways.
+/// A row for each direction: its colour, and its body as one of three
+/// candles drawn in that colour. The body is picked as a picture because
+/// "filled, bordered or hollow" is what the eye compares, where a hollow
+/// switch and a border switch left the combination to be imagined.
 fn bars_group(context: &Rc<Context>) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     group.set_title("Bars");
@@ -159,20 +160,109 @@ fn bars_group(context: &Rc<Context>) -> adw::PreferencesGroup {
 
     let theming = context.theming.borrow();
     let theme = theming.theme();
-    let look = theming.bar_look().clone();
+    let mut look = theming.bar_look().clone();
     drop(theming);
 
     // The theme's swatches and Ink: what a bar can be drawn in.
     let mut offered = theme.clone();
     offered.swatches.push(Swatch::new(INK, &ink(&theme)));
 
-    group.add(&colour_row(context, &offered, "Up colour", &look.up, |look, c| look.up = c));
-    group.add(&colour_row(context, &offered, "Down colour", &look.down, |look, c| look.down = c));
-    group.add(&hollow_row(context, "Hollow up candles", look.up_hollow, |look, on| look.up_hollow = on));
-    group.add(&hollow_row(context, "Hollow down candles", look.down_hollow, |look, on| {
-        look.down_hollow = on
-    }));
+    for up in [true, false] {
+        let (choice, current) = side(&mut look, up);
+        let (choice, current) = (choice.clone(), *current);
+        let row = adw::ActionRow::new();
+        row.set_title(if up { "Up" } else { "Down" });
+
+        let strip = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+        strip.add_css_class("segmented");
+        let mut first: Option<gtk::ToggleButton> = None;
+        let mut glyphs = Vec::new();
+        for body in Body::ALL {
+            let glyph = candle_glyph(context, up, body);
+            let tile = gtk::ToggleButton::new();
+            tile.add_css_class("body-tile");
+            tile.set_tooltip_text(Some(match body {
+                Body::Filled => "Filled",
+                Body::Bordered => "Bordered in the text colour",
+                Body::Hollow => "Hollow",
+            }));
+            tile.set_child(Some(&glyph));
+            tile.set_group(first.as_ref());
+            tile.set_active(current == body);
+            let ctx = context.clone();
+            tile.connect_toggled(move |tile| {
+                if tile.is_active() {
+                    change_bars(&ctx, |look| *side(look, up).1 = body);
+                }
+            });
+            first.get_or_insert(tile.clone());
+            strip.append(&tile);
+            glyphs.push(glyph);
+        }
+
+        let ctx = context.clone();
+        let picker = palette::picker(&offered, Some(choice.clone()), &bar_colour(&offered, &choice), move |choice| {
+            change_bars(&ctx, |look| *side(look, up).0 = choice);
+            // The candles are drawn in the colour just picked.
+            glyphs.iter().for_each(|glyph| glyph.queue_draw());
+        });
+        row.add_suffix(&picker);
+        row.add_suffix(&strip);
+        group.add(&row);
+    }
     group
+}
+
+/// One direction's half of the look: its colour and its body.
+fn side(look: &mut BarLook, up: bool) -> (&mut ColorChoice, &mut Body) {
+    match up {
+        true => (&mut look.up, &mut look.up_body),
+        false => (&mut look.down, &mut look.down_body),
+    }
+}
+
+/// A candle as `body` would draw this direction's, in the colours the charts
+/// would use, read when it is drawn so a new colour needs only a redraw.
+fn candle_glyph(context: &Rc<Context>, up: bool, body: Body) -> gtk::DrawingArea {
+    const W: i32 = 14;
+    const H: i32 = 26;
+    let area = gtk::DrawingArea::new();
+    area.set_content_width(W);
+    area.set_content_height(H);
+    let ctx = context.clone();
+    area.set_draw_func(move |_, cr, _, _| {
+        let theming = ctx.theming.borrow();
+        let mut look = theming.bar_look().clone();
+        *side(&mut look, up).1 = body;
+        let scheme = look.scheme(&theming.theme());
+        let direction = if up { Direction::Up } else { Direction::Down };
+        let (edge, fill) = (scheme.edge(direction), scheme.body(direction));
+
+        // A nine-pixel body round a wick down its middle pixel.
+        let (x, left, width, top, bottom) = (7.5, 3.0, 9.0, 8.0, 18.0);
+        cr.set_line_width(1.0);
+        colors::set_source(cr, edge);
+        if colors::is_transparent(fill) {
+            cr.move_to(x, 2.0);
+            cr.line_to(x, top);
+            cr.move_to(x, bottom);
+            cr.line_to(x, f64::from(H) - 2.0);
+            cr.rectangle(left + 0.5, top + 0.5, width - 1.0, bottom - top - 1.0);
+            let _ = cr.stroke();
+            return;
+        }
+        cr.move_to(x, 2.0);
+        cr.line_to(x, f64::from(H) - 2.0);
+        let _ = cr.stroke();
+        cr.rectangle(left, top, width, bottom - top);
+        let _ = cr.fill();
+        if edge != fill {
+            colors::set_source(cr, fill);
+            cr.rectangle(left + 1.0, top + 1.0, width - 2.0, bottom - top - 2.0);
+            let _ = cr.fill();
+        }
+    });
+    area
 }
 
 /// The Overlays page: the lines every chart draws, or does not. One
@@ -210,41 +300,10 @@ pub fn overlays_page(store: Rc<Store>, on_charts: Rc<dyn Fn()>) -> adw::Preferen
     page
 }
 
-/// Change one of the four answers, store it, and repaint everything.
+/// Change one of the bars' answers, store it, and repaint everything.
 fn change_bars(context: &Rc<Context>, edit: impl FnOnce(&mut BarLook)) {
     let mut look = context.theming.borrow().bar_look().clone();
     edit(&mut look);
     context.theming.borrow_mut().set_bar_look(look, &context.store);
     apply(context);
-}
-
-/// A direction's colour, picked from `offered`: the theme's palette and Ink.
-fn colour_row(
-    context: &Rc<Context>,
-    offered: &omacharts_engine::Theme,
-    title: &str,
-    choice: &ColorChoice,
-    edit: fn(&mut BarLook, ColorChoice),
-) -> adw::ActionRow {
-    let row = adw::ActionRow::new();
-    row.set_title(title);
-    let ctx = context.clone();
-    let picker = palette::picker(offered, Some(choice.clone()), &bar_colour(offered, choice), move |choice| {
-        change_bars(&ctx, |look| edit(look, choice));
-    });
-    row.add_suffix(&picker);
-    row.set_activatable_widget(Some(&picker));
-    row
-}
-
-fn hollow_row(context: &Rc<Context>, title: &str, on: bool, edit: fn(&mut BarLook, bool)) -> adw::SwitchRow {
-    let row = adw::SwitchRow::new();
-    row.set_title(title);
-    row.set_active(on);
-    let ctx = context.clone();
-    row.connect_active_notify(move |row| {
-        let on = row.is_active();
-        change_bars(&ctx, |look| edit(look, on));
-    });
-    row
 }

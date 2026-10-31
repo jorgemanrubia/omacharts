@@ -475,33 +475,37 @@ over. Run `chart range` last.
 
 ### `config bars`
 
-Sets the look every chart paints its bars from: a colour for a rise, a
-colour for a fall, and which are hollow. It is Preferences › Appearance ›
-**Bars** ([Colouring](/manual/charts/#colouring)).
+Sets how candles look on every chart: a colour and a body for each
+direction, filled, bordered or hollow. It is Preferences › Appearance ›
+**Bars** ([Bars](/manual/themes/#bars)).
 
 ```
 $ omacharts config bars
-up green, down rose, filled
+up green filled, down rose filled
   [exit 0]
 
-$ omacharts config bars monochrome --hollow up
-bars are now up ink, down ink, up hollow
+$ omacharts config bars red-up --up-body hollow
+bars are now up rose hollow, down green filled
   [exit 0]
 
-$ omacharts config bars --up blue --down orange --hollow none
-bars are now up blue, down orange, filled
+$ omacharts config bars --down-body bordered
+bars are now up rose hollow, down green bordered
+  [exit 0]
+
+$ omacharts config bars monochrome --up-body filled --down-body filled
+bars are now up ink filled, down ink filled
   [exit 0]
 ```
 
 | Argument or flag | Takes | Does |
 |---|---|---|
-| (none) | | Prints the look. With `--json`, the `up`, `down` and `hollow` fields |
-| `STATE` | `coloured`, `red-up`, `monochrome` | Sets both colours: the theme's green up and rose down, the same swapped, or ink both ways |
-| `--up C`, `--down C` | A theme colour by name (`green`, `rose`, `blue`, `amber`, `violet`, `teal`, `orange`, `cyan`), `ink`, or `#rrggbb` | One direction's colour. A name follows the theme; a hex does not |
-| `--hollow WHICH` | `none`, `up`, `down`, `both` | Which candles are drawn as an outline |
+| `STATE` | `coloured`, `red-up`, `monochrome` | Sets both colours: the theme's green and rose, the two swapped, or Ink. Omitted, the command prints the current look |
+| `--up COLOUR`, `--down COLOUR` | A theme colour by name, `ink` for the theme's text colour, or `#rrggbb` | One direction's colour. Wins over `STATE` |
+| `--up-body BODY`, `--down-body BODY` | `filled`, `bordered`, `hollow` | One direction's body. `bordered` draws the wick and the body's edge in the theme's text colour |
 
-A state and the flags can be given together, and the flags win. Each chart
-then paints the look its own way, `chart set --colouring`.
+A flag changes only its own answer. The others stay as they were. Each
+chart then paints the look its own way, `chart set --colouring`
+([Colouring](/manual/charts/#colouring)).
 
 ### `config grid` and `config price-line`
 
@@ -1553,8 +1557,8 @@ same.
 | Setting | Values | Default | Preferences row | Chapter |
 |---|---|---|---|---|
 | `theme` | `omarchy` (Follow system), or an Omarchy theme by its folder name, such as `tokyo-night` | `omarchy` on Omarchy, `tokyo-night` elsewhere | Appearance › Theme | [Themes](/manual/themes/) |
-| `bar_up`, `bar_down` | a theme colour by name, such as `green` or `rose`; `ink`; or `#rrggbb` | `green`, `rose` | Appearance › Bars › Up colour, Down colour | [Themes](/manual/themes/#bar-colours) |
-| `bar_up_hollow`, `bar_down_hollow` | on, off | off | Appearance › Bars › Hollow up candles, Hollow down candles | [Themes](/manual/themes/#bar-colours) |
+| `bar_up`, `bar_down` | a theme colour by name, such as `green` or `rose`; `ink`; or `#rrggbb` | `green`, `rose` | Appearance › Bars › Up, Down | [Themes](/manual/themes/#bars) |
+| `bar_up_hollow`, `bar_down_hollow`, `bar_up_border`, `bar_down_border` | on, off | off | Appearance › Bars › Up, Down: Hollow or Bordered | [Themes](/manual/themes/#bars) |
 | `bar_style` | `candles`, `ohlc` | `candles` | Charts › Defaults › Style | [Chart settings](/manual/chart-settings/) |
 | `ohlc_thickness` | `1` to `4` | `2` | Charts › Defaults › Thickness | [Chart settings](/manual/chart-settings/) |
 | `chart_colouring` | `theme` (Filled), `theme-hollow`, `theme-red-up`, `theme-soft`, `theme-quiet`, `theme-mono` | `theme` | Charts › Defaults › Colouring | [Chart settings](/manual/chart-settings/) |

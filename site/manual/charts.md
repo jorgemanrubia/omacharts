@@ -145,7 +145,7 @@ crop: none (resized to 2000 wide)
 
 ### Colouring
 
-Every chart paints its bars from one look: an up colour, a down colour, and whether rising or falling candles are hollow. The look is set in Preferences › Appearance › **Bars** and is the same on every chart ([Bar colours](/manual/themes/#bar-colours)). A chart's colouring is what it does with that look.
+Every chart paints its bars from one look: a colour and a body for rising candles, and the same for falling ones. The look is set in Preferences › Appearance › **Bars** and is the same on every chart ([Bars](/manual/themes/#bars)). A chart's colouring is what it does with that look.
 
 | Colouring | Paints |
 |---|---|

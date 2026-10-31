@@ -296,7 +296,7 @@ const LINKS: &[&str] = &["focus", "follow", "pinned"];
 const VOLUME_COLOURINGS: &[&str] =
     &["chart", "default", "theme", "theme-red-up", "theme-soft", "theme-quiet", "theme-mono"];
 const COLOURING: &[&str] = &["coloured", "red-up", "monochrome"];
-const HOLLOW: &[&str] = &["none", "up", "down", "both"];
+const BODIES: &[&str] = &["filled", "bordered", "hollow"];
 const BAR_COLOUR: &str = "a theme colour by name (green, rose, blue, amber, violet, teal, orange, cyan), \
      ink for none, or #rrggbb";
 const SORT_COLUMNS: &[&str] = &["symbol", "last", "change", "change_pct", "none"];
@@ -1275,14 +1275,20 @@ pub const SURFACE: &[Noun] = &[
             },
             Verb {
                 name: "bars",
-                about: "How candles look: a colour for up and for down, and which are hollow",
+                about: "How candles look: a colour for up and for down, and how each body is drawn",
                 args: &[Arg::opt("STATE", "sets both colours: the theme's green and rose, swapped, or ink; omit to read them").of(COLOURING)],
                 flags: &[
                     Flag::valued("up", "COLOUR", BAR_COLOUR),
                     Flag::valued("down", "COLOUR", BAR_COLOUR),
-                    Flag::valued("hollow", "WHICH", "which candles are drawn as an outline").of(HOLLOW),
+                    Flag::valued(
+                        "up-body",
+                        "BODY",
+                        "a rising candle filled, filled with its wick and edge in the theme's text colour, or an outline",
+                    )
+                    .of(BODIES),
+                    Flag::valued("down-body", "BODY", "the same for a falling candle").of(BODIES),
                 ],
-                example: "omacharts config bars monochrome --hollow up",
+                example: "omacharts config bars monochrome --up-body hollow --down-body bordered",
                 json: true,
                 writes: true,
                 workspace: false,
@@ -1754,6 +1760,12 @@ mod tests {
             .map(|s| serde_json::to_string(s).unwrap().trim_matches('"').to_string())
             .collect();
         assert_eq!(LINE_STYLES.to_vec(), engine);
+    }
+
+    #[test]
+    fn the_bodies_on_offer_are_the_ones_that_exist() {
+        let engine: Vec<&str> = omacharts_engine::Body::ALL.iter().map(|b| b.key()).collect();
+        assert_eq!(BODIES.to_vec(), engine);
     }
 
     /// The help names the palette, and a name it offers that the theme does

@@ -898,11 +898,16 @@ impl<'a> Columns<'a> {
     /// candles into one block. There the body keeps the width it had, and
     /// the wick takes the same side of its middle on every candle.
     fn body(&self, at: usize) -> (f64, f64) {
+        let width = self.body_width();
+        (self.x(at).round() - ((width - 1.0) / 2.0).floor(), width)
+    }
+
+    /// Every candle body's width in whole pixels; see [`Columns::body`].
+    fn body_width(&self) -> f64 {
         let wanted = (self.bar_w * 0.68).clamp(1.0, 24.0);
         let room = (self.bar_w.floor() - 1.0).max(1.0);
         let odd = ((wanted - 1.0) / 2.0).round() * 2.0 + 1.0;
-        let width = if odd <= room { odd } else { wanted.round().min(room) };
-        (self.x(at).round() - ((width - 1.0) / 2.0).floor(), width)
+        if odd <= room { odd } else { wanted.round().min(room) }
     }
 
     /// The pixel a column holding several bars is, as a left edge and a
@@ -6898,13 +6903,16 @@ fn candles(
     // Below about three pixels a candle is a line; outlining it just muddies
     // the colour.
     let hairline = bar_w < 3.0;
+    // A border takes a pixel off each side of the body. Under five pixels
+    // that leaves the colour one pixel or none, and every candle reads as
+    // the border colour, so a candle that narrow keeps its direction's own
+    // colours throughout, as a hairline does.
+    let bordered = columns.body_width() >= 5.0;
 
     for rising in [false, true] {
-        let (outline, fill) = if rising {
-            (&scheme.up, &scheme.up_fill)
-        } else {
-            (&scheme.down, &scheme.down_fill)
-        };
+        let direction = if rising { Direction::Up } else { Direction::Down };
+        let fill = scheme.body(direction);
+        let edge = if bordered { scheme.edge(direction) } else { scheme.outline(direction) };
 
         // A hollow body shows what is behind it, so a wick drawn through it
         // would be seen inside: it stops at the body's edges instead.
@@ -6912,7 +6920,7 @@ fn candles(
 
         // Wicks.
         cr.set_line_width(1.0);
-        colors::set_source(cr, outline);
+        colors::set_source(cr, edge);
         let mut any = false;
         for (i, bar) in bars.iter().enumerate() {
             if (bar.close >= bar.open) != rising {
@@ -6952,21 +6960,36 @@ fn candles(
             continue;
         }
 
-        // Bodies, as one path.
-        for (i, bar) in bars.iter().enumerate() {
-            if (bar.close >= bar.open) != rising {
-                continue;
+        // Bodies, as one path, `inset` pixels in from every side. A body
+        // with no inside at that inset is left out of the path.
+        let bodies = |inset: f64| {
+            for (i, bar) in bars.iter().enumerate() {
+                if (bar.close >= bar.open) != rising {
+                    continue;
+                }
+                let (x, w) = columns.body(i);
+                let top = to_y(bar.open.max(bar.close)).round();
+                let h = (to_y(bar.open.min(bar.close)).round() - top).max(1.0);
+                if inset == 0.0 || (w > 2.0 * inset && h > 2.0 * inset) {
+                    cr.rectangle(x + inset, top + inset, w - 2.0 * inset, h - 2.0 * inset);
+                }
             }
-            let (x, w) = columns.body(i);
-            let top = to_y(bar.open.max(bar.close)).round();
-            let bottom = to_y(bar.open.min(bar.close)).round();
-            cr.rectangle(x, top, w, (bottom - top).max(1.0));
-        }
+        };
+        bodies(0.0);
         if hollow {
             // Hollow: stroke the outline and leave the background showing.
-            colors::set_source(cr, outline);
+            colors::set_source(cr, edge);
             let _ = cr.stroke();
-        } else {
+            continue;
+        }
+        colors::set_source(cr, if bordered { edge } else { fill });
+        let _ = cr.fill();
+        if bordered && edge != fill {
+            // Bordered: the edge colour filled the whole body, and the body
+            // colour fills its inside, a pixel in, the way TradingView draws
+            // one. A body too thin to have an inside stays all edge, which
+            // is how a doji reads as a dark dash there too.
+            bodies(1.0);
             colors::set_source(cr, fill);
             let _ = cr.fill();
         }
@@ -12824,6 +12847,41 @@ mod tests {
         assert_eq!(alpha(50), 0, "the inside of a hollow body is left empty");
         assert!((11..40).all(|y| alpha(y) != 0), "the upper wick reaches the body");
         assert!((61..90).all(|y| alpha(y) != 0), "the lower wick reaches the body");
+    }
+
+    #[test]
+    fn a_bordered_candle_has_its_edge_and_wick_in_the_border_colour() {
+        let mut state = charted(1);
+        (state.scheme.up, state.scheme.up_fill, state.scheme.up_edge) =
+            ("#00ff00".into(), "#00ff00".into(), "#ff0000".into());
+        let bars = [Bar { ts: 0, open: 40.0, high: 90.0, low: 10.0, close: 60.0, volume: 0.0 }];
+        let to_y = |price: f64| 100.0 - price;
+        let columns = Columns::of(&bars, 0, 1, 0.0, 20.0);
+        let (left, w) = columns.body(0);
+        let (x, left, right) = (columns.x(0).round() as usize, left as usize, (left + w) as usize - 1);
+        let drawn = frame(20.0, 100.0, |cr| draw_candles(cr, &state, &columns, &to_y));
+        // Cairo's ARGB32, little-endian: blue, green, red, alpha.
+        let red = |x: usize, y: usize| drawn[(y * 20 + x) * 4 + 2] > 200 && drawn[(y * 20 + x) * 4 + 1] < 50;
+        let green = |x: usize, y: usize| drawn[(y * 20 + x) * 4 + 1] > 200 && drawn[(y * 20 + x) * 4 + 2] < 50;
+        assert!(red(x, 20) && red(x, 80), "the wicks are the border's");
+        assert!(red(left, 50) && red(right, 50), "the body's sides are the border's");
+        assert!(red(x, 40) && red(x, 59), "the body's top and bottom are the border's");
+        assert!(green(x, 50) && green(left + 1, 50), "the inside is the candle's colour");
+    }
+
+    #[test]
+    fn a_candle_too_narrow_for_a_border_keeps_its_colour() {
+        let mut state = charted(1);
+        (state.scheme.up, state.scheme.up_fill, state.scheme.up_edge) =
+            ("#00ff00".into(), "#00ff00".into(), "#ff0000".into());
+        let bars = [Bar { ts: 0, open: 40.0, high: 90.0, low: 10.0, close: 60.0, volume: 0.0 }];
+        let to_y = |price: f64| 100.0 - price;
+        // Four pixels a bar: a three-pixel body, one pixel of colour inside a border.
+        let columns = Columns::of(&bars, 0, 1, 0.0, 4.0);
+        assert_eq!(columns.body_width(), 3.0);
+        let drawn = frame(4.0, 100.0, |cr| draw_candles(cr, &state, &columns, &to_y));
+        let red = drawn.chunks(4).any(|px| px[2] > 200 && px[1] < 50);
+        assert!(!red, "no pixel of the border is drawn");
     }
 
     #[test]
