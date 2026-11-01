@@ -606,10 +606,6 @@ entry.range-date > image:hover { opacity: 0.9; }
   box-shadow: none;
   outline: none;
 }
-/* A menu button's own button inside it keeps Adwaita's padding, which made
-   the link's hover box half as wide again as its neighbours'. The outer one
-   carries the box; this one only holds the glyph. */
-.legend-link > button { min-width: 0; min-height: 0; padding: 0; }
 /* A Pinned chart that just refused a rail click, for a moment: the pin is the
    reason nothing moved, so the pin is what lights up. */
 .legend-link.refused {
