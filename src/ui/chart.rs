@@ -3896,10 +3896,10 @@ impl ChartView {
                 s.magnet = controller.current_event_state().contains(gtk::gdk::ModifierType::CONTROL_MASK);
                 s.pointer = Some((x, y));
                 s.follow_hand(area.width() as f64, area.height() as f64);
-                if s.ruler.is_some_and(|(_, _, finished)| !finished) {
-                    if let Some(to) = s.ruler_anchor(area.width() as f64, area.height() as f64, x, y) {
-                        s.ruler_motion(to);
-                    }
+                if s.ruler.is_some_and(|(_, _, finished)| !finished)
+                    && let Some(to) = s.ruler_anchor(area.width() as f64, area.height() as f64, x, y)
+                {
+                    s.ruler_motion(to);
                 }
             }
             // The cursor is the only thing that says a line can be dragged, so

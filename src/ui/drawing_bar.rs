@@ -256,10 +256,11 @@ impl DrawingBar {
         {
             let weak = Rc::downgrade(&bar);
             bar.ruler.connect_toggled(move |button| {
-                if let Some(bar) = weak.upgrade() {
-                    if button.is_active() && !bar.showing.get() {
-                        on_ruler();
-                    }
+                if let Some(bar) = weak.upgrade()
+                    && button.is_active()
+                    && !bar.showing.get()
+                {
+                    on_ruler();
                 }
             });
         }
