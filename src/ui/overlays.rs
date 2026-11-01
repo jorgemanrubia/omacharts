@@ -77,21 +77,15 @@ pub fn charts_changed() {
 fn lines_group(store: Rc<Store>, on_charts: Rc<dyn Fn()>) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     group.set_title("Lines");
-    group.set_description(Some("The same on every chart, in every chartbook."));
 
     let rows = [
-        ("Gridlines", "The scales and their labels stay either way", SETTING_SHOW_GRID),
-        ("Last price line", "The price stays on the axis either way", SETTING_PRICE_LINE),
-        (
-            "Crosshair across Follow charts",
-            "The pointer on one draws the same moment on the others",
-            SETTING_SYNC_CROSSHAIR,
-        ),
+        ("Gridlines", SETTING_SHOW_GRID),
+        ("Last price line", SETTING_PRICE_LINE),
+        ("Crosshair across Follow charts", SETTING_SYNC_CROSSHAIR),
     ];
-    for (title, subtitle, key) in rows {
+    for (title, key) in rows {
         let row = adw::SwitchRow::new();
         row.set_title(title);
-        row.set_subtitle(subtitle);
         row.set_active(chart_switch(&store, key));
         let (store_for_row, on_charts) = (store.clone(), on_charts.clone());
         row.connect_active_notify(move |row| {

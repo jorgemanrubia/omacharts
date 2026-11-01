@@ -674,9 +674,6 @@ fn time_group(context: &Rc<Context>) -> adw::PreferencesGroup {
 
     let group = adw::PreferencesGroup::new();
     group.set_title("Time");
-    group.set_description(Some(
-        "How the time axis, the crosshair and every time you type into an indicator tell the time.",
-    ));
 
     // The exchange's own first, then the curated zones in the order the
     // markets open across a day. A zone set by name from the command line
@@ -909,15 +906,6 @@ fn updates_group(context: &Rc<Context>) -> adw::PreferencesGroup {
     group
 }
 
-/// A path as somebody would say it, so a row showing one is readable.
-fn home_relative(path: &std::path::Path) -> String {
-    let home = crate::store::home();
-    match path.strip_prefix(&home) {
-        Ok(rest) if !home.as_os_str().is_empty() => format!("~/{}", rest.display()),
-        _ => path.display().to_string(),
-    }
-}
-
 /// Where prices come from, and how much of them is kept.
 fn build_data_page(context: &Rc<Context>) {
     let group = adw::PreferencesGroup::new();
@@ -967,7 +955,6 @@ fn build_data_page(context: &Rc<Context>) {
 
     let limit = adw::ComboRow::new();
     limit.set_title("Keep at most");
-    limit.set_subtitle("Past this, the oldest data is dropped automatically");
     let labels: Vec<String> = cache::LIMITS.iter().map(|(_, label)| label.to_string()).collect();
     limit.set_model(Some(&string_list(&labels)));
     // A stored limit that is not one of the offered sizes falls back to the
@@ -1037,13 +1024,6 @@ fn backups_group(context: &Rc<Context>) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     group.set_title("Preference backups");
     let settings = context.store.path().map(std::path::Path::to_path_buf);
-    if let Some(path) = &settings {
-        group.set_description(Some(&format!(
-            "Taken when your settings change: up to {} from the past week, in {}.",
-            backup::MOST_KEPT,
-            home_relative(&backup::dir(path)),
-        )));
-    }
 
     let row = adw::ActionRow::new();
     row.set_title("Last backup");
@@ -1246,7 +1226,6 @@ fn desktop_group() -> Option<adw::PreferencesGroup> {
 
     let row = adw::ActionRow::new();
     row.set_title("Show in the Omarchy bar");
-    row.set_subtitle("Your watchlist, a click away from anywhere");
 
     let switch = gtk::Switch::new();
     switch.set_valign(gtk::Align::Center);
@@ -1260,13 +1239,10 @@ fn desktop_group() -> Option<adw::PreferencesGroup> {
             crate::bar_plugin::remove(&home)
         };
         match result {
+            // A failure said before clears once the switch works.
             Ok(()) => {
                 if let Some(row) = row_weak.upgrade() {
-                    row.set_subtitle(if on {
-                        "Added to the bar"
-                    } else {
-                        "Your watchlist, a click away from anywhere"
-                    });
+                    row.set_subtitle("");
                 }
             }
             // Say what went wrong and put the switch back, rather than
