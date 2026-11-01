@@ -120,6 +120,12 @@ or the frames in `review/` and check that each action did what the Picture says
 — a click that missed is the most common fault, and the author should not be
 the one to find it.
 
+**What lives where.** Committed: `video/scripts/<slug>.md`, its storyboard
+`video/storyboards/<slug>.jpg` and its cover `video/covers/<slug>.jpg`.
+Saved but ignored by git: the finished videos and subtitles in
+`video/renders/`, and everything working in `video/out/`. Videos never go in
+the repo.
+
 **A pinned choice goes in the frontmatter:** `voice:` names a file in
 `video/voices/`, `music_file:` the track the author picked.
 

@@ -72,6 +72,8 @@ music: ambient synth pads, soft plucked arpeggio, calm and optimistic
 - **Script.** Written at the `script` stage. One `###` section per scene,
   numbered, each with **Picture** (what the viewer sees, in prose), **Voice**
   (the exact narration) and an indented action block.
+- **Storyboard.** Added by `bin/video board`: a link to
+  `video/storyboards/<slug>.jpg`, the latest storyboard, kept in the repo.
 - **Pronunciation.** How a word should sound, applied to every scene's
   narration before it goes to TTS.
 

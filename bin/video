@@ -14,7 +14,12 @@
     bin/video render SCRIPT         record, mix and encode the video
     bin/video show FILE|URL         play or open it where the author watches
     bin/video page SCRIPT           open the script's page on GitHub there
-    bin/video studio                bring the studio up and leave it running
+    bin/video studio [SCRIPT] [--upto N]
+                                    bring the studio up, run SCRIPT's setup and
+                                    the scenes before N, and leave it running
+    bin/video act ACTION... [--shot FILE]
+                                    perform actions on that studio (for pinning
+                                    click positions), then screenshot it
 
 SCRIPT is a path or a slug under video/scripts. Everything it makes goes to
 video/out/<slug>/, which git ignores. The format, the stages and why they are
@@ -375,6 +380,10 @@ class Studio:
         self.key("Escape")
         time.sleep(0.3)
         self.key("Escape")
+        (DATA / "studio-session.json").write_text(json.dumps({
+            "env": {k: self.env[k] for k in ("XDG_RUNTIME_DIR", "WAYLAND_DISPLAY", "HYPRLAND_INSTANCE_SIGNATURE",
+                                              "DBUS_SESSION_BUS_ADDRESS", "HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME")},
+            "binary": str(self.binary), "signature": self.signature, "runtime": str(self.runtime), "colors": self.colors}))
 
     def _make_home(self):
         theme = next((d / self.theme for d in (Path.home() / ".config/omarchy/themes", Path.home() / ".local/share/omarchy/themes", Path("/usr/share/omarchy/themes")) if (d / self.theme).is_dir()), None)
@@ -444,7 +453,24 @@ hl.config({{
 
     # Shutting it down
 
+    @classmethod
+    def attach(cls):
+        """The studio another `bin/video studio` is holding up, to act on."""
+        path = DATA / "studio-session.json"
+        if not path.exists():
+            die("no studio running; start one with bin/video studio [SCRIPT] [--upto N]")
+        session = json.loads(path.read_text())
+        studio = cls.__new__(cls)
+        studio.env = {**os.environ, **session["env"], "GDK_BACKEND": "wayland"}
+        studio.binary, studio.signature = Path(session["binary"]), session["signature"]
+        studio.runtime, studio.colors = Path(session["runtime"]), session["colors"]
+        studio.hand = Hand(studio)
+        return studio
+
     def stop(self):
+        session = DATA / "studio-session.json"
+        if session.exists() and json.loads(session.read_text()).get("runtime") == str(self.runtime):
+            session.unlink()
         # Exactly the processes that live in this studio's runtime directory,
         # and the bus started for it — never anything matched by name, with
         # the author's own Hyprland and omacharts running alongside.
@@ -602,6 +628,9 @@ class Hand:
         self.vp = importlib.machinery.SourceFileLoader("virtual_pointer", path).load_module()
         self.env = {k: studio.env[k] for k in ("XDG_RUNTIME_DIR", "WAYLAND_DISPLAY")}
         self.x, self.y = LAYOUT[0] * 0.62, LAYOUT[1] * 0.55
+        where = re.match(r"(-?\d+), (-?\d+)", studio.hyprctl("cursorpos") if hasattr(studio, "signature") else "")
+        if where:
+            self.x, self.y = float(where[1]), float(where[2])
         with self.device() as pointer:
             pointer.move(self.x, self.y)
 
@@ -703,18 +732,39 @@ def board(script):
             studio.perform(action, events)
         time.sleep(1.5)
         studio.shot(stills / "00-setup.png")
+        steps = stills / "steps"
+        steps.mkdir()
         for scene in script.scenes:
             cues = re.findall(r"\{(\w+)\}", scene.voice)
+            n = 0
             for cue in cues:
                 for action in scene.actions.get(cue, []):
                     studio.perform(action, events, scene=scene.number, cue=cue)
+                    # A still after every action, for pinning positions: a
+                    # menu item can only be aimed at once the menu is seen.
+                    n += 1
+                    time.sleep(0.5)
+                    studio.shot(steps / f"{scene.number:02d}-{n:02d}-{cue}-{action[0]}.png")
             time.sleep(1.2)
             studio.shot(stills / f"{scene.number:02d}.png")
     studio.keep_data()
     (stills / "events.json").write_text(json.dumps(events, indent=1))
     sheet = contact_sheet(script, stills, events)
-    say(f"{sheet.relative_to(ROOT)} — {len(script.scenes)} scenes")
+    keep_board(script, sheet)
+    say(f"{sheet.relative_to(ROOT)} — {len(script.scenes)} scenes; a still after every action in board/steps/")
     return sheet
+
+
+def keep_board(script, sheet):
+    """The storyboard lives in the repo beside its script, and the script
+    links it, so its page on GitHub shows the pictures under the words."""
+    kept = VIDEO / "storyboards" / f"{script.slug}.jpg"
+    kept.parent.mkdir(exist_ok=True)
+    run(["ffmpeg", "-v", "error", "-y", "-i", str(sheet), "-q:v", "3", str(kept)])
+    link = f"![Storyboard](../storyboards/{script.slug}.jpg)"
+    text = script.path.read_text()
+    if link not in text:
+        script.path.write_text(text.rstrip("\n") + f"\n\n## Storyboard\n\n{link}\n")
 
 
 def contact_sheet(script, stills, events):
@@ -784,7 +834,10 @@ def cover(script):
     # YouTube takes a thumbnail of at most 2MB; 1280x720 is what it asks for.
     run(["ffmpeg", "-v", "error", "-y", "-i", str(out), "-vf", "scale=1280:720:flags=lanczos", "-q:v", "2",
          str(script.out / "thumbnail.jpg")])
-    say(f"{out.relative_to(ROOT)}, and thumbnail.jpg for YouTube")
+    kept = VIDEO / "covers" / f"{script.slug}.jpg"
+    kept.parent.mkdir(exist_ok=True)
+    run(["ffmpeg", "-v", "error", "-y", "-i", str(out), "-q:v", "2", str(kept)])
+    say(f"{out.relative_to(ROOT)}, thumbnail.jpg for YouTube, and video/covers/{kept.name} for the repo")
     return out
 
 
@@ -960,7 +1013,14 @@ def compose(script, voiced, plan, raw, offset):
         for cue, at in s["cues"].items():
             run(["ffmpeg", "-v", "error", "-y", "-ss", f"{intro + at + 0.6:.2f}", "-i", str(preview), "-frames:v", "1",
                  str(review / f"{v['scene'].number:02d}-{cue}.jpg")])
-    say(f"{final.relative_to(ROOT)} ({total:.1f}s), {preview.name} for watching, review/ has a frame per cue")
+    # The finished files beside the scripts, where the author looks for
+    # them; git ignores video/renders/, since videos are too heavy for the
+    # repo. Scripts, storyboards and covers are committed.
+    renders = VIDEO / "renders"
+    renders.mkdir(exist_ok=True)
+    for made in (final, preview, out / f"{script.slug}.srt"):
+        shutil.copy(made, renders / made.name)
+    say(f"video/renders/{final.name} ({total:.1f}s), {preview.name} for watching; review/ in {out.relative_to(ROOT)} has a frame per cue")
 
 
 def loudnorm(source, target):
@@ -1138,7 +1198,9 @@ def main():
     elif verb == "read":
         show(read(need()))
     elif verb == "board":
-        show(board(need()))
+        sheet = board(need())
+        if not os.environ.get("VIDEO_NO_SHOW"):
+            show(sheet)
     elif verb == "cover":
         show(cover(need()))
     elif verb == "music":
@@ -1153,15 +1215,34 @@ def main():
     elif verb == "page":
         show(page(need().path))
     elif verb == "studio":
-        with Studio(theme=rest[0] if rest else None) as studio:
-            say(f"studio up: export XDG_RUNTIME_DIR={studio.runtime} WAYLAND_DISPLAY={studio.env['WAYLAND_DISPLAY']} "
-                f"HYPRLAND_INSTANCE_SIGNATURE={studio.signature} DBUS_SESSION_BUS_ADDRESS={studio.env['DBUS_SESSION_BUS_ADDRESS']}")
-            say("Ctrl+C to take it down")
-            try:
-                while True:
-                    time.sleep(3600)
-            except KeyboardInterrupt:
-                pass
+        # Held up for pinning positions: setup run, scenes before --upto played.
+        script = find_script(rest[0]) if rest and not rest[0].startswith("--") else None
+        upto = int(rest[rest.index("--upto") + 1]) if "--upto" in rest else 0
+        with Studio(script) as studio:
+            events = []
+            if script:
+                for action in script.setup:
+                    studio.perform(action, events)
+                for scene in script.scenes:
+                    if scene.number >= upto:
+                        break
+                    for cue in re.findall(r"\{(\w+)\}", scene.voice):
+                        for action in scene.actions.get(cue, []):
+                            studio.perform(action, events)
+                    time.sleep(0.6)
+            say("studio up; act on it with  bin/video act 'click 50% 50%' ... [--shot FILE]; Ctrl+C or kill to take it down")
+            while True:
+                time.sleep(3600)
+    elif verb == "act":
+        studio = Studio.attach()
+        shot = rest[rest.index("--shot") + 1] if "--shot" in rest else None
+        actions = [a for i, a in enumerate(rest) if a != "--shot" and (i == 0 or rest[i - 1] != "--shot")]
+        for text in actions:
+            studio.perform(parse_action(text), [])
+            time.sleep(0.5)
+        if shot:
+            studio.shot(shot)
+            say(f"shot {shot}")
     else:
         die(f"unknown command {verb}; bin/video --help")
 
