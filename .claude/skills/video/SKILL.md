@@ -95,6 +95,12 @@ in a few lines, what changed and what to look at.
 **Approving a stage** moves `stage:` forward in the frontmatter and produces
 the next stage's artifact.
 
+**Whenever a stage's result is ready, open it where the author watches,**
+without being asked: the brief or the script as its page on GitHub once it
+is pushed (`bin/video page <slug>`), a read-through, storyboard or render
+with `bin/video` itself, which opens what it makes. Saying where a file is
+is not handing it over.
+
 **Read-through, storyboard and render** are `bin/video`, which runs the heavy
 work on this machine and plays or opens the result where the author watches —
 locally, or on another machine when `~/.config/omacharts-video/config` says

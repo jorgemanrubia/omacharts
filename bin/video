@@ -12,7 +12,8 @@
     bin/video cover SCRIPT          the cover: first frame, held, and thumbnail
     bin/video music SCRIPT [N]      N music candidates for the script's length
     bin/video render SCRIPT         record, mix and encode the video
-    bin/video show FILE             play or open FILE where the author watches
+    bin/video show FILE|URL         play or open it where the author watches
+    bin/video page SCRIPT           open the script's page on GitHub there
     bin/video studio                bring the studio up and leave it running
 
 SCRIPT is a path or a slug under video/scripts. Everything it makes goes to
@@ -991,10 +992,12 @@ def show(path):
     """Play or open a file where the author is watching: this desktop, or —
     when ~/.config/omacharts-video/config says `viewer = ssh <host>` — that
     machine's desktop, over the connection `ssh_options` describes."""
-    path = Path(path).resolve()
     config = read_config()
-    player = player_for(path)
     viewer = config.get("viewer", "local")
+    if str(path).startswith(("https://", "http://")):
+        return open_url(str(path), viewer, config)
+    path = Path(path).resolve()
+    player = player_for(path)
     if viewer == "local":
         subprocess.Popen(player + [str(path)], start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         say(f"playing {path.name} here")
@@ -1014,6 +1017,38 @@ def show(path):
     )
     subprocess.run(["ssh", *options, host, remote], check=True)
     say(f"playing {path.name} on {host} (~/{folder}/{path.name})")
+
+
+# Hyprland's own environment has neither the instance signature nor the
+# display, so a command started over SSH looks them up in the runtime dir.
+SESSION = (
+    'export XDG_RUNTIME_DIR=/run/user/$(id -u); '
+    'export HYPRLAND_INSTANCE_SIGNATURE=$(ls -t $XDG_RUNTIME_DIR/hypr | head -1); '
+    'export WAYLAND_DISPLAY=$(basename "$(ls $XDG_RUNTIME_DIR/wayland-[0-9] | head -1)"); '
+    'pid=$(pgrep -x Hyprland | head -1); '
+    'line=$(tr "\\0" "\\n" < /proc/$pid/environ | grep "^DBUS_SESSION_BUS_ADDRESS="); [ -n "$line" ] && export "$line"; '
+)
+
+
+def open_url(url, viewer, config):
+    """A page — a script on GitHub — in the browser where the author watches."""
+    if viewer == "local":
+        subprocess.Popen(["xdg-open", url], start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        say(f"opened {url} here")
+        return
+    host = viewer.removeprefix("ssh").strip()
+    options = split_args(os.path.expanduser(config.get("ssh_options", "")))
+    import shlex
+    subprocess.run(["ssh", *options, host, SESSION + f"setsid -f xdg-open {shlex.quote(url)} >/dev/null 2>&1"], check=True)
+    say(f"opened {url} on {host}")
+
+
+def page(script_path):
+    """The script's page on GitHub, on the branch this checkout is on."""
+    branch = subprocess.run(["git", "branch", "--show-current"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
+    remote = subprocess.run(["git", "remote", "get-url", "origin"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
+    repo = re.sub(r"^(git@github\.com:|https://github\.com/)", "", remote).removesuffix(".git")
+    return f"https://github.com/{repo}/blob/{branch}/{Path(script_path).resolve().relative_to(ROOT)}"
 
 
 def player_for(path):
@@ -1115,6 +1150,8 @@ def main():
             show(script.out / f"{script.slug}-1080p.mp4")
     elif verb == "show":
         show(rest[0])
+    elif verb == "page":
+        show(page(need().path))
     elif verb == "studio":
         with Studio(theme=rest[0] if rest else None) as studio:
             say(f"studio up: export XDG_RUNTIME_DIR={studio.runtime} WAYLAND_DISPLAY={studio.env['WAYLAND_DISPLAY']} "
