@@ -797,9 +797,9 @@ pub const SURFACE: &[Noun] = &[
             },
             Verb {
                 name: "range",
-                about: "Show a stretch of the calendar on the focused chart, such as the year to date, and keep showing it until the view is moved",
-                args: &[Arg::req("RANGE", "a count and a unit: small letters roll back (6m, 3y, 2w, 10d), capitals count whole periods to date (Y, 2Y, M, Q, or ytd), a year or a month (2025, 2026-09), one day, which starts the chart there and keeps its width, running past the last bar into empty room if it must (2026-03-12, 10/12 or 12 mar or march 12 in the latest year it has passed in, mon for this week's Monday, 2mon the one before, last fri, today, yesterday, 3 weeks ago or 3w ago), a slice with both ends included (2025:, 2024:2025-06, :2020, -- -2y:-1y since it starts with a minus, or 2025.. the same way, and either end may be a day: 3 weeks ago:, oct 1:oct 22), or all (:)")],
-                flags: &[Flag::valued("resolution", "TF", "show it at this resolution rather than the one the range fits, such as 1W")],
+                about: "Go to a date and keep the window, or show a span or a custom range, on the focused chart, as Go to (Ctrl+G) does",
+                args: &[Arg::req("RANGE", "a date, which keeps the window (oct 22, 2026/10/22, yesterday, last fri, 3 weeks ago); a span back from today (6m, 3w, ytd, 2025, 2025/03, all); or a custom range, two ends joined by : or .. with either end optional (3 weeks ago:, oct 1:oct 22, 2025:, and -6m:-1m after --). One with a space in it goes in quotes")],
+                flags: &[Flag::valued("resolution", "TF", "show it at this resolution whether or not it fits, such as 1W")],
                 example: "omacharts chart range ytd",
                 json: false,
                 writes: false,

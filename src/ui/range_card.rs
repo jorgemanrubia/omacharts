@@ -781,8 +781,8 @@ impl RangeCard {
                     ),
                 ],
                 &[
-                    "A date starts the chart there at the width it has now; 3 weeks ago is a date, 3w the span to today.",
-                    "The resolution stays, unless it cannot show the range.",
+                    "A date starts the chart on that day, as wide as it is now. 3 weeks ago is a date; 3w is a span.",
+                    "The resolution stays unless it cannot show the window.",
                 ],
                 &[("Space", "common ranges")],
             ),

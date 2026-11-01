@@ -446,3 +446,13 @@ next writer needs the case. One dated line each, newest last.
   Saving always makes a new template and never replaces one." Validation
   rules and the edge cases a dialog already handles on screen do not go in
   the manual. Document what the user does, not every case the code checks.
+- 2026-11-01 — On the Go to documentation, "clarity and succinct explanations
+  as always", with one vocabulary everywhere: "window" is what is on screen,
+  and what you type is one of three things, named exactly **A date (keeps the
+  window)**, **A span** and **A custom range**, in that order, in the manual,
+  the ⓘ popover, the card, `chart range`'s help and replies and `doc/cli.md`
+  alike. No "range" for a span, no "slice" for a custom range, no "show" where
+  the feature's name, **Go to**, does. The section opens with the idea in two
+  or three sentences (jump to a date and keep the window, or set the window
+  as a span or a custom range, in a few keystrokes); the `3w` versus
+  `3 weeks ago` distinction and the resolution rule are stated once, briefly.

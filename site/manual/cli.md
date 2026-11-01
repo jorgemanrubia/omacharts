@@ -359,8 +359,8 @@ omacharts: no instrument called ZZZQX; try `omacharts symbol search ZZZQX`
 
 ## Charts
 
-`chart set` changes one chart, and `chart range` the stretch of time it
-shows. `config bars` and `config set` change every
+`chart set` changes one chart, and `chart range` the days it shows.
+`config bars` and `config set` change every
 chart, or what new charts open with. What each setting looks like on screen
 is in [Charts](/manual/charts/).
 
@@ -416,14 +416,11 @@ says whether they are shown.
 
 ### `chart range`
 
-Lays the focused chart across a stretch of the calendar, as **Go to**
-(<kbd>Ctrl</kbd> + <kbd>G</kbd>) does. `RANGE` is written the way **Go to**
-takes it: `6m`, `ytd`, `2Y`, `2025`, `2025:`, `2024:2025-06`, `all` and the
-rest are in [Showing a stretch of time](/manual/charts/#showing-a-stretch-of-time).
-A day on its own, such as `oct 12` or `3 weeks ago`, starts the chart on that
-day and keeps its width, at the same resolution, running into empty room past
-the latest bar when it gets there; the reply names the whole window. Put
-quotes around one with a space in it.
+Does on the focused chart what **Go to** (<kbd>Ctrl</kbd> + <kbd>G</kbd>)
+does. `RANGE` is a date, a span or a custom range, written the way **Go to**
+takes it ([Go to](/manual/charts/#go-to)). A date keeps the window: the chart
+starts on that day, as wide as it is now, and the reply names the whole
+window. Put quotes around one with a space in it.
 
 ```
 $ omacharts chart range ytd
@@ -455,18 +452,18 @@ omacharts: tomorrow holds no days up to today
   [exit 2]
 ```
 
-A range that starts with a minus, such as `-6m:-1m`, goes after `--`, or it
-reads as a flag: `omacharts chart range -- -6m:-1m`.
+A custom range that starts with a minus, such as `-6m:-1m`, goes after `--`,
+or it reads as a flag: `omacharts chart range -- -6m:-1m`.
 
 | Argument or flag | Takes |
 |---|---|
-| `RANGE` | The stretch of time |
-| `--resolution TF` | Shows the range at this resolution, whether or not it fits. Without it, the resolution is chosen as in the window |
+| `RANGE` | A date, a span or a custom range |
+| `--resolution TF` | Shows it at this resolution, whether or not it fits. Without it, the resolution is chosen as in **Go to** |
 
-It always acts on the focused chart of the open window, so with no window open
-it exits `6`. The range holds until the chart is zoomed or panned, and is not
-stored, so a command that changes the arrangement, such as `chart set`, starts
-the view over. Set the range last.
+It acts on the chart on screen, so with no window open it exits `6`. The
+window holds until the chart is zoomed or panned and is not stored, so a
+command that changes the arrangement, such as `chart set`, starts the view
+over. Run `chart range` last.
 
 ### `config bars`
 

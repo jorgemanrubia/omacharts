@@ -19,7 +19,7 @@ A digit typed over the chart opens **Change resolution** instead ([Charts](/manu
 
 ## The search
 
-The search opens near the top of the window, in the same place whichever chart is focused. Every chart fades, the one a pick will change wears its focus ring twice as wide, and the end of the search row names it, such as **→ pos:1**. Adding a symbol to a watchlist changes no chart, so nothing fades and the row names the list instead ([Watchlists](/manual/watchlists/#symbols)).
+The search opens near the top of the window, in the same place whichever chart is focused. Every chart fades, the one a pick will change wears a wider focus ring, and the end of the search row names it, such as **→ pos:1**. Adding a symbol to a watchlist changes no chart, so nothing fades and the row names the watchlist instead ([Watchlists](/manual/watchlists/#symbols)).
 
 <!-- regenerate:
 theme: tokyo-night
