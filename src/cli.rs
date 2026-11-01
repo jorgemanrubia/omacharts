@@ -292,7 +292,7 @@ pub trait Live {
         _range: omacharts_engine::Range,
         _resolution: Option<omacharts_engine::Timeframe>,
     ) -> Result<String, Fault> {
-        Err(Fault::new(EXIT_NO_WINDOW, "no window is open, and a range is of the chart on screen".into()))
+        Err(Fault::new(EXIT_NO_WINDOW, "no window is open, and chart range acts on the chart on screen".into()))
     }
 
     /// What the window holds a stream subscription to, for a provider that

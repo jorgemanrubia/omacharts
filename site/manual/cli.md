@@ -418,37 +418,33 @@ says whether they are shown.
 
 Does on the focused chart what **Go to** (<kbd>Ctrl</kbd> + <kbd>G</kbd>)
 does. `RANGE` is a date, a span or a custom range, written the way **Go to**
-takes it ([Go to](/manual/charts/#go-to)). A date keeps the window: the chart
-starts on that day, as wide as it is now, and the reply names the whole
-window. Put quotes around one with a space in it.
+takes it ([Go to](/manual/charts/#go-to)). The reply says which of the three
+it was, the days the chart shows, the chart it acted on and, when the
+resolution moved, the new one. Put quotes around a range with a space in it.
 
 ```
 $ omacharts chart range ytd
-showing year to date on pos:1 NVDA 1D in "Manual"
-  [exit 0]
-
-$ omacharts chart range "oct 12"
-showing 12 Oct – 20 Oct on pos:1 NVDA 1h in "Manual"
+span: year to date on pos:0 NVDA 1D in "Manual"
   [exit 0]
 
 $ omacharts chart range "3 weeks ago:"
-showing since 11 Oct on pos:1 NVDA 1h in "Manual"
+custom range: since 11 Oct on pos:0 NVDA 1D in "Manual", now 1h
+  [exit 0]
+
+$ omacharts chart range "1 week ago"
+date: 25 Oct – 2 Nov (window kept) on pos:0 NVDA 1h in "Manual"
   [exit 0]
 
 $ omacharts chart range 2025: --resolution 1W
-showing since 1 Jan 2025 on pos:1 NVDA 1W in "Manual"
+custom range: since 1 Jan 2025 on pos:0 NVDA 1h in "Manual", now 1W
   [exit 0]
 
 $ omacharts chart range 6x
-omacharts: 6x is not a range; try ytd, 1y, 2025: or all
-  [exit 2]
-
-$ omacharts chart range 2030
-omacharts: 2030 holds no days up to today
+omacharts: 6x is not a date, span or custom range; try oct 22, ytd or 2025:
   [exit 2]
 
 $ omacharts chart range tomorrow
-omacharts: tomorrow holds no days up to today
+omacharts: tomorrow is in the future, with no days up to today
   [exit 2]
 ```
 

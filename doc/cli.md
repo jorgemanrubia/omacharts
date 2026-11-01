@@ -949,12 +949,14 @@ tos      thinkorswim · US listings, from your thinkorswim account · live, as e
 
 ```
 $ omacharts chart range ytd
-showing year to date on pos:0 AAPL 1D in "Macro"
+span: year to date on pos:0 NVDA 1D in "Manual"
   [exit 0]
 ```
 
 `chart range` does on the focused chart what Go to (Ctrl+G) does in the
-window, and takes the same text. It is one of three things.
+window, and takes the same text. It is one of three things, and the reply
+says which, then the days the chart shows, the chart it acted on and, when
+the resolution moved, the new one.
 
 **A date (keeps the window)** starts the chart on that day, as wide as it is
 now: the same number of bars at the same resolution. Near the latest bar the
@@ -969,7 +971,7 @@ year, month, day, so `10/11` is 11 October. A day still to come, such as
 
 ```
 $ omacharts chart range "oct 12"
-showing 12 Oct – 20 Oct on pos:0 AAPL 1h in "Macro"
+date: 12 Oct – 1 Nov (window kept) on pos:0 NVDA 1h in "Manual"
   [exit 0]
 ```
 
@@ -998,11 +1000,12 @@ bars, and within what the feed keeps at that resolution. Otherwise the chart
 moves to the resolution on the strip that fits best, or to a common one off
 the strip when none on it fits. A year of 5m bars is shown daily, and a month
 of daily bars hourly. `--resolution` names one instead, and the chart shows
-it at that resolution whether it fits or not:
+it at that resolution whether it fits or not. The reply ends with `now 1W`
+when the resolution moved, by choice or by fit:
 
 ```
 $ omacharts chart range 2025: --resolution 1W
-showing since 1 Jan 2025 on pos:0 AAPL 1W in "Macro"
+custom range: since 1 Jan 2025 on pos:0 NVDA 1h in "Manual", now 1W
   [exit 0]
 ```
 
@@ -1016,11 +1019,11 @@ it exits `6`.
 
 ```
 $ omacharts chart range 6x
-omacharts: 6x is not a range; try ytd, 1y, 2025: or all
+omacharts: 6x is not a date, span or custom range; try oct 22, ytd or 2025:
   [exit 2]
 
 $ omacharts chart range 2030
-omacharts: 2030 holds no days up to today
+omacharts: 2030 is in the future, with no days up to today
   [exit 2]
 ```
 

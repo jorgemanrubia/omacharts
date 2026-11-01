@@ -7812,21 +7812,35 @@ impl Window {
     /// Show `range` on the focused chart, at `forced` when it is given, else
     /// at its resolution when the range fits it and at the nearest on the
     /// strip that does when not. A day on its own keeps the length of time
-    /// on screen, and the resolution with it. Answers with the chart named,
-    /// for a command.
+    /// on screen, and the resolution with it. Answers for a command, in the
+    /// manual's words: which of the three things it was, the days it comes
+    /// to, the chart it acted on, and the resolution when that moved:
+    /// `span: year to date on pos:1 NVDA 5m in "Manual", now 1D`.
     pub fn show_range_at(self: &Rc<Self>, range: omacharts_engine::Range, forced: Option<Timeframe>) -> String {
+        use omacharts_engine::Range;
         let pane = self.focused_pane();
         let today = chrono::Local::now().date_naive();
         let range = self.as_shown(range, today).pinned(today);
         let current = pane.timeframe.get();
         let target = self.plan_range(range, forced).timeframe;
+        // The chart as it was, so the answer names what the command found.
+        let acted_on = self.chart_named(&pane);
         // Held before the resolution changes, so the series that arrives for
         // the new one is laid across the range rather than at rest.
         pane.view.show_range(range);
         if target != current {
             self.set_timeframe(target);
         }
-        format!("showing {} on {}", range.spelled(today), self.chart_named(&pane))
+        let (kind, kept) = match range {
+            Range::Day(_) | Range::Lasting(..) => ("date", " (window kept)"),
+            Range::Slice(..) => ("custom range", ""),
+            _ => ("span", ""),
+        };
+        let moved = match target != current {
+            true => format!(", now {}", target.label()),
+            false => String::new(),
+        };
+        format!("{kind}: {}{kept} on {acted_on}{moved}", range.spelled(today))
     }
 
     /// `range` as the focused chart would show it: a day on its own keeps

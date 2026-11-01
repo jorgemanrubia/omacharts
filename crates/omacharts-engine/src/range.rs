@@ -486,7 +486,7 @@ impl Range {
                     _ => format!("this {unit} and {} before", count - 1),
                 }
             }
-            Range::All => "whole series".into(),
+            Range::All => "whole history".into(),
             Range::Year(year) => format!("all of {year}"),
             Range::Month(year, month) => match NaiveDate::from_ymd_opt(year, month, 1) {
                 Some(first) => format!("all of {}", first.format("%B %Y")),
@@ -502,7 +502,7 @@ impl Range {
                 (Some(from), None) => format!("from {} to today", from.words()),
                 (None, Some(to)) => format!("up to {}", to.words()),
                 (Some(from), Some(to)) => format!("{} to {}", from.words(), to.words()),
-                (None, None) => "whole series".into(),
+                (None, None) => "whole history".into(),
             },
         }
     }
