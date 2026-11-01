@@ -95,15 +95,31 @@ in a few lines, what changed and what to look at.
 **Approving a stage** moves `stage:` forward in the frontmatter and produces
 the next stage's artifact.
 
-**Read-through, storyboard and render** run on this machine and are presented
-on whichever machine the author is watching from (local memory says which). The
-tooling behind stages 3–5 is described in [studio.md](studio.md) and is being
-built: when a stage is reached and its tool does not exist yet, build that
-much of it, then produce the stage.
+**Read-through, storyboard and render** are `bin/video`, which runs the heavy
+work on this machine and plays or opens the result where the author watches —
+locally, or on another machine when `~/.config/omacharts-video/config` says
+`viewer = ssh <host>`:
 
-**`/video` with no arguments** lists `video/scripts/*.md` with each one's
-`stage` and any open `> note:` lines, and says for each what the author does next —
-"read the brief", "listen to the read-through", "answer the reply in scene 2".
+| Stage | Command | Makes, under `video/out/<slug>/` |
+|---|---|---|
+| read-through | `bin/video read <slug>` | `read.wav`: every scene voiced, in order |
+| storyboard | `bin/video board <slug>` | `board.png`: a still per scene, clicks marked, narration under each |
+| music | `bin/video music <slug> [n]` | `music/candidate-*.flac`, sized to the video |
+| render | `bin/video render <slug>` | `<slug>.mp4` (4K), `<slug>-1080p.mp4`, `.srt`, `review/` |
+
+`bin/video status` lists the scripts; `bin/video show <file>` plays any file
+where the author watches; `bin/video setup` builds the speech and music
+environments once. Voicing is cached per scene, so after the first read-through
+only changed lines are spoken again — speech runs at several times real time on
+the CPU, so say how long a command will take before starting a slow one.
+
+**Before handing over a storyboard or a render, look at it.** Open `board.png`
+or the frames in `review/` and check that each action did what the Picture says
+— a click that missed is the most common fault, and the author should not be
+the one to find it.
+
+**A pinned choice goes in the frontmatter:** `voice:` names a file in
+`video/voices/`, `music_file:` the track the author picked.
 
 ## This skill learns
 

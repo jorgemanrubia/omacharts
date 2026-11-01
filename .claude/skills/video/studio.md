@@ -10,10 +10,10 @@ Hyprland 0.56.2.
 
 ```
 script.md ──► voice ──► record ──► compose ──► review ──► final.mp4 + .srt
-              (TTS +     (studio,    (Remotion:   (frames at
-              word        real       zooms, key   every cue,
-              timings)    time)      badges,      checked
-                                     music, VO)   before anyone)
+              (TTS +     (studio,    (ffmpeg:     (a frame at
+              word        real       mix, duck,   every cue,
+              timings)    time)      master)      checked
+                                                  before anyone)
 ```
 
 1. **Voice.** Each scene's narration goes to TTS, which returns audio and
@@ -24,12 +24,15 @@ script.md ──► voice ──► record ──► compose ──► review �
    narration reaches its cue word. The narration clock drives the actions,
    so picture and voice are in sync by construction, and `events.json`
    records when each action actually landed and where on screen.
-3. **Compose.** The recording, the voice, the music and `events.json` go
-   into a Remotion composition: zooms to where the action is, key badges,
-   title and end cards, music ducked under the voice, the mix normalised to
-   −14 LUFS. Remotion renders through headless Chrome, so convert the HEVC
-   recording to an intermediate it decodes reliably first.
-4. **Review.** Pull a frame at every cue and at every zoom's peak, look at
+3. **Compose.** ffmpeg today: the recording cut at the sync point, the
+   voice placed scene by scene, music ducked under it, the mix mastered,
+   a 4K H.264 file and a 1080p one, and subtitles from the aligned words.
+   **Not built yet:** the zooms, key badges and title cards in
+   [craft.md](craft.md). `events.json` records every action's time and
+   position for them; the plan is a Remotion composition that reads it,
+   with the 4K recording converted first to an intermediate headless Chrome
+   decodes reliably.
+4. **Review.** `review/` holds a frame just after every cue; look at
    them, and fix what is wrong before the author sees anything.
 
 ## Bringing it up
@@ -57,11 +60,31 @@ script.md ──► voice ──► record ──► compose ──► review �
 ## Driving it
 
 `omacharts` CLI commands for anything the app can do (the surface is
-`omacharts surface --json`), `wtype` for keys, `bin/virtual-pointer` for the
-mouse — all three confirmed reaching the studio window, with the cursor
-drawn on the output. A fresh window ignores its first chord (see
-`bin/headless-window`): send a harmless key during setup, never as the first
-thing on camera.
+`omacharts surface --json`), `wtype` for keys, `bin/virtual-pointer`'s
+protocol for the mouse. Lessons, each paid for:
+
+- **A pointer device per gesture.** One device held for the whole run worked
+  until the window rebuilt its panes; after a split its clicks reached
+  nothing, while a fresh device's landed every time. `Hand` makes one for
+  each glide, click or drag, and a separate `virtual-pointer hold` keeps the
+  seat from ever having none.
+- **Chords need room.** Every wtype run brings a keyboard with its own
+  keymap, and a chord sent before the far end has read it arrives as the bare
+  letter (which opens the symbol search). 300ms before the first key and
+  120ms around modifiers are what held up while the machine was busy.
+- A fresh window ignores its first chord: the studio sends two Escapes on
+  start, never anything on camera.
+- No Hyprland animations, and `disable_watchdog_warning`: a nested Hyprland
+  started without `start-hyprland` draws a warning banner across the top of
+  every frame otherwise.
+
+## Market data
+
+`~/.local/share/omacharts-video/studio-data/` holds `market.db` from the
+first run, copied into every later one so the charts are the same each time
+(the latest bar still moves with the live feed). Never `omacharts.db`: that
+is the layout, and keeping it would start the next run on whatever the last
+one left on screen. Delete the folder to take a fresh snapshot.
 
 ## Capturing it
 
@@ -69,17 +92,41 @@ wlr-screencopy works on `REC` (`grim -o REC` gives a 3840x2160 frame).
 `gpu-screen-recorder` does **not** — it captures through KMS and a virtual
 output has no connector. Video comes from `wf-recorder`:
 
-    wf-recorder -o REC -r 60 -c hevc_vaapi -d /dev/dri/renderD128 -p qp=18
+    wf-recorder -o REC -r 60 -c hevc_vaapi -d /dev/dri/renderD128 -p qp=16
 
 That held 60fps at 3840x2160 with no gaps through drags and crosshair
-movement (593 frames in 9.87s). `libx264 -p preset=ultrafast` did not keep
-up — it fell behind and stretched 10s of action into 14.5s — so encode on the
-GPU while recording and re-encode afterwards.
+movement. `libx264 -p preset=ultrafast` did not keep up — it fell behind and
+stretched 10s of action into 14.5s — so encode on the GPU while recording
+and re-encode afterwards.
+
+**Sync** is found, not assumed: in the pre-roll the window border turns
+magenta for 0.3s, and the frame where it appears says exactly where the
+timeline's zero falls in the file. Cutting at that point puts every action
+on its word.
+
+## Sound
+
+Each scene's voice is normalised to −16 LUFS and placed at its start. Music
+is looped or cut to length at −27 LUFS, faded at both ends, and ducked under
+the voice by a sidechain compressor. The mix is mastered in two passes to
+−14 LUFS integrated, −1 dBTP — measured at −14.1 on the first render.
+
+## Speech
+
+Chatterbox (MIT) is the engine for drafts; it clones a voice from a 10-second
+reference when the voice file names one. Qwen3-TTS (Apache-2.0) clones too,
+from a reference and its transcript. Both are 5–15× slower than real time on
+this CPU and slower still when other heavy jobs share it — that is what the
+per-scene cache is for. Every line is force-aligned (torchaudio's MMS_FA) to
+time its words, which is how cues find their moment; it reads letters only,
+so numbers belong in the narration spelled out.
 
 ## Shutting it down
 
 Find the studio's processes by `XDG_RUNTIME_DIR=<studio dir>` in
-`/proc/<pid>/environ` and kill exactly those. Never by name — the desktop's own
-Hyprland and omacharts are running. Not `pkill -f` either: its pattern is in
-the shell's own command line, so it kills the shell running the cleanup
-halfway through.
+`/proc/<pid>/environ` and kill exactly those. Never by name — the author's own
+Hyprland and omacharts are running alongside. Not `pkill -f` either: its
+pattern is in the shell's own command line, so it kills the shell running
+the cleanup halfway through. `bin/video` turns SIGINT, SIGTERM and SIGHUP
+into a clean shutdown; a background job started from a non-interactive shell
+has SIGINT ignored, and Python inherits that unless it sets a handler.

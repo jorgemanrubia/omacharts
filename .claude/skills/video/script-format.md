@@ -61,8 +61,9 @@ music: calm, warm keys, unhurried
 
 - **Frontmatter.** `stage` is one of `brief`, `script`, `read`, `board`,
   `render`, `done`, and is moved forward only when the author approves a stage.
-  `voice` and `music` say what was chosen, in words until a choice is pinned
-  to a file.
+  `voice` names a narrator in `video/voices/<name>.json` (`draft` until one
+  is chosen). `music` describes the music in words; `music_file` pins the
+  track picked from `bin/video music`.
 - **Brief.** Exists from the first draft on; stays as the record of intent
   once the script is written.
 - **Setup.** Off-camera commands run before recording starts, one per line.
