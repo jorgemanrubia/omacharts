@@ -17,6 +17,7 @@
     bin/video studio [SCRIPT] [--upto N]
                                     bring the studio up, run SCRIPT's setup and
                                     the scenes before N, and leave it running
+    bin/video stop                  take that studio down
     bin/video act ACTION... [--shot FILE]
                                     perform actions on that studio (for pinning
                                     click positions), then screenshot it
@@ -383,7 +384,8 @@ class Studio:
         (DATA / "studio-session.json").write_text(json.dumps({
             "env": {k: self.env[k] for k in ("XDG_RUNTIME_DIR", "WAYLAND_DISPLAY", "HYPRLAND_INSTANCE_SIGNATURE",
                                               "DBUS_SESSION_BUS_ADDRESS", "HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME")},
-            "binary": str(self.binary), "signature": self.signature, "runtime": str(self.runtime), "colors": self.colors}))
+            "binary": str(self.binary), "signature": self.signature, "runtime": str(self.runtime), "colors": self.colors,
+            "pid": os.getpid()}))
 
     def _make_home(self):
         theme = next((d / self.theme for d in (Path.home() / ".config/omarchy/themes", Path.home() / ".local/share/omarchy/themes", Path("/usr/share/omarchy/themes")) if (d / self.theme).is_dir()), None)
@@ -1233,6 +1235,18 @@ def main():
             say("studio up; act on it with  bin/video act 'click 50% 50%' ... [--shot FILE]; Ctrl+C or kill to take it down")
             while True:
                 time.sleep(3600)
+    elif verb == "stop":
+        # By the pid the studio wrote down, never by name: a pattern also
+        # matches the shell that runs the kill.
+        path = DATA / "studio-session.json"
+        if not path.exists():
+            die("no studio running")
+        os.kill(json.loads(path.read_text())["pid"], signal.SIGTERM)
+        for _ in range(50):
+            if not path.exists():
+                break
+            time.sleep(0.2)
+        say("studio down")
     elif verb == "act":
         studio = Studio.attach()
         shot = rest[rest.index("--shot") + 1] if "--shot" in rest else None

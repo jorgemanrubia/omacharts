@@ -127,10 +127,10 @@ this one {swatch}a different fill, {amber}say amber, {save}then save it back
 
     select: click 29% 24%
     props:  key alt+Return
-    swatch: click 59% 46%
-    amber:  click 61% 50%
-    save:   click 58% 43%
-    pick:   click 58% 52%
+    swatch: click 58.8% 44.7%
+    amber:  click 61.5% 49.5%
+    save:   click 57.5% 41.6%
+    pick:   click 57.9% 51.2%
     after: 1.2
 
 ### 2. A template from a chart
@@ -152,7 +152,7 @@ Trend.
 
     next: key Escape; key ctrl+alt+Right
     menu: rclick 30% 30%
-    make: click 35% 38%; wait 0.3; click 37% 42%
+    make: click 33.4% 36.7%; wait 0.3; click 37.9% 40.8%
     name: type Trend; key Return
     after: 1.2
 
@@ -190,9 +190,9 @@ dialog closes and the charts are as they were.
 three timeframes, each with its own {menu}studies. {tpl}I'll save it {name}as
 Desk.
 
-    next: key ctrl+Return; key ctrl+alt+Right
-    menu: rclick 8% 98%
-    tpl:  click 13% 95%; wait 0.3; click 14% 90%
+    next: key ctrl+Return; wait 0.5; key ctrl+alt+Right
+    menu: rclick 7.7% 98.7%
+    tpl:  click 10% 96.8%; wait 0.3; click 13.9% 93.5%
     name: type Desk; key Return
     after: 1.0
 
@@ -209,8 +209,8 @@ with its studies.
 **Voice.** {menu}A {dup}copy {name}for gold starts on Desk. {focus}The charts
 are linked, {sym}so one symbol moves all three.
 
-    menu:  rclick 8% 98%
-    dup:   click 13% 85%
+    menu:  rclick 7.7% 98.7%
+    dup:   click 10.05% 88.6%
     name:  type Gold; key Return
     focus: click 63% 72%
     sym:   type GC; key Return
@@ -243,3 +243,7 @@ place. The manual's template pages have the rest.
 ## Pronunciation
 
 - RSI: R S I
+
+## Storyboard
+
+![Storyboard](../storyboards/templates-work-for-you.jpg)
