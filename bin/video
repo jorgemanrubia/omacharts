@@ -900,11 +900,20 @@ def compose(script, voiced, plan, raw, offset):
     still = cover(script) if intro > 0 else None
     total = plan["total"] + intro
     voice = out / "voice.wav"
+    # Each scene is levelled into a file of its own first and only then
+    # delayed into place: run in one graph, loudnorm ahead of adelay
+    # quietly cancels the delay, and every line starts at zero.
+    levelled = out / "scenes"
+    shutil.rmtree(levelled, ignore_errors=True)
+    levelled.mkdir()
     inputs, parts = [], []
     for i, (v, s) in enumerate(zip(voiced, plan["scenes"])):
-        inputs += ["-i", str(v["wav"])]
+        scene = levelled / f"{i + 1:02d}.wav"
+        run(["ffmpeg", "-v", "error", "-y", "-i", str(v["wav"]), "-af", "loudnorm=I=-16:TP=-2,aresample=48000",
+             "-ac", "2", str(scene)])
+        inputs += ["-i", str(scene)]
         ms = int((s["start"] + intro) * 1000)
-        parts.append(f"[{i}:a]aresample=48000,aformat=channel_layouts=stereo,loudnorm=I=-16:TP=-2,aresample=48000,adelay={ms}|{ms}[v{i}]")
+        parts.append(f"[{i}:a]adelay={ms}|{ms}[v{i}]")
     mix = "".join(f"[v{i}]" for i in range(len(voiced)))
     graph = ";".join(parts) + f";{mix}amix=inputs={len(voiced)}:normalize=0,apad,atrim=0:{total:.3f}[out]"
     run(["ffmpeg", "-v", "error", "-y", *inputs, "-filter_complex", graph, "-map", "[out]", str(voice)])
@@ -1102,7 +1111,8 @@ def main():
     elif verb == "render":
         script = need()
         render(script)
-        show(script.out / f"{script.slug}-1080p.mp4")
+        if not os.environ.get("VIDEO_NO_SHOW"):
+            show(script.out / f"{script.slug}-1080p.mp4")
     elif verb == "show":
         show(rest[0])
     elif verb == "studio":

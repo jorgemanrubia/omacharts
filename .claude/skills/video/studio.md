@@ -116,7 +116,11 @@ same amount. The first word comes `SETTLE` (1s) after the fade ends.
 
 ## Sound
 
-Each scene's voice is normalised to −16 LUFS and placed at its start. Music
+Each scene's voice is normalised to −16 LUFS into a file of its own, then
+placed at its start. In one ffmpeg graph, `loudnorm` ahead of `adelay`
+silently cancels the delay and every line starts at zero — renders shipped
+like that until the author heard the voice under the cover. Check the voice
+track is silent where it should be before handing a render over. Music
 is looped or cut to length at −27 LUFS, faded at both ends, and ducked under
 the voice by a sidechain compressor. The mix is mastered in two passes to
 −14 LUFS integrated, −1 dBTP — measured at −14.1 on the first render.
