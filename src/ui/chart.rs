@@ -5174,9 +5174,16 @@ fn draw_time_axis(
     let time_at = |column: i64| axis_time(bars, state.timeframe, per, column - before);
     let utc = state.timeframe.is_calendar();
     let (ticks, tick_seconds) = axis_ticks(total, plot_w, step, utc, state.clock, time_at);
-    // Where the last label drawn ends, so a label pushed in from an edge
-    // never lands on its neighbour.
-    let mut drawn_to = f64::MIN;
+    // Each label waits for the next before it is drawn, so that one pushed
+    // in from the left edge into its neighbour is the one left out, as at
+    // the right edge, and not the neighbour sitting on its own gridline.
+    // Held: its left edge, its right edge, whether it was pushed, the text.
+    let mut held: Option<(f64, f64, bool, String)> = None;
+    let show = |left: f64, label: &str| {
+        colors::set_source_alpha(cr, &state.theme.ui.text_muted, 0.9);
+        cr.move_to(left, height - 7.0);
+        let _ = cr.show_text(label);
+    };
     for column in ticks {
         let Some(ts) = time_at(column) else { continue };
         let x = plot_x + nudge + (column as f64 + 0.5) * bar_w;
@@ -5191,21 +5198,41 @@ fn draw_time_axis(
         }
 
         let label = format_axis_time(ts, tick_seconds, state.timeframe.is_intraday(), utc, state.clock);
-        colors::set_source_alpha(cr, &state.theme.ui.text_muted, 0.9);
-        if let Ok(extents) = cr.text_extents(&label) {
-            // Centred on its tick, but kept inside the chart: on a narrow
-            // chart a long intraday label centred near the left edge ran
-            // off it and was cut in half.
-            let w = extents.width();
-            let left = (x - w / 2.0).min(plot_x + plot_w - w).max(2.0);
-            if left < drawn_to + 8.0 {
+        let Ok(extents) = cr.text_extents(&label) else { continue };
+        // Centred on its tick, but kept inside the chart: on a narrow chart
+        // a long intraday label centred near the left edge ran off it and
+        // was cut in half.
+        let w = extents.width();
+        let left = inside_plot(x, w, plot_x, plot_w);
+        let pushed = left != x - w / 2.0;
+        if let Some((_, right, held_pushed, _)) = held
+            && left < right + 8.0
+        {
+            if !held_pushed {
                 continue;
             }
-            drawn_to = left + w;
-            cr.move_to(left, height - 7.0);
-            let _ = cr.show_text(&label);
+            held = None;
+        }
+        if let Some((left, _, _, label)) = held.replace((left, left + w, pushed, label)) {
+            show(left, &label);
         }
     }
+    if let Some((left, _, _, label)) = held {
+        show(left, &label);
+    }
+}
+
+/// Where a label `w` wide that belongs at `x` on the time axis starts:
+/// centred on it, but pushed in from either edge so it reads in full, as the
+/// tick labels and the crosshair's own both are.
+///
+/// Split a window enough times and the label is wider than the chart it
+/// belongs to, which puts the right edge left of the left one. `clamp`
+/// panics on that, inside a draw callback, which does not unwind — so the
+/// whole app would go rather than one chart drawing badly for a moment. The
+/// left edge wins instead.
+fn inside_plot(x: f64, w: f64, plot_x: f64, plot_w: f64) -> f64 {
+    (x - w / 2.0).min(plot_x + plot_w - w).max(plot_x)
 }
 
 /// The moment the time axis gives the column `at`, counted from the first
@@ -6042,12 +6069,7 @@ fn draw_crosshair(
         cr.set_font_size(11.0);
         if let Ok(extents) = cr.text_extents(&label) {
             let w = extents.width() + 10.0;
-            // Split a window enough times and the label is wider than the
-            // chart it belongs to, which puts the right edge left of the left
-            // one. `clamp` panics on that, inside a draw callback, which does
-            // not unwind — so the whole app goes rather than one chart drawing
-            // badly for a moment.
-            let x = (snapped_x - w / 2.0).clamp(plot_x, (plot_x + plot_w - w).max(plot_x));
+            let x = inside_plot(snapped_x, w, plot_x, plot_w);
             let y = height - TIME_AXIS_H + 2.0;
             colors::set_source(cr, tint);
             cr.rectangle(x, y, w, TIME_AXIS_H - 4.0);
@@ -8430,6 +8452,16 @@ mod tests {
             let lines = range / step;
             assert!((2.0..=15.0).contains(&lines), "{range} -> {lines} lines");
         }
+    }
+
+    #[test]
+    fn a_time_label_is_pushed_in_from_either_edge_rather_than_cut() {
+        // A plot from 10 to 410, and a label 80 wide.
+        assert_eq!(inside_plot(200.0, 80.0, 10.0, 400.0), 160.0);
+        assert_eq!(inside_plot(28.0, 80.0, 10.0, 400.0), 10.0);
+        assert_eq!(inside_plot(392.0, 80.0, 10.0, 400.0), 330.0);
+        // Wider than the plot: the edges cross, which `clamp` panics on.
+        assert_eq!(inside_plot(40.0, 80.0, 10.0, 50.0), 10.0);
     }
 
     #[test]
