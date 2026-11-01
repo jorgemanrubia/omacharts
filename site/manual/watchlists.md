@@ -164,7 +164,7 @@ From anywhere:
 
 | Key | Does |
 |---|---|
-| <kbd>↑</kbd> <kbd>↓</kbd> / <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>↑</kbd> <kbd>↓</kbd> | Over a chart, the previous or next symbol in the list, without going to the sidebar. It puts the symbol on the focused chart, as typing it would ([Link modes](#link-modes)). A selected drawing takes <kbd>↑</kbd> <kbd>↓</kbd> first, to nudge it. |
+| <kbd>↑</kbd> <kbd>↓</kbd> / <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>↑</kbd> <kbd>↓</kbd> | Over a chart, the previous or next symbol in the list, without going to the sidebar. It puts the symbol on the focused chart, as typing it would ([Link modes](#link-modes)). On a pinned chart it steps the sidebar instead, as a click there would. A selected drawing takes <kbd>↑</kbd> <kbd>↓</kbd> first, to nudge it. |
 | <kbd>Ctrl</kbd> + <kbd>1</kbd> … <kbd>9</kbd> | Shows watchlist N, counting down the page of watchlists. |
 
 ## Linking charts to the watchlist
@@ -207,9 +207,9 @@ Follow charts show. Nothing moves when:
 - Following from a chart with no symbol. The Follow charts keep what they
   were showing.
 
-When the focused chart is pinned and no chart follows, a click in the sidebar
-moves nothing. The pin on that chart lights for a moment and the sidebar's
-highlight goes back to the symbol the chart shows.
+When the focused chart is pinned and no chart follows, a click in the sidebar,
+or an arrow key over the chart, moves nothing. The pin on that chart lights for
+a moment and the sidebar's highlight goes back to the symbol the chart shows.
 
 A click in a watchlist moves charts in its own chartbook only.
 
