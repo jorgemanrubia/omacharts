@@ -18,7 +18,6 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::bars::BarStyle;
 use crate::indicators::LineStyle;
 
 /// Which way the platform stylesheet should lean.
@@ -341,8 +340,7 @@ impl TradingColours {
 }
 
 /// How `theme` draws orders and positions on a chart whose bars wear
-/// `bars`: the look chosen for every chart, turned by the chart's own
-/// colouring ([`BarColouring::look`]).
+/// `bars`: the look the chart wears.
 ///
 /// A side and money are told apart by hue: a buy and a long are the
 /// theme's Blue swatch and a sell and a short its Amber, which every theme
@@ -764,15 +762,20 @@ pub fn parse_bar_colour(text: &str) -> Option<ColorChoice> {
     }
     SWATCH_NAMES
         .iter()
-        .chain([&FOREGROUND])
+        .chain(&[FOREGROUND, SLATE, SAND, SILVER, GRAPHITE])
         .find(|name| name.eq_ignore_ascii_case(text))
         .map(|name| ColorChoice::swatch(name))
 }
 
-/// A bar colour on a theme: one of its swatches, [`FOREGROUND`], or a fixed hex.
+/// A bar colour on a theme: one of its swatches, [`FOREGROUND`], one of
+/// the soft and quiet pairs' colours, or a fixed hex.
 pub fn bar_colour(theme: &Theme, choice: &ColorChoice) -> String {
     match choice {
         ColorChoice::Swatch { name } if name == FOREGROUND => foreground(theme),
+        ColorChoice::Swatch { name } if name == SLATE => slate_and_sand(theme).0,
+        ColorChoice::Swatch { name } if name == SAND => slate_and_sand(theme).1,
+        ColorChoice::Swatch { name } if name == SILVER => quiet_greys(theme).0,
+        ColorChoice::Swatch { name } if name == GRAPHITE => quiet_greys(theme).1,
         choice => choice.resolve(theme),
     }
 }
@@ -856,123 +859,20 @@ pub fn theme_mono_bars(theme: &Theme) -> BarScheme {
     BarLook::monochrome().scheme(theme)
 }
 
-/// How one chart paints the bars: the look chosen for every chart, as it is
-/// or turned one of three ways. The colours stay the [`BarLook`]'s; this is
-/// only what a chart does with them.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum BarColouring {
-    #[default]
-    Filled,
-    Hollow,
-    RedUp,
-    /// A slate against a sand, from the theme's palette.
-    Soft,
-    /// Two greys made from the theme's text.
-    Quiet,
-    Monochrome,
-}
+/// Bar colours worked out from the theme as it is, offered beside the
+/// palette and [`FOREGROUND`]: a slate against a sand that sit back behind
+/// what is drawn over the bars, and two greys of the theme's text.
+pub const SLATE: &str = "Slate";
+pub const SAND: &str = "Sand";
+pub const SILVER: &str = "Silver";
+pub const GRAPHITE: &str = "Graphite";
 
-/// The ids a colouring is stored under, the same ids bar schemes were.
-pub const THEME_BARS_ID: &str = "theme";
-pub const THEME_HOLLOW_ID: &str = "theme-hollow";
-pub const THEME_RED_UP_ID: &str = "theme-red-up";
-pub const THEME_MONO_ID: &str = "theme-mono";
-pub const THEME_SOFT_ID: &str = "theme-soft";
-pub const THEME_QUIET_ID: &str = "theme-quiet";
-
-impl BarColouring {
-    pub const ALL: [BarColouring; 6] = [
-        BarColouring::Filled,
-        BarColouring::Hollow,
-        BarColouring::RedUp,
-        BarColouring::Soft,
-        BarColouring::Quiet,
-        BarColouring::Monochrome,
-    ];
-
-    pub fn key(self) -> &'static str {
-        match self {
-            BarColouring::Filled => THEME_BARS_ID,
-            BarColouring::Hollow => THEME_HOLLOW_ID,
-            BarColouring::RedUp => THEME_RED_UP_ID,
-            BarColouring::Soft => THEME_SOFT_ID,
-            BarColouring::Quiet => THEME_QUIET_ID,
-            BarColouring::Monochrome => THEME_MONO_ID,
-        }
-    }
-
-    /// Schemes an older version stored come back as the colouring they
-    /// painted; anything else unknown is not a colouring.
-    pub fn from_key(key: &str) -> Option<BarColouring> {
-        match key {
-            "hollow" => Some(BarColouring::Hollow),
-            "monochrome" => Some(BarColouring::Monochrome),
-            key => BarColouring::ALL.into_iter().find(|c| c.key() == key),
-        }
-    }
-
-    /// An OHLC bar has no body to fill or leave hollow, so filled is simply
-    /// "coloured" there.
-    pub fn label(self, style: BarStyle) -> &'static str {
-        match self {
-            BarColouring::Filled if style == BarStyle::Ohlc => "Coloured",
-            BarColouring::Filled => "Filled",
-            BarColouring::Hollow => "Hollow",
-            BarColouring::RedUp => "Red up",
-            BarColouring::Soft => "Soft",
-            BarColouring::Quiet => "Quiet",
-            BarColouring::Monochrome => "Monochrome",
-        }
-    }
-
-    /// What a bar of this style can be painted as.
-    pub fn offered(style: BarStyle) -> &'static [BarColouring] {
-        match style {
-            BarStyle::Candles => &BarColouring::ALL,
-            BarStyle::Ohlc => &[
-                BarColouring::Filled,
-                BarColouring::RedUp,
-                BarColouring::Soft,
-                BarColouring::Quiet,
-                BarColouring::Monochrome,
-            ],
-        }
-    }
-
-    /// What a bar of this style is actually painted as.
-    pub fn for_style(self, style: BarStyle) -> BarColouring {
-        if BarColouring::offered(style).contains(&self) { self } else { BarColouring::Filled }
-    }
-
-    /// The look, turned the way this colouring turns it. Soft and Quiet
-    /// put their own pair on the theme in place of the look's colours,
-    /// keeping its hollow bodies.
-    pub fn look(self, theme: &Theme, look: &BarLook) -> BarLook {
-        let pair = |(up, down): (String, String)| BarLook {
-            up: ColorChoice::Fixed { hex: up },
-            down: ColorChoice::Fixed { hex: down },
-            ..look.clone()
-        };
-        match self {
-            BarColouring::Soft => pair(slate_and_sand(theme)),
-            BarColouring::Quiet => pair(quiet_greys(theme)),
-            BarColouring::Filled => look.clone(),
-            BarColouring::Hollow => BarLook { up_body: Body::Hollow, ..look.clone() },
-            BarColouring::RedUp => BarLook {
-                up: look.down.clone(),
-                down: look.up.clone(),
-                up_body: look.down_body,
-                down_body: look.up_body,
-            },
-            BarColouring::Monochrome => {
-                BarLook { up: ColorChoice::swatch(FOREGROUND), down: ColorChoice::swatch(FOREGROUND), ..look.clone() }
-            }
-        }
-    }
-
-    pub fn scheme(self, theme: &Theme, look: &BarLook) -> BarScheme {
-        self.look(theme, look).scheme(theme)
-    }
+/// [`SLATE`], [`SAND`], [`SILVER`] and [`GRAPHITE`] on `theme`, as the
+/// colour pickers offer them.
+pub fn pair_colours(theme: &Theme) -> [Swatch; 4] {
+    let (slate, sand) = slate_and_sand(theme);
+    let (silver, graphite) = quiet_greys(theme);
+    [Swatch::new(SLATE, &slate), Swatch::new(SAND, &sand), Swatch::new(SILVER, &silver), Swatch::new(GRAPHITE, &graphite)]
 }
 
 /// What a soft bar is held to against the chart behind it.
@@ -1000,8 +900,8 @@ const GREY: f64 = 0.01;
 
 /// Where a slate blue and a sand sit on the wheel, for a theme that has
 /// neither to offer.
-const SLATE: f64 = 255.0;
-const SAND: f64 = 75.0;
+const SLATE_HUE: f64 = 255.0;
+const SAND_HUE: f64 = 75.0;
 
 /// The soft pair, up first: the coolest of the theme's blues against the
 /// warmest of its ambers, neither saying good or bad, both at the one
@@ -1009,8 +909,8 @@ const SAND: f64 = 75.0;
 /// differ by hue alone. A theme whose blue and amber lie near each other
 /// gets a little more chroma until the pair clears [`SOFT_APART`].
 fn slate_and_sand(theme: &Theme) -> (String, String) {
-    let slate = nearest_hue(theme, &["Blue", "Cyan", "Teal"], SLATE);
-    let sand = nearest_hue(theme, &["Amber", "Orange"], SAND);
+    let slate = nearest_hue(theme, &["Blue", "Cyan", "Teal"], SLATE_HUE);
+    let sand = nearest_hue(theme, &["Amber", "Orange"], SAND_HUE);
     let grey = held_to(&theme.ui.text, &theme.ui.background, SOFT_CONTRAST, Some(0.0));
     let Some(grey) = Oklch::of(&grey) else {
         return (theme.ui.text.clone(), theme.ui.text_muted.clone());
@@ -1063,23 +963,6 @@ fn quiet_greys(theme: &Theme) -> (String, String) {
     let (near, far) = (grey(QUIET_NEAR), grey(QUIET_FAR));
     let lightness = |hex: &str| Oklch::of(hex).map_or(0.0, |c| c.l);
     if lightness(&far) > lightness(&near) { (far, near) } else { (near, far) }
-}
-
-/// Written down as its key, the id the settings have always stored, so an
-/// indicator that chose a colouring is read back by the same name a chart's
-/// is.
-impl Serialize for BarColouring {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(self.key())
-    }
-}
-
-impl<'de> Deserialize<'de> for BarColouring {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let key = String::deserialize(deserializer)?;
-        BarColouring::from_key(&key)
-            .ok_or_else(|| serde::de::Error::custom(format!("{key:?} is not a bar colouring")))
-    }
 }
 
 /// The [`FOREGROUND`] colour on a theme: the text, held to a bar's contrast
@@ -1753,10 +1636,10 @@ mod tests {
     #[test]
     fn volume_is_painted_in_the_bars_own_colours() {
         for theme in builtin_themes() {
-            for colouring in BarColouring::ALL {
-                let bars = colouring.scheme(&theme, &BarLook::default());
+            for look in [BarLook::default(), BarLook::red_up(), BarLook::monochrome()] {
+                let bars = look.scheme(&theme);
                 for direction in [Direction::Up, Direction::Down, Direction::Flat] {
-                    assert_eq!(bars.volume(direction), bars.outline(direction), "{} {colouring:?}", theme.name);
+                    assert_eq!(bars.volume(direction), bars.outline(direction), "{} {look:?}", theme.name);
                 }
             }
         }
@@ -1778,12 +1661,12 @@ mod tests {
         assert_eq!((filled.profit.as_str(), filled.loss.as_str()), (bars.up.as_str(), bars.down.as_str()));
         assert_eq!((filled.limit, filled.stop, filled.position), (LineStyle::Dashed, LineStyle::Dashed, LineStyle::Solid));
 
-        let red_up = theme_trading(&theme, &BarColouring::RedUp.look(&theme, &BarLook::default()));
+        let red_up = theme_trading(&theme, &BarLook::red_up());
         assert_eq!((red_up.buy.as_str(), red_up.sell.as_str()), (filled.buy.as_str(), filled.sell.as_str()));
         assert_eq!((red_up.long.as_str(), red_up.short.as_str()), (filled.long.as_str(), filled.short.as_str()));
         assert_eq!((red_up.profit.as_str(), red_up.loss.as_str()), (filled.loss.as_str(), filled.profit.as_str()));
 
-        let mono = theme_trading(&theme, &BarColouring::Monochrome.look(&theme, &BarLook::default()));
+        let mono = theme_trading(&theme, &BarLook::monochrome());
         assert_eq!(mono, filled, "money keeps its colours on a chart with none");
 
         // Colours somebody chose for the bars are money's too.
@@ -1858,20 +1741,6 @@ mod tests {
         assert_eq!(serde_json::from_str::<Theme>(&json).unwrap(), set);
     }
 
-    /// A colouring is written as the key a chart stores it under, and read
-    /// back from it, upstream's soft and quiet palettes included.
-    #[test]
-    fn a_colouring_is_written_as_its_key() {
-        for colouring in BarColouring::ALL {
-            let json = serde_json::to_string(&colouring).unwrap();
-            assert_eq!(json, format!("\"{}\"", colouring.key()));
-            assert_eq!(serde_json::from_str::<BarColouring>(&json).unwrap(), colouring);
-        }
-        assert_eq!(BarColouring::from_key("theme-soft"), Some(BarColouring::Soft));
-        assert_eq!(BarColouring::from_key("theme-quiet"), Some(BarColouring::Quiet));
-        assert!(serde_json::from_str::<BarColouring>("\"nonsense\"").is_err());
-    }
-
     #[test]
     fn hex_parsing_handles_every_length() {
         assert_eq!(rgb("#fff"), Some((255, 255, 255)));
@@ -1917,13 +1786,6 @@ mod tests {
         assert_eq!(scheme.up, theme_bars(&theme).up, "the colour stays for everything but the candle");
         assert_eq!(scheme.up_fill, scheme.up, "a border leaves the body filled");
         assert_eq!(scheme.down_edge, scheme.down, "the other direction is untouched");
-    }
-
-    #[test]
-    fn red_up_swaps_the_bodies_with_the_colours() {
-        let look = BarLook { up_body: Body::Bordered, ..BarLook::default() };
-        let turned = BarColouring::RedUp.look(&dark(), &look);
-        assert_eq!((turned.up_body, turned.down_body), (Body::Filled, Body::Bordered));
     }
 
     #[test]

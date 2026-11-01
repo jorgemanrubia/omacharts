@@ -1816,10 +1816,9 @@ impl Window {
         pane.view.set_mark_tick(target.tick);
         let key = target.account.key();
         let theme = self.theming.borrow().theme();
-        // The theme's trading colours, with profit and loss in the chart's
-        // own up and down: a red-up chart turns them round with its bars.
-        let theming = self.theming.borrow();
-        let bars = pane.colouring.get().for_style(pane.bar_style.get()).look(&theme, theming.bar_look());
+        // The theme's trading colours, with profit and loss in the bars' own
+        // up and down: red-up bars turn them round.
+        let bars = self.theming.borrow().bar_look().clone();
         let look = omacharts_engine::theme_trading(&theme, &bars);
         let places = crate::ui::trading_panel::decimals_of(Self::tick_of(pane, &target));
         let price = |price: f64| omacharts_engine::grouped_decimals(price, places);

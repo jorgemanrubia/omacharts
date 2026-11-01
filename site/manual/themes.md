@@ -37,7 +37,7 @@ A theme of your own is made with Omarchy's tools, and then appears in the catalo
 
 ## Bars
 
-Preferences › Appearance › **Bars** sets how candles look on every chart. **Up** and **Down** each have a row: a colour, and three candles to pick the body from.
+Preferences › Appearance › **Bars** sets how bars look on every chart. **Drawn as** picks **Candles** or **OHLC** ([Style](/manual/charts/#style)), and on OHLC bars **Thickness** under it sets how wide they are drawn. **Up** and **Down** each have a row: a colour, and three candles to pick the body from.
 
 | Control | Does |
 |---|---|
@@ -48,7 +48,7 @@ Preferences › Appearance › **Bars** sets how candles look on every chart. **
 
 A border needs room: a candle whose body is under five pixels wide keeps its own colour throughout, and one too narrow for a body is drawn as a line in its colour. `omacharts config bars` sets the same answers ([`config bars`](/manual/cli/#config-bars)).
 
-The colours are the theme's, so they change with it. Red for a rise is the two colours swapped; monochrome is Foreground both ways. Each chart then paints the look its own way, with its **Colouring**: as it is, hollow rises, red up, soft, quiet, or monochrome ([Colouring](/manual/charts/#colouring)). Soft is a slate against a sand from the theme's palette, quiet two greys made from its text; both keep the look's bodies. Volume bars take the candle colours unless the volume indicator was given a colouring of its own ([Volume](/manual/indicators/volume/)).
+The colours are the theme's, so they change with it. Red for a rise is the two colours swapped; monochrome is Foreground both ways. Beside the palette and Foreground, the pickers offer **Slate** and **Sand**, a slate against a sand from the theme's palette that sit back behind what is drawn over the bars, and **Silver** and **Graphite**, two greys made from its text. They are every chart's, except on a chart with [a look of its own](/manual/charts/#a-charts-own-look). Volume bars take the candle colours unless the volume indicator was given colours of its own ([Volume](/manual/indicators/volume/)).
 
 ## The palette
 

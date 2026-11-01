@@ -267,8 +267,7 @@ pub const CHART_SELECTOR: &str =
 
 /// How a chart paints the theme's candle colours, spelled as the scheme ids
 /// the settings store.
-const COLOURINGS: &[&str] = &["theme", "theme-hollow", "theme-red-up", "theme-soft", "theme-quiet", "theme-mono"];
-const STYLES: &[&str] = &["candles", "ohlc", "none"];
+const STYLES: &[&str] = &["candles", "ohlc"];
 const SESSIONS: &[&str] = &["regular", "extended"];
 const CONTINUOUS: &[&str] = &["back-adjusted", "as-traded"];
 const SPLITS: &[&str] = &["horizontal", "vertical"];
@@ -289,12 +288,6 @@ const PROFILE_METHODS: &[&str] = &["total", "delta"];
 const VWAP_SOURCES: &[&str] = &["hlc3", "hl2", "ohlc4", "close"];
 const SWITCHES: &[&str] = &["on", "off"];
 const LINKS: &[&str] = &["focus", "follow", "pinned"];
-/// What a volume pane's bars may be painted from: the chart's own colouring
-/// (`chart`, or `default` as upstream spells it), or one of its own; and a
-/// delta volume profile's two sides and a cumulative delta's: the look
-/// chosen in Preferences (`default`), `theme-soft` or `theme-quiet`.
-const VOLUME_COLOURINGS: &[&str] =
-    &["chart", "default", "theme", "theme-red-up", "theme-soft", "theme-quiet", "theme-mono"];
 const COLOURING: &[&str] = &["coloured", "red-up", "monochrome"];
 const BODIES: &[&str] = &["filled", "bordered", "hollow"];
 const BAR_COLOUR: &str = "a theme colour by name (green, rose, blue, amber, violet, teal, orange, cyan), \
@@ -398,7 +391,6 @@ const INDICATOR_FLAGS: &[Flag] = &[
     Flag::valued("poc-width", "F", "a volume profile's point of control thickness in pixels"),
     Flag::valued("up-color", "COLOUR", "volume bars of a rising session"),
     Flag::valued("down-color", "COLOUR", "volume bars of a falling session"),
-    Flag::valued("colouring", "COLOURING", "how volume bars are painted: as the chart paints its candles (chart, or default), or in theme, theme-red-up, theme-soft, theme-quiet or theme-mono; and a delta volume profile's bought and sold rows or a cumulative delta's rises and falls: in the look chosen in Preferences (default), or theme-soft or theme-quiet").of(VOLUME_COLOURINGS),
     Flag::valued("opacity", "F", "how solid volume bars are drawn, 0.2-1; 1 is fully opaque"),
     Flag::valued("d-color", "COLOUR", "the stochastic's %D line"),
     Flag::valued("color", "COLOUR", "the line, the volume profile's background, or a Session Times range's shading"),
@@ -921,15 +913,8 @@ pub const SURFACE: &[Noun] = &[
                     Flag::valued("symbol", "SYMBOL", "the instrument to chart, such as AAPL or 2330.TW"),
                     Flag::valued("suffix", "S", "its venue suffix, for a listing abroad"),
                     Flag::valued("resolution", "TF", "such as 5m, 1h, 1D, 1W, 1M, 1Y"),
-                    Flag::valued("style", "STYLE", "how bars are drawn, or `none` to hide them").of(STYLES),
                     Flag::valued("thickness", "PX", "how many pixels wide OHLC bars are drawn, from 1 to 4"),
-                    Flag::valued(
-                        "bars",
-                        "BOOL",
-                        "hide the bars, or show them again in the style they had",
-                    )
-                    .of(SWITCHES),
-                    Flag::valued("colouring", "COLOURING", "how the theme's candle colours are painted").of(COLOURINGS),
+                    Flag::valued("bars", "BOOL", "hide the chart's bars, or show them again").of(SWITCHES),
                     Flag::valued("session", "SESSION", "which hours to include").of(SESSIONS),
                     Flag::valued(
                         "continuous",
@@ -964,7 +949,7 @@ pub const SURFACE: &[Noun] = &[
                          `none` for no indicators at all; a name or id:N",
                     ),
                 ],
-                example: "omacharts chart set --symbol NVDA --resolution 1h --style candles",
+                example: "omacharts chart set --symbol NVDA --resolution 1h --session regular",
                 json: true,
                 writes: true,
                 workspace: true,
@@ -1275,9 +1260,10 @@ pub const SURFACE: &[Noun] = &[
             },
             Verb {
                 name: "bars",
-                about: "How candles look: a colour for up and for down, and how each body is drawn",
+                about: "How every chart draws its bars: candles or OHLC bars, a colour for up and for down, and how each body is drawn",
                 args: &[Arg::opt("STATE", "sets both colours: the theme's green and rose, swapped, or foreground; omit to read them").of(COLOURING)],
                 flags: &[
+                    Flag::valued("style", "STYLE", "candles or OHLC bars").of(STYLES),
                     Flag::valued("up", "COLOUR", BAR_COLOUR),
                     Flag::valued("down", "COLOUR", BAR_COLOUR),
                     Flag::valued(
@@ -1288,7 +1274,7 @@ pub const SURFACE: &[Noun] = &[
                     .of(BODIES),
                     Flag::valued("down-body", "BODY", "the same for a falling candle").of(BODIES),
                 ],
-                example: "omacharts config bars monochrome --up-body hollow --down-body bordered",
+                example: "omacharts config bars monochrome --style candles --up-body hollow --down-body bordered",
                 json: true,
                 writes: true,
                 workspace: false,
@@ -1548,9 +1534,8 @@ const STORED_FIELDS: &[(&str, &str, &str)] = &[
     ("suffix", "chart set", "--suffix"),
     ("timeframe", "chart set", "--resolution"),
     ("indicators", "chart indicator", ""),
-    ("bar_style", "chart set", "--style"),
+    ("bar_style", "", "never read: how bars are drawn is every chart's, `config bars --style`; written for older builds"),
     ("bars_hidden", "chart set", "--bars"),
-    ("colouring", "chart set", "--colouring"),
     ("ohlc_thickness", "chart set", "--thickness"),
     ("session", "chart set", "--session"),
     ("continuous", "chart set", "--continuous"),
@@ -1652,8 +1637,7 @@ mod tests {
 
     #[test]
     fn the_bar_styles_on_offer_are_the_ones_that_exist() {
-        let mut engine: Vec<&str> = BarStyle::ALL.iter().map(|s| s.key()).collect();
-        engine.push("none");
+        let engine: Vec<&str> = BarStyle::ALL.iter().map(|s| s.key()).collect();
         assert_eq!(STYLES, engine.as_slice());
     }
 

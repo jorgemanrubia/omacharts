@@ -15,7 +15,7 @@ use std::rc::Rc;
 
 use gtk::prelude::*;
 use omacharts_engine::{
-    BarStyle, FetchFailure, Indicator, Instrument, LinkMode, Session, Theme, Timeframe,
+    FetchFailure, Indicator, Instrument, LinkMode, Session, Theme, Timeframe,
 };
 
 use crate::ui::chart::{ChartView, Hidden};
@@ -282,12 +282,9 @@ pub struct ChartPane {
     /// half. Held until the rest arrives to name it, written back as it
     /// was, and nothing is traded meanwhile — never what the chart charts.
     pub trading_pending: RefCell<Option<(String, Option<String>)>>,
-    /// The style its bars are drawn in when they are drawn: hiding them
-    /// leaves it alone, so showing them again brings back the same one.
-    pub bar_style: Cell<BarStyle>,
+    /// Whether its bars are hidden. How they are drawn when they are not is
+    /// every chart's answer, not this one's.
     pub bars_hidden: Cell<bool>,
-    /// How the theme's candle colours are painted on this chart.
-    pub colouring: Cell<omacharts_engine::BarColouring>,
     /// How many pixels wide its OHLC bars are drawn.
     pub ohlc_thickness: Cell<u8>,
     pub session: Cell<Session>,
@@ -375,7 +372,6 @@ impl ChartPane {
         scheme: omacharts_engine::theme::BarScheme,
         timeframe: Timeframe,
         indicators: Vec<Indicator>,
-        bar_style: BarStyle,
         session: Session,
         mode: LinkMode,
     ) -> Rc<ChartPane> {
@@ -826,9 +822,7 @@ impl ChartPane {
             trading_size: RefCell::new(None),
             trading_symbol: RefCell::new(None),
             trading_pending: RefCell::new(None),
-            bar_style: Cell::new(bar_style),
             bars_hidden: Cell::new(false),
-            colouring: Cell::new(Default::default()),
             ohlc_thickness: Cell::new(crate::chart_defaults::DEFAULT_OHLC_THICKNESS),
             session: Cell::new(session),
             continuous: Cell::new(Default::default()),
@@ -2475,7 +2469,6 @@ mod tests {
             scheme,
             Timeframe::days(1),
             Vec::new(),
-            BarStyle::default(),
             Session::default(),
             LinkMode::default(),
         )

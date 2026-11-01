@@ -1152,7 +1152,7 @@ fn charts_verb(
         ("chartbook", "show") | ("chart", "list") => {
             let at = workspace.resolve(selector.map(String::as_str))?;
             let book = workspace.book(at)?;
-            let rows: Vec<String> = charts::panes(book).iter().map(pane_json).collect();
+            let rows: Vec<String> = charts::panes(book).iter().map(|pane| pane_json(pane, crate::chart_defaults::bar_style(store))).collect();
             return Ok(match as_json {
                 true => format!(
                     "{{\"chartbook\":{},\"watchlist\":{},\"charts\":[{}]}}\n",
@@ -1190,7 +1190,7 @@ fn charts_verb(
                                     pane["suffix"].as_str()
                                 ),
                                 pane["timeframe"].as_str().unwrap_or(""),
-                                shown_style(pane),
+                                shown_style(pane, crate::chart_defaults::bar_style(store)),
                                 stored_mode(pane).key(),
                                 title,
                             )
@@ -1555,23 +1555,6 @@ fn chart_set(
             Fault::usage(format!("{text:?} is not a resolution; try 5m, 1h, 1D, 1W, 1M or 1Y"))
         })?),
     };
-    // None is not a style but the bars hidden, which keeps the style they
-    // had for showing them again.
-    let style = match arg(m, "style").map(String::as_str) {
-        None => None,
-        Some("none") => Some(None),
-        Some(text) => Some(Some(
-            BarStyle::from_key(text)
-                .ok_or_else(|| Fault::usage(format!("{text:?} is not a bar style")))?,
-        )),
-    };
-    let colouring = match arg(m, "colouring") {
-        None => None,
-        Some(text) => Some(
-            omacharts_engine::BarColouring::from_key(text)
-                .ok_or_else(|| Fault::usage(format!("{text:?} is not a bar colouring")))?,
-        ),
-    };
     let session = match arg(m, "session") {
         None => None,
         Some(text) => Some(
@@ -1599,15 +1582,6 @@ fn chart_set(
         }
     };
     let bars = switch("bars")?;
-    if let (Some(Some(style)), Some(false)) = (style, bars) {
-        return Err(Fault::usage(format!(
-            "--style {} shows the bars, and --bars off hides them; pass one",
-            style.key()
-        )));
-    }
-    if let (Some(None), Some(true)) = (style, bars) {
-        return Err(Fault::usage("--style none hides the bars, and --bars on shows them; pass one".into()));
-    }
     let thickness = arg(m, "thickness").map(|text| parse_thickness(text, "--thickness")).transpose()?;
     // Blank takes the title away, as clearing it in the header does.
     let title = arg(m, "title").map(|text| crate::ui::window::clean_title(text));
@@ -1651,29 +1625,12 @@ fn chart_set(
         chart["timeframe"] = json!(timeframe.key());
         changed.push(format!("resolution {}", timeframe.key()));
     }
-    match style {
-        None => {}
-        Some(Some(style)) => {
-            chart["bar_style"] = json!(style.key());
-            chart["bars_hidden"] = json!(false);
-            changed.push(format!("style {}", style.key()));
-        }
-        Some(None) => {
-            chart["bars_hidden"] = json!(true);
-            changed.push("bars hidden".to_string());
-        }
-    }
-    // Said once: `--style none --bars off` agree, and are one change.
-    if let Some(shown) = bars.filter(|_| style.is_none()) {
+    if let Some(shown) = bars {
         chart["bars_hidden"] = json!(!shown);
         changed.push(match shown {
-            true => format!("bars shown, as {}", chart["bar_style"].as_str().unwrap_or("candles")),
+            true => format!("bars shown, as {}", crate::chart_defaults::bar_style(store).key()),
             false => "bars hidden".to_string(),
         });
-    }
-    if let Some(colouring) = colouring {
-        chart["colouring"] = json!(colouring.key());
-        changed.push(format!("colouring {}", colouring.key()));
     }
     if let Some(thickness) = thickness {
         chart["ohlc_thickness"] = json!(thickness);
@@ -3438,12 +3395,6 @@ struct Edits {
     poc_width: Option<f64>,
     up_color: Option<ColorChoice>,
     down_color: Option<ColorChoice>,
-    /// `Some(None)` puts volume back on the chart's own colouring, and a
-    /// volume profile on the one chosen in Preferences.
-    colouring: Option<Option<omacharts_engine::BarColouring>>,
-    /// The word `colouring` was given as, since `chart` and `default` are
-    /// each one kind's and not the other's.
-    colouring_word: Option<String>,
     opacity: Option<f64>,
     color: Option<ColorChoice>,
     width: Option<f64>,
@@ -3577,14 +3528,6 @@ impl Edits {
             },
             up_color: colour(m, "up-color")?,
             down_color: colour(m, "down-color")?,
-            colouring: match arg(m, "colouring").map(String::as_str) {
-                None => None,
-                Some("chart" | "default") => Some(None),
-                Some(text) => Some(Some(omacharts_engine::BarColouring::from_key(text).ok_or_else(
-                    || Fault::usage(format!("{text:?} is not a bar colouring")),
-                )?)),
-            },
-            colouring_word: arg(m, "colouring").cloned(),
             opacity: bounded(m, "opacity", omacharts_engine::indicators::MIN_VOLUME_OPACITY, 1.0)?,
             color: colour(m, "color")?,
             width: number(m, "width")?,
@@ -3681,7 +3624,6 @@ impl Edits {
             && self.poc.is_none()
             && self.up_color.is_none()
             && self.down_color.is_none()
-            && self.colouring.is_none()
             && self.opacity.is_none()
             && self.color.is_none()
             && self.width.is_none()
@@ -3889,28 +3831,6 @@ impl Edits {
                     true => params[key] = to_value(colour)?,
                     false => return Err(refuse(what)),
                 }
-            }
-        }
-        if let Some(colouring) = &self.colouring {
-            let word = self.colouring_word.as_deref().unwrap_or_default();
-            let telling = colouring.is_none_or(|c| omacharts_engine::indicators::profile::DELTA_COLOURINGS.contains(&c));
-            match kind {
-                IndicatorKind::VolumeProfile | IndicatorKind::Cvd if word == "chart" => {
-                    return Err(Fault::usage(format!(
-                        "{} follows the colouring chosen in Preferences; use default",
-                        kind.short_name()
-                    )));
-                }
-                IndicatorKind::Volume | IndicatorKind::VolumeProfile | IndicatorKind::Cvd if !telling => {
-                    return Err(Fault::usage(format!(
-                        "{word} paints rises and falls alike; {} takes default, theme, theme-soft or theme-quiet",
-                        kind.short_name()
-                    )));
-                }
-                IndicatorKind::Volume | IndicatorKind::VolumeProfile | IndicatorKind::Cvd => {
-                    params["colouring"] = to_value(colouring)?;
-                }
-                _ => return Err(refuse("colouring")),
             }
         }
         if let Some(opacity) = self.opacity {
@@ -4272,15 +4192,16 @@ fn parse_thickness(text: &str, what: &str) -> Result<u8, Fault> {
         })
 }
 
-/// The style a chart's bars are drawn in, or `none` while they are hidden.
-fn shown_style(pane: &Value) -> &str {
+/// The style a chart's bars are drawn in, every chart's `style`, or `none`
+/// while they are hidden.
+fn shown_style(pane: &Value, style: BarStyle) -> &'static str {
     match pane["bars_hidden"].as_bool().unwrap_or(false) {
         true => "none",
-        false => pane["bar_style"].as_str().unwrap_or(""),
+        false => style.key(),
     }
 }
 
-fn pane_json(pane: &Value) -> String {
+fn pane_json(pane: &Value, style: BarStyle) -> String {
     json!({
         "id": pane["id"],
         // Null for a chart nobody titled.
@@ -4289,11 +4210,8 @@ fn pane_json(pane: &Value) -> String {
         "suffix": pane["suffix"],
         "display": spell(pane["symbol"].as_str().unwrap_or(""), pane["suffix"].as_str()),
         "resolution": pane["timeframe"],
-        "style": shown_style(pane),
-        // The style hidden bars come back in, so `none` above does not lose it.
-        "bar_style": pane["bar_style"],
+        "style": shown_style(pane, style),
         "bars": !pane["bars_hidden"].as_bool().unwrap_or(false),
-        "colouring": pane["colouring"],
         // Missing from a chart stored before OHLC bars could be thicker.
         "ohlc_thickness": pane["ohlc_thickness"].as_u64().unwrap_or(crate::chart_defaults::DEFAULT_OHLC_THICKNESS.into()),
         "session": pane["session"],
@@ -4786,7 +4704,7 @@ fn status(store: &Store, window_open: bool, as_json: bool) -> Result<String, Fau
             Some(format!(
                 "{{\"position\":{i},\"target\":\"pos:{i}\",\"focused\":{},\"chart\":{}}}",
                 Some(*id) == Some(focused),
-                pane_json(pane)
+                pane_json(pane, crate::chart_defaults::bar_style(store))
             ))
         })
         .collect();
@@ -5593,8 +5511,8 @@ fn config_chart_switch(
     said(as_json, json!({switch.json_key(): on}), switch.said(on).to_string())
 }
 
-/// How candles look: a colour for each direction, and how each body is
-/// drawn.
+/// How every chart draws its bars: the style, a colour for each direction,
+/// and how each body is drawn.
 ///
 /// The preset is the question people arrive with — colour or none, and which
 /// way round — and sets the two colours; the flags set any of the other
@@ -5610,6 +5528,9 @@ fn config_bars(
 
     let current = crate::theming::bar_look(store);
     let mut look = current.clone();
+    let was = crate::chart_defaults::bar_style(store);
+    // The parser has already held it to the styles there are.
+    let style = arg(m, "style").and_then(|key| BarStyle::from_key(key)).unwrap_or(was);
     if let Some(preset) = arg(m, "STATE") {
         let colours = match preset.as_str() {
             "monochrome" => BarLook::monochrome(),
@@ -5641,9 +5562,10 @@ fn config_bars(
         look.down_body = body;
     }
 
-    let given = ["STATE", "up", "down", "up-body", "down-body"].iter().any(|id| arg(m, id).is_some());
+    let given = ["STATE", "style", "up", "down", "up-body", "down-body"].iter().any(|id| arg(m, id).is_some());
     if given {
         crate::theming::save_bar_look(store, &look);
+        store.set_setting(crate::chart_defaults::SETTING_BAR_STYLE, style.key());
         // A candle has no row to reload: an open window paints from the
         // scheme it read, so it is told to read it again.
         if let Some(live) = live {
@@ -5652,16 +5574,20 @@ fn config_bars(
     }
     let (up, down) = (spell_bar_colour(&look.up), spell_bar_colour(&look.down));
     let (up_body, down_body) = (look.up_body.key(), look.down_body.key());
-    let described = format!("up {up} {up_body}, down {down} {down_body}");
+    let described = format!("{}, up {up} {up_body}, down {down} {down_body}", style.key());
     // Said rather than silently done, because "it was already monochrome"
     // and "it is monochrome now" are different answers to somebody checking
     // their own work.
-    let text = match (given, look == current) {
+    let text = match (given, look == current && style == was) {
         (false, _) => described,
         (true, true) => format!("bars were already {described}"),
         (true, false) => format!("bars are now {described}"),
     };
-    said(as_json, json!({"up": up, "down": down, "up_body": up_body, "down_body": down_body}), text)
+    said(
+        as_json,
+        json!({"style": style.key(), "up": up, "down": down, "up_body": up_body, "down_body": down_body}),
+        text,
+    )
 }
 
 /// The widget in the Omarchy bar.
@@ -7105,7 +7031,7 @@ mod tests {
     fn a_charts_symbol_and_resolution_can_be_set_together() {
         let store = bare();
         run("chartbook create Macro --switch", &store);
-        let set = run("chart set --book Macro --symbol NVDA --resolution 1h --style ohlc", &store);
+        let set = run("chart set --book Macro --symbol NVDA --resolution 1h", &store);
         assert_eq!(set.code, 0, "{}", set.err);
 
         let listed = run("chart list --book Macro --json", &store);
@@ -7114,47 +7040,29 @@ mod tests {
         assert_eq!(parsed["charts"][0]["resolution"], "1h");
     }
 
-    /// Hiding the bars is a look at what is under them, so it must not cost
-    /// the style they come back in.
+    /// Hiding the bars is this chart's; how they come back is every chart's.
     #[test]
-    fn hidden_bars_come_back_in_the_style_they_had() {
+    fn hidden_bars_come_back_in_the_style_every_chart_draws() {
         let store = bare();
         run("chartbook create Macro --symbol SPY --switch", &store);
         let chart = |store: &Store| -> serde_json::Value {
             let listed = run("chart list --book Macro --json", store);
             serde_json::from_str::<serde_json::Value>(&listed.out).unwrap()["charts"][0].clone()
         };
-        assert_eq!(run("chart set --book Macro --style ohlc", &store).code, 0);
-
-        assert_eq!(run("chart set --book Macro --style none", &store).code, 0);
-        assert_eq!(chart(&store)["style"], "none");
-        assert_eq!(chart(&store)["bar_style"], "ohlc");
-        assert_eq!(chart(&store)["bars"], false);
-
-        let shown = run("chart set --book Macro --bars on", &store);
-        assert_eq!(shown.code, 0, "{}", shown.err);
-        assert_eq!(chart(&store)["style"], "ohlc");
-        assert_eq!(chart(&store)["bars"], true);
+        assert_eq!(chart(&store)["style"], "candles");
 
         assert_eq!(run("chart set --book Macro --bars off", &store).code, 0);
         assert_eq!(chart(&store)["style"], "none");
-        assert_eq!(run("chart set --book Macro --style candles", &store).code, 0);
-        assert_eq!(chart(&store)["style"], "candles", "choosing a style shows the bars");
+        assert_eq!(chart(&store)["bars"], false);
 
-        // Two flags that agree are one change, and said once.
-        let both = run("chart set --book Macro --style none --bars off", &store);
-        assert_eq!(both.code, 0, "{}", both.err);
-        assert_eq!(both.out.matches("bars hidden").count(), 1, "{}", both.out);
-    }
+        assert_eq!(run("config bars --style ohlc", &store).code, 0);
+        assert_eq!(chart(&store)["style"], "none", "a style for every chart leaves hidden bars hidden");
 
-    #[test]
-    fn a_style_and_the_bars_saying_opposite_things_are_refused() {
-        let store = bare();
-        run("chartbook create Macro --symbol SPY --switch", &store);
-        for both in ["--style candles --bars off", "--style none --bars on"] {
-            let out = run(&format!("chart set --book Macro {both}"), &store);
-            assert_eq!(out.code, super::super::EXIT_USAGE, "{both}");
-        }
+        let shown = run("chart set --book Macro --bars on", &store);
+        assert_eq!(shown.code, 0, "{}", shown.err);
+        assert!(shown.out.contains("bars shown, as ohlc"), "{}", shown.out);
+        assert_eq!(chart(&store)["style"], "ohlc");
+        assert_eq!(chart(&store)["bars"], true);
     }
 
     /// A command that half-worked is worse than one that refused: the caller
@@ -7477,26 +7385,34 @@ mod tests {
     #[test]
     fn bars_are_answers_set_together_or_alone() {
         let store = Store::memory().unwrap();
-        assert_eq!(run("config bars", &store).out.trim(), "up green filled, down rose filled");
+        assert_eq!(run("config bars", &store).out.trim(), "candles, up green filled, down rose filled");
 
         assert_eq!(run("config bars red-up --up-body hollow", &store).code, 0);
-        assert_eq!(run("config bars", &store).out.trim(), "up rose hollow, down green filled");
+        assert_eq!(run("config bars", &store).out.trim(), "candles, up rose hollow, down green filled");
 
         // A flag alone leaves the others as they were.
         assert_eq!(run("config bars --down Foreground", &store).code, 0);
-        assert_eq!(run("config bars", &store).out.trim(), "up rose hollow, down foreground filled");
+        assert_eq!(run("config bars", &store).out.trim(), "candles, up rose hollow, down foreground filled");
         assert_eq!(run("config get bar_down", &store).out.trim(), "foreground");
 
         // A flag wins over the preset it is given with.
         assert_eq!(run("config bars monochrome --up #336699 --up-body filled", &store).code, 0);
         let json: Value = serde_json::from_str(&run("config bars --json", &store).out).unwrap();
-        assert_eq!(json, json!({"up": "#336699", "down": "foreground", "up_body": "filled", "down_body": "filled"}));
+        assert_eq!(
+            json,
+            json!({"style": "candles", "up": "#336699", "down": "foreground", "up_body": "filled", "down_body": "filled"})
+        );
 
         let again = run("config bars monochrome --up #336699 --up-body filled", &store);
         assert!(again.out.starts_with("bars were already"), "{}", again.out);
 
         assert_eq!(run("config bars --down-body bordered", &store).code, 0);
-        assert_eq!(run("config bars", &store).out.trim(), "up #336699 filled, down foreground bordered");
+        assert_eq!(run("config bars", &store).out.trim(), "candles, up #336699 filled, down foreground bordered");
+
+        // The style is one more answer, and leaves the colours alone.
+        assert_eq!(run("config bars --style ohlc", &store).code, 0);
+        assert_eq!(run("config bars", &store).out.trim(), "ohlc, up #336699 filled, down foreground bordered");
+        assert_eq!(run("config get bar_style", &store).out.trim(), "ohlc");
         assert_ne!(run("config bars --up-body outlined", &store).code, 0, "a body that does not exist is refused");
     }
 
@@ -7655,72 +7571,8 @@ mod tests {
         assert_ne!(out.code, 0, "an RSI has no periods");
     }
 
-    /// A volume profile's delta follows the colouring chosen in Preferences
-    /// until a command picks one of the three that tell bought from sold,
-    /// and `default` puts it back; the words that are the volume strip's
-    /// own, and Monochrome, are refused and leave it as it was.
-    #[test]
-    fn a_volume_profile_takes_a_colouring_of_its_own_and_gives_it_back() {
-        let store = bare();
-        run("chartbook create Macro --switch", &store);
-        run("chart indicator add volume_profile --book Macro", &store);
-        let colouring = |store: &Store| {
-            let listed = run("chart indicator list --book Macro --json", store);
-            let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
-            parsed["indicators"][0]["params"]["colouring"].as_str().map(str::to_string)
-        };
-        assert_eq!(colouring(&store), None, "Preferences' to begin with");
-
-        let out = run("chart indicator set volume_profile --book Macro --colouring theme-quiet", &store);
-        assert_eq!(out.code, 0, "{}", out.err);
-        assert_eq!(colouring(&store).as_deref(), Some("theme-quiet"));
-
-        for refused in ["chart", "theme-mono", "loud"] {
-            let out = run(&format!("chart indicator set volume_profile --book Macro --colouring {refused}"), &store);
-            assert_eq!(out.code, super::super::EXIT_USAGE, "{refused}");
-        }
-        assert_eq!(colouring(&store).as_deref(), Some("theme-quiet"), "a refusal leaves it as it was");
-
-        let out = run("chart indicator set volume_profile --book Macro --colouring default", &store);
-        assert_eq!(out.code, 0, "{}", out.err);
-        assert_eq!(colouring(&store), None);
-
-    }
-
-    /// Volume's Colouring is the delta profile's: `default`, and `chart` as
-    /// it was spelled before, keep it painted as the chart paints its
-    /// candles, and the three palettes that tell a rise from a fall are its
-    /// own; Monochrome, which tells nothing, is refused.
-    #[test]
-    fn volume_takes_the_delta_profiles_colourings() {
-        let store = bare();
-        run("chartbook create Macro --switch", &store);
-        run("chart indicator add volume --book Macro", &store);
-        let colouring = |store: &Store| {
-            let listed = run("chart indicator list --book Macro --json", store);
-            let parsed: serde_json::Value = serde_json::from_str(&listed.out).unwrap();
-            parsed["indicators"][0]["params"]["colouring"].as_str().map(str::to_string)
-        };
-        assert_eq!(colouring(&store), None, "the chart's own to begin with");
-
-        let out = run("chart indicator set volume --book Macro --colouring theme-soft", &store);
-        assert_eq!(out.code, 0, "{}", out.err);
-        assert_eq!(colouring(&store).as_deref(), Some("theme-soft"));
-
-        let out = run("chart indicator set volume --book Macro --colouring theme-mono", &store);
-        assert_eq!(out.code, super::super::EXIT_USAGE);
-        assert_eq!(colouring(&store).as_deref(), Some("theme-soft"), "a refusal leaves it as it was");
-
-        for back in ["default", "chart"] {
-            run("chart indicator set volume --book Macro --colouring theme-quiet", &store);
-            let out = run(&format!("chart indicator set volume --book Macro --colouring {back}"), &store);
-            assert_eq!(out.code, 0, "{back}: {}", out.err);
-            assert_eq!(colouring(&store), None, "{back}");
-        }
-    }
-
-    /// A cumulative delta starts on the session, as candles, in the
-    /// colouring chosen in Preferences, and every one of those is a flag:
+    /// A cumulative delta starts on the session, as candles, and every one
+    /// of those is a flag:
     /// `never` makes it one running sum, which nothing else takes.
     #[test]
     fn a_cumulative_delta_is_set_up_from_a_command() {
@@ -7737,28 +7589,26 @@ mod tests {
         assert_eq!(made["kind"], "cvd");
         assert_eq!(made["reset"], "session");
         assert_eq!(made["style"], "candles");
-        assert!(made.get("colouring").is_none(), "Preferences' colouring");
 
         let out = run(
-            "chart indicator set cvd --book Macro --anchor never --cvd-style line --colouring theme-quiet --height 0.3",
+            "chart indicator set cvd --book Macro --anchor never --cvd-style line --height 0.3",
             &store,
         );
         assert_eq!(out.code, 0, "{}", out.err);
         let set = params(&store);
         assert!(set["reset"].is_null(), "never: {set}");
         assert_eq!(set["style"], "line");
-        assert_eq!(set["colouring"], "theme-quiet");
         assert_eq!(set["height"], 0.3);
 
         let out = run("chart indicator set cvd --book Macro --anchor week", &store);
         assert_eq!(out.code, 0, "{}", out.err);
         assert_eq!(params(&store)["reset"], "week");
 
-        for refused in ["--colouring chart", "--colouring theme-mono", "--rows 20", "--period 9"] {
+        for refused in ["--rows 20", "--period 9"] {
             let out = run(&format!("chart indicator set cvd --book Macro {refused}"), &store);
-            assert_eq!(out.code, super::super::EXIT_USAGE, "{refused}");
+            assert_ne!(out.code, 0, "{refused}");
         }
-        assert_eq!(params(&store)["colouring"], "theme-quiet", "a refusal leaves it as it was");
+        assert_eq!(params(&store)["reset"], "week", "a refusal leaves it as it was");
 
         run("chart indicator add vwap --book Macro", &store);
         let out = run("chart indicator set vwap --book Macro --anchor never", &store);
@@ -8282,7 +8132,7 @@ mod tests {
             serde_json::from_str(&run("chart list --book Macro --json", store).out).unwrap()
         };
         assert_eq!(listed(&store)["charts"][0]["ohlc_thickness"], json!(2));
-        let out = run("chart set --book Macro --style ohlc --thickness 3", &store);
+        let out = run("chart set --book Macro --thickness 3", &store);
         assert_eq!(out.code, 0, "{}", out.err);
         assert!(out.out.contains("OHLC bars 3px"), "{}", out.out);
         assert_eq!(listed(&store)["charts"][0]["ohlc_thickness"], json!(3));

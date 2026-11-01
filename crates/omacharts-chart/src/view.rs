@@ -37,9 +37,8 @@ use omacharts_engine::drawings::{
 use omacharts_engine::bars::Unit;
 use omacharts_engine::clock::{ChartZone, TimeFormat};
 use omacharts_engine::indicators::{self as indicators, BandSeries, LineStyle, Output, Profile};
-use omacharts_engine::indicators::profile::DELTA_COLOURINGS;
 use omacharts_engine::{
-    grouped_decimals, Bar, BarColouring, BarLook, BarScheme, BarStyle, Direction, FetchFailure, Indicator, Instrument,
+    grouped_decimals, Bar, BarLook, BarScheme, BarStyle, Direction, FetchFailure, Indicator, Instrument,
     Range, Tag, Theme, Timeframe,
 };
 
@@ -179,10 +178,10 @@ struct State {
     /// The look chosen in Preferences: what a delta profile with no
     /// colouring of its own is painted in, rather than this chart's.
     house: BarLook,
-    /// A delta profile's bought and sold colours, for the house colouring
-    /// and then each of [`DELTA_COLOURINGS`] in turn, worked out when the
-    /// theme or the house colouring changes rather than on every frame.
-    delta_inks: [(String, String); 1 + DELTA_COLOURINGS.len()],
+    /// A delta profile's bought and sold colours, the house look's rise and
+    /// fall, worked out when the theme or the house look changes rather
+    /// than on every frame.
+    delta_ink: (String, String),
     /// The last-price tag for a rise and a fall, worked out from the scheme
     /// whenever it changes rather than on every frame.
     price_tags: [Tag; 2],
@@ -1363,7 +1362,7 @@ impl State {
         State {
             bars: Vec::new(),
             echo: None,
-            delta_inks: delta_inks(&theme, &BarLook::default()),
+            delta_ink: delta_ink(&theme, &BarLook::default()),
             house: BarLook::default(),
             theme,
             price_tags: price_tags(&scheme),
@@ -2386,16 +2385,9 @@ impl State {
     }
 
     /// The bought and sold colours a delta profile or a cumulative delta is
-    /// painted in: its own colouring's, or the house colouring's when it has
-    /// none, or one that is not offered to a delta.
-    fn delta_ink(&self, drawn: &Drawn) -> (&str, &str) {
-        let chosen = match &drawn.indicator.params {
-            omacharts_engine::Params::VolumeProfile { colouring, .. }
-            | omacharts_engine::Params::Cvd { colouring, .. } => *colouring,
-            _ => None,
-        };
-        let at = chosen.and_then(|c| DELTA_COLOURINGS.iter().position(|o| *o == c)).map_or(0, |at| at + 1);
-        let (up, down) = &self.delta_inks[at];
+    /// painted in: the house look's.
+    fn delta_ink(&self) -> (&str, &str) {
+        let (up, down) = &self.delta_ink;
         (up, down)
     }
 
@@ -4459,6 +4451,10 @@ impl ChartView {
         self.redraw();
     }
 
+    pub fn show_grid(&self) -> bool {
+        self.state.borrow().show_grid
+    }
+
     /// Show or hide the gridlines. The axes and their labels stay: without
     /// them a chart is a shape with no scale.
     pub fn set_show_grid(&self, show: bool) {
@@ -4928,10 +4924,15 @@ impl ChartView {
         });
     }
 
+    /// The colours its bars are painted in.
+    pub fn scheme(&self) -> BarScheme {
+        self.state.borrow().scheme.clone()
+    }
+
     pub fn restyle(&self, theme: Theme, scheme: BarScheme) {
         {
             let mut state = self.state.borrow_mut();
-            state.delta_inks = delta_inks(&theme, &state.house);
+            state.delta_ink = delta_ink(&theme, &state.house);
             state.theme = theme;
             state.price_tags = price_tags(&scheme);
             state.scheme = scheme;
@@ -4939,15 +4940,15 @@ impl ChartView {
         self.redraw();
     }
 
-    /// The look chosen in Preferences, which a delta profile with no
-    /// colouring of its own is painted in.
+    /// The look chosen in Preferences, which delta profiles and cumulative
+    /// deltas are painted in.
     pub fn set_house_look(&self, look: BarLook) {
         {
             let mut state = self.state.borrow_mut();
             if state.house == look {
                 return;
             }
-            state.delta_inks = delta_inks(&state.theme, &look);
+            state.delta_ink = delta_ink(&state.theme, &look);
             state.house = look;
         }
         self.redraw();
@@ -7472,7 +7473,7 @@ fn draw_pane(
             drawn.indicator.params,
             omacharts_engine::Params::Cvd { style: omacharts_engine::indicators::cvd::Style::Line, .. }
         );
-        let (up, down) = state.delta_ink(drawn);
+        let (up, down) = state.delta_ink();
         let chip = match line {
             true => {
                 draw_delta_line(cr, state, drawn, shown, columns, &strip, lit);
@@ -9819,27 +9820,14 @@ fn time_at_column(state: &State, index: i64) -> Option<i64> {
 }
 
 /// The colours a volume pane paints a rising and a falling bar: the
-/// indicator's own when somebody chose them, otherwise the candles' own —
-/// the chart's candles, or the colouring the indicator chose for itself.
+/// indicator's own when somebody chose them, otherwise the chart's candles'.
 pub fn volume_colours(
     indicator: &Indicator,
     theme: &omacharts_engine::Theme,
     scheme: &BarScheme,
 ) -> (String, String) {
-    let omacharts_engine::Params::Volume { colouring, up_color, down_color, .. } = &indicator.params
-    else {
+    let omacharts_engine::Params::Volume { up_color, down_color, .. } = &indicator.params else {
         return (scheme.up.clone(), scheme.down.clone());
-    };
-    let own;
-    let scheme = match colouring {
-        // A colouring of its own turns the bars' look as shipped, not the
-        // chart's: the chart is handed its colours, not the look they came
-        // from.
-        Some(colouring) => {
-            own = colouring.scheme(theme, &omacharts_engine::theme::BarLook::default());
-            &own
-        }
-        None => scheme,
     };
     let pick = |choice: &Option<omacharts_engine::theme::ColorChoice>, fallback: &str| {
         choice.as_ref().map_or_else(|| fallback.to_string(), |c| c.resolve(theme))
@@ -9900,36 +9888,18 @@ fn profile_inks(
     match method {
         Method::Total => vec![ink(selection::Side::All, &drawn.color)],
         Method::Delta => {
-            let (up, down) = state.delta_ink(drawn);
+            let (up, down) = state.delta_ink();
             vec![ink(selection::Side::Up, up), ink(selection::Side::Down, down)]
         }
     }
 }
 
-/// A delta profile's bought and sold colours: the house look's rise and
-/// fall, then each colouring a delta can be given, in the order
-/// [`DELTA_COLOURINGS`] offers them, keeping the house look's hollow
-/// bodies and nothing else of it. Red for a rise is said once, in
-/// Preferences, and a delta in the house look reads the way it does.
-fn delta_inks(theme: &Theme, house: &BarLook) -> [(String, String); 1 + DELTA_COLOURINGS.len()] {
-    let pair = |colouring: BarColouring| {
-        let scheme = colouring.scheme(theme, house);
-        (scheme.up, scheme.down)
-    };
-    let mut inks: [(String, String); 1 + DELTA_COLOURINGS.len()] = Default::default();
-    inks[0] = pair(BarColouring::Filled);
-    for (at, colouring) in DELTA_COLOURINGS.into_iter().enumerate() {
-        inks[at + 1] = pair(colouring);
-    }
-    inks
-}
-
-/// A delta profile's bought and sold colours, as a pair of hex colours: the
-/// house look's, or the one the profile chose of [`DELTA_COLOURINGS`].
-pub fn delta_colours(colouring: Option<BarColouring>, theme: &Theme, house: &BarLook) -> (String, String) {
-    let inks = delta_inks(theme, house);
-    let at = colouring.and_then(|c| DELTA_COLOURINGS.iter().position(|o| *o == c)).map_or(0, |at| at + 1);
-    inks[at].clone()
+/// A delta profile's bought and sold colours on `theme`: the house look's
+/// rise and fall. Red for a rise is said once, in Preferences, and a delta
+/// reads the way the look does.
+fn delta_ink(theme: &Theme, house: &BarLook) -> (String, String) {
+    let scheme = house.scheme(theme);
+    (scheme.up, scheme.down)
 }
 
 /// How strongly a delta's rows are filled: all as strongly as a total's
@@ -11911,25 +11881,20 @@ mod tests {
         assert_eq!(contracts(2_500_000_000.0), "2.50B");
     }
 
-    /// A volume pane on Default, which every volume pane before its
-    /// Colouring was a delta's is, paints as the chart's candles do; one of
-    /// the three palettes, or a Monochrome kept from before, paints as that
-    /// palette does, as it always did.
+    /// A volume pane paints as the chart's candles do, and a colour of its
+    /// own wins for its side.
     #[test]
-    fn a_volume_pane_on_default_is_painted_as_the_chart_s_candles() {
+    fn a_volume_pane_is_painted_as_the_chart_s_candles() {
         let theme = omacharts_engine::theme::builtin_themes().into_iter().next().expect("a built-in theme");
-        let look = BarLook::default();
-        let scheme = BarColouring::Quiet.scheme(&theme, &look);
+        let scheme = BarLook::red_up().scheme(&theme);
         let mut indicator = Indicator::new(1, indicators::Kind::Volume);
         assert_eq!(volume_colours(&indicator, &theme, &scheme), (scheme.up.clone(), scheme.down.clone()));
-        for own in BarColouring::offered(omacharts_engine::BarStyle::Ohlc).iter().copied() {
-            if let omacharts_engine::Params::Volume { colouring, .. } = &mut indicator.params {
-                *colouring = Some(own);
-            }
-            let painted = own.scheme(&theme, &look);
-            assert_eq!(volume_colours(&indicator, &theme, &scheme), (painted.up, painted.down), "{own:?}");
+        if let omacharts_engine::Params::Volume { up_color, .. } = &mut indicator.params {
+            *up_color = Some(omacharts_engine::ColorChoice::Fixed { hex: "#123456".into() });
         }
+        assert_eq!(volume_colours(&indicator, &theme, &scheme), ("#123456".to_string(), scheme.down.clone()));
     }
+
 
     /// A chart of the regular session out of hours: the last price is the
     /// feed's newest trade, not the last close drawn, following each

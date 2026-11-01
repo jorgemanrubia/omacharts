@@ -15,7 +15,7 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
-use omacharts_engine::{BarColouring, BarStyle, Session};
+use omacharts_engine::Session;
 
 use crate::backup;
 use crate::cache;
@@ -390,8 +390,6 @@ fn build_charts_page(context: &Rc<Context>) {
 
     // Grouped as a chart's own settings are, so a row is found in the same
     // place in both.
-    let bars = adw::PreferencesGroup::new();
-    bars.set_title("Bars");
     let scales = adw::PreferencesGroup::new();
     scales.set_title("Scales");
     let hours = adw::PreferencesGroup::new();
@@ -447,68 +445,6 @@ fn build_charts_page(context: &Rc<Context>) {
     };
 
     let current = defaults.get();
-    let style = adw::ComboRow::new();
-    style.set_title("Style");
-    let names: Vec<&str> = BarStyle::ALL.iter().map(|s| s.label()).collect();
-    style.set_model(Some(&string_list(&names.iter().map(|n| n.to_string()).collect::<Vec<_>>())));
-    style.set_selected(BarStyle::ALL.iter().position(|s| *s == current.bar_style).unwrap_or(0) as u32);
-
-    let colouring = adw::ComboRow::new();
-    colouring.set_title("Colouring");
-    crate::ui::chart_settings::fill_colourings(&colouring, current.bar_style, current.colouring);
-
-    // How thick OHLC bars are drawn, offered only while they are the style.
-    let thickness = {
-        let changed = changed.clone();
-        crate::ui::controls::bounded_row(
-            crate::ui::chart_settings::THICKNESS_LABEL,
-            None,
-            f64::from(current.ohlc_thickness),
-            f64::from(crate::chart_defaults::MIN_OHLC_THICKNESS),
-            f64::from(crate::chart_defaults::MAX_OHLC_THICKNESS),
-            1.0,
-            0,
-            move |px| {
-                let px = px.round() as u8;
-                changed(&|d| d.ohlc_thickness = px);
-            },
-        )
-        .row
-    };
-    thickness.set_visible(current.bar_style == BarStyle::Ohlc);
-    {
-        let changed = changed.clone();
-        let colouring = colouring.clone();
-        let defaults = defaults.clone();
-        let thickness = thickness.clone();
-        style.connect_selected_notify(move |row| {
-            let Some(chosen) = BarStyle::ALL.get(row.selected() as usize).copied() else { return };
-            changed(&|d| d.bar_style = chosen);
-            crate::ui::chart_settings::fill_colourings(&colouring, chosen, defaults.get().colouring);
-            thickness.set_visible(chosen == BarStyle::Ohlc);
-        });
-    }
-    {
-        let changed = changed.clone();
-        let defaults = defaults.clone();
-        colouring.connect_selected_notify(move |row| {
-            if crate::ui::chart_settings::filling_colourings(row) {
-                return;
-            }
-            let style = defaults.get().bar_style;
-            let Some(chosen) = BarColouring::offered(style).get(row.selected() as usize).copied()
-            else {
-                return;
-            };
-            if chosen != defaults.get().colouring.for_style(style) {
-                changed(&|d| d.colouring = chosen);
-            }
-        });
-    }
-    bars.add(&style);
-    bars.add(&thickness);
-    bars.add(&colouring);
-
     let session = adw::ComboRow::new();
     session.set_title("Hours");
     let sessions: Vec<String> = Session::ALL.iter().map(|s| s.label().to_string()).collect();
@@ -620,7 +556,7 @@ fn build_charts_page(context: &Rc<Context>) {
     }));
 
     drawings.add(&footer);
-    for group in [&bars, &scales, &hours, &indicators, &drawings] {
+    for group in [&scales, &hours, &indicators, &drawings] {
         context.charts_page.add(group);
     }
 }

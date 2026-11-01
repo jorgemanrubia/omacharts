@@ -117,8 +117,8 @@ Every indicator the app has, with every parameter it exposes:
 | `macd` | `--fast`, `--slow`, `--signal`, `--signal-color`, `--height` |
 | `atr` | `--period`, `--height` |
 | `stochastic` | `--period` (%K length), `--k-smooth`, `--d-period`, `--overbought`, `--oversold`, `--height`, `--d-color` |
-| `volume` | `--height`, `--colouring` (`default`, `theme`, `theme-soft`, `theme-quiet`), `--opacity`, `--up-color`, `--down-color` |
-| `cvd` | `--anchor` (or `never`), `--cvd-style` (`candles` or `line`), `--colouring` (`default`, `theme`, `theme-soft`, `theme-quiet`), `--height` |
+| `volume` | `--height`, `--opacity`, `--up-color`, `--down-color` |
+| `cvd` | `--anchor` (or `never`), `--cvd-style` (`candles` or `line`), `--height` |
 | `vwap` | `--anchor`, `--bands`, `--band-alpha` |
 | `volume_profile` | `--anchor`, `--rows` (a number or `auto`), `--value-area`, `--poc-color`, `--poc-width`, `--outline` (`on` or `off`), `--outline-color`, `--outline-width`, `--profile-style` (`filled` or `outline`), `--align` (`left` or `right`), `--profile-width` (0.1 to 1), `--profile-method` (`total` or `delta`) |
 
@@ -627,13 +627,14 @@ years in UTC, so `3M` is the calendar quarters.
 A `chart set` with one bad value changes nothing at all — everything is
 checked before anything is written, so you never get a half-applied chart.
 
-Besides what a chart shows, `chart set` carries how it shows it — `--title`, `--style`,
+Besides what a chart shows, `chart set` carries how it shows it — `--title`,
 `--thickness`, `--bars`, `--session`, `--auto-scale`, `--log-scale`,
 `--indicators`, `--legend` and `--drawings` — and those are stored with the
 chart, so a price axis held still with `--auto-scale off` is still held the
-next time the app opens. Gridlines and the last-price line are not one chart's:
-they are the same on every chart, and set with `config grid` and `config
-price-line` (see Preferences).
+next time the app opens. `--bars off` hides the chart's bars, for a chart that
+is all indicators. How bars are drawn, the gridlines and the last-price line
+are not one chart's: they are the same on every chart, and set with `config
+bars`, `config grid` and `config price-line` (see Preferences).
 
 `--log-scale on` makes the price axis logarithmic: equal heights are equal
 percentage moves, which is what a chart of twenty years wants. Indicators in
@@ -993,8 +994,9 @@ Settings are read and written by name — `config list` shows every one that has
 been written, and `config set` writes any of them.
 
 Some of them have a command of their own, because what the app does with
-them is more than storing a value. How candles look is one. Every chart
-paints its bars from one look, a colour and a body for each direction.
+them is more than storing a value. How bars look is one. Every chart
+draws its bars one way, candles or OHLC bars, from one look, a colour and a
+body for each direction.
 `config bars` reads and sets it, and the window's Preferences › Appearance ›
 Bars is the same answers.
 
@@ -1004,13 +1006,15 @@ up green filled, down rose filled
   [exit 0]
 
 $ omacharts config bars red-up --up-body hollow
-bars are now up rose hollow, down green filled
+bars are now candles, up rose hollow, down green filled
   [exit 0]
 
-$ omacharts config bars --down-body bordered
-bars are now up rose hollow, down green bordered
+$ omacharts config bars --style line
+bars are now line, up rose hollow, down green filled
   [exit 0]
 ```
+
+`--style` is `candles` or `ohlc`.
 
 Each direction has a colour (`--up`, `--down`: a theme colour by name —
 green, rose, blue, amber, violet, teal, orange, cyan — `foreground` for
@@ -1023,29 +1027,14 @@ mainland China, Japan and Korea) or `monochrome`. A flag changes only its own
 answer, and wins over `STATE`. Stored as `bar_up`, `bar_down`,
 `bar_up_hollow`, `bar_down_hollow`, `bar_up_border` and `bar_down_border`.
 
-What one chart does with that look is its colouring, `chart set --colouring`:
-`theme` paints it as it is, `theme-hollow` with rising candles hollow,
-`theme-red-up` with up and down swapped, `theme-soft` in a slate against a
-sand from the theme's palette, `theme-quiet` in two greys of its text, and
-`theme-mono` in foreground. Soft and quiet keep the look's hollow bodies. A style
-offers what it can draw: OHLC bars have no body to leave hollow, and a
-colouring the style does not offer is drawn as `theme`. A volume pane follows the
-chart's colouring unless given one of its own: `chart indicator set volume
---colouring theme-mono`, and `--colouring chart` (or `default`) to follow the
-chart again. A delta volume profile and a cumulative delta paint their two
-sides in the look chosen in Preferences unless given `--colouring theme-soft`
-or `theme-quiet`.
-Its bars are always solid, in the candles' colours, drawn at `--opacity`, 0.2
-to 1 and 0.85 unless set.
-
-`config set chart_colouring theme-mono` changes only what new charts open
-with.
+Volume bars are always solid, in the candles' colours, drawn at
+`--opacity`, 0.2 to 1 and 0.85 unless set.
 
 What a new chart opens with is a handful of settings, the ones the preferences
-show under Charts › Defaults: `bar_style`, `ohlc_thickness`,
-`chart_colouring`, `chart_session`, `show_grid`, `chart_log_scale`, `chart_template`,
-`chart_shows_drawings`, `chart_sends_drawings` and `chart_shows_legend`.
-Changing one chart never changes them.
+show under Charts › Defaults: `ohlc_thickness`, `chart_session`,
+`chart_log_scale`, `chart_template`, `chart_shows_drawings`,
+`chart_sends_drawings` and `chart_shows_legend`. Changing one chart never
+changes them.
 
 The theme is another. `config theme` lists the themes, the one in use
 starred: `system`, which follows the desktop's Omarchy theme as it changes,

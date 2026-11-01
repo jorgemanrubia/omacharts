@@ -25,7 +25,7 @@ use chrono_tz::Tz;
 use crate::bars::{Bar, Timeframe};
 use crate::ladders::{Days, Held, Ladder};
 use crate::symbols::Instrument;
-use crate::theme::{BarColouring, ColorChoice, Theme, SWATCH_SEQUENCE};
+use crate::theme::{ColorChoice, Theme, SWATCH_SEQUENCE};
 
 pub use bands::{Band, BandSeries, Bands, FILL_ALPHA, MAX_FILL_ALPHA, MIN_FILL_ALPHA};
 pub use periods::Reset;
@@ -360,15 +360,13 @@ impl Kind {
                 align: profile::Align::Left,
                 width: profile::DEFAULT_WIDTH,
                 method: profile::Method::Total,
-                colouring: None,
                 merged: Vec::new(),
             },
-            Kind::Volume => Params::Volume { height: 0.18, colouring: None, up_color: None, down_color: None, opacity: DEFAULT_VOLUME_OPACITY },
+            Kind::Volume => Params::Volume { height: 0.18, up_color: None, down_color: None, opacity: DEFAULT_VOLUME_OPACITY },
             Kind::Cvd => Params::Cvd {
                 reset: Some(Reset::Session),
                 style: cvd::Style::Candles,
                 height: 0.16,
-                colouring: None,
             },
             // Fourteen bars, overbought at seventy, oversold at thirty: the
             // numbers Wilder published and the ones every other chart shows,
@@ -493,13 +491,6 @@ pub enum Params {
         /// volume less the bid volume there. Missing, the total it always was.
         #[serde(default)]
         method: profile::Method,
-        /// The colouring a delta's bought and sold rows are painted in, as
-        /// a chart's rising and falling bars are: unset, the colouring
-        /// chosen in Preferences, and following it as it changes; set, one
-        /// of [`profile::DELTA_COLOURINGS`] of its own. A total is in the
-        /// profile's colour and pays this no mind.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        colouring: Option<BarColouring>,
         /// Where each period starts that was merged into the one before it,
         /// as the start of its reset period. Several in a row make one
         /// composite of them all.
@@ -512,12 +503,6 @@ pub enum Params {
     Volume {
         /// How much of the chart's height the pane takes.
         height: f64,
-        /// How its bars are painted: unset, the way the chart paints its
-        /// candles, so volume follows the chart; set, a colouring of its
-        /// own, so a quiet volume can sit under loud candles, or the other
-        /// way round.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        colouring: Option<BarColouring>,
         /// The bars of a rising and a falling session. Unset is the candles'
         /// own colour, so volume reads as belonging to the bar above it.
         #[serde(default)]
@@ -540,12 +525,6 @@ pub enum Params {
         style: cvd::Style,
         #[serde(default = "cvd_height")]
         height: f64,
-        /// The colouring its rising and falling bars are painted in, as a
-        /// delta profile's bought and sold rows are: unset, the colouring
-        /// chosen in Preferences, and following it as it changes; set, one
-        /// of [`profile::DELTA_COLOURINGS`] of its own.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        colouring: Option<BarColouring>,
     },
     Rsi {
         period: usize,
@@ -1511,7 +1490,7 @@ mod tests {
     #[test]
     fn an_absurd_pane_height_is_brought_back_into_range() {
         let mut volume = Indicator::new(1, Kind::Volume);
-        volume.params = Params::Volume { height: 5.0, colouring: None, up_color: None, down_color: None, opacity: DEFAULT_VOLUME_OPACITY };
+        volume.params = Params::Volume { height: 5.0, up_color: None, down_color: None, opacity: DEFAULT_VOLUME_OPACITY };
         match compute(&volume, &bars(&[1.0, 2.0]), 0, Timeframe::days(1), None) {
             Output::Volume { height, .. } => assert_eq!(height, MAX_PANE_SHARE),
             other => panic!("{other:?}"),
@@ -1898,26 +1877,19 @@ mod tests {
         assert_eq!(back, last);
     }
 
-    /// A delta's colouring is written down only once one is picked, by the
-    /// key a chart's colouring is, and a profile written before it could be
-    /// picked follows Preferences.
+    /// A profile or a volume pane written with a colouring of its own,
+    /// before the pairs were taken out, is read without it, in the look.
     #[test]
-    fn a_delta_profile_keeps_the_colouring_picked_for_it() {
-        let json = r#"{"id": 1, "kind": "volume_profile", "visible": true,
-            "params": {"kind": "volume_profile", "reset": "session", "value_area": 0.7, "method": "delta"}}"#;
-        let older: Indicator = serde_json::from_str(json).expect("an older profile");
-        let Params::VolumeProfile { colouring, .. } = &older.params else { unreachable!() };
-        assert_eq!(*colouring, None);
-        assert!(!serde_json::to_string(&older).unwrap().contains("colouring"), "nothing picked, nothing written");
-
-        let mut picked = older.clone();
-        if let Params::VolumeProfile { colouring, .. } = &mut picked.params {
-            *colouring = Some(BarColouring::Quiet);
+    fn a_colouring_written_before_is_read_without_it() {
+        for json in [
+            r#"{"id": 1, "kind": "volume_profile", "visible": true,
+                "params": {"kind": "volume_profile", "reset": "session", "value_area": 0.7, "method": "delta", "colouring": "theme-quiet"}}"#,
+            r#"{"id": 1, "kind": "volume", "visible": true,
+                "params": {"kind": "volume", "height": 0.18, "colouring": "theme-soft"}}"#,
+        ] {
+            let read: Indicator = serde_json::from_str(json).expect("an older indicator");
+            assert!(!serde_json::to_string(&read).unwrap().contains("colouring"), "{json}");
         }
-        let json = serde_json::to_string(&picked).unwrap();
-        assert!(json.contains(r#""colouring":"theme-quiet""#), "{json}");
-        let back: Indicator = serde_json::from_str(&json).unwrap();
-        assert_eq!(back, picked);
     }
 
     #[test]

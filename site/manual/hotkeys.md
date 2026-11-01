@@ -108,7 +108,7 @@ From anywhere:
 | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>G</kbd> | Shows or hides the gridlines | [Charts](/manual/charts/) |
 | <kbd>Ctrl</kbd> + <kbd>H</kbd> | Hides every drawing, or shows them again | [Hiding the drawings](/manual/drawings/#hiding-the-drawings) |
 | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>H</kbd> | Hides every indicator, or shows them again | [Hiding every indicator](/manual/indicators/#hiding-every-indicator) |
-| <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>H</kbd> | Hides the bars, or shows them again in the style they had | [Hiding the bars](/manual/charts/#hiding-the-bars) |
+| <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>H</kbd> | Hides the focused chart's bars, or shows them again | [Hiding the bars](/manual/charts/#hiding-the-bars) |
 | <kbd>F2</kbd> | With no drawing selected, edits the chart title: in the header when it shows the chart title, otherwise in the **Chart title** dialog. With a drawing selected, F2 is the drawing's (below) | [Chart titles](/manual/charts/#chart-titles) |
 | <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>1</kbd> … <kbd>9</kbd> | Chart template N, in the order they are listed | [Chart templates](/manual/chart-templates/) |
 | <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>0</kbd> | No chart template | [Chart templates](/manual/chart-templates/) |

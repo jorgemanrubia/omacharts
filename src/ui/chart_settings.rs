@@ -16,9 +16,9 @@ use omacharts_engine::indicators::{
     MIN_PANE_SHARE,
 };
 use omacharts_engine::indicators::cvd::Style;
-use omacharts_engine::indicators::profile::{Align, Method, Style as ProfileStyle, DELTA_COLOURINGS};
+use omacharts_engine::indicators::profile::{Align, Method, Style as ProfileStyle};
 use omacharts_engine::theme::ColorChoice;
-use omacharts_engine::{BarColouring, BarStyle, Indicator, Session};
+use omacharts_engine::{Indicator, Session};
 
 use crate::ui::colors;
 use crate::ui::controls;
@@ -643,113 +643,40 @@ fn title_group(window: &Rc<Window>) -> adw::PreferencesGroup {
     group
 }
 
+/// Whether this chart draws its bars. How they are drawn is every chart's,
+/// under Appearance; hiding them is this chart's, for one that is all
+/// indicators.
 fn bars_group(window: &Rc<Window>) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     group.set_title("Bars");
-
-    // The styles, then None: hiding the bars keeps the style they had, and
-    // the colouring row keeps describing it, greyed until they are back.
-    let mut names: Vec<&str> = BarStyle::ALL.iter().map(|s| s.label()).collect();
-    names.push(crate::ui::window::NO_BARS_LABEL);
-    let hidden_at = BarStyle::ALL.len() as u32;
-    let row = adw::ComboRow::new();
-    row.set_title("Style");
-    row.set_model(Some(&gtk::StringList::new(&names)));
-    row.set_selected(match window.bars_hidden() {
-        true => hidden_at,
-        false => BarStyle::ALL.iter().position(|s| *s == window.bar_style()).unwrap_or(0) as u32,
-    });
-
-    let colouring = adw::ComboRow::new();
-    colouring.set_title("Colouring");
-    fill_colourings(&colouring, window.bar_style(), window.bar_colouring());
-    colouring.set_sensitive(!window.bars_hidden());
-
-    // Set while the rows are being brought up to date with a chart changed
+    // Set while the row is being brought up to date with a chart changed
     // from elsewhere, so that reading the change is not taken for making it.
     let syncing = Rc::new(std::cell::Cell::new(false));
 
-    // How thick OHLC bars are drawn, offered only while they are.
-    let thickness = {
-        let window = window.clone();
-        let syncing = syncing.clone();
-        controls::bounded_row(
-            THICKNESS_LABEL,
-            None,
-            f64::from(window.ohlc_thickness()),
-            f64::from(crate::chart_defaults::MIN_OHLC_THICKNESS),
-            f64::from(crate::chart_defaults::MAX_OHLC_THICKNESS),
-            1.0,
-            0,
-            move |px| {
-                let px = px.round() as u8;
-                if !syncing.get() && px != window.ohlc_thickness() {
-                    window.set_ohlc_thickness(px);
-                }
-            },
-        )
-    };
-    thickness.row.set_visible(!window.bars_hidden() && window.bar_style() == BarStyle::Ohlc);
-
-    let window_for_style = window.clone();
-    let colouring_for_style = colouring.clone();
-    let syncing_for_style = syncing.clone();
-    let thickness_for_style = thickness.row.clone();
-    row.connect_selected_notify(move |row| {
-        if syncing_for_style.get() {
-            return;
-        }
-        let ohlc = BarStyle::ALL.get(row.selected() as usize) == Some(&BarStyle::Ohlc);
-        thickness_for_style.set_visible(ohlc);
-        if row.selected() == hidden_at {
-            window_for_style.set_bars_hidden(true);
-            colouring_for_style.set_sensitive(false);
-        } else if let Some(style) = BarStyle::ALL.get(row.selected() as usize).copied() {
-            window_for_style.set_bar_style(style);
-            fill_colourings(&colouring_for_style, style, window_for_style.bar_colouring());
-            colouring_for_style.set_sensitive(true);
+    let row = adw::SwitchRow::new();
+    row.set_title("Show bars");
+    row.set_active(!window.bars_hidden());
+    let shown = window.clone();
+    let quiet = syncing.clone();
+    row.connect_active_notify(move |row| {
+        if !quiet.get() {
+            shown.set_bars_hidden(!row.is_active());
         }
     });
     group.add(&row);
-    group.add(&thickness.row);
 
-    let window_for_colouring = window.clone();
-    let syncing_for_colouring = syncing.clone();
-    colouring.connect_selected_notify(move |row| {
-        if filling_colourings(row) || syncing_for_colouring.get() {
-            return;
-        }
-        let style = window_for_colouring.bar_style();
-        let Some(chosen) = BarColouring::offered(style).get(row.selected() as usize).copied()
-        else {
-            return;
-        };
-        if chosen != window_for_colouring.bar_colouring().for_style(style) {
-            window_for_colouring.set_bar_colouring(chosen);
-        }
-    });
-    group.add(&colouring);
-
-    // A command, or a theme, can change the chart while this is open; the
-    // rows read it again rather than go on describing what it was. Weakly,
-    // so the window does not keep a closed dialog's rows alive.
+    // A command can change the chart while this is open; the row reads it
+    // again rather than go on describing what it was. Weakly, so the window
+    // does not keep a closed dialog's rows alive.
     let weak = Rc::downgrade(window);
-    let rows = (row.downgrade(), colouring.downgrade());
-    let thickness = (thickness.row.downgrade(), thickness.adjustment.clone());
+    let shown = row.downgrade();
     window.watch_chart(move || {
-        let (Some(window), Some(row), Some(colouring)) = (weak.upgrade(), rows.0.upgrade(), rows.1.upgrade())
-        else {
-            return false;
-        };
+        let (Some(window), Some(row)) = (weak.upgrade(), shown.upgrade()) else { return false };
         if row.root().is_none() {
             return false;
         }
         syncing.set(true);
-        sync_bars(&window, &row, &colouring, hidden_at);
-        if let Some(shown) = thickness.0.upgrade() {
-            shown.set_visible(!window.bars_hidden() && window.bar_style() == BarStyle::Ohlc);
-            thickness.1.set_value(f64::from(window.ohlc_thickness()));
-        }
+        row.set_active(!window.bars_hidden());
         syncing.set(false);
         true
     });
@@ -757,43 +684,9 @@ fn bars_group(window: &Rc<Window>) -> adw::PreferencesGroup {
     group
 }
 
-/// Bring the Bars rows to what the focused chart is wearing now.
-fn sync_bars(window: &Rc<Window>, row: &adw::ComboRow, colouring: &adw::ComboRow, hidden_at: u32) {
-    let hidden = window.bars_hidden();
-    row.set_selected(match hidden {
-        true => hidden_at,
-        false => BarStyle::ALL.iter().position(|s| *s == window.bar_style()).unwrap_or(0) as u32,
-    });
-    fill_colourings(colouring, window.bar_style(), window.bar_colouring());
-    colouring.set_sensitive(!hidden);
-}
-
 /// The row for how many pixels wide OHLC bars are drawn, in a chart's
 /// settings and in the preferences alike.
 pub const THICKNESS_LABEL: &str = "Thickness";
-
-/// Offer the colourings a bar of `style` can be painted in, with `current`
-/// selected — as an OHLC bar draws it, so a hollow chart turned into OHLC
-/// reads as coloured, which is what it shows.
-///
-/// A new model selects its first entry on the way in, which the row's own
-/// handler would take for a choice; [`filling_colourings`] tells it not to.
-pub fn fill_colourings(row: &adw::ComboRow, style: BarStyle, current: BarColouring) {
-    let offered = BarColouring::offered(style);
-    let names: Vec<&str> = offered.iter().map(|c| c.label(style)).collect();
-    row.set_widget_name(FILLING);
-    row.set_model(Some(&gtk::StringList::new(&names)));
-    let shown = current.for_style(style);
-    row.set_selected(offered.iter().position(|c| *c == shown).unwrap_or(0) as u32);
-    row.set_widget_name("");
-}
-
-const FILLING: &str = "filling-colourings";
-
-/// Whether the row is being refilled rather than chosen from.
-pub fn filling_colourings(row: &adw::ComboRow) -> bool {
-    row.widget_name() == FILLING
-}
 
 /// The way back to what a new chart opens with, for a chart that has wandered.
 fn defaults_group(window: &Rc<Window>, frame: &adw::Window) -> adw::PreferencesGroup {
@@ -1725,7 +1618,7 @@ fn appearance_group(
     // does: unset is the next colour along from the first line's, so the two
     // never come out the same.
     // A cumulative delta's line is drawn only as a line: as candles it is
-    // in its colouring, and these rows would change nothing on screen.
+    // in the look's colours, and these rows would change nothing on screen.
     if let Params::Cvd { style, .. } = &indicator.params {
         let is_line = |params: &Params| matches!(params, Params::Cvd { style: Style::Line, .. });
         group.set_visible(*style == Style::Line);
@@ -2037,7 +1930,7 @@ fn parameters_group(
         Params::Volume { height, .. } => {
             group.add(&pane_height_row(owner, refresh, id, *height));
         }
-        Params::Cvd { reset, style, height, colouring } => {
+        Params::Cvd { reset, style, height } => {
             // Said once, here, rather than on the chart: the legend's ≈ is
             // the mark there.
             if owner.estimates_delta() {
@@ -2061,7 +1954,6 @@ fn parameters_group(
             let app = owner.app.clone();
             style_row.connect_selected_notify(move |_| app.chart_changed_elsewhere());
             group.add(&style_row);
-            group.add(&colouring_row(owner, refresh, id, *colouring));
             group.add(&pane_height_row(owner, refresh, id, *height));
         }
         Params::Rsi { period, height, overbought, oversold } => {
@@ -2150,7 +2042,7 @@ fn parameters_group(
             ));
             group.add(&pane_height_row(owner, refresh, id, *height));
         }
-        Params::VolumeProfile { reset, rows, value_area, method, colouring, last_only, .. } => {
+        Params::VolumeProfile { reset, rows, value_area, method, last_only, .. } => {
             group.add(&reset_row(owner, refresh, id, *reset));
             // The newest period alone, on either method and either edge.
             let last_row = adw::SwitchRow::new();
@@ -2184,9 +2076,6 @@ fn parameters_group(
                 },
             );
             group.add(&method_row);
-            let colouring_row = colouring_row(owner, refresh, id, *colouring);
-            colouring_row.set_visible(has_colouring(*method));
-            group.add(&colouring_row);
             for row in rows_rows(owner, refresh, id, *rows) {
                 group.add(&row);
             }
@@ -2209,11 +2098,9 @@ fn parameters_group(
             area_row.set_sensitive(has_value_area(*method));
             method_row.connect_selected_notify({
                 let area_row = area_row.clone();
-                let colouring_row = colouring_row.clone();
                 move |row| {
                     let method = Method::ALL.get(row.selected() as usize).copied().unwrap_or_default();
                     area_row.set_sensitive(has_value_area(method));
-                    colouring_row.set_visible(has_colouring(method));
                 }
             });
             group.add(&area_row);
@@ -2286,13 +2173,13 @@ fn volume_colours(
     group
 }
 
-/// The volume pane's palette, its opacity and its two colours, as it is
+/// The volume pane's colouring, its opacity and its two colours, as it is
 /// painted now.
 fn volume_rows(owner: &Rc<Owner>, refresh: &Refresh, indicator: &Indicator) -> Vec<gtk::Widget> {
     let id = indicator.id;
     let (up, down) =
         crate::ui::chart::volume_colours(indicator, &owner.theme(), &owner.bar_scheme());
-    let Params::Volume { colouring, up_color, down_color, .. } = &indicator.params else {
+    let Params::Volume { up_color, down_color, .. } = &indicator.params else {
         return Vec::new();
     };
     let opacity = percent_row(
@@ -2309,17 +2196,6 @@ fn volume_rows(owner: &Rc<Owner>, refresh: &Refresh, indicator: &Indicator) -> V
             }
         },
     );
-    // The chart's own colouring first, then the ones a bar with no body
-    // can wear: a volume bar has none to leave hollow, like an OHLC bar.
-    let offered = BarColouring::offered(BarStyle::Ohlc);
-    let mut names = vec![VOLUME_FOLLOWS_CHART];
-    names.extend(offered.iter().map(|c| c.label(BarStyle::Ohlc)));
-    let current = colouring.and_then(|c| offered.iter().position(|o| *o == c)).map(|at| at + 1);
-    let choice = choice_row(owner, refresh, id, "Colouring", &names, current, move |indicator, at| {
-        if let Params::Volume { colouring, .. } = &mut indicator.params {
-            *colouring = at.checked_sub(1).and_then(|at| offered.get(at).copied());
-        }
-    });
     // Bars have no line to repaint as a sample.
     let unused = Ink::new(String::new);
     let up_row = colour_row(
@@ -2350,39 +2226,11 @@ fn volume_rows(owner: &Rc<Owner>, refresh: &Refresh, indicator: &Indicator) -> V
         },
         id,
     );
-    vec![choice.upcast(), opacity.upcast(), up_row.upcast(), down_row.upcast()]
+    vec![opacity.upcast(), up_row.upcast(), down_row.upcast()]
 }
-
-/// What a volume pane's colouring row offers first: the way the chart
-/// paints its candles, whatever that is.
-const VOLUME_FOLLOWS_CHART: &str = "Same as the chart";
 
 /// The volume row that says how solid its bars are.
 pub const VOLUME_OPACITY_LABEL: &str = "Opacity";
-
-/// The colouring row a delta volume profile and a cumulative delta share:
-/// **Default**, the look chosen in Preferences, first, then the pairs of
-/// their own, [`DELTA_COLOURINGS`]. A colouring outside those that an
-/// indicator already has, from a hand-edited chart, is offered last, so the
-/// row shows what is drawn.
-fn colouring_row(owner: &Rc<Owner>, refresh: &Refresh, id: u32, current: Option<BarColouring>) -> adw::ComboRow {
-    let mut offered: Vec<BarColouring> = DELTA_COLOURINGS.to_vec();
-    if let Some(kept) = current.filter(|c| !offered.contains(c)) {
-        offered.push(kept);
-    }
-    let mut names = vec![PROFILE_FOLLOWS_DEFAULTS];
-    names.extend(offered.iter().map(|c| c.label(BarStyle::Ohlc)));
-    let at = current.and_then(|c| offered.iter().position(|o| *o == c)).map(|at| at + 1);
-    choice_row(owner, refresh, id, PROFILE_COLOURING_LABEL, &names, at, move |indicator, at| {
-        let chosen = at.checked_sub(1).and_then(|at| offered.get(at).copied());
-        match &mut indicator.params {
-            Params::Volume { colouring, .. }
-            | Params::VolumeProfile { colouring, .. }
-            | Params::Cvd { colouring, .. } => *colouring = chosen,
-            _ => {}
-        }
-    })
-}
 
 /// The cumulative delta row that picks candles or a line.
 const CVD_STYLE_LABEL: &str = "Style";
@@ -2408,20 +2256,6 @@ pub const PROFILE_LAST_ONLY_LABEL: &str = "Only show in last period";
 /// The volume profile switch that draws its point of control or leaves it
 /// out.
 pub const PROFILE_POC_LABEL: &str = "Show point of control";
-
-/// The volume profile row that says how a delta's two sides are painted.
-const PROFILE_COLOURING_LABEL: &str = "Colouring";
-
-/// What a delta profile's colouring row offers first: the colouring chosen
-/// on the Defaults page of Preferences, whatever that is.
-const PROFILE_FOLLOWS_DEFAULTS: &str = "Default";
-
-/// Whether a volume profile measuring by `method` is painted in a colouring:
-/// a delta is, bought and sold as rising and falling bars; a total is in
-/// the profile's own colour.
-fn has_colouring(method: Method) -> bool {
-    method == Method::Delta
-}
 
 /// How a volume profile is drawn: its outline, its rows, its point of
 /// control, and its shape, side and width.
@@ -3550,19 +3384,6 @@ mod tests {
         assert_eq!(Method::ALL[0], Method::default());
         assert!(has_value_area(Method::Total));
         assert!(!has_value_area(Method::Delta));
-    }
-
-    /// A delta offers the colourings that tell a rise from a fall, by the
-    /// names a chart's own colouring row gives them, after the default;
-    /// a total offers none.
-    #[test]
-    fn a_delta_profile_offers_the_two_toned_colourings_after_the_default() {
-        let names: Vec<&str> = DELTA_COLOURINGS.iter().map(|c| c.label(BarStyle::Ohlc)).collect();
-        assert_eq!(names, ["Soft", "Quiet"]);
-        assert!(names.iter().all(|name| BarColouring::ALL.iter().any(|c| c.label(BarStyle::Ohlc) == *name)));
-        assert_eq!(PROFILE_FOLLOWS_DEFAULTS, "Default");
-        assert!(has_colouring(Method::Delta));
-        assert!(!has_colouring(Method::Total));
     }
 
     #[test]

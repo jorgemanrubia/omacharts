@@ -99,7 +99,14 @@ crop: 276,56,2008,1328   (the whole dialog, 12px layout margin)
 
 ### Appearance
 
-**Theme** chooses the theme, and **Bars** the colours every chart's bars are painted in ([Themes and colours](/manual/themes/)).
+Everything on this page is the same on every chart, in every chartbook, and changes them all as you change it. A chart's settings show the same page, under **Global**.
+
+| Group › row | Does | Chapter |
+|---|---|---|
+| Theme › **Follow system**, **Catalogue** | The theme: the desktop's, or one picked from every Omarchy theme. | [Choosing a theme](/manual/themes/#choosing-a-theme) |
+| Bars › **Drawn as** | **Candles** or **OHLC**. | [Style](/manual/charts/#style) |
+| Bars › **Thickness** | How many pixels wide OHLC bars are drawn, from 1 to 4. Only there while the bars are OHLC. | [Style](/manual/charts/#style) |
+| Bars › **Up**, **Down** | Each direction's colour, and its body: filled, bordered or hollow. | [Bars](/manual/themes/#bars) |
 
 ### Overlays
 

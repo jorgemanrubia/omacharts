@@ -30,9 +30,7 @@ crop: 700,84,1160,1276 (both)
 | Group › row | Does |
 |---|---|
 | **Title** | The chart title, shown by the header's **Chart title** part. Blank for none ([Chart titles](/manual/charts/#chart-titles)) |
-| **Bars** › **Style** | **Candles**, **OHLC bars**, or **None** to hide the bars ([Bars](/manual/charts/#bars)). **Colouring** is greyed out while they are hidden |
-| **Bars** › **Thickness** | How many pixels wide OHLC bars are drawn, from 1 to 4. Only there on OHLC bars |
-| **Bars** › **Colouring** | **Filled**, **Hollow**, **Red up**, **Soft**, **Quiet** or **Monochrome** for candles; the same less **Hollow**, with **Coloured** for **Filled**, for OHLC bars ([Colouring](/manual/charts/#colouring)) |
+| **Bars** › **Show bars** | Off, this chart's bars are hidden ([Hiding the bars](/manual/charts/#hiding-the-bars)). How bars are drawn, OHLC thickness included, is every chart's, on the **Appearance** page under **Global** |
 | **Scales** › **Auto scale price** | Fits the visible bars vertically. Off, the chart can be dragged up and down ([Scales](/manual/charts/#scales)) |
 | **Scales** › **Logarithmic scale** | Equal heights are equal percentage moves ([Logarithmic scale](/manual/charts/#logarithmic-scale)) |
 | **Scales** › **Gridlines** | Draws the grid, on every chart. The scales and their labels stay either way ([Gridlines](/manual/charts/#gridlines)) |
@@ -64,9 +62,6 @@ crop: 292,76,1976,1288   (the whole dialog; the Defaults page scrolls inside it)
 
 | Group › row | Choices | Default |
 |---|---|---|
-| **Bars** › **Style** | **Candles**, **OHLC bars** | **Candles** |
-| **Bars** › **Thickness** | 1 to 4 pixels. Only there on OHLC bars | 2 |
-| **Bars** › **Colouring** | What the style offers, as in Chart settings | **Filled** |
 | **Scales** › **Logarithmic scale** | On or off | Off |
 | **Session** › **Hours** | **Extended hours**, **Regular hours only** | **Extended hours** |
 | **Indicators** › **Template** | A chart template, or **None** ([Chart templates](/manual/chart-templates/)) | **Default** |
@@ -81,7 +76,7 @@ Once a row has changed, *New charts will use these options.* and **Apply to all 
 
 ### Putting one chart back on the defaults
 
-**Reset to defaults** › **Reset**, at the bottom of the Chart page, puts the focused chart's bars, session, scales, drawing switches, legend and template back on the defaults. Gridlines and the last-price line are every chart's, and stay as they are. It asks first when the chart has indicators of its own, as choosing a template does ([Chart templates](/manual/chart-templates/)).
+**Reset to defaults** › **Reset**, at the bottom of the Chart page, shows the focused chart's bars and puts its session, scales, drawing switches, legend and template back on the defaults. Gridlines, the last-price line and how bars are drawn are every chart's, and stay as they are. It asks first when the chart has indicators of its own, as choosing a template does ([Chart templates](/manual/chart-templates/)).
 
 ## See also
 

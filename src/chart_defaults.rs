@@ -5,15 +5,13 @@
 //! two of what you were looking at is the point of splitting.
 
 use omacharts_engine::continuous::Adjustment;
-use omacharts_engine::{BarColouring, BarStyle, Session};
+use omacharts_engine::{BarStyle, Session};
 
 use crate::store::Store;
 
+/// How every chart draws its bars: candles, OHLC bars or a line. Every
+/// chart's, not a new chart's default. See [`bar_style`].
 pub const SETTING_BAR_STYLE: &str = "bar_style";
-/// How a new chart paints the bar look every chart shares. Its own key,
-/// not the old `bar_scheme`: that one now only says what the look was before
-/// it had four answers, and reading it here too would turn a chart twice.
-pub const SETTING_COLOURING: &str = "chart_colouring";
 pub const SETTING_SESSION: &str = "chart_session";
 /// How a futures root's months are joined at the rolls, on a feed that
 /// stitches them: back-adjusted or as traded.
@@ -48,8 +46,6 @@ pub const NO_TEMPLATE: &str = "none";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct ChartDefaults {
-    pub bar_style: BarStyle,
-    pub colouring: BarColouring,
     /// How many pixels wide an OHLC bar is drawn.
     pub ohlc_thickness: u8,
     pub session: Session,
@@ -69,8 +65,6 @@ pub struct ChartDefaults {
 impl Default for ChartDefaults {
     fn default() -> ChartDefaults {
         ChartDefaults {
-            bar_style: BarStyle::default(),
-            colouring: BarColouring::default(),
             ohlc_thickness: DEFAULT_OHLC_THICKNESS,
             session: Session::default(),
             continuous: Adjustment::default(),
@@ -87,14 +81,6 @@ impl ChartDefaults {
     pub fn load(store: &Store) -> ChartDefaults {
         let fallback = ChartDefaults::default();
         ChartDefaults {
-            bar_style: store
-                .setting(SETTING_BAR_STYLE)
-                .and_then(|key| BarStyle::from_key(&key))
-                .unwrap_or(fallback.bar_style),
-            colouring: store
-                .setting(SETTING_COLOURING)
-                .and_then(|key| BarColouring::from_key(&key))
-                .unwrap_or(fallback.colouring),
             ohlc_thickness: store
                 .setting(SETTING_OHLC_THICKNESS)
                 .and_then(|n| n.trim().parse::<u8>().ok())
@@ -116,8 +102,6 @@ impl ChartDefaults {
     }
 
     pub fn save(&self, store: &Store) {
-        store.set_setting(SETTING_BAR_STYLE, self.bar_style.key());
-        store.set_setting(SETTING_COLOURING, self.colouring.key());
         store.set_setting(SETTING_OHLC_THICKNESS, &self.ohlc_thickness.to_string());
         store.set_setting(SETTING_SESSION, self.session.key());
         store.set_setting(SETTING_CONTINUOUS, self.continuous.key());
@@ -130,6 +114,11 @@ impl ChartDefaults {
     }
 }
 
+/// How every chart draws its bars.
+pub fn bar_style(store: &Store) -> BarStyle {
+    store.setting(SETTING_BAR_STYLE).and_then(|key| BarStyle::from_key(&key)).unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,14 +127,11 @@ mod tests {
     fn what_is_saved_is_what_comes_back() {
         let store = Store::memory().unwrap();
         let fresh = ChartDefaults::load(&store);
-        assert_eq!(fresh.colouring, BarColouring::Filled);
         assert_eq!(fresh.ohlc_thickness, DEFAULT_OHLC_THICKNESS);
         assert!(fresh.shows_drawings && fresh.sends_drawings);
         assert!(fresh.shows_legend, "the legend is shown unless somebody turns it off");
 
         let chosen = ChartDefaults {
-            bar_style: BarStyle::Ohlc,
-            colouring: BarColouring::Monochrome,
             ohlc_thickness: 3,
             session: Session::ALL[Session::ALL.len() - 1],
             continuous: Adjustment::AsTraded,

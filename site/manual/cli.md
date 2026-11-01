@@ -118,7 +118,7 @@ chartbook  Semis (id:1)
   [exit 0]
 ```
 
-`--json` adds every chart's settings (style, colouring, session, scales, link
+`--json` adds every chart's settings (style, session, scales, link
 mode, whether it shows and sends drawings, indicators and chart template) and
 `windowOpen`, which says whether you are reading the window or the stored
 data.
@@ -374,8 +374,8 @@ $ omacharts chart set --symbol NVDA --resolution 240
 chart 2: symbol NVDA, resolution 4h
   [exit 0]
 
-$ omacharts chart set --style candles --colouring theme-hollow --session regular --auto-scale off --log-scale on
-chart 4: style candles, colouring theme-hollow, session regular, auto-scale off, log scale on
+$ omacharts chart set --bars off --session regular --auto-scale off --log-scale on
+chart 4: bars hidden, session regular, auto-scale off, log scale on
   [exit 0]
 
 $ omacharts chart set --title "Semis desk"
@@ -397,10 +397,8 @@ omacharts: "3x" is not a resolution; try 5m, 1h, 1D, 1W, 1M or 1Y
 | `--symbol SYMBOL` | The instrument, such as `AAPL` or `2330.TW` | [Symbols and search](/manual/symbols/) |
 | `--suffix S` | Its venue suffix, for a listing abroad | [Symbols and search](/manual/symbols/#listings-abroad) |
 | `--resolution TF` | A resolution as typed on the chart | [Resolutions](/manual/charts/#resolutions) |
-| `--style STYLE` | `candles`, `ohlc`, or `none` to hide the bars | [Bars](/manual/charts/#bars) |
 | `--thickness PX` | How many pixels wide OHLC bars are drawn, `1` to `4` | [Style](/manual/charts/#style) |
-| `--bars on` or `off` | Shows the bars in the style they had, or hides them | [Hiding the bars](/manual/charts/#hiding-the-bars) |
-| `--colouring C` | `theme` (Filled), `theme-hollow` (Hollow), `theme-red-up` (Red up), `theme-soft` (Soft), `theme-quiet` (Quiet), `theme-mono` (Monochrome) | [Colouring](/manual/charts/#colouring) |
+| `--bars on` or `off` | Shows the chart's bars, or hides them | [Hiding the bars](/manual/charts/#hiding-the-bars) |
 | `--session S` | `regular`, `extended` | [Sessions](/manual/charts/#sessions) |
 | `--auto-scale on` or `off` | Fits the price axis to the visible bars, or holds it still | [Scales](/manual/charts/#scales) |
 | `--log-scale on` or `off` | Logarithmic or linear price axis | [Logarithmic scale](/manual/charts/#logarithmic-scale) |
@@ -414,17 +412,10 @@ omacharts: "3x" is not a resolution; try 5m, 1h, 1D, 1W, 1M or 1Y
 | `--chart CHART` | Which chart: `pos:N`, or a raw id from `chart list`; the focused one when not given | [Which chart a command acts on](#which-chart-a-command-acts-on) |
 | `--json` | The result as JSON | |
 
-A colouring the style does not offer, such as `theme-hollow` on OHLC bars,
-is accepted and drawn as `theme` until the chart is candles again.
 Gridlines and the last-price line are every chart's, not one chart's:
-`config grid` and `config price-line` below.
-
-`--style none` and `--bars off` both hide the bars and keep their style.
-`--bars on` brings them back in it, and `--style candles` or `--style ohlc`
-shows them in that one. A style and `--bars` that disagree, such as
-`--style candles --bars off`, are refused. In JSON, `style` is `none` while
-the bars are hidden, `bar_style` is the style they come back in, and `bars`
-says whether they are shown.
+`config grid` and `config price-line` below. So is how bars are drawn, set
+with [`config bars`](#config-bars). In JSON, `style` is that style, or `none`
+while this chart's bars are hidden, and `bars` says whether they are shown.
 
 ### `chart range`
 
@@ -475,37 +466,34 @@ over. Run `chart range` last.
 
 ### `config bars`
 
-Sets how candles look on every chart: a colour and a body for each
-direction, filled, bordered or hollow. It is Preferences › Appearance ›
-**Bars** ([Bars](/manual/themes/#bars)).
+Sets how bars look on every chart, as Preferences › Appearance › **Bars** does: how they are drawn, and for each direction a colour and a body, filled, bordered or hollow ([Bars](/manual/themes/#bars)).
 
 ```
 $ omacharts config bars
-up green filled, down rose filled
+candles, up green filled, down rose filled
   [exit 0]
 
 $ omacharts config bars red-up --up-body hollow
-bars are now up rose hollow, down green filled
+bars are now candles, up rose hollow, down green filled
   [exit 0]
 
-$ omacharts config bars --down-body bordered
-bars are now up rose hollow, down green bordered
+$ omacharts config bars --style ohlc
+bars are now ohlc, up rose hollow, down green filled
   [exit 0]
 
 $ omacharts config bars monochrome --up-body filled --down-body filled
-bars are now up foreground filled, down foreground filled
+bars are now ohlc, up foreground filled, down foreground filled
   [exit 0]
 ```
 
 | Argument or flag | Takes | Does |
 |---|---|---|
+| `--style STYLE` | `candles`, `ohlc`, `line` | How every chart draws its bars ([Style](/manual/charts/#style)) |
 | `STATE` | `coloured`, `red-up`, `monochrome` | Sets both colours: the theme's green and rose, the two swapped, or Foreground. Omitted, the command prints the current look |
 | `--up COLOUR`, `--down COLOUR` | A theme colour by name, `foreground` for the theme's text colour, or `#rrggbb` | One direction's colour. Wins over `STATE` |
 | `--up-body BODY`, `--down-body BODY` | `filled`, `bordered`, `hollow` | One direction's body. `bordered` draws the wick and the body's edge in the theme's text colour |
 
-A flag changes only its own answer. The others stay as they were. Each
-chart then paints the look its own way, `chart set --colouring`
-([Colouring](/manual/charts/#colouring)).
+A flag changes only its own answer. The others stay as they were.
 
 ### `config grid` and `config price-line`
 
@@ -523,8 +511,8 @@ on
   [exit 0]
 ```
 
-The chart defaults (`bar_style`, `ohlc_thickness`, `chart_colouring`, `chart_session`, `show_grid`,
-`chart_log_scale`, `chart_shows_legend`, `chart_header`, `timeframes`) are set with `config set`;
+The chart defaults (`ohlc_thickness`, `chart_session`, `chart_log_scale`,
+`chart_shows_legend`, `chart_header`, `timeframes`) are set with `config set`;
 see [Settings](#settings).
 
 ## Indicators
@@ -565,7 +553,6 @@ are in [Indicators](/manual/indicators/) and the page of its family.
 | `--outline-color C` | A colour | Volume profile |
 | `--outline-width F`, `--poc-width F` | 0.5 to 6 | Volume profile |
 | `--up-color C`, `--down-color C` | A colour | Volume |
-| `--colouring C` | `chart` (or `default`) to follow the chart's colouring, or `theme`, `theme-red-up`, `theme-soft`, `theme-quiet`, `theme-mono` for one of its own. A delta volume profile and a cumulative delta take `default`, the look chosen in Preferences, `theme-soft` or `theme-quiet` | Volume, volume profile, cumulative delta ([Volume](/manual/indicators/volume/)) |
 | `--opacity F` | `0.2` to `1`, where `1` is fully opaque | Volume |
 | `--overbought F`, `--oversold F` | 0 to 100 | RSI, stochastic |
 | `--height F` | 0.05 to 0.95; Volume defaults to 0.18, the other strips to 0.16 | Volume, cumulative delta, RSI, MACD, ATR, stochastic |
@@ -1065,7 +1052,7 @@ omacharts: this chartbook has 3 charts, so there is no pos:7
 ### `chart list`
 
 Lists the charts in a chartbook: raw id, symbol, resolution, bar style
-(`none` while the bars are hidden), link mode and chart title, with `*` on the focused one. `--chart` takes these raw ids. The
+(every chart's, or `none` while that chart's bars are hidden), link mode and chart title, with `*` on the focused one. `--chart` takes these raw ids. The
 list is by id, not layout order; `status show` gives positions.
 
 ```
@@ -1078,7 +1065,7 @@ Desk — watchlist "Default"
 ```
 
 `--book` lists another chartbook. `--json` gives each chart in full:
-its chart title, `title` (`null` when it has none), colouring, session, both scales, whether it shows and sends
+its chart title, `title` (`null` when it has none), session, both scales, whether it shows and sends
 drawings, indicators and template.
 
 ## Chartbooks
@@ -1559,9 +1546,8 @@ same.
 | `theme` | `omarchy` (Follow system), or an Omarchy theme by its folder name, such as `tokyo-night` | `omarchy` on Omarchy, `tokyo-night` elsewhere | Appearance › Theme | [Themes](/manual/themes/) |
 | `bar_up`, `bar_down` | a theme colour by name, such as `green` or `rose`; `foreground`; or `#rrggbb` | `green`, `rose` | Appearance › Bars › Up, Down | [Themes](/manual/themes/#bars) |
 | `bar_up_hollow`, `bar_down_hollow`, `bar_up_border`, `bar_down_border` | on, off | off | Appearance › Bars › Up, Down: Hollow or Bordered | [Themes](/manual/themes/#bars) |
-| `bar_style` | `candles`, `ohlc` | `candles` | Charts › Defaults › Style | [Chart settings](/manual/chart-settings/) |
-| `ohlc_thickness` | `1` to `4` | `2` | Charts › Defaults › Thickness | [Chart settings](/manual/chart-settings/) |
-| `chart_colouring` | `theme` (Filled), `theme-hollow`, `theme-red-up`, `theme-soft`, `theme-quiet`, `theme-mono` | `theme` | Charts › Defaults › Colouring | [Chart settings](/manual/chart-settings/) |
+| `bar_style` | `candles`, `ohlc` | `candles` | Appearance › Bars › Drawn as | [Bars](/manual/charts/#bars) |
+| `ohlc_thickness` | `1` to `4` | `2` | Appearance › Bars › Thickness | [Style](/manual/charts/#style) |
 | `chart_session` | `extended`, `regular` | `extended` | Charts › Defaults › Hours | [Chart settings](/manual/chart-settings/) |
 | `show_grid` | on, off | off | Overlays › Gridlines | [Gridlines](/manual/charts/#gridlines) |
 | `price_line` | on, off | on | Overlays › Last price line | [The last price line](/manual/charts/#the-last-price-line) |

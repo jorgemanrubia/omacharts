@@ -348,13 +348,13 @@ pub fn new_pane(
         "suffix": suffix,
         "timeframe": "1D",
         "indicators": [],
-            "bar_style": defaults.bar_style.key(),
-            "colouring": defaults.colouring.key(),
             "session": defaults.session.key(),
             "continuous": defaults.continuous.key(),
-            // Not read: gridlines are the same on every chart. Written for a
-            // build from before then, which refuses a chart without it.
+            // Not read: gridlines and how bars are drawn are the same on
+            // every chart. Written for a build from before then, which
+            // refuses a chart without them.
             "show_grid": true,
+            "bar_style": omacharts_engine::BarStyle::default().key(),
             // Focus, which is where the window starts a new chartbook's
             // chart: it takes a click in the rail while it is focused.
             "link": LinkMode::default().key(),

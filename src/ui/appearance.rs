@@ -15,6 +15,7 @@ use std::rc::{Rc, Weak};
 
 use adw::prelude::*;
 use gtk::glib;
+use omacharts_engine::BarStyle;
 use omacharts_engine::theme::{bar_colour, foreground, BarLook, Body, ColorChoice, Direction, Swatch, FOREGROUND};
 
 use crate::store::Store;
@@ -25,6 +26,8 @@ struct Context {
     store: Rc<Store>,
     theming: Rc<RefCell<Theming>>,
     on_change: Rc<dyn Fn()>,
+    /// Puts a Thickness chosen here on every chart, and on new ones.
+    on_thickness: Rc<dyn Fn(u8)>,
     page: adw::PreferencesPage,
     /// The groups [`rebuild`] owns.
     groups: RefCell<Vec<adw::PreferencesGroup>>,
@@ -43,11 +46,13 @@ pub fn page(
     store: Rc<Store>,
     theming: Rc<RefCell<Theming>>,
     on_change: Rc<dyn Fn()>,
+    on_thickness: Rc<dyn Fn(u8)>,
 ) -> adw::PreferencesPage {
     let context = Rc::new(Context {
         store,
         theming,
         on_change,
+        on_thickness,
         page: adw::PreferencesPage::new(),
         groups: RefCell::new(Vec::new()),
     });
@@ -134,6 +139,10 @@ fn bars_group(context: &Rc<Context>) -> adw::PreferencesGroup {
     let mut look = theming.bar_look().clone();
     drop(theming);
 
+    let thickness = thickness_row(context);
+    group.add(&style_row(context, &thickness));
+    group.add(&thickness);
+
     // The theme's swatches and Foreground: what a bar can be drawn in.
     let mut offered = theme.clone();
     offered.swatches.push(Swatch::new(FOREGROUND, &foreground(&theme)));
@@ -182,6 +191,108 @@ fn bars_group(context: &Rc<Context>) -> adw::PreferencesGroup {
         group.add(&row);
     }
     group
+}
+
+/// How every chart draws its bars, as three pictures of them: a style is
+/// told apart by its shape, which a word only describes.
+/// How many pixels wide OHLC bars are drawn, offered only while they are
+/// what the bars are drawn as. Every chart's, like the rest of the page.
+fn thickness_row(context: &Rc<Context>) -> adw::ActionRow {
+    let current = crate::chart_defaults::ChartDefaults::load(&context.store).ohlc_thickness;
+    let on_thickness = context.on_thickness.clone();
+    let row = crate::ui::controls::bounded_row(
+        crate::ui::chart_settings::THICKNESS_LABEL,
+        None,
+        f64::from(current),
+        f64::from(crate::chart_defaults::MIN_OHLC_THICKNESS),
+        f64::from(crate::chart_defaults::MAX_OHLC_THICKNESS),
+        1.0,
+        0,
+        move |px| on_thickness(px.round() as u8),
+    )
+    .row;
+    row.set_visible(crate::chart_defaults::bar_style(&context.store) == BarStyle::Ohlc);
+    row
+}
+
+fn style_row(context: &Rc<Context>, thickness: &adw::ActionRow) -> adw::ActionRow {
+    let row = adw::ActionRow::new();
+    row.set_title("Drawn as");
+    let strip = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+    strip.add_css_class("segmented");
+    let current = crate::chart_defaults::bar_style(&context.store);
+    let mut first: Option<gtk::ToggleButton> = None;
+    for style in BarStyle::ALL {
+        let tile = gtk::ToggleButton::new();
+        tile.add_css_class("body-tile");
+        let inside = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        inside.append(&style_glyph(context, style));
+        inside.append(&gtk::Label::new(Some(match style {
+            BarStyle::Candles => "Candles",
+            BarStyle::Ohlc => "OHLC",
+        })));
+        tile.set_child(Some(&inside));
+        tile.set_group(first.as_ref());
+        tile.set_active(current == style);
+        let (ctx, thickness) = (context.clone(), thickness.clone());
+        tile.connect_toggled(move |tile| {
+            if tile.is_active() {
+                thickness.set_visible(style == BarStyle::Ohlc);
+            }
+            if tile.is_active() && crate::chart_defaults::bar_style(&ctx.store) != style {
+                ctx.store.set_setting(crate::chart_defaults::SETTING_BAR_STYLE, style.key());
+                (ctx.on_change)();
+            }
+        });
+        first.get_or_insert(tile.clone());
+        strip.append(&tile);
+    }
+    row.add_suffix(&strip);
+    row
+}
+
+/// A rise and a fall drawn in `style`, in the colours the charts use.
+fn style_glyph(context: &Rc<Context>, style: BarStyle) -> gtk::DrawingArea {
+    const W: i32 = 18;
+    const H: i32 = 22;
+    let area = gtk::DrawingArea::new();
+    area.set_content_width(W);
+    area.set_content_height(H);
+    area.set_valign(gtk::Align::Center);
+    let ctx = context.clone();
+    area.set_draw_func(move |_, cr, _, _| {
+        let theming = ctx.theming.borrow();
+        let scheme = theming.bar_scheme();
+        drop(theming);
+        cr.set_line_width(1.5);
+        // (wick x, high, low, body top, body bottom, rising)
+        let bars = [(5.0, 2.0, 18.0, 6.0, 14.0, true), (13.0, 4.0, 16.0, 8.0, 13.0, false)];
+        match style {
+            BarStyle::Candles | BarStyle::Ohlc => {
+                for (x, high, low, top, bottom, up) in bars {
+                    // The direction's colour, whatever its body: a hollow
+                    // candle here would read as a fourth style.
+                    colors::set_source(cr, if up { &scheme.up } else { &scheme.down });
+                    cr.move_to(x, high);
+                    cr.line_to(x, low);
+                    let _ = cr.stroke();
+                    if style == BarStyle::Candles {
+                        cr.rectangle(x - 2.5, top, 5.0, bottom - top);
+                        let _ = cr.fill();
+                    } else {
+                        // The open to the left, the close to the right.
+                        let (open, close) = if up { (bottom, top) } else { (top, bottom) };
+                        cr.move_to(x - 3.0, open);
+                        cr.line_to(x, open);
+                        cr.move_to(x, close);
+                        cr.line_to(x + 3.0, close);
+                        let _ = cr.stroke();
+                    }
+                }
+            }
+        }
+    });
+    area
 }
 
 /// One direction's half of the look: its colour and its body.

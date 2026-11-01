@@ -97,7 +97,6 @@ const SHARED: &[&str] = &[
     "watchlist_sort_",
     "watchlist_link_",
     "bar_style",
-    "chart_colouring",
     "bar_up",
     "bar_down",
     "bar_up_hollow",

@@ -113,60 +113,50 @@ Set it from the chart menu's **Session** submenu or the **Hours** row of [Chart 
 
 ### Style
 
+Every chart draws its bars the same way. Choose it in Preferences › Appearance › Bars › **Drawn as**, from any chart's **Bar style** submenu, or with `omacharts config bars --style`. Choosing one from a chart changes every chart, and shows that chart's bars if they were hidden.
+
 | Style | Draws |
 |---|---|
 | **Candles** | A body from open to close and a wick from high to low. The default |
 | **OHLC bars** | A vertical bar from high to low, a tick to the left at the open and one to the right at the close |
-| **None** | Nothing. The bars are hidden |
 
-OHLC bars have a **Thickness** row under **Style**, from 1 to 4 pixels and 2 by default. Where the bars are packed too close for it, they are drawn thinner so neighbours never touch.
+OHLC bars have a **Thickness**, from 1 to 4 pixels and 2 by default: the **Thickness** row under **Drawn as** in Preferences › Appearance › Bars, there while the bars are OHLC, for every chart and for new ones; `omacharts chart set --thickness` sets one chart's. Where the bars are packed too close for it, they are drawn thinner so neighbours never touch.
 
 <!-- regenerate:
 theme: tokyo-night
 window: 2560x1440 @2, bin/headless-window (HOME sandboxed, theme seeded)
 state:
-  (one NVDA 1D chart drawn as OHLC bars)
-  key ctrl+shift+s
+  omacharts config bars --style ohlc
+  key ctrl+comma; click Appearance in the sidebar
 capture: bin/headless-window shot /tmp/thickness.png
-crop: 755,243,1050,640 (the Bars group)
+crop: the Bars group
 -->
-{% include figure.html src="/assets/manual/charts/ohlc-thickness.png" alt="The Bars group of Chart settings on OHLC bars, with the Thickness slider under Style" caption="Thickness, under Style on OHLC bars." %}
+{% include figure.html src="/assets/manual/charts/ohlc-thickness.png" alt="Preferences › Appearance › Bars on OHLC bars, with the Thickness slider under Drawn as" caption="Thickness, under Drawn as on OHLC bars." %}
 
 <!-- regenerate:
 theme: tokyo-night
 window: 2560x1440 @2, bin/headless-window (HOME sandboxed, theme seeded)
 state:
   (the daily-candles state above)
-  omacharts chart set --style ohlc
+  omacharts config bars --style ohlc
 capture: bin/headless-window cli chart screenshot --output /tmp/ohlc.png
 crop: none (resized to 2000 wide)
 -->
 {% include figure.html src="/assets/manual/charts/daily-ohlc.jpg" alt="The same NVDA daily chart drawn as OHLC bars" caption="The same chart as OHLC bars." %}
 
-### Colouring
+### Colours
 
-Every chart paints its bars from one look: a colour and a body for rising candles, and the same for falling ones. The look is set in Preferences › Appearance › **Bars** and is the same on every chart ([Bars](/manual/themes/#bars)). A chart's colouring is what it does with that look.
-
-| Colouring | Paints |
-|---|---|
-| **Filled** (**Coloured** for OHLC bars) | The look as it is. The default |
-| **Hollow** | The same, with rising candles drawn as outlines. Candles only |
-| **Red up** | The look the other way round, a rise in the down colour and a fall in the up colour, so red reads as a rise, the way charts are read in Taiwan, mainland China, Japan and Korea. The volume strip and a trade's profit and loss turn with the bars |
-| **Soft** | A slate for a rise and a sand for a fall, from the theme's palette, both held quieter than the look's colours so the bars sit back behind indicators and drawings. Keeps the look's hollow candles |
-| **Quiet** | Two greys made from the theme's text, a rise the lighter and a fall the darker, as a black-and-white chart has them. Keeps the look's hollow candles |
-| **Monochrome** | Every bar in Foreground, the theme's text colour. An OHLC bar still shows its direction by its ticks; a candle does not, unless the look makes it hollow |
-
-The **Colouring** row offers only what the style can draw: OHLC bars have no body to leave open. A colouring the style does not offer is kept for when the chart has the style back, and the bars are drawn **Filled** meanwhile.
+The colour of a rise and of a fall, and whether a candle's body is filled, bordered or hollow, are every chart's too, set beside the style ([Bars](/manual/themes/#bars)).
 
 ### Hiding the bars
 
-<kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>H</kbd> hides the focused chart's bars, and pressing it again shows them in the style they had. Choosing **None** does the same. Hiding the bars leaves their style as it was, so they come back as candles or OHLC bars, whichever the chart had. Choosing a style shows them again.
+<kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>H</kbd> hides the focused chart's bars, and pressing it again shows them, drawn the way every chart draws them. Choosing **None** in the **Bar style** submenu does the same, and choosing a style shows them again. This is the one part of the bars that is the chart's own, for a chart that is all indicators.
 
 Only the bars go. The price scale still fits them, and the indicators, drawings, last price and crosshair stay. Hidden bars are kept with the chart, and a chart made by splitting it starts with its bars hidden too.
 
 While they are hidden, a struck-through candle after the chart's resolution says so. Click it to show them again.
 
-Set them per chart from the chart menu's **Bar style** submenu or the **Style** and **Colouring** rows of Chart settings. To change every chart at once, use **Apply to all charts now** in Preferences ([Chart settings](/manual/chart-settings/#defaults-for-new-charts)).
+The **Show bars** switch of [Chart settings](/manual/chart-settings/) and `omacharts chart set --bars off` hide them too.
 
 ## Scales
 
@@ -213,8 +203,6 @@ state:
   omacharts chart set --symbol NVDA --resolution 1D
   key ctrl+shift+b                          # sidebar hidden
   omacharts chart split horizontal    # so the left chart's price axis is mid-window and the menu has room
-  omacharts chart set --chart pos:0 --style candles
-  omacharts chart set --chart pos:1 --style candles
   omacharts chart focus pos:0
   move 1250 710
   run bin/virtual-pointer --extent 1280x720 --button right click 600 300   # the left chart's price axis
@@ -498,7 +486,7 @@ crop: 560,262,640,986   (the whole menu, 20px layout margin)
 | Item | Does | Explained in |
 |---|---|---|
 | **Paste** | Puts down the drawings or the indicator last copied. Only there while something has been copied | [Drawings](/manual/drawings/), [Indicators](/manual/indicators/#selecting-an-indicator) |
-| **Bar style** › **Candles**, **OHLC bars**, **None** | The chart's bar style, or its bars hidden, with its key | [Bars](#bars) |
+| **Bar style** › **Candles**, **OHLC bars**, **None** | How every chart draws its bars, or this chart's bars hidden, with its key | [Bars](#bars) |
 | **Session** › **Extended hours**, **Regular hours only** | The chart's hours | [Sessions](#sessions) |
 | **Template** › **None**, then each chart template | Puts the chart on a template, with its key | [Chart templates](/manual/chart-templates/) |
 | **Template** › **Create new template from chart…** | Saves the chart's indicators as a new template and puts the chart on it. Greyed out on a chart with no indicators | [Chart templates](/manual/chart-templates/#creating-a-template) |
