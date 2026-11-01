@@ -3032,9 +3032,13 @@ impl Window {
                 false => cluster.add_css_class("over-chart"),
             }
         }
+        // From what is mounted, not the whole tree: a maximized chart from
+        // the right of a split fills the window and sits under the toggle,
+        // and asking the tree where it stands left its name under the
+        // corner's ground.
+        let edge = self.mounted().start_edge();
         for pane in self.panes.borrow().iter() {
-            let edge = rects.get(&pane.id).is_some_and(|(x, _, _, _)| at(*x, 0.0));
-            pane.set_start_clearance(if edge { clearance } else { 0 });
+            pane.set_start_clearance(if edge.contains(&pane.id) { clearance } else { 0 });
         }
     }
 
