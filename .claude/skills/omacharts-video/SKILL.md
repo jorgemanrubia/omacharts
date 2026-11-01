@@ -79,10 +79,17 @@ nothing displays. Proven on 2026-11-01 with Hyprland 0.56.2:
   cursor drawn on the output.
 - Capture: wlr-screencopy works on `REC` (`grim -o REC` gives a 3840x2160
   frame). `gpu-screen-recorder` does **not** — it captures through KMS and a
-  virtual output has no connector. Video comes from `wf-recorder -o REC`.
+  virtual output has no connector. Video comes from `wf-recorder`:
+  `wf-recorder -o REC -r 60 -c hevc_vaapi -d /dev/dri/renderD128 -p qp=18`
+  held 60fps at 3840x2160 with no gaps through drags and crosshair
+  movement (593 frames in 9.87s). `libx264 -p preset=ultrafast` did not
+  keep up — it fell behind and stretched 10s of action into 14.5s — so
+  encode on the GPU while recording and do any re-encoding afterwards.
 - Shutting down: find the studio's processes by
   `XDG_RUNTIME_DIR=<studio dir>` in `/proc/<pid>/environ` and kill exactly
   those. Never by name — Jorge's own Hyprland and omacharts are running.
+  Not `pkill -f` either: its pattern is in the shell's own command line,
+  so it kills the shell running the cleanup halfway through.
 
 ## Scripts
 
