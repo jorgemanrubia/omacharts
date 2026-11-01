@@ -33,6 +33,7 @@ crop: none
 | Tool | Key | Placing it |
 |---|---|---|
 | Pointer | <kbd>Esc</kbd> | No tool. Selects, moves and resizes drawings |
+| Measure | — | Click the start, move the mouse, then click the end |
 | Line | <kbd>Alt</kbd> + <kbd>L</kbd> | Press where it starts, then where it ends |
 | Horizontal line | <kbd>Alt</kbd> + <kbd>H</kbd> | A level. It stays flat however you drag it and spans the time between its two ends |
 | Arrow | <kbd>Alt</kbd> + <kbd>A</kbd> | A line with a head at the end |
@@ -40,7 +41,6 @@ crop: none
 | Rectangle | <kbd>Alt</kbd> + <kbd>R</kbd> | Press at one corner, release at the other |
 | Circle | <kbd>Alt</kbd> + <kbd>C</kbd> | Placed like a rectangle; the ellipse fills it |
 | Text | <kbd>Alt</kbd> + <kbd>T</kbd> | Click where the text goes, then type |
-| Measure | — | Click the start, move the mouse, then click the end |
 
 After one drawing the tool is deselected. <kbd>Ctrl</kbd> + click a tool to keep it selected until <kbd>Esc</kbd> or another tool. The selected tool draws on whichever chart you press. A configuration is a saved look for a tool's drawings, numbered 1 to 9 ([Configurations](#configurations)).
 
@@ -70,10 +70,10 @@ A finished drawing is left selected.
 
 ## Measuring a range
 
-The ruler measures the change between two points. Choose **Measure** at the
-bottom of the tools, click the starting point, move the mouse, then click the
-end point. The label shows price change, percentage change, bar distance and
-elapsed time. The range stays fixed after the second click. Click again to
+The ruler measures the change between two points. Choose **Measure**, just
+below the pointer at the top of the tools, click the starting point, move the
+mouse, then click the end point. The label shows price change, percentage
+change, bar distance and elapsed time. The range stays fixed after the second click. Click again to
 start another, or press <kbd>Esc</kbd> to clear it and return to the pointer.
 
 <!-- regenerate:

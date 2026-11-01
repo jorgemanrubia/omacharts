@@ -219,11 +219,12 @@ impl DrawingBar {
             cr.stroke().ok();
         });
         ruler.set_child(Some(&icon));
-        if let Some((_, first, _)) = buttons.first() {
-            ruler.set_group(Some(first));
+        // Straight under the pointer, inside its rule: both change what the
+        // hand does on the chart, where everything below the rule draws.
+        if let Some((_, pointer, _)) = buttons.first() {
+            ruler.set_group(Some(pointer));
+            column.insert_child_after(&ruler, Some(pointer));
         }
-        column.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-        column.append(&ruler);
 
         let bar = Rc::new(DrawingBar {
             root: gtk::Box::new(gtk::Orientation::Vertical, 0),

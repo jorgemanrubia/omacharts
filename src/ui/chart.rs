@@ -6180,6 +6180,33 @@ fn draw_echo(
     cr.restore().ok();
 }
 
+/// Which way a measured range went, which picks its colour.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RulerDirection {
+    Up,
+    Down,
+    Flat,
+}
+
+impl RulerDirection {
+    fn of(from: Anchor, to: Anchor) -> Self {
+        match to.price.partial_cmp(&from.price) {
+            Some(std::cmp::Ordering::Greater) => Self::Up,
+            Some(std::cmp::Ordering::Less) => Self::Down,
+            _ => Self::Flat,
+        }
+    }
+}
+
+/// The ruler's two arrows as (tail, tip), through the middle of the box
+/// whose opposite corners are the projected start `a` and end `b`: one from
+/// the start price to the end price, one from the start time to the end
+/// time. The head goes on the tip.
+fn ruler_arrows(a: (f64, f64), b: (f64, f64)) -> [((f64, f64), (f64, f64)); 2] {
+    let (mid_x, mid_y) = ((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0);
+    [((mid_x, a.1), (mid_x, b.1)), ((a.0, mid_y), (b.0, mid_y))]
+}
+
 /// A temporary range on the pointer layer: no scene rebuild on mouse motion.
 fn draw_ruler(
     cr: &cairo::Context,
@@ -6194,36 +6221,45 @@ fn draw_ruler(
     let (x, y) = (a.0.min(b.0), a.1.min(b.1));
     let (w, h) = ((b.0 - a.0).abs(), (b.1 - a.1).abs());
     let measured = omacharts_engine::measurement::Measurement::between(from, to, &state.bars);
-    let colour = &state.theme.ui.accent;
+    // The candles' own up and down, so a "Red up" scheme measures a rise in
+    // red; the label is the last-price tag of that direction, whose figure is
+    // already chosen to read on its fill.
+    let flat;
+    let (colour, tag) = match RulerDirection::of(from, to) {
+        RulerDirection::Up => (&state.scheme.up, &state.price_tags[0]),
+        RulerDirection::Down => (&state.scheme.down, &state.price_tags[1]),
+        RulerDirection::Flat => {
+            flat = Tag::on(&state.scheme.neutral);
+            (&state.scheme.neutral, &flat)
+        }
+    };
     cr.save().ok();
     cr.rectangle(plan.plot_x, plan.price_y, plan.plot_w, plan.price_h);
     cr.clip();
     colors::set_source_alpha(cr, colour, 0.18);
     cr.rectangle(x, y, w, h);
     cr.fill().ok();
-    colors::set_source_alpha(cr, colour, 0.9);
+    colors::set_source(cr, colour);
     cr.set_line_width(1.0);
     cr.rectangle(x, y, w, h);
     cr.stroke().ok();
-    // Both dimensions have arrowheads, including when measuring backwards.
-    for (a, b) in [
-        ((x, y + h / 2.0), (x + w, y + h / 2.0)),
-        ((x + w / 2.0, y), (x + w / 2.0, y + h)),
-    ] {
-        cr.move_to(a.0, a.1);
-        cr.line_to(b.0, b.1);
+    // One head on each arrow, at the end: the way price and time went.
+    for (tail, tip) in ruler_arrows(a, b) {
+        cr.move_to(tail.0, tail.1);
+        cr.line_to(tip.0, tip.1);
         cr.stroke().ok();
-        for (tip, other) in [(a, b), (b, a)] {
-            let angle = (other.1 - tip.1).atan2(other.0 - tip.0);
-            for offset in [-0.55_f64, 0.55] {
-                cr.move_to(tip.0, tip.1);
-                cr.line_to(
-                    tip.0 + 5.0 * (angle + offset).cos(),
-                    tip.1 + 5.0 * (angle + offset).sin(),
-                );
-            }
-            cr.stroke().ok();
+        if (tip.0 - tail.0).hypot(tip.1 - tail.1) < 1.0 {
+            continue;
         }
+        let angle = (tail.1 - tip.1).atan2(tail.0 - tip.0);
+        for offset in [-0.55_f64, 0.55] {
+            cr.move_to(tip.0, tip.1);
+            cr.line_to(
+                tip.0 + 5.0 * (angle + offset).cos(),
+                tip.1 + 5.0 * (angle + offset).sin(),
+            );
+        }
+        cr.stroke().ok();
     }
     let lines = measured.lines();
     cr.set_font_size(11.0);
@@ -6244,12 +6280,11 @@ fn draw_ruler(
             .min(plan.price_y + plan.price_h - 40.0)
             .max(plan.price_y)
     };
-    colors::set_source(cr, &state.theme.ui.background);
+    colors::set_source(cr, &tag.fill);
     cr.rectangle(bx, by, bw, 40.0);
-    cr.fill().ok();
-    colors::set_source(cr, colour);
-    cr.rectangle(bx, by, bw, 40.0);
+    cr.fill_preserve().ok();
     cr.stroke().ok();
+    colors::set_source(cr, &tag.label);
     for (i, line) in lines.iter().enumerate() {
         let width = cr.text_extents(line).map(|e| e.x_advance()).unwrap_or(0.0);
         cr.move_to(bx + (bw - width) / 2.0, by + 15.0 + i as f64 * 15.0);
@@ -8777,6 +8812,29 @@ mod drawing_tests {
             (x, plan.price_y + plan.price_h + 10.0)] {
             assert!(state.ruler_anchor(w, h, x, y).is_none(), "accepted ({x}, {y})");
         }
+    }
+
+    #[test]
+    fn a_ruler_takes_its_direction_from_the_prices_not_the_screen() {
+        let at = |price| Anchor::new(1, price);
+        assert_eq!(RulerDirection::of(at(100.0), at(110.0)), RulerDirection::Up);
+        assert_eq!(RulerDirection::of(at(110.0), at(100.0)), RulerDirection::Down);
+        assert_eq!(RulerDirection::of(at(100.0), at(100.0)), RulerDirection::Flat);
+        assert_eq!(RulerDirection::of(at(100.0), at(f64::NAN)), RulerDirection::Flat);
+    }
+
+    #[test]
+    fn a_ruler_arrow_points_only_at_the_end_in_both_dimensions() {
+        // Up and to the right: the end is higher on screen, so a smaller y.
+        let [price, time] = ruler_arrows((100.0, 300.0), (400.0, 100.0));
+        assert_eq!(price, ((250.0, 300.0), (250.0, 100.0)));
+        assert_eq!(time, ((100.0, 200.0), (400.0, 200.0)));
+        // Down and to the left: the tips follow, pointing down and left.
+        let [price, time] = ruler_arrows((400.0, 100.0), (100.0, 300.0));
+        assert_eq!(price.1, (250.0, 300.0));
+        assert!(price.1.1 > price.0.1, "points down");
+        assert_eq!(time.1, (100.0, 200.0));
+        assert!(time.1.0 < time.0.0, "points left");
     }
 
     #[test]
