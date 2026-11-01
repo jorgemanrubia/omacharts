@@ -8,6 +8,11 @@ apps="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 icons="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor"
 mkdir -p "$apps"
 
+# The system's install(1), not this script: anyone with this bin/ on PATH
+# (it is where `omacharts` lives) would otherwise have every `install` below
+# run this file again, without end.
+install() { command -p install "$@"; }
+
 for size in 16 24 32 48 64 128 256 512; do
   dir="$icons/${size}x${size}/apps"
   mkdir -p "$dir"
