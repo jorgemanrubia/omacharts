@@ -441,10 +441,16 @@ notes are generated and grouped by label, so an unlabelled PR lands under
 
 ```
 gh pr edit <N> --add-label enhancement     # or bug
-gh pr merge <N> --squash
+gh pr merge <N> --squash                   # only the contributor's commits
+gh pr merge <N> --rebase                   # the owner's tweaks on top
 ```
 
-with a subject in the repo's voice and a body that says what landed.
+A squash folds every commit into one credited to the PR's author, so a
+PR carrying the owner's tweak commits is landed with `--rebase`
+instead: each commit reaches main as written, the contributor's and
+then his, and the history keeps who did what. A squash is for a PR that
+is the contributor's alone, with a subject in the repo's voice and a
+body that says what landed.
 
 **Thank the author.** Short: thanks, plus at most two sentences, and only for
 something they would otherwise be surprised by — a commit you pushed to their
