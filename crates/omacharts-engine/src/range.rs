@@ -1653,4 +1653,64 @@ mod tests {
         // the chart's axis counts them: Saturday to Monday.
         assert_eq!(lasting_end(&times, |t| *t, day(2026, 10, 25), columns, utc_day, daily), Some(day(2026, 11, 2)));
     }
+
+    /// The range as held, the first bar and the room past the last, the
+    /// window's last day, and what the card and the command call it.
+    type Shown = (Range, (usize, usize), Option<NaiveDate>, String);
+
+    /// A day as the window shows one: the card or `chart range` makes it a
+    /// [`Range::Lasting`] from the calendar's today, the window pins it to
+    /// its date, and the chart lays it out from its own today, its last
+    /// bar's. Every step is the one `Window::as_shown` and `show_range_at`
+    /// take, so two texts for the same day have to come out the same.
+    fn as_the_window_shows(text: &str, bars: &[i64], columns: usize) -> Option<Shown> {
+        let today = day(2026, 11, 1);
+        let range = Range::parse(text)?;
+        let Range::Day(end) = range else { return None };
+        let start = end.first(today)?;
+        let last = lasting_end(bars, |t| *t, start, columns, utc_day, |ts, n| ts + n * 3_600)?;
+        let range = range.lasting(columns as u32, (last - start).num_days() as u32).pinned(today);
+        let chart_today = bars.last().and_then(|&ts| utc_day(ts))?;
+        let view = lasting_view(bars, |t| *t, range.start(chart_today)?, columns, utc_day);
+        let end = lasting_end(bars, |t| *t, range.start(chart_today)?, columns, utc_day, |ts, n| ts + n * 3_600);
+        Some((range, view, end, range.spelled(today)))
+    }
+
+    /// Every way of saying a day goes through the same window as the date
+    /// it names: `2 days ago` on Sunday 1 November is Friday 30 October,
+    /// the last bar's day, and shows exactly what `10/30` shows; so for
+    /// weeks back, yesterday, last Friday and a weekday alone.
+    #[test]
+    fn a_relative_day_keeps_the_window_exactly_as_its_date_does() {
+        // Hourly bars of a stock's sessions, 14:00 to 20:00, to Friday 30 October.
+        let bars: Vec<i64> = (0..40)
+            .map(|d| day(2026, 9, 21) + Days::new(d))
+            .filter(|d| d.weekday().num_days_from_monday() < 5)
+            .flat_map(|d| (14..=20).map(move |h| at(d, h)))
+            .collect();
+        let columns = 70;
+        for (relative, fixed) in [
+            ("2 days ago", "10/30"),
+            ("3 days ago", "10/29"),
+            ("4 days ago", "10/28"),
+            ("2d ago", "2026/10/30"),
+            ("1 week ago", "10/25"),
+            ("a week ago", "oct 25"),
+            ("2 weeks ago", "18 oct"),
+            ("yesterday", "10/31"),
+            ("last fri", "10/30"),
+            ("fri", "10/30"),
+            ("on the 28 oct", "10/28"),
+        ] {
+            let a = as_the_window_shows(relative, &bars, columns);
+            let b = as_the_window_shows(fixed, &bars, columns);
+            assert!(a.is_some(), "{relative} reads as a day");
+            assert_eq!(a, b, "{relative} and {fixed}");
+        }
+        // And the window is the full width: 2 days ago is Friday's seven
+        // bars, then the rest as room past the last bar.
+        let (_, (first, room), _, spelled) = as_the_window_shows("2 days ago", &bars, columns).unwrap_or((Range::All, (0, 0), None, String::new()));
+        assert_eq!((bars.len() - first, room), (7, columns - 7));
+        assert_eq!(spelled, "30 Oct – 2 Nov");
+    }
 }
