@@ -1,0 +1,4 @@
+out/
+# Finished videos are saved here but never committed: too heavy for the
+# repo. Scripts, storyboards and covers are.
+renders/

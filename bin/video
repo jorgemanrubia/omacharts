@@ -1,0 +1,1272 @@
+#!/usr/bin/env -S uv run --quiet --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["pillow"]
+# ///
+"""Render Omacharts videos from a Markdown script.
+
+    bin/video setup                 build the speech and music environments
+    bin/video status                every script and its stage
+    bin/video read SCRIPT           voice the narration, for a read-through
+    bin/video board SCRIPT          one still per scene, with its narration
+    bin/video cover SCRIPT          the cover: first frame, held, and thumbnail
+    bin/video music SCRIPT [N]      N music candidates for the script's length
+    bin/video render SCRIPT         record, mix and encode the video
+    bin/video show FILE|URL         play or open it where the author watches
+    bin/video page SCRIPT           open the script's page on GitHub there
+    bin/video studio [SCRIPT] [--upto N]
+                                    bring the studio up, run SCRIPT's setup and
+                                    the scenes before N, and leave it running
+    bin/video stop                  take that studio down
+    bin/video act ACTION... [--shot FILE]
+                                    perform actions on that studio (for pinning
+                                    click positions), then screenshot it
+
+SCRIPT is a path or a slug under video/scripts. Everything it makes goes to
+video/out/<slug>/, which git ignores. The format, the stages and why they are
+in that order are in .claude/skills/video/.
+"""
+
+import contextlib
+import hashlib
+import importlib.machinery
+import json
+import math
+import os
+import random
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+VIDEO = ROOT / "video"
+SCRIPTS = VIDEO / "scripts"
+VOICES = VIDEO / "voices"
+ENGINES = VIDEO / "engines"
+OUT = VIDEO / "out"
+CACHE = OUT / ".cache"
+DATA = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") / "omacharts-video"
+CONFIG = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "omacharts-video/config"
+ACE_REPO = "https://github.com/ACE-Step/ACE-Step-1.5.git"
+
+# The studio draws at 3840x2160 with a scale of 2, so the layout everything
+# is positioned in — the window tree, the pointer — is half that.
+SIZE = (3840, 2160)
+LAYOUT = (1920, 1080)
+FPS = 60
+
+LEAD_IN = 0.8  # the opening picture, before the first word
+SCENE_GAP = 0.35  # breath between scenes
+DEFAULT_AFTER = 0.8  # hold once a scene's narration ends
+TAIL = 1.5
+COVER = 2.5  # the cover held at the start, before it fades into the first scene
+COVER_FADE = 0.6
+SETTLE = 1.0  # the app on screen, silent, between the cover's fade and the first word
+
+
+def die(message):
+    print(f"video: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
+def say(message):
+    print(f"video: {message}", flush=True)
+
+
+# --- The script -------------------------------------------------------------
+
+
+class Scene:
+    def __init__(self, number, title):
+        self.number = number
+        self.title = title
+        self.picture = ""
+        self.voice = ""
+        self.actions = {}  # cue -> [action, ...]
+        self.after = DEFAULT_AFTER
+
+
+class Script:
+    """A video/scripts/<slug>.md, read the way script-format.md lays it out."""
+
+    def __init__(self, path):
+        self.path = Path(path)
+        self.slug = self.path.stem
+        text = self.path.read_text()
+        self.meta, body = self._frontmatter(text)
+        self.setup = []
+        self.scenes = []
+        self.pronunciation = {}
+        self._parse(body)
+
+    @staticmethod
+    def _frontmatter(text):
+        if not text.startswith("---\n"):
+            return {}, text
+        head, _, body = text[4:].partition("\n---\n")
+        meta = {}
+        for line in head.splitlines():
+            key, sep, value = line.partition(":")
+            if sep:
+                meta[key.strip()] = value.split(" #")[0].strip()
+        return meta, body
+
+    def _parse(self, body):
+        section = None
+        scene = None
+        field = None
+        for line in body.splitlines():
+            if line.startswith("## "):
+                section, scene, field = line[3:].strip().lower(), None, None
+                continue
+            if line.startswith(">"):
+                continue
+            if section == "setup" and line.startswith("    ") and line.strip():
+                self.setup.append(parse_action(line.strip()))
+            elif section == "pronunciation" and line.startswith("- "):
+                word, _, spoken = line[2:].partition(":")
+                self.pronunciation[word.strip()] = spoken.strip()
+            elif section == "script":
+                heading = re.match(r"### (\d+)\.\s*(.*)", line)
+                if heading:
+                    scene = Scene(int(heading[1]), heading[2].strip())
+                    self.scenes.append(scene)
+                    field = None
+                elif scene is None:
+                    continue
+                elif line.startswith("    ") and line.strip():
+                    field = None
+                    cue, _, rest = line.strip().partition(":")
+                    if cue == "after":
+                        scene.after = float(rest)
+                    else:
+                        scene.actions[cue.strip()] = [parse_action(a) for a in rest.split(";") if a.strip()]
+                elif line.startswith("**Picture.**"):
+                    field, scene.picture = "picture", line[len("**Picture.**") :].strip()
+                elif line.startswith("**Voice.**"):
+                    field, scene.voice = "voice", line[len("**Voice.**") :].strip()
+                elif not line.strip():
+                    field = None
+                elif field:
+                    setattr(scene, field, getattr(scene, field) + " " + line.strip())
+        if not self.scenes:
+            die(f"{self.path.name} has no scenes yet — it is at the {self.meta.get('stage', 'brief')} stage")
+
+    @property
+    def out(self):
+        path = OUT / self.slug
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+
+def find_script(name):
+    path = Path(name)
+    if not path.exists():
+        path = SCRIPTS / f"{name}.md"
+    if not path.exists():
+        die(f"no script {name}; see bin/video status")
+    return Script(path)
+
+
+ACTION_ARITY = {"key": 1, "type": None, "cli": None, "move": 2, "click": 2, "rclick": 2, "drag": 4, "scroll": 3, "wait": 1, "zoom": 3}
+
+
+def parse_action(text):
+    verb, _, rest = text.strip().partition(" ")
+    if verb not in ACTION_ARITY:
+        die(f"unknown action {verb!r} in {text!r}")
+    if ACTION_ARITY[verb] is None:
+        return (verb, rest.strip())
+    args = rest.split()
+    if len(args) != ACTION_ARITY[verb]:
+        die(f"{verb} takes {ACTION_ARITY[verb]} arguments: {text!r}")
+    return (verb, *args)
+
+
+# --- Narration ---------------------------------------------------------------
+
+
+class Line:
+    """One scene's narration: what is sent to the voice, the words the aligner
+    reads, and which of those words each cue and each sentence starts on."""
+
+    def __init__(self, voice, pronunciation):
+        self.cues = {}  # cue -> index into self.words, or None for the end
+        self.sentences = []  # (display text, first word, last word)
+        spoken, words, pending, sentence, first = [], [], [], [], None
+        for piece in voice.split():
+            names = re.findall(r"\{(\w+)\}", piece)
+            piece = re.sub(r"\{\w+\}", "", piece)
+            pending += names
+            if not piece:
+                continue
+            core = piece.strip(".,;:!?\"'()—–")
+            said = piece.replace(core, pronunciation[core]) if core in pronunciation else piece
+            spoken.append(said)
+            start = len(words)
+            words += [w for w in (re.sub(r"[^a-z']", "", part.lower()) for part in re.split(r"[\s\-–—/]+", said)) if w]
+            for name in pending:
+                self.cues[name] = start if start < len(words) else None
+            pending = []
+            if first is None and start < len(words):
+                first = start
+            sentence.append(piece)
+            if piece.endswith((".", "?", "!")) and first is not None:
+                self.sentences.append((" ".join(sentence), first, len(words) - 1))
+                sentence, first = [], None
+        for name in pending:
+            self.cues[name] = None
+        if sentence and first is not None:
+            self.sentences.append((" ".join(sentence), first, len(words) - 1))
+        self.text = " ".join(spoken)
+        self.words = words
+
+
+def load_voice(name):
+    path = VOICES / f"{name}.json"
+    if not path.exists():
+        die(f"no voice {name}: add video/voices/{name}.json")
+    voice = json.loads(path.read_text())
+    if voice.get("reference"):
+        voice["reference"] = str((VOICES / voice["reference"]).resolve())
+    return voice
+
+
+def voice_scenes(script):
+    """Speak every scene, reusing what was spoken before for unchanged lines,
+    and return per scene: the wav, its word timings and its Line."""
+    voice = load_voice(script.meta.get("voice", "narrator"))
+    engine = voice.get("engine", "chatterbox")
+    (CACHE / "tts").mkdir(parents=True, exist_ok=True)
+    spoken, jobs = [], []
+    for scene in script.scenes:
+        line = Line(scene.voice, script.pronunciation)
+        key = hashlib.sha256(json.dumps([voice, line.text]).encode()).hexdigest()[:20]
+        wav = CACHE / "tts" / f"{key}.wav"
+        if not (wav.exists() and wav.with_suffix(".json").exists()):
+            jobs.append({"text": line.text, "words": line.words, "out": str(wav)})
+        spoken.append((scene, line, wav))
+    if jobs:
+        say(f"voicing {len(jobs)} of {len(spoken)} scenes with {engine} (the rest are cached)")
+        batch = CACHE / "tts" / f"batch-{os.getpid()}.json"
+        batch.write_text(json.dumps({"voice": voice, "jobs": jobs}))
+        python = DATA / "venvs" / engine / "bin/python"
+        if not python.exists():
+            die(f"no {engine} environment; run bin/video setup")
+        run([str(python), str(ENGINES / f"{engine}_engine.py"), str(batch)], cwd=ENGINES, env={**os.environ, "OMP_NUM_THREADS": str(max(4, os.cpu_count() // 2))})
+        batch.unlink()
+    result = []
+    for scene, line, wav in spoken:
+        timing = json.loads(wav.with_suffix(".json").read_text())
+        result.append({"scene": scene, "line": line, "wav": wav, "duration": timing["duration"], "words": timing["words"]})
+    return result
+
+
+def cue_time(voiced, cue):
+    index = voiced["line"].cues.get(cue)
+    if index is None or index >= len(voiced["words"]):
+        return voiced["duration"]
+    return voiced["words"][index]["start"]
+
+
+# --- Read-through -------------------------------------------------------------
+
+
+def read(script):
+    voiced = voice_scenes(script)
+    out = script.out / "read.wav"
+    inputs, parts = [], []
+    gap = script.out / ".gap.wav"
+    run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-t", str(SCENE_GAP + DEFAULT_AFTER), str(gap)])
+    for i, v in enumerate(voiced):
+        inputs += ["-i", str(v["wav"]), "-i", str(gap)]
+        parts += [f"[{2 * i}:a]aresample=48000,aformat=channel_layouts=stereo[a{i}]", f"[{2 * i + 1}:a]anull[g{i}]"]
+    chain = "".join(f"[a{i}][g{i}]" for i in range(len(voiced)))
+    graph = ";".join(parts) + f";{chain}concat=n={2 * len(voiced)}:v=0:a=1,loudnorm=I=-16:TP=-1.5[out]"
+    run(["ffmpeg", "-v", "error", "-y", *inputs, "-filter_complex", graph, "-map", "[out]", str(out)])
+    gap.unlink()
+    total = sum(v["duration"] for v in voiced)
+    words = sum(len(v["line"].words) for v in voiced)
+    say(f"{out.relative_to(ROOT)} — {len(voiced)} scenes, {words} words, {total:.1f}s of speech")
+    return out
+
+
+# --- The studio ----------------------------------------------------------------
+
+
+class Studio:
+    """A Hyprland of its own, nested in the author's but drawing to a virtual
+    output nobody sees, with omacharts running inside on its own bus, home and
+    data. studio.md in the skill says why each piece is the way it is."""
+
+    def __init__(self, script=None, theme=None):
+        self.theme = theme or (script.meta.get("theme") if script else None) or "tokyo-night"
+        self.work = (script.out if script else OUT / "studio") / "studio"
+        # Short on purpose: a Wayland socket path is capped at 108 bytes.
+        self.runtime = Path(f"/run/user/{os.getuid()}/ocv-{os.getpid()}")
+        self.pids = []
+        self.build = (script.meta.get("build") if script else None) or os.environ.get("VIDEO_BUILD") or "main"
+
+    # Bringing it up
+
+    def __enter__(self):
+        try:
+            self.start()
+        except BaseException:
+            self.stop()
+            raise
+        return self
+
+    def __exit__(self, *_):
+        self.stop()
+
+    def start(self):
+        self.binary = omacharts_build(self.build)
+        shutil.rmtree(self.work, ignore_errors=True)
+        self.home = self.work / "home"
+        self.data = self.work / "data"
+        self._make_home()
+        self._seed_data()
+        self.runtime.mkdir(mode=0o700, parents=True, exist_ok=True)
+
+        config = self.work / "studio.lua"
+        config.write_text(self._hyprland_config())
+        parent = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / os.environ.get("WAYLAND_DISPLAY", "wayland-1")
+        if not parent.exists():
+            die(f"no Wayland display at {parent} to nest the studio in")
+        env = {"HOME": str(Path.home()), "PATH": os.environ["PATH"], "USER": os.environ.get("USER", ""),
+               "XDG_RUNTIME_DIR": str(self.runtime), "WAYLAND_DISPLAY": str(parent)}
+        log = open(self.work / "hyprland.log", "w")
+        hypr = subprocess.Popen(["Hyprland", "-c", str(config)], env=env, stdout=log, stderr=log, stdin=subprocess.DEVNULL, start_new_session=True)
+        self.pids.append(hypr.pid)
+        self.hyprland = hypr
+
+        socket = self._wait(lambda: next(self.runtime.glob("hypr/*/.socket.sock"), None), "Hyprland's socket")
+        self.signature = socket.parent.name
+        display = self._wait(lambda: next((p for p in self.runtime.glob("wayland-*") if not p.name.endswith(".lock")), None), "the studio's display")
+        self.env = {**os.environ, "XDG_RUNTIME_DIR": str(self.runtime), "WAYLAND_DISPLAY": display.name,
+                    "HYPRLAND_INSTANCE_SIGNATURE": self.signature, "HOME": str(self.home), "XDG_DATA_HOME": str(self.data),
+                    "XDG_CONFIG_HOME": str(self.home / ".config"), "GDK_BACKEND": "wayland", "GTK_A11Y": "none",
+                    "GIO_USE_VFS": "local", "GDK_DEBUG": "no-portals"}
+        for name in ("DISPLAY", "SWAYSOCK"):
+            self.env.pop(name, None)
+
+        self.hyprctl("output", "create", "headless", "REC")
+        self._wait(lambda: "REC" in self.hyprctl("monitors"), "the REC output")
+        self.hyprctl("eval", 'hl.monitor({ output = "WAYLAND-1", disabled = true })')
+
+        bus = subprocess.run(["dbus-daemon", "--session", "--print-address=1", "--print-pid=1", "--fork"],
+                             env=self.env, capture_output=True, text=True, check=True).stdout.split()
+        self.env["DBUS_SESSION_BUS_ADDRESS"], self.bus_pid = bus[0], int(bus[1])
+
+        # A seat with no keyboard says so, and a client told there is none
+        # never binds one, so the first key after a device appears is lost.
+        # Held for the whole run, the seat always has one.
+        self.pids.append(self.spawn(["bash", "-c", "while :; do wtype -s 2000000 || exit 0; done"]).pid)
+        # Likewise a pointer, held and never moved, so the seat always has
+        # one; the gestures each bring their own (see Hand).
+        self.pids.append(self.spawn([str(ROOT / "bin/virtual-pointer"), "hold"]).pid)
+        time.sleep(0.3)
+        self.hand = Hand(self)
+
+        app = self.spawn([str(self.binary)], log="app.log")
+        self.pids.append(app.pid)
+        self._wait(lambda: self.window(), "the omacharts window", timeout=30)
+        time.sleep(2.5)  # charts drawn, data in
+        # The first chord a fresh window is sent goes nowhere.
+        self.key("Escape")
+        time.sleep(0.3)
+        self.key("Escape")
+        (session_file()).write_text(json.dumps({
+            "env": {k: self.env[k] for k in ("XDG_RUNTIME_DIR", "WAYLAND_DISPLAY", "HYPRLAND_INSTANCE_SIGNATURE",
+                                              "DBUS_SESSION_BUS_ADDRESS", "HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME")},
+            "binary": str(self.binary), "signature": self.signature, "runtime": str(self.runtime), "colors": self.colors,
+            "pid": os.getpid()}))
+
+    def _make_home(self):
+        theme = next((d / self.theme for d in (Path.home() / ".config/omarchy/themes", Path.home() / ".local/share/omarchy/themes", Path("/usr/share/omarchy/themes")) if (d / self.theme).is_dir()), None)
+        if not theme:
+            die(f"no Omarchy theme called {self.theme}")
+        current = self.home / ".local/state/omarchy/current"
+        current.mkdir(parents=True)
+        shutil.copytree(theme, current / "theme", ignore=shutil.ignore_patterns("backgrounds", "*.png"))
+        (current / "theme.name").write_text(self.theme + "\n")
+        self.colors = dict(re.findall(r'^(\w+)\s*=\s*"(#[0-9a-fA-F]{6})"', (theme / "colors.toml").read_text(), re.M))
+        # Fonts and toolkit settings as on the author's desktop, so the window
+        # looks the way it does there.
+        for rel in (".config/fontconfig", ".config/gtk-3.0", ".config/gtk-4.0", ".local/share/fonts", ".local/share/icons"):
+            source = Path.home() / rel
+            if source.exists():
+                (self.home / rel).parent.mkdir(parents=True, exist_ok=True)
+                (self.home / rel).symlink_to(source)
+
+    def _seed_data(self):
+        # The same market data every render: a snapshot, kept outside the
+        # repo, copied fresh for each run so setup always starts from it.
+        base = DATA / "studio-data"
+        if base.exists():
+            shutil.copytree(base, self.data, symlinks=True)
+        else:
+            self.data.mkdir(parents=True)
+
+    def keep_data(self):
+        """Keep this run's market data as the snapshot, once the app has
+        exited and its database is closed. Only market.db: the layout lives in
+        omacharts.db, and a snapshot of that would start the next run on
+        whatever this one left on screen."""
+        base = DATA / "studio-data/omacharts"
+        if base.exists() or not (self.data / "omacharts/market.db").exists():
+            return
+        say("keeping this run's market data as the studio snapshot")
+        base.mkdir(parents=True)
+        for db in (self.data / "omacharts").glob("market.db*"):
+            shutil.copy2(db, base)
+
+    def _hyprland_config(self):
+        hexa = lambda name, fallback: self.colors.get(name, fallback).lstrip("#")
+        return f"""hl.monitor({{ output = "REC", mode = "{SIZE[0]}x{SIZE[1]}@{FPS}", position = "0x0", scale = 2 }})
+hl.config({{
+  general = {{ gaps_in = 5, gaps_out = 10, border_size = 2,
+    col = {{ active_border = "rgb({hexa('accent', '#7aa2f7')})", inactive_border = "rgb({hexa('muted', '#414868')})" }} }},
+  decoration = {{ rounding = 0, shadow = {{ enabled = false }}, blur = {{ enabled = false }} }},
+  misc = {{ force_default_wallpaper = 0, disable_hyprland_logo = true, disable_splash_rendering = true,
+    disable_watchdog_warning = true,
+    background_color = "rgb({hexa('background', '#1a1b26')})" }},
+  cursor = {{ inactive_timeout = 0 }},
+  -- No fades: the sync marker has to switch on a single frame.
+  animations = {{ enabled = false }},
+}})
+"""
+
+    def _wait(self, probe, what, timeout=15):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self.hyprland.poll() is not None:
+                die(f"the studio's Hyprland exited; see {self.work / 'hyprland.log'}")
+            found = probe()
+            if found:
+                return found
+            time.sleep(0.1)
+        die(f"timed out waiting for {what}")
+
+    # Shutting it down
+
+    @classmethod
+    def attach(cls):
+        """The studio another `bin/video studio` is holding up, to act on."""
+        path = session_file()
+        if not path.exists():
+            die("no studio running; start one with bin/video studio [SCRIPT] [--upto N]")
+        session = json.loads(path.read_text())
+        studio = cls.__new__(cls)
+        studio.env = {**os.environ, **session["env"], "GDK_BACKEND": "wayland"}
+        studio.binary, studio.signature = Path(session["binary"]), session["signature"]
+        studio.runtime, studio.colors = Path(session["runtime"]), session["colors"]
+        studio.hand = Hand(studio)
+        return studio
+
+    def stop(self):
+        session = session_file()
+        if session.exists() and json.loads(session.read_text()).get("runtime") == str(self.runtime):
+            session.unlink()
+        # Exactly the processes that live in this studio's runtime directory,
+        # and the bus started for it — never anything matched by name, with
+        # the author's own Hyprland and omacharts running alongside.
+        mine = f"XDG_RUNTIME_DIR={self.runtime}".encode()
+        for proc in Path("/proc").iterdir():
+            if not proc.name.isdigit() or int(proc.name) == os.getpid():
+                continue
+            try:
+                if mine in (proc / "environ").read_bytes().split(b"\0"):
+                    os.kill(int(proc.name), signal.SIGTERM)
+            except (OSError, PermissionError):
+                pass
+        if getattr(self, "bus_pid", None):
+            try:
+                os.kill(self.bus_pid, signal.SIGTERM)
+            except OSError:
+                pass
+        time.sleep(0.5)
+        fuse = shutil.which("fusermount3") or shutil.which("fusermount")
+        if fuse and (self.runtime / "gvfs").exists():
+            subprocess.run([fuse, "-u", str(self.runtime / "gvfs")], capture_output=True)
+        shutil.rmtree(self.runtime, ignore_errors=True)
+
+    # Talking to it
+
+    def spawn(self, argv, log=None):
+        out = open(self.work / log, "w") if log else subprocess.DEVNULL
+        return subprocess.Popen(argv, env=self.env, stdout=out, stderr=out, stdin=subprocess.DEVNULL, start_new_session=True)
+
+    def hyprctl(self, *args):
+        env = {**os.environ, "XDG_RUNTIME_DIR": str(self.runtime), "HYPRLAND_INSTANCE_SIGNATURE": getattr(self, "signature", "")}
+        return subprocess.run(["hyprctl", *args], env=env, capture_output=True, text=True).stdout
+
+    def window(self):
+        try:
+            clients = json.loads(self.hyprctl("clients", "-j") or "[]")
+        except json.JSONDecodeError:
+            return None
+        for client in clients:
+            if client.get("class") == "com.jorgemanrubia.Omacharts":
+                return client
+        return None
+
+    def at(self, x, y):
+        """A position given as percentages of the window, in layout pixels."""
+        window = self.window()
+        (wx, wy), (ww, wh) = window["at"], window["size"]
+        return wx + ww * percent(x), wy + wh * percent(y)
+
+    def cli(self, args):
+        result = subprocess.run([str(self.binary), *split_args(args)], env=self.env, capture_output=True, text=True)
+        if result.returncode != 0:
+            die(f"omacharts {args}: {result.stderr.strip() or result.stdout.strip()}")
+        return result.stdout.strip()
+
+    def key(self, chord):
+        # Each wtype run brings a keyboard with its own keymap, and a chord
+        # sent before the far end has read it arrives as the bare letter —
+        # which in Omacharts opens the symbol search. These pauses are the
+        # ones bin/headless-window found reliable; shorter ones lost chords
+        # while the machine was busy recording.
+        *mods, key = chord.split("+")
+        argv = ["wtype", "-s", "300"]
+        for mod in mods:
+            argv += ["-M", mod, "-s", "120"]
+        argv += ["-k", key, "-s", "120"]
+        for mod in reversed(mods):
+            argv += ["-m", mod]
+        subprocess.run(argv, env=self.env, check=True)
+
+    def type(self, text):
+        # One wtype run, so one keyboard, with the gaps a hand leaves.
+        argv = ["wtype", "-s", "300"]
+        for ch in text:
+            name = {" ": "space", "-": "minus"}.get(ch)
+            argv += ["-k", name] if name else [ch]
+            argv += ["-s", str(max(40, int(random.gauss(95, 30))) if ch != " " else 140)]
+        subprocess.run(argv, env=self.env, check=True)
+
+    def border(self, colour):
+        colour = colour or f"rgb({self.colors.get('accent', '#7aa2f7').lstrip('#')})"
+        self.hyprctl("eval", f'hl.config({{ general = {{ col = {{ active_border = "{colour}" }} }} }})')
+
+    def shot(self, path):
+        subprocess.run(["grim", "-c", "-o", "REC", str(path)], env=self.env, check=True)
+
+    def perform(self, action, events, now=0.0, scene=None, cue=None):
+        verb, *args = action
+        event = {"t": now, "scene": scene, "cue": cue, "verb": verb, "args": args}
+        if verb == "key":
+            self.key(args[0])
+        elif verb == "type":
+            self.type(args[0])
+        elif verb == "cli":
+            self.cli(args[0])
+        elif verb == "wait":
+            time.sleep(float(args[0]))
+        elif verb == "move":
+            event["at"] = self.hand.move(*self.at(*args))
+        elif verb == "click":
+            event["at"] = self.hand.click(*self.at(*args))
+        elif verb == "rclick":
+            event["at"] = self.hand.click(*self.at(*args), button="right")
+        elif verb == "drag":
+            event["at"], event["to"] = self.hand.drag(*self.at(*args[:2]), *self.at(*args[2:]))
+        elif verb == "scroll":
+            event["at"] = self.hand.scroll(*self.at(*args[:2]), int(args[2]))
+        elif verb == "zoom":
+            event["at"] = self.at(*args[:2])
+        events.append(event)
+
+
+def session_file():
+    """Where a held studio is written down. VIDEO_SESSION names it, so
+    several can be held at once — one per subagent pinning its own scenes."""
+    name = os.environ.get("VIDEO_SESSION")
+    return DATA / (f"studio-session-{name}.json" if name else "studio-session.json")
+
+
+def omacharts_build(ref):
+    """The omacharts binary a video is made with.
+
+    Videos show the app as it is on main unless the script says otherwise
+    (`build:` in the frontmatter, or VIDEO_BUILD): a branch, a tag or a
+    commit, built in a worktree of its own so the working tree is never
+    touched, or `here` for whatever this checkout has built."""
+    if ref == "here":
+        binary = ROOT / "target/release/omacharts"
+        say("building omacharts from this checkout")
+        run(["cargo", "build", "--release", "--quiet"], cwd=ROOT)
+        return binary
+    tree, target = DATA / "build", DATA / "build-target"
+    run(["git", "fetch", "-q", "origin"], cwd=ROOT)
+    commit = subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"origin/{ref}^{{commit}}"], cwd=ROOT,
+                            capture_output=True, text=True).stdout.strip()
+    if not commit:
+        commit = subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"], cwd=ROOT,
+                                capture_output=True, text=True).stdout.strip()
+    if not commit:
+        die(f"no branch, tag or commit called {ref}")
+    if not (tree / ".git").exists():
+        run(["git", "worktree", "add", "-q", "--detach", str(tree), commit], cwd=ROOT)
+    else:
+        run(["git", "checkout", "-q", "--detach", commit], cwd=tree)
+    title = subprocess.run(["git", "log", "-1", "--format=%h %s", commit], cwd=ROOT, capture_output=True, text=True).stdout.strip()
+    say(f"omacharts {ref} at {title} — building (incremental after the first time)")
+    run(["cargo", "build", "--release", "--quiet"], cwd=tree, env={**os.environ, "CARGO_TARGET_DIR": str(target)})
+    return target / "release/omacharts"
+
+
+class Hand:
+    """The studio's pointer, moved the way a hand moves one: along a gentle
+    curve, easing in and out, taking longer for longer distances.
+
+    Every gesture comes through a pointer device of its own, made for it and
+    dropped after, as bin/virtual-pointer does. One device kept for the whole
+    run worked until the window rebuilt its panes — after a split its clicks
+    reached nothing, while a fresh device's landed every time."""
+
+    def __init__(self, studio):
+        path = str(ROOT / "bin/virtual-pointer")
+        self.vp = importlib.machinery.SourceFileLoader("virtual_pointer", path).load_module()
+        self.env = {k: studio.env[k] for k in ("XDG_RUNTIME_DIR", "WAYLAND_DISPLAY")}
+        self.x, self.y = LAYOUT[0] * 0.62, LAYOUT[1] * 0.55
+        where = re.match(r"(-?\d+), (-?\d+)", studio.hyprctl("cursorpos") if hasattr(studio, "signature") else "")
+        if where:
+            self.x, self.y = float(where[1]), float(where[2])
+        with self.device() as pointer:
+            pointer.move(self.x, self.y)
+
+    @contextlib.contextmanager
+    def device(self):
+        saved = os.environ.copy()
+        os.environ.update(self.env)
+        try:
+            conn, pointer = self.vp.create_pointer()
+        finally:
+            os.environ.clear()
+            os.environ.update(saved)
+        hand = self.vp.Pointer(conn, pointer, LAYOUT)
+        conn.roundtrip()
+        try:
+            yield hand
+        finally:
+            conn.sock.close()
+
+    def duration(self, x, y, hurry=1.0):
+        distance = math.hypot(x - self.x, y - self.y)
+        return 0 if distance < 1 else min(1.1, 0.28 + distance / 1400) * hurry
+
+    def _glide(self, pointer, x, y, hurry=1.0):
+        seconds = self.duration(x, y, hurry)
+        pointer.move(self.x, self.y)
+        if seconds:
+            sx, sy = self.x, self.y
+            # A control point off to one side of the straight line bends the
+            # path the way a wrist does.
+            bend = random.choice((-1, 1)) * 0.12
+            cx, cy = (sx + x) / 2 - (y - sy) * bend, (sy + y) / 2 + (x - sx) * bend
+            steps = max(2, int(seconds * 120))
+            started = time.monotonic()
+            for i in range(1, steps + 1):
+                t = i / steps
+                e = t * t * (3 - 2 * t)  # smoothstep
+                px = (1 - e) ** 2 * sx + 2 * (1 - e) * e * cx + e * e * x
+                py = (1 - e) ** 2 * sy + 2 * (1 - e) * e * cy + e * e * y
+                pointer.move(px, py)
+                time.sleep(max(0, started + seconds * t - time.monotonic()))
+        self.x, self.y = x, y
+        return [round(x, 1), round(y, 1)]
+
+    def move(self, x, y):
+        with self.device() as pointer:
+            return self._glide(pointer, x, y)
+
+    def click(self, x, y, button="left"):
+        with self.device() as pointer:
+            at = self._glide(pointer, x, y)
+            time.sleep(0.08)
+            pointer.button(button, True)
+            time.sleep(0.06)
+            pointer.button(button, False)
+            time.sleep(0.06)
+            return at
+
+    def drag(self, x1, y1, x2, y2):
+        with self.device() as pointer:
+            at = self._glide(pointer, x1, y1)
+            time.sleep(0.08)
+            pointer.button("left", True)
+            time.sleep(0.06)
+            to = self._glide(pointer, x2, y2, hurry=0.7)
+            time.sleep(0.06)
+            pointer.button("left", False)
+            return at, to
+
+    def scroll(self, x, y, steps):
+        with self.device() as pointer:
+            at = self._glide(pointer, x, y)
+            for _ in range(abs(steps)):
+                pointer.wheel(1 if steps > 0 else -1)
+                time.sleep(0.07)
+            return at
+
+
+def percent(value):
+    return float(str(value).rstrip("%")) / 100
+
+
+def split_args(text):
+    import shlex
+
+    return shlex.split(text)
+
+
+# --- Storyboard ------------------------------------------------------------------
+
+
+def board(script):
+    stills = script.out / "board"
+    shutil.rmtree(stills, ignore_errors=True)
+    stills.mkdir()
+    events = []
+    with Studio(script) as studio:
+        for action in script.setup:
+            studio.perform(action, events)
+        time.sleep(1.5)
+        studio.shot(stills / "00-setup.png")
+        steps = stills / "steps"
+        steps.mkdir()
+        for scene in script.scenes:
+            cues = re.findall(r"\{(\w+)\}", scene.voice)
+            n = 0
+            for cue in cues:
+                for action in scene.actions.get(cue, []):
+                    studio.perform(action, events, scene=scene.number, cue=cue)
+                    # A still after every action, for pinning positions: a
+                    # menu item can only be aimed at once the menu is seen.
+                    n += 1
+                    time.sleep(0.5)
+                    studio.shot(steps / f"{scene.number:02d}-{n:02d}-{cue}-{action[0]}.png")
+            time.sleep(1.2)
+            studio.shot(stills / f"{scene.number:02d}.png")
+    studio.keep_data()
+    (stills / "events.json").write_text(json.dumps(events, indent=1))
+    sheet = contact_sheet(script, stills, events)
+    keep_board(script, sheet)
+    say(f"{sheet.relative_to(ROOT)} — {len(script.scenes)} scenes; a still after every action in board/steps/")
+    return sheet
+
+
+def keep_board(script, sheet):
+    """The storyboard lives in the repo beside its script, and the script
+    links it, so its page on GitHub shows the pictures under the words."""
+    kept = VIDEO / "storyboards" / f"{script.slug}.jpg"
+    kept.parent.mkdir(exist_ok=True)
+    run(["ffmpeg", "-v", "error", "-y", "-i", str(sheet), "-q:v", "3", str(kept)])
+    link = f"![Storyboard](../storyboards/{script.slug}.jpg)"
+    text = script.path.read_text()
+    if link not in text:
+        script.path.write_text(text.rstrip("\n") + f"\n\n## Storyboard\n\n{link}\n")
+
+
+def contact_sheet(script, stills, events):
+    from PIL import Image, ImageDraw, ImageFont
+
+    font = lambda size, bold=False: ImageFont.truetype(fc_match("sans:bold" if bold else "sans"), size)
+    tile_w, tile_h, pad, text_h = 1280, 720, 40, 230
+    columns = 2
+    rows = math.ceil(len(script.scenes) / columns)
+    sheet = Image.new("RGB", (columns * (tile_w + pad) + pad, rows * (tile_h + text_h + pad) + pad + 90), "#111318")
+    draw = ImageDraw.Draw(sheet)
+    draw.text((pad, 28), f"{script.meta.get('title', script.slug)} — storyboard", fill="#e6e6e6", font=font(40, True))
+    scale = tile_w / LAYOUT[0]
+    for i, scene in enumerate(script.scenes):
+        x = pad + (i % columns) * (tile_w + pad)
+        y = 90 + pad + (i // columns) * (tile_h + text_h + pad)
+        still = Image.open(stills / f"{scene.number:02d}.png").convert("RGB").resize((tile_w, tile_h), Image.LANCZOS)
+        mark = ImageDraw.Draw(still)
+        for event in events:
+            if event["scene"] == scene.number and event.get("at"):
+                ex, ey = event["at"][0] * scale, event["at"][1] * scale
+                mark.ellipse((ex - 14, ey - 14, ex + 14, ey + 14), outline="#ff4d6d", width=4)
+                mark.text((ex + 18, ey - 12), event["cue"] or "", fill="#ff4d6d", font=font(22, True))
+        sheet.paste(still, (x, y))
+        draw.text((x, y + tile_h + 14), f"{scene.number}. {scene.title}", fill="#e6e6e6", font=font(28, True))
+        voice = re.sub(r"\{(\w+)\}", r"[\1] ", scene.voice)
+        draw.multiline_text((x, y + tile_h + 56), wrap(voice, 92), fill="#b8bcc8", font=font(22), spacing=6)
+    path = script.out / "board.png"
+    sheet.save(path)
+    return path
+
+
+def wrap(text, width):
+    import textwrap
+
+    return "\n".join(textwrap.wrap(text, width))
+
+
+def fc_match(pattern):
+    return subprocess.run(["fc-match", "-f", "%{file}", pattern], capture_output=True, text=True).stdout
+
+
+# --- Cover -------------------------------------------------------------------------
+
+
+def cover(script):
+    """The cover: the video's first frame, held, and its thumbnail. The page
+    is video/cover/cover.html, the site's OpenGraph card re-framed for 16:9;
+    it needs the network for Archivo, as the card does."""
+    import tempfile
+    import urllib.parse
+
+    title = script.meta.get("cover_title") or script.meta.get("title") or script.slug
+    out = script.out / "cover.png"
+    with tempfile.TemporaryDirectory() as work:
+        work = Path(work)
+        for name in ("cover.html", "cover.css"):
+            shutil.copy(VIDEO / "cover" / name, work)
+        shutil.copy(ROOT / "site/icon.svg", work)
+        shutil.copy(ROOT / "site/assets/home/bg-ribbon.jpg", work)
+        (work / "fonts").symlink_to(ROOT / "site/assets/fonts")
+        url = f"file://{work}/cover.html?title={urllib.parse.quote(title)}"
+        run(["chromium", "--headless=new", "--no-sandbox", "--hide-scrollbars", "--force-device-scale-factor=1",
+             f"--window-size={SIZE[0]},{SIZE[1]}", "--virtual-time-budget=20000", f"--screenshot={work / 'shot.png'}", url],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        shutil.copy(work / "shot.png", out)
+    # YouTube takes a thumbnail of at most 2MB; 1280x720 is what it asks for.
+    run(["ffmpeg", "-v", "error", "-y", "-i", str(out), "-vf", "scale=1280:720:flags=lanczos", "-q:v", "2",
+         str(script.out / "thumbnail.jpg")])
+    kept = VIDEO / "covers" / f"{script.slug}.jpg"
+    kept.parent.mkdir(exist_ok=True)
+    run(["ffmpeg", "-v", "error", "-y", "-i", str(out), "-q:v", "2", str(kept)])
+    say(f"{out.relative_to(ROOT)}, thumbnail.jpg for YouTube, and video/covers/{kept.name} for the repo")
+    return out
+
+
+# --- Music -------------------------------------------------------------------------
+
+
+def music(script, count=3):
+    if not (DATA / "ace/.venv").exists():
+        die("no music environment; run bin/video setup")
+    voiced = voice_scenes(script)
+    length = math.ceil(timeline(script, voiced)["total"] + float(script.meta.get("cover", COVER))) + 4
+    prompt = script.meta.get("music") or "calm, warm instrumental background music for a software screencast"
+    prompt += ", instrumental, steady, unobtrusive, clean modern mix, background music under a voice-over"
+    folder = script.out / "music"
+    folder.mkdir(exist_ok=True)
+    job = folder / "job.json"
+    job.write_text(json.dumps({"caption": prompt, "duration": length, "count": count, "out": str(folder)}))
+    say(f"composing {count} candidates of {length}s — several minutes each on the CPU")
+    run([str(DATA / "ace/.venv/bin/python"), str(ENGINES / "ace_engine.py"), str(DATA / "ace"), str(job)],
+        env={**os.environ, "OMP_NUM_THREADS": str(os.cpu_count())}, cwd=folder)
+    found = sorted(folder.glob("*.flac"))
+    for i, track in enumerate(found, 1):
+        say(f"  {i}: {track.relative_to(ROOT)}")
+    say("pin one with  music_file: <path>  in the script's frontmatter")
+    return found
+
+
+# --- Render ------------------------------------------------------------------------
+
+
+def lead_in(script):
+    """How long the recording runs before the first word. After a cover, the
+    fade into the recording plus a second of the app on screen and silent:
+    the voice belongs to the video, not to its cover."""
+    return COVER_FADE + SETTLE if float(script.meta.get("cover", COVER)) > 0 else LEAD_IN
+
+
+def timeline(script, voiced):
+    """When each scene starts, and when each cue's actions fire, in seconds
+    from the first frame of the recording."""
+    t, scenes = lead_in(script), []
+    for v in voiced:
+        cues = {cue: t + cue_time(v, cue) for cue in v["scene"].actions}
+        last = max(cues.values(), default=t)
+        end = max(t + v["duration"], last + 0.8) + v["scene"].after
+        scenes.append({"start": t, "cues": cues, "end": end})
+        t = end + SCENE_GAP
+    return {"scenes": scenes, "total": t - SCENE_GAP + TAIL}
+
+
+def render(script):
+    voiced = voice_scenes(script)
+    plan = timeline(script, voiced)
+    out = script.out
+    raw = out / "raw.mkv"
+    events = []
+    with Studio(script) as studio:
+        for action in script.setup:
+            studio.perform(action, events)
+        time.sleep(1.5)
+        say(f"recording {plan['total']:.1f}s")
+        recorder = studio.spawn(["wf-recorder", "-y", "-o", "REC", "-r", str(FPS), "-c", "hevc_vaapi", "-d", "/dev/dri/renderD128",
+                                 "-p", "qp=16", "-f", str(raw)], log="wf-recorder.log")
+        time.sleep(1.0)
+        # A marker the file can be searched for: the border goes magenta for
+        # a moment in the pre-roll, which is cut, and the frame it appears on
+        # says exactly where `zero` falls in the recording.
+        studio.border("rgb(ff00ff)")
+        marked = time.monotonic()
+        time.sleep(0.3)
+        studio.border(None)
+        time.sleep(0.4)
+        zero = time.monotonic()
+        for v, s in zip(voiced, plan["scenes"]):
+            for cue, at in sorted(s["cues"].items(), key=lambda kv: kv[1]):
+                # A pointer action is started early by its glide, so the click
+                # lands on the word rather than the glide starting on it.
+                first = v["scene"].actions[cue][0]
+                lead = studio.hand.duration(*studio.at(*first[1:3])) if first[0] in ("click", "rclick", "move", "drag", "scroll") else 0
+                pause(zero + at - lead - time.monotonic())
+                for action in v["scene"].actions[cue]:
+                    studio.perform(action, events, now=time.monotonic() - zero, scene=v["scene"].number, cue=cue)
+        pause(zero + plan["total"] - time.monotonic())
+        recorder.send_signal(signal.SIGINT)
+        recorder.wait(timeout=30)
+    studio.keep_data()
+    (out / "events.json").write_text(json.dumps(events, indent=1))
+    offset = find_marker(raw) + (zero - marked)
+    compose(script, voiced, plan, raw, offset)
+
+
+def find_marker(raw):
+    """The time, in the file, of the first frame whose left border is magenta."""
+    x, y = 2 * 10 + 2, SIZE[1] // 2  # mid-border: 2 layout pixels at scale 2, after a 10-pixel gap
+    frames = subprocess.run(["ffmpeg", "-v", "error", "-t", "8", "-i", str(raw), "-vf", f"crop=2:2:{x}:{y}",
+                             "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], capture_output=True, check=True).stdout
+    for i in range(len(frames) // 12):
+        r, g, b = frames[i * 12 : i * 12 + 3]
+        if r > 170 and b > 170 and g < 100:
+            return i / FPS
+    die(f"no sync marker in the first 8 seconds of {raw}; the left border was not where it was expected")
+
+
+def pause(seconds):
+    if seconds > 0:
+        time.sleep(seconds)
+
+
+def compose(script, voiced, plan, raw, offset):
+    out = script.out
+    # The video opens on its cover, held, then fades into the recording;
+    # everything heard is placed after it.
+    intro = float(script.meta.get("cover", COVER))
+    still = cover(script) if intro > 0 else None
+    total = plan["total"] + intro
+    voice = out / "voice.wav"
+    # Each scene is levelled into a file of its own first and only then
+    # delayed into place: run in one graph, loudnorm ahead of adelay
+    # quietly cancels the delay, and every line starts at zero.
+    levelled = out / "scenes"
+    shutil.rmtree(levelled, ignore_errors=True)
+    levelled.mkdir()
+    inputs, parts = [], []
+    for i, (v, s) in enumerate(zip(voiced, plan["scenes"])):
+        scene = levelled / f"{i + 1:02d}.wav"
+        run(["ffmpeg", "-v", "error", "-y", "-i", str(v["wav"]), "-af", "loudnorm=I=-16:TP=-2,aresample=48000",
+             "-ac", "2", str(scene)])
+        inputs += ["-i", str(scene)]
+        ms = int((s["start"] + intro) * 1000)
+        parts.append(f"[{i}:a]adelay={ms}|{ms}[v{i}]")
+    mix = "".join(f"[v{i}]" for i in range(len(voiced)))
+    graph = ";".join(parts) + f";{mix}amix=inputs={len(voiced)}:normalize=0,apad,atrim=0:{total:.3f}[out]"
+    run(["ffmpeg", "-v", "error", "-y", *inputs, "-filter_complex", graph, "-map", "[out]", str(voice)])
+
+    track = script.meta.get("music_file")
+    audio = out / "mix.wav"
+    if track:
+        track = (ROOT / track) if not Path(track).is_absolute() else Path(track)
+        fade = max(0, total - 2.5)
+        graph = (f"[1:a]aresample=48000,aformat=channel_layouts=stereo,aloop=loop=-1:size=2e9,atrim=0:{total:.3f},"
+                 f"loudnorm=I=-27:TP=-3,afade=t=in:d=1.2,afade=t=out:st={fade:.2f}:d=2.5[m];"
+                 f"[0:a]asplit[v][key];[m][key]sidechaincompress=threshold=0.015:ratio=6:attack=40:release=600:makeup=1[ducked];"
+                 f"[v][ducked]amix=inputs=2:normalize=0[out]")
+        run(["ffmpeg", "-v", "error", "-y", "-i", str(voice), "-i", str(track), "-filter_complex", graph, "-map", "[out]", str(audio)])
+    else:
+        say("no music_file in the frontmatter; rendering without music")
+        shutil.copy(voice, audio)
+    master = out / "master.wav"
+    loudnorm(audio, master)
+
+    final = out / f"{script.slug}.mp4"
+    preview = out / f"{script.slug}-1080p.mp4"
+    say("encoding")
+    recording = ["-ss", f"{max(0, offset):.3f}", "-t", f"{plan['total']:.3f}", "-i", str(raw)]
+    if still:
+        # The fade overlaps the recording's lead-in, where nothing happens yet.
+        inputs = ["-loop", "1", "-framerate", str(FPS), "-t", f"{intro + COVER_FADE:.3f}", "-i", str(still), *recording, "-i", str(master)]
+        video = (f"[0:v]format=yuv420p,setsar=1[c];[1:v]fps={FPS},format=yuv420p,setsar=1[r];"
+                 f"[c][r]xfade=transition=fade:duration={COVER_FADE}:offset={intro:.3f}[v]")
+        maps = ["-filter_complex", video, "-map", "[v]", "-map", "2:a"]
+    else:
+        inputs = [*recording, "-i", str(master)]
+        maps = ["-map", "0:v", "-map", "1:a"]
+    run(["ffmpeg", "-v", "error", "-y", *inputs, *maps, "-t", f"{total:.3f}", "-c:v", "libx264", "-preset", "slow", "-crf", "14",
+         "-pix_fmt", "yuv420p", "-r", str(FPS), "-c:a", "aac", "-b:a", "320k", "-movflags", "+faststart", str(final)])
+    run(["ffmpeg", "-v", "error", "-y", "-i", str(final), "-vf", "scale=1920:1080:flags=lanczos", "-c:v", "libx264", "-preset", "medium",
+         "-crf", "18", "-c:a", "copy", "-movflags", "+faststart", str(preview)])
+    subtitles(voiced, plan, out / f"{script.slug}.srt", intro)
+    review = out / "review"
+    shutil.rmtree(review, ignore_errors=True)
+    review.mkdir()
+    for v, s in zip(voiced, plan["scenes"]):
+        for cue, at in s["cues"].items():
+            run(["ffmpeg", "-v", "error", "-y", "-ss", f"{intro + at + 0.6:.2f}", "-i", str(preview), "-frames:v", "1",
+                 str(review / f"{v['scene'].number:02d}-{cue}.jpg")])
+    # The finished files beside the scripts, where the author looks for
+    # them; git ignores video/renders/, since videos are too heavy for the
+    # repo. Scripts, storyboards and covers are committed.
+    renders = VIDEO / "renders"
+    renders.mkdir(exist_ok=True)
+    for made in (final, preview, out / f"{script.slug}.srt"):
+        shutil.copy(made, renders / made.name)
+    say(f"video/renders/{final.name} ({total:.1f}s), {preview.name} for watching; review/ in {out.relative_to(ROOT)} has a frame per cue")
+
+
+def loudnorm(source, target):
+    # Two passes: measure, then apply the gain that lands on -14 LUFS, the
+    # level YouTube plays everything back at.
+    measured = subprocess.run(["ffmpeg", "-hide_banner", "-i", str(source), "-af", "loudnorm=I=-14:TP=-1:LRA=11:print_format=json",
+                               "-f", "null", "-"], capture_output=True, text=True).stderr
+    m = json.loads(measured[measured.rindex("{") : measured.rindex("}") + 1])
+    chain = (f"loudnorm=I=-14:TP=-1:LRA=11:measured_I={m['input_i']}:measured_TP={m['input_tp']}:measured_LRA={m['input_lra']}"
+             f":measured_thresh={m['input_thresh']}:offset={m['target_offset']}:linear=true,aresample=48000")
+    run(["ffmpeg", "-v", "error", "-y", "-i", str(source), "-af", chain, str(target)])
+
+
+def subtitles(voiced, plan, path, intro=0.0):
+    stamp = lambda t: f"{int(t // 3600):02d}:{int(t % 3600 // 60):02d}:{int(t % 60):02d},{int(t * 1000 % 1000):03d}"
+    blocks = []
+    for v, s in zip(voiced, plan["scenes"]):
+        for text, first, last in v["line"].sentences:
+            if last < len(v["words"]):
+                start, end = intro + s["start"] + v["words"][first]["start"], intro + s["start"] + v["words"][last]["end"]
+                blocks.append(f"{len(blocks) + 1}\n{stamp(start)} --> {stamp(end + 0.2)}\n{text}\n")
+    path.write_text("\n".join(blocks))
+
+
+# --- Showing it ------------------------------------------------------------------------
+
+
+def show(path):
+    """Play or open a file where the author is watching: this desktop, or —
+    when ~/.config/omacharts-video/config says `viewer = ssh <host>` — that
+    machine's desktop, over the connection `ssh_options` describes."""
+    config = read_config()
+    viewer = config.get("viewer", "local")
+    if str(path).startswith(("https://", "http://")):
+        return open_url(str(path), viewer, config)
+    path = Path(path).resolve()
+    player = player_for(path)
+    if viewer == "local":
+        subprocess.Popen(player + [str(path)], start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        say(f"playing {path.name} here")
+        return
+    host = viewer.removeprefix("ssh").strip()
+    options = split_args(os.path.expanduser(config.get("ssh_options", "")))
+    folder = "Videos/omacharts"
+    subprocess.run(["ssh", *options, host, f"mkdir -p ~/{folder}"], check=True)
+    subprocess.run(["scp", "-q", *options, str(path), f"{host}:{folder}/"], check=True)
+    remote = (
+        'pid=$(pgrep -x Hyprland | head -1); '
+        'for v in XDG_RUNTIME_DIR HYPRLAND_INSTANCE_SIGNATURE DBUS_SESSION_BUS_ADDRESS; do '
+        '  line=$(tr "\\0" "\\n" < /proc/$pid/environ | grep "^$v="); [ -n "$line" ] && export "$line"; done; '
+        'export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}; '
+        'export WAYLAND_DISPLAY=$(basename "$(ls $XDG_RUNTIME_DIR/wayland-[0-9] | head -1)"); '
+        f'setsid -f {" ".join(player)} ~/{folder}/{path.name} >/dev/null 2>&1'
+    )
+    subprocess.run(["ssh", *options, host, remote], check=True)
+    say(f"playing {path.name} on {host} (~/{folder}/{path.name})")
+
+
+# Hyprland's own environment has neither the instance signature nor the
+# display, so a command started over SSH looks them up in the runtime dir.
+SESSION = (
+    'export XDG_RUNTIME_DIR=/run/user/$(id -u); '
+    'export HYPRLAND_INSTANCE_SIGNATURE=$(ls -t $XDG_RUNTIME_DIR/hypr | head -1); '
+    'export WAYLAND_DISPLAY=$(basename "$(ls $XDG_RUNTIME_DIR/wayland-[0-9] | head -1)"); '
+    'pid=$(pgrep -x Hyprland | head -1); '
+    'line=$(tr "\\0" "\\n" < /proc/$pid/environ | grep "^DBUS_SESSION_BUS_ADDRESS="); [ -n "$line" ] && export "$line"; '
+)
+
+
+def open_url(url, viewer, config):
+    """A page — a script on GitHub — in the browser where the author watches."""
+    if viewer == "local":
+        subprocess.Popen(["xdg-open", url], start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        say(f"opened {url} here")
+        return
+    host = viewer.removeprefix("ssh").strip()
+    options = split_args(os.path.expanduser(config.get("ssh_options", "")))
+    import shlex
+    subprocess.run(["ssh", *options, host, SESSION + f"setsid -f xdg-open {shlex.quote(url)} >/dev/null 2>&1"], check=True)
+    say(f"opened {url} on {host}")
+
+
+def page(script_path):
+    """The script's page on GitHub, on the branch this checkout is on."""
+    branch = subprocess.run(["git", "branch", "--show-current"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
+    remote = subprocess.run(["git", "remote", "get-url", "origin"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
+    repo = re.sub(r"^(git@github\.com:|https://github\.com/)", "", remote).removesuffix(".git")
+    return f"https://github.com/{repo}/blob/{branch}/{Path(script_path).resolve().relative_to(ROOT)}"
+
+
+def player_for(path):
+    if path.suffix in (".png", ".jpg"):
+        return ["imv"]
+    if path.suffix in (".wav", ".flac", ".mp3"):
+        return ["mpv", "--no-video", "--really-quiet"]
+    return ["mpv", "--really-quiet", "--fs"]
+
+
+def read_config():
+    config = {}
+    if CONFIG.exists():
+        for line in CONFIG.read_text().splitlines():
+            key, sep, value = line.partition("=")
+            if sep and not key.strip().startswith("#"):
+                config[key.strip()] = value.strip()
+    return config
+
+
+# --- Setup and status ---------------------------------------------------------------------
+
+
+def setup():
+    venvs = DATA / "venvs"
+    for engine in ("chatterbox", "qwen"):
+        target = venvs / engine
+        if (target / "bin/python").exists():
+            say(f"{engine}: ready")
+            continue
+        say(f"{engine}: building {target}")
+        run(["uv", "venv", "-q", "-p", "3.11", str(target)])
+        run(["uv", "pip", "install", "-q", "-r", str(ENGINES / f"requirements-{engine}.txt")],
+            env={**os.environ, "VIRTUAL_ENV": str(target), "UV_TORCH_BACKEND": "cpu"})
+    ace = DATA / "ace"
+    if (ace / ".venv").exists():
+        say("music: ready")
+    else:
+        say(f"music: building {ace} (ACE-Step 1.5, several GB)")
+        if not ace.exists():
+            run(["git", "clone", "-q", "--depth", "1", ACE_REPO, str(ace)])
+        run(["uv", "sync", "-q"], cwd=ace)
+    for tool in ("Hyprland", "hyprctl", "wtype", "grim", "wf-recorder", "dbus-daemon", "ffmpeg", "mpv", "imv"):
+        if not shutil.which(tool):
+            say(f"missing {tool}")
+
+
+def status():
+    scripts = sorted(SCRIPTS.glob("*.md"))
+    if not scripts:
+        say("no scripts yet — start one with /video new <idea>")
+    for path in scripts:
+        text = path.read_text()
+        stage = re.search(r"^stage:\s*(\w+)", text, re.M)
+        notes = len(re.findall(r"^> note:", text, re.M))
+        replies = len(re.findall(r"^> reply:", text, re.M))
+        extra = ", ".join(x for x in (f"{notes} open notes" if notes else "", f"{replies} replies" if replies else "") if x)
+        print(f"{path.stem:32} {stage[1] if stage else '?':8} {extra}")
+
+
+def run(argv, **kwargs):
+    result = subprocess.run(argv, **kwargs)
+    if result.returncode != 0:
+        die(f"{Path(argv[0]).name} failed ({result.returncode}): {' '.join(map(str, argv))[:300]}")
+    return result
+
+
+def interrupted(signum, _frame):
+    raise KeyboardInterrupt(signal.Signals(signum).name)
+
+
+def main():
+    # Whatever stops this, the studio comes down with it: a Ctrl+C, a kill,
+    # a closed terminal. `with Studio()` only cleans up on an exception.
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, interrupted)
+    args = sys.argv[1:]
+    if not args or args[0] in ("-h", "--help", "help"):
+        print(__doc__)
+        return
+    verb, rest = args[0], args[1:]
+    need = lambda: find_script(rest[0]) if rest else die(f"{verb} needs a script")
+    if verb == "setup":
+        setup()
+    elif verb == "status":
+        status()
+    elif verb == "read":
+        show(read(need()))
+    elif verb == "board":
+        sheet = board(need())
+        if not os.environ.get("VIDEO_NO_SHOW"):
+            show(sheet)
+    elif verb == "cover":
+        show(cover(need()))
+    elif verb == "music":
+        music(need(), int(rest[1]) if len(rest) > 1 else 3)
+    elif verb == "render":
+        script = need()
+        render(script)
+        if not os.environ.get("VIDEO_NO_SHOW"):
+            show(script.out / f"{script.slug}-1080p.mp4")
+    elif verb == "show":
+        show(rest[0])
+    elif verb == "page":
+        show(page(need().path))
+    elif verb == "studio":
+        # Held up for pinning positions: setup run, scenes before --upto played.
+        script = find_script(rest[0]) if rest and not rest[0].startswith("--") else None
+        upto = int(rest[rest.index("--upto") + 1]) if "--upto" in rest else 0
+        with Studio(script) as studio:
+            events = []
+            if script:
+                for action in script.setup:
+                    studio.perform(action, events)
+                for scene in script.scenes:
+                    if scene.number >= upto:
+                        break
+                    for cue in re.findall(r"\{(\w+)\}", scene.voice):
+                        for action in scene.actions.get(cue, []):
+                            studio.perform(action, events)
+                    time.sleep(0.6)
+            say("studio up; act on it with  bin/video act 'click 50% 50%' ... [--shot FILE]; Ctrl+C or kill to take it down")
+            while True:
+                time.sleep(3600)
+    elif verb == "stop":
+        # By the pid the studio wrote down, never by name: a pattern also
+        # matches the shell that runs the kill.
+        path = session_file()
+        if not path.exists():
+            die("no studio running")
+        os.kill(json.loads(path.read_text())["pid"], signal.SIGTERM)
+        for _ in range(50):
+            if not path.exists():
+                break
+            time.sleep(0.2)
+        say("studio down")
+    elif verb == "act":
+        studio = Studio.attach()
+        shot = rest[rest.index("--shot") + 1] if "--shot" in rest else None
+        actions = [a for i, a in enumerate(rest) if a != "--shot" and (i == 0 or rest[i - 1] != "--shot")]
+        for text in actions:
+            studio.perform(parse_action(text), [])
+            time.sleep(0.5)
+        if shot:
+            studio.shot(shot)
+            say(f"shot {shot}")
+    else:
+        die(f"unknown command {verb}; bin/video --help")
+
+
+if __name__ == "__main__":
+    main()

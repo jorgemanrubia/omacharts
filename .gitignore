@@ -11,3 +11,4 @@
 /site/.jekyll-metadata
 /site/.bundle
 /site/vendor
+__pycache__/

@@ -1,0 +1,2 @@
+chatterbox-tts
+setuptools<81

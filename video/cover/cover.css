@@ -1,0 +1,78 @@
+/* The video cover, from site/assets/home/src/og.css at 1.6x: the card is
+   2400 wide, the cover 3840. The ground is the home's ribbon background
+   itself, already rendered at 3840x2160, so it needs no captures. */
+* { box-sizing: border-box; margin: 0; }
+html, body { width: 3840px; height: 2160px; overflow: hidden; background: #0d1114; }
+
+@font-face {
+  font-family: "Cascadia Mono";
+  font-weight: 700;
+  src: url("fonts/cascadia-mono-latin-700-normal.woff2") format("woff2");
+}
+
+.ground {
+  position: absolute; inset: 0;
+  background: url("bg-ribbon.jpg") center / cover;
+  filter: brightness(1.12) saturate(1.1);
+}
+
+.scrim { position: absolute; inset: 0; pointer-events: none; }
+.scrim::before {
+  content: ""; position: absolute; inset: 0;
+  background:
+    linear-gradient(180deg, rgba(13,17,20,.3) 0%, rgba(13,17,20,0) 22%, rgba(13,17,20,0) 78%, rgba(13,17,20,.4) 100%),
+    radial-gradient(70% 70% at 50% 50%, rgba(13,17,20,0) 45%, rgba(13,17,20,.35) 80%, rgba(13,17,20,.75) 100%);
+}
+.scrim::after {
+  content: ""; position: absolute; inset: 0;
+  background: radial-gradient(58% 56% at 50% 50%,
+    rgba(13,17,20,.93) 0%,
+    rgba(13,17,20,.84) 34%,
+    rgba(13,17,20,.48) 66%,
+    rgba(13,17,20,0) 100%);
+}
+
+.copy {
+  position: absolute; inset: 0;
+  display: grid; place-content: center;
+  font-family: "Archivo", system-ui, sans-serif;
+  color: #f3ecdc;
+}
+.lockup { display: flex; align-items: flex-start; gap: 96px; }
+.block { display: flex; flex-direction: column; }
+.mark {
+  display: block; width: 480px; height: 480px;
+  border-radius: 22%;
+  box-shadow: 0 32px 80px rgba(0, 0, 0, .5);
+}
+.wordmark {
+  font-size: 464px;
+  font-weight: 800;
+  line-height: .86;
+  letter-spacing: -.045em;
+  margin: -.077em 0 -.096em;
+  text-shadow: 0 .02em .14em rgba(0, 0, 0, .6);
+}
+.label {
+  font-family: "Cascadia Mono", monospace;
+  font-size: 122px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  margin: calc(77px - .153em) 0 -.153em .14em;
+  color: #e2c285;
+}
+
+/* Where to go next, in the corner: quieter than the title, but legible in
+   a thumbnail. */
+.url {
+  position: absolute; right: 150px; bottom: 130px;
+  font-family: "Cascadia Mono", monospace;
+  font-size: 72px;
+  font-weight: 700;
+  letter-spacing: .06em;
+  color: rgba(243, 236, 220, .78);
+  text-shadow: 0 .03em .12em rgba(0, 0, 0, .7);
+}
