@@ -254,10 +254,10 @@ state:
   (the Change resolution state above, without its keys)
   key ctrl+g
   type ytd
-capture: bin/headless-window shot /tmp/goto.png
+capture: bin/headless-window shot /tmp/goto.png   (icon theme seeded too: gtk-icon-theme-name=Yaru-magenta in the sandboxed HOME's gtk-4.0/settings.ini)
 crop: 898,193,763,532   (the whole card, 24px layout margin)
 -->
-{% include figure.html src="/assets/manual/charts/go-to.png" alt="The Go to card with ytd typed, 1D auto under the box, and From 2026/01/01 and To 2026/10/27, marked today" caption="**Go to** with ytd typed." %}
+{% include figure.html src="/assets/manual/charts/go-to.png" alt="The Go to card with ytd typed, 1D auto on the row under the box, and From 2026/01/01 and To 2026/11/01, marked today" caption="**Go to** with ytd typed." %}
 
 **A date (keeps the window)** starts the chart on that day, as wide as it is now: the same number of bars at the same resolution. Near the latest bar the window runs past it into empty room, as it does when you scroll past the end. The card names the whole window, such as **25 Oct – 31 Oct**.
 
@@ -313,12 +313,13 @@ Left open at the end, it runs to today, so new bars stay in it.
 theme: tokyo-night
 window: 2560x1440 @2, bin/headless-window (HOME sandboxed, theme seeded)
 state:
-  (the state above, the box emptied)
+  (the state above)
+  key ctrl+a BackSpace     # the box emptied
   key space
 capture: bin/headless-window shot /tmp/golist.png
 crop: 898,193,763,889   (the card and the list, 24px layout margin)
 -->
-{% include figure.html src="/assets/manual/charts/go-to-list.png" alt="The Go to card with the list of common ranges dropped under its empty box: ytd, 1y, 6m, 3m, mtd, 1m, 2026-09, 2026, 2025: and qtd, each with the day it starts" caption="The common ranges, with nothing typed." %}
+{% include figure.html src="/assets/manual/charts/go-to-list.png" alt="The Go to card with the list of common ranges dropped under its empty box: ytd, 1y, 6m, 3m, mtd, 1m, 2026-10, 2026, 2025: and qtd, each with the day it starts" caption="The common ranges, with nothing typed." %}
 
 ### The resolution in Go to
 
