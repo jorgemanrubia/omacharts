@@ -68,16 +68,17 @@ crop: 0,0,760,920
 
 A finished drawing is left selected.
 
-## Measuring a range
+## Measuring a move
 
-The ruler measures the change between two points. Press <kbd>Alt</kbd> +
+The ruler measures a move between two points. Press <kbd>Alt</kbd> +
 <kbd>M</kbd>, or choose **Measure** just below the pointer at the top of the
-tools. Click the starting point, move the mouse, then click the end point. The
-label shows the percentage change in
-bold, then the price change, and under them the bar distance and elapsed time:
-`+0.53%  +4.01` over `71 bars, 5h 55m`. The range stays fixed after the second
-click. Click again to start another, or press <kbd>Esc</kbd> to clear it and
-return to the pointer.
+tools. Click the starting point, move the mouse, then click the end point. A
+rise is drawn in your bar colours' up colour and a fall in their down colour,
+with an arrow pointing each way the move went. The label shows the percentage
+change in bold, then the price change, and under them the bar distance and
+elapsed time: `+0.53%  +4.01` over `71 bars, 5h 55m`. The measurement stays
+fixed after the second click. Click again to start another, or press
+<kbd>Esc</kbd> to clear it and return to the pointer.
 
 <!-- regenerate:
 theme: nord
@@ -99,10 +100,10 @@ crop: 0,0,1950,1600
 Bar distance counts the spaces between candles. Elapsed time includes weekends
 and market closures. The price change has as many decimals as the price axis
 gives that price. With fewer than two loaded candles the label shows the time
-without a bar distance, and a range that starts at zero shows no percentage.
-Points beyond the loaded candles
-use the chart's estimated times. The range is not saved or shared with other
-charts. Choosing another tool or changing the symbol or resolution clears it.
+without a bar distance, and a move that starts at zero shows no percentage.
+Points beyond the loaded candles use the chart's estimated times. The
+measurement is not saved or shared with other charts. Choosing another tool or
+changing the symbol or resolution clears it.
 
 ## Selecting and moving
 
@@ -315,4 +316,4 @@ New charts take their defaults from Preferences › Charts › Defaults › **Dr
 ## See also
 
 - [Drawing from the CLI](/manual/cli/#drawings)
-- [Measuring with the CLI](/manual/cli/#measuring-a-range)
+- [Measuring with the CLI](/manual/cli/#measuring-a-move)

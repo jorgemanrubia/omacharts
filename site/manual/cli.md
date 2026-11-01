@@ -277,7 +277,7 @@ codes](#exit-codes).
 | `watchlist` | Watchlists and the symbols in them | [Watchlists and sections](#watchlists-and-sections); `watchlist feed` under [The Omarchy plugin](#watchlist-feed) |
 | `section` | The sections inside a watchlist | [Watchlists and sections](#watchlists-and-sections) |
 | `chartbook` | Chartbooks | [Chartbooks](#chartbooks); `chartbook template` under [Chartbook templates](#chartbook-templates); `chartbook screenshot` under [Screenshots](#screenshots) |
-| `chart` | The charts in a chartbook | [Charts](#charts) (`set`, `range`), [Indicators](#indicators), [Drawings](#drawings), [Measuring a range](#measuring-a-range), [Arranging charts](#arranging-charts) (`list`, `split`, `close`, `focus`), [Linking](#linking) (`crosshair`), [Screenshots](#screenshots) |
+| `chart` | The charts in a chartbook | [Charts](#charts) (`set`, `range`), [Indicators](#indicators), [Drawings](#drawings), [Measuring a move](#measuring-a-move), [Arranging charts](#arranging-charts) (`list`, `split`, `close`, `focus`), [Linking](#linking) (`crosshair`), [Screenshots](#screenshots) |
 | `template` | Chart templates | [Chart templates](#chart-templates) |
 | `provider` | The data feed, and signing in to one | [Market data](#market-data) |
 | `config` | Stored preferences | [Preferences](#preferences); `config bars` under [Charts](#config-bars) |
@@ -769,7 +769,7 @@ created chart template "Trend" (id:5) from the indicator on pos:0 SPY 1D in "Cha
   [exit 0]
 ```
 
-## Measuring a range
+## Measuring a move
 
 `omacharts chart measure` displays a temporary ruler on the focused chart and
 returns its measurements. A window must be open; otherwise it exits 6.
@@ -791,8 +791,8 @@ The reply is the percentage change, the price change at the price axis's
 precision, the bar distance and the elapsed time. Bar distance counts column
 intervals; elapsed time includes market closures. With fewer than two loaded
 candles the reply has no bar distance and `bars` is `null`. A zero starting price has
-`null` for `percent_change`. The range is not saved or shared. The mouse tool is
-in [Measuring a range](/manual/drawings/#measuring-a-range).
+`null` for `percent_change`. The measurement is not saved or shared. The mouse
+tool is in [Measuring a move](/manual/drawings/#measuring-a-move).
 
 ## Drawings
 
