@@ -1,6 +1,6 @@
 ---
 title: Templates that work for you
-stage: script
+stage: board
 length: 95s
 theme: tokyo-night
 voice: narrator

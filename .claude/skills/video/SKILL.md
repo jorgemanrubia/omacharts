@@ -175,6 +175,10 @@ principles of a good screencast, which the scriptwriter also follows.
   the author describes an action, the video performs it through the app —
   the menu, the dialog, the key — never a terminal command standing in for
   it. If the studio cannot do something yet, extend the studio.
+- **Introduce each section.** A video with several sections opens each
+  one with a brief introduction — a sentence or two, over its chart, with
+  nothing moving — saying what it is about before showing it. The first
+  also says, in plain words, the idea that ties the video together.
 - **Film the latest main.** Videos show omacharts as it is on main —
   `bin/video` fetches it and builds it in a worktree of its own — unless the
   author asks for something else, which goes in the script as `build:`.
