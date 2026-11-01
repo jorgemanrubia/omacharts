@@ -92,10 +92,13 @@ pub enum Part {
     Maximize,
     /// The chain that says what the watchlist does to the chart.
     Link,
+    /// The instrument's full name, faded, on a line of its own under the
+    /// rest. Which section it is in makes no difference.
+    Name,
 }
 
 impl Part {
-    pub const ALL: [Part; 15] = [
+    pub const ALL: [Part; 16] = [
         Part::Symbol,
         Part::Resolution,
         Part::Change,
@@ -111,6 +114,7 @@ impl Part {
         Part::Settings,
         Part::Maximize,
         Part::Link,
+        Part::Name,
     ];
 
     /// The section it is in until somebody places it, or `None` for a part
@@ -141,6 +145,7 @@ impl Part {
             Part::Settings => Some(Section::Right),
             Part::Maximize => Some(Section::Right),
             Part::Link => Some(Section::Right),
+            Part::Name => None,
         }
     }
 
@@ -178,6 +183,7 @@ impl Part {
             Part::Settings => "settings",
             Part::Maximize => "maximize",
             Part::Link => "link",
+            Part::Name => "name",
         }
     }
 
@@ -203,6 +209,7 @@ impl Part {
             Part::Settings => "Chart settings",
             Part::Maximize => "Maximize",
             Part::Link => "Watchlist link",
+            Part::Name => "Name",
         }
     }
 }
@@ -487,6 +494,7 @@ mod tests {
         assert_eq!(parts, vec![Part::Symbol, Part::Change, Part::Template]);
         assert_eq!(spell(&parts), "symbol,change,template");
         assert_eq!(parse("stripe").unwrap(), vec![Part::Stripe]);
+        assert_eq!(parse("NAME").unwrap(), vec![Part::Name]);
         assert_eq!(parse("none").unwrap(), Vec::new());
         assert_eq!(spell(&[]), "none");
         assert!(parse("symbol,price").is_err());

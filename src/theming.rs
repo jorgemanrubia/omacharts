@@ -404,6 +404,10 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
    crosshair moves. */
 .readout { font-size: 0.85em; }
 .readout-symbol { font-size: 1.05em; font-weight: 700; }
+/* The instrument's name under the header: the symbol says which, this says
+   what, so it stays out of the way. Indented to the symbol's own text, past
+   the button's padding. */
+.legend-name { font-size: 0.85em; opacity: 0.55; margin: 0 0 2px 5px; }
 .delay-chip {
   font-size: 0.75em;
   padding: 1px 6px;
