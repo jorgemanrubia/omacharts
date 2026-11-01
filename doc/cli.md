@@ -373,8 +373,8 @@ or typing in the search — and a command names the charts it means.
 A pointer on one chart draws a quieter crosshair at the same moment and price
 on every other chart on screen of the same symbol, whatever their link mode or
 resolution. Charts of different symbols never share one. It is one setting
-for the whole app, on by default — Preferences › Charts › Other › Sync
-crosshair across charts, or the key `sync_crosshair`:
+for the whole app, on by default — Preferences › Overlays › Crosshair
+across Follow charts, or the key `sync_crosshair`:
 
 ```
 omacharts chart crosshair off
@@ -1441,7 +1441,7 @@ once, in a window that is open too: the charts, sidebar and theme on screen beco
 the restored ones. What it replaced is backed up first, so restoring that undoes
 it. A backup written by a newer Omacharts is refused with nothing changed, and
 one from an older one is brought up to date as it is restored. Preferences ›
-Data › Backups does the same from the window.
+General › Preference backups does the same from the window.
 
 ## Teaching an agent about this app
 

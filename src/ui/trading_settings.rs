@@ -1,8 +1,10 @@
 //! Preferences → Trading: three sections. "Trading services" lists the
 //! trading service logins, each a row with its accounts under it, edited the way the
-//! Data page edits its data feeds; "Order entry" holds what every chart's
-//! orders follow; "Chart" how the orders and P&L are drawn on a chart. The last two
-//! are there with no login too, to be set before the first one.
+//! Market data page edits its data feeds; "Order entry" holds what every
+//! chart's orders follow; "Orders and positions", which Preferences adds
+//! last, how they and their P&L are drawn on a chart, starting with which
+//! side their labels sit at. The last two are there with no login too, to be
+//! set before the first one.
 //!
 //! With no login, the accounts' section is its heading and a button. "Add a
 //! trading account…" offers every trading service in the registry, and opens that trading service's own login
@@ -52,7 +54,7 @@ impl Secrets for Keyring {
     }
 }
 
-/// The keyring `service`'s passwords go in: what the Data page keeps a
+/// The keyring `service`'s passwords go in: what the Market data page keeps a
 /// trading service's data login in while trading is switched off.
 pub(crate) fn keyring(service: &str) -> impl Secrets {
     Keyring(trading::service_for(service).and_then(|service| service.keyring()))
@@ -87,7 +89,7 @@ pub struct Panel {
     /// Has the window chart from the data feeds now stored and redraw its
     /// headers. Called after every change here.
     on_change: Rc<dyn Fn()>,
-    /// Draws the Data page again, whose row for the connection follows the
+    /// Draws the Market data page again, whose row for the connection follows the
     /// logins.
     data_page: RefCell<Option<Rc<dyn Fn()>>>,
     page: adw::PreferencesPage,
@@ -137,7 +139,7 @@ impl Panel {
             redraw: RefCell::new(None),
         });
         // A sign-in coming back, a balance arriving, or a session ending by
-        // itself redraws the page, and the Data page whose row follows the
+        // itself redraws the page, and the Market data page whose row follows the
         // data login, while it is open; held weakly both ways.
         let weak = Rc::downgrade(&panel);
         let redraw: Rc<dyn Fn()> = Rc::new(move || {
@@ -176,7 +178,7 @@ impl Panel {
         *self.last.borrow_mut() = Some(group.clone());
     }
 
-    /// The Data page's redraw, for when a login changes what it says.
+    /// The Market data page's redraw, for when a login changes what it says.
     pub fn redraw_data_page(&self, redraw: Rc<dyn Fn()>) {
         *self.data_page.borrow_mut() = Some(redraw);
     }
@@ -200,7 +202,7 @@ impl Panel {
 }
 
 /// Open the login dialog for a new login of `service` over `anchor`; what
-/// the Data page's "Add a data feed…" does for a trading service connection's feed
+/// the Market data page's "Add a data feed…" does for a trading service connection's feed
 /// too.
 pub fn add_service(panel: &Rc<Panel>, service: &str, anchor: &gtk::Widget) {
     let asked = panel;
@@ -240,7 +242,6 @@ fn rebuild(panel: &Rc<Panel>) {
     if let Some(edit) = panel.edit_sizes.borrow().clone() {
         groups.push(order_entry_group(edit));
     }
-    groups.push(chart_group(panel));
     for group in &groups {
         panel.page.add(group);
     }
@@ -394,11 +395,11 @@ fn order_entry_group(edit: EditSizes) -> adw::PreferencesGroup {
     group
 }
 
-/// How the orders are drawn on a chart: which side their labels sit at,
-/// and whether the P&L on them and in the header is money or R.
-fn chart_group(panel: &Rc<Panel>) -> adw::PreferencesGroup {
-    let group = adw::PreferencesGroup::new();
-    group.set_title("Chart");
+/// The first rows of the group of how orders and positions are drawn,
+/// which Preferences puts last on the page with [`Panel::set_last`]: which
+/// side of a chart the orders' labels sit at, then whether the P&L on them
+/// and in the header is money or R, and what 1R is worth.
+pub fn chart_rows(panel: &Rc<Panel>) -> Vec<adw::PreferencesRow> {
     let row = adw::ComboRow::new();
     row.set_title("Order labels");
     let names: Vec<&str> = LabelSide::ALL.iter().map(|side| side.label()).collect();
@@ -416,11 +417,9 @@ fn chart_group(panel: &Rc<Panel>) -> adw::PreferencesGroup {
             moved();
         }
     });
-    group.add(&row);
     let amount = r_amount_row(panel);
-    group.add(&pnl_display_row(panel, &amount));
-    group.add(&amount);
-    group
+    let display = pnl_display_row(panel, &amount);
+    vec![row.upcast(), display.upcast(), amount.upcast()]
 }
 
 /// "Show P&L as": Money, as the account's books say it, or Risk (R). The
@@ -493,7 +492,7 @@ fn add_button(panel: &Rc<Panel>) -> gtk::MenuButton {
     let add = gtk::MenuButton::new();
     add.set_label("Add a trading service…");
     add.set_halign(gtk::Align::Start);
-    // Under the logins' list, apart from it, as under the Data page's.
+    // Under the logins' list, apart from it, as under the Market data page's.
     add.set_margin_top(12);
     let items = panel
         .desk
@@ -584,9 +583,9 @@ fn removal_words(name: &str, feed: &str, removal: &trading::Removal) -> (String,
     let body = match removal {
         trading::Removal::Login => None,
         trading::Removal::HandOver { to } => Some(format!("Charts' {feed} data will come through {to}.")),
-        trading::Removal::Ask => Some("Kept, it stays on the Data page, not signed in.".to_string()),
+        trading::Removal::Ask => Some("Kept, it stays on the Market data page, not signed in.".to_string()),
         trading::Removal::KeepFeed => {
-            Some(format!("The {feed} data feed stays on the Data page, not signed in: it is the last one."))
+            Some(format!("The {feed} data feed stays on the Market data page, not signed in: it is the last one."))
         }
     };
     let heading = match removal {
@@ -728,7 +727,7 @@ mod tests {
             assert!(words.iter().any(|w| w == "Add a trading service…"), "{words:?}");
             assert!(!words.iter().any(|w| w == "Remove" || w == "Sign in…"), "{words:?}");
             let titles: Vec<String> = panel.groups.borrow().iter().map(|group| group.title().to_string()).collect();
-            assert_eq!(titles, ["Trading services", "Order entry", "Chart"]);
+            assert_eq!(titles, ["Trading services", "Order entry"]);
             assert!(words.iter().any(|w| w == "Edit quantities…"), "{words:?}");
         });
     }
@@ -744,23 +743,7 @@ mod tests {
             let counted = told.clone();
             panel.set_labels_moved(Rc::new(move || counted.set(counted.get() + 1)));
             assert_eq!(order_labels(&store), LabelSide::Left);
-            let combo = |panel: &Panel| {
-                let group = panel.groups.borrow().iter().find(|group| group.title() == "Chart").cloned().unwrap();
-                fn find(widget: &gtk::Widget) -> Option<adw::ComboRow> {
-                    let mut next = widget.first_child();
-                    while let Some(child) = next {
-                        if let Ok(row) = child.clone().downcast::<adw::ComboRow>() {
-                            return Some(row);
-                        }
-                        if let Some(row) = find(&child) {
-                            return Some(row);
-                        }
-                        next = child.next_sibling();
-                    }
-                    None
-                }
-                find(group.upcast_ref()).expect("the Order labels row")
-            };
+            let combo = |panel: &Rc<Panel>| chart_rows(panel)[0].clone().downcast::<adw::ComboRow>().unwrap();
             let row = combo(&panel);
             assert_eq!(row.title(), "Order labels");
             assert!(row.subtitle().is_none_or(|s| s.is_empty()), "no hint under it");
@@ -774,21 +757,24 @@ mod tests {
         });
     }
 
-    /// The Chart group's rows, under whatever they are wrapped in.
-    fn chart_rows<T: IsA<gtk::Widget>>(panel: &Panel) -> Vec<T> {
+    /// The rows of type `T` among `rows`, under whatever they are wrapped in.
+    fn rows_of<T: IsA<gtk::Widget>>(rows: &[adw::PreferencesRow]) -> Vec<T> {
         fn under<T: IsA<gtk::Widget>>(widget: &gtk::Widget, found: &mut Vec<T>) {
-            let mut next = widget.first_child();
-            while let Some(child) = next {
-                match child.clone().downcast::<T>() {
-                    Ok(row) => found.push(row),
-                    Err(_) => under(&child, found),
+            match widget.clone().downcast::<T>() {
+                Ok(row) => found.push(row),
+                Err(_) => {
+                    let mut next = widget.first_child();
+                    while let Some(child) = next {
+                        under(&child, found);
+                        next = child.next_sibling();
+                    }
                 }
-                next = child.next_sibling();
             }
         }
-        let group = panel.groups.borrow().iter().find(|group| group.title() == "Chart").cloned().unwrap();
         let mut found = Vec::new();
-        under(group.upcast_ref(), &mut found);
+        for row in rows {
+            under(row.upcast_ref(), &mut found);
+        }
         found
     }
 
@@ -804,11 +790,12 @@ mod tests {
             let told = Rc::new(std::cell::Cell::new(0));
             let counted = told.clone();
             panel.set_pnl_changed(Rc::new(move || counted.set(counted.get() + 1)));
-            let combos = chart_rows::<adw::ComboRow>(&panel);
+            let rows = chart_rows(&panel);
+            let combos = rows_of::<adw::ComboRow>(&rows);
             let titles: Vec<String> = combos.iter().map(|row| row.title().to_string()).collect();
             assert_eq!(titles, ["Order labels", "Show P&L as"]);
             let display = combos[1].clone();
-            let amount = chart_rows::<adw::SpinRow>(&panel).pop().expect("the row for 1R");
+            let amount = rows_of::<adw::SpinRow>(&rows).pop().expect("the row for 1R");
             assert_eq!(amount.title(), "Value of 1R");
             for row in [display.upcast_ref::<adw::ActionRow>(), amount.upcast_ref()] {
                 assert!(row.subtitle().is_none_or(|s| s.is_empty()), "no hint under {}", row.title());
@@ -823,8 +810,9 @@ mod tests {
             assert_eq!(amount.value(), 500.0);
 
             rebuild(&panel);
-            let display = chart_rows::<adw::ComboRow>(&panel)[1].clone();
-            let amount = chart_rows::<adw::SpinRow>(&panel).pop().unwrap();
+            let rows = chart_rows(&panel);
+            let display = rows_of::<adw::ComboRow>(&rows)[1].clone();
+            let amount = rows_of::<adw::SpinRow>(&rows).pop().unwrap();
             assert_eq!(display.selected(), 1, "kept");
             assert!(amount.is_visible(), "the row for 1R drawn again with R kept");
             assert_eq!(told.get(), 1, "drawing the page again changes nothing");
@@ -849,7 +837,7 @@ mod tests {
             let told = Rc::new(std::cell::Cell::new(0));
             let counted = told.clone();
             panel.set_pnl_changed(Rc::new(move || counted.set(counted.get() + 1)));
-            let amount = chart_rows::<adw::SpinRow>(&panel).pop().unwrap();
+            let amount = rows_of::<adw::SpinRow>(&chart_rows(&panel)).pop().unwrap();
             assert!(amount.is_visible());
             assert!(!amount.has_css_class("error"));
 
@@ -871,7 +859,7 @@ mod tests {
             assert_eq!(chart_pnl::load(&store), ChartPnl::R(250.0));
             assert_eq!(told.get(), 1);
             rebuild(&panel);
-            assert_eq!(chart_rows::<adw::SpinRow>(&panel).pop().unwrap().value(), 250.0, "kept");
+            assert_eq!(rows_of::<adw::SpinRow>(&chart_rows(&panel)).pop().unwrap().value(), 250.0, "kept");
         });
     }
 
@@ -906,7 +894,7 @@ mod tests {
             rebuild(&panel);
             let groups = panel.groups.borrow().clone();
             let titles: Vec<String> = groups.iter().map(|group| group.title().to_string()).collect();
-            assert_eq!(titles, ["Trading services", "Order entry", "Chart"]);
+            assert_eq!(titles, ["Trading services", "Order entry"]);
             assert!(words_under(groups[0].upcast_ref()).iter().any(|w| w == "Add a trading service…"));
             assert!(words_under(groups[1].upcast_ref()).iter().any(|w| w == "Edit quantities…"));
             let rows = login_rows(&panel);
@@ -1048,10 +1036,10 @@ mod tests {
             Some("Charts' Rithmic data will come through Tradeify.")
         );
         assert_eq!(words(trading::Removal::Ask).0, "Remove the Rithmic data feed too?");
-        assert_eq!(words(trading::Removal::Ask).1.as_deref(), Some("Kept, it stays on the Data page, not signed in."));
+        assert_eq!(words(trading::Removal::Ask).1.as_deref(), Some("Kept, it stays on the Market data page, not signed in."));
         assert_eq!(
             words(trading::Removal::KeepFeed).1.as_deref(),
-            Some("The Rithmic data feed stays on the Data page, not signed in: it is the last one.")
+            Some("The Rithmic data feed stays on the Market data page, not signed in: it is the last one.")
         );
     }
 

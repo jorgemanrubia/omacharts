@@ -2212,7 +2212,7 @@ pub(super) mod tests {
                 }
                 index += 1;
             }
-            for group in ["Orders and positions", "Right", "Order entry", "Chart"] {
+            for group in ["Orders and positions", "Right", "Order entry"] {
                 assert!(groups.iter().any(|title| title == group), "no {group} group in {groups:?}");
             }
             for row in ["Buy", "Sell", "Long", "Short", "Profit", "Loss", "P&L", "Buy Sell", "Quantity", "Order labels"] {

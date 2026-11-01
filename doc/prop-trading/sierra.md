@@ -9,7 +9,7 @@ omacharts features enable sierra     # the data feed
 omacharts features enable trading    # and, with both on, the broker
 ```
 
-With `sierra` off nothing of it exists: no feed on the Data page or in
+With `sierra` off nothing of it exists: no feed on the Market data page or in
 `provider list`, no `provider setup sierra`, no folder looked for, no file
 watched and no connection made. The user manual says nothing about it until
 it is no longer experimental; this file is where it is described.

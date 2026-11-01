@@ -11,7 +11,7 @@ Preferences holds the settings that apply to the whole app. Open it with <kbd>Ct
 
 The sections down its side are **General**, **Charts**, **Market data**, **Appearance** and **Overlays**. In a narrow window the list of sections becomes a page of its own and a section opens over it.
 
-Reopened while the app is running, the dialog comes back on the section and tab you left it on. Opening it from a chart's header still goes to Charts › Header.
+Reopened while the app is running, the dialog comes back on the section and tab you left it on. Opening it from a chart's header goes to Overlays, where the header is edited.
 
 <!-- regenerate:
 theme: tokyo-night
@@ -27,14 +27,31 @@ state:
 capture: bin/headless-window shot /tmp/prefs.png
 crop: 276,16,2008,1008   (the whole dialog, 12px layout margin)
 -->
-{% include figure.html src="/assets/manual/preferences/general.png" alt="The Preferences dialog on General, with the Desktop and Updates groups" caption="Preferences on General." %}
+{% include figure.html src="/assets/manual/preferences/general.png" alt="The Preferences dialog on General, with the Desktop, Time, Chart, Preference backups and Updates groups" caption="Preferences on General." %}
 
 ### General
 
 | Group › row | Does | Chapter |
 |---|---|---|
 | Desktop › **Show in the Omarchy bar** | Puts the Omarchy plugin in the bar, or takes it out. The group appears only on an Omarchy desktop. | [Omarchy plugin](/manual/bar-widget/) |
+| Time › **Time zone**, **Time format** | How every chart tells the time. | [Time](#time) |
+| Chart › **Preset resolutions**, **Edit…** | Opens the Resolutions dialog. | [The preset resolutions](/manual/charts/#the-preset-resolutions) |
+| Chart › **Zoom sensitivity** | How far the wheel and a two-finger swipe zoom every chart, from 10% to 200%. 100% by default, where a wheel notch zooms as it always has. | [Moving around](/manual/charts/#moving-around) |
+| Preference backups › **Last backup**, **Back Up Now**, **Restore…** | When settings were last backed up, and restoring one. | [Where your data lives](/manual/your-data/) |
 | Updates › **Update automatically** | Downloads new releases in the background, to start at the next launch. On by default. | [Installation](/manual/installing/#updates) |
+
+#### Time
+
+The **Time** group sets the clock every chart reads. A change applies at once to every chart on screen. It governs the time axis, the crosshair, every time typed into an indicator's settings, and the times `omacharts chart drawing` reads and prints.
+
+| Row | Choices | Default |
+|---|---|---|
+| **Time zone** | **Each chart's exchange**, or a city, each listed with its offset from UTC today, such as **London (UTC+1)** | New York |
+| **Time format** | **24-hour (15:30)**, **12-hour (3:30 PM)** | The desktop's clock format |
+
+**Each chart's exchange** puts each chart in its own exchange's clock: ES in Chicago time, a Madrid listing in Madrid time, crypto in UTC. The crosshair's time then ends with the zone, such as **21 Oct 2026 07:30 CT**, so two linked charts that disagree about the time say why. Any other time zone, by its IANA name such as `Asia/Kolkata`, can be set from the CLI ([Settings](/manual/cli/#settings)); the row then lists it too.
+
+Daily and longer bars are dates and read the same in every time zone.
 
 ### Charts
 
@@ -55,34 +72,15 @@ crop: 292,76,1976,1288
 | Tab › group › row | Does | Chapter |
 |---|---|---|
 | Templates › **Chart templates** | The list. + makes one, a row opens its editor, the pencil renames, the bin deletes. | [Chart templates](/manual/chart-templates/) |
-| Header › **Left**, **Center** | The parts every chart's header shows in each section, in order. | [The header](/manual/charts/#the-header) |
-| Other › Chart › **Preset resolutions**, **Edit…** | Opens the Resolutions dialog. | [The preset resolutions](/manual/charts/#the-preset-resolutions) |
-| Other › Chart › **Zoom sensitivity** | How far the wheel and a two-finger swipe zoom every chart, from 10% to 200%. 100% by default, where a wheel notch zooms as it always has. | [Moving around](/manual/charts/#moving-around) |
-| Other › Time › **Time zone**, **Time format** | How every chart tells the time. | [Time](#time) |
-
-#### Time
-
-The **Time** group on the **Other** tab sets the clock every chart reads. A change applies at once to every chart on screen. It governs the time axis, the crosshair, every time typed into an indicator's settings, and the times `omacharts chart drawing` reads and prints.
-
-| Row | Choices | Default |
-|---|---|---|
-| **Time zone** | **Each chart's exchange**, or a city, each listed with its offset from UTC today, such as **London (UTC+1)** | New York |
-| **Time format** | **24-hour (15:30)**, **12-hour (3:30 PM)** | The desktop's clock format |
-
-**Each chart's exchange** puts each chart in its own exchange's clock: ES in Chicago time, a Madrid listing in Madrid time, crypto in UTC. The crosshair's time then ends with the zone, such as **21 Oct 2026 07:30 CT**, so two linked charts that disagree about the time say why. Any other time zone, by its IANA name such as `Asia/Kolkata`, can be set from the CLI ([Settings](/manual/cli/#settings)); the row then lists it too.
-
-Daily and longer bars are dates and read the same in every time zone.
 
 ### Market data
 
 <!-- regenerate:
 theme: tokyo-night
-window: 2560x1440 @2, $SP/kit/hw; after `hw start` and before `hw app`, XDG_DATA_HOME in the session's env file
-  pointed at $HOME/.local/share so paths read from ~
+window: 2560x1440 @2, $SP/kit/hw
 state:
   move 1270 710
   omacharts chart set --symbol NVDA --resolution 1D
-  omacharts backup create      # and a few changes between, so several are kept
   key ctrl+comma
   click 214 243          # Market data in the sidebar
   click 214 223          # Market data again (clears the keyboard-focus ring)
@@ -90,7 +88,7 @@ state:
 capture: bin/headless-window shot /tmp/data.png
 crop: 276,56,2008,1328   (the whole dialog, 12px layout margin)
 -->
-{% include figure.html src="/assets/manual/preferences/data.png" alt="Preferences on Market data, with the Data feed, Storage and Backups groups" caption="Preferences on Market data." %}
+{% include figure.html src="/assets/manual/preferences/data.png" alt="Preferences on Market data, with the Data feed and Storage groups" caption="Preferences on Market data." %}
 
 | Group › row | Does | Chapter |
 |---|---|---|
@@ -98,7 +96,6 @@ crop: 276,56,2008,1328   (the whole dialog, 12px layout margin)
 | thinkorswim › **Sign in…** / **Sign out** | Shown only while thinkorswim is chosen. | [Market data feeds](/manual/market-data/) |
 | Storage › **Cached data**, **Clear** | How much downloaded price data is kept, and a button to delete it all. | [Where your data lives](/manual/your-data/) |
 | Storage › **Keep at most** | 256 MB, 512 MB, 1 GB, 2 GB, 5 GB. | [Where your data lives](/manual/your-data/) |
-| Backups › **Last backup**, **Back Up Now**, **Restore…** | When settings were last backed up, and restoring one. | [Where your data lives](/manual/your-data/) |
 
 ### Appearance
 
@@ -106,13 +103,16 @@ crop: 276,56,2008,1328   (the whole dialog, 12px layout margin)
 
 ### Overlays
 
-The lines every chart draws, the same on every chart in every chartbook.
+The same on every chart, in every chartbook. A chart's settings show the same page, under **Global**.
 
-| Row | Does | Default |
+| Group › row | Does | Chapter |
 |---|---|---|
-| **Gridlines** | The grid behind the bars. The scales and their labels stay either way ([Gridlines](/manual/charts/#gridlines)) | Off |
-| **Last price line** | The dashed line across at the last price. The price stays on the axis either way | On |
-| **Crosshair across Follow charts** | The pointer on one chart draws the same moment on every other chart of the same symbol ([Sharing the crosshair](/manual/charts/#sharing-the-crosshair)) | On |
+| **Left**, **Center**, **Right** | The parts the header shows in each section, in order. A part is in one section at a time. **Restore defaults** puts every section back as it ships. | [The header](/manual/charts/#the-header) |
+| Lines › **Gridlines** | The grid behind the bars. The scales and their labels stay either way. Off until turned on. | [Gridlines](/manual/charts/#gridlines) |
+| Lines › **Last price line** | The dashed line at the last price. The price stays on the axis either way. | [The last price line](/manual/charts/#the-last-price-line) |
+| Lines › **Crosshair across Follow charts** | The pointer on one chart draws the same moment on every other chart of the same symbol. | [Sharing the crosshair](/manual/charts/#sharing-the-crosshair) |
+
+Right-clicking a chart's header and choosing **Edit header…** opens this page.
 
 ## Settings that stay with this machine
 

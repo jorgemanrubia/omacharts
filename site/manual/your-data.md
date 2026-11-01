@@ -49,7 +49,7 @@ crop: 980,230,600,1140
 
 ### In Preferences
 
-Preferences › Market data › **Backups**:
+Preferences › General › **Preference backups**:
 
 | Control | Does |
 |---|---|
@@ -65,7 +65,7 @@ A restore takes effect at once, even in an open window. The charts, the sidebar 
 
 | To move | Do |
 |---|---|
-| Everything | On the other machine, Preferences › Market data › **Restore… › Choose a File…** and pick a copy of `omacharts.db` or any file from `backups/`. |
+| Everything | On the other machine, Preferences › General › **Restore… › Choose a File…** and pick a copy of `omacharts.db` or any file from `backups/`. |
 | Everything, before the first launch | Put `omacharts.db` in `~/.local/share/omacharts/` on a machine that has never run Omacharts. |
 | Watchlists only | Export them on this machine and import them on the other with the CLI. Importing adds to that machine's lists rather than replacing them ([Watchlists and sections in the CLI](/manual/cli/#watchlists-and-sections)). |
 

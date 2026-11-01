@@ -74,7 +74,7 @@ crop: 898,193,763,399   (the whole card, 24px layout margin)
 
 ### The preset resolutions
 
-The resolution strip is the same for every chart. Out of the box it is `5m 15m 1h 4h 1D 1W`. To edit it, right-click the strip, where the [header](#the-header) shows it, and choose **Edit resolutions…**, or open Preferences › Charts › Other › **Preset resolutions** › **Edit…**.
+The resolution strip is the same for every chart. Out of the box it is `5m 15m 1h 4h 1D 1W`. To edit it, right-click the strip, where the [header](#the-header) shows it, and choose **Edit resolutions…**, or open Preferences › General › Chart › **Preset resolutions** › **Edit…**.
 
 <!-- regenerate:
 theme: tokyo-night
@@ -182,7 +182,7 @@ The price axis fits the bars on screen until you drag it. A chart's scales come 
 | Double-click the time axis | Back to the resting zoom, at the latest bar |
 | <kbd>Ctrl</kbd> + <kbd>Esc</kbd> | **Reset chart**. Both scales back to how the chart opens, at the latest bars |
 
-The time axis is labelled in the time zone and the time format chosen in Preferences › Charts › Other ([Time](/manual/preferences/#time)), New York time unless you change it.
+The time axis is labelled in the time zone and the time format chosen in Preferences › General › Time ([Time](/manual/preferences/#time)), New York time unless you change it.
 
 ### Logarithmic scale
 
@@ -241,7 +241,7 @@ crop: 490,300,1180,536   (the menu with 20px layout margin right and below)
 | <kbd>+</kbd> <kbd>−</kbd> | Zooms in and out about the middle |
 | <kbd>End</kbd> | Back to the latest bar, following new bars again |
 
-The wheel zooms a step a notch. A trackpad's two-finger swipe up or down zooms by how far the fingers travel, so a slow swipe zooms a little. Preferences › Charts › Other › **Zoom sensitivity** makes both gentler or faster, for every chart at once, and also sets how far the wheel stretches the price axis.
+The wheel zooms a step a notch. A trackpad's two-finger swipe up or down zooms by how far the fingers travel, so a slow swipe zooms a little. Preferences › General › Chart › **Zoom sensitivity** makes both gentler or faster, for every chart at once, and also sets how far the wheel stretches the price axis.
 
 A chart can be panned a little past either end of its bars. One panned back into history stays there as new bars arrive. <kbd>↑</kbd> <kbd>↓</kbd> over a chart move through the watchlist, not the chart ([Watchlists](/manual/watchlists/)).
 
@@ -440,7 +440,7 @@ The header is the line at a chart's top-left and the row centred across its top.
 
 Out of the box the left shows the data feed, the symbol, the resolution and the daily change, and the center the chart title.
 
-Edit it in Preferences › Charts › **Header**, or right-click the header or the resolution strip and choose **Edit header…**, which opens the same tab. The **+** beside a section's title adds a part that is in neither section, a part's bin removes it, and dragging a part by its handle reorders it. To move a part to the other section, remove it and add it there.
+Edit it in Preferences › **Overlays**, or right-click the header or the resolution strip and choose **Edit header…**, which opens the same page. The **+** beside a section's title adds a part that is in neither section, a part's bin removes it, and dragging a part by its handle reorders it. To move a part to the other section, remove it and add it there.
 
 ### Chart titles
 

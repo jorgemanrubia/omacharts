@@ -26,13 +26,12 @@ it on.** Off, the app is the one it was before any of this, even with a
 broker login saved: no trading panel or toggle; no account, P&L, Buy Sell or
 Quantity in a chart's header; no order or position lines or tags on a chart;
 no orders in the chart's menu; no trading keys and no trading rows on the
-shortcuts sheet; no Preferences → Trading in the sidebar, no Trading colours
-and lines on the Theme page and no trading parts in Preferences → Charts →
-Header (a header that holds them keeps them where they were, unseen, for
-when the flag is on); no trading part typed to `config set chart_header…`;
-and nothing signs in to a broker's order plant, at startup or ever. Rithmic
+shortcuts sheet; no Preferences → Trading in the sidebar and no trading parts
+in Preferences → Overlays → Header (a header that holds them keeps them where
+they were, unseen, for when the flag is on); no trading part typed to
+`config set chart_header…`; and nothing signs in to a broker's order plant, at startup or ever. Rithmic
 as a data feed is not trading and stays: with the flag off its login is
-typed in its own dialog from the Data page, kept as the data login, and
+typed in its own dialog from the Market data page, kept as the data login, and
 signs in its data alone; the row signs it in, out and removes it like any
 other feed's.
 
@@ -65,11 +64,11 @@ See [sierra.md](sierra.md).
 **With the flag on, trading's settings are always visible in Preferences;
 everything else is unchanged until there is an account.** Every trading
 setting is in Preferences whether or not there is a login, so it can be set
-before the first one: Preferences → Trading (its accounts, Order entry and
-Chart), the Trading colours and lines on the Theme page of a theme of one's
-own, and the header's P&L, Buy Sell and Quantity in Preferences → Charts →
-Header, listed and offered like any other part. A setting changed with no
-account changes nothing anybody sees until there is one.
+before the first one: Preferences → Trading (its accounts, Order entry, and
+Orders and positions with their colours and lines), and the header's P&L,
+Buy Sell and Quantity in Preferences → Overlays → Header, listed and offered
+like any other part. A setting changed with no account changes nothing
+anybody sees until there is one.
 
 Everywhere else, until somebody adds a trading account the app is the one it
 was before any of this: the same chart, header, corners, menus, panels and
@@ -98,7 +97,7 @@ thinkorswim already is a feed):
   delivers (polled or streamed), what richer data it has (minute ladders,
   trades, later depth), how far back, and what it needs to sign in, are all
   declared by the feed and read by routing, the loader, indicators and the
-  Data page without code naming any one feed.
+  Market data page without code naming any one feed.
 - **Data elements**: bars, minute ladders, day totals, trades and ticks are
   the engine's own types, with no feed's quirks in them; a feed maps into
   them at its edge.
@@ -212,9 +211,9 @@ Done in three steps, in this order:
    it and `bin/perf-compare` showing nothing changed. No Rithmic code yet.
 2. **The Rithmic provider**, in `crates/omacharts-engine/src/providers/rithmic/`
    on top of `crates/rithmic`.
-3. **The Data page**, as below.
+3. **The Market data page**, as below.
 
-#### The Data page
+#### The Market data page
 
 An ordered list of data feeds. With nothing configured it is one row,
 Yahoo, and a button to add another; no brokerage, no "Experimental", no
@@ -235,8 +234,8 @@ Symbols use the first data feed that offers them.
 - **Add a data feed…** offers the feeds not on the list. Rithmic's login is
   a broker's, so with trading on adding it adds a login in Preferences →
   Trading, through the same dialog: name, user ID, password, system and
-  gateway. With trading off the same dialog opens from the Data page, and
-  the login signs in its data alone.
+  gateway. With trading off the same dialog opens from the Market data page,
+  and the login signs in its data alone.
 - **A feed's row** has a handle to drag it up or down, one action (Sign in…
   or Sign out) and Remove. Its subtitle says what it serves and how it
   stands: "live", "not signed in", "session expired", or the feed's own
@@ -517,7 +516,7 @@ is drawn from can be combined freely:
   order plant after sign-in. A prop trader usually has several under one
   login. The list is cached on the machine (bookkeeping, never in a backup)
   so the page and the header draw without connecting.
-- **A data feed** is a row on the Data page. Only one Rithmic login
+- **A data feed** is a row on the Market data page. Only one Rithmic login
   supplies market data, the first added unless the trader picks another;
   the others connect for orders, positions and P&L only. Several logins each
   streaming quotes could count as several data sessions under CME's
@@ -525,12 +524,12 @@ is drawn from can be combined freely:
   not known.
 
 **Preferences → Trading** has two sections. **Trading accounts** lists the
-logins, each a row with its accounts under it, edited the way the Data page
-edits feeds: "Add a trading account…" (Rithmic for now) opens the same login
+logins, each a row with its accounts under it, edited the way the Market data
+page edits feeds: "Add a trading account…" (Rithmic for now) opens the same login
 dialog. Adding the first login also adds Rithmic as the first data feed,
 through that login. Removing a login removes its accounts; if it was the
 data login, Rithmic data moves to another login, or the Rithmic feed goes if
-none is left. Nothing else on the Data page is touched.
+none is left. Nothing else on the Market data page is touched.
 
 ```
 Trading accounts
@@ -567,7 +566,7 @@ stays, not signed in, when it is the last one.
 **The chart's account and feed.** Every chart has an account, whose money
 its orders spend: the default, or one chosen for it. A chart's default
 feed is its account's own, Rithmic through the data login, when that
-serves the instrument, and otherwise the Data page's order; nothing is
+serves the instrument, and otherwise the Market data page's order; nothing is
 stored for it. A feed chosen for the chart overrides it until the feed
 stops serving the instrument or the chart changes account. One function
 decides a chart's account and one its feed, for the header and for the

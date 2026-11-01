@@ -1223,7 +1223,7 @@ omacharts: NVDA not shown; the focused chart is pinned and no chart follows the 
 
 ## Sharing the crosshair
 
-Whether the pointer on one chart draws the same moment on every other chart of the same symbol, whatever their link mode. One setting for every chart, Preferences › Charts › Other › **Sync crosshair across charts** ([Sharing the crosshair](/manual/charts/#sharing-the-crosshair)).
+Whether the pointer on one chart draws the same moment on every other chart of the same symbol, whatever their link mode. One setting for every chart, Preferences › Overlays › **Crosshair across Follow charts** ([Sharing the crosshair](/manual/charts/#sharing-the-crosshair)).
 
 | Command | Does |
 |---|---|
@@ -1569,13 +1569,13 @@ same.
 | `chart_shows_drawings` | on, off | on | Charts › Defaults › Show drawings from other charts | [Drawings](/manual/drawings/) |
 | `chart_sends_drawings` | on, off | on | Charts › Defaults › Send drawings to other charts | [Drawings](/manual/drawings/) |
 | `chart_template` | a chart template's name or `id:N`, or `none` | `Default` | Charts › Defaults › Template | [Chart templates](/manual/chart-templates/) |
-| `chart_header` | comma-separated `symbol`, `resolution`, `change`, `template`, `title`, `feed`, `stripe`; or `none` | `feed,symbol,resolution,change` | Charts › Header › Left | [Charts](/manual/charts/) |
-| `chart_header_center` | the same | `title` | Charts › Header › Center | [Charts](/manual/charts/) |
-| `chart_time_zone` | an IANA name such as `Europe/London` or `America/Chicago`, or `exchange` for each chart's exchange's own | `America/New_York` | Charts › Other › Time › Time zone | [Preferences](/manual/preferences/#time) |
-| `time_format` | `24h`, `12h` | the desktop's clock format | Charts › Other › Time › Time format | [Preferences](/manual/preferences/#time) |
-| `timeframes` | comma-separated resolutions, such as `5m,15m,1h,4h,1D,1W`; an entry that is not a resolution is skipped | `5m,15m,1h,4h,1D,1W` | Charts › Other › Preset resolutions | [Charts](/manual/charts/) |
+| `chart_header` | comma-separated `symbol`, `resolution`, `change`, `template`, `title`, `feed`, `stripe`; or `none` | `feed,symbol,resolution,change` | Overlays › Left | [Charts](/manual/charts/) |
+| `chart_header_center` | the same | `title` | Overlays › Center | [Charts](/manual/charts/) |
+| `chart_time_zone` | an IANA name such as `Europe/London` or `America/Chicago`, or `exchange` for each chart's exchange's own | `America/New_York` | General › Time › Time zone | [Preferences](/manual/preferences/#time) |
+| `time_format` | `24h`, `12h` | the desktop's clock format | General › Time › Time format | [Preferences](/manual/preferences/#time) |
+| `timeframes` | comma-separated resolutions, such as `5m,15m,1h,4h,1D,1W`; an entry that is not a resolution is skipped | `5m,15m,1h,4h,1D,1W` | General › Chart › Preset resolutions | [Charts](/manual/charts/) |
 | `sync_crosshair` | on, off | on | Overlays › Crosshair across Follow charts | [Charts](/manual/charts/#sharing-the-crosshair) |
-| `zoom_sensitivity` | a percentage from `10` to `200`, with or without `%` | `100` | Charts › Other › Chart › Zoom sensitivity | [Charts](/manual/charts/#moving-around) |
+| `zoom_sensitivity` | a percentage from `10` to `200`, with or without `%` | `100` | General › Chart › Zoom sensitivity | [Charts](/manual/charts/#moving-around) |
 | `provider` | `yahoo`, `tos` | `yahoo` | Market data › Data feed | [Market data feeds](/manual/market-data/) |
 | `screenshot_folder` | a folder; `~/` is your home; empty for the default | where Omarchy saves screenshots; `<Pictures>/Omacharts` without Omarchy | None | [Screenshots](/manual/screenshots/) |
 | `cache_limit` | a size in bytes; `cache limit` takes `512MB` or `2GB` | 1 GB | Market data › Keep at most | [Where your data lives](/manual/your-data/) |

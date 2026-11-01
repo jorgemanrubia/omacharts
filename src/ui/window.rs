@@ -8512,7 +8512,7 @@ impl Window {
     /// The Overlays page, likewise.
     pub fn overlays_page(self: &Rc<Self>) -> adw::PreferencesPage {
         let this = self.clone();
-        crate::ui::appearance::overlays_page(self.store.clone(), Rc::new(move || this.adopt_chart_look()))
+        crate::ui::overlays::page(this, self.store.clone())
     }
 
     pub fn shared_store(&self) -> Rc<Store> {
@@ -8539,7 +8539,7 @@ impl Window {
     /// The preferences at the tab that edits what every chart's header
     /// shows, from the header itself.
     pub fn edit_header(self: &Rc<Self>) {
-        self.open_preferences_at(Some("header"));
+        self.open_preferences_at(Some(crate::ui::preferences::HEADER));
     }
 
     fn open_preferences_at(self: &Rc<Self>, charts_tab: Option<&str>) {
@@ -11656,7 +11656,7 @@ impl Window {
         if !self.store.setting_bool(SETTING_SYNC_CROSSHAIR, true) {
             self.clear_echoes();
         }
-        crate::ui::appearance::charts_changed();
+        crate::ui::overlays::charts_changed();
     }
 
     /// Whether the focused chart draws its indicators.

@@ -1,10 +1,14 @@
 //! Settings.
 //!
-//! Appearance asks the two questions people actually arrive with: which
-//! theme, and what candles look like. It is its own module,
-//! [`crate::ui::appearance`], because a chart's settings show it too. How one
-//! chart paints those candles — filled, hollow, red up, monochrome — is that
-//! chart's, and what a new one opens with is under Charts.
+//! Five sections, each a question somebody arrives with. General: the app on
+//! this desktop, its clock, its backups. Charts: what a new chart opens
+//! with, and the templates. Market data: where the bars come from and how
+//! they are kept. Appearance: how every chart looks, and Overlays: what every
+//! chart draws over its bars, each answered once for all of them; they are
+//! modules of their own, [`crate::ui::appearance`] and
+//! [`crate::ui::overlays`], because a chart's settings show them too.
+//! Trading, while it is switched on: the accounts, and how orders and
+//! positions are drawn.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -18,7 +22,6 @@ use crate::cache;
 use crate::chart_defaults::ChartDefaults;
 use crate::store::Store;
 use crate::theming::Theming;
-use crate::ui::appearance;
 use crate::ui::form_window;
 use crate::ui::window::Window;
 
@@ -27,6 +30,10 @@ pub struct Preferences;
 /// What opens the window at the Trading section rather than at a tab of
 /// Charts.
 pub const TRADING: &str = "trading";
+
+/// What opens the window at Overlays, where the header is edited, rather
+/// than at a tab of Charts: from a chart's header.
+pub const HEADER: &str = "header";
 
 /// Where the window was when it was last looked at, for this run of the app:
 /// the section down the sidebar, by its id, and the tab shown in Charts.
@@ -63,7 +70,6 @@ struct Context {
     on_restored: Rc<dyn Fn()>,
     general_page: adw::PreferencesPage,
     charts_page: adw::PreferencesPage,
-    charts_other_page: adw::PreferencesPage,
     charts_templates_page: adw::PreferencesPage,
     data_page: adw::PreferencesPage,
     trading_page: adw::PreferencesPage,
@@ -115,10 +121,12 @@ impl Preferences {
             open.close();
         }
         // Trading is a section, not a tab of Charts, and is asked for by the
-        // same word: from a chart's account list.
-        let (charts_tab, at_trading) = match charts_tab {
-            Some(TRADING) => (None, true),
-            tab => (tab, false),
+        // same word: from a chart's account list. So is the header, which is
+        // the first thing on Overlays: from a chart's header.
+        let (charts_tab, at_trading, at_header) = match charts_tab {
+            Some(TRADING) => (None, true, false),
+            Some(HEADER) => (None, false, true),
+            tab => (tab, false, false),
         };
 
         let general_page = adw::PreferencesPage::new();
@@ -126,39 +134,12 @@ impl Preferences {
         let data_page = adw::PreferencesPage::new();
         let trading_page = adw::PreferencesPage::new();
 
-        // Charts is four things: what a new chart opens with, the sets of
-        // indicators charts can share, the line every chart's header shows,
-        // and the rest.
-        let charts_other_page = adw::PreferencesPage::new();
+        // Charts is two things: what a new chart opens with, and the sets of
+        // indicators charts can share.
         let charts_templates_page = adw::PreferencesPage::new();
         let charts = gtk::Stack::new();
         charts.add_titled(&charts_page, Some("defaults"), "Defaults");
         charts.add_titled(&charts_templates_page, Some("templates"), "Templates");
-        // What every chart's header shows, changed on all of them as it is
-        // changed here.
-        let charts_header_page = adw::PreferencesPage::new();
-        let store_for_header = store.clone();
-        let window_for_header = window.clone();
-        // The account, Buy and Sell, the quantity and the day's P&L are
-        // listed and offered while trading is switched on, with or without
-        // a login, like every trading setting: they draw nothing on a chart
-        // until there is an account to trade on. Switched off, they are
-        // neither listed nor offered, and stay where they were.
-        let (sections, restore_header) = header_sections(crate::header::load(&store), move |header| {
-            crate::header::save(&store_for_header, header);
-            window_for_header.apply_header();
-        });
-        for section in &sections {
-            charts_header_page.add(&section.group);
-        }
-        let restore_group = adw::PreferencesGroup::new();
-        let restore = gtk::Button::with_label("Restore defaults");
-        restore.set_halign(gtk::Align::Start);
-        restore.connect_clicked(move |_| restore_header());
-        restore_group.add(&restore);
-        charts_header_page.add(&restore_group);
-        charts.add_titled(&charts_header_page, Some("header"), "Header");
-        charts.add_titled(&charts_other_page, Some("other"), "Other");
         // Opened from something on a chart, at the tab that is about it;
         // otherwise where it was left.
         let last = LAST_SEEN.with(|seen| seen.borrow().clone());
@@ -170,10 +151,8 @@ impl Preferences {
             LAST_SEEN.with(|seen| seen.borrow_mut().charts_tab = tab);
         });
 
-        let appearance_page = appearance::page(store.clone(), theming.clone(), on_change.clone());
-        let window_for_charts = window.clone();
-        let overlays_page =
-            appearance::overlays_page(store.clone(), Rc::new(move || window_for_charts.adopt_chart_look()));
+        let appearance_page = window.appearance_page();
+        let overlays_page = window.overlays_page();
 
         // General first: what the app does, before what it looks like.
         // Trading's page only while trading is switched on.
@@ -190,10 +169,11 @@ impl Preferences {
         }
         // Opened from a chart at the section it asked for, else where it was
         // left.
-        let start = match (charts_tab, at_trading && trading) {
-            (_, true) => Some(TRADING.to_string()),
-            (Some(_), _) => Some("charts".to_string()),
-            (None, _) => last.section,
+        let start = match (charts_tab, at_trading && trading, at_header) {
+            (_, true, _) => Some(TRADING.to_string()),
+            (_, _, true) => Some("overlays".to_string()),
+            (Some(_), ..) => Some("charts".to_string()),
+            (None, ..) => last.section,
         };
         let start = start.and_then(|id| sections.iter().position(|(known, ..)| *known == id)).unwrap_or(0);
 
@@ -205,7 +185,6 @@ impl Preferences {
             on_restored,
             general_page,
             charts_page,
-            charts_other_page,
             charts_templates_page,
             data_page,
             trading_page,
@@ -224,82 +203,6 @@ impl Preferences {
         OPEN.with(|open| open.borrow().set(Some(&frame)));
         frame.present();
     }
-}
-
-/// The header's sections, a list each, handing every change to `changed` as
-/// the whole header.
-///
-/// A part is in the header once, so a part in one section is not offered by
-/// the other's +, and is offered again the moment it is taken out.
-///
-/// Comes with the way back to the standard header, every section at once.
-#[allow(clippy::type_complexity)]
-fn header_sections(
-    current: crate::header::Header,
-    changed: impl Fn(&crate::header::Header) + 'static,
-) -> (Vec<Rc<crate::ui::part_list::PartList<crate::header::Part>>>, Rc<dyn Fn()>) {
-    use crate::header::Section;
-    use crate::ui::part_list::PartList;
-    type Lists = Rc<RefCell<Vec<(Section, std::rc::Weak<PartList<crate::header::Part>>)>>>;
-    let header = Rc::new(RefCell::new(current));
-    let changed = Rc::new(changed);
-    let lists: Lists = Rc::new(RefCell::new(Vec::new()));
-    let elsewhere = Rc::new(move |header: &crate::header::Header, section: Section| -> Vec<crate::header::Part> {
-        Section::ALL
-            .into_iter()
-            .filter(|other| *other != section)
-            .flat_map(|other| header.section(other).to_vec())
-            .collect()
-    });
-    let built: Vec<_> = Section::ALL
-        .into_iter()
-        .map(|section| {
-            let (edited, changed, others) = (header.clone(), changed.clone(), lists.clone());
-            let elsewhere_now = elsewhere.clone();
-            // Trading's parts while it is switched off are neither listed
-            // nor lost: they stay where they were for when it is on.
-            let current = header.borrow().shown(section, crate::features::trading());
-            let list = PartList::new(
-                section.title(),
-                &format!("Add to the {}", section.title().to_lowercase()),
-                current,
-                move |parts: Vec<crate::header::Part>| {
-                    edited.borrow_mut().set_shown(section, parts, crate::features::trading());
-                    let now = edited.borrow().clone();
-                    for (other, list) in others.borrow().iter().filter(|(other, _)| *other != section) {
-                        if let Some(list) = list.upgrade() {
-                            list.set_elsewhere(elsewhere_now(&now, *other));
-                        }
-                    }
-                    changed(&now);
-                },
-            );
-            list.set_elsewhere(elsewhere(&header.borrow(), section));
-            lists.borrow_mut().push((section, Rc::downgrade(&list)));
-            list
-        })
-        .collect();
-    // Kept by their groups, which let go when the dialog is disposed: a
-    // section with no rows and nothing to offer holds nothing that would.
-    for list in &built {
-        let kept = built.clone();
-        list.group.connect_destroy(move |_| {
-            let _ = &kept;
-        });
-    }
-    let shown: Vec<_> = built.iter().map(Rc::downgrade).collect();
-    let restore = Rc::new(move || {
-        let standard = crate::header::Header::standard();
-        *header.borrow_mut() = standard.clone();
-        for (section, list) in Section::ALL.into_iter().zip(&shown) {
-            if let Some(list) = list.upgrade() {
-                list.replace(standard.shown(section, crate::features::trading()));
-                list.set_elsewhere(elsewhere(&standard, section));
-            }
-        }
-        changed(&standard);
-    });
-    (built, restore)
 }
 
 /// The sections down a sidebar, the selected one beside it.
@@ -721,18 +624,23 @@ fn build_charts_page(context: &Rc<Context>) {
     }
 }
 
-/// How orders and positions are drawn on a chart: a colour for each of buy,
-/// sell, long, short, profit and loss, and a pattern for each kind of line.
+/// How orders and positions are drawn on a chart: `first`, the Trading
+/// page's own rows (which side the labels sit at, and how P&L is shown),
+/// then a colour for each of buy, sell, long, short, profit and loss, and a
+/// pattern for each kind of line.
 /// One look worn over every theme, and each row saves only itself: what
 /// nobody set keeps following the theme. On the Trading page, there while
 /// trading is switched on, with or without a login, as every trading
 /// setting is: without one nothing draws in it.
-fn trading_look_group(context: &Rc<Context>) -> adw::PreferencesGroup {
+fn trading_look_group(context: &Rc<Context>, first: Vec<adw::PreferencesRow>) -> adw::PreferencesGroup {
     use omacharts_engine::indicators::LineStyle;
     use omacharts_engine::{TradingColour, TradingLine, TradingLook};
 
     let group = adw::PreferencesGroup::new();
     group.set_title("Orders and positions");
+    for row in &first {
+        group.add(row);
+    }
     let theming = context.theming.borrow();
     let theme = theming.theme();
     let shown = omacharts_engine::theme_trading(&theme, theming.bar_look());
@@ -810,8 +718,9 @@ fn build_general_page(context: &Rc<Context>) {
     if let Some(group) = desktop_group() {
         context.general_page.add(&group);
     }
-    context.charts_other_page.add(&time_group(context));
-    context.charts_other_page.add(&chart_group(context));
+    context.general_page.add(&time_group(context));
+    context.general_page.add(&chart_group(context));
+    context.general_page.add(&backups_group(context));
     context.general_page.add(&updates_group(context));
     build_charts_page(context);
     rebuild_templates(context);
@@ -1153,7 +1062,7 @@ fn build_data_page(context: &Rc<Context>) {
             &context.data_page,
             context.store.clone(),
             context.on_change.clone(),
-            vec![group, backups_group(context)],
+            vec![group],
             Rc::new(|_: &str, _: &gtk::Widget| {}),
         );
         return;
@@ -1170,13 +1079,13 @@ fn build_data_page(context: &Rc<Context>) {
     trading.set_labels_moved(Rc::new(move || window.adopt_order_labels()));
     let window = context.window.clone();
     trading.set_pnl_changed(Rc::new(move || window.adopt_pnl_display()));
-    trading.set_last(&trading_look_group(context));
+    trading.set_last(&trading_look_group(context, crate::ui::trading_settings::chart_rows(&trading)));
     let adding = trading.clone();
     let redraw = crate::ui::feed_settings::build(
         &context.data_page,
         context.store.clone(),
         context.on_change.clone(),
-        vec![group, backups_group(context)],
+        vec![group],
         Rc::new(move |service: &str, anchor: &gtk::Widget| crate::ui::trading_settings::add_service(&adding, service, anchor)),
     );
     trading.redraw_data_page(redraw);
@@ -1184,11 +1093,11 @@ fn build_data_page(context: &Rc<Context>) {
 
 /// When the settings were last backed up, and the way back to any backup.
 ///
-/// Below the cache rather than beside it: the cache is what can be thrown
-/// away, and this is what cannot.
+/// On General rather than beside the cache: the cache is market data that
+/// can be fetched again, and this is everything somebody made.
 fn backups_group(context: &Rc<Context>) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
-    group.set_title("Backups");
+    group.set_title("Preference backups");
     let settings = context.store.path().map(std::path::Path::to_path_buf);
     if let Some(path) = &settings {
         group.set_description(Some(&format!(
@@ -1610,92 +1519,6 @@ fn describe_count(series: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A part in one section is not offered by the others, and is offered
-    /// again once it is taken out; every change is the whole header.
-    #[test]
-    fn a_part_in_one_section_is_not_offered_in_the_others() {
-        use crate::header::{Header, Part};
-        crate::ui::on_gtk(|| {
-            crate::features::force(crate::features::Feature::Trading, true);
-            let saved: Rc<RefCell<Vec<Header>>> = Rc::default();
-            let seen = saved.clone();
-            let (sections, _) =
-                header_sections(Header::standard(), move |header| seen.borrow_mut().push(header.clone()));
-            let [left, center, right] = sections.as_slice() else { panic!("three sections") };
-            assert_eq!(left.group.title(), "Left");
-            assert_eq!(center.group.title(), "Center");
-            assert_eq!(right.group.title(), "Right");
-            assert_eq!(left.parts(), vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Change]);
-            assert_eq!(center.parts(), vec![Part::Title]);
-            assert_eq!(right.parts(), vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::Position, Part::Settings, Part::Maximize, Part::Link]);
-            assert_eq!(left.offered(), vec![Part::Template, Part::Stripe]);
-            assert_eq!(center.offered(), vec![Part::Template, Part::Stripe]);
-            assert_eq!(right.offered(), vec![Part::Template, Part::Stripe]);
-
-            // Out of the center, the title is offered by all three.
-            center.set(Vec::new());
-            assert_eq!(left.offered(), vec![Part::Template, Part::Title, Part::Stripe]);
-            assert_eq!(center.offered(), vec![Part::Template, Part::Title, Part::Stripe]);
-            assert_eq!(right.offered(), vec![Part::Template, Part::Title, Part::Stripe]);
-            // The stripe into the left is offered by none.
-            left.set(vec![Part::Symbol, Part::Stripe]);
-            assert_eq!(
-                center.offered(),
-                vec![Part::Resolution, Part::Change, Part::Template, Part::Title, Part::Feed]
-            );
-            assert!(!left.offered().contains(&Part::Stripe));
-            assert!(!right.offered().contains(&Part::Stripe));
-            assert_eq!(
-                saved.borrow().last(),
-                Some(&Header {
-                    left: vec![Part::Symbol, Part::Stripe],
-                    center: Vec::new(),
-                    right: vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::Position, Part::Settings, Part::Maximize, Part::Link]
-                })
-            );
-            // The corner's controls move like any other part: the gear out
-            // of the right is offered by the left, and put there is offered
-            // by neither until it is taken out again.
-            right.set(vec![Part::Maximize, Part::Link]);
-            assert!(left.offered().contains(&Part::Settings));
-            left.set(vec![Part::Symbol, Part::Settings]);
-            assert!(!right.offered().contains(&Part::Settings));
-            assert_eq!(saved.borrow().last().map(|header| header.right.clone()), Some(vec![Part::Maximize, Part::Link]));
-            left.set(vec![Part::Symbol]);
-            assert!(right.offered().contains(&Part::Settings));
-        });
-    }
-
-    /// Restoring puts every section back as it ships, at once, lists and
-    /// offers included, and hands the whole header on once.
-    #[test]
-    fn restoring_the_header_puts_every_section_back() {
-        use crate::header::{Header, Part};
-        crate::ui::on_gtk(|| {
-            crate::features::force(crate::features::Feature::Trading, true);
-            let saved: Rc<RefCell<Vec<Header>>> = Rc::default();
-            let seen = saved.clone();
-            let moved = Header {
-                left: vec![Part::Change, Part::Settings, Part::Size],
-                center: Vec::new(),
-                right: vec![Part::Symbol, Part::Stripe],
-            };
-            let (sections, restore) =
-                header_sections(moved, move |header| seen.borrow_mut().push(header.clone()));
-            let [left, center, right] = sections.as_slice() else { panic!("three sections") };
-            restore();
-            assert_eq!(left.parts(), vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Change]);
-            assert_eq!(center.parts(), vec![Part::Title]);
-            assert_eq!(right.parts(), vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::Position, Part::Settings, Part::Maximize, Part::Link]);
-            assert_eq!(left.offered(), vec![Part::Template, Part::Stripe]);
-            assert_eq!(right.offered(), vec![Part::Template, Part::Stripe]);
-            assert_eq!(saved.borrow().as_slice(), &[Header::standard()]);
-            // And the lists go on from there.
-            center.set(Vec::new());
-            assert_eq!(saved.borrow().last().map(|header| header.left.clone()), Some(Header::standard().left));
-        });
-    }
 
     #[test]
     fn sizes_read_sensibly() {
