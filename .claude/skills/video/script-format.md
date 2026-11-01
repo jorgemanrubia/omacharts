@@ -63,6 +63,7 @@ music: ambient synth pads, soft plucked arpeggio, calm and optimistic
   `build` says which omacharts to film: `main` when absent (the latest
   main, fetched and built in a worktree of its own), or a branch, tag or
   commit, or `here` for this checkout's own build.
+  `polish: off` renders without the zooms and key badges.
   `voice` names a narrator in `video/voices/<name>.json` (`draft` until one
   is chosen). `music` describes the music in words; `music_file` pins the
   track picked from `bin/video music`.

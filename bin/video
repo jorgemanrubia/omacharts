@@ -955,6 +955,90 @@ def pause(seconds):
         time.sleep(seconds)
 
 
+# --- Polish --------------------------------------------------------------------------
+
+POINTER = ("click", "rclick", "drag", "scroll")
+KEY_NAMES = {"ctrl": "Ctrl", "alt": "Alt", "shift": "Shift", "super": "Super", "logo": "Super",
+             "Right": "→", "Left": "←", "Up": "↑", "Down": "↓", "Return": "Enter", "Escape": "Esc",
+             "question": "?", "BackSpace": "⌫", "Tab": "Tab", "space": "Space"}
+
+
+def polish_plan(events, total):
+    """Where to zoom and which keys to show, from what the recording did.
+
+    craft.md's rules, as code: zoom only on a run of two or more pointer
+    actions close together — a menu, a dialog — never on a lone click; pull
+    back as soon as the hands go to the keyboard, or shortly after the last
+    click, so the result is seen in its whole frame; and show a badge for every
+    chord with a modifier, which is how the viewer learns the key."""
+    scale_px = SIZE[0] / LAYOUT[0]
+    zooms, badges, run = [], [], []
+
+    def close_run(until):
+        if len(run) >= 2:
+            xs = [e["at"][0] for e in run] + [e["to"][0] for e in run if e.get("to")]
+            ys = [e["at"][1] for e in run] + [e["to"][1] for e in run if e.get("to")]
+            pad = 240
+            w, h = max(xs) - min(xs) + 2 * pad, max(ys) - min(ys) + 2 * pad
+            zoom = min(1.8, 0.9 * min(LAYOUT[0] / w, LAYOUT[1] / h))
+            if zoom >= 1.25:
+                start = max(0.0, run[0]["t"] - 0.45)
+                end = min(until, run[-1]["t"] + 1.6)
+                if end - start >= 1.8:
+                    zooms.append({"start": round(start, 3), "end": round(end, 3),
+                                  "x": round((min(xs) + max(xs)) / 2 * scale_px), "y": round((min(ys) + max(ys)) / 2 * scale_px),
+                                  "scale": round(zoom, 3)})
+        run.clear()
+
+    for event in events:
+        if event.get("scene") is None:
+            continue
+        if event["verb"] in POINTER and event.get("at"):
+            if run and (event["t"] - run[-1]["t"] > 3.0 or math.hypot(event["at"][0] - run[-1]["at"][0], event["at"][1] - run[-1]["at"][1]) > 700):
+                close_run(event["t"])
+            run.append(event)
+        elif event["verb"] in ("key", "type", "cli"):
+            close_run(event["t"] + 0.2)
+            chord = event["args"][0] if event["verb"] == "key" else ""
+            if "+" in chord:
+                keys = [KEY_NAMES.get(part, KEY_NAMES.get(part.lower(), part.upper() if len(part) == 1 else part)) for part in chord.split("+")]
+                badges.append({"start": round(event["t"], 3), "end": round(event["t"] + 1.6, 3), "keys": keys})
+    close_run(total)
+    # A badge that would still be showing when the next one appears gives way.
+    for a, b in zip(badges, badges[1:]):
+        a["end"] = min(a["end"], b["start"])
+    return zooms, badges
+
+
+def polish(script, raw, offset, total):
+    """The recording, cut to the timeline and polished by Remotion: zooms and
+    key badges drawn over it. Returns the file to compose from instead of raw."""
+    events = json.loads((script.out / "events.json").read_text())
+    zooms, badges = polish_plan(events, total)
+    public = script.out / "compose-public"
+    shutil.rmtree(public, ignore_errors=True)
+    public.mkdir()
+    # H.264 in, not the recorder's HEVC: headless Chrome decodes it reliably.
+    run(["ffmpeg", "-v", "error", "-y", "-ss", f"{max(0, offset):.3f}", "-i", str(raw), "-t", f"{total:.3f}",
+         "-c:v", "libx264", "-preset", "fast", "-crf", "10", "-pix_fmt", "yuv420p", "-r", str(FPS), "-an",
+         str(public / "recording.mp4")])
+    # Copied, not linked: Remotion serves a copy of this folder and leaves
+    # symlinks behind, and a missing font fails the whole render.
+    shutil.copy(ROOT / "site/assets/fonts/cascadia-mono-latin-700-normal.woff2", public / "cascadia-mono-700.woff2")
+    props = {"src": "recording.mp4", "width": SIZE[0], "height": SIZE[1], "fps": FPS,
+             "frames": int(round(total * FPS)), "zooms": zooms, "badges": badges}
+    (script.out / "polish.json").write_text(json.dumps(props, indent=1))
+    compose_dir = VIDEO / "compose"
+    if not (compose_dir / "node_modules").exists():
+        die("no Remotion; run bin/video setup")
+    say(f"polishing: {len(zooms)} zooms, {len(badges)} key badges (Remotion, a few minutes at 4K)")
+    out = script.out / "polished.mp4"
+    run(["npx", "remotion", "render", "src/index.ts", "Polish", str(out), f"--props={script.out / 'polish.json'}",
+         f"--public-dir={public}", "--codec=h264", "--crf=12", f"--concurrency={max(2, (os.cpu_count() or 8) // 2)}",
+         "--log=error"], cwd=compose_dir)
+    return out
+
+
 def compose(script, voiced, plan, raw, offset):
     out = script.out
     # The video opens on its cover, held, then fades into the recording;
@@ -1000,7 +1084,10 @@ def compose(script, voiced, plan, raw, offset):
     final = out / f"{script.slug}.mp4"
     preview = out / f"{script.slug}-1080p.mp4"
     say("encoding")
-    recording = ["-ss", f"{max(0, offset):.3f}", "-t", f"{plan['total']:.3f}", "-i", str(raw)]
+    if script.meta.get("polish", "on") != "off":
+        recording = ["-i", str(polish(script, raw, offset, plan["total"]))]
+    else:
+        recording = ["-ss", f"{max(0, offset):.3f}", "-t", f"{plan['total']:.3f}", "-i", str(raw)]
     if still:
         # The fade overlaps the recording's lead-in, where nothing happens yet.
         inputs = ["-loop", "1", "-framerate", str(FPS), "-t", f"{intro + COVER_FADE:.3f}", "-i", str(still), *recording, "-i", str(master)]
@@ -1160,7 +1247,13 @@ def setup():
         if not ace.exists():
             run(["git", "clone", "-q", "--depth", "1", ACE_REPO, str(ace)])
         run(["uv", "sync", "-q"], cwd=ace)
-    for tool in ("Hyprland", "hyprctl", "wtype", "grim", "wf-recorder", "dbus-daemon", "ffmpeg", "mpv", "imv"):
+    compose_dir = VIDEO / "compose"
+    if (compose_dir / "node_modules").exists():
+        say("polish: ready")
+    else:
+        say("polish: installing Remotion")
+        run(["npm", "ci", "--no-audit", "--no-fund"], cwd=compose_dir)
+    for tool in ("Hyprland", "hyprctl", "wtype", "grim", "wf-recorder", "dbus-daemon", "ffmpeg", "mpv", "imv", "npx"):
         if not shutil.which(tool):
             say(f"missing {tool}")
 
