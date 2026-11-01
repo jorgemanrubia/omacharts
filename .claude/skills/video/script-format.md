@@ -88,6 +88,7 @@ block names each cue once:
 | `cli <args>` | run `omacharts <args>` against the studio window |
 | `move <x%> <y%>` | glide the cursor there |
 | `click <x%> <y%>` | glide there and click |
+| `rclick <x%> <y%>` | glide there and right-click, for a context menu |
 | `drag <x%> <y%> <x%> <y%>` | press, move and release as one gesture |
 | `scroll <x%> <y%> <steps>` | wheel notches; negative scrolls up |
 | `wait <seconds>` | pause the timeline |

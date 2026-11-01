@@ -161,7 +161,7 @@ def find_script(name):
     return Script(path)
 
 
-ACTION_ARITY = {"key": 1, "type": None, "cli": None, "move": 2, "click": 2, "drag": 4, "scroll": 3, "wait": 1, "zoom": 3}
+ACTION_ARITY = {"key": 1, "type": None, "cli": None, "move": 2, "click": 2, "rclick": 2, "drag": 4, "scroll": 3, "wait": 1, "zoom": 3}
 
 
 def parse_action(text):
@@ -541,6 +541,8 @@ hl.config({{
             event["at"] = self.hand.move(*self.at(*args))
         elif verb == "click":
             event["at"] = self.hand.click(*self.at(*args))
+        elif verb == "rclick":
+            event["at"] = self.hand.click(*self.at(*args), button="right")
         elif verb == "drag":
             event["at"], event["to"] = self.hand.drag(*self.at(*args[:2]), *self.at(*args[2:]))
         elif verb == "scroll":
@@ -643,13 +645,13 @@ class Hand:
         with self.device() as pointer:
             return self._glide(pointer, x, y)
 
-    def click(self, x, y):
+    def click(self, x, y, button="left"):
         with self.device() as pointer:
             at = self._glide(pointer, x, y)
             time.sleep(0.08)
-            pointer.button("left", True)
+            pointer.button(button, True)
             time.sleep(0.06)
-            pointer.button("left", False)
+            pointer.button(button, False)
             time.sleep(0.06)
             return at
 
@@ -818,7 +820,7 @@ def render(script):
                 # A pointer action is started early by its glide, so the click
                 # lands on the word rather than the glide starting on it.
                 first = v["scene"].actions[cue][0]
-                lead = studio.hand.duration(*studio.at(*first[1:3])) if first[0] in ("click", "move", "drag", "scroll") else 0
+                lead = studio.hand.duration(*studio.at(*first[1:3])) if first[0] in ("click", "rclick", "move", "drag", "scroll") else 0
                 pause(zero + at - lead - time.monotonic())
                 for action in v["scene"].actions[cue]:
                     studio.perform(action, events, now=time.monotonic() - zero, scene=v["scene"].number, cue=cue)

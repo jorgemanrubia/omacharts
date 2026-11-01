@@ -1,6 +1,6 @@
 ---
 title: Templates that work for you
-stage: brief
+stage: script
 length: 75s
 theme: tokyo-night
 voice: narrator
@@ -69,3 +69,163 @@ the other box changes with it, untouched.
   doesn't matter here.
 - "Omacharts works for you" is the idea the video is built on. It isn't
   said anywhere in the narration, the close included.
+
+## Setup
+
+Three chartbooks, one per beat, in strip order: Nasdaq (NQ daily, two boxes
+on configuration 3), Crude (CL daily with two averages and volume, on no
+template) and S&P (three ES charts, all Follow). New charts open on no chart
+template, so the studies set here are each chart's own and nothing leaks
+into the Default template. The header names the chart template.
+
+    cli config set chart_header symbol,resolution,change,template
+    cli template default none
+    cli chartbook rename "Chartbook 1" Nasdaq
+    cli chart set --symbol NQ --resolution 1D
+    cli chart range 6m
+    cli chart drawing add rect --from 2026-06-05,30970 --to 2026-07-02,28230 --config 3
+    cli chart drawing add rect --from 2026-09-22,31620 --to 2026-10-13,30360 --config 3
+    cli chartbook create Crude --symbol CL --switch
+    cli chart set --resolution 1D
+    cli chart indicator add ema --period 20 --color Blue
+    cli chart indicator add ema --period 50 --color Amber
+    cli chart indicator add volume
+    cli chart range 6m
+    cli chartbook create "S&P" --symbol ES --switch
+    cli chart split horizontal
+    cli chart split vertical --chart pos:1
+    cli chart set --chart pos:0 --resolution 1D --link follow
+    cli chart set --chart pos:1 --resolution 1h --link follow
+    cli chart set --chart pos:2 --resolution 5m --link follow
+    cli chart indicator add sma --chart pos:0 --period 50 --color Blue
+    cli chart indicator add sma --chart pos:0 --period 200 --color Amber
+    cli chart indicator add volume --chart pos:0
+    cli chart indicator add sma --chart pos:1 --period 20 --color Blue
+    cli chart indicator add session_times --chart pos:1
+    cli chart indicator add vwap --chart pos:2 --bands 1,2
+    cli chart focus pos:2
+    cli chartbook switch Nasdaq
+
+## Script
+
+### 1. One look, two boxes
+
+**Picture.** NQ daily over six months, the sidebar on the right, three tabs
+along the bottom. Two blue boxes: the June range on the left third of the
+chart, the late-September range on the right, both clear of the middle where
+the properties dialog will sit. The cursor clicks inside the left box and it
+is selected; Alt and Enter opens **Rectangle properties** in the middle, its
+picture tagged 3. A click on the **Background** swatch opens the nine
+colours; a click on Amber fills the left box amber, the tag turns
+**Custom** and **Save as…** appears under the picture. A click on it opens
+Configuration 1 to 9, with 3 marked `*`; a click on **Configuration 3 \***
+and the right-hand box, never touched, turns amber too.
+
+**Voice.** {select}Both boxes follow configuration three. {props}I'll give
+this one {swatch}a different fill, {amber}say amber, {save}then save it back
+{pick}over three. The other box changes with it.
+
+    select: click 23% 37%
+    props:  key alt+Return
+    swatch: click 59% 46%
+    amber:  click 61% 50%
+    save:   click 58% 43%
+    pick:   click 58% 52%
+    after: 1.2
+
+### 2. A template from a chart
+
+**Picture.** The dialog closes and the window moves to the Crude chartbook:
+CL daily with a blue twenty-period and an amber fifty-period average and
+volume. On "make" the header gains **Trend**: the chart is now on a chart
+template of that name, holding its three studies. (Made from the terminal,
+because the studio cannot right-click yet. With a right-click this becomes
+the chart menu › **Template** › **Create new template from chart…** and
+Trend typed in its dialog; the narration fits either.)
+
+**Voice.** {next}Indicators work the same way. This crude oil chart has the
+studies I want everywhere. {make}I'll make them a template called Trend.
+
+    next: key Escape; key ctrl+alt+Right
+    make: cli template create Trend --from-chart
+    after: 0.8
+
+### 3. Split, and add once
+
+**Picture.** Ctrl and Alt and V: a copy appears below, its header also
+naming Trend. Typing 1h opens **Change resolution**, and Enter turns the
+lower chart hourly. Ctrl and Shift and I opens **Add an indicator**; rsi is
+typed and Enter picks it. An RSI strip appears under both charts at once,
+while the RSI settings dialog is still open in the middle.
+
+**Voice.** {split}Split it, and the new half is on Trend too. {hourly}Make it
+hourly. {add}Now add {rsi}RSI to either one. Both get it at once.
+
+    split:  key ctrl+alt+v
+    hourly: type 1h; key Return
+    add:    key ctrl+shift+i
+    rsi:    type rsi; key Return
+    after: 1.2
+
+### 4. A chartbook as a template
+
+**Picture.** The RSI dialog is kept (Ctrl and Enter) and the window moves to
+the S&P chartbook: ES daily on the left with the fifty- and two-hundred-day
+averages and volume, hourly top right with a twenty-period average and
+session shading, five-minute bottom right with VWAP and two bands. On
+"save" it is saved as the chartbook template Desk; nothing on screen
+changes. (From the terminal for the same reason as scene 2; with a
+right-click, the tab menu › **Template** › **Save as New Template…** and
+Desk typed.)
+
+**Voice.** {next}A whole chartbook can be a template too. S and P futures on
+three timeframes, each with its own studies. {save}I'll save it as Desk.
+
+    next: key ctrl+Return; key ctrl+alt+Right
+    save: cli chartbook template save Desk
+    after: 0.6
+
+### 5. A copy for gold
+
+**Picture.** A **Gold** tab appears beside S&P and opens: the same three
+charts, still on ES. (A duplicate from the terminal; with a right-click, the
+tab menu › **Duplicate** and Gold typed over the name.) The cursor clicks
+the five-minute chart, GC is typed and Enter charts it; all three charts
+turn to gold futures together, daily, hourly and five-minute, each with its
+studies.
+
+**Voice.** {dup}A copy for gold starts on Desk. {focus}The charts are linked,
+{sym}so one symbol moves all three.
+
+    dup:   cli chartbook duplicate --name Gold --switch
+    focus: click 63% 72%
+    sym:   type GC; key Return
+    after: 1.5
+
+### 6. The change carries
+
+**Picture.** Ctrl and Alt and V on gold's five-minute chart: a new chart
+appears below it, the right column now three charts. Ctrl and Alt and left
+arrow goes back to S&P, which has the same fourth chart under its
+five-minute ES chart, nobody having touched it.
+
+**Voice.** Now change the layout in either book. {split}One more chart in
+gold, {back}and S and P has it too.
+
+    split: key ctrl+alt+v
+    back:  key ctrl+alt+Left
+    after: 1.5
+
+### 7. Close
+
+**Picture.** S&P with its four charts, held. The cursor rests off the
+charts.
+
+**Voice.** One look, one set of studies, one layout, each changed in one
+place. The manual's template pages have the rest.
+
+    after: 2.0
+
+## Pronunciation
+
+- RSI: R S I
