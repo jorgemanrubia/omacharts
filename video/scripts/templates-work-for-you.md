@@ -1,10 +1,11 @@
 ---
 title: Templates that work for you
-stage: script
+stage: render
 length: 75s
 theme: tokyo-night
 voice: narrator
 music: ambient electronic, gentle analog pads over a soft plucked arpeggio and a steady, unhurried pulse; quietly confident rather than dreamy, with the arpeggio picking up a note or two at each of the three reveals and the last one landing a little brighter
+music_file: video/out/templates-work-for-you/music/candidate-2-seed1037.flac
 ---
 
 ## Brief
