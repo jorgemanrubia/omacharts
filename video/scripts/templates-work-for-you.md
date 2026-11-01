@@ -1,7 +1,7 @@
 ---
 title: Templates that work for you
-stage: render
-length: 75s
+stage: script
+length: 95s
 theme: tokyo-night
 voice: narrator
 music: ambient electronic, gentle analog pads over a soft plucked arpeggio and a steady, unhurried pulse; quietly confident rather than dreamy, with the arpeggio picking up a note or two at each of the three reveals and the last one landing a little brighter
@@ -17,11 +17,14 @@ arrangement. Change it in one place and the rest change with it.
 **For.** Traders already charting in Omacharts who still restyle drawings
 one by one and rebuild the same layout for every market.
 
-**Payoff.** Inside the first eight seconds: two boxes on a Nasdaq futures
-chart, one gets a new look in its properties, and the moment it's saved
+**Payoff.** Right after a short opening on the idea, two boxes on a Nasdaq
+futures chart, one gets a new look in its properties, and the moment it's saved
 the other box changes with it, untouched.
 
-**Beats.**
+**Beats.** Each of the three sections opens with a brief introduction,
+voiced over the chart it is about to use, saying what that kind of
+template keeps consistent; the first one also states the idea behind the
+whole video, in plain words.
 1. **Drawings.** Two boxes on NQ daily (Alt and R), both on the same
    configuration. Open one's properties (Alt and Enter), give it a new fill
    colour, and Save as… back over its configuration number. The other box
@@ -60,8 +63,8 @@ the other box changes with it, untouched.
 - Studies are added on camera only once, in beat 2. Creating a template,
   saving a chartbook template and duplicating each ask for a name, which
   means three short typed names. That, plus three reveals that each need a
-  second's hold, is why the video runs seventy-five seconds with every beat
-  kept.
+  second's hold, is why the video ran seventy-five seconds with every beat
+  kept; the three introductions add about twenty-five more.
 - Drawings show on every chart of their symbol, which is why each beat has
   its own symbol (NQ, CL, then ES and GC): beat 1's boxes stay out of the
   later charts.
@@ -110,7 +113,19 @@ into the Default template. The header names the chart template.
 
 ## Script
 
-### 1. One look, two boxes
+### 1. Set it up once
+
+**Picture.** NQ daily over six months, the sidebar on the right, three tabs
+along the bottom, the two blue boxes on the chart. Nothing moves; the
+cursor rests clear of the boxes.
+
+**Voice.** Omacharts tries to do the repetitive part for you. Set something
+up once, and whatever uses it stays consistent. Drawings are a good
+example.
+
+    after: 0.5
+
+### 2. One look, two boxes
 
 **Picture.** NQ daily over six months, the sidebar on the right, three tabs
 along the bottom. Two blue boxes: the June range on the left third of the
@@ -135,12 +150,22 @@ this one {swatch}a different fill, {amber}say amber, {save}then save it back
     pick:   click 57.9% 51.2%
     after: 1.2
 
-### 2. A template from a chart
+### 3. Same studies on every chart
 
 **Picture.** The dialog closes and the window moves to the Crude chartbook:
 CL daily with a blue twenty-period and an amber fifty-period average and
-volume. As the studies are named, the cursor right-clicks the price area
-in the upper left of the chart, clear of the legend, and the chart menu
+volume. Nothing else moves while the chart is introduced.
+
+**Voice.** {next}Next, the studies on your charts. Most of them want the
+same set, and keeping it in sync by hand is tedious.
+
+    next: key Escape; key ctrl+alt+Right
+    after: 0.5
+
+### 4. A template from a chart
+
+**Picture.** CL daily, as the last scene left it. As the studies are named,
+the cursor right-clicks the price area in the upper left of the chart, clear of the legend, and the chart menu
 opens there: Bar style, Session, Template. A click on **Template** slides
 the menu over to its submenu — None, Default and, under a rule, **Create
 new template from chart…** — and a click on that opens **New Chart
@@ -148,17 +173,16 @@ Template** with its Name field ready. Trend is typed and Enter creates it:
 the dialog closes and the header gains **Trend**, the chart now on a
 template holding its three studies.
 
-**Voice.** {next}Indicators work the same way. This crude oil chart has the
+**Voice.** Indicators work the same way. This crude oil chart has the
 studies I want {menu}everywhere. {make}I'll make them a template {name}called
 Trend.
 
-    next: key Escape; key ctrl+alt+Right
     menu: rclick 30% 30%
     make: click 33.4% 36.7%; wait 0.3; click 37.9% 40.8%
     name: type Trend; key Return
     after: 1.2
 
-### 3. Split, and add once
+### 5. Split, and add once
 
 **Picture.** Ctrl and Alt and V: a copy appears below, its header also
 naming Trend. Typing 1h opens **Change resolution**, and Enter turns the
@@ -175,30 +199,39 @@ hourly. {add}Now add {rsi}RSI to either one. Both get it at once.
     rsi:    type rsi; key Return
     after: 1.2
 
-### 4. A chartbook as a template
+### 6. The whole arrangement
 
 **Picture.** The RSI dialog is kept (Ctrl and Enter) and the window moves to
 the S&P chartbook: ES daily on the left with the fifty- and two-hundred-day
 averages and volume, hourly top right with a twenty-period average and
-session shading, five-minute bottom right with VWAP and two bands. The
-cursor right-clicks the S&P tab in the strip at the bottom left, and its
-menu opens upward: Rename, Duplicate, Remove, Take screenshot and, under a
+session shading, five-minute bottom right with VWAP and two bands. Nothing
+else moves while the chartbook is introduced.
+
+**Voice.** {next}The last one is about the whole screen. How you lay out
+charts for one market is usually how you want it for the next.
+
+    next: key ctrl+Return; wait 0.5; key ctrl+alt+Right
+    after: 0.5
+
+### 7. A chartbook as a template
+
+**Picture.** The S&P chartbook, as the last scene left it. The cursor
+right-clicks the S&P tab in the strip at the bottom left, and its menu opens upward: Rename, Duplicate, Remove, Take screenshot and, under a
 rule, Template. A click on **Template** slides to None, **Save as New
 Template…** and Manage Templates…; a click on Save as New Template… opens
 **Save as New Chartbook Template**. Desk is typed and Enter saves it; the
 dialog closes and the charts are as they were.
 
-**Voice.** {next}A whole chartbook can be a template too. S and P futures on
+**Voice.** A whole chartbook can be a template too. S and P futures on
 three timeframes, each with its own {menu}studies. {tpl}I'll save it {name}as
 Desk.
 
-    next: key ctrl+Return; wait 0.5; key ctrl+alt+Right
     menu: rclick 7.7% 98.7%
     tpl:  click 10% 96.8%; wait 0.3; click 13.9% 93.5%
     name: type Desk; key Return
     after: 1.0
 
-### 5. A copy for gold
+### 8. A copy for gold
 
 **Picture.** The cursor right-clicks the S&P tab again and the same menu
 opens upward; a click on **Duplicate** puts a tab beside S&P and opens it:
@@ -218,7 +251,7 @@ are linked, {sym}so one symbol moves all three.
     sym:   type GC; key Return
     after: 1.5
 
-### 6. The change carries
+### 9. The change carries
 
 **Picture.** Ctrl and Alt and V on gold's five-minute chart: a new chart
 appears below it, the right column now three charts. Ctrl and Alt and left
@@ -232,7 +265,7 @@ gold, {back}and S and P has it too.
     back:  key ctrl+alt+Left
     after: 1.5
 
-### 7. Close
+### 10. Close
 
 **Picture.** S&P with its four charts, held. The cursor rests off the
 charts.
