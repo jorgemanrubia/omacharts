@@ -45,10 +45,10 @@ crop: none
 After one drawing the tool is deselected. <kbd>Ctrl</kbd> + click a tool to keep it selected until <kbd>Esc</kbd> or another tool. The selected tool draws on whichever chart you press. A configuration is a saved look for a tool's drawings, numbered 1 to 9 ([Configurations](#configurations)).
 
 <!-- regenerate:
-theme: nord
-window: 2560x1600 @2, bin/headless-window
+theme: tokyo-night
+window: 2560x1600 @2, bin/headless-window (HOME sandboxed, with the Omarchy theme's colors.toml and icons.theme copied into its .local/share/omarchy/themes/tokyo-night and gtk-icon-theme-name=Yaru-magenta in its .config/gtk-4.0/settings.ini)
 state:
-  omacharts config set theme nord
+  omacharts config set theme omarchy:tokyo-night   (before the window opens)
   omacharts chart set --symbol NVDA --resolution 1D --template none
   key ctrl+d
   key alt+r
@@ -81,21 +81,21 @@ fixed after the second click. Click again to start another, or press
 <kbd>Esc</kbd> to clear it and return to the pointer.
 
 <!-- regenerate:
-theme: nord
-window: 2560x1600 @2, bin/headless-window
+theme: tokyo-night
+window: 2560x1600 @2, bin/headless-window (HOME sandboxed and the theme seeded, as for the tools above)
 state:
-  omacharts config set theme nord
+  omacharts config set theme omarchy:tokyo-night   (before the window opens)
   omacharts chart set --symbol NVDA --resolution 1D --template none
   key ctrl+d
-  click 23 410
-  click 400 340
-  move 600 200
-  click 600 200
-  move 700 350
+  key alt+m
+  click 515 520
+  move 668 160
+  click 668 160
+  move 1275 795
 capture: bin/headless-window shot /tmp/ruler.png; magick /tmp/ruler.png -crop 1950x1600+0+0 +repage -resize 1600x site/assets/manual/drawings/ruler.png
 crop: 0,0,1950,1600
 -->
-{% include figure.html src="/assets/manual/drawings/ruler.png" alt="A measured range on NVDA with price change, percentage change, bar distance and elapsed time above it" caption="A range left fixed by the second click." %}
+{% include figure.html src="/assets/manual/drawings/ruler.png" alt="A rise on NVDA measured in green, labelled +22.92% +43.62 over 28 bars, 41d" caption="A move measured from the August low, left fixed by the second click." %}
 
 Bar distance counts the spaces between candles. Elapsed time includes weekends
 and market closures. The price change has as many decimals as the price axis
