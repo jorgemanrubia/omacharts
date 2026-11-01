@@ -228,7 +228,7 @@ def load_voice(name):
 def voice_scenes(script):
     """Speak every scene, reusing what was spoken before for unchanged lines,
     and return per scene: the wav, its word timings and its Line."""
-    voice = load_voice(script.meta.get("voice", "draft"))
+    voice = load_voice(script.meta.get("voice", "narrator"))
     engine = voice.get("engine", "chatterbox")
     (CACHE / "tts").mkdir(parents=True, exist_ok=True)
     spoken, jobs = [], []

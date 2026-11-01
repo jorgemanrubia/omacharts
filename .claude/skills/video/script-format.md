@@ -12,7 +12,7 @@ title: Measure a move
 stage: brief
 length: 60s
 theme: tokyo-night
-music: calm, warm keys, unhurried
+music: ambient synth pads, soft plucked arpeggio, calm and optimistic
 ---
 
 ## Brief

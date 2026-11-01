@@ -147,6 +147,14 @@ principles of a good screencast, which the scriptwriter also follows.
 - **Narrator: a female voice, not deep.** Mid-pitched to slightly bright,
   clear and relaxed. A low, heavy voice reads as a trailer, not as someone
   showing you their tool.
+  The voice is pinned: `video/voices/narrator.json`, a light, airy but
+  clear woman's voice in her thirties, cloned from `narrator.wav`. Every
+  video uses it unless the author asks otherwise.
+- **Music: a theme composed for each video,** not a library track reused.
+  The starting point is ambient electronic — gentle analog synth pads, a
+  soft plucked arpeggio, a subtle pulse, calm and optimistic, spacious —
+  shaped to the video's mood and length. The brief proposes it; the author
+  picks from `bin/video music` candidates.
 
 ## Reference
 

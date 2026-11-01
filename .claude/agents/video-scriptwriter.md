@@ -29,7 +29,9 @@ and stop.
 ## What you are asked to do
 
 **Draft a brief** (new idea). Create `video/scripts/<slug>.md`, slug from the
-idea in a few lowercase words. Frontmatter with `stage: brief`, then the
+idea in a few lowercase words. Frontmatter with `stage: brief`, `voice:
+narrator`, and a `music:` line describing a theme for this video — start
+from the music rule in Taste and shape it to this video's mood. Then the
 Brief section only: pitch, for, payoff, beats, and length in frontmatter. If
 the idea is really two videos, write the stronger one and say what the other
 would be.

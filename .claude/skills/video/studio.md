@@ -113,9 +113,11 @@ the voice by a sidechain compressor. The mix is mastered in two passes to
 
 ## Speech
 
-Chatterbox (MIT) is the engine for drafts; it clones a voice from a 10-second
-reference when the voice file names one. Qwen3-TTS (Apache-2.0) clones too,
-from a reference and its transcript. Both are 5–15× slower than real time on
+The narrator is Qwen3-TTS (Apache-2.0) cloning `video/voices/narrator.wav`
+from that clip and its transcript — the same model family that designed the
+voice, which keeps its character best. Chatterbox (MIT) is the fallback, and
+`draft` its built-in voice. Newer torchaudio needs torchcodec to read audio,
+so the aligner reads with soundfile. Both are 5–15× slower than real time on
 this CPU and slower still when other heavy jobs share it — that is what the
 per-scene cache is for. Every line is force-aligned (torchaudio's MMS_FA) to
 time its words, which is how cues find their moment; it reads letters only,

@@ -1,0 +1,8 @@
+{
+  "engine": "qwen",
+  "reference": "narrator.wav",
+  "reference_text": "Hi, this is Omacharts: fast, beautiful charting software for Omarchy. Let me split this chart. One key, and now I have two. I'll put Nvidia on the new one, on the hourly.",
+  "language": "English",
+  "seed": 1,
+  "about": "Designed with Qwen3-TTS VoiceDesign: a woman in her thirties with a light, airy but clear voice, mid-to-high pitch, easygoing and precise, neutral accent. Chosen 2026-11-01."
+}

@@ -7,6 +7,7 @@ in already normalised; the caller maps them back to its cues.
 
 import json
 
+import soundfile
 import torch
 import torchaudio
 
@@ -17,8 +18,11 @@ def align(jobs):
     tokenizer = bundle.get_tokenizer()
     aligner = bundle.get_aligner()
     for job in jobs:
-        wav, rate = torchaudio.load(job["out"])
-        wav = torchaudio.functional.resample(wav.mean(0, keepdim=True), rate, bundle.sample_rate)
+        # soundfile, not torchaudio.load: newer torchaudio hands loading to
+        # torchcodec, which these environments do not carry.
+        data, rate = soundfile.read(job["out"], dtype="float32", always_2d=True)
+        wav = torch.from_numpy(data.T).mean(0, keepdim=True)
+        wav = torchaudio.functional.resample(wav, rate, bundle.sample_rate)
         with torch.inference_mode():
             emission, _ = model(wav)
             spans = aligner(emission[0], tokenizer(job["words"]))
