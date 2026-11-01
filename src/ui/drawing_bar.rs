@@ -45,6 +45,26 @@ fn tool_group(kind: Option<Kind>) -> u8 {
     }
 }
 
+/// A button in the bar, for what it says on hover.
+#[derive(Clone, Copy)]
+enum Button {
+    Pointer,
+    Measure,
+    Draw(Kind),
+}
+
+/// A button's tooltip: its name and its key, the way every other button in
+/// the window writes one. How to use a tool is the manual's to say, not a
+/// sentence that pops up every time the hand passes over it.
+fn tooltip(button: Button) -> String {
+    use crate::ui::shortcuts;
+    match button {
+        Button::Pointer => shortcuts::tooltip_with_key("Pointer", "Escape"),
+        Button::Measure => shortcuts::tooltip("Measure", "chart.measure"),
+        Button::Draw(kind) => shortcuts::tooltip(kind.label(), &format!("chart.draw-{}", kind.key())),
+    }
+}
+
 pub struct DrawingBar {
     /// What goes in the layout: the bar with its ground, shown and hidden.
     pub root: gtk::Box,
@@ -132,29 +152,10 @@ impl DrawingBar {
             button.add_css_class("flat");
             button.set_child(Some(&stack));
             button.set_size_request(TOOL, TOOL);
-            // Every tool says the one thing that is true of all of them, at
-            // the end of what is true of it alone.
-            let held = match kind {
-                None => "",
-                Some(_) => "\nCtrl+click to keep it in hand",
-            };
-            let about = match kind {
-                None => "Pointer (Esc): select, move and resize drawings",
-                Some(Kind::Line) => "Line (Alt+L): click where it starts, then where it ends",
-                Some(Kind::Horizontal) => {
-                    "Horizontal line (Alt+H): a level, held flat however you drag it"
-                }
-                Some(Kind::Arrow) => "Arrow (Alt+A): a line that points where it ends",
-                Some(Kind::Zigzag) => {
-                    "Zig-zag (Alt+Z): click each corner; double-click or Enter ends it, Esc drops it"
-                }
-                Some(Kind::Rect) => "Rectangle (Alt+R): press at one corner, release at the other",
-                Some(Kind::Ellipse) => {
-                    "Circle (Alt+C): press and drag to any shape, round or wide"
-                }
-                Some(Kind::Text) => "Text (Alt+T): click where the words go, then type",
-            };
-            button.set_tooltip_text(Some(&format!("{about}{held}")));
+            button.set_tooltip_text(Some(&tooltip(match kind {
+                None => Button::Pointer,
+                Some(kind) => Button::Draw(kind),
+            })));
             // One lit at a time, and a click on the lit one changes nothing:
             // a group of toggles is a set of radio buttons.
             if let Some((_, first, _)) = buttons.first() {
@@ -190,9 +191,7 @@ impl DrawingBar {
         ruler.add_css_class("drawing-tool");
         ruler.add_css_class("flat");
         ruler.set_size_request(TOOL, TOOL);
-        ruler.set_tooltip_text(Some(
-            "Measure: click to start, move to measure, click to finish; Esc clears",
-        ));
+        ruler.set_tooltip_text(Some(&tooltip(Button::Measure)));
         let icon = gtk::DrawingArea::new();
         icon.set_size_request(TOOL - 10, TOOL - 10);
         icon.set_draw_func(|area, cr, w, h| {
@@ -495,6 +494,26 @@ impl DrawingBar {
                 }
             });
             icon.queue_draw();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_tool_button_says_its_name_and_its_key_and_nothing_else() {
+        // The key is written by GTK, which needs a display to do it.
+        if !crate::ui::gtk_ready() {
+            return;
+        }
+        assert_eq!(tooltip(Button::Pointer), "Pointer (Escape)");
+        assert_eq!(tooltip(Button::Measure), "Measure (Alt+M)");
+        assert_eq!(tooltip(Button::Draw(Kind::Rect)), "Rectangle (Alt+R)");
+        for kind in Kind::ALL {
+            let tip = tooltip(Button::Draw(kind));
+            assert!(tip.starts_with(kind.label()) && tip.ends_with(')') && !tip.contains(':'), "{tip}");
         }
     }
 }

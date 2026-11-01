@@ -85,6 +85,7 @@ pub const BINDINGS: &[Binding] = &[
     global("chart.draw-rect", &["<Alt>r"]),
     global("chart.draw-ellipse", &["<Alt>c"]),
     global("chart.draw-text", &["<Alt>t"]),
+    global("chart.measure", &["<Alt>m"]),
     // The bar itself is a panel, so its key is the watchlist's neighbour:
     // Ctrl+B for the rail on the right, Ctrl+D for the tools on the left.
     global("win.drawing-tools", &["<Ctrl>d"]),

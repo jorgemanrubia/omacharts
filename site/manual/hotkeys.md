@@ -130,6 +130,7 @@ Tools and configurations:
 | <kbd>Alt</kbd> + <kbd>R</kbd> | A rectangle | [Drawings](/manual/drawings/) |
 | <kbd>Alt</kbd> + <kbd>C</kbd> | A circle, dragged to any shape | [Drawings](/manual/drawings/) |
 | <kbd>Alt</kbd> + <kbd>T</kbd> | Text: click, then type | [Drawings](/manual/drawings/) |
+| <kbd>Alt</kbd> + <kbd>M</kbd> | Measure: click the start, then the end | [Drawings](/manual/drawings/#measuring-a-range) |
 | <kbd>Alt</kbd> + <kbd>1</kbd> … <kbd>9</kbd> | Configuration N, for the selected drawing or the one about to be drawn | [Drawings](/manual/drawings/) |
 | <kbd>Ctrl</kbd>, held | A point being placed or dragged snaps to the open, high, low or close of the candle under it | [Drawings](/manual/drawings/) |
 

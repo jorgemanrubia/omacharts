@@ -33,7 +33,7 @@ crop: none
 | Tool | Key | Placing it |
 |---|---|---|
 | Pointer | <kbd>Esc</kbd> | No tool. Selects, moves and resizes drawings |
-| Measure | — | Click the start, move the mouse, then click the end |
+| Measure | <kbd>Alt</kbd> + <kbd>M</kbd> | Click the start, move the mouse, then click the end |
 | Line | <kbd>Alt</kbd> + <kbd>L</kbd> | Press where it starts, then where it ends |
 | Horizontal line | <kbd>Alt</kbd> + <kbd>H</kbd> | A level. It stays flat however you drag it and spans the time between its two ends |
 | Arrow | <kbd>Alt</kbd> + <kbd>A</kbd> | A line with a head at the end |
@@ -70,9 +70,10 @@ A finished drawing is left selected.
 
 ## Measuring a range
 
-The ruler measures the change between two points. Choose **Measure**, just
-below the pointer at the top of the tools, click the starting point, move the
-mouse, then click the end point. The label shows the percentage change in
+The ruler measures the change between two points. Press <kbd>Alt</kbd> +
+<kbd>M</kbd>, or choose **Measure** just below the pointer at the top of the
+tools. Click the starting point, move the mouse, then click the end point. The
+label shows the percentage change in
 bold, then the price change, and under them the bar distance and elapsed time:
 `+0.53%  +4.01` over `71 bars, 5h 55m`. The range stays fixed after the second
 click. Click again to start another, or press <kbd>Esc</kbd> to clear it and
