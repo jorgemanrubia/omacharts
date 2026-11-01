@@ -540,6 +540,8 @@ popover.background.pick-help-pop > contents { padding: 14px 16px; }
 .pick-help-what { color: alpha(currentColor, 0.75); font-size: 0.9em; }
 .pick-help-foot { font-size: 0.85em; color: alpha(currentColor, 0.5); }
 .pick-help-cap { color: @window_fg_color; }
+.pick-help-note { font-size: 0.85em; color: alpha(currentColor, 0.6); margin-top: 4px; }
+.pick-help-note.first { margin-top: 9px; padding-top: 9px; border-top: 1px solid alpha(currentColor, 0.13); }
 
 .range-hint { padding: 8px 20px 0 20px; font-size: 0.9em; opacity: 0.6; }
 .range-hint.error { color: @error_color; opacity: 1; }

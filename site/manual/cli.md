@@ -420,14 +420,26 @@ Lays the focused chart across a stretch of the calendar, as **Go to**
 (<kbd>Ctrl</kbd> + <kbd>G</kbd>) does. `RANGE` is written the way **Go to**
 takes it: `6m`, `ytd`, `2Y`, `2025`, `2025:`, `2024:2025-06`, `all` and the
 rest are in [Showing a stretch of time](/manual/charts/#showing-a-stretch-of-time).
+A day on its own, such as `oct 12` or `3 weeks ago`, starts the chart on that
+day and keeps its width, at the same resolution, running into empty room past
+the latest bar when it gets there; the reply names the whole window. Put
+quotes around one with a space in it.
 
 ```
 $ omacharts chart range ytd
 showing year to date on pos:1 NVDA 1D in "Manual"
   [exit 0]
 
+$ omacharts chart range "oct 12"
+showing 12 Oct – 20 Oct on pos:1 NVDA 1h in "Manual"
+  [exit 0]
+
+$ omacharts chart range "3 weeks ago:"
+showing since 11 Oct on pos:1 NVDA 1h in "Manual"
+  [exit 0]
+
 $ omacharts chart range 2025: --resolution 1W
-showing from 2025 to today on pos:1 NVDA 1W in "Manual"
+showing since 1 Jan 2025 on pos:1 NVDA 1W in "Manual"
   [exit 0]
 
 $ omacharts chart range 6x
@@ -436,6 +448,10 @@ omacharts: 6x is not a range; try ytd, 1y, 2025: or all
 
 $ omacharts chart range 2030
 omacharts: 2030 holds no days up to today
+  [exit 2]
+
+$ omacharts chart range tomorrow
+omacharts: tomorrow holds no days up to today
   [exit 2]
 ```
 

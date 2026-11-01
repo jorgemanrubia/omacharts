@@ -5554,6 +5554,13 @@ impl Window {
         crate::ui::range_card::Context {
             today,
             showing,
+            lasting: {
+                let weak = Rc::downgrade(self);
+                Rc::new(move |range| match weak.upgrade() {
+                    Some(this) => this.as_shown(range, today),
+                    None => range,
+                })
+            },
             first,
             current: pane.timeframe.get(),
             ladder,
@@ -7800,9 +7807,13 @@ impl Window {
 
     /// Show `range` on the focused chart, at `forced` when it is given, else
     /// at its resolution when the range fits it and at the nearest on the
-    /// strip that does when not. Answers with the chart named, for a command.
+    /// strip that does when not. A day on its own keeps the length of time
+    /// on screen, and the resolution with it. Answers with the chart named,
+    /// for a command.
     pub fn show_range_at(self: &Rc<Self>, range: omacharts_engine::Range, forced: Option<Timeframe>) -> String {
         let pane = self.focused_pane();
+        let today = chrono::Local::now().date_naive();
+        let range = self.as_shown(range, today).pinned(today);
         let current = pane.timeframe.get();
         let target = self.plan_range(range, forced).timeframe;
         // Held before the resolution changes, so the series that arrives for
@@ -7811,7 +7822,18 @@ impl Window {
         if target != current {
             self.set_timeframe(target);
         }
-        format!("showing {} on {}", range.description(), self.chart_named(&pane))
+        format!("showing {} on {}", range.spelled(today), self.chart_named(&pane))
+    }
+
+    /// `range` as the focused chart would show it: a day on its own keeps
+    /// the window it has now, columns and all, and anything else is as it
+    /// says.
+    pub fn as_shown(&self, range: omacharts_engine::Range, today: chrono::NaiveDate) -> omacharts_engine::Range {
+        let omacharts_engine::Range::Day(day) = range else { return range };
+        let view = &self.focused_pane().view;
+        let (Some(columns), Some(start)) = (view.columns_shown(), day.first(today)) else { return range };
+        let end = view.lasting_end(start, columns).unwrap_or(start);
+        range.lasting(columns as u32, (end - start).num_days().max(0) as u32)
     }
 
     /// The resolution `range` would show at on the focused chart — `forced`,
@@ -7819,8 +7841,9 @@ impl Window {
     pub fn plan_range(&self, range: omacharts_engine::Range, forced: Option<Timeframe>) -> crate::ui::range_card::Plan {
         use omacharts_engine::range::{bars_in, resolution_for, Fit, AIM_BARS};
         let pane = self.focused_pane();
-        let current = pane.timeframe.get();
         let today = chrono::Local::now().date_naive();
+        let range = self.as_shown(range, today);
+        let current = pane.timeframe.get();
         let instrument = pane.instrument.borrow().clone();
         let Some(instrument) = instrument else {
             return crate::ui::range_card::Plan {
@@ -7851,7 +7874,17 @@ impl Window {
             provider.capabilities().iter().find(|c| c.timeframe == native).and_then(|c| c.history_days)
         };
         let fit = Fit { ladder: &ladder, bars: AIM_BARS, share, offers: &offers, reach: &reach };
-        let timeframe = forced.unwrap_or_else(|| resolution_for(range, today, current, &fit));
+        // A day on its own keeps the resolution, as it keeps the length of
+        // time on screen, unless the feed does not reach back to it there.
+        let keeps = matches!(range, omacharts_engine::Range::Lasting(..))
+            && match (reach(current), range.reach(today)) {
+                (Some(limit), Some(back)) => i64::from(limit) >= back,
+                _ => true,
+            };
+        let timeframe = forced.unwrap_or_else(|| match keeps {
+            true => current,
+            false => resolution_for(range, today, current, &fit),
+        });
         // A range from the first bar counts from the first bar the chart has.
         let counted = match range.start(today) {
             Some(_) => range,

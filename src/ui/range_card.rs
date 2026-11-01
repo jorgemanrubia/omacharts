@@ -50,11 +50,21 @@ pub struct Plan {
 type PlanFn = Rc<dyn Fn(Range, Option<Timeframe>) -> Plan>;
 type OnDay = Rc<dyn Fn(NaiveDate)>;
 
+impl Context {
+    /// A day on its own as the chart would show it, as wide as it is now.
+    fn on_screen(&self, range: Range) -> Range {
+        (self.lasting)(range)
+    }
+}
+
 /// What the window tells a card when it opens.
 pub struct Context {
     pub today: NaiveDate,
     /// The first and last day on screen now.
     pub showing: (NaiveDate, NaiveDate),
+    /// A day typed on its own as the chart would show it: from that day,
+    /// as wide as the chart is now.
+    pub lasting: Rc<dyn Fn(Range) -> Range>,
     /// The first day the series holds, for a range that starts with it.
     pub first: NaiveDate,
     /// The resolution the chart has now.
@@ -206,8 +216,10 @@ impl Hint {
 }
 
 /// The ⓘ's help: each example as a key cap, what it means on the right,
-/// in titled sections, and under them the keys the card answers to.
-fn help(sections: &[(&str, &[(&str, &str)])], keys: &[(&str, &str)]) -> gtk::Widget {
+/// in titled sections, then a line or two on how they differ, and under
+/// them the keys the card answers to. Caps are parted by `|`, so one can
+/// hold a space: `3w ago|yesterday`.
+fn help(sections: &[(&str, &[(&str, &str)])], notes: &[&str], keys: &[(&str, &str)]) -> gtk::Widget {
     let column = gtk::Box::new(gtk::Orientation::Vertical, 0);
     column.add_css_class("pick-help");
     for (at, (name, lines)) in sections.iter().enumerate() {
@@ -222,7 +234,7 @@ fn help(sections: &[(&str, &[(&str, &str)])], keys: &[(&str, &str)]) -> gtk::Wid
         }
         for (examples, what) in lines.iter() {
             let caps = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-            for example in examples.split_whitespace() {
+            for example in examples.split('|') {
                 let cap = gtk::Label::new(Some(example));
                 cap.add_css_class("pick-help-key");
                 caps.append(&cap);
@@ -237,6 +249,15 @@ fn help(sections: &[(&str, &[(&str, &str)])], keys: &[(&str, &str)]) -> gtk::Wid
             group.append(&row);
         }
         column.append(&group);
+    }
+    for (at, note) in notes.iter().enumerate() {
+        let line = gtk::Label::new(Some(note));
+        line.add_css_class("pick-help-note");
+        set_class(&line, "first", at == 0);
+        line.set_xalign(0.0);
+        line.set_wrap(true);
+        line.set_max_width_chars(46);
+        column.append(&line);
     }
     if !keys.is_empty() {
         let foot = gtk::Box::new(gtk::Orientation::Horizontal, 14);
@@ -732,26 +753,36 @@ impl RangeCard {
             help(
                 &[
                     (
-                        "Up to today",
+                        "A date (keeps the window)",
                         &[
-                            ("6m 3y", "the last 6 months, 3 years"),
-                            ("ytd qtd mtd", "this year, quarter, month"),
-                            ("2ytd", "this year and last"),
-                            ("mon: 10/12:", "since Monday, 12 Oct"),
+                            ("3 weeks ago|3w ago", "the day 3 weeks back"),
+                            ("yesterday|last fri", "yesterday, last Friday"),
+                            ("oct 22|10/22", "the latest 22 October"),
+                            ("2026/10/22", "a day with its year"),
+                        ],
+                    ),
+                    (
+                        "A span",
+                        &[
+                            ("6m|3w", "the last 6 months, 3 weeks"),
+                            ("ytd|mtd", "this year, this month so far"),
+                            ("2025|2025/03", "all of 2025, March 2025"),
                             ("all", "the whole history"),
                         ],
                     ),
                     (
-                        "A set period",
+                        "A custom range",
                         &[
-                            ("2025", "all of 2025"),
-                            ("2025/03", "March 2025"),
-                            ("2025/03/12 12 mar", "one day; no year is this year"),
-                            ("mon 2mon", "this Monday, the one before"),
-                            ("2025/03:2025/06", "March to June 2025"),
+                            ("3 weeks ago:", "from that day to today"),
+                            ("oct 1:oct 22", "1 to 22 October"),
+                            ("2025:", "1 January 2025 to today"),
                             ("-6m:-1m", "6 months to 1 month ago"),
                         ],
                     ),
+                ],
+                &[
+                    "A date starts the chart there at the width it has now; 3 weeks ago is a date, 3w the span to today.",
+                    "The resolution stays, unless it cannot show the range.",
                 ],
                 &[("Space", "common ranges")],
             ),
@@ -1087,19 +1118,24 @@ impl RangeCard {
     fn days(range: Range, context: &Context) -> (NaiveDate, NaiveDate) {
         let today = context.today;
         let from = range.start(today).unwrap_or(context.first);
-        let to = range.end(today).map_or(today, |end| end.min(today));
+        let to = match range {
+            // A day keeps the window, which can run past today.
+            Range::Lasting(..) => range.end(today).unwrap_or(from),
+            _ => range.end(today).map_or(today, |end| end.min(today)),
+        };
         (from, to)
     }
 
     /// Bring everything under the box into line with what it holds.
     fn refresh(&self) {
         let text = self.frame.entry.text().to_string();
-        crate::ui::range_card::fill(&self.frame.list, &self.shown, &text);
+        let lasting = self.context.borrow().as_ref().map(|context| context.lasting.clone());
+        crate::ui::range_card::fill(&self.frame.list, &self.shown, &text, lasting.as_deref());
 
         let context = self.context.borrow();
         let Some(context) = context.as_ref() else { return };
         let today = context.today;
-        let parsed = Range::parse(&text).filter(|_| !text.trim().is_empty());
+        let parsed = Range::parse(&text).filter(|_| !text.trim().is_empty()).map(|range| context.on_screen(range));
         let touched = self.touched.get();
 
         let wrong = !text.trim().is_empty() && parsed.is_none() && !could_become(&text);
@@ -1284,8 +1320,8 @@ impl RangeCard {
     fn commit(&self) {
         let text = self.frame.entry.text().trim().to_string();
         let forced = self.forced.get();
-        let (apply, resolution, today) = match self.context.borrow().as_ref() {
-            Some(context) => (context.apply.clone(), context.resolution.clone(), context.today),
+        let (apply, resolution, today, lasting) = match self.context.borrow().as_ref() {
+            Some(context) => (context.apply.clone(), context.resolution.clone(), context.today, context.lasting.clone()),
             None => return,
         };
         if text.is_empty() {
@@ -1298,6 +1334,7 @@ impl RangeCard {
         // Not a range, or one with no days to show: the box says so in red
         // and the card stays.
         let Some(range) = Range::parse(&text).filter(|range| range.holds_days(today)) else { return };
+        let range = lasting(range);
         self.frame.close();
         glib::idle_add_local_once(move || apply(range, forced));
     }
@@ -1320,12 +1357,13 @@ impl ResolutionCard {
                 &[(
                     "",
                     &[
-                        ("15 90", "minutes"),
-                        ("1h 4h", "hours"),
-                        ("1D 1W", "days, weeks"),
-                        ("1M 1Q 1Y", "months, quarters, years"),
+                        ("15|90", "minutes"),
+                        ("1h|4h", "hours"),
+                        ("1D|1W", "days, weeks"),
+                        ("1M|1Q|1Y", "months, quarters, years"),
                     ],
                 )],
+                &[],
                 &[],
             ),
         );
@@ -1402,13 +1440,18 @@ fn could_become(text: &str) -> bool {
         "january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november",
         "december",
     ];
-    const WORDS: [&str; 19] = [
+    const WORDS: [&str; 27] = [
         "ytd", "mtd", "qtd", "wtd", "year", "month", "week", "day", "all", "max", "today", "yesterday", "monday",
-        "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+        "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "tomorrow", "wks", "yrs", "mos", "years",
+        "months", "weeks", "days",
     ];
+    // Words that come before a day or its number as well as after: `on 22
+    // oct`, `3 weeks ago`, `last fri`.
+    const AROUND: [&str; 8] = ["on", "the", "ago", "last", "next", "in", "from", "now"];
     let text = text.trim().to_lowercase();
     // Each run of letters is on its way to a word the grammar knows; one
-    // with digits after it can only be a month's name, `mar 12`.
+    // with digits after it can only be a month's name, `mar 12`, or one of
+    // the words around a day.
     let mut rest = text.as_str();
     while let Some(start) = rest.find(|c: char| c.is_ascii_alphabetic()) {
         let after = &rest[start..];
@@ -1416,8 +1459,8 @@ fn could_become(text: &str) -> bool {
         let (word, tail) = after.split_at(len);
         let scope = tail.split([':', '.']).next().unwrap_or_default();
         let known = match scope.contains(|c: char| c.is_ascii_digit()) {
-            true => MONTHS.iter().any(|month| month.starts_with(word)),
-            false => MONTHS.iter().chain(WORDS.iter()).any(|known| known.starts_with(word)),
+            true => MONTHS.iter().chain(AROUND.iter()).any(|month| month.starts_with(word)),
+            false => MONTHS.iter().chain(WORDS.iter()).chain(AROUND.iter()).any(|known| known.starts_with(word)),
         };
         if !known {
             return false;
@@ -1448,20 +1491,30 @@ fn typed(range: Range) -> String {
 }
 
 /// The ranges `query` could mean, one row each: what to type for it, what
-/// it is, and the day it starts.
-pub fn fill(rows: &gtk::ListBox, shown: &RefCell<Vec<Range>>, query: &str) {
+/// it lands on, and the day it starts. A day on its own is shown as
+/// `lasting` makes it, as wide as the chart is now.
+pub fn fill(rows: &gtk::ListBox, shown: &RefCell<Vec<Range>>, query: &str, lasting: Option<&dyn Fn(Range) -> Range>) {
     while let Some(child) = rows.first_child() {
         rows.remove(&child);
     }
     let today = chrono::Local::now().date_naive();
-    let ranges = Range::suggest(query, today);
+    let ranges: Vec<Range> = Range::suggest(query, today)
+        .into_iter()
+        .map(|range| lasting.map_or(range, |lasting| lasting(range)))
+        .collect();
     for range in &ranges {
         let key = gtk::Label::new(Some(&typed(*range)));
         key.add_css_class("pick-ticker");
         key.set_xalign(0.0);
         key.set_width_chars(8);
 
-        let what = gtk::Label::new(Some(&range.description()));
+        // A day or a slice by the days it lands on, `22 Oct – 1 Nov`, which
+        // says more than the words typed; the rest as they are said.
+        let what = match range {
+            Range::Day(_) | Range::Lasting(..) | Range::Slice(Some(_), _) => range.spelled(today),
+            _ => range.description(),
+        };
+        let what = gtk::Label::new(Some(&what));
         what.add_css_class("pick-name");
         what.set_xalign(0.0);
         what.set_hexpand(true);
@@ -1505,7 +1558,7 @@ mod tests {
 
     #[test]
     fn half_typed_text_is_not_an_error() {
-        for text in ["2", "20", "2026-", "2026-0", "2026/0", "2026/03/1", "2025:", "2025.", "2025..20", "-6m.", "-2", "y", "2yt", "a", "m", "2mo", "th", "12 n", "mar 1", "10/", "yest", "mon:1"] {
+        for text in ["2", "20", "2026-", "2026-0", "2026/0", "2026/03/1", "2025:", "2025.", "2025..20", "-6m.", "-2", "y", "2yt", "a", "m", "2mo", "th", "12 n", "mar 1", "10/", "yest", "mon:1", "3 weeks a", "3 days ago", "on 22 o", "on the 2", "last f", "6 months ago:1 mo", "3w ag"] {
             assert!(could_become(text), "{text}");
         }
         for text in ["6x", "2025q4", "zz", "mon2", "12 x"] {

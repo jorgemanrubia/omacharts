@@ -1723,11 +1723,24 @@ impl State {
         let clock = self.clock;
         let date = |ts: i64| clock.read(ts, utc).map(|at| at.date());
         let Some(today) = date(last.ts) else { return };
+        let len = self.bars.len();
+        // A day on its own keeps the window's size from that day on,
+        // running into empty room past the last bar the way a chart
+        // scrolled past its end does, at the same bar width.
+        if let (Range::Lasting(_, columns, _), Some(start)) = (range, range.start(today)) {
+            let columns = (columns as usize).clamp(MIN_VISIBLE, MAX_VISIBLE);
+            let (first, room) = omacharts_engine::range::lasting_view(&self.bars, |bar| bar.ts, start, columns, date);
+            self.lead = 0;
+            self.visible = columns;
+            self.anchored = room > 0;
+            self.overhang = room;
+            self.first = first.min(len.saturating_sub(1));
+            return;
+        }
         let first = match range.start(today) {
             None => 0,
             Some(start) => self.bars.partition_point(|bar| date(bar.ts).is_some_and(|d| d < start)),
         };
-        let len = self.bars.len();
         let first = first.min(len);
         let end = match range.end(today) {
             None => len,
@@ -3719,6 +3732,31 @@ impl ChartView {
         Some((day(first)?, day((first + visible).checked_sub(1)?)?))
     }
 
+    /// How many columns the chart spreads across, bars and the empty room
+    /// past them: the window a day typed on its own keeps.
+    pub fn columns_shown(&self) -> Option<usize> {
+        let state = self.state.borrow();
+        Some(state.columns()).filter(|columns| *columns > 0)
+    }
+
+    /// The day the last of `columns` from `day` falls on, on this chart:
+    /// its bar's, or past the last bar the moment the time axis gives that
+    /// column.
+    pub fn lasting_end(&self, day: chrono::NaiveDate, columns: usize) -> Option<chrono::NaiveDate> {
+        let state = self.state.borrow();
+        let utc = state.timeframe.is_calendar();
+        let clock = state.clock;
+        let timeframe = state.timeframe;
+        omacharts_engine::range::lasting_end(
+            &state.bars,
+            |bar| bar.ts,
+            day,
+            columns,
+            |ts| clock.read(ts, utc).map(|at| at.date()),
+            |ts, ahead| timeframe.shift(ts, ahead),
+        )
+    }
+
     /// The day of the first bar the chart holds.
     pub fn first_day(&self) -> Option<chrono::NaiveDate> {
         let state = self.state.borrow();
@@ -4794,7 +4832,11 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
 /// goes when a hand moves the view, which is when it stops being true.
 fn draw_range(cr: &cairo::Context, state: &State, width: f64, height: f64) {
     let Some(range) = state.range else { return };
-    let text = range.key();
+    let year = state.bars.last().and_then(|bar| state.clock.read(bar.ts, state.timeframe.is_calendar()));
+    let text = match year {
+        Some(at) => range.short_key(chrono::Datelike::year(&at)),
+        None => range.key(),
+    };
     cr.select_font_face("sans-serif", cairo::FontSlant::Normal, cairo::FontWeight::Bold);
     cr.set_font_size(11.0);
     let Ok(extents) = cr.text_extents(&text) else { return };

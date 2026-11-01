@@ -259,6 +259,24 @@ crop: 898,193,763,532   (the whole card, 24px layout margin)
 -->
 {% include figure.html src="/assets/manual/charts/go-to.png" alt="The Go to card with ytd typed, 1D auto in the corner of the box, 214 bars under it, and From 2026/01/01 and To 2026/10/27, marked today" caption="**Go to** with ytd typed." %}
 
+What you type is one of three things: a date, a span, or a custom range.
+
+**A date (keeps the window)** moves the chart to start on that day and keeps its width: the same number of bars across, at the same resolution. With ten days on screen, `oct 12` starts on 12 October and shows as many bars as before. Near the latest bar the chart keeps the same width and shows empty room after the latest bar, as it does when you scroll past the end, so **To** can be past the latest bar, counting the empty room one bar's time a column, as the time axis does: `1 week ago`, typed on Sunday 1 November with ten days of hourly AAPL on screen, is 25 to 31 October.
+
+| Typed | Is |
+|---|---|
+| `3 weeks ago`, `3w ago`, `a month ago`, `1y ago` | That long before today, to the day: on 1 November, `3 weeks ago` is 11 October |
+| `today`, `yesterday` | That day |
+| `fri`, `2fri` | The latest Friday (today, on a Friday), and the one before it. Every day of the week works, `mon` to `sun`, and so does any count |
+| `last fri` | The latest Friday before today, so a week ago on a Friday |
+| `oct 22`, `22 oct`, `october 22`, `10/22` | 22 October. With no year it is the latest one that has passed: this year's, or last year's if this year's is still to come |
+| `22 oct 2025`, `2025/10/22`, `2025-10-22` | That day in that year |
+| `on oct 22`, `on the 22 oct` | The same day. `on` in front changes nothing |
+
+Numbers always run year, month, day, so `10/11` is 11 October, never 10 November. A day still to come, such as `tomorrow`, `in 2 days` or `next fri`, holds nothing to show, so the box turns red and the card stays open.
+
+**A span** says how much to show, up to today. `3w` and `3 weeks ago` are different things: `3w` is a span, the last three weeks up to today, and `3 weeks ago` is a date.
+
 | Typed | Shows |
 |---|---|
 | `6m`, `3y`, `2w`, `10d` | The last six months, three years, two weeks or ten days, up to today. A small letter counts back from today, and a letter alone is one: `m` is the last month, `q` the last three months |
@@ -266,21 +284,27 @@ crop: 898,193,763,532   (the whole card, 24px layout margin)
 | `ytd`, `qtd`, `mtd`, `wtd`, `2ytd` | The same, in any case |
 | `2025` | All of 2025 |
 | `2025/03` or `2025-03` | All of March 2025 |
-| `2025:` | From 1 January 2025 to today |
-| `2025/03:2025/06` | From the start of March to the end of June 2025. A colon joins two ends, and both are included. Two dots do the same: `2025/03..2025/06`, `2025..` |
-| `:2020` | From the first bar to the end of 2020 |
-| `2026/03/12:` | From 12 March 2026 to today |
-| `2026/03/12`, `10/12`, `12 mar` | That one day. With no year, the latest one that has passed: this year's, or last year's if this year's is still to come |
-| `mon`, `2mon` | This week's Monday (today, on a Monday), and the one before it. Every day of the week works, `tue` to `sun`, and so does any count |
-| `mon:`, `2mon:fri` | From Monday to today; from the Monday before last to the latest Friday |
-| `today`, `yesterday` | That day |
-| `-6m:-1m` | From six months ago to one month ago |
-| `-2w`, `-2mon` | The same as `2w` and `2mon`: a dash in front of a count or a day of the week changes nothing |
+| `-2w` | The same as `2w`. A dash in front of a count changes nothing |
 | `all` or `:` | The whole history |
 
-Today is the day of the last bar. The ⓘ beside the title shows examples like these. Text that cannot become a range, whatever you type next, turns the box red.
+**A custom range** joins two ends with a colon, and shows from the first to the second, both included. Either end can be left open, and either end is a date, a month, a year, or a count back such as `-6m`. Two dots do the same as the colon: `oct 1..oct 22`, `2025..`.
 
-**From** and **To**, under the box, are the range's first and last day, and **today** over **To** means the range runs to the latest bar, so new bars stay in it. With more than one chart in the window, every chart fades and the one it will change wears its focus ring twice as wide.
+| Typed | Shows |
+|---|---|
+| `3 weeks ago:` | From 3 weeks ago to today |
+| `oct 1:oct 22` | From 1 to 22 October |
+| `6 months ago:1 month ago` | From six months ago to one month ago, to the day |
+| `2025:` | From 1 January 2025 to today |
+| `2025/03:2025/06` | From the start of March to the end of June 2025 |
+| `:2020` | From the first bar to the end of 2020 |
+| `mon:`, `2mon:fri` | From Monday to today; from the Monday before last to the latest Friday |
+| `-6m:-1m` | From six months ago to one month ago |
+
+A custom range open at the end runs to today, so new bars stay in it. The resolution stays the chart's own unless the range can't be shown at it, as [The resolution in Go to](#the-resolution-in-go-to) describes.
+
+Today is the day of the last bar. The ⓘ beside the title sums these up, a few examples of each. Text that cannot become a range, whatever you type next, turns the box red.
+
+**From** and **To**, under the box, are the range's first and last day, so for a day typed on its own they show the whole window the chart will show, and **today** over **To** means the range runs to the latest bar, so new bars stay in it. With more than one chart in the window, every chart fades and the one it will change wears its focus ring twice as wide.
 
 | Key | In Go to |
 |---|---|
@@ -302,7 +326,7 @@ crop: 898,193,763,889   (the card and the list, 24px layout margin)
 
 ### The resolution in Go to
 
-Under the box, at its right, is the resolution the range will be shown at. **auto** beside it means Omacharts chose it, and **auto** alone, with nothing typed yet, means it will choose once there is a range; until then it has nothing to open. The chart keeps its own resolution unless the range would make too few bars or too many, or reaches further back than the feed keeps bars of that resolution. Then it takes the one on the strip that fits best, the one nearest a comfortable 140 or so candles however far it is from the chart's own, or, when none on the strip fits, a common one off it such as `5m`. A year of 5m bars is shown daily, a month of daily bars hourly, and a single day 5m even on a strip that starts at `1h`.
+Under the box, at its right, is the resolution the range will be shown at. **auto** beside it means Omacharts chose it, and **auto** alone, with nothing typed yet, means it will choose once there is a range; until then it has nothing to open. A day typed on its own keeps the chart's resolution, as it keeps the chart's width, unless the feed doesn't keep bars of that resolution as far back as the day. Otherwise the chart keeps its own resolution unless the range would make too few bars or too many, or reaches further back than the feed keeps bars of that resolution. Then it takes the one on the strip that fits best, the one nearest a comfortable 140 or so candles however far it is from the chart's own, or, when none on the strip fits, a common one off it such as `5m`. A year of 5m bars is shown daily, and a month of daily bars hourly.
 
 To choose one yourself, <kbd>Tab</kbd> to it. Only a resolution the range can be shown at is offered: one the feed keeps far enough back, which makes at least 12 bars and no more than 3,000. A daily bar for today, or a year of 5m bars, is skipped by the arrows, the wheel and typing alike, and a resolution you chose goes back to **auto** when the range changes to one it doesn't fit.
 
