@@ -58,6 +58,7 @@ DEFAULT_AFTER = 0.8  # hold once a scene's narration ends
 TAIL = 1.5
 COVER = 2.5  # the cover held at the start, before it fades into the first scene
 COVER_FADE = 0.6
+SETTLE = 1.0  # the app on screen, silent, between the cover's fade and the first word
 
 
 def die(message):
@@ -519,7 +520,7 @@ hl.config({{
         for ch in text:
             name = {" ": "space", "-": "minus"}.get(ch)
             argv += ["-k", name] if name else [ch]
-            argv += ["-s", str(int(random.gauss(95, 30)) if ch != " " else 140)]
+            argv += ["-s", str(max(40, int(random.gauss(95, 30))) if ch != " " else 140)]
         subprocess.run(argv, env=self.env, check=True)
 
     def border(self, colour):
@@ -813,10 +814,17 @@ def music(script, count=3):
 # --- Render ------------------------------------------------------------------------
 
 
+def lead_in(script):
+    """How long the recording runs before the first word. After a cover, the
+    fade into the recording plus a second of the app on screen and silent:
+    the voice belongs to the video, not to its cover."""
+    return COVER_FADE + SETTLE if float(script.meta.get("cover", COVER)) > 0 else LEAD_IN
+
+
 def timeline(script, voiced):
     """When each scene starts, and when each cue's actions fire, in seconds
-    from the first frame of the video."""
-    t, scenes = LEAD_IN, []
+    from the first frame of the recording."""
+    t, scenes = lead_in(script), []
     for v in voiced:
         cues = {cue: t + cue_time(v, cue) for cue in v["scene"].actions}
         last = max(cues.values(), default=t)

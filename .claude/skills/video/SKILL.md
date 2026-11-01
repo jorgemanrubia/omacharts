@@ -157,6 +157,8 @@ principles of a good screencast, which the scriptwriter also follows.
   author asks for something else, which goes in the script as `build:`.
 - **Every video opens on its cover,** held about two and a half seconds
   with the music already playing, then faded into the first scene. The
+  voice waits until the fade is over and the app has been on screen, silent,
+  for a second: the narration belongs to the video, not to its cover. The
   cover is the site's OpenGraph card re-framed for 16:9: the ribbon of
   charts, the mark and wordmark, the title in gold where the manual card
   says MANUAL, and omacharts.org in the corner. It doubles as the YouTube

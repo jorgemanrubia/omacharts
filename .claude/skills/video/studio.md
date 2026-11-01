@@ -112,7 +112,7 @@ Archivo from Google Fonts (so it needs the network, like the OG cards).
 `compose` holds it for `cover:` seconds (2.5 by default) and crossfades
 into the recording over 0.6s — the recording's lead-in, where nothing
 happens yet — and shifts the voice, subtitles and review frames by the
-same amount.
+same amount. The first word comes `SETTLE` (1s) after the fade ends.
 
 ## Sound
 
