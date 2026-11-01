@@ -1601,7 +1601,7 @@ mod tests {
     fn the_bars_round_trip_through_the_store() {
         let store = Store::memory().unwrap();
         let look = BarLook {
-            up: parse_bar_colour("ink").unwrap(),
+            up: parse_bar_colour("foreground").unwrap(),
             down: parse_bar_colour("#123456").unwrap(),
             up_body: Body::Hollow,
             down_body: Body::Bordered,

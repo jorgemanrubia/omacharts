@@ -15,7 +15,7 @@ use std::rc::{Rc, Weak};
 
 use adw::prelude::*;
 use gtk::glib;
-use omacharts_engine::theme::{bar_colour, ink, BarLook, Body, ColorChoice, Direction, Swatch, INK};
+use omacharts_engine::theme::{bar_colour, foreground, BarLook, Body, ColorChoice, Direction, Swatch, FOREGROUND};
 
 use crate::store::Store;
 use crate::theming::Theming;
@@ -154,18 +154,15 @@ fn choose_theme(context: &Rc<Context>, id: &str) {
 fn bars_group(context: &Rc<Context>) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     group.set_title("Bars");
-    group.set_description(Some(
-        "Colours are the theme's, so they change with it. Ink is its text colour, for bars with no colour.",
-    ));
 
     let theming = context.theming.borrow();
     let theme = theming.theme();
     let mut look = theming.bar_look().clone();
     drop(theming);
 
-    // The theme's swatches and Ink: what a bar can be drawn in.
+    // The theme's swatches and Foreground: what a bar can be drawn in.
     let mut offered = theme.clone();
-    offered.swatches.push(Swatch::new(INK, &ink(&theme)));
+    offered.swatches.push(Swatch::new(FOREGROUND, &foreground(&theme)));
 
     for up in [true, false] {
         let (choice, current) = side(&mut look, up);

@@ -646,12 +646,12 @@ pub struct BarLook {
 ///
 /// One answer of three rather than a hollow and a border switch: a hollow
 /// candle with a border is an outline in the border colour, which is the
-/// colour [`INK`] already offers.
+/// colour [`FOREGROUND`] already offers.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Body {
     #[default]
     Filled,
-    /// The wick and the body's edge in [`ink`], the theme's text, the way
+    /// The wick and the body's edge in [`foreground`], the theme's text, the way
     /// TradingView outlines a candle.
     Bordered,
     Hollow,
@@ -675,8 +675,13 @@ impl Body {
 }
 
 /// The neutral a bar can be drawn in when it should carry no direction: the
-/// theme's text with its tint taken out. Offered beside the theme's swatches.
-pub const INK: &str = "Ink";
+/// theme's text with its tint taken out. Offered beside the theme's swatches,
+/// under Omarchy's name for the text, so that picking it on a dark theme
+/// plainly means light candles and on a light one dark.
+pub const FOREGROUND: &str = "Foreground";
+
+/// What [`FOREGROUND`] was called before, still read from a stored setting.
+const FOREGROUND_WAS: &str = "ink";
 
 /// A body that is not painted: the outline is drawn and the chart shows
 /// through.
@@ -706,7 +711,7 @@ impl BarLook {
     /// than be signalled at by one. Direction is simply not shown, unless a
     /// hollow body is asked to show it.
     pub fn monochrome() -> BarLook {
-        BarLook { up: ColorChoice::swatch(INK), down: ColorChoice::swatch(INK), ..BarLook::default() }
+        BarLook { up: ColorChoice::swatch(FOREGROUND), down: ColorChoice::swatch(FOREGROUND), ..BarLook::default() }
     }
 
     /// The colours on a theme.
@@ -718,7 +723,7 @@ impl BarLook {
             _ => colour.clone(),
         };
         let edge = |colour: &String, body: Body| match body {
-            Body::Bordered => ink(theme),
+            Body::Bordered => foreground(theme),
             _ => colour.clone(),
         };
         BarScheme {
@@ -739,7 +744,7 @@ impl BarLook {
 }
 
 /// A bar colour as it is stored and typed: a swatch's name in lower case,
-/// `ink`, or a hex.
+/// `foreground`, or a hex.
 pub fn spell_bar_colour(choice: &ColorChoice) -> String {
     match choice {
         ColorChoice::Swatch { name } => name.to_lowercase(),
@@ -747,23 +752,27 @@ pub fn spell_bar_colour(choice: &ColorChoice) -> String {
     }
 }
 
-/// The other way: any case of a swatch's name or `ink`, or a `#rrggbb` hex.
+/// The other way: any case of a swatch's name or `foreground`, or a
+/// `#rrggbb` hex.
 pub fn parse_bar_colour(text: &str) -> Option<ColorChoice> {
     let text = text.trim();
     if text.starts_with('#') {
         return rgb(text).map(|_| ColorChoice::Fixed { hex: text.to_lowercase() });
     }
+    if text.eq_ignore_ascii_case(FOREGROUND_WAS) {
+        return Some(ColorChoice::swatch(FOREGROUND));
+    }
     SWATCH_NAMES
         .iter()
-        .chain([&INK])
+        .chain([&FOREGROUND])
         .find(|name| name.eq_ignore_ascii_case(text))
         .map(|name| ColorChoice::swatch(name))
 }
 
-/// A bar colour on a theme: one of its swatches, [`INK`], or a fixed hex.
+/// A bar colour on a theme: one of its swatches, [`FOREGROUND`], or a fixed hex.
 pub fn bar_colour(theme: &Theme, choice: &ColorChoice) -> String {
     match choice {
-        ColorChoice::Swatch { name } if name == INK => ink(theme),
+        ColorChoice::Swatch { name } if name == FOREGROUND => foreground(theme),
         choice => choice.resolve(theme),
     }
 }
@@ -836,7 +845,7 @@ fn set_apart(
     colour.to_string()
 }
 
-/// Candles in [`INK`] both ways, filled.
+/// Candles in [`FOREGROUND`] both ways, filled.
 ///
 /// Direction is not shown. Hollow rises keep it at the cost of some of the
 /// quiet, and that is a separate answer, since it vanishes anyway below about
@@ -956,7 +965,7 @@ impl BarColouring {
                 down_body: look.up_body,
             },
             BarColouring::Monochrome => {
-                BarLook { up: ColorChoice::swatch(INK), down: ColorChoice::swatch(INK), ..look.clone() }
+                BarLook { up: ColorChoice::swatch(FOREGROUND), down: ColorChoice::swatch(FOREGROUND), ..look.clone() }
             }
         }
     }
@@ -1073,9 +1082,9 @@ impl<'de> Deserialize<'de> for BarColouring {
     }
 }
 
-/// The [`INK`] colour on a theme: the text, held to a bar's contrast and
-/// moved clear of the colours it stands in for.
-pub fn ink(theme: &Theme) -> String {
+/// The [`FOREGROUND`] colour on a theme: the text, held to a bar's contrast
+/// and moved clear of the colours it stands in for.
+pub fn foreground(theme: &Theme) -> String {
     let green = ColorChoice::swatch("Green").resolve(theme);
     let rose = ColorChoice::swatch("Rose").resolve(theme);
     let ink = held_to(&theme.ui.text, &theme.ui.background, MONO_CONTRAST, Some(MONO_CHROMA));
@@ -1900,11 +1909,11 @@ mod tests {
     }
 
     #[test]
-    fn a_border_is_the_colour_a_bar_in_ink_is_drawn_in() {
+    fn a_border_is_the_colour_a_bar_in_foreground_is_drawn_in() {
         let look = BarLook { up_body: Body::Bordered, ..BarLook::default() };
         let theme = dark();
         let scheme = look.scheme(&theme);
-        assert_eq!(scheme.up_edge, ink(&theme));
+        assert_eq!(scheme.up_edge, foreground(&theme));
         assert_eq!(scheme.up, theme_bars(&theme).up, "the colour stays for everything but the candle");
         assert_eq!(scheme.up_fill, scheme.up, "a border leaves the body filled");
         assert_eq!(scheme.down_edge, scheme.down, "the other direction is untouched");
@@ -1918,18 +1927,19 @@ mod tests {
     }
 
     #[test]
-    fn ink_is_offered_beside_the_swatches_and_resolves_to_the_monochrome_colour() {
+    fn foreground_is_offered_beside_the_swatches_and_resolves_to_the_monochrome_colour() {
         let theme = dark();
-        let look = BarLook { up: parse_bar_colour("ink").unwrap(), ..BarLook::default() };
+        let look = BarLook { up: parse_bar_colour("foreground").unwrap(), ..BarLook::default() };
         assert_eq!(look.scheme(&theme).up, theme_mono_bars(&theme).up);
     }
 
     #[test]
     fn a_bar_colour_is_spelled_the_way_it_is_typed() {
-        for text in ["green", "rose", "ink", "#123abc"] {
+        for text in ["green", "rose", "foreground", "#123abc"] {
             let choice = parse_bar_colour(text).unwrap();
             assert_eq!(spell_bar_colour(&choice), text);
         }
+        assert_eq!(parse_bar_colour("ink"), parse_bar_colour("foreground"), "the old name still reads");
         assert_eq!(parse_bar_colour("Rose"), Some(ColorChoice::swatch("Rose")));
         assert_eq!(parse_bar_colour("chartreuse"), None);
         assert_eq!(parse_bar_colour("#12"), None);

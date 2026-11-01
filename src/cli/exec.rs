@@ -5622,7 +5622,7 @@ fn config_bars(
         let Some(text) = arg(m, flag) else { return Ok(None) };
         parse_bar_colour(text).map(Some).ok_or_else(|| {
             Fault::usage(format!(
-                "no such bar colour: {text:?}; give one of {}, ink, or a #rrggbb hex",
+                "no such bar colour: {text:?}; give one of {}, foreground, or a #rrggbb hex",
                 SWATCH_NAMES.map(str::to_lowercase).join(", ")
             ))
         })
@@ -7483,20 +7483,20 @@ mod tests {
         assert_eq!(run("config bars", &store).out.trim(), "up rose hollow, down green filled");
 
         // A flag alone leaves the others as they were.
-        assert_eq!(run("config bars --down Ink", &store).code, 0);
-        assert_eq!(run("config bars", &store).out.trim(), "up rose hollow, down ink filled");
-        assert_eq!(run("config get bar_down", &store).out.trim(), "ink");
+        assert_eq!(run("config bars --down Foreground", &store).code, 0);
+        assert_eq!(run("config bars", &store).out.trim(), "up rose hollow, down foreground filled");
+        assert_eq!(run("config get bar_down", &store).out.trim(), "foreground");
 
         // A flag wins over the preset it is given with.
         assert_eq!(run("config bars monochrome --up #336699 --up-body filled", &store).code, 0);
         let json: Value = serde_json::from_str(&run("config bars --json", &store).out).unwrap();
-        assert_eq!(json, json!({"up": "#336699", "down": "ink", "up_body": "filled", "down_body": "filled"}));
+        assert_eq!(json, json!({"up": "#336699", "down": "foreground", "up_body": "filled", "down_body": "filled"}));
 
         let again = run("config bars monochrome --up #336699 --up-body filled", &store);
         assert!(again.out.starts_with("bars were already"), "{}", again.out);
 
         assert_eq!(run("config bars --down-body bordered", &store).code, 0);
-        assert_eq!(run("config bars", &store).out.trim(), "up #336699 filled, down ink bordered");
+        assert_eq!(run("config bars", &store).out.trim(), "up #336699 filled, down foreground bordered");
         assert_ne!(run("config bars --up-body outlined", &store).code, 0, "a body that does not exist is refused");
     }
 

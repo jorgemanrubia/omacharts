@@ -298,7 +298,7 @@ const VOLUME_COLOURINGS: &[&str] =
 const COLOURING: &[&str] = &["coloured", "red-up", "monochrome"];
 const BODIES: &[&str] = &["filled", "bordered", "hollow"];
 const BAR_COLOUR: &str = "a theme colour by name (green, rose, blue, amber, violet, teal, orange, cyan), \
-     ink for none, or #rrggbb";
+     foreground (the text colour) for none, or #rrggbb";
 const SORT_COLUMNS: &[&str] = &["symbol", "last", "change", "change_pct", "none"];
 /// The kinds a drawing comes in, plus the one alias.
 ///
@@ -1276,7 +1276,7 @@ pub const SURFACE: &[Noun] = &[
             Verb {
                 name: "bars",
                 about: "How candles look: a colour for up and for down, and how each body is drawn",
-                args: &[Arg::opt("STATE", "sets both colours: the theme's green and rose, swapped, or ink; omit to read them").of(COLOURING)],
+                args: &[Arg::opt("STATE", "sets both colours: the theme's green and rose, swapped, or foreground; omit to read them").of(COLOURING)],
                 flags: &[
                     Flag::valued("up", "COLOUR", BAR_COLOUR),
                     Flag::valued("down", "COLOUR", BAR_COLOUR),

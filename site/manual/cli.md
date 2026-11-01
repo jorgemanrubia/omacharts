@@ -493,14 +493,14 @@ bars are now up rose hollow, down green bordered
   [exit 0]
 
 $ omacharts config bars monochrome --up-body filled --down-body filled
-bars are now up ink filled, down ink filled
+bars are now up foreground filled, down foreground filled
   [exit 0]
 ```
 
 | Argument or flag | Takes | Does |
 |---|---|---|
-| `STATE` | `coloured`, `red-up`, `monochrome` | Sets both colours: the theme's green and rose, the two swapped, or Ink. Omitted, the command prints the current look |
-| `--up COLOUR`, `--down COLOUR` | A theme colour by name, `ink` for the theme's text colour, or `#rrggbb` | One direction's colour. Wins over `STATE` |
+| `STATE` | `coloured`, `red-up`, `monochrome` | Sets both colours: the theme's green and rose, the two swapped, or Foreground. Omitted, the command prints the current look |
+| `--up COLOUR`, `--down COLOUR` | A theme colour by name, `foreground` for the theme's text colour, or `#rrggbb` | One direction's colour. Wins over `STATE` |
 | `--up-body BODY`, `--down-body BODY` | `filled`, `bordered`, `hollow` | One direction's body. `bordered` draws the wick and the body's edge in the theme's text colour |
 
 A flag changes only its own answer. The others stay as they were. Each
@@ -1557,7 +1557,7 @@ same.
 | Setting | Values | Default | Preferences row | Chapter |
 |---|---|---|---|---|
 | `theme` | `omarchy` (Follow system), or an Omarchy theme by its folder name, such as `tokyo-night` | `omarchy` on Omarchy, `tokyo-night` elsewhere | Appearance › Theme | [Themes](/manual/themes/) |
-| `bar_up`, `bar_down` | a theme colour by name, such as `green` or `rose`; `ink`; or `#rrggbb` | `green`, `rose` | Appearance › Bars › Up, Down | [Themes](/manual/themes/#bars) |
+| `bar_up`, `bar_down` | a theme colour by name, such as `green` or `rose`; `foreground`; or `#rrggbb` | `green`, `rose` | Appearance › Bars › Up, Down | [Themes](/manual/themes/#bars) |
 | `bar_up_hollow`, `bar_down_hollow`, `bar_up_border`, `bar_down_border` | on, off | off | Appearance › Bars › Up, Down: Hollow or Bordered | [Themes](/manual/themes/#bars) |
 | `bar_style` | `candles`, `ohlc` | `candles` | Charts › Defaults › Style | [Chart settings](/manual/chart-settings/) |
 | `ohlc_thickness` | `1` to `4` | `2` | Charts › Defaults › Thickness | [Chart settings](/manual/chart-settings/) |

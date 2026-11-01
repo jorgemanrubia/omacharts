@@ -41,14 +41,14 @@ Preferences › Appearance › **Bars** sets how candles look on every chart. **
 
 | Control | Does |
 |---|---|
-| Colour | A colour from the theme's palette, or **Ink**, the theme's text colour, for bars with no colour |
+| Colour | A colour from the theme's palette, or **Foreground**, the theme's text colour (Omarchy's `foreground`), for bars with no colour. It is light on a dark theme and dark on a light one |
 | Filled | The whole candle in its colour |
 | Bordered | The wick and the body's edge in the theme's text colour, as TradingView draws one. It follows the theme, so it is light on a dark theme and dark on a light one |
-| Hollow | The body as an outline in the candle's colour. Ink and Hollow make a hollow candle in the text colour |
+| Hollow | The body as an outline in the candle's colour. Foreground and Hollow make a hollow candle in the text colour |
 
 A border needs room: a candle whose body is under five pixels wide keeps its own colour throughout, and one too narrow for a body is drawn as a line in its colour. `omacharts config bars` sets the same answers ([`config bars`](/manual/cli/#config-bars)).
 
-The colours are the theme's, so they change with it. Red for a rise is the two colours swapped; monochrome is Ink both ways. Each chart then paints the look its own way, with its **Colouring**: as it is, hollow rises, red up, soft, quiet, or monochrome ([Colouring](/manual/charts/#colouring)). Soft is a slate against a sand from the theme's palette, quiet two greys made from its text; both keep the look's bodies. Volume bars take the candle colours unless the volume indicator was given a colouring of its own ([Volume](/manual/indicators/volume/)).
+The colours are the theme's, so they change with it. Red for a rise is the two colours swapped; monochrome is Foreground both ways. Each chart then paints the look its own way, with its **Colouring**: as it is, hollow rises, red up, soft, quiet, or monochrome ([Colouring](/manual/charts/#colouring)). Soft is a slate against a sand from the theme's palette, quiet two greys made from its text; both keep the look's bodies. Volume bars take the candle colours unless the volume indicator was given a colouring of its own ([Volume](/manual/indicators/volume/)).
 
 ## The palette
 

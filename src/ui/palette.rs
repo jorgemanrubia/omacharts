@@ -20,9 +20,6 @@ use omacharts_engine::theme::{ColorChoice, Theme};
 use crate::ui::colors;
 
 const SWATCH: i32 = 26;
-/// Nine colours, the eight with a hue and the neutral, as a square: three
-/// rows of three, the neutral last, in the corner by itself.
-const COLUMNS: i32 = 3;
 
 /// A button showing `resolved`, which opens the theme's palette.
 ///
@@ -80,10 +77,15 @@ fn palette_box(
         _ => None,
     };
 
+    // Full rows: four across for eight, three for nine. A swatch alone on
+    // a row reads as a leftover.
+    let palette = theme.palette();
+    let count = palette.len() as i32;
+    let columns = [4, 3].into_iter().find(|c| count % c == 0).unwrap_or(4);
     let grid = gtk::Grid::new();
     grid.set_row_spacing(4);
     grid.set_column_spacing(4);
-    for (n, swatch) in theme.palette().iter().enumerate() {
+    for (n, swatch) in palette.iter().enumerate() {
         let picked = current_name.as_deref() == Some(swatch.name.as_str());
         let cell = gtk::Button::new();
         cell.add_css_class("flat");
@@ -102,7 +104,7 @@ fn palette_box(
                 popover.popdown();
             }
         });
-        grid.attach(&cell, n as i32 % COLUMNS, n as i32 / COLUMNS, 1, 1);
+        grid.attach(&cell, n as i32 % columns, n as i32 / columns, 1, 1);
     }
     content.append(&grid);
 

@@ -1013,8 +1013,8 @@ bars are now up rose hollow, down green bordered
 ```
 
 Each direction has a colour (`--up`, `--down`: a theme colour by name —
-green, rose, blue, amber, violet, teal, orange, cyan — `ink` for the
-theme's text colour, or a `#rrggbb` hex, which the theme leaves alone) and a
+green, rose, blue, amber, violet, teal, orange, cyan — `foreground` for
+the theme's text colour, or a `#rrggbb` hex, which the theme leaves alone) and a
 body (`--up-body`, `--down-body`): `filled`, `bordered` (its wick and body
 edge in the theme's text colour, as TradingView draws one) or `hollow`.
 `STATE` sets both colours at once: `coloured`, `red-up` (the theme's colours
@@ -1027,7 +1027,7 @@ What one chart does with that look is its colouring, `chart set --colouring`:
 `theme` paints it as it is, `theme-hollow` with rising candles hollow,
 `theme-red-up` with up and down swapped, `theme-soft` in a slate against a
 sand from the theme's palette, `theme-quiet` in two greys of its text, and
-`theme-mono` in ink. Soft and quiet keep the look's hollow bodies. A style
+`theme-mono` in foreground. Soft and quiet keep the look's hollow bodies. A style
 offers what it can draw: OHLC bars have no body to leave hollow, and a
 colouring the style does not offer is drawn as `theme`. A volume pane follows the
 chart's colouring unless given one of its own: `chart indicator set volume

@@ -154,7 +154,7 @@ Every chart paints its bars from one look: a colour and a body for rising candle
 | **Red up** | The look the other way round, a rise in the down colour and a fall in the up colour, so red reads as a rise, the way charts are read in Taiwan, mainland China, Japan and Korea. The volume strip and a trade's profit and loss turn with the bars |
 | **Soft** | A slate for a rise and a sand for a fall, from the theme's palette, both held quieter than the look's colours so the bars sit back behind indicators and drawings. Keeps the look's hollow candles |
 | **Quiet** | Two greys made from the theme's text, a rise the lighter and a fall the darker, as a black-and-white chart has them. Keeps the look's hollow candles |
-| **Monochrome** | Every bar in Ink, the theme's text colour. An OHLC bar still shows its direction by its ticks; a candle does not, unless the look makes it hollow |
+| **Monochrome** | Every bar in Foreground, the theme's text colour. An OHLC bar still shows its direction by its ticks; a candle does not, unless the look makes it hollow |
 
 The **Colouring** row offers only what the style can draw: OHLC bars have no body to leave open. A colouring the style does not offer is kept for when the chart has the style back, and the bars are drawn **Filled** meanwhile.
 
