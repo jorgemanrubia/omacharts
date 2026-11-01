@@ -7522,12 +7522,19 @@ fn axis_ticks(
         }
         kept
     };
-    // A rung fits when its ticks average a label's gap apart, measured from
-    // the first tick to the last. Not by how many fit on screen: that count
-    // moves by one as a tick scrolls in or out at an edge, so a chart near
-    // the limit flipped between years and half-years while it was dragged.
-    // The spacing stays put wherever the view is. Measured before thinning,
-    // which would leave every rung looking like it fits.
+    // Measured before thinning: thinning alone would leave every rung looking
+    // like it fits, and the finest one would always win.
+    //
+    // A tick never lands on the first column, so n ticks share the plot with
+    // the stretch before the first of them: n + 1 gaps, not n. Counting n
+    // lets evenly spaced ticks — a yearly chart's, every two bars — sit just
+    // under the gap, and thinning them then leaves only the last.
+    let room = (plot_w / TIME_LABEL_GAP).max(2.0).floor() - 1.0;
+    // The n is how many ticks the columns hold at the rung's average spacing,
+    // first tick to last, not how many are on screen: that count moves by one
+    // as a tick scrolls in or out at an edge, so a chart near the limit
+    // flipped between years and half-years while it was dragged. The spacing
+    // stays put wherever the view is.
     let fits = |every: Every| {
         let span = ticks(every).fold(None, |span, column| match span {
             None => Some((column, column, 0)),
@@ -7535,7 +7542,7 @@ fn axis_ticks(
         });
         match span {
             Some((first, last, gaps)) if gaps > 0 => {
-                (last - first) as f64 * bar_w / gaps as f64 >= TIME_LABEL_GAP
+                (total - 1) as f64 * gaps as f64 / (last - first) as f64 <= room
             }
             _ => true,
         }
