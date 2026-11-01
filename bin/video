@@ -298,7 +298,7 @@ class Studio:
         # Short on purpose: a Wayland socket path is capped at 108 bytes.
         self.runtime = Path(f"/run/user/{os.getuid()}/ocv-{os.getpid()}")
         self.pids = []
-        self.binary = ROOT / "target/release/omacharts"
+        self.build = (script.meta.get("build") if script else None) or os.environ.get("VIDEO_BUILD") or "main"
 
     # Bringing it up
 
@@ -314,9 +314,7 @@ class Studio:
         self.stop()
 
     def start(self):
-        if not self.binary.exists():
-            say("building omacharts")
-            run(["cargo", "build", "--release", "--quiet"], cwd=ROOT)
+        self.binary = omacharts_build(self.build)
         shutil.rmtree(self.work, ignore_errors=True)
         self.home = self.work / "home"
         self.data = self.work / "data"
@@ -552,6 +550,37 @@ hl.config({{
         events.append(event)
 
 
+def omacharts_build(ref):
+    """The omacharts binary a video is made with.
+
+    Videos show the app as it is on main unless the script says otherwise
+    (`build:` in the frontmatter, or VIDEO_BUILD): a branch, a tag or a
+    commit, built in a worktree of its own so the working tree is never
+    touched, or `here` for whatever this checkout has built."""
+    if ref == "here":
+        binary = ROOT / "target/release/omacharts"
+        say("building omacharts from this checkout")
+        run(["cargo", "build", "--release", "--quiet"], cwd=ROOT)
+        return binary
+    tree, target = DATA / "build", DATA / "build-target"
+    run(["git", "fetch", "-q", "origin"], cwd=ROOT)
+    commit = subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"origin/{ref}^{{commit}}"], cwd=ROOT,
+                            capture_output=True, text=True).stdout.strip()
+    if not commit:
+        commit = subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"], cwd=ROOT,
+                                capture_output=True, text=True).stdout.strip()
+    if not commit:
+        die(f"no branch, tag or commit called {ref}")
+    if not (tree / ".git").exists():
+        run(["git", "worktree", "add", "-q", "--detach", str(tree), commit], cwd=ROOT)
+    else:
+        run(["git", "checkout", "-q", "--detach", commit], cwd=tree)
+    title = subprocess.run(["git", "log", "-1", "--format=%h %s", commit], cwd=ROOT, capture_output=True, text=True).stdout.strip()
+    say(f"omacharts {ref} at {title} — building (incremental after the first time)")
+    run(["cargo", "build", "--release", "--quiet"], cwd=tree, env={**os.environ, "CARGO_TARGET_DIR": str(target)})
+    return target / "release/omacharts"
+
+
 class Hand:
     """The studio's pointer, moved the way a hand moves one: along a gentle
     curve, easing in and out, taking longer for longer distances.
@@ -737,7 +766,7 @@ def music(script, count=3):
     job.write_text(json.dumps({"caption": prompt, "duration": length, "count": count, "out": str(folder)}))
     say(f"composing {count} candidates of {length}s — several minutes each on the CPU")
     run([str(DATA / "ace/.venv/bin/python"), str(ENGINES / "ace_engine.py"), str(DATA / "ace"), str(job)],
-        env={**os.environ, "OMP_NUM_THREADS": str(os.cpu_count())})
+        env={**os.environ, "OMP_NUM_THREADS": str(os.cpu_count())}, cwd=folder)
     found = sorted(folder.glob("*.flac"))
     for i, track in enumerate(found, 1):
         say(f"  {i}: {track.relative_to(ROOT)}")

@@ -150,6 +150,9 @@ principles of a good screencast, which the scriptwriter also follows.
   The voice is pinned: `video/voices/narrator.json`, a light, airy but
   clear woman's voice in her thirties, cloned from `narrator.wav`. Every
   video uses it unless the author asks otherwise.
+- **Film the latest main.** Videos show omacharts as it is on main —
+  `bin/video` fetches it and builds it in a worktree of its own — unless the
+  author asks for something else, which goes in the script as `build:`.
 - **Music: a theme composed for each video,** not a library track reused.
   The starting point is ambient electronic — gentle analog synth pads, a
   soft plucked arpeggio, a subtle pulse, calm and optimistic, spacious —
