@@ -5931,9 +5931,9 @@ fn draw_time_axis(
     cr.set_font_size(11.0);
 
     // The columns across the whole plot, the empty room at either end
-    // included: a tick there is the time that column would be, one
-    // timeframe step on from the last bar or back from the first, so the
-    // axis keeps reading as the chart is dragged past its data.
+    // included: past the last bar a tick is the time that column would be,
+    // so the axis keeps reading as the chart is dragged into the future.
+    // Before the first there is no history to date.
     let before = ((bars_x - plot_x) / bar_w).round().max(0.0) as i64;
     // What rounding to a column left over: the columns sit off the grid by
     // the part of one scrolled past the left edge.
@@ -6013,27 +6013,28 @@ fn inside_plot(x: f64, w: f64, plot_x: f64, plot_w: f64) -> f64 {
 }
 
 /// The moment the time axis gives the column `at`, counted from the first
-/// one drawn: its own time over the data, and in the empty room either side
-/// the time that column would be, `per` bars on from the last column or
-/// back from the first.
+/// one drawn: its own time over the data, and in the empty room past it the
+/// time that column would be, `per` bars on from the last column.
+///
+/// None before the first column: the series has no history there, and
+/// counting back a timeframe a bar, closed hours and all, named a stretch it
+/// never had, spaced unlike the bars beside it.
 ///
 /// By the column, not the bar: once a column stands for several bars, a
 /// bar's time to a column made the room's dates crawl, so that a year of
 /// it read as a fraction of one and its labels sat out of step with the
 /// data's.
 fn axis_time(bars: &[Bar], timeframe: Timeframe, per: f64, at: i64) -> Option<i64> {
-    if let Some(bar) = usize::try_from(at).ok().and_then(|at| bars.get(at)) {
+    let at = usize::try_from(at).ok()?;
+    if let Some(bar) = bars.get(at) {
         return Some(bar.ts);
     }
     if timeframe.seconds() <= 0 {
         return None;
     }
-    let per = per.max(1.0);
-    let steps = |columns: i64| (columns as f64 * per).round() as i64;
-    match at < 0 {
-        true => bars.first().map(|b| timeframe.shift(b.ts, steps(at))),
-        false => bars.last().map(|b| timeframe.shift(b.ts, steps(at - bars.len() as i64 + 1))),
-    }
+    let last = bars.last()?;
+    let steps = ((at + 1 - bars.len()) as f64 * per.max(1.0)).round() as i64;
+    Some(timeframe.shift(last.ts, steps))
 }
 
 /// Up and down candles in two passes, each building one path for wicks and one
@@ -9966,7 +9967,7 @@ mod tests {
     /// The empty room past a zoomed-out chart's data is dated a column at a
     /// time, carrying on from the columns over the data: one bar's time to
     /// a column, four bars to each, made a year of room read as a quarter
-    /// of one.
+    /// of one. The room before the data is not dated at all.
     #[test]
     fn the_room_past_zoomed_out_bars_is_dated_by_the_column() {
         let day = 86_400;
@@ -9978,8 +9979,7 @@ mod tests {
         assert_eq!(at(124), Some(992 * day));
         assert_eq!(at(125), Some(1000 * day), "the room begins where the next column would");
         assert_eq!(at(134), Some(1072 * day));
-        assert_eq!(at(-1), Some(-8 * day));
-        assert_eq!(at(-10), Some(-80 * day));
+        assert_eq!(at(-1), None, "no history before the first bar");
     }
 
     /// A chart with a volume strip under it, which is the arrangement that
