@@ -162,6 +162,10 @@ fn mosaic(themes: &[&Theme], bars: &Rc<dyn Fn(&Theme) -> BarScheme>) -> gtk::Asp
     }
     let frame = gtk::AspectFrame::new(0.5, 0.5, 16.0 / 9.0, false);
     frame.set_child(Some(&grid));
+    // The tiles expand to fill the frame. Said outright here, or GTK hands
+    // that expansion up to the card and the page, and on a window taller
+    // than the page both theme cards stretch to fill it.
+    frame.set_vexpand(false);
     frame
 }
 
