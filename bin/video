@@ -9,6 +9,7 @@
     bin/video status                every script and its stage
     bin/video read SCRIPT           voice the narration, for a read-through
     bin/video board SCRIPT          one still per scene, with its narration
+    bin/video cover SCRIPT          the cover: first frame, held, and thumbnail
     bin/video music SCRIPT [N]      N music candidates for the script's length
     bin/video render SCRIPT         record, mix and encode the video
     bin/video show FILE             play or open FILE where the author watches
@@ -55,6 +56,8 @@ LEAD_IN = 0.8  # the opening picture, before the first word
 SCENE_GAP = 0.35  # breath between scenes
 DEFAULT_AFTER = 0.8  # hold once a scene's narration ends
 TAIL = 1.5
+COVER = 2.5  # the cover held at the start, before it fades into the first scene
+COVER_FADE = 0.6
 
 
 def die(message):
@@ -752,6 +755,37 @@ def fc_match(pattern):
     return subprocess.run(["fc-match", "-f", "%{file}", pattern], capture_output=True, text=True).stdout
 
 
+# --- Cover -------------------------------------------------------------------------
+
+
+def cover(script):
+    """The cover: the video's first frame, held, and its thumbnail. The page
+    is video/cover/cover.html, the site's OpenGraph card re-framed for 16:9;
+    it needs the network for Archivo, as the card does."""
+    import tempfile
+    import urllib.parse
+
+    title = script.meta.get("cover_title") or script.meta.get("title") or script.slug
+    out = script.out / "cover.png"
+    with tempfile.TemporaryDirectory() as work:
+        work = Path(work)
+        for name in ("cover.html", "cover.css"):
+            shutil.copy(VIDEO / "cover" / name, work)
+        shutil.copy(ROOT / "site/icon.svg", work)
+        shutil.copy(ROOT / "site/assets/home/bg-ribbon.jpg", work)
+        (work / "fonts").symlink_to(ROOT / "site/assets/fonts")
+        url = f"file://{work}/cover.html?title={urllib.parse.quote(title)}"
+        run(["chromium", "--headless=new", "--no-sandbox", "--hide-scrollbars", "--force-device-scale-factor=1",
+             f"--window-size={SIZE[0]},{SIZE[1]}", "--virtual-time-budget=20000", f"--screenshot={work / 'shot.png'}", url],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        shutil.copy(work / "shot.png", out)
+    # YouTube takes a thumbnail of at most 2MB; 1280x720 is what it asks for.
+    run(["ffmpeg", "-v", "error", "-y", "-i", str(out), "-vf", "scale=1280:720:flags=lanczos", "-q:v", "2",
+         str(script.out / "thumbnail.jpg")])
+    say(f"{out.relative_to(ROOT)}, and thumbnail.jpg for YouTube")
+    return out
+
+
 # --- Music -------------------------------------------------------------------------
 
 
@@ -852,12 +886,16 @@ def pause(seconds):
 
 def compose(script, voiced, plan, raw, offset):
     out = script.out
-    total = plan["total"]
+    # The video opens on its cover, held, then fades into the recording;
+    # everything heard is placed after it.
+    intro = float(script.meta.get("cover", COVER))
+    still = cover(script) if intro > 0 else None
+    total = plan["total"] + intro
     voice = out / "voice.wav"
     inputs, parts = [], []
     for i, (v, s) in enumerate(zip(voiced, plan["scenes"])):
         inputs += ["-i", str(v["wav"])]
-        ms = int(s["start"] * 1000)
+        ms = int((s["start"] + intro) * 1000)
         parts.append(f"[{i}:a]aresample=48000,aformat=channel_layouts=stereo,loudnorm=I=-16:TP=-2,aresample=48000,adelay={ms}|{ms}[v{i}]")
     mix = "".join(f"[v{i}]" for i in range(len(voiced)))
     graph = ";".join(parts) + f";{mix}amix=inputs={len(voiced)}:normalize=0,apad,atrim=0:{total:.3f}[out]"
@@ -882,18 +920,27 @@ def compose(script, voiced, plan, raw, offset):
     final = out / f"{script.slug}.mp4"
     preview = out / f"{script.slug}-1080p.mp4"
     say("encoding")
-    run(["ffmpeg", "-v", "error", "-y", "-ss", f"{max(0, offset):.3f}", "-i", str(raw), "-i", str(master), "-t", f"{total:.3f}",
-         "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-preset", "slow", "-crf", "14", "-pix_fmt", "yuv420p", "-r", str(FPS),
-         "-c:a", "aac", "-b:a", "320k", "-movflags", "+faststart", str(final)])
+    recording = ["-ss", f"{max(0, offset):.3f}", "-t", f"{plan['total']:.3f}", "-i", str(raw)]
+    if still:
+        # The fade overlaps the recording's lead-in, where nothing happens yet.
+        inputs = ["-loop", "1", "-framerate", str(FPS), "-t", f"{intro + COVER_FADE:.3f}", "-i", str(still), *recording, "-i", str(master)]
+        video = (f"[0:v]format=yuv420p,setsar=1[c];[1:v]fps={FPS},format=yuv420p,setsar=1[r];"
+                 f"[c][r]xfade=transition=fade:duration={COVER_FADE}:offset={intro:.3f}[v]")
+        maps = ["-filter_complex", video, "-map", "[v]", "-map", "2:a"]
+    else:
+        inputs = [*recording, "-i", str(master)]
+        maps = ["-map", "0:v", "-map", "1:a"]
+    run(["ffmpeg", "-v", "error", "-y", *inputs, *maps, "-t", f"{total:.3f}", "-c:v", "libx264", "-preset", "slow", "-crf", "14",
+         "-pix_fmt", "yuv420p", "-r", str(FPS), "-c:a", "aac", "-b:a", "320k", "-movflags", "+faststart", str(final)])
     run(["ffmpeg", "-v", "error", "-y", "-i", str(final), "-vf", "scale=1920:1080:flags=lanczos", "-c:v", "libx264", "-preset", "medium",
          "-crf", "18", "-c:a", "copy", "-movflags", "+faststart", str(preview)])
-    subtitles(voiced, plan, out / f"{script.slug}.srt")
+    subtitles(voiced, plan, out / f"{script.slug}.srt", intro)
     review = out / "review"
     shutil.rmtree(review, ignore_errors=True)
     review.mkdir()
     for v, s in zip(voiced, plan["scenes"]):
         for cue, at in s["cues"].items():
-            run(["ffmpeg", "-v", "error", "-y", "-ss", f"{at + 0.6:.2f}", "-i", str(preview), "-frames:v", "1",
+            run(["ffmpeg", "-v", "error", "-y", "-ss", f"{intro + at + 0.6:.2f}", "-i", str(preview), "-frames:v", "1",
                  str(review / f"{v['scene'].number:02d}-{cue}.jpg")])
     say(f"{final.relative_to(ROOT)} ({total:.1f}s), {preview.name} for watching, review/ has a frame per cue")
 
@@ -909,13 +956,13 @@ def loudnorm(source, target):
     run(["ffmpeg", "-v", "error", "-y", "-i", str(source), "-af", chain, str(target)])
 
 
-def subtitles(voiced, plan, path):
+def subtitles(voiced, plan, path, intro=0.0):
     stamp = lambda t: f"{int(t // 3600):02d}:{int(t % 3600 // 60):02d}:{int(t % 60):02d},{int(t * 1000 % 1000):03d}"
     blocks = []
     for v, s in zip(voiced, plan["scenes"]):
         for text, first, last in v["line"].sentences:
             if last < len(v["words"]):
-                start, end = s["start"] + v["words"][first]["start"], s["start"] + v["words"][last]["end"]
+                start, end = intro + s["start"] + v["words"][first]["start"], intro + s["start"] + v["words"][last]["end"]
                 blocks.append(f"{len(blocks) + 1}\n{stamp(start)} --> {stamp(end + 0.2)}\n{text}\n")
     path.write_text("\n".join(blocks))
 
@@ -1040,6 +1087,8 @@ def main():
         show(read(need()))
     elif verb == "board":
         show(board(need()))
+    elif verb == "cover":
+        show(cover(need()))
     elif verb == "music":
         music(need(), int(rest[1]) if len(rest) > 1 else 3)
     elif verb == "render":

@@ -104,6 +104,16 @@ magenta for 0.3s, and the frame where it appears says exactly where the
 timeline's zero falls in the file. Cutting at that point puts every action
 on its word.
 
+## Cover
+
+`bin/video cover` renders `video/cover/cover.html` in headless Chromium at
+3840x2160 over the site's own `bg-ribbon.jpg`, mark and Cascadia Mono, with
+Archivo from Google Fonts (so it needs the network, like the OG cards).
+`compose` holds it for `cover:` seconds (2.5 by default) and crossfades
+into the recording over 0.6s — the recording's lead-in, where nothing
+happens yet — and shifts the voice, subtitles and review frames by the
+same amount.
+
 ## Sound
 
 Each scene's voice is normalised to −16 LUFS and placed at its start. Music

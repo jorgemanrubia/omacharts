@@ -1,0 +1,36 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>cover</title>
+<!-- A video's cover: its first frame, held, and its thumbnail. The site's
+     OpenGraph card re-framed for 16:9 at 3840x2160 — the same ribbon of
+     charts under the same scrim, the same lockup, with the video's title
+     where the manual card says MANUAL. bin/video cover renders it with the
+     title in the query string (?title=...). -->
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;800&display=block">
+<link rel="stylesheet" href="cover.css">
+<div class="ground"></div>
+<div class="scrim"></div>
+<div class="copy">
+  <div class="lockup">
+    <img class="mark" src="icon.svg" alt="">
+    <div class="block">
+      <div class="wordmark">Omacharts</div>
+      <div class="label" id="label"></div>
+    </div>
+  </div>
+</div>
+<div class="url">omacharts.org</div>
+<script>
+  const label = document.getElementById("label");
+  label.textContent = new URLSearchParams(location.search).get("title") || "";
+  // A long title shrinks to the wordmark's width rather than running past
+  // the lockup's right edge.
+  document.fonts.ready.then(() => {
+    const word = document.querySelector(".wordmark").getBoundingClientRect().width;
+    let size = parseFloat(getComputedStyle(label).fontSize);
+    while (label.scrollWidth > word * 1.02 && size > 60) {
+      size -= 2;
+      label.style.fontSize = size + "px";
+    }
+  });
+</script>

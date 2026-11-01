@@ -104,6 +104,7 @@ locally, or on another machine when `~/.config/omacharts-video/config` says
 |---|---|---|
 | read-through | `bin/video read <slug>` | `read.wav`: every scene voiced, in order |
 | storyboard | `bin/video board <slug>` | `board.png`: a still per scene, clicks marked, narration under each |
+| cover | `bin/video cover <slug>` | `cover.png` (4K) and `thumbnail.jpg` (1280x720) |
 | music | `bin/video music <slug> [n]` | `music/candidate-*.flac`, sized to the video |
 | render | `bin/video render <slug>` | `<slug>.mp4` (4K), `<slug>-1080p.mp4`, `.srt`, `review/` |
 
@@ -154,6 +155,14 @@ principles of a good screencast, which the scriptwriter also follows.
 - **Film the latest main.** Videos show omacharts as it is on main —
   `bin/video` fetches it and builds it in a worktree of its own — unless the
   author asks for something else, which goes in the script as `build:`.
+- **Every video opens on its cover,** held about two and a half seconds
+  with the music already playing, then faded into the first scene. The
+  cover is the site's OpenGraph card re-framed for 16:9: the ribbon of
+  charts, the mark and wordmark, the title in gold where the manual card
+  says MANUAL, and omacharts.org in the corner. It doubles as the YouTube
+  thumbnail. The payoff comes right after it, so the opening scene still
+  starts on something happening. (`cover: 0` in a script turns it off;
+  `cover_title:` overrides the title.)
 - **Music: a theme composed for each video,** not a library track reused.
   The starting point is ambient electronic — gentle analog synth pads, a
   soft plucked arpeggio, a subtle pulse, calm and optimistic, spacious —

@@ -5,8 +5,9 @@ General craft, distilled from people who make these well. The Taste rules in
 
 ## Story
 
-- Open on the payoff. The first five seconds show something working — no
-  logo sting, no "in this video I'll show you".
+- Open on the payoff. The first five seconds after the cover show something
+  working — no logo sting beyond the cover, no "in this video I'll show
+  you".
 - One idea per video, shown as a task with an outcome, not a tour of
   features. A feature video runs 60–90 seconds; a walkthrough 2–4 minutes.
 - End on one next step (the install command, the `?` key), then stop.
