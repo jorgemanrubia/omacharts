@@ -781,8 +781,16 @@ returns its measurements. A window must be open; otherwise it exits 6.
 | `--clear` | Clears the ruler. Use it alone |
 | `--json` | Returns the chart position and the measurement: `from`, `to`, `price_change`, `percent_change`, `bars` and `elapsed_seconds` |
 
-Bar distance counts column intervals; elapsed seconds include market closures.
-With fewer than two loaded candles, `bars` is `null`. A zero starting price has
+```
+$ omacharts chart measure --from 2026-09-01,650 --to 2026-10-15,700
++7.69% +50.00; 31 bars, 44d on pos:0 SPY 1D in "Chartbook 1"
+  [exit 0]
+```
+
+The reply is the percentage change, the price change at the price axis's
+precision, the bar distance and the elapsed time. Bar distance counts column
+intervals; elapsed time includes market closures. With fewer than two loaded
+candles the reply has no bar distance and `bars` is `null`. A zero starting price has
 `null` for `percent_change`. The range is not saved or shared. The mouse tool is
 in [Measuring a range](/manual/drawings/#measuring-a-range).
 

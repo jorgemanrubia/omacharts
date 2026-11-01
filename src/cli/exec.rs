@@ -1279,10 +1279,7 @@ fn chart_measure(
     };
     let (chart, measured) = live.measure(anchors)?;
     let text = match measured {
-        Some(m) => {
-            let [change, span] = m.lines();
-            format!("{change}; {span} on {chart}")
-        }
+        Some(m) => format!("{} on {chart}", m.parts().line()),
         None => format!("cleared measurement on {chart}"),
     };
     said(
@@ -6799,7 +6796,7 @@ mod tests {
             Ok((
                 "pos:0 SPY 1D in Main".into(),
                 anchors
-                    .map(|(a, b)| omacharts_engine::measurement::Measurement::between(a, b, &[])),
+                    .map(|(a, b)| omacharts_engine::measurement::Measurement::between(a, b, &[], None)),
             ))
         }
         fn flush_workspace(&self) {}

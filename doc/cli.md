@@ -1359,6 +1359,8 @@ as does `omacharts help <group> <command>`.
 With a window open, measure two time/price anchors on the focused chart:
 
 ```sh
+omacharts chart measure --from 2026-09-01,650 --to 2026-10-15,700
+# +7.69% +50.00; 31 bars, 44d on pos:0 SPY 1D in "Chartbook 1"
 omacharts chart measure --from 2026-09-01,180.5 --to 2026-09-19,192 --json
 omacharts chart measure --clear
 ```

@@ -72,9 +72,11 @@ A finished drawing is left selected.
 
 The ruler measures the change between two points. Choose **Measure**, just
 below the pointer at the top of the tools, click the starting point, move the
-mouse, then click the end point. The label shows price change, percentage
-change, bar distance and elapsed time. The range stays fixed after the second click. Click again to
-start another, or press <kbd>Esc</kbd> to clear it and return to the pointer.
+mouse, then click the end point. The label shows the percentage change in
+bold, then the price change, and under them the bar distance and elapsed time:
+`+0.53%  +4.01` over `71 bars, 5h 55m`. The range stays fixed after the second
+click. Click again to start another, or press <kbd>Esc</kbd> to clear it and
+return to the pointer.
 
 <!-- regenerate:
 theme: nord
@@ -94,8 +96,10 @@ crop: 0,0,1950,1600
 {% include figure.html src="/assets/manual/drawings/ruler.png" alt="A measured range on NVDA with price change, percentage change, bar distance and elapsed time above it" caption="A range left fixed by the second click." %}
 
 Bar distance counts the spaces between candles. Elapsed time includes weekends
-and market closures. With fewer than two loaded candles the bar distance reads
-`n/a`; a zero starting price has no percentage. Points beyond the loaded candles
+and market closures. The price change has as many decimals as the price axis
+gives that price. With fewer than two loaded candles the label shows the time
+without a bar distance, and a range that starts at zero shows no percentage.
+Points beyond the loaded candles
 use the chart's estimated times. The range is not saved or shared with other
 charts. Choosing another tool or changing the symbol or resolution clears it.
 

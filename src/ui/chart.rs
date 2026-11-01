@@ -2272,8 +2272,9 @@ impl ChartView {
         let mut state = self.state.borrow_mut();
         state.ruler_armed = false;
         state.ruler = anchors.map(|(a, b)| (a, b, true));
+        let kind = state.instrument.as_ref().map(|i| i.kind);
         let measured = anchors
-            .map(|(a, b)| omacharts_engine::measurement::Measurement::between(a, b, &state.bars));
+            .map(|(a, b)| omacharts_engine::measurement::Measurement::between(a, b, &state.bars, kind));
         let drawing_armed = state.tool.is_some();
         drop(state);
         self.area.set_cursor_from_name(Some(if drawing_armed { "crosshair" } else { "default" }));
@@ -6220,7 +6221,8 @@ fn draw_ruler(
     let b = state.project_anchor(plan, scale, to);
     let (x, y) = (a.0.min(b.0), a.1.min(b.1));
     let (w, h) = ((b.0 - a.0).abs(), (b.1 - a.1).abs());
-    let measured = omacharts_engine::measurement::Measurement::between(from, to, &state.bars);
+    let kind = state.instrument.as_ref().map(|i| i.kind);
+    let measured = omacharts_engine::measurement::Measurement::between(from, to, &state.bars, kind);
     // The candles' own up and down, so a "Red up" scheme measures a rise in
     // red; the label is the last-price tag of that direction, whose figure is
     // already chosen to read on its fill.
@@ -6261,14 +6263,26 @@ fn draw_ruler(
         }
         cr.stroke().ok();
     }
-    let lines = measured.lines();
-    cr.set_font_size(11.0);
-    let tw = lines
-        .iter()
-        .filter_map(|line| cr.text_extents(line).ok())
-        .map(|ext| ext.x_advance())
-        .fold(0.0_f64, f64::max);
-    let bw = (tw + 20.0).min(plan.plot_w);
+    // The percentage is what the eye goes to, so it leads in bold, with the
+    // change after it on the same baseline and the span under both.
+    let parts = measured.parts();
+    let advance = |text: &str| cr.text_extents(text).map(|e| e.x_advance()).unwrap_or(0.0);
+    let bold = |cr: &cairo::Context| {
+        cr.select_font_face("sans-serif", cairo::FontSlant::Normal, cairo::FontWeight::Bold);
+        cr.set_font_size(13.0);
+    };
+    let normal = |cr: &cairo::Context| {
+        cr.select_font_face("sans-serif", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
+        cr.set_font_size(11.0);
+    };
+    bold(cr);
+    let percent_w = parts.percent.as_deref().map_or(0.0, &advance);
+    normal(cr);
+    let gap = if parts.percent.is_some() { advance("  ") } else { 0.0 };
+    let change_w = advance(&parts.change);
+    let span_w = advance(&parts.span);
+    let first_w = percent_w + gap + change_w;
+    let bw = (first_w.max(span_w) + 20.0).min(plan.plot_w);
     let bx = (x + w / 2.0 - bw / 2.0).clamp(
         plan.plot_x,
         (plan.plot_x + plan.plot_w - bw).max(plan.plot_x),
@@ -6285,11 +6299,17 @@ fn draw_ruler(
     cr.fill_preserve().ok();
     cr.stroke().ok();
     colors::set_source(cr, &tag.label);
-    for (i, line) in lines.iter().enumerate() {
-        let width = cr.text_extents(line).map(|e| e.x_advance()).unwrap_or(0.0);
-        cr.move_to(bx + (bw - width) / 2.0, by + 15.0 + i as f64 * 15.0);
-        cr.show_text(line).ok();
+    let left = bx + (bw - first_w) / 2.0;
+    if let Some(percent) = &parts.percent {
+        bold(cr);
+        cr.move_to(left, by + 15.0);
+        cr.show_text(percent).ok();
     }
+    normal(cr);
+    cr.move_to(left + percent_w + gap, by + 15.0);
+    cr.show_text(&parts.change).ok();
+    cr.move_to(bx + (bw - span_w) / 2.0, by + 30.0);
+    cr.show_text(&parts.span).ok();
     cr.restore().ok();
 }
 
