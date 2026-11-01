@@ -218,10 +218,7 @@ pub fn dispatch(
             // Only after it worked, and only what it touched. Rebuilding the
             // window because a setting changed would be the kind of thing
             // that is fine with five symbols and stutters with five hundred.
-            // The ruler already updated its pointer layer through Live;
-            // reloading stored content would erase this temporary range.
-            if let Some(live) = live.filter(|_| spec.writes && (noun, verb) != ("chart", "measure"))
-            {
+            if let Some(live) = live.filter(|_| spec.writes) {
                 match spec.workspace {
                     true => live.reload_workspace(),
                     false => live.reload_watchlists(),

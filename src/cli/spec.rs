@@ -935,7 +935,7 @@ pub const SURFACE: &[Noun] = &[
                 ],
                 example: "omacharts chart measure --from 2026-09-01,180.5 --to 2026-09-19,192",
                 json: true,
-                writes: true,
+                writes: false,
                 workspace: false,
             },
             Verb {
