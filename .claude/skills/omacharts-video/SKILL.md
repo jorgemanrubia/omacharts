@@ -202,3 +202,6 @@ Things that broke, and why.
 
 - A fresh window ignores its first chord (see `bin/headless-window`): send a
   harmless key during `setup`, never as the first thing on camera.
+- **Narrator: a female voice, not deep.** Mid-pitched to slightly bright,
+  clear and relaxed. A low, heavy voice reads as a trailer, not as someone
+  showing you their tool.
