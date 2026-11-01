@@ -83,6 +83,7 @@ into the Default template. The header names the chart template.
     cli chartbook rename "Chartbook 1" Nasdaq
     cli chart set --symbol NQ --resolution 1D
     cli chart range 6m
+    cli chart drawing configure rect --config 3 --alpha 0.5
     cli chart drawing add rect --from 2026-06-05,30970 --to 2026-07-02,28230 --config 3
     cli chart drawing add rect --from 2026-09-22,31620 --to 2026-10-13,30360 --config 3
     cli chartbook create Crude --symbol CL --switch
