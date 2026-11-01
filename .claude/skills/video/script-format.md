@@ -59,8 +59,7 @@ music: ambient synth pads, soft plucked arpeggio, calm and optimistic
 
 ## The parts
 
-- **Frontmatter.** `stage` is one of `brief`, `script`, `read`, `board`,
-  `render`, `done`, and is moved forward only when the author approves a stage.
+- **Frontmatter.** `stage` is one of `brief`, `script`, `board`, `render`, `done`, and is moved forward only when the author approves a stage.
   `build` says which omacharts to film: `main` when absent (the latest
   main, fetched and built in a worktree of its own), or a branch, tag or
   commit, or `here` for this checkout's own build.

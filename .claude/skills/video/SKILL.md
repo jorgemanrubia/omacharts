@@ -1,6 +1,6 @@
 ---
 name: video
-description: Make narrated screencast videos of Omacharts, stage by stage — brief, script, read-through, storyboard, render — from a Markdown script the author steers. `/video` shows where every video stands and what to do next; `/video new <idea>` starts one; notes in chat or `> note:` lines in the script steer it. Use whenever a video, screencast, demo, trailer, voice-over or YouTube clip of Omacharts is mentioned, when a file under video/scripts/ is touched, or when the author comments on a script, a read-through, a storyboard or a rendered video.
+description: Make narrated screencast videos of Omacharts, stage by stage — brief, script, storyboard, render — from a Markdown script the author steers. `/video` shows where every video stands and what to do next; `/video new <idea>` starts one; notes in chat or `> note:` lines in the script steer it. Use whenever a video, screencast, demo, trailer, voice-over or YouTube clip of Omacharts is mentioned, when a file under video/scripts/ is touched, or when the author comments on a script, a read-through, a storyboard or a rendered video.
 ---
 
 # Omacharts videos
@@ -8,8 +8,8 @@ description: Make narrated screencast videos of Omacharts, stage by stage — br
 Videos are rendered, not recorded. The author — whoever is making the
 video — shapes a script and judges what comes out; nobody sits at a screen
 recorder, and nothing touches the desktop they are using. Every video is one Markdown file, `video/scripts/<slug>.md`, and moves
-through five stages, each cheaper to change than the next. Most of the shaping
-happens in the first three, where it costs seconds.
+through four stages, each cheaper to change than the next. Most of the
+shaping happens in the first two, where it costs seconds.
 
 ## The stages
 
@@ -17,9 +17,13 @@ happens in the first three, where it costs seconds.
 |---|---|---|---|
 | 1 | **Brief** | pitch, audience, opening payoff, 4–7 beats, length | a minute to read |
 | 2 | **Script** | every scene as Picture + Voice | a few minutes to read |
-| 3 | **Read-through** | the narration, voiced, played on their machine | a minute to listen |
-| 4 | **Storyboard** | one still per scene, with its narration under it | a minute to look |
-| 5 | **Render** | the finished video, with music | the video's length |
+| 3 | **Storyboard** | one still per scene, with its narration under it | a minute to look |
+| 4 | **Render** | the finished video, with music | the video's length |
+
+A **read-through** — the narration alone, voiced — is there on request
+(`/video <slug> read`), not a stage: the author chose to hear the voice in
+the render rather than listen twice. The render reuses the same cached
+voicing, so asking for one costs nothing extra later.
 
 ### 1. Brief — is this the right video?
 
@@ -40,16 +44,7 @@ screen already shows?
 **Typical notes.** "Too wordy." "Say why, not what." "Scene 3 needs a beat to
 breathe." "Show the readout before naming it."
 
-### 3. Read-through — does it sound right?
-
-**What to look for.** Pace, stumbles, mispronounced words, sentences that run
-out of breath, and the voice itself. This is where TTS shows its seams, and
-fixing a line here costs a minute of audio, not a render.
-
-**Typical notes.** "Faster in scene 2." "She says Omarchy wrong." "Pause after
-the percentage."
-
-### 4. Storyboard — does it look right?
+### 3. Storyboard — does it look right?
 
 **What to look for.** The data on screen (is it a chart worth looking at?),
 the layout and theme, where the cursor and zooms land, whether each picture
@@ -58,7 +53,7 @@ matches the line under it.
 **Typical notes.** "Pick a symbol with a cleaner trend." "Zoom closer on the
 readout." "Too much on screen in scene 1."
 
-### 5. Render — is it finished?
+### 4. Render — is it finished?
 
 **What to look for.** Mostly polish: timing of actions against the voice, zoom
 feel, music level and choice, the ending. A note that goes back to the story
@@ -73,8 +68,8 @@ time.
 - `/video <slug> <notes>`, or notes in plain chat about a video — apply them
   at its current stage.
 - `/video <slug> ok` — approve the current stage and produce the next one.
-- `/video <slug> read`, `board`, `render` — produce that stage now, without
-  moving the stage forward.
+- `/video <slug> read`, `board`, `render` — produce that now, without moving
+  the stage forward; `read` is the optional read-through.
 
 Notes can also live in the script: a `> note: …` line under the scene it is
 about. Write as many as you want while reading, then say "apply notes".
@@ -116,7 +111,7 @@ locally, or on another machine when `~/.config/omacharts-video/config` says
 
 `bin/video status` lists the scripts; `bin/video show <file>` plays any file
 where the author watches; `bin/video setup` builds the speech and music
-environments once. Voicing is cached per scene, so after the first read-through
+environments once. Voicing is cached per scene, so after the first voicing
 only changed lines are spoken again — speech runs at several times real time on
 the CPU, so say how long a command will take before starting a slow one.
 
