@@ -7780,24 +7780,7 @@ impl Window {
         anchors: Option<(omacharts_engine::Anchor, omacharts_engine::Anchor)>,
     ) -> (String, Option<omacharts_engine::measurement::Measurement>) {
         let pane = self.focused_pane();
-        let at = self
-            .layout
-            .borrow()
-            .leaves()
-            .iter()
-            .position(|id| *id == pane.id)
-            .unwrap_or(0);
-        let symbol = pane
-            .instrument
-            .borrow()
-            .as_ref()
-            .map(|i| i.display_symbol())
-            .unwrap_or_default();
-        let label = format!(
-            "pos:{at} {symbol} {} in \"{}\"",
-            pane.timeframe.get().label(),
-            self.book_label(self.active.get())
-        );
+        let label = self.chart_named(&pane);
         let result = pane.view.measure(anchors);
         self.sync_drawing_bar();
         (label, result)
