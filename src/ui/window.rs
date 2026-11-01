@@ -6210,21 +6210,24 @@ impl Window {
         self.focused_pane().ladders.borrow().is_some()
     }
 
-    /// The colouring chosen in Preferences, and whether it is worn the other
-    /// way round: what a delta profile or a cumulative delta with no
-    /// colouring of its own is painted in, on every chart.
+    /// The look chosen in Preferences: what a delta profile or a cumulative
+    /// delta with no colouring of its own is painted in, on every chart.
     pub fn house_look(&self) -> omacharts_engine::BarLook {
         self.theming.borrow().bar_look().clone()
     }
 
-    /// Adopt a theme or bar scheme chosen outside this window, and repaint.
+    /// Adopt a theme or bars that changed outside this window — a command,
+    /// the desktop's theme — and show it everywhere.
     ///
     /// `restyle` paints from the `Theming` this process is holding, so without
     /// re-reading the choice first it would faithfully repaint the theme the
-    /// window already had.
+    /// window already had. An Appearance page that is open is rebuilt too:
+    /// its theme cards, its colours and the border's Black or White are the
+    /// theme's, and nothing on the page asked for the change.
     pub fn adopt_theming(self: &Rc<Self>) {
         self.theming.borrow_mut().reload_selection(&self.store);
         self.restyle();
+        crate::ui::appearance::restyled();
     }
 
     /// Show the settings a backup just put back: everything the window holds
@@ -8342,7 +8345,7 @@ impl Window {
         let this = self.clone();
         glib::timeout_add_seconds_local(THEME_POLL_SECONDS, move || {
             if this.theming.borrow_mut().poll_omarchy() {
-                this.restyle();
+                this.adopt_theming();
             }
             glib::ControlFlow::Continue
         });
