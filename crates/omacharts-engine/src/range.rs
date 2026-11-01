@@ -29,6 +29,9 @@ pub enum Range {
     Year(i32),
     /// One calendar month: the year, then the month from 1.
     Month(i32, u32),
+    /// One calendar month named without a year, `june` or `jan`: the
+    /// latest one, this month's when it is that month now.
+    LatestMonth(u32),
     /// One day: a date, `mon`, `10/12`, `yesterday`, `3 weeks ago`. Always
     /// one of the [`End`]s that is a day.
     Day(End),
@@ -75,6 +78,8 @@ pub enum End {
     After(u32, Span),
     /// The next of a weekday after today, `next fri`; refused the same way.
     Next(Weekday),
+    /// A month by name with no year, `jan`: the latest, this one included.
+    LatestMonth(u32),
 }
 
 impl End {
@@ -92,9 +97,10 @@ impl End {
         if let Some(day) = one_day(text) {
             return Some(day);
         }
-        match calendar(text)? {
+        match calendar(text).or_else(|| named_month(text))? {
             Range::Year(year) => Some(End::Year(year)),
             Range::Month(year, month) => Some(End::Month(year, month)),
+            Range::LatestMonth(month) => Some(End::LatestMonth(month)),
             _ => None,
         }
     }
@@ -116,6 +122,7 @@ impl End {
             End::After(1, Span::Day) => "tomorrow".into(),
             End::After(count, span) => format!("in {count}{}", span.letter()),
             End::Next(weekday) => format!("next {}", weekday.to_string().to_lowercase()),
+            End::LatestMonth(month) => month_name(month).to_lowercase(),
         }
     }
 
@@ -156,6 +163,10 @@ impl End {
                 let until = (7 + weekday.num_days_from_monday() - today.weekday().num_days_from_monday()) % 7;
                 today.checked_add_days(Days::new(u64::from(if until == 0 { 7 } else { until })))
             }
+            End::LatestMonth(month) => {
+                let (year, month) = latest_month(month, today);
+                NaiveDate::from_ymd_opt(year, month, 1)
+            }
         }
     }
 
@@ -165,6 +176,10 @@ impl End {
             End::Day(day) => Some(day),
             End::Month(year, month) => {
                 NaiveDate::from_ymd_opt(year, month, 1)?.checked_add_months(Months::new(1))?.pred_opt()
+            }
+            End::LatestMonth(month) => {
+                let (year, month) = latest_month(month, today);
+                End::Month(year, month).last(today)
             }
             End::Year(year) => NaiveDate::from_ymd_opt(year, 12, 31),
             End::Ago(..) => self.first(today)?.pred_opt(),
@@ -192,6 +207,7 @@ impl End {
             End::After(count, span) => format!("in {}", span.counted(count)),
             End::Last(weekday) => format!("last {}", day_name(weekday)),
             End::Next(weekday) => format!("next {}", day_name(weekday)),
+            End::LatestMonth(month) => month_name(month),
             End::Weekday(count, weekday) => {
                 let name = day_name(weekday);
                 match count {
@@ -361,6 +377,36 @@ fn weekday(word: &str) -> Option<Weekday> {
         .find(|day| NaiveDate::from_isoywd_opt(2026, 1, *day).is_some_and(|d| d.format("%A").to_string().to_lowercase().starts_with(word)))
 }
 
+/// A month by name, `june`, `jan`, `Sept`, alone for the latest one or
+/// with a year, `june 2025`, `2025 june`, for that one. A name and a day,
+/// `oct 22`, is a day, which [`one_day`] reads first.
+fn named_month(text: &str) -> Option<Range> {
+    let lower = text.trim().to_ascii_lowercase();
+    let words: Vec<&str> = lower.split([' ', ',']).filter(|word| !word.is_empty()).collect();
+    match words[..] {
+        [name] => Some(Range::LatestMonth(month_named(name)?)),
+        [name, year] | [year, name] if year.len() == 4 && year.chars().all(|c| c.is_ascii_digit()) => {
+            let year: i32 = year.parse().ok().filter(|y| (1800..=2200).contains(y))?;
+            Some(Range::Month(year, month_named(name)?))
+        }
+        _ => None,
+    }
+}
+
+/// The latest of `month` as of `today`, this month included: its year and
+/// the month.
+fn latest_month(month: u32, today: NaiveDate) -> (i32, u32) {
+    match month <= today.month() {
+        true => (today.year(), month),
+        false => (today.year() - 1, month),
+    }
+}
+
+/// `January`, for saying a month.
+fn month_name(month: u32) -> String {
+    NaiveDate::from_ymd_opt(2000, month, 1).map_or(String::new(), |d| d.format("%B").to_string())
+}
+
 /// `mar`, `sept`, `november`: three letters of the name at least.
 fn month_named(word: &str) -> Option<u32> {
     if word.len() < 3 {
@@ -443,6 +489,7 @@ impl Range {
             Range::All => "All".into(),
             Range::Year(year) => year.to_string(),
             Range::Month(year, month) => format!("{year}-{month:02}"),
+            Range::LatestMonth(month) => month_name(month).to_lowercase(),
             Range::Day(day) | Range::Lasting(day, ..) => day.key(),
             Range::Slice(from, to) => {
                 format!("{}:{}", from.map(End::key).unwrap_or_default(), to.map(End::key).unwrap_or_default())
@@ -456,9 +503,12 @@ impl Range {
     pub fn short_key(self, year: i32) -> String {
         let end = |end: End| match end {
             End::Day(day) if day.year() == year => day.format("%m-%d").to_string(),
+            // A month of this year by its name, `jan`, which reads back.
+            End::Month(this, month) if this == year => month_name(month).to_lowercase()[..3].to_string(),
             end => end.key(),
         };
         match self {
+            Range::Month(this, month) => end(End::Month(this, month)),
             Range::Day(day) | Range::Lasting(day, ..) => end(day),
             Range::Slice(from, to) => format!("{}:{}", from.map(end).unwrap_or_default(), to.map(end).unwrap_or_default()),
             range => range.key(),
@@ -499,6 +549,7 @@ impl Range {
                 Some(first) => format!("all of {}", first.format("%B %Y")),
                 None => format!("{year}-{month:02}"),
             },
+            Range::LatestMonth(month) => format!("all of the latest {}", month_name(month)),
             Range::Day(day) => day.words(),
             Range::Lasting(day, seconds) => match seconds / 86_400 {
                 0 => day.words(),
@@ -563,6 +614,9 @@ impl Range {
         if let Some(day) = one_day(text) {
             return Some(Range::Day(day));
         }
+        if let Some(month) = named_month(text) {
+            return Some(month);
+        }
         let split = text.find(|c: char| !c.is_ascii_digit())?;
         let (digits, unit) = text.split_at(split);
         let unit = unit.trim();
@@ -598,6 +652,7 @@ impl Range {
             Range::Slice(from, _) => from?.first(today),
             Range::Year(year) => NaiveDate::from_ymd_opt(year, 1, 1),
             Range::Month(year, month) => NaiveDate::from_ymd_opt(year, month, 1),
+            Range::LatestMonth(month) => End::LatestMonth(month).first(today),
             Range::Day(day) | Range::Lasting(day, ..) => day.first(today),
             Range::Back(count, Span::Day) => today.checked_sub_days(Days::new(u64::from(count) - 1)),
             Range::Back(count, Span::Week) => today.checked_sub_days(Days::new(7 * u64::from(count) - 1)),
@@ -627,6 +682,7 @@ impl Range {
             Range::Month(year, month) => NaiveDate::from_ymd_opt(year, month, 1)?
                 .checked_add_months(Months::new(1))?
                 .pred_opt(),
+            Range::LatestMonth(month) => End::LatestMonth(month).last(today),
             Range::Day(day) => day.last(today),
             Range::Lasting(day, seconds) => {
                 let from = day.first(today)?.and_time(chrono::NaiveTime::MIN);
@@ -660,9 +716,17 @@ impl Range {
             End::Weekday(..) | End::MonthDay(..) | End::Today | End::Yesterday | End::Before(..) | End::Last(..) => {
                 end.first(today).map_or(end, End::Day)
             }
+            End::LatestMonth(month) => {
+                let (year, month) = latest_month(month, today);
+                End::Month(year, month)
+            }
             end => end,
         };
         match self {
+            Range::LatestMonth(month) => {
+                let (year, month) = latest_month(month, today);
+                Range::Month(year, month)
+            }
             Range::Day(day) => Range::Day(pin(day)),
             Range::Lasting(day, seconds) => Range::Lasting(pin(day), seconds),
             Range::Slice(from, to) => Range::Slice(from.map(pin), to.map(pin)),
@@ -683,6 +747,7 @@ impl Range {
         let (Some(first), last) = (self.start(today), self.end(today)) else { return self.description() };
         match self {
             Range::Day(_) => day(first),
+            Range::Month(..) | Range::LatestMonth(_) => first.format("%B %Y").to_string(),
             Range::Lasting(..) => match last {
                 Some(last) if last > first => format!("{} – {}", day(first), day(last)),
                 _ => day(first),
@@ -767,9 +832,16 @@ impl Range {
                 false => Range::suggest(rest, today).into_iter().filter(|range| dash_takes(*range)).collect(),
             };
         }
-        // A day: it alone, then from it to today.
-        if let Some(Range::Day(day)) = Range::parse(text) {
-            return vec![Range::Day(day), Range::Slice(Some(day), None)];
+        // A day: it alone, then from it to today. A month by name the same.
+        match Range::parse(text) {
+            Some(Range::Day(day)) => return vec![Range::Day(day), Range::Slice(Some(day), None)],
+            Some(Range::LatestMonth(month)) => {
+                return vec![Range::LatestMonth(month), Range::Slice(Some(End::LatestMonth(month)), None)];
+            }
+            Some(Range::Month(year, month)) if text.contains(|c: char| c.is_ascii_alphabetic()) => {
+                return vec![Range::Month(year, month), Range::Slice(Some(End::Month(year, month)), None)];
+            }
+            _ => {}
         }
         let digits = text.chars().all(|c| c.is_ascii_digit());
         // The start of a year, or a year and the start of a month: that
@@ -1383,7 +1455,9 @@ mod tests {
         assert_eq!(Range::parse("2m"), Some(Range::Back(2, Span::Month)));
         assert_eq!(Range::parse("1mo"), Some(Range::Back(1, Span::Month)));
         assert_eq!(Range::parse("2026-03"), Some(Range::Month(2026, 3)));
-        for bad in ["2/30", "13/1", "mar", "0mon", "12 mar 3", "1/2/3", "2025-3/12"] {
+        // A month by name alone is a span, all of the latest March.
+        assert_eq!(Range::parse("mar"), Some(Range::LatestMonth(3)));
+        for bad in ["2/30", "13/1", "0mon", "12 mar 3", "1/2/3", "2025-3/12"] {
             assert_eq!(Range::parse(bad), None, "{bad}");
         }
     }
@@ -1572,6 +1646,9 @@ mod tests {
         assert_eq!(pinned("oct 2:oct 12").map(|r| r.short_key(2026)), Some("10-02:10-12".into()));
         assert_eq!(pinned("2025/10/22").map(|r| r.short_key(2026)), Some("2025-10-22".into()));
         assert_eq!(pinned("ytd").map(|r| r.short_key(2026)), Some("YTD".into()));
+        assert_eq!(pinned("jan:mar").map(|r| r.short_key(2026)), Some("jan:mar".into()));
+        assert_eq!(pinned("june").map(|r| r.short_key(2026)), Some("jun".into()));
+        assert_eq!(pinned("june 2025").map(|r| r.short_key(2026)), Some("2025-06".into()));
         let lasting = Range::parse("1 week ago").map(|r| r.lasting(86_400).pinned(sunday));
         assert_eq!(lasting, Some(Range::Lasting(End::Day(day(2026, 10, 25)), 86_400)));
     }
@@ -1777,5 +1854,96 @@ mod tests {
                 assert_eq!(Range::parse(&slice), Some(range), "{slice}");
             }
         }
+    }
+
+    /// A month by name, full or short and in any case, is all of the
+    /// latest one: alone, with a year, and at either end of a custom range,
+    /// in From and To too.
+    #[test]
+    fn a_month_by_name_is_all_of_the_latest_one_everywhere() {
+        let today = day(2026, 11, 1);
+        let months = [
+            ("january", 1), ("jan", 1), ("JAN", 1), ("february", 2), ("feb", 2), ("march", 3), ("mar", 3),
+            ("april", 4), ("apr", 4), ("may", 5), ("June", 6), ("jun", 6), ("july", 7), ("jul", 7),
+            ("august", 8), ("aug", 8), ("september", 9), ("sep", 9), ("Sept", 9), ("october", 10), ("oct", 10),
+            ("november", 11), ("nov", 11), ("december", 12), ("dec", 12),
+        ];
+        for (name, month) in months {
+            let year = if month <= 11 { 2026 } else { 2025 };
+            let first = day(year, month, 1);
+            let last = first.checked_add_months(Months::new(1)).and_then(|d| d.pred_opt());
+            let range = Range::parse(name);
+            assert_eq!(range, Some(Range::LatestMonth(month)), "{name}");
+            assert_eq!(range.and_then(|r| r.start(today)), Some(first), "{name} starts on the 1st");
+            assert_eq!(range.and_then(|r| r.end(today)), last, "{name} ends on its last day");
+            assert_eq!(range.map(|r| r.pinned(today)), Some(Range::Month(year, month)), "{name} pinned");
+            assert_eq!(range.map(|r| r.spelled(today)), Some(first.format("%B %Y").to_string()), "{name} spelled");
+            assert_eq!(range.map(|r| Range::parse(&r.key())), Some(range), "{name} reads back");
+            let end = End::LatestMonth(month);
+            assert_eq!(End::parse(name), Some(end), "{name} in From or To");
+            for (text, range) in [
+                (format!("{name} 2025"), Range::Month(2025, month)),
+                (format!("2025 {name}"), Range::Month(2025, month)),
+                (format!("{name}:"), Range::Slice(Some(end), None)),
+                (format!("{name} .."), Range::Slice(Some(end), None)),
+                (format!(":{name}"), Range::Slice(None, Some(end))),
+                (format!(".. {name}"), Range::Slice(None, Some(end))),
+                (format!("{name} : {name}"), Range::Slice(Some(end), Some(end))),
+                (format!("{name} 2025:"), Range::Slice(Some(End::Month(2025, month)), None)),
+            ] {
+                assert_eq!(Range::parse(&text), Some(range), "{text}");
+            }
+        }
+        // A range of months by name, the latest of each.
+        let quarter = Range::parse("jan:mar");
+        assert_eq!(quarter.and_then(|r| r.start(today)), Some(day(2026, 1, 1)));
+        assert_eq!(quarter.and_then(|r| r.end(today)), Some(day(2026, 3, 31)));
+        assert_eq!(Range::parse("june:").and_then(|r| r.start(today)), Some(day(2026, 6, 1)));
+        // What already meant something else still does.
+        assert!(matches!(Range::parse("mon"), Some(Range::Day(End::Weekday(1, Weekday::Mon)))));
+        assert!(matches!(Range::parse("sat"), Some(Range::Day(End::Weekday(1, Weekday::Sat)))));
+        assert_eq!(Range::parse("oct 22"), Some(Range::Day(End::MonthDay(10, 22))));
+        assert_eq!(Range::parse("22 oct"), Some(Range::Day(End::MonthDay(10, 22))));
+        assert_eq!(Range::parse("3 mar"), Some(Range::Day(End::MonthDay(3, 3))));
+        assert_eq!(Range::parse("m"), Some(Range::Back(1, Span::Month)));
+        assert_eq!(Range::parse("2026-09"), Some(Range::Month(2026, 9)));
+        assert_eq!(Range::parse("ma"), None);
+    }
+
+    /// This month by name is all of it, to its last day; January typed in
+    /// January is this one, and in December last year's.
+    #[test]
+    fn a_month_by_name_this_month_and_across_new_year() {
+        let november = Range::parse("november");
+        assert_eq!(november.and_then(|r| r.end(day(2026, 11, 1))), Some(day(2026, 11, 30)));
+        assert!(november.is_some_and(|r| r.holds_days(day(2026, 11, 1))));
+        for (today, text, year) in [
+            (day(2027, 1, 15), "january", 2027),
+            (day(2027, 1, 15), "december", 2026),
+            (day(2026, 12, 20), "january", 2026),
+            (day(2026, 12, 20), "december", 2026),
+            (day(2027, 1, 1), "jan", 2027),
+        ] {
+            let start = Range::parse(text).and_then(|r| r.start(today));
+            assert_eq!(start.map(|d| d.year()), Some(year), "{text} on {today}");
+        }
+    }
+
+    /// A month the last bar falls in shows all of itself: the bars from its
+    /// first, then empty room to the end of its last day.
+    #[test]
+    fn this_month_runs_to_its_end_past_the_last_bar() {
+        let bars = sessions(3_600);
+        let start = day(2026, 10, 1);
+        let end = day(2026, 10, 31);
+        let seconds = (end - start).num_days() * 86_400 + 86_399;
+        let (first, columns, room) = lasting_window(&bars, |&ts| utc(ts), start, seconds, 3_600);
+        assert_eq!(bars[first], at(start, 14), "the 1st's first bar");
+        assert_eq!(room, 27, "20:00 Friday 30 October to the end of Saturday 31 October");
+        assert_eq!(columns, bars.len() - first + room);
+        // A month that is over is its own bars, edge to edge.
+        let (first, columns, room) = lasting_window(&bars, |&ts| utc(ts), day(2026, 9, 1), 29 * 86_400 + 86_399, 3_600);
+        assert_eq!((utc(bars[first]).map(|t| t.date()), room), (Some(day(2026, 9, 21)), 0));
+        assert_eq!(utc(bars[first + columns - 1]).map(|t| t.date()), Some(day(2026, 9, 30)));
     }
 }

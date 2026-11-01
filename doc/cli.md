@@ -984,7 +984,10 @@ alone is one. Capitals count whole periods to date: `Y` is the year to date,
 shortened, with or without a space, in any case: `3 days`, `2 wks`,
 `6 months`, `2 qtr`, `1 year` are `3d`, `2w`, `6m`, `2q`, `1y`. The same
 spellings work wherever a count and a unit go, `3 days ago` and `-6 months:`
-included. `2025` is all of that year, `2026-09`
+included. A month by name, `june`, `jan` or `Sept`, is all of the latest
+one, this month's when it is that month now, with the days after the latest
+bar as empty room; with a year, `june 2025`, it is that one. `2025` is all
+of that year, `2026-09`
 all of that month, and `all` the whole history. `3w` and `3 weeks ago`
 differ: the first is the last three weeks, the second one day. A span counts
 back from the latest bar, so on a Sunday the week to date is the week that
@@ -992,7 +995,9 @@ just traded.
 
 **A custom range** is two ends joined by `:` or `..`, both included, with or
 without spaces around it, and either end can be left out. An end is anything
-a date can be, a month, a year or a count back such as `-6m`: `2025:` is from 1 January 2025 to today, `2024:2025-06` from
+a date can be, a month such as `2025-03` or `jan`, a year or a count back
+such as `-6m`: `jan:mar` is 1 January to 31 March, `2025:` is from
+1 January 2025 to today, `2024:2025-06` from
 the start of 2024 to the end of June 2025, `:2020` from the first bar,
 `oct 1:oct 22` those days and the ones between, `3 weeks ago:` since that
 day, and `-2y:-1y` the year before last. One that starts with a minus goes

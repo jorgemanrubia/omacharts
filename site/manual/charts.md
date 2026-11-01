@@ -283,15 +283,18 @@ Numbers run year, month, day, so `10/11` is 11 October. A day still to come, suc
 | `ytd`, `qtd`, `mtd`, `wtd`, `2ytd` | The same, in any case |
 | `2025` | All of 2025 |
 | `2025/03`, `2025-03` | All of March 2025 |
+| `june`, `jan`, `Sept` | All of the latest June, January or September. In June, `june` is this June, all of it, with the days after the latest bar as empty room |
+| `june 2025`, `jan 2024` | All of that month |
 | `-2w` | The same as `2w` |
 | `all`, `:` | The whole history |
 
-**A custom range** is two ends joined by `:` or `..`, both included, with or without spaces around it. Either end can be left out. An end is anything a date can be, a month, a year, or a count back such as `-6m` or `-6 months`.
+**A custom range** is two ends joined by `:` or `..`, both included, with or without spaces around it. Either end can be left out. An end is anything a date can be, a month such as `2025/03` or `jan`, a year, or a count back such as `-6m` or `-6 months`.
 
 | Typed | Shows |
 |---|---|
 | `3 weeks ago:` | From that day to today. The card says **since 11 Oct** |
 | `oct 1:oct 22` | 1 to 22 October |
+| `jan:mar` | 1 January to 31 March, the latest of each |
 | `2025:` | From 1 January 2025 to today |
 | `2025/03:2025/06` | March to June 2025 |
 | `:2020` | From the first bar to the end of 2020 |

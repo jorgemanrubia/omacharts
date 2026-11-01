@@ -1726,8 +1726,14 @@ impl State {
         let len = self.bars.len();
         // A day on its own shows from the start of that day for the length
         // of time that was on screen, into empty room past the last bar when
-        // it gets there, counted as the time axis counts it.
-        if let (Range::Lasting(_, seconds), Some(start)) = (range, range.start(today)) {
+        // it gets there, counted as the time axis counts it. A month shows
+        // the whole of itself the same way, so this month runs to its end.
+        let window = match (range, range.start(today), range.end(today)) {
+            (Range::Lasting(_, seconds), Some(start), _) => Some((start, seconds)),
+            (Range::Month(..), Some(start), Some(end)) => Some((start, (end - start).num_days() * 86_400 + 86_399)),
+            _ => None,
+        };
+        if let Some((start, seconds)) = window {
             let (first, columns, room) = omacharts_engine::range::lasting_window(
                 &self.bars,
                 |bar| clock.read(bar.ts, utc),

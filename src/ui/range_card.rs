@@ -768,6 +768,7 @@ impl RangeCard {
                             ("6m|3 weeks", "the last 6 months, 3 weeks"),
                             ("ytd|mtd", "this year, this month so far"),
                             ("2025|2025/03", "all of 2025, March 2025"),
+                            ("june|jan 2025", "the latest June, January 2025"),
                             ("all", "the whole history"),
                         ],
                     ),
@@ -1120,8 +1121,9 @@ impl RangeCard {
         let today = context.today;
         let from = range.start(today).unwrap_or(context.first);
         let to = match range {
-            // A day keeps the window, which can run past today.
-            Range::Lasting(..) => range.end(today).unwrap_or(from),
+            // A day keeps the window, and a month is all of itself, so
+            // either can run past today.
+            Range::Lasting(..) | Range::Month(..) | Range::LatestMonth(_) => range.end(today).unwrap_or(from),
             _ => range.end(today).map_or(today, |end| end.min(today)),
         };
         (from, to)
@@ -1512,7 +1514,7 @@ pub fn fill(rows: &gtk::ListBox, shown: &RefCell<Vec<Range>>, query: &str, lasti
         // A day or a slice by the days it lands on, `22 Oct – 1 Nov`, which
         // says more than the words typed; the rest as they are said.
         let what = match range {
-            Range::Day(_) | Range::Lasting(..) | Range::Slice(Some(_), _) => range.spelled(today),
+            Range::Day(_) | Range::Lasting(..) | Range::LatestMonth(_) | Range::Slice(Some(_), _) => range.spelled(today),
             _ => range.description(),
         };
         let what = gtk::Label::new(Some(&what));
