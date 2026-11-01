@@ -1,6 +1,6 @@
 ---
 title: Templates that work for you
-stage: board
+stage: render
 length: 95s
 theme: tokyo-night
 voice: narrator
