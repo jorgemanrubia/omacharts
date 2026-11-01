@@ -6208,6 +6208,20 @@ fn ruler_arrows(a: (f64, f64), b: (f64, f64)) -> [((f64, f64), (f64, f64)); 2] {
     [((mid_x, a.1), (mid_x, b.1)), ((a.0, mid_y), (b.0, mid_y))]
 }
 
+/// The length of a ruler arrowhead's sides, for an arrow `length` long.
+///
+/// Full size on an arrow at least three heads long; on a shorter one the
+/// head shrinks with it, so a narrow box is not all arrowhead; and an arrow
+/// shorter than a full head has none, since it would be nothing else.
+fn ruler_head(length: f64) -> Option<f64> {
+    const HEAD: f64 = 9.0;
+    match length {
+        l if l >= 3.0 * HEAD => Some(HEAD),
+        l if l >= HEAD => Some(l / 3.0),
+        _ => None,
+    }
+}
+
 /// A temporary range on the pointer layer: no scene rebuild on mouse motion.
 fn draw_ruler(
     cr: &cairo::Context,
@@ -6250,15 +6264,15 @@ fn draw_ruler(
         cr.move_to(tail.0, tail.1);
         cr.line_to(tip.0, tip.1);
         cr.stroke().ok();
-        if (tip.0 - tail.0).hypot(tip.1 - tail.1) < 1.0 {
+        let Some(head) = ruler_head((tip.0 - tail.0).hypot(tip.1 - tail.1)) else {
             continue;
-        }
+        };
         let angle = (tail.1 - tip.1).atan2(tail.0 - tip.0);
-        for offset in [-0.55_f64, 0.55] {
+        for offset in [-0.5_f64, 0.5] {
             cr.move_to(tip.0, tip.1);
             cr.line_to(
-                tip.0 + 5.0 * (angle + offset).cos(),
-                tip.1 + 5.0 * (angle + offset).sin(),
+                tip.0 + head * (angle + offset).cos(),
+                tip.1 + head * (angle + offset).sin(),
             );
         }
         cr.stroke().ok();
@@ -8855,6 +8869,17 @@ mod drawing_tests {
         assert!(price.1.1 > price.0.1, "points down");
         assert_eq!(time.1, (100.0, 200.0));
         assert!(time.1.0 < time.0.0, "points left");
+    }
+
+    #[test]
+    fn a_ruler_arrowhead_shrinks_on_a_short_arrow_and_goes_on_a_tiny_one() {
+        assert_eq!(ruler_head(200.0), Some(9.0));
+        assert_eq!(ruler_head(27.0), Some(9.0));
+        assert_eq!(ruler_head(18.0), Some(6.0));
+        assert_eq!(ruler_head(9.0), Some(3.0));
+        assert_eq!(ruler_head(8.9), None);
+        assert_eq!(ruler_head(0.0), None);
+        assert_eq!(ruler_head(f64::NAN), None);
     }
 
     #[test]
