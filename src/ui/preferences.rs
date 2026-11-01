@@ -154,28 +154,37 @@ impl Preferences {
         let appearance_page = window.appearance_page();
         let overlays_page = window.overlays_page();
 
-        // General first: what the app does, before what it looks like.
+        // What the app does first, then, under a rule that says which
+        // charts they change, what the charts look like.
         // Trading's page only while trading is switched on.
         let trading = crate::features::trading();
-        let mut sections: Vec<(&str, &str, &str, gtk::Widget)> = vec![
+        let mut app: Vec<Section> = vec![
             ("general", "General", "preferences-system-symbolic", general_page.clone().upcast()),
-            ("charts", "Charts", "utilities-system-monitor-symbolic", charts.upcast()),
             ("data", "Market data", "network-transmit-receive-symbolic", data_page.clone().upcast()),
-            ("appearance", "Appearance", "preferences-desktop-appearance-symbolic", appearance_page.upcast()),
-            ("overlays", "Overlays", "view-grid-symbolic", overlays_page.upcast()),
         ];
         if trading {
-            sections.push((TRADING, "Trading", "view-list-bullet-symbolic", trading_page.clone().upcast()));
+            app.push((TRADING, "Trading", "view-list-bullet-symbolic", trading_page.clone().upcast()));
         }
+        let symbol = window.focused_pane().instrument.borrow().as_ref().map(|i| i.display_symbol());
+        let rule = crate::ui::scope_rule::rule(
+            symbol,
+            vec![appearance_page.clone().upcast(), overlays_page.clone().upcast()],
+        );
+        let visual: [Section; 3] = [
+            ("appearance", "Appearance", "preferences-desktop-appearance-symbolic", appearance_page.upcast()),
+            ("overlays", "Overlays", "view-grid-symbolic", overlays_page.upcast()),
+            ("charts", "Charts", "utilities-system-monitor-symbolic", charts.upcast()),
+        ];
         // Opened from a chart at the section it asked for, else where it was
-        // left.
+        // left. The header is the first thing on Overlays, so opening there
+        // is all it takes to show it.
         let start = match (charts_tab, at_trading && trading, at_header) {
             (_, true, _) => Some(TRADING.to_string()),
             (_, _, true) => Some("overlays".to_string()),
             (Some(_), ..) => Some("charts".to_string()),
             (None, ..) => last.section,
-        };
-        let start = start.and_then(|id| sections.iter().position(|(known, ..)| *known == id)).unwrap_or(0);
+        }
+        .unwrap_or_else(|| "general".to_string());
 
         let context = Rc::new(Context {
             store,
@@ -198,50 +207,63 @@ impl Preferences {
         // remembers its own.
         let frame = form_window::untracked(parent, "Preferences", (820, 640));
         frame.add_css_class("preferences-window");
-        frame.set_content(Some(&split_view(&frame, &sections, start)));
+        frame.set_content(Some(&split_view(&frame, [&app, &visual], &rule, &start)));
 
         OPEN.with(|open| open.borrow().set(Some(&frame)));
         frame.present();
     }
 }
 
-/// The sections down a sidebar, the selected one beside it.
+/// A section of Preferences: its id, title, icon and page.
+type Section = (&'static str, &'static str, &'static str, gtk::Widget);
+
+/// The sections down a sidebar, in two lists with `rule` between them, the
+/// selected one beside it.
 ///
-/// A section with tabs of its own shows them in its header, where the title
-/// would be.
+/// Two lists rather than one with a header, so the rule's buttons sit in
+/// the tab order between them. A section with tabs of its own shows them in
+/// its header, where the title would be.
 fn split_view(
     frame: &adw::Window,
-    sections: &[(&str, &str, &str, gtk::Widget)],
-    start: usize,
+    lists: [&[Section]; 2],
+    rule: &gtk::Widget,
+    start: &str,
 ) -> adw::NavigationSplitView {
     let stack = gtk::Stack::new();
-    let sidebar = gtk::ListBox::new();
-    sidebar.add_css_class("navigation-sidebar");
     let mut titles: Vec<(String, String)> = Vec::new();
-    for (id, title, icon, page) in sections {
-        let header = adw::HeaderBar::new();
-        // Words alone: a switcher that insists on an icon per tab draws a
-        // placeholder for every tab that has none.
-        if let Some(tabs) = page.downcast_ref::<gtk::Stack>() {
-            let switcher = gtk::StackSwitcher::new();
-            switcher.set_stack(Some(tabs));
-            header.set_title_widget(Some(&switcher));
+    let sidebars = lists.map(|sections| {
+        let sidebar = gtk::ListBox::new();
+        sidebar.add_css_class("navigation-sidebar");
+        for (id, title, icon, page) in sections {
+            let header = adw::HeaderBar::new();
+            // Words alone: a switcher that insists on an icon per tab draws a
+            // placeholder for every tab that has none.
+            if let Some(tabs) = page.downcast_ref::<gtk::Stack>() {
+                let switcher = gtk::StackSwitcher::new();
+                switcher.set_stack(Some(tabs));
+                header.set_title_widget(Some(&switcher));
+            }
+            let toolbar = adw::ToolbarView::new();
+            toolbar.add_top_bar(&header);
+            toolbar.set_content(Some(page));
+            let view = adw::NavigationView::new();
+            view.add(&adw::NavigationPage::with_tag(&toolbar, title, id));
+            stack.add_named(&view, Some(id));
+            titles.push((id.to_string(), title.to_string()));
+            sidebar.append(&sidebar_row(id, title, icon));
         }
-        let toolbar = adw::ToolbarView::new();
-        toolbar.add_top_bar(&header);
-        toolbar.set_content(Some(page));
-        let view = adw::NavigationView::new();
-        view.add(&adw::NavigationPage::with_tag(&toolbar, title, id));
-        stack.add_named(&view, Some(id));
-        titles.push((id.to_string(), title.to_string()));
-        sidebar.append(&sidebar_row(id, title, icon));
-    }
+        sidebar
+    });
 
+    let column = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    column.append(&sidebars[0]);
+    column.append(rule);
+    column.append(&sidebars[1]);
     let side = adw::ToolbarView::new();
     side.add_top_bar(&adw::HeaderBar::new());
     let scroller = gtk::ScrolledWindow::new();
     scroller.set_hscrollbar_policy(gtk::PolicyType::Never);
-    scroller.set_child(Some(&sidebar));
+    scroller.set_child(Some(&column));
     side.set_content(Some(&scroller));
 
     let first = titles.first().map(|(_, title)| title.clone()).unwrap_or_default();
@@ -250,13 +272,45 @@ fn split_view(
     split.set_sidebar(Some(&adw::NavigationPage::new(&side, "Preferences")));
     split.set_content(Some(&content));
 
-    follow_sidebar(&sidebar, stack, content, &split, titles);
-    sidebar.connect_row_selected(|_, row| {
-        let Some(row) = row else { return };
-        let id = row.widget_name().to_string();
-        LAST_SEEN.with(|seen| seen.borrow_mut().section = Some(id));
+    // One selection across both lists: choosing in one lets go of the other.
+    for (at, sidebar) in sidebars.iter().enumerate() {
+        follow_sidebar(sidebar, stack.clone(), content.clone(), &split, titles.clone());
+        let other = sidebars[1 - at].clone();
+        sidebar.connect_row_selected(move |_, row| {
+            let Some(row) = row else { return };
+            other.unselect_all();
+            let id = row.widget_name().to_string();
+            LAST_SEEN.with(|seen| seen.borrow_mut().section = Some(id));
+        });
+        // The arrows read the two lists as one, past the rule: left to
+        // itself a list hands an arrow off its end to Tab, which stops on
+        // the rule's buttons, where the next arrow goes nowhere.
+        let other = sidebars[1 - at].clone();
+        sidebar.connect_keynav_failed(move |_, direction| {
+            let row = match (at, direction) {
+                (0, gtk::DirectionType::Down) => other.row_at_index(0),
+                (1, gtk::DirectionType::Up) => other.last_child().and_downcast::<gtk::ListBoxRow>(),
+                _ => None,
+            };
+            let Some(row) = row else { return glib::Propagation::Proceed };
+            other.select_row(Some(&row));
+            row.grab_focus();
+            glib::Propagation::Stop
+        });
+    }
+    let chosen = sidebars.iter().find_map(|sidebar| {
+        let mut at = 0;
+        while let Some(row) = sidebar.row_at_index(at) {
+            if row.widget_name() == start {
+                return Some((sidebar.clone(), row));
+            }
+            at += 1;
+        }
+        None
     });
-    sidebar.select_row(sidebar.row_at_index(start as i32).as_ref());
+    if let Some((sidebar, row)) = chosen {
+        sidebar.select_row(Some(&row));
+    }
 
     // Narrow enough and the sidebar becomes a page of its own, the way every
     // split view on this platform folds.
@@ -306,18 +360,23 @@ pub(crate) fn sidebar_rule(text: &str) -> gtk::Box {
     rule.set_margin_bottom(4);
     rule.set_margin_start(12);
     rule.set_margin_end(12);
+    rule.append(&rule_word(text));
+    let line = gtk::Separator::new(gtk::Orientation::Horizontal);
+    line.set_hexpand(true);
+    line.set_valign(gtk::Align::Center);
+    rule.append(&line);
+    rule
+}
+
+/// A word in a sidebar rule's look: small, spaced capitals, faded.
+pub(crate) fn rule_word(text: &str) -> gtk::Label {
     let label = gtk::Label::new(Some(text));
     label.add_css_class("caption-heading");
     label.add_css_class("dim-label");
     let spaced = gtk::pango::AttrList::new();
     spaced.insert(gtk::pango::AttrInt::new_letter_spacing(gtk::pango::SCALE));
     label.set_attributes(Some(&spaced));
-    rule.append(&label);
-    let line = gtk::Separator::new(gtk::Orientation::Horizontal);
-    line.set_hexpand(true);
-    line.set_valign(gtk::Align::Center);
-    rule.append(&line);
-    rule
+    label
 }
 
 /// A way to the resolution list from the settings, since the other way in is

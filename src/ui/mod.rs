@@ -27,6 +27,7 @@ pub mod sign_in_dialogs;
 pub mod size_templates;
 pub mod trading_settings;
 pub mod screenshot;
+pub mod scope_rule;
 pub mod search;
 pub mod shortcuts;
 pub mod theme_picker;

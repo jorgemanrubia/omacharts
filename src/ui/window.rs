@@ -5075,6 +5075,7 @@ impl Window {
             watchlist.highlight(instrument);
         }
         crate::ui::chart_settings::follow(self);
+        crate::ui::scope_rule::follow(self);
     }
 
     /// Divide the focused chart in two, the new one showing the same thing.

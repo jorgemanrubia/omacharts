@@ -110,7 +110,9 @@ fn theme_group(context: &Rc<Context>) -> adw::PreferencesGroup {
         },
     };
     drop(theming);
-    theme_picker::group(choices)
+    let group = theme_picker::group(choices);
+    group.set_widget_name(crate::ui::scope_rule::GLOBAL_ONLY);
+    group
 }
 
 /// Wear a theme, and rebuild the page once the card that chose it has

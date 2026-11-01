@@ -87,6 +87,10 @@ fn lines_group(store: Rc<Store>, on_charts: Rc<dyn Fn()>) -> adw::PreferencesGro
         let row = adw::SwitchRow::new();
         row.set_title(title);
         row.set_active(chart_switch(&store, key));
+        // Between charts by nature, so never one chart's own.
+        if key == SETTING_SYNC_CROSSHAIR {
+            row.set_widget_name(crate::ui::scope_rule::GLOBAL_ONLY);
+        }
         let (store_for_row, on_charts) = (store.clone(), on_charts.clone());
         row.connect_active_notify(move |row| {
             store_for_row.set_setting_bool(key, row.is_active());

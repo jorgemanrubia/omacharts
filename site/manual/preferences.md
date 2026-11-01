@@ -9,7 +9,7 @@ Preferences holds the settings that apply to the whole app. Open it with <kbd>Ct
 
 ## The dialog
 
-The sections down its side are **General**, **Charts**, **Market data**, **Appearance** and **Overlays**. In a narrow window the list of sections becomes a page of its own and a section opens over it.
+The sections down its side are **General** and **Market data**, then **Appearance**, **Overlays** and **Charts**. In a narrow window the list of sections becomes a page of its own and a section opens over it.
 
 Reopened while the app is running, the dialog comes back on the section and tab you left it on. Opening it from a chart's header goes to Overlays, where the header is edited.
 

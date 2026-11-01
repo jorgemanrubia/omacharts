@@ -533,6 +533,22 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
 .preferences-window .theme-preview { border-radius: 8px; }
 .preferences-window .theme-card grid .theme-preview { border-radius: 5px; }
 .preferences-window button.theme-tile { padding: 6px; border-radius: 10px; }
+/* The scope rule over the visual sections, a size under the other rules so
+   its four words keep some air. The choice is two of its words; the picked
+   one reads, the other fades, and Local, once picked, is in the accent,
+   since it is the exception to every other page. */
+.preferences-window .scope-rule label { font-size: 0.68rem; }
+.preferences-window .scope-rule button {
+  min-height: 0;
+  min-width: 0;
+  padding: 2px 3px;
+  border-radius: 5px;
+}
+.preferences-window .scope-rule button label { opacity: 0.45; }
+.preferences-window .scope-rule button:checked { background: none; }
+.preferences-window .scope-rule button:checked label { opacity: 1; color: @window_fg_color; }
+.preferences-window .scope-rule button.scope-local:checked label { color: @accent_color; }
+.preferences-window .scope-rule button:hover { background: alpha(@window_fg_color, 0.06); }
 
 /* Menus and popovers are one surface. A right-click menu and the link
    popover open beside each other often enough that two looks for one kind
