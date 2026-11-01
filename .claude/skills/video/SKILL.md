@@ -87,6 +87,18 @@ message that says what the steer was ("Open the measure video on the readout"),
 so `git log` on a script is the history of how it was shaped. Then tell the author,
 in a few lines, what changed and what to look at.
 
+**Parallelise with subagents.** Whenever pieces of work do not depend on
+each other, run them at once in subagents rather than one after another:
+briefs for several videos; the script's revision while the storyboard of the
+unchanged scenes is checked; pinning click positions, one subagent per
+scene or menu, each holding its own studio (`VIDEO_SESSION=<name>
+bin/video studio … --upto N`, and the same `VIDEO_SESSION` on its `act`
+and `stop`); music candidates while the storyboard is reviewed. Two limits:
+speech, music and rendering each take most of the CPU, so two of those at
+once are each slower and gain nothing; and a recording must not share the
+CPU with them, since a busy machine drops keys and frames. Studios, the
+scriptwriter and anything that only reads are fine to run side by side.
+
 **Approving a stage** moves `stage:` forward in the frontmatter and produces
 the next stage's artifact.
 

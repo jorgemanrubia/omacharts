@@ -381,7 +381,7 @@ class Studio:
         self.key("Escape")
         time.sleep(0.3)
         self.key("Escape")
-        (DATA / "studio-session.json").write_text(json.dumps({
+        (session_file()).write_text(json.dumps({
             "env": {k: self.env[k] for k in ("XDG_RUNTIME_DIR", "WAYLAND_DISPLAY", "HYPRLAND_INSTANCE_SIGNATURE",
                                               "DBUS_SESSION_BUS_ADDRESS", "HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME")},
             "binary": str(self.binary), "signature": self.signature, "runtime": str(self.runtime), "colors": self.colors,
@@ -458,7 +458,7 @@ hl.config({{
     @classmethod
     def attach(cls):
         """The studio another `bin/video studio` is holding up, to act on."""
-        path = DATA / "studio-session.json"
+        path = session_file()
         if not path.exists():
             die("no studio running; start one with bin/video studio [SCRIPT] [--upto N]")
         session = json.loads(path.read_text())
@@ -470,7 +470,7 @@ hl.config({{
         return studio
 
     def stop(self):
-        session = DATA / "studio-session.json"
+        session = session_file()
         if session.exists() and json.loads(session.read_text()).get("runtime") == str(self.runtime):
             session.unlink()
         # Exactly the processes that live in this studio's runtime directory,
@@ -583,6 +583,13 @@ hl.config({{
         elif verb == "zoom":
             event["at"] = self.at(*args[:2])
         events.append(event)
+
+
+def session_file():
+    """Where a held studio is written down. VIDEO_SESSION names it, so
+    several can be held at once — one per subagent pinning its own scenes."""
+    name = os.environ.get("VIDEO_SESSION")
+    return DATA / (f"studio-session-{name}.json" if name else "studio-session.json")
 
 
 def omacharts_build(ref):
@@ -850,7 +857,7 @@ def music(script, count=3):
     if not (DATA / "ace/.venv").exists():
         die("no music environment; run bin/video setup")
     voiced = voice_scenes(script)
-    length = math.ceil(timeline(script, voiced)["total"]) + 4
+    length = math.ceil(timeline(script, voiced)["total"] + float(script.meta.get("cover", COVER))) + 4
     prompt = script.meta.get("music") or "calm, warm instrumental background music for a software screencast"
     prompt += ", instrumental, steady, unobtrusive, clean modern mix, background music under a voice-over"
     folder = script.out / "music"
@@ -1238,7 +1245,7 @@ def main():
     elif verb == "stop":
         # By the pid the studio wrote down, never by name: a pattern also
         # matches the shell that runs the kill.
-        path = DATA / "studio-session.json"
+        path = session_file()
         if not path.exists():
             die("no studio running")
         os.kill(json.loads(path.read_text())["pid"], signal.SIGTERM)
