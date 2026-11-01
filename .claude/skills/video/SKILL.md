@@ -138,6 +138,27 @@ Saved but ignored by git: the finished videos and subtitles in
 `video/renders/`, and everything working in `video/out/`. Videos never go in
 the repo.
 
+**Publishing to YouTube** happens only when the author asks. The tool is
+[youtubeuploader](https://github.com/porjo/youtubeuploader), on the official
+API, with the OAuth client and its saved sign-in in `~/.config/omacharts-video/`
+(`youtube-client.json`, `youtube-token.json`), never in the repo. Write the
+metadata as JSON in `video/out/<slug>/youtube.json` — title, a short
+description in the Taste tone with chapters from the scene start times (from
+0:00, one per section) and links to the matching manual pages, tags, and
+`playlistTitles` (created if missing) — then:
+
+    youtubeuploader -secrets ~/.config/omacharts-video/youtube-client.json \
+      -cache ~/.config/omacharts-video/youtube-token.json \
+      -filename video/renders/<slug>.mp4 -thumbnail video/out/<slug>/thumbnail.jpg \
+      -caption video/renders/<slug>.srt -metaJSON video/out/<slug>/youtube.json \
+      -metaJSONout video/out/<slug>/youtube-uploaded.json
+
+Uploads land private until Google audits the API project; the author makes
+them public in YouTube Studio, so open the video's Studio page for them
+afterwards. If the sign-in ever has to be redone: the tool waits on port 8080,
+but Google sends its reply to `http://localhost/` with no port — take the
+`code` and `state` from that address and request them on port 8080.
+
 **A pinned choice goes in the frontmatter:** `voice:` names a file in
 `video/voices/`, `music_file:` the track the author picked.
 
