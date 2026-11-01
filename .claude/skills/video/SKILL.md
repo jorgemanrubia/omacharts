@@ -142,7 +142,8 @@ principles of a good screencast, which the scriptwriter also follows.
   "game-changer", "super easy"), no catchphrases ("let's dive in", "and
   that's it!"), no exclamation marks, no stacked rhetorical questions.
   Friendly comes from plain words and a relaxed pace, not from enthusiasm
-  markers. Applies to the narration, the on-screen text and the music
+  markers. A tagline can be the idea a video is built on, but it is never
+  said: spoken, it is a slogan. Applies to the narration, the on-screen text and the music
   choice alike.
 - **Narrator: a female voice, not deep.** Mid-pitched to slightly bright,
   clear and relaxed. A low, heavy voice reads as a trailer, not as someone

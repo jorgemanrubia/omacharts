@@ -1,7 +1,7 @@
 ---
 title: Templates that work for you
 stage: brief
-length: 60s
+length: 75s
 theme: tokyo-night
 voice: narrator
 music: ambient electronic, gentle analog pads over a soft plucked arpeggio and a steady, unhurried pulse; quietly confident rather than dreamy, with the arpeggio picking up a note or two at each of the three reveals and the last one landing a little brighter
@@ -39,7 +39,7 @@ the other box changes with it, untouched.
    and left arrow): the ES book has the same new chart.
 4. **Close.** One line on what this saves, and where to read more.
 
-**What the source changes, and what will be tight.**
+**What the source changes.**
 - Beat 2: splitting a chart already puts the new half on the same template
   (the manual: "You split the chart: the new chart is on the same
   template"), so there is no template to select after the split. The beat
@@ -47,8 +47,8 @@ the other box changes with it, untouched.
   If you want the act of choosing seen, a second chart on no template could
   be put on it with Ctrl, Alt, Shift and a number, at the cost of a few
   seconds.
-- Beat 3: building three charts with their studies on camera would take the
-  whole minute, so the chartbook is ready when the beat starts and the
+- Beat 3: building three charts with their studies on camera would take most of
+  the video, so the chartbook is ready when the beat starts and the
   video shows saving, cloning and the change that carries. Duplicating a
   chartbook keeps its template, so the copy is on it from the start. The
   three ES charts are set to Follow in setup, so one typed GC moves all
@@ -59,13 +59,13 @@ the other box changes with it, untouched.
 - Studies are added on camera only once, in beat 2. Creating a template,
   saving a chartbook template and duplicating each ask for a name, which
   means three short typed names. That, plus three reveals that each need a
-  second's hold, makes sixty seconds tight: expect sixty-five to
-  seventy-five. Seventy-five would be the honest length if every beat stays.
+  second's hold, is why the video runs seventy-five seconds with every beat
+  kept.
 - Drawings show on every chart of their symbol, which is why each beat has
   its own symbol (NQ, CL, then ES and GC): beat 1's boxes stay out of the
   later charts.
 - Futures by root: the symbol search finds `ES` (E-mini S&P 500), `GC`
   (Gold), `NQ` and `CL`. On Yahoo, futures are ten minutes delayed, which
   doesn't matter here.
-- "Omacharts works for you" is the idea, not a line to say: as a closing
-  sentence it would read as a slogan.
+- "Omacharts works for you" is the idea the video is built on. It isn't
+  said anywhere in the narration, the close included.
