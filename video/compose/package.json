@@ -1,0 +1,18 @@
+{
+  "name": "omacharts-video-compose",
+  "private": true,
+  "description": "The polish over a recording: zooms and key badges, rendered by Remotion. bin/video drives it.",
+  "scripts": {
+    "render": "remotion render"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.536",
+    "react": "19.2.0",
+    "react-dom": "19.2.0",
+    "remotion": "4.0.536"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.2",
+    "typescript": "5.9.3"
+  }
+}

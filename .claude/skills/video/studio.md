@@ -9,11 +9,10 @@ Hyprland 0.56.2.
 ## Pipeline
 
 ```
-script.md ──► voice ──► record ──► compose ──► review ──► final.mp4 + .srt
-              (TTS +     (studio,    (ffmpeg:     (a frame at
-              word        real       mix, duck,   every cue,
-              timings)    time)      master)      checked
-                                                  before anyone)
+script.md ──► voice ──► record ──► polish ──► compose ──► review
+              (TTS +     (studio,    (Remotion:  (ffmpeg:     (a frame at
+              word        real       zooms, key  cover, mix,  every cue,
+              timings)    time)      badges)     master)      checked)
 ```
 
 1. **Voice.** Each scene's narration goes to TTS, which returns audio and
@@ -24,15 +23,18 @@ script.md ──► voice ──► record ──► compose ──► review �
    narration reaches its cue word. The narration clock drives the actions,
    so picture and voice are in sync by construction, and `events.json`
    records when each action actually landed and where on screen.
-3. **Compose.** ffmpeg today: the recording cut at the sync point, the
-   voice placed scene by scene, music ducked under it, the mix mastered,
+3. **Polish.** The recording, cut at the sync point and re-encoded to H.264
+   (headless Chrome decodes it reliably; the recorder's HEVC less so), goes
+   to a Remotion composition in `video/compose/` that draws the zooms and key
+   badges. `bin/video` makes the plan from `events.json` (`polish_plan`):
+   zoom only on a run of two or more pointer actions close together, scaled to
+   fit them, eased in and out, released when the hands go to the keyboard or
+   1.6s after the last click; a badge for every chord with a modifier.
+   Remotion only draws what the plan says. `polish: off` in a script skips it.
+4. **Compose.** ffmpeg: the cover held and faded into the polished recording,
+   the voice placed scene by scene, music ducked under it, the mix mastered,
    a 4K H.264 file and a 1080p one, and subtitles from the aligned words.
-   **Not built yet:** the zooms, key badges and title cards in
-   [craft.md](craft.md). `events.json` records every action's time and
-   position for them; the plan is a Remotion composition that reads it,
-   with the 4K recording converted first to an intermediate headless Chrome
-   decodes reliably.
-4. **Review.** `review/` holds a frame just after every cue; look at
+5. **Review.** `review/` holds a frame just after every cue; look at
    them, and fix what is wrong before the author sees anything.
 
 ## Bringing it up
