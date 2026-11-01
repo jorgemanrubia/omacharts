@@ -96,15 +96,15 @@ Cut, copy and paste take an indicator as well as drawings. **Paste** puts down w
 
 <!-- regenerate:
 theme: tokyo-night
-window: 2560x1600 @2, scratchpad kit
+window: 2560x1600 @2, bin/headless-window start --size 2560x1600 (HOME sandboxed)
 state:
   (the state of the first figure)
   key ctrl+d
   key Escape
   click 900 300          # the range box, nearer its left edge so the menu has room
-  run bin/virtual-pointer --button right click 900 300
+  run bin/virtual-pointer --extent 1280x800 --button right click 900 300
 capture: bin/headless-window shot /tmp/dmenu.png
-crop: 1680,336,672,1048   (the box above, the menu with 20px layout margin right and below)
+crop: 1666,320,642,888   (the box above, the menu with 20px layout margin right and below)
 -->
 {% include figure.html src="/assets/manual/drawings/drawing-menu.png" alt="A selected teal box with grips at its corners and edges, and its right-click menu" caption="A selected box and its menu." %}
 

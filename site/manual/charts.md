@@ -1,6 +1,6 @@
 ---
 title: "Charts"
-description: "Resolutions, sessions, bars, scales, moving around, the crosshair, the header and the chart menu."
+description: "Resolutions, sessions, bars, scales, moving around, Go to, the crosshair, the header and the chart menu."
 section: charting
 nav_order: 14
 ---
@@ -33,9 +33,10 @@ A resolution is the length of one bar, typed as a number and a unit.
 | `1D`, `D` | Days. A unit alone means one of it |
 | `1W` | Weeks |
 | `1M`, `3M`, `1mo` | Months. `1M` is a month and `1m` a minute; `mo` is a month in either case |
+| `1Q`, `Q` | Quarters, the same as `3M` |
 | `1Y` | Years |
 
-Longer spellings (`min`, `hr`, `day`, `wk`, `month`, `year`) work too. A resolution is shown in its largest exact unit, so `60m` becomes `1h` and `7D` becomes `1W`. Monthly and yearly bars follow calendar months and years, so `3M` is calendar quarters.
+Longer spellings (`min`, `hr`, `day`, `wk`, `month`, `quarter`, `year`) work too. A resolution is shown in its largest exact unit, so `60m` becomes `1h` and `7D` becomes `1W`. Monthly and yearly bars follow calendar months and years, so `3M` is calendar quarters.
 
 Intraday bars start with the trading day, in the exchange's own clock. On a chart of [regular hours](#sessions) they count from the open, so SPY's 4h bars start at 09:30 and 13:30 New York time, and the second one ends early at the 16:00 close. On extended hours they count from the start of the day's trading: 04:00, 08:00, 12:00 and 16:00 for SPY, and 17:00 Chicago time for ES. The times stay put when the clocks change for summer. FX and crypto count from midnight UTC.
 
@@ -45,7 +46,7 @@ The resolution strip is the row of resolution buttons across the top of the focu
 
 | Key or gesture | Does |
 |---|---|
-| Type a digit over the chart | Opens the resolution box with that digit in it |
+| Type a digit over the chart | Opens **Change resolution** with that digit in it |
 | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>←</kbd> <kbd>→</kbd> | The previous or next resolution on the strip. Stops at either end. From a resolution not on the strip, starts at the nearest one that is |
 | A button on the resolution strip | That resolution, on that chart |
 | The resolution in the header | Opens the list of the strip's resolutions, for a chart too narrow to show the strip |
@@ -54,15 +55,22 @@ The resolution strip is the row of resolution buttons across the top of the focu
 theme: tokyo-night
 window: 2560x1440 @2, bin/headless-window (HOME sandboxed, theme seeded)
 state:
-  (one NVDA 1D chart, sidebar hidden)
+  omacharts chartbook create Manual --symbol NVDA --switch
+  omacharts chartbook delete "Chartbook 1"
+  omacharts chart set --resolution 1D
+  click 400 400
+  key ctrl+b                # sidebar hidden
+  move 640 600
   key 4
   type h
-capture: bin/headless-window shot /tmp/resbox.png
-crop: 0,0,1640,320
+capture: bin/headless-window shot /tmp/resolution.png
+crop: 898,193,763,399   (the whole card, 24px layout margin)
 -->
-{% include figure.html src="/assets/manual/charts/resolution-box.png" alt="The resolution box under the strip of an NVDA daily chart, with 4h typed" caption="The resolution box with 4h typed." %}
+{% include figure.html src="/assets/manual/charts/change-resolution.png" alt="The Change resolution card over an NVDA daily chart, with 4h typed and 4 hours under the box" caption="**Change resolution** with 4h typed." %}
 
-As you type, the box shows what you have typed as a resolution (`240` shows **4 hours**) or **not a resolution**. <kbd>Enter</kbd> sets it; <kbd>Esc</kbd> or a click elsewhere cancels. A resolution not on the strip is added to it, in order of length.
+**Change resolution** opens over the focused chart. Under the box it says what you typed as a resolution (`240` shows **4 hours**), or **not a resolution** in red. With more than one chart in the window, every chart fades and the one it will change wears a wider focus ring. The ⓘ beside the title has examples.
+
+<kbd>Enter</kbd> sets the resolution; <kbd>Esc</kbd> or a click elsewhere closes it, changing nothing. A resolution not on the strip is added to it, in order of length.
 
 ### The preset resolutions
 
@@ -211,7 +219,7 @@ state:
   move 1250 710
   run bin/virtual-pointer --extent 1280x720 --button right click 600 300   # the left chart's price axis
 capture: bin/headless-window shot /tmp/axismenu.png
-crop: 490,300,1220,582   (the menu with 20px layout margin right and below)
+crop: 490,300,1180,536   (the menu with 20px layout margin right and below)
 -->
 ![The price axis menu, with Auto scale price ticked](/assets/manual/charts/price-axis-menu.png)
 
@@ -234,6 +242,115 @@ crop: 490,300,1220,582   (the menu with 20px layout margin right and below)
 | <kbd>End</kbd> | Back to the latest bar, following new bars again |
 
 A chart can be panned a little past either end of its bars. One panned back into history stays there as new bars arrive. <kbd>↑</kbd> <kbd>↓</kbd> over a chart move through the watchlist, not the chart ([Watchlists](/manual/watchlists/)).
+
+## Go to
+
+<kbd>Ctrl</kbd> + <kbd>G</kbd> opens **Go to**. Type a date, such as `3 weeks ago`, and the chart jumps there and keeps the window you have. Or set the window yourself, as a span such as `6m` or a custom range such as `oct 1:oct 22`. Either way it is a few keystrokes and <kbd>Enter</kbd>.
+
+<!-- regenerate:
+theme: tokyo-night
+window: 2560x1440 @2, bin/headless-window (HOME sandboxed, theme seeded)
+state:
+  (the Change resolution state above, without its keys)
+  key ctrl+g
+  type ytd
+capture: bin/headless-window shot /tmp/goto.png   (icon theme seeded too: gtk-icon-theme-name=Yaru-magenta in the sandboxed HOME's gtk-4.0/settings.ini)
+crop: 898,193,763,532   (the whole card, 24px layout margin)
+-->
+{% include figure.html src="/assets/manual/charts/go-to.png" alt="The Go to card with ytd typed, 1D auto on the row under the box, and From 2026/01/01 and To 2026/11/01, marked today" caption="**Go to** with ytd typed." %}
+
+**A date (keeps the window)** starts the chart at the beginning of that day and shows as much time as it shows now, at the same resolution. With ten days on screen, `oct 22` shows 22 October to 1 November. Whatever of that is past the latest bar is empty room, as when you scroll past the end, and the bars get wider or narrower to fit it. The card names the whole window, such as **25 Oct – 4 Nov**.
+
+| Typed | Is |
+|---|---|
+| `3 weeks ago`, `3w ago`, `a month ago`, `1y ago` | That long before today, to the day. On 1 November, `3 weeks ago` is 11 October |
+| `today`, `yesterday` | That day |
+| `fri`, `2fri` | The latest Friday, today included, and the one before it. Any day of the week, `mon` to `sun`, and any count |
+| `last fri` | The latest Friday before today. On a Friday, a week ago |
+| `oct 22`, `22 oct`, `october 22`, `10/22` | The latest 22 October that has passed |
+| `22 oct 2025`, `2025/10/22`, `2025-10-22` | That day in that year |
+| `on oct 22`, `on the 22 oct` | The same day. `on` changes nothing |
+
+Numbers run year, month, day, so `10/11` is 11 October. A day still to come, such as `tomorrow` or `next fri`, is refused: the box turns red and the card stays open.
+
+**A span** is back from today. `3w` is the last three weeks, up to today; `3 weeks ago` is a date, the one day. A span counts back from the latest bar, so on a Sunday the week to date is the week that just traded.
+
+| Typed | Shows |
+|---|---|
+| `6m`, `3y`, `2w`, `10d` | The last six months, three years, two weeks or ten days. A small letter counts back from today, and a letter alone is one: `m` is the last month, `q` the last three |
+| `6 months`, `3 years`, `2 wks`, `10 days` | The same, with the unit spelled out or shortened, with or without a space, in any case: `d` `day`, `w` `wk` `week`, `m` `mo` `month`, `q` `qtr` `quarter`, `y` `yr` `year` |
+| `Y`, `M`, `Q`, `W` | The year, month, quarter or week to date. A capital counts whole periods, so `2Y` is this year to date and all of last year |
+| `ytd`, `qtd`, `mtd`, `wtd`, `2ytd` | The same, in any case |
+| `2025` | All of 2025 |
+| `2025/03`, `2025-03` | All of March 2025 |
+| `june`, `jan`, `Sept` | All of the latest June, January or September. In June, `june` is this June, all of it, with the days after the latest bar as empty room |
+| `june 2025`, `jan 2024` | All of that month |
+| `-2w` | The same as `2w` |
+| `all`, `:` | The whole history |
+
+**A custom range** is two ends joined by `:` or `..`, both included, with or without spaces around it. Either end can be left out. An end is anything a date can be, a month such as `2025/03` or `jan`, a year, or a count back such as `-6m` or `-6 months`.
+
+| Typed | Shows |
+|---|---|
+| `3 weeks ago:` | From that day to today. The card says **since 11 Oct** |
+| `oct 1:oct 22` | 1 to 22 October |
+| `jan:mar` | 1 January to 31 March, the latest of each |
+| `2025:` | From 1 January 2025 to today |
+| `2025/03:2025/06` | March to June 2025 |
+| `:2020` | From the first bar to the end of 2020 |
+| `mon:` | From Monday to today |
+| `-6m:-1m` | From six months ago to one month ago |
+| `oct 1..oct 22` | The same as `oct 1:oct 22` |
+
+Left open at the end, it runs to today, so new bars stay in it.
+
+**From** and **To**, under the box, are the first and last day the chart will show. **today** over **To** means it runs to the latest bar. With more than one chart in the window, every chart fades and the one it will change wears a wider focus ring. The ⓘ beside the title has a few examples of each kind. Text that cannot become one of them turns the box red.
+
+| Key | In Go to |
+|---|---|
+| <kbd>Enter</kbd> | Goes to what you typed. <kbd>Ctrl</kbd> + <kbd>Enter</kbd> does it from anywhere in the card |
+| <kbd>Space</kbd> or <kbd>?</kbd> in an empty box, or <kbd>↓</kbd> | Drops a list under the box: the common ranges when nothing is typed, or what the text could mean, each with the day it starts. <kbd>↑</kbd> <kbd>↓</kbd> move through it and <kbd>Enter</kbd> takes the highlighted row |
+| <kbd>Tab</kbd> | Moves to the resolution under the box, then to **From** and **To** |
+| <kbd>Esc</kbd>, or a click outside | Closes it, changing nothing |
+
+<!-- regenerate:
+theme: tokyo-night
+window: 2560x1440 @2, bin/headless-window (HOME sandboxed, theme seeded)
+state:
+  (the state above)
+  key ctrl+a BackSpace     # the box emptied
+  key space
+capture: bin/headless-window shot /tmp/golist.png
+crop: 898,193,763,889   (the card and the list, 24px layout margin)
+-->
+{% include figure.html src="/assets/manual/charts/go-to-list.png" alt="The Go to card with the list of common ranges dropped under its empty box: ytd, 1y, 6m, 3m, mtd, 1m, 2026-10, 2026, 2025: and qtd, each with the day it starts" caption="The common ranges, with nothing typed." %}
+
+### The resolution in Go to
+
+Under the box, at its right, is the resolution the chart will show. **auto** beside it means Omacharts chose it. **auto** alone, before anything is typed, means it will choose once there is something to show.
+
+The resolution stays the chart's own unless it cannot show the window: too few bars, too many, or further back than the feed keeps bars of that resolution. Then Omacharts takes the resolution on the strip that fits best, or one off the strip, such as `5m`, when none on it fits. A year of 5m bars is shown daily, and a month of daily bars hourly.
+
+To choose one yourself, <kbd>Tab</kbd> to it. Only a resolution that can show the window is offered. The arrows, the wheel and typing skip the rest, and a resolution you chose goes back to **auto** when the window changes to one it cannot show.
+
+| Key or gesture | On the resolution |
+|---|---|
+| <kbd>↑</kbd> <kbd>↓</kbd> | Counts it up or down: `1D`, `2D`, `3D` |
+| <kbd>←</kbd> <kbd>→</kbd> | A shorter or longer unit with the same count: `2D` becomes `2h` or `2W`. When that count cannot show the window, the nearest one that can, from the strip first |
+| Typing one, such as `4h` or `W` | Sets it |
+| The wheel | Steps along the resolution strip |
+| <kbd>Backspace</kbd> or <kbd>Delete</kbd> | The chart's own resolution. Pressed again, back to **auto** |
+| A click, or <kbd>Space</kbd> | Lists **auto**, the chart's own resolution, then the strip's resolutions and the common ones off it that can show the window |
+
+### From and To
+
+<kbd>Tab</kbd> from the resolution goes into **From**, then **To**. Type a day the way the box takes one: `2026/03/21`, `23 nov`, `yesterday`, `mon`. A month or a year works too; **From** takes its first day and **To** its last. <kbd>↑</kbd> <kbd>↓</kbd> move the day by one, with <kbd>Shift</kbd> by ten. The calendar in the corner of each opens the month under the card, with **From** to **To** shaded, to pick a day with the pointer. Its title, such as **October 2026**, shows the months of the year instead, and clicked again a dozen years. The box above then shows the custom range the two days make, such as `03/21:`.
+
+### How long it holds
+
+The chart keeps the window until you zoom or pan. A new symbol, new bars and a resized window are laid across the same days, so the year to date stays the year to date on any symbol. While it holds, its name shows in the corner under the price axis, such as **YTD**. It is not saved with the chartbook.
+
+`omacharts chart range ytd` does the same from a terminal ([`chart range`](/manual/cli/#chart-range)).
 
 ## Gridlines
 
@@ -323,7 +440,7 @@ state:
   key ctrl+alt+h
   run bin/virtual-pointer --extent 1280x720 --button right click 300 150
 capture: bin/headless-window shot /tmp/chartmenu.png
-crop: 70,290,1580,900
+crop: 560,262,640,780   (the whole menu, 20px layout margin)
 -->
 {% include figure.html src="/assets/manual/charts/chart-menu.png" alt="The chart menu open over a chart, each item with its key" caption="The chart menu on a chartbook of two charts." %}
 

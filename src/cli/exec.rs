@@ -134,6 +134,8 @@ pub fn dispatch(
         ("chart", "screenshot") => screenshot(live, m, json, false),
         ("chartbook", "screenshot") => screenshot(live, m, json, true),
         ("chart", "crosshair") => crosshair(store, m, json),
+        // A range is held by the chart on screen and nowhere else.
+        ("chart", "range") => chart_range(live, m),
         ("chartbook", _) | ("chart", _) => {
             // "The one I am looking at" needs something to be looking at. The
             // stored arrangement is what the window had when it last closed,
@@ -981,6 +983,36 @@ fn screenshot(
         false if clipboard => format!("saved {of} to {}, and copied it\n", path.display()),
         false => format!("saved {of} to {}\n", path.display()),
     })
+}
+
+/// Lay the focused chart across a stretch of the calendar.
+fn chart_range(live: Option<&dyn Live>, m: &clap::ArgMatches) -> Result<String, Fault> {
+    let text = required(m, "RANGE")?;
+    let range = omacharts_engine::Range::parse(text)
+        .ok_or_else(|| Fault::usage(format!("{text} is not a date, span or custom range; try oct 22, ytd or 2025:")))?;
+    let today = chrono::Local::now().date_naive();
+    if !range.holds_days(today) {
+        // Still to come, or ends before it starts: either way nothing to show.
+        let why = match range.start(today) {
+            Some(start) if start > today => format!("{text} is in the future, with no days up to today"),
+            _ => format!("{text} holds no days up to today"),
+        };
+        return Err(Fault::usage(why));
+    }
+    let resolution = match m.get_one::<String>("resolution") {
+        None => None,
+        Some(text) => Some(
+            Timeframe::parse(text)
+                .ok_or_else(|| Fault::usage(format!("{text} is not a resolution; try 5m, 1h, 1D or 1W")))?,
+        ),
+    };
+    let live = live.ok_or_else(|| {
+        Fault::new(
+            crate::cli::EXIT_NO_WINDOW,
+            "no window is open, and chart range acts on the chart on screen; start Omacharts, then run it again".into(),
+        )
+    })?;
+    Ok(format!("{}\n", live.show_range(range, resolution)?))
 }
 
 fn charts_verb(

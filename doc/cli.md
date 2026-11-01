@@ -587,7 +587,7 @@ otherwise.
 
 `--resolution` takes what you would type on the chart: a bare number is
 minutes (`240` is four hours), and a suffix names the unit — `m`, `h`, `D`,
-`W`, `M` for months and `Y` for years. Case does not matter except for the
+`W`, `M` for months, `Q` for quarters (`1Q` is `3M`) and `Y` for years. Case does not matter except for the
 month: `1M` is a month and `1m` a minute, and `1mo` is a month in any case.
 Monthly and yearly bars are built from daily ones, on calendar months and
 years in UTC, so `3M` is the calendar quarters.
@@ -943,6 +943,98 @@ $ omacharts provider list
 yahoo    Yahoo Finance · Every listing the symbol search covers · delayed 15 min for indexes, 10 for futures   (stored, not in use)
 tos      thinkorswim · US listings, from your thinkorswim account · live, as each print arrives · experimental   (in use, not stored · not signed in)
   [exit 0]
+```
+
+## Choosing the days a chart shows
+
+```
+$ omacharts chart range ytd
+span: year to date on pos:0 NVDA 1D in "Manual"
+  [exit 0]
+```
+
+`chart range` does on the focused chart what Go to (Ctrl+G) does in the
+window, and takes the same text. It is one of three things, and the reply
+says which, then the days the chart shows, the chart it acted on and, when
+the resolution moved, the new one.
+
+**A date (keeps the window)** starts the chart at the beginning of that day
+and shows as much time as it shows now, at the same resolution: with ten days
+on screen, `oct 22` shows 22 October to 1 November. Whatever of that is past
+the latest bar is empty room, as a chart scrolled past its end has, and the
+bars widen or narrow to fit. The reply names the whole window. A date is `2026-03-12` or `2026/3/12`;
+`oct 12`, `12 oct` or `10/12` with no year, the latest one that has passed;
+`mon` for the latest Monday and `2mon` for the one before, any day of the
+week and any count; `last fri`; `today` or `yesterday`; `3 weeks ago`,
+`3w ago` or `a month ago`; and any of them with `on` in front. Numbers run
+year, month, day, so `10/11` is 11 October. A day still to come, such as
+`tomorrow` or `next fri`, is refused.
+
+```
+$ omacharts chart range "oct 12"
+date: 12 Oct – 10 Nov (window kept) on pos:0 NVDA 1h in "Manual"
+  [exit 0]
+```
+
+**A span** is back from today. Small letters count back: `6m` is the last six
+months, `3y`, `2w` and `10d` the same, `q` the last three months, and a letter
+alone is one. Capitals count whole periods to date: `Y` is the year to date,
+`2Y` this year and last, and `W`, `M` and `Q` the same; `ytd`, `mtd`, `qtd`,
+`wtd` and `2ytd` say it in any case. The unit can be spelled out or
+shortened, with or without a space, in any case: `3 days`, `2 wks`,
+`6 months`, `2 qtr`, `1 year` are `3d`, `2w`, `6m`, `2q`, `1y`. The same
+spellings work wherever a count and a unit go, `3 days ago` and `-6 months:`
+included. A month by name, `june`, `jan` or `Sept`, is all of the latest
+one, this month's when it is that month now, with the days after the latest
+bar as empty room; with a year, `june 2025`, it is that one. `2025` is all
+of that year, `2026-09`
+all of that month, and `all` the whole history. `3w` and `3 weeks ago`
+differ: the first is the last three weeks, the second one day. A span counts
+back from the latest bar, so on a Sunday the week to date is the week that
+just traded.
+
+**A custom range** is two ends joined by `:` or `..`, both included, with or
+without spaces around it, and either end can be left out. An end is anything
+a date can be, a month such as `2025-03` or `jan`, a year or a count back
+such as `-6m`: `jan:mar` is 1 January to 31 March, `2025:` is from
+1 January 2025 to today, `2024:2025-06` from
+the start of 2024 to the end of June 2025, `:2020` from the first bar,
+`oct 1:oct 22` those days and the ones between, `3 weeks ago:` since that
+day, and `-2y:-1y` the year before last. One that starts with a minus goes
+after `--`, or it reads as a flag: `omacharts chart range -- -2y:-1y`. Left
+open at the end, it runs to today, so new bars stay in it. Put quotes around
+one with a space in it.
+
+The resolution stays unless it cannot show the window: between 50 and 400
+bars, and within what the feed keeps at that resolution. Otherwise the chart
+moves to the resolution on the strip that fits best, or to a common one off
+the strip when none on it fits. A year of 5m bars is shown daily, and a month
+of daily bars hourly. `--resolution` names one instead, and the chart shows
+it at that resolution whether it fits or not. The reply ends with `now 1W`
+when the resolution moved, by choice or by fit:
+
+```
+$ omacharts chart range 2025: --resolution 1W
+custom range: since 1 Jan 2025 on pos:0 NVDA 1h in "Manual", now 1W
+  [exit 0]
+```
+
+The chart keeps the window until the view is zoomed or panned. A new symbol
+and new bars are laid across the same days, so the year to date stays the
+year to date on any symbol, and the corner under the price axis names it
+while it holds. It is not stored: a window opened again, or a command that
+rewrites the arrangement such as `chart set`, starts the view over, so run
+`chart range` last. It acts on the chart on screen, so with nothing running
+it exits `6`.
+
+```
+$ omacharts chart range 6x
+omacharts: 6x is not a date, span or custom range; try oct 22, ytd or 2025:
+  [exit 2]
+
+$ omacharts chart range 2030
+omacharts: 2030 is in the future, with no days up to today
+  [exit 2]
 ```
 
 ## Signing in to a feed that charts your own account

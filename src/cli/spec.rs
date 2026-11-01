@@ -796,6 +796,16 @@ pub const SURFACE: &[Noun] = &[
                 workspace: true,
             },
             Verb {
+                name: "range",
+                about: "Go to a date and keep the window, or show a span or a custom range, on the focused chart, as Go to (Ctrl+G) does",
+                args: &[Arg::req("RANGE", "a date, which keeps the window (oct 22, 2026/10/22, yesterday, last fri, 3 weeks ago); a span back from today (6m, 3w, ytd, 2025, 2025/03, all); or a custom range, two ends joined by : or .. with either end optional (3 weeks ago:, oct 1:oct 22, 2025:, and -6m:-1m after --). One with a space in it goes in quotes")],
+                flags: &[Flag::valued("resolution", "TF", "show it at this resolution whether or not it fits, such as 1W")],
+                example: "omacharts chart range ytd",
+                json: false,
+                writes: false,
+                workspace: false,
+            },
+            Verb {
                 name: "set",
                 about: "Change what a chart shows",
                 args: &[],

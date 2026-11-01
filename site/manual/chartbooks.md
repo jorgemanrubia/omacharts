@@ -63,7 +63,7 @@ state:
   move 600 300
   bin/virtual-pointer --button right click 104 708   # the Semis tab
 capture: bin/headless-window shot tab.png
-crop: 0,1020,760,420
+crop: 0,1080,720,360   (the menu with 20px layout margin, the strip under it)
 -->
 {% include figure.html src="/assets/manual/chartbooks/tab-menu.png" alt="A chartbook tab's menu: Rename, Duplicate, Remove, Take screenshot and Template" caption="A tab's menu." %}
 

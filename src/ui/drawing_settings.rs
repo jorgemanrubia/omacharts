@@ -1312,6 +1312,7 @@ fn paint_row(
     button.set_valign(gtk::Align::Center);
     button.add_css_class("flat");
     let popover = gtk::Popover::new();
+    popover.set_has_arrow(false);
 
     let content = gtk::Box::new(gtk::Orientation::Vertical, 8);
     content.set_margin_top(8);

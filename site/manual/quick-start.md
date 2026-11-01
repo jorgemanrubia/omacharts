@@ -41,7 +41,7 @@ state:
   type nv
   move 960 650           # off the list, so no row is hovered
 capture: bin/headless-window shot search.png
-crop: 712,244,1136,954   (the search popover, 24px layout margin)
+crop: 698,193,1163,766   (the search, 24px layout margin)
 -->
 {% include figure.html src="/assets/manual/quick-start/search.png" alt="The symbol search with nv typed and NVDA highlighted at the top" caption="The search with nv typed." %}
 
@@ -52,7 +52,7 @@ empty.
 
 ## 4. Set the resolution
 
-Type a number over the chart and the resolution box opens with it. A bare
+Type a number over the chart and **Change resolution** opens with it. A bare
 number is minutes, so `15` <kbd>Enter</kbd> is fifteen minutes. A letter
 after it names the unit, as in `4h`, `1D` and `1W`. The strip along the top
 of the chart has the common resolutions as buttons, and

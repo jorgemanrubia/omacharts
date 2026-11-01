@@ -62,6 +62,9 @@ pub struct ChartPane {
     /// on the chart: with four charts open, four of these drawn all the time
     /// is four more things between you and the prices.
     pub expand: gtk::Button,
+    /// Dims the chart while a picker is open over it, so the chart a pick
+    /// will change is the one that looks different from the rest.
+    pub shade: gtk::Box,
     expand_icon: gtk::DrawingArea,
     /// Which way the expand glyph points, and which word its tooltip uses.
     expand_state: Rc<Cell<bool>>,
@@ -284,6 +287,13 @@ impl ChartPane {
         // The chart's own two layers, stacked, rather than the drawing area
         // alone: the crosshair is a widget over the bars now.
         overlay.set_child(Some(&view.root));
+        // Over the bars, under the legend: the chart dims and its name
+        // stays readable, which is half of saying which chart it is.
+        let shade = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        shade.add_css_class("pick-shade");
+        shade.set_can_target(false);
+        shade.set_visible(false);
+        overlay.add_overlay(&shade);
         overlay.add_overlay(&legend);
         overlay.add_overlay(&top);
         overlay.add_overlay(&corner);
@@ -335,6 +345,7 @@ impl ChartPane {
             hidden_glyphs,
             link,
             expand,
+            shade,
             expand_icon,
             expand_state,
             instrument: RefCell::new(None),
@@ -1231,6 +1242,22 @@ impl Node {
             }
         }
     }
+
+    /// The leaves that stand against the tree's left edge: the first half
+    /// of a side-by-side split, and both halves of a stacked one. Read off
+    /// the shape rather than off measured rects, so it holds before
+    /// anything has a size.
+    pub fn start_edge(&self) -> Vec<u32> {
+        match self {
+            Node::Leaf(id) => vec![*id],
+            Node::Split { horizontal: true, first, .. } => first.start_edge(),
+            Node::Split { horizontal: false, first, second, .. } => {
+                let mut out = first.start_edge();
+                out.extend(second.start_edge());
+                out
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1399,6 +1426,16 @@ mod tests {
     fn leaves_come_back_in_layout_order() {
         let layout = Node::leaf(1).split(1, 2, true).split(1, 3, false).split(2, 4, false);
         assert_eq!(layout.leaves(), vec![1, 3, 2, 4]);
+    }
+
+    #[test]
+    fn the_start_edge_is_every_chart_down_the_left_and_no_other() {
+        // 1 over 3 on the left, 2 over 4 on the right.
+        let layout = Node::leaf(1).split(1, 2, true).split(1, 3, false).split(2, 4, false);
+        assert_eq!(layout.start_edge(), vec![1, 3]);
+        // A maximized chart is mounted as a tree of its own, and is the
+        // left edge wherever it sat in the whole one.
+        assert_eq!(Node::leaf(4).start_edge(), vec![4]);
     }
 
     /// The key moves the boundary, so it moves the same way whichever side of

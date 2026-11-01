@@ -83,7 +83,7 @@ state:
   (the corner state above, sidebar open)
   key F10
 capture: bin/headless-window shot /tmp/menu.png
-crop: 1052,0,1508,340   (from the focused chart's border; the menu sits against the window's right edge, so it ends there)
+crop: 1052,0,1508,290   (from the focused chart's border; the menu sits against the window's right edge, so it ends there)
 -->
 ![The main menu open under the window's corner, with New chartbook, Preferences and Keyboard Shortcuts](/assets/manual/window/main-menu.png)
 
@@ -119,7 +119,7 @@ crop: 490,68,1580,1304   (the whole dialog, 16px layout margin above and below, 
 |---|---|
 | <kbd>Esc</kbd> | Closes it. In a dialog with several pages, such as Preferences, goes back a page first. In a search box, closes the dialog rather than clearing the box. |
 | <kbd>Ctrl</kbd> + <kbd>Enter</kbd> | Finishes a dialog that makes something (**New chartbook**, adding an indicator, a drawing's **Properties**) from wherever the keyboard is in it. The button it stands for says so in its tooltip. Plain <kbd>Enter</kbd> takes the highlighted row of a list instead. |
-| A click outside | Closes the pickers: the symbol search, **Add an indicator** and the Keyboard shortcuts sheet. A dialog you fill in stays open. |
+| A click outside | Closes the pickers: the symbol search, **Change resolution**, **Go to**, **Add an indicator** and the Keyboard shortcuts sheet. A dialog you fill in stays open. |
 | Typing | Goes to the search box. Every picker opens with the keyboard in its box. |
 | <kbd>Alt</kbd> + <kbd>←</kbd> <kbd>→</kbd> | Moves between the tabs of a dialog that has them (**Chart settings** and a drawing's **Properties**), wrapping at either end. |
 

@@ -102,13 +102,13 @@ state:
   move 600 300
   bin/virtual-pointer --button right click 1080 176   # the Memory section's name
 capture: bin/headless-window shot section.png
-crop: 2000,300,560,400
+crop: 2000,300,560,300
 -->
 {% include figure.html src="/assets/manual/watchlists/section-menu.png" alt="A section's menu over the sidebar: Add symbol… Ctrl+N, Turn into a watchlist, and below a line Remove section…" caption="A section's menu." %}
 
 | Menu item | Does |
 |---|---|
-| **Add symbol…** | Opens the symbol search, titled *Add to Memory*. The symbol lands at the end of the section, which unfolds if it was folded. |
+| **Add symbol…** | Opens the symbol search, its search row naming the list and the section, such as **→ Semis · Memory**. The symbol lands at the end of the section, which unfolds if it was folded. |
 | **Turn into a watchlist** | Makes a watchlist named after the section, moves its symbols into it, removes the section and shows the new list. It doesn't ask. |
 | **Remove section…** | Removes the section and the symbols in it, after asking. |
 
@@ -232,7 +232,7 @@ state:
   click 415 23                    # the 1h chart's chain (left chart, so the menu opens over the chart beside it, not the sidebar)
   move 400 64                     # over the Focus row
 capture: bin/headless-window shot chain.png
-crop: 0,0,1150,380
+crop: 0,0,1120,370
 -->
 {% include figure.html src="/assets/manual/linking/chain-menu.png" alt="The chain's menu on the hourly chart: Focus, Follows watchlist while focused, ticked; Follow, Always follows watchlist; Pinned, Never follows watchlist" caption="The chain's menu, open on a Focus chart." %}
 

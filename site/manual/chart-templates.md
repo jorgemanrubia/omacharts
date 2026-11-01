@@ -62,7 +62,7 @@ With the **Chart template** part of the header on, the header names the template
 
 <!-- regenerate:
 theme: tokyo-night
-window: 2560x1600 @2, scratchpad kit (fresh session)
+window: 2560x1600 @2, bin/headless-window start --size 2560x1600 (fresh session, HOME sandboxed)
 state:
   omacharts config set theme tokyo-night
   move 1270 790
@@ -71,11 +71,11 @@ state:
   omacharts template indicator add Momentum macd
   omacharts chart set --template Momentum
   omacharts config set chart_header symbol,resolution,change,template
-  run bin/virtual-pointer --button right click 600 150   # high enough that the menu has room below
-  click 675 237        # Template
-  move 732 440         # inside the submenu, on no row
+  run bin/virtual-pointer --extent 1280x800 --button right click 600 150   # high enough that the menu has room below
+  click 665 221        # Template
+  move 736 384         # inside the submenu, on no row
 capture: bin/headless-window shot /tmp/menu.png
-crop: 0,0,1830,1092   (the submenu with 24px layout margin right and below)
+crop: 0,0,1800,936   (the submenu with 20px layout margin right and below)
 -->
 {% include figure.html src="/assets/manual/chart-templates/template-menu.png" alt="The chart menu's Template submenu open over a SPY daily chart, each template with its key, and Create new template from chart below a line" caption="The chart menu's **Template** submenu. The header's last part names the template." %}
 

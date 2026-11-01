@@ -18,6 +18,7 @@ use gtk::glib;
 use omacharts_engine::{grouped_decimals, FetchFailure, Instrument};
 
 use crate::store::{Entry, Section, Store, DEFAULT_WATCHLIST};
+use crate::ui::pick_frame::Over;
 use crate::ui::search::SymbolSearch;
 use crate::ui::shortcuts;
 
@@ -2847,13 +2848,21 @@ impl Watchlist {
             .watchlist_sections(self.active.get())
             .into_iter()
             .find(|s| s.id == section_id);
-        let title = match &section {
-            Some(section) if !section.root => format!("Add to {}", section.name),
-            _ => "Add to watchlist".to_string(),
+        // No chart changes, so the picker opens on the window and names the
+        // list instead, and the section when it is not the list's own.
+        let list = self
+            .watchlists()
+            .into_iter()
+            .find(|(id, _)| *id == self.active.get())
+            .map(|(_, name)| name)
+            .unwrap_or_else(|| "watchlist".to_string());
+        let target = match &section {
+            Some(section) if !section.root => format!("{list} · {}", section.name),
+            _ => list,
         };
         let folded = section.map(|section| section.collapsed).unwrap_or(false);
         let this = self.clone();
-        self.search.present(&self.widget, &title, move |instrument| {
+        self.search.present(Over::window(&self.widget, &target), move |instrument| {
             this.store.add_to_section(section_id, &instrument.symbol, instrument.suffix.as_deref());
             // Folded, or behind the page of lists, the symbol arrives where
             // nobody can watch it arrive, which reads as the add having
@@ -2881,6 +2890,7 @@ impl Watchlist {
         entry.set_placeholder_text(Some("Section name"));
 
         let popover = gtk::Popover::new();
+        popover.set_has_arrow(false);
         popover.set_child(Some(&entry));
         popover.set_parent(anchor);
 

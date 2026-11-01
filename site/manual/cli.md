@@ -277,7 +277,7 @@ codes](#exit-codes).
 | `watchlist` | Watchlists and the symbols in them | [Watchlists and sections](#watchlists-and-sections); `watchlist feed` under [The Omarchy plugin](#watchlist-feed) |
 | `section` | The sections inside a watchlist | [Watchlists and sections](#watchlists-and-sections) |
 | `chartbook` | Chartbooks | [Chartbooks](#chartbooks); `chartbook template` under [Chartbook templates](#chartbook-templates); `chartbook screenshot` under [Screenshots](#screenshots) |
-| `chart` | The charts in a chartbook | [Charts](#charts) (`set`), [Indicators](#indicators), [Drawings](#drawings), [Arranging charts](#arranging-charts) (`list`, `split`, `close`, `focus`), [Linking](#linking) (`crosshair`), [Screenshots](#screenshots) |
+| `chart` | The charts in a chartbook | [Charts](#charts) (`set`, `range`), [Indicators](#indicators), [Drawings](#drawings), [Arranging charts](#arranging-charts) (`list`, `split`, `close`, `focus`), [Linking](#linking) (`crosshair`), [Screenshots](#screenshots) |
 | `template` | Chart templates | [Chart templates](#chart-templates) |
 | `provider` | The data feed, and signing in to one | [Market data](#market-data) |
 | `config` | Stored preferences | [Preferences](#preferences); `config bars` under [Charts](#config-bars) |
@@ -359,7 +359,8 @@ omacharts: no instrument called ZZZQX; try `omacharts symbol search ZZZQX`
 
 ## Charts
 
-`chart set` changes one chart. `config bars` and `config set` change every
+`chart set` changes one chart, and `chart range` the days it shows.
+`config bars` and `config set` change every
 chart, or what new charts open with. What each setting looks like on screen
 is in [Charts](/manual/charts/).
 
@@ -412,6 +413,53 @@ shows them in that one. A style and `--bars` that disagree, such as
 `--style candles --bars off`, are refused. In JSON, `style` is `none` while
 the bars are hidden, `bar_style` is the style they come back in, and `bars`
 says whether they are shown.
+
+### `chart range`
+
+Does on the focused chart what **Go to** (<kbd>Ctrl</kbd> + <kbd>G</kbd>)
+does. `RANGE` is a date, a span or a custom range, written the way **Go to**
+takes it ([Go to](/manual/charts/#go-to)). The reply says which of the three
+it was, the days the chart shows, the chart it acted on and, when the
+resolution moved, the new one. Put quotes around a range with a space in it.
+
+```
+$ omacharts chart range ytd
+span: year to date on pos:0 NVDA 1D in "Manual"
+  [exit 0]
+
+$ omacharts chart range "3 weeks ago:"
+custom range: since 11 Oct on pos:0 NVDA 1D in "Manual", now 1h
+  [exit 0]
+
+$ omacharts chart range "1 week ago"
+date: 25 Oct – 23 Nov (window kept) on pos:0 NVDA 1h in "Manual"
+  [exit 0]
+
+$ omacharts chart range 2025: --resolution 1W
+custom range: since 1 Jan 2025 on pos:0 NVDA 1h in "Manual", now 1W
+  [exit 0]
+
+$ omacharts chart range 6x
+omacharts: 6x is not a date, span or custom range; try oct 22, ytd or 2025:
+  [exit 2]
+
+$ omacharts chart range tomorrow
+omacharts: tomorrow is in the future, with no days up to today
+  [exit 2]
+```
+
+A custom range that starts with a minus, such as `-6m:-1m`, goes after `--`,
+or it reads as a flag: `omacharts chart range -- -6m:-1m`.
+
+| Argument or flag | Takes |
+|---|---|
+| `RANGE` | A date, a span or a custom range |
+| `--resolution TF` | Shows it at this resolution, whether or not it fits. Without it, the resolution is chosen as in **Go to** |
+
+It acts on the chart on screen, so with no window open it exits `6`. The
+window holds until the chart is zoomed or panned and is not stored, so a
+command that changes the arrangement, such as `chart set`, starts the view
+over. Run `chart range` last.
 
 ### `config bars`
 

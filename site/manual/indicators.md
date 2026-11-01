@@ -52,7 +52,7 @@ state:
   move 795 900
   key ctrl+shift+i
 capture: bin/headless-window shot /tmp/picker.png
-crop: 364,314,872,1272   (the whole search, 16px margin)
+crop: 365,314,870,1272   (the whole search, 16px margin)
 -->
 {% include figure.html src="/assets/manual/indicators/add-an-indicator.png" alt="The Add an indicator search with its list of indicators" caption="The **Add an indicator** search, before anything is typed." %}
 
