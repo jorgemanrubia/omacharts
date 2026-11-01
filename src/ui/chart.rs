@@ -241,6 +241,9 @@ struct State {
     /// The tool that is armed: the next press on the plot starts a drawing
     /// of this kind. `None` is the usual state, where a press pans.
     tool: Option<DrawingKind>,
+    /// The ruler lives only on the pointer layer; its tuple is start, end, finished.
+    ruler_armed: bool,
+    ruler: Option<(Anchor, Anchor, bool)>,
     /// A drawing with its first anchor down and its second following the
     /// pointer. Drawn on the pointer layer, since it moves with the hand;
     /// committed to `drawings` on the second press or at the end of a drag.
@@ -1167,6 +1170,8 @@ impl State {
             marquee_base: Vec::new(),
             tool: None,
             placing: None,
+            ruler_armed: false,
+            ruler: None,
             next_config: 1,
             configs: Configurations::default(),
             sends: true,
@@ -1327,19 +1332,44 @@ impl State {
         true
     }
 
-    /// A drawing as pixels, through the same scales the candles use.
-    fn project(&self, plan: &Layout, scale: &PriceScale, drawing: &Drawing) -> Projected {
+    fn ruler_anchor(&self, width: f64, height: f64, x: f64, y: f64) -> Option<Anchor> {
+        let plan = layout(self, width, height);
+        if !(plan.plot_x..=plan.plot_x + plan.plot_w).contains(&x)
+            || !(plan.price_y..=plan.price_y + plan.price_h).contains(&y)
+        {
+            return None;
+        }
+        self.locate(width, height, x, y)
+    }
+
+    fn ruler_click(&mut self, anchor: Anchor) {
+        self.ruler = Some(match self.ruler {
+            Some((from, _, false)) => (from, anchor, true),
+            _ => (anchor, anchor, false),
+        });
+        self.drag = None;
+    }
+
+    fn ruler_motion(&mut self, anchor: Anchor) {
+        if let Some((from, _, false)) = self.ruler {
+            self.ruler = Some((from, anchor, false));
+        }
+    }
+
+    fn project_anchor(&self, plan: &Layout, scale: &PriceScale, anchor: Anchor) -> (f64, f64) {
         let (first, _, lead) = self.view();
         let bar_w = plan.plot_w / self.columns().max(1) as f64;
-        // The bar index the plot's left edge stands at, negative when room
-        // was opened before the first bar.
         let left = first as f64 - lead as f64;
-        let point = |anchor: &Anchor| {
-            let index = index_of_ts(&self.bars, anchor.ts);
-            let x = plan.plot_x + (index - left + 0.5) * bar_w;
-            let y = scale.to_y(anchor.price, plan.price_y, plan.price_h);
-            (x, y)
-        };
+        let index = index_of_ts(&self.bars, anchor.ts);
+        (
+            plan.plot_x + (index - left + 0.5) * bar_w,
+            scale.to_y(anchor.price, plan.price_y, plan.price_h),
+        )
+    }
+
+    /// A drawing as pixels, through the same scales the candles use.
+    fn project(&self, plan: &Layout, scale: &PriceScale, drawing: &Drawing) -> Projected {
+        let point = |anchor: &Anchor| self.project_anchor(plan, scale, *anchor);
         let projected = match drawing.kind.is_path() {
             true => Projected::through(drawing.kind, drawing.corners().iter().map(point).collect()),
             false => Projected::new(drawing.kind, point(&drawing.from), point(&drawing.to)),
@@ -1686,7 +1716,8 @@ impl State {
     /// Take on a series, starting the view over when the instrument or the
     /// resolution changed. A range it is holding to is laid across the new
     /// series rather than let go of.
-    fn replace_series(&mut self, instrument: Instrument, timeframe: Timeframe, bars: Vec<Bar>) {
+    /// Says whether the instrument or the resolution changed.
+    fn replace_series(&mut self, instrument: Instrument, timeframe: Timeframe, bars: Vec<Bar>) -> bool {
         let changed = self
             .instrument
             .as_ref()
@@ -1697,12 +1728,16 @@ impl State {
         self.instrument = Some(instrument);
         self.timeframe = timeframe;
         if changed {
+            // A measured range belongs to the series it was measured on.
+            self.ruler = None;
+            self.ruler_armed = false;
             self.anchored = true;
             self.overhang = RIGHT_MARGIN;
             self.lead = 0;
             self.visible = 160;
         }
         self.fit_range();
+        changed
     }
 
     /// Show `range`, and keep showing it as the series changes.
@@ -2166,6 +2201,8 @@ impl ChartView {
             if kind.is_none() {
                 state.next_config = 1;
             }
+            state.ruler_armed = false;
+            state.ruler = None;
             state.tool = kind;
             state.placing = None;
             if kind.is_some() {
@@ -2191,16 +2228,59 @@ impl ChartView {
     /// pointer. The tool belongs to the window, not to one chart: picking
     /// the line and then clicking into the chart beside draws a line there.
     pub fn hand_over(&self, to: &ChartView) {
-        let (kind, sticky, next) = {
+        let (kind, sticky, next, ruler) = {
             let state = self.state.borrow();
-            (state.tool, state.sticky, state.next_config)
+            (state.tool, state.sticky, state.next_config, state.ruler_armed)
         };
+        if ruler {
+            self.arm(None);
+            to.arm_ruler();
+            to.tool_changed();
+            return;
+        }
         if self.armed().is_some() {
             self.arm(None);
         }
         to.arm_sticky(kind, sticky);
         to.state.borrow_mut().next_config = next;
         to.tool_changed();
+    }
+
+    pub fn arm_ruler(&self) {
+        self.arm(None);
+        {
+            let mut state = self.state.borrow_mut();
+            state.ruler_armed = true;
+            state.selected.clear();
+            state.drag = None;
+        }
+        self.area.set_cursor_from_name(Some("crosshair"));
+        self.pointer.queue_draw();
+    }
+
+    pub fn ruler_armed(&self) -> bool {
+        self.state.borrow().ruler_armed
+    }
+
+    pub fn measure(
+        &self,
+        anchors: Option<(Anchor, Anchor)>,
+    ) -> Option<omacharts_engine::measurement::Measurement> {
+        if anchors.is_some() {
+            self.arm(None);
+        }
+        let mut state = self.state.borrow_mut();
+        state.ruler_armed = false;
+        state.ruler = anchors.map(|(a, b)| (a, b, true));
+        let kind = state.instrument.as_ref().map(|i| i.kind);
+        let measured = anchors
+            .map(|(a, b)| omacharts_engine::measurement::Measurement::between(a, b, &state.bars, kind));
+        let drawing_armed = state.tool.is_some();
+        drop(state);
+        self.area.set_cursor_from_name(Some(if drawing_armed { "crosshair" } else { "default" }));
+        self.pointer.queue_draw();
+        self.tool_changed();
+        measured
     }
 
     pub fn armed(&self) -> Option<DrawingKind> {
@@ -2226,7 +2306,11 @@ impl ChartView {
         }
         let busy = {
             let mut s = self.state.borrow_mut();
-            let busy = s.tool.is_some() || s.placing.is_some() || !s.selected.is_empty();
+            let busy = s.ruler_armed
+                || s.ruler.is_some()
+                || s.tool.is_some()
+                || s.placing.is_some()
+                || !s.selected.is_empty();
             s.selected.clear();
             // The drag the gesture is still in ends with nothing to commit.
             if matches!(s.drag, Some(Drag::Place { .. })) {
@@ -3420,7 +3504,10 @@ impl ChartView {
     /// Replace the series. Resets the view only when the instrument changed,
     /// so a background refresh of the same chart does not throw away a pan.
     pub fn set_series(&self, instrument: Instrument, timeframe: Timeframe, bars: Vec<Bar>) {
-        self.state.borrow_mut().replace_series(instrument, timeframe, bars);
+        let changed = self.state.borrow_mut().replace_series(instrument, timeframe, bars);
+        if changed {
+            self.tool_changed();
+        }
         self.redraw();
     }
 
@@ -3809,6 +3896,11 @@ impl ChartView {
                 s.magnet = controller.current_event_state().contains(gtk::gdk::ModifierType::CONTROL_MASK);
                 s.pointer = Some((x, y));
                 s.follow_hand(area.width() as f64, area.height() as f64);
+                if s.ruler.is_some_and(|(_, _, finished)| !finished)
+                    && let Some(to) = s.ruler_anchor(area.width() as f64, area.height() as f64, x, y)
+                {
+                    s.ruler_motion(to);
+                }
             }
             // The cursor is the only thing that says a line can be dragged, so
             // it changes the moment the pointer is close enough to grab it.
@@ -3823,7 +3915,7 @@ impl ChartView {
             let (armed, over_drawing, over_indicator, holding) = {
                 let mut s = state.borrow_mut();
                 let (w, h) = (area.width() as f64, area.height() as f64);
-                let free = s.drag.is_none() && s.tool.is_none();
+                let free = s.drag.is_none() && s.tool.is_none() && !s.ruler_armed;
                 let over = free.then(|| s.drawing_at(w, h, x, y)).flatten();
                 // The grip under the hand is lit, which is a redraw of the
                 // chart — but only on the motion that reaches a grip or leaves
@@ -3847,7 +3939,7 @@ impl ChartView {
                     _ => None,
                 };
                 (
-                    s.tool.is_some(),
+                    s.tool.is_some() || s.ruler_armed,
                     over.map(|(index, grip)| s.grip_cursor(index, grip, false)),
                     indicator,
                     holding,
@@ -4016,6 +4108,14 @@ impl ChartView {
         let pointer = self.pointer.clone();
         drag.connect_drag_begin(move |gesture, x, y| {
         let (width, height) = (area.width() as f64, area.height() as f64);
+        {
+            let mut s = state.borrow_mut();
+            if s.ruler_armed && let Some(anchor) = s.ruler_anchor(width, height, x, y) {
+                s.ruler_click(anchor);
+                pointer.queue_draw();
+                return;
+            }
+        }
         // On a drawing, Shift or Ctrl adds it to the selection: design
         // tools say Shift and charting tools say Ctrl, and a hand that
         // learned one should not have to learn the other. On empty chart
@@ -4495,7 +4595,7 @@ impl ChartView {
         let on_price_auto = self.on_price_auto.clone();
         let view = Rc::downgrade(self);
         click.connect_pressed(move |_, presses, x, y| {
-            if presses < 2 {
+            if presses < 2 || state.borrow().ruler_armed {
                 return;
             }
             // The press that made this a double-click already ended a
@@ -4900,6 +5000,10 @@ fn draw_pointer(cr: &cairo::Context, width: f64, height: f64, state: &State) {
         let placed = state.project(&plan, &scale, &shown);
         draw_drawing(cr, state, &placed, &shown, true, false, lit);
         cr.restore().ok();
+    }
+
+    if let Some((from, to, _)) = state.ruler {
+        draw_ruler(cr, state, &plan, &scale, from, to);
     }
 
     // The selection box, while a hand drags one out.
@@ -6074,6 +6178,152 @@ fn draw_echo(
     cr.move_to(plot_x, y);
     cr.line_to(plot_x + plot_w, y);
     let _ = cr.stroke();
+    cr.restore().ok();
+}
+
+/// Which way a measured range went, which picks its colour.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RulerDirection {
+    Up,
+    Down,
+    Flat,
+}
+
+impl RulerDirection {
+    fn of(from: Anchor, to: Anchor) -> Self {
+        match to.price.partial_cmp(&from.price) {
+            Some(std::cmp::Ordering::Greater) => Self::Up,
+            Some(std::cmp::Ordering::Less) => Self::Down,
+            _ => Self::Flat,
+        }
+    }
+}
+
+/// The ruler's two arrows as (tail, tip), through the middle of the box
+/// whose opposite corners are the projected start `a` and end `b`: one from
+/// the start price to the end price, one from the start time to the end
+/// time. The head goes on the tip.
+fn ruler_arrows(a: (f64, f64), b: (f64, f64)) -> [((f64, f64), (f64, f64)); 2] {
+    let (mid_x, mid_y) = ((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0);
+    [((mid_x, a.1), (mid_x, b.1)), ((a.0, mid_y), (b.0, mid_y))]
+}
+
+/// The length of a ruler arrowhead's sides, for an arrow `length` long.
+///
+/// Full size on an arrow at least three heads long; on a shorter one the
+/// head shrinks with it, so a narrow box is not all arrowhead; and an arrow
+/// shorter than a full head has none, since it would be nothing else.
+fn ruler_head(length: f64) -> Option<f64> {
+    const HEAD: f64 = 9.0;
+    match length {
+        l if l >= 3.0 * HEAD => Some(HEAD),
+        l if l >= HEAD => Some(l / 3.0),
+        _ => None,
+    }
+}
+
+/// A temporary range on the pointer layer: no scene rebuild on mouse motion.
+fn draw_ruler(
+    cr: &cairo::Context,
+    state: &State,
+    plan: &Layout,
+    scale: &PriceScale,
+    from: Anchor,
+    to: Anchor,
+) {
+    let a = state.project_anchor(plan, scale, from);
+    let b = state.project_anchor(plan, scale, to);
+    let (x, y) = (a.0.min(b.0), a.1.min(b.1));
+    let (w, h) = ((b.0 - a.0).abs(), (b.1 - a.1).abs());
+    let kind = state.instrument.as_ref().map(|i| i.kind);
+    let measured = omacharts_engine::measurement::Measurement::between(from, to, &state.bars, kind);
+    // The candles' own up and down, so a "Red up" scheme measures a rise in
+    // red; the label is the last-price tag of that direction, whose figure is
+    // already chosen to read on its fill.
+    let flat;
+    let (colour, tag) = match RulerDirection::of(from, to) {
+        RulerDirection::Up => (&state.scheme.up, &state.price_tags[0]),
+        RulerDirection::Down => (&state.scheme.down, &state.price_tags[1]),
+        RulerDirection::Flat => {
+            flat = Tag::on(&state.scheme.neutral);
+            (&state.scheme.neutral, &flat)
+        }
+    };
+    cr.save().ok();
+    cr.rectangle(plan.plot_x, plan.price_y, plan.plot_w, plan.price_h);
+    cr.clip();
+    colors::set_source_alpha(cr, colour, 0.18);
+    cr.rectangle(x, y, w, h);
+    cr.fill().ok();
+    colors::set_source(cr, colour);
+    cr.set_line_width(1.0);
+    cr.rectangle(x, y, w, h);
+    cr.stroke().ok();
+    // One head on each arrow, at the end: the way price and time went.
+    for (tail, tip) in ruler_arrows(a, b) {
+        cr.move_to(tail.0, tail.1);
+        cr.line_to(tip.0, tip.1);
+        cr.stroke().ok();
+        let Some(head) = ruler_head((tip.0 - tail.0).hypot(tip.1 - tail.1)) else {
+            continue;
+        };
+        let angle = (tail.1 - tip.1).atan2(tail.0 - tip.0);
+        for offset in [-0.5_f64, 0.5] {
+            cr.move_to(tip.0, tip.1);
+            cr.line_to(
+                tip.0 + head * (angle + offset).cos(),
+                tip.1 + head * (angle + offset).sin(),
+            );
+        }
+        cr.stroke().ok();
+    }
+    // The percentage is what the eye goes to, so it leads in bold, with the
+    // change after it on the same baseline and the span under both.
+    let parts = measured.parts();
+    let advance = |text: &str| cr.text_extents(text).map(|e| e.x_advance()).unwrap_or(0.0);
+    let bold = |cr: &cairo::Context| {
+        cr.select_font_face("sans-serif", cairo::FontSlant::Normal, cairo::FontWeight::Bold);
+        cr.set_font_size(13.0);
+    };
+    let normal = |cr: &cairo::Context| {
+        cr.select_font_face("sans-serif", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
+        cr.set_font_size(11.0);
+    };
+    bold(cr);
+    let percent_w = parts.percent.as_deref().map_or(0.0, &advance);
+    normal(cr);
+    let gap = if parts.percent.is_some() { advance("  ") } else { 0.0 };
+    let change_w = advance(&parts.change);
+    let span_w = advance(&parts.span);
+    let first_w = percent_w + gap + change_w;
+    let bw = (first_w.max(span_w) + 20.0).min(plan.plot_w);
+    let bx = (x + w / 2.0 - bw / 2.0).clamp(
+        plan.plot_x,
+        (plan.plot_x + plan.plot_w - bw).max(plan.plot_x),
+    );
+    let by = if y - 46.0 >= plan.price_y {
+        y - 46.0
+    } else {
+        (y + h + 6.0)
+            .min(plan.price_y + plan.price_h - 40.0)
+            .max(plan.price_y)
+    };
+    colors::set_source(cr, &tag.fill);
+    cr.rectangle(bx, by, bw, 40.0);
+    cr.fill_preserve().ok();
+    cr.stroke().ok();
+    colors::set_source(cr, &tag.label);
+    let left = bx + (bw - first_w) / 2.0;
+    if let Some(percent) = &parts.percent {
+        bold(cr);
+        cr.move_to(left, by + 15.0);
+        cr.show_text(percent).ok();
+    }
+    normal(cr);
+    cr.move_to(left + percent_w + gap, by + 15.0);
+    cr.show_text(&parts.change).ok();
+    cr.move_to(bx + (bw - span_w) / 2.0, by + 30.0);
+    cr.show_text(&parts.span).ok();
     cr.restore().ok();
 }
 
@@ -8576,6 +8826,90 @@ mod drawing_tests {
         // And before the first.
         assert_eq!(ts_at(&series, -2.0), series[0].ts - 2 * 3600);
         assert_eq!(index_of_ts(&series, series[0].ts - 2 * 3600), -2.0);
+    }
+
+    #[test]
+    fn ruler_ignores_the_header_axes_and_indicator_strips() {
+        let mut state = charted(400);
+        let indicator = Indicator::new(1, indicators::Kind::Rsi);
+        state.indicators.push(Drawn {
+            color: "#5588ff".into(),
+            output: indicators::compute(&indicator, &state.bars, 0, state.timeframe, None),
+            indicator,
+        });
+        let (w, h) = (800.0, 400.0);
+        let plan = layout(&state, w, h);
+        let x = plan.plot_x + plan.plot_w / 2.0;
+        let y = plan.price_y + plan.price_h / 2.0;
+        assert!(state.ruler_anchor(w, h, x, y).is_some());
+        for (x, y) in [(x, 0.0), (w - 1.0, y), (x, h - 1.0),
+            (x, plan.price_y + plan.price_h + 10.0)] {
+            assert!(state.ruler_anchor(w, h, x, y).is_none(), "accepted ({x}, {y})");
+        }
+    }
+
+    #[test]
+    fn a_ruler_takes_its_direction_from_the_prices_not_the_screen() {
+        let at = |price| Anchor::new(1, price);
+        assert_eq!(RulerDirection::of(at(100.0), at(110.0)), RulerDirection::Up);
+        assert_eq!(RulerDirection::of(at(110.0), at(100.0)), RulerDirection::Down);
+        assert_eq!(RulerDirection::of(at(100.0), at(100.0)), RulerDirection::Flat);
+        assert_eq!(RulerDirection::of(at(100.0), at(f64::NAN)), RulerDirection::Flat);
+    }
+
+    #[test]
+    fn a_ruler_arrow_points_only_at_the_end_in_both_dimensions() {
+        // Up and to the right: the end is higher on screen, so a smaller y.
+        let [price, time] = ruler_arrows((100.0, 300.0), (400.0, 100.0));
+        assert_eq!(price, ((250.0, 300.0), (250.0, 100.0)));
+        assert_eq!(time, ((100.0, 200.0), (400.0, 200.0)));
+        // Down and to the left: the tips follow, pointing down and left.
+        let [price, time] = ruler_arrows((400.0, 100.0), (100.0, 300.0));
+        assert_eq!(price.1, (250.0, 300.0));
+        assert!(price.1.1 > price.0.1, "points down");
+        assert_eq!(time.1, (100.0, 200.0));
+        assert!(time.1.0 < time.0.0, "points left");
+    }
+
+    #[test]
+    fn a_ruler_arrowhead_shrinks_on_a_short_arrow_and_goes_on_a_tiny_one() {
+        assert_eq!(ruler_head(200.0), Some(9.0));
+        assert_eq!(ruler_head(27.0), Some(9.0));
+        assert_eq!(ruler_head(18.0), Some(6.0));
+        assert_eq!(ruler_head(9.0), Some(3.0));
+        assert_eq!(ruler_head(8.9), None);
+        assert_eq!(ruler_head(0.0), None);
+        assert_eq!(ruler_head(f64::NAN), None);
+    }
+
+    #[test]
+    fn ruler_click_move_click_freezes_and_a_third_click_starts_again() {
+        let mut state = charted(400);
+        let a = Anchor::new(1, 100.0);
+        let b = Anchor::new(2, 110.0);
+        let c = Anchor::new(3, 95.0);
+        let drawings = state.drawings.clone();
+        state.ruler_click(a);
+        assert_eq!(state.ruler, Some((a, a, false)));
+        assert!(
+            state.drag.is_none(),
+            "releasing the first click must not finish it"
+        );
+        state.ruler_motion(b);
+        assert_eq!(state.ruler, Some((a, b, false)));
+        state.ruler_click(c);
+        state.ruler_motion(b);
+        assert_eq!(
+            state.ruler,
+            Some((a, c, true)),
+            "motion after finishing must leave it fixed"
+        );
+        state.ruler_click(b);
+        assert_eq!(state.ruler, Some((b, b, false)));
+        assert_eq!(
+            state.drawings, drawings,
+            "a ruler never becomes stored content"
+        );
     }
 
     /// Where the hand is becomes an anchor, and the anchor is drawn back

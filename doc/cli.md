@@ -820,6 +820,28 @@ it as it was; Ctrl+B and Ctrl+I set the selection — or the word the caret is
 in — bold or italic. Ctrl+= and Ctrl+− grow and shrink the selected
 drawing's text, which on a figure is its label rather than the figure.
 
+## Measuring a move
+
+With a window open, `chart measure` puts the ruler on the focused chart between
+two time/price anchors and says what it measured:
+
+```sh
+omacharts chart measure --from 2026-09-01,650 --to 2026-10-15,700
+# +7.69% +50.00; 31 bars, 44d on pos:0 SPY 1D in "Chartbook 1"
+omacharts chart measure --from 2026-09-01,180.5 --to 2026-09-19,192 --json
+omacharts chart measure --clear
+```
+
+Dates and times use the focused chart's time zone. The command displays a
+temporary ruler and returns the chart position, price change, percentage
+change, bar distance and elapsed seconds. Bar distance counts
+column intervals, not candles inclusively; elapsed time includes market closures.
+With fewer than two loaded bars the bar distance is `null`; a zero starting price
+has a `null` percentage. Empty columns use the chart's extrapolated cadence,
+not a forecast of exchange opening times. The ruler is not saved or shared.
+In the window, Alt+M or Measure in the drawing tools picks up the ruler: click,
+move, click; Escape clears it.
+
 ## Taking a picture of a chart
 
 ```

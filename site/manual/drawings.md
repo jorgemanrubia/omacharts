@@ -33,6 +33,7 @@ crop: none
 | Tool | Key | Placing it |
 |---|---|---|
 | Pointer | <kbd>Esc</kbd> | No tool. Selects, moves and resizes drawings |
+| Measure | <kbd>Alt</kbd> + <kbd>M</kbd> | Click the start, move the mouse, then click the end |
 | Line | <kbd>Alt</kbd> + <kbd>L</kbd> | Press where it starts, then where it ends |
 | Horizontal line | <kbd>Alt</kbd> + <kbd>H</kbd> | A level. It stays flat however you drag it and spans the time between its two ends |
 | Arrow | <kbd>Alt</kbd> + <kbd>A</kbd> | A line with a head at the end |
@@ -45,15 +46,16 @@ After one drawing the tool is deselected. <kbd>Ctrl</kbd> + click a tool to keep
 
 <!-- regenerate:
 theme: tokyo-night
-window: 2560x1600 @2, scratchpad kit
+window: 2560x1600 @2, bin/headless-window (HOME sandboxed, with the Omarchy theme's colors.toml and icons.theme copied into its .local/share/omarchy/themes/tokyo-night and gtk-icon-theme-name=Yaru-magenta in its .config/gtk-4.0/settings.ini)
 state:
-  (the state of the first figure)
+  omacharts config set theme omarchy:tokyo-night   (before the window opens)
+  omacharts chart set --symbol NVDA --resolution 1D --template none
   key ctrl+d
   key alt+r
   key alt+6
   move 1275 795
-capture: bin/headless-window shot /tmp/bar.png
-crop: 0,0,760,840
+capture: bin/headless-window shot /tmp/bar.png; magick /tmp/bar.png -crop 760x920+0+0 +repage site/assets/manual/drawings/tools-bar.png
+crop: 0,0,760,920
 -->
 {% include figure.html src="/assets/manual/drawings/tools-bar.png" alt="The drawing tools down the left edge, with the rectangle lit and a small 6 on it" caption="The tools, with the rectangle selected and configuration 6 chosen for it." %}
 
@@ -65,6 +67,43 @@ crop: 0,0,760,840
 | <kbd>Esc</kbd> | Drops the drawing and deselects the tool |
 
 A finished drawing is left selected.
+
+## Measuring a move
+
+The ruler measures a move between two points. Press <kbd>Alt</kbd> +
+<kbd>M</kbd>, or choose **Measure** just below the pointer at the top of the
+tools. Click the starting point, move the mouse, then click the end point. A
+rise is drawn in your bar colours' up colour and a fall in their down colour,
+with an arrow pointing each way the move went. The label shows the percentage
+change in bold, then the price change, and under them the bar distance and
+elapsed time: `+0.53%  +4.01` over `71 bars, 5h 55m`. The measurement stays
+fixed after the second click. Click again to start another, or press
+<kbd>Esc</kbd> to clear it and return to the pointer.
+
+<!-- regenerate:
+theme: tokyo-night
+window: 2560x1600 @2, bin/headless-window (HOME sandboxed and the theme seeded, as for the tools above)
+state:
+  omacharts config set theme omarchy:tokyo-night   (before the window opens)
+  omacharts chart set --symbol NVDA --resolution 1D --template none
+  key ctrl+d
+  key alt+m
+  click 515 520
+  move 668 160
+  click 668 160
+  move 1275 795
+capture: bin/headless-window shot /tmp/ruler.png; magick /tmp/ruler.png -crop 1950x1600+0+0 +repage -resize 1600x site/assets/manual/drawings/ruler.png
+crop: 0,0,1950,1600
+-->
+{% include figure.html src="/assets/manual/drawings/ruler.png" alt="A rise on NVDA measured in green, labelled +22.92% +43.62 over 28 bars, 41d" caption="A move measured from the August low, left fixed by the second click." %}
+
+Bar distance counts the spaces between candles. Elapsed time includes weekends
+and market closures. The price change has as many decimals as the price axis
+gives that price. With fewer than two loaded candles the label shows the time
+without a bar distance, and a move that starts at zero shows no percentage.
+Points beyond the loaded candles use the chart's estimated times. The
+measurement is not saved or shared with other charts. Choosing another tool or
+changing the symbol or resolution clears it.
 
 ## Selecting and moving
 
@@ -277,3 +316,4 @@ New charts take their defaults from Preferences › Charts › Defaults › **Dr
 ## See also
 
 - [Drawing from the CLI](/manual/cli/#drawings)
+- [Measuring with the CLI](/manual/cli/#measuring-a-move)

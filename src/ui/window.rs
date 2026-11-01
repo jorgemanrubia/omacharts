@@ -229,6 +229,7 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Alt+R", "Draw a rectangle over a run of bars"),
             ("Alt+C", "Draw a circle, dragged to any shape"),
             ("Alt+T", "Write on the chart: click, then type"),
+            ("Alt+M", "Measure: click the start, then the end"),
             ("Ctrl+D", "Show or hide the drawing tools"),
             ("Alt+1 … 9", "Configuration N, for the selected drawing or the one about to be drawn"),
             ("Enter / F2", "Put the caret in the selected drawing's text"),
@@ -2152,6 +2153,10 @@ impl Window {
             {
                 let this = this.clone();
                 move || this.toggle_drawing_tools()
+            },
+            {
+                let this = this.clone();
+                move || this.arm_ruler()
             },
         );
         let with_tools = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -7764,6 +7769,23 @@ impl Window {
         self.set_pane_sends_drawings(pane, defaults.sends_drawings);
     }
 
+    pub fn measurement_zone(&self) -> chrono_tz::Tz {
+        let pane = self.focused_pane();
+        crate::clock::zone(&self.store).for_instrument(pane.instrument.borrow().as_ref())
+    }
+
+    /// A temporary measurement belongs to the live focused chart, never the store.
+    pub fn measure(
+        &self,
+        anchors: Option<(omacharts_engine::Anchor, omacharts_engine::Anchor)>,
+    ) -> (String, Option<omacharts_engine::measurement::Measurement>) {
+        let pane = self.focused_pane();
+        let label = self.chart_named(&pane);
+        let result = pane.view.measure(anchors);
+        self.sync_drawing_bar();
+        (label, result)
+    }
+
     /// Right-clicking the chart offers the things you change most, and a way
     /// to everything else.
     /// A picture of what is on screen, for a command.
@@ -8176,6 +8198,7 @@ impl Window {
         if let Some(bar) = self.drawing_bar.borrow().as_ref() {
             let view = &self.focused_pane().view;
             bar.show_armed(view.armed(), view.next_config(), view.is_sticky());
+            bar.show_ruler(view.ruler_armed());
         }
     }
 
@@ -8186,6 +8209,15 @@ impl Window {
     /// Arm a drawing tool on the focused chart. The key is not a toggle:
     /// Alt+R twice is still the rectangle, so a hand that is not sure
     /// whether it pressed can press again. Escape is the way back.
+    /// Pick up the ruler on the focused chart, from its key or its button.
+    /// Like a drawing tool's key, pressing it again keeps it in hand.
+    fn arm_ruler(&self) {
+        let pane = self.focused_pane();
+        pane.view.arm_ruler();
+        pane.view.area.grab_focus();
+        self.sync_drawing_bar();
+    }
+
     fn arm_drawing(&self, kind: omacharts_engine::DrawingKind) {
         let pane = self.focused_pane();
         pane.view.arm(Some(kind));
@@ -9003,6 +9035,11 @@ impl Window {
             this.arm_drawing(omacharts_engine::DrawingKind::Text)
         });
         actions.add_action(&draw_text);
+
+        let measure = gio::SimpleAction::new("measure", None);
+        let this = self.clone();
+        measure.connect_activate(move |_, _| this.arm_ruler());
+        actions.add_action(&measure);
 
         let drawing_text = gio::SimpleAction::new("drawing-text", None);
         let this = self.clone();
