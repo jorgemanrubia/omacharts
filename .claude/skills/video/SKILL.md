@@ -158,6 +158,10 @@ principles of a good screencast, which the scriptwriter also follows.
   The voice is pinned: `video/voices/narrator.json`, a light, airy but
   clear woman's voice in her thirties, cloned from `narrator.wav`. Every
   video uses it unless the author asks otherwise.
+- **Show what the author asked to see, the way a person does it.** When
+  the author describes an action, the video performs it through the app —
+  the menu, the dialog, the key — never a terminal command standing in for
+  it. If the studio cannot do something yet, extend the studio.
 - **Film the latest main.** Videos show omacharts as it is on main —
   `bin/video` fetches it and builds it in a worktree of its own — unless the
   author asks for something else, which goes in the script as `build:`.

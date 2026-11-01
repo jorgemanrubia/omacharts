@@ -125,7 +125,7 @@ and the right-hand box, never touched, turns amber too.
 this one {swatch}a different fill, {amber}say amber, {save}then save it back
 {pick}over three. The other box changes with it.
 
-    select: click 23% 37%
+    select: click 29% 24%
     props:  key alt+Return
     swatch: click 59% 46%
     amber:  click 61% 50%
@@ -137,18 +137,24 @@ this one {swatch}a different fill, {amber}say amber, {save}then save it back
 
 **Picture.** The dialog closes and the window moves to the Crude chartbook:
 CL daily with a blue twenty-period and an amber fifty-period average and
-volume. On "make" the header gains **Trend**: the chart is now on a chart
-template of that name, holding its three studies. (Made from the terminal,
-because the studio cannot right-click yet. With a right-click this becomes
-the chart menu › **Template** › **Create new template from chart…** and
-Trend typed in its dialog; the narration fits either.)
+volume. As the studies are named, the cursor right-clicks the price area
+in the upper left of the chart, clear of the legend, and the chart menu
+opens there: Bar style, Session, Template. A click on **Template** slides
+the menu over to its submenu — None, Default and, under a rule, **Create
+new template from chart…** — and a click on that opens **New Chart
+Template** with its Name field ready. Trend is typed and Enter creates it:
+the dialog closes and the header gains **Trend**, the chart now on a
+template holding its three studies.
 
 **Voice.** {next}Indicators work the same way. This crude oil chart has the
-studies I want everywhere. {make}I'll make them a template called Trend.
+studies I want {menu}everywhere. {make}I'll make them a template {name}called
+Trend.
 
     next: key Escape; key ctrl+alt+Right
-    make: cli template create Trend --from-chart
-    after: 0.8
+    menu: rclick 30% 30%
+    make: click 35% 38%; wait 0.3; click 37% 42%
+    name: type Trend; key Return
+    after: 1.2
 
 ### 3. Split, and add once
 
@@ -172,32 +178,40 @@ hourly. {add}Now add {rsi}RSI to either one. Both get it at once.
 **Picture.** The RSI dialog is kept (Ctrl and Enter) and the window moves to
 the S&P chartbook: ES daily on the left with the fifty- and two-hundred-day
 averages and volume, hourly top right with a twenty-period average and
-session shading, five-minute bottom right with VWAP and two bands. On
-"save" it is saved as the chartbook template Desk; nothing on screen
-changes. (From the terminal for the same reason as scene 2; with a
-right-click, the tab menu › **Template** › **Save as New Template…** and
-Desk typed.)
+session shading, five-minute bottom right with VWAP and two bands. The
+cursor right-clicks the S&P tab in the strip at the bottom left, and its
+menu opens upward: Rename, Duplicate, Remove, Take screenshot and, under a
+rule, Template. A click on **Template** slides to None, **Save as New
+Template…** and Manage Templates…; a click on Save as New Template… opens
+**Save as New Chartbook Template**. Desk is typed and Enter saves it; the
+dialog closes and the charts are as they were.
 
 **Voice.** {next}A whole chartbook can be a template too. S and P futures on
-three timeframes, each with its own studies. {save}I'll save it as Desk.
+three timeframes, each with its own {menu}studies. {tpl}I'll save it {name}as
+Desk.
 
     next: key ctrl+Return; key ctrl+alt+Right
-    save: cli chartbook template save Desk
-    after: 0.6
+    menu: rclick 8% 98%
+    tpl:  click 13% 95%; wait 0.3; click 14% 90%
+    name: type Desk; key Return
+    after: 1.0
 
 ### 5. A copy for gold
 
-**Picture.** A **Gold** tab appears beside S&P and opens: the same three
-charts, still on ES. (A duplicate from the terminal; with a right-click, the
-tab menu › **Duplicate** and Gold typed over the name.) The cursor clicks
-the five-minute chart, GC is typed and Enter charts it; all three charts
-turn to gold futures together, daily, hourly and five-minute, each with its
-studies.
+**Picture.** The cursor right-clicks the S&P tab again and the same menu
+opens upward; a click on **Duplicate** puts a tab beside S&P and opens it:
+the same three charts, still on ES, the new tab's name, "S&P copy",
+selected for editing. Gold is typed over it and Enter keeps it. The cursor
+clicks the five-minute chart, GC is typed and Enter charts it; all three
+charts turn to gold futures together, daily, hourly and five-minute, each
+with its studies.
 
-**Voice.** {dup}A copy for gold starts on Desk. {focus}The charts are linked,
-{sym}so one symbol moves all three.
+**Voice.** {menu}A {dup}copy {name}for gold starts on Desk. {focus}The charts
+are linked, {sym}so one symbol moves all three.
 
-    dup:   cli chartbook duplicate --name Gold --switch
+    menu:  rclick 8% 98%
+    dup:   click 13% 85%
+    name:  type Gold; key Return
     focus: click 63% 72%
     sym:   type GC; key Return
     after: 1.5
