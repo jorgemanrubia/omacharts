@@ -259,7 +259,7 @@ crop: 898,193,763,532   (the whole card, 24px layout margin)
 -->
 {% include figure.html src="/assets/manual/charts/go-to.png" alt="The Go to card with ytd typed, 1D auto on the row under the box, and From 2026/01/01 and To 2026/11/01, marked today" caption="**Go to** with ytd typed." %}
 
-**A date (keeps the window)** starts the chart on that day, as wide as it is now: the same number of bars at the same resolution. Near the latest bar the window runs past it into empty room, as it does when you scroll past the end. The card names the whole window, such as **25 Oct – 31 Oct**.
+**A date (keeps the window)** starts the chart at the beginning of that day and shows as much time as it shows now, at the same resolution. With ten days on screen, `oct 22` shows 22 October to 1 November. Whatever of that is past the latest bar is empty room, as when you scroll past the end, and the bars get wider or narrower to fit it. The card names the whole window, such as **25 Oct – 4 Nov**.
 
 | Typed | Is |
 |---|---|
@@ -278,6 +278,7 @@ Numbers run year, month, day, so `10/11` is 11 October. A day still to come, suc
 | Typed | Shows |
 |---|---|
 | `6m`, `3y`, `2w`, `10d` | The last six months, three years, two weeks or ten days. A small letter counts back from today, and a letter alone is one: `m` is the last month, `q` the last three |
+| `6 months`, `3 years`, `2 wks`, `10 days` | The same, with the unit spelled out or shortened, with or without a space, in any case: `d` `day`, `w` `wk` `week`, `m` `mo` `month`, `q` `qtr` `quarter`, `y` `yr` `year` |
 | `Y`, `M`, `Q`, `W` | The year, month, quarter or week to date. A capital counts whole periods, so `2Y` is this year to date and all of last year |
 | `ytd`, `qtd`, `mtd`, `wtd`, `2ytd` | The same, in any case |
 | `2025` | All of 2025 |
@@ -285,7 +286,7 @@ Numbers run year, month, day, so `10/11` is 11 October. A day still to come, suc
 | `-2w` | The same as `2w` |
 | `all`, `:` | The whole history |
 
-**A custom range** is two ends joined by `:` or `..`, both included. Either end can be left out. An end is a date, a month, a year or a count back such as `-6m`.
+**A custom range** is two ends joined by `:` or `..`, both included, with or without spaces around it. Either end can be left out. An end is anything a date can be, a month, a year, or a count back such as `-6m` or `-6 months`.
 
 | Typed | Shows |
 |---|---|

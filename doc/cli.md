@@ -958,10 +958,11 @@ window, and takes the same text. It is one of three things, and the reply
 says which, then the days the chart shows, the chart it acted on and, when
 the resolution moved, the new one.
 
-**A date (keeps the window)** starts the chart on that day, as wide as it is
-now: the same number of bars at the same resolution. Near the latest bar the
-window runs past it into empty room, as a chart scrolled past its end does,
-and the reply names the whole window. A date is `2026-03-12` or `2026/3/12`;
+**A date (keeps the window)** starts the chart at the beginning of that day
+and shows as much time as it shows now, at the same resolution: with ten days
+on screen, `oct 22` shows 22 October to 1 November. Whatever of that is past
+the latest bar is empty room, as a chart scrolled past its end has, and the
+bars widen or narrow to fit. The reply names the whole window. A date is `2026-03-12` or `2026/3/12`;
 `oct 12`, `12 oct` or `10/12` with no year, the latest one that has passed;
 `mon` for the latest Monday and `2mon` for the one before, any day of the
 week and any count; `last fri`; `today` or `yesterday`; `3 weeks ago`,
@@ -971,7 +972,7 @@ year, month, day, so `10/11` is 11 October. A day still to come, such as
 
 ```
 $ omacharts chart range "oct 12"
-date: 12 Oct – 1 Nov (window kept) on pos:0 NVDA 1h in "Manual"
+date: 12 Oct – 10 Nov (window kept) on pos:0 NVDA 1h in "Manual"
   [exit 0]
 ```
 
@@ -979,15 +980,19 @@ date: 12 Oct – 1 Nov (window kept) on pos:0 NVDA 1h in "Manual"
 months, `3y`, `2w` and `10d` the same, `q` the last three months, and a letter
 alone is one. Capitals count whole periods to date: `Y` is the year to date,
 `2Y` this year and last, and `W`, `M` and `Q` the same; `ytd`, `mtd`, `qtd`,
-`wtd` and `2ytd` say it in any case. `2025` is all of that year, `2026-09`
+`wtd` and `2ytd` say it in any case. The unit can be spelled out or
+shortened, with or without a space, in any case: `3 days`, `2 wks`,
+`6 months`, `2 qtr`, `1 year` are `3d`, `2w`, `6m`, `2q`, `1y`. The same
+spellings work wherever a count and a unit go, `3 days ago` and `-6 months:`
+included. `2025` is all of that year, `2026-09`
 all of that month, and `all` the whole history. `3w` and `3 weeks ago`
 differ: the first is the last three weeks, the second one day. A span counts
 back from the latest bar, so on a Sunday the week to date is the week that
 just traded.
 
-**A custom range** is two ends joined by `:` or `..`, both included, and
-either end can be left out. An end is a date, a month, a year or a count back
-such as `-6m`: `2025:` is from 1 January 2025 to today, `2024:2025-06` from
+**A custom range** is two ends joined by `:` or `..`, both included, with or
+without spaces around it, and either end can be left out. An end is anything
+a date can be, a month, a year or a count back such as `-6m`: `2025:` is from 1 January 2025 to today, `2024:2025-06` from
 the start of 2024 to the end of June 2025, `:2020` from the first bar,
 `oct 1:oct 22` those days and the ones between, `3 weeks ago:` since that
 day, and `-2y:-1y` the year before last. One that starts with a minus goes

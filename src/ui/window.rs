@@ -5561,7 +5561,7 @@ impl Window {
             lasting: {
                 let weak = Rc::downgrade(self);
                 Rc::new(move |range| match weak.upgrade() {
-                    Some(this) => this.as_shown(range, today),
+                    Some(this) => this.as_shown(range),
                     None => range,
                 })
             },
@@ -7820,7 +7820,7 @@ impl Window {
         use omacharts_engine::Range;
         let pane = self.focused_pane();
         let today = chrono::Local::now().date_naive();
-        let range = self.as_shown(range, today).pinned(today);
+        let range = self.as_shown(range).pinned(today);
         let current = pane.timeframe.get();
         let target = self.plan_range(range, forced).timeframe;
         // The chart as it was, so the answer names what the command found.
@@ -7843,15 +7843,14 @@ impl Window {
         format!("{kind}: {}{kept} on {acted_on}{moved}", range.spelled(today))
     }
 
-    /// `range` as the focused chart would show it: a day on its own keeps
-    /// the window it has now, columns and all, and anything else is as it
-    /// says.
-    pub fn as_shown(&self, range: omacharts_engine::Range, today: chrono::NaiveDate) -> omacharts_engine::Range {
-        let omacharts_engine::Range::Day(day) = range else { return range };
-        let view = &self.focused_pane().view;
-        let (Some(columns), Some(start)) = (view.columns_shown(), day.first(today)) else { return range };
-        let end = view.lasting_end(start, columns).unwrap_or(start);
-        range.lasting(columns as u32, (end - start).num_days().max(0) as u32)
+    /// `range` as the focused chart would show it: a day on its own lasts
+    /// as long as the chart shows now, from the start of that day, and
+    /// anything else is as it says.
+    pub fn as_shown(&self, range: omacharts_engine::Range) -> omacharts_engine::Range {
+        match self.focused_pane().view.seconds_shown() {
+            Some(seconds) => range.lasting(seconds),
+            None => range,
+        }
     }
 
     /// The resolution `range` would show at on the focused chart — `forced`,
@@ -7860,7 +7859,7 @@ impl Window {
         use omacharts_engine::range::{bars_in, resolution_for, Fit, AIM_BARS};
         let pane = self.focused_pane();
         let today = chrono::Local::now().date_naive();
-        let range = self.as_shown(range, today);
+        let range = self.as_shown(range);
         let current = pane.timeframe.get();
         let instrument = pane.instrument.borrow().clone();
         let Some(instrument) = instrument else {

@@ -1724,14 +1724,19 @@ impl State {
         let date = |ts: i64| clock.read(ts, utc).map(|at| at.date());
         let Some(today) = date(last.ts) else { return };
         let len = self.bars.len();
-        // A day on its own keeps the window's size from that day on,
-        // running into empty room past the last bar the way a chart
-        // scrolled past its end does, at the same bar width.
-        if let (Range::Lasting(_, columns, _), Some(start)) = (range, range.start(today)) {
-            let columns = (columns as usize).clamp(MIN_VISIBLE, MAX_VISIBLE);
-            let (first, room) = omacharts_engine::range::lasting_view(&self.bars, |bar| bar.ts, start, columns, date);
+        // A day on its own shows from the start of that day for the length
+        // of time that was on screen, into empty room past the last bar when
+        // it gets there, counted as the time axis counts it.
+        if let (Range::Lasting(_, seconds), Some(start)) = (range, range.start(today)) {
+            let (first, columns, room) = omacharts_engine::range::lasting_window(
+                &self.bars,
+                |bar| clock.read(bar.ts, utc),
+                start,
+                seconds,
+                self.timeframe.seconds(),
+            );
             self.lead = 0;
-            self.visible = columns;
+            self.visible = columns.clamp(MIN_VISIBLE, MAX_VISIBLE);
             self.anchored = room > 0;
             self.overhang = room;
             self.first = first.min(len.saturating_sub(1));
@@ -3732,29 +3737,17 @@ impl ChartView {
         Some((day(first)?, day((first + visible).checked_sub(1)?)?))
     }
 
-    /// How many columns the chart spreads across, bars and the empty room
-    /// past them: the window a day typed on its own keeps.
-    pub fn columns_shown(&self) -> Option<usize> {
+    /// How long the chart shows: from the moment at its left edge to the
+    /// one at its right, as the time axis reads them, empty room past the
+    /// last bar included. What a day typed on its own keeps.
+    pub fn seconds_shown(&self) -> Option<i64> {
         let state = self.state.borrow();
-        Some(state.columns()).filter(|columns| *columns > 0)
-    }
-
-    /// The day the last of `columns` from `day` falls on, on this chart:
-    /// its bar's, or past the last bar the moment the time axis gives that
-    /// column.
-    pub fn lasting_end(&self, day: chrono::NaiveDate, columns: usize) -> Option<chrono::NaiveDate> {
-        let state = self.state.borrow();
-        let utc = state.timeframe.is_calendar();
-        let clock = state.clock;
-        let timeframe = state.timeframe;
-        omacharts_engine::range::lasting_end(
-            &state.bars,
-            |bar| bar.ts,
-            day,
-            columns,
-            |ts| clock.read(ts, utc).map(|at| at.date()),
-            |ts, ahead| timeframe.shift(ts, ahead),
-        )
+        let columns = state.columns() as i64;
+        if columns == 0 {
+            return None;
+        }
+        let left = state.left_edge();
+        Some(time_at_column(&state, left + columns - 1)? - time_at_column(&state, left)?)
     }
 
     /// The day of the first bar the chart holds.

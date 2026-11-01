@@ -11,7 +11,7 @@
 //! looking at, and on a Sunday the week to date is the week that just
 //! traded.
 
-use chrono::{Datelike, Days, Months, NaiveDate, Weekday};
+use chrono::{Datelike, Days, Months, NaiveDate, NaiveDateTime, Weekday};
 
 use crate::bars::Timeframe;
 
@@ -32,12 +32,12 @@ pub enum Range {
     /// One day: a date, `mon`, `10/12`, `yesterday`, `3 weeks ago`. Always
     /// one of the [`End`]s that is a day.
     Day(End),
-    /// From one day on, as wide as the chart was when it was asked: a
-    /// [`Range::Day`] typed on a chart, which goes to that day and keeps
-    /// the window the same size. The day, then the columns across the
-    /// chart, then how many days on its last column falls, past the last
-    /// bar too, where the window runs into empty room.
-    Lasting(End, u32, u32),
+    /// From one day on, for as long as the chart showed when it was asked:
+    /// a [`Range::Day`] typed on a chart, which starts the chart at the
+    /// beginning of that day and keeps the length of time on screen. The
+    /// day, then that length in seconds, from the first moment on screen
+    /// to the last as the time axis reads them, empty room included.
+    Lasting(End, i64),
     /// From one end to the other, written the way pandas slices dates:
     /// `2025:` from 1 January 2025 to today, `2024:2025-06` the two whole,
     /// `:2020` from the first bar, `-2y:-1y` the year before last. Both ends
@@ -83,21 +83,11 @@ impl End {
     pub fn parse(text: &str) -> Option<End> {
         let text = text.trim();
         if let Some(ago) = text.strip_prefix('-') {
-            let split = ago.find(|c: char| !c.is_ascii_digit())?;
-            let (digits, unit) = ago.split_at(split);
-            let count: u32 = match digits {
-                "" => 1,
-                digits => digits.parse().ok().filter(|&n| n > 0 && n <= 100)?,
-            };
-            let span = match unit.to_ascii_lowercase().as_str() {
-                "d" => Span::Day,
-                "w" => Span::Week,
-                "m" => Span::Month,
-                "y" => Span::Year,
-                // `-2mon` is `2mon`: a weekday already counts back.
-                _ => return one_day(ago).filter(|end| matches!(end, End::Weekday(..))),
-            };
-            return Some(End::Ago(count, span));
+            if let Some((count, span)) = count_and_unit(ago).filter(|_| !ago.trim().is_empty()) {
+                return Some(End::Ago(count, span));
+            }
+            // `-2mon` is `2mon`: a weekday already counts back.
+            return one_day(ago).filter(|end| matches!(end, End::Weekday(..)));
         }
         if let Some(day) = one_day(text) {
             return Some(day);
@@ -238,11 +228,11 @@ fn one_day(text: &str) -> Option<End> {
         _ => {}
     }
     if let Some(rest) = lower.strip_suffix("ago") {
-        let (count, span) = so_long(rest)?;
+        let (count, span) = count_and_unit(rest).filter(|_| !rest.trim().is_empty())?;
         return Some(End::Before(count, span));
     }
     if let Some(rest) = lower.strip_suffix("from now").or_else(|| lower.strip_prefix("in ")) {
-        let (count, span) = so_long(rest)?;
+        let (count, span) = count_and_unit(rest).filter(|_| !rest.trim().is_empty())?;
         return Some(End::After(count, span));
     }
     if let Some(rest) = lower.strip_prefix("last ") {
@@ -308,26 +298,43 @@ fn one_day(text: &str) -> Option<End> {
     }
 }
 
-/// A count and a unit, the way `ago` follows them: `3 weeks`, `3w`,
-/// `a month`, `1 day`. `m` is a month, as it is everywhere else here.
-fn so_long(text: &str) -> Option<(u32, Span)> {
-    let text = text.trim();
-    let (count, unit) = match text.strip_prefix("an ").or_else(|| text.strip_prefix("a ")) {
+/// A count and a unit, read the same wherever the grammar takes one: a
+/// span (`3d`), so long ago (`3 days ago`), an end of a slice (`-3 d:`).
+/// The count is digits, or `a` or `an` for one, or nothing for one; then
+/// any spaces; then the unit in any case and any of its spellings:
+///
+/// - `d`, `dy`, `day`, `days`
+/// - `w`, `wk`, `wks`, `week`, `weeks`
+/// - `m`, `mo`, `mos`, `mth`, `mths`, `month`, `months`
+/// - `q`, `qtr`, `qtrs`, `quarter`, `quarters`, three months each
+/// - `y`, `yr`, `yrs`, `year`, `years`
+///
+/// `m` is a month, as it is everywhere in this grammar. A capital alone,
+/// `Y`, `M`, `Q`, `W`, is a period to date, which [`Range::parse`] reads
+/// before this.
+fn count_and_unit(text: &str) -> Option<(u32, Span)> {
+    let lower = text.trim().to_ascii_lowercase();
+    let (count, unit) = match lower.strip_prefix("an ").or_else(|| lower.strip_prefix("a ")) {
         Some(unit) => (1, unit.trim()),
         None => {
-            let split = text.find(|c: char| !c.is_ascii_digit())?;
-            let (digits, unit) = text.split_at(split);
-            (digits.parse().ok().filter(|&n| n > 0 && n <= 100)?, unit.trim())
+            let split = lower.find(|c: char| !c.is_ascii_digit()).unwrap_or(lower.len());
+            let (digits, unit) = lower.split_at(split);
+            let count = match digits {
+                "" => 1,
+                digits => digits.parse().ok().filter(|&n| n > 0 && n <= 100)?,
+            };
+            (count, unit.trim())
         }
     };
-    let span = match unit {
-        "d" | "day" | "days" => Span::Day,
-        "w" | "wk" | "wks" | "week" | "weeks" => Span::Week,
-        "m" | "mo" | "mos" | "month" | "months" => Span::Month,
-        "y" | "yr" | "yrs" | "year" | "years" => Span::Year,
+    let (times, span) = match unit {
+        "d" | "dy" | "day" | "days" => (1, Span::Day),
+        "w" | "wk" | "wks" | "week" | "weeks" => (1, Span::Week),
+        "m" | "mo" | "mos" | "mth" | "mths" | "month" | "months" => (1, Span::Month),
+        "q" | "qtr" | "qtrs" | "quarter" | "quarters" => (3, Span::Month),
+        "y" | "yr" | "yrs" | "year" | "years" => (1, Span::Year),
         _ => return None,
     };
-    Some((count, span))
+    Some((count * times, span))
 }
 
 /// `Monday`, for saying a weekday.
@@ -493,7 +500,7 @@ impl Range {
                 None => format!("{year}-{month:02}"),
             },
             Range::Day(day) => day.words(),
-            Range::Lasting(day, _, days) => match days {
+            Range::Lasting(day, seconds) => match seconds / 86_400 {
                 0 => day.words(),
                 1 => format!("{} and the day after", day.words()),
                 days => format!("{} and {days} days on", day.words()),
@@ -558,6 +565,7 @@ impl Range {
         }
         let split = text.find(|c: char| !c.is_ascii_digit())?;
         let (digits, unit) = text.split_at(split);
+        let unit = unit.trim();
         let count: u32 = match digits {
             "" => 1,
             digits => digits.parse().ok().filter(|&n| n > 0 && n <= 100)?,
@@ -577,14 +585,7 @@ impl Range {
             "Y" => return to_date(Period::Year),
             _ => {}
         }
-        let (count, span) = match unit.to_ascii_lowercase().as_str() {
-            "d" | "day" | "days" => (count, Span::Day),
-            "w" | "wk" | "week" | "weeks" => (count, Span::Week),
-            "m" | "mo" | "month" | "months" => (count, Span::Month),
-            "q" => (count * 3, Span::Month),
-            "y" | "yr" | "year" | "years" => (count, Span::Year),
-            _ => return None,
-        };
+        let (count, span) = count_and_unit(text)?;
         Some(Range::Back(count, span))
     }
 
@@ -627,17 +628,21 @@ impl Range {
                 .checked_add_months(Months::new(1))?
                 .pred_opt(),
             Range::Day(day) => day.last(today),
-            Range::Lasting(day, _, days) => day.first(today)?.checked_add_days(Days::new(u64::from(days))),
+            Range::Lasting(day, seconds) => {
+                let from = day.first(today)?.and_time(chrono::NaiveTime::MIN);
+                Some((from + chrono::Duration::seconds(seconds.max(0))).date())
+            }
             _ => None,
         }
     }
 
-    /// A day on its own as a chart shows it: from that day across
-    /// `columns`, as many as the chart has now, its last landing `days`
-    /// on. Anything else is as it was: a range says how long it is.
-    pub fn lasting(self, columns: u32, days: u32) -> Range {
+    /// A day on its own as a chart shows it: from the start of that day for
+    /// `seconds`, the length of time the chart shows now, so it ends that
+    /// long after, wherever it falls. Anything else is as it was: a range
+    /// says how long it is.
+    pub fn lasting(self, seconds: i64) -> Range {
         match self {
-            Range::Day(day) => Range::Lasting(day, columns, days),
+            Range::Day(day) => Range::Lasting(day, seconds.max(0)),
             range => range,
         }
     }
@@ -659,7 +664,7 @@ impl Range {
         };
         match self {
             Range::Day(day) => Range::Day(pin(day)),
-            Range::Lasting(day, columns, days) => Range::Lasting(pin(day), columns, days),
+            Range::Lasting(day, seconds) => Range::Lasting(pin(day), seconds),
             Range::Slice(from, to) => Range::Slice(from.map(pin), to.map(pin)),
             range => range,
         }
@@ -938,42 +943,32 @@ fn weekdays(first: NaiveDate, last: NaiveDate) -> i64 {
     span / 7 * 5 + rest
 }
 
-/// Where a [`Range::Lasting`] lays a window of `columns` over `bars`, in
-/// order and stamped by `stamp`: from the first bar on or after `day`, read
-/// on the chart's clock by `day_of`, and how many of the columns are empty
-/// room past the last bar. The window keeps its size however near the
-/// last bar it starts, the way a chart scrolled past its end does, and its
-/// start stays on the day asked for.
-pub fn lasting_view<T>(
+/// Where a [`Range::Lasting`] lands on `bars`, each read on the chart's
+/// clock by `at`: the first bar on or after `day`, the columns from there to
+/// the moment `seconds` after the day began, and how many of those columns
+/// are empty room past the last bar, one to each `step` seconds as the time
+/// axis counts them there. The start stays on the day however near the last
+/// bar it is, and the columns are whatever that stretch of time takes, so the
+/// bars widen or narrow to show exactly it.
+pub fn lasting_window<T>(
     bars: &[T],
-    stamp: impl Fn(&T) -> i64,
+    at: impl Fn(&T) -> Option<NaiveDateTime>,
     day: NaiveDate,
-    columns: usize,
-    day_of: impl Fn(i64) -> Option<NaiveDate>,
-) -> (usize, usize) {
-    let first = bars.partition_point(|bar| day_of(stamp(bar)).is_some_and(|d| d < day));
-    (first, (first + columns).saturating_sub(bars.len()))
-}
-
-/// The day the last of `columns` from `day` falls on: its bar's, or past
-/// the last bar, the moment `past` gives for so many columns after the
-/// last bar's stamp, which is how the chart's own axis counts its empty
-/// room, a column to each step of the resolution.
-pub fn lasting_end<T>(
-    bars: &[T],
-    stamp: impl Fn(&T) -> i64,
-    day: NaiveDate,
-    columns: usize,
-    day_of: impl Fn(i64) -> Option<NaiveDate>,
-    past: impl Fn(i64, i64) -> i64,
-) -> Option<NaiveDate> {
-    let (first, _) = lasting_view(bars, &stamp, day, columns, &day_of);
-    let at = first + columns.max(1) - 1;
-    if let Some(bar) = bars.get(at) {
-        return day_of(stamp(bar));
+    seconds: i64,
+    step: i64,
+) -> (usize, usize, usize) {
+    let from = day.and_time(chrono::NaiveTime::MIN);
+    let until = from + chrono::Duration::seconds(seconds.max(0));
+    let first = bars.partition_point(|bar| at(bar).is_some_and(|t| t < from));
+    let end = bars.partition_point(|bar| at(bar).is_some_and(|t| t <= until));
+    if end < bars.len() {
+        return (first, end.saturating_sub(first).max(1), 0);
     }
-    let last = bars.len().checked_sub(1)?;
-    day_of(past(stamp(&bars[last]), (at - last) as i64)).map(|end| end.max(day))
+    let room = match bars.last().and_then(&at) {
+        Some(last) if step > 0 => ((until - last).num_seconds().max(0) / step) as usize,
+        _ => 0,
+    };
+    (first, bars.len().saturating_sub(first) + room, room)
 }
 
 /// The fewest and the most bars a range aims to land on when the resolution
@@ -1527,28 +1522,35 @@ mod tests {
         assert_eq!(Range::parse("oct 11:oct 21").map(|r| r.spelled(today)), Some("11 Oct – 21 Oct".into()));
     }
 
-    /// A day typed on a chart keeps the window: its columns, and the days
-    /// they come to, which it names whole, past today too.
+    /// A date typed on a chart lasts as long as the chart shows: with ten
+    /// days on screen, every way of naming a day starts there and ends ten
+    /// days on, wherever that falls, today and past it included.
     #[test]
-    fn a_day_on_a_chart_keeps_the_window() {
+    fn a_date_on_a_chart_lasts_as_long_as_the_view() {
         let today = day(2026, 11, 1);
-        let ten = Range::parse("oct 22").map(|r| r.lasting(60, 10));
-        assert_eq!(ten.and_then(|r| r.start(today)), Some(day(2026, 10, 22)));
-        assert_eq!(ten.and_then(|r| r.end(today)), Some(day(2026, 11, 1)));
-        assert_eq!(ten.map(|r| r.spelled(today)), Some("22 Oct – 1 Nov".into()));
-        assert_eq!(ten.map(|r| r.key()), Some("10-22".into()), "it reads back as the day");
-        // Running past today it is still the window, never since.
-        let week = Range::parse("1 week ago").map(|r| r.lasting(60, 10));
+        let ten = 10 * 86_400;
+        for text in [
+            "2 days ago", "3 days ago", "5 days ago", "10/23", "yesterday", "last fri", "fri", "1 week ago",
+            "on the 28 oct", "2026/10/22", "today",
+        ] {
+            let range = Range::parse(text).map(|r| r.lasting(ten)).unwrap_or(Range::All);
+            let (start, end) = (range.start(today), range.end(today));
+            assert!(matches!(range, Range::Lasting(..)), "{text} is a date");
+            assert_eq!(end.zip(start).map(|(end, start)| (end - start).num_days()), Some(10), "{text}");
+            assert!(range.holds_days(today), "{text}");
+            assert!(!range.spelled(today).starts_with("since"), "{text} names its window");
+        }
+        let week = Range::parse("1 week ago").map(|r| r.lasting(ten));
         assert_eq!(week.map(|r| r.spelled(today)), Some("25 Oct – 4 Nov".into()));
-        assert!(week.is_some_and(|r| r.holds_days(today)));
-        let one = Range::parse("oct 22").map(|r| r.lasting(6, 0));
-        assert_eq!(one.map(|r| r.spelled(today)), Some("22 Oct".into()));
-        // A slice open at the end still runs to today.
-        assert_eq!(Range::parse("1 week ago:").map(|r| r.lasting(60, 10).spelled(today)), Some("since 25 Oct".into()));
-        // Ranges keep their own length.
-        assert_eq!(Range::parse("2025").map(|r| r.lasting(60, 10)), Some(Range::Year(2025)));
-        assert_eq!(Range::parse("1w").map(|r| r.lasting(60, 10)), Some(Range::Back(1, Span::Week)));
-        assert_eq!(Range::parse("oct 1:").map(|r| r.lasting(60, 10)), Range::parse("oct 1:"));
+        assert_eq!(week.map(|r| r.key()), Some("1w ago".into()), "it reads back as the day");
+        // Less than a day on screen is the day itself.
+        assert_eq!(Range::parse("oct 22").map(|r| r.lasting(6 * 3_600).spelled(today)), Some("22 Oct".into()));
+        // A custom range open at the end still runs to today.
+        assert_eq!(Range::parse("1 week ago:").map(|r| r.lasting(ten).spelled(today)), Some("since 25 Oct".into()));
+        // Spans and ranges keep their own length.
+        assert_eq!(Range::parse("2025").map(|r| r.lasting(ten)), Some(Range::Year(2025)));
+        assert_eq!(Range::parse("1w").map(|r| r.lasting(ten)), Some(Range::Back(1, Span::Week)));
+        assert_eq!(Range::parse("oct 1:").map(|r| r.lasting(ten)), Range::parse("oct 1:"));
     }
 
     /// A day named on the calendar is pinned to its date before a chart,
@@ -1570,110 +1572,111 @@ mod tests {
         assert_eq!(pinned("oct 2:oct 12").map(|r| r.short_key(2026)), Some("10-02:10-12".into()));
         assert_eq!(pinned("2025/10/22").map(|r| r.short_key(2026)), Some("2025-10-22".into()));
         assert_eq!(pinned("ytd").map(|r| r.short_key(2026)), Some("YTD".into()));
-        let lasting = Range::parse("1 week ago").map(|r| r.lasting(60, 10).pinned(sunday));
-        assert_eq!(lasting, Some(Range::Lasting(End::Day(day(2026, 10, 25)), 60, 10)));
+        let lasting = Range::parse("1 week ago").map(|r| r.lasting(86_400).pinned(sunday));
+        assert_eq!(lasting, Some(Range::Lasting(End::Day(day(2026, 10, 25)), 86_400)));
     }
 
-    /// A column past the last bar a day on, as a daily chart's axis counts.
-    fn daily(ts: i64, columns: i64) -> i64 {
-        ts + columns * 86_400
-    }
-
-    fn utc_day(ts: i64) -> Option<NaiveDate> {
-        chrono::DateTime::from_timestamp(ts, 0).map(|t| t.date_naive())
+    fn utc(ts: i64) -> Option<NaiveDateTime> {
+        chrono::DateTime::from_timestamp(ts, 0).map(|t| t.naive_utc())
     }
 
     fn at(date: NaiveDate, hour: i64) -> i64 {
         date.and_hms_opt(0, 0, 0).map_or(0, |t| t.and_utc().timestamp()) + hour * 3_600
     }
 
-    /// Daily bars, every day: a window of eleven from 22 October is the
-    /// 22nd to 1 November, all of it bars.
-    #[test]
-    fn a_lasting_day_on_daily_bars() {
-        let times: Vec<i64> = (0..60).map(|d| at(day(2026, 10, 1), 24 * d)).collect();
-        let (first, room) = lasting_view(&times, |t| *t, day(2026, 10, 22), 11, utc_day);
-        assert_eq!((utc_day(times[first]), room), (Some(day(2026, 10, 22)), 0));
-        assert_eq!(lasting_end(&times, |t| *t, day(2026, 10, 22), 11, utc_day, daily), Some(day(2026, 11, 1)));
-    }
-
-    /// Hourly bars of a session, 14:00 to 20:00: fourteen columns from
-    /// the open are that day and the next.
-    #[test]
-    fn a_lasting_day_on_intraday_bars() {
-        let times: Vec<i64> = (0..10)
-            .flat_map(|d| (14..=20).map(move |h| at(day(2026, 10, 19), 24 * d + h)))
-            .collect();
-        let (first, room) = lasting_view(&times, |t| *t, day(2026, 10, 21), 14, utc_day);
-        assert_eq!((times[first], room), (at(day(2026, 10, 21), 14), 0));
-        assert_eq!(lasting_end(&times, |t| *t, day(2026, 10, 21), 14, utc_day, daily), Some(day(2026, 10, 22)));
-    }
-
-    /// A stock's weekdays: a Saturday asked for starts on the Monday's bar,
-    /// and the window is as many bars as before, over the next weekend.
-    #[test]
-    fn a_lasting_day_across_a_weekend() {
-        let times: Vec<i64> = (0..40)
-            .map(|d| day(2026, 10, 1) + Days::new(d))
+    /// A stock's weekdays from 21 September to Friday 30 October, a bar
+    /// every `step` seconds from 14:00 to 20:59.
+    fn sessions(step: i64) -> Vec<i64> {
+        (0..40)
+            .map(|d| day(2026, 9, 21) + Days::new(d))
             .filter(|d| d.weekday().num_days_from_monday() < 5)
-            .map(|d| at(d, 0))
-            .collect();
-        let (first, room) = lasting_view(&times, |t| *t, day(2026, 10, 17), 6, utc_day);
-        assert_eq!((utc_day(times[first]), room), (Some(day(2026, 10, 19)), 0));
-        assert_eq!(lasting_end(&times, |t| *t, day(2026, 10, 17), 6, utc_day, daily), Some(day(2026, 10, 26)));
+            .flat_map(|d| (0..7 * 3_600 / step).map(move |i| at(d, 14) + i * step))
+            .collect()
     }
 
-    /// Near the last bar the window keeps its size: the start stays on the
-    /// day, and what is left of it is empty room past the last bar, its
-    /// days reckoned on at the last bar's step.
-    #[test]
-    fn a_lasting_day_runs_past_the_last_bar_at_full_width() {
-        // A stock's weekdays to Friday 30 October; today is Sunday 1 November.
-        let times: Vec<i64> = (0..30)
-            .map(|d| day(2026, 10, 1) + Days::new(d))
-            .filter(|d| d.weekday().num_days_from_monday() < 5)
-            .map(|d| at(d, 0))
-            .collect();
+    /// The first and last moment on screen, the window as
+    /// [`lasting_window`] gives it, and what the card calls it.
+    type Shown = (i64, i64, (usize, usize, usize), String);
+
+    /// A date as the window shows it: made a [`Range::Lasting`] of
+    /// `seconds` from the calendar's today, as the card and `chart range`
+    /// do, pinned to its date, and laid over `bars` from the chart's own
+    /// today, its last bar's, as the chart does. The first and last moment
+    /// its columns stand for, as the time axis reads them, and what the card
+    /// and the command call it.
+    fn shown(text: &str, bars: &[i64], seconds: i64, step: i64) -> Option<Shown> {
         let today = day(2026, 11, 1);
-        let columns = 8;
-        let monday = times.iter().position(|&t| utc_day(t) == Some(day(2026, 10, 26))).unwrap_or(0);
-        let friday = times.iter().position(|&t| utc_day(t) == Some(day(2026, 10, 23))).unwrap_or(0);
-        // 1 week ago, Sunday 25 October: Monday's bar and the four after,
-        // then three columns of room. 10/23: six bars, then two. Yesterday,
-        // a Saturday after the last bar: all of it room.
-        for (text, first, room) in [("1 week ago", monday, 3), ("10/23", friday, 2), ("yesterday", times.len(), 8)] {
-            let start = Range::parse(text).and_then(|r| r.pinned(today).start(today)).unwrap_or(today);
-            let view = lasting_view(&times, |t| *t, start, columns, utc_day);
-            assert_eq!(view, (first, room), "{text}");
-            assert_eq!(first + columns - room, times.len().max(first), "{text} fills the window up to the last bar");
-            let end = lasting_end(&times, |t| *t, start, columns, utc_day, daily);
-            assert!(end.is_some_and(|end| end > day(2026, 10, 30)), "{text} ends past the last bar: {end:?}");
+        let range = Range::parse(text)?.lasting(seconds).pinned(today);
+        let chart_today = bars.last().and_then(|&ts| utc(ts)).map(|t| t.date())?;
+        let start = range.start(chart_today)?;
+        let window = lasting_window(bars, |&ts| utc(ts), start, seconds, step);
+        let (first, columns, _) = window;
+        let moment = |column: usize| match bars.get(column) {
+            Some(&ts) => ts,
+            None => bars[bars.len() - 1] + (column + 1 - bars.len()) as i64 * step,
+        };
+        let left = moment(first.min(bars.len() - 1));
+        let right = moment((first + columns).max(1) - 1).max(left);
+        Some((left, right, window, range.spelled(today)))
+    }
+
+    /// Whatever the date and the resolution, the chart shows from the start
+    /// of that day to as long after it as the chart showed before: its
+    /// columns begin on the day and end at the last moment inside that
+    /// stretch, bars or the empty room past the last bar alike.
+    #[test]
+    fn a_date_shows_exactly_its_stretch_at_any_resolution() {
+        for (step, length) in [(900, 2 * 86_400), (3_600, 10 * 86_400), (86_400, 30 * 86_400)] {
+            let bars = sessions(step.min(3_600));
+            let bars: Vec<i64> = match step {
+                86_400 => bars.iter().filter(|&&ts| (ts - 14 * 3_600).rem_euclid(86_400) == 0).copied().collect(),
+                _ => bars,
+            };
+            for (text, date) in [
+                ("2 days ago", day(2026, 10, 30)),
+                ("3 days ago", day(2026, 10, 29)),
+                ("5 days ago", day(2026, 10, 27)),
+                ("10/23", day(2026, 10, 23)),
+                ("last fri", day(2026, 10, 30)),
+                ("2 weeks ago", day(2026, 10, 18)),
+            ] {
+                let Some((left, right, (first, columns, room), _)) = shown(text, &bars, length, step) else {
+                    panic!("{text} at {step}s");
+                };
+                let from = at(date, 0);
+                let until = from + length;
+                assert!(left >= from, "{text} at {step}s starts on its day");
+                assert!(first == 0 || bars[first - 1] < from, "{text} at {step}s starts at the day's first bar");
+                assert!(right <= until, "{text} at {step}s ends inside its stretch");
+                let next = match room {
+                    0 => bars.get(first + columns).copied(),
+                    _ => Some(right + step),
+                };
+                assert!(next.is_none_or(|next| next > until), "{text} at {step}s ends {length}s after its day began");
+                assert_eq!(room > 0, until >= bars[bars.len() - 1] + step, "{text} at {step}s: room only past the last bar");
+            }
         }
-        // The three columns of room past Friday's bar go on a day each, as
-        // the chart's axis counts them: Saturday to Monday.
-        assert_eq!(lasting_end(&times, |t| *t, day(2026, 10, 25), columns, utc_day, daily), Some(day(2026, 11, 2)));
     }
 
-    /// The range as held, the first bar and the room past the last, the
-    /// window's last day, and what the card and the command call it.
-    type Shown = (Range, (usize, usize), Option<NaiveDate>, String);
+    /// A Saturday: the stretch starts on the Saturday, which has no bars,
+    /// so the first column is Monday's first bar, and it ends where the
+    /// length of time says, over the next weekend too.
+    #[test]
+    fn a_date_on_a_weekend_keeps_its_stretch() {
+        let bars = sessions(3_600);
+        let (left, right, _, spelled) = shown("10/24", &bars, 7 * 86_400, 3_600).unwrap_or_default();
+        assert_eq!(left, at(day(2026, 10, 26), 14), "Monday's first bar");
+        assert_eq!(right, at(day(2026, 10, 31), 0), "four columns of room past Friday's last bar, to Saturday 31 October");
+        assert_eq!(spelled, "24 Oct – 31 Oct");
+    }
 
-    /// A day as the window shows one: the card or `chart range` makes it a
-    /// [`Range::Lasting`] from the calendar's today, the window pins it to
-    /// its date, and the chart lays it out from its own today, its last
-    /// bar's. Every step is the one `Window::as_shown` and `show_range_at`
-    /// take, so two texts for the same day have to come out the same.
-    fn as_the_window_shows(text: &str, bars: &[i64], columns: usize) -> Option<Shown> {
-        let today = day(2026, 11, 1);
-        let range = Range::parse(text)?;
-        let Range::Day(end) = range else { return None };
-        let start = end.first(today)?;
-        let last = lasting_end(bars, |t| *t, start, columns, utc_day, |ts, n| ts + n * 3_600)?;
-        let range = range.lasting(columns as u32, (last - start).num_days() as u32).pinned(today);
-        let chart_today = bars.last().and_then(|&ts| utc_day(ts))?;
-        let view = lasting_view(bars, |t| *t, range.start(chart_today)?, columns, utc_day);
-        let end = lasting_end(bars, |t| *t, range.start(chart_today)?, columns, utc_day, |ts, n| ts + n * 3_600);
-        Some((range, view, end, range.spelled(today)))
+    /// Wholly past the last bar, all of the stretch is empty room, counted
+    /// at the resolution's step.
+    #[test]
+    fn a_date_past_the_last_bar_is_all_room() {
+        let bars = sessions(3_600);
+        let (first, columns, room) = lasting_window(&bars, |&ts| utc(ts), day(2026, 10, 31), 86_400, 3_600);
+        assert_eq!((first, columns, room), (bars.len(), 28, 28), "20:00 Friday to midnight Saturday is 28 hours");
     }
 
     /// Every way of saying a day goes through the same window as the date
@@ -1681,18 +1684,13 @@ mod tests {
     /// the last bar's day, and shows exactly what `10/30` shows; so for
     /// weeks back, yesterday, last Friday and a weekday alone.
     #[test]
-    fn a_relative_day_keeps_the_window_exactly_as_its_date_does() {
-        // Hourly bars of a stock's sessions, 14:00 to 20:00, to Friday 30 October.
-        let bars: Vec<i64> = (0..40)
-            .map(|d| day(2026, 9, 21) + Days::new(d))
-            .filter(|d| d.weekday().num_days_from_monday() < 5)
-            .flat_map(|d| (14..=20).map(move |h| at(d, h)))
-            .collect();
-        let columns = 70;
+    fn a_relative_day_shows_exactly_what_its_date_does() {
+        let bars = sessions(900);
+        let length = 2 * 86_400;
         for (relative, fixed) in [
             ("2 days ago", "10/30"),
             ("3 days ago", "10/29"),
-            ("4 days ago", "10/28"),
+            ("5 days ago", "10/27"),
             ("2d ago", "2026/10/30"),
             ("1 week ago", "10/25"),
             ("a week ago", "oct 25"),
@@ -1702,15 +1700,82 @@ mod tests {
             ("fri", "10/30"),
             ("on the 28 oct", "10/28"),
         ] {
-            let a = as_the_window_shows(relative, &bars, columns);
-            let b = as_the_window_shows(fixed, &bars, columns);
+            let a = shown(relative, &bars, length, 900);
             assert!(a.is_some(), "{relative} reads as a day");
-            assert_eq!(a, b, "{relative} and {fixed}");
+            assert_eq!(a, shown(fixed, &bars, length, 900), "{relative} and {fixed}");
+            let (_, _, _, spelled) = a.unwrap_or_default();
+            assert!(spelled.contains(" – "), "{relative} names its whole stretch: {spelled}");
         }
-        // And the window is the full width: 2 days ago is Friday's seven
-        // bars, then the rest as room past the last bar.
-        let (_, (first, room), _, spelled) = as_the_window_shows("2 days ago", &bars, columns).unwrap_or((Range::All, (0, 0), None, String::new()));
-        assert_eq!((bars.len() - first, room), (7, columns - 7));
-        assert_eq!(spelled, "30 Oct – 2 Nov");
+    }
+
+    /// A count and a unit read the same everywhere one is taken: as a span,
+    /// so long ago, and as either end of a custom range, with `:` or `..`
+    /// and with or without spaces around it, in the From and To boxes too.
+    #[test]
+    fn a_count_and_a_unit_read_the_same_in_every_place() {
+        let units: [(&[&str], u32, Span); 5] = [
+            (&["d", " d", "dy", "day", " days", " Days", "DAYS"], 3, Span::Day),
+            (&["w", " w", "wk", "wks", " week", " weeks", " Weeks"], 3, Span::Week),
+            (&["m", " m", "mo", "mos", "mth", " month", " months", " Months"], 3, Span::Month),
+            (&["q", " q", "qtr", "qtrs", " quarter", " quarters"], 9, Span::Month),
+            (&["y", " y", "yr", "yrs", " year", " years", " YEARS"], 3, Span::Year),
+        ];
+        for (spellings, count, span) in units {
+            for unit in spellings {
+                let said = format!("3{unit}");
+                assert_eq!(Range::parse(&said), Some(Range::Back(count, span)), "{said} as a span");
+                assert_eq!(Range::parse(&format!("-{said}")), Some(Range::Back(count, span)), "-{said}");
+                let ago = End::Before(count, span);
+                assert_eq!(Range::parse(&format!("{said} ago")), Some(Range::Day(ago)), "{said} ago");
+                assert_eq!(End::parse(&format!("{said} ago")), Some(ago), "{said} ago in From or To");
+                let back = End::Ago(count, span);
+                assert_eq!(End::parse(&format!("-{said}")), Some(back), "-{said} in From or To");
+                for (text, range) in [
+                    (format!("-{said}:"), Range::Slice(Some(back), None)),
+                    (format!("-{said} .."), Range::Slice(Some(back), None)),
+                    (format!(":-{said}"), Range::Slice(None, Some(back))),
+                    (format!(".. -{said}"), Range::Slice(None, Some(back))),
+                    (format!("{said} ago:"), Range::Slice(Some(ago), None)),
+                    (format!("{said} ago ..{said} ago"), Range::Slice(Some(ago), Some(ago))),
+                    (format!(" : {said} ago"), Range::Slice(None, Some(ago))),
+                ] {
+                    assert_eq!(Range::parse(&text), Some(range), "{text}");
+                }
+            }
+        }
+        // With a word for the unit, as with a letter.
+        for (words, letters) in [("3 days", "3d"), ("2 weeks", "2w"), ("6 months", "6m"), ("1 year", "1y"), ("2 quarters", "2q")] {
+            assert_eq!(Range::parse(words), Range::parse(letters), "{words}");
+            assert!(Range::parse(words).is_some(), "{words}");
+        }
+        // A capital alone is still a period to date.
+        assert_eq!(Range::parse("3M"), Some(Range::ToDate(3, Period::Month)));
+        assert_eq!(Range::parse("3 Y"), Some(Range::ToDate(3, Period::Year)));
+        assert_eq!(Range::parse("3 days ago").map(|r| matches!(r, Range::Day(_))), Some(true));
+    }
+
+    /// Every way of naming a day works alone and at either end of a custom
+    /// range, with `:` or `..`, spaced or not, and in From and To.
+    #[test]
+    fn a_day_reads_the_same_in_every_place() {
+        for text in [
+            "oct 22", "22 oct", "october 22", "22 october 2025", "10/22", "2026/10/22", "2026-10-22", "3 weeks ago",
+            "3w ago", "a week ago", "yesterday", "today", "last fri", "fri", "2mon", "on oct 22", "on the 22 oct",
+        ] {
+            let end = End::parse(text).unwrap_or_else(|| panic!("{text} in From or To"));
+            assert_eq!(Range::parse(text), Some(Range::Day(end)), "{text} alone");
+            for (slice, range) in [
+                (format!("{text}:"), Range::Slice(Some(end), None)),
+                (format!("{text} :"), Range::Slice(Some(end), None)),
+                (format!("{text}.."), Range::Slice(Some(end), None)),
+                (format!("{text} .. "), Range::Slice(Some(end), None)),
+                (format!(":{text}"), Range::Slice(None, Some(end))),
+                (format!(".. {text}"), Range::Slice(None, Some(end))),
+                (format!("{text} : {text}"), Range::Slice(Some(end), Some(end))),
+                (format!("{text}..{text}"), Range::Slice(Some(end), Some(end))),
+            ] {
+                assert_eq!(Range::parse(&slice), Some(range), "{slice}");
+            }
+        }
     }
 }

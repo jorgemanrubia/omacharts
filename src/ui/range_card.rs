@@ -51,7 +51,8 @@ type PlanFn = Rc<dyn Fn(Range, Option<Timeframe>) -> Plan>;
 type OnDay = Rc<dyn Fn(NaiveDate)>;
 
 impl Context {
-    /// A day on its own as the chart would show it, as wide as it is now.
+    /// A day on its own as the chart would show it, for as long as it shows
+    /// now.
     fn on_screen(&self, range: Range) -> Range {
         (self.lasting)(range)
     }
@@ -62,8 +63,8 @@ pub struct Context {
     pub today: NaiveDate,
     /// The first and last day on screen now.
     pub showing: (NaiveDate, NaiveDate),
-    /// A day typed on its own as the chart would show it: from that day,
-    /// as wide as the chart is now.
+    /// A day typed on its own as the chart would show it: from the start of
+    /// that day, for as long as the chart shows now.
     pub lasting: Rc<dyn Fn(Range) -> Range>,
     /// The first day the series holds, for a range that starts with it.
     pub first: NaiveDate,
@@ -764,7 +765,7 @@ impl RangeCard {
                     (
                         "A span",
                         &[
-                            ("6m|3w", "the last 6 months, 3 weeks"),
+                            ("6m|3 weeks", "the last 6 months, 3 weeks"),
                             ("ytd|mtd", "this year, this month so far"),
                             ("2025|2025/03", "all of 2025, March 2025"),
                             ("all", "the whole history"),
@@ -781,7 +782,7 @@ impl RangeCard {
                     ),
                 ],
                 &[
-                    "A date starts the chart on that day, as wide as it is now. 3 weeks ago is a date; 3w is a span.",
+                    "A date starts the chart on that day for as long as it shows now. 3 weeks ago is a date; 3w or 3 weeks is a span.",
                     "The resolution stays unless it cannot show the window.",
                 ],
                 &[("Space", "common ranges")],
@@ -1440,10 +1441,10 @@ fn could_become(text: &str) -> bool {
         "january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november",
         "december",
     ];
-    const WORDS: [&str; 27] = [
+    const WORDS: [&str; 34] = [
         "ytd", "mtd", "qtd", "wtd", "year", "month", "week", "day", "all", "max", "today", "yesterday", "monday",
         "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "tomorrow", "wks", "yrs", "mos", "years",
-        "months", "weeks", "days",
+        "months", "weeks", "days", "dy", "mth", "mths", "qtr", "qtrs", "quarter", "quarters",
     ];
     // Words that come before a day or its number as well as after: `on 22
     // oct`, `3 weeks ago`, `last fri`.
@@ -1492,7 +1493,7 @@ fn typed(range: Range) -> String {
 
 /// The ranges `query` could mean, one row each: what to type for it, what
 /// it lands on, and the day it starts. A day on its own is shown as
-/// `lasting` makes it, as wide as the chart is now.
+/// `lasting` makes it, for as long as the chart shows now.
 pub fn fill(rows: &gtk::ListBox, shown: &RefCell<Vec<Range>>, query: &str, lasting: Option<&dyn Fn(Range) -> Range>) {
     while let Some(child) = rows.first_child() {
         rows.remove(&child);
@@ -1558,7 +1559,7 @@ mod tests {
 
     #[test]
     fn half_typed_text_is_not_an_error() {
-        for text in ["2", "20", "2026-", "2026-0", "2026/0", "2026/03/1", "2025:", "2025.", "2025..20", "-6m.", "-2", "y", "2yt", "a", "m", "2mo", "th", "12 n", "mar 1", "10/", "yest", "mon:1", "3 weeks a", "3 days ago", "on 22 o", "on the 2", "last f", "6 months ago:1 mo", "3w ag"] {
+        for text in ["2", "20", "2026-", "2026-0", "2026/0", "2026/03/1", "2025:", "2025.", "2025..20", "-6m.", "-2", "y", "2yt", "a", "m", "2mo", "th", "12 n", "mar 1", "10/", "yest", "mon:1", "3 weeks a", "3 days ago", "on 22 o", "on the 2", "last f", "6 months ago:1 mo", "3w ag", "2 quar", "3 qtr", "3 dy", "oct 1 : oct 2", "3 weeks ago .."] {
             assert!(could_become(text), "{text}");
         }
         for text in ["6x", "2025q4", "zz", "mon2", "12 x"] {
