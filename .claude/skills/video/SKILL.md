@@ -153,9 +153,10 @@ description in the Taste tone with chapters from the scene start times (from
       -caption video/renders/<slug>.srt -metaJSON video/out/<slug>/youtube.json \
       -metaJSONout video/out/<slug>/youtube-uploaded.json
 
-Uploads land private until Google audits the API project; the author makes
-them public in YouTube Studio, so open the video's Studio page for them
-afterwards. If the sign-in ever has to be redone: the tool waits on port 8080,
+Uploads land private, and the author makes them public in YouTube Studio —
+that works on this project despite the warnings about unaudited API
+projects (first video, 2026-11-01) — so open the video's Studio page for
+them afterwards. If the sign-in ever has to be redone: the tool waits on port 8080,
 but Google sends its reply to `http://localhost/` with no port — take the
 `code` and `state` from that address and request them on port 8080.
 
