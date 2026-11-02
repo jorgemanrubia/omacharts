@@ -1123,9 +1123,8 @@ pub const PROFILE_ROW_SHARE: f64 = 0.14 / 0.30;
 /// the drawing's own tint and the study's.
 pub const PROFILE_EDGE_ALPHA: f64 = 0.55;
 
-
-/// The point of control's strength, the study's; its width is the drawing's
-/// stroke, which is what sets it apart from the study's hairline.
+/// The point of control's strength, the study's. Its width is its own,
+/// [`ProfileLook::poc_width`], a stroke where the study's is a hairline.
 pub const PROFILE_POC_ALPHA: f64 = 0.9;
 
 /// How a drawing's text is set: its colour, its face and its size.

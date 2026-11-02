@@ -250,14 +250,14 @@ its outline, `--fill` its background, `--width` the outline's thickness, and
 `--poc-color`, `--poc-width`, `--profile-style filled|outline`, `--align
 left|right`, `--value-area` and `--transparency` the rest. The study takes
 `--outline-color`, `--outline-width` and `--poc-width` the same way. It takes no `--text`. The study's own profiles are read and merged with
-`chart profile`: `list --visible --json` gives each one's `start`, `end`,
+`chart profile`: `list --on-screen --json` gives each one's `start`, `end`,
 `poc`, `value_area_low` and `value_area_high`, and `merge --at START` folds
 the one starting there into the one before it — read again after each merge,
 since the composite's value area is new. `split --at` undoes it.
 
 ```
 omacharts chart drawing add profile --from 2026-10-14,0 --to 2026-10-21,0 --config 9
-omacharts chart profile list --visible --json
+omacharts chart profile list --on-screen --json
 omacharts chart profile merge --at 1793836800
 ```
 

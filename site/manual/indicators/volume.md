@@ -50,7 +50,7 @@ Drawn over the price. For each reset period, how much volume traded at each pric
 | **Style** | Filled | Filled, or Outline: only the edge of the rows, so the candles under it stay clear |
 | **Alignment** | Left | Left, or Right: the rows grow back from the end of the period |
 
-**Automatic** gives every period rows of the same height, a round multiple of the instrument's price step. With **Automatic** off, **Rows** is the number of rows each period is divided into.
+**Automatic** gives every period rows of the same height, a round multiple of the instrument's price step, about 400 to a typical period. A period too quiet for 40 rows at that height has its rows split by 2, 5 or 10, down to the price step, so it is drawn smooth too. With **Automatic** off, **Rows** is the number of rows each period is divided into.
 
 ### Composite profiles
 

@@ -7545,7 +7545,10 @@ impl Window {
                 let item = gio::MenuItem::new(Some("Reset every"), None);
                 item.set_attribute_value("custom", Some(&"reset".to_variant()));
                 presets.append_item(&item);
-                let choices = Reset::ALL.map(|r| (r.label().to_string(), r.key().to_variant(), r == *reset));
+                // Ringed is the period being drawn: a chosen one the chart is
+                // too coarse for is drawn as another, and that is the one in use.
+                let in_use = reset.effective_for(pane.timeframe.get());
+                let choices = Reset::ALL.map(|r| (r.label().to_string(), r.key().to_variant(), r == in_use));
                 let strip = choice_strip(&choices, "chart.indicator-reset", "Reset every");
                 // A period the chart is too coarse for would be promoted to
                 // another the moment it was picked: greyed, and saying why,

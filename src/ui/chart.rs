@@ -2157,7 +2157,22 @@ impl ChartView {
         let Output::Profiles(profiles) = &drawn.output else { return None };
         let (first, count, _) = s.view();
         let end = first + count;
-        Some(profiles.iter().map(|p| (p.clone(), p.last_bar >= first && p.first_bar < end)).collect())
+        // Begun at its first bar rather than at its period's start, which for
+        // a session is midnight UTC, the evening before in New York; the
+        // periods keep their starts.
+        Some(
+            profiles
+                .iter()
+                .map(|p| {
+                    let mut p = p.clone();
+                    if let Some(bar) = s.bars.get(p.first_bar) {
+                        p.start_ts = bar.ts;
+                    }
+                    let on = p.last_bar >= first && p.first_bar < end;
+                    (p, on)
+                })
+                .collect(),
+        )
     }
 
     /// The profile of indicator `id` holding the moment `ts`.
@@ -7225,7 +7240,7 @@ fn draw_profile_drawing(
         }
         Shape::Outline => {
             colors::set_source_alpha(cr, colour, opacity);
-            cr.set_line_width(style.width.max(1.0));
+            cr.set_line_width(style.width.max(0.5));
         }
     }
     cr.set_line_join(cairo::LineJoin::Miter);

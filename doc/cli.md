@@ -126,7 +126,7 @@ everything takes `--visible`.
 
 **A volume profile's periods can be read and merged.** `chart profile list`
 names each profile on the focused chart — its start and end, point of control
-and value area, and whether it is on screen (`--visible` keeps only those) —
+and value area, and whether it is on screen (`--on-screen` keeps only those) —
 and `chart profile merge --at WHEN` folds the profile holding that moment
 into the one before it, a composite with one point of control and one value
 area; `split --at` puts it back. A composite is the chart's, kept for the
@@ -134,7 +134,7 @@ symbol and the period it was made under. All three need the window, which has
 the bars that say where a period starts.
 
 ```
-omacharts chart profile list --visible --json
+omacharts chart profile list --on-screen --json
 omacharts chart profile merge --at 2026-10-28
 ```
 
@@ -832,7 +832,7 @@ the selection is done to all of them, properties included when they are all
 one kind), a drag moves a corner or the whole thing, the arrow keys
 nudge it (Ctrl+Shift+↑/↓ bring it to the front or send it to the back),
 Delete removes it,
-a double-click or a right-click opens its properties, Alt+1 to Alt+9 is configuration
+Alt+Enter, a double-click or Properties… in its menu opens its properties, Alt+1 to Alt+9 is configuration
 N, and Ctrl+Z and Ctrl+Y undo and redo on that chart.
 
 Words are typed where they will be drawn: Enter or F2 on a drawing, a

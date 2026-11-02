@@ -757,6 +757,17 @@ fn style_editor(window: &Rc<Window>, kind: Kind, current: Style, on_style: Rc<dy
             group.add(&row);
             shows.push(Rc::new(move |s: &Style| show(&s.colour)));
 
+            let (row, show) = width_row("Outline thickness", style.borrow().width, {
+                let style = style.clone();
+                let emit = emit.clone();
+                move |width| {
+                    style.borrow_mut().width = width;
+                    emit();
+                }
+            });
+            group.add(&row);
+            shows.push(Rc::new(move |s: &Style| show(s.width)));
+
             let (row, show) = paint_row(&theme, "Background", &style.borrow().fill, {
                 let style = style.clone();
                 let emit = emit.clone();
@@ -802,17 +813,6 @@ fn style_editor(window: &Rc<Window>, kind: Kind, current: Style, on_style: Rc<dy
             });
             group.add(&row);
             shows.push(Rc::new(move |s: &Style| show(&s.profile.poc)));
-
-            let (row, show) = width_row("Outline thickness", style.borrow().width, {
-                let style = style.clone();
-                let emit = emit.clone();
-                move |width| {
-                    style.borrow_mut().width = width;
-                    emit();
-                }
-            });
-            group.add(&row);
-            shows.push(Rc::new(move |s: &Style| show(s.width)));
 
             let (row, show) = width_row("Point of control thickness", style.borrow().profile.poc_width, {
                 let style = style.clone();

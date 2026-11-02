@@ -1256,7 +1256,7 @@ fn chart_profile(live: Option<&dyn Live>, m: &clap::ArgMatches, as_json: bool) -
         Some(text) => Some(text.parse::<u32>().map_err(|_| Fault::usage(format!("{text:?} is not an indicator id")))?),
     };
     let merge = match required(m, "ACTION")?.as_str() {
-        "list" => return list_profiles(live, id, flag(m, "visible"), as_json),
+        "list" => return list_profiles(live, id, flag(m, "on-screen"), as_json),
         "merge" => true,
         "split" => false,
         other => return Err(Fault::usage(format!("{other:?} is not list, merge or split"))),

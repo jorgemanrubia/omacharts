@@ -1205,8 +1205,8 @@ fn appearance_group(
         return Some(volume_colours(owner, refresh, indicator));
     }
 
-    // A volume profile is bars and a mark, not a line, so it is asked about
-    // its two colours and nothing about thickness or pattern.
+    // A volume profile is rows and a mark, not a line: its own outline,
+    // rows and point of control, and no pattern.
     if indicator.kind == Kind::VolumeProfile {
         return Some(profile_style(owner, refresh, colour, indicator));
     }
@@ -1718,7 +1718,8 @@ fn volume_colours(
     group
 }
 
-/// The two colours a volume profile actually has.
+/// How a volume profile is drawn: its outline, its rows, its point of
+/// control, and its shape and side.
 fn profile_style(
     owner: &Rc<Owner>,
     refresh: &Refresh,
@@ -1728,48 +1729,16 @@ fn profile_style(
     let id = indicator.id;
     let group = adw::PreferencesGroup::new();
     group.set_title("Style");
-
-    // Neither row has samples to repaint: a profile has no line to show.
-    let unused = Ink::new(String::new);
-    group.add(&colour_row(
-        owner,
-        refresh,
-        &unused,
-        "Profile",
-        colour,
-        indicator.color.clone(),
-        move |indicator, choice| indicator.color = choice,
-        id,
-    ));
-
-    let Params::VolumeProfile { poc_color, .. } = &indicator.params else { return group };
-    // Unset is not "the same as the profile": it is the next colour along the
-    // theme's sequence, which is the pair that sequence keeps far apart in hue.
-    let shown = owner.theme().companion_or(poc_color.as_ref(), colour);
-
-    group.add(&colour_row(
-        owner,
-        refresh,
-        &unused,
-        "Point of control",
-        &shown,
-        poc_color.clone(),
-        move |indicator, choice| {
-            if let Params::VolumeProfile { poc_color, .. } = &mut indicator.params {
-                *poc_color = choice;
-            }
-        },
-        id,
-    ));
-
-    let Params::VolumeProfile { style, align, outline_color, outline_width, poc_width, .. } = &indicator.params else {
-        return group
+    let Params::VolumeProfile { style, align, poc_color, outline_color, outline_width, poc_width, .. } = &indicator.params
+    else {
+        return group;
     };
-    group.add(&thickness_row(owner, refresh, id, "Point of control thickness", *poc_width, |indicator, width| {
-        if let Params::VolumeProfile { poc_width, .. } = &mut indicator.params {
-            *poc_width = width;
-        }
-    }));
+
+    // In the order a profile drawing's properties are in: the outline, the
+    // rows, the point of control, then how it is drawn. No row has samples
+    // to repaint: a profile has no line to show.
+    let unused = Ink::new(String::new);
+
     // The outline is what the outline style draws; filled rows have none,
     // so its two rows wait for it.
     let outlined = *style == Style::Outline;
@@ -1797,6 +1766,41 @@ fn profile_style(
     });
     width_row.set_sensitive(outlined);
     group.add(&width_row);
+
+    group.add(&colour_row(
+        owner,
+        refresh,
+        &unused,
+        "Background",
+        colour,
+        indicator.color.clone(),
+        move |indicator, choice| indicator.color = choice,
+        id,
+    ));
+
+    // Unset is not "the same as the profile": it is the next colour along the
+    // theme's sequence, which is the pair that sequence keeps far apart in hue.
+    let shown = owner.theme().companion_or(poc_color.as_ref(), colour);
+    group.add(&colour_row(
+        owner,
+        refresh,
+        &unused,
+        "Point of control",
+        &shown,
+        poc_color.clone(),
+        move |indicator, choice| {
+            if let Params::VolumeProfile { poc_color, .. } = &mut indicator.params {
+                *poc_color = choice;
+            }
+        },
+        id,
+    ));
+    group.add(&thickness_row(owner, refresh, id, "Point of control thickness", *poc_width, |indicator, width| {
+        if let Params::VolumeProfile { poc_width, .. } = &mut indicator.params {
+            *poc_width = width;
+        }
+    }));
+
     group.add(&choice_row(owner, refresh, id, "Style", &Style::ALL.map(Style::label), Style::ALL.iter().position(|s| s == style), |indicator, at| {
         if let Params::VolumeProfile { style, .. } = &mut indicator.params {
             *style = Style::ALL[at];
@@ -2047,6 +2051,10 @@ fn reset_row(
     // are on charts of every resolution.
     if owner.template.is_none() {
         let timeframe = owner.app.focused_pane().timeframe.get();
+        // The period being drawn, which a chosen one the chart is too coarse
+        // for is not.
+        let in_use = current.effective_for(timeframe);
+        row.set_selected(Reset::ALL.iter().position(|r| *r == in_use).unwrap_or(0) as u32);
         let factory = gtk::SignalListItemFactory::new();
         factory.connect_setup(|_, item| {
             let label = gtk::Label::new(None);

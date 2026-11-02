@@ -956,7 +956,7 @@ pub const SURFACE: &[Noun] = &[
                 about: "List the focused chart's volume profiles, merge one at a moment into the one before it, or split a composite back into its periods; requires a window",
                 args: &[Arg::req("ACTION", "what to do").of(&["list", "merge", "split"])],
                 flags: &[
-                    Flag::switch("visible", "for list: only the profiles on screen"),
+                    Flag::switch("on-screen", "for list: only the profiles on screen"),
                     Flag::valued("at", "WHEN", "for merge and split, a moment inside the profile: 2026-09-01 or 2026-09-01T14:30, in the chart's clock"),
                     Flag::valued("id", "N", "which volume profile, when the chart has more than one"),
                 ],

@@ -802,14 +802,14 @@ tool is in [Measuring a move](/manual/drawings/#measuring-a-move).
 
 `omacharts chart profile list` reads the focused chart's volume profiles: where
 each begins and ends, its point of control and its value area, and whether it
-is on screen (`●`) or not (`○`). `--visible` keeps only the ones on screen.
+is on screen (`●`) or not (`○`). `--on-screen` keeps only the ones on screen.
 With `--json`, each profile has `start` and `end` (Unix seconds, with
 `start_text` and `end_text` in the chart's clock), `periods` (the start of each
 period in it), `composite`, `poc`, `value_area_low`, `value_area_high`,
 `volume` and `visible`.
 
 ```
-$ omacharts chart profile list --visible
+$ omacharts chart profile list --on-screen
 3 profiles on pos:0 SPY 1h in "Chartbook 1"
 ●  2026-10-28 00:00 → 2026-10-28 15:30  POC 768.72  VA 766.10–770.40
 ●  2026-10-29 00:00 → 2026-10-30 15:30  POC 769.20  VA 766.85–771.05  composite of 2
