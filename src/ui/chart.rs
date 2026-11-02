@@ -7541,7 +7541,7 @@ impl Every {
 /// so many bars instead drifts against the calendar: twenty-six weeks is not
 /// six months.
 ///
-/// Which round time to use is settled on how many of them there are; what
+/// Which round time to use is settled on how far apart its ticks fall; what
 /// finally gets drawn is thinned so no two labels sit on top of each other.
 fn axis_ticks(
     total: i64,
@@ -7579,20 +7579,37 @@ fn axis_ticks(
         }
         kept
     };
-    // Counted before thinning: thinning alone would leave every rung looking
+    // Measured before thinning: thinning alone would leave every rung looking
     // like it fits, and the finest one would always win.
     //
     // A tick never lands on the first column, so n ticks share the plot with
     // the stretch before the first of them: n + 1 gaps, not n. Counting n
     // lets evenly spaced ticks — a yearly chart's, every two bars — sit just
     // under the gap, and thinning them then leaves only the last.
-    let room = (plot_w / TIME_LABEL_GAP).max(2.0) as usize - 1;
+    let room = (plot_w / TIME_LABEL_GAP).max(2.0).floor() - 1.0;
+    // The n is how many ticks the columns hold at the rung's average spacing,
+    // first tick to last, not how many are on screen: that count moves by one
+    // as a tick scrolls in or out at an edge, so a chart near the limit
+    // flipped between years and half-years while it was dragged. The spacing
+    // stays put wherever the view is.
+    let fits = |every: Every| {
+        let span = ticks(every).fold(None, |span, column| match span {
+            None => Some((column, column, 0)),
+            Some((first, _, gaps)) => Some((first, column, gaps + 1)),
+        });
+        match span {
+            Some((first, last, gaps)) if gaps > 0 => {
+                (total - 1) as f64 * gaps as f64 / (last - first) as f64 <= room
+            }
+            _ => true,
+        }
+    };
     let mut coarsest = Every::Months(240);
     for every in Every::LADDER {
         if every.seconds() < step {
             continue;
         }
-        if ticks(every).count() <= room {
+        if fits(every) {
             return (spaced(ticks(every).collect()), every.seconds());
         }
         coarsest = every;
@@ -9758,6 +9775,33 @@ mod drawing_tests {
         );
         assert_ne!(inside, outside, "the box painted nothing");
         assert_ne!(inside, solid, "the box is opaque");
+    }
+
+    /// Daily bars, about five and a half years across 1088 pixels: the count
+    /// of half-yearly ticks on screen went 11, 12, 11 as the chart was
+    /// dragged, and the axis flipped between half-years and years with it.
+    #[test]
+    fn dragging_a_chart_keeps_its_time_axis_step() {
+        use chrono::{Datelike, TimeZone, Utc};
+        let mut weekdays = Vec::new();
+        let mut day = Utc.with_ymd_and_hms(2012, 1, 2, 0, 0, 0).unwrap();
+        while day.year() < 2024 {
+            if day.weekday().num_days_from_monday() < 5 {
+                weekdays.push(day.timestamp());
+            }
+            day += chrono::Duration::days(1);
+        }
+        let (total, plot_w) = (1_480, 1_088.0);
+        let every_at = |offset: usize| {
+            let (_, every) = axis_ticks(total, plot_w, 86_400, true, Clock::default(), |column| {
+                weekdays.get(offset + column as usize).copied()
+            });
+            every
+        };
+        let first = every_at(0);
+        for offset in 1..520 {
+            assert_eq!(every_at(offset), first, "dragged {offset} bars");
+        }
     }
 
     /// Twenty-one yearly bars across 922 pixels: ten two-yearly ticks fit by
