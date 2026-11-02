@@ -63,8 +63,8 @@ pub struct Context {
     pub today: NaiveDate,
     /// The first and last day on screen now.
     pub showing: (NaiveDate, NaiveDate),
-    /// A day typed on its own as the chart would show it: from the start of
-    /// that day, for as long as the chart shows now.
+    /// A day typed on its own as the chart would show it: for as long as
+    /// the chart shows now, from the start of that day or up to now.
     pub lasting: Rc<dyn Fn(Range) -> Range>,
     /// The first day the series holds, for a range that starts with it.
     pub first: NaiveDate,
@@ -1121,9 +1121,8 @@ impl RangeCard {
         let today = context.today;
         let from = range.start(today).unwrap_or(context.first);
         let to = match range {
-            // A day keeps the window, and a month is all of itself, so
-            // either can run past today.
-            Range::Lasting(..) | Range::Month(..) | Range::LatestMonth(_) => range.end(today).unwrap_or(from),
+            // A month is all of itself, so it can run past today.
+            Range::Month(..) | Range::LatestMonth(_) => range.end(today).unwrap_or(from),
             _ => range.end(today).map_or(today, |end| end.min(today)),
         };
         (from, to)

@@ -1845,20 +1845,25 @@ impl State {
         let date = |ts: i64| clock.read(ts, utc).map(|at| at.date());
         let Some(today) = date(last.ts) else { return };
         let len = self.bars.len();
-        // A day on its own shows from the start of that day for the length
-        // of time that was on screen, into empty room past the last bar when
-        // it gets there, counted as the time axis counts it. A month shows
-        // the whole of itself the same way, so this month runs to its end.
+        // A day on its own shows the length of time that was on screen, from
+        // the start of that day or up to now, into empty room past the last
+        // bar when it gets there, counted as the time axis counts it. A
+        // month shows the whole of itself the same way, so this month runs
+        // to its end.
         let window = match (range, range.start(today), range.end(today)) {
-            (Range::Lasting(_, seconds), Some(start), _) => Some((start, seconds)),
-            (Range::Month(..), Some(start), Some(end)) => Some((start, (end - start).num_days() * 86_400 + 86_399)),
+            (Range::Lasting(..), ..) => clock
+                .read(self.timeframe.shift(last.ts, RIGHT_MARGIN as i64), utc)
+                .and_then(|edge| range.lasting_on(today, edge)),
+            (Range::Month(..), Some(start), Some(end)) => {
+                Some((start.and_time(chrono::NaiveTime::MIN), (end - start).num_days() * 86_400 + 86_399))
+            }
             _ => None,
         };
-        if let Some((start, seconds)) = window {
+        if let Some((from, seconds)) = window {
             let (first, columns, room) = omacharts_engine::range::lasting_window(
                 &self.bars,
                 |bar| clock.read(bar.ts, utc),
-                start,
+                from,
                 seconds,
                 self.timeframe.seconds(),
             );
@@ -3964,6 +3969,12 @@ impl ChartView {
         }
         let left = state.left_edge();
         Some(time_at_column(&state, left + columns - 1)? - time_at_column(&state, left)?)
+    }
+
+    /// The moment it is now, on the clock the time axis reads.
+    pub fn now(&self) -> Option<chrono::NaiveDateTime> {
+        let state = self.state.borrow();
+        state.clock.read(chrono::Utc::now().timestamp(), state.timeframe.is_calendar())
     }
 
     /// The day of the first bar the chart holds.
