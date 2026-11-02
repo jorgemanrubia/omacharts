@@ -475,6 +475,28 @@ impl DrawingBar {
                         curve(cr);
                         let _ = cr.stroke();
                     }
+                    // Rows of volume off a left edge, longest in the
+                    // middle, with the busiest one marked across: a
+                    // profile, which is what the tool lays down.
+                    Some(Kind::Profile) => {
+                        let (x, top) = (5.5, 5.0);
+                        let rows = [0.35, 0.6, 1.0, 0.75, 0.45, 0.25];
+                        let row_h = (h - 10.0) / rows.len() as f64;
+                        let reach = w - 11.0;
+                        for (n, share) in rows.iter().enumerate() {
+                            cr.rectangle(x, top + n as f64 * row_h + 0.5, reach * share, row_h - 1.0);
+                        }
+                        cr.set_source_rgba(r, g, b, a * 0.45);
+                        let _ = cr.fill();
+                        cr.set_source_rgba(r, g, b, a);
+                        cr.set_line_width(1.0);
+                        cr.move_to(x - 0.5, top);
+                        cr.line_to(x - 0.5, h - 5.0);
+                        let y = (top + 2.5 * row_h).round() + 0.5;
+                        cr.move_to(x, y);
+                        cr.line_to(x + reach, y);
+                        let _ = cr.stroke();
+                    }
                     Some(Kind::Text) => {
                         // A capital I with its serifs: the mark every
                         // application puts on its text tool, and the one

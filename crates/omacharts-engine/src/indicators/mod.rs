@@ -297,6 +297,13 @@ impl Kind {
                 rows: None,
                 value_area: 0.70,
                 poc_color: None,
+                style: profile::Style::Filled,
+                outline: false,
+                outline_color: None,
+                outline_width: 1.0,
+                poc_width: 1.0,
+                align: profile::Align::Left,
+                merged: Vec::new(),
             },
             Kind::Volume => Params::Volume { height: 0.18, up_color: None, down_color: None },
             // Fourteen bars, overbought at seventy, oversold at thirty: the
@@ -365,6 +372,34 @@ pub enum Params {
         /// colour, which is what it did before it could be set apart.
         #[serde(default)]
         poc_color: Option<ColorChoice>,
+        /// Solid rows, or only their outline.
+        #[serde(default)]
+        style: profile::Style,
+        /// Whether filled rows wear an outline too. The outline style is
+        /// nothing but its outline, so this is for the filled one. Off until
+        /// asked for.
+        #[serde(default)]
+        outline: bool,
+        /// The outline's colour. Unset is the profile's own.
+        #[serde(default)]
+        outline_color: Option<ColorChoice>,
+        /// The outline's thickness, in pixels.
+        #[serde(default = "profile::hairline")]
+        outline_width: f64,
+        /// The point of control's thickness, in pixels.
+        #[serde(default = "profile::hairline")]
+        poc_width: f64,
+        /// The edge of the period the rows grow from.
+        #[serde(default)]
+        align: profile::Align,
+        /// Where each period starts that was merged into the one before it,
+        /// as the start of its reset period. Several in a row make one
+        /// composite of them all.
+        ///
+        /// Never written down with the indicator: the chart keeps them, and
+        /// hands them in to be drawn. See [`profile::Merge`].
+        #[serde(skip)]
+        merged: Vec<i64>,
     },
     Volume {
         /// How much of the chart's height the pane takes.
@@ -923,7 +958,7 @@ pub fn compute_in(indicator: &Indicator, bars: &[Bar], context: &Context) -> Out
             values: bars.iter().map(|bar| bar.volume).collect(),
             height: height.clamp(MIN_PANE_SHARE, MAX_PANE_SHARE),
         },
-        (Kind::VolumeProfile, Params::VolumeProfile { reset, rows, value_area, .. }) => {
+        (Kind::VolumeProfile, Params::VolumeProfile { reset, rows, value_area, merged, .. }) => {
             Output::Profiles(profile::compute(
                 bars,
                 reset.effective_for(timeframe),
@@ -931,6 +966,7 @@ pub fn compute_in(indicator: &Indicator, bars: &[Bar], context: &Context) -> Out
                 *rows,
                 *value_area,
                 kind,
+                merged,
             ))
         }
         (Kind::SessionTimes, Params::SessionTimes { ranges }) => {
@@ -1137,7 +1173,7 @@ mod tests {
         // But a session is one bar on a weekly chart, so it is promoted — and
         // saying "Session" there would describe a chart nobody is looking at.
         assert_eq!(vwap.label_for(Timeframe::weeks(1)), "VWAP · Quarter");
-        assert_eq!(vwap.label_for(Timeframe::days(1)), "VWAP · Month");
+        assert_eq!(vwap.label_for(Timeframe::days(1)), "VWAP · Week");
         // Intraday, nothing is promoted and the two agree.
         assert_eq!(vwap.label_for(Timeframe::minutes(5)), "VWAP · Session");
     }

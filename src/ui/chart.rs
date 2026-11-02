@@ -21,6 +21,7 @@
 
 pub mod bench;
 mod selection;
+pub use selection::ProfileSpot;
 
 use std::borrow::Cow;
 use std::cell::RefCell;
@@ -129,6 +130,16 @@ pub struct Echo {
     pub price: f64,
 }
 
+/// What a profile drawing's profile depends on, for keeping it.
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct ProfileKey {
+    span: (usize, usize),
+    first: i64,
+    last: (i64, u64, u64, u64),
+    rows: Option<usize>,
+    value_area: u64,
+}
+
 struct State {
     bars: Vec<Bar>,
     /// Where another chart's pointer is, drawn here as a quieter crosshair.
@@ -139,6 +150,10 @@ struct State {
     /// whenever it changes rather than on every frame.
     price_tags: [Tag; 2],
     instrument: Option<Instrument>,
+    /// The profiles the volume profile drawings show, as last worked out:
+    /// a drawing is projected on every motion of the pointer, and its
+    /// profile only changes with its span or the bars.
+    profile_cache: RefCell<Vec<(ProfileKey, Option<Profile>)>>,
     timeframe: Timeframe,
     /// Leftmost visible bar.
     first: usize,
@@ -804,6 +819,11 @@ fn shift_by_columns(
     scale: &PriceScale,
     by_price: f64,
 ) {
+    // Moved whole, a profile would be a profile of other bars: its edges
+    // are what change the span.
+    if drawing.kind == DrawingKind::Profile {
+        return;
+    }
     let move_anchor = |anchor: &mut Anchor| {
         anchor.ts = ts_at(bars, index_of_ts(bars, anchor.ts) + by_index);
         anchor.price = scale.shift(anchor.price, by_price);
@@ -1134,6 +1154,7 @@ impl State {
             price_tags: price_tags(&scheme),
             scheme,
             instrument: None,
+            profile_cache: RefCell::new(Vec::new()),
             timeframe: Timeframe::days(1),
             first: 0,
             visible: 160,
@@ -1367,9 +1388,63 @@ impl State {
         )
     }
 
+    /// The volume profile a profile drawing shows: of the bars between its
+    /// two anchors, on this chart's own bars.
+    fn span_profile(&self, drawing: &Drawing) -> Option<Profile> {
+        let (from, to) = (drawing.from.ts.min(drawing.to.ts), drawing.from.ts.max(drawing.to.ts));
+        let first = self.bars.partition_point(|bar| bar.ts < from);
+        let end = self.bars.partition_point(|bar| bar.ts <= to);
+        if first >= end {
+            return None;
+        }
+        let look = &drawing.style(&self.configs).profile;
+        // The last bar's volume as well as its time: a live bar grows in
+        // place, and a profile over it has to grow with it.
+        let last = &self.bars[end - 1];
+        let key = ProfileKey {
+            span: (first, end),
+            first: self.bars[first].ts,
+            last: (last.ts, last.volume.to_bits(), last.high.to_bits(), last.low.to_bits()),
+            rows: look.rows,
+            value_area: look.value_area.to_bits(),
+        };
+        if let Some((_, profile)) = self.profile_cache.borrow().iter().find(|(k, _)| *k == key) {
+            return profile.clone();
+        }
+        let kind = self.instrument.as_ref().map(|i| i.kind);
+        let profile =
+            omacharts_engine::indicators::profile::of_span(&self.bars[first..end], first, look.rows, look.value_area, kind);
+        let mut cache = self.profile_cache.borrow_mut();
+        // A handful of drawings, each dragged through a few spans: enough
+        // to keep, small enough never to sweep.
+        if cache.len() >= 32 {
+            cache.remove(0);
+        }
+        cache.push((key, profile.clone()));
+        profile
+    }
+
+    /// Where a bar's column begins, in pixels.
+    fn column_edge(&self, plan: &Layout, index: f64) -> f64 {
+        let (first, _, lead) = self.view();
+        let bar_w = plan.plot_w / self.columns().max(1) as f64;
+        plan.plot_x + (index - (first as f64 - lead as f64)) * bar_w
+    }
+
     /// A drawing as pixels, through the same scales the candles use.
     fn project(&self, plan: &Layout, scale: &PriceScale, drawing: &Drawing) -> Projected {
         let point = |anchor: &Anchor| self.project_anchor(plan, scale, *anchor);
+        // A profile is as wide as the bars it covers, edge to edge, and as
+        // tall as the prices they reached: its anchors only say when.
+        if drawing.kind == DrawingKind::Profile
+            && let Some(profile) = self.span_profile(drawing)
+            && let (Some(low), Some(high)) = (profile.rows.first(), profile.rows.last())
+        {
+            let to_y = |price: f64| scale.to_y(price, plan.price_y, plan.price_h);
+            let left = self.column_edge(plan, profile.first_bar as f64);
+            let right = self.column_edge(plan, profile.last_bar as f64 + 1.0);
+            return Projected::new(drawing.kind, (left, to_y(high.high)), (right, to_y(low.low)));
+        }
         let projected = match drawing.kind.is_path() {
             true => Projected::through(drawing.kind, drawing.corners().iter().map(point).collect()),
             false => Projected::new(drawing.kind, point(&drawing.from), point(&drawing.to)),
@@ -1437,6 +1512,13 @@ impl State {
             copy.order = order;
             copy.scope = scope;
             shift_by_columns(bars, &mut copy, by_index, &scale, by_price);
+            // A profile is not moved whole, but a copy put down exactly on
+            // its original would be one nobody could see: its span moves.
+            if copy.kind == DrawingKind::Profile {
+                for anchor in [&mut copy.from, &mut copy.to] {
+                    anchor.ts = ts_at(bars, index_of_ts(bars, anchor.ts) + by_index);
+                }
+            }
             drawings.push(copy.clone());
             added.push(copy);
         }
@@ -1525,6 +1607,10 @@ impl State {
         match grip {
             Grip::Top | Grip::Bottom => "ns-resize",
             Grip::Left | Grip::Right => "ew-resize",
+            // Not moved whole, so nothing to take hold of; and its corners
+            // move only sideways.
+            Grip::Body if drawing.kind == DrawingKind::Profile => "default",
+            _ if drawing.kind == DrawingKind::Profile => "ew-resize",
             Grip::Body => match held {
                 true => "grabbing",
                 false => "grab",
@@ -2057,6 +2143,43 @@ impl ChartView {
             self.redraw();
             self.tell_indicator(IndicatorEvent::Picked(id));
         }
+    }
+
+    /// The profile of indicator `id` whose period is under `x`.
+    pub fn profile_at(&self, id: u32, x: f64) -> Option<selection::ProfileSpot> {
+        let s = self.state.borrow();
+        s.profile_at(self.area.width() as f64, self.area.height() as f64, id, x)
+    }
+
+    /// Every profile indicator `id` draws, and whether each is on screen,
+    /// for a command that reads them.
+    pub fn profiles(&self, id: u32) -> Option<Vec<(Profile, bool)>> {
+        let s = self.state.borrow();
+        let drawn = s.indicators.iter().find(|d| d.indicator.id == id)?;
+        let Output::Profiles(profiles) = &drawn.output else { return None };
+        let (first, count, _) = s.view();
+        let end = first + count;
+        // Begun at its first bar rather than at its period's start, which for
+        // a session is midnight UTC, the evening before in New York; the
+        // periods keep their starts.
+        Some(
+            profiles
+                .iter()
+                .map(|p| {
+                    let mut p = p.clone();
+                    if let Some(bar) = s.bars.get(p.first_bar) {
+                        p.start_ts = bar.ts;
+                    }
+                    let on = p.last_bar >= first && p.first_bar < end;
+                    (p, on)
+                })
+                .collect(),
+        )
+    }
+
+    /// The profile of indicator `id` holding the moment `ts`.
+    pub fn profile_of(&self, id: u32, ts: i64) -> Option<selection::ProfileSpot> {
+        self.state.borrow().profile_of(id, ts)
     }
 
     /// The indicator under a pixel that a click there would select.
@@ -3020,7 +3143,7 @@ impl ChartView {
         self.end_text_edit(text_editor::Ended::Commit);
         let (text, style, ink, align) = {
             let state = self.state.borrow();
-            let Some(drawing) = state.drawings.get(index) else { return false };
+            let Some(drawing) = state.drawings.get(index).filter(|d| d.kind.takes_text()) else { return false };
             let style = drawing.style(&state.configs).clone();
             let ground = drawings::text_ground(drawing.kind, &style, &state.theme);
             let ink = drawings::text_colour(&style.text.colour, &state.theme, &ground);
@@ -4272,7 +4395,14 @@ impl ChartView {
                         s.selected.clear();
                     }
                     s.selected.push(index);
-                    if let Some(origin) = s.locate(width, height, x, y) {
+                    // A profile's body selects it and nothing more: what
+                    // follows is the chart's, so a drag across one pans.
+                    let still = grip == Grip::Body
+                        && s.drawings.get(index).is_some_and(|d| d.kind == DrawingKind::Profile);
+                    if still {
+                        let left = s.left_edge();
+                        s.drag = Some(Drag::Pan { left, offset: s.price_offset });
+                    } else if let Some(origin) = s.locate(width, height, x, y) {
                         // Before the first motion, so a drag is one step
                         // back however far it went. A press that never
                         // moves is forgotten at the end.
@@ -4614,20 +4744,31 @@ impl ChartView {
                 return;
             }
             let region = region_at(x, y, area.width() as f64, area.height() as f64);
-            // A drawing under the pointer: the second click puts the caret
-            // in it. This is the shortest way to a label — the way a slide
-            // editor opens a shape's text — and it is free, because a
-            // double-click on the plot has never done anything.
+            // A drawing under the pointer: the second click opens its
+            // properties, as it does on an indicator, so one gesture means
+            // one thing across everything on the chart. Text is the
+            // exception — its words are what there is to change, so the
+            // caret goes in it. A label on any other drawing is Enter or F2.
             if region == Region::Plot {
                 let hit = {
                     let s = state.borrow();
                     s.drawing_at(area.width() as f64, area.height() as f64, x, y)
+                        .map(|(index, _)| (index, s.drawings.get(index).is_some_and(|d| d.kind.is_text())))
                 };
-                if let Some((index, _)) = hit
+                if let Some((index, text)) = hit
                     && let Some(view) = view.upgrade()
                 {
                     view.select_at(x, y);
-                    view.begin_text_edit(index, false);
+                    match text {
+                        true => {
+                            view.begin_text_edit(index, false);
+                        }
+                        false => {
+                            if let Some(handler) = view.on_drawing_properties.borrow().as_ref() {
+                                handler();
+                            }
+                        }
+                    }
                     return;
                 }
                 // An indicator has no words to type, so its second click
@@ -4890,10 +5031,11 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
     cr.rectangle(plot_x, price_y, plot_w, price_h);
     cr.clip();
     draw_indicator_fills(cr, state, &columns, &to_y);
+    draw_drawings(cr, state, &plan, &scale, true);
     draw_candles(cr, state, &columns, &to_y);
     draw_indicator_lines(cr, state, &columns, &to_y);
     cr.restore().ok();
-    draw_drawings(cr, state, &plan, &scale);
+    draw_drawings(cr, state, &plan, &scale, false);
 
     for (at, row) in plan.rows.iter().enumerate() {
         draw_row_edge(cr, state, &plan, at);
@@ -4999,7 +5141,8 @@ fn draw_pointer(cr: &cairo::Context, width: f64, height: f64, state: &State) {
         };
         let lit = closing.then(|| (Grip::Corner(shown.points.len().saturating_sub(1)), Lit::Hover));
         let placed = state.project(&plan, &scale, &shown);
-        draw_drawing(cr, state, &placed, &shown, true, false, lit);
+        let to_y = |price: f64| scale.to_y(price, plan.price_y, plan.price_h);
+        draw_drawing(cr, state, &placed, &shown, true, false, lit, &to_y);
         cr.restore().ok();
     }
 
@@ -6406,7 +6549,11 @@ enum Lit {
 /// What has been drawn on the symbol, over the candles and the indicator
 /// lines and under the strips, clipped to the price plot so a line drawn
 /// off the top does not cross an RSI.
-fn draw_drawings(cr: &cairo::Context, state: &State, plan: &Layout, scale: &PriceScale) {
+///
+/// In two passes: `under` the bars for the kinds that are shading, and over
+/// them for the rest — with the grips of the shaded ones, since a grip under
+/// a candle is one nobody can find.
+fn draw_drawings(cr: &cairo::Context, state: &State, plan: &Layout, scale: &PriceScale, under: bool) {
     if state.drawings.is_empty() || !state.show_drawings {
         return;
     }
@@ -6414,11 +6561,21 @@ fn draw_drawings(cr: &cairo::Context, state: &State, plan: &Layout, scale: &Pric
     cr.rectangle(plan.plot_x, plan.price_y, plan.plot_w, plan.price_h);
     cr.clip();
     for (index, drawing) in state.drawings.iter().enumerate() {
+        let shaded = drawing.kind.under_bars();
+        let selected = state.selected.contains(&index);
+        if shaded != under && !(shaded && selected) {
+            continue;
+        }
         let projected = state.project(plan, scale, drawing);
         let typing = state.editing == Some(index);
-        let selected = state.selected.contains(&index);
         let lit = selected.then(|| state.lit_grip(index)).flatten();
-        draw_drawing(cr, state, &projected, drawing, selected, typing, lit);
+        if shaded && !under {
+            let colour = drawing.style(&state.configs).colour.hex(&state.theme);
+            draw_grips(cr, state, &projected, drawing, lit, &colour);
+            continue;
+        }
+        let to_y = |price: f64| scale.to_y(price, plan.price_y, plan.price_h);
+        draw_drawing(cr, state, &projected, drawing, selected && !shaded, typing, lit, &to_y);
         if typing {
             draw_editing_ground(cr, state, drawing);
         }
@@ -6434,6 +6591,7 @@ fn draw_drawings(cr: &cairo::Context, state: &State, plan: &Layout, scale: &Pric
 /// measured over every theme — so the candles read through it and the edge
 /// is the edge of the shape rather than a line drawn around it. A selected
 /// drawing wears a grip at each of its corners.
+#[allow(clippy::too_many_arguments)]
 fn draw_drawing(
     cr: &cairo::Context,
     state: &State,
@@ -6442,6 +6600,7 @@ fn draw_drawing(
     selected: bool,
     typing: bool,
     lit: Option<(Grip, Lit)>,
+    to_y: &dyn Fn(f64) -> f64,
 ) {
     let style = drawing.style(&state.configs);
     let colour = style.colour.hex(&state.theme);
@@ -6541,6 +6700,7 @@ fn draw_drawing(
         // kind. A text drawing with nothing typed into it yet draws nothing
         // at all, which is the right picture of a caret waiting.
         DrawingKind::Text => {}
+        DrawingKind::Profile => draw_profile_drawing(cr, state, projected, drawing, style, &colour, to_y),
     }
     if !typing {
         draw_label(cr, state, projected, drawing, style);
@@ -6566,29 +6726,41 @@ fn draw_drawing(
             let _ = cr.stroke();
             cr.set_dash(&[], 0.0);
         }
-        for grip in drawing.grips() {
-            let Some((x, y)) = projected.grip(grip) else { continue };
-            // The grip under the hand says so: without it, nothing tells a
-            // hand reaching for a point whether a press takes the point or
-            // the line, nor, once dragging, which point it has.
-            let shine = lit.filter(|(at, _)| *at == grip).map(|(_, how)| how);
-            if let Some(how) = shine {
-                let (half, alpha) = match how {
-                    Lit::Hover => (GRIP_HALO, 0.22),
-                    Lit::Held => (GRIP_HALO + 2.0, 0.32),
-                };
-                colors::set_source_alpha(cr, &colour, alpha);
-                cr.rectangle(x - half, y - half, 2.0 * half, 2.0 * half);
-                let _ = cr.fill();
-            }
-            let half = GRIP_HALF + if shine.is_some() { 1.0 } else { 0.0 };
-            colors::set_source(cr, &state.theme.ui.background);
-            cr.rectangle(x - half - 1.0, y - half - 1.0, 2.0 * half + 2.0, 2.0 * half + 2.0);
-            let _ = cr.fill();
-            colors::set_source(cr, &colour);
+        draw_grips(cr, state, projected, drawing, lit, &colour);
+    }
+}
+
+/// The squares at a selected drawing's grips, the one under the hand lit.
+fn draw_grips(
+    cr: &cairo::Context,
+    state: &State,
+    projected: &Projected,
+    drawing: &Drawing,
+    lit: Option<(Grip, Lit)>,
+    colour: &str,
+) {
+    for grip in drawing.grips() {
+        let Some((x, y)) = projected.grip(grip) else { continue };
+        // The grip under the hand says so: without it, nothing tells a
+        // hand reaching for a point whether a press takes the point or
+        // the line, nor, once dragging, which point it has.
+        let shine = lit.filter(|(at, _)| *at == grip).map(|(_, how)| how);
+        if let Some(how) = shine {
+            let (half, alpha) = match how {
+                Lit::Hover => (GRIP_HALO, 0.22),
+                Lit::Held => (GRIP_HALO + 2.0, 0.32),
+            };
+            colors::set_source_alpha(cr, colour, alpha);
             cr.rectangle(x - half, y - half, 2.0 * half, 2.0 * half);
             let _ = cr.fill();
         }
+        let half = GRIP_HALF + if shine.is_some() { 1.0 } else { 0.0 };
+        colors::set_source(cr, &state.theme.ui.background);
+        cr.rectangle(x - half - 1.0, y - half - 1.0, 2.0 * half + 2.0, 2.0 * half + 2.0);
+        let _ = cr.fill();
+        colors::set_source(cr, colour);
+        cr.rectangle(x - half, y - half, 2.0 * half, 2.0 * half);
+        let _ = cr.fill();
     }
 }
 
@@ -6992,47 +7164,133 @@ fn draw_profiles(
     columns: &Columns,
     to_y: &impl Fn(f64) -> f64,
 ) {
-    let chosen = match &drawn.indicator.params {
-        omacharts_engine::Params::VolumeProfile { poc_color, .. } => poc_color.as_ref(),
-        _ => None,
+    let (chosen, edged, outline, outline_width, poc_width) = match &drawn.indicator.params {
+        omacharts_engine::Params::VolumeProfile { poc_color, outline: edged, outline_color, outline_width, poc_width, .. } => {
+            (poc_color.as_ref(), *edged, outline_color.as_ref(), *outline_width, *poc_width)
+        }
+        _ => (None, false, None, 1.0, 1.0),
     };
     let poc = state.theme.companion_or(chosen, &drawn.color);
+    let outline = outline.map(|c| c.resolve(&state.theme)).unwrap_or_else(|| drawn.color.clone());
+    let (style, align) = selection::profile_look(drawn);
 
     for profile in profiles {
         // Where a click finds it, too, so the two cannot drift apart.
-        let (left, span) = selection::profile_box(profile, columns);
-        if span <= 0.0 {
+        let area = selection::profile_box(profile, columns, align);
+        if area.span <= 0.0 || profile.max_volume <= 0.0 || profile.rows.is_empty() {
             continue;
         }
 
-        let (area_low, area_high) = profile.value_area_bounds();
-        for row in &profile.rows {
-            if row.volume <= 0.0 || profile.max_volume <= 0.0 {
-                continue;
+        match style {
+            omacharts_engine::indicators::profile::Style::Filled => {
+                let (area_low, area_high) = profile.value_area_bounds();
+                for row in &profile.rows {
+                    if row.volume <= 0.0 {
+                        continue;
+                    }
+                    let (from, to) = area.row(row.volume / profile.max_volume);
+                    let top = to_y(row.high);
+                    let height = (to_y(row.low) - top).max(1.0);
+                    let inside = row.low >= area_low && row.high <= area_high;
+                    colors::set_source_alpha(cr, &drawn.color, if inside { 0.30 } else { 0.14 });
+                    cr.rectangle(from, top, to - from, height);
+                    let _ = cr.fill();
+                }
+                if edged {
+                    colors::set_source_alpha(cr, &outline, drawings::PROFILE_EDGE_ALPHA);
+                    cr.set_line_width(outline_width.max(0.5));
+                    cr.set_line_join(cairo::LineJoin::Miter);
+                    selection::profile_path(cr, &area, profile, to_y);
+                    let _ = cr.stroke();
+                }
             }
-            let width = span * (row.volume / profile.max_volume);
-            let top = to_y(row.high);
-            let height = (to_y(row.low) - top).max(1.0);
-            let inside = row.low >= area_low && row.high <= area_high;
-            colors::set_source_alpha(cr, &drawn.color, if inside { 0.30 } else { 0.14 });
-            cr.rectangle(left, top, width, height.max(1.0));
-            let _ = cr.fill();
+            // Only the shape the rows make, so the candles under it stay
+            // as plain as they are without it.
+            omacharts_engine::indicators::profile::Style::Outline => {
+                colors::set_source_alpha(cr, &outline, 0.75);
+                cr.set_line_width(outline_width.max(0.5));
+                cr.set_line_join(cairo::LineJoin::Miter);
+                selection::profile_path(cr, &area, profile, to_y);
+                let _ = cr.stroke();
+            }
         }
 
         // The point of control, across the period it belongs to, in a colour
         // set against the profile rather than the same one brighter — it is a
         // different fact about the period, drawn on top of it.
         let y = to_y(profile.poc_price()).round() + 0.5;
+        let (from, to) = area.row(1.0);
         colors::set_source_alpha(cr, &poc, 0.9);
-        cr.set_line_width(1.0);
-        cr.move_to(left, y);
-        cr.line_to(left + span, y);
+        cr.set_line_width(poc_width.max(0.5));
+        cr.move_to(from, y);
+        cr.line_to(to, y);
         let _ = cr.stroke();
 
         if state.picked == Some(drawn.indicator.id) {
-            selection::outline_profile(cr, &state.theme, &drawn.color, profile, columns, to_y);
+            selection::outline_profile(cr, &state.theme, &drawn.color, profile, &area, to_y);
         }
     }
+}
+
+/// A volume profile drawing: the study's rows across the whole span it
+/// covers, set apart from the study by the edge round them, or drawn as only
+/// that edge, with a point of control at the drawing's own stroke.
+fn draw_profile_drawing(
+    cr: &cairo::Context,
+    state: &State,
+    projected: &Projected,
+    drawing: &Drawing,
+    style: &drawings::Style,
+    colour: &str,
+    to_y: &dyn Fn(f64) -> f64,
+) {
+    use omacharts_engine::indicators::profile::{Align, Style as Shape};
+    let Some(profile) = state.span_profile(drawing) else { return };
+    if profile.max_volume <= 0.0 || profile.rows.is_empty() {
+        return;
+    }
+    let (x, _, w, _) = projected.bounds();
+    let look = &style.profile;
+    let area = match look.align {
+        Align::Left => selection::ProfileBox { edge: x, span: w, towards: 1.0 },
+        Align::Right => selection::ProfileBox { edge: x + w, span: w, towards: -1.0 },
+    };
+    let opacity = look.opacity.clamp(0.0, 1.0);
+    match look.shape {
+        Shape::Filled => {
+            let fill = style.fill.hex(&state.theme);
+            let (area_low, area_high) = profile.value_area_bounds();
+            for row in profile.rows.iter().filter(|row| row.volume > 0.0) {
+                let (from, to) = area.row(row.volume / profile.max_volume);
+                let top = to_y(row.high);
+                let height = (to_y(row.low) - top).max(1.0);
+                let inside = row.low >= area_low && row.high <= area_high;
+                let alpha = if inside { style.alpha } else { style.alpha * drawings::PROFILE_ROW_SHARE };
+                colors::set_source_alpha(cr, &fill, alpha * opacity);
+                cr.rectangle(from, top, to - from, height);
+                let _ = cr.fill();
+            }
+            // An edge the drawing can go without: off, the rows are all of it.
+            let edge = if style.border { drawings::PROFILE_EDGE_ALPHA } else { 0.0 };
+            colors::set_source_alpha(cr, colour, edge * opacity);
+            cr.set_line_width(style.width.max(0.5));
+        }
+        Shape::Outline => {
+            colors::set_source_alpha(cr, colour, opacity);
+            cr.set_line_width(style.width.max(0.5));
+        }
+    }
+    cr.set_line_join(cairo::LineJoin::Miter);
+    selection::profile_path(cr, &area, &profile, to_y);
+    let _ = cr.stroke();
+
+    let y = to_y(profile.poc_price()).round() + 0.5;
+    colors::set_source_alpha(cr, &look.poc.hex(&state.theme), drawings::PROFILE_POC_ALPHA);
+    cr.set_line_width(look.poc_width.max(0.5));
+    let (from, to) = area.row(1.0);
+    cr.move_to(from, y);
+    cr.line_to(to, y);
+    let _ = cr.stroke();
 }
 
 /// Where a series indexed by bar is drawn in one column, if it has a value

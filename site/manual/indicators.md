@@ -219,6 +219,10 @@ A paste is a new indicator with the same settings, on the chart that has the key
 
 | Item | Does |
 |---|---|
+| **Period** buttons | A moving average only: 10, 20, 50, 100 or 200, the one in use ringed |
+| **Reset every** buttons | A VWAP or a volume profile only: Session, Week, Month, Quarter or Year ([Reset periods](#reset-periods)) |
+| **Merge with previous profile** | A volume profile only, over a profile with one before it ([Composite profiles](/manual/indicators/volume/#composite-profiles)) |
+| **Split composite profile** | A volume profile only, over a composite |
 | **Cut** (<kbd>Ctrl</kbd> + <kbd>X</kbd>) | Copies it and removes it |
 | **Copy** (<kbd>Ctrl</kbd> + <kbd>C</kbd>) | Copies it |
 | **Paste** (<kbd>Ctrl</kbd> + <kbd>V</kbd>) | Only while something is copied: an indicator, or drawings |
@@ -257,7 +261,7 @@ The [VWAP](/manual/indicators/averages-and-bands/#volume-weighted-average-price)
 | **Quarter** | On 1 January, April, July and October |
 | **Year** | On 1 January |
 
-A period needs at least ten bars at the chart's resolution. One with fewer uses the finest period that has ten, and the legend names it. A session VWAP becomes weekly on a 4h chart, monthly on a daily chart and quarterly on a weekly chart. The chosen period is kept, and comes back on an intraday resolution.
+A period needs at least five bars at the chart's resolution. One with fewer uses the finest period that has five, and the legend names it: a session VWAP becomes weekly on a daily chart and quarterly on a weekly chart. The chosen period is kept, and comes back on a finer resolution. A period the chart is too coarse for cannot be picked: in the indicator's menu and in **Reset every** it is greyed, pointing at it says why, and the period in use is the one shown. In a template's settings every period can be picked, since the template's charts can be at any resolution.
 
 ## See also
 

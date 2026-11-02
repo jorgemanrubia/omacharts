@@ -524,9 +524,14 @@ are in [Indicators](/manual/indicators/) and the page of its family.
 | `--k-smooth N`, `--d-period N` | Bars | Stochastic |
 | `--d-color C` | A colour | Stochastic |
 | `--anchor P` | `session`, `week`, `month`, `quarter`, `year` | VWAP, volume profile |
-| `--rows N` | `auto`, or a number of rows per period, held between 4 and 400 | Volume profile |
+| `--rows N` | `auto`, or a number of rows per period, held between 4 and 800 | Volume profile |
 | `--value-area F` | 0 to 1; 0.70 when not given | Volume profile |
 | `--poc-color C` | A colour | Volume profile |
+| `--profile-style S` | `filled`, `outline` | Volume profile |
+| `--align A` | `left`, `right` | Volume profile |
+| `--outline B` | `on`, `off` | Volume profile: whether filled rows wear an outline |
+| `--outline-color C` | A colour | Volume profile |
+| `--outline-width F`, `--poc-width F` | 0.5 to 6 | Volume profile |
 | `--up-color C`, `--down-color C` | A colour | Volume |
 | `--overbought F`, `--oversold F` | 0 to 100 | RSI, stochastic |
 | `--height F` | 0.05 to 0.95; Volume defaults to 0.18, the other strips to 0.16 | Volume, RSI, MACD, ATR, stochastic |
@@ -794,12 +799,53 @@ candles the reply has no bar distance and `bars` is `null`. A zero starting pric
 `null` for `percent_change`. The measurement is not saved or shared. The mouse
 tool is in [Measuring a move](/manual/drawings/#measuring-a-move).
 
+## Volume profiles
+
+`omacharts chart profile list` reads the focused chart's volume profiles: where
+each begins and ends, its point of control and its value area, and whether it
+is on screen (`●`) or not (`○`). `--on-screen` keeps only the ones on screen.
+With `--json`, each profile has `start` and `end` (Unix seconds, with
+`start_text` and `end_text` in the chart's clock), `periods` (the start of each
+period in it), `composite`, `poc`, `value_area_low`, `value_area_high`,
+`volume` and `visible`.
+
+```
+$ omacharts chart profile list --on-screen
+21 profiles on pos:0 SPY 1h in "Chartbook 1"
+●  2026-10-02 09:30 → 2026-10-02 15:30  POC 769.35  VA 768.30–770.40
+●  2026-10-05 09:30 → 2026-10-05 15:30  POC 775.25  VA 772.80–776.60
+…
+●  2026-10-27 09:30 → 2026-10-27 15:30  POC 769.75  VA 768.10–771.20
+●  2026-10-28 09:30 → 2026-10-29 15:30  POC 768.15  VA 767.60–771.20  composite of 2
+●  2026-10-30 09:30 → 2026-10-30 15:30  POC 757.95  VA 753.10–760.40
+●  2026-11-02 09:30 → 2026-11-02 16:00  POC 754.15  VA 751.60–759.90
+  [exit 0]
+```
+
+`omacharts chart profile merge --at WHEN` folds the focused chart's volume
+profile holding that moment into the one before it, and `omacharts chart
+profile split --at WHEN` puts a composite back into its periods
+([Composite profiles](/manual/indicators/volume/#composite-profiles)). `WHEN`
+is a day, a day and a time, read in the chart's time zone, or Unix seconds,
+such as `start` from `list`. `--id N` says which profile when the chart has more
+than one. A window must be open;
+otherwise it exits 6.
+
+```
+$ omacharts chart profile merge --at 2026-10-28
+merged the profile into the one before it on pos:0 SPY 1h in "Chartbook 1"
+  [exit 0]
+```
+
 ## Drawings
 
 `omacharts chart drawing ACTION [KIND]` changes the drawings on a chart's
 symbol. `--book` and `--chart` pick the chart ([Which chart a command acts
 on](#which-chart-a-command-acts-on)). `KIND` is `line`, `hline`, `arrow`,
-`zigzag`, `rect`, `ellipse` (or `circle`), or `text`. The tools and their
+`zigzag`, `rect`, `ellipse` (or `circle`), `text`, or `profile` (or `vp`: a
+volume profile of the span between `--from` and `--to`, whose prices are
+ignored; `--color` is its outline and `--fill` its background, and it takes no
+`--text`). The tools and their
 configurations are in [Drawings](/manual/drawings/). Whether a chart shows
 other charts' drawings and sends its own is `chart set --show-drawings` and
 `--send-drawings`, each `on` or `off`:
@@ -844,14 +890,20 @@ read in the chart's time zone, the one its time axis is labelled in
 | `--text-color C` | A colour | The words' colour |
 | `--font FAMILY` | A family; `system` | The words' font. A family this machine lacks falls back to the system's |
 | `--font-size F` | 6 to 96 | The words' size in pixels |
+| `--poc-color C` | A colour | A volume profile's point of control |
+| `--profile-style S` | `filled`, `outline` | A volume profile's rows, or only their edge |
+| `--align A` | `left`, `right` | The edge of its span a volume profile grows from |
+| `--value-area F` | 0.1 to 1 | The share of a volume profile's volume its value area holds |
+| `--transparency F` | 0 to 1 | How far a volume profile's outline and background fade |
+| `--poc-width F` | 0.5 to 12 | A volume profile's point of control thickness; `--width` is its outline's |
 | `--scope S` | `shared`, `local` | Whether the symbol's other charts see it. Defaults to what the chart sends |
 | `--order WHERE` | `front`, `back` | Brings it to the front or sends it to the back |
 
 A colour is one of the presets `up`, `down`, `blue`, `amber`, `violet`,
 `teal`, `orange`, `cyan` and `ink`, which follow the theme, or `#rrggbb`,
 which does not. Any of `--color`, `--width`, `--arrow`, `--head`,
-`--border`, `--fill`, `--alpha`, `--text-color`, `--font` and `--font-size`
-gives the drawing a look of its own, off its configuration; `--text` and
+`--border`, `--fill`, `--alpha`, `--text-color`, `--font`, `--font-size`,
+`--poc-color`, `--profile-style`, `--align`, `--value-area`, `--transparency` and `--poc-width` gives the drawing a look of its own, off its configuration; `--text` and
 `--text-at` do not. A `local` drawing has a negative id. Changing a drawing's
 scope gives it a new id.
 

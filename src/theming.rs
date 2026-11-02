@@ -802,6 +802,7 @@ entry.range-date > image:hover { opacity: 0.9; }
    the picture whatever the picture is. */
 .drawing-config-tag { padding: 2px 10px; border-radius: 10px; font-weight: 700; font-size: 12px; background: @window_fg_color; color: @view_bg_color; }
 .drawing-preview-current { box-shadow: 0 0 0 2px @accent_bg_color; }
+.menu-choice { padding: 2px 6px; min-width: 0; min-height: 0; border-radius: 5px; font-size: 0.9em; }
 /* Typing on the chart: nothing behind the glyphs, so what is under them is
    the chart. The caret is the accent, which is the one thing on a text
    widget that has to be found rather than read, and a ring in the same

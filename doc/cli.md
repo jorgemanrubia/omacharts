@@ -119,10 +119,24 @@ Every indicator the app has, with every parameter it exposes:
 | `stochastic` | `--period` (%K length), `--k-smooth`, `--d-period`, `--overbought`, `--oversold`, `--height`, `--d-color` |
 | `volume` | `--height` |
 | `vwap` | `--anchor`, `--bands`, `--band-alpha` |
-| `volume_profile` | `--anchor`, `--rows` (a number or `auto`), `--value-area`, `--poc-color` |
+| `volume_profile` | `--anchor`, `--rows` (a number or `auto`), `--value-area`, `--poc-color`, `--poc-width`, `--outline` (`on` or `off`), `--outline-color`, `--outline-width`, `--profile-style` (`filled` or `outline`), `--align` (`left` or `right`) |
 
 Anything that draws a line also takes `--color`, `--width` and `--style`, and
 everything takes `--visible`.
+
+**A volume profile's periods can be read and merged.** `chart profile list`
+names each profile on the focused chart — its start and end, point of control
+and value area, and whether it is on screen (`--on-screen` keeps only those) —
+and `chart profile merge --at WHEN` folds the profile holding that moment
+into the one before it, a composite with one point of control and one value
+area; `split --at` puts it back. A composite is the chart's, kept for the
+symbol and the period it was made under. All three need the window, which has
+the bars that say where a period starts.
+
+```
+omacharts chart profile list --on-screen --json
+omacharts chart profile merge --at 2026-10-28
+```
 
 Colours come in two kinds, and the difference matters:
 
@@ -684,7 +698,7 @@ omacharts chartbook duplicate Macro --name "Macro weekly" --switch
 ## Drawing on a chart
 
 A drawing is a line between two anchors, a box or an ellipse with them at
-opposite corners, or words at one. An anchor is a moment and a price —
+opposite corners, words at one, or a volume profile of the bars between two. An anchor is a moment and a price —
 `2026-09-01,180.5`, or with the minute, `2026-09-01T14:30,180.5`, or unix
 seconds — which is how the chart keeps them too, so a line through two daily
 closes still passes through the same two moments on the hourly chart.
@@ -694,6 +708,7 @@ omacharts chart drawing add line --from 2026-09-01,180.5 --to 2026-09-19,192 --c
 omacharts chart drawing add rect --from 2026-09-08,178 --to 2026-09-12,186 --fill down --alpha 0.25
 omacharts chart drawing add ellipse --from 2026-09-08,178 --to 2026-09-12,186 --config 5
 omacharts chart drawing add text --from 2026-09-10,184 --text "gap fills here"
+omacharts chart drawing add profile --from 2026-09-08,0 --to 2026-09-12,0 --profile-style outline --align right
 omacharts chart drawing list
 omacharts chart drawing set --id 1 --color ink --width 2.5 --arrow end
 omacharts chart drawing set --id 1 --order front
@@ -726,7 +741,15 @@ omacharts chart drawing configure line --config 3 --color teal --arrow end
 omacharts chart drawing reset-configs rect
 ```
 
-**Any drawing can carry words.** `--text` on a line, a box or an ellipse is a
+**A volume profile drawing** (`profile`, or `vp`) reads only the times of its
+anchors: its height is the prices its bars reached. `--color` is its outline
+and `--fill` its background, `--border on|off` whether filled rows have it,
+`--width` its thickness;
+`--poc-color`, `--poc-width`, `--profile-style`, `--align`, `--value-area` and
+`--transparency` are the rest. It is never moved whole, only
+re-spanned, and it takes no words.
+
+**Any other drawing can carry words.** `--text` on a line, a box or an ellipse is a
 label on it, placed by `--text-at` — `center` by default, or an edge or a
 corner: `top`, `bottom`, `left`, `right`, `top-left` and the rest. The empty
 string takes a label off again.
@@ -794,8 +817,8 @@ and is numbered below zero, so one id names a drawing wherever it lives.
 `list` names the symbol and both switches; `clear` removes everything the
 chart can see.
 
-By hand: Ctrl+D shows the tools, Alt+L, Alt+H, Alt+A, Alt+Z, Alt+R, Alt+C and
-Alt+T arm them
+By hand: Ctrl+D shows the tools, Alt+L, Alt+H, Alt+A, Alt+Z, Alt+R, Alt+C,
+Alt+T and Alt+V arm them
 (Escape is the pointer again; a right-click drops a drawing half laid down
 and keeps the tool), a press and a second press (or one
 press-and-drag) place a drawing — except the text tool, where one press puts
@@ -810,11 +833,11 @@ the selection is done to all of them, properties included when they are all
 one kind), a drag moves a corner or the whole thing, the arrow keys
 nudge it (Ctrl+Shift+↑/↓ bring it to the front or send it to the back),
 Delete removes it,
-Enter or a right-click opens its properties, Alt+1 to Alt+9 is configuration
+Alt+Enter, a double-click or Properties… in its menu opens its properties, Alt+1 to Alt+9 is configuration
 N, and Ctrl+Z and Ctrl+Y undo and redo on that chart.
 
-Words are typed where they will be drawn: double-click any drawing, or take
-"Edit text" from its menu, and the caret lands on the chart in the drawing's
+Words are typed where they will be drawn: Enter or F2 on a drawing, a
+double-click on a text drawing, or "Edit text" from its menu, and the caret lands on the chart in the drawing's
 own font and ink. Enter commits and Shift+Enter is a newline; Escape leaves
 it as it was; Ctrl+B and Ctrl+I set the selection — or the word the caret is
 in — bold or italic. Ctrl+= and Ctrl+− grow and shrink the selected

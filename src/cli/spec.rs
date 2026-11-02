@@ -214,6 +214,8 @@ const KINDS: &[&str] = &[
 const RANGE_PRESETS: &[&str] = &["eth", "rth", "asia", "london", "new_york", "custom"];
 const ANCHORS: &[&str] = &["session", "week", "month", "quarter", "year"];
 const LINE_STYLES: &[&str] = &["solid", "dashed", "dotted"];
+const PROFILE_STYLES: &[&str] = &["filled", "outline"];
+const PROFILE_ALIGNS: &[&str] = &["left", "right"];
 const SWITCHES: &[&str] = &["on", "off"];
 const LINKS: &[&str] = &["focus", "follow", "pinned"];
 const COLOURING: &[&str] = &["coloured", "red-up", "monochrome"];
@@ -227,7 +229,7 @@ const SORT_COLUMNS: &[&str] = &["symbol", "last", "change", "change_pct", "none"
 /// list before the parser sees anything, so an alias the engine understands
 /// and the table does not is an alias nobody can use.
 const DRAWING_KINDS: &[&str] =
-    &["line", "hline", "arrow", "zigzag", "rect", "ellipse", "circle", "text"];
+    &["line", "hline", "arrow", "zigzag", "rect", "ellipse", "circle", "text", "profile", "vp"];
 /// Where a figure's label sits in it.
 const PLACES: &[&str] = &[
     "center", "top", "bottom", "left", "right", "top-left", "top-right", "bottom-left",
@@ -303,6 +305,12 @@ const INDICATOR_FLAGS: &[Flag] = &[
     Flag::valued("rows", "N", "volume profile rows, or `auto` to follow the instrument's own increment"),
     Flag::valued("value-area", "F", "the share of volume the value area covers, 0-1"),
     Flag::valued("poc-color", "COLOUR", "the volume profile's point of control"),
+    Flag::valued("profile-style", "HOW", "volume profile rows filled, or only their outline").of(PROFILE_STYLES),
+    Flag::valued("align", "EDGE", "the edge of its period a volume profile grows from").of(PROFILE_ALIGNS),
+    Flag::valued("outline", "BOOL", "whether a filled volume profile wears an outline").of(SWITCHES),
+    Flag::valued("outline-color", "COLOUR", "a volume profile's outline"),
+    Flag::valued("outline-width", "F", "a volume profile's outline thickness in pixels"),
+    Flag::valued("poc-width", "F", "a volume profile's point of control thickness in pixels"),
     Flag::valued("up-color", "COLOUR", "volume bars of a rising session"),
     Flag::valued("down-color", "COLOUR", "volume bars of a falling session"),
     Flag::valued("d-color", "COLOUR", "the stochastic's %D line"),
@@ -907,7 +915,7 @@ pub const SURFACE: &[Noun] = &[
                     Flag::valued("width", "F", "a line's thickness in pixels, or a box's edge"),
                     Flag::valued("arrow", "WHERE", "which ends of a line wear an arrowhead").of(ARROWS),
                     Flag::valued("head", "SHAPE", "the arrowhead's shape").of(HEADS),
-                    Flag::valued("border", "BOOL", "whether a box has an edge").of(SWITCHES),
+                    Flag::valued("border", "BOOL", "whether a box has an edge, or a filled volume profile an outline").of(SWITCHES),
                     Flag::valued("fill", "COLOUR", "what a box is filled with: a preset name or #rrggbb"),
                     Flag::valued("alpha", "F", "how much of a box's fill shows, 0-1"),
                     Flag::valued("scope", "SCOPE", "who else sees it (default: shared, unless the chart does not send)")
@@ -918,6 +926,12 @@ pub const SURFACE: &[Noun] = &[
                     Flag::valued("text-color", "COLOUR", "the words' colour: a preset name or #rrggbb"),
                     Flag::valued("font", "FAMILY", "the words' font family; `system` for the desktop's own"),
                     Flag::valued("font-size", "F", "the words' size in pixels"),
+                    Flag::valued("poc-color", "COLOUR", "a volume profile's point of control: a preset name or #rrggbb"),
+                    Flag::valued("profile-style", "HOW", "a volume profile's rows filled, or only their outline").of(PROFILE_STYLES),
+                    Flag::valued("align", "EDGE", "the edge of its span a volume profile grows from").of(PROFILE_ALIGNS),
+                    Flag::valued("value-area", "F", "the share of a volume profile's volume its value area holds, 0.1-1"),
+                    Flag::valued("transparency", "F", "how far a volume profile's outline and background fade, 0-1"),
+                    Flag::valued("poc-width", "F", "a volume profile's point of control thickness in pixels; --width is its outline's"),
                 ],
                 example: "omacharts chart drawing add line --from 2026-09-01,180.5 --to 2026-09-19,192 --config 4",
                 json: true,
@@ -936,6 +950,20 @@ pub const SURFACE: &[Noun] = &[
                 example: "omacharts chart measure --from 2026-09-01,180.5 --to 2026-09-19,192",
                 json: true,
                 writes: false,
+                workspace: false,
+            },
+            Verb {
+                name: "profile",
+                about: "List the focused chart's volume profiles, merge one at a moment into the one before it, or split a composite back into its periods; requires a window",
+                args: &[Arg::req("ACTION", "what to do").of(&["list", "merge", "split"])],
+                flags: &[
+                    Flag::switch("on-screen", "for list: only the profiles on screen"),
+                    Flag::valued("at", "WHEN", "for merge and split, a moment inside the profile: 2026-09-01 or 2026-09-01T14:30, in the chart's clock"),
+                    Flag::valued("id", "N", "which volume profile, when the chart has more than one"),
+                ],
+                example: "omacharts chart profile merge --at 2026-09-02",
+                json: true,
+                writes: true,
                 workspace: false,
             },
             Verb {
@@ -1337,6 +1365,7 @@ const STORED_FIELDS: &[(&str, &str, &str)] = &[
     ("template", "chart set", "--template"),
     ("indicators_shown", "chart set", "--indicators"),
     ("drawings_shown", "chart set", "--drawings"),
+    ("profile_merges", "chart profile", ""),
     ("name", "chartbook rename", ""),
     ("layout", "chart split", ""),
     ("focused", "chart focus", ""),

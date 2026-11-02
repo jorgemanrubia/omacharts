@@ -67,10 +67,13 @@ impl Reset {
     ///
     /// A session VWAP on a daily chart resets every single bar, which draws a
     /// line through the closes and calls it an average. Below this many bars
-    /// the indicator is noise wearing an indicator's name.
-    const MIN_BARS: i64 = 10;
+    /// the indicator is noise wearing an indicator's name. Five and not more,
+    /// because a week of daily bars is five, and a weekly profile or VWAP on
+    /// a daily chart is a thing traders ask for and read.
+    const MIN_BARS: i64 = 5;
 
-    /// Is this period worth resetting on at this timeframe?
+    /// Is this period worth resetting on at this timeframe? A period that is
+    /// not is never drawn, and is not offered.
     pub fn is_meaningful_for(self, timeframe: Timeframe) -> bool {
         self.approx_seconds() >= Reset::MIN_BARS * timeframe.seconds()
     }
@@ -88,7 +91,7 @@ impl Reset {
     ///
     /// A period kept from a lower timeframe is promoted rather than drawn as
     /// nonsense — switch a session VWAP to the daily chart and it becomes a
-    /// monthly one instead of a line through the closes.
+    /// weekly one instead of a line through the closes.
     pub fn effective_for(self, timeframe: Timeframe) -> Reset {
         if self.is_meaningful_for(timeframe) {
             self
@@ -202,15 +205,15 @@ mod tests {
         assert_eq!(Reset::default_for(Timeframe::minutes(5)), Reset::Session);
         assert_eq!(Reset::default_for(Timeframe::minutes(15)), Reset::Session);
         assert_eq!(Reset::default_for(Timeframe::hours(1)), Reset::Session);
-        assert_eq!(Reset::default_for(Timeframe::hours(4)), Reset::Week);
-        assert_eq!(Reset::default_for(Timeframe::days(1)), Reset::Month);
+        assert_eq!(Reset::default_for(Timeframe::hours(4)), Reset::Session);
+        assert_eq!(Reset::default_for(Timeframe::days(1)), Reset::Week);
         assert_eq!(Reset::default_for(Timeframe::weeks(1)), Reset::Quarter);
     }
 
     #[test]
     fn a_session_reset_is_meaningless_on_a_daily_chart() {
         assert!(!Reset::Session.is_meaningful_for(Timeframe::days(1)));
-        assert!(!Reset::Week.is_meaningful_for(Timeframe::days(1)));
+        assert!(Reset::Week.is_meaningful_for(Timeframe::days(1)));
         assert!(Reset::Month.is_meaningful_for(Timeframe::days(1)));
         assert!(Reset::Session.is_meaningful_for(Timeframe::hours(1)));
     }
@@ -218,10 +221,17 @@ mod tests {
     #[test]
     fn too_fine_a_period_is_promoted_not_drawn() {
         // Carried up from an intraday chart.
-        assert_eq!(Reset::Session.effective_for(Timeframe::days(1)), Reset::Month);
+        assert_eq!(Reset::Session.effective_for(Timeframe::days(1)), Reset::Week);
         // Already coarse enough: left alone.
         assert_eq!(Reset::Year.effective_for(Timeframe::days(1)), Reset::Year);
         assert_eq!(Reset::Session.effective_for(Timeframe::minutes(5)), Reset::Session);
+    }
+
+    #[test]
+    fn a_week_on_a_daily_chart_is_drawn_weekly() {
+        assert_eq!(Reset::Week.effective_for(Timeframe::days(1)), Reset::Week);
+        // A month of weekly bars is four, too few.
+        assert_eq!(Reset::Month.effective_for(Timeframe::weeks(1)), Reset::Quarter);
     }
 
     #[test]

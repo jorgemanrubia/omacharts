@@ -137,6 +137,7 @@ pub fn dispatch(
         // A range is held by the chart on screen and nowhere else.
         ("chart", "range") => chart_range(live, m),
         ("chart", "measure") => chart_measure(live, m, json),
+        ("chart", "profile") => chart_profile(live, m, json),
         ("chartbook", _) | ("chart", _) => {
             // "The one I am looking at" needs something to be looking at. The
             // stored arrangement is what the window had when it last closed,
@@ -1247,6 +1248,79 @@ fn charts_verb(
     said(as_json, json!({"message": text}), text)
 }
 
+/// Merge or split a volume profile on the chart on screen.
+fn chart_profile(live: Option<&dyn Live>, m: &clap::ArgMatches, as_json: bool) -> Result<String, Fault> {
+    let live = live.ok_or_else(|| Fault::no_window("focused chart"))?;
+    let id = match arg(m, "id") {
+        None => None,
+        Some(text) => Some(text.parse::<u32>().map_err(|_| Fault::usage(format!("{text:?} is not an indicator id")))?),
+    };
+    let merge = match required(m, "ACTION")?.as_str() {
+        "list" => return list_profiles(live, id, flag(m, "on-screen"), as_json),
+        "merge" => true,
+        "split" => false,
+        other => return Err(Fault::usage(format!("{other:?} is not list, merge or split"))),
+    };
+    let Some(when) = arg(m, "at") else {
+        return Err(Fault::usage("say which profile with --at, a moment inside it".into()));
+    };
+    let ts = read_when(when, "at", live.measurement_zone())?;
+    let chart = live.profile(id, ts, merge)?;
+    let done = if merge { "merged the profile into the one before it" } else { "split the composite profile" };
+    let action = if merge { "merge" } else { "split" };
+    said(as_json, json!({"chart": chart, "action": action, "at": ts}), format!("{done} on {chart}"))
+}
+
+/// The profiles a chart draws, as numbers a script can compare: where each
+/// begins and ends, the periods in it, its point of control and value area.
+fn list_profiles(live: &dyn Live, id: Option<u32>, visible: bool, as_json: bool) -> Result<String, Fault> {
+    let zone = live.measurement_zone();
+    let (chart, profiles) = live.profiles(id)?;
+    let day = |ts: i64| {
+        chrono::DateTime::from_timestamp(ts, 0)
+            .map(|at| at.with_timezone(&zone).format("%Y-%m-%d %H:%M").to_string())
+            .unwrap_or_default()
+    };
+    let shown: Vec<_> = profiles.iter().filter(|(_, on)| !visible || *on).collect();
+    if as_json {
+        let rows: Vec<Value> = shown
+            .iter()
+            .map(|(p, on)| {
+                let (low, high) = p.value_area_bounds();
+                json!({
+                    "start": p.start_ts,
+                    "end": p.end_ts,
+                    "start_text": day(p.start_ts),
+                    "end_text": day(p.end_ts),
+                    "periods": p.parts,
+                    "composite": p.is_composite(),
+                    "poc": p.poc_price(),
+                    "value_area_low": low,
+                    "value_area_high": high,
+                    "volume": p.total_volume,
+                    "visible": on,
+                })
+            })
+            .collect();
+        return Ok(format!("{}\n", json!({"chart": chart, "profiles": rows})));
+    }
+    let mut out = format!("{} profiles on {chart}\n", shown.len());
+    for (p, on) in shown {
+        let (low, high) = p.value_area_bounds();
+        out.push_str(&format!(
+            "{}  {} → {}  POC {:.2}  VA {:.2}–{:.2}{}\n",
+            if *on { "●" } else { "○" },
+            day(p.start_ts),
+            day(p.end_ts),
+            p.poc_price(),
+            low,
+            high,
+            if p.is_composite() { format!("  composite of {}", p.parts.len()) } else { String::new() },
+        ));
+    }
+    Ok(out)
+}
+
 fn chart_measure(
     live: Option<&dyn Live>,
     m: &clap::ArgMatches,
@@ -1923,6 +1997,11 @@ fn chart_drawing(
     // What a kind that has no corners of its own should hear, rather than
     // having them quietly dropped: four points on a rectangle is somebody
     // expecting a polygon.
+    // A volume profile carries no words: there is no inside free of its
+    // rows to put them in.
+    let takes_no_text = |kind: omacharts_engine::DrawingKind| {
+        Fault::usage(format!("a {} drawing takes no --text or --text-at", kind.label().to_lowercase()))
+    };
     let not_a_path = || {
         Fault::usage("--point is a zig-zag's corners; every other kind is --from and --to".into())
     };
@@ -1962,10 +2041,13 @@ fn chart_drawing(
     let text = match action {
         "add" => {
             let kind = kind.ok_or_else(|| {
-                Fault::usage("`drawing add` needs a kind: line, rect, ellipse or text".into())
+                Fault::usage("`drawing add` needs a kind: line, hline, arrow, zigzag, rect, ellipse, text or profile".into())
             })?;
             if !corners.is_empty() && !kind.is_path() {
                 return Err(not_a_path());
+            }
+            if !kind.takes_text() && !words.is_empty() {
+                return Err(takes_no_text(kind));
             }
             // Words sit at a point, so a text drawing takes one anchor and
             // uses it for both. A zig-zag given its corners has its ends
@@ -2048,6 +2130,9 @@ fn chart_drawing(
             }
             let mut drawing = find_drawing(store, &symbol, suffix.as_deref(), &locals, id)?;
             let was_local = drawing.is_local();
+            if !drawing.kind.takes_text() && !words.is_empty() {
+                return Err(takes_no_text(drawing.kind));
+            }
             // Through `move_grip` rather than straight onto the field, so a
             // text drawing's two anchors stay the one point they are.
             if let Some(from) = from {
@@ -2169,7 +2254,7 @@ fn configurations_verb(
                             json!({
                                 "kind": kind.key(),
                                 "config": n,
-                                "style": style_json(configs.of(*kind, n)),
+                                "style": style_json(*kind, configs.of(*kind, n)),
                                 "default": configs.is_default(*kind, n),
                             })
                             .to_string()
@@ -2205,7 +2290,7 @@ fn configurations_verb(
             configs.set(kind, n, style.clone());
             store.set_drawing_configurations(&configs);
             let text = format!("{} configuration {n} is now {}", kind.label(), describe_style(kind, &style));
-            Ok(Some(said(as_json, json!({"kind": kind.key(), "config": n, "style": style_json(&style), "message": text}), text)?))
+            Ok(Some(said(as_json, json!({"kind": kind.key(), "config": n, "style": style_json(kind, &style), "message": text}), text)?))
         }
         "reset-configs" => {
             let mut configs = store.drawing_configurations();
@@ -2323,7 +2408,7 @@ fn drawing_json(d: &omacharts_engine::Drawing, configs: &omacharts_engine::Confi
         "config": d.config,
         // Where a look of its own came from, for a drawing that has one.
         "started_from": d.started_from,
-        "style": style_json(d.style(configs)),
+        "style": style_json(d.kind, d.style(configs)),
         "scope": d.scope.key(),
         "order": d.order,
         "text": d.has_text().then(|| json!({
@@ -2344,8 +2429,8 @@ fn drawing_json(d: &omacharts_engine::Drawing, configs: &omacharts_engine::Confi
     })
 }
 
-fn style_json(style: &omacharts_engine::Style) -> Value {
-    json!({
+fn style_json(kind: omacharts_engine::DrawingKind, style: &omacharts_engine::Style) -> Value {
+    let mut out = json!({
         "color": style.colour.spell(),
         "width": style.width,
         "arrow": style.arrow.key(),
@@ -2358,7 +2443,19 @@ fn style_json(style: &omacharts_engine::Style) -> Value {
         // family and resolves differently on another machine.
         "font": style.text.family_name(),
         "font_size": style.text.clamped_size(),
-    })
+    });
+    // Only a volume profile has these, so only a volume profile says them.
+    if kind == omacharts_engine::DrawingKind::Profile {
+        out["profile"] = json!({
+            "poc_color": style.profile.poc.spell(),
+            "style": style.profile.shape.key(),
+            "align": style.profile.align.key(),
+            "value_area": style.profile.value_area,
+            "transparency": 1.0 - style.profile.opacity,
+            "poc_width": style.profile.poc_width,
+        });
+    }
+    out
 }
 
 /// A drawing, said back in one line:
@@ -2425,6 +2522,17 @@ fn describe_style(kind: omacharts_engine::DrawingKind, style: &omacharts_engine:
             format!("fill {} at {:.2}{edge}", style.fill.spell(), style.alpha)
         }
         Kind::Text => describe_text_style(style),
+        Kind::Profile => {
+            let look = &style.profile;
+            format!(
+                "{} {}, from the {}, point of control {}, value area {:.0}%",
+                style.colour.spell(),
+                look.shape.key(),
+                look.align.key(),
+                look.poc.spell(),
+                look.value_area * 100.0
+            )
+        }
     }
 }
 
@@ -2453,6 +2561,12 @@ struct StyleEdits {
     /// desktop's own, which `--font system` is the way to ask for.
     font: Option<Option<String>>,
     font_size: Option<f64>,
+    poc: Option<omacharts_engine::Paint>,
+    shape: Option<omacharts_engine::drawings::ProfileShape>,
+    align: Option<omacharts_engine::drawings::ProfileAlign>,
+    value_area: Option<f64>,
+    transparency: Option<f64>,
+    poc_width: Option<f64>,
 }
 
 impl StyleEdits {
@@ -2499,7 +2613,25 @@ impl StyleEdits {
             true => None,
             false => Some(family.to_string()),
         });
+        let shape = match arg(m, "profile-style") {
+            None => None,
+            Some(text) => Some(omacharts_engine::drawings::ProfileShape::from_key(text).ok_or_else(|| {
+                Fault::usage(format!("{text:?} is not a profile style; use filled or outline"))
+            })?),
+        };
+        let align = match arg(m, "align") {
+            None => None,
+            Some(text) => Some(omacharts_engine::drawings::ProfileAlign::from_key(text).ok_or_else(|| {
+                Fault::usage(format!("{text:?} is not an alignment; use left or right"))
+            })?),
+        };
         Ok(StyleEdits {
+            poc: paint("poc-color")?,
+            shape,
+            align,
+            value_area: bounded(m, "value-area", 0.1, 1.0)?,
+            transparency: bounded(m, "transparency", 0.0, 1.0)?,
+            poc_width: bounded(m, "poc-width", MIN_WIDTH, MAX_WIDTH)?,
             colour: paint("color")?,
             width,
             arrow,
@@ -2529,6 +2661,12 @@ impl StyleEdits {
             && self.text_colour.is_none()
             && self.font.is_none()
             && self.font_size.is_none()
+            && self.poc.is_none()
+            && self.shape.is_none()
+            && self.align.is_none()
+            && self.value_area.is_none()
+            && self.transparency.is_none()
+            && self.poc_width.is_none()
     }
 
     fn apply(&self, style: &mut omacharts_engine::Style) {
@@ -2561,6 +2699,24 @@ impl StyleEdits {
         }
         if let Some(size) = self.font_size {
             style.text.size = size;
+        }
+        if let Some(poc) = &self.poc {
+            style.profile.poc = poc.clone();
+        }
+        if let Some(shape) = self.shape {
+            style.profile.shape = shape;
+        }
+        if let Some(align) = self.align {
+            style.profile.align = align;
+        }
+        if let Some(share) = self.value_area {
+            style.profile.value_area = share;
+        }
+        if let Some(clear) = self.transparency {
+            style.profile.opacity = 1.0 - clear;
+        }
+        if let Some(width) = self.poc_width {
+            style.profile.poc_width = width;
         }
     }
 }
@@ -2662,22 +2818,29 @@ fn chart_zone(store: &Store, symbol: &str, suffix: Option<&str>) -> Tz {
 }
 
 fn read_anchor(text: &str, id: &str, zone: Tz) -> Result<omacharts_engine::Anchor, Fault> {
-    use chrono::{NaiveDate, NaiveDateTime, TimeZone};
     let bad = || Fault::usage(format!("--{id} takes WHEN,PRICE — like 2026-09-01,180.5 or 2026-09-01T14:30,180.5 — not {text:?}"));
     let (when, price) = text.rsplit_once(',').ok_or_else(bad)?;
     let price: f64 = price.trim().parse().map_err(|_| bad())?;
-    let when = when.trim();
-    let ts = if let Ok(seconds) = when.parse::<i64>() {
-        seconds
+    let ts = read_when(when, id, zone).map_err(|_| bad())?;
+    Ok(omacharts_engine::Anchor::new(ts, price))
+}
+
+/// A moment as a command types it: unix seconds, a day, or a day and a time
+/// in the chart's clock.
+fn read_when(text: &str, id: &str, zone: Tz) -> Result<i64, Fault> {
+    use chrono::{NaiveDate, NaiveDateTime, TimeZone};
+    let bad = || Fault::usage(format!("--{id} takes a moment like 2026-09-01 or 2026-09-01T14:30, not {text:?}"));
+    let when = text.trim();
+    if let Ok(seconds) = when.parse::<i64>() {
+        Ok(seconds)
     } else if let Ok(at) = NaiveDateTime::parse_from_str(when, "%Y-%m-%dT%H:%M") {
-        zone.from_local_datetime(&at).earliest().ok_or_else(bad)?.timestamp()
+        Ok(zone.from_local_datetime(&at).earliest().ok_or_else(bad)?.timestamp())
     } else if let Ok(day) = NaiveDate::parse_from_str(when, "%Y-%m-%d") {
         let at = day.and_hms_opt(0, 0, 0).ok_or_else(bad)?;
-        zone.from_local_datetime(&at).earliest().ok_or_else(bad)?.timestamp()
+        Ok(zone.from_local_datetime(&at).earliest().ok_or_else(bad)?.timestamp())
     } else {
-        return Err(bad());
-    };
-    Ok(omacharts_engine::Anchor::new(ts, price))
+        Err(bad())
+    }
 }
 
 /// Does this stored indicator have that kind?
@@ -2810,6 +2973,12 @@ struct Edits {
     rows: Option<Option<u64>>,
     value_area: Option<f64>,
     poc_color: Option<ColorChoice>,
+    profile_style: Option<omacharts_engine::indicators::profile::Style>,
+    align: Option<omacharts_engine::indicators::profile::Align>,
+    outline: Option<bool>,
+    outline_color: Option<ColorChoice>,
+    outline_width: Option<f64>,
+    poc_width: Option<f64>,
     up_color: Option<ColorChoice>,
     down_color: Option<ColorChoice>,
     color: Option<ColorChoice>,
@@ -2890,6 +3059,27 @@ impl Edits {
             },
             value_area: bounded(m, "value-area", 0.0, 1.0)?,
             poc_color: colour(m, "poc-color")?,
+            outline: match arg(m, "outline").map(String::as_str) {
+                None => None,
+                Some("on") => Some(true),
+                Some("off") => Some(false),
+                Some(other) => return Err(Fault::usage(format!("--outline is on or off, not {other:?}"))),
+            },
+            outline_color: colour(m, "outline-color")?,
+            outline_width: bounded(m, "outline-width", 0.5, 6.0)?,
+            poc_width: bounded(m, "poc-width", 0.5, 6.0)?,
+            profile_style: match arg(m, "profile-style") {
+                None => None,
+                Some(text) => Some(omacharts_engine::indicators::profile::Style::from_key(text).ok_or_else(|| {
+                    Fault::usage(format!("{text:?} is not a profile style; use filled or outline"))
+                })?),
+            },
+            align: match arg(m, "align") {
+                None => None,
+                Some(text) => Some(omacharts_engine::indicators::profile::Align::from_key(text).ok_or_else(|| {
+                    Fault::usage(format!("{text:?} is not an alignment; use left or right"))
+                })?),
+            },
             up_color: colour(m, "up-color")?,
             down_color: colour(m, "down-color")?,
             color: colour(m, "color")?,
@@ -2974,6 +3164,12 @@ impl Edits {
             && self.rows.is_none()
             && self.value_area.is_none()
             && self.poc_color.is_none()
+            && self.profile_style.is_none()
+            && self.align.is_none()
+            && self.outline.is_none()
+            && self.outline_color.is_none()
+            && self.outline_width.is_none()
+            && self.poc_width.is_none()
             && self.up_color.is_none()
             && self.down_color.is_none()
             && self.color.is_none()
@@ -3093,6 +3289,41 @@ impl Edits {
             match kind == IndicatorKind::VolumeProfile {
                 true => params["poc_color"] = to_value(colour)?,
                 false => return Err(refuse("point of control")),
+            }
+        }
+        if let Some(style) = self.profile_style {
+            match kind == IndicatorKind::VolumeProfile {
+                true => params["style"] = json!(style.key()),
+                false => return Err(refuse("profile style")),
+            }
+        }
+        if let Some(align) = self.align {
+            match kind == IndicatorKind::VolumeProfile {
+                true => params["align"] = json!(align.key()),
+                false => return Err(refuse("alignment")),
+            }
+        }
+        if let Some(on) = self.outline {
+            match kind == IndicatorKind::VolumeProfile {
+                true => params["outline"] = json!(on),
+                false => return Err(refuse("outline")),
+            }
+        }
+        if let Some(colour) = &self.outline_color {
+            match kind == IndicatorKind::VolumeProfile {
+                true => params["outline_color"] = to_value(colour)?,
+                false => return Err(refuse("outline")),
+            }
+        }
+        for (width, key, what) in [
+            (self.outline_width, "outline_width", "outline thickness"),
+            (self.poc_width, "poc_width", "point of control thickness"),
+        ] {
+            if let Some(width) = width {
+                match kind == IndicatorKind::VolumeProfile {
+                    true => params[key] = json!(width),
+                    false => return Err(refuse(what)),
+                }
             }
         }
         for (colour, key, what) in [
@@ -6796,6 +7027,19 @@ mod tests {
                     .map(|(a, b)| omacharts_engine::measurement::Measurement::between(a, b, &[], None)),
             ))
         }
+        /// Two sessions, so there is one to merge into the other.
+        fn profiles(&self, _id: Option<u32>) -> Result<(String, Vec<(omacharts_engine::indicators::Profile, bool)>), Fault> {
+            use omacharts_engine::indicators::profile::compute;
+            let day = 86_400;
+            let bars: Vec<omacharts_engine::Bar> = (0..4)
+                .map(|i| omacharts_engine::Bar { ts: 1_793_836_800 + (i / 2) * day + (i % 2) * 3600, open: 100.0, high: 101.0, low: 99.0, close: 100.5, volume: 10.0 })
+                .collect();
+            let profiles = compute(&bars, omacharts_engine::Reset::Session, 0, Some(10), 0.7, None, &[]);
+            Ok(("pos:0 SPY 1h in Main".into(), profiles.into_iter().map(|p| (p, true)).collect()))
+        }
+        fn profile(&self, _id: Option<u32>, _ts: i64, _merge: bool) -> Result<String, Fault> {
+            Ok("pos:0 SPY 1h in Main".into())
+        }
         fn flush_workspace(&self) {}
         fn reload_workspace(&self) {}
         fn reload_watchlists(&self) {}
@@ -6909,6 +7153,31 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A volume profile drawing takes the study's own properties from a
+    /// command, as its properties dialog gives them.
+    #[test]
+    fn a_profile_drawing_is_set_up_from_a_command() {
+        let store = bare();
+        run("chartbook create Macro --symbol SPY --switch", &store);
+        let out = run(
+            "chart drawing add profile --book Macro --from 2026-10-14,1 --to 2026-10-21,1 \
+             --profile-style outline --align right --poc-color amber --value-area 0.6",
+            &store,
+        );
+        assert_eq!(out.code, 0, "{}", out.err);
+        let listed = json_of(&run("chart drawing list --book Macro --json", &store));
+        let profile = &listed["drawings"][0]["style"]["profile"];
+        assert_eq!(profile["style"], "outline");
+        assert_eq!(profile["align"], "right");
+        assert_eq!(profile["poc_color"], "amber");
+        assert_eq!(profile["value_area"], 0.6);
+
+        let bad = run("chart drawing add profile --book Macro --from 2026-10-14,1 --to 2026-10-21,1 --align up", &store);
+        assert_eq!(bad.code, crate::cli::EXIT_USAGE, "{}", bad.err);
+        let configured = run("chart drawing configure profile --config 2 --profile-style outline", &store);
+        assert_eq!(configured.code, 0, "{}", configured.err);
     }
 
     /// A drawing belongs to the symbol: added through one chart, it is listed

@@ -15,7 +15,8 @@ description: >-
   sections, chartbooks, link modes, the instrument search, and the cached
   price data. Also for marking a chart up — "draw the trendline", "box the
   range", "circle that gap", "mark the breakout", "label this high" — which
-  is lines, horizontal levels, arrows, zig-zags, boxes, circles and words.
+  is lines, horizontal levels, arrows, zig-zags, boxes, circles, words and
+  volume profiles of a span.
   Use it for any mention of omacharts, and whenever the user speaks about
   charts, watchlists, chartbooks or linked charts as things already on their
   screen.
@@ -242,6 +243,23 @@ same word — is a box with its outline swapped for a curve: the same two
 anchors at opposite corners of the box it is drawn in, the same fill and
 edge, never held round. Reach for it over a box when the empty corners
 matter.
+
+**A volume profile of any span is a drawing.** `profile` (or `vp`) profiles
+the bars between `--from` and `--to`; only their times are read. `--color` is
+its outline, `--fill` its background, `--width` the outline's thickness, and
+`--poc-color`, `--poc-width`, `--profile-style filled|outline`, `--align
+left|right`, `--value-area` and `--transparency` the rest. The study takes
+`--outline-color`, `--outline-width` and `--poc-width` the same way. It takes no `--text`. The study's own profiles are read and merged with
+`chart profile`: `list --on-screen --json` gives each one's `start`, `end`,
+`poc`, `value_area_low` and `value_area_high`, and `merge --at START` folds
+the one starting there into the one before it — read again after each merge,
+since the composite's value area is new. `split --at` undoes it.
+
+```
+omacharts chart drawing add profile --from 2026-10-14,0 --to 2026-10-21,0 --config 9
+omacharts chart profile list --on-screen --json
+omacharts chart profile merge --at 1793836800
+```
 
 **Words go on the chart two ways.** `text` is a drawing that is nothing but
 what it says, at one anchor — `--from` alone, and `--to` is not read. Any

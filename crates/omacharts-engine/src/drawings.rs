@@ -404,13 +404,19 @@ pub enum Kind {
     /// Words on the chart, at the first anchor. The only kind whose size
     /// comes from what it says rather than from where its anchors are.
     Text,
+    /// A volume profile of the bars between its two anchors: a composite of
+    /// whatever span the hand dragged across. Only the times of its anchors
+    /// mean anything; how tall it is comes from the bars it covers. It is
+    /// not moved whole, since a profile somewhere else is a different
+    /// profile: its two edges change the span instead.
+    Profile,
 }
 
 impl Kind {
     /// Every kind, in the order the tools are offered: the plain line
     /// first, then the two that are a line with one thing added, then the
-    /// shapes, then the words.
-    pub const ALL: [Kind; 7] = [
+    /// shapes, then the words, then the profile.
+    pub const ALL: [Kind; 8] = [
         Kind::Line,
         Kind::Horizontal,
         Kind::Arrow,
@@ -418,6 +424,7 @@ impl Kind {
         Kind::Rect,
         Kind::Ellipse,
         Kind::Text,
+        Kind::Profile,
     ];
 
     /// The kinds that are a shape, which is every kind that can carry text
@@ -444,6 +451,7 @@ impl Kind {
             Kind::Rect => "Rectangle",
             Kind::Ellipse => "Circle",
             Kind::Text => "Text",
+            Kind::Profile => "Volume profile",
         }
     }
 
@@ -456,6 +464,7 @@ impl Kind {
             Kind::Rect => "rect",
             Kind::Ellipse => "ellipse",
             Kind::Text => "text",
+            Kind::Profile => "profile",
         }
     }
 
@@ -473,11 +482,32 @@ impl Kind {
                     .any(|name| key.eq_ignore_ascii_case(name))
                     .then_some(Kind::Horizontal)
             })
+            .or_else(|| {
+                ["vp"]
+                    .iter()
+                    .any(|name| key.eq_ignore_ascii_case(name))
+                    .then_some(Kind::Profile)
+            })
     }
 
     /// Whether this kind has an inside: a fill, and room for text in it.
     pub fn is_bounded(self) -> bool {
         matches!(self, Kind::Rect | Kind::Ellipse)
+    }
+
+    /// Whether it is painted under the bars rather than over them. A profile
+    /// is shading, as the study's profiles and a band's fill are, and a
+    /// shade over the candles hides what it describes; everything else is
+    /// a mark on the chart, and goes on top.
+    pub fn under_bars(self) -> bool {
+        self == Kind::Profile
+    }
+
+    /// Whether it can carry words: the text itself, and every figure. A
+    /// profile cannot, since it is read for its rows and has no inside free
+    /// of them.
+    pub fn takes_text(self) -> bool {
+        self != Kind::Profile
     }
 
     /// Whether the drawing is the text itself, rather than a shape that may
@@ -1019,7 +1049,92 @@ pub struct Style {
     /// actually say never is.
     #[serde(default)]
     pub text: TextStyle,
+    /// What only a volume profile has. Left out of every other kind's
+    /// stored style, which would only ever carry the defaults.
+    #[serde(default, skip_serializing_if = "ProfileLook::is_default")]
+    pub profile: ProfileLook,
 }
+
+/// A volume profile drawing's own properties: the study's, as one drawing
+/// carries them. The rows are the drawing's fill, the value area at its
+/// alpha and the rest at [`PROFILE_ROW_SHARE`] of it; the edge round them is
+/// its colour.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub struct ProfileLook {
+    /// The line across the busiest price.
+    pub poc: Paint,
+    /// Solid rows, or only their outline.
+    #[serde(default)]
+    pub shape: ProfileShape,
+    /// The edge of the span the rows grow from.
+    #[serde(default)]
+    pub align: ProfileAlign,
+    /// Fraction of the volume the value area covers.
+    pub value_area: f64,
+    /// Rows to divide the span into, or `None` for the instrument's own
+    /// increment, as the study does.
+    #[serde(default)]
+    pub rows: Option<usize>,
+    /// How much of the outline and the background shows, over the strength
+    /// each is drawn at: 1 is the look as designed, 0 nothing. The point of
+    /// control keeps its own, being the line the profile is read by.
+    #[serde(default = "ProfileLook::opaque")]
+    pub opacity: f64,
+    /// The point of control's thickness. The outline's is the drawing's
+    /// own `width`.
+    #[serde(default = "ProfileLook::poc_default")]
+    pub poc_width: f64,
+}
+
+impl ProfileLook {
+    fn opaque() -> f64 {
+        1.0
+    }
+
+    fn poc_default() -> f64 {
+        DEFAULT_WIDTH
+    }
+
+    fn is_default(&self) -> bool {
+        *self == ProfileLook::default()
+    }
+}
+
+impl Default for ProfileLook {
+    fn default() -> ProfileLook {
+        ProfileLook {
+            poc: Paint::preset(Preset::Ink),
+            shape: ProfileShape::Filled,
+            align: ProfileAlign::Left,
+            value_area: 0.70,
+            rows: None,
+            opacity: 1.0,
+            poc_width: DEFAULT_WIDTH,
+        }
+    }
+}
+
+pub use crate::indicators::profile::{Align as ProfileAlign, Style as ProfileShape};
+
+/// The value area's fill: the study's own. A drawing over a study is already
+/// on top, and being louder would only cost the candles under it — at 0.36
+/// the up and down bodies under a fill fall below 0.06 ΔE apart.
+pub const PROFILE_ALPHA: f64 = 0.30;
+
+/// The rows outside the value area, as a share of its alpha: the study's
+/// 0.14 to its 0.30.
+pub const PROFILE_ROW_SHARE: f64 = 0.14 / 0.30;
+
+/// The hairline around a filled profile's silhouette, the drawing's and the
+/// study's alike. Soft on purpose: 0.55 read as a box drawn round the rows
+/// on a light theme, and 0.45 is the lowest that is still a rim on every
+/// shipped theme, 1.59:1 on the chart and 0.05 ΔE off its own fill at worst,
+/// and stays one at 20% transparency.
+pub const PROFILE_EDGE_ALPHA: f64 = 0.45;
+
+/// The point of control's strength, the study's. Its width is its own,
+/// [`ProfileLook::poc_width`], a stroke where the study's is a hairline.
+pub const PROFILE_POC_ALPHA: f64 = 0.9;
 
 /// How a drawing's text is set: its colour, its face and its size.
 ///
@@ -1091,6 +1206,7 @@ impl Style {
             fill: Paint::preset(preset),
             alpha: FILL_ALPHA,
             text: TextStyle::of(preset),
+            profile: ProfileLook::default(),
         }
     }
 
@@ -1107,6 +1223,7 @@ impl Style {
             fill: Paint::preset(preset),
             alpha: FILL_ALPHA,
             text: TextStyle::of(preset),
+            profile: ProfileLook::default(),
         }
     }
 
@@ -1150,6 +1267,41 @@ impl Style {
         Style { border: false, alpha: 0.0, ..Style::rect(preset) }
     }
 
+    /// A volume profile starts from the box's look, with what only a
+    /// profile has.
+    ///
+    /// Drawn often over the study, whose default is Blue rows under an Amber
+    /// point of control on every shipped theme, so the nine are set apart
+    /// from it. Blue, Teal and Cyan are outlines: a cool fill cannot be told
+    /// from the study's by hue, so they differ by form. Four to seven grow
+    /// from the right, mirroring the study, which grows from the left. Every
+    /// point of control is Ink: a companion for a Blue or Violet body would
+    /// be the study's Amber. Ink filled, the ninth, is the neutral composite
+    /// laid over session profiles.
+    pub fn profile(preset: Preset) -> Style {
+        let (shape, align) = match preset {
+            Preset::Up | Preset::Down | Preset::Ink => (ProfileShape::Filled, ProfileAlign::Left),
+            Preset::Blue | Preset::Cyan => (ProfileShape::Outline, ProfileAlign::Left),
+            Preset::Amber | Preset::Violet | Preset::Orange => (ProfileShape::Filled, ProfileAlign::Right),
+            Preset::Teal => (ProfileShape::Outline, ProfileAlign::Right),
+        };
+        // A filled profile's outline is a hairline round its rows; an
+        // outline is the whole of the drawing, at a line's weight.
+        let width = match shape {
+            ProfileShape::Filled => BORDER_WIDTH,
+            ProfileShape::Outline => DEFAULT_WIDTH,
+        };
+        Style {
+            width,
+            alpha: PROFILE_ALPHA,
+            // Filled rows go without an edge until one is asked for; the
+            // outline style is nothing but one.
+            border: false,
+            profile: ProfileLook { shape, align, ..ProfileLook::default() },
+            ..Style::rect(preset)
+        }
+    }
+
     /// The configuration this kind starts from.
     pub fn of(kind: Kind, preset: Preset) -> Style {
         match kind {
@@ -1160,6 +1312,7 @@ impl Style {
             Kind::Rect => Style::rect(preset),
             Kind::Ellipse => Style::ellipse(preset),
             Kind::Text => Style::text(preset),
+            Kind::Profile => Style::profile(preset),
         }
     }
 
@@ -1204,6 +1357,8 @@ pub struct Configurations {
     pub horizontal: Vec<Style>,
     #[serde(default)]
     pub zigzag: Vec<Style>,
+    #[serde(default)]
+    pub profile: Vec<Style>,
 }
 
 /// How many configurations each kind has.
@@ -1220,6 +1375,7 @@ impl Default for Configurations {
             rect: nine(Style::rect),
             ellipse: nine(Style::ellipse),
             text: nine(Style::text),
+            profile: nine(Style::profile),
         }
     }
 }
@@ -1280,6 +1436,7 @@ impl Configurations {
             Kind::Rect => &self.rect,
             Kind::Ellipse => &self.ellipse,
             Kind::Text => &self.text,
+            Kind::Profile => &self.profile,
         }
     }
 
@@ -1292,6 +1449,7 @@ impl Configurations {
             Kind::Rect => &mut self.rect,
             Kind::Ellipse => &mut self.ellipse,
             Kind::Text => &mut self.text,
+            Kind::Profile => &mut self.profile,
         }
     }
 
@@ -1611,6 +1769,20 @@ impl Drawing {
     /// rightward at all, since both its side grips sit on one spot and the
     /// left one is found first.
     pub fn drag_grip(&mut self, grip: Grip, at: Anchor) -> Grip {
+        // A profile's corners are its two edges: dragged past the other one,
+        // the hand holds the matching corner on the far side.
+        if self.kind == Kind::Profile {
+            let Some(side) = profile_side(grip) else { return grip };
+            let held = self.drag_grip_edge(side, at);
+            return match held == side {
+                true => grip,
+                false => mirrored(grip),
+            };
+        }
+        self.drag_grip_edge(grip, at)
+    }
+
+    fn drag_grip_edge(&mut self, grip: Grip, at: Anchor) -> Grip {
         self.move_grip(grip, at);
         let (earlier, later) = (self.from.ts.min(self.to.ts), self.from.ts.max(self.to.ts));
         let (lower, higher) = (self.from.price.min(self.to.price), self.from.price.max(self.to.price));
@@ -1647,6 +1819,14 @@ impl Drawing {
             self.to.price = at.price;
             return;
         }
+        // Whichever corner of a profile, its edge on that side.
+        let grip = match self.kind {
+            Kind::Profile => match profile_side(grip) {
+                Some(side) => side,
+                None => return,
+            },
+            _ => grip,
+        };
         if let Grip::Corner(n) = grip {
             if let Some(corner) = self.points.get_mut(n) {
                 *corner = at;
@@ -1689,7 +1869,12 @@ impl Drawing {
     }
 
     /// Shift the whole drawing by a span of time and a difference in price.
+    /// A volume profile stays where it is: moved, it would be a profile of
+    /// other bars, which is a change of span its edges are for.
     pub fn shift(&mut self, by_ts: i64, by_price: f64) {
+        if self.kind == Kind::Profile {
+            return;
+        }
         for anchor in [&mut self.from, &mut self.to] {
             anchor.ts += by_ts;
             anchor.price += by_price;
@@ -1732,9 +1917,34 @@ impl Drawing {
             // its properties, and a grip on its corner would promise a
             // stretch that is not on offer.
             Kind::Text => &[],
+            // A grip at each corner, where a hand looks for one, but all
+            // four move only the edge they are on: the span is all a profile
+            // has to change. Nothing moves its prices; those are the bars'.
+            Kind::Profile => &[Grip::From, Grip::FromTo, Grip::ToFrom, Grip::To],
             // Answered above, where the number of them is known.
             Kind::Zigzag => &[],
         }
+    }
+}
+
+/// The edge of a profile a corner grip moves: the left two its start, the
+/// right two its end.
+fn profile_side(grip: Grip) -> Option<Grip> {
+    match grip {
+        Grip::From | Grip::FromTo | Grip::Left => Some(Grip::Left),
+        Grip::To | Grip::ToFrom | Grip::Right => Some(Grip::Right),
+        _ => None,
+    }
+}
+
+/// The corner across from it on the other edge, at the same height.
+fn mirrored(grip: Grip) -> Grip {
+    match grip {
+        Grip::From => Grip::ToFrom,
+        Grip::ToFrom => Grip::From,
+        Grip::FromTo => Grip::To,
+        Grip::To => Grip::FromTo,
+        grip => grip,
     }
 }
 
@@ -1828,6 +2038,18 @@ impl Projected {
         }
         match (self.kind, grip) {
             (Kind::Text, _) => None,
+            // The corners of the box it fills, the left two on its start and
+            // the right two on its end, wherever its anchors are.
+            (Kind::Profile, Grip::From | Grip::FromTo | Grip::ToFrom | Grip::To) => {
+                let (left, top, w, h) = self.bounds();
+                Some(match grip {
+                    Grip::From => (left, top),
+                    Grip::FromTo => (left, top + h),
+                    Grip::ToFrom => (left + w, top),
+                    _ => (left + w, top + h),
+                })
+            }
+            (Kind::Profile, _) => None,
             (_, Grip::From) => Some(self.from),
             (_, Grip::To) => Some(self.to),
             (Kind::Rect | Kind::Ellipse, Grip::FromTo) => Some((self.from.0, self.to.1)),
@@ -1909,7 +2131,9 @@ impl Projected {
                 .segments()
                 .iter()
                 .any(|(a, b)| distance_to_segment((x, y), *a, *b) <= reach),
-            Kind::Rect => {
+            // Its span and the prices it reached, which the chart puts in
+            // its anchors when it projects it.
+            Kind::Rect | Kind::Profile => {
                 let (left, right) = ordered(self.from.0, self.to.0);
                 let (top, bottom) = ordered(self.from.1, self.to.1);
                 (left - reach..=right + reach).contains(&x) && (top - reach..=bottom + reach).contains(&y)
@@ -1949,7 +2173,7 @@ impl Projected {
             // The box the shape fills. A dragged selection is a rough
             // gesture over a region, not a click: catching an ellipse whose
             // bounding box the hand swept is what the hand meant.
-            Kind::Rect | Kind::Ellipse => overlaps(self.bounds()),
+            Kind::Rect | Kind::Ellipse | Kind::Profile => overlaps(self.bounds()),
             Kind::Text => false,
         }
     }
@@ -3248,5 +3472,35 @@ mod edge_grip_tests {
         let mut prices = [drawing.from.price, drawing.to.price];
         prices.sort_by(f64::total_cmp);
         assert_eq!(prices, [50.0, 80.0]);
+    }
+
+    #[test]
+    fn a_profile_is_resized_by_its_edges_and_never_moved_whole() {
+        let mut drawing = Drawing::new(Kind::Profile, Anchor::new(100, 10.0), Anchor::new(200, 10.0));
+        assert_eq!(drawing.grips(), vec![Grip::From, Grip::FromTo, Grip::ToFrom, Grip::To]);
+        // A top corner moves only the time of its edge.
+        drawing.move_grip(Grip::From, Anchor::new(50, 99.0));
+        assert_eq!((drawing.from.ts, drawing.from.price), (50, 10.0));
+        drawing.move_grip(Grip::From, Anchor::new(100, 99.0));
+        drawing.shift(50, 1.0);
+        assert_eq!((drawing.from.ts, drawing.to.ts), (100, 200), "not moved whole");
+        drawing.move_grip(Grip::Right, Anchor::new(300, 0.0));
+        assert_eq!((drawing.from.ts, drawing.to.ts), (100, 300));
+        assert!(!Kind::Profile.takes_text());
+        assert_eq!(Kind::from_key("vp"), Some(Kind::Profile));
+    }
+
+    #[test]
+    fn the_nine_profile_configurations_stand_apart_from_the_study() {
+        let configs = Configurations::default();
+        let shapes: Vec<_> = (1..=9).map(|n| configs.of(Kind::Profile, n).profile.shape).collect();
+        // Blue, Teal and Cyan are told from the study's Blue by form.
+        for n in [3, 6, 8] {
+            assert_eq!(shapes[n - 1], ProfileShape::Outline, "configuration {n}");
+        }
+        for n in 4..=7 {
+            assert_eq!(configs.of(Kind::Profile, n as u8).profile.align, ProfileAlign::Right, "configuration {n}");
+        }
+        assert!((1..=9).all(|n| configs.of(Kind::Profile, n).profile.poc == Paint::preset(Preset::Ink)));
     }
 }

@@ -41,6 +41,7 @@ crop: none
 | Rectangle | <kbd>Alt</kbd> + <kbd>R</kbd> | Press at one corner, release at the other |
 | Circle | <kbd>Alt</kbd> + <kbd>C</kbd> | Placed like a rectangle; the ellipse fills it |
 | Text | <kbd>Alt</kbd> + <kbd>T</kbd> | Click where the text goes, then type |
+| Volume profile | <kbd>Alt</kbd> + <kbd>V</kbd> | Press where the span starts, release where it ends ([Volume profiles](#volume-profiles)) |
 
 After one drawing the tool is deselected. <kbd>Ctrl</kbd> + click a tool to keep it selected until <kbd>Esc</kbd> or another tool. The selected tool draws on whichever chart you press. A configuration is a saved look for a tool's drawings, numbered 1 to 9 ([Configurations](#configurations)).
 
@@ -54,8 +55,8 @@ state:
   key alt+r
   key alt+6
   move 1275 795
-capture: bin/headless-window shot /tmp/bar.png; magick /tmp/bar.png -crop 760x920+0+0 +repage site/assets/manual/drawings/tools-bar.png
-crop: 0,0,760,920
+capture: bin/headless-window shot /tmp/bar.png; magick /tmp/bar.png -crop 760x1010+0+0 +repage site/assets/manual/drawings/tools-bar.png
+crop: 0,0,760,1010
 -->
 {% include figure.html src="/assets/manual/drawings/tools-bar.png" alt="The drawing tools down the left edge, with the rectangle lit and a small 6 on it" caption="The tools, with the rectangle selected and configuration 6 chosen for it." %}
 
@@ -162,11 +163,11 @@ crop: 1666,320,642,888   (the box above, the menu with 20px layout margin right 
 
 ## Properties
 
-<kbd>Alt</kbd> + <kbd>Enter</kbd>, or **Properties…**, opens the properties of the selected drawings. With kinds mixed nothing opens. Each change applies as you make it, with the chart visible behind the dialog. **Done**, <kbd>Ctrl</kbd> + <kbd>Enter</kbd> or <kbd>Esc</kbd> closes it.
+<kbd>Alt</kbd> + <kbd>Enter</kbd>, **Properties…**, or a double-click on any drawing but text, opens the properties of the selected drawings. With kinds mixed nothing opens. Each change applies as you make it, with the chart visible behind the dialog. **Done**, <kbd>Ctrl</kbd> + <kbd>Enter</kbd> or <kbd>Esc</kbd> closes it.
 
 Across the top is a picture of the drawing, tagged with its configuration, or **Custom** when it has a look of its own. Click the picture to see the nine configurations drawn as this drawing, with its own look beside them while it has one. <kbd>Alt</kbd> + <kbd>1</kbd> … <kbd>9</kbd> works inside the dialog too. Under a **Custom** look, **Save as…** writes the look over one of the nine configurations (the one it started from is marked `*`) and puts the drawing back on that number. Every drawing on that number changes with it.
 
-A figure (any drawing but text) has two tabs, **General** and **Text**. <kbd>Alt</kbd> + <kbd>←</kbd> / <kbd>→</kbd> moves between them. A text drawing has no tabs, only **Colour**, **Font** and **Font size**.
+A figure (any drawing but text and a volume profile) has two tabs, **General** and **Text**. <kbd>Alt</kbd> + <kbd>←</kbd> / <kbd>→</kbd> moves between them. A text drawing has no tabs, only **Colour**, **Font** and **Font size**.
 
 <!-- regenerate:
 theme: tokyo-night
@@ -226,6 +227,7 @@ As shipped, the nine configurations are the nine [colours](#colours) in order, 1
 | Arrow, zig-zag | 1.5 px, an open head at the end |
 | Rectangle, circle | Filled at 16% of the colour, with a 1 px edge of it |
 | Text | The colour, nothing else |
+| Volume profile | See [Volume profiles](#volume-profiles) |
 
 Text in every configuration is 18 px in the system font, in the configuration's colour.
 
@@ -244,6 +246,49 @@ capture: bin/headless-window shot /tmp/cfg.png
 crop: 800,180,960,1240
 -->
 {% include figure.html src="/assets/manual/drawings/line-configurations.png" alt="The Line configurations dialog, listing configurations 1 to 9 with a picture of each line" caption="The **Line configurations** dialog, as shipped." %}
+
+## Volume profiles
+
+The volume profile tool draws a profile of the bars in the span you drag across: how much volume traded at each price, the value area drawn stronger, and the point of control as a line across it. It covers any stretch, across sessions or inside one, over a [Volume Profile](/manual/indicators/volume/#volume-profile) study or on its own. Its height is the range of prices those bars reached.
+
+It is drawn under the bars, as the study's profiles are, so the candles stay on top. Selected, it has a grip at each corner: the left two move its start and the right two its end, sideways only, and the profile is worked out again. It cannot be moved whole or nudged with the arrow keys; a press on it that drags pans the chart. It takes no text. On a chart of another resolution it is worked out from that chart's bars. A pasted copy lands a few bars to the right of the original.
+
+| Property | Does |
+|---|---|
+| **Outline** | Whether filled rows have an edge round them. Off by default; always on for an outline. Off, the outline's colour and thickness are greyed |
+| **Outline colour** | The edge round the rows |
+| **Outline thickness** | The outline. 1 px on a filled configuration, 1.5 px on an outline |
+| **Background** | The rows |
+| **Transparency** | Fades the outline and the background together. 0% is the look as configured |
+| **Point of control** | The line across the busiest price |
+| **Point of control thickness** | The point of control, 1.5 px |
+| **Style** | **Filled**: the rows under the outline. **Outline**: the outline alone |
+| **Alignment** | **Left**: the rows grow from the start of the span. **Right**: from its end |
+| **Value area %** | The share of the span's volume the value area holds, 10 to 100% |
+
+| Configuration | Colour | Style | Alignment |
+|---|---|---|---|
+| 1, 2, 9 | Up, Down, Ink | Filled | Left |
+| 3, 8 | Blue, Cyan | Outline | Left |
+| 4, 5, 7 | Amber, Violet, Orange | Filled | Right |
+| 6 | Teal | Outline | Right |
+
+Every configuration's point of control is Ink, and its outline and background are the same colour.
+
+<!-- regenerate:
+theme: tokyo-night
+window: 2560x1440 @2, bin/headless-window (HOME sandboxed, theme seeded)
+state:
+  key ctrl+b
+  omacharts chart set --symbol SPY --resolution 1h
+  omacharts chart indicator add volume_profile
+  omacharts chart drawing add profile --from 2026-10-14,700 --to 2026-10-21,700 --config 9
+  omacharts chart drawing add profile --from 2026-10-26,700 --to 2026-10-30,700 --config 4
+  move 1270 1000
+capture: bin/headless-window cli chart screenshot --output /tmp/vp.png; magick /tmp/vp.png -quality 88 site/assets/manual/drawings/volume-profiles.jpg
+crop: none
+-->
+{% include figure.html src="/assets/manual/drawings/volume-profiles.jpg" alt="SPY 1h with session volume profiles, an Ink profile drawn over a week of them from the left and an Amber one over the last days from the right" caption="Two volume profile drawings over the session study: configuration 9 over one week, configuration 4 over the next." %}
 
 ## Colours
 
@@ -265,7 +310,7 @@ A text drawing is text at a point. Any other drawing can carry a label, which si
 
 | Key or gesture | Does |
 |---|---|
-| Double-click a drawing, <kbd>Enter</kbd>, <kbd>F2</kbd>, **Edit text** | Puts the caret in the selected drawing, on the chart, in its own font and colour |
+| <kbd>Enter</kbd>, <kbd>F2</kbd>, **Edit text**, or double-click a text drawing | Puts the caret in the selected drawing, on the chart, in its own font and colour. Not on a volume profile, which takes no text |
 | <kbd>Enter</kbd> while typing, or a click elsewhere | Commits |
 | <kbd>Shift</kbd> + <kbd>Enter</kbd> | A new line |
 | <kbd>Ctrl</kbd> + <kbd>B</kbd>, <kbd>Ctrl</kbd> + <kbd>I</kbd> | Bold or italic, over the selection or the word the caret is in |

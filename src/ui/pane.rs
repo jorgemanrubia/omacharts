@@ -118,6 +118,9 @@ pub struct ChartPane {
     /// The drawings that are this chart's alone, kept with it rather than
     /// in the store, since they belong to no symbol but to this pane.
     pub local_drawings: RefCell<Vec<omacharts_engine::Drawing>>,
+    /// The volume profile periods merged on this chart, kept with it: a
+    /// composite is a study of this chart's, not of the indicator's.
+    pub profile_merges: RefCell<Vec<omacharts_engine::indicators::profile::Merge>>,
     /// What the link icon is painted in, so a mode other than the default can
     /// be read off four charts at a glance rather than by opening four
     /// popovers. Held here because the drawing happens on every frame and the
@@ -367,6 +370,7 @@ impl ChartPane {
             sends_drawings: Cell::new(true),
             uid: RefCell::new(gtk::glib::uuid_string_random().to_string()),
             local_drawings: RefCell::new(Vec::new()),
+            profile_merges: RefCell::new(Vec::new()),
             link_colour,
             glyph,
         });

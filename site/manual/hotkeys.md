@@ -130,6 +130,7 @@ Tools and configurations:
 | <kbd>Alt</kbd> + <kbd>R</kbd> | A rectangle | [Drawings](/manual/drawings/) |
 | <kbd>Alt</kbd> + <kbd>C</kbd> | A circle, dragged to any shape | [Drawings](/manual/drawings/) |
 | <kbd>Alt</kbd> + <kbd>T</kbd> | Text: click, then type | [Drawings](/manual/drawings/) |
+| <kbd>Alt</kbd> + <kbd>V</kbd> | A volume profile of the span dragged across | [Drawings](/manual/drawings/#volume-profiles) |
 | <kbd>Alt</kbd> + <kbd>M</kbd> | Measure: click the start, then the end | [Drawings](/manual/drawings/#measuring-a-move) |
 | <kbd>Alt</kbd> + <kbd>1</kbd> … <kbd>9</kbd> | Configuration N, for the selected drawing or the one about to be drawn | [Drawings](/manual/drawings/) |
 | <kbd>Ctrl</kbd>, held | A point being placed or dragged snaps to the open, high, low or close of the candle under it | [Drawings](/manual/drawings/) |
@@ -249,7 +250,7 @@ Drawing with the mouse:
 | <kbd>Shift</kbd> + click / <kbd>Ctrl</kbd> + click a drawing | Adds it to the selection, or takes it out | [Drawings](/manual/drawings/) |
 | <kbd>Shift</kbd> + drag the empty chart | Selects every drawing the box touches | [Drawings](/manual/drawings/) |
 | <kbd>Ctrl</kbd> + drag a corner | Snaps it to the candle under it | [Drawings](/manual/drawings/) |
-| Double-click a drawing | Puts the caret in it, to type | [Drawings](/manual/drawings/) |
+| Double-click a drawing | Opens its properties. On a text drawing, puts the caret in it | [Drawings](/manual/drawings/) |
 | Click an indicator, or its name in the legend | Selects it | [Indicators](/manual/indicators/#selecting-an-indicator) |
 | Double-click an indicator | Opens its settings | [Indicators](/manual/indicators/#selecting-an-indicator) |
 | Right-click an indicator | Selects it and opens its menu: **Cut**, **Copy**, **Paste**, **Remove**, **Properties…** | [Indicators](/manual/indicators/#selecting-an-indicator) |
