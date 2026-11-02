@@ -1,7 +1,7 @@
 ---
 title: Volume profile
 stage: script
-length: 230s
+length: 240s
 theme: tokyo-night
 voice: narrator
 music: ambient electronic, warm analog pads and a soft plucked arpeggio over a slow, deliberate pulse; patient and a little curious through the theory, steadier once the study is on screen, and in the agent section the pulse firms up and a second arpeggio layer enters as the profiles fold together; it opens up for the theme changes near the end, with room to breathe, and resolves brighter for the close
@@ -23,7 +23,9 @@ hidden, a monthly profile under every month, and in a few quick seconds
 the months fold together into four wide composites, each with one point
 of control and one value area. No terminal yet; that is saved for the
 end. Then the first line says the idea in plain words: where the volume
-sits tells you what the market agreed was fair.
+sits tells you what the market agreed was fair. That first word lands
+about ten seconds in, cover included, by design: the fold plays in
+silence so it can be seen.
 
 **Beats.** Each section opens with a sentence or two over its chart, with
 nothing moving, saying what it is about. The first one also carries the
@@ -53,12 +55,13 @@ idea that ties the video together.
    one point of control, one value area.
 5. **Ask an agent.** Doing that across the whole chart is a judgement
    applied many times, which is what an agent is for. A terminal opens
-   on the right; the request is typed in plain words: merge
-   neighbouring profiles with value areas overlapping at least 50%. The
+   on the right, the agent already waiting at its prompt; the request is
+   typed in plain words: merge neighbouring profiles with value areas
+   overlapping at least 50%. The
    agent reads the profiles (`omacharts chart profile list --on-screen
    --json`) and merges right to left (`omacharts chart profile merge --at
    …`); each merge lands on the chart as it runs, the first one with a
-   paired zoom. The terminal closes, the bars come back.
+   zoom on the chart. The terminal closes, the bars come back.
 6. **Any theme.** Preferences › Theme, two themes, one of them light; the
    candles, profiles and composites recolour live. Mostly music.
 7. **Close.** One line on what the profile gives you, and where to read
@@ -84,8 +87,7 @@ idea that ties the video together.
   `omacharts` commands against the studio window, so the data is the same
   every render.
 - The craft guide allows only cuts and short crossfades. The sweep as the
-  terminal opens and closes, and the paired zoom on the first merge, are an
-  exception for the agent section only, because the author asked for them.
+  terminal opens and closes is an exception for the agent section only, because the author asked for them.
   Everything else cuts.
 - The composite ranges come from the author's own run on SPY four-hour
   with monthly profiles: September to November 2025, December 2025 to
@@ -94,7 +96,7 @@ idea that ties the video together.
   reads them off the studio.
 - The agent itself is shown, not named, unless the author wants it named.
 - Length: the author is fine with two minutes or more, so each section
-  takes the time it needs: about three minutes fifty all told, most of it
+  takes the time it needs: about four minutes all told (240s), most of it
   narration at a relaxed pace, with real holds where the app is working.
 
 ## Setup
@@ -162,8 +164,9 @@ five-minute bars over four regular sessions, a session profile at the
 start of each, the value area stronger and the point of control a line
 across it. Nothing else moves.
 
-**Voice.** {next}It comes from auction market theory, and the basics are
-short. The market is an auction. Price moves up and down to find the other
+**Voice.** {next}A volume profile is the volume traded at each price,
+stacked sideways against the bars. It comes from auction market theory,
+and the basics are short. The market is an auction. Price moves up and down to find the other
 side of each trade. In balance, it trades inside value and builds the
 profile; out of balance, it leaves to find new value.
 
@@ -174,9 +177,10 @@ profile; out of balance, it leaves to find new value.
 
 **Picture.** The same chart. On "value area", one zoom of about two times
 on the third session's profile, framing its stronger band and the point
-of control line together. It is held through both definitions and eases
-back to the full chart as "When price leaves value" begins. The cursor
-stays off the chart.
+of control line together. Nothing else acts in the scene, so it holds
+for the composer's longest, four and a half seconds, through the value
+area line and into the point of control, then eases back to the full
+chart. The cursor stays off the chart.
 
 **Voice.** Here's one session. {zoom}The value area is the band holding
 about seventy percent of the volume. The point of control is the busiest
@@ -219,11 +223,10 @@ its volume traded. {grip}Stretch it a few bars, and it's worked out again.
 ### 7. One for every period
 
 **Picture.** Ctrl and Alt and right arrow: the Study chartbook, SPY on
-four-hour bars over the last three months, candles only. Nothing else
-moves.
+four-hour bars over the last three months, candles only, the header naming
+SPY and 4h. Nothing else moves.
 
-**Voice.** {next}For a profile of every period, there's a study. This is
-SPY on four-hour bars.
+**Voice.** {next}For a profile of every period, there's a study.
 
     next: key ctrl+alt+Right
     after: 0.5
@@ -235,9 +238,12 @@ is typed and Enter picks Volume Profile, whose settings open; Ctrl and
 Enter adds it. A narrow profile sits at the start of every session, under
 the candles. The cursor right-clicks a profile near the middle of the
 chart and its menu opens, the **Reset every** buttons along the top with
-Session ringed; a click on **Week** redraws one profile a week. Another
-right-click, a click on **Month**: four monthly profiles, wide and easy
-to read.
+Session ringed, the period in use; a click on **Week** redraws one profile
+a week. Another right-click on a weekly profile, a click on **Month**:
+four monthly profiles, wide and easy to read. (A session profile on
+four-hour bars is about two bars wide, and the menu only opens with the
+pointer on a profile's rows, so the storyboard pins both right-clicks on
+rows.)
 
 **Voice.** {add}Add Volume Profile {pick}from the indicators, {done}and
 every session gets its own. For a wider view, {menu1}reset it {week}every
@@ -309,19 +315,18 @@ again and again. That's work for an agent.
 
 **Picture.** A terminal opens on the right, taking about 38% of the
 width, themed like the app, the composer covering the snap with a light
-sweep and labelling the two panes; the chart reflows into the rest, every
-profile still on screen. `vp-agent` is typed at the shell
-prompt and Enter starts it; it shows a bare `❯` prompt. The request is
-typed into it at human speed: "Merge neighbouring profiles with value
-areas overlapping at least 50%". Enter sends it.
+sweep and labelling the two panes; the chart reflows into the rest. The
+terminal opens with the agent already running, at its bare `❯` prompt,
+nothing typed to start it. (The chart is narrower now: the storyboard
+checks how many months are still on screen against scene 1.) The request
+is typed at the prompt at human speed: "Merge neighbouring profiles with
+value areas overlapping at least 50%". Enter sends it.
 
-**Voice.** {open}An agent drives Omacharts from the terminal, {start}with
-the same commands you'd type. {ask}The rule goes in plain words: merge
-neighbouring profiles with value areas overlapping at least half. It works
-out the rest. {go}
+**Voice.** {open}An agent drives Omacharts from the terminal, with the
+same commands you'd type. {ask}The rule is at least half, so a month that
+only brushes the next one stays apart. The agent works out the rest. {go}
 
-    open:  terminal open
-    start: type vp-agent; key Return
+    open:  terminal open vp-agent --pace 0.8
     ask:   type Merge neighbouring profiles with value areas overlapping at least 50%
     go:    key Return
     after: 0.3
@@ -333,17 +338,21 @@ chart profile list --on-screen --json` and how many profiles it found.
 Then it walks them right to left, a line per pair: a merge prints its
 overlap and the real `omacharts chart profile merge --at …`, and the
 profile on the left folds into its neighbour as it lands; a pair that
-doesn't overlap enough says "kept apart" in grey. On the first merge, a
-paired zoom frames the merge command in the terminal and the profile it
-changes on the chart together, then pulls back to the full split frame
-for the rest, which run at their own pace. It ends on its summary line,
-how many merges and how many profiles there are now.
+doesn't overlap enough says "kept apart" in grey. On "Each", timed to the
+first merge (October 2026 into September), one zoom of about 1.8 times on
+those two profiles at the right of the chart pane, held until it eases
+back for the rest, which run at their own pace. It ends on its summary
+line, how many merges and how many profiles there are now. The run takes
+about seventeen seconds at this pace, six merges and eight pairs kept
+apart; the storyboard measures it and sets `after:` so the summary line
+is on screen and read before the scene ends.
 
 **Voice.** It reads the profiles on screen and walks them right to left.
-Each merge is a real Omacharts command, and the chart changes as it lands.
-Months that don't overlap enough stay apart.
+{merge}Each merge is a real Omacharts command, and the chart changes as it
+lands.
 
-    after: 8.0
+    merge: zoom 85% 45% 1.8
+    after: 10.5
 
 ### 14. The result
 
@@ -363,20 +372,21 @@ value. The gaps between them are where it went looking for the next.
 
 ### 15. Any theme
 
-**Picture.** Ctrl and comma opens Preferences over the middle of the
-window, the chart still showing on either side. A click on **Theme** in
-its sidebar, a click on the **Theme** row's drop-down, and a click on
-**Carbon**: the window, the candles, the profiles and the composites turn
-to Carbon's neutral greys at once. A breath, then the drop-down again and
-**Paper**: everything goes light, warm off-white with ink text, the
-profiles recoloured to match. Escape closes Preferences and the full chart
-holds in Paper, the music up in the gap. (If the dialog hides too much of
-the chart, the storyboard can close it between the two themes.)
+**Picture.** The chart from scene 14, held while the section is
+introduced. Then Ctrl and comma opens Preferences over the middle of the
+window. A click on **Theme** in its sidebar, a click on the **Theme**
+row's drop-down, and a click on **Carbon**: the window, the candles, the
+profiles and the composites turn to Carbon's neutral greys at once.
+Escape closes Preferences and the full chart holds in Carbon for about
+two seconds. Ctrl and comma again, **Theme**, the drop-down, **Paper**:
+everything goes light, warm off-white with ink text, the profiles
+recoloured to match. Escape, and the full chart holds in Paper, the music
+up in the gap.
 
-**Voice.** {prefs}And it all follows the theme, composites included.
+**Voice.** And it all follows the theme, {prefs}composites included.
 
-    prefs: key ctrl+comma; wait 0.8; click 33% 30%; wait 0.6; click 62% 22%; wait 0.5; click 62% 36%; wait 2.5; click 62% 22%; wait 0.5; click 62% 39%; wait 1.5; key Escape
-    after: 7.5
+    prefs: key ctrl+comma; wait 0.8; click 33% 30%; wait 0.6; click 62% 22%; wait 0.5; click 62% 36%; wait 0.6; key Escape; wait 2.0; key ctrl+comma; wait 0.8; click 33% 30%; wait 0.6; click 62% 22%; wait 0.5; click 62% 39%; wait 0.6; key Escape
+    after: 13.5
 
 ### 16. Close
 

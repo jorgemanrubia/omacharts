@@ -1102,7 +1102,7 @@ def polish_plan(events, total):
     for i, event in enumerate(asked):
         later = [e["t"] for e in events if e.get("scene") is not None and e["t"] > event["t"] + 0.5
                  and e["verb"] in ("key", "type", "cli", "zoom", "terminal", *POINTER)]
-        end = min([event["t"] + 4.5, total, *later[:1]])
+        end = min([event["t"] + 8.0, total, *later[:1]])
         if end - event["t"] >= 1.5:
             zooms.append({"start": round(max(0.0, event["t"] - 0.2), 3), "end": round(end, 3),
                           "x": round(event["at"][0] * scale_px), "y": round(event["at"][1] * scale_px),
