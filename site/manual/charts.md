@@ -259,7 +259,7 @@ crop: 898,193,763,532   (the whole card, 24px layout margin)
 -->
 {% include figure.html src="/assets/manual/charts/go-to.png" alt="The Go to card with ytd typed, 1D auto on the row under the box, and From 2026/01/01 and To 2026/11/01, marked today" caption="**Go to** with ytd typed." %}
 
-**A date (keeps the window)** starts the chart at the beginning of that day and shows as much time as it shows now, at the same resolution. With ten days on screen, `oct 12` shows 12 October to 22 October. When that would run past now, the window ends now instead and starts as much earlier, so the date lands inside it. With ten days on screen on 1 November, `oct 28` and `today` both show 22 October to 1 November. Whatever of the window is past the latest bar is empty room, as when you scroll past the end, and the bars get wider or narrower to fit it. The card names the whole window, such as **22 Oct – 1 Nov**.
+**A date (keeps the window)** starts the chart at the beginning of that day and shows as much time as it shows now, at the same resolution. With ten days on screen, `oct 12` shows 12 October to 22 October. When that would run past now, the window ends now instead and starts as much earlier, so the date lands inside it. With ten days on screen on 1 November, `oct 28` and `today` both show 22 October to 1 November. The day you typed is tinted and named on the time axis until you zoom or pan. Whatever of the window is past the latest bar is empty room, as when you scroll past the end, and the bars get wider or narrower to fit it. The card names the whole window, such as **22 Oct – 1 Nov**.
 
 | Typed | Is |
 |---|---|
