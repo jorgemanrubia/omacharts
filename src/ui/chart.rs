@@ -4864,9 +4864,10 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
     let to_y = |price: f64| scale.to_y(price, price_y, price_h);
     let bar_w = columns.bar_w;
 
-    // One answer for how precisely prices are written, used by the gridlines,
-    // the last-price chip and the crosshair alike — a chart saying 1.1257 on
-    // one label and 1.13 on another is describing two different prices.
+    // One answer for how precisely a price is written, used by the last-price
+    // chip and the crosshair alike — a chart saying 1.1257 on one label and
+    // 1.13 on another is describing two different prices. The gridlines are
+    // round numbers and go by their own step.
     let step = scale.step(price_h);
     let kind = state.instrument.as_ref().map(|i| i.kind);
     let (low, high) = scale.prices();
@@ -5102,12 +5103,11 @@ fn draw_price_grid(
     if step <= 0.0 {
         return;
     }
-    let (low, high) = scale.prices();
-    let decimals = omacharts_engine::price_decimals(
-        step,
-        (low + high) / 2.0,
-        state.instrument.as_ref().map(|i| i.kind),
-    );
+    // Gridlines are written to their own step, not to how the market quotes:
+    // a line at 7,640 is exactly 7,640, and "7,640.00" down a whole column
+    // is noise. The quote's precision belongs to the labels that point at an
+    // actual price — the last-price chip and the crosshair.
+    let decimals = decimals_for(step);
 
     cr.set_line_width(1.0);
     cr.select_font_face("sans-serif", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
@@ -7140,13 +7140,19 @@ pub fn nice_step(range: f64, target: usize) -> f64 {
     step * magnitude
 }
 
-/// Enough decimals to tell two adjacent gridlines apart, and no more.
+/// The decimals a multiple of `step` is written to exactly, and no more: none
+/// for gridlines 20 apart, one for 2.5, two for 0.25. A gridline sits on a
+/// round number, so anything past that is a zero saying nothing.
 pub fn decimals_for(step: f64) -> usize {
     if step <= 0.0 {
         return 2;
     }
-    let places = -step.log10().floor();
-    places.clamp(0.0, 6.0) as usize
+    (0..=8)
+        .find(|&places| {
+            let scaled = step * 10f64.powi(places as i32);
+            (scaled - scaled.round()).abs() < 1e-6 * scaled.max(1.0)
+        })
+        .unwrap_or(8)
 }
 
 /// About how far apart, in pixels, two time labels should be.
@@ -8625,6 +8631,11 @@ mod tests {
         assert_eq!(decimals_for(0.5), 1);
         assert_eq!(decimals_for(0.01), 2);
         assert_eq!(decimals_for(0.0001), 4);
+        // Steps that are not a power of ten keep the digits they need.
+        assert_eq!(decimals_for(20.0), 0);
+        assert_eq!(decimals_for(2.5), 1);
+        assert_eq!(decimals_for(0.25), 2);
+        assert_eq!(decimals_for(0.0005), 4);
     }
 
     /// A strip with these values, drawn on whatever scale it asks for.
