@@ -395,9 +395,11 @@ parity and does not is worse than none:
 - **A resolution.** `--resolution` takes anything parseable rather than a
   fixed set, so there are no variants to compare; the test checks only that
   every resolution the header strip offers is one a command accepts.
-- **Whether a window that is open actually catches up.** Nothing tests that,
-  and `config set theme` is the case that does not: it writes the row and the
-  running window keeps the theme it started with.
+- **Whether a window that is open actually catches up.** Nothing tests that.
+  `config set` tells the window about the keys it acts on, and has it read
+  its look again for any other, which is how `config set theme` changes the
+  charts on screen; a key the window reads only as it starts is written, and
+  the open window carries on without it.
 
 ## Every change ships with its manual
 

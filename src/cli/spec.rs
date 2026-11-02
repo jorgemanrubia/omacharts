@@ -293,7 +293,7 @@ const BODIES: &[&str] = &["filled", "bordered", "hollow"];
 const THICKNESSES: &[&str] = &["1", "1.5", "2", "3"];
 const BAR_COLOUR: &str = "a theme colour by name (green, rose, blue, amber, violet, teal, orange, cyan), \
      foreground (the text colour) for none, slate, sand, silver or graphite (worked out from the theme), or #rrggbb";
-/// How bars are drawn: the same five flags for every chart's look, `config
+/// How bars are drawn: the same flags for every chart's look, `config
 /// bars`, and one chart's own, `chart look`.
 const STYLE_FLAG: Flag = Flag::valued("style", "STYLE", "candles, OHLC bars or a line through the closes").of(STYLES);
 const UP_FLAG: Flag = Flag::valued("up", "COLOUR", BAR_COLOUR);
@@ -309,6 +309,10 @@ const UP_THICKNESS_FLAG: Flag =
     Flag::valued("up-thickness", "PX", "how many pixels wide a rising OHLC bar is drawn").of(THICKNESSES);
 const DOWN_THICKNESS_FLAG: Flag =
     Flag::valued("down-thickness", "PX", "the same for a falling OHLC bar").of(THICKNESSES);
+const LINE_LOW_FLAG: Flag =
+    Flag::valued("line-low", "COLOUR", "a line's colour at its lowest close on screen, as a bar colour is given");
+const LINE_HIGH_FLAG: Flag =
+    Flag::valued("line-high", "COLOUR", "a line's colour at its highest close on screen, shaded from the low one");
 const SORT_COLUMNS: &[&str] = &["symbol", "last", "change", "change_pct", "none"];
 /// The kinds a drawing comes in, plus the one alias.
 ///
@@ -928,6 +932,8 @@ pub const SURFACE: &[Noun] = &[
                     DOWN_BODY_FLAG,
                     UP_THICKNESS_FLAG,
                     DOWN_THICKNESS_FLAG,
+                    LINE_LOW_FLAG,
+                    LINE_HIGH_FLAG,
                     Flag::valued("grid", "BOOL", "draw gridlines").of(SWITCHES),
                     Flag::valued("price-line", "BOOL", "draw a line across at the last price").of(SWITCHES),
                     Flag::valued(
@@ -1133,16 +1139,6 @@ pub const SURFACE: &[Noun] = &[
                 writes: true,
                 workspace: false,
             },
-            Verb {
-                name: "strip",
-                about: "Whether the header has the resolution strip, which the focused chart shows",
-                args: &[Arg::opt("STATE", "omit to read it").of(SWITCHES)],
-                flags: &[],
-                example: "omacharts chart strip off",
-                json: true,
-                writes: true,
-                workspace: false,
-            },
         ],
     },
     Noun {
@@ -1329,6 +1325,8 @@ pub const SURFACE: &[Noun] = &[
                     DOWN_BODY_FLAG,
                     UP_THICKNESS_FLAG,
                     DOWN_THICKNESS_FLAG,
+                    LINE_LOW_FLAG,
+                    LINE_HIGH_FLAG,
                 ],
                 example: "omacharts config bars monochrome --style candles --up-body hollow --down-body bordered",
                 json: true,

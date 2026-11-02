@@ -55,6 +55,9 @@ pub fn theme_id(word: &str) -> &str {
 /// both write these, so there is no second spelling to drift.
 pub const SETTING_BAR_UP: &str = "bar_up";
 pub const SETTING_BAR_DOWN: &str = "bar_down";
+/// A line's two shades: at its lowest close on screen, and at its highest.
+const SETTING_BAR_LINE_LOW: &str = "bar_line_low";
+const SETTING_BAR_LINE_HIGH: &str = "bar_line_high";
 /// A body is stored as two switches, hollow and bordered, so the hollow
 /// one an older version wrote still reads. Hollow wins where both are on,
 /// which only a hand-edited row can make.
@@ -105,6 +108,8 @@ pub fn bar_look(store: &Store) -> BarLook {
         down: colour(SETTING_BAR_DOWN, legacy.down),
         up_body: body(SETTING_BAR_UP_HOLLOW, SETTING_BAR_UP_BORDER, legacy.up_body),
         down_body: body(SETTING_BAR_DOWN_HOLLOW, SETTING_BAR_DOWN_BORDER, legacy.down_body),
+        line_low: colour(SETTING_BAR_LINE_LOW, legacy.line_low),
+        line_high: colour(SETTING_BAR_LINE_HIGH, legacy.line_high),
         up_thickness: px(SETTING_BAR_UP_THICKNESS).unwrap_or(one),
         down_thickness: px(SETTING_BAR_DOWN_THICKNESS).unwrap_or(one),
     }
@@ -115,6 +120,8 @@ pub fn bar_look(store: &Store) -> BarLook {
 pub fn save_bar_look(store: &Store, look: &BarLook) {
     store.set_setting(SETTING_BAR_UP, &spell_bar_colour(&look.up));
     store.set_setting(SETTING_BAR_DOWN, &spell_bar_colour(&look.down));
+    store.set_setting(SETTING_BAR_LINE_LOW, &spell_bar_colour(&look.line_low));
+    store.set_setting(SETTING_BAR_LINE_HIGH, &spell_bar_colour(&look.line_high));
     store.set_setting_bool(SETTING_BAR_UP_HOLLOW, look.up_body == Body::Hollow);
     store.set_setting_bool(SETTING_BAR_DOWN_HOLLOW, look.down_body == Body::Hollow);
     store.set_setting_bool(SETTING_BAR_UP_BORDER, look.up_body == Body::Bordered);
@@ -289,11 +296,14 @@ impl Theming {
     /// A command from a terminal writes the setting and nothing else; the
     /// window is still wearing whatever it started in, and would write its own
     /// choice back over the new one the next time anything touched it.
-    pub fn reload_selection(&mut self, store: &Store) {
+    /// Whether any of it changed, which the stylesheet wears.
+    pub fn reload_selection(&mut self, store: &Store) -> bool {
         let default_theme = if self.omarchy.is_some() { OMARCHY_ID } else { FALLBACK_THEME_ID };
-        self.theme_id = store.setting(SETTING_THEME).unwrap_or_else(|| default_theme.to_string());
-        self.bars = bar_look(store);
-        self.trading = trading_look(store);
+        let theme_id = store.setting(SETTING_THEME).unwrap_or_else(|| default_theme.to_string());
+        let (bars, trading) = (bar_look(store), trading_look(store));
+        let changed = (&theme_id, &bars, &trading) != (&self.theme_id, &self.bars, &self.trading);
+        (self.theme_id, self.bars, self.trading) = (theme_id, bars, trading);
+        changed
     }
 
     /// Re-read the desktop palette. `true` when something moved and the app
@@ -759,25 +769,26 @@ row.bars-head button:checked { color: @window_fg_color; border-bottom-color: @ac
 .preferences-window .theme-preview { border-radius: 8px; }
 .preferences-window .theme-card grid .theme-preview { border-radius: 5px; }
 .preferences-window button.theme-tile { padding: 6px; border-radius: 10px; }
-/* The scope rule over the visual sections, a size under the other rules so
-   its four words keep some air. The choice is two of its words; the picked
-   one reads, the other fades, and Local, once picked, is in the accent,
-   since it is the exception to every other page. */
-.preferences-window .scope-rule label { font-size: 0.68rem; }
-.preferences-window .scope-rule button {
+/* The scope rule over the visual sections, in Preferences and in a chart's
+   settings alike, a size under the other rules so its four words keep some
+   air. The choice is two of its words; the picked one reads, the other
+   fades, and Local, once picked, is in the accent, since it is the
+   exception to every other page. */
+.scope-rule label { font-size: 0.68rem; }
+.scope-rule button {
   min-height: 0;
   min-width: 0;
   padding: 2px 3px;
   border-radius: 5px;
 }
-.preferences-window .scope-rule button label { opacity: 0.45; }
-.preferences-window .scope-rule button:checked { background: none; }
-.preferences-window .scope-rule button:checked label { opacity: 1; color: @window_fg_color; }
-.preferences-window .scope-rule button.scope-local:checked label { color: @accent_color; }
-.preferences-window .scope-rule button:hover { background: alpha(@window_fg_color, 0.06); }
+.scope-rule button label { opacity: 0.45; }
+.scope-rule button:checked { background: none; }
+.scope-rule button:checked label { opacity: 1; color: @window_fg_color; }
+.scope-rule button.scope-local:checked label { color: @accent_color; }
+.scope-rule button:hover { background: alpha(@window_fg_color, 0.06); }
 /* The reset after LOCAL: as quiet as the words beside it until pointed at. */
-.preferences-window .scope-rule button.scope-reset { padding: 1px; color: alpha(@window_fg_color, 0.55); }
-.preferences-window .scope-rule button.scope-reset:hover { color: @accent_color; }
+.scope-rule button.scope-reset { padding: 1px; color: alpha(@window_fg_color, 0.55); }
+.scope-rule button.scope-reset:hover { color: @accent_color; }
 
 /* Menus and popovers are one surface. A right-click menu and the link
    popover open beside each other often enough that two looks for one kind
@@ -1666,8 +1677,8 @@ paned.chart-split > separator:active {{ background-color: @omacharts_gutter_hove
 .chart-split .chart-pane.focused {{ border-color: @omacharts_focus; }}
 /* While a picker is open every chart fades, and the one it will change
    wears the ring twice as wide: a second ring inside the border, as an
-   outline, so nothing inside the pane moves. Preferences under LOCAL rings
-   the chart its rows change the same way, without the fade. Two classes,
+   outline, so nothing inside the pane moves. A settings window under LOCAL
+   rings the chart its rows change the same way, without the fade. Two classes,
    so a picker closing does not take LOCAL's ring with it. */
 .chart-split .chart-pane.picked,
 .chart-split .chart-pane.local-target {{
@@ -1953,6 +1964,8 @@ mod tests {
             down: parse_bar_colour("#123456").unwrap(),
             up_body: Body::Hollow,
             down_body: Body::Bordered,
+            line_low: parse_bar_colour("amber").unwrap(),
+            line_high: parse_bar_colour("#abcdef").unwrap(),
             up_thickness: Thickness::One,
             down_thickness: Thickness::OneAndAHalf,
         };

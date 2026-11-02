@@ -13,9 +13,9 @@
 use std::rc::Rc;
 
 use adw::prelude::*;
-use omacharts_engine::theme::{mix, BarScheme, Theme, OMARCHY_ID};
+use omacharts_engine::theme::{mix, BarScheme, Direction, Theme, OMARCHY_ID};
 
-use crate::ui::colors;
+use crate::ui::{appearance, colors};
 
 /// The tag the catalogue is pushed under.
 const CATALOGUE: &str = "themes";
@@ -324,29 +324,18 @@ fn paint(cr: &gtk::cairo::Context, w: f64, h: f64, theme: &Theme, bars: &BarSche
     let step = (right - left) / CANDLES.len() as f64;
     let body = (step * 0.6).round().max(1.0);
     for rising in [true, false] {
-        let (edge, fill) = if rising { (&bars.up, &bars.up_fill) } else { (&bars.down, &bars.down_fill) };
-        let hollow = colors::is_transparent(fill);
-        colors::set_source(cr, edge);
+        // In the direction's own colour, never a border's, as the chart
+        // draws a candle as narrow as these.
+        let direction = if rising { Direction::Up } else { Direction::Down };
+        let (edge, fill) = (bars.outline(direction), bars.body(direction));
         for (n, (open, close, high, low)) in CANDLES.into_iter().enumerate() {
             if (close >= open) != rising {
                 continue;
             }
             let x = (left + step * n as f64 + step / 2.0).round() + 0.5;
             let (upper, lower) = (y(open.max(close)).round(), y(open.min(close)).round().max(y(open.max(close)).round() + 1.0));
-            cr.move_to(x, y(high).round());
-            cr.line_to(x, upper);
-            cr.move_to(x, lower);
-            cr.line_to(x, y(low).round());
-            let _ = cr.stroke();
-            if hollow && body >= 3.0 {
-                cr.rectangle((x - body / 2.0).round() + 0.5, upper + 0.5, body - 1.0, (lower - upper - 1.0).max(1.0));
-                let _ = cr.stroke();
-            } else {
-                colors::set_source(cr, if hollow { edge } else { fill });
-                cr.rectangle((x - body / 2.0).round(), upper, body, lower - upper);
-                let _ = cr.fill();
-                colors::set_source(cr, edge);
-            }
+            let wick = (x, y(high).round(), y(low).round());
+            appearance::candle(cr, edge, fill, wick, ((x - body / 2.0).round(), upper, body, lower - upper));
         }
     }
     if compact {

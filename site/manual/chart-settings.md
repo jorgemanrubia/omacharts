@@ -11,7 +11,7 @@ Each chart has settings of its own. New charts open with the defaults set in Pre
 
 Chart settings is a window of its own for the focused chart, so the chart stays in sight while you change it. Open it with <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>S</kbd>, the gear in the chart's top-right corner, or **Chart settings…** in the chart menu. Every row takes effect at once. The chart's name is under the window's title, such as **pos:0 NVDA 1D**. Focus another chart while it is open and it shows that one.
 
-The sections down its side are the chart's own, **Chart** and **Indicators**, then under **GLOBAL** **Appearance** and **Overlays**, the same pages as in [Preferences](/manual/preferences/), which change every chart. <kbd>Alt</kbd> + <kbd>←</kbd> <kbd>→</kbd> moves from one section to the next.
+The sections down its side are the chart's own, **Chart** and **Indicators**, then **Appearance** and **Overlays** under the **VISUAL** rule, the same pages and the same rule as in [Preferences](/manual/preferences/). **GLOBAL** changes every chart. **LOCAL** changes this chart alone: the first change gives it [a look of its own](/manual/charts/#a-charts-own-look). In a split Chart settings opens on **LOCAL**, since the chart in sight is one of several; on a chart alone it opens on **GLOBAL**. Focusing another chart starts it the same way again. The choice is this window's own, so picking one here leaves Preferences on its own choice. The reset arrow after **LOCAL** works as it does in Preferences. <kbd>Alt</kbd> + <kbd>←</kbd> <kbd>→</kbd> moves from one section to the next.
 
 ### The Chart page
 
@@ -35,7 +35,7 @@ crop: 496,176,1568,1328 (both; the whole window, 12px layout margin)
 | Group › row | Does |
 |---|---|
 | **Title** | The chart title, shown by the header's **Chart title** part. Blank for none ([Chart titles](/manual/charts/#chart-titles)) |
-| **Bars** › **Show bars** | Off, this chart's bars are hidden ([Hiding the bars](/manual/charts/#hiding-the-bars)). How bars are drawn, OHLC thickness included, is every chart's, on the **Appearance** page under **Global** |
+| **Bars** › **Show bars** | Off, this chart's bars are hidden ([Hiding the bars](/manual/charts/#hiding-the-bars)). How bars are drawn, OHLC thickness included, is part of the chart's look, on the **Appearance** page |
 | **Scales** › **Auto scale price** | Fits the visible bars vertically. Off, the chart can be dragged up and down ([Scales](/manual/charts/#scales)) |
 | **Scales** › **Logarithmic scale** | Equal heights are equal percentage moves ([Logarithmic scale](/manual/charts/#logarithmic-scale)) |
 | **Scales** › **Gridlines** | Draws the grid, on every chart, or on this chart alone when it has [a look of its own](/manual/charts/#a-charts-own-look). The scales and their labels stay either way ([Gridlines](/manual/charts/#gridlines)) |

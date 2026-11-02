@@ -514,9 +514,18 @@ pub struct BarScheme {
     pub down_fill: String,
     /// Used when open == close.
     pub neutral: String,
+    /// The last price's line and tag after a rise: the colour a line takes
+    /// when nobody picks one, [`Theme::series`]'s first, rather than the
+    /// rise's. A fall keeps the fall's colour. See [`BarScheme::last_price`].
+    pub last_up: String,
     /// How many pixels wide a rising OHLC bar is drawn, and a falling one.
     pub up_thickness: f64,
     pub down_thickness: f64,
+    /// A line through the closes, shaded from its lowest close on screen to
+    /// its highest: what the chart draws it in, and what a picture of one
+    /// is drawn in.
+    pub line_low: String,
+    pub line_high: String,
 }
 
 impl BarScheme {
@@ -526,6 +535,15 @@ impl BarScheme {
             Direction::Up => &self.up,
             Direction::Down => &self.down,
             Direction::Flat => &self.neutral,
+        }
+    }
+
+    /// The colour the last price's line and tag are drawn in, after a rise
+    /// or a fall.
+    pub fn last_price(&self, rising: bool) -> &str {
+        match rising {
+            true => &self.last_up,
+            false => &self.down,
         }
     }
 
@@ -592,6 +610,10 @@ pub struct BarLook {
     pub down: ColorChoice,
     pub up_body: Body,
     pub down_body: Body,
+    /// A line has no direction to colour, so it is shaded instead: this at
+    /// the lowest close on screen, `line_high` at the highest.
+    pub line_low: ColorChoice,
+    pub line_high: ColorChoice,
     /// An OHLC bar's width, per direction: a body is a candle's, and a
     /// thickness is what an OHLC bar has in its place.
     pub up_thickness: Thickness,
@@ -698,6 +720,8 @@ impl Default for BarLook {
             down: ColorChoice::swatch("Rose"),
             up_body: Body::Filled,
             down_body: Body::Filled,
+            line_low: ColorChoice::swatch("Blue"),
+            line_high: ColorChoice::swatch("Violet"),
             up_thickness: Thickness::default(),
             down_thickness: Thickness::default(),
         }
@@ -764,10 +788,13 @@ impl BarLook {
                 true => up.clone(),
                 false => theme.ui.text_muted.clone(),
             },
+            last_up: theme.series(0),
             up,
             down,
             up_thickness: self.up_thickness.px(),
             down_thickness: self.down_thickness.px(),
+            line_low: resolve(&self.line_low),
+            line_high: resolve(&self.line_high),
         }
     }
 }
@@ -1564,6 +1591,19 @@ mod tests {
         let bars = theme_bars(&theme);
         assert_eq!(bars.up, theme.swatch("Green").unwrap().hex);
         assert_eq!(bars.down, theme.swatch("Rose").unwrap().hex);
+    }
+
+    /// After a rise the last price is a line's blue, whatever the bars
+    /// rise in; after a fall it is the fall's colour.
+    #[test]
+    fn the_last_price_rises_in_a_lines_colour_and_falls_in_the_fall() {
+        for theme in builtin_themes() {
+            for look in [BarLook::default(), BarLook::red_up(), BarLook::monochrome()] {
+                let scheme = look.scheme(&theme);
+                assert_eq!(scheme.last_price(true), theme.swatch("Blue").unwrap().hex, "{}", theme.name);
+                assert_eq!(scheme.last_price(false), scheme.down);
+            }
+        }
     }
 
     #[test]

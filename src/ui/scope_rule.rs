@@ -1,5 +1,5 @@
-//! The rule over Preferences' visual sections, and the choice on it: whether
-//! those sections change every chart or only the focused one.
+//! The rule over a settings window's visual sections, and the choice on it:
+//! whether those sections change every chart or only the focused one.
 //!
 //! `VISUAL        GLOBAL / LOCAL`, the choice against the right edge. Local
 //! rather than the chart's symbol, which can be FRED:IRLTLT01GBM156N long;
@@ -8,77 +8,216 @@
 //! chart's, under either choice, a reset after LOCAL gives it every chart's
 //! look back: under Global too, so a chart that looks different says why.
 //!
-//! In a split, while Local is picked, the focused chart wears the ring a
-//! picker gives the chart it is about to change, so which chart the rows
-//! change is plain from the window.
+//! Each settings window that shows the visual pages has a [`Scope`] of its
+//! own, Preferences one and a chart's settings another, so picking Local in
+//! one leaves the other as it was. The pages read and change the look
+//! through the scope they were built for ([`Scope::look`],
+//! [`Scope::change`]), so which charts an edit reaches is decided here
+//! alone.
 //!
-//! The visual pages read and change the look through [`look`] and
-//! [`change`], so which charts an edit reaches is decided here alone.
+//! In a split, while any open scope has Local picked, the focused chart
+//! wears the ring a picker gives the chart it is about to change, so which
+//! chart the rows change is plain from the window.
 
-use std::cell::{Cell, RefCell};
-use std::rc::Rc;
+use std::cell::RefCell;
+use std::rc::{Rc, Weak};
 
 use adw::prelude::*;
 use gtk::glib;
 
+use omacharts_engine::theme::{BarScheme, Theme};
+
 use crate::chart_look::{ChartLook, LookEdit};
 use crate::ui::window::Window;
-
-/// The name a row that only ever means every chart is given, so the rule
-/// can find it and grey it while one chart is picked.
-pub const GLOBAL_ONLY: &str = "global-only";
 
 /// The class that rings the chart Local changes, as `picked` rings the chart
 /// a picker changes; one rule draws both.
 const LOCAL_TARGET: &str = "local-target";
 
-/// Names the focused chart to the rule, or says there is none.
-type Rename = Rc<dyn Fn(Option<String>)>;
-
-/// Tells the rule whether the chart's look differs from every chart's, so
-/// the reset shows.
-type Note = Rc<dyn Fn(bool)>;
+/// One settings window's choice of which charts its visual pages change.
+/// Whether its Local choice is active is the one record of whether Local is
+/// picked there.
+pub struct Scope {
+    window: Rc<Window>,
+    global: gtk::ToggleButton,
+    local: gtk::ToggleButton,
+    /// Shown only while the focused chart's look differs from every chart's.
+    reset: gtk::Button,
+}
 
 thread_local! {
-    /// The open rule's way to rename its chart, so focus moving to another
-    /// chart while Preferences is open renames it.
-    static RENAME: RefCell<Option<Rename>> = const { RefCell::new(None) };
-    /// Whether Local is picked. Global whenever Preferences is closed, so a
-    /// chart's settings, which show the same pages, change every chart.
-    static LOCAL: Cell<bool> = const { Cell::new(false) };
-    /// The rule's way to show the reset while the chart's look differs.
-    static NOTE: RefCell<Option<Note>> = const { RefCell::new(None) };
+    /// Every scope whose rule is still standing, so focus moving to another
+    /// chart renames each, and the ring knows whether any has Local picked.
+    /// A scope leaves with its rule.
+    static OPEN: RefCell<Vec<Rc<Scope>>> = const { RefCell::new(Vec::new()) };
     /// The chart wearing [`LOCAL_TARGET`], so the ring moves with the focus
-    /// and comes off with the rule.
+    /// and comes off with the last Local rule.
     static RINGED: RefCell<Option<glib::WeakRef<gtk::Box>>> = const { RefCell::new(None) };
 }
 
-/// The look the visual pages show: every chart's, or with Local picked the
-/// one the focused chart wears.
-pub fn look(window: &Window) -> ChartLook {
-    window.look(!LOCAL.get())
+/// The look in scope as a page draws it: the look, the theme it is drawn
+/// on, and its bars on that theme. Worked out once per change, not per
+/// picture drawn.
+#[derive(Clone, PartialEq)]
+pub struct Worn {
+    pub look: ChartLook,
+    pub theme: Theme,
+    pub scheme: BarScheme,
 }
 
-/// Change the look where the rule says: every chart's, or the focused
-/// chart's alone, copying every chart's look onto it on its first change.
-pub fn change(window: &Rc<Window>, edit: LookEdit) {
-    window.change_look(edit, !LOCAL.get());
-    note(window);
+impl Scope {
+    /// A scope for a settings window over `window`'s charts, and its rule,
+    /// for the window's sidebar. It starts on Local when `local` asks and the
+    /// focused chart shows something to have a look of, else on Global.
+    /// Picking either has the pages show the look in scope, through the
+    /// window's watchers ([`Window::watch_chart`]).
+    pub fn new(window: &Rc<Window>, local: bool) -> (Rc<Scope>, gtk::Widget) {
+        let global = choice("GLOBAL");
+        let local_choice = choice("LOCAL");
+        local_choice.add_css_class("scope-local");
+        local_choice.set_group(Some(&global));
+        global.set_active(true);
+        local_choice.set_active(local);
+
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        row.add_css_class("scope-rule");
+        row.set_margin_top(20);
+        row.set_margin_bottom(8);
+        row.set_margin_start(12);
+        row.set_margin_end(12);
+        let heading = crate::ui::preferences::rule_word("VISUAL");
+        // The choice against the sidebar's right edge, the heading at its left.
+        heading.set_hexpand(true);
+        heading.set_xalign(0.0);
+        row.append(&heading);
+        row.append(&global);
+        row.append(&crate::ui::preferences::rule_word("/"));
+        row.append(&local_choice);
+        // Only while the focused chart's look differs from every chart's, so
+        // its showing is what says the chart has been changed.
+        let reset = gtk::Button::new();
+        reset.set_child(Some(&reset_glyph(&reset)));
+        reset.add_css_class("flat");
+        reset.add_css_class("scope-reset");
+        reset.set_tooltip_text(Some("Reset to global defaults"));
+        row.append(&reset);
+
+        let scope = Rc::new(Scope { window: window.clone(), global, local: local_choice, reset });
+        // Named before anything is wired, so a chart with nothing to change
+        // falling back to Global is the start, not a change of scope.
+        scope.name();
+        OPEN.with(|open| open.borrow_mut().push(scope.clone()));
+        settle(window);
+
+        let held = Rc::downgrade(&scope);
+        scope.reset.connect_clicked(move |_| {
+            let Some(scope) = held.upgrade() else { return };
+            scope.window.follow_global_look();
+            settle(&scope.window);
+            scope.window.chart_changed_elsewhere();
+        });
+        let held = Rc::downgrade(&scope);
+        scope.local.connect_toggled(move |_| {
+            let Some(scope) = held.upgrade() else { return };
+            settle(&scope.window);
+            scope.window.chart_changed_elsewhere();
+        });
+        // Gone with its settings window, so a closed one is not renamed and
+        // its Local no longer rings the chart.
+        let held = Rc::downgrade(&scope);
+        row.connect_destroy(move |_| {
+            let Some(scope) = held.upgrade() else { return };
+            OPEN.with(|open| open.borrow_mut().retain(|other| !Rc::ptr_eq(other, &scope)));
+            settle(&scope.window);
+        });
+        (scope, row.upcast())
+    }
+
+    /// The chart window whose charts this scope changes.
+    pub fn window(&self) -> &Rc<Window> {
+        &self.window
+    }
+
+    /// Whether Local is picked.
+    pub fn local(&self) -> bool {
+        self.local.is_active()
+    }
+
+    /// The look the pages show: every chart's, or with Local picked the one
+    /// the focused chart wears.
+    pub fn look(&self) -> ChartLook {
+        self.window.look(!self.local())
+    }
+
+    pub fn worn(&self) -> Worn {
+        let look = self.look();
+        let theme = self.window.theme_of(&look);
+        let scheme = look.bars.scheme(&theme);
+        Worn { look, theme, scheme }
+    }
+
+    /// Change the look where the rule says: every chart's, or the focused
+    /// chart's alone, copying every chart's look onto it on its first change.
+    pub fn change(&self, edit: LookEdit) {
+        self.window.change_look(edit, !self.local());
+        settle(&self.window);
+    }
+
+    /// Grey `row` while Local is picked: what it changes is every chart's
+    /// alone. Set as it is built, since a page rebuilds its rows, and again on
+    /// each change of scope, which the rule tells the window's watchers of.
+    pub fn global_only(self: &Rc<Self>, row: &impl IsA<gtk::Widget>) {
+        row.set_sensitive(!self.local());
+        let shown = row.upcast_ref::<gtk::Widget>().downgrade();
+        let scope: Weak<Scope> = Rc::downgrade(self);
+        self.window.watch_chart(move || {
+            let Some(row) = shown.upgrade().filter(|row| row.root().is_some()) else { return false };
+            let Some(scope) = scope.upgrade() else { return false };
+            row.set_sensitive(!scope.local());
+            true
+        });
+    }
+
+    /// Name the focused chart in Local's tooltip. A chart showing no symbol
+    /// has no look of its own to change, so Local is greyed and Global picked.
+    fn name(&self) {
+        let symbol = self.window.focused_pane().instrument.borrow().as_ref().map(|i| i.display_symbol());
+        self.local.set_sensitive(symbol.is_some());
+        self.local.set_tooltip_text(symbol.as_deref());
+        if symbol.is_none() {
+            self.global.set_active(true);
+        }
+    }
 }
 
-/// The focused chart changed, or what it shows did: the open rule names it,
-/// and with Local picked the pages show its look.
+/// The open scopes over `window`'s charts. Cloned out, so nothing they set
+/// off finds the list borrowed.
+fn open(window: &Window) -> Vec<Rc<Scope>> {
+    OPEN.with(|open| open.borrow().iter().filter(|scope| std::ptr::eq(Rc::as_ptr(&scope.window), window)).cloned().collect())
+}
+
+/// The focused chart changed, or what it shows did: every open rule names
+/// it, and the pages of a scope with Local picked show its look.
 pub fn follow(window: &Window) {
-    let Some(rename) = RENAME.with(|rename| rename.borrow().clone()) else { return };
-    let symbol = window.focused_pane().instrument.borrow().as_ref().map(|i| i.display_symbol());
-    rename(symbol);
-    note(window);
-    ring(local_chart(window));
+    let scopes = open(window);
+    for scope in &scopes {
+        scope.name();
+    }
+    if scopes.iter().any(|scope| scope.local()) {
+        window.chart_changed_elsewhere();
+    }
+    settle(window);
 }
 
-/// The focused chart's pane while Local is picked; none under Global.
-fn local_chart(window: &Window) -> Option<gtk::Box> {
-    LOCAL.get().then(|| window.focused_pane().root.clone())
+/// Tell every open rule whether the focused chart's look differs from
+/// every chart's, and ring the focused chart while any has Local picked.
+fn settle(window: &Window) {
+    let scopes = open(window);
+    let differs = window.own_look_differs();
+    for scope in &scopes {
+        scope.reset.set_visible(differs);
+    }
+    ring(scopes.iter().any(|scope| scope.local()).then(|| window.focused_pane().root.clone()));
 }
 
 /// Ring `chart`, taking the ring off whichever chart wore it.
@@ -93,115 +232,6 @@ fn ring(chart: Option<gtk::Box>) {
             *ringed = Some(chart.downgrade());
         }
     });
-}
-
-/// Tell the rule whether the focused chart's look differs from every
-/// chart's.
-fn note(window: &Window) {
-    if let Some(note) = NOTE.with(|note| note.borrow().clone()) {
-        note(window.own_look_differs());
-    }
-}
-
-/// Every visual page on screen shows the look in scope again, with the
-/// rows under `pages` that are every chart's alone greyed while Local is
-/// picked. Greyed after, since a page rebuilds its rows.
-fn reshow(pages: &[gtk::Widget]) {
-    crate::ui::appearance::restyled();
-    crate::ui::overlays::header_changed();
-    crate::ui::overlays::charts_changed();
-    for page in pages {
-        grey(page, !LOCAL.get());
-    }
-}
-
-/// The rule, for the focused chart showing `symbol`. Picking Local shows
-/// `pages` the chart's look and greys every [`GLOBAL_ONLY`] row under them.
-/// `scoped` hears whether Local is picked each time that changes, and again
-/// when the focus moves while it is.
-pub fn rule(window: &Rc<Window>, symbol: Option<String>, pages: Vec<gtk::Widget>, scoped: impl Fn(bool) + 'static) -> gtk::Widget {
-    let global = choice("GLOBAL");
-    let local = choice("LOCAL");
-    local.add_css_class("scope-local");
-    local.set_group(Some(&global));
-    global.set_active(true);
-
-    let row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-    row.add_css_class("scope-rule");
-    row.set_margin_top(20);
-    row.set_margin_bottom(8);
-    row.set_margin_start(12);
-    row.set_margin_end(12);
-    let heading = crate::ui::preferences::rule_word("VISUAL");
-    // The choice against the sidebar's right edge, the heading at its left.
-    heading.set_hexpand(true);
-    heading.set_xalign(0.0);
-    row.append(&heading);
-    row.append(&global);
-    row.append(&crate::ui::preferences::rule_word("/"));
-    row.append(&local);
-    // Only while the focused chart's look differs from every chart's, so
-    // its showing is what says the chart has been changed.
-    let reset = gtk::Button::new();
-    reset.set_child(Some(&reset_glyph(&reset)));
-    reset.add_css_class("flat");
-    reset.add_css_class("scope-reset");
-    reset.set_tooltip_text(Some("Reset to global defaults"));
-    row.append(&reset);
-
-    let scoped: Rc<dyn Fn(bool)> = Rc::new(scoped);
-    let pages: Rc<[gtk::Widget]> = pages.into();
-    let rename: Rename = {
-        let (global, local, scoped, pages) = (global.clone(), local.clone(), scoped.clone(), pages.clone());
-        Rc::new(move |symbol: Option<String>| {
-            local.set_sensitive(symbol.is_some());
-            local.set_tooltip_text(symbol.as_deref());
-            if symbol.is_none() {
-                global.set_active(true);
-            } else if local.is_active() {
-                scoped(true);
-                reshow(&pages);
-            }
-        })
-    };
-    rename(symbol);
-    RENAME.with(|slot| *slot.borrow_mut() = Some(rename));
-
-    let show: Note = {
-        let reset = reset.clone();
-        Rc::new(move |differs: bool| reset.set_visible(differs))
-    };
-    show(window.own_look_differs());
-    NOTE.with(|slot| *slot.borrow_mut() = Some(show));
-    {
-        let (window, pages) = (window.clone(), pages.clone());
-        reset.connect_clicked(move |_| {
-            window.follow_global_look();
-            note(&window);
-            reshow(&pages);
-        });
-    }
-
-    // Gone with the window, so a closed Preferences is not renamed, and the
-    // pages a chart's settings show change every chart again.
-    row.connect_destroy(|_| {
-        RENAME.with(|slot| *slot.borrow_mut() = None);
-        NOTE.with(|slot| *slot.borrow_mut() = None);
-        LOCAL.set(false);
-        ring(None);
-    });
-
-    {
-        let window = window.clone();
-        local.connect_toggled(move |local| {
-            LOCAL.set(local.is_active());
-            note(&window);
-            ring(local_chart(&window));
-            scoped(local.is_active());
-            reshow(&pages);
-        });
-    }
-    row.upcast()
 }
 
 /// ↺, in the colour of `button`'s text. Drawn rather than taken from the
@@ -240,17 +270,4 @@ fn choice(text: &str) -> gtk::ToggleButton {
     button.add_css_class("flat");
     button.set_child(Some(&crate::ui::preferences::rule_word(text)));
     button
-}
-
-/// Set every [`GLOBAL_ONLY`] widget under `root` to `sensitive`.
-fn grey(root: &gtk::Widget, sensitive: bool) {
-    let mut child = root.first_child();
-    while let Some(widget) = child {
-        if widget.widget_name() == GLOBAL_ONLY {
-            widget.set_sensitive(sensitive);
-        } else {
-            grey(&widget, sensitive);
-        }
-        child = widget.next_sibling();
-    }
 }

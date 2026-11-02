@@ -260,14 +260,13 @@ pub trait Live {
     fn reload_workspace(&self);
     /// Draw the rail again, after a command changed a watchlist.
     fn reload_watchlists(&self);
-    /// Re-read the theme and bar scheme, and repaint.
-    fn adopt_theming(&self);
+    /// Read every chart's look back from the settings — the theme, the
+    /// bars, the header, the lines — and wear it, if a command changed it.
+    /// Nothing to do without a window.
+    fn adopt_look(&self) {}
     /// Chart from the feed the settings now name, if it is not the one on
     /// screen. Nothing to do without a window.
     fn adopt_feed(&self) {}
-    /// Show the header the settings now name on every chart on screen.
-    /// Nothing to do without a window.
-    fn adopt_header(&self) {}
     /// Draw every chart on screen in the time zone and the time format the
     /// settings now name. Nothing to do without a window.
     fn adopt_clock(&self) {}
@@ -280,9 +279,6 @@ pub trait Live {
     /// Put in or take out what the feature flags now switch, in place.
     /// Nothing to do without a window.
     fn adopt_features(&self) {}
-    /// Re-read the gridlines and the last-price line, and put them on every
-    /// chart. Nothing to do without a window.
-    fn adopt_chart_look(&self) {}
     /// Write every chart's template name again, after one was renamed.
     /// Nothing to do without a window.
     fn adopt_template_names(&self) {}
@@ -1067,16 +1063,12 @@ impl Live for Rc<crate::ui::Window> {
         crate::ui::Window::reload_watchlists(self);
     }
 
-    fn adopt_theming(&self) {
-        crate::ui::Window::adopt_theming(self);
+    fn adopt_look(&self) {
+        crate::ui::Window::adopt_look(self);
     }
 
     fn adopt_feed(&self) {
         crate::ui::Window::adopt_feed(self);
-    }
-
-    fn adopt_header(&self) {
-        crate::ui::Window::adopt_header(self);
     }
 
     fn adopt_clock(&self) {
@@ -1093,10 +1085,6 @@ impl Live for Rc<crate::ui::Window> {
 
     fn adopt_features(&self) {
         crate::ui::Window::adopt_features(self);
-    }
-
-    fn adopt_chart_look(&self) {
-        crate::ui::Window::adopt_chart_look(self);
     }
 
     fn adopt_template_names(&self) {
@@ -1268,7 +1256,6 @@ mod tests {
         }
         fn reload_workspace(&self) {}
         fn reload_watchlists(&self) {}
-        fn adopt_theming(&self) {}
         fn warm(&self, _instruments: &[Instrument]) {}
         fn warm_closes(&self, _batches: Vec<Vec<Listing>>) {}
         fn symbols(&self) -> Option<Rc<SearchIndex>> {

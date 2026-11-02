@@ -145,7 +145,6 @@ pub fn dispatch(
         ("chart", "screenshot") => screenshot(live, m, json, false),
         ("chartbook", "screenshot") => screenshot(live, m, json, true),
         ("chart", "crosshair") => crosshair(store, m, json),
-        ("chart", "strip") => strip(store, m, json, live),
         // A range is held by the chart on screen and nowhere else.
         ("chart", "range") => chart_range(live, m),
         ("chart", "measure") => chart_measure(live, m, json),
@@ -201,8 +200,8 @@ pub fn dispatch(
         ("config", "set") => {
             let outcome = config_set(store, m, json);
             // The settings a window acts on the moment they change: the feed,
-            // whose charts switch with nothing to restart, and the header,
-            // which every chart on screen shows.
+            // whose charts switch with nothing to restart, and the look,
+            // which every chart on screen wears.
             if outcome.is_ok()
                 && let Some(live) = live
             {
@@ -213,13 +212,15 @@ pub fn dispatch(
                     // A login changed: which charts it can serve may have
                     // too.
                     Ok(key) if crate::feeds::signs_in_from(key) => live.adopt_feed(),
-                    Ok(key) if key == crate::header::SETTING => live.adopt_header(),
                     Ok(key) if key == crate::clock::SETTING_ZONE || key == crate::clock::SETTING_FORMAT => {
                         live.adopt_clock()
                     }
                     Ok(key) if key == crate::zoom::SETTING => live.adopt_zoom(),
                     Ok(key) if key == chart_pnl::DISPLAY || key == chart_pnl::R_AMOUNT => live.adopt_pnl(),
-                    _ => {}
+                    // Any other may be one of the rows a chart's look is read
+                    // from, which the window reads again and wears only if
+                    // it changed.
+                    _ => live.adopt_look(),
                 }
             }
             outcome
@@ -4757,27 +4758,6 @@ fn crosshair(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<Strin
     })
 }
 
-/// Whether the header has the resolution strip, which only the focused chart
-/// shows. The whole app's, like the header it is part of: hiding it takes
-/// nothing away, since a resolution is still typed, picked beside the
-/// symbol, or stepped to with the keys. Shown again, it goes back across
-/// the middle, where a header that never moved it has it.
-fn strip(store: &Store, m: &clap::ArgMatches, as_json: bool, live: Option<&dyn Live>) -> Result<String, Fault> {
-    use crate::header::Part;
-    let mut header = crate::header::load(store);
-    read_or_set(m, as_json, "strip", header.contains(Part::Strip), |on| {
-        match on {
-            true => header.add(Part::Strip),
-            false => header.remove(Part::Strip),
-        }
-        crate::header::save(store, &header);
-        if let Some(live) = live {
-            live.adopt_header();
-        }
-        format!("resolution strip is {}", on_off(on))
-    })
-}
-
 /// Every chart's header: read back as it is stored, or set from the zones
 /// given, which are one argument each so nothing needs quoting. Refused
 /// whole on a misspelling, as `config set chart_header` refuses it.
@@ -4792,7 +4772,7 @@ fn config_header(store: &Store, m: &clap::ArgMatches, as_json: bool, live: Optio
     }
     let header = retyped_header(store, &given.join(" "))?;
     if let Some(live) = live {
-        live.adopt_header();
+        live.adopt_look();
     }
     let header = crate::header::spell(&header.seen());
     said(as_json, json!({"header": header}), format!("every chart's header shows {header}"))
@@ -5466,7 +5446,7 @@ fn config_theme(
     let already = theme.id == current.id && store.setting(crate::theming::SETTING_THEME).is_some();
     store.set_setting(crate::theming::SETTING_THEME, &id);
     if let Some(live) = live {
-        live.adopt_theming();
+        live.adopt_look();
     }
     let text = match already {
         true => format!("the theme was already {name}"),
@@ -5495,15 +5475,11 @@ fn read_or_set(
     said(as_json, json!({key: on}), text)
 }
 
-/// Make `edits` every chart's answers, and have an open window wear them:
-/// its stylesheet and the rail too when one changes a colour.
+/// Make `edits` every chart's answers, and have an open window wear them.
 fn change_every_look(store: &Store, live: Option<&dyn Live>, edits: Vec<LookEdit>) {
-    let colours = edits.iter().any(LookEdit::colours);
     LookEdit::save_global(edits, store);
-    match live {
-        Some(live) if colours => live.adopt_theming(),
-        Some(live) => live.adopt_chart_look(),
-        None => {}
+    if let Some(live) = live {
+        live.adopt_look();
     }
 }
 
@@ -5555,7 +5531,8 @@ fn config_bars(
     let mut answer = to_value(&look)?;
     if let Some(fields) = answer.as_object_mut() {
         fields.retain(|key, _| {
-            ["style", "up", "down", "up_body", "down_body", "up_thickness", "down_thickness"].contains(&key.as_str())
+            ["style", "up", "down", "up_body", "down_body", "up_thickness", "down_thickness", "line_low", "line_high"]
+                .contains(&key.as_str())
         });
     }
     said(as_json, answer, text)
@@ -5588,6 +5565,8 @@ fn look_edits(m: &clap::ArgMatches) -> Result<Vec<LookEdit>, Fault> {
         let thickness = arg(m, &format!("{flag}-thickness")).and_then(|px| Thickness::parse(px));
         edits.extend(thickness.map(|px| LookEdit::Thickness(direction, px)));
     }
+    edits.extend(colour("line-low")?.map(LookEdit::LineLow));
+    edits.extend(colour("line-high")?.map(LookEdit::LineHigh));
     if let Some(text) = arg(m, "header") {
         edits.push(LookEdit::Header(crate::header::parse(text).map_err(Fault::usage)?));
     }
@@ -5876,7 +5855,7 @@ fn backup_restore(
     // arrangement is reloaded after this returns, like any command that
     // writes it.
     if let Some(live) = live {
-        live.adopt_theming();
+        live.adopt_look();
         live.adopt_feed();
         live.adopt_zoom();
         live.adopt_pnl();
@@ -7066,6 +7045,20 @@ mod tests {
         assert_eq!(workspace.find("Last copy").unwrap(), workspace.find("Last").unwrap() + 1);
     }
 
+    /// A line's two shades are part of the look, so a chart's own keeps
+    /// them through a change to every chart's.
+    #[test]
+    fn a_charts_own_look_has_its_own_line_shades() {
+        let store = bare();
+        ok("chartbook create Macro --symbol SPY", &store);
+        let said = ok("chart look --book Macro --chart pos:0 --style line --line-low amber", &store);
+        assert!(said.contains("line amber to violet"), "{said}");
+        ok("config bars --line-low teal --line-high rose", &store);
+        let own = &panes_of(&store, "Macro")[0]["look"];
+        assert_eq!((&own["line_low"], &own["line_high"]), (&json!("amber"), &json!("violet")));
+        assert!(ok("config bars", &store).contains("line teal to rose"));
+    }
+
     /// The first change to one chart's look copies every chart's onto it,
     /// so a later change to every chart's leaves the copy as it was, until
     /// `--follow` drops it.
@@ -7565,36 +7558,37 @@ mod tests {
     #[test]
     fn bars_are_answers_set_together_or_alone() {
         let store = Store::memory().unwrap();
-        assert_eq!(run("config bars", &store).out.trim(), "candles, up green filled 2px, down rose filled 2px");
+        assert_eq!(run("config bars", &store).out.trim(), "candles, up green filled 2px, down rose filled 2px, line blue to violet");
 
         assert_eq!(run("config bars red-up --up-body hollow", &store).code, 0);
-        assert_eq!(run("config bars", &store).out.trim(), "candles, up rose hollow 2px, down green filled 2px");
+        assert_eq!(run("config bars", &store).out.trim(), "candles, up rose hollow 2px, down green filled 2px, line blue to violet");
 
         // A flag alone leaves the others as they were.
         assert_eq!(run("config bars --down Foreground", &store).code, 0);
-        assert_eq!(run("config bars", &store).out.trim(), "candles, up rose hollow 2px, down foreground filled 2px");
+        assert_eq!(run("config bars", &store).out.trim(), "candles, up rose hollow 2px, down foreground filled 2px, line blue to violet");
         assert_eq!(run("config get bar_down", &store).out.trim(), "foreground");
 
         // A flag wins over the preset it is given with.
-        assert_eq!(run("config bars monochrome --up #336699 --up-body filled", &store).code, 0);
+        assert_eq!(run("config bars monochrome --up #336699 --up-body filled --line-low amber", &store).code, 0);
         let json: Value = serde_json::from_str(&run("config bars --json", &store).out).unwrap();
         assert_eq!(
             json,
             json!({
                 "style": "candles", "up": "#336699", "down": "foreground", "up_body": "filled", "down_body": "filled",
-                "up_thickness": "2", "down_thickness": "2"
+                "up_thickness": "2", "down_thickness": "2", "line_low": "amber", "line_high": "violet"
             })
         );
+        assert_eq!(run("config bars --line-low blue", &store).code, 0);
 
-        let again = run("config bars monochrome --up #336699 --up-body filled", &store);
+        let again = run("config bars monochrome --up #336699 --up-body filled --line-low blue", &store);
         assert!(again.out.starts_with("bars were already"), "{}", again.out);
 
         assert_eq!(run("config bars --down-body bordered", &store).code, 0);
-        assert_eq!(run("config bars", &store).out.trim(), "candles, up #336699 filled 2px, down foreground bordered 2px");
+        assert_eq!(run("config bars", &store).out.trim(), "candles, up #336699 filled 2px, down foreground bordered 2px, line blue to violet");
 
         // The style is one more answer, and leaves the colours alone.
         assert_eq!(run("config bars --style ohlc", &store).code, 0);
-        assert_eq!(run("config bars", &store).out.trim(), "ohlc, up #336699 filled 2px, down foreground bordered 2px");
+        assert_eq!(run("config bars", &store).out.trim(), "ohlc, up #336699 filled 2px, down foreground bordered 2px, line blue to violet");
         assert_eq!(run("config get bar_style", &store).out.trim(), "ohlc");
         assert_ne!(run("config bars --up-body outlined", &store).code, 0, "a body that does not exist is refused");
 
@@ -8273,20 +8267,6 @@ mod tests {
     }
 
     #[test]
-    fn the_resolution_strip_can_be_hidden_and_shown_again() {
-        let store = bare();
-        assert_eq!(run("chart strip", &store).out.trim(), "off", "the standard header has the title instead");
-        assert_eq!(run("chart strip on", &store).code, 0);
-        assert_eq!(run("chart strip", &store).out.trim(), "on");
-        assert_eq!(run("chart strip off", &store).code, 0);
-        assert_eq!(run("chart strip", &store).out.trim(), "off");
-        assert!(!crate::header::load(&store).contains(crate::header::Part::Strip));
-        assert_eq!(run("chart strip on", &store).code, 0);
-        let header = crate::header::load(&store);
-        assert_eq!(header.zone_of(crate::header::Part::Strip), Some(crate::header::Zone::Center));
-    }
-
-    #[test]
     fn sizes_are_read_the_way_people_write_them() {
         assert_eq!(parse_bytes("1GB"), Some(1024 * 1024 * 1024));
         assert_eq!(parse_bytes("512 MB"), Some(512 * 1024 * 1024));
@@ -8682,7 +8662,6 @@ mod tests {
         fn flush_workspace(&self) {}
         fn reload_workspace(&self) {}
         fn reload_watchlists(&self) {}
-        fn adopt_theming(&self) {}
         fn warm(&self, _instruments: &[omacharts_engine::Instrument]) {}
         fn warm_closes(&self, _batches: Vec<Vec<crate::loader::Listing>>) {}
 
@@ -9460,8 +9439,8 @@ mod tests {
         fn reload_watchlists(&self) {
             self.0.borrow_mut().push("watchlists");
         }
-        fn adopt_theming(&self) {
-            self.0.borrow_mut().push("theming");
+        fn adopt_look(&self) {
+            self.0.borrow_mut().push("look");
         }
         fn adopt_feed(&self) {
             self.0.borrow_mut().push("feed");
@@ -9512,7 +9491,7 @@ mod tests {
         let outcome = dispatch(&args, &store, Some(&window), &super::super::Here);
         assert_eq!(outcome.code, 0, "{}", outcome.err);
         assert!(outcome.out.contains("what they replaced is kept as settings-"), "{}", outcome.out);
-        assert_eq!(*window.0.borrow(), vec!["flush", "theming", "feed", "watchlists", "workspace"]);
+        assert_eq!(*window.0.borrow(), vec!["flush", "look", "feed", "watchlists", "workspace"]);
         assert!(!run("watchlist list", &store).out.contains("Later"));
 
         let unknown = run("backup restore settings-nope", &store);

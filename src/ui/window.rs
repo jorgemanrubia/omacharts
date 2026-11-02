@@ -42,6 +42,7 @@ use omacharts_engine::LinkMode;
 use crate::ui::colors;
 use crate::ui::preferences::Preferences;
 use crate::ui::pick_frame::Over;
+use crate::ui::scope_rule::Scope;
 use crate::ui::search::SymbolSearch;
 use crate::ui::shortcuts;
 use crate::ui::watchlist::{Quote, Watchlist, DEFAULTS};
@@ -2761,6 +2762,57 @@ mod outside_change_tests {
         });
     }
 
+    /// A row of every chart's look written with `config set` reaches the
+    /// charts on screen, as `config grid` and `config bars` do.
+    #[test]
+    fn a_look_set_by_config_set_reaches_the_charts_on_screen() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            let pane = window.focused_pane();
+            assert!(!pane.view.show_grid());
+            command(&window, &["config", "set", "show_grid", "true"]);
+            assert!(pane.view.show_grid(), "the chart kept its old gridlines");
+            command(&window, &["config", "set", "bar_style", "ohlc"]);
+            assert_eq!(pane.view.bar_style(), BarStyle::Ohlc);
+            command(&window, &["config", "set", "chart_header", "left=symbol"]);
+            assert_eq!(*pane.header.borrow(), crate::header::load(&store));
+            assert!(pane.header.borrow().contains(crate::header::Part::Symbol));
+        });
+    }
+
+    /// Preferences, open while commands change every chart's look, follows
+    /// them: the Gridlines switch moves with `config grid`, and Appearance's
+    /// style tabs with `config bars`. The switch, moved by hand, reaches
+    /// the charts.
+    #[test]
+    fn open_preferences_follow_a_command() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            window.open_preferences_at(Some("overlays"));
+            let grid = titled::<adw::SwitchRow>(&window, "Gridlines").into_iter().next().expect("a Gridlines row");
+            assert!(!grid.is_active());
+            command(&window, &["config", "grid", "on"]);
+            assert!(grid.is_active(), "the Gridlines switch kept the old answer");
+            grid.set_active(false);
+            assert!(!window.focused_pane().view.show_grid(), "the switch did not reach the chart");
+
+            let ohlc = || {
+                let forms = crate::ui::form_window::over(&window.window);
+                forms
+                    .iter()
+                    .flat_map(|form| rows::<gtk::ToggleButton>(form.upcast_ref()))
+                    .find(|tab| rows::<gtk::Label>(tab.upcast_ref()).iter().any(|label| label.text() == BarStyle::Ohlc.label()))
+                    .expect("an OHLC tab")
+            };
+            assert!(!ohlc().is_active());
+            command(&window, &["config", "bars", "red-up", "--style", "ohlc"]);
+            assert!(ohlc().is_active(), "Appearance kept the old style");
+            assert_eq!(window.focused_pane().view.bar_style(), BarStyle::Ohlc);
+        });
+    }
+
     /// The names a combo row offers, in order.
     fn offered(row: &adw::ComboRow) -> Vec<String> {
         (0..row.model().map_or(0, |m| m.n_items()))
@@ -2828,6 +2880,152 @@ mod outside_change_tests {
             // The line's rows follow a command that draws it as candles again.
             command(&window, &["chart", "indicator", "set", "cvd", "--cvd-style", "candles"]);
             assert!(!line_shown(), "the line's rows stayed for candles");
+        });
+    }
+
+    /// Appearance and Overlays go with the window they are shown in. Their
+    /// controls hold them weakly, since they hold the controls, so nothing
+    /// is left holding the chart window once theirs has closed and the
+    /// window has said what changed next.
+    #[test]
+    fn appearance_and_overlays_let_go_when_their_window_closes() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            // What is pending runs, and what has gone is pruned.
+            let settled = || {
+                while gtk::glib::MainContext::default().iteration(false) {}
+                window.chart_changed_elsewhere();
+                Rc::strong_count(&window)
+            };
+            let alone = settled();
+            let pages: [fn(&Rc<Scope>) -> adw::PreferencesPage; 2] = [Window::appearance_page, Window::overlays_page];
+            for page in pages {
+                let holder = gtk::Window::new();
+                let (scope, rule) = Scope::new(&window, false);
+                let shown = gtk::Box::new(gtk::Orientation::Vertical, 0);
+                shown.append(&rule);
+                shown.append(&page(&scope));
+                drop(scope);
+                holder.set_child(Some(&shown));
+                assert!(Rc::strong_count(&window) > alone);
+                holder.destroy();
+                drop((holder, shown, rule));
+                assert_eq!(settled(), alone, "a page or its scope still holds the window");
+            }
+        });
+    }
+
+    /// The open chart settings, a window of their own.
+    fn chart_settings_form() -> adw::Window {
+        crate::ui::form_window::open(crate::ui::chart_settings::KIND).expect("the chart's settings")
+    }
+
+    /// Preferences, open over `window`.
+    fn preferences_form(window: &Window) -> adw::Window {
+        crate::ui::form_window::over(&window.window)
+            .into_iter()
+            .find(|form| form.has_css_class("preferences-window"))
+            .expect("Preferences")
+    }
+
+    /// The GLOBAL and LOCAL choices of the scope rule in `form`.
+    fn scope_choices(form: &adw::Window) -> (gtk::ToggleButton, gtk::ToggleButton) {
+        let rule = rows::<gtk::Widget>(form.upcast_ref()).into_iter().find(|w| w.has_css_class("scope-rule")).expect("a rule");
+        let (local, global): (Vec<_>, Vec<_>) = rows::<gtk::ToggleButton>(&rule).into_iter().partition(|b| b.has_css_class("scope-local"));
+        (global.into_iter().next().expect("a GLOBAL choice"), local.into_iter().next().expect("a LOCAL choice"))
+    }
+
+    /// The Gridlines switch on `form`'s Overlays page, rather than the Chart
+    /// page's of a chart's settings.
+    fn overlays_grid(form: &adw::Window) -> adw::SwitchRow {
+        let page = rows::<gtk::Stack>(form.upcast_ref())
+            .into_iter()
+            .find_map(|stack| stack.child_by_name(crate::ui::preferences::OVERLAYS))
+            .expect("an Overlays page");
+        rows::<adw::SwitchRow>(&page).into_iter().find(|row| row.title() == "Gridlines").expect("a Gridlines row")
+    }
+
+    /// A chart's settings open on LOCAL in a split, where the chart they
+    /// are on is one of several, and on GLOBAL on a chart alone. Moving the
+    /// focus to another chart starts them on that again.
+    #[test]
+    fn chart_settings_start_local_in_a_split_and_global_alone() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            crate::ui::chart_settings::ChartSettings::present(&window);
+            let (global, local) = scope_choices(&chart_settings_form());
+            assert!(global.is_active() && !local.is_active(), "one chart opened on LOCAL");
+            chart_settings_form().close();
+
+            command(&window, &["chart", "split", "horizontal"]);
+            crate::ui::chart_settings::ChartSettings::present(&window);
+            let (global, local) = scope_choices(&chart_settings_form());
+            assert!(local.is_active(), "a split opened on GLOBAL");
+            // Picked by hand, then the focus moves: the next chart starts
+            // where a split starts.
+            global.set_active(true);
+            command(&window, &["chart", "focus", "pos:0"]);
+            let (_, local) = scope_choices(&chart_settings_form());
+            assert!(local.is_active(), "the next chart kept the last one's GLOBAL");
+        });
+    }
+
+    /// Under LOCAL a chart's settings change the chart they are on: the
+    /// first change gives it a look of its own, and every other chart, and
+    /// every chart's look, stay as they were.
+    #[test]
+    fn an_edit_under_local_in_chart_settings_changes_that_chart_alone() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            command(&window, &["chart", "split", "horizontal"]);
+            command(&window, &["chart", "focus", "pos:0"]);
+            crate::ui::chart_settings::ChartSettings::present(&window);
+            let grid = overlays_grid(&chart_settings_form());
+            assert!(!grid.is_active());
+            grid.set_active(true);
+            assert!(at(&window, 0).view.show_grid(), "the chart in sight kept its gridlines off");
+            assert!(!at(&window, 1).view.show_grid(), "the other chart took the gridlines on");
+            assert!(!window.look(true).grid, "every chart's look changed");
+            assert!(window.wears_own_look());
+        });
+    }
+
+    /// Preferences and a chart's settings each keep their own scope:
+    /// picking in one leaves the other's choice, and each window's edits
+    /// reach the charts its own choice says.
+    #[test]
+    fn preferences_and_chart_settings_scope_apart() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            command(&window, &["chart", "split", "horizontal"]);
+            command(&window, &["chart", "focus", "pos:0"]);
+            crate::ui::chart_settings::ChartSettings::present(&window);
+            window.open_preferences_at(Some("overlays"));
+            let (chart_global, chart_local) = scope_choices(&chart_settings_form());
+            let (prefs_global, prefs_local) = scope_choices(&preferences_form(&window));
+            assert!(chart_local.is_active());
+            assert!(prefs_global.is_active(), "Preferences took the chart's settings' LOCAL");
+
+            prefs_local.set_active(true);
+            chart_global.set_active(true);
+            assert!(prefs_local.is_active(), "the chart's settings' GLOBAL reached Preferences");
+            assert!(!chart_local.is_active());
+
+            // GLOBAL in the chart's settings: every chart.
+            overlays_grid(&chart_settings_form()).set_active(true);
+            assert!(window.look(true).grid);
+            assert!(at(&window, 0).view.show_grid() && at(&window, 1).view.show_grid());
+            // LOCAL in Preferences: the focused chart alone.
+            let grid = overlays_grid(&preferences_form(&window));
+            assert!(grid.is_active(), "Preferences kept the old answer");
+            grid.set_active(false);
+            assert!(!at(&window, 0).view.show_grid(), "Preferences' LOCAL missed the focused chart");
+            assert!(at(&window, 1).view.show_grid(), "Preferences' LOCAL reached the other chart");
+            assert!(window.look(true).grid, "Preferences' LOCAL changed every chart's look");
         });
     }
 }
@@ -4049,13 +4247,14 @@ pub struct Window {
     /// them, in layout order, so a change can be carried to the other books
     /// on it the way it was made. Empty for a book on none.
     template_leaves: RefCell<Vec<u32>>,
-    /// What an open chart settings dialog reads off the focused chart, asked
-    /// to read it again when something else changed it. Each says whether
-    /// it is still on screen, and goes once it is not.
+    /// What an open chart settings window or a visual page of Preferences
+    /// reads off the focused chart and the looks, asked to read it again
+    /// when something else changed it. Each says whether it is still on
+    /// screen, and goes once it is not.
     chart_watchers: RefCell<Vec<Box<dyn Fn() -> bool>>>,
     /// Every chart's look, as the settings rows held it when last read:
     /// read once here and again whenever it may have changed
-    /// ([`Window::reread_look`]), rather than a dozen rows per chart worn.
+    /// ([`Window::adopt_look`]), rather than a dozen rows per chart worn.
     global_look: RefCell<ChartLook>,
     /// A save is already queued, so a drag does not queue one per pixel.
     save_pending: Cell<bool>,
@@ -4535,7 +4734,6 @@ impl Window {
         let pane = ChartPane::new(id, theme, bars, timeframe, indicators, session, mode);
         *pane.look.borrow_mut() = look;
         self.wear(&pane, &global);
-        pane.view.set_house_look(self.house_look());
 
         let searcher = self.clone();
         pane.symbol_button.connect_clicked(move |_| {
@@ -6058,9 +6256,10 @@ impl Window {
         self.chart_changed_elsewhere();
     }
 
-    /// Have `watch` run whenever the focused chart may have been changed by
-    /// something other than the dialog showing it: a command, a theme.
-    /// It answers whether it is still wanted.
+    /// Have `watch` run whenever the focused chart, or the look it wears,
+    /// may have been changed by something other than the page showing it:
+    /// a command, a theme, the focus moving. It answers whether it is still
+    /// wanted.
     pub fn watch_chart(&self, watch: impl Fn() -> bool + 'static) {
         self.chart_watchers.borrow_mut().push(Box::new(watch));
     }
@@ -6096,27 +6295,6 @@ impl Window {
         self.focused_pane().ladders.borrow().is_some()
     }
 
-    /// The look chosen in Preferences: what a delta profile or a cumulative
-    /// delta with no colouring of its own is painted in, on every chart.
-    pub fn house_look(&self) -> omacharts_engine::BarLook {
-        self.theming.borrow().bar_look().clone()
-    }
-
-    /// Adopt a theme or bars that changed outside this window — a command,
-    /// the desktop's theme — and show it everywhere.
-    ///
-    /// `restyle` paints from the `Theming` this process is holding, so without
-    /// re-reading the choice first it would faithfully repaint the theme the
-    /// window already had. An Appearance page that is open is rebuilt too:
-    /// its theme cards, its colours and the border's Black or White are the
-    /// theme's, and nothing on the page asked for the change.
-    pub fn adopt_theming(self: &Rc<Self>) {
-        self.reread_look();
-        self.theming.borrow_mut().reload_selection(&self.store);
-        self.restyle();
-        crate::ui::appearance::restyled();
-    }
-
     /// Show the settings a backup just put back: everything the window holds
     /// in memory that came out of them, read again.
     ///
@@ -6125,7 +6303,7 @@ impl Window {
     /// without being saved first — what is on screen is exactly what was
     /// replaced, and saving it would put it back.
     pub fn adopt_restored(self: &Rc<Self>) {
-        self.adopt_theming();
+        self.adopt_look();
         self.adopt_feed();
         self.adopt_zoom();
         self.adopt_pnl_display();
@@ -8228,7 +8406,7 @@ impl Window {
         let this = self.clone();
         glib::timeout_add_seconds_local(THEME_POLL_SECONDS, move || {
             if this.theming.borrow_mut().poll_omarchy() {
-                this.adopt_theming();
+                this.restyle();
             }
             glib::ControlFlow::Continue
         });
@@ -8241,21 +8419,11 @@ impl Window {
             bar.restyle();
         }
         self.wear_looks();
-        let house = self.house_look();
-        for pane in self.panes.borrow().iter() {
-            pane.view.set_house_look(house.clone());
-        }
         // The trading look, which colours nothing `wear_looks` repaints.
         self.apply_marks();
         if let Some(watchlist) = self.watchlist.borrow().as_ref() {
             watchlist.rebuild();
         }
-        // An open chart settings shows the theme's colours.
-        self.chart_changed_elsewhere();
-        // The header card's change and candles wear the bars' colours.
-        crate::ui::overlays::header_changed();
-        // The Bar style menu's tick, for a style chosen elsewhere.
-        self.sync_chart_actions(&self.focused_pane());
     }
 
     fn open_search(self: &Rc<Self>) {
@@ -8376,20 +8544,16 @@ impl Window {
     }
 
     /// The Appearance page, for Preferences and for a chart's settings:
-    /// every chart's look, beside the chart you noticed it on.
-    pub fn appearance_page(self: &Rc<Self>) -> adw::PreferencesPage {
-        crate::ui::appearance::page(self.clone(), self.theming.clone())
+    /// the look of the charts `scope` says, beside the chart you noticed it
+    /// on.
+    pub fn appearance_page(scope: &Rc<Scope>) -> adw::PreferencesPage {
+        crate::ui::appearance::page(scope.clone(), scope.window().theming.clone())
     }
 
     /// The Overlays page, for Preferences and for a chart's settings: what
-    /// every chart draws over its bars.
-    pub fn overlays_page(self: &Rc<Self>) -> adw::PreferencesPage {
-        let charts = self.clone();
-        crate::ui::overlays::page(
-            self.clone(),
-            self.store.clone(),
-            Rc::new(move || charts.adopt_chart_look()),
-        )
+    /// the charts `scope` says draw over their bars.
+    pub fn overlays_page(scope: &Rc<Scope>) -> adw::PreferencesPage {
+        crate::ui::overlays::page(scope.clone(), scope.window().store.clone())
     }
 
     /// Re-fold and repaint what is on screen, after something that changes
@@ -10914,14 +11078,6 @@ impl Window {
 
     // -- the header ------------------------------------------------------
 
-    /// Adopt a header set outside this window, a command, and show it on the
-    /// header card too, which nothing on the card asked to change.
-    pub fn adopt_header(self: &Rc<Self>) {
-        self.reread_look();
-        self.wear_looks();
-        crate::ui::overlays::header_changed();
-    }
-
     /// Fill in the parts of a chart's header only the window knows: the
     /// template's name, the day's move and the last price. Each only when the
     /// header shows it, so a chart that asks for neither never reads a quote.
@@ -11496,19 +11652,18 @@ impl Window {
         pane.look.borrow().clone().unwrap_or_else(|| self.global_look.borrow().clone())
     }
 
-    /// Read every chart's look from the settings again, after something
-    /// wrote it.
-    fn reread_look(&self) {
-        *self.global_look.borrow_mut() = ChartLook::global(&self.store);
-    }
-
-    /// The look Preferences shows: every chart's, or with `every` false the
-    /// one the focused chart wears.
+    /// The look a settings window's visual pages show: every chart's, or
+    /// with `every` false the one the focused chart wears.
     pub fn look(&self, every: bool) -> ChartLook {
         match every {
             true => self.global_look.borrow().clone(),
             false => self.look_of(&self.focused_pane()),
         }
+    }
+
+    /// Whether the open chartbook holds more than one chart.
+    pub fn is_split(&self) -> bool {
+        self.panes.borrow().len() > 1
     }
 
     /// Whether the focused chart wears a look of its own.
@@ -11529,18 +11684,8 @@ impl Window {
     /// change to every chart's leaves it as it is.
     pub fn change_look(self: &Rc<Self>, edit: LookEdit, every: bool) {
         if every {
-            let colours = edit.colours();
             LookEdit::save_global([edit], &self.store);
-            self.reread_look();
-            match colours {
-                // The window's stylesheet and the rail wear every chart's
-                // colours too.
-                true => {
-                    self.theming.borrow_mut().reload_selection(&self.store);
-                    self.restyle();
-                }
-                false => self.adopt_chart_look(),
-            }
+            self.adopt_look();
             return;
         }
         let pane = self.focused_pane();
@@ -11574,6 +11719,7 @@ impl Window {
         self.wear(pane, &global);
         self.sync_chart_actions(pane);
         self.save_workspace();
+        self.chart_changed_elsewhere();
     }
 
     /// Dress a chart in its own look, or while it has none in `global`, on
@@ -11613,28 +11759,44 @@ impl Window {
 
     /// Every chart on screen in the look it wears, as the settings and its
     /// own say now. Every chart's look is read once, not per chart. A
-    /// chartbook not on screen wears its looks when it is built.
+    /// chartbook not on screen wears its looks when it is built. Whatever
+    /// shows a look — the menu's ticks, Preferences' pages, a chart's
+    /// settings — reads it again.
     pub fn wear_looks(self: &Rc<Self>) {
         let global = self.global_look.borrow().clone();
         let panes = self.panes.borrow().clone();
         for pane in &panes {
             self.wear(pane, &global);
         }
+        self.sync_chart_actions(&self.focused_pane());
+        self.chart_changed_elsewhere();
     }
 
-    /// Read every chart's look back from the settings and put it on every
-    /// chart on screen that wears it. Also how a command from a terminal
-    /// reaches an open window.
-    pub fn adopt_chart_look(self: &Rc<Self>) {
-        self.reread_look();
-        self.wear_looks();
-        // The menu's ticks, for when the answer came from the key, the
-        // settings or a command rather than from the menu itself.
-        self.sync_chart_actions(&self.focused_pane());
-        if !self.store.setting_bool(SETTING_SYNC_CROSSHAIR, true) {
+    /// Read every chart's look back from the settings and wear it, after
+    /// anything wrote it: a page, a key, a command, a backup put back. The
+    /// one way a change to every chart's look reaches the window, and
+    /// nothing at all when the look is as it was. A theme, colours or a
+    /// trading look that changed restyle the whole window too, since its
+    /// stylesheet and the rail wear them.
+    pub fn adopt_look(self: &Rc<Self>) {
+        let now = ChartLook::global(&self.store);
+        let moved = *self.global_look.borrow() != now;
+        *self.global_look.borrow_mut() = now;
+        let restyle = self.theming.borrow_mut().reload_selection(&self.store);
+        if restyle {
+            self.restyle();
+        } else if moved {
+            self.wear_looks();
+        }
+    }
+
+    /// Draw the crosshair across Follow charts, or not, on every chart:
+    /// which is never one chart's.
+    pub fn set_crosshair_sync(self: &Rc<Self>, on: bool) {
+        self.store.set_setting_bool(SETTING_SYNC_CROSSHAIR, on);
+        if !on {
             self.clear_echoes();
         }
-        crate::ui::overlays::charts_changed();
     }
 
     /// Whether the focused chart draws its indicators.
@@ -11693,7 +11855,7 @@ impl Window {
     }
 
     /// The one way the price scale is put on or off automatic from outside
-    /// the chart — the axis menu, the settings dialog — so they cannot come
+    /// the chart — the axis menu, the chart settings window — so they cannot come
     /// to different conclusions. A drag on the axis itself arrives through
     /// `price_auto_changed` instead.
     pub fn set_auto_scale(self: &Rc<Self>, auto: bool) {
@@ -11708,7 +11870,7 @@ impl Window {
     }
 
     /// The one way the price axis is made logarithmic or linear from inside
-    /// the window — the axis menu, the settings dialog.
+    /// the window — the axis menu, the chart settings window.
     pub fn set_log_scale(self: &Rc<Self>, log: bool) {
         let pane = self.focused_pane();
         pane.view.set_price_log(log);
@@ -11727,7 +11889,7 @@ impl Window {
     }
 
     /// The one way the bars are hidden and shown, so the key, the chart menu
-    /// and the settings dialog cannot come to different conclusions. The
+    /// and the chart settings window cannot come to different conclusions. The
     /// style is left alone: showing them again is showing them as they were.
     pub fn set_bars_hidden(self: &Rc<Self>, hidden: bool) {
         let pane = self.focused_pane();
@@ -12969,7 +13131,7 @@ impl Window {
         layout.append_submenu(Some("Sidebars"), &sidebars);
         // Both only mean anything with something else on screen: there is
         // nothing to close down to, and nothing to grow over.
-        if self.panes.borrow().len() > 1 {
+        if self.is_split() {
             let open = self.maximized.get() == Some(self.focused.get());
             let what = if open { pane::RESTORE } else { pane::MAXIMIZE };
             shortcuts::append(&layout, what, "chart.maximize");

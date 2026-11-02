@@ -1,6 +1,8 @@
 //! Controls the settings pages share, so a question asked on two pages is
 //! answered with the same widget on both.
 
+use std::rc::Rc;
+
 use adw::prelude::*;
 use gtk::glib;
 
@@ -258,6 +260,78 @@ pub fn time_row(
     });
     row.add_controller(focus);
     row
+}
+
+
+/// What a [`picture_factory`] row holds beside its picture.
+pub(crate) enum Pictured {
+    /// The picture alone.
+    Alone,
+    /// The row's word after it, then the chevron a dropdown's face wears.
+    Face(Rc<[String]>),
+    /// The row's word after it, then the tick the menu puts on the answer
+    /// picked.
+    Listed(Rc<[String]>),
+}
+
+/// A list factory whose every row is a picture `size` big, drawn by
+/// `paint` given the row's position, with what `pictured` says beside it.
+/// Each picture is handed to `drawn` once, as it is made, so a change of
+/// what they show can ask them all to draw again.
+pub(crate) fn picture_factory(
+    size: (i32, i32),
+    pictured: Pictured,
+    paint: impl Fn(&gtk::cairo::Context, usize, f64, f64) + Clone + 'static,
+    drawn: impl Fn(&gtk::DrawingArea) + 'static,
+) -> gtk::SignalListItemFactory {
+    let factory = gtk::SignalListItemFactory::new();
+    let words = match &pictured {
+        Pictured::Alone => None,
+        Pictured::Face(words) | Pictured::Listed(words) => Some(words.clone()),
+    };
+    factory.connect_setup(move |_, item| {
+        let Some(item) = item.downcast_ref::<gtk::ListItem>() else { return };
+        let picture = gtk::DrawingArea::new();
+        picture.set_content_width(size.0);
+        picture.set_content_height(size.1);
+        picture.set_valign(gtk::Align::Center);
+        drawn(&picture);
+        let end = match pictured {
+            Pictured::Alone => {
+                item.set_child(Some(&picture));
+                return;
+            }
+            Pictured::Face(_) => gtk::Image::from_icon_name("pan-down-symbolic"),
+            Pictured::Listed(_) => {
+                let tick = gtk::Image::from_icon_name("object-select-symbolic");
+                tick.add_css_class("tick");
+                tick
+            }
+        };
+        let label = gtk::Label::new(None);
+        label.set_xalign(0.0);
+        label.set_hexpand(matches!(pictured, Pictured::Listed(_)));
+        let inside = gtk::Box::new(gtk::Orientation::Horizontal, 7);
+        inside.append(&picture);
+        inside.append(&label);
+        inside.append(&end);
+        item.set_child(Some(&inside));
+    });
+    factory.connect_bind(move |_, item| {
+        let Some(item) = item.downcast_ref::<gtk::ListItem>() else { return };
+        let Some(child) = item.child() else { return };
+        let Some(picture) = child.clone().downcast::<gtk::DrawingArea>().ok().or_else(|| child.first_child().and_downcast())
+        else {
+            return;
+        };
+        let position = item.position() as usize;
+        let paint = paint.clone();
+        picture.set_draw_func(move |_, cr, w, h| paint(cr, position, f64::from(w), f64::from(h)));
+        if let (Some(words), Some(label)) = (&words, picture.next_sibling().and_downcast::<gtk::Label>()) {
+            label.set_text(words.get(position).map_or("", String::as_str));
+        }
+    });
+    factory
 }
 
 #[cfg(test)]

@@ -76,14 +76,14 @@ crop: 898,193,763,399   (the whole card, 24px layout margin)
 
 The resolution strip is the same for every chart. Out of the box it is `5m 15m 1h 4h 1D 1W`. To edit it, right-click the strip, where the [header](#the-header) shows it, and choose **Edit resolutions…**, or open Preferences › General › Chart › **Preset resolutions** › **Edit…**.
 
-The strip is a part of [the header](#the-header). To hide it, take it off the header in Preferences › Overlays › **Header**, or run `omacharts chart strip off`; `chart strip on` puts it back in the centre. The resolutions stay: typing one, the resolution in the header and <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>←</kbd> <kbd>→</kbd> all still work.
+The strip is a part of [the header](#the-header). To hide it, take it off the header in Preferences › Overlays › **Header**, or leave `strip` out of `omacharts config header`. The resolutions stay: typing one, the resolution in the header and <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>←</kbd> <kbd>→</kbd> all still work.
 
 <!-- regenerate:
 theme: tokyo-night
 window: 2560x1440 @2, bin/headless-window (HOME sandboxed, theme seeded)
 state:
   (one NVDA 1D chart, sidebar hidden)
-  omacharts chart strip on
+  omacharts config header left=symbol,resolution,change center=strip right=settings,maximize,link
   run bin/virtual-pointer --extent 1280x720 --button right click 600 24
   click 675 46            # Edit resolutions…
 capture: bin/headless-window shot /tmp/resdialog.png
@@ -121,7 +121,7 @@ Charts draw their bars in the style picked at the head of Preferences › Appear
 |---|---|
 | **Candles** | A body from open to close and a wick from high to low. The default |
 | **OHLC bars** | A vertical bar from high to low, a tick to the left at the open and one to the right at the close |
-| **Line** | One line through the closes, in the theme's accent. For a series that is only a close: a yield, a spread |
+| **Line** | One line through the closes, shaded from its Low colour at the lowest close on screen to its High colour at the highest, the theme's blue and violet until set ([Bars](/manual/themes/#bars)). For a series that is only a close: a yield, a spread |
 
 OHLC bars have a thickness, 1, 1.5, 2 or 3 pixels and 2 by default, for rising and falling bars apart. It is part of the bars' look, beside each direction's colour in Preferences › Appearance › [Bars](/manual/themes/#bars), there while the bars are OHLC bars, and `omacharts config bars --up-thickness`, `--down-thickness` sets it too. Where the bars are packed too close for it, they are drawn thinner so neighbours never touch.
 
@@ -369,13 +369,14 @@ state:
   omacharts chart split vertical --chart pos:1
   omacharts chart set --chart pos:1 --resolution 1h
   omacharts chart set --chart pos:2 --resolution 15m
-  key alt+Right
+  omacharts chart focus pos:1
+  key ctrl+shift+b       # hide the sidebar
   key ctrl+m
   move 700 300; move 702 302
 capture: bin/headless-window shot /tmp/max.png
 crop: 1100,500,1460,940
 -->
-{% include figure.html src="/assets/manual/charts/crosshair.jpg" alt="An NVDA hourly chart with the crosshair and its price and time tags, and the last-price tag on its dashed line" caption="The crosshair's tags in the accent colour, and the last price in the colour of the last bar's direction." %}
+{% include figure.html src="/assets/manual/charts/crosshair.jpg" alt="An NVDA hourly chart with the crosshair and its price and time tags, and the last-price tag on its dashed line" caption="The crosshair's tags in the accent colour, and the last price in blue, after a rising bar." %}
 
 The crosshair is a pair of dotted lines that cross at the centre of the bar under the pointer. The price is tagged on the price axis and the bar's time on the time axis (the date alone on daily and coarser bars), in the chosen [time zone and format](/manual/preferences/#time). When each chart reads its exchange's clock, the time ends with the zone, such as **21 Oct 2026 07:30 CT**. Over an indicator strip the price tag shows that strip's value.
 
@@ -497,9 +498,9 @@ A chart's look is its theme, how its bars are drawn and coloured, its header, it
 
 The first change you make to one chart alone copies every chart's look onto it, then makes the change. From then on, a change to every chart's look leaves that chart as it was. Colours are kept as the names you picked, such as **Blue** or **Foreground**, so a new theme recolours the chart the way it recolours every other. A hex colour stays that colour.
 
-A chart with a look of its own is on the window's theme until you pick one for it under Preferences › **LOCAL** › Appearance › Theme. The chart then draws in that theme: its background, scales and bars, and its header, legend and buttons too. The rest of the window keeps the window's theme. The reset arrow after **LOCAL** puts the chart back on the window's theme with the rest of every chart's look.
+A chart with a look of its own is on the window's theme until you pick one for it under **LOCAL** › Appearance › Theme, in Preferences or its Chart settings. The chart then draws in that theme: its background, scales and bars, and its header, legend and buttons too. The rest of the window keeps the window's theme. The reset arrow after **LOCAL** puts the chart back on the window's theme with the rest of every chart's look.
 
-To give one chart a look of its own, focus it, open Preferences and pick **LOCAL** on the **VISUAL** rule, then change Appearance or Overlays. The reset arrow after **LOCAL** puts it back on every chart's look. Choosing a style from a chart's **Bar style** submenu also gives that chart a look of its own. A chart's own look comes with it when you split it or duplicate its chartbook.
+To give one chart a look of its own, focus it, open Preferences or its Chart settings and pick **LOCAL** on the **VISUAL** rule, then change Appearance or Overlays. In a split, Chart settings opens on **LOCAL**. The reset arrow after **LOCAL** puts it back on every chart's look. Choosing a style from a chart's **Bar style** submenu also gives that chart a look of its own. A chart's own look comes with it when you split it or duplicate its chartbook.
 
 `omacharts chart look` gives the focused chart a look of its own, reads the look it wears, and with `--follow` puts it back on every chart's ([`chart look`](/manual/cli/#chart-look)).
 

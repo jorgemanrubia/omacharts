@@ -96,6 +96,8 @@ const SHARED: &[&str] = &[
     "bar_style",
     "bar_up",
     "bar_down",
+    "bar_line_low",
+    "bar_line_high",
     "bar_up_hollow",
     "bar_down_hollow",
     "bar_up_border",

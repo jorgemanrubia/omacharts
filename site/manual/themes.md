@@ -24,7 +24,7 @@ crop: none
 
 ## Choosing a theme
 
-Preferences › Appearance › **Theme** has two cards, each a small picture of the window in its theme. The same page is under **Global** in [Chart settings](/manual/chart-settings/).
+Preferences › Appearance › **Theme** has two cards, each a small picture of the window in its theme. The same page is under **VISUAL** in [Chart settings](/manual/chart-settings/).
 
 | Card | What it is |
 |---|---|
@@ -37,7 +37,7 @@ A theme of your own is made with Omarchy's tools, and then appears in the catalo
 
 ## Bars
 
-Preferences › Appearance › **Bars** sets how bars look on every chart, or under **LOCAL** on the focused chart alone ([A chart's own look](/manual/charts/#a-charts-own-look)). Tabs at its head pick the style: **Candles**, **OHLC bars** or **Line** ([Style](/manual/charts/#style)). Under them, the **Up** and **Down** rows each hold the direction's colour and, beside it, its body for candles or its thickness for OHLC bars, each picked from a list showing a bar drawn as the charts draw it. A line has no rise or fall to colour, so Up and Down go with it.
+Preferences › Appearance › **Bars** sets how bars look on every chart, or under **LOCAL** on the focused chart alone ([A chart's own look](/manual/charts/#a-charts-own-look)). Tabs at its head pick the style: **Candles**, **OHLC bars** or **Line** ([Style](/manual/charts/#style)). Under them, the **Up** and **Down** rows each hold the direction's colour and, beside it, its body for candles or its thickness for OHLC bars, each picked from a list showing a bar drawn as the charts draw it. A line has no rise or fall to colour, so **High** and **Low** take Up's and Down's places: its colour at the highest close on screen and at the lowest, the theme's violet and blue until you pick others.
 
 | Control | Does |
 |---|---|

@@ -245,9 +245,13 @@ fn build(window: &Rc<Window>, frame: &adw::Window) -> Shown {
     if crate::features::trading() {
         own.push(("trading", "Trading", TRADING_ICON, preferences::section_view(&trading_page(window), "Trading")));
     }
-    // Under a rule saying they are every chart's, not this one's.
-    let (every, _) = preferences::visual_sections(window);
-    let sidebar = preferences::Sections::new("Chart settings", [&own, &every], &preferences::sidebar_rule("GLOBAL"));
+    // Under the rule saying which charts they change: in a split this
+    // chart, which is the one in sight, on one chart every chart. A scope
+    // of this window's own, made again for each chart it shows, so it
+    // starts there whatever Preferences has picked.
+    let (scope, rule) = crate::ui::scope_rule::Scope::new(window, window.is_split());
+    let every = preferences::visual_sections(&scope);
+    let sidebar = preferences::Sections::new("Chart settings", [&own, &every], &rule);
     let title = adw::WindowTitle::new("Chart settings", &window.focused_name());
     sidebar.header.set_title_widget(Some(&title));
     sidebar.split.set_min_sidebar_width(200.0);
@@ -274,7 +278,9 @@ fn build(window: &Rc<Window>, frame: &adw::Window) -> Shown {
             if list.group.root().is_none() {
                 return false;
             }
-            rebuild_indicators(&owner, &view, &list);
+            if list.listed.borrow().as_ref() != Some(&Listed::now(&owner)) {
+                rebuild_indicators(&owner, &view, &list);
+            }
             true
         });
     }
@@ -869,6 +875,9 @@ impl Owner {
 pub struct IndicatorList {
     group: adw::PreferencesGroup,
     rows: Rc<RefCell<Vec<gtk::Widget>>>,
+    /// What the rows show, so a change elsewhere that leaves it as it was,
+    /// as most look edits do, does not build them again.
+    listed: Rc<RefCell<Option<Listed>>>,
     /// The + in the group's header. Kept so the hotkey can hang the picker off
     /// the same button the pointer would have used: a popover that appears
     /// somewhere else depending on how you asked for it is two features.
@@ -888,7 +897,7 @@ impl IndicatorList {
         add.set_valign(gtk::Align::Center);
         group.set_header_suffix(Some(&add));
 
-        IndicatorList { group, rows: Rc::new(RefCell::new(Vec::new())), add }
+        IndicatorList { group, rows: Rc::default(), listed: Rc::default(), add }
     }
 
     fn clear(&self) {
@@ -900,6 +909,23 @@ impl IndicatorList {
     fn push(&self, row: &impl IsA<gtk::Widget>) {
         self.group.add(row);
         self.rows.borrow_mut().push(row.clone().upcast());
+    }
+}
+
+/// What an [`IndicatorList`] shows: the template it goes through, the
+/// indicators and the colour each is drawn in.
+#[derive(PartialEq)]
+struct Listed {
+    through: Option<String>,
+    indicators: Vec<Indicator>,
+    colours: Vec<String>,
+}
+
+impl Listed {
+    fn now(owner: &Owner) -> Listed {
+        let indicators = owner.indicators();
+        let colours = omacharts_engine::palette_colors(&indicators, &owner.theme());
+        Listed { through: owner.through_template(), indicators, colours }
     }
 }
 
@@ -974,13 +1000,13 @@ impl Refresh {
 /// you cannot read.
 fn rebuild_indicators(owner: &Rc<Owner>, view: &adw::NavigationView, list: &IndicatorList) {
     list.clear();
-    let indicators = owner.indicators();
+    let listed = Listed::now(owner);
+    let (through, indicators) = (&listed.through, &listed.indicators);
     let refresh = Refresh::rebuilding(owner, view, list);
 
     // On a template, what is being edited is the template, and the page says
     // so before anything is changed: a change here reaches every chart on it.
-    let through = owner.through_template();
-    let description = match (&through, owner.template.is_some(), indicators.is_empty()) {
+    let description = match (through, owner.template.is_some(), indicators.is_empty()) {
         // The heading names the template; this says only what that means.
         (Some(_), _, _) => Some("A change here reaches every chart that uses it.".to_string()),
         (None, true, _) => None,
@@ -991,7 +1017,7 @@ fn rebuild_indicators(owner: &Rc<Owner>, view: &adw::NavigationView, list: &Indi
         ),
     };
     list.group.set_description(description.as_deref());
-    list.group.set_title(match (&through, owner.template) {
+    list.group.set_title(match (through, owner.template) {
         (Some(name), _) => format!("On the {name} template"),
         (None, Some(_)) => "Indicators in the template".to_string(),
         (None, None) => "On the chart".to_string(),
@@ -1003,12 +1029,12 @@ fn rebuild_indicators(owner: &Rc<Owner>, view: &adw::NavigationView, list: &Indi
     // side of the price each one is on. A chart with no strips has no stack to
     // describe, so it is left out there.
     let stacked = indicators.iter().any(|i| i.kind.in_own_pane());
-    let price_at = if stacked { price_row_at(&indicators) } else { usize::MAX };
-    for (at, indicator) in indicators.iter().enumerate() {
+    let price_at = if stacked { price_row_at(indicators) } else { usize::MAX };
+    for (at, (indicator, colour)) in indicators.iter().zip(&listed.colours).enumerate() {
         if at == price_at {
             list.push(&price_row(owner, &refresh));
         }
-        list.push(&indicator_row(owner, view, &refresh, &indicators, indicator));
+        list.push(&indicator_row(owner, view, &refresh, indicator, colour.clone()));
     }
     if price_at == indicators.len() {
         list.push(&price_row(owner, &refresh));
@@ -1026,6 +1052,7 @@ fn rebuild_indicators(owner: &Rc<Owner>, view: &adw::NavigationView, list: &Indi
         });
         list.push(&empty);
     }
+    *list.listed.borrow_mut() = Some(listed);
 }
 
 /// Where the price plot sits in the list: above the first strip that is below
@@ -1091,11 +1118,10 @@ fn indicator_row(
     owner: &Rc<Owner>,
     view: &adw::NavigationView,
     refresh: &Refresh,
-    all: &[Indicator],
     indicator: &Indicator,
+    colour: String,
 ) -> adw::ActionRow {
     let id = indicator.id;
-    let colour = drawn_colour(owner, all, id);
     let row = adw::ActionRow::new();
     row.set_title(&indicator.label());
     row.set_subtitle(indicator.kind.name());

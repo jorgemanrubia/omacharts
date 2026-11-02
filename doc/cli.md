@@ -394,13 +394,6 @@ across Follow charts, or the key `sync_crosshair`:
 omacharts chart crosshair off
 ```
 
-Whether the header has the resolution strip, which only the focused chart
-shows. `on` puts it back in the centre:
-
-```
-omacharts chart strip off
-```
-
 ## Worked example: the top US semiconductors in their own watchlist
 
 This is a real session, run exactly as written.
@@ -978,11 +971,11 @@ pos:0 NVDA 1D in Macro follows all charts
   [exit 0]
 
 $ omacharts chart look --style ohlc --grid off
-pos:0 NVDA 1D in Macro now wears its own look: ohlc, up green filled 2px, down rose filled 2px, grid off, price line on, header symbol,resolution, theme window
+pos:0 NVDA 1D in Macro now wears its own look: ohlc, up green filled 2px, down rose filled 2px, line blue to violet, grid off, price line on, header symbol,resolution, theme window
   [exit 0]
 
 $ omacharts chart look --theme catppuccin-latte
-pos:0 NVDA 1D in Macro now wears its own look: ohlc, up green filled 2px, down rose filled 2px, grid off, price line on, header symbol,resolution, theme catppuccin-latte
+pos:0 NVDA 1D in Macro now wears its own look: ohlc, up green filled 2px, down rose filled 2px, line blue to violet, grid off, price line on, header symbol,resolution, theme catppuccin-latte
   [exit 0]
 
 $ omacharts chart look --follow
@@ -992,7 +985,7 @@ pos:0 NVDA 1D in Macro now follows all charts
 
 `--theme` takes a theme `config theme` lists, or `window` for the window's,
 which a copy starts on and follows. `--style`, `--up`, `--down`, `--up-body`,
-`--down-body`, `--up-thickness` and `--down-thickness` take what `config bars` takes, `--header` what
+`--down-body`, `--up-thickness`, `--down-thickness`, `--line-low` and `--line-high` take what `config bars` takes, `--header` what
 `config set chart_header` takes, and `--grid` and `--price-line` `on` or
 `off`. Colours are kept as the names
 given, so a chart's own look follows a change of theme as every chart's
@@ -1183,21 +1176,23 @@ Bars is the same answers.
 
 ```
 $ omacharts config bars
-up green filled, down rose filled
+candles, up green filled 2px, down rose filled 2px, line blue to violet
   [exit 0]
 
 $ omacharts config bars red-up --up-body hollow
-bars are now candles, up rose hollow 2px, down green filled 2px
+bars are now candles, up rose hollow 2px, down green filled 2px, line blue to violet
   [exit 0]
 
 $ omacharts config bars --style ohlc
-bars are now ohlc, up rose hollow 2px, down green filled 2px
+bars are now ohlc, up rose hollow 2px, down green filled 2px, line blue to violet
   [exit 0]
 ```
 
 `--style` is `candles`, `ohlc` or `line`. A line runs through the closes and
 nothing else, which is what a series that only has a close — a yield, a
-spread — reads best as.
+spread — reads best as. A line is shaded from `--line-low` at the lowest
+close on screen to `--line-high` at the highest, colours given as a
+direction's are: the theme's blue and violet until set.
 
 Each direction has a colour (`--up`, `--down`: a theme colour by name —
 green, rose, blue, amber, violet, teal, orange, cyan — `foreground` for
@@ -1212,7 +1207,7 @@ the other way round, red for a rise, the way charts are read in Taiwan,
 mainland China, Japan and Korea) or `monochrome`. A flag changes only its own
 answer, and wins over `STATE`. Stored as `bar_up`, `bar_down`,
 `bar_up_hollow`, `bar_down_hollow`, `bar_up_border`, `bar_down_border`,
-`bar_up_thickness` and `bar_down_thickness`.
+`bar_up_thickness`, `bar_down_thickness`, `bar_line_low` and `bar_line_high`.
 
 Volume bars are always solid, in the candles' colours, drawn at
 `--opacity`, 0.2 to 1 and 0.85 unless set. The look is every chart's, except on a chart with a look of

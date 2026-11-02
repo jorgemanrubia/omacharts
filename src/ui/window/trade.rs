@@ -2487,7 +2487,7 @@ pub(super) mod tests {
             let mut header = crate::header::load(&store);
             header.remove(Part::Settings);
             crate::header::save(&store, &header);
-            window.adopt_header();
+            window.adopt_look();
             assert!(settings(&window));
         });
     }

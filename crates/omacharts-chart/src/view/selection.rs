@@ -1166,15 +1166,14 @@ mod tests {
         // A delta is seen, and outlined when selected, in both its colours.
         let delta = super::super::profile_inks(Method::Delta, None, drawn, &state);
         let shown: Vec<&str> = delta.iter().map(|ink| ink.shown(profile::Style::Filled)).collect();
-        let (up, down) = &state.delta_ink;
-        assert_eq!(shown, vec![up.as_str(), down.as_str()]);
+        assert_eq!(shown, vec![state.scheme.up.as_str(), state.scheme.down.as_str()]);
         let outlined = super::super::profile_inks(Method::Delta, Some(&amber), drawn, &state);
         assert!(outlined.iter().all(|ink| ink.shown(profile::Style::Outline) == "#ffaa00"));
     }
 
-    /// Bought rows are drawn in the colour bars rise in and sold rows in the
-    /// colour they fall in, of the look chosen in Preferences, whatever this
-    /// chart's candles wear, and as that look changes.
+    /// Bought rows are drawn in the colour this chart's bars rise in and
+    /// sold rows in the colour they fall in, as its volume is, whatever
+    /// look every other chart wears.
     #[test]
     fn a_delta_profile_is_drawn_in_the_colours_bars_rise_and_fall_in() {
         use omacharts_engine::BarLook;
@@ -1188,23 +1187,12 @@ mod tests {
                 .map(|ink| (ink.side, ink.fill))
                 .collect()
         };
-        let worn = |state: &State, house: &BarLook| {
-            let scheme = house.scheme(&state.theme);
-            vec![(Side::Up, scheme.up), (Side::Down, scheme.down)]
-        };
-        assert_ne!(state.scheme.up, state.scheme.down);
-        assert_eq!(fills(&state), worn(&state, &BarLook::default()), "the house look to begin with");
-
-        // The chart's own candles are not what it follows.
-        state.scheme = BarLook::monochrome().scheme(&state.theme);
-        assert_eq!(fills(&state), worn(&state, &BarLook::default()), "not the chart's");
-
         for theme in omacharts_engine::theme::builtin_themes() {
-            state.theme = theme;
-            for house in [BarLook::default(), BarLook::red_up(), BarLook::monochrome()] {
-                state.house = house.clone();
-                state.delta_ink = super::super::delta_ink(&state.theme, &state.house);
-                assert_eq!(fills(&state), worn(&state, &house), "{house:?}");
+            for look in [BarLook::default(), BarLook::red_up(), BarLook::monochrome()] {
+                state.scheme = look.scheme(&theme);
+                state.theme = theme.clone();
+                let volume = super::super::volume_colours(&drawn.indicator, &state.theme, &state.scheme);
+                assert_eq!(fills(&state), vec![(Side::Up, volume.0), (Side::Down, volume.1)], "{look:?}");
             }
         }
     }

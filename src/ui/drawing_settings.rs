@@ -2730,32 +2730,18 @@ fn sample_factory(
     style: Rc<RefCell<Style>>,
     paint: impl Fn(&gtk::cairo::Context, &Style, usize, f64, f64) + Clone + 'static,
 ) -> (gtk::SignalListItemFactory, Samples) {
-    let factory = gtk::SignalListItemFactory::new();
     let samples: Samples = Rc::new(RefCell::new(Vec::new()));
-    factory.connect_setup(move |_, item| {
-        let Some(item) = item.downcast_ref::<gtk::ListItem>() else { return };
-        let sample = gtk::DrawingArea::new();
-        sample.set_size_request(84, 20);
-        sample.set_valign(gtk::Align::Center);
-        item.set_child(Some(&sample));
-    });
-    {
-        let samples = samples.clone();
-        factory.connect_bind(move |_, item| {
-            let Some(item) = item.downcast_ref::<gtk::ListItem>() else { return };
-            let Some(sample) = item.child().and_downcast::<gtk::DrawingArea>() else { return };
-            let position = item.position() as usize;
-            let theme = theme.clone();
-            let style = style.clone();
-            let paint = paint.clone();
-            sample.set_draw_func(move |_, cr, w, h| {
-                let style = style.borrow();
-                colors::set_source(cr, &style.colour.hex(&theme));
-                paint(cr, &style, position, w as f64, h as f64);
-            });
-            samples.borrow_mut().push(sample.downgrade());
-        });
-    }
+    let collected = samples.clone();
+    let factory = controls::picture_factory(
+        (84, 20),
+        controls::Pictured::Alone,
+        move |cr, position, w, h| {
+            let style = style.borrow();
+            colors::set_source(cr, &style.colour.hex(&theme));
+            paint(cr, &style, position, w, h);
+        },
+        move |sample| collected.borrow_mut().push(sample.downgrade()),
+    );
     (factory, samples)
 }
 

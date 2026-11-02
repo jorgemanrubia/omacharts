@@ -22,6 +22,7 @@ use crate::cache;
 use crate::store::Store;
 use crate::theming::Theming;
 use crate::ui::form_window;
+use crate::ui::scope_rule::Scope;
 use crate::ui::window::Window;
 
 pub struct Preferences;
@@ -36,8 +37,8 @@ pub const OVERLAYS: &str = "overlays";
 pub(crate) const ROOT: &str = "root";
 
 /// A section that is every chart's look, which a chart's settings show too:
-/// its id, title, icon, and the window's way to build its page.
-type Visual = (&'static str, &'static str, &'static str, fn(&Rc<Window>) -> adw::PreferencesPage);
+/// its id, title, icon, and the window's way to build its page for a scope.
+type Visual = (&'static str, &'static str, &'static str, fn(&Rc<Scope>) -> adw::PreferencesPage);
 
 const VISUAL: [Visual; 2] = [
     ("appearance", "Appearance", "preferences-desktop-appearance-symbolic", Window::appearance_page),
@@ -77,14 +78,13 @@ struct Context {
     /// The window, for the chart templates: they are shown on its charts,
     /// and only it knows which of its charts are using one.
     window: Rc<Window>,
+    /// Which charts the visual sections and Charts change: this window's
+    /// own, so a chart's settings picking Local leaves it as it is.
+    scope: Rc<Scope>,
     /// The list on the Templates page, rebuilt whenever one changes.
     templates_group: RefCell<Option<adw::PreferencesGroup>>,
-    /// Whether the Charts page changes the focused chart rather than every
-    /// chart: the rule over the sidebar, picked Local.
-    charts_local: std::cell::Cell<bool>,
-    /// Reads the Charts page's rows again: after the scope or the focused
-    /// chart changes, and after a template is made, renamed or deleted on the
-    /// Templates page.
+    /// Reads the Charts page's rows again, after a template is made,
+    /// renamed or deleted on the Templates page.
     show_chart_settings: RefCell<Option<Rc<dyn Fn()>>>,
 }
 
@@ -144,8 +144,10 @@ impl Preferences {
         if crate::features::trading() {
             app.push((TRADING, "Trading", "view-list-bullet-symbolic", section_view(&trading_page, "Trading")));
         }
-        let symbol = window.focused_pane().instrument.borrow().as_ref().map(|i| i.display_symbol());
-        let (mut visual, visual_pages) = visual_sections(&window);
+        // Global to begin with, whatever the arrangement: Preferences is
+        // the app's, and opening it to change one chart is the exception.
+        let (scope, rule) = Scope::new(&window, false);
+        let mut visual = visual_sections(&scope);
         visual.push(("charts", "Charts", "utilities-system-monitor-symbolic", section_view(&charts_page, "Charts")));
         // Opened from a chart at the section it asked for, else where it was
         // left. The header is the first thing on Overlays, so opening there
@@ -168,26 +170,11 @@ impl Preferences {
             data_page,
             trading_page,
             window,
+            scope,
             templates_group: RefCell::new(None),
-            charts_local: std::cell::Cell::new(false),
             show_chart_settings: RefCell::new(None),
         });
         build_general_page(&context);
-        let rule = {
-            let (context, window) = (context.clone(), context.window.clone());
-            crate::ui::scope_rule::rule(
-                &window,
-                symbol,
-                visual_pages,
-                move |local| {
-                    context.charts_local.set(local);
-                    let show = context.show_chart_settings.borrow().clone();
-                    if let Some(show) = show {
-                        show();
-                    }
-                },
-            )
-        };
 
         // A form window, but not one `form_window` keeps: Preferences
         // remembers its own.
@@ -227,15 +214,9 @@ pub(crate) fn section_view(page: &impl IsA<gtk::Widget>, title: &str) -> adw::Na
 }
 
 /// Appearance and Overlays, for Preferences and for a chart's settings,
-/// and their pages.
-pub(crate) fn visual_sections(window: &Rc<Window>) -> (Vec<Section>, Vec<gtk::Widget>) {
-    VISUAL
-        .iter()
-        .map(|(id, title, icon, page)| {
-            let page = page(window);
-            ((*id, *title, *icon, section_view(&page, title)), page.upcast())
-        })
-        .unzip()
+/// changing the charts `scope` says.
+pub(crate) fn visual_sections(scope: &Rc<Scope>) -> Vec<Section> {
+    VISUAL.iter().map(|(id, title, icon, page)| (*id, *title, *icon, section_view(&page(scope), title))).collect()
 }
 
 /// A settings window's sections down a sidebar, in two lists read as one,
@@ -363,22 +344,6 @@ fn sidebar_row(id: &str, title: &str, icon: &str) -> gtk::ListBoxRow {
     gtk::ListBoxRow::builder().child(&row).name(id).build()
 }
 
-/// A rule across the sidebar with a word on it, over the sections that go
-/// under it.
-pub(crate) fn sidebar_rule(text: &str) -> gtk::Box {
-    let rule = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    rule.set_margin_top(14);
-    rule.set_margin_bottom(4);
-    rule.set_margin_start(12);
-    rule.set_margin_end(12);
-    rule.append(&rule_word(text));
-    let line = gtk::Separator::new(gtk::Orientation::Horizontal);
-    line.set_hexpand(true);
-    line.set_valign(gtk::Align::Center);
-    rule.append(&line);
-    rule
-}
-
 /// A word in a sidebar rule's look: small, spaced capitals, faded.
 pub(crate) fn rule_word(text: &str) -> gtk::Label {
     let label = gtk::Label::new(Some(text));
@@ -455,9 +420,8 @@ fn zoom_row(context: &Rc<Context>) -> adw::ActionRow {
 /// as its own settings would. Either way the rows show what they change, read
 /// again after every change, so a template change declined shows the old one.
 fn build_charts_page(context: &Rc<Context>) {
-    let local = Rc::downgrade(context);
-    let every = move || local.upgrade().is_none_or(|context| !context.charts_local.get());
-    let rows = crate::ui::chart_settings::ChartRows::new(&context.window, every, || {});
+    let scope = context.scope.clone();
+    let rows = crate::ui::chart_settings::ChartRows::new(&context.window, move || !scope.local(), || {});
     // Grouped as a chart's own settings are, so a row is found in the same
     // place in both.
     let group = |title: &str, rows: &[&adw::PreferencesRow]| {
@@ -478,6 +442,16 @@ fn build_charts_page(context: &Rc<Context>) {
     }
     group("Indicators", &[rows.template.upcast_ref(), rows.legend.upcast_ref()]);
     group("Drawings", &[rows.shows.upcast_ref(), rows.sends.upcast_ref()]);
+    // What `every()` names moves with the scope, and under Local with the
+    // focus, and the window tells its watchers of both.
+    let (show, shown) = (rows.show.clone(), rows.log.downgrade());
+    context.window.watch_chart(move || {
+        if shown.upgrade().is_none_or(|row| row.root().is_none()) {
+            return false;
+        }
+        show();
+        true
+    });
     *context.show_chart_settings.borrow_mut() = Some(rows.show);
 }
 

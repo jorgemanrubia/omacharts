@@ -7,39 +7,30 @@
 //! beside a chart's own settings.
 
 use std::cell::{Cell, RefCell};
-use std::rc::{Rc, Weak};
+use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::glib;
-use omacharts_engine::{Direction, Theme};
+use omacharts_engine::Direction;
 
 use crate::chart_look::{ChartLook, LookEdit};
 use crate::header::{Layout, Part, Zone};
 use crate::store::Store;
+use crate::ui::scope_rule::{Scope, Worn};
 use crate::ui::window::{Window, SETTING_SYNC_CROSSHAIR};
-use crate::ui::{colors, drop_line, scope_rule};
-
-/// A Lines switch on screen, and how it reads whether its line is drawn.
-type Switch = (glib::WeakRef<adw::SwitchRow>, Rc<dyn Fn() -> bool>);
-
-thread_local! {
-    /// Every Lines switch on screen, so a key or a command that changes a
-    /// setting moves its switch with it.
-    static SWITCHES: RefCell<Vec<Switch>> = const { RefCell::new(Vec::new()) };
-    /// Every header card on screen, so a command, a theme change or a
-    /// change of scope reaches it. More than one: Preferences and a chart's
-    /// settings can both be open.
-    static CARDS: RefCell<Vec<Weak<HeaderCard>>> = const { RefCell::new(Vec::new()) };
-}
+use crate::ui::{appearance, colors, drop_line};
 
 /// The Overlays page. The header and the lines are the look, changed where
-/// the rule says; `on_crosshair` puts the crosshair switch, which is every
-/// chart's, on the charts once it is stored.
-pub fn page(window: Rc<Window>, store: Rc<Store>, on_crosshair: Rc<dyn Fn()>) -> adw::PreferencesPage {
+/// `scope`'s rule says. Each card and switch follows the look through
+/// [`Window::watch_chart`], so a key, a command, the desktop's theme or the
+/// rule moving it reaches every page open.
+pub fn page(scope: Rc<Scope>, store: Rc<Store>) -> adw::PreferencesPage {
     let page = adw::PreferencesPage::new();
     let header = adw::PreferencesGroup::new();
     header.set_title("Header");
-    let card = HeaderCard::new(window.clone(), store.clone());
+    // The button's handler is what keeps the card: the card's own parts
+    // hold it weakly, so it goes with the page.
+    let card = HeaderCard::new(scope.clone(), store.clone());
     let restore = gtk::Button::with_label("Restore defaults");
     restore.add_css_class("flat");
     let restoring = card.clone();
@@ -47,24 +38,8 @@ pub fn page(window: Rc<Window>, store: Rc<Store>, on_crosshair: Rc<dyn Fn()>) ->
     header.set_header_suffix(Some(&restore));
     header.add(&card.card);
     page.add(&header);
-    page.add(&lines_group(window, store, on_crosshair));
+    page.add(&lines_group(scope, store));
     page
-}
-
-/// The header, the look of the charts or the scope changed — a command, the
-/// Appearance page, the desktop's theme, the rule over the sidebar, the
-/// focused chart — so every header card on screen shows the header in scope
-/// now, in the colours the charts use now.
-pub fn header_changed() {
-    let live: Vec<Rc<HeaderCard>> = CARDS.with(|cards| {
-        let mut cards = cards.borrow_mut();
-        cards.retain(|card| card.upgrade().is_some());
-        cards.iter().filter_map(Weak::upgrade).collect()
-    });
-    for card in live {
-        *card.layout.borrow_mut() = scope_rule::look(&card.window).header;
-        card.rebuild();
-    }
 }
 
 /// The header as a picture of it: its two rows of left, centre and right
@@ -84,10 +59,15 @@ pub fn header_changed() {
 /// a login, like every trading setting: they draw nothing on a chart until
 /// there is an account to trade on. Switched off, they are neither shown nor
 /// offered, and stay where they were.
+///
+/// Its parts' handlers hold it weakly, since it holds the parts.
 struct HeaderCard {
-    window: Rc<Window>,
+    scope: Rc<Scope>,
     store: Rc<Store>,
-    layout: RefCell<Layout>,
+    /// The look in scope, its header the one the card shows.
+    worn: RefCell<Worn>,
+    /// Whether trading was on, which decides the parts on offer.
+    trading: Cell<bool>,
     card: gtk::Box,
     chart: gtk::DrawingArea,
     /// The six places, in the order of [`Zone::ALL`].
@@ -101,7 +81,7 @@ struct HeaderCard {
 }
 
 impl HeaderCard {
-    fn new(window: Rc<Window>, store: Rc<Store>) -> Rc<HeaderCard> {
+    fn new(scope: Rc<Scope>, store: Rc<Store>) -> Rc<HeaderCard> {
         let card = gtk::Box::new(gtk::Orientation::Vertical, 0);
         card.add_css_class("header-card");
         card.set_overflow(gtk::Overflow::Hidden);
@@ -160,8 +140,9 @@ impl HeaderCard {
         card.append(&spare_row);
 
         let this = Rc::new(HeaderCard {
-            layout: RefCell::new(scope_rule::look(&window).header),
-            window,
+            worn: RefCell::new(scope.worn()),
+            trading: Cell::new(crate::features::trading()),
+            scope,
             store,
             card,
             chart,
@@ -171,31 +152,61 @@ impl HeaderCard {
             spare_row,
             all_shown,
         });
-        let window = this.window.clone();
+        let drawn = Rc::downgrade(&this);
         this.chart.set_draw_func(move |_, cr, width, height| {
-            let look = scope_rule::look(&window);
+            let Some(card) = drawn.upgrade() else { return };
+            let worn = card.worn.borrow();
             // The candles start just under the rows the header has.
             let top = f64::from(fitted.margin_top() + fitted.height()) + 14.0;
-            draw_chart(cr, f64::from(width), f64::from(height), top, &look, &window.theme_of(&look));
+            draw_chart(cr, f64::from(width), f64::from(height), top, &worn);
         });
         for (zone, place) in Zone::ALL.into_iter().zip(&this.zones) {
             this.take_drops_in(zone, place);
         }
         this.take_drops_back();
         this.rebuild();
-        CARDS.with(|cards| cards.borrow_mut().push(Rc::downgrade(&this)));
+        // Until it is off the window: a chart's settings build theirs anew
+        // as the focus moves.
+        let followed = Rc::downgrade(&this);
+        this.scope.window().watch_chart(move || {
+            let Some(card) = followed.upgrade().filter(|card| card.card.root().is_some()) else { return false };
+            card.follow();
+            true
+        });
         this
     }
 
-    fn set(self: &Rc<Self>, layout: Layout) {
-        scope_rule::change(&self.window, LookEdit::Header(layout));
-        *self.layout.borrow_mut() = scope_rule::look(&self.window).header;
-        self.rebuild();
+    /// The header the card shows.
+    fn layout(&self) -> Layout {
+        self.worn.borrow().look.header.clone()
     }
 
-    // The parts hold the card they rebuild, and the card holds the parts:
-    // GTK lets go of a part's handlers when the window is disposed, which is
-    // what ends that.
+    fn set(self: &Rc<Self>, layout: Layout) {
+        self.scope.change(LookEdit::Header(layout));
+        self.follow();
+    }
+
+    /// Show the look in scope as it is now: the parts placed again when
+    /// the header, the bars' colours they are written in or trading
+    /// changed, and the picture behind them redrawn when anything did.
+    fn follow(self: &Rc<Self>) {
+        let now = self.scope.worn();
+        let trading = crate::features::trading();
+        let replace = {
+            let was = self.worn.borrow();
+            if *was == now && self.trading.get() == trading {
+                return;
+            }
+            was.look.header != now.look.header || was.scheme != now.scheme || self.trading.get() != trading
+        };
+        *self.worn.borrow_mut() = now;
+        self.trading.set(trading);
+        match replace {
+            true => self.rebuild(),
+            false => self.chart.queue_draw(),
+        }
+    }
+
     fn rebuild(self: &Rc<Self>) {
         self.card.remove_css_class("dragging");
         for place in &self.zones {
@@ -207,9 +218,8 @@ impl HeaderCard {
         while let Some(child) = self.spare.first_child() {
             self.spare.remove(&child);
         }
-        // The colours are read here, so a new theme needs only this.
         self.chart.queue_draw();
-        let layout = self.layout.borrow().clone();
+        let layout = self.layout();
         for (zone, place) in Zone::ALL.into_iter().zip(&self.zones) {
             for part in layout.shown(zone) {
                 place.append(&self.placed(part));
@@ -236,10 +246,11 @@ impl HeaderCard {
         chip.append(&self.sample(part));
         let click = gtk::GestureClick::new();
         click.set_button(0);
-        let this = self.clone();
+        let this = Rc::downgrade(self);
         click.connect_released(move |click, presses, _, _| {
+            let Some(this) = this.upgrade() else { return };
             if click.current_button() == gtk::gdk::BUTTON_SECONDARY || presses == 2 {
-                let mut layout = this.layout.borrow().clone();
+                let mut layout = this.layout();
                 layout.remove(part);
                 this.set(layout);
             }
@@ -267,9 +278,10 @@ impl HeaderCard {
         name.add_css_class("spare-name");
         card.append(&name);
         let click = gtk::GestureClick::new();
-        let this = self.clone();
+        let this = Rc::downgrade(self);
         click.connect_released(move |_, _, _, _| {
-            let mut layout = this.layout.borrow().clone();
+            let Some(this) = this.upgrade() else { return };
+            let mut layout = this.layout();
             layout.add(part);
             this.set(layout);
         });
@@ -354,7 +366,7 @@ impl HeaderCard {
                 // The last few, round the day: the card is narrower than a
                 // chart, and a strip as wide as a chart's pushed the right
                 // of the picture off its edge.
-                let listed = self.window.timeframes();
+                let listed = self.scope.window().timeframes();
                 for timeframe in listed.iter().skip(listed.len().saturating_sub(4)).copied() {
                     let button = crate::ui::pane::strip_button(timeframe);
                     button.set_active(timeframe == SAMPLE_TIMEFRAME);
@@ -379,9 +391,7 @@ impl HeaderCard {
     /// `words` as markup in the colour a bar going `direction` is painted
     /// in, as on a chart.
     fn painted(&self, words: &str, direction: Direction) -> String {
-        let theme = self.window.theme();
-        let scheme = scope_rule::look(&self.window).bars.scheme(&theme);
-        crate::header::change_markup(words, Some(scheme.outline(direction)))
+        crate::header::change_markup(words, Some(self.worn.borrow().scheme.outline(direction)))
     }
 
     /// Make `widget` the handle that drags `part`.
@@ -390,8 +400,9 @@ impl HeaderCard {
         source.set_actions(gtk::gdk::DragAction::MOVE);
         let payload = part.key().to_string();
         source.connect_prepare(move |_, _, _| Some(gtk::gdk::ContentProvider::for_value(&payload.to_value())));
-        let (lifted, this) = (widget.clone(), self.clone());
+        let this = Rc::downgrade(self);
         source.connect_drag_begin(move |source, _| {
+            let (Some(lifted), Some(this)) = (source.widget(), this.upgrade()) else { return };
             let ghost = gtk::WidgetPaintable::new(Some(&lifted));
             source.set_icon(Some(&ghost), lifted.width() / 2, lifted.height() / 2);
             lifted.add_css_class("lifted");
@@ -399,8 +410,12 @@ impl HeaderCard {
         });
         // Whether it landed or not: a drop has already rebuilt the card, and
         // one that missed leaves the places to put away.
-        let this = self.clone();
-        source.connect_drag_end(move |_, _, _| this.rebuild());
+        let this = Rc::downgrade(self);
+        source.connect_drag_end(move |_, _, _| {
+            if let Some(this) = this.upgrade() {
+                this.rebuild();
+            }
+        });
         widget.add_controller(source);
     }
 
@@ -409,7 +424,7 @@ impl HeaderCard {
     /// would. One that would not stays shut, unnamed and narrow.
     fn show_places(&self, part: Part) {
         self.card.add_css_class("dragging");
-        let layout = self.layout.borrow();
+        let layout = self.layout();
         self.second.set_visible(layout.second_row() || Zone::ALL[3..].iter().any(|zone| layout.takes(*zone, part)));
         for (zone, place) in Zone::ALL.into_iter().zip(&self.zones) {
             if !layout.takes(zone, part) {
@@ -430,10 +445,13 @@ impl HeaderCard {
     fn take_drops_in(self: &Rc<Self>, zone: Zone, place: &gtk::Box) {
         let target = gtk::DropTarget::new(glib::Type::STRING, gtk::gdk::DragAction::MOVE);
         target.set_preload(true);
-        let (this, over) = (self.clone(), place.clone());
+        let this = Rc::downgrade(self);
         target.connect_motion(move |target, x, _| {
+            let (Some(this), Some(over)) = (this.upgrade(), target.widget().and_downcast::<gtk::Box>()) else {
+                return gtk::gdk::DragAction::empty();
+            };
             let part = target.value().as_ref().and_then(dragged);
-            match part.filter(|part| this.layout.borrow().takes(zone, *part)) {
+            match part.filter(|part| this.layout().takes(zone, *part)) {
                 Some(part) => {
                     over.add_css_class("drop-over");
                     mark_landing(&over, part, x);
@@ -442,15 +460,17 @@ impl HeaderCard {
                 None => gtk::gdk::DragAction::empty(),
             }
         });
-        let over = place.clone();
-        target.connect_leave(move |_| {
-            over.remove_css_class("drop-over");
-            unmark(&over);
+        target.connect_leave(|target| {
+            if let Some(over) = target.widget().and_downcast::<gtk::Box>() {
+                over.remove_css_class("drop-over");
+                unmark(&over);
+            }
         });
-        let (this, over) = (self.clone(), place.clone());
-        target.connect_drop(move |_, value, x, _| {
-            let Some(part) = dragged(value).filter(|part| this.layout.borrow().takes(zone, *part)) else { return false };
-            let mut layout = this.layout.borrow().clone();
+        let this = Rc::downgrade(self);
+        target.connect_drop(move |target, value, x, _| {
+            let (Some(this), Some(over)) = (this.upgrade(), target.widget().and_downcast::<gtk::Box>()) else { return false };
+            let Some(part) = dragged(value).filter(|part| this.layout().takes(zone, *part)) else { return false };
+            let mut layout = this.layout();
             let at = among_all(&layout, zone, part, landing(&over, part, x).0);
             layout.place(part, zone, at);
             this.set(layout);
@@ -464,22 +484,27 @@ impl HeaderCard {
     fn take_drops_back(self: &Rc<Self>) {
         let target = gtk::DropTarget::new(glib::Type::STRING, gtk::gdk::DragAction::MOVE);
         target.set_preload(true);
-        let (this, over) = (self.clone(), self.spare_row.clone());
+        let this = Rc::downgrade(self);
         target.connect_motion(move |target, _, _| {
-            match target.value().as_ref().and_then(dragged).filter(|part| this.layout.borrow().contains(*part)) {
+            let Some(this) = this.upgrade() else { return gtk::gdk::DragAction::empty() };
+            match target.value().as_ref().and_then(dragged).filter(|part| this.layout().contains(*part)) {
                 Some(_) => {
-                    over.add_css_class("drop-over");
+                    this.spare_row.add_css_class("drop-over");
                     gtk::gdk::DragAction::MOVE
                 }
                 None => gtk::gdk::DragAction::empty(),
             }
         });
-        let over = self.spare_row.clone();
-        target.connect_leave(move |_| over.remove_css_class("drop-over"));
-        let this = self.clone();
+        target.connect_leave(|target| {
+            if let Some(over) = target.widget() {
+                over.remove_css_class("drop-over");
+            }
+        });
+        let this = Rc::downgrade(self);
         target.connect_drop(move |_, value, _, _| {
-            let Some(part) = dragged(value).filter(|part| this.layout.borrow().contains(*part)) else { return false };
-            let mut layout = this.layout.borrow().clone();
+            let Some(this) = this.upgrade() else { return false };
+            let Some(part) = dragged(value).filter(|part| this.layout().contains(*part)) else { return false };
+            let mut layout = this.layout();
             layout.remove(part);
             this.set(layout);
             true
@@ -597,7 +622,8 @@ const OIL: [(f64, f64, f64, f64); 21] = [
 /// gridlines and the last price line when those are on, and [`OIL`]'s
 /// candles in the charts' own colours and bodies, from `top`, under the
 /// header so the parts read clear of them.
-fn draw_chart(cr: &gtk::cairo::Context, width: f64, height: f64, top: f64, look: &ChartLook, theme: &Theme) {
+fn draw_chart(cr: &gtk::cairo::Context, width: f64, height: f64, top: f64, worn: &Worn) {
+    let Worn { look, theme, scheme } = worn;
     if look.grid {
         cr.set_line_width(1.0);
         colors::set_source(cr, &theme.ui.grid);
@@ -634,74 +660,28 @@ fn draw_chart(cr: &gtk::cairo::Context, width: f64, height: f64, top: f64, look:
         false => middle + (before - price) / (before - lo) * (bottom - middle),
     };
 
-    let scheme = look.bars.scheme(theme);
     cr.set_line_width(1.0);
     for (i, (open, high, low, close)) in OIL.iter().enumerate() {
         let x = (width - right - half - step * (OIL.len() - 1 - i) as f64).round();
         let direction = if close >= open { Direction::Up } else { Direction::Down };
-        colors::set_source(cr, scheme.edge(direction));
-        cr.move_to(x + 0.5, y(*high).round());
-        cr.line_to(x + 0.5, y(*low).round());
-        let _ = cr.stroke();
         let (body_top, body_bottom) = (y(open.max(*close)).round(), y(open.min(*close)).round());
-        let body_h = (body_bottom - body_top).max(1.0);
-        let fill = scheme.body(direction);
-        // Filled on whole pixels, the edge on half ones so it stays crisp;
-        // a hollow body is its edge alone.
-        if colors::rgba(fill).3 > 0.0 {
-            cr.rectangle(x - half, body_top, 2.0 * half + 1.0, body_h);
-            colors::set_source(cr, fill);
-            let _ = cr.fill();
-        }
-        if body_h > 2.0 {
-            cr.rectangle(x - half + 0.5, body_top + 0.5, 2.0 * half, body_h - 1.0);
-            colors::set_source(cr, scheme.edge(direction));
-            let _ = cr.stroke();
-        }
+        let body = (x - half, body_top, 2.0 * half + 1.0, (body_bottom - body_top).max(1.0));
+        let wick = (x + 0.5, y(*high).round(), y(*low).round());
+        appearance::candle(cr, scheme.edge(direction), scheme.body(direction), wick, body);
     }
 
     if look.price_line
         && let Some((open, .., close)) = OIL.last()
     {
-        let direction = if close >= open { Direction::Up } else { Direction::Down };
         cr.save().ok();
         cr.set_dash(&[3.0, 3.0], 0.0);
-        colors::set_source_alpha(cr, scheme.outline(direction), 0.7);
+        colors::set_source_alpha(cr, scheme.last_price(close >= open), 0.7);
         let at = y(*close).round() + 0.5;
         cr.move_to(0.0, at);
         cr.line_to(width, at);
         let _ = cr.stroke();
         cr.restore().ok();
     }
-}
-
-/// Every header card's picture again, after a line was switched: the
-/// picture draws the lines as the charts do.
-fn repaint_cards() {
-    CARDS.with(|cards| {
-        for card in cards.borrow().iter().filter_map(Weak::upgrade) {
-            card.chart.queue_draw();
-        }
-    });
-}
-
-/// A line changed from somewhere else — the key, the chart menu, a
-/// command — so every switch on screen reads what is stored now.
-pub fn charts_changed() {
-    let live: Vec<(adw::SwitchRow, Rc<dyn Fn() -> bool>)> = SWITCHES.with(|switches| {
-        let mut switches = switches.borrow_mut();
-        switches.retain(|(row, _)| row.upgrade().is_some());
-        switches.iter().filter_map(|(row, read)| Some((row.upgrade()?, read.clone()))).collect()
-    });
-    for (row, read) in live {
-        let on = read();
-        // Only when it differs: setting it runs the handler, which stores it
-        // and repaints the charts again.
-        if row.is_active() != on {
-            row.set_active(on);
-        }
-    }
-    repaint_cards();
 }
 
 /// A line a look draws or not: its row's title, whether the look draws
@@ -715,44 +695,52 @@ pub(crate) const LINES: [Line; 2] = [
 
 /// The look's lines, switched where the rule says, then the crosshair
 /// across Follow charts, which is every chart's.
-fn lines_group(window: Rc<Window>, store: Rc<Store>, on_crosshair: Rc<dyn Fn()>) -> adw::PreferencesGroup {
+fn lines_group(scope: Rc<Scope>, store: Rc<Store>) -> adw::PreferencesGroup {
+    let window = scope.window().clone();
     let group = adw::PreferencesGroup::new();
     group.set_title("Lines");
     for (title, drawn, edit) in LINES {
-        let looked_at = window.clone();
-        let read: Rc<dyn Fn() -> bool> = Rc::new(move || drawn(&scope_rule::look(&looked_at)));
-        let row = switch_row(&group, title, read.clone());
-        let window = window.clone();
+        let looked_at = scope.clone();
+        let read: Rc<dyn Fn() -> bool> = Rc::new(move || drawn(&looked_at.look()));
+        let row = switch_row(&window, &group, title, read.clone());
+        let scope = scope.clone();
         row.connect_active_notify(move |row| {
             // Moved to what is already there, by a change of scope: not an
             // edit, and under Local one would hand the chart a copy.
             if row.is_active() != read() {
-                scope_rule::change(&window, edit(row.is_active()));
-                repaint_cards();
+                scope.change(edit(row.is_active()));
             }
         });
     }
-    let stored = store.clone();
-    let read: Rc<dyn Fn() -> bool> = Rc::new(move || stored.setting_bool(SETTING_SYNC_CROSSHAIR, true));
-    let row = switch_row(&group, "Crosshair across Follow charts", read.clone());
+    let read: Rc<dyn Fn() -> bool> = Rc::new(move || store.setting_bool(SETTING_SYNC_CROSSHAIR, true));
+    let row = switch_row(&window, &group, "Crosshair across Follow charts", read.clone());
     // Between charts by nature, so never one chart's own.
-    row.set_widget_name(scope_rule::GLOBAL_ONLY);
+    scope.global_only(&row);
     row.connect_active_notify(move |row| {
         if row.is_active() != read() {
-            store.set_setting_bool(SETTING_SYNC_CROSSHAIR, row.is_active());
-            on_crosshair();
+            window.set_crosshair_sync(row.is_active());
         }
     });
     group
 }
 
-/// A switch in `group` showing what `read` says, kept to it by
-/// [`charts_changed`].
-fn switch_row(group: &adw::PreferencesGroup, title: &str, read: Rc<dyn Fn() -> bool>) -> adw::SwitchRow {
+/// A switch in `group` showing what `read` says, and moved with it while
+/// it is on screen, whatever changed it: a key, the chart menu, a command.
+fn switch_row(window: &Window, group: &adw::PreferencesGroup, title: &str, read: Rc<dyn Fn() -> bool>) -> adw::SwitchRow {
     let row = adw::SwitchRow::new();
     row.set_title(title);
     row.set_active(read());
     group.add(&row);
-    SWITCHES.with(|switches| switches.borrow_mut().push((row.downgrade(), read)));
+    let shown = row.downgrade();
+    window.watch_chart(move || {
+        let Some(row) = shown.upgrade().filter(|row| row.root().is_some()) else { return false };
+        let on = read();
+        // Only when it differs: setting it runs the handler, which stores it
+        // and repaints the charts again.
+        if row.is_active() != on {
+            row.set_active(on);
+        }
+        true
+    });
     row
 }

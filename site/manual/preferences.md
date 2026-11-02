@@ -99,17 +99,18 @@ The list of chart templates, the same for every chart on one. **+** makes one, a
 
 ### Appearance
 
-Under **GLOBAL**, everything on this page is every chart's, in every chartbook, and changes them all as you change it. Under **LOCAL**, the theme, the bars and OHLC thickness are the focused chart's: the first change gives it a look of its own. [Chart settings](/manual/chart-settings/) shows the same page, under **GLOBAL**.
+Under **GLOBAL**, everything on this page is every chart's, in every chartbook, and changes them all as you change it. Under **LOCAL**, the theme, the bars and OHLC thickness are the focused chart's: the first change gives it a look of its own. [Chart settings](/manual/chart-settings/) shows the same page, under a rule of its own.
 
 | Group › row | Does | Chapter |
 |---|---|---|
 | Theme › **Follow system**, **Catalogue** | The theme: the desktop's, or one picked from every Omarchy theme. | [Choosing a theme](/manual/themes/#choosing-a-theme) |
 | Bars › **Candles**, **OHLC bars**, **Line** | The style, as tabs at the group's head. | [Style](/manual/charts/#style) |
 | Bars › **Up**, **Down** | Each direction's colour, and its body for candles (filled, bordered or hollow) or its thickness for OHLC bars: 1, 1.5, 2 or 3 pixels. Not shown for a line. | [Bars](/manual/themes/#bars) |
+| Bars › **High**, **Low** | A line's colour at its highest close on screen and at its lowest. Shown only for a line. | [Bars](/manual/themes/#bars) |
 
 ### Overlays
 
-Like Appearance: every chart's under **GLOBAL**, the focused chart's under **LOCAL**. **Crosshair across Follow charts** is between charts by nature, so it is greyed under LOCAL. [Chart settings](/manual/chart-settings/) shows the same page, under **GLOBAL**.
+Like Appearance: every chart's under **GLOBAL**, the focused chart's under **LOCAL**. **Crosshair across Follow charts** is between charts by nature, so it is greyed under LOCAL. [Chart settings](/manual/chart-settings/) shows the same page, under a rule of its own.
 
 | Group › row | Does | Chapter |
 |---|---|---|

@@ -63,6 +63,9 @@ pub enum LookEdit {
     Colour(Direction, ColorChoice),
     Body(Direction, Body),
     Thickness(Direction, Thickness),
+    /// A line's shade at its lowest close on screen, and at its highest.
+    LineLow(ColorChoice),
+    LineHigh(ColorChoice),
     /// A header put over the one there: trading's parts, while it is off,
     /// stay where they were, since nobody could see them to keep them.
     Header(Layout),
@@ -92,6 +95,8 @@ impl ChartLook {
             LookEdit::Colour(direction, colour) => *self.bars.side_mut(direction).colour = colour,
             LookEdit::Body(direction, body) => *self.bars.side_mut(direction).body = body,
             LookEdit::Thickness(direction, px) => *self.bars.side_mut(direction).thickness = px,
+            LookEdit::LineLow(colour) => self.bars.line_low = colour,
+            LookEdit::LineHigh(colour) => self.bars.line_high = colour,
             LookEdit::Header(mut layout) => {
                 layout.keep_hidden(&self.header);
                 self.header = layout;
@@ -102,19 +107,22 @@ impl ChartLook {
     }
 
     /// How the bars are drawn, the way `config bars` and `chart look` say
-    /// it: `candles, up green filled 2px, down rose hollow 2px`, each
-    /// direction's colour, body and OHLC thickness.
+    /// it: `candles, up green filled 2px, down rose hollow 2px, line blue to
+    /// violet`, each direction's colour, body and OHLC thickness, then the
+    /// line's shades.
     pub fn spell_bars(&self) -> String {
         let bars = &self.bars;
         format!(
-            "{}, up {} {} {}px, down {} {} {}px",
+            "{}, up {} {} {}px, down {} {} {}px, line {} to {}",
             self.style.key(),
             spell_bar_colour(&bars.up),
             bars.up_body.key(),
             bars.up_thickness.key(),
             spell_bar_colour(&bars.down),
             bars.down_body.key(),
-            bars.down_thickness.key()
+            bars.down_thickness.key(),
+            spell_bar_colour(&bars.line_low),
+            spell_bar_colour(&bars.line_high)
         )
     }
 
@@ -152,7 +160,11 @@ impl LookEdit {
                 }
                 LookEdit::Grid(on) => store.set_setting_bool(SETTING_SHOW_GRID, on),
                 LookEdit::PriceLine(on) => store.set_setting_bool(SETTING_PRICE_LINE, on),
-                edit @ (LookEdit::Colour(..) | LookEdit::Body(..) | LookEdit::Thickness(..)) => bars
+                edit @ (LookEdit::Colour(..)
+                | LookEdit::Body(..)
+                | LookEdit::Thickness(..)
+                | LookEdit::LineLow(..)
+                | LookEdit::LineHigh(..)) => bars
                     .get_or_insert_with(|| ChartLook { bars: theming::bar_look(store), ..ChartLook::default() })
                     .set(edit),
             }
@@ -160,12 +172,6 @@ impl LookEdit {
         if let Some(look) = bars {
             theming::save_bar_look(store, &look.bars);
         }
-    }
-
-    /// Whether it changes a colour, which the window's own stylesheet and
-    /// the rail wear too, rather than only what the charts draw.
-    pub fn colours(&self) -> bool {
-        matches!(self, LookEdit::Theme(_) | LookEdit::Colour(..) | LookEdit::Body(..))
     }
 }
 
@@ -189,6 +195,10 @@ struct Spelled {
     up_body: Option<String>,
     #[serde(default)]
     down_body: Option<String>,
+    #[serde(default)]
+    line_low: Option<String>,
+    #[serde(default)]
+    line_high: Option<String>,
     /// Its pixels as text; read as a number too, which is how an older
     /// build wrote them.
     #[serde(default)]
@@ -228,6 +238,8 @@ impl From<Spelled> for ChartLook {
                 down: colour(spelled.down, fallback.bars.down),
                 up_body: body(spelled.up_body, fallback.bars.up_body),
                 down_body: body(spelled.down_body, fallback.bars.down_body),
+                line_low: colour(spelled.line_low, fallback.bars.line_low),
+                line_high: colour(spelled.line_high, fallback.bars.line_high),
                 up_thickness: thickness(spelled.up_thickness, fallback.bars.up_thickness),
                 down_thickness: thickness(spelled.down_thickness, fallback.bars.down_thickness),
             },
@@ -247,6 +259,8 @@ impl From<ChartLook> for Spelled {
             down: Some(spell_bar_colour(&look.bars.down)),
             up_body: Some(look.bars.up_body.key().to_string()),
             down_body: Some(look.bars.down_body.key().to_string()),
+            line_low: Some(spell_bar_colour(&look.bars.line_low)),
+            line_high: Some(spell_bar_colour(&look.bars.line_high)),
             up_thickness: Some(look.bars.up_thickness.key().into()),
             down_thickness: Some(look.bars.down_thickness.key().into()),
             header: Some(serde_json::Value::String(header::spell(&look.header))),
@@ -315,6 +329,20 @@ mod tests {
         assert_eq!((&json["up_thickness"], &json["down_thickness"]), (&serde_json::json!("2"), &serde_json::json!("1.5")));
         assert_eq!(json["header"], "left=symbol,change left2=name");
         assert_eq!(serde_json::from_value::<ChartLook>(json).unwrap(), look);
+    }
+
+    /// A line's shades travel with the rest, each in its own row.
+    #[test]
+    fn a_look_carries_the_line_shades() {
+        let mut look = ChartLook::default();
+        look.set(LookEdit::LineLow(ColorChoice::swatch("Amber")));
+        let json = serde_json::to_value(&look).unwrap();
+        assert_eq!((&json["line_low"], &json["line_high"]), (&serde_json::json!("amber"), &serde_json::json!("violet")));
+        assert_eq!(serde_json::from_value::<ChartLook>(json).unwrap(), look);
+        let store = Store::memory().unwrap();
+        LookEdit::save_global([LookEdit::LineHigh(ColorChoice::swatch("Teal"))], &store);
+        assert_eq!(ChartLook::global(&store).bars.line_high, ColorChoice::swatch("Teal"));
+        assert_eq!(ChartLook::global(&store).bars.line_low, BarLook::default().line_low);
     }
 
     /// A newer build's words cost the one answer, not the chart.

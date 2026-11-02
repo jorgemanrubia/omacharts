@@ -277,7 +277,7 @@ codes](#exit-codes).
 | `watchlist` | Watchlists and the symbols in them | [Watchlists and sections](#watchlists-and-sections); `watchlist feed` under [The Omarchy plugin](#watchlist-feed) |
 | `section` | The sections inside a watchlist | [Watchlists and sections](#watchlists-and-sections) |
 | `chartbook` | Chartbooks | [Chartbooks](#chartbooks); `chartbook template` under [Chartbook templates](#chartbook-templates); `chartbook screenshot` under [Screenshots](#screenshots) |
-| `chart` | The charts in a chartbook | [Charts](#charts) (`set`, `range`, `strip`), [Indicators](#indicators), [Drawings](#drawings), [Measuring a move](#measuring-a-move), [Arranging charts](#arranging-charts) (`list`, `split`, `close`, `focus`), [Linking](#linking), [Sharing the crosshair](#sharing-the-crosshair) (`crosshair`), [Screenshots](#screenshots) |
+| `chart` | The charts in a chartbook | [Charts](#charts) (`set`, `range`, `look`), [Indicators](#indicators), [Drawings](#drawings), [Measuring a move](#measuring-a-move), [Arranging charts](#arranging-charts) (`list`, `split`, `close`, `focus`), [Linking](#linking), [Sharing the crosshair](#sharing-the-crosshair) (`crosshair`), [Screenshots](#screenshots) |
 | `template` | Chart templates | [Chart templates](#chart-templates) |
 | `provider` | The data feed, and signing in to one | [Market data](#market-data) |
 | `config` | Stored preferences | [Preferences](#preferences); `config bars`, `config grid` and `config price-line` under [Charts](#config-bars) |
@@ -479,11 +479,11 @@ pos:0 NVDA 1D in Macro follows all charts
   [exit 0]
 
 $ omacharts chart look --style ohlc --grid off
-pos:0 NVDA 1D in Macro now wears its own look: ohlc, up green filled 2px, down rose filled 2px, grid off, price line on, header symbol,resolution, theme window
+pos:0 NVDA 1D in Macro now wears its own look: ohlc, up green filled 2px, down rose filled 2px, line blue to violet, grid off, price line on, header symbol,resolution, theme window
   [exit 0]
 
 $ omacharts chart look --theme catppuccin-latte
-pos:0 NVDA 1D in Macro now wears its own look: ohlc, up green filled 2px, down rose filled 2px, grid off, price line on, header symbol,resolution, theme catppuccin-latte
+pos:0 NVDA 1D in Macro now wears its own look: ohlc, up green filled 2px, down rose filled 2px, line blue to violet, grid off, price line on, header symbol,resolution, theme catppuccin-latte
   [exit 0]
 
 $ omacharts chart look --follow
@@ -502,6 +502,7 @@ omacharts: give --follow or changes to the look, not both
 | `--up COLOUR`, `--down COLOUR` | A theme colour by name, `foreground` for the theme's text colour, `slate`, `sand`, `silver` or `graphite` ([Themes](/manual/themes/)), or `#rrggbb` | One direction's colour |
 | `--up-body BODY`, `--down-body BODY` | `filled`, `bordered`, `hollow` | One direction's body, as in [`config bars`](#config-bars) |
 | `--up-thickness PX`, `--down-thickness PX` | `1`, `1.5`, `2`, `3` | How many pixels wide one direction's OHLC bars are drawn |
+| `--line-low COLOUR`, `--line-high COLOUR` | As `--up` | A line's colour at its lowest close on screen and at its highest |
 | `--header PARTS` | Parts in their places, as [`config header`](#config-header) takes them, or `none` | What the header shows, in order ([The header](/manual/charts/#the-header)) |
 | `--grid on` or `off` | | Draws the grid ([Gridlines](/manual/charts/#gridlines)) |
 | `--price-line on` or `off` | | Draws the dashed line at the last price |
@@ -514,23 +515,23 @@ exits `6`.
 
 ### `config bars`
 
-Sets how bars look on every chart that has no look of its own, as Preferences › Appearance › Bars does: how they are drawn, and for each direction a colour, a body (filled, bordered or hollow) and how thick its OHLC bars are ([Bars](/manual/themes/#bars)).
+Sets how bars look on every chart that has no look of its own, as Preferences › Appearance › Bars does: how they are drawn, for each direction a colour, a body (filled, bordered or hollow) and how thick its OHLC bars are, and a line's two colours ([Bars](/manual/themes/#bars)).
 
 ```
 $ omacharts config bars
-candles, up green filled 2px, down rose filled 2px
+candles, up green filled 2px, down rose filled 2px, line blue to violet
   [exit 0]
 
 $ omacharts config bars red-up --up-body hollow
-bars are now candles, up rose hollow 2px, down green filled 2px
+bars are now candles, up rose hollow 2px, down green filled 2px, line blue to violet
   [exit 0]
 
 $ omacharts config bars --style ohlc --up-thickness 1 --down-thickness 3
-bars are now ohlc, up rose hollow 1px, down green filled 3px
+bars are now ohlc, up rose hollow 1px, down green filled 3px, line blue to violet
   [exit 0]
 
 $ omacharts config bars monochrome --up-body filled --down-body filled
-bars are now ohlc, up foreground filled 1px, down foreground filled 3px
+bars are now ohlc, up foreground filled 1px, down foreground filled 3px, line blue to violet
   [exit 0]
 ```
 
@@ -541,6 +542,7 @@ bars are now ohlc, up foreground filled 1px, down foreground filled 3px
 | `--up COLOUR`, `--down COLOUR` | A theme colour by name, `foreground` for the theme's text colour, `slate`, `sand`, `silver` or `graphite` ([Themes](/manual/themes/)), or `#rrggbb` | One direction's colour. Wins over `STATE` |
 | `--up-body BODY`, `--down-body BODY` | `filled`, `bordered`, `hollow` | One direction's body. `bordered` draws the wick and the body's edge in the theme's text colour |
 | `--up-thickness PX`, `--down-thickness PX` | `1`, `1.5`, `2`, `3` | How many pixels wide one direction's OHLC bars are drawn, `2` until set. A bar is drawn thinner where bars are too close for it |
+| `--line-low COLOUR`, `--line-high COLOUR` | As `--up` | A line's colour at its lowest close on screen and at its highest. Blue and violet until set |
 
 A flag changes only its own answer. The others stay as they were.
 
@@ -584,13 +586,6 @@ left=symbol,change center=strip right=settings,maximize,link left2=name
 | `none` | A header with nothing in it |
 
 A part named twice, or a word that is not a place or a part, is refused and changes nothing. A place on the second row under an empty one moves up into it. Omitted, the command prints the header as it is stored.
-
-### `chart strip`
-
-| Command | Does |
-|---|---|
-| `chart strip` | Whether the header has the resolution strip, which the focused chart shows; prints `on` or `off`. |
-| `chart strip on` or `off` | Puts it in the header's centre, or takes it off, on every chart. To put it anywhere else, use [`config header`](#config-header). |
 
 ## Indicators
 
@@ -1625,6 +1620,7 @@ same.
 | `bar_up_hollow`, `bar_down_hollow`, `bar_up_border`, `bar_down_border` | on, off | off | Appearance › Bars › Up, Down: Hollow or Bordered | [Themes](/manual/themes/#bars) |
 | `bar_style` | `candles`, `ohlc`, `line` | `candles` | Appearance › Bars › Style | [Bars](/manual/charts/#bars) |
 | `bar_up_thickness`, `bar_down_thickness` | `1`, `1.5`, `2`, `3` | `2` | Appearance › Bars › Up, Down, under OHLC | [Themes](/manual/themes/#bars) |
+| `bar_line_low`, `bar_line_high` | as `bar_up` | `blue`, `violet` | Appearance › Bars › Low, High, under Line | [Themes](/manual/themes/#bars) |
 | `chart_session` | `extended`, `regular` | `extended` | Charts › Hours | [Chart settings](/manual/chart-settings/) |
 | `show_grid` | on, off | off | Overlays › Gridlines | [Gridlines](/manual/charts/#gridlines) |
 | `price_line` | on, off | on | Overlays › Last price line | [The last price line](/manual/charts/#the-last-price-line) |

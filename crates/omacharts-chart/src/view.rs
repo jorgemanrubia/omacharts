@@ -38,7 +38,7 @@ use omacharts_engine::bars::Unit;
 use omacharts_engine::clock::{ChartZone, TimeFormat};
 use omacharts_engine::indicators::{self as indicators, BandSeries, LineStyle, Output, Profile};
 use omacharts_engine::{
-    grouped_decimals, Bar, BarLook, BarScheme, BarStyle, Direction, FetchFailure, Indicator, Instrument,
+    grouped_decimals, Bar, BarScheme, BarStyle, Direction, FetchFailure, Indicator, Instrument,
     Range, Tag, Theme, Timeframe,
 };
 
@@ -164,16 +164,10 @@ struct State {
     echo: Option<Echo>,
     theme: Theme,
     scheme: BarScheme,
-    /// The look chosen in Preferences: what a delta profile with no
-    /// colouring of its own is painted in, rather than this chart's.
-    house: BarLook,
-    /// A delta profile's bought and sold colours, the house look's rise and
-    /// fall, worked out when the theme or the house look changes rather
-    /// than on every frame.
-    delta_ink: (String, String),
-    /// The last-price tag for a rise and a fall, worked out from the scheme
-    /// whenever it changes rather than on every frame.
-    price_tags: [Tag; 2],
+    /// The tags for a rise and a fall, worked out from the scheme whenever
+    /// it changes rather than on every frame: the ruler's, and the last
+    /// price's, which after a rise is [`BarScheme::last_price`]'s.
+    price_tags: PriceTags,
     /// The feed's latest trade when the bars drawn leave it out, a chart
     /// of the regular session out of hours: the price is the price,
     /// whatever candles are shown. `None` when the last bar has it.
@@ -1355,8 +1349,6 @@ impl State {
         State {
             bars: Vec::new(),
             echo: None,
-            delta_ink: delta_ink(&theme, &BarLook::default()),
-            house: BarLook::default(),
             theme,
             price_tags: price_tags(&scheme),
             scheme,
@@ -2392,10 +2384,9 @@ impl State {
     }
 
     /// The bought and sold colours a delta profile or a cumulative delta is
-    /// painted in: the house look's.
+    /// painted in: the chart's own rise and fall, as its volume is.
     fn delta_ink(&self) -> (&str, &str) {
-        let (up, down) = &self.delta_ink;
-        (up, down)
+        (&self.scheme.up, &self.scheme.down)
     }
 
     /// Whether the price scale is automatic, and the zoom and shift of a
@@ -4945,24 +4936,9 @@ impl ChartView {
             for (drawn, colour) in state.indicators.iter_mut().zip(omacharts_engine::palette_colors(&shown, &theme)) {
                 drawn.color = colour;
             }
-            state.delta_ink = delta_ink(&theme, &state.house);
             state.theme = theme;
             state.price_tags = price_tags(&scheme);
             state.scheme = scheme;
-        }
-        self.redraw();
-    }
-
-    /// The look chosen in Preferences, which delta profiles and cumulative
-    /// deltas are painted in.
-    pub fn set_house_look(&self, look: BarLook) {
-        {
-            let mut state = self.state.borrow_mut();
-            if state.house == look {
-                return;
-            }
-            state.delta_ink = delta_ink(&state.theme, &look);
-            state.house = look;
         }
         self.redraw();
     }
@@ -6893,31 +6869,49 @@ fn draw_candles(cr: &cairo::Context, state: &State, columns: &Columns, to_y: &im
         return;
     }
     if state.draws_a_line() {
-        close_line(cr, &state.theme.ui.accent, columns, to_y);
+        close_line(cr, &state.scheme, columns, to_y);
         return;
     }
     candles(cr, state.bar_style, &state.scheme, columns, to_y);
 }
 
-/// One line through the closes, in the theme's accent: a line has no up or
-/// down to colour, and green for a yield that rose says nothing.
-fn close_line(cr: &cairo::Context, color: &str, columns: &Columns, to_y: &impl Fn(f64) -> f64) {
+/// One line through the closes, shaded from the scheme's low colour at the
+/// lowest close on screen to its high colour at the highest. A line has no
+/// up or down to colour, and green for a yield that rose says nothing; where
+/// a close sits in the range drawn is what the shade tells instead.
+fn close_line(cr: &cairo::Context, scheme: &BarScheme, columns: &Columns, to_y: &impl Fn(f64) -> f64) {
+    let Some((top, bottom)) = trace_closes(cr, columns, to_y) else { return };
+    // A flat line, with no height to shade across, is drawn in the low colour.
+    let fade = cairo::LinearGradient::new(0.0, bottom, 0.0, top.min(bottom - 1.0));
+    for (at, colour) in [(0.0, &scheme.line_low), (1.0, &scheme.line_high)] {
+        let (r, g, b, a) = colors::rgba(colour);
+        fade.add_color_stop_rgba(at, r, g, b, a);
+    }
+    let _ = cr.set_source(&fade);
+    let _ = cr.stroke();
+}
+
+/// The path of a line through the closes, with the pen set for it, left
+/// for the caller to stroke in its own colour. Returns the highest and the
+/// lowest y it reaches, or None when there is no bar to draw.
+fn trace_closes(cr: &cairo::Context, columns: &Columns, to_y: &impl Fn(f64) -> f64) -> Option<(f64, f64)> {
     let mut points = columns.bars.iter().enumerate().map(|(i, bar)| (columns.x(i), to_y(bar.close)));
-    let Some((x, y)) = points.next() else { return };
+    let (x, y) = points.next()?;
     cr.set_line_width(1.5);
     cr.set_line_join(cairo::LineJoin::Round);
     cr.move_to(x, y);
+    let (mut top, mut bottom) = (y, y);
     let mut alone = true;
     for (x, y) in points {
         cr.line_to(x, y);
+        (top, bottom) = (top.min(y), bottom.max(y));
         alone = false;
     }
     if alone {
         // A single close is a line to nowhere; a dot is what there is.
         cr.line_to(x + 1.0, y);
     }
-    colors::set_source(cr, color);
-    let _ = cr.stroke();
+    Some((top, bottom))
 }
 
 /// Candles, from nothing but what it takes to draw one: the style, the
@@ -8720,7 +8714,10 @@ fn draw_last_price(
     if y < price_y {
         return;
     }
-    let tag = &state.price_tags[if rising { 0 } else { 1 }];
+    let tag = match rising {
+        true => &state.price_tags.last_up,
+        false => &state.price_tags.down,
+    };
     // With marks on the chart their boxes drew it already, under them.
     if state.marks.is_empty() {
         draw_last_price_line(cr, state, plot_x, plot_w, price_y, to_y);
@@ -8769,8 +8766,7 @@ fn draw_last_price_line(
     cr.save().ok();
     cr.set_dash(&[3.0, 3.0], 0.0);
     cr.set_line_width(1.0);
-    let colour = if rising { &state.scheme.up } else { &state.scheme.down };
-    colors::set_source_alpha(cr, colour, 0.7);
+    colors::set_source_alpha(cr, state.scheme.last_price(rising), 0.7);
     cr.move_to(plot_x, y);
     cr.line_to(plot_x + plot_w, y);
     let _ = cr.stroke();
@@ -8946,10 +8942,17 @@ fn draw_pane_value(
     );
 }
 
-/// The last-price tag for each direction: the same fill and label the bar
-/// widget's change pill is drawn in, from the one rule in [`Tag::on`].
-fn price_tags(scheme: &BarScheme) -> [Tag; 2] {
-    [Tag::on(&scheme.up), Tag::on(&scheme.down)]
+/// A chip on the price axis for each direction, and for the last price
+/// after a rise: the same fill and label the bar widget's change pill is
+/// drawn in, from the one rule in [`Tag::on`].
+struct PriceTags {
+    up: Tag,
+    down: Tag,
+    last_up: Tag,
+}
+
+fn price_tags(scheme: &BarScheme) -> PriceTags {
+    PriceTags { up: Tag::on(&scheme.up), down: Tag::on(&scheme.down), last_up: Tag::on(scheme.last_price(true)) }
 }
 
 /// The last-price tag on the price axis, the shape of every other chip there.
@@ -9109,12 +9112,12 @@ fn draw_ruler(
     let kind = state.instrument.as_ref().map(|i| i.kind);
     let measured = omacharts_engine::measurement::Measurement::between(from, to, &state.bars, kind);
     // The candles' own up and down, so a chart with them turned round
-    // measures a rise in red; the label is the last-price tag of that direction, whose figure is
-    // already chosen to read on its fill.
+    // measures a rise in red; the label is that direction's tag, whose
+    // figure is already chosen to read on its fill.
     let flat;
     let (colour, tag) = match RulerDirection::of(from, to) {
-        RulerDirection::Up => (&state.scheme.up, &state.price_tags[0]),
-        RulerDirection::Down => (&state.scheme.down, &state.price_tags[1]),
+        RulerDirection::Up => (&state.scheme.up, &state.price_tags.up),
+        RulerDirection::Down => (&state.scheme.down, &state.price_tags.down),
         RulerDirection::Flat => {
             flat = Tag::on(&state.scheme.neutral);
             (&state.scheme.neutral, &flat)
@@ -9933,14 +9936,6 @@ fn profile_inks(
             vec![ink(selection::Side::Up, up), ink(selection::Side::Down, down)]
         }
     }
-}
-
-/// A delta profile's bought and sold colours on `theme`: the house look's
-/// rise and fall. Red for a rise is said once, in Preferences, and a delta
-/// reads the way the look does.
-fn delta_ink(theme: &Theme, house: &BarLook) -> (String, String) {
-    let scheme = house.scheme(theme);
-    (scheme.up, scheme.down)
 }
 
 /// How strongly a delta's rows are filled: all as strongly as a total's
@@ -11928,7 +11923,7 @@ mod tests {
     #[test]
     fn a_volume_pane_is_painted_as_the_chart_s_candles() {
         let theme = omacharts_engine::theme::builtin_themes().into_iter().next().expect("a built-in theme");
-        let scheme = BarLook::red_up().scheme(&theme);
+        let scheme = omacharts_engine::BarLook::red_up().scheme(&theme);
         let mut indicator = Indicator::new(1, indicators::Kind::Volume);
         assert_eq!(volume_colours(&indicator, &theme, &scheme), (scheme.up.clone(), scheme.down.clone()));
         if let omacharts_engine::Params::Volume { up_color, .. } = &mut indicator.params {
