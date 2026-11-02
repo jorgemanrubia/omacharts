@@ -1267,10 +1267,8 @@ fn chart_profile(live: Option<&dyn Live>, m: &clap::ArgMatches, as_json: bool) -
     let ts = read_when(when, "at", live.measurement_zone())?;
     let chart = live.profile(id, ts, merge)?;
     let done = if merge { "merged the profile into the one before it" } else { "split the composite profile" };
-    Ok(match as_json {
-        true => json!({"chart": chart, "action": if merge { "merge" } else { "split" }, "at": ts}).to_string(),
-        false => format!("{done} on {chart}"),
-    })
+    let action = if merge { "merge" } else { "split" };
+    said(as_json, json!({"chart": chart, "action": action, "at": ts}), format!("{done} on {chart}"))
 }
 
 /// The profiles a chart draws, as numbers a script can compare: where each
@@ -1304,7 +1302,7 @@ fn list_profiles(live: &dyn Live, id: Option<u32>, visible: bool, as_json: bool)
                 })
             })
             .collect();
-        return Ok(json!({"chart": chart, "profiles": rows}).to_string());
+        return Ok(format!("{}\n", json!({"chart": chart, "profiles": rows})));
     }
     let mut out = format!("{} profiles on {chart}\n", shown.len());
     for (p, on) in shown {
@@ -1320,7 +1318,7 @@ fn list_profiles(live: &dyn Live, id: Option<u32>, visible: bool, as_json: bool)
             if p.is_composite() { format!("  composite of {}", p.parts.len()) } else { String::new() },
         ));
     }
-    Ok(out.trim_end().to_string())
+    Ok(out)
 }
 
 fn chart_measure(
