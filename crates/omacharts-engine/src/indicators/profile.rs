@@ -434,6 +434,11 @@ fn one(
         }
     };
     let mut volumes = vec![0.0f64; rows];
+    // The rows a bar covers wholly all get the same share of it, so they are
+    // written as one step up where they begin and one down after they end,
+    // summed into place at the end: a bar costs the same however many rows
+    // it spans, which at a few hundred rows a period is most of the work.
+    let mut whole = vec![0.0f64; rows + 1];
 
     for bar in bars {
         let weight = if bar.volume > 0.0 { bar.volume } else { 1.0 };
@@ -445,16 +450,25 @@ fn one(
             volumes[first] += weight;
             continue;
         }
-        // Split across the rows the bar touches, by how much of it is in each.
-        // `row` is a price coordinate here, not just an index — `take(last + 1)
-        // .skip(first)` would say the same thing far less plainly than `first..=last`.
-        #[allow(clippy::needless_range_loop)]
-        for row in first..=last {
+        // Split across the rows the bar touches, by how much of it is in each:
+        // the two it ends in by their overlap, the ones between in full.
+        let share = |row: usize| {
             let row_low = low + row as f64 * step;
-            let row_high = row_low + step;
-            let overlap = (bar.high.min(row_high) - bar.low.max(row_low)).max(0.0);
-            volumes[row] += weight * overlap / span;
+            let overlap = (bar.high.min(row_low + step) - bar.low.max(row_low)).max(0.0);
+            weight * overlap / span
+        };
+        volumes[first] += share(first);
+        volumes[last] += share(last);
+        if last > first + 1 {
+            let full = weight * step / span;
+            whole[first + 1] += full;
+            whole[last] -= full;
         }
+    }
+    let mut running = 0.0;
+    for (row, volume) in volumes.iter_mut().enumerate() {
+        running += whole[row];
+        *volume += running;
     }
 
     let total: f64 = volumes.iter().sum();
