@@ -59,6 +59,26 @@ script.md ──► voice ──► record ──► polish ──► compose �
   snapshot of `$XDG_DATA_HOME/omacharts`, so charts look the same render
   after render (the last bar still moves with the live feed).
 
+## The terminal
+
+For a scene about the command line — an agent using it, say — `terminal open`
+tiles a real `foot` beside the app, themed from the same colours, with a shell
+whose PATH holds this studio's `omacharts` and `video/agent/vp-agent`. Typed
+commands run against the app on camera, so the chart changes as they do.
+Lessons:
+
+- Hyprland 0.56's Lua dispatchers: `hl.dispatch(hl.dsp.focus({ window =
+  "class:…" }))` to move focus, `hl.dispatch(hl.dsp.window.resize({ x = N,
+  y = 0, relative = true }))` to move the split. Which way a relative resize
+  moves the split depends on the window's side, so the studio measures and
+  corrects.
+- `hl.dsp.window.close()` closes whatever has the focus. A `terminal close`
+  with no terminal once closed the app: close only after checking the
+  terminal is there and has the focus.
+- An agent's own run is not the same twice and cannot be timed to a voice,
+  so `vp-agent` plays one: its sentences are written, every command it shows
+  is the real one, run live.
+
 ## Driving it
 
 `omacharts` CLI commands for anything the app can do (the surface is

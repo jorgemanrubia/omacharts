@@ -172,7 +172,13 @@ def find_script(name):
     return Script(path)
 
 
-ACTION_ARITY = {"key": 1, "type": None, "cli": None, "move": 2, "click": 2, "rclick": 2, "drag": 4, "scroll": 3, "wait": 1, "zoom": 3}
+ACTION_ARITY = {"key": 1, "type": None, "cli": None, "move": 2, "click": 2, "rclick": 2, "drag": 4, "scroll": 3, "wait": 1, "zoom": 3,
+                "terminal": 1, "focus": 1}
+
+# The terminal a video opens beside the app, as a share of the width: enough
+# for a command and its answer to be read at 1080p, the chart still the
+# larger of the two.
+TERMINAL_SHARE = 0.38
 
 
 def parse_action(text):
@@ -445,7 +451,8 @@ hl.config({{
     def _wait(self, probe, what, timeout=15):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            if self.hyprland.poll() is not None:
+            # An attached studio is not this process's to watch.
+            if getattr(self, "hyprland", None) and self.hyprland.poll() is not None:
                 die(f"the studio's Hyprland exited; see {self.work / 'hyprland.log'}")
             found = probe()
             if found:
@@ -582,7 +589,97 @@ hl.config({{
             event["at"] = self.hand.scroll(*self.at(*args[:2]), int(args[2]))
         elif verb == "zoom":
             event["at"] = self.at(*args[:2])
+        elif verb == "terminal":
+            self.terminal(args[0])
+        elif verb == "focus":
+            self.focus(args[0])
         events.append(event)
+
+    # The terminal, for a scene about the command line: a real one, tiled
+    # beside the app, running a real shell whose `omacharts` is this studio's.
+
+    TERMINAL_CLASS = "studio-terminal"
+
+    def terminal(self, what):
+        if what == "close":
+            # Closing goes to whatever has the focus, so only ever with the
+            # terminal there to take it: with none, it would close the app.
+            if not self.client(self.TERMINAL_CLASS):
+                return
+            self.hyprctl("eval", f'hl.dispatch(hl.dsp.focus({{ window = "class:{self.TERMINAL_CLASS}" }}))')
+            active = json.loads(self.hyprctl("activewindow", "-j") or "{}")
+            if active.get("class") != self.TERMINAL_CLASS:
+                die("the terminal would not take the focus, so it was not closed")
+            self.hyprctl("eval", "hl.dispatch(hl.dsp.window.close())")
+            self._wait(lambda: not self.client(self.TERMINAL_CLASS), "the terminal to close")
+            return
+        if what != "open":
+            die(f"terminal is open or close, not {what!r}")
+        if self.client(self.TERMINAL_CLASS):
+            self.focus("terminal")
+            return
+        home = Path(self.env["HOME"])
+        tools = home / ".local/bin"
+        tools.mkdir(parents=True, exist_ok=True)
+        for name, target in (("omacharts", self.binary), ("vp-agent", ROOT / "video/agent/vp-agent")):
+            link = tools / name
+            if not link.exists():
+                link.symlink_to(target)
+        c = lambda name, fallback: self.colors.get(name, fallback).lstrip("#")
+        config = home / ".config/foot/foot.ini"
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text(f"""font=JetBrainsMono Nerd Font:size=10
+pad=18x14
+[cursor]
+color={c('background', '#1a1b26')} {c('foreground', '#a9b1d6')}
+[colors]
+background={c('background', '#1a1b26')}
+foreground={c('foreground', '#a9b1d6')}
+regular0={c('dark_background', '#13141c')}
+regular1={c('red', '#f7768e')}
+regular2={c('green', '#9ece6a')}
+regular3={c('yellow', '#e0af68')}
+regular4={c('blue', '#7aa2f7')}
+regular5={c('magenta', '#ad8ee6')}
+regular6={c('cyan', '#449dab')}
+regular7={c('foreground', '#a9b1d6')}
+""")
+        rc = home / ".config/foot/rc"
+        rc.write_text(f'export PATH="{tools}:$PATH"\nPS1="\\[\\e[34m\\]❯\\[\\e[0m\\] "\nclear\n')
+        self.spawn(["foot", "--app-id", self.TERMINAL_CLASS, "-c", str(config), "bash", "--rcfile", str(rc), "-i"], log="terminal.log" if hasattr(self, "work") else None)
+        self._wait(lambda: self.client(self.TERMINAL_CLASS), "the terminal", timeout=15)
+        self.focus("terminal")
+        # Tiled beside the app at half the width; nudged to its share. Which
+        # way a relative resize moves the split depends on the side the
+        # window is on, so the result is measured and the nudge corrected.
+        total = sum(client["size"][0] for client in self.clients())
+        for _ in range(3):
+            width = self.client(self.TERMINAL_CLASS)["size"][0]
+            off = round(total * TERMINAL_SHARE) - width
+            if abs(off) < 8:
+                break
+            self.hyprctl("eval", f"hl.dispatch(hl.dsp.window.resize({{ x = {off}, y = 0, relative = true }}))")
+            time.sleep(0.2)
+            if abs(round(total * TERMINAL_SHARE) - self.client(self.TERMINAL_CLASS)["size"][0]) > abs(off):
+                self.hyprctl("eval", f"hl.dispatch(hl.dsp.window.resize({{ x = {-2 * off}, y = 0, relative = true }}))")
+                time.sleep(0.2)
+        time.sleep(0.4)
+
+    def focus(self, what):
+        target = {"app": "com.jorgemanrubia.Omacharts", "terminal": self.TERMINAL_CLASS}.get(what)
+        if not target:
+            die(f"focus is app or terminal, not {what!r}")
+        self.hyprctl("eval", f'hl.dispatch(hl.dsp.focus({{ window = "class:{target}" }}))')
+        time.sleep(0.2)
+
+    def clients(self):
+        try:
+            return json.loads(self.hyprctl("clients", "-j") or "[]")
+        except json.JSONDecodeError:
+            return []
+
+    def client(self, cls):
+        return next((c for c in self.clients() if c.get("class") == cls), None)
 
 
 def session_file():
@@ -1010,11 +1107,29 @@ def polish_plan(events, total):
     return zooms, badges
 
 
+def split_plan(events, total):
+    """When the terminal stands beside the app, for the transitions into and
+    out of it and the labels over the two panes."""
+    splits, opened = [], None
+    for event in events:
+        if event.get("scene") is None or event["verb"] != "terminal":
+            continue
+        if event["args"][0] == "open" and opened is None:
+            opened = event["t"]
+        elif event["args"][0] == "close" and opened is not None:
+            splits.append({"start": round(opened, 3), "end": round(event["t"], 3), "share": TERMINAL_SHARE})
+            opened = None
+    if opened is not None:
+        splits.append({"start": round(opened, 3), "end": round(total, 3), "share": TERMINAL_SHARE})
+    return splits
+
+
 def polish(script, raw, offset, total):
     """The recording, cut to the timeline and polished by Remotion: zooms and
     key badges drawn over it. Returns the file to compose from instead of raw."""
     events = json.loads((script.out / "events.json").read_text())
     zooms, badges = polish_plan(events, total)
+    splits = split_plan(events, total)
     public = script.out / "compose-public"
     shutil.rmtree(public, ignore_errors=True)
     public.mkdir()
@@ -1026,12 +1141,12 @@ def polish(script, raw, offset, total):
     # symlinks behind, and a missing font fails the whole render.
     shutil.copy(ROOT / "site/assets/fonts/cascadia-mono-latin-700-normal.woff2", public / "cascadia-mono-700.woff2")
     props = {"src": "recording.mp4", "width": SIZE[0], "height": SIZE[1], "fps": FPS,
-             "frames": int(round(total * FPS)), "zooms": zooms, "badges": badges}
+             "frames": int(round(total * FPS)), "zooms": zooms, "badges": badges, "splits": splits}
     (script.out / "polish.json").write_text(json.dumps(props, indent=1))
     compose_dir = VIDEO / "compose"
     if not (compose_dir / "node_modules").exists():
         die("no Remotion; run bin/video setup")
-    say(f"polishing: {len(zooms)} zooms, {len(badges)} key badges (Remotion, a few minutes at 4K)")
+    say(f"polishing: {len(zooms)} zooms, {len(badges)} key badges, {len(splits)} terminal splits (Remotion, a few minutes at 4K)")
     out = script.out / "polished.mp4"
     run(["npx", "remotion", "render", "src/index.ts", "Polish", str(out), f"--props={script.out / 'polish.json'}",
          f"--public-dir={public}", "--codec=h264", "--crf=12", f"--concurrency={max(2, (os.cpu_count() or 8) // 2)}",

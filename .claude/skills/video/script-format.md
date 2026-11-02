@@ -95,6 +95,8 @@ block names each cue once:
 | `scroll <x%> <y%> <steps>` | wheel notches; negative scrolls up |
 | `wait <seconds>` | pause the timeline |
 | `zoom <x%> <y%> <scale>` | ask the composer for a zoom there |
+| `terminal open` / `terminal close` | a real terminal, themed like the app, tiled on the right at 38% of the width; the chart reflows beside it. Its shell runs this studio's `omacharts` and `vp-agent`. The composer covers the snap with a light sweep and labels the two panes while it is open |
+| `focus app` / `focus terminal` | which window the keys go to |
 
 Several actions on one cue go on one line, separated by `;`. Positions are
 percentages of the window, so they survive a change of resolution; at the
