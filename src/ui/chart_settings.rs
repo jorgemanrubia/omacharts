@@ -326,7 +326,6 @@ fn bars_group(window: &Rc<Window>, store: &Rc<Store>) -> adw::PreferencesGroup {
     // them.
     let sync = adw::ActionRow::new();
     sync.set_title("Crosshair across Follow charts");
-    sync.set_subtitle("The pointer on one draws the same moment on the others");
     let switch = gtk::Switch::new();
     switch.set_valign(gtk::Align::Center);
     switch.set_active(store.setting_bool(crate::ui::window::SETTING_SYNC_CROSSHAIR, true));
@@ -373,7 +372,6 @@ fn defaults_group(window: &Rc<Window>, dialog: &adw::PreferencesDialog) -> adw::
     let group = adw::PreferencesGroup::new();
     let row = adw::ActionRow::new();
     row.set_title("Reset to defaults");
-    row.set_subtitle("Bars, session, scale and drawings as a new chart opens, set in Preferences");
     let button = gtk::Button::with_label("Reset");
     button.set_valign(gtk::Align::Center);
     let window = window.clone();
@@ -403,18 +401,9 @@ fn defaults_group(window: &Rc<Window>, dialog: &adw::PreferencesDialog) -> adw::
 fn scales_group(window: &Rc<Window>) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     group.set_title("Scales");
-    // The gestures, which are otherwise something you either know or do not:
-    // nothing on the chart says the prices down the side can be dragged.
-    group.set_description(Some(
-        "Drag the price scale to stretch it, the time scale to squeeze time. \
-         Double-click either to put it back.",
-    ));
 
     let auto = adw::ActionRow::new();
     auto.set_title("Auto scale price");
-    auto.set_subtitle(
-        "Fits the visible bars vertically. Turn it off to drag the chart up and down",
-    );
     let switch = gtk::Switch::new();
     switch.set_valign(gtk::Align::Center);
     switch.set_active(window.focused_pane().view.price_auto());
@@ -441,7 +430,6 @@ fn scales_group(window: &Rc<Window>) -> adw::PreferencesGroup {
 
     let log = adw::ActionRow::new();
     log.set_title("Logarithmic scale");
-    log.set_subtitle("Equal heights are equal percentage moves, for long histories");
     let switch = gtk::Switch::new();
     switch.set_valign(gtk::Align::Center);
     switch.set_active(window.log_scale());
@@ -458,7 +446,6 @@ fn scales_group(window: &Rc<Window>) -> adw::PreferencesGroup {
 
     let grid = adw::ActionRow::new();
     grid.set_title("Gridlines");
-    grid.set_subtitle("The scales and their labels stay either way");
     let switch = gtk::Switch::new();
     switch.set_valign(gtk::Align::Center);
     switch.set_active(window.show_grid());
@@ -473,7 +460,6 @@ fn scales_group(window: &Rc<Window>) -> adw::PreferencesGroup {
 
     let reset = adw::ActionRow::new();
     reset.set_title("Reset chart");
-    reset.set_subtitle("Both scales back to how the chart opened, at the latest bars");
     let button = gtk::Button::with_label("Reset");
     button.set_valign(gtk::Align::Center);
     button.set_tooltip_text(Some(&shortcuts::tooltip("Reset chart", "chart.reset-view")));
