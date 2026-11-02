@@ -35,7 +35,7 @@ crop: 0,812,1592,380 (then -quality 88 to site/assets/manual/indicators/volume.j
 
 ## Volume Profile
 
-Drawn over the price. For each reset period, how much volume traded at each price, as a histogram against the left edge of the period, at most 40% of its width. The rows in the **value area**, the band around the busiest price that holds the given share of the period's volume, are drawn stronger. The **point of control**, the busiest row, is a line across the profile.
+Drawn over the price. For each reset period, how much volume traded at each price, as a histogram against the left or the right edge of the period, at most 40% of its width. The rows in the **value area**, the band around the busiest price that holds the given share of the period's volume, are drawn stronger. The **point of control**, the busiest row, is a line across the profile.
 
 | Setting | Default | Allowed |
 |---|---|---|
@@ -44,8 +44,16 @@ Drawn over the price. For each reset period, how much volume traded at each pric
 | **Value area %** | 70% | 10 to 100% |
 | **Profile** colour | The next free colour | A palette name, or a custom colour |
 | **Point of control** colour | A contrasting colour from the theme | A palette name, or a custom colour |
+| **Style** | Filled | Filled, or Outline: only the edge of the rows, so the candles under it stay clear |
+| **Alignment** | Left | Left, or Right: the rows grow back from the end of the period |
 
 **Automatic** gives every period rows of the same height, a round multiple of the instrument's price step. With **Automatic** off, **Rows** is the number of rows each period is divided into.
+
+### Composite profiles
+
+Right-click a profile and choose **Merge with previous profile** to fold it into the one before it: one profile, with one point of control and one value area, over both periods. Merge again to take in another. **Split composite profile**, on a composite, puts its periods back as they were.
+
+A composite belongs to the chart it was made on and to the symbol it is showing, even when the profile is a template's, and it is kept with the chart. Changing **Reset every** draws the new periods, without the composites. For a profile over any span you choose, use the [volume profile drawing](/manual/drawings/#volume-profiles).
 
 <!-- regenerate:
 theme: tokyo-night

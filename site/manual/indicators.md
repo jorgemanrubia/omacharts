@@ -219,6 +219,10 @@ A paste is a new indicator with the same settings, on the chart that has the key
 
 | Item | Does |
 |---|---|
+| **Period** buttons | A moving average only: 10, 20, 50, 100 or 200, the one in use ringed |
+| **Reset every** buttons | A VWAP or a volume profile only: Session, Week, Month, Quarter or Year ([Reset periods](#reset-periods)) |
+| **Merge with previous profile** | A volume profile only, over a profile with one before it ([Composite profiles](/manual/indicators/volume/#composite-profiles)) |
+| **Split composite profile** | A volume profile only, over a composite |
 | **Cut** (<kbd>Ctrl</kbd> + <kbd>X</kbd>) | Copies it and removes it |
 | **Copy** (<kbd>Ctrl</kbd> + <kbd>C</kbd>) | Copies it |
 | **Paste** (<kbd>Ctrl</kbd> + <kbd>V</kbd>) | Only while something is copied: an indicator, or drawings |

@@ -527,6 +527,8 @@ are in [Indicators](/manual/indicators/) and the page of its family.
 | `--rows N` | `auto`, or a number of rows per period, held between 4 and 400 | Volume profile |
 | `--value-area F` | 0 to 1; 0.70 when not given | Volume profile |
 | `--poc-color C` | A colour | Volume profile |
+| `--profile-style S` | `filled`, `outline` | Volume profile |
+| `--align A` | `left`, `right` | Volume profile |
 | `--up-color C`, `--down-color C` | A colour | Volume |
 | `--overbought F`, `--oversold F` | 0 to 100 | RSI, stochastic |
 | `--height F` | 0.05 to 0.95; Volume defaults to 0.18, the other strips to 0.16 | Volume, RSI, MACD, ATR, stochastic |
@@ -794,12 +796,29 @@ candles the reply has no bar distance and `bars` is `null`. A zero starting pric
 `null` for `percent_change`. The measurement is not saved or shared. The mouse
 tool is in [Measuring a move](/manual/drawings/#measuring-a-move).
 
+## Composite profiles
+
+`omacharts chart profile merge --at WHEN` folds the focused chart's volume
+profile holding that moment into the one before it, and `omacharts chart
+profile split --at WHEN` puts a composite back into its periods
+([Composite profiles](/manual/indicators/volume/#composite-profiles)). `WHEN`
+is a day or a day and a time, read in the chart's time zone. `--id N` says
+which profile when the chart has more than one. A window must be open;
+otherwise it exits 6.
+
+```
+$ omacharts chart profile merge --at 2026-10-28
+merged the profile into the one before it on pos:0 SPY 1h in "Chartbook 1"
+  [exit 0]
+```
+
 ## Drawings
 
 `omacharts chart drawing ACTION [KIND]` changes the drawings on a chart's
 symbol. `--book` and `--chart` pick the chart ([Which chart a command acts
 on](#which-chart-a-command-acts-on)). `KIND` is `line`, `hline`, `arrow`,
-`zigzag`, `rect`, `ellipse` (or `circle`), or `text`. The tools and their
+`zigzag`, `rect`, `ellipse` (or `circle`), `text`, or `profile` (a volume
+profile of the span between `--from` and `--to`, whose prices are ignored). The tools and their
 configurations are in [Drawings](/manual/drawings/). Whether a chart shows
 other charts' drawings and sends its own is `chart set --show-drawings` and
 `--send-drawings`, each `on` or `off`:

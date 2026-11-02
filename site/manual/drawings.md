@@ -41,6 +41,7 @@ crop: none
 | Rectangle | <kbd>Alt</kbd> + <kbd>R</kbd> | Press at one corner, release at the other |
 | Circle | <kbd>Alt</kbd> + <kbd>C</kbd> | Placed like a rectangle; the ellipse fills it |
 | Text | <kbd>Alt</kbd> + <kbd>T</kbd> | Click where the text goes, then type |
+| Volume profile | <kbd>Alt</kbd> + <kbd>V</kbd> | Press where the span starts, release where it ends ([Volume profiles](#volume-profiles)) |
 
 After one drawing the tool is deselected. <kbd>Ctrl</kbd> + click a tool to keep it selected until <kbd>Esc</kbd> or another tool. The selected tool draws on whichever chart you press. A configuration is a saved look for a tool's drawings, numbered 1 to 9 ([Configurations](#configurations)).
 
@@ -166,7 +167,7 @@ crop: 1666,320,642,888   (the box above, the menu with 20px layout margin right 
 
 Across the top is a picture of the drawing, tagged with its configuration, or **Custom** when it has a look of its own. Click the picture to see the nine configurations drawn as this drawing, with its own look beside them while it has one. <kbd>Alt</kbd> + <kbd>1</kbd> … <kbd>9</kbd> works inside the dialog too. Under a **Custom** look, **Save as…** writes the look over one of the nine configurations (the one it started from is marked `*`) and puts the drawing back on that number. Every drawing on that number changes with it.
 
-A figure (any drawing but text) has two tabs, **General** and **Text**. <kbd>Alt</kbd> + <kbd>←</kbd> / <kbd>→</kbd> moves between them. A text drawing has no tabs, only **Colour**, **Font** and **Font size**.
+A figure (any drawing but text and a volume profile) has two tabs, **General** and **Text**. <kbd>Alt</kbd> + <kbd>←</kbd> / <kbd>→</kbd> moves between them. A text drawing has no tabs, only **Colour**, **Font** and **Font size**.
 
 <!-- regenerate:
 theme: tokyo-night
@@ -226,6 +227,7 @@ As shipped, the nine configurations are the nine [colours](#colours) in order, 1
 | Arrow, zig-zag | 1.5 px, an open head at the end |
 | Rectangle, circle | Filled at 16% of the colour, with a 1 px edge of it |
 | Text | The colour, nothing else |
+| Volume profile | See [Volume profiles](#volume-profiles) |
 
 Text in every configuration is 18 px in the system font, in the configuration's colour.
 
@@ -244,6 +246,38 @@ capture: bin/headless-window shot /tmp/cfg.png
 crop: 800,180,960,1240
 -->
 {% include figure.html src="/assets/manual/drawings/line-configurations.png" alt="The Line configurations dialog, listing configurations 1 to 9 with a picture of each line" caption="The **Line configurations** dialog, as shipped." %}
+
+## Volume profiles
+
+The volume profile tool draws a profile of the bars in the span you drag across: how much volume traded at each price, the value area drawn stronger, and the point of control as a line across it. It is a composite of whatever stretch you choose, across sessions or inside one, on top of a [Volume Profile](/manual/indicators/volume/#volume-profile) study or on its own. Its height is the prices those bars reached; only the span is yours to choose.
+
+Drag its left or right edge to change the span, and the profile is worked out again. It cannot be moved whole, or nudged with the arrow keys, since moved it would be a profile of other bars. It takes no text. On a chart of another resolution it is worked out from that chart's bars.
+
+| Property | Does |
+|---|---|
+| **Colour** | The rows and their edge |
+| **Point of control** | The line across the busiest price |
+| **Thickness** | The point of control, and the edge of an outline |
+| **Style** | **Filled** rows under a fine edge, or **Outline**: the edge alone |
+| **Alignment** | **Left**: the rows grow from the start of the span. **Right**: from its end |
+| **Value area %** | The share of the span's volume the value area holds, 10 to 100% |
+
+The nine configurations are drawn to sit over the study's own profiles and still read as something else: 1 Up, 2 Down and 9 Ink filled from the left; 3 Blue and 8 Cyan as outlines from the left; 4 Amber, 5 Violet and 7 Orange filled from the right; 6 Teal an outline from the right. Every point of control is Ink. Ink filled, 9, is the neutral composite to lay over session profiles.
+
+<!-- regenerate:
+theme: tokyo-night
+window: 2560x1440 @2, bin/headless-window (HOME sandboxed, theme seeded)
+state:
+  key ctrl+b
+  omacharts chart set --symbol SPY --resolution 1h
+  omacharts chart indicator add volume_profile
+  omacharts chart drawing add profile --from 2026-10-14,700 --to 2026-10-21,700 --config 9
+  omacharts chart drawing add profile --from 2026-10-26,700 --to 2026-10-30,700 --config 4
+  move 1270 1000
+capture: bin/headless-window cli chart screenshot --output /tmp/vp.png; magick /tmp/vp.png -quality 88 site/assets/manual/drawings/volume-profiles.jpg
+crop: none
+-->
+{% include figure.html src="/assets/manual/drawings/volume-profiles.jpg" alt="SPY 1h with session volume profiles, an Ink profile drawn over a week of them from the left and an Amber one over the last days from the right" caption="Two volume profile drawings over the session study: configuration 9 over one week, configuration 4 over the next." %}
 
 ## Colours
 
