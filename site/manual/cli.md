@@ -863,14 +863,18 @@ read in the chart's time zone, the one its time axis is labelled in
 | `--text-color C` | A colour | The words' colour |
 | `--font FAMILY` | A family; `system` | The words' font. A family this machine lacks falls back to the system's |
 | `--font-size F` | 6 to 96 | The words' size in pixels |
+| `--poc-color C` | A colour | A volume profile's point of control |
+| `--profile-style S` | `filled`, `outline` | A volume profile's rows, or only their edge |
+| `--align A` | `left`, `right` | The edge of its span a volume profile grows from |
+| `--value-area F` | 0.1 to 1 | The share of a volume profile's volume its value area holds |
 | `--scope S` | `shared`, `local` | Whether the symbol's other charts see it. Defaults to what the chart sends |
 | `--order WHERE` | `front`, `back` | Brings it to the front or sends it to the back |
 
 A colour is one of the presets `up`, `down`, `blue`, `amber`, `violet`,
 `teal`, `orange`, `cyan` and `ink`, which follow the theme, or `#rrggbb`,
 which does not. Any of `--color`, `--width`, `--arrow`, `--head`,
-`--border`, `--fill`, `--alpha`, `--text-color`, `--font` and `--font-size`
-gives the drawing a look of its own, off its configuration; `--text` and
+`--border`, `--fill`, `--alpha`, `--text-color`, `--font`, `--font-size`,
+`--poc-color`, `--profile-style`, `--align` and `--value-area` gives the drawing a look of its own, off its configuration; `--text` and
 `--text-at` do not. A `local` drawing has a negative id. Changing a drawing's
 scope gives it a new id.
 

@@ -2383,6 +2383,12 @@ fn style_json(style: &omacharts_engine::Style) -> Value {
         // family and resolves differently on another machine.
         "font": style.text.family_name(),
         "font_size": style.text.clamped_size(),
+        "profile": {
+            "poc_color": style.profile.poc.spell(),
+            "style": style.profile.shape.key(),
+            "align": style.profile.align.key(),
+            "value_area": style.profile.value_area,
+        },
     })
 }
 
@@ -2489,6 +2495,10 @@ struct StyleEdits {
     /// desktop's own, which `--font system` is the way to ask for.
     font: Option<Option<String>>,
     font_size: Option<f64>,
+    poc: Option<omacharts_engine::Paint>,
+    shape: Option<omacharts_engine::drawings::ProfileShape>,
+    align: Option<omacharts_engine::drawings::ProfileAlign>,
+    value_area: Option<f64>,
 }
 
 impl StyleEdits {
@@ -2535,7 +2545,23 @@ impl StyleEdits {
             true => None,
             false => Some(family.to_string()),
         });
+        let shape = match arg(m, "profile-style") {
+            None => None,
+            Some(text) => Some(omacharts_engine::drawings::ProfileShape::from_key(text).ok_or_else(|| {
+                Fault::usage(format!("{text:?} is not a profile style; use filled or outline"))
+            })?),
+        };
+        let align = match arg(m, "align") {
+            None => None,
+            Some(text) => Some(omacharts_engine::drawings::ProfileAlign::from_key(text).ok_or_else(|| {
+                Fault::usage(format!("{text:?} is not an alignment; use left or right"))
+            })?),
+        };
         Ok(StyleEdits {
+            poc: paint("poc-color")?,
+            shape,
+            align,
+            value_area: bounded(m, "value-area", 0.1, 1.0)?,
             colour: paint("color")?,
             width,
             arrow,
@@ -2565,6 +2591,10 @@ impl StyleEdits {
             && self.text_colour.is_none()
             && self.font.is_none()
             && self.font_size.is_none()
+            && self.poc.is_none()
+            && self.shape.is_none()
+            && self.align.is_none()
+            && self.value_area.is_none()
     }
 
     fn apply(&self, style: &mut omacharts_engine::Style) {
@@ -2597,6 +2627,18 @@ impl StyleEdits {
         }
         if let Some(size) = self.font_size {
             style.text.size = size;
+        }
+        if let Some(poc) = &self.poc {
+            style.profile.poc = poc.clone();
+        }
+        if let Some(shape) = self.shape {
+            style.profile.shape = shape;
+        }
+        if let Some(align) = self.align {
+            style.profile.align = align;
+        }
+        if let Some(share) = self.value_area {
+            style.profile.value_area = share;
         }
     }
 }
@@ -6980,6 +7022,31 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A volume profile drawing takes the study's own properties from a
+    /// command, as its properties dialog gives them.
+    #[test]
+    fn a_profile_drawing_is_set_up_from_a_command() {
+        let store = bare();
+        run("chartbook create Macro --symbol SPY --switch", &store);
+        let out = run(
+            "chart drawing add profile --book Macro --from 2026-10-14,1 --to 2026-10-21,1 \
+             --profile-style outline --align right --poc-color amber --value-area 0.6",
+            &store,
+        );
+        assert_eq!(out.code, 0, "{}", out.err);
+        let listed = json_of(&run("chart drawing list --book Macro --json", &store));
+        let profile = &listed["drawings"][0]["style"]["profile"];
+        assert_eq!(profile["style"], "outline");
+        assert_eq!(profile["align"], "right");
+        assert_eq!(profile["poc_color"], "amber");
+        assert_eq!(profile["value_area"], 0.6);
+
+        let bad = run("chart drawing add profile --book Macro --from 2026-10-14,1 --to 2026-10-21,1 --align up", &store);
+        assert_eq!(bad.code, crate::cli::EXIT_USAGE, "{}", bad.err);
+        let configured = run("chart drawing configure profile --config 2 --profile-style outline", &store);
+        assert_eq!(configured.code, 0, "{}", configured.err);
     }
 
     /// A drawing belongs to the symbol: added through one chart, it is listed
