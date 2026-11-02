@@ -8526,8 +8526,10 @@ impl Window {
             true => "Edit text",
             false => "Add text",
         };
-        shortcuts::append_with_key(&edit, words, "chart.drawing-text", "Return");
-        menu.append_section(None, &edit);
+        if drawing.kind.takes_text() {
+            shortcuts::append_with_key(&edit, words, "chart.drawing-text", "Return");
+            menu.append_section(None, &edit);
+        }
         menu.append_section(None, &self.clipboard_section("chart.drawing-delete"));
 
         // The arrowhead, as the four pictures it is, on one row: the three
@@ -9266,6 +9268,13 @@ impl Window {
             this.arm_drawing(omacharts_engine::DrawingKind::Text)
         });
         actions.add_action(&draw_text);
+
+        let draw_profile = gio::SimpleAction::new("draw-profile", None);
+        let this = self.clone();
+        draw_profile.connect_activate(move |_, _| {
+            this.arm_drawing(omacharts_engine::DrawingKind::Profile)
+        });
+        actions.add_action(&draw_profile);
 
         let measure = gio::SimpleAction::new("measure", None);
         let this = self.clone();

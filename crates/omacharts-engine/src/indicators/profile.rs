@@ -233,6 +233,23 @@ fn parts(bars: &[Bar], reset: Reset, session_origin: i64) -> Vec<i64> {
     out
 }
 
+/// One profile of every bar in `bars`, which start at `offset` on the chart:
+/// what a volume profile drawing shows of the span it covers.
+pub fn of_span(
+    bars: &[Bar],
+    offset: usize,
+    rows: Option<usize>,
+    value_area: f64,
+    kind: Option<InstrumentKind>,
+) -> Option<Profile> {
+    let first = bars.first()?;
+    let grid = match rows {
+        Some(rows) => Grid::Rows(rows.clamp(MIN_ROWS, MAX_ROWS)),
+        None => Grid::Step(auto_step(bars, &[(0, bars.len())], kind)),
+    };
+    one(bars, offset, first.ts, grid, value_area)
+}
+
 /// How a period is divided up.
 ///
 /// A fixed count stretches to whatever the period happened to cover, so two

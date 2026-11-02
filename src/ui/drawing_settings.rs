@@ -15,13 +15,13 @@
 //! as the way out for somebody who wants exactly one colour and knows the
 //! theme will not follow it.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
 use omacharts_engine::drawings::{
-    self, Arrow, ArrowHead, Configurations, Kind, Paint, Place, Preset, Style, Text,
+    self, Arrow, ArrowHead, Configurations, Kind, Paint, Place, Preset, ProfileAlign, ProfileShape, Style, Text,
     CONFIGURATIONS,
 };
 use omacharts_engine::Theme;
@@ -152,7 +152,7 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
     // A figure's words are a subject of their own, behind a tab. A text
     // drawing *is* its words, and `style_editor` has already put the three
     // rows on this page: a tab there would be a tab over nothing.
-    let text_tab = (!kind.is_text()).then(|| {
+    let text_tab = (!kind.is_text() && kind.takes_text()).then(|| {
         let on_text: Rc<dyn Fn(Text)> = {
             let view = view.clone();
             let call_refresh = call_refresh.clone();
@@ -575,6 +575,16 @@ fn describe(kind: Kind, style: &Style) -> String {
             };
             format!("{}, {:.0}px{face}", name_of(&style.text.colour), style.text.clamped_size())
         }
+        Kind::Profile => {
+            let look = &style.profile;
+            format!(
+                "{} {}, from the {}, point of control {}",
+                name_of(&style.colour),
+                look.shape.label().to_lowercase(),
+                look.align.label().to_lowercase(),
+                name_of(&look.poc)
+            )
+        }
     }
 }
 
@@ -730,6 +740,93 @@ fn style_editor(window: &Rc<Window>, kind: Kind, current: Style, on_style: Rc<dy
                 }
             }));
         }
+        // The study's properties, as one drawing carries them.
+        Kind::Profile => {
+            let (row, show) = paint_row(&theme, "Colour", &style.borrow().colour, {
+                let style = style.clone();
+                let emit = emit.clone();
+                move |paint| {
+                    style.borrow_mut().colour = paint;
+                    emit();
+                }
+            });
+            group.add(&row);
+            shows.push(Rc::new(move |s: &Style| show(&s.colour)));
+
+            let (row, show) = paint_row(&theme, "Point of control", &style.borrow().profile.poc, {
+                let style = style.clone();
+                let emit = emit.clone();
+                move |paint| {
+                    style.borrow_mut().profile.poc = paint;
+                    emit();
+                }
+            });
+            group.add(&row);
+            shows.push(Rc::new(move |s: &Style| show(&s.profile.poc)));
+
+            let (row, show) = width_row("Thickness", style.borrow().width, {
+                let style = style.clone();
+                let emit = emit.clone();
+                move |width| {
+                    style.borrow_mut().width = width;
+                    emit();
+                }
+            });
+            group.add(&row);
+            shows.push(Rc::new(move |s: &Style| show(s.width)));
+
+            let shapes = ProfileShape::ALL;
+            let (row, show) = named_row(
+                "Style",
+                &shapes.map(ProfileShape::label),
+                shapes.iter().position(|s| *s == style.borrow().profile.shape),
+                {
+                    let style = style.clone();
+                    let emit = emit.clone();
+                    move |at| {
+                        style.borrow_mut().profile.shape = shapes[at];
+                        emit();
+                    }
+                },
+            );
+            group.add(&row);
+            shows.push(Rc::new(move |s: &Style| show(shapes.iter().position(|x| *x == s.profile.shape))));
+
+            let aligns = ProfileAlign::ALL;
+            let (row, show) = named_row(
+                "Alignment",
+                &aligns.map(ProfileAlign::label),
+                aligns.iter().position(|a| *a == style.borrow().profile.align),
+                {
+                    let style = style.clone();
+                    let emit = emit.clone();
+                    move |at| {
+                        style.borrow_mut().profile.align = aligns[at];
+                        emit();
+                    }
+                },
+            );
+            group.add(&row);
+            shows.push(Rc::new(move |s: &Style| show(aligns.iter().position(|x| *x == s.profile.align))));
+
+            let area = adw::SpinRow::with_range(10.0, 100.0, 5.0);
+            area.set_title("Value area %");
+            area.set_value(style.borrow().profile.value_area * 100.0);
+            {
+                let style = style.clone();
+                let emit = emit.clone();
+                let showing = showing.clone();
+                area.connect_value_notify(move |row| {
+                    if showing.get() {
+                        return;
+                    }
+                    style.borrow_mut().profile.value_area = row.value() / 100.0;
+                    emit();
+                });
+            }
+            group.add(&area);
+            shows.push(Rc::new(move |s: &Style| area.set_value(s.profile.value_area * 100.0)));
+        }
         // A box and an ellipse have the same properties — a fill at an alpha
         // under an edge — and differ only in the outline drawn round them, so
         // they are edited by the same rows.
@@ -835,7 +932,7 @@ fn style_editor(window: &Rc<Window>, kind: Kind, current: Style, on_style: Rc<dy
 
     // A shape's words, in a group of their own. The text kind's three rows
     // are already its page, above.
-    let text = (!kind.is_text()).then(|| {
+    let text = (!kind.is_text() && kind.takes_text()).then(|| {
         let group = adw::PreferencesGroup::new();
         group.set_title("Text");
         // The ink, the face and the size, and not where it sits: a
@@ -1279,6 +1376,86 @@ fn size_row(current: f64, on_pick: impl Fn(f64) + 'static) -> (adw::ActionRow, R
 }
 
 /// A row that picks a width, in pixels, by number.
+/// A small profile in a style's look, for a swatch or a preview: rows off
+/// the edge it grows from, and the busiest marked across.
+fn profile_sample(cr: &gtk::cairo::Context, theme: &Theme, style: &Style, x: f64, y: f64, w: f64, h: f64) {
+    let rows = [0.3, 0.55, 0.85, 1.0, 0.7, 0.45, 0.25];
+    let row_h = h / rows.len() as f64;
+    let colour = style.colour.hex(theme);
+    let right = style.profile.align == ProfileAlign::Right;
+    let span = |share: f64| match right {
+        true => (x + w - w * share, w * share),
+        false => (x, w * share),
+    };
+    let path = |cr: &gtk::cairo::Context| {
+        let edge = if right { x + w } else { x };
+        cr.move_to(edge, y);
+        for (n, share) in rows.iter().enumerate() {
+            let end = if right { x + w - w * share } else { x + w * share };
+            cr.line_to(end, y + n as f64 * row_h);
+            cr.line_to(end, y + (n + 1) as f64 * row_h);
+        }
+        cr.line_to(edge, y + h);
+        cr.close_path();
+    };
+    match style.profile.shape {
+        ProfileShape::Filled => {
+            for (n, share) in rows.iter().enumerate() {
+                let inside = (2..=4).contains(&n);
+                let alpha = if inside { style.alpha } else { style.alpha * drawings::PROFILE_ROW_SHARE };
+                colors::set_source_alpha(cr, &colour, alpha.max(0.12));
+                let (left, width) = span(*share);
+                cr.rectangle(left, y + n as f64 * row_h, width, row_h);
+                let _ = cr.fill();
+            }
+            colors::set_source_alpha(cr, &colour, drawings::PROFILE_EDGE_ALPHA);
+            cr.set_line_width(1.0);
+        }
+        ProfileShape::Outline => {
+            colors::set_source(cr, &colour);
+            cr.set_line_width(style.width.clamp(1.0, 2.0));
+        }
+    }
+    path(cr);
+    let _ = cr.stroke();
+    let poc = (y + 3.5 * row_h).round() + 0.5;
+    colors::set_source_alpha(cr, &style.profile.poc.hex(theme), drawings::PROFILE_POC_ALPHA);
+    cr.set_line_width(style.width.clamp(1.0, 2.0));
+    let (left, width) = span(1.0);
+    cr.move_to(left, poc);
+    cr.line_to(left + width, poc);
+    let _ = cr.stroke();
+}
+
+/// A row choosing one of a few named ways, and a way to show another.
+fn named_row(
+    title: &str,
+    names: &[&str],
+    current: Option<usize>,
+    on_pick: impl Fn(usize) + 'static,
+) -> (adw::ComboRow, Rc<dyn Fn(Option<usize>)>) {
+    let row = adw::ComboRow::new();
+    row.set_title(title);
+    row.set_model(Some(&gtk::StringList::new(names)));
+    row.set_selected(current.unwrap_or(0) as u32);
+    let showing = Rc::new(Cell::new(false));
+    {
+        let showing = showing.clone();
+        row.connect_selected_notify(move |row| {
+            if !showing.get() {
+                on_pick(row.selected() as usize);
+            }
+        });
+    }
+    let shown = row.clone();
+    let show: Rc<dyn Fn(Option<usize>)> = Rc::new(move |at| {
+        showing.set(true);
+        shown.set_selected(at.unwrap_or(0) as u32);
+        showing.set(false);
+    });
+    (row, show)
+}
+
 fn width_row(title: &str, current: f64, on_pick: impl Fn(f64) + 'static) -> (adw::ActionRow, Rc<dyn Fn(f64)>) {
     let row = adw::ActionRow::new();
     row.set_title(title);
@@ -1499,6 +1676,7 @@ pub fn swatch(theme: &Theme, kind: Kind, style: &Style) -> gtk::DrawingArea {
                     let _ = cr.stroke();
                 }
             }
+            Kind::Profile => profile_sample(cr, &theme, &style, 1.0, 1.0, w - 2.0, h - 2.0),
             // A swatch is thirty pixels by twelve: too small for a word, so
             // the text configuration shows the ink as a bar of it, the way
             // every other colour in the window is shown at this size.
@@ -1657,6 +1835,7 @@ fn draw_preview_figure(
             let box_at = (0.0, (h - box_h) / 2.0, w, box_h);
             preview_text(cr, box_at, Kind::Rect, theme, style, text, scale);
         }
+        Kind::Profile => profile_sample(cr, theme, style, w * 0.25, h * 0.18, w * 0.5, h * 0.64),
     }
 }
 

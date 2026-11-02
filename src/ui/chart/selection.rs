@@ -210,7 +210,7 @@ pub(super) fn profile_box(profile: &Profile, columns: &Columns, align: Align) ->
 /// The shape a profile's rows make together: along the edge they grow from,
 /// and back the stepped way their ends make. Narrower than a few pixels the
 /// steps are a smear, and the edge says it alone.
-pub(super) fn profile_path(cr: &cairo::Context, area: &ProfileBox, profile: &Profile, to_y: &impl Fn(f64) -> f64) {
+pub(super) fn profile_path(cr: &cairo::Context, area: &ProfileBox, profile: &Profile, to_y: &dyn Fn(f64) -> f64) {
     let mut rows: Vec<_> = profile.rows.iter().collect();
     rows.sort_by(|a, b| b.high.total_cmp(&a.high));
     let (top, bottom) = (to_y(rows[0].high), to_y(rows[rows.len() - 1].low));

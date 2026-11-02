@@ -2450,6 +2450,17 @@ fn describe_style(kind: omacharts_engine::DrawingKind, style: &omacharts_engine:
             format!("fill {} at {:.2}{edge}", style.fill.spell(), style.alpha)
         }
         Kind::Text => describe_text_style(style),
+        Kind::Profile => {
+            let look = &style.profile;
+            format!(
+                "{} {}, from the {}, point of control {}, value area {:.0}%",
+                style.colour.spell(),
+                look.shape.key(),
+                look.align.key(),
+                look.poc.spell(),
+                look.value_area * 100.0
+            )
+        }
     }
 }
 

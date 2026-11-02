@@ -805,6 +805,11 @@ fn shift_by_columns(
     scale: &PriceScale,
     by_price: f64,
 ) {
+    // Moved whole, a profile would be a profile of other bars: its edges
+    // are what change the span.
+    if drawing.kind == DrawingKind::Profile {
+        return;
+    }
     let move_anchor = |anchor: &mut Anchor| {
         anchor.ts = ts_at(bars, index_of_ts(bars, anchor.ts) + by_index);
         anchor.price = scale.shift(anchor.price, by_price);
@@ -1368,9 +1373,41 @@ impl State {
         )
     }
 
+    /// The volume profile a profile drawing shows: of the bars between its
+    /// two anchors, on this chart's own bars.
+    fn span_profile(&self, drawing: &Drawing) -> Option<Profile> {
+        let (from, to) = (drawing.from.ts.min(drawing.to.ts), drawing.from.ts.max(drawing.to.ts));
+        let first = self.bars.partition_point(|bar| bar.ts < from);
+        let end = self.bars.partition_point(|bar| bar.ts <= to);
+        if first >= end {
+            return None;
+        }
+        let look = &drawing.style(&self.configs).profile;
+        let kind = self.instrument.as_ref().map(|i| i.kind);
+        omacharts_engine::indicators::profile::of_span(&self.bars[first..end], first, look.rows, look.value_area, kind)
+    }
+
+    /// Where a bar's column begins, in pixels.
+    fn column_edge(&self, plan: &Layout, index: f64) -> f64 {
+        let (first, _, lead) = self.view();
+        let bar_w = plan.plot_w / self.columns().max(1) as f64;
+        plan.plot_x + (index - (first as f64 - lead as f64)) * bar_w
+    }
+
     /// A drawing as pixels, through the same scales the candles use.
     fn project(&self, plan: &Layout, scale: &PriceScale, drawing: &Drawing) -> Projected {
         let point = |anchor: &Anchor| self.project_anchor(plan, scale, *anchor);
+        // A profile is as wide as the bars it covers, edge to edge, and as
+        // tall as the prices they reached: its anchors only say when.
+        if drawing.kind == DrawingKind::Profile
+            && let Some(profile) = self.span_profile(drawing)
+            && let (Some(low), Some(high)) = (profile.rows.first(), profile.rows.last())
+        {
+            let to_y = |price: f64| scale.to_y(price, plan.price_y, plan.price_h);
+            let left = self.column_edge(plan, profile.first_bar as f64);
+            let right = self.column_edge(plan, profile.last_bar as f64 + 1.0);
+            return Projected::new(drawing.kind, (left, to_y(high.high)), (right, to_y(low.low)));
+        }
         let projected = match drawing.kind.is_path() {
             true => Projected::through(drawing.kind, drawing.corners().iter().map(point).collect()),
             false => Projected::new(drawing.kind, point(&drawing.from), point(&drawing.to)),
@@ -3032,7 +3069,7 @@ impl ChartView {
         self.end_text_edit(text_editor::Ended::Commit);
         let (text, style, ink, align) = {
             let state = self.state.borrow();
-            let Some(drawing) = state.drawings.get(index) else { return false };
+            let Some(drawing) = state.drawings.get(index).filter(|d| d.kind.takes_text()) else { return false };
             let style = drawing.style(&state.configs).clone();
             let ground = drawings::text_ground(drawing.kind, &style, &state.theme);
             let ink = drawings::text_colour(&style.text.colour, &state.theme, &ground);
@@ -5011,7 +5048,8 @@ fn draw_pointer(cr: &cairo::Context, width: f64, height: f64, state: &State) {
         };
         let lit = closing.then(|| (Grip::Corner(shown.points.len().saturating_sub(1)), Lit::Hover));
         let placed = state.project(&plan, &scale, &shown);
-        draw_drawing(cr, state, &placed, &shown, true, false, lit);
+        let to_y = |price: f64| scale.to_y(price, plan.price_y, plan.price_h);
+        draw_drawing(cr, state, &placed, &shown, true, false, lit, &to_y);
         cr.restore().ok();
     }
 
@@ -6430,7 +6468,8 @@ fn draw_drawings(cr: &cairo::Context, state: &State, plan: &Layout, scale: &Pric
         let typing = state.editing == Some(index);
         let selected = state.selected.contains(&index);
         let lit = selected.then(|| state.lit_grip(index)).flatten();
-        draw_drawing(cr, state, &projected, drawing, selected, typing, lit);
+        let to_y = |price: f64| scale.to_y(price, plan.price_y, plan.price_h);
+        draw_drawing(cr, state, &projected, drawing, selected, typing, lit, &to_y);
         if typing {
             draw_editing_ground(cr, state, drawing);
         }
@@ -6446,6 +6485,7 @@ fn draw_drawings(cr: &cairo::Context, state: &State, plan: &Layout, scale: &Pric
 /// measured over every theme — so the candles read through it and the edge
 /// is the edge of the shape rather than a line drawn around it. A selected
 /// drawing wears a grip at each of its corners.
+#[allow(clippy::too_many_arguments)]
 fn draw_drawing(
     cr: &cairo::Context,
     state: &State,
@@ -6454,6 +6494,7 @@ fn draw_drawing(
     selected: bool,
     typing: bool,
     lit: Option<(Grip, Lit)>,
+    to_y: &dyn Fn(f64) -> f64,
 ) {
     let style = drawing.style(&state.configs);
     let colour = style.colour.hex(&state.theme);
@@ -6553,6 +6594,7 @@ fn draw_drawing(
         // kind. A text drawing with nothing typed into it yet draws nothing
         // at all, which is the right picture of a caret waiting.
         DrawingKind::Text => {}
+        DrawingKind::Profile => draw_profile_drawing(cr, state, projected, drawing, style, &colour, to_y),
     }
     if !typing {
         draw_label(cr, state, projected, drawing, style);
@@ -7060,6 +7102,63 @@ fn draw_profiles(
             selection::outline_profile(cr, &state.theme, &drawn.color, profile, &area, to_y);
         }
     }
+}
+
+/// A volume profile drawing: the study's rows across the whole span it
+/// covers, set apart from the study by the edge round them, or drawn as only
+/// that edge, with a point of control at the drawing's own stroke.
+fn draw_profile_drawing(
+    cr: &cairo::Context,
+    state: &State,
+    projected: &Projected,
+    drawing: &Drawing,
+    style: &drawings::Style,
+    colour: &str,
+    to_y: &dyn Fn(f64) -> f64,
+) {
+    use omacharts_engine::indicators::profile::{Align, Style as Shape};
+    let Some(profile) = state.span_profile(drawing) else { return };
+    if profile.max_volume <= 0.0 || profile.rows.is_empty() {
+        return;
+    }
+    let (x, _, w, _) = projected.bounds();
+    let look = &style.profile;
+    let area = match look.align {
+        Align::Left => selection::ProfileBox { edge: x, span: w, towards: 1.0 },
+        Align::Right => selection::ProfileBox { edge: x + w, span: w, towards: -1.0 },
+    };
+    match look.shape {
+        Shape::Filled => {
+            let (area_low, area_high) = profile.value_area_bounds();
+            for row in profile.rows.iter().filter(|row| row.volume > 0.0) {
+                let (from, to) = area.row(row.volume / profile.max_volume);
+                let top = to_y(row.high);
+                let height = (to_y(row.low) - top).max(1.0);
+                let inside = row.low >= area_low && row.high <= area_high;
+                let alpha = if inside { style.alpha } else { style.alpha * drawings::PROFILE_ROW_SHARE };
+                colors::set_source_alpha(cr, colour, alpha);
+                cr.rectangle(from, top, to - from, height);
+                let _ = cr.fill();
+            }
+            colors::set_source_alpha(cr, colour, drawings::PROFILE_EDGE_ALPHA);
+            cr.set_line_width(drawings::BORDER_WIDTH);
+        }
+        Shape::Outline => {
+            colors::set_source(cr, colour);
+            cr.set_line_width(style.width.max(1.0));
+        }
+    }
+    cr.set_line_join(cairo::LineJoin::Miter);
+    selection::profile_path(cr, &area, &profile, to_y);
+    let _ = cr.stroke();
+
+    let y = to_y(profile.poc_price()).round() + 0.5;
+    colors::set_source_alpha(cr, &look.poc.hex(&state.theme), drawings::PROFILE_POC_ALPHA);
+    cr.set_line_width(style.width.max(1.0));
+    let (from, to) = area.row(1.0);
+    cr.move_to(from, y);
+    cr.line_to(to, y);
+    let _ = cr.stroke();
 }
 
 /// Where a series indexed by bar is drawn in one column, if it has a value
