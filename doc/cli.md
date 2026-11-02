@@ -119,7 +119,7 @@ Every indicator the app has, with every parameter it exposes:
 | `stochastic` | `--period` (%K length), `--k-smooth`, `--d-period`, `--overbought`, `--oversold`, `--height`, `--d-color` |
 | `volume` | `--height` |
 | `vwap` | `--anchor`, `--bands`, `--band-alpha` |
-| `volume_profile` | `--anchor`, `--rows` (a number or `auto`), `--value-area`, `--poc-color`, `--poc-width`, `--outline-color`, `--outline-width`, `--profile-style` (`filled` or `outline`), `--align` (`left` or `right`) |
+| `volume_profile` | `--anchor`, `--rows` (a number or `auto`), `--value-area`, `--poc-color`, `--poc-width`, `--outline` (`on` or `off`), `--outline-color`, `--outline-width`, `--profile-style` (`filled` or `outline`), `--align` (`left` or `right`) |
 
 Anything that draws a line also takes `--color`, `--width` and `--style`, and
 everything takes `--visible`.
@@ -743,7 +743,8 @@ omacharts chart drawing reset-configs rect
 
 **A volume profile drawing** (`profile`, or `vp`) reads only the times of its
 anchors: its height is the prices its bars reached. `--color` is its outline
-and `--fill` its background, `--width` the outline's thickness;
+and `--fill` its background, `--border on|off` whether filled rows have it,
+`--width` its thickness;
 `--poc-color`, `--poc-width`, `--profile-style`, `--align`, `--value-area` and
 `--transparency` are the rest. It is never moved whole, only
 re-spanned, and it takes no words.

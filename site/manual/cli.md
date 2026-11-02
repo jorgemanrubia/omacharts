@@ -529,7 +529,8 @@ are in [Indicators](/manual/indicators/) and the page of its family.
 | `--poc-color C` | A colour | Volume profile |
 | `--profile-style S` | `filled`, `outline` | Volume profile |
 | `--align A` | `left`, `right` | Volume profile |
-| `--outline-color C` | A colour | Volume profile, in the outline style |
+| `--outline B` | `on`, `off` | Volume profile: whether filled rows wear an outline |
+| `--outline-color C` | A colour | Volume profile |
 | `--outline-width F`, `--poc-width F` | 0.5 to 6 | Volume profile |
 | `--up-color C`, `--down-color C` | A colour | Volume |
 | `--overbought F`, `--oversold F` | 0 to 100 | RSI, stochastic |

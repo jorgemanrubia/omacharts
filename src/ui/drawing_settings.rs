@@ -746,7 +746,32 @@ fn style_editor(window: &Rc<Window>, kind: Kind, current: Style, on_style: Rc<dy
         }
         // The study's properties, as one drawing carries them.
         Kind::Profile => {
-            let (row, show) = paint_row(&theme, "Outline", &style.borrow().colour, {
+            // Filled rows wear an outline only when asked; the outline style
+            // is nothing but one, so the switch is for the filled style.
+            let filled = |s: &Style| s.profile.shape == ProfileShape::Filled;
+            let edge = adw::SwitchRow::new();
+            edge.set_title("Outline");
+            edge.set_active(style.borrow().border || !filled(&style.borrow()));
+            edge.set_sensitive(filled(&style.borrow()));
+            {
+                let style = style.clone();
+                let emit = emit.clone();
+                let showing = showing.clone();
+                edge.connect_active_notify(move |row| {
+                    if showing.get() || !filled(&style.borrow()) {
+                        return;
+                    }
+                    style.borrow_mut().border = row.is_active();
+                    emit();
+                });
+            }
+            group.add(&edge);
+            shows.push(Rc::new(move |s: &Style| {
+                edge.set_active(s.border || !filled(s));
+                edge.set_sensitive(filled(s));
+            }));
+
+            let (row, show) = paint_row(&theme, "Outline colour", &style.borrow().colour, {
                 let style = style.clone();
                 let emit = emit.clone();
                 move |paint| {
@@ -1460,7 +1485,8 @@ fn profile_sample(cr: &gtk::cairo::Context, theme: &Theme, style: &Style, x: f64
                 cr.rectangle(left, y + n as f64 * row_h, width, row_h);
                 let _ = cr.fill();
             }
-            colors::set_source_alpha(cr, &colour, drawings::PROFILE_EDGE_ALPHA * opacity);
+            let edge = if style.border { drawings::PROFILE_EDGE_ALPHA } else { 0.0 };
+            colors::set_source_alpha(cr, &colour, edge * opacity);
             cr.set_line_width(1.0);
         }
         ProfileShape::Outline => {

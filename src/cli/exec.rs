@@ -2975,6 +2975,7 @@ struct Edits {
     poc_color: Option<ColorChoice>,
     profile_style: Option<omacharts_engine::indicators::profile::Style>,
     align: Option<omacharts_engine::indicators::profile::Align>,
+    outline: Option<bool>,
     outline_color: Option<ColorChoice>,
     outline_width: Option<f64>,
     poc_width: Option<f64>,
@@ -3058,6 +3059,12 @@ impl Edits {
             },
             value_area: bounded(m, "value-area", 0.0, 1.0)?,
             poc_color: colour(m, "poc-color")?,
+            outline: match arg(m, "outline").map(String::as_str) {
+                None => None,
+                Some("on") => Some(true),
+                Some("off") => Some(false),
+                Some(other) => return Err(Fault::usage(format!("--outline is on or off, not {other:?}"))),
+            },
             outline_color: colour(m, "outline-color")?,
             outline_width: bounded(m, "outline-width", 0.5, 6.0)?,
             poc_width: bounded(m, "poc-width", 0.5, 6.0)?,
@@ -3159,6 +3166,7 @@ impl Edits {
             && self.poc_color.is_none()
             && self.profile_style.is_none()
             && self.align.is_none()
+            && self.outline.is_none()
             && self.outline_color.is_none()
             && self.outline_width.is_none()
             && self.poc_width.is_none()
@@ -3293,6 +3301,12 @@ impl Edits {
             match kind == IndicatorKind::VolumeProfile {
                 true => params["align"] = json!(align.key()),
                 false => return Err(refuse("alignment")),
+            }
+        }
+        if let Some(on) = self.outline {
+            match kind == IndicatorKind::VolumeProfile {
+                true => params["outline"] = json!(on),
+                false => return Err(refuse("outline")),
             }
         }
         if let Some(colour) = &self.outline_color {

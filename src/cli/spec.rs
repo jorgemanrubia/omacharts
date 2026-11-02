@@ -307,7 +307,8 @@ const INDICATOR_FLAGS: &[Flag] = &[
     Flag::valued("poc-color", "COLOUR", "the volume profile's point of control"),
     Flag::valued("profile-style", "HOW", "volume profile rows filled, or only their outline").of(PROFILE_STYLES),
     Flag::valued("align", "EDGE", "the edge of its period a volume profile grows from").of(PROFILE_ALIGNS),
-    Flag::valued("outline-color", "COLOUR", "a volume profile's outline, drawn in the outline style"),
+    Flag::valued("outline", "BOOL", "whether a filled volume profile wears an outline").of(SWITCHES),
+    Flag::valued("outline-color", "COLOUR", "a volume profile's outline"),
     Flag::valued("outline-width", "F", "a volume profile's outline thickness in pixels"),
     Flag::valued("poc-width", "F", "a volume profile's point of control thickness in pixels"),
     Flag::valued("up-color", "COLOUR", "volume bars of a rising session"),
@@ -914,7 +915,7 @@ pub const SURFACE: &[Noun] = &[
                     Flag::valued("width", "F", "a line's thickness in pixels, or a box's edge"),
                     Flag::valued("arrow", "WHERE", "which ends of a line wear an arrowhead").of(ARROWS),
                     Flag::valued("head", "SHAPE", "the arrowhead's shape").of(HEADS),
-                    Flag::valued("border", "BOOL", "whether a box has an edge").of(SWITCHES),
+                    Flag::valued("border", "BOOL", "whether a box has an edge, or a filled volume profile an outline").of(SWITCHES),
                     Flag::valued("fill", "COLOUR", "what a box is filled with: a preset name or #rrggbb"),
                     Flag::valued("alpha", "F", "how much of a box's fill shows, 0-1"),
                     Flag::valued("scope", "SCOPE", "who else sees it (default: shared, unless the chart does not send)")

@@ -1117,11 +1117,10 @@ pub const PROFILE_ALPHA: f64 = 0.30;
 /// 0.14 to its 0.30.
 pub const PROFILE_ROW_SHARE: f64 = 0.14 / 0.30;
 
-/// The hairline around a filled profile's silhouette. The study draws no
-/// edge, so this is what says "drawing" where the hue cannot: a box's 0.35
-/// is lost against a 0.30 fill, and 0.55 is the first step that clears both
-/// the drawing's own tint and the study's.
-pub const PROFILE_EDGE_ALPHA: f64 = 0.55;
+/// The hairline around a filled profile's silhouette, the drawing's and the
+/// study's alike. Soft on purpose: 0.55 cleared both tints by the most and
+/// read as a line drawn round the rows rather than their edge.
+pub const PROFILE_EDGE_ALPHA: f64 = 0.40;
 
 /// The point of control's strength, the study's. Its width is its own,
 /// [`ProfileLook::poc_width`], a stroke where the study's is a hairline.

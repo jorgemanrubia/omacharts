@@ -7136,11 +7136,11 @@ fn draw_profiles(
     columns: &Columns,
     to_y: &impl Fn(f64) -> f64,
 ) {
-    let (chosen, outline, outline_width, poc_width) = match &drawn.indicator.params {
-        omacharts_engine::Params::VolumeProfile { poc_color, outline_color, outline_width, poc_width, .. } => {
-            (poc_color.as_ref(), outline_color.as_ref(), *outline_width, *poc_width)
+    let (chosen, edged, outline, outline_width, poc_width) = match &drawn.indicator.params {
+        omacharts_engine::Params::VolumeProfile { poc_color, outline: edged, outline_color, outline_width, poc_width, .. } => {
+            (poc_color.as_ref(), *edged, outline_color.as_ref(), *outline_width, *poc_width)
         }
-        _ => (None, None, 1.0, 1.0),
+        _ => (None, false, None, 1.0, 1.0),
     };
     let poc = state.theme.companion_or(chosen, &drawn.color);
     let outline = outline.map(|c| c.resolve(&state.theme)).unwrap_or_else(|| drawn.color.clone());
@@ -7167,6 +7167,13 @@ fn draw_profiles(
                     colors::set_source_alpha(cr, &drawn.color, if inside { 0.30 } else { 0.14 });
                     cr.rectangle(from, top, to - from, height);
                     let _ = cr.fill();
+                }
+                if edged {
+                    colors::set_source_alpha(cr, &outline, drawings::PROFILE_EDGE_ALPHA);
+                    cr.set_line_width(outline_width.max(0.5));
+                    cr.set_line_join(cairo::LineJoin::Miter);
+                    selection::profile_path(cr, &area, profile, to_y);
+                    let _ = cr.stroke();
                 }
             }
             // Only the shape the rows make, so the candles under it stay
@@ -7235,7 +7242,9 @@ fn draw_profile_drawing(
                 cr.rectangle(from, top, to - from, height);
                 let _ = cr.fill();
             }
-            colors::set_source_alpha(cr, colour, drawings::PROFILE_EDGE_ALPHA * opacity);
+            // An edge the drawing can go without: off, the rows are all of it.
+            let edge = if style.border { drawings::PROFILE_EDGE_ALPHA } else { 0.0 };
+            colors::set_source_alpha(cr, colour, edge * opacity);
             cr.set_line_width(style.width.max(0.5));
         }
         Shape::Outline => {

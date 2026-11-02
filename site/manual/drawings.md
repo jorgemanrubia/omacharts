@@ -255,12 +255,13 @@ Drag its left or right edge to change the span, and the profile is worked out ag
 
 | Property | Does |
 |---|---|
-| **Outline** | The edge round the rows |
+| **Outline** | Whether filled rows have an edge round them. On by default; always on for an outline |
+| **Outline colour** | The edge round the rows |
 | **Background** | The rows |
 | **Transparency** | Fades the outline and the background together. 0% is the look as configured |
 | **Point of control** | The line across the busiest price |
-| **Outline thickness** | The outline. 1 px on a filled configuration, 1.5 px on an outline |
 | **Point of control thickness** | The point of control, 1.5 px |
+| **Outline thickness** | The outline. 1 px on a filled configuration, 1.5 px on an outline |
 | **Style** | **Filled**: the rows under the outline. **Outline**: the outline alone |
 | **Alignment** | **Left**: the rows grow from the start of the span. **Right**: from its end |
 | **Value area %** | The share of the span's volume the value area holds, 10 to 100% |

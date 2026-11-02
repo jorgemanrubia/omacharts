@@ -1729,7 +1729,8 @@ fn profile_style(
     let id = indicator.id;
     let group = adw::PreferencesGroup::new();
     group.set_title("Style");
-    let Params::VolumeProfile { style, align, poc_color, outline_color, outline_width, poc_width, .. } = &indicator.params
+    let Params::VolumeProfile { style, align, poc_color, outline, outline_color, outline_width, poc_width, .. } =
+        &indicator.params
     else {
         return group;
     };
@@ -1739,15 +1740,35 @@ fn profile_style(
     // to repaint: a profile has no line to show.
     let unused = Ink::new(String::new);
 
-    // The outline is what the outline style draws; filled rows have none,
-    // so its two rows wait for it.
-    let outlined = *style == Style::Outline;
+    // Filled rows wear an outline only when asked; the outline style is
+    // nothing but one, so the switch is for the filled style, and the
+    // outline's own two rows wait for there to be an outline.
+    let filled = *style == Style::Filled;
+    let switch = adw::SwitchRow::new();
+    switch.set_title("Outline");
+    switch.set_active(*outline || !filled);
+    switch.set_sensitive(filled);
+    {
+        let owner = owner.clone();
+        let refresh = refresh.clone();
+        switch.connect_active_notify(move |row| {
+            let on = row.is_active();
+            update(&owner, id, |indicator| {
+                if let Params::VolumeProfile { outline, .. } = &mut indicator.params {
+                    *outline = on;
+                }
+            });
+            refresh.run();
+        });
+    }
+    group.add(&switch);
+    let outlined = !filled || *outline;
     let shown = outline_color.as_ref().map(|c| c.resolve(&owner.theme())).unwrap_or_else(|| colour.to_string());
     let outline_row = colour_row(
         owner,
         refresh,
         &unused,
-        "Outline",
+        "Outline colour",
         &shown,
         outline_color.clone(),
         move |indicator, choice| {
