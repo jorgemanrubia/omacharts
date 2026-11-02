@@ -5504,13 +5504,11 @@ impl Window {
     }
 
     /// Where a picker opens: over the focused chart, which is the one a pick
-    /// changes, named by its position.
+    /// changes.
     fn over_focused(&self) -> Over {
         let pane = self.focused_pane();
-        let leaves = self.layout.borrow().leaves();
-        let at = leaves.iter().position(|leaf| *leaf == pane.id).unwrap_or(0);
         let panes = self.panes.borrow();
-        Over::chart(&pane, panes.iter().map(|pane| pane.as_ref()), at)
+        Over::chart(&pane, panes.iter().map(|pane| pane.as_ref()))
     }
 
     /// The resolution box: type "3", "15", "4h", "1D".

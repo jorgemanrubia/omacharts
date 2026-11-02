@@ -19,7 +19,7 @@ A digit typed over the chart opens **Change resolution** instead ([Charts](/manu
 
 ## The search
 
-The search opens near the top of the window, in the same place whichever chart is focused. Every chart fades, the one a pick will change wears a wider focus ring, and the end of the search row names it, such as **→ pos:1**. Adding a symbol to a watchlist changes no chart, so nothing fades and the row names the watchlist instead ([Watchlists](/manual/watchlists/#symbols)).
+The search opens near the top of the window, in the same place whichever chart is focused. Every chart fades, and the one a pick will change wears a wider focus ring. Adding a symbol to a watchlist changes no chart, so nothing fades and the end of the search row names the watchlist instead ([Watchlists](/manual/watchlists/#symbols)).
 
 <!-- regenerate:
 theme: tokyo-night
@@ -37,7 +37,7 @@ state:
 capture: bin/headless-window shot /tmp/search.png
 crop: none (resized to 2000 wide, JPEG)
 -->
-{% include figure.html src="/assets/manual/symbols/search-semi.jpg" alt="The symbol search with semi typed over two NVDA daily charts, listing SEMI, SMH, SOXX, TSM and other matches with their names, venues and kinds; the right-hand chart is dimmed and the search row ends in → pos:1" caption="The search with semi typed. It will change the dimmed chart, pos:1." %}
+{% include figure.html src="/assets/manual/symbols/search-semi.jpg" alt="The symbol search with semi typed over two NVDA daily charts, listing SEMI, SMH, SOXX, TSM and other matches with their names, venues and kinds; the right-hand chart wears the wider ring" caption="The search with semi typed. It will change the chart with the wider ring, on the right." %}
 
 The box reads **Symbol or name**. It matches a ticker or any part of a name, in the instrument's own language too. `台積` finds 2330.TW. Empty, it lists the majors.
 
