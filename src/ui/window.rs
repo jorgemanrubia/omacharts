@@ -1975,7 +1975,7 @@ mod tools_toggle_tests {
             .panes
             .borrow()
             .iter()
-            .map(|pane| pane.header_row.parent().expect("the legend").margin_start())
+            .map(|pane| pane.zones[0].parent().expect("the legend").margin_start())
             .collect()
     }
 
@@ -2378,7 +2378,7 @@ mod outside_change_tests {
             let window = bare_window(&store);
             let pane = window.focused_pane();
             assert!(pane.shows(crate::header::Part::Title), "the title is not in the standard header");
-            assert!(pane.title_part.parent().is_some_and(|parent| parent == pane.header_center));
+            assert!(pane.title_part.parent().is_some_and(|parent| parent == pane.zones[1]));
             assert!(pane.title_button.has_css_class(TITLE_UNTITLED));
             let words = pane.title_button.child().and_downcast::<gtk::Label>().expect("the title's words");
             assert_eq!(words.text(), TITLE_PLACEHOLDER);
@@ -2450,7 +2450,7 @@ mod outside_change_tests {
     /// the row it is in. The menu row says F2.
     #[test]
     fn f2_edits_the_chart_title_in_the_header_or_else_in_the_dialog() {
-        use crate::header::{Header, Part};
+        use crate::header::{Layout, Part};
         crate::ui::on_gtk(|| {
             let store = Rc::new(Store::memory().expect("a store"));
             let window = bare_window(&store);
@@ -2464,15 +2464,17 @@ mod outside_change_tests {
             assert!(window.window.visible_dialog().is_none());
             pane.finish_title_edit(false);
 
-            pane.header_center.set_child_visible(false);
+            pane.zones[1].set_child_visible(false);
             window.edit_chart_title();
             assert!(!pane.editing_title());
             let dialog = window.window.visible_dialog().and_downcast::<adw::AlertDialog>().expect("the dialog");
             assert_eq!(dialog.title(), "Chart title");
             dialog.force_close();
-            pane.header_center.set_child_visible(true);
+            pane.zones[1].set_child_visible(true);
 
-            *pane.header.borrow_mut() = Header { center: Vec::new(), ..Header::standard() };
+            let mut header = Layout::standard();
+            header.remove(Part::Title);
+            *pane.header.borrow_mut() = header;
             pane.arrange_header();
             assert!(!pane.shows(Part::Title));
             window.edit_chart_title();
@@ -2535,6 +2537,7 @@ mod outside_change_tests {
             window.set_chart_title("Semis desk");
             settle();
             assert!(pane.root.is_mapped(), "the chart never came on screen");
+            assert!(pane.title_in_view(), "the chart came on screen too narrow to show its title");
             let at = pane.title_button.compute_bounds(&pane.root).expect("the title has a place");
             let titled = screenshot::chart(&pane, &window.theme()).expect("a screenshot").texture;
             window.set_chart_title("");
@@ -2544,21 +2547,13 @@ mod outside_change_tests {
 
             let scale = titled.width() as f32 / pane.root.width() as f32;
             let ((titled, stride), (untitled, _)) = (pixels(&titled), pixels(&untitled));
-            let rows = (at.y() * scale) as usize..((at.y() + at.height()) * scale) as usize;
-            let columns = (at.x() * scale) as usize * 4..((at.x() + at.width()) * scale) as usize * 4;
-            let region = |bytes: &[u8]| -> Vec<u8> {
-                rows.clone().flat_map(|row| bytes[row * stride..][columns.clone()].to_vec()).collect()
-            };
+            // The header's band, down to the foot of the title: the parts of a
+            // header laid out in zones move as the title comes and goes, so
+            // what is compared is the band, and the title is what changes it.
+            let rows = 0..((at.y() + at.height()) * scale) as usize;
+            let region = |bytes: &[u8]| -> Vec<u8> { rows.clone().flat_map(|row| bytes[row * stride..][..stride].to_vec()).collect() };
             let (titled, untitled) = (region(&titled), region(&untitled));
-            let ground = untitled[..4].to_vec();
-            assert!(
-                untitled.chunks(4).all(|pixel| pixel == ground),
-                "an untitled chart's empty slot drew something into the screenshot"
-            );
-            assert!(
-                titled.chunks(4).any(|pixel| pixel != ground),
-                "the title is not in the screenshot where the header shows it"
-            );
+            assert_ne!(titled, untitled, "the title is not in the screenshot's header");
         });
     }
 
@@ -4309,9 +4304,7 @@ impl Window {
             retry_timer: RefCell::new(None),
             series: Rc::new(RefCell::new(HashMap::new())),
             split: split.clone(),
-            timeframes: RefCell::new(parse_timeframes(
-                store.setting(SETTING_TIMEFRAMES).as_deref(),
-            )),
+            timeframes: RefCell::new(parse_timeframes(store.setting(SETTING_TIMEFRAMES).as_deref())),
         });
 
         // A root opened in the picker asks the feed serving it what it
@@ -4608,7 +4601,7 @@ impl Window {
         let editor = self.clone();
         let size_menu = gtk::GestureClick::new();
         size_menu.set_button(gtk::gdk::BUTTON_SECONDARY);
-        let (part, anchor) = (pane.size_menu.clone(), pane.header_row.clone());
+        let (part, anchor) = (pane.size_menu.clone(), pane.zones[0].clone());
         size_menu.connect_pressed(move |gesture, _, x, y| {
             gesture.set_state(gtk::EventSequenceState::Claimed);
             editor.focus(id);
@@ -4690,21 +4683,20 @@ impl Window {
 
         // And the header, the same way, for what it shows: one line for every
         // chart, set in the preferences, and reached from here because here
-        // is where somebody is looking when they want it changed. Either of
-        // its sections.
-        for header in [pane.header_row.clone(), pane.header_center.clone()] {
+        // is where somebody is looking when they want it changed.
+        for zone in &pane.zones {
             let editor = self.clone();
             let header_menu = gtk::GestureClick::new();
             header_menu.set_button(gtk::gdk::BUTTON_SECONDARY);
-            let anchor = header.clone();
+            let header = zone.clone();
             header_menu.connect_pressed(move |gesture, _, x, y| {
                 gesture.set_state(gtk::EventSequenceState::Claimed);
                 editor.focus(id);
                 let model = gio::Menu::new();
                 model.append(Some("Edit header…"), Some("chart.edit-header"));
-                popup_menu(&model, &anchor, x, y);
+                popup_menu(&model, &header, x, y);
             });
-            header.add_controller(header_menu);
+            zone.add_controller(header_menu);
         }
 
         let axis_owner = self.clone();
@@ -7463,6 +7455,11 @@ impl Window {
         handle
     }
 
+    /// The strip's resolutions.
+    pub fn timeframes(&self) -> Vec<Timeframe> {
+        self.timeframes.borrow().clone()
+    }
+
     /// Fill the resolution strip from the list.
     /// Build every chart's resolution strip. Called when the list of
     /// resolutions changes, which is the only time the buttons differ.
@@ -7482,8 +7479,7 @@ impl Window {
         let mut buttons = Vec::new();
 
         for timeframe in self.timeframes.borrow().iter().copied() {
-            let button = gtk::ToggleButton::with_label(&timeframe.label());
-            button.add_css_class("flat");
+            let button = crate::ui::pane::strip_button(timeframe);
             button.set_tooltip_text(Some(&timeframe.description()));
             // A click picks a resolution; it does not move the keyboard. Taking
             // the focus left a ring on the button that outlived the click, and
@@ -8417,7 +8413,7 @@ impl Window {
     /// The preferences at the section that edits what every chart's header
     /// shows, from the header itself.
     pub fn edit_header(self: &Rc<Self>) {
-        self.open_preferences_at(Some("overlays"));
+        self.open_preferences_at(Some(crate::ui::preferences::OVERLAYS));
     }
 
     /// The preferences, at section `at` when asked for, else where they
@@ -10928,16 +10924,16 @@ impl Window {
     }
 
     /// Fill in the parts of a chart's header only the window knows: the
-    /// template's name, and the day's move. Each only when the header shows
-    /// it, so a chart that does not ask for the move never reads a quote.
+    /// template's name, the day's move and the last price. Each only when the
+    /// header shows it, so a chart that asks for neither never reads a quote.
     fn write_header_of(self: &Rc<Self>, pane: &Rc<ChartPane>) {
         use crate::header::Part;
         if pane.shows(Part::Template) {
             let name = pane.template.get().and_then(|id| crate::templates::get(&self.store, id));
             pane.write_template(name.as_ref().map(|t| t.name.as_str()));
         }
-        if pane.shows(Part::Change) {
-            self.write_change_of(pane);
+        if pane.shows(Part::Change) || pane.shows(Part::Last) {
+            self.write_quote_of(pane);
         }
     }
 
@@ -11002,24 +10998,31 @@ impl Window {
         Some(part)
     }
 
-    /// Every chart's day's move, after quotes have moved.
+    /// Every chart's day's move and last price, after quotes have moved.
     ///
     /// Out of the cache the rail reads, through the same lookup, so the
     /// header and the rail cannot disagree and nothing is fetched for it.
     /// Called where the rail's own numbers are refreshed — never from a draw.
     fn write_changes(self: &Rc<Self>) {
         let panes = self.panes.borrow().clone();
-        for pane in panes.iter().filter(|pane| pane.shows(crate::header::Part::Change)) {
-            self.write_change_of(pane);
+        use crate::header::Part;
+        for pane in panes.iter().filter(|pane| pane.shows(Part::Change) || pane.shows(Part::Last)) {
+            self.write_quote_of(pane);
         }
     }
 
-    fn write_change_of(self: &Rc<Self>, pane: &Rc<ChartPane>) {
+    fn write_quote_of(self: &Rc<Self>, pane: &Rc<ChartPane>) {
         let instrument = pane.instrument.borrow().clone();
-        let quote = instrument.and_then(|instrument| {
-            let routed = self.route_pane(pane, &instrument)?;
-            crate::cli::quote(&self.store, routed.feed.provider.as_ref(), &instrument)
+        let quote = instrument.as_ref().and_then(|instrument| {
+            let routed = self.route_pane(pane, instrument)?;
+            crate::cli::quote(&self.store, routed.feed.provider.as_ref(), instrument)
         });
+        // With the rail's decimals, so the two cannot write one price two ways.
+        let last = quote.as_ref().zip(instrument.as_ref()).map(|(quote, instrument)| {
+            let decimals = crate::ui::watchlist::decimals_for(quote.last, instrument.kind);
+            omacharts_engine::grouped_decimals(quote.last, decimals)
+        });
+        pane.write_last(last.as_deref());
         // In the chart's own colours for a rise and a fall, as its candles
         // are painted — a chart whose rises are red says so here too.
         let scheme = pane.view.scheme();
@@ -11867,7 +11870,11 @@ impl Window {
             let pane = self.focused_pane();
             self.give_setting(&pane, setting);
             self.sync_chart_actions(&pane);
-            self.redraw_current();
+            // Other hours or another join is another series; the rest
+            // redraw what they change themselves.
+            if matches!(setting, ChartSetting::Session(_) | ChartSetting::Continuous(_)) {
+                self.redraw_current();
+            }
             self.save_workspace();
             settled();
             return;
@@ -12344,15 +12351,9 @@ impl Window {
         }
     }
 
-    /// Whether the focused chart is shown what other charts of its symbol
-    /// draw. It is shown its drawings again, since the answer to "which do
-    /// I see" just changed.
-    pub fn set_shows_drawings(self: &Rc<Self>, shows: bool) {
-        self.set_pane_shows_drawings(&self.focused_pane(), shows);
-        self.save_workspace();
-    }
-
-    /// The same for any chart, written down by the caller.
+    /// Whether `pane` is shown what other charts of its symbol draw. It is
+    /// shown its drawings again, since the answer to "which do I see" just
+    /// changed. Written down by the caller.
     fn set_pane_shows_drawings(self: &Rc<Self>, pane: &Rc<ChartPane>, shows: bool) {
         pane.shows_drawings.set(shows);
         let instrument = pane.instrument.borrow().clone();
@@ -12361,7 +12362,8 @@ impl Window {
         }
     }
 
-    /// Whether what is drawn on the focused chart goes to the symbol.
+    /// Whether what is drawn on `pane` goes to the symbol. Written down by
+    /// the caller.
     ///
     /// Live, not only for what is drawn next: turning it off takes back the
     /// drawings this chart sent, and turning it on sends what it has been
@@ -12373,12 +12375,6 @@ impl Window {
     /// it, so another chart's work is never withdrawn by a switch on this
     /// one — and a drawing made before charts had names belongs to none of
     /// them and stays where it is.
-    pub fn set_sends_drawings(self: &Rc<Self>, sends: bool) {
-        self.set_pane_sends_drawings(&self.focused_pane(), sends);
-        self.save_workspace();
-    }
-
-    /// The same for any chart, written down by the caller.
     fn set_pane_sends_drawings(self: &Rc<Self>, pane: &Rc<ChartPane>, sends: bool) {
         if pane.sends_drawings.get() == sends {
             return;

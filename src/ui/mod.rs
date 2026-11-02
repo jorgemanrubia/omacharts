@@ -16,6 +16,7 @@ pub mod drawing_bar;
 pub mod drawing_settings;
 pub mod feed_settings;
 pub mod form_window;
+pub mod layouts;
 pub mod pane;
 pub mod palette;
 pub mod part_list;
@@ -37,6 +38,13 @@ pub mod window;
 
 pub use chart::ChartView;
 pub use window::Window;
+
+/// `widget`'s children, first to last. Each next one is asked of the one
+/// before, so a walk that takes a child out stops there.
+pub fn children(widget: &impl gtk::prelude::IsA<gtk::Widget>) -> impl Iterator<Item = gtk::Widget> {
+    use gtk::prelude::*;
+    std::iter::successors(widget.first_child(), |child| child.next_sibling())
+}
 
 /// Run a test that builds widgets on the one thread GTK is ever
 /// initialised on, and say whether it ran.
@@ -74,7 +82,19 @@ pub fn on_gtk(test: impl FnOnce() + Send + 'static) -> bool {
                     // Each test starts with the flags as they ship, whatever
                     // the one before switched on.
                     crate::features::reset();
-                    let _ = done.send(std::panic::catch_unwind(std::panic::AssertUnwindSafe(test)));
+                    let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(test));
+                    // And with no windows of the one before. One left open
+                    // shares the screen with the next test's, and a tiling
+                    // compositor gives each a slice: a chart that asked for
+                    // 1000 px wide came up 76, too narrow for its header to
+                    // show the parts the test looked for.
+                    for window in gtk::Window::list_toplevels() {
+                        use gtk::prelude::*;
+                        if let Ok(window) = window.downcast::<gtk::Window>() {
+                            window.destroy();
+                        }
+                    }
+                    let _ = done.send(ran);
                 }
             })
             .expect("a thread for GTK");

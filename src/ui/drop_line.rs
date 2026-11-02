@@ -19,7 +19,7 @@ pub enum Edge {
     After,
 }
 
-const MARKED: &str = "drop-marked";
+pub const MARKED: &str = "drop-marked";
 const BEFORE: &str = "drop-before";
 const AFTER: &str = "drop-after";
 
@@ -83,7 +83,10 @@ pub fn target(
     target
 }
 
-fn mark(widget: &gtk::Widget, at: Option<Edge>) {
+/// Draw the line on `widget`'s edge `at`, or take it off for `None`, for a
+/// drop that works out its own landing rather than through [`target`]. The
+/// widget has to carry the marked class first, as `target` gives its own.
+pub fn mark(widget: &gtk::Widget, at: Option<Edge>) {
     let (on, off) = match at {
         Some(Edge::Before) => (Some(BEFORE), AFTER),
         Some(Edge::After) => (Some(AFTER), BEFORE),

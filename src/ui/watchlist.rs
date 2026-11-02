@@ -140,7 +140,7 @@ impl Column {
     }
 
     /// What the column is called where there is room to say it in full.
-    fn label(self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             Column::Symbol => "Symbol",
             Column::Last => "Last price",
@@ -156,21 +156,6 @@ impl Column {
             Column::Change => 9,
             Column::ChangePct => 7,
         }
-    }
-}
-
-impl crate::ui::part_list::Part for Column {
-    fn every() -> Vec<Self> {
-        Column::ALL.to_vec()
-    }
-    fn key(self) -> &'static str {
-        Column::key(self)
-    }
-    fn label(self) -> &'static str {
-        Column::label(self)
-    }
-    fn fixed(self) -> bool {
-        self == Column::Symbol
     }
 }
 
@@ -2036,8 +2021,7 @@ impl Watchlist {
         self.column_header.add_controller(menu);
     }
 
-    /// The columns, as a list to add to, take from and drag into order, in
-    /// the shape the preferences edit the charts' header in.
+    /// The columns, as a list to add to, take from and drag into order.
     pub fn edit_columns(self: &Rc<Self>) {
         let dialog = adw::Dialog::new();
         dialog.set_title("Watchlist Columns");
@@ -3215,7 +3199,7 @@ fn write_cell(
 /// The engine owns the rule so the rail and the chart cannot give the same
 /// price two ways. There is no gridline here, so only the instrument has an
 /// opinion.
-fn decimals_for(price: f64, kind: omacharts_engine::InstrumentKind) -> usize {
+pub(crate) fn decimals_for(price: f64, kind: omacharts_engine::InstrumentKind) -> usize {
     omacharts_engine::price_decimals(0.0, price, Some(kind))
 }
 

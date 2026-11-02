@@ -20,6 +20,7 @@ use omacharts_engine::indicators::profile::{Align, Method, Style as ProfileStyle
 use omacharts_engine::theme::ColorChoice;
 use omacharts_engine::{Indicator, Session};
 
+use crate::chart_defaults::{ChartDefaults, ChartSetting};
 use crate::ui::colors;
 use crate::ui::controls;
 use crate::ui::dialogs;
@@ -44,45 +45,6 @@ enum Focus {
 /// The one window of this kind, for `form_window`.
 pub(crate) const KIND: &str = "chart-settings";
 
-/// The chart's own sections down the sidebar, in order. Sections that are
-/// every chart's rather than this one's come after them, from
-/// [`extra_sections`].
-const SECTIONS: [(&str, &str, &str); 2] = [
-    ("chart", "Chart", "preferences-system-symbolic"),
-    ("indicators", "Indicators", "view-list-symbolic"),
-];
-
-/// A section past the chart's own: its id, title, icon, page, and the rule
-/// heading it when it starts a run of sections that are not this chart's.
-pub(crate) struct Extra {
-    pub id: &'static str,
-    pub title: &'static str,
-    pub icon: &'static str,
-    pub page: adw::PreferencesPage,
-    pub rule: Option<&'static str>,
-}
-
-/// Sections that are every chart's rather than this one's, put under the
-/// chart's own beneath a rule headed "Global": Appearance and Overlays.
-fn extra_sections(window: &Rc<Window>) -> Vec<Extra> {
-    vec![
-        Extra {
-            id: "appearance",
-            title: "Appearance",
-            icon: "preferences-desktop-appearance-symbolic",
-            page: window.appearance_page(),
-            rule: Some("GLOBAL"),
-        },
-        Extra {
-            id: "overlays",
-            title: "Overlays",
-            icon: "view-grid-symbolic",
-            page: window.overlays_page(),
-            rule: None,
-        },
-    ]
-}
-
 thread_local! {
     /// What the open window is showing, so that asking again finds it and a
     /// focus moving to another chart can rebuild it for that one.
@@ -103,7 +65,7 @@ struct Shown {
     chart: String,
     /// The sidebar's header, which names that chart under its title.
     title: adw::WindowTitle,
-    sidebar: gtk::ListBox,
+    sidebar: preferences::Sections,
     /// Every section's page stack, in sidebar order.
     views: Vec<adw::NavigationView>,
     list: IndicatorList,
@@ -174,9 +136,9 @@ impl ChartSettings {
                 // keyboard goes with it.
                 dialogs::step_tabs_with_alt(&frame, |forward| {
                     let Some(shown) = current() else { return };
-                    let at = shown.sidebar.selected_row().map(|row| row.index()).unwrap_or(0) as u32;
+                    let at = shown.sidebar.selected() as u32;
                     let next = dialogs::step_round(at, shown.views.len() as u32, forward);
-                    shown.select(next as usize);
+                    shown.sidebar.select(next as usize);
                     let Some(view) = shown.views.get(next as usize).cloned() else { return };
                     glib::idle_add_local_once(move || {
                         view.child_focus(gtk::DirectionType::TabForward);
@@ -189,18 +151,18 @@ impl ChartSettings {
         let owner = Owner::chart(window);
         let indicators = shown.views[1].clone();
         match focus {
-            Focus::Chart => shown.select(0),
+            Focus::Chart => shown.sidebar.select(0),
             Focus::Indicators => {
-                shown.select(1);
+                shown.sidebar.select(1);
                 take_pending(&shown.pending);
-                indicators.pop_to_tag("root");
+                indicators.pop_to_tag(preferences::ROOT);
             }
             // One indicator of a template is the template's to change, so the
             // gear on such a chart lands on the list that says so.
             Focus::Indicator(id) | Focus::Adding(id, ..) => {
-                shown.select(1);
+                shown.sidebar.select(1);
                 take_pending(&shown.pending);
-                indicators.pop_to_tag("root");
+                indicators.pop_to_tag(preferences::ROOT);
                 let refresh = Refresh::rebuilding(&owner, &indicators, &shown.list);
                 refresh.run();
                 let panel = match focus {
@@ -239,24 +201,9 @@ pub fn follow(window: &Rc<Window>) {
         return;
     }
     take_pending(&shown.pending);
-    let at = shown.sidebar.selected_row().map(|row| row.index()).unwrap_or(0);
+    let at = shown.sidebar.selected();
     let rebuilt = build(window, &shown.window);
-    rebuilt.select((at.max(0) as usize).min(rebuilt.views.len() - 1));
-}
-
-impl Shown {
-    /// Show section `at`, by its row in the sidebar.
-    fn select(&self, at: usize) {
-        self.sidebar.select_row(self.sidebar.row_at_index(at as i32).as_ref());
-    }
-}
-
-/// A page at the root of a section's page stack, under a header bar.
-fn rooted(view: &adw::NavigationView, page: &adw::PreferencesPage, title: &str) {
-    let toolbar = adw::ToolbarView::new();
-    toolbar.add_top_bar(&adw::HeaderBar::new());
-    toolbar.set_content(Some(page));
-    view.add(&adw::NavigationPage::with_tag(&toolbar, title, "root"));
+    rebuilt.sidebar.select(at.min(rebuilt.views.len() - 1));
 }
 
 /// Fill `frame` with the focused chart's settings, and remember it.
@@ -265,81 +212,48 @@ fn rooted(view: &adw::NavigationView, page: &adw::PreferencesPage, title: &str) 
 /// every row is read from the chart as it is built, and a row that had to be
 /// told about another chart would be a second way of building it.
 fn build(window: &Rc<Window>, frame: &adw::Window) -> Shown {
-    let chart_page = adw::PreferencesPage::new();
-    chart_page.add(&title_group(window));
-    chart_page.add(&bars_group(window));
-    chart_page.add(&scales_group(window));
-    chart_page.add(&session_group(window));
-    chart_page.add(&drawings_group(window));
-    chart_page.add(&defaults_group(window, frame));
-
+    let owner = Owner::chart(window);
     let indicators_page = adw::PreferencesPage::new();
+    let indicators = preferences::section_view(&indicators_page, "Indicators");
     // Above the list, because it decides what the list is: the chart's
     // own, or a template's shown here and changed elsewhere.
     let templates = adw::PreferencesGroup::new();
     indicators_page.add(&templates);
     let list = IndicatorList::new(&indicators_page, "On the chart");
+    let rows = {
+        let list = Refresh::rebuilding(&owner, &indicators, &list);
+        ChartRows::new(window, || false, move || list.run())
+    };
+    rows.template.set_title("Chart template");
+    templates.add(&rows.template);
+    templates.add(&rows.legend);
 
-    let stack = gtk::Stack::new();
-    let sidebar = gtk::ListBox::new();
-    sidebar.add_css_class("navigation-sidebar");
-    let (chart, indicators) = (adw::NavigationView::new(), adw::NavigationView::new());
-    rooted(&chart, &chart_page, SECTIONS[0].1);
-    rooted(&indicators, &indicators_page, SECTIONS[1].1);
+    let chart_page = adw::PreferencesPage::new();
+    chart_page.add(&title_group(window));
+    chart_page.add(&bars_group(window));
+    chart_page.add(&scales_group(window, &rows.log));
+    chart_page.add(&session_group(window, &rows));
+    chart_page.add(&drawings_group(&rows));
+    chart_page.add(&defaults_group(window, frame));
 
-    let mut sections: Vec<(&'static str, &'static str, &'static str, adw::NavigationView)> = SECTIONS
-        .into_iter()
-        .zip([chart, indicators])
-        .map(|((id, title, icon), view)| (id, title, icon, view))
-        .collect();
+    let mut own: Vec<preferences::Section> = vec![
+        ("chart", "Chart", "preferences-system-symbolic", preferences::section_view(&chart_page, "Chart")),
+        ("indicators", "Indicators", "view-list-symbolic", indicators.clone()),
+    ];
     // What this chart trades is this chart's, so it sits with the chart's
     // own sections, above the rule.
     if crate::features::trading() {
-        let view = adw::NavigationView::new();
-        rooted(&view, &trading_page(window), "Trading");
-        sections.push(("trading", "Trading", TRADING_ICON, view));
+        own.push(("trading", "Trading", TRADING_ICON, preferences::section_view(&trading_page(window), "Trading")));
     }
-    let mut rules: Vec<(&'static str, &'static str)> = Vec::new();
-    for extra in extra_sections(window) {
-        let view = adw::NavigationView::new();
-        rooted(&view, &extra.page, extra.title);
-        if let Some(rule) = extra.rule {
-            rules.push((extra.id, rule));
-        }
-        sections.push((extra.id, extra.title, extra.icon, view));
-    }
-    for (id, title, icon, view) in &sections {
-        stack.add_named(view, Some(id));
-        sidebar.append(&preferences::sidebar_row(id, title, icon));
-    }
-    // A rule between this chart's sections and the ones that are every
-    // chart's, headed so it says which is which.
-    sidebar.set_header_func(move |row, _| {
-        let name = row.widget_name();
-        let header = rules.iter().find(|(id, _)| *id == name.as_str()).map(|(_, text)| preferences::sidebar_rule(text));
-        row.set_header(header.as_ref());
-    });
+    // Under a rule saying they are every chart's, not this one's.
+    let (every, _) = preferences::visual_sections(window);
+    let sidebar = preferences::Sections::new("Chart settings", [&own, &every], &preferences::sidebar_rule("GLOBAL"));
     let title = adw::WindowTitle::new("Chart settings", &window.focused_name());
-    let side_header = adw::HeaderBar::new();
-    side_header.set_title_widget(Some(&title));
-    let side = adw::ToolbarView::new();
-    side.add_top_bar(&side_header);
-    side.set_content(Some(&sidebar));
+    sidebar.header.set_title_widget(Some(&title));
+    sidebar.split.set_min_sidebar_width(200.0);
+    frame.set_content(Some(&sidebar.split));
 
-    let content = adw::NavigationPage::new(&stack, "Chart");
-    let split = adw::NavigationSplitView::new();
-    split.set_sidebar(Some(&adw::NavigationPage::new(&side, "Chart settings")));
-    split.set_content(Some(&content));
-    split.set_min_sidebar_width(200.0);
-
-    let titles = sections.iter().map(|(id, title, ..)| (id.to_string(), title.to_string())).collect();
-    preferences::follow_sidebar(&sidebar, stack, content, &split, titles);
-    sidebar.select_row(sidebar.row_at_index(0).as_ref());
-
-    frame.set_content(Some(&split));
-
-    let views: Vec<adw::NavigationView> = sections.into_iter().map(|(.., view)| view).collect();
-    let owner = Owner::chart(window);
+    let views: Vec<adw::NavigationView> = own.into_iter().chain(every).map(|(.., view)| view).collect();
     // Wired once here rather than on every rebuild: the button outlives
     // the rows, and reconnecting it each time would stack up handlers.
     let owner_for_add = owner.clone();
@@ -348,7 +262,6 @@ fn build(window: &Rc<Window>, frame: &adw::Window) -> Shown {
         pick_indicator(&owner_for_add, &refresh_for_add);
     });
     rebuild_indicators(&owner, &views[1], &list);
-    template_rows(window, frame, &templates, &Refresh::rebuilding(&owner, &views[1], &list));
     {
         // A command can add, change or take away an indicator while the
         // list is open, and the list reads it again. Until the next build,
@@ -414,8 +327,7 @@ impl TemplateEditor {
         let frame = form_window::new(&parent, EDITOR_KIND, &name, (560, 640));
 
         let page = adw::PreferencesPage::new();
-        let view = adw::NavigationView::new();
-        rooted(&view, &page, &name);
+        let view = preferences::section_view(&page, &name);
         frame.set_content(Some(&view));
 
         let owner = Owner::template(window, template);
@@ -438,109 +350,143 @@ impl TemplateEditor {
     }
 }
 
-/// A way to rebuild something, held by what it rebuilds and let go of later.
-type Again = RefCell<Option<Rc<dyn Fn()>>>;
+/// The switches of [`ChartRows`]: each one's title, what it reads off the
+/// settings, and the change it makes.
+type Switch = (&'static str, fn(&ChartDefaults) -> bool, fn(bool) -> ChartSetting);
 
-/// Which template the chart is on, and a way into the one it is on.
+const SWITCHES: [Switch; 4] = [
+    ("Logarithmic scale", |settings| settings.log_scale, ChartSetting::LogScale),
+    ("Show drawings from other charts", |settings| settings.shows_drawings, ChartSetting::ShowsDrawings),
+    ("Send drawings to other charts", |settings| settings.sends_drawings, ChartSetting::SendsDrawings),
+    (LEGEND_LABEL, |settings| settings.shows_legend, ChartSetting::Legend),
+];
+
+/// The rows a chart's settings and Preferences › Charts both show, each
+/// placed by the caller in a group of its own: the hours, how a futures
+/// root's months are joined, the switches, and the template.
 ///
-/// Rebuilt whole after every choice, because a choice can be refused — the
-/// question about replacing the chart's own indicators can be answered with
-/// Cancel — and the rows have to say what the chart is on, not what was
-/// clicked.
-fn template_rows(
-    window: &Rc<Window>,
-    frame: &adw::Window,
-    group: &adw::PreferencesGroup,
-    list: &Refresh,
-) {
-    let rows: Rc<RefCell<Vec<gtk::Widget>>> = Rc::new(RefCell::new(Vec::new()));
-    // Holds the function that rebuilds these rows, which the rows themselves
-    // call; let go when the dialog closes, or the two would keep each other.
-    let rebuild: Rc<Again> = Rc::new(RefCell::new(None));
-    let fill = {
-        let window = window.clone();
-        let group = group.clone();
-        let list = list.clone();
-        let rebuild = rebuild.clone();
-        move || {
-            for row in rows.borrow_mut().drain(..) {
-                group.remove(&row);
-            }
-            let templates = window.templates();
-            let current = window.focused_template();
+/// A change goes through [`Window::change_chart_setting`]: to the focused
+/// chart, or while `every()` to every chart and the defaults. The rows read
+/// again once it is settled, so a template change declined shows the old
+/// one, and `settled` runs after them. Only a person's change is one: the
+/// rows announce their value as they are set, too.
+pub(crate) struct ChartRows {
+    pub session: adw::ComboRow,
+    pub continuous: adw::ComboRow,
+    pub log: adw::SwitchRow,
+    pub shows: adw::SwitchRow,
+    pub sends: adw::SwitchRow,
+    pub legend: adw::SwitchRow,
+    /// "None" first, then every template.
+    pub template: adw::ComboRow,
+    /// Reads every row again: what `every()` names may have changed, or
+    /// the list of templates.
+    pub show: Rc<dyn Fn()>,
+}
 
-            let choice = adw::ComboRow::new();
-            choice.set_title("Chart template");
-            let mut names = vec!["None".to_string()];
-            names.extend(templates.iter().map(|t| t.name.clone()));
-            let model = gtk::StringList::new(&[]);
-            for name in &names {
-                model.append(name);
-            }
-            choice.set_model(Some(&model));
-            let at = current
-                .and_then(|id| templates.iter().position(|t| t.id == id))
-                .map(|at| at + 1)
-                .unwrap_or(0);
-            choice.set_selected(at as u32);
-            {
-                let window = window.clone();
-                let list = list.clone();
-                let rebuild = rebuild.clone();
-                let ids: Vec<u32> = templates.iter().map(|t| t.id).collect();
-                choice.connect_selected_notify(move |row| {
-                    let chosen = match row.selected() as usize {
-                        0 => None,
-                        at => ids.get(at - 1).copied(),
-                    };
-                    if chosen == window.focused_template() {
-                        return;
+impl ChartRows {
+    pub(crate) fn new(window: &Rc<Window>, every: impl Fn() -> bool + 'static, settled: impl Fn() + 'static) -> ChartRows {
+        use omacharts_engine::continuous::Adjustment;
+        let choice = |title: &str, names: Vec<&str>| {
+            let row = adw::ComboRow::new();
+            row.set_title(title);
+            row.set_model(Some(&gtk::StringList::new(&names)));
+            row
+        };
+        let session = choice("Hours", Session::ALL.iter().map(|s| s.label()).collect());
+        let continuous = choice("Continuous futures", Adjustment::ALL.iter().map(|a| a.label()).collect());
+        let template = choice("Template", Vec::new());
+        let switches = SWITCHES.map(|(title, ..)| {
+            let row = adw::SwitchRow::new();
+            row.set_title(title);
+            row
+        });
+
+        let every: Rc<dyn Fn() -> bool> = Rc::new(every);
+        // The template ids beside the row, since the list changes on the
+        // Templates page.
+        let ids: Rc<RefCell<Vec<u32>>> = Rc::default();
+        let showing = Rc::new(std::cell::Cell::new(false));
+        // Weakly: every row's handler holds this, and the rows go with
+        // whatever window shows them.
+        let show: Rc<dyn Fn()> = {
+            let (window, every, ids, showing) = (window.clone(), every.clone(), ids.clone(), showing.clone());
+            let (session, continuous, template) = (session.downgrade(), continuous.downgrade(), template.downgrade());
+            let switches = switches.each_ref().map(|row| row.downgrade());
+            Rc::new(move || {
+                let (Some(session), Some(continuous), Some(template)) =
+                    (session.upgrade(), continuous.upgrade(), template.upgrade())
+                else {
+                    return;
+                };
+                let current = match every() {
+                    true => ChartDefaults::load(window.store()),
+                    false => window.focused_settings(),
+                };
+                let templates = window.templates();
+                *ids.borrow_mut() = templates.iter().map(|t| t.id).collect();
+                showing.set(true);
+                session.set_selected(Session::ALL.iter().position(|s| *s == current.session).unwrap_or(0) as u32);
+                continuous.set_selected(Adjustment::ALL.iter().position(|a| *a == current.continuous).unwrap_or(0) as u32);
+                for (row, (_, on, _)) in switches.iter().zip(SWITCHES) {
+                    if let Some(row) = row.upgrade() {
+                        row.set_active(on(&current));
                     }
-                    let list = list.clone();
-                    let rebuild = rebuild.clone();
-                    // Off the row's own signal: the rows are rebuilt by what
-                    // this does, and this row is one of them.
-                    let window = window.clone();
-                    glib::idle_add_local_once(move || {
-                        window.choose_template(chosen, move || {
-                            list.run();
-                            let again = rebuild.borrow().clone();
-                            if let Some(rebuild) = again {
-                                rebuild();
-                            }
-                        });
-                    });
-                });
-            }
-            group.add(&choice);
-            rows.borrow_mut().push(choice.upcast());
+                }
+                let names: Vec<&str> = std::iter::once("None").chain(templates.iter().map(|t| t.name.as_str())).collect();
+                template.set_model(Some(&gtk::StringList::new(&names)));
+                let at = current.template.and_then(|id| templates.iter().position(|t| t.id == id)).map_or(0, |at| at + 1);
+                template.set_selected(at as u32);
+                showing.set(false);
+            })
+        };
+        show();
 
-            let legend = adw::SwitchRow::new();
-            legend.set_title(LEGEND_LABEL);
-            legend.set_active(window.shows_legend());
-            {
-                let window = window.clone();
-                legend.connect_active_notify(move |row| window.set_shows_legend(row.is_active()));
-            }
-            group.add(&legend);
-            rows.borrow_mut().push(legend.upcast());
-            // No way into a second editor for the template: the list below
-            // is the template's while the chart is on one, and says so.
+        let change: Rc<dyn Fn(ChartSetting)> = {
+            let (window, show, settled) = (window.clone(), show.clone(), Rc::new(settled));
+            Rc::new(move |setting| {
+                if showing.get() {
+                    return;
+                }
+                let (show, settled) = (show.clone(), settled.clone());
+                window.change_chart_setting(setting, every(), move || {
+                    show();
+                    settled();
+                });
+            })
+        };
+        {
+            let change = change.clone();
+            session.connect_selected_notify(move |row| {
+                let Some(chosen) = Session::ALL.get(row.selected() as usize).copied() else { return };
+                change(ChartSetting::Session(chosen));
+            });
         }
-    };
-    let fill: Rc<dyn Fn()> = Rc::new(fill);
-    *rebuild.borrow_mut() = Some(fill.clone());
-    // Let go when the window closes or is rebuilt for another chart, which
-    // replaces these rows with new ones.
-    let gone = rebuild.clone();
-    group.connect_unrealize(move |_| {
-        gone.borrow_mut().take();
-    });
-    frame.connect_close_request(move |_| {
-        rebuild.borrow_mut().take();
-        glib::Propagation::Proceed
-    });
-    fill();
+        {
+            let change = change.clone();
+            continuous.connect_selected_notify(move |row| {
+                let Some(chosen) = Adjustment::ALL.get(row.selected() as usize).copied() else { return };
+                change(ChartSetting::Continuous(chosen));
+            });
+        }
+        for (row, (_, _, setting)) in switches.iter().zip(SWITCHES) {
+            let change = change.clone();
+            row.connect_active_notify(move |row| change(setting(row.is_active())));
+        }
+        template.connect_selected_notify(move |row| {
+            let chosen = match row.selected() as usize {
+                0 => None,
+                at => match ids.borrow().get(at - 1) {
+                    Some(id) => Some(*id),
+                    None => return,
+                },
+            };
+            change(ChartSetting::Template(chosen));
+        });
+
+        let [log, shows, sends, legend] = switches;
+        ChartRows { session, continuous, log, shows, sends, legend, template, show }
+    }
 }
 
 /// The row a chart's title is typed into.
@@ -716,80 +662,48 @@ fn defaults_group(window: &Rc<Window>, frame: &adw::Window) -> adw::PreferencesG
 /// nobody opens unless they already suspect it is there. That menu stays as it
 /// was: these rows drive the same window actions, so the tick in the menu and
 /// the switch here cannot come to different conclusions.
-fn scales_group(window: &Rc<Window>) -> adw::PreferencesGroup {
+fn scales_group(window: &Rc<Window>, log: &adw::SwitchRow) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     group.set_title("Scales");
 
-    let auto = adw::ActionRow::new();
-    auto.set_title("Auto scale price");
-    let switch = gtk::Switch::new();
-    switch.set_valign(gtk::Align::Center);
-    switch.set_active(window.focused_pane().view.price_auto());
+    let switch = |title: &str, on: bool| {
+        let row = adw::SwitchRow::new();
+        row.set_title(title);
+        row.set_active(on);
+        group.add(&row);
+        row
+    };
+
+    let auto = switch("Auto scale price", window.focused_pane().view.price_auto());
     let window_for_auto = window.clone();
-    switch.connect_state_set(move |_, on| {
+    auto.connect_active_notify(move |row| {
         // The action toggles rather than taking a value, so it is activated
         // only when the chart is not already the way the switch now reads.
         //
         // Spelled out through WidgetExt because an application window is an
         // action group in its own right, and that one holds the window's own
         // actions — it knows nothing of the "chart." group inserted on it.
-        if window_for_auto.focused_pane().view.price_auto() != on {
+        if window_for_auto.focused_pane().view.price_auto() != row.is_active() {
             let _ = gtk::prelude::WidgetExt::activate_action(
                 &window_for_auto.window,
                 "chart.auto-scale",
                 None,
             );
         }
-        glib::Propagation::Proceed
     });
-    auto.add_suffix(&switch);
-    auto.set_activatable_widget(Some(&switch));
-    group.add(&auto);
 
-    let log = adw::ActionRow::new();
-    log.set_title("Logarithmic scale");
-    let switch = gtk::Switch::new();
-    switch.set_valign(gtk::Align::Center);
-    switch.set_active(window.log_scale());
-    let window_for_log = window.clone();
-    switch.connect_state_set(move |_, on| {
-        if window_for_log.log_scale() != on {
-            window_for_log.set_log_scale(on);
+    group.add(log);
+
+    // The lines every chart's Overlays switches, for this chart alone.
+    let worn = window.look(false);
+    for (title, drawn, edit) in crate::ui::overlays::LINES {
+        let row = switch(title, drawn(&worn));
+        if matches!(edit(true), crate::chart_look::LookEdit::PriceLine(_)) {
+            row.set_subtitle("The price stays on the axis either way");
         }
-        glib::Propagation::Proceed
-    });
-    log.add_suffix(&switch);
-    log.set_activatable_widget(Some(&switch));
-    group.add(&log);
-
-    let grid = adw::ActionRow::new();
-    grid.set_title("Gridlines");
-    let switch = gtk::Switch::new();
-    switch.set_valign(gtk::Align::Center);
-    switch.set_active(window.focused_pane().view.show_grid());
-    let window_for_grid = window.clone();
-    switch.connect_state_set(move |_, on| {
-        window_for_grid.change_worn_look(crate::chart_look::LookEdit::Grid(on));
-        glib::Propagation::Proceed
-    });
-    grid.add_suffix(&switch);
-    grid.set_activatable_widget(Some(&switch));
-    group.add(&grid);
-
-    let price_line = adw::ActionRow::new();
-    price_line.set_title("Last price line");
-    price_line.set_subtitle("The price stays on the axis either way");
-    let switch = gtk::Switch::new();
-    switch.set_valign(gtk::Align::Center);
-    switch.set_active(window.focused_pane().view.price_line());
-    let window_for_line = window.clone();
-    switch.connect_state_set(move |_, on| {
-        window_for_line.change_worn_look(crate::chart_look::LookEdit::PriceLine(on));
-        glib::Propagation::Proceed
-    });
-    price_line.add_suffix(&switch);
-    price_line.set_activatable_widget(Some(&switch));
-    group.add(&price_line);
+        let window = window.clone();
+        row.connect_active_notify(move |row| window.change_worn_look(edit(row.is_active())));
+    }
 
     let reset = adw::ActionRow::new();
     reset.set_title("Reset chart");
@@ -812,42 +726,14 @@ fn scales_group(window: &Rc<Window>) -> adw::PreferencesGroup {
     group
 }
 
-fn session_group(window: &Rc<Window>) -> adw::PreferencesGroup {
+fn session_group(window: &Rc<Window>, rows: &ChartRows) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     group.set_title("Session");
-
-    let names: Vec<&str> = Session::ALL.iter().map(|s| s.label()).collect();
-    let session = window.session();
-
-    let row = adw::ComboRow::new();
-    row.set_title("Hours");
-    row.set_model(Some(&gtk::StringList::new(&names)));
-    row.set_selected(Session::ALL.iter().position(|s| *s == session).unwrap_or(0) as u32);
-
-    let for_hours = window.clone();
-    row.connect_selected_notify(move |row| {
-        let Some(chosen) = Session::ALL.get(row.selected() as usize).copied() else { return };
-        for_hours.set_session(chosen);
-        for_hours.refresh();
-    });
-    group.add(&row);
-
+    group.add(&rows.session);
     // Only on a root whose feed can join its months either way: anything
     // else has nothing to choose, and no row.
     if window.offers_continuous() {
-        use omacharts_engine::continuous::Adjustment;
-        let names: Vec<&str> = Adjustment::ALL.iter().map(|a| a.label()).collect();
-        let joined = adw::ComboRow::new();
-        joined.set_title("Continuous futures");
-        joined.set_model(Some(&gtk::StringList::new(&names)));
-        let now = window.continuous();
-        joined.set_selected(Adjustment::ALL.iter().position(|a| *a == now).unwrap_or(0) as u32);
-        let window = window.clone();
-        joined.connect_selected_notify(move |row| {
-            let Some(chosen) = Adjustment::ALL.get(row.selected() as usize).copied() else { return };
-            window.set_continuous(chosen);
-        });
-        group.add(&joined);
+        group.add(&rows.continuous);
     }
     group
 }
@@ -869,30 +755,11 @@ fn session_group(window: &Rc<Window>) -> adw::PreferencesGroup {
 /// They are independent on purpose. A chart that shows but does not send is
 /// a reference view; one that sends but does not show is rarer and still
 /// coherent, and neither needs explaining in terms of the other.
-fn drawings_group(window: &Rc<Window>) -> adw::PreferencesGroup {
+fn drawings_group(rows: &ChartRows) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     group.set_title("Drawings");
-
-    let pane = window.focused_pane();
-
-    let shows = adw::SwitchRow::new();
-    shows.set_title("Show drawings from other charts");
-    shows.set_active(pane.shows_drawings.get());
-    {
-        let window = window.clone();
-        shows.connect_active_notify(move |row| window.set_shows_drawings(row.is_active()));
-    }
-    group.add(&shows);
-
-    let sends = adw::SwitchRow::new();
-    sends.set_title("Send drawings to other charts");
-    sends.set_active(pane.sends_drawings.get());
-    {
-        let window = window.clone();
-        sends.connect_active_notify(move |row| window.set_sends_drawings(row.is_active()));
-    }
-    group.add(&sends);
-
+    group.add(&rows.shows);
+    group.add(&rows.sends);
     group
 }
 

@@ -277,7 +277,7 @@ codes](#exit-codes).
 | `watchlist` | Watchlists and the symbols in them | [Watchlists and sections](#watchlists-and-sections); `watchlist feed` under [The Omarchy plugin](#watchlist-feed) |
 | `section` | The sections inside a watchlist | [Watchlists and sections](#watchlists-and-sections) |
 | `chartbook` | Chartbooks | [Chartbooks](#chartbooks); `chartbook template` under [Chartbook templates](#chartbook-templates); `chartbook screenshot` under [Screenshots](#screenshots) |
-| `chart` | The charts in a chartbook | [Charts](#charts) (`set`, `range`), [Indicators](#indicators), [Drawings](#drawings), [Measuring a move](#measuring-a-move), [Arranging charts](#arranging-charts) (`list`, `split`, `close`, `focus`), [Linking](#linking), [Sharing the crosshair](#sharing-the-crosshair) (`crosshair`), [Screenshots](#screenshots) |
+| `chart` | The charts in a chartbook | [Charts](#charts) (`set`, `range`, `strip`), [Indicators](#indicators), [Drawings](#drawings), [Measuring a move](#measuring-a-move), [Arranging charts](#arranging-charts) (`list`, `split`, `close`, `focus`), [Linking](#linking), [Sharing the crosshair](#sharing-the-crosshair) (`crosshair`), [Screenshots](#screenshots) |
 | `template` | Chart templates | [Chart templates](#chart-templates) |
 | `provider` | The data feed, and signing in to one | [Market data](#market-data) |
 | `config` | Stored preferences | [Preferences](#preferences); `config bars`, `config grid` and `config price-line` under [Charts](#config-bars) |
@@ -502,7 +502,7 @@ omacharts: give --follow or changes to the look, not both
 | `--up COLOUR`, `--down COLOUR` | A theme colour by name, `foreground` for the theme's text colour, or `#rrggbb` | One direction's colour |
 | `--up-body BODY`, `--down-body BODY` | `filled`, `bordered`, `hollow` | One direction's body, as in [`config bars`](#config-bars) |
 | `--up-thickness PX`, `--down-thickness PX` | `1`, `1.5`, `2`, `3` | How many pixels wide one direction's OHLC bars are drawn |
-| `--header PARTS` | `symbol`, `resolution`, `change`, `template`, `look`, joined with commas, or `none` | What the header shows, in order ([The header](/manual/charts/#the-header)) |
+| `--header PARTS` | Parts in their places, as [`config header`](#config-header) takes them, or `none` | What the header shows, in order ([The header](/manual/charts/#the-header)) |
 | `--grid on` or `off` | | Draws the grid ([Gridlines](/manual/charts/#gridlines)) |
 | `--price-line on` or `off` | | Draws the dashed line at the last price |
 | `--follow` | | Drops the chart's own look, so it wears every chart's again |
@@ -561,8 +561,36 @@ on
 ```
 
 The chart defaults (`chart_session`, `chart_log_scale`, `chart_shows_legend`,
-`chart_header`, `timeframes`) are set with `config set`;
-see [Settings](#settings).
+`timeframes`) are set with `config set`; see [Settings](#settings).
+
+### `config header`
+
+Sets what every chart's header shows and where, as Preferences › Overlays › **Header** does. One argument per place, each `place=part,part`, so nothing needs quoting. Places left out are empty.
+
+```
+$ omacharts config header left=symbol,change center=strip right=settings,maximize,link left2=name
+every chart's header shows left=symbol,change center=strip right=settings,maximize,link left2=name
+  [exit 0]
+
+$ omacharts config header
+left=symbol,change center=strip right=settings,maximize,link left2=name
+  [exit 0]
+```
+
+| Takes | Means |
+|---|---|
+| Places | `left`, `center`, `right` on the first row; `left2`, `center2`, `right2` on the second |
+| Parts | `symbol`, `resolution`, `change`, `last`, `template`, `look`, `name`, `title`, `feed`, `strip`, `settings`, `maximize`, `link` |
+| `none` | A header with nothing in it |
+
+A part named twice, or a word that is not a place or a part, is refused and changes nothing. A place on the second row under an empty one moves up into it. Omitted, the command prints the header as it is stored.
+
+### `chart strip`
+
+| Command | Does |
+|---|---|
+| `chart strip` | Whether the header has the resolution strip, which the focused chart shows; prints `on` or `off`. |
+| `chart strip on` or `off` | Puts it in the header's centre, or takes it off, on every chart. To put it anywhere else, use [`config header`](#config-header). |
 
 ## Indicators
 
@@ -1604,8 +1632,7 @@ same.
 | `chart_shows_drawings` | on, off | on | Charts › Settings › Show drawings from other charts | [Drawings](/manual/drawings/) |
 | `chart_sends_drawings` | on, off | on | Charts › Settings › Send drawings to other charts | [Drawings](/manual/drawings/) |
 | `chart_template` | a chart template's name or `id:N`, or `none` | `Default` | Charts › Settings › Template | [Chart templates](/manual/chart-templates/) |
-| `chart_header` | comma-separated `symbol`, `resolution`, `change`, `template`, `look`, `title`, `feed`, `stripe`, `name`; or `none` | `feed,symbol,resolution,change` | Overlays › Left | [Charts](/manual/charts/) |
-| `chart_header_center` | the same | `title` | Overlays › Center | [Charts](/manual/charts/) |
+| `chart_header` | places as [`config header`](#config-header) takes them, in one quoted value; or `none`. A comma-separated list of parts with no places is the older form: those on the first row's left, `name` on the second | `left=feed,symbol,resolution,change center=title right=account,day_pnl,trade,size,settings,maximize,link` | Overlays › Header | [Charts](/manual/charts/#the-header) |
 | `chart_time_zone` | an IANA name such as `Europe/London` or `America/Chicago`, or `exchange` for each chart's exchange's own | `America/New_York` | General › Time › Time zone | [Preferences](/manual/preferences/#time) |
 | `time_format` | `24h`, `12h` | the desktop's clock format | General › Time › Time format | [Preferences](/manual/preferences/#time) |
 | `timeframes` | comma-separated resolutions, such as `5m,15m,1h,4h,1D,1W`; an entry that is not a resolution is skipped | `5m,15m,1h,4h,1D,1W` | General › Chart › Preset resolutions | [Charts](/manual/charts/) |
@@ -1650,7 +1677,7 @@ omacharts: no such data feed: "thinkorswimm"; the feeds are yahoo, tos
   [exit 2]
 
 $ omacharts config set chart_header symbol,banana
-omacharts: "banana" is not part of a header; try symbol, resolution, change, template, title, feed, stripe, settings, maximize, link
+omacharts: "banana" is not part of a header; try symbol, resolution, change, last, template, name, title, feed, strip, settings, maximize, link
   [exit 2]
 
 $ omacharts config set chart_time_zone Europe/London

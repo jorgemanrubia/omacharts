@@ -145,6 +145,7 @@ pub fn dispatch(
         ("chart", "screenshot") => screenshot(live, m, json, false),
         ("chartbook", "screenshot") => screenshot(live, m, json, true),
         ("chart", "crosshair") => crosshair(store, m, json),
+        ("chart", "strip") => strip(store, m, json, live),
         // A range is held by the chart on screen and nowhere else.
         ("chart", "range") => chart_range(live, m),
         ("chart", "measure") => chart_measure(live, m, json),
@@ -212,9 +213,7 @@ pub fn dispatch(
                     // A login changed: which charts it can serve may have
                     // too.
                     Ok(key) if crate::feeds::signs_in_from(key) => live.adopt_feed(),
-                    Ok(key) if crate::header::Section::ALL.iter().any(|section| section.setting() == key) => {
-                        live.adopt_header()
-                    }
+                    Ok(key) if key == crate::header::SETTING => live.adopt_header(),
                     Ok(key) if key == crate::clock::SETTING_ZONE || key == crate::clock::SETTING_FORMAT => {
                         live.adopt_clock()
                     }
@@ -227,8 +226,15 @@ pub fn dispatch(
         }
         ("config", "theme") => config_theme(store, m, json, live),
         ("config", "bars") => config_bars(store, m, json, live),
-        ("config", "grid") => config_chart_switch(store, m, json, live, ChartSwitch::Grid),
-        ("config", "price-line") => config_chart_switch(store, m, json, live, ChartSwitch::PriceLine),
+        ("config", "header") => config_header(store, m, json, live),
+        ("config", "grid") => read_or_set(m, json, "grid", ChartLook::global(store).grid, |on| {
+            change_every_look(store, live, vec![LookEdit::Grid(on)]);
+            if on { "gridlines on every chart" } else { "no gridlines on any chart" }.to_string()
+        }),
+        ("config", "price-line") => read_or_set(m, json, "priceLine", ChartLook::global(store).price_line, |on| {
+            change_every_look(store, live, vec![LookEdit::PriceLine(on)]);
+            if on { "a last-price line on every chart" } else { "no last-price line on any chart" }.to_string()
+        }),
 
         ("plugin", "status") => plugin_status(&caller.home(), json),
         ("plugin", "install") => plugin_install(&caller.home(), json),
@@ -4744,21 +4750,63 @@ fn status(store: &Store, window_open: bool, as_json: bool) -> Result<String, Fau
 /// reads and writes a setting rather than a pane. The same key the
 /// preferences' switch writes, so `config set sync_crosshair` reaches it too.
 fn crosshair(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<String, Fault> {
-    const KEY: &str = "sync_crosshair";
-    let Some(state) = arg(m, "STATE") else {
-        let on = store.setting_bool(KEY, true);
+    use crate::ui::window::SETTING_SYNC_CROSSHAIR;
+    read_or_set(m, as_json, "crosshairSync", store.setting_bool(SETTING_SYNC_CROSSHAIR, true), |on| {
+        store.set_setting_bool(SETTING_SYNC_CROSSHAIR, on);
+        format!("crosshair syncing across charts of the same symbol is {}", on_off(on))
+    })
+}
+
+/// Whether the header has the resolution strip, which only the focused chart
+/// shows. The whole app's, like the header it is part of: hiding it takes
+/// nothing away, since a resolution is still typed, picked beside the
+/// symbol, or stepped to with the keys. Shown again, it goes back across
+/// the middle, where a header that never moved it has it.
+fn strip(store: &Store, m: &clap::ArgMatches, as_json: bool, live: Option<&dyn Live>) -> Result<String, Fault> {
+    use crate::header::Part;
+    let mut header = crate::header::load(store);
+    read_or_set(m, as_json, "strip", header.contains(Part::Strip), |on| {
+        match on {
+            true => header.add(Part::Strip),
+            false => header.remove(Part::Strip),
+        }
+        crate::header::save(store, &header);
+        if let Some(live) = live {
+            live.adopt_header();
+        }
+        format!("resolution strip is {}", on_off(on))
+    })
+}
+
+/// Every chart's header: read back as it is stored, or set from the zones
+/// given, which are one argument each so nothing needs quoting. Refused
+/// whole on a misspelling, as `config set chart_header` refuses it.
+fn config_header(store: &Store, m: &clap::ArgMatches, as_json: bool, live: Option<&dyn Live>) -> Result<String, Fault> {
+    let given: Vec<String> = m.get_many::<String>("ZONES").map(|zones| zones.cloned().collect()).unwrap_or_default();
+    let trading = crate::features::stored(store, crate::features::Feature::Trading);
+    if given.is_empty() {
+        let header = crate::header::spell(&crate::header::load(store).seen(trading));
         return match as_json {
-            true => Ok(format!("{}\n", json!({"crosshairSync": on}))),
-            false => Ok(format!("{}\n", if on { "on" } else { "off" })),
+            true => Ok(format!("{}\n", json!({"header": header}))),
+            false => Ok(format!("{header}\n")),
         };
-    };
-    let on = state == "on";
-    store.set_setting_bool(KEY, on);
-    said(
-        as_json,
-        json!({"crosshairSync": on}),
-        format!("crosshair syncing across charts of the same symbol is {state}"),
-    )
+    }
+    let header = retyped_header(store, &given.join(" "))?;
+    if let Some(live) = live {
+        live.adopt_header();
+    }
+    let header = crate::header::spell(&header.seen(trading));
+    said(as_json, json!({"header": header}), format!("every chart's header shows {header}"))
+}
+
+/// Every chart's header made the one typed, and saved. Refused whole on a
+/// misspelling; trading's parts, while it is off, stay where they were.
+fn retyped_header(store: &Store, text: &str) -> Result<crate::header::Layout, Fault> {
+    let trading = crate::features::stored(store, crate::features::Feature::Trading);
+    let mut header = crate::header::parse_for(text, trading).map_err(Fault::usage)?;
+    header.keep_hidden(&crate::header::load(store), trading);
+    crate::header::save(store, &header);
+    Ok(header)
 }
 
 // -- settings and cache ---------------------------------------------------
@@ -5251,20 +5299,12 @@ fn config_set(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<Stri
     // and be told it worked. So this one is checked, and stored canonically
     // so that `TOS` and `tos` are the same choice rather than two.
     // The header too, so a typo is refused here rather than read back later
-    // as a header missing a part. Either section, and a part placed in one
-    // leaves the other, as it does in the preferences.
-    if let Some(section) = crate::header::Section::ALL.into_iter().find(|section| section.setting() == key) {
+    // as a header missing a part.
+    if key == crate::header::SETTING {
+        let header = retyped_header(store, value)?;
         let trading = crate::features::stored(store, crate::features::Feature::Trading);
-        let parts = crate::header::parse_for(value, trading).map_err(Fault::usage)?;
-        let value = crate::header::spell(&parts);
-        let mut header = crate::header::load(store);
-        header.set_shown(section, parts, trading);
-        crate::header::save(store, &header);
-        let text = match section {
-            crate::header::Section::Left => format!("every chart's header shows {value}"),
-            crate::header::Section::Center => format!("every chart's header shows {value} in the center"),
-            crate::header::Section::Right => format!("every chart's header shows {value} on the right"),
-        };
+        let value = crate::header::spell(&header.seen(trading));
+        let text = format!("every chart's header shows {value}");
         return said(as_json, json!({"key": key, "value": value}), text);
     }
     // The templates themselves are a document `template` keeps, with the
@@ -5439,61 +5479,38 @@ fn config_theme(
     said(as_json, json!({"theme": spell(&id), "name": name}), text)
 }
 
-/// The two things every chart draws or does not, the same on all of them.
-#[derive(Clone, Copy)]
-enum ChartSwitch {
-    Grid,
-    PriceLine,
-}
-
-impl ChartSwitch {
-    /// The setting it is kept in: the one the window reads.
-    fn key(self) -> &'static str {
-        match self {
-            ChartSwitch::Grid => crate::chart_defaults::SETTING_SHOW_GRID,
-            ChartSwitch::PriceLine => crate::chart_defaults::SETTING_PRICE_LINE,
-        }
-    }
-
-    fn json_key(self) -> &'static str {
-        match self {
-            ChartSwitch::Grid => "grid",
-            ChartSwitch::PriceLine => "priceLine",
-        }
-    }
-
-    fn said(self, on: bool) -> &'static str {
-        match (self, on) {
-            (ChartSwitch::Grid, true) => "gridlines on every chart",
-            (ChartSwitch::Grid, false) => "no gridlines on any chart",
-            (ChartSwitch::PriceLine, true) => "a last-price line on every chart",
-            (ChartSwitch::PriceLine, false) => "no last-price line on any chart",
-        }
-    }
-}
-
-/// Gridlines or the last-price line: read, or turned on or off for every
-/// chart at once, open or not.
-fn config_chart_switch(
-    store: &Store,
+/// A switch a verb reads back, `now`, or with `STATE` sets: `set` stores
+/// the state given and says what it did. `--json` calls it `key`.
+fn read_or_set(
     m: &clap::ArgMatches,
     as_json: bool,
-    live: Option<&dyn Live>,
-    switch: ChartSwitch,
+    key: &str,
+    now: bool,
+    set: impl FnOnce(bool) -> String,
 ) -> Result<String, Fault> {
     let Some(state) = arg(m, "STATE") else {
-        let on = store.setting_bool(switch.key(), true);
         return match as_json {
-            true => Ok(format!("{}\n", json!({switch.json_key(): on}))),
-            false => Ok(format!("{}\n", on_off(on))),
+            true => Ok(format!("{}\n", json!({key: now}))),
+            false => Ok(format!("{}\n", on_off(now))),
         };
     };
     let on = state == "on";
-    store.set_setting_bool(switch.key(), on);
-    if let Some(live) = live {
-        live.adopt_chart_look();
+    let text = set(on);
+    said(as_json, json!({key: on}), text)
+}
+
+/// Make `edits` every chart's answers, and have an open window wear them:
+/// its stylesheet and the rail too when one changes a colour.
+fn change_every_look(store: &Store, live: Option<&dyn Live>, edits: Vec<LookEdit>) {
+    let colours = edits.iter().any(LookEdit::colours);
+    for edit in edits {
+        edit.save_global(store);
     }
-    said(as_json, json!({switch.json_key(): on}), switch.said(on).to_string())
+    match live {
+        Some(live) if colours => live.adopt_theming(),
+        Some(live) => live.adopt_chart_look(),
+        None => {}
+    }
 }
 
 /// How every chart draws its bars: the style, a colour for each direction,
@@ -5586,8 +5603,7 @@ fn look_edits(m: &clap::ArgMatches) -> Result<Vec<LookEdit>, Fault> {
     edits.extend(thickness("up-thickness").map(LookEdit::UpThickness));
     edits.extend(thickness("down-thickness").map(LookEdit::DownThickness));
     if let Some(text) = arg(m, "header") {
-        let parts = crate::header::parse(text).map_err(Fault::usage)?;
-        edits.push(LookEdit::Header(crate::header::Section::Left, parts));
+        edits.push(LookEdit::Header(crate::header::parse(text).map_err(Fault::usage)?));
     }
     edits.extend(switch("grid").map(LookEdit::Grid));
     edits.extend(switch("price-line").map(LookEdit::PriceLine));
@@ -6375,39 +6391,21 @@ mod tests {
     fn the_header_is_one_setting_and_a_typo_is_refused() {
         let store = bare();
         crate::features::set(&store, crate::features::Feature::Trading, true);
-        use crate::header::{Header, Part};
-        let corner = vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::Position, Part::Settings, Part::Maximize, Part::Link];
-        assert_eq!(crate::header::load(&store), Header::standard());
-        let out = run("config set chart_header change,symbol,template", &store);
+        use crate::header::{Layout, Part, Zone};
+        assert_eq!(crate::header::load(&store), Layout::standard());
+        let out = run("config header left=change,symbol right=link,template left2=name", &store);
         assert_eq!(out.code, 0, "{}", out.err);
-        assert_eq!(out.out, "every chart's header shows change,symbol,template\n");
-        assert_eq!(run("config set chart_header symbol,price", &store).code, EXIT_USAGE);
-        assert_eq!(
-            crate::header::load(&store),
-            Header { left: vec![Part::Change, Part::Symbol, Part::Template], center: vec![Part::Title], right: corner.clone() }
-        );
-        // The title put on the left leaves the center; the stripe put in
-        // the center leaves the left.
-        assert_eq!(run("config set chart_header symbol,stripe,title", &store).code, 0);
-        assert_eq!(
-            crate::header::load(&store),
-            Header { left: vec![Part::Symbol, Part::Stripe, Part::Title], center: Vec::new(), right: corner.clone() }
-        );
-        assert_eq!(run("config set chart_header symbol,stripe", &store).code, 0);
-        let out = run("config set chart_header_center stripe", &store);
-        assert_eq!(out.out, "every chart's header shows stripe in the center\n");
-        assert_eq!(
-            crate::header::load(&store),
-            Header { left: vec![Part::Symbol], center: vec![Part::Stripe], right: corner.clone() }
-        );
-        assert_eq!(run("config set chart_header_center stripe,banana", &store).code, EXIT_USAGE);
-        // The right is a section like the others, and the corner's controls
-        // parts like the others.
-        let out = run("config set chart_header_right link,settings", &store);
-        assert_eq!(out.out, "every chart's header shows link,settings on the right\n");
-        assert_eq!(crate::header::load(&store).right, vec![Part::Link, Part::Settings]);
-        assert_eq!(run("config set chart_header settings,symbol", &store).code, 0);
-        assert_eq!(crate::header::load(&store).right, vec![Part::Link]);
+        assert_eq!(out.out, "every chart's header shows left=change,symbol right=link,template left2=name\n");
+        assert_eq!(run("config header", &store).out, "left=change,symbol right=link,template left2=name\n");
+        assert_eq!(run("config header left=symbol,price", &store).code, EXIT_USAGE);
+        assert_eq!(run("config set chart_header left=symbol,price", &store).code, EXIT_USAGE);
+        let header = crate::header::load(&store);
+        assert_eq!(header.zone(Zone::Left), [Part::Change, Part::Symbol]);
+        assert_eq!(header.zone(Zone::Right), [Part::Link, Part::Template]);
+        assert_eq!(header.zone(Zone::Left2), [Part::Name]);
+        // The way it was typed before it had zones still works.
+        assert_eq!(run("config set chart_header symbol,change", &store).code, 0);
+        assert_eq!(crate::header::load(&store).zone(Zone::Left), [Part::Symbol, Part::Change]);
         // Not a chart's to have: there is no flag for it any more.
         assert_eq!(run("chart set --header symbol", &store).code, EXIT_USAGE);
     }
@@ -7153,7 +7151,8 @@ mod tests {
         for book in ["Macro", "Copy"] {
             for pane in panes_of(&store, book) {
                 assert_eq!(pane["look"]["up_body"], "hollow", "{book}");
-                assert_eq!(pane["look"]["header"]["left"], json!(["symbol", "change"]), "{book}");
+                let header = pane["look"]["header"].as_str().unwrap_or_default();
+                assert!(header.starts_with("left=symbol,change "), "{book}: {header}");
             }
         }
     }
@@ -7308,12 +7307,14 @@ mod tests {
     }
 
     /// The gridlines and the line at the last price are one answer for every
-    /// chart: drawn to begin with, turned off and read back from a command.
+    /// chart, read as the charts draw it: off and on to begin with, turned
+    /// off and on and read back from a command.
     #[test]
     fn gridlines_and_the_last_price_line_are_one_switch_for_every_chart() {
         let store = Store::memory().unwrap();
-        for verb in ["grid", "price-line"] {
-            assert_eq!(run(&format!("config {verb}"), &store).out, "on\n", "{verb} drawn to begin with");
+        // Gridlines start off, the last-price line on: what the charts draw.
+        for (verb, drawn) in [("grid", "off\n"), ("price-line", "on\n")] {
+            assert_eq!(run(&format!("config {verb}"), &store).out, drawn, "{verb} to begin with");
 
             let off = run(&format!("config {verb} off"), &store);
             assert_eq!(off.code, 0, "{}", off.err);
@@ -8270,6 +8271,20 @@ mod tests {
         assert_eq!(run("chart crosshair", &store).out.trim(), "off");
         assert_eq!(run("chart crosshair on", &store).code, 0);
         assert_eq!(run("chart crosshair", &store).out.trim(), "on");
+    }
+
+    #[test]
+    fn the_resolution_strip_can_be_hidden_and_shown_again() {
+        let store = bare();
+        assert_eq!(run("chart strip", &store).out.trim(), "off", "the standard header has the title instead");
+        assert_eq!(run("chart strip on", &store).code, 0);
+        assert_eq!(run("chart strip", &store).out.trim(), "on");
+        assert_eq!(run("chart strip off", &store).code, 0);
+        assert_eq!(run("chart strip", &store).out.trim(), "off");
+        assert!(!crate::header::load(&store).contains(crate::header::Part::Strip));
+        assert_eq!(run("chart strip on", &store).code, 0);
+        let header = crate::header::load(&store);
+        assert_eq!(header.zone_of(crate::header::Part::Strip), Some(crate::header::Zone::Center));
     }
 
     #[test]
@@ -9581,14 +9596,14 @@ mod tests {
     fn with_trading_off_the_header_has_no_trading_parts() {
         use crate::header::Part;
         let store = bare();
-        let out = run("config set chart_header_right trade,settings", &store);
+        let out = run("config set chart_header right=trade,settings", &store);
         assert_eq!(out.code, EXIT_USAGE);
         assert!(!out.err.contains("day_pnl") && !out.err.contains("account"), "{}", out.err);
-        let out = run("config set chart_header_right link,settings", &store);
+        let out = run("config header left=symbol right=link,settings", &store);
         assert_eq!(out.code, 0, "{}", out.err);
-        assert_eq!(out.out, "every chart's header shows link,settings on the right\n");
+        assert_eq!(out.out, "every chart's header shows left=symbol right=link,settings\n");
         assert_eq!(
-            crate::header::load(&store).right,
+            crate::header::load(&store).zone(crate::header::Zone::Right),
             vec![Part::Account, Part::DayPnl, Part::Trade, Part::Size, Part::Position, Part::Link, Part::Settings],
             "trading's parts kept where they were"
         );

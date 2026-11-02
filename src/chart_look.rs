@@ -19,8 +19,8 @@
 use omacharts_engine::theme::{parse_bar_colour, spell_bar_colour, BarLook, Body, ColorChoice, Thickness};
 use omacharts_engine::BarStyle;
 
-use crate::chart_defaults::{chart_switch, SETTING_BAR_STYLE, SETTING_PRICE_LINE, SETTING_SHOW_GRID};
-use crate::header::{self, Header, Part, Section};
+use crate::chart_defaults::{SETTING_BAR_STYLE, SETTING_PRICE_LINE, SETTING_SHOW_GRID};
+use crate::header::{self, Layout};
 use crate::store::Store;
 use crate::theming;
 
@@ -35,7 +35,7 @@ pub struct ChartLook {
     pub theme: Option<String>,
     pub style: BarStyle,
     pub bars: BarLook,
-    pub header: Header,
+    pub header: Layout,
     pub grid: bool,
     pub price_line: bool,
 }
@@ -47,7 +47,7 @@ impl Default for ChartLook {
             theme: None,
             style: BarStyle::default(),
             bars: BarLook::default(),
-            header: Header::standard(),
+            header: Layout::standard(),
             grid: false,
             price_line: true,
         }
@@ -65,22 +65,23 @@ pub enum LookEdit {
     DownBody(Body),
     UpThickness(Thickness),
     DownThickness(Thickness),
-    /// One section of the header, taking its parts out of the others.
-    Header(Section, Vec<Part>),
+    Header(Layout),
     Grid(bool),
     PriceLine(bool),
 }
 
 impl ChartLook {
-    /// Every chart's look, as the settings rows hold it.
+    /// Every chart's look, as the settings rows hold it: a row nobody has
+    /// written is the default's answer.
     pub fn global(store: &Store) -> ChartLook {
+        let default = ChartLook::default();
         ChartLook {
             theme: None,
             style: crate::chart_defaults::bar_style(store),
             bars: theming::bar_look(store),
             header: header::load(store),
-            grid: chart_switch(store, SETTING_SHOW_GRID),
-            price_line: chart_switch(store, SETTING_PRICE_LINE),
+            grid: store.setting_bool(SETTING_SHOW_GRID, default.grid),
+            price_line: store.setting_bool(SETTING_PRICE_LINE, default.price_line),
         }
     }
 
@@ -94,7 +95,7 @@ impl ChartLook {
             LookEdit::DownBody(body) => self.bars.down_body = body,
             LookEdit::UpThickness(px) => self.bars.up_thickness = px,
             LookEdit::DownThickness(px) => self.bars.down_thickness = px,
-            LookEdit::Header(section, parts) => self.header.set_shown(section, parts, crate::features::trading()),
+            LookEdit::Header(layout) => self.header = layout,
             LookEdit::Grid(on) => self.grid = on,
             LookEdit::PriceLine(on) => self.price_line = on,
         }
@@ -126,7 +127,7 @@ impl ChartLook {
             self.spell_bars(),
             on_off(self.grid),
             on_off(self.price_line),
-            self.header.spell(),
+            header::spell(&self.header.seen(crate::features::trading())),
             self.theme.as_deref().map_or(WINDOW_THEME, theming::spell_theme),
         )
     }
@@ -141,11 +142,7 @@ impl LookEdit {
             // Every chart already wears the window's.
             LookEdit::Theme(None) => {}
             LookEdit::Style(style) => store.set_setting(SETTING_BAR_STYLE, style.key()),
-            LookEdit::Header(section, parts) => {
-                let mut header = header::load(store);
-                header.set_shown(section, parts, crate::features::trading());
-                header::save(store, &header);
-            }
+            LookEdit::Header(layout) => header::save(store, &layout),
             LookEdit::Grid(on) => store.set_setting_bool(SETTING_SHOW_GRID, on),
             LookEdit::PriceLine(on) => store.set_setting_bool(SETTING_PRICE_LINE, on),
             bars => {
@@ -189,9 +186,8 @@ struct Spelled {
     up_thickness: Option<serde_json::Value>,
     #[serde(default)]
     down_thickness: Option<serde_json::Value>,
-    /// Each section's parts by key. A plain list is how a look was written
-    /// before the header had sections, and is its left, the others as they
-    /// ship, as the header setting itself reads.
+    /// As `config header` types it. A list of parts is how a look was
+    /// written before the header had zones, and reads as that header did.
     #[serde(default)]
     header: Option<serde_json::Value>,
     #[serde(default)]
@@ -244,45 +240,31 @@ impl From<ChartLook> for Spelled {
             down_body: Some(look.bars.down_body.key().to_string()),
             up_thickness: Some(look.bars.up_thickness.key().into()),
             down_thickness: Some(look.bars.down_thickness.key().into()),
-            header: Some(serde_json::json!({
-                "left": header::keys(&look.header.left),
-                "center": header::keys(&look.header.center),
-                "right": header::keys(&look.header.right),
-            })),
+            header: Some(serde_json::Value::String(header::spell(&look.header))),
             grid: Some(look.grid),
             price_line: Some(look.price_line),
         }
     }
 }
 
-/// A header as [`Spelled`] holds it, read leniently: a part this build
-/// does not know is left out, and anything that is not a header is the
+/// A header as [`Spelled`] holds it, read leniently: a part or a zone this
+/// build does not know is left out, and anything that is not a header is the
 /// standard one.
-fn read_header(value: serde_json::Value) -> Header {
-    let keys = |value: &serde_json::Value| -> Vec<Part> {
-        let keys: Vec<&str> = value.as_array().into_iter().flatten().filter_map(serde_json::Value::as_str).collect();
-        header::from_keys(&keys)
-    };
-    match &value {
-        serde_json::Value::Array(_) => Header { left: keys(&value), ..Header::standard() },
-        serde_json::Value::Object(sections) => {
-            let mut read = Header { left: Vec::new(), center: Vec::new(), right: Vec::new() };
-            for section in Section::ALL {
-                let key = section.title().to_lowercase();
-                let parts = sections.get(&key).map_or_else(|| header::standard(section), keys);
-                // In the first section that names it, as the setting reads.
-                let placed: Vec<Part> = Section::ALL.into_iter().flat_map(|s| read.section(s).to_vec()).collect();
-                read.set(section, parts.into_iter().filter(|part| !placed.contains(part)).collect());
-            }
-            read
+fn read_header(value: serde_json::Value) -> Layout {
+    match value {
+        serde_json::Value::String(text) => header::read(&text, true),
+        serde_json::Value::Array(keys) => {
+            let keys: Vec<&str> = keys.iter().filter_map(serde_json::Value::as_str).collect();
+            header::read(&keys.join(","), true)
         }
-        _ => Header::standard(),
+        _ => Layout::standard(),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::header::{Part, Zone};
 
     #[test]
     fn a_store_nobody_has_chosen_in_wears_the_default() {
@@ -296,13 +278,12 @@ mod tests {
         let store = Store::memory().unwrap();
         LookEdit::Up(ColorChoice::swatch("Blue")).save_global(&store);
         LookEdit::Grid(false).save_global(&store);
-        LookEdit::Header(Section::Left, vec![Part::Change]).save_global(&store);
+        LookEdit::Header(header::parse_for("left=change", true).unwrap()).save_global(&store);
         let look = ChartLook::global(&store);
         assert_eq!(look.bars.up, ColorChoice::swatch("Blue"));
         assert_eq!(look.bars.down, BarLook::default().down);
         assert!(!look.grid && look.price_line);
-        assert_eq!(look.header.left, vec![Part::Change]);
-        assert_eq!(look.header.right, Header::standard().right);
+        assert_eq!(look.header, header::parse_for("left=change", true).unwrap());
         assert!(!store.has_setting(SETTING_BAR_STYLE));
     }
 
@@ -312,36 +293,42 @@ mod tests {
         look.set(LookEdit::Style(BarStyle::Ohlc));
         look.set(LookEdit::Down(ColorChoice::Fixed { hex: "#e66100".to_string() }));
         look.set(LookEdit::UpBody(Body::Hollow));
+        look.set(LookEdit::DownThickness(Thickness::OneAndAHalf));
+        look.set(LookEdit::Header(header::parse_for("left=symbol,change left2=name", true).unwrap()));
         look.set(LookEdit::PriceLine(false));
         let json = serde_json::to_value(&look).unwrap();
         assert_eq!(json["style"], "ohlc");
         assert_eq!(json["up"], "green");
         assert_eq!(json["down"], "#e66100");
+        assert_eq!((&json["up_thickness"], &json["down_thickness"]), (&serde_json::json!("2"), &serde_json::json!("1.5")));
+        assert_eq!(json["header"], "left=symbol,change left2=name");
         assert_eq!(serde_json::from_value::<ChartLook>(json).unwrap(), look);
     }
 
     /// A newer build's words cost the one answer, not the chart.
     #[test]
     fn a_word_this_build_does_not_know_is_the_default() {
-        let json = serde_json::json!({"style": "renko", "up": "Blue", "header": {"left": ["volume", "change"]}, "price_line": false});
+        let json = serde_json::json!({"style": "renko", "up": "Blue", "header": "left=volume,change top=link", "price_line": false});
         let look: ChartLook = serde_json::from_value(json).unwrap();
         assert_eq!(look.style, BarStyle::default());
         assert_eq!(look.bars.up, ColorChoice::swatch("Blue"));
         assert_eq!(look.bars.down, BarLook::default().down);
-        assert_eq!(look.header.left, vec![Part::Change]);
-        assert_eq!(look.header.center, Header::standard().center, "a section left out ships as it is");
+        assert_eq!(look.header, header::parse_for("left=change", true).unwrap());
         assert!(!look.grid && !look.price_line);
     }
 
-    /// A look written before the header had sections held one list, its
-    /// line, which is the left; the others come as they ship.
+    /// A look written before the header had zones held it as a list of
+    /// parts, which comes forward the way the old header setting does: on
+    /// the first row's left, the name under it, the rest as it ships.
     #[test]
-    fn a_header_written_as_a_list_is_its_left() {
-        let look: ChartLook = serde_json::from_value(serde_json::json!({"header": ["symbol", "change"]})).unwrap();
-        assert_eq!(look.header.left, vec![Part::Symbol, Part::Change]);
-        assert_eq!(look.header.right, Header::standard().right);
+    fn a_header_written_as_a_list_comes_forward() {
+        let json = serde_json::json!({"header": ["symbol", "change", "name"]});
+        let look: ChartLook = serde_json::from_value(json).unwrap();
+        assert_eq!(look.header.zone(Zone::Left), [Part::Symbol, Part::Change]);
+        assert_eq!(look.header.zone(Zone::Left2), [Part::Name]);
+        assert!(look.header.contains(Part::Settings));
         let look: ChartLook = serde_json::from_value(serde_json::json!({"header": 7})).unwrap();
-        assert_eq!(look.header, Header::standard());
+        assert_eq!(look.header, Layout::standard());
     }
 
     /// An older build wrote a thickness as a number, and offered 4.

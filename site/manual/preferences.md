@@ -116,12 +116,12 @@ Like Appearance: every chart's under **GLOBAL**, the focused chart's under **LOC
 
 | Group › row | Does | Chapter |
 |---|---|---|
-| **Left**, **Center**, **Right** | The parts the header shows in each section, in order. A part is in one section at a time. **Restore defaults** puts every section back as it ships. | [The header](/manual/charts/#the-header) |
+| Header | What every chart's header shows and where, drawn as a chart shows it, with the parts it does not show underneath. Drag a part to any of the two rows' left, centre or right, or down among the others to take it off, as right-clicking or double-clicking it does; click one underneath to put it back. **Restore defaults** puts it back as it ships. | [The header](/manual/charts/#the-header) |
 | Lines › **Gridlines** | The grid behind the bars. The scales and their labels stay either way. Off until turned on. | [Gridlines](/manual/charts/#gridlines) |
 | Lines › **Last price line** | The dashed line at the last price. The price stays on the axis either way. | [The last price line](/manual/charts/#the-last-price-line) |
 | Lines › **Crosshair across Follow charts** | The pointer on one chart draws the same moment on every other chart of the same symbol. | [Sharing the crosshair](/manual/charts/#sharing-the-crosshair) |
 
-Right-clicking a chart's header and choosing **Edit header…** opens this page.
+Right-clicking a chart's header and choosing **Edit header…** opens this page. A header with every part taken off has nothing to right-click, so this page is the way back to it.
 
 ## Settings that stay with this machine
 

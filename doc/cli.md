@@ -228,32 +228,44 @@ which is the same setting `template default` writes.
 
 ## The header
 
-The line at a chart's top-left shows its data feed, symbol, resolution and the
-day's move — as a percentage, in the theme's green for a rise and red for a
-fall, swapped on a chart set to red up — and can also show the name of its
-chart template, and the instrument's full name, which goes on a line of its
-own under the rest. It is one line for the whole
-app: every chart in every chartbook shows the same parts, in the order given,
-and a window that is open changes them all at once:
+The header runs across a chart's top in two rows, each with a left, a centre
+and a right. Every part of it goes in one of the six places: the symbol, the
+resolution, the day's move — as a percentage, in the chart's own colours for a
+rise and a fall, in the header's text when it has not moved — the last price,
+the name of its chart template, the instrument's full name, the chart title,
+the data feed's dot, the resolution strip, the gear, the maximize button and
+the link button. It is one header for the whole app: every chart in every
+chartbook shows the same parts in the same places, unless it wears a look of
+its own (`chart look --header`), and a window that is open changes them all
+at once:
 
 ```
-omacharts config set chart_header symbol,resolution,change
-omacharts config set chart_header template,symbol
-omacharts config set chart_header symbol,resolution,name
+omacharts config header left=symbol,change center=strip right=settings,maximize,link left2=name
+omacharts config header left=symbol,resolution,last right=link
+omacharts config header
 ```
 
-`none` is a header with nothing in it. The day's move comes from the same
-cached quotes the watchlist shows, so it is as fresh as the sidebar and fetches
-nothing of its own.
+One place per argument, `left`, `center`, `right`, and `left2`, `center2`,
+`right2` on the second row; places left out are empty. A place on the second
+row under an empty one moves up into it. `none` is a header with nothing in
+it, and the
+command alone prints the header as it is. The same value, quoted, is
+`config set chart_header`, where a plain list such as `symbol,resolution,change`
+still means what it did before there were places: those on the first row's
+left, the name on the second.
 
-The row centred across the top is `chart_header_center`, and out of the box it
-holds `title`: the chart title, which is stored with each chart rather than
-for the app. `chart set --title` gives a chart its title and `--title ""` takes
-it away; a chart made by splitting another starts with none:
+The day's move and the last price come from the same cached quotes the
+watchlist shows, so they are as fresh as the sidebar and fetch nothing of
+their own.
+
+The centre of the first row, out of the box, holds `title`: the chart title,
+which is stored with each chart rather than for the app. `chart set --title`
+gives a chart its title and `--title ""` takes it away; a chart made by
+splitting another starts with none:
 
 ```
 omacharts chart set --title "Semis desk"
-omacharts config set chart_header_center title,stripe
+omacharts config header left=symbol,resolution center=title,strip right=settings,maximize,link
 ```
 
 ## The clock
@@ -380,6 +392,13 @@ across Follow charts, or the key `sync_crosshair`:
 
 ```
 omacharts chart crosshair off
+```
+
+Whether the header has the resolution strip, which only the focused chart
+shows. `on` puts it back in the centre:
+
+```
+omacharts chart strip off
 ```
 
 ## Worked example: the top US semiconductors in their own watchlist

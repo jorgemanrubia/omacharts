@@ -116,9 +116,7 @@ fn steady_columns(widget: &gtk::Widget) {
             clamp.set_tightening_threshold(clamp.maximum_size());
         }
     }
-    let mut child = widget.first_child();
-    while let Some(widget) = child {
-        steady_columns(&widget);
-        child = widget.next_sibling();
+    for child in crate::ui::children(widget) {
+        steady_columns(&child);
     }
 }

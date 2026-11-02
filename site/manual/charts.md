@@ -76,12 +76,14 @@ crop: 898,193,763,399   (the whole card, 24px layout margin)
 
 The resolution strip is the same for every chart. Out of the box it is `5m 15m 1h 4h 1D 1W`. To edit it, right-click the strip, where the [header](#the-header) shows it, and choose **Edit resolutions…**, or open Preferences › General › Chart › **Preset resolutions** › **Edit…**.
 
+The strip is a part of [the header](#the-header). To hide it, take it off the header in Preferences › Overlays › **Header**, or run `omacharts chart strip off`; `chart strip on` puts it back in the centre. The resolutions stay: typing one, the resolution in the header and <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>←</kbd> <kbd>→</kbd> all still work.
+
 <!-- regenerate:
 theme: tokyo-night
 window: 2560x1440 @2, bin/headless-window (HOME sandboxed, theme seeded)
 state:
   (one NVDA 1D chart, sidebar hidden)
-  omacharts config set chart_header_center stripe
+  omacharts chart strip on
   run bin/virtual-pointer --extent 1280x720 --button right click 600 24
   click 675 46            # Edit resolutions…
 capture: bin/headless-window shot /tmp/resdialog.png
@@ -417,22 +419,36 @@ Prices refresh as bars close. A chart does not refresh while its market is shut 
 
 ## The header
 
-The header is the line at a chart's top-left and the row centred across its top. It is the same on every chart in every chartbook, except a chart with [a look of its own](#a-charts-own-look). Each part goes in one of its two sections, **Left** or **Center**, in any order.
+The header runs across a chart's top. It has two rows, each with a left, a centre and a right, and every part of it goes in one of those six places, in any order. It is the same on every chart in every chartbook, except a chart with [a look of its own](#a-charts-own-look).
 
 | Part | Shows |
 |---|---|
 | **Symbol** | The symbol, with its venue. Click it to [find another](/manual/symbols/) |
 | **Resolution** | The resolution. Click it for the list of the strip's resolutions |
-| **Daily change** | The day's move as a percentage, green for a rise and red for a fall in the theme's own tones, swapped on a chart set to red up, and in the header's text when it has not moved. The same figure as the sidebar's |
+| **Daily change** | The day's move as a percentage, in the chart's up and down colours, and in the header's text when it has not moved. The same figure as the sidebar's |
+| **Last price** | The last price, as the sidebar writes it |
 | **Chart template** | The name of the [chart template](/manual/chart-templates/) the chart is on, dimmed. Nothing on a chart that is on none |
 | **Local visuals** | A window pulled off another, dimmed, on a chart whose [look of its own](#a-charts-own-look) differs from every chart's. Nothing on any other |
+| **Name** | The instrument's full name, faded. Nothing when the feed knows no name beyond the ticker |
 | **Chart title** | The chart's own title. Click it to [edit it](#chart-titles) |
-| **Resolutions stripe** | The preset resolutions as buttons, on the focused chart only. Hidden when the chart is too narrow for it |
-| **Name** | The instrument's full name, faded, on a line of its own under the rest wherever it sits. Nothing when the feed knows no name beyond the ticker |
+| **Resolution strip** | The [preset resolutions](#the-preset-resolutions) as buttons, on the focused chart only |
+| **Chart settings** | The gear, while the pointer is on the chart ([The corners](/manual/window/#the-corners)) |
+| **Maximize** | The two arrows, when the chartbook has two charts or more |
+| **Link mode** | The link button ([Linking charts to the watchlist](/manual/watchlists/#linking-charts-to-the-watchlist)) |
 
-Out of the box the left shows the data feed, the symbol, the resolution and the daily change, and the center the chart title.
+Out of the box the first row has the data feed, the symbol, the resolution and the daily change on the left, the chart title in the centre, and the gear, **Maximize** and the link on the right, with the account, the P&L, **Buy**, **Sell** and the quantity ahead of them while trading is on. The second row is empty, and an empty second row takes no room.
 
-Edit it in Preferences › **Overlays**, or right-click the header or the resolution strip and choose **Edit header…**, which opens the same page. The **+** beside a section's title adds a part that is in neither section, a part's bin removes it, and dragging a part by its handle reorders it. To move a part to the other section, remove it and add it there.
+Edit it in Preferences › Overlays › **Header**, or right-click the header and choose **Edit header…**, which opens Preferences there. A header with every part taken off has nothing to right-click, so open Preferences › Overlays to put parts back. The page draws the header as a chart shows it, with the parts it does not show underneath. Drag a part to any place in the header, or down among the others to take it off, or right-click or double-click it; click one underneath to put it back where it goes out of the box. The places are outlined while a part is being dragged. A place on the second row takes a part only under a place that has one, and when the last part leaves a place on the first row, the parts under it move up.
+
+On a narrow chart, a row's centre is hidden when it would run into what is either side of it.
+
+From a terminal, `omacharts config header` takes one place per argument, each `place=part,part`:
+
+```
+omacharts config header left=symbol,change center=strip right=settings,maximize,link left2=name
+```
+
+The places are `left`, `center` and `right`, and `left2`, `center2` and `right2` on the second row. `none` is a header with nothing in it, and `config header` alone prints the header as it is.
 
 ### Chart titles
 

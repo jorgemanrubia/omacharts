@@ -1,8 +1,5 @@
-//! A short list of parts to add to, take from and drag into order: what the
-//! charts' header shows, and which columns the watchlist has.
-//!
-//! The same rows for both, because they are the same question — which of a
-//! handful of things, and in what order — asked about two lines of text.
+//! A short list of parts to add to, take from and drag into order: which
+//! columns the watchlist has, as rows of text.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -11,56 +8,27 @@ use adw::prelude::*;
 use gtk::glib;
 
 use crate::ui::drop_line;
-
-/// Something a [`PartList`] can hold.
-pub trait Part: Copy + PartialEq + 'static {
-    /// Every one there is, in the order the + offers them.
-    fn every() -> Vec<Self>;
-    /// How it is written down; what a drag carries.
-    fn key(self) -> &'static str;
-    /// How the list names it.
-    fn label(self) -> &'static str;
-    /// Always there and always first: no bin, no handle, and nothing lands
-    /// above it.
-    fn fixed(self) -> bool {
-        false
-    }
-}
-
-impl Part for crate::header::Part {
-    fn every() -> Vec<Self> {
-        Self::every_shown(crate::features::trading())
-    }
-    fn key(self) -> &'static str {
-        crate::header::Part::key(self)
-    }
-    fn label(self) -> &'static str {
-        crate::header::Part::label(self)
-    }
-}
+use crate::ui::watchlist::Column;
 
 /// The parts, as a group of rows.
 ///
 /// Every change is handed to `changed` as the whole list, in order, the moment
 /// it is made, as the indicator list applies its changes.
-pub struct PartList<P: Part> {
+pub struct PartList {
     pub group: adw::PreferencesGroup,
     add: gtk::MenuButton,
-    parts: RefCell<Vec<P>>,
-    /// Parts the + does not offer, because they are somewhere else: in the
-    /// header's other section, for one.
-    elsewhere: RefCell<Vec<P>>,
+    parts: RefCell<Vec<Column>>,
     rows: RefCell<Vec<gtk::Widget>>,
-    changed: Box<dyn Fn(Vec<P>)>,
+    changed: Box<dyn Fn(Vec<Column>)>,
 }
 
-impl<P: Part> PartList<P> {
+impl PartList {
     pub fn new(
         title: &str,
         add_tip: &str,
-        current: Vec<P>,
-        changed: impl Fn(Vec<P>) + 'static,
-    ) -> Rc<PartList<P>> {
+        current: Vec<Column>,
+        changed: impl Fn(Vec<Column>) + 'static,
+    ) -> Rc<PartList> {
         let group = adw::PreferencesGroup::new();
         group.set_title(title);
         let add = gtk::MenuButton::new();
@@ -73,7 +41,6 @@ impl<P: Part> PartList<P> {
             group,
             add,
             parts: RefCell::new(current),
-            elsewhere: RefCell::new(Vec::new()),
             rows: RefCell::new(Vec::new()),
             changed: Box::new(changed),
         });
@@ -81,33 +48,13 @@ impl<P: Part> PartList<P> {
         list
     }
 
-    /// Stop offering `parts`, which are somewhere else now, and offer again
-    /// what no longer is.
-    pub fn set_elsewhere(self: &Rc<Self>, parts: Vec<P>) {
-        *self.elsewhere.borrow_mut() = parts;
-        self.rebuild();
-    }
-
-    /// What it holds, in order.
-    pub fn parts(&self) -> Vec<P> {
-        self.parts.borrow().clone()
-    }
-
     /// What the + offers, in its order.
-    pub fn offered(&self) -> Vec<P> {
+    pub fn offered(&self) -> Vec<Column> {
         let parts = self.parts.borrow();
-        let elsewhere = self.elsewhere.borrow();
-        P::every().into_iter().filter(|p| !parts.contains(p) && !elsewhere.contains(p)).collect()
+        Column::ALL.into_iter().filter(|p| !parts.contains(p)).collect()
     }
 
-    /// Show `parts` without handing them on: for a change made elsewhere,
-    /// which has already been applied.
-    pub(crate) fn replace(self: &Rc<Self>, parts: Vec<P>) {
-        *self.parts.borrow_mut() = parts;
-        self.rebuild();
-    }
-
-    pub(crate) fn set(self: &Rc<Self>, parts: Vec<P>) {
+    pub(crate) fn set(self: &Rc<Self>, parts: Vec<Column>) {
         *self.parts.borrow_mut() = parts.clone();
         (self.changed)(parts);
         self.rebuild();
@@ -126,16 +73,6 @@ impl<P: Part> PartList<P> {
             // A name, not markup: "P&L" would be a broken entity.
             row.set_use_markup(false);
             row.set_title(part.label());
-            if part.fixed() {
-                // Where the handle would be, so its name lines up with the
-                // others.
-                let blank = gtk::Image::from_icon_name("list-drag-handle-symbolic");
-                blank.set_opacity(0.0);
-                row.add_prefix(&blank);
-                self.group.add(&row);
-                self.rows.borrow_mut().push(row.upcast());
-                continue;
-            }
             let handle = gtk::Image::from_icon_name("list-drag-handle-symbolic");
             handle.add_css_class("dim-label");
             handle.set_tooltip_text(Some("Drag to reorder"));
@@ -169,7 +106,7 @@ impl<P: Part> PartList<P> {
                 let this = self.clone();
                 move |value: &glib::Value| {
                     let key = value.get::<String>().ok()?;
-                    let moving = P::every().into_iter().find(|p| p.key() == key)?;
+                    let moving = Column::from_key(&key)?;
                     let parts = this.parts.borrow();
                     Some((
                         parts.iter().position(|p| *p == moving)?,

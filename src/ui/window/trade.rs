@@ -2170,60 +2170,39 @@ pub(super) mod tests {
 
     /// Every trading setting is in Preferences with no login, ready for
     /// the first: the Trading page's colours and lines of orders and
-    /// positions, the header's P&L, Buy Sell and Quantity in its Right, and
-    /// the Trading page's own groups.
+    /// positions, the header's P&L, Buy Sell and Quantity in its picture on
+    /// Overlays, and the Trading page's own groups.
     #[test]
     fn preferences_show_every_trading_setting_without_a_login() {
         crate::ui::on_gtk(|| {
             let store = Rc::new(Store::memory().expect("a store"));
             let window = window(&store);
             assert!(!window.trading.borrow().trades());
-            window.open_preferences_at(None);
-            let dialog = preferences_of(&window);
-            let widgets = |root: gtk::Widget| {
-                let (mut found, mut stack) = (Vec::new(), vec![root]);
-                while let Some(widget) = stack.pop() {
-                    let mut child = widget.first_child();
-                    while let Some(next) = child {
-                        child = next.next_sibling();
-                        stack.push(next);
-                    }
-                    found.push(widget);
-                }
-                found
-            };
-            let sidebar = widgets(dialog.clone().upcast())
-                .into_iter()
-                .find_map(|widget| widget.downcast::<gtk::ListBox>().ok().filter(|list| list.has_css_class("navigation-sidebar")))
-                .expect("the sidebar");
-            // Each section is put in the dialog when it is picked.
-            let (mut groups, mut rows) = (Vec::new(), Vec::new());
-            let mut index = 0;
-            while let Some(section) = sidebar.row_at_index(index) {
-                sidebar.select_row(Some(&section));
-                for widget in widgets(dialog.clone().upcast()) {
-                    if let Some(group) = widget.downcast_ref::<adw::PreferencesGroup>() {
-                        groups.push(group.title().to_string());
-                    }
-                    if let Some(row) = widget.downcast_ref::<adw::PreferencesRow>() {
-                        rows.push(row.title().to_string());
-                    }
-                }
-                index += 1;
+            let words = preferences_words(&window);
+            for group in ["Orders and positions", "Header", "Order entry"] {
+                assert!(words.groups.iter().any(|title| title == group), "no {group} group in {:?}", words.groups);
             }
-            for group in ["Orders and positions", "Right", "Order entry"] {
-                assert!(groups.iter().any(|title| title == group), "no {group} group in {groups:?}");
+            for row in ["Buy", "Sell", "Long", "Short", "Profit", "Loss", "Order labels"] {
+                assert!(words.rows.iter().any(|title| title == row), "no {row} row in {:?}", words.rows);
             }
-            for row in ["Buy", "Sell", "Long", "Short", "Profit", "Loss", "P&L", "Buy Sell", "Quantity", "Order labels"] {
-                assert!(rows.iter().any(|title| title == row), "no {row} row in {rows:?}");
+            for part in ["P&L", "Buy Sell", "Quantity"] {
+                assert!(words.parts.iter().any(|name| name == part), "no {part} in the header's {:?}", words.parts);
             }
-            dialog.close();
         });
     }
 
-    /// The sidebar's sections, every group's title and every row's title in
-    /// the Preferences `window` opens.
-    fn preferences_words(window: &Rc<Window>) -> (Vec<String>, Vec<String>, Vec<String>) {
+    /// What the Preferences a window opens say: the sidebar's sections,
+    /// every group's and every row's title, and the parts the header's
+    /// picture shows or offers.
+    struct PreferencesWords {
+        sections: Vec<String>,
+        groups: Vec<String>,
+        rows: Vec<String>,
+        parts: Vec<String>,
+    }
+
+    /// The words of the Preferences `window` opens, closed again after.
+    fn preferences_words(window: &Rc<Window>) -> PreferencesWords {
         window.open_preferences_at(None);
         let dialog = preferences_of(window);
         let widgets = |root: gtk::Widget| {
@@ -2238,31 +2217,40 @@ pub(super) mod tests {
             }
             found
         };
-        let sidebar = widgets(dialog.clone().upcast())
+        // The sidebar is two lists, the app's sections and the charts'.
+        let lists: Vec<gtk::ListBox> = widgets(dialog.clone().upcast())
             .into_iter()
-            .find_map(|widget| widget.downcast::<gtk::ListBox>().ok().filter(|list| list.has_css_class("navigation-sidebar")))
-            .expect("the sidebar");
-        let (mut sections, mut groups, mut rows) = (Vec::new(), Vec::new(), Vec::new());
-        let mut index = 0;
-        while let Some(section) = sidebar.row_at_index(index) {
+            .filter_map(|widget| widget.downcast::<gtk::ListBox>().ok().filter(|list| list.has_css_class("navigation-sidebar")))
+            .collect();
+        assert!(!lists.is_empty(), "no sidebar");
+        let mut words = PreferencesWords { sections: Vec::new(), groups: Vec::new(), rows: Vec::new(), parts: Vec::new() };
+        let sections = lists.iter().flat_map(|list| (0..).map_while(|index| list.row_at_index(index)).map(move |row| (list, row)));
+        for (sidebar, section) in sections {
             for widget in widgets(section.clone().upcast()) {
                 if let Some(label) = widget.downcast_ref::<gtk::Label>() {
-                    sections.push(label.label().to_string());
+                    words.sections.push(label.label().to_string());
                 }
             }
             sidebar.select_row(Some(&section));
             for widget in widgets(dialog.clone().upcast()) {
                 if let Some(group) = widget.downcast_ref::<adw::PreferencesGroup>() {
-                    groups.push(group.title().to_string());
+                    words.groups.push(group.title().to_string());
                 }
                 if let Some(row) = widget.downcast_ref::<adw::PreferencesRow>() {
-                    rows.push(row.title().to_string());
+                    words.rows.push(row.title().to_string());
+                }
+                // A part in the picture is named by its tooltip, one under
+                // it, waiting to be put in, by its caption.
+                if widget.has_css_class("header-chip") {
+                    words.parts.extend(widget.tooltip_text().map(|name| name.to_string()));
+                }
+                if let Some(name) = widget.downcast_ref::<gtk::Label>().filter(|label| label.has_css_class("spare-name")) {
+                    words.parts.push(name.label().to_string());
                 }
             }
-            index += 1;
         }
         dialog.close();
-        (sections, groups, rows)
+        words
     }
 
     /// Trading switched off, as it ships, is the app before trading even
@@ -2289,14 +2277,18 @@ pub(super) mod tests {
             };
             assert!(off(&window), "trading built with the flag off");
             assert!(window.order_section(10.0).is_none(), "orders in the chart menu");
-            let (sections, groups, rows) = preferences_words(&window);
-            assert!(!sections.iter().any(|section| section == "Trading"), "a Trading section in {sections:?}");
+            let words = preferences_words(&window);
+            assert!(!words.sections.iter().any(|section| section == "Trading"), "a Trading section in {:?}", words.sections);
             for group in ["Orders and positions", "Trading services", "Order entry"] {
-                assert!(!groups.iter().any(|title| title == group), "a {group} group in {groups:?}");
+                assert!(!words.groups.iter().any(|title| title == group), "a {group} group in {:?}", words.groups);
             }
-            for row in ["Profit", "Loss", "P&L", "Buy Sell", "Quantity", "Account", "Order labels"] {
-                assert!(!rows.iter().any(|title| title == row), "a {row} row in {rows:?}");
+            for row in ["Profit", "Loss", "Order labels"] {
+                assert!(!words.rows.iter().any(|title| title == row), "a {row} row in {:?}", words.rows);
             }
+            for part in ["P&L", "Buy Sell", "Quantity", "Account"] {
+                assert!(!words.parts.iter().any(|name| name == part), "{part} in the header's {:?}", words.parts);
+            }
+            assert!(words.parts.iter().any(|name| name == "Symbol"), "no header picture to look in");
 
             let charts = |window: &Rc<Window>| {
                 window.panes.borrow().iter().map(|pane| (pane.id, pane.instrument.borrow().clone())).collect::<Vec<_>>()
@@ -2311,7 +2303,7 @@ pub(super) mod tests {
             assert!(window.desk.opening(&id) || window.desk.live(&id), "the saved login is not signing in");
             assert_eq!(charts(&window), before, "the charts were rebuilt");
             assert_eq!(window.focused_pane().id, focused);
-            let (sections, _, _) = preferences_words(&window);
+            let sections = preferences_words(&window).sections;
             assert!(sections.iter().any(|section| section == "Trading"), "no Trading section in {sections:?}");
 
             crate::features::set(&store, crate::features::Feature::Trading, false);
@@ -2484,7 +2476,7 @@ pub(super) mod tests {
     /// into the chart's settings: the chart's menu, only then.
     #[test]
     fn the_chart_menu_opens_the_settings_only_when_the_gear_is_gone() {
-        use crate::header::{Part, Section};
+        use crate::header::Part;
         crate::ui::on_gtk(|| {
             let store = Rc::new(Store::memory().expect("a store"));
             let window = window(&store);
@@ -2493,7 +2485,7 @@ pub(super) mod tests {
             };
             assert!(!settings(&window), "offered twice: the gear is in the header");
             let mut header = crate::header::load(&store);
-            header.set(Section::Right, vec![Part::Maximize, Part::Link]);
+            header.remove(Part::Settings);
             crate::header::save(&store, &header);
             window.adopt_header();
             assert!(settings(&window));

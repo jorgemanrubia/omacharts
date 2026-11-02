@@ -134,17 +134,10 @@ pub fn card(title: &str, body: Option<&str>, extra: Option<&gtk::Widget>) -> adw
 
 /// The first widget under `root`, depth first, wearing `class`.
 fn descendant_with_class(root: &gtk::Widget, class: &str) -> Option<gtk::Widget> {
-    let mut child = root.first_child();
-    while let Some(c) = child {
-        if c.has_css_class(class) {
-            return Some(c);
-        }
-        if let Some(found) = descendant_with_class(&c, class) {
-            return Some(found);
-        }
-        child = c.next_sibling();
-    }
-    None
+    crate::ui::children(root).find_map(|child| match child.has_css_class(class) {
+        true => Some(child),
+        false => descendant_with_class(&child, class),
+    })
 }
 
 /// "Ctrl+Enter", written the way this desktop writes it.

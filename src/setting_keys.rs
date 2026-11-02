@@ -113,8 +113,6 @@ const SHARED: &[&str] = &[
     "chart_template",
     "chart_templates",
     "chart_header",
-    "chart_header_center",
-    "chart_header_right",
     "chartbook_templates",
     "chart_time_zone",
     "time_format",

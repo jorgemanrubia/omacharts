@@ -17,19 +17,11 @@ pub const SETTING_SESSION: &str = "chart_session";
 /// How a futures root's months are joined at the rolls, on a feed that
 /// stitches them: back-adjusted or as traded.
 pub const SETTING_CONTINUOUS: &str = "chart_continuous";
-/// Gridlines and the last-price line are every chart's, not a default:
-/// see [`crate::ui::appearance`].
+/// Gridlines and the last-price line are every chart's look, not a
+/// default: see [`crate::chart_look`].
 pub const SETTING_SHOW_GRID: &str = "show_grid";
 pub const SETTING_PRICE_LINE: &str = "price_line";
 const SETTING_LOG_SCALE: &str = "chart_log_scale";
-
-/// Whether one of the switches every chart shares, stored under `key`, is
-/// on: as stored, or before anybody sets it, gridlines off and the rest on.
-/// The window, the Overlays page and `config` all read it here, so none of
-/// them can open to a different answer.
-pub fn chart_switch(store: &Store, key: &str) -> bool {
-    store.setting_bool(key, key != SETTING_SHOW_GRID)
-}
 
 const SETTING_SHOWS_DRAWINGS: &str = "chart_shows_drawings";
 const SETTING_SENDS_DRAWINGS: &str = "chart_sends_drawings";
@@ -160,18 +152,5 @@ mod tests {
         let on_one = ChartDefaults { template: Some(7), ..chosen };
         on_one.save(&store);
         assert_eq!(ChartDefaults::load(&store), on_one);
-    }
-
-    /// Gridlines are off until somebody turns them on; the last-price line
-    /// is on. What is stored wins either way.
-    #[test]
-    fn a_fresh_store_draws_no_gridlines_and_the_last_price_line() {
-        let store = Store::memory().unwrap();
-        assert!(!chart_switch(&store, SETTING_SHOW_GRID));
-        assert!(chart_switch(&store, SETTING_PRICE_LINE));
-        store.set_setting_bool(SETTING_SHOW_GRID, true);
-        store.set_setting_bool(SETTING_PRICE_LINE, false);
-        assert!(chart_switch(&store, SETTING_SHOW_GRID));
-        assert!(!chart_switch(&store, SETTING_PRICE_LINE));
     }
 }

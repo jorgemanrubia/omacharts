@@ -184,8 +184,8 @@ follows").
 - **The app** is Omacharts; **the command** is `omacharts`. A chart is named
   `pos:N`, counting from 0.
 - **Settings** by key in backticks, with the values they take:
-  `chart_header` is a comma-separated list of `symbol`, `resolution`,
-  `change`, `template`, `title`, `account` and `stripe`, or `none`.
+  `chart_header` is places such as `left=symbol,resolution right=link`, or
+  `none`.
 
 ## Screenshots
 

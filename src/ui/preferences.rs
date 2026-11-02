@@ -16,11 +16,9 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
-use omacharts_engine::Session;
 
 use crate::backup;
 use crate::cache;
-use crate::chart_defaults::{ChartDefaults, ChartSetting};
 use crate::store::Store;
 use crate::theming::Theming;
 use crate::ui::form_window;
@@ -30,6 +28,21 @@ pub struct Preferences;
 
 /// The section of the account lists and the trading look, by its id.
 pub const TRADING: &str = "trading";
+
+/// The section that edits what every chart's header shows, by its id.
+pub const OVERLAYS: &str = "overlays";
+
+/// The tag of the page at the root of a section's page stack.
+pub(crate) const ROOT: &str = "root";
+
+/// A section that is every chart's look, which a chart's settings show too:
+/// its id, title, icon, and the window's way to build its page.
+type Visual = (&'static str, &'static str, &'static str, fn(&Rc<Window>) -> adw::PreferencesPage);
+
+const VISUAL: [Visual; 2] = [
+    ("appearance", "Appearance", "preferences-desktop-appearance-symbolic", Window::appearance_page),
+    (OVERLAYS, "Overlays", "view-grid-symbolic", Window::overlays_page),
+];
 
 /// Where the window was when it was last looked at, for this run of the app:
 /// the section down the sidebar, by its id. Opening it again goes back
@@ -119,28 +132,21 @@ impl Preferences {
         let data_page = adw::PreferencesPage::new();
         let trading_page = adw::PreferencesPage::new();
 
-        let appearance_page = window.appearance_page();
-        let overlays_page = window.overlays_page();
-
         // What the app does first, then, under a rule that says which
         // charts they change, what the charts look like. A template is the
         // same for every chart on it, so it sits with the app, not under
         // the rule. Trading's page only while trading is switched on.
-        let trading = crate::features::trading();
         let mut app: Vec<Section> = vec![
-            ("general", "General", "preferences-system-symbolic", general_page.clone().upcast()),
-            ("data", "Market data", "network-transmit-receive-symbolic", data_page.clone().upcast()),
-            ("templates", "Templates", "edit-copy-symbolic", templates_page.clone().upcast()),
+            ("general", "General", "preferences-system-symbolic", section_view(&general_page, "General")),
+            ("data", "Market data", "network-transmit-receive-symbolic", section_view(&data_page, "Market data")),
+            ("templates", "Templates", "edit-copy-symbolic", section_view(&templates_page, "Templates")),
         ];
-        if trading {
-            app.push((TRADING, "Trading", "view-list-bullet-symbolic", trading_page.clone().upcast()));
+        if crate::features::trading() {
+            app.push((TRADING, "Trading", "view-list-bullet-symbolic", section_view(&trading_page, "Trading")));
         }
         let symbol = window.focused_pane().instrument.borrow().as_ref().map(|i| i.display_symbol());
-        let visual: [Section; 3] = [
-            ("appearance", "Appearance", "preferences-desktop-appearance-symbolic", appearance_page.clone().upcast()),
-            ("overlays", "Overlays", "view-grid-symbolic", overlays_page.clone().upcast()),
-            ("charts", "Charts", "utilities-system-monitor-symbolic", charts_page.clone().upcast()),
-        ];
+        let (mut visual, visual_pages) = visual_sections(&window);
+        visual.push(("charts", "Charts", "utilities-system-monitor-symbolic", section_view(&charts_page, "Charts")));
         // Opened from a chart at the section it asked for, else where it was
         // left. The header is the first thing on Overlays, so opening there
         // is all it takes to show it.
@@ -172,7 +178,7 @@ impl Preferences {
             crate::ui::scope_rule::rule(
                 &window,
                 symbol,
-                vec![appearance_page.upcast(), overlays_page.upcast()],
+                visual_pages,
                 move |local| {
                     context.charts_local.set(local);
                     let show = context.show_chart_settings.borrow().clone();
@@ -187,140 +193,174 @@ impl Preferences {
         // remembers its own.
         let frame = form_window::untracked(parent, "Preferences", (820, 640));
         frame.add_css_class("preferences-window");
-        frame.set_content(Some(&split_view(&frame, [&app, &visual], &rule, &start)));
+        let sections = Sections::new("Preferences", [&app, &visual], &rule);
+        sections.connect_selected(|id| LAST_SEEN.with(|seen| seen.borrow_mut().section = Some(id.to_string())));
+        if let Some(at) = sections.rows().iter().position(|row| row.widget_name() == start) {
+            sections.select(at);
+        }
+        // Narrow enough and the sidebar becomes a page of its own, the way
+        // every split view on this platform folds.
+        if let Ok(narrow) = adw::BreakpointCondition::parse("max-width: 560sp") {
+            let breakpoint = adw::Breakpoint::new(narrow);
+            breakpoint.add_setter(&sections.split, "collapsed", Some(&true.to_value()));
+            frame.add_breakpoint(breakpoint);
+        }
+        frame.set_content(Some(&sections.split));
 
         OPEN.with(|open| open.borrow().set(Some(&frame)));
         frame.present();
     }
 }
 
-/// A section of Preferences: its id, title, icon and page.
-type Section = (&'static str, &'static str, &'static str, gtk::Widget);
+/// A section of a settings window: its id, title, icon, and its page stack,
+/// so a page can be pushed inside one without taking the others with it.
+pub(crate) type Section = (&'static str, &'static str, &'static str, adw::NavigationView);
 
-/// The sections down a sidebar, in two lists with `rule` between them, the
-/// selected one beside it.
-///
-/// Two lists rather than one with a header, so the rule's buttons sit in
-/// the tab order between them.
-fn split_view(
-    frame: &adw::Window,
-    lists: [&[Section]; 2],
-    rule: &gtk::Widget,
-    start: &str,
-) -> adw::NavigationSplitView {
-    let stack = gtk::Stack::new();
-    let mut titles: Vec<(String, String)> = Vec::new();
-    let sidebars = lists.map(|sections| {
-        let sidebar = gtk::ListBox::new();
-        sidebar.add_css_class("navigation-sidebar");
-        for (id, title, icon, page) in sections {
-            let toolbar = adw::ToolbarView::new();
-            toolbar.add_top_bar(&adw::HeaderBar::new());
-            toolbar.set_content(Some(page));
-            let view = adw::NavigationView::new();
-            view.add(&adw::NavigationPage::with_tag(&toolbar, title, id));
-            stack.add_named(&view, Some(id));
-            titles.push((id.to_string(), title.to_string()));
-            sidebar.append(&sidebar_row(id, title, icon));
-        }
-        sidebar
-    });
+/// `page` as the root of a section's page stack, under a header bar.
+pub(crate) fn section_view(page: &impl IsA<gtk::Widget>, title: &str) -> adw::NavigationView {
+    let toolbar = adw::ToolbarView::new();
+    toolbar.add_top_bar(&adw::HeaderBar::new());
+    toolbar.set_content(Some(page));
+    let view = adw::NavigationView::new();
+    view.add(&adw::NavigationPage::with_tag(&toolbar, title, ROOT));
+    view
+}
 
-    let column = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    column.append(&sidebars[0]);
-    column.append(rule);
-    column.append(&sidebars[1]);
-    let side = adw::ToolbarView::new();
-    side.add_top_bar(&adw::HeaderBar::new());
-    let scroller = gtk::ScrolledWindow::new();
-    scroller.set_hscrollbar_policy(gtk::PolicyType::Never);
-    scroller.set_child(Some(&column));
-    side.set_content(Some(&scroller));
+/// Appearance and Overlays, for Preferences and for a chart's settings,
+/// and their pages.
+pub(crate) fn visual_sections(window: &Rc<Window>) -> (Vec<Section>, Vec<gtk::Widget>) {
+    VISUAL
+        .iter()
+        .map(|(id, title, icon, page)| {
+            let page = page(window);
+            ((*id, *title, *icon, section_view(&page, title)), page.upcast())
+        })
+        .unzip()
+}
 
-    let first = titles.first().map(|(_, title)| title.clone()).unwrap_or_default();
-    let content = adw::NavigationPage::new(&stack, &first);
-    let split = adw::NavigationSplitView::new();
-    split.set_sidebar(Some(&adw::NavigationPage::new(&side, "Preferences")));
-    split.set_content(Some(&content));
+/// A settings window's sections down a sidebar, in two lists read as one,
+/// and the selected one beside it.
+#[derive(Clone)]
+pub(crate) struct Sections {
+    pub split: adw::NavigationSplitView,
+    /// The sidebar's header bar, for a window that names something under
+    /// its title.
+    pub header: adw::HeaderBar,
+    lists: [gtk::ListBox; 2],
+}
 
-    // One selection across both lists: choosing in one lets go of the other.
-    for (at, sidebar) in sidebars.iter().enumerate() {
-        follow_sidebar(sidebar, stack.clone(), content.clone(), &split, titles.clone());
-        let other = sidebars[1 - at].clone();
-        sidebar.connect_row_selected(move |_, row| {
-            let Some(row) = row else { return };
-            other.unselect_all();
-            let id = row.widget_name().to_string();
-            LAST_SEEN.with(|seen| seen.borrow_mut().section = Some(id));
-        });
-        // The arrows read the two lists as one, past the rule: left to
-        // itself a list hands an arrow off its end to Tab, which stops on
-        // the rule's buttons, where the next arrow goes nowhere.
-        let other = sidebars[1 - at].clone();
-        sidebar.connect_keynav_failed(move |_, direction| {
-            let row = match (at, direction) {
-                (0, gtk::DirectionType::Down) => other.row_at_index(0),
-                (1, gtk::DirectionType::Up) => other.last_child().and_downcast::<gtk::ListBoxRow>(),
-                _ => None,
-            };
-            let Some(row) = row else { return glib::Propagation::Proceed };
-            other.select_row(Some(&row));
-            row.grab_focus();
-            glib::Propagation::Stop
-        });
-    }
-    let chosen = sidebars.iter().find_map(|sidebar| {
-        let mut at = 0;
-        while let Some(row) = sidebar.row_at_index(at) {
-            if row.widget_name() == start {
-                return Some((sidebar.clone(), row));
+impl Sections {
+    /// `lists` down a sidebar titled `title`, `rule` between them, the first
+    /// section chosen.
+    ///
+    /// Two lists rather than one with a header, so the rule's buttons sit in
+    /// the tab order between them.
+    pub(crate) fn new(title: &str, lists: [&[Section]; 2], rule: &impl IsA<gtk::Widget>) -> Sections {
+        let stack = gtk::Stack::new();
+        let mut titles: Vec<(String, String)> = Vec::new();
+        let lists = lists.map(|sections| {
+            let list = gtk::ListBox::new();
+            list.add_css_class("navigation-sidebar");
+            for (id, title, icon, view) in sections {
+                stack.add_named(view, Some(id));
+                titles.push((id.to_string(), title.to_string()));
+                list.append(&sidebar_row(id, title, icon));
             }
-            at += 1;
+            list
+        });
+
+        let column = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        column.append(&lists[0]);
+        column.append(rule);
+        column.append(&lists[1]);
+        let header = adw::HeaderBar::new();
+        let side = adw::ToolbarView::new();
+        side.add_top_bar(&header);
+        let scroller = gtk::ScrolledWindow::new();
+        scroller.set_hscrollbar_policy(gtk::PolicyType::Never);
+        scroller.set_child(Some(&column));
+        side.set_content(Some(&scroller));
+
+        let first = titles.first().map(|(_, title)| title.clone()).unwrap_or_default();
+        let content = adw::NavigationPage::new(&stack, &first);
+        let split = adw::NavigationSplitView::new();
+        split.set_sidebar(Some(&adw::NavigationPage::new(&side, title)));
+        split.set_content(Some(&content));
+
+        for (at, list) in lists.iter().enumerate() {
+            // A section chosen shows its page under its title, and goes to
+            // it when the split is folded. One selection across both lists:
+            // choosing in one lets go of the other.
+            let (stack, content, shown, titles) = (stack.clone(), content.clone(), split.clone(), titles.clone());
+            let other = lists[1 - at].clone();
+            list.connect_row_selected(move |_, row| {
+                let Some(row) = row else { return };
+                other.unselect_all();
+                let id = row.widget_name();
+                let Some((_, title)) = titles.iter().find(|(known, _)| *known == id.as_str()) else { return };
+                stack.set_visible_child_name(&id);
+                content.set_title(title);
+                shown.set_show_content(true);
+            });
+            // The arrows read the two lists as one, past the rule: left to
+            // itself a list hands an arrow off its end to Tab, which stops on
+            // the rule's buttons, where the next arrow goes nowhere.
+            let other = lists[1 - at].clone();
+            list.connect_keynav_failed(move |_, direction| {
+                let row = match (at, direction) {
+                    (0, gtk::DirectionType::Down) => other.row_at_index(0),
+                    (1, gtk::DirectionType::Up) => other.last_child().and_downcast::<gtk::ListBoxRow>(),
+                    _ => None,
+                };
+                let Some(row) = row else { return glib::Propagation::Proceed };
+                other.select_row(Some(&row));
+                row.grab_focus();
+                glib::Propagation::Stop
+            });
         }
-        None
-    });
-    if let Some((sidebar, row)) = chosen {
-        sidebar.select_row(Some(&row));
+        let sections = Sections { split, header, lists };
+        sections.select(0);
+        sections
     }
 
-    // Narrow enough and the sidebar becomes a page of its own, the way every
-    // split view on this platform folds.
-    if let Ok(narrow) = adw::BreakpointCondition::parse("max-width: 560sp") {
-        let breakpoint = adw::Breakpoint::new(narrow);
-        breakpoint.add_setter(&split, "collapsed", Some(&true.to_value()));
-        frame.add_breakpoint(breakpoint);
+    /// Every section's row, down both lists.
+    pub(crate) fn rows(&self) -> Vec<gtk::ListBoxRow> {
+        self.lists.iter().flat_map(|list| (0..).map_while(move |at| list.row_at_index(at))).collect()
     }
-    split
+
+    /// The chosen section, by its place down the sidebar.
+    pub(crate) fn selected(&self) -> usize {
+        self.rows().iter().position(|row| row.is_selected()).unwrap_or(0)
+    }
+
+    /// Choose the section at `at` down the sidebar.
+    pub(crate) fn select(&self, at: usize) {
+        let Some(row) = self.rows().into_iter().nth(at) else { return };
+        if let Some(list) = row.parent().and_downcast::<gtk::ListBox>() {
+            list.select_row(Some(&row));
+        }
+    }
+
+    /// `chosen` hears the id of each section chosen.
+    pub(crate) fn connect_selected(&self, chosen: impl Fn(&str) + Clone + 'static) {
+        for list in &self.lists {
+            let chosen = chosen.clone();
+            list.connect_row_selected(move |_, row| {
+                if let Some(row) = row {
+                    chosen(&row.widget_name());
+                }
+            });
+        }
+    }
 }
 
 /// A section's row in a settings sidebar: its icon and its title, named by
 /// its id.
-pub(crate) fn sidebar_row(id: &str, title: &str, icon: &str) -> gtk::ListBoxRow {
+fn sidebar_row(id: &str, title: &str, icon: &str) -> gtk::ListBoxRow {
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     row.append(&gtk::Image::from_icon_name(icon));
     row.append(&gtk::Label::new(Some(title)));
     gtk::ListBoxRow::builder().child(&row).name(id).build()
-}
-
-/// A section chosen in `sidebar` shows its page of `stack` as `content`,
-/// under its title from `titles` (id, title), and goes to it when `split` is
-/// folded.
-pub(crate) fn follow_sidebar(
-    sidebar: &gtk::ListBox,
-    stack: gtk::Stack,
-    content: adw::NavigationPage,
-    split: &adw::NavigationSplitView,
-    titles: Vec<(String, String)>,
-) {
-    let shown = split.clone();
-    sidebar.connect_row_selected(move |_, row| {
-        let Some(row) = row else { return };
-        let id = row.widget_name();
-        let Some((_, title)) = titles.iter().find(|(known, _)| *known == id.as_str()) else { return };
-        stack.set_visible_child_name(&id);
-        content.set_title(title);
-        shown.set_show_content(true);
-    });
 }
 
 /// A rule across the sidebar with a word on it, over the sections that go
@@ -350,10 +390,10 @@ pub(crate) fn rule_word(text: &str) -> gtk::Label {
     label
 }
 
-/// A way to the resolution list from the settings, since the other way in is
-/// right-clicking a strip, which you have to know about to find; and how far
-/// the charts zoom to the wheel and the touchpad. Whether the crosshair
-/// follows across charts is every chart's look, on Overlays.
+/// A way to the resolution strip's list from the settings, since the other
+/// way in is right-clicking a strip, which you have to know about to find
+/// (whether there is a strip at all is the header's to say); and how far the
+/// charts zoom to the wheel and the touchpad.
 fn chart_group(context: &Rc<Context>) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     group.set_title("Chart");
@@ -415,155 +455,30 @@ fn zoom_row(context: &Rc<Context>) -> adw::ActionRow {
 /// as its own settings would. Either way the rows show what they change, read
 /// again after every change, so a template change declined shows the old one.
 fn build_charts_page(context: &Rc<Context>) {
+    let local = Rc::downgrade(context);
+    let every = move || local.upgrade().is_none_or(|context| !context.charts_local.get());
+    let rows = crate::ui::chart_settings::ChartRows::new(&context.window, every, || {});
     // Grouped as a chart's own settings are, so a row is found in the same
     // place in both.
-    let scales = adw::PreferencesGroup::new();
-    scales.set_title("Scales");
-    let hours = adw::PreferencesGroup::new();
-    hours.set_title("Session");
-    let indicators = adw::PreferencesGroup::new();
-    indicators.set_title("Indicators");
-    let drawings = adw::PreferencesGroup::new();
-    drawings.set_title("Drawings");
-
-    // Rows announce their value as they are set, too; only a person's change
-    // is one to make.
-    let showing = Rc::new(std::cell::Cell::new(false));
-    let change: Rc<RefCell<Option<Rc<dyn Fn(ChartSetting)>>>> = Rc::default();
-
-    let session = adw::ComboRow::new();
-    session.set_title("Hours");
-    let sessions: Vec<String> = Session::ALL.iter().map(|s| s.label().to_string()).collect();
-    session.set_model(Some(&string_list(&sessions)));
-    hours.add(&session);
-
-    let continuous = adw::ComboRow::new();
-    continuous.set_title("Continuous futures");
-    {
-        use omacharts_engine::continuous::Adjustment;
-        let joins: Vec<String> = Adjustment::ALL.iter().map(|a| a.label().to_string()).collect();
-        continuous.set_model(Some(&string_list(&joins)));
-    }
+    let group = |title: &str, rows: &[&adw::PreferencesRow]| {
+        let group = adw::PreferencesGroup::new();
+        group.set_title(title);
+        for row in rows {
+            group.add(*row);
+        }
+        context.charts_page.add(&group);
+        group
+    };
+    group("Scales", &[rows.log.upcast_ref()]);
+    let hours = group("Session", &[rows.session.upcast_ref()]);
     // Only where some feed has a choice to make: the default of nothing is
     // no row.
     if omacharts_engine::continuous::any_offered() {
-        hours.add(&continuous);
+        hours.add(&rows.continuous);
     }
-
-    let switch = |title: &str| {
-        let row = adw::SwitchRow::new();
-        row.set_title(title);
-        row
-    };
-    let log = switch("Logarithmic scale");
-    scales.add(&log);
-    let shows = switch("Show drawings from other charts");
-    let sends = switch("Send drawings to other charts");
-    drawings.add(&shows);
-    drawings.add(&sends);
-    // "None" first, then every template. The ids are kept beside the row,
-    // since the list changes on the Templates page.
-    let template = adw::ComboRow::new();
-    template.set_title("Template");
-    indicators.add(&template);
-    let legend = switch(crate::ui::chart_settings::LEGEND_LABEL);
-    indicators.add(&legend);
-    let ids: Rc<RefCell<Vec<u32>>> = Rc::new(RefCell::new(Vec::new()));
-
-    let show: Rc<dyn Fn()> = {
-        let context = context.clone();
-        let (session, continuous, log, shows, sends, legend, template) = (
-            session.clone(),
-            continuous.clone(),
-            log.clone(),
-            shows.clone(),
-            sends.clone(),
-            legend.clone(),
-            template.clone(),
-        );
-        let (ids, showing) = (ids.clone(), showing.clone());
-        Rc::new(move || {
-            let current = match context.charts_local.get() {
-                true => context.window.focused_settings(),
-                false => ChartDefaults::load(&context.store),
-            };
-            let templates = context.window.templates();
-            let mut names = vec!["None".to_string()];
-            names.extend(templates.iter().map(|t| t.name.clone()));
-            *ids.borrow_mut() = templates.iter().map(|t| t.id).collect();
-            showing.set(true);
-            session.set_selected(Session::ALL.iter().position(|s| *s == current.session).unwrap_or(0) as u32);
-            {
-                use omacharts_engine::continuous::Adjustment;
-                let at = Adjustment::ALL.iter().position(|a| *a == current.continuous).unwrap_or(0);
-                continuous.set_selected(at as u32);
-            }
-            log.set_active(current.log_scale);
-            shows.set_active(current.shows_drawings);
-            sends.set_active(current.sends_drawings);
-            legend.set_active(current.shows_legend);
-            template.set_model(Some(&string_list(&names)));
-            let at = current
-                .template
-                .and_then(|id| templates.iter().position(|t| t.id == id))
-                .map_or(0, |at| at + 1);
-            template.set_selected(at as u32);
-            showing.set(false);
-        })
-    };
-    show();
-
-    let change: Rc<dyn Fn(ChartSetting)> = {
-        let context = context.clone();
-        let show = show.clone();
-        let made: Rc<dyn Fn(ChartSetting)> = Rc::new(move |setting| {
-            if showing.get() {
-                return;
-            }
-            let show = show.clone();
-            context.window.change_chart_setting(setting, !context.charts_local.get(), move || show());
-        });
-        *change.borrow_mut() = Some(made.clone());
-        made
-    };
-    {
-        let change = change.clone();
-        session.connect_selected_notify(move |row| {
-            let Some(chosen) = Session::ALL.get(row.selected() as usize).copied() else { return };
-            change(ChartSetting::Session(chosen));
-        });
-    }
-    let toggle = |row: &adw::SwitchRow, setting: fn(bool) -> ChartSetting| {
-        let change = change.clone();
-        row.connect_active_notify(move |row| change(setting(row.is_active())));
-    };
-    toggle(&log, ChartSetting::LogScale);
-    toggle(&shows, ChartSetting::ShowsDrawings);
-    toggle(&sends, ChartSetting::SendsDrawings);
-    toggle(&legend, ChartSetting::Legend);
-    {
-        let change = change.clone();
-        continuous.connect_selected_notify(move |row| {
-            use omacharts_engine::continuous::Adjustment;
-            let Some(chosen) = Adjustment::ALL.get(row.selected() as usize).copied() else { return };
-            change(ChartSetting::Continuous(chosen));
-        });
-    }
-    template.connect_selected_notify(move |row| {
-        let chosen = match row.selected() as usize {
-            0 => None,
-            at => match ids.borrow().get(at - 1) {
-                Some(id) => Some(*id),
-                None => return,
-            },
-        };
-        change(ChartSetting::Template(chosen));
-    });
-    *context.show_chart_settings.borrow_mut() = Some(show);
-
-    for group in [&scales, &hours, &indicators, &drawings] {
-        context.charts_page.add(group);
-    }
+    group("Indicators", &[rows.template.upcast_ref(), rows.legend.upcast_ref()]);
+    group("Drawings", &[rows.shows.upcast_ref(), rows.sends.upcast_ref()]);
+    *context.show_chart_settings.borrow_mut() = Some(rows.show);
 }
 
 /// How orders and positions are drawn on a chart: `first`, the Trading

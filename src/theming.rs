@@ -679,6 +679,56 @@ row.bars-head button {
 }
 row.bars-head button:hover { color: @window_fg_color; }
 row.bars-head button:checked { color: @window_fg_color; border-bottom-color: @accent_color; }
+/* The header as a picture of a chart's top: on the charts' own ground, its
+   parts lit on hover, and the parts it does not show waiting underneath,
+   drawn the same way. While a part is dragged the empty places that would
+   take it say their names, and the one it would land in turns to the
+   accent; no boxes. One that would not stays shut. */
+.header-card {
+  background-color: @view_bg_color;
+  border: 1px solid alpha(@window_fg_color, 0.12);
+  border-radius: 12px;
+}
+.header-card .header-zone { border-radius: 8px; }
+/* The picture is a chart's top at a settings column's width, a fraction of
+   a chart's, so its parts are drawn small enough to keep their places
+   apart; the ones waiting underneath match them. */
+.header-card .header-zone, .header-card .header-spare { font-size: 0.8em; }
+.header-card .timeframe-strip button { min-width: 22px; min-height: 20px; padding: 0 4px; }
+.header-card .trade-button { min-height: 20px; padding: 0 6px; }
+.header-card.dragging .header-zone:not(.shut) { min-width: 72px; }
+.header-card .zone-name {
+  font-size: 0.75em;
+  letter-spacing: 0.08em;
+  color: alpha(@window_fg_color, 0.35);
+}
+.header-card .header-zone.drop-over .zone-name { color: @accent_color; }
+.header-card .header-chip { border-radius: 6px; }
+.header-card .header-chip:hover { background: alpha(@window_fg_color, 0.06); }
+.header-card .lifted { opacity: 0.25; }
+.header-card .header-icon { min-width: 20px; min-height: 20px; color: alpha(@window_fg_color, 0.6); -gtk-icon-size: 13px; }
+.header-card .header-spare {
+  border: 1px solid alpha(@window_fg_color, 0.14);
+  border-radius: 8px;
+  padding: 0 4px;
+  min-height: 26px;
+}
+.header-card .header-spare:hover {
+  border-color: alpha(@window_fg_color, 0.3);
+  background: alpha(@window_fg_color, 0.04);
+}
+/* A part's name in small caps, set apart from the picture beside it, which
+   is often words too. Dropped onto the picture's baseline by a fixed nudge,
+   the same on every card: an icon has no baseline to align to. */
+.header-card .spare-name {
+  font-size: 0.64em;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: alpha(@window_fg_color, 0.5);
+  margin: 4px 4px 0 0;
+}
+.header-card .header-spares.drop-over { background: alpha(@window_fg_color, 0.04); }
 /* The sidebar sits on the charts' own ground, a step darker than the page. */
 .form-window .sidebar-pane { background-color: @view_bg_color; }
 /* The two theme cards, and the catalogue's tiles. */
