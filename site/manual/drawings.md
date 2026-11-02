@@ -55,8 +55,8 @@ state:
   key alt+r
   key alt+6
   move 1275 795
-capture: bin/headless-window shot /tmp/bar.png; magick /tmp/bar.png -crop 760x920+0+0 +repage site/assets/manual/drawings/tools-bar.png
-crop: 0,0,760,920
+capture: bin/headless-window shot /tmp/bar.png; magick /tmp/bar.png -crop 760x1010+0+0 +repage site/assets/manual/drawings/tools-bar.png
+crop: 0,0,760,1010
 -->
 {% include figure.html src="/assets/manual/drawings/tools-bar.png" alt="The drawing tools down the left edge, with the rectangle lit and a small 6 on it" caption="The tools, with the rectangle selected and configuration 6 chosen for it." %}
 

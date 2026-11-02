@@ -1208,7 +1208,7 @@ fn appearance_group(
     // A volume profile is bars and a mark, not a line, so it is asked about
     // its two colours and nothing about thickness or pattern.
     if indicator.kind == Kind::VolumeProfile {
-        return Some(profile_colours(owner, refresh, colour, indicator));
+        return Some(profile_style(owner, refresh, colour, indicator));
     }
 
     let group = adw::PreferencesGroup::new();
@@ -1719,7 +1719,7 @@ fn volume_colours(
 }
 
 /// The two colours a volume profile actually has.
-fn profile_colours(
+fn profile_style(
     owner: &Rc<Owner>,
     refresh: &Refresh,
     colour: &str,
