@@ -178,9 +178,9 @@ profile; out of balance, it leaves to find new value.
 **Picture.** The same chart. On "value area", one zoom of about two times
 on the third session's profile, framing its stronger band and the point
 of control line together. Nothing else acts in the scene, so it holds
-for the composer's longest, four and a half seconds, through the value
-area line and into the point of control, then eases back to the full
-chart. The cursor stays off the chart.
+for the composer's longest, eight seconds, through the value area and
+point of control lines and into "When price leaves value", then eases back
+to the full chart. The cursor stays off the chart.
 
 **Voice.** Here's one session. {zoom}The value area is the band holding
 about seventy percent of the volume. The point of control is the busiest
@@ -352,7 +352,7 @@ is on screen and read before the scene ends.
 lands.
 
     merge: zoom 85% 45% 1.8
-    after: 10.5
+    after: 12
 
 ### 14. The result
 
