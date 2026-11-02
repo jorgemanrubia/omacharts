@@ -241,6 +241,8 @@ crop: 490,300,1180,536   (the menu with 20px layout margin right and below)
 | <kbd>+</kbd> <kbd>−</kbd> | Zooms in and out about the middle |
 | <kbd>End</kbd> | Back to the latest bar, following new bars again |
 
+The wheel zooms a step a notch. A trackpad's two-finger swipe up or down zooms by how far the fingers travel, so a slow swipe zooms a little. Preferences › Charts › Other › **Zoom sensitivity** makes both gentler or faster, for every chart at once, and also sets how far the wheel stretches the price axis.
+
 A chart can be panned a little past either end of its bars. One panned back into history stays there as new bars arrive. <kbd>↑</kbd> <kbd>↓</kbd> over a chart move through the watchlist, not the chart ([Watchlists](/manual/watchlists/)).
 
 ## Go to

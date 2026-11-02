@@ -2050,6 +2050,7 @@ impl Window {
     ) -> Rc<Window> {
         store.seed_watchlist_if_empty(DEFAULTS);
         crate::feeds::note_running(provider.id());
+        crate::zoom::adopt(&store);
 
         let index = crate::inventory::Inventory::curated();
         let theming = Rc::new(RefCell::new(Theming::load(&store)));
@@ -3521,13 +3522,14 @@ impl Window {
     /// Show the settings a backup just put back: everything the window holds
     /// in memory that came out of them, read again.
     ///
-    /// The same four things a restore typed in a terminal asks for through
+    /// The same things a restore typed in a terminal asks for through
     /// [`crate::cli::Live`], in the same order. The arrangement goes last and
     /// without being saved first — what is on screen is exactly what was
     /// replaced, and saving it would put it back.
     pub fn adopt_restored(self: &Rc<Self>) {
         self.adopt_theming();
         self.adopt_feed();
+        self.adopt_zoom();
         self.reload_watchlists();
         self.reload_workspace();
     }
@@ -6704,6 +6706,12 @@ impl Window {
 
     fn live(&self) -> Option<Rc<Live>> {
         self.live.borrow().clone()
+    }
+
+    /// Zoom every chart at the sensitivity the settings now name. Read by the
+    /// charts on each scroll, so nothing on screen needs redrawing.
+    pub fn adopt_zoom(&self) {
+        crate::zoom::adopt(&self.store);
     }
 
     /// Chart from whatever feed the settings now name, if that is not the

@@ -4129,12 +4129,18 @@ impl ChartView {
     /// Plain wheel zooms time about the cursor. Shift pans. Ctrl scales price.
     /// Over an axis, the wheel scales that axis whatever the modifiers — the
     /// axis is the control.
+    ///
+    /// Zooming goes by how far the wheel turned or the fingers travelled,
+    /// scaled by the app's zoom sensitivity — see [`crate::zoom`]. A wheel
+    /// notch is a notch; a touchpad's pixels are a fraction of one each.
     fn wire_zoom(&self) {
         let scroll = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::BOTH_AXES);
         let state = self.state.clone();
         let area = self.area.clone();
         let pointer = self.pointer.clone();
         let on_price_auto = self.on_price_auto.clone();
+        // Time-axis steps too small to move a column yet.
+        let carry = std::cell::Cell::new(1.0);
         scroll.connect_scroll(move |controller, dx, dy| {
             if dx == 0.0 && dy == 0.0 {
                 return glib::Propagation::Proceed;
@@ -4159,10 +4165,16 @@ impl ChartView {
                 return glib::Propagation::Stop;
             }
 
+            let unit = match controller.unit() {
+                gtk::gdk::ScrollUnit::Surface => crate::zoom::Delta::Pixels,
+                _ => crate::zoom::Delta::Notches,
+            };
+            let notches = crate::zoom::notches(dy, unit, crate::zoom::current());
+
             match (region, shift, ctrl) {
                 (Region::PriceAxis, _, _) | (Region::Plot, false, true) => {
                     // Same sense as dragging the axis.
-                    s.scale_price(2f64.powf(dy / 4.0));
+                    s.scale_price(2f64.powf(notches / 4.0));
                 }
                 (Region::Plot, true, _) => {
                     let columns = s.columns() as f64;
@@ -4174,7 +4186,12 @@ impl ChartView {
                         .pointer
                         .map(|(x, _)| ((x - PAD) / plot_w).clamp(0.0, 1.0))
                         .unwrap_or(0.5);
-                    s.zoom_time(if dy > 0.0 { 1.15 } else { 1.0 / 1.15 }, anchor, plot_w);
+                    let factor = crate::zoom::time_factor(notches);
+                    let (now, next) = crate::zoom::carried(carry.get(), factor, s.columns());
+                    carry.set(next);
+                    if let Some(factor) = now {
+                        s.zoom_time(factor, anchor, plot_w);
+                    }
                 }
             }
             drop(s);

@@ -254,8 +254,9 @@ fn rebuild(context: &Rc<Context>) {
 }
 
 /// A way to the resolution list from the settings, since the other way in is
-/// right-clicking a strip, which you have to know about to find; and the one
-/// switch about how the charts behave towards each other.
+/// right-clicking a strip, which you have to know about to find; the one
+/// switch about how the charts behave towards each other; and how far they
+/// zoom to the wheel and the touchpad.
 fn chart_group(context: &Rc<Context>) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     group.set_title("Chart");
@@ -296,7 +297,37 @@ fn chart_group(context: &Rc<Context>) -> adw::PreferencesGroup {
     sync.set_activatable_widget(Some(&switch));
     group.add(&sync);
 
+    group.add(&zoom_row(context));
+
     group
+}
+
+/// How far the wheel and a two-finger swipe zoom, for every chart, as a
+/// percentage of the base rate. Read by the charts on every scroll, so a
+/// change is felt on the next one. The mark is where it started.
+fn zoom_row(context: &Rc<Context>) -> adw::ActionRow {
+    use crate::zoom::{DEFAULT, MAX, MIN};
+    let row = adw::ActionRow::new();
+    row.set_title("Zoom sensitivity");
+    let scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, MIN as f64, MAX as f64, 5.0);
+    scale.set_size_request(180, -1);
+    scale.set_valign(gtk::Align::Center);
+    scale.set_draw_value(true);
+    scale.set_value_pos(gtk::PositionType::Left);
+    scale.set_digits(0);
+    scale.set_round_digits(0);
+    scale.set_format_value_func(|_, v| format!("{v:.0}%"));
+    scale.add_mark(DEFAULT as f64, gtk::PositionType::Bottom, None);
+    scale.set_value(crate::zoom::sensitivity(&context.store) as f64);
+    let store = context.store.clone();
+    scale.connect_value_changed(move |scale| {
+        let percent = scale.value().round() as u32;
+        if percent != crate::zoom::sensitivity(&store) {
+            crate::zoom::save(&store, percent);
+        }
+    });
+    row.add_suffix(&scale);
+    row
 }
 
 fn theme_group(context: &Rc<Context>) -> adw::PreferencesGroup {
