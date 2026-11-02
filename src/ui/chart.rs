@@ -2103,6 +2103,17 @@ impl ChartView {
         s.profile_at(self.area.width() as f64, self.area.height() as f64, id, x)
     }
 
+    /// Every profile indicator `id` draws, and whether each is on screen,
+    /// for a command that reads them.
+    pub fn profiles(&self, id: u32) -> Option<Vec<(Profile, bool)>> {
+        let s = self.state.borrow();
+        let drawn = s.indicators.iter().find(|d| d.indicator.id == id)?;
+        let Output::Profiles(profiles) = &drawn.output else { return None };
+        let (first, count, _) = s.view();
+        let end = first + count;
+        Some(profiles.iter().map(|p| (p.clone(), p.last_bar >= first && p.first_bar < end)).collect())
+    }
+
     /// The profile of indicator `id` holding the moment `ts`.
     pub fn profile_of(&self, id: u32, ts: i64) -> Option<selection::ProfileSpot> {
         self.state.borrow().profile_of(id, ts)

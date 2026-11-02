@@ -250,6 +250,12 @@ pub trait Live {
         Err(Fault::no_window("focused chart"))
     }
 
+    /// The focused chart's volume profiles, each with whether it is on
+    /// screen, and the chart they are on.
+    fn profiles(&self, _id: Option<u32>) -> Result<(String, Vec<(omacharts_engine::indicators::Profile, bool)>), Fault> {
+        Err(Fault::no_window("focused chart"))
+    }
+
     /// Read the arrangement back and rebuild from it.
     fn reload_workspace(&self);
     /// Draw the rail again, after a command changed a watchlist.
@@ -971,6 +977,10 @@ impl Live for Rc<crate::ui::Window> {
 
     fn profile(&self, id: Option<u32>, ts: i64, merge: bool) -> Result<String, Fault> {
         crate::ui::Window::change_profile_at(self, id, ts, merge).map_err(Fault::not_found)
+    }
+
+    fn profiles(&self, id: Option<u32>) -> Result<(String, Vec<(omacharts_engine::indicators::Profile, bool)>), Fault> {
+        crate::ui::Window::profiles_on_focused(self, id).map_err(Fault::not_found)
     }
 
     fn flush_workspace(&self) {

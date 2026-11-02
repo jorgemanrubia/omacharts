@@ -7949,13 +7949,18 @@ impl Window {
         crate::clock::zone(&self.store).for_instrument(pane.instrument.borrow().as_ref())
     }
 
-    /// Merge the focused chart's volume profile holding `ts` into the one
-    /// before it, or split the composite holding it, for a command. The
-    /// window's to answer, since only it has the bars that say where a
-    /// period begins.
-    pub fn change_profile_at(self: &Rc<Self>, id: Option<u32>, ts: i64, merge: bool) -> Result<String, String> {
+    /// The focused chart's volume profiles, for a command: the chart they
+    /// are on, and each profile with whether it is on screen.
+    pub fn profiles_on_focused(&self, id: Option<u32>) -> Result<(String, Vec<(omacharts_engine::indicators::Profile, bool)>), String> {
         let pane = self.focused_pane();
         let label = self.chart_named(&pane);
+        let indicator = self.profile_indicator(&pane, &label, id)?;
+        let profiles = pane.view.profiles(indicator).unwrap_or_default();
+        Ok((label, profiles))
+    }
+
+    /// The one volume profile on a chart, or the one `id` names.
+    fn profile_indicator(&self, pane: &ChartPane, label: &str, id: Option<u32>) -> Result<u32, String> {
         let profiles: Vec<u32> = pane
             .indicators
             .borrow()
@@ -7964,14 +7969,24 @@ impl Window {
             .filter(|i| id.is_none_or(|id| i.id == id))
             .map(|i| i.id)
             .collect();
-        let indicator = match profiles.as_slice() {
-            [one] => *one,
-            [] => return Err(format!("{label} has no volume profile")),
+        match profiles.as_slice() {
+            [one] => Ok(*one),
+            [] => Err(format!("{label} has no volume profile")),
             many => {
                 let ids: Vec<String> = many.iter().map(|id| id.to_string()).collect();
-                return Err(format!("{label} has {} volume profiles; say which with --id {}", many.len(), ids.join(" or ")));
+                Err(format!("{label} has {} volume profiles; say which with --id {}", many.len(), ids.join(" or ")))
             }
-        };
+        }
+    }
+
+    /// Merge the focused chart's volume profile holding `ts` into the one
+    /// before it, or split the composite holding it, for a command. The
+    /// window's to answer, since only it has the bars that say where a
+    /// period begins.
+    pub fn change_profile_at(self: &Rc<Self>, id: Option<u32>, ts: i64, merge: bool) -> Result<String, String> {
+        let pane = self.focused_pane();
+        let label = self.chart_named(&pane);
+        let indicator = self.profile_indicator(&pane, &label, id)?;
         let Some(spot) = pane.view.profile_of(indicator, ts) else {
             return Err(format!("{label} draws no profile at that moment"));
         };

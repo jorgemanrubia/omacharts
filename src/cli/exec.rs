@@ -1251,25 +1251,76 @@ fn charts_verb(
 /// Merge or split a volume profile on the chart on screen.
 fn chart_profile(live: Option<&dyn Live>, m: &clap::ArgMatches, as_json: bool) -> Result<String, Fault> {
     let live = live.ok_or_else(|| Fault::no_window("focused chart"))?;
+    let id = match arg(m, "id") {
+        None => None,
+        Some(text) => Some(text.parse::<u32>().map_err(|_| Fault::usage(format!("{text:?} is not an indicator id")))?),
+    };
     let merge = match required(m, "ACTION")?.as_str() {
+        "list" => return list_profiles(live, id, flag(m, "visible"), as_json),
         "merge" => true,
         "split" => false,
-        other => return Err(Fault::usage(format!("{other:?} is not merge or split"))),
+        other => return Err(Fault::usage(format!("{other:?} is not list, merge or split"))),
     };
     let Some(when) = arg(m, "at") else {
         return Err(Fault::usage("say which profile with --at, a moment inside it".into()));
     };
     let ts = read_when(when, "at", live.measurement_zone())?;
-    let id = match arg(m, "id") {
-        None => None,
-        Some(text) => Some(text.parse::<u32>().map_err(|_| Fault::usage(format!("{text:?} is not an indicator id")))?),
-    };
     let chart = live.profile(id, ts, merge)?;
     let done = if merge { "merged the profile into the one before it" } else { "split the composite profile" };
     Ok(match as_json {
         true => json!({"chart": chart, "action": if merge { "merge" } else { "split" }, "at": ts}).to_string(),
         false => format!("{done} on {chart}"),
     })
+}
+
+/// The profiles a chart draws, as numbers a script can compare: where each
+/// begins and ends, the periods in it, its point of control and value area.
+fn list_profiles(live: &dyn Live, id: Option<u32>, visible: bool, as_json: bool) -> Result<String, Fault> {
+    let zone = live.measurement_zone();
+    let (chart, profiles) = live.profiles(id)?;
+    let day = |ts: i64| {
+        chrono::DateTime::from_timestamp(ts, 0)
+            .map(|at| at.with_timezone(&zone).format("%Y-%m-%d %H:%M").to_string())
+            .unwrap_or_default()
+    };
+    let shown: Vec<_> = profiles.iter().filter(|(_, on)| !visible || *on).collect();
+    if as_json {
+        let rows: Vec<Value> = shown
+            .iter()
+            .map(|(p, on)| {
+                let (low, high) = p.value_area_bounds();
+                json!({
+                    "start": p.start_ts,
+                    "end": p.end_ts,
+                    "start_text": day(p.start_ts),
+                    "end_text": day(p.end_ts),
+                    "periods": p.parts,
+                    "composite": p.is_composite(),
+                    "poc": p.poc_price(),
+                    "value_area_low": low,
+                    "value_area_high": high,
+                    "volume": p.total_volume,
+                    "visible": on,
+                })
+            })
+            .collect();
+        return Ok(json!({"chart": chart, "profiles": rows}).to_string());
+    }
+    let mut out = format!("{} profiles on {chart}\n", shown.len());
+    for (p, on) in shown {
+        let (low, high) = p.value_area_bounds();
+        out.push_str(&format!(
+            "{}  {} → {}  POC {:.2}  VA {:.2}–{:.2}{}\n",
+            if *on { "●" } else { "○" },
+            day(p.start_ts),
+            day(p.end_ts),
+            p.poc_price(),
+            low,
+            high,
+            if p.is_composite() { format!("  composite of {}", p.parts.len()) } else { String::new() },
+        ));
+    }
+    Ok(out.trim_end().to_string())
 }
 
 fn chart_measure(
