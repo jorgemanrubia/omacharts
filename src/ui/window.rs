@@ -229,6 +229,7 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Alt+R", "Draw a rectangle over a run of bars"),
             ("Alt+C", "Draw a circle, dragged to any shape"),
             ("Alt+T", "Write on the chart: click, then type"),
+            ("Alt+V", "Draw a volume profile of the bars dragged across"),
             ("Alt+M", "Measure: click the start, then the end"),
             ("Ctrl+D", "Show or hide the drawing tools"),
             ("Alt+1 … 9", "Configuration N, for the selected drawing or the one about to be drawn"),
