@@ -8110,7 +8110,7 @@ impl Window {
     pub fn as_shown(&self, range: omacharts_engine::Range) -> omacharts_engine::Range {
         let view = &self.focused_pane().view;
         match view.seconds_shown().zip(view.now()) {
-            Some((seconds, now)) => range.lasting(seconds, now),
+            Some((seconds, now)) => range.lasting(seconds, chrono::Local::now().date_naive(), now),
             None => range,
         }
     }

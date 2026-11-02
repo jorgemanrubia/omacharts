@@ -708,11 +708,16 @@ impl Range {
     /// starts as much earlier, the same length: `today` on a chart six weeks
     /// wide is the six weeks up to now, not six weeks of room for bars still
     /// to come. Anything else is as it was: a range says how long it is.
-    pub fn lasting(self, seconds: i64, now: NaiveDateTime) -> Range {
+    ///
+    /// `now` is on the chart's clock, the one its window is measured on, and
+    /// `today` the calendar's, the one the day is pinned to afterwards. They
+    /// differ in the evening on a chart that keeps New York time, and a day
+    /// named from the wrong one is a day out from the date it is pinned to.
+    pub fn lasting(self, seconds: i64, today: NaiveDate, now: NaiveDateTime) -> Range {
         match self {
             Range::Day(day) => {
                 let seconds = seconds.max(0);
-                let from = day.first(now.date()).map(|first| first.and_time(NaiveTime::MIN));
+                let from = day.first(today).map(|first| first.and_time(NaiveTime::MIN));
                 // How far past now it would run from its day.
                 let past = from.map_or(0, |from| (from + Duration::seconds(seconds) - now).num_seconds());
                 Range::Lasting(day, seconds, past.max(0))
@@ -1655,7 +1660,7 @@ mod tests {
             "2 days ago", "3 days ago", "5 days ago", "10/23", "yesterday", "last fri", "fri", "1 week ago",
             "on the 28 oct", "2026/10/22", "2026/10/12", "today",
         ] {
-            let range = Range::parse(text).map(|r| r.lasting(ten, now)).unwrap_or(Range::All);
+            let range = Range::parse(text).map(|r| r.lasting(ten, today, now)).unwrap_or(Range::All);
             let (start, end) = (range.start(today), range.end(today));
             let typed = Range::parse(text).and_then(|r| r.start(today));
             assert!(matches!(range, Range::Lasting(..)), "{text} is a date");
@@ -1664,19 +1669,19 @@ mod tests {
             assert!(range.holds_days(today), "{text}");
             assert!(!range.spelled(today).starts_with("since"), "{text} names its window");
         }
-        let week = Range::parse("1 week ago").map(|r| r.lasting(ten, now));
+        let week = Range::parse("1 week ago").map(|r| r.lasting(ten, today, now));
         assert_eq!(week.map(|r| r.spelled(today)), Some("22 Oct – 1 Nov".into()));
         assert_eq!(week.map(|r| r.key()), Some("1w ago".into()), "it reads back as the day");
-        let back = Range::parse("2026/10/12").map(|r| r.lasting(ten, now));
+        let back = Range::parse("2026/10/12").map(|r| r.lasting(ten, today, now));
         assert_eq!(back.map(|r| r.spelled(today)), Some("12 Oct – 22 Oct".into()), "far enough back, from the day");
         // Less than a day on screen is the day itself.
-        assert_eq!(Range::parse("oct 22").map(|r| r.lasting(6 * 3_600, now).spelled(today)), Some("22 Oct".into()));
+        assert_eq!(Range::parse("oct 22").map(|r| r.lasting(6 * 3_600, today, now).spelled(today)), Some("22 Oct".into()));
         // A custom range open at the end still runs to today.
-        assert_eq!(Range::parse("1 week ago:").map(|r| r.lasting(ten, now).spelled(today)), Some("since 25 Oct".into()));
+        assert_eq!(Range::parse("1 week ago:").map(|r| r.lasting(ten, today, now).spelled(today)), Some("since 25 Oct".into()));
         // Spans and ranges keep their own length.
-        assert_eq!(Range::parse("2025").map(|r| r.lasting(ten, now)), Some(Range::Year(2025)));
-        assert_eq!(Range::parse("1w").map(|r| r.lasting(ten, now)), Some(Range::Back(1, Span::Week)));
-        assert_eq!(Range::parse("oct 1:").map(|r| r.lasting(ten, now)), Range::parse("oct 1:"));
+        assert_eq!(Range::parse("2025").map(|r| r.lasting(ten, today, now)), Some(Range::Year(2025)));
+        assert_eq!(Range::parse("1w").map(|r| r.lasting(ten, today, now)), Some(Range::Back(1, Span::Week)));
+        assert_eq!(Range::parse("oct 1:").map(|r| r.lasting(ten, today, now)), Range::parse("oct 1:"));
     }
 
     /// A date near now on a chart that shows a long while would run past
@@ -1693,7 +1698,7 @@ mod tests {
             ("today", six_weeks, "21 Sep – 2 Nov", "the 42 days up to now"),
             ("10 days ago", eight_years, "2 Nov 2018 – 2 Nov", "the 2922 days up to now"),
         ] {
-            let range = Range::parse(text).map(|r| r.lasting(seconds, now)).unwrap_or(Range::All);
+            let range = Range::parse(text).map(|r| r.lasting(seconds, today, now)).unwrap_or(Range::All);
             let ends = |newest| {
                 let (from, seconds) = range.lasting_on(today, newest)?;
                 Some((from + Duration::seconds(seconds), seconds))
@@ -1709,7 +1714,7 @@ mod tests {
         }
         // Far enough back for its length to end before now, a day starts the
         // window, and the window does not follow the bars.
-        let back = Range::parse("2026/09/01").map(|r| r.lasting(six_weeks, now));
+        let back = Range::parse("2026/09/01").map(|r| r.lasting(six_weeks, today, now));
         assert_eq!(back.map(|r| r.spelled(today)), Some("1 Sep – 13 Oct".into()));
         assert_eq!(
             back.and_then(|r| r.lasting_on(today, now)),
@@ -1717,12 +1722,19 @@ mod tests {
         );
         // A live edge further on than the day has to spare stops at the day:
         // a year on a weekly chart, whose ten bars of room are ten weeks.
-        let close = Range::parse("2025/12/02").map(|r| r.lasting(365 * 86_400, now));
+        let close = Range::parse("2025/12/02").map(|r| r.lasting(365 * 86_400, today, now));
         assert_eq!(
             close.and_then(|r| r.lasting_on(today, now + Duration::weeks(10))).map(|(from, _)| from),
             Some(day(2025, 12, 2).and_time(NaiveTime::MIN)),
             "the day stays on screen"
         );
+        // Late in the evening on the chart's clock it is already tomorrow on
+        // the calendar's: a day named relative to today ends where the same
+        // date typed out does, at now.
+        let evening = day(2026, 11, 1).and_time(NaiveTime::MIN) + Duration::hours(18);
+        let spelled = |text| Range::parse(text).map(|r| r.lasting(eight_years, today, evening).pinned(today).spelled(today));
+        assert_eq!(spelled("10 days ago"), spelled("2026/10/23"));
+        assert_eq!(spelled("10 days ago").map(|s| s.ends_with("1 Nov")), Some(true), "it ends at now, on the chart's clock");
     }
 
     /// A day named on the calendar is pinned to its date before a chart,
@@ -1747,9 +1759,9 @@ mod tests {
         assert_eq!(pinned("jan:mar").map(|r| r.short_key(2026)), Some("jan:mar".into()));
         assert_eq!(pinned("june").map(|r| r.short_key(2026)), Some("jun".into()));
         assert_eq!(pinned("june 2025").map(|r| r.short_key(2026)), Some("2025-06".into()));
-        let lasting = Range::parse("1 week ago").map(|r| r.lasting(86_400, noon(sunday)).pinned(sunday));
+        let lasting = Range::parse("1 week ago").map(|r| r.lasting(86_400, sunday, noon(sunday)).pinned(sunday));
         assert_eq!(lasting, Some(Range::Lasting(End::Day(day(2026, 10, 25)), 86_400, 0)));
-        let today = Range::parse("today").map(|r| r.lasting(86_400, noon(sunday)).pinned(sunday));
+        let today = Range::parse("today").map(|r| r.lasting(86_400, sunday, noon(sunday)).pinned(sunday));
         assert_eq!(today, Some(Range::Lasting(End::Day(sunday), 86_400, 12 * 3_600)), "pinned, it keeps its window");
     }
 
@@ -1783,7 +1795,7 @@ mod tests {
     /// the card and the command call it.
     fn shown(text: &str, bars: &[i64], seconds: i64, step: i64) -> Option<Shown> {
         let today = day(2026, 11, 1);
-        let range = Range::parse(text)?.lasting(seconds, noon(today)).pinned(today);
+        let range = Range::parse(text)?.lasting(seconds, today, noon(today)).pinned(today);
         let newest = bars.last().and_then(|&ts| utc(ts))?;
         let (from, seconds) = range.lasting_on(newest.date(), newest)?;
         let window = lasting_window(bars, |&ts| utc(ts), from, seconds, step);
