@@ -250,7 +250,7 @@ Drawing with the mouse:
 | <kbd>Shift</kbd> + click / <kbd>Ctrl</kbd> + click a drawing | Adds it to the selection, or takes it out | [Drawings](/manual/drawings/) |
 | <kbd>Shift</kbd> + drag the empty chart | Selects every drawing the box touches | [Drawings](/manual/drawings/) |
 | <kbd>Ctrl</kbd> + drag a corner | Snaps it to the candle under it | [Drawings](/manual/drawings/) |
-| Double-click a drawing | Puts the caret in it, to type | [Drawings](/manual/drawings/) |
+| Double-click a drawing | Opens its properties. On a text drawing, puts the caret in it | [Drawings](/manual/drawings/) |
 | Click an indicator, or its name in the legend | Selects it | [Indicators](/manual/indicators/#selecting-an-indicator) |
 | Double-click an indicator | Opens its settings | [Indicators](/manual/indicators/#selecting-an-indicator) |
 | Right-click an indicator | Selects it and opens its menu: **Cut**, **Copy**, **Paste**, **Remove**, **Properties…** | [Indicators](/manual/indicators/#selecting-an-indicator) |

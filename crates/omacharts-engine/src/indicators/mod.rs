@@ -298,6 +298,9 @@ impl Kind {
                 value_area: 0.70,
                 poc_color: None,
                 style: profile::Style::Filled,
+                outline_color: None,
+                outline_width: 1.0,
+                poc_width: 1.0,
                 align: profile::Align::Left,
                 merged: Vec::new(),
             },
@@ -371,6 +374,16 @@ pub enum Params {
         /// Solid rows, or only their outline.
         #[serde(default)]
         style: profile::Style,
+        /// The outline's colour, drawn in the outline style. Unset is the
+        /// profile's own.
+        #[serde(default)]
+        outline_color: Option<ColorChoice>,
+        /// The outline's thickness, in pixels.
+        #[serde(default = "profile::hairline")]
+        outline_width: f64,
+        /// The point of control's thickness, in pixels.
+        #[serde(default = "profile::hairline")]
+        poc_width: f64,
         /// The edge of the period the rows grow from.
         #[serde(default)]
         align: profile::Align,

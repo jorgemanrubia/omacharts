@@ -577,8 +577,12 @@ fn describe(kind: Kind, style: &Style) -> String {
         }
         Kind::Profile => {
             let look = &style.profile;
+            let background = match style.fill == style.colour {
+                true => String::new(),
+                false => format!(" on {}", name_of(&style.fill)),
+            };
             format!(
-                "{} {}, from the {}, point of control {}",
+                "{}{background} {}, from the {}, point of control {}",
                 name_of(&style.colour),
                 look.shape.label().to_lowercase(),
                 look.align.label().to_lowercase(),
@@ -742,7 +746,7 @@ fn style_editor(window: &Rc<Window>, kind: Kind, current: Style, on_style: Rc<dy
         }
         // The study's properties, as one drawing carries them.
         Kind::Profile => {
-            let (row, show) = paint_row(&theme, "Colour", &style.borrow().colour, {
+            let (row, show) = paint_row(&theme, "Outline", &style.borrow().colour, {
                 let style = style.clone();
                 let emit = emit.clone();
                 move |paint| {
@@ -752,6 +756,41 @@ fn style_editor(window: &Rc<Window>, kind: Kind, current: Style, on_style: Rc<dy
             });
             group.add(&row);
             shows.push(Rc::new(move |s: &Style| show(&s.colour)));
+
+            let (row, show) = paint_row(&theme, "Background", &style.borrow().fill, {
+                let style = style.clone();
+                let emit = emit.clone();
+                move |paint| {
+                    style.borrow_mut().fill = paint;
+                    emit();
+                }
+            });
+            group.add(&row);
+            shows.push(Rc::new(move |s: &Style| show(&s.fill)));
+
+            // Over the outline and the background together, from the look
+            // as designed at 0%: their strengths are measured, and this
+            // only fades them.
+            let fade = adw::ActionRow::new();
+            fade.set_title("Transparency");
+            let scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, 100.0, 1.0);
+            scale.set_size_request(160, -1);
+            scale.set_valign(gtk::Align::Center);
+            scale.set_draw_value(true);
+            scale.set_value_pos(gtk::PositionType::Left);
+            scale.set_format_value_func(|_, v| format!("{v:.0}%"));
+            scale.set_value((1.0 - style.borrow().profile.opacity) * 100.0);
+            {
+                let style = style.clone();
+                let emit = emit.clone();
+                scale.connect_value_changed(move |scale| {
+                    style.borrow_mut().profile.opacity = (1.0 - scale.value() / 100.0).clamp(0.0, 1.0);
+                    emit();
+                });
+            }
+            fade.add_suffix(&scale);
+            group.add(&fade);
+            shows.push(Rc::new(move |s: &Style| scale.set_value((1.0 - s.profile.opacity) * 100.0)));
 
             let (row, show) = paint_row(&theme, "Point of control", &style.borrow().profile.poc, {
                 let style = style.clone();
@@ -764,7 +803,7 @@ fn style_editor(window: &Rc<Window>, kind: Kind, current: Style, on_style: Rc<dy
             group.add(&row);
             shows.push(Rc::new(move |s: &Style| show(&s.profile.poc)));
 
-            let (row, show) = width_row("Thickness", style.borrow().width, {
+            let (row, show) = width_row("Outline thickness", style.borrow().width, {
                 let style = style.clone();
                 let emit = emit.clone();
                 move |width| {
@@ -774,6 +813,17 @@ fn style_editor(window: &Rc<Window>, kind: Kind, current: Style, on_style: Rc<dy
             });
             group.add(&row);
             shows.push(Rc::new(move |s: &Style| show(s.width)));
+
+            let (row, show) = width_row("Point of control thickness", style.borrow().profile.poc_width, {
+                let style = style.clone();
+                let emit = emit.clone();
+                move |width| {
+                    style.borrow_mut().profile.poc_width = width;
+                    emit();
+                }
+            });
+            group.add(&row);
+            shows.push(Rc::new(move |s: &Style| show(s.profile.poc_width)));
 
             let shapes = ProfileShape::ALL;
             let (row, show) = named_row(
@@ -1382,6 +1432,8 @@ fn profile_sample(cr: &gtk::cairo::Context, theme: &Theme, style: &Style, x: f64
     let rows = [0.3, 0.55, 0.85, 1.0, 0.7, 0.45, 0.25];
     let row_h = h / rows.len() as f64;
     let colour = style.colour.hex(theme);
+    let fill = style.fill.hex(theme);
+    let opacity = style.profile.opacity.clamp(0.0, 1.0);
     let right = style.profile.align == ProfileAlign::Right;
     let span = |share: f64| match right {
         true => (x + w - w * share, w * share),
@@ -1403,16 +1455,16 @@ fn profile_sample(cr: &gtk::cairo::Context, theme: &Theme, style: &Style, x: f64
             for (n, share) in rows.iter().enumerate() {
                 let inside = (2..=4).contains(&n);
                 let alpha = if inside { style.alpha } else { style.alpha * drawings::PROFILE_ROW_SHARE };
-                colors::set_source_alpha(cr, &colour, alpha.max(0.12));
+                colors::set_source_alpha(cr, &fill, alpha.max(0.12) * opacity);
                 let (left, width) = span(*share);
                 cr.rectangle(left, y + n as f64 * row_h, width, row_h);
                 let _ = cr.fill();
             }
-            colors::set_source_alpha(cr, &colour, drawings::PROFILE_EDGE_ALPHA);
+            colors::set_source_alpha(cr, &colour, drawings::PROFILE_EDGE_ALPHA * opacity);
             cr.set_line_width(1.0);
         }
         ProfileShape::Outline => {
-            colors::set_source(cr, &colour);
+            colors::set_source_alpha(cr, &colour, opacity);
             cr.set_line_width(style.width.clamp(1.0, 2.0));
         }
     }
@@ -1420,7 +1472,7 @@ fn profile_sample(cr: &gtk::cairo::Context, theme: &Theme, style: &Style, x: f64
     let _ = cr.stroke();
     let poc = (y + 3.5 * row_h).round() + 0.5;
     colors::set_source_alpha(cr, &style.profile.poc.hex(theme), drawings::PROFILE_POC_ALPHA);
-    cr.set_line_width(style.width.clamp(1.0, 2.0));
+    cr.set_line_width(style.profile.poc_width.clamp(1.0, 2.0));
     let (left, width) = span(1.0);
     cr.move_to(left, poc);
     cr.line_to(left + width, poc);

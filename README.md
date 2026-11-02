@@ -51,8 +51,8 @@ Fast, beautiful charting software for [Omarchy](https://omarchy.org).
   click where it ends to read its percentage and price change, the bars it took
   and the time it spanned, coloured up or down. `omacharts chart measure` shows
   the same measurement from a terminal while the window is open.
-- **Drawings.** Trendlines, levels, arrows, zig-zags, boxes, circles and text,
-  a keystroke each. Their colours are roles your theme fills, held clear of
+- **Drawings.** Trendlines, levels, arrows, zig-zags, boxes, circles, text and
+  volume profiles of any span, a keystroke each. Their colours are roles your theme fills, held clear of
   the candles, so a drawing reads on any theme. Figures take labels, and what
   you draw is on every chart of that symbol.
   [See how it works](https://www.youtube.com/watch?v=wwMnxI0watk).

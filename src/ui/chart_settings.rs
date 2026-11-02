@@ -1762,7 +1762,41 @@ fn profile_colours(
         id,
     ));
 
-    let Params::VolumeProfile { style, align, .. } = &indicator.params else { return group };
+    let Params::VolumeProfile { style, align, outline_color, outline_width, poc_width, .. } = &indicator.params else {
+        return group
+    };
+    group.add(&thickness_row(owner, refresh, id, "Point of control thickness", *poc_width, |indicator, width| {
+        if let Params::VolumeProfile { poc_width, .. } = &mut indicator.params {
+            *poc_width = width;
+        }
+    }));
+    // The outline is what the outline style draws; filled rows have none,
+    // so its two rows wait for it.
+    let outlined = *style == Style::Outline;
+    let shown = outline_color.as_ref().map(|c| c.resolve(&owner.theme())).unwrap_or_else(|| colour.to_string());
+    let outline_row = colour_row(
+        owner,
+        refresh,
+        &unused,
+        "Outline",
+        &shown,
+        outline_color.clone(),
+        move |indicator, choice| {
+            if let Params::VolumeProfile { outline_color, .. } = &mut indicator.params {
+                *outline_color = choice;
+            }
+        },
+        id,
+    );
+    outline_row.set_sensitive(outlined);
+    group.add(&outline_row);
+    let width_row = thickness_row(owner, refresh, id, "Outline thickness", *outline_width, |indicator, width| {
+        if let Params::VolumeProfile { outline_width, .. } = &mut indicator.params {
+            *outline_width = width;
+        }
+    });
+    width_row.set_sensitive(outlined);
+    group.add(&width_row);
     group.add(&choice_row(owner, refresh, id, "Style", &Style::ALL.map(Style::label), Style::ALL.iter().position(|s| s == style), |indicator, at| {
         if let Params::VolumeProfile { style, .. } = &mut indicator.params {
             *style = Style::ALL[at];
@@ -1775,6 +1809,29 @@ fn profile_colours(
     }));
 
     group
+}
+
+/// A line's thickness in pixels, applied as it is spun.
+fn thickness_row(
+    owner: &Rc<Owner>,
+    refresh: &Refresh,
+    id: u32,
+    title: &str,
+    current: f64,
+    apply: impl Fn(&mut Indicator, f64) + 'static,
+) -> adw::SpinRow {
+    let row = adw::SpinRow::with_range(0.5, 6.0, 0.5);
+    row.set_title(title);
+    row.set_digits(1);
+    row.set_value(current);
+    let owner = owner.clone();
+    let refresh = refresh.clone();
+    row.connect_value_notify(move |row| {
+        let width = row.value();
+        update(&owner, id, |indicator| apply(indicator, width));
+        refresh.run();
+    });
+    row
 }
 
 /// A row choosing one of a few named ways, applied as soon as it is picked.
@@ -2340,14 +2397,13 @@ fn rows_rows(
 ) -> Vec<adw::PreferencesRow> {
     let drawn = owner.profile_rows(id);
 
-    let spin = adw::SpinRow::with_range(4.0, 400.0, 1.0);
+    let spin = adw::SpinRow::with_range(4.0, 800.0, 1.0);
     spin.set_title("Rows");
     spin.set_value(rows.or(drawn).unwrap_or(48) as f64);
     spin.set_sensitive(rows.is_some());
 
     let automatic = adw::ActionRow::new();
     automatic.set_title("Automatic");
-    automatic.set_subtitle("Rows as tall as the instrument's own price steps");
     let switch = gtk::Switch::new();
     switch.set_active(rows.is_none());
     switch.set_valign(gtk::Align::Center);

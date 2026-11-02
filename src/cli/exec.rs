@@ -1999,6 +1999,11 @@ fn chart_drawing(
     // What a kind that has no corners of its own should hear, rather than
     // having them quietly dropped: four points on a rectangle is somebody
     // expecting a polygon.
+    // A volume profile carries no words: there is no inside free of its
+    // rows to put them in.
+    let takes_no_text = |kind: omacharts_engine::DrawingKind| {
+        Fault::usage(format!("a {} drawing takes no --text or --text-at", kind.label().to_lowercase()))
+    };
     let not_a_path = || {
         Fault::usage("--point is a zig-zag's corners; every other kind is --from and --to".into())
     };
@@ -2038,10 +2043,13 @@ fn chart_drawing(
     let text = match action {
         "add" => {
             let kind = kind.ok_or_else(|| {
-                Fault::usage("`drawing add` needs a kind: line, rect, ellipse or text".into())
+                Fault::usage("`drawing add` needs a kind: line, hline, arrow, zigzag, rect, ellipse, text or profile".into())
             })?;
             if !corners.is_empty() && !kind.is_path() {
                 return Err(not_a_path());
+            }
+            if !kind.takes_text() && !words.is_empty() {
+                return Err(takes_no_text(kind));
             }
             // Words sit at a point, so a text drawing takes one anchor and
             // uses it for both. A zig-zag given its corners has its ends
@@ -2124,6 +2132,9 @@ fn chart_drawing(
             }
             let mut drawing = find_drawing(store, &symbol, suffix.as_deref(), &locals, id)?;
             let was_local = drawing.is_local();
+            if !drawing.kind.takes_text() && !words.is_empty() {
+                return Err(takes_no_text(drawing.kind));
+            }
             // Through `move_grip` rather than straight onto the field, so a
             // text drawing's two anchors stay the one point they are.
             if let Some(from) = from {
@@ -2245,7 +2256,7 @@ fn configurations_verb(
                             json!({
                                 "kind": kind.key(),
                                 "config": n,
-                                "style": style_json(configs.of(*kind, n)),
+                                "style": style_json(*kind, configs.of(*kind, n)),
                                 "default": configs.is_default(*kind, n),
                             })
                             .to_string()
@@ -2281,7 +2292,7 @@ fn configurations_verb(
             configs.set(kind, n, style.clone());
             store.set_drawing_configurations(&configs);
             let text = format!("{} configuration {n} is now {}", kind.label(), describe_style(kind, &style));
-            Ok(Some(said(as_json, json!({"kind": kind.key(), "config": n, "style": style_json(&style), "message": text}), text)?))
+            Ok(Some(said(as_json, json!({"kind": kind.key(), "config": n, "style": style_json(kind, &style), "message": text}), text)?))
         }
         "reset-configs" => {
             let mut configs = store.drawing_configurations();
@@ -2399,7 +2410,7 @@ fn drawing_json(d: &omacharts_engine::Drawing, configs: &omacharts_engine::Confi
         "config": d.config,
         // Where a look of its own came from, for a drawing that has one.
         "started_from": d.started_from,
-        "style": style_json(d.style(configs)),
+        "style": style_json(d.kind, d.style(configs)),
         "scope": d.scope.key(),
         "order": d.order,
         "text": d.has_text().then(|| json!({
@@ -2420,8 +2431,8 @@ fn drawing_json(d: &omacharts_engine::Drawing, configs: &omacharts_engine::Confi
     })
 }
 
-fn style_json(style: &omacharts_engine::Style) -> Value {
-    json!({
+fn style_json(kind: omacharts_engine::DrawingKind, style: &omacharts_engine::Style) -> Value {
+    let mut out = json!({
         "color": style.colour.spell(),
         "width": style.width,
         "arrow": style.arrow.key(),
@@ -2434,13 +2445,19 @@ fn style_json(style: &omacharts_engine::Style) -> Value {
         // family and resolves differently on another machine.
         "font": style.text.family_name(),
         "font_size": style.text.clamped_size(),
-        "profile": {
+    });
+    // Only a volume profile has these, so only a volume profile says them.
+    if kind == omacharts_engine::DrawingKind::Profile {
+        out["profile"] = json!({
             "poc_color": style.profile.poc.spell(),
             "style": style.profile.shape.key(),
             "align": style.profile.align.key(),
             "value_area": style.profile.value_area,
-        },
-    })
+            "transparency": 1.0 - style.profile.opacity,
+            "poc_width": style.profile.poc_width,
+        });
+    }
+    out
 }
 
 /// A drawing, said back in one line:
@@ -2550,6 +2567,8 @@ struct StyleEdits {
     shape: Option<omacharts_engine::drawings::ProfileShape>,
     align: Option<omacharts_engine::drawings::ProfileAlign>,
     value_area: Option<f64>,
+    transparency: Option<f64>,
+    poc_width: Option<f64>,
 }
 
 impl StyleEdits {
@@ -2613,6 +2632,8 @@ impl StyleEdits {
             shape,
             align,
             value_area: bounded(m, "value-area", 0.1, 1.0)?,
+            transparency: bounded(m, "transparency", 0.0, 1.0)?,
+            poc_width: bounded(m, "poc-width", MIN_WIDTH, MAX_WIDTH)?,
             colour: paint("color")?,
             width,
             arrow,
@@ -2646,6 +2667,8 @@ impl StyleEdits {
             && self.shape.is_none()
             && self.align.is_none()
             && self.value_area.is_none()
+            && self.transparency.is_none()
+            && self.poc_width.is_none()
     }
 
     fn apply(&self, style: &mut omacharts_engine::Style) {
@@ -2690,6 +2713,12 @@ impl StyleEdits {
         }
         if let Some(share) = self.value_area {
             style.profile.value_area = share;
+        }
+        if let Some(clear) = self.transparency {
+            style.profile.opacity = 1.0 - clear;
+        }
+        if let Some(width) = self.poc_width {
+            style.profile.poc_width = width;
         }
     }
 }
@@ -2948,6 +2977,9 @@ struct Edits {
     poc_color: Option<ColorChoice>,
     profile_style: Option<omacharts_engine::indicators::profile::Style>,
     align: Option<omacharts_engine::indicators::profile::Align>,
+    outline_color: Option<ColorChoice>,
+    outline_width: Option<f64>,
+    poc_width: Option<f64>,
     up_color: Option<ColorChoice>,
     down_color: Option<ColorChoice>,
     color: Option<ColorChoice>,
@@ -3028,6 +3060,9 @@ impl Edits {
             },
             value_area: bounded(m, "value-area", 0.0, 1.0)?,
             poc_color: colour(m, "poc-color")?,
+            outline_color: colour(m, "outline-color")?,
+            outline_width: bounded(m, "outline-width", 0.5, 6.0)?,
+            poc_width: bounded(m, "poc-width", 0.5, 6.0)?,
             profile_style: match arg(m, "profile-style") {
                 None => None,
                 Some(text) => Some(omacharts_engine::indicators::profile::Style::from_key(text).ok_or_else(|| {
@@ -3126,6 +3161,9 @@ impl Edits {
             && self.poc_color.is_none()
             && self.profile_style.is_none()
             && self.align.is_none()
+            && self.outline_color.is_none()
+            && self.outline_width.is_none()
+            && self.poc_width.is_none()
             && self.up_color.is_none()
             && self.down_color.is_none()
             && self.color.is_none()
@@ -3257,6 +3295,23 @@ impl Edits {
             match kind == IndicatorKind::VolumeProfile {
                 true => params["align"] = json!(align.key()),
                 false => return Err(refuse("alignment")),
+            }
+        }
+        if let Some(colour) = &self.outline_color {
+            match kind == IndicatorKind::VolumeProfile {
+                true => params["outline_color"] = to_value(colour)?,
+                false => return Err(refuse("outline")),
+            }
+        }
+        for (width, key, what) in [
+            (self.outline_width, "outline_width", "outline thickness"),
+            (self.poc_width, "poc_width", "point of control thickness"),
+        ] {
+            if let Some(width) = width {
+                match kind == IndicatorKind::VolumeProfile {
+                    true => params[key] = json!(width),
+                    false => return Err(refuse(what)),
+                }
             }
         }
         for (colour, key, what) in [
@@ -6959,6 +7014,19 @@ mod tests {
                 anchors
                     .map(|(a, b)| omacharts_engine::measurement::Measurement::between(a, b, &[], None)),
             ))
+        }
+        /// Two sessions, so there is one to merge into the other.
+        fn profiles(&self, _id: Option<u32>) -> Result<(String, Vec<(omacharts_engine::indicators::Profile, bool)>), Fault> {
+            use omacharts_engine::indicators::profile::compute;
+            let day = 86_400;
+            let bars: Vec<omacharts_engine::Bar> = (0..4)
+                .map(|i| omacharts_engine::Bar { ts: 1_793_836_800 + (i / 2) * day + (i % 2) * 3600, open: 100.0, high: 101.0, low: 99.0, close: 100.5, volume: 10.0 })
+                .collect();
+            let profiles = compute(&bars, omacharts_engine::Reset::Session, 0, Some(10), 0.7, None, &[]);
+            Ok(("pos:0 SPY 1h in Main".into(), profiles.into_iter().map(|p| (p, true)).collect()))
+        }
+        fn profile(&self, _id: Option<u32>, _ts: i64, _merge: bool) -> Result<String, Fault> {
+            Ok("pos:0 SPY 1h in Main".into())
         }
         fn flush_workspace(&self) {}
         fn reload_workspace(&self) {}

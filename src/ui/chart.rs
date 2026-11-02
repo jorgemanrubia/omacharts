@@ -130,6 +130,16 @@ pub struct Echo {
     pub price: f64,
 }
 
+/// What a profile drawing's profile depends on, for keeping it.
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct ProfileKey {
+    span: (usize, usize),
+    first: i64,
+    last: (i64, u64, u64, u64),
+    rows: Option<usize>,
+    value_area: u64,
+}
+
 struct State {
     bars: Vec<Bar>,
     /// Where another chart's pointer is, drawn here as a quieter crosshair.
@@ -140,6 +150,10 @@ struct State {
     /// whenever it changes rather than on every frame.
     price_tags: [Tag; 2],
     instrument: Option<Instrument>,
+    /// The profiles the volume profile drawings show, as last worked out:
+    /// a drawing is projected on every motion of the pointer, and its
+    /// profile only changes with its span or the bars.
+    profile_cache: RefCell<Vec<(ProfileKey, Option<Profile>)>>,
     timeframe: Timeframe,
     /// Leftmost visible bar.
     first: usize,
@@ -1140,6 +1154,7 @@ impl State {
             price_tags: price_tags(&scheme),
             scheme,
             instrument: None,
+            profile_cache: RefCell::new(Vec::new()),
             timeframe: Timeframe::days(1),
             first: 0,
             visible: 160,
@@ -1383,8 +1398,30 @@ impl State {
             return None;
         }
         let look = &drawing.style(&self.configs).profile;
+        // The last bar's volume as well as its time: a live bar grows in
+        // place, and a profile over it has to grow with it.
+        let last = &self.bars[end - 1];
+        let key = ProfileKey {
+            span: (first, end),
+            first: self.bars[first].ts,
+            last: (last.ts, last.volume.to_bits(), last.high.to_bits(), last.low.to_bits()),
+            rows: look.rows,
+            value_area: look.value_area.to_bits(),
+        };
+        if let Some((_, profile)) = self.profile_cache.borrow().iter().find(|(k, _)| *k == key) {
+            return profile.clone();
+        }
         let kind = self.instrument.as_ref().map(|i| i.kind);
-        omacharts_engine::indicators::profile::of_span(&self.bars[first..end], first, look.rows, look.value_area, kind)
+        let profile =
+            omacharts_engine::indicators::profile::of_span(&self.bars[first..end], first, look.rows, look.value_area, kind);
+        let mut cache = self.profile_cache.borrow_mut();
+        // A handful of drawings, each dragged through a few spans: enough
+        // to keep, small enough never to sweep.
+        if cache.len() >= 32 {
+            cache.remove(0);
+        }
+        cache.push((key, profile.clone()));
+        profile
     }
 
     /// Where a bar's column begins, in pixels.
@@ -1475,6 +1512,13 @@ impl State {
             copy.order = order;
             copy.scope = scope;
             shift_by_columns(bars, &mut copy, by_index, &scale, by_price);
+            // A profile is not moved whole, but a copy put down exactly on
+            // its original would be one nobody could see: its span moves.
+            if copy.kind == DrawingKind::Profile {
+                for anchor in [&mut copy.from, &mut copy.to] {
+                    anchor.ts = ts_at(bars, index_of_ts(bars, anchor.ts) + by_index);
+                }
+            }
             drawings.push(copy.clone());
             added.push(copy);
         }
@@ -1563,6 +1607,8 @@ impl State {
         match grip {
             Grip::Top | Grip::Bottom => "ns-resize",
             Grip::Left | Grip::Right => "ew-resize",
+            // Not moved whole, so nothing to take hold of.
+            Grip::Body if drawing.kind == DrawingKind::Profile => "default",
             Grip::Body => match held {
                 true => "grabbing",
                 false => "grab",
@@ -4332,7 +4378,14 @@ impl ChartView {
                         s.selected.clear();
                     }
                     s.selected.push(index);
-                    if let Some(origin) = s.locate(width, height, x, y) {
+                    // A profile's body selects it and nothing more: what
+                    // follows is the chart's, so a drag across one pans.
+                    let still = grip == Grip::Body
+                        && s.drawings.get(index).is_some_and(|d| d.kind == DrawingKind::Profile);
+                    if still {
+                        let left = s.left_edge();
+                        s.drag = Some(Drag::Pan { left, offset: s.price_offset });
+                    } else if let Some(origin) = s.locate(width, height, x, y) {
                         // Before the first motion, so a drag is one step
                         // back however far it went. A press that never
                         // moves is forgotten at the end.
@@ -4674,20 +4727,31 @@ impl ChartView {
                 return;
             }
             let region = region_at(x, y, area.width() as f64, area.height() as f64);
-            // A drawing under the pointer: the second click puts the caret
-            // in it. This is the shortest way to a label — the way a slide
-            // editor opens a shape's text — and it is free, because a
-            // double-click on the plot has never done anything.
+            // A drawing under the pointer: the second click opens its
+            // properties, as it does on an indicator, so one gesture means
+            // one thing across everything on the chart. Text is the
+            // exception — its words are what there is to change, so the
+            // caret goes in it. A label on any other drawing is Enter or F2.
             if region == Region::Plot {
                 let hit = {
                     let s = state.borrow();
                     s.drawing_at(area.width() as f64, area.height() as f64, x, y)
+                        .map(|(index, _)| (index, s.drawings.get(index).is_some_and(|d| d.kind.is_text())))
                 };
-                if let Some((index, _)) = hit
+                if let Some((index, text)) = hit
                     && let Some(view) = view.upgrade()
                 {
                     view.select_at(x, y);
-                    view.begin_text_edit(index, false);
+                    match text {
+                        true => {
+                            view.begin_text_edit(index, false);
+                        }
+                        false => {
+                            if let Some(handler) = view.on_drawing_properties.borrow().as_ref() {
+                                handler();
+                            }
+                        }
+                    }
                     return;
                 }
                 // An indicator has no words to type, so its second click
@@ -7057,11 +7121,14 @@ fn draw_profiles(
     columns: &Columns,
     to_y: &impl Fn(f64) -> f64,
 ) {
-    let chosen = match &drawn.indicator.params {
-        omacharts_engine::Params::VolumeProfile { poc_color, .. } => poc_color.as_ref(),
-        _ => None,
+    let (chosen, outline, outline_width, poc_width) = match &drawn.indicator.params {
+        omacharts_engine::Params::VolumeProfile { poc_color, outline_color, outline_width, poc_width, .. } => {
+            (poc_color.as_ref(), outline_color.as_ref(), *outline_width, *poc_width)
+        }
+        _ => (None, None, 1.0, 1.0),
     };
     let poc = state.theme.companion_or(chosen, &drawn.color);
+    let outline = outline.map(|c| c.resolve(&state.theme)).unwrap_or_else(|| drawn.color.clone());
     let (style, align) = selection::profile_look(drawn);
 
     for profile in profiles {
@@ -7090,8 +7157,8 @@ fn draw_profiles(
             // Only the shape the rows make, so the candles under it stay
             // as plain as they are without it.
             omacharts_engine::indicators::profile::Style::Outline => {
-                colors::set_source_alpha(cr, &drawn.color, 0.75);
-                cr.set_line_width(1.0);
+                colors::set_source_alpha(cr, &outline, 0.75);
+                cr.set_line_width(outline_width.max(0.5));
                 cr.set_line_join(cairo::LineJoin::Miter);
                 selection::profile_path(cr, &area, profile, to_y);
                 let _ = cr.stroke();
@@ -7104,7 +7171,7 @@ fn draw_profiles(
         let y = to_y(profile.poc_price()).round() + 0.5;
         let (from, to) = area.row(1.0);
         colors::set_source_alpha(cr, &poc, 0.9);
-        cr.set_line_width(1.0);
+        cr.set_line_width(poc_width.max(0.5));
         cr.move_to(from, y);
         cr.line_to(to, y);
         let _ = cr.stroke();
@@ -7138,8 +7205,10 @@ fn draw_profile_drawing(
         Align::Left => selection::ProfileBox { edge: x, span: w, towards: 1.0 },
         Align::Right => selection::ProfileBox { edge: x + w, span: w, towards: -1.0 },
     };
+    let opacity = look.opacity.clamp(0.0, 1.0);
     match look.shape {
         Shape::Filled => {
+            let fill = style.fill.hex(&state.theme);
             let (area_low, area_high) = profile.value_area_bounds();
             for row in profile.rows.iter().filter(|row| row.volume > 0.0) {
                 let (from, to) = area.row(row.volume / profile.max_volume);
@@ -7147,15 +7216,15 @@ fn draw_profile_drawing(
                 let height = (to_y(row.low) - top).max(1.0);
                 let inside = row.low >= area_low && row.high <= area_high;
                 let alpha = if inside { style.alpha } else { style.alpha * drawings::PROFILE_ROW_SHARE };
-                colors::set_source_alpha(cr, colour, alpha);
+                colors::set_source_alpha(cr, &fill, alpha * opacity);
                 cr.rectangle(from, top, to - from, height);
                 let _ = cr.fill();
             }
-            colors::set_source_alpha(cr, colour, drawings::PROFILE_EDGE_ALPHA);
-            cr.set_line_width(drawings::BORDER_WIDTH);
+            colors::set_source_alpha(cr, colour, drawings::PROFILE_EDGE_ALPHA * opacity);
+            cr.set_line_width(style.width.max(0.5));
         }
         Shape::Outline => {
-            colors::set_source(cr, colour);
+            colors::set_source_alpha(cr, colour, opacity);
             cr.set_line_width(style.width.max(1.0));
         }
     }
@@ -7165,7 +7234,7 @@ fn draw_profile_drawing(
 
     let y = to_y(profile.poc_price()).round() + 0.5;
     colors::set_source_alpha(cr, &look.poc.hex(&state.theme), drawings::PROFILE_POC_ALPHA);
-    cr.set_line_width(style.width.max(1.0));
+    cr.set_line_width(look.poc_width.max(0.5));
     let (from, to) = area.row(1.0);
     cr.move_to(from, y);
     cr.line_to(to, y);

@@ -6574,11 +6574,11 @@ impl Window {
                 let mut indicator = indicator.clone();
                 // The chart's own composites, put into the profile only to be
                 // drawn: the indicator itself may be a template's.
-                if let omacharts_engine::Params::VolumeProfile { merged, .. } = &mut indicator.params
-                    && let Some(merge) =
-                        merges.iter().find(|m| m.indicator == indicator.id && m.symbol == instrument.symbol)
-                {
-                    *merged = merge.starts.clone();
+                if let omacharts_engine::Params::VolumeProfile { merged, reset, .. } = &mut indicator.params {
+                    let reset = reset.effective_for(timeframe);
+                    if let Some(merge) = merges.iter().find(|m| m.is(indicator.id, instrument, reset)) {
+                        *merged = merge.starts.clone();
+                    }
                 }
                 Drawn {
                     color,
@@ -7615,13 +7615,24 @@ impl Window {
     /// and for the symbol it is showing.
     fn change_profile_merges(self: &Rc<Self>, id: u32, spot: &crate::ui::chart::ProfileSpot, merge: bool) {
         let pane = self.focused_pane();
-        let Some(symbol) = pane.instrument.borrow().as_ref().map(|i| i.symbol.clone()) else { return };
+        let Some(instrument) = pane.instrument.borrow().clone() else { return };
+        let reset = pane.indicators.borrow().iter().find(|i| i.id == id).and_then(|i| match i.params {
+            Params::VolumeProfile { reset, .. } => Some(reset.effective_for(pane.timeframe.get())),
+            _ => None,
+        });
+        let Some(reset) = reset else { return };
         {
             let mut merges = pane.profile_merges.borrow_mut();
-            let at = match merges.iter().position(|m| m.indicator == id && m.symbol == symbol) {
+            let at = match merges.iter().position(|m| m.is(id, &instrument, reset)) {
                 Some(at) => at,
                 None => {
-                    merges.push(omacharts_engine::indicators::profile::Merge { indicator: id, symbol, starts: Vec::new() });
+                    merges.push(omacharts_engine::indicators::profile::Merge {
+                        indicator: id,
+                        symbol: instrument.symbol.clone(),
+                        suffix: instrument.suffix.clone(),
+                        reset,
+                        starts: Vec::new(),
+                    });
                     merges.len() - 1
                 }
             };
@@ -8551,8 +8562,8 @@ impl Window {
 
         let menu = gio::Menu::new();
         let edit = gio::Menu::new();
-        // Above the properties, because it is the more common errand and the
-        // shorter way to it: a double-click on the drawing does the same.
+        // Above the properties, because it is the more common errand; Enter
+        // and F2 do the same.
         // Labelled for what is there — one that already says something is
         // being changed, one that says nothing is being given words.
         let words = match drawing.has_text() {

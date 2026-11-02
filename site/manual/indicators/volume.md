@@ -40,10 +40,13 @@ Drawn over the price. For each reset period, how much volume traded at each pric
 | Setting | Default | Allowed |
 |---|---|---|
 | **Reset every** | Session | Session, Week, Month, Quarter, Year ([Reset periods](/manual/indicators/#reset-periods)) |
-| **Automatic**, **Rows** | Automatic | A number of rows per period, 4 to 400 |
+| **Automatic**, **Rows** | Automatic | A number of rows per period, 4 to 800 |
 | **Value area %** | 70% | 10 to 100% |
 | **Profile** colour | The next free colour | A palette name, or a custom colour |
 | **Point of control** colour | A contrasting colour from the theme | A palette name, or a custom colour |
+| **Point of control thickness** | 1 px | 0.5 to 6 px |
+| **Outline** colour | The profile's colour | A palette name, or a custom colour. Drawn in the Outline style |
+| **Outline thickness** | 1 px | 0.5 to 6 px. Drawn in the Outline style |
 | **Style** | Filled | Filled, or Outline: only the edge of the rows, so the candles under it stay clear |
 | **Alignment** | Left | Left, or Right: the rows grow back from the end of the period |
 
@@ -53,7 +56,7 @@ Drawn over the price. For each reset period, how much volume traded at each pric
 
 Right-click a profile and choose **Merge with previous profile** to fold it into the one before it: one profile, with one point of control and one value area, over both periods. Merge again to take in another. **Split composite profile**, on a composite, puts its periods back as they were.
 
-A composite belongs to the chart it was made on and to the symbol it is showing, even when the profile is a template's, and it is kept with the chart. Changing **Reset every** draws the new periods, without the composites. For a profile over any span you choose, use the [volume profile drawing](/manual/drawings/#volume-profiles).
+A composite belongs to the chart it was made on, to the symbol it is showing and to the period it was made under, even when the profile is a template's, and it is kept with the chart. Changing **Reset every**, or a resolution that changes the period in use, draws the new periods without it; going back brings it back. For a profile over any span you choose, use the [volume profile drawing](/manual/drawings/#volume-profiles).
 
 <!-- regenerate:
 theme: tokyo-night

@@ -229,7 +229,7 @@ const SORT_COLUMNS: &[&str] = &["symbol", "last", "change", "change_pct", "none"
 /// list before the parser sees anything, so an alias the engine understands
 /// and the table does not is an alias nobody can use.
 const DRAWING_KINDS: &[&str] =
-    &["line", "hline", "arrow", "zigzag", "rect", "ellipse", "circle", "text", "profile"];
+    &["line", "hline", "arrow", "zigzag", "rect", "ellipse", "circle", "text", "profile", "vp"];
 /// Where a figure's label sits in it.
 const PLACES: &[&str] = &[
     "center", "top", "bottom", "left", "right", "top-left", "top-right", "bottom-left",
@@ -307,6 +307,9 @@ const INDICATOR_FLAGS: &[Flag] = &[
     Flag::valued("poc-color", "COLOUR", "the volume profile's point of control"),
     Flag::valued("profile-style", "HOW", "volume profile rows filled, or only their outline").of(PROFILE_STYLES),
     Flag::valued("align", "EDGE", "the edge of its period a volume profile grows from").of(PROFILE_ALIGNS),
+    Flag::valued("outline-color", "COLOUR", "a volume profile's outline, drawn in the outline style"),
+    Flag::valued("outline-width", "F", "a volume profile's outline thickness in pixels"),
+    Flag::valued("poc-width", "F", "a volume profile's point of control thickness in pixels"),
     Flag::valued("up-color", "COLOUR", "volume bars of a rising session"),
     Flag::valued("down-color", "COLOUR", "volume bars of a falling session"),
     Flag::valued("d-color", "COLOUR", "the stochastic's %D line"),
@@ -926,6 +929,8 @@ pub const SURFACE: &[Noun] = &[
                     Flag::valued("profile-style", "HOW", "a volume profile's rows filled, or only their outline").of(PROFILE_STYLES),
                     Flag::valued("align", "EDGE", "the edge of its span a volume profile grows from").of(PROFILE_ALIGNS),
                     Flag::valued("value-area", "F", "the share of a volume profile's volume its value area holds, 0.1-1"),
+                    Flag::valued("transparency", "F", "how far a volume profile's outline and background fade, 0-1"),
+                    Flag::valued("poc-width", "F", "a volume profile's point of control thickness in pixels; --width is its outline's"),
                 ],
                 example: "omacharts chart drawing add line --from 2026-09-01,180.5 --to 2026-09-19,192 --config 4",
                 json: true,

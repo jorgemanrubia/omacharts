@@ -85,7 +85,14 @@ impl State {
     pub(super) fn profile_of(&self, id: u32, ts: i64) -> Option<ProfileSpot> {
         let drawn = self.indicators.iter().find(|d| d.indicator.id == id)?;
         let Output::Profiles(profiles) = &drawn.output else { return None };
-        let at = profiles.iter().rposition(|p| p.start_ts <= ts)?;
+        // The one holding the moment; else one starting within the day after
+        // it, since a day typed in a clock east of the exchange's is read
+        // as the evening before its session; else the last to start before.
+        let at = profiles
+            .iter()
+            .position(|p| p.start_ts <= ts && ts <= p.end_ts)
+            .or_else(|| profiles.iter().position(|p| p.start_ts > ts && p.start_ts < ts + 86_400))
+            .or_else(|| profiles.iter().rposition(|p| p.start_ts <= ts))?;
         Some(ProfileSpot { parts: profiles[at].parts.clone(), has_previous: at > 0 })
     }
 

@@ -163,7 +163,7 @@ crop: 1666,320,642,888   (the box above, the menu with 20px layout margin right 
 
 ## Properties
 
-<kbd>Alt</kbd> + <kbd>Enter</kbd>, or **Properties…**, opens the properties of the selected drawings. With kinds mixed nothing opens. Each change applies as you make it, with the chart visible behind the dialog. **Done**, <kbd>Ctrl</kbd> + <kbd>Enter</kbd> or <kbd>Esc</kbd> closes it.
+<kbd>Alt</kbd> + <kbd>Enter</kbd>, **Properties…**, or a double-click on any drawing but text, opens the properties of the selected drawings. With kinds mixed nothing opens. Each change applies as you make it, with the chart visible behind the dialog. **Done**, <kbd>Ctrl</kbd> + <kbd>Enter</kbd> or <kbd>Esc</kbd> closes it.
 
 Across the top is a picture of the drawing, tagged with its configuration, or **Custom** when it has a look of its own. Click the picture to see the nine configurations drawn as this drawing, with its own look beside them while it has one. <kbd>Alt</kbd> + <kbd>1</kbd> … <kbd>9</kbd> works inside the dialog too. Under a **Custom** look, **Save as…** writes the look over one of the nine configurations (the one it started from is marked `*`) and puts the drawing back on that number. Every drawing on that number changes with it.
 
@@ -249,20 +249,30 @@ crop: 800,180,960,1240
 
 ## Volume profiles
 
-The volume profile tool draws a profile of the bars in the span you drag across: how much volume traded at each price, the value area drawn stronger, and the point of control as a line across it. It is a composite of whatever stretch you choose, across sessions or inside one, on top of a [Volume Profile](/manual/indicators/volume/#volume-profile) study or on its own. Its height is the prices those bars reached; only the span is yours to choose.
+The volume profile tool draws a profile of the bars in the span you drag across: how much volume traded at each price, the value area drawn stronger, and the point of control as a line across it. It covers any stretch, across sessions or inside one, over a [Volume Profile](/manual/indicators/volume/#volume-profile) study or on its own. Its height is the range of prices those bars reached.
 
-Drag its left or right edge to change the span, and the profile is worked out again. It cannot be moved whole, or nudged with the arrow keys, since moved it would be a profile of other bars. It takes no text. On a chart of another resolution it is worked out from that chart's bars.
+Drag its left or right edge to change the span, and the profile is worked out again. It cannot be moved whole or nudged with the arrow keys; a press on it that drags pans the chart. It takes no text. On a chart of another resolution it is worked out from that chart's bars. A pasted copy lands a few bars to the right of the original.
 
 | Property | Does |
 |---|---|
-| **Colour** | The rows and their edge |
+| **Outline** | The edge round the rows |
+| **Background** | The rows |
+| **Transparency** | Fades the outline and the background together. 0% is the look as configured |
 | **Point of control** | The line across the busiest price |
-| **Thickness** | The point of control, and the edge of an outline |
-| **Style** | **Filled** rows under a fine edge, or **Outline**: the edge alone |
+| **Outline thickness** | The outline. 1 px on a filled configuration, 1.5 px on an outline |
+| **Point of control thickness** | The point of control, 1.5 px |
+| **Style** | **Filled**: the rows under the outline. **Outline**: the outline alone |
 | **Alignment** | **Left**: the rows grow from the start of the span. **Right**: from its end |
 | **Value area %** | The share of the span's volume the value area holds, 10 to 100% |
 
-The nine configurations are drawn to sit over the study's own profiles and still read as something else: 1 Up, 2 Down and 9 Ink filled from the left; 3 Blue and 8 Cyan as outlines from the left; 4 Amber, 5 Violet and 7 Orange filled from the right; 6 Teal an outline from the right. Every point of control is Ink. Ink filled, 9, is the neutral composite to lay over session profiles.
+| Configuration | Colour | Style | Alignment |
+|---|---|---|---|
+| 1, 2, 9 | Up, Down, Ink | Filled | Left |
+| 3, 8 | Blue, Cyan | Outline | Left |
+| 4, 5, 7 | Amber, Violet, Orange | Filled | Right |
+| 6 | Teal | Outline | Right |
+
+Every configuration's point of control is Ink, and its outline and background are the same colour.
 
 <!-- regenerate:
 theme: tokyo-night
@@ -299,7 +309,7 @@ A text drawing is text at a point. Any other drawing can carry a label, which si
 
 | Key or gesture | Does |
 |---|---|
-| Double-click a drawing, <kbd>Enter</kbd>, <kbd>F2</kbd>, **Edit text** | Puts the caret in the selected drawing, on the chart, in its own font and colour |
+| <kbd>Enter</kbd>, <kbd>F2</kbd>, **Edit text**, or double-click a text drawing | Puts the caret in the selected drawing, on the chart, in its own font and colour. Not on a volume profile, which takes no text |
 | <kbd>Enter</kbd> while typing, or a click elsewhere | Commits |
 | <kbd>Shift</kbd> + <kbd>Enter</kbd> | A new line |
 | <kbd>Ctrl</kbd> + <kbd>B</kbd>, <kbd>Ctrl</kbd> + <kbd>I</kbd> | Bold or italic, over the selection or the word the caret is in |

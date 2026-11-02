@@ -26,8 +26,28 @@ use super::periods::Reset;
 pub struct Merge {
     pub indicator: u32,
     pub symbol: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suffix: Option<String>,
+    /// The period the profiles were merged under. Weeks and sessions share
+    /// their starts on a Monday, so a merge kept without it would join two
+    /// weeks the moment the profile was switched to weekly.
+    #[serde(default)]
+    pub reset: Reset,
     /// The start of each merged period; see [`compute`].
     pub starts: Vec<i64>,
+}
+
+impl Merge {
+    /// Whether these are the merges of indicator `id` on this instrument,
+    /// under this period.
+    pub fn is(&self, id: u32, instrument: &crate::symbols::Instrument, reset: Reset) -> bool {
+        self.indicator == id && self.symbol == instrument.symbol && self.suffix == instrument.suffix && self.reset == reset
+    }
+}
+
+/// The study's lines as they have always been drawn: a hairline.
+pub fn hairline() -> f64 {
+    1.0
 }
 
 /// How a profile's rows are painted: as solid bars, or as only the shape
@@ -146,7 +166,7 @@ impl Profile {
 /// ceiling keeps a profile from becoming a smear of hairlines on a chart only
 /// a few hundred pixels tall.
 const MIN_ROWS: usize = 4;
-const MAX_ROWS: usize = 400;
+const MAX_ROWS: usize = 800;
 
 /// How many rows the typical period should get when the count is automatic.
 ///
@@ -157,8 +177,16 @@ const MAX_ROWS: usize = 400;
 /// Set where it is because of what it has to beat. Forty-eight rows across an
 /// Apple session is nine cents a row, which hides exactly the shelf a profile
 /// is read for; a nickel a row is the increment the stock actually trades on,
-/// and that comes out near a hundred and sixty.
-const TARGET_ROWS: f64 = 250.0;
+/// and that comes out near a hundred and sixty. Raised from 250 when that
+/// read as blocky: a bar's volume is spread over every row it covers, so finer
+/// rows draw a smoother curve rather than a noisier one.
+const TARGET_ROWS: f64 = 400.0;
+
+/// The fewest rows an automatic period is drawn with before its rows are
+/// split. The step is the chart's, so a period far quieter than the typical
+/// one — this month two days in, against whole months — would be a handful
+/// of blocks.
+const SMOOTH_ROWS: f64 = 40.0;
 
 /// One profile per period, with each period whose start is in `merged` folded
 /// into the one before it: a composite, profiled as a single period.
@@ -184,7 +212,7 @@ pub fn compute(
     let step = rows.is_none().then(|| auto_step(bars, &periods, kind));
 
     let grid = match step {
-        Some(step) => Grid::Step(step),
+        Some((step, tick)) => Grid::Step { step, tick },
         None => Grid::Rows(rows.unwrap_or(MIN_ROWS).clamp(MIN_ROWS, MAX_ROWS)),
     };
 
@@ -245,7 +273,10 @@ pub fn of_span(
     let first = bars.first()?;
     let grid = match rows {
         Some(rows) => Grid::Rows(rows.clamp(MIN_ROWS, MAX_ROWS)),
-        None => Grid::Step(auto_step(bars, &[(0, bars.len())], kind)),
+        None => {
+            let (step, tick) = auto_step(bars, &[(0, bars.len())], kind);
+            Grid::Step { step, tick }
+        }
     };
     one(bars, offset, first.ts, grid, value_area)
 }
@@ -260,7 +291,8 @@ pub fn of_span(
 #[derive(Clone, Copy)]
 enum Grid {
     Rows(usize),
-    Step(f64),
+    /// Rows `step` tall, which a quiet period may split down to `tick`.
+    Step { step: f64, tick: f64 },
 }
 
 /// Where each reset period starts and ends, as indices into `bars`.
@@ -314,7 +346,7 @@ fn span(bars: &[Bar]) -> f64 {
 /// be drawn across a fraction of its own range — a sliver, with everything
 /// above it clamped into the top row. Picking a step that fits the widest
 /// period inside [`MAX_ROWS`] is what keeps every period whole.
-fn auto_step(bars: &[Bar], periods: &[(usize, usize)], kind: Option<InstrumentKind>) -> f64 {
+fn auto_step(bars: &[Bar], periods: &[(usize, usize)], kind: Option<InstrumentKind>) -> (f64, f64) {
     let price = bars[bars.len() / 2].close.abs().max(f64::MIN_POSITIVE);
     let tick = 10f64.powi(-(price_decimals(0.0, price, kind) as i32));
 
@@ -323,7 +355,7 @@ fn auto_step(bars: &[Bar], periods: &[(usize, usize)], kind: Option<InstrumentKi
     let mut spans: Vec<f64> =
         periods.iter().map(|&(a, b)| span(&bars[a..b])).filter(|s| *s > 0.0).collect();
     if spans.is_empty() {
-        return tick;
+        return (tick, tick);
     }
     spans.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let typical = spans[spans.len() / 2];
@@ -337,11 +369,32 @@ fn auto_step(bars: &[Bar], periods: &[(usize, usize)], kind: Option<InstrumentKi
             multiple = base * 10f64.powi(decade);
             let step = multiple * tick;
             if typical / step <= TARGET_ROWS && widest / step <= MAX_ROWS as f64 {
-                return step;
+                return (step, tick);
             }
         }
     }
-    multiple * tick
+    (multiple * tick, tick)
+}
+
+/// The chart's step, split for a period too quiet to be drawn smoothly at it:
+/// by 2, 5 or 10 and on, so every row edge is still on the chart's grid, and
+/// never finer than the instrument's own increment.
+fn smoothed(step: f64, tick: f64, span: f64) -> f64 {
+    if span <= 0.0 || span / step >= SMOOTH_ROWS {
+        return step;
+    }
+    let mut finest = step;
+    for split in [2.0, 5.0, 10.0, 20.0, 50.0, 100.0] {
+        let fine = step / split;
+        if fine < tick * 0.999 {
+            break;
+        }
+        finest = fine;
+        if span / fine >= SMOOTH_ROWS {
+            break;
+        }
+    }
+    finest
 }
 
 fn one(
@@ -372,7 +425,8 @@ fn one(
         // Boundaries on multiples of the step, not on wherever the period's
         // low happened to fall. A row that runs from 182.35 to 182.40 is one
         // you can find on the axis; the same row starting at 182.3617 is not.
-        Grid::Step(step) => {
+        Grid::Step { step, tick } => {
+            let step = smoothed(step, tick, high - low);
             let base = (low / step).floor() * step;
             let rows = ((high - base) / step).ceil().max(1.0);
             let rows = if rows.is_finite() { rows as usize } else { MIN_ROWS };
@@ -682,7 +736,7 @@ mod tests {
     fn row_counts_are_clamped_to_something_drawable() {
         let bars = vec![bar(0, 9.0, 11.0, 50.0)];
         assert_eq!(compute(&bars, Reset::Session, 0, Some(0), 0.7, None, &[])[0].rows.len(), 4);
-        assert_eq!(compute(&bars, Reset::Session, 0, Some(10_000), 0.7, None, &[])[0].rows.len(), 400);
+        assert_eq!(compute(&bars, Reset::Session, 0, Some(10_000), 0.7, None, &[])[0].rows.len(), 800);
     }
 
     /// A quarter on a daily chart, on an instrument whose history is mostly

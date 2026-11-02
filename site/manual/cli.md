@@ -524,11 +524,13 @@ are in [Indicators](/manual/indicators/) and the page of its family.
 | `--k-smooth N`, `--d-period N` | Bars | Stochastic |
 | `--d-color C` | A colour | Stochastic |
 | `--anchor P` | `session`, `week`, `month`, `quarter`, `year` | VWAP, volume profile |
-| `--rows N` | `auto`, or a number of rows per period, held between 4 and 400 | Volume profile |
+| `--rows N` | `auto`, or a number of rows per period, held between 4 and 800 | Volume profile |
 | `--value-area F` | 0 to 1; 0.70 when not given | Volume profile |
 | `--poc-color C` | A colour | Volume profile |
 | `--profile-style S` | `filled`, `outline` | Volume profile |
 | `--align A` | `left`, `right` | Volume profile |
+| `--outline-color C` | A colour | Volume profile, in the outline style |
+| `--outline-width F`, `--poc-width F` | 0.5 to 6 | Volume profile |
 | `--up-color C`, `--down-color C` | A colour | Volume |
 | `--overbought F`, `--oversold F` | 0 to 100 | RSI, stochastic |
 | `--height F` | 0.05 to 0.95; Volume defaults to 0.18, the other strips to 0.16 | Volume, RSI, MACD, ATR, stochastic |
@@ -819,8 +821,8 @@ $ omacharts chart profile list --visible
 profile holding that moment into the one before it, and `omacharts chart
 profile split --at WHEN` puts a composite back into its periods
 ([Composite profiles](/manual/indicators/volume/#composite-profiles)). `WHEN`
-is a day or a day and a time, read in the chart's time zone, and `start` from
-`list` works as it is. `--id N` says which profile when the chart has more
+is a day, a day and a time, read in the chart's time zone, or Unix seconds,
+such as `start` from `list`. `--id N` says which profile when the chart has more
 than one. A window must be open;
 otherwise it exits 6.
 
@@ -835,8 +837,10 @@ merged the profile into the one before it on pos:0 SPY 1h in "Chartbook 1"
 `omacharts chart drawing ACTION [KIND]` changes the drawings on a chart's
 symbol. `--book` and `--chart` pick the chart ([Which chart a command acts
 on](#which-chart-a-command-acts-on)). `KIND` is `line`, `hline`, `arrow`,
-`zigzag`, `rect`, `ellipse` (or `circle`), `text`, or `profile` (a volume
-profile of the span between `--from` and `--to`, whose prices are ignored). The tools and their
+`zigzag`, `rect`, `ellipse` (or `circle`), `text`, or `profile` (or `vp`: a
+volume profile of the span between `--from` and `--to`, whose prices are
+ignored; `--color` is its outline and `--fill` its background, and it takes no
+`--text`). The tools and their
 configurations are in [Drawings](/manual/drawings/). Whether a chart shows
 other charts' drawings and sends its own is `chart set --show-drawings` and
 `--send-drawings`, each `on` or `off`:
@@ -885,6 +889,8 @@ read in the chart's time zone, the one its time axis is labelled in
 | `--profile-style S` | `filled`, `outline` | A volume profile's rows, or only their edge |
 | `--align A` | `left`, `right` | The edge of its span a volume profile grows from |
 | `--value-area F` | 0.1 to 1 | The share of a volume profile's volume its value area holds |
+| `--transparency F` | 0 to 1 | How far a volume profile's outline and background fade |
+| `--poc-width F` | 0.5 to 12 | A volume profile's point of control thickness; `--width` is its outline's |
 | `--scope S` | `shared`, `local` | Whether the symbol's other charts see it. Defaults to what the chart sends |
 | `--order WHERE` | `front`, `back` | Brings it to the front or sends it to the back |
 
@@ -892,7 +898,7 @@ A colour is one of the presets `up`, `down`, `blue`, `amber`, `violet`,
 `teal`, `orange`, `cyan` and `ink`, which follow the theme, or `#rrggbb`,
 which does not. Any of `--color`, `--width`, `--arrow`, `--head`,
 `--border`, `--fill`, `--alpha`, `--text-color`, `--font`, `--font-size`,
-`--poc-color`, `--profile-style`, `--align` and `--value-area` gives the drawing a look of its own, off its configuration; `--text` and
+`--poc-color`, `--profile-style`, `--align`, `--value-area`, `--transparency` and `--poc-width` gives the drawing a look of its own, off its configuration; `--text` and
 `--text-at` do not. A `local` drawing has a negative id. Changing a drawing's
 scope gives it a new id.
 

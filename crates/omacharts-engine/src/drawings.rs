@@ -415,7 +415,7 @@ pub enum Kind {
 impl Kind {
     /// Every kind, in the order the tools are offered: the plain line
     /// first, then the two that are a line with one thing added, then the
-    /// shapes, then the words.
+    /// shapes, then the words, then the profile.
     pub const ALL: [Kind; 8] = [
         Kind::Line,
         Kind::Horizontal,
@@ -483,7 +483,7 @@ impl Kind {
                     .then_some(Kind::Horizontal)
             })
             .or_else(|| {
-                ["vp", "volume-profile", "volume_profile"]
+                ["vp"]
                     .iter()
                     .any(|name| key.eq_ignore_ascii_case(name))
                     .then_some(Kind::Profile)
@@ -1041,14 +1041,16 @@ pub struct Style {
     /// actually say never is.
     #[serde(default)]
     pub text: TextStyle,
-    /// What only a volume profile has.
-    #[serde(default)]
+    /// What only a volume profile has. Left out of every other kind's
+    /// stored style, which would only ever carry the defaults.
+    #[serde(default, skip_serializing_if = "ProfileLook::is_default")]
     pub profile: ProfileLook,
 }
 
 /// A volume profile drawing's own properties: the study's, as one drawing
-/// carries them. The rows are the drawing's colour, the value area at its
-/// alpha and the rest at [`PROFILE_ROW_SHARE`] of it.
+/// carries them. The rows are the drawing's fill, the value area at its
+/// alpha and the rest at [`PROFILE_ROW_SHARE`] of it; the edge round them is
+/// its colour.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct ProfileLook {
     /// The line across the busiest price.
@@ -1065,6 +1067,29 @@ pub struct ProfileLook {
     /// increment, as the study does.
     #[serde(default)]
     pub rows: Option<usize>,
+    /// How much of the outline and the background shows, over the strength
+    /// each is drawn at: 1 is the look as designed, 0 nothing. The point of
+    /// control keeps its own, being the line the profile is read by.
+    #[serde(default = "ProfileLook::opaque")]
+    pub opacity: f64,
+    /// The point of control's thickness. The outline's is the drawing's
+    /// own `width`.
+    #[serde(default = "ProfileLook::poc_default")]
+    pub poc_width: f64,
+}
+
+impl ProfileLook {
+    fn opaque() -> f64 {
+        1.0
+    }
+
+    fn poc_default() -> f64 {
+        DEFAULT_WIDTH
+    }
+
+    fn is_default(&self) -> bool {
+        *self == ProfileLook::default()
+    }
 }
 
 impl Default for ProfileLook {
@@ -1075,6 +1100,8 @@ impl Default for ProfileLook {
             align: ProfileAlign::Left,
             value_area: 0.70,
             rows: None,
+            opacity: 1.0,
+            poc_width: DEFAULT_WIDTH,
         }
     }
 }
@@ -1095,6 +1122,7 @@ pub const PROFILE_ROW_SHARE: f64 = 0.14 / 0.30;
 /// is lost against a 0.30 fill, and 0.55 is the first step that clears both
 /// the drawing's own tint and the study's.
 pub const PROFILE_EDGE_ALPHA: f64 = 0.55;
+
 
 /// The point of control's strength, the study's; its width is the drawing's
 /// stroke, which is what sets it apart from the study's hairline.
@@ -1249,8 +1277,14 @@ impl Style {
             Preset::Amber | Preset::Violet | Preset::Orange => (ProfileShape::Filled, ProfileAlign::Right),
             Preset::Teal => (ProfileShape::Outline, ProfileAlign::Right),
         };
+        // A filled profile's outline is a hairline round its rows; an
+        // outline is the whole of the drawing, at a line's weight.
+        let width = match shape {
+            ProfileShape::Filled => BORDER_WIDTH,
+            ProfileShape::Outline => DEFAULT_WIDTH,
+        };
         Style {
-            width: DEFAULT_WIDTH,
+            width,
             alpha: PROFILE_ALPHA,
             profile: ProfileLook { shape, align, ..ProfileLook::default() },
             ..Style::rect(preset)
