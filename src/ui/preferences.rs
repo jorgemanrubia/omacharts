@@ -254,8 +254,9 @@ fn rebuild(context: &Rc<Context>) {
 }
 
 /// A way to the resolution list from the settings, since the other way in is
-/// right-clicking a strip, which you have to know about to find.
-fn resolutions_group(context: &Rc<Context>) -> adw::PreferencesGroup {
+/// right-clicking a strip, which you have to know about to find; and the one
+/// switch about how the charts behave towards each other.
+fn chart_group(context: &Rc<Context>) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     group.set_title("Chart");
 
@@ -273,6 +274,28 @@ fn resolutions_group(context: &Rc<Context>) -> adw::PreferencesGroup {
     row.connect_activated(move |_| edit());
 
     group.add(&row);
+
+    // One switch for the app rather than one per chart, and nothing to do
+    // with how a chart is linked to the watchlist: two charts of the same
+    // symbol are two looks at the same moment, whichever list moves them.
+    let sync = adw::ActionRow::new();
+    sync.set_title("Sync crosshair across charts");
+    let switch = gtk::Switch::new();
+    switch.set_valign(gtk::Align::Center);
+    switch.set_active(context.store.setting_bool(crate::ui::window::SETTING_SYNC_CROSSHAIR, true));
+    let store = context.store.clone();
+    let window = context.window.clone();
+    switch.connect_state_set(move |_, on| {
+        store.set_setting_bool(crate::ui::window::SETTING_SYNC_CROSSHAIR, on);
+        if !on {
+            window.clear_echoes();
+        }
+        glib::Propagation::Proceed
+    });
+    sync.add_suffix(&switch);
+    sync.set_activatable_widget(Some(&switch));
+    group.add(&sync);
+
     group
 }
 
@@ -754,7 +777,7 @@ fn build_general_page(context: &Rc<Context>) {
         context.general_page.add(&group);
     }
     context.charts_other_page.add(&time_group(context));
-    context.charts_other_page.add(&resolutions_group(context));
+    context.charts_other_page.add(&chart_group(context));
     context.general_page.add(&screenshots_group(context));
     build_charts_page(context);
     rebuild_templates(context);

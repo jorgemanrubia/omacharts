@@ -18,7 +18,6 @@ use omacharts_engine::indicators::profile::{Align, Style};
 use omacharts_engine::theme::ColorChoice;
 use omacharts_engine::{BarColouring, BarStyle, Indicator, Session};
 
-use crate::store::Store;
 use crate::ui::colors;
 use crate::ui::controls;
 use crate::ui::dialogs;
@@ -38,21 +37,21 @@ pub struct ChartSettings;
 
 impl ChartSettings {
     /// The chart's own settings, on the first page.
-    pub fn present(window: &Rc<Window>, store: Rc<Store>) {
-        ChartSettings::open(window, store, Focus::Chart);
+    pub fn present(window: &Rc<Window>) {
+        ChartSettings::open(window, Focus::Chart);
     }
 
     /// Straight to the indicators.
-    pub fn present_indicators(window: &Rc<Window>, store: Rc<Store>) {
-        ChartSettings::open(window, store, Focus::Indicators);
+    pub fn present_indicators(window: &Rc<Window>) {
+        ChartSettings::open(window, Focus::Indicators);
     }
 
     /// Straight to one indicator's panel, for the gear beside it on the chart.
-    pub fn present_indicator(window: &Rc<Window>, store: Rc<Store>, id: u32) {
-        ChartSettings::open(window, store, Focus::Indicator(id));
+    pub fn present_indicator(window: &Rc<Window>, id: u32) {
+        ChartSettings::open(window, Focus::Indicator(id));
     }
 
-    fn open(window: &Rc<Window>, store: Rc<Store>, focus: Focus) {
+    fn open(window: &Rc<Window>, focus: Focus) {
         let dialog = adw::PreferencesDialog::new();
         dialog.set_title("Chart");
         dialog.set_content_width(560);
@@ -64,7 +63,7 @@ impl ChartSettings {
         let chart_page = adw::PreferencesPage::new();
         chart_page.set_title("Chart");
         chart_page.set_icon_name(Some("preferences-system-symbolic"));
-        chart_page.add(&bars_group(window, &store));
+        chart_page.add(&bars_group(window));
         chart_page.add(&scales_group(window));
         chart_page.add(&session_group(window));
         chart_page.add(&drawings_group(window));
@@ -270,7 +269,7 @@ fn template_rows(
     fill();
 }
 
-fn bars_group(window: &Rc<Window>, store: &Rc<Store>) -> adw::PreferencesGroup {
+fn bars_group(window: &Rc<Window>) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     group.set_title("Bars");
 
@@ -322,25 +321,6 @@ fn bars_group(window: &Rc<Window>, store: &Rc<Store>) -> adw::PreferencesGroup {
     });
     group.add(&colouring);
 
-    // One switch for the window rather than one per chart: it is about how the
-    // charts behave towards each other, which is not a property of any one of
-    // them.
-    let sync = adw::ActionRow::new();
-    sync.set_title("Crosshair across Follow charts");
-    let switch = gtk::Switch::new();
-    switch.set_valign(gtk::Align::Center);
-    switch.set_active(store.setting_bool(crate::ui::window::SETTING_SYNC_CROSSHAIR, true));
-    let window_for_sync = window.clone();
-    let store_for_sync = store.clone();
-    switch.connect_state_set(move |_, on| {
-        store_for_sync.set_setting_bool(crate::ui::window::SETTING_SYNC_CROSSHAIR, on);
-        if !on {
-            window_for_sync.clear_echoes();
-        }
-        glib::Propagation::Proceed
-    });
-    sync.add_suffix(&switch);
-    group.add(&sync);
 
     group
 }

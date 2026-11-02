@@ -1468,7 +1468,8 @@ pub enum NotShown {
 const SETTING_WORKSPACE: &str = "workspace";
 /// Whether the drawing tools are on screen.
 const SHOW_DRAWING_TOOLS: &str = "show_drawing_tools";
-/// Whether a pointer on a Follow chart draws a line on the other Follow charts.
+/// Whether a pointer on a chart draws a line on the other charts of its
+/// symbol. One switch for the app, in the preferences.
 pub const SETTING_SYNC_CROSSHAIR: &str = "sync_crosshair";
 
 /// One chart, as it is written down.
@@ -2552,8 +2553,8 @@ impl Window {
             closer.change_indicators_of(&pane, kept);
         });
 
-        // The pointer on a Follow chart draws a crosshair on the other Follow
-        // charts, so you can read the same moment and the same price on all
+        // The pointer on a chart draws a crosshair on the other charts of its
+        // symbol, so you can read the same moment and the same price on all
         // of them at once. Both halves travel as values rather than as
         // pixels: charts at different resolutions share no bar index, and
         // charts at different zooms share no y.
@@ -4622,21 +4623,27 @@ impl Window {
         entry.add_controller(keys);
     }
 
-    /// Draw `ts` on every Follow chart when `from` is one, and on none when
-    /// it is not: a Focus or Pinned chart is deliberately somewhere else.
+    /// Draw where the pointer on `from` is on every other chart showing its
+    /// symbol, and on no other chart.
+    ///
+    /// Whatever their link mode or resolution: what decides it is the
+    /// symbol, since a price and a moment only mean the same thing on two
+    /// charts of the same one. With the setting off nothing is drawn, and a
+    /// line still standing from before it was turned off goes as soon as the
+    /// pointer moves.
     fn echo_crosshair(self: &Rc<Self>, from: u32, echo: Option<Echo>) {
-        if !self.store.setting_bool(SETTING_SYNC_CROSSHAIR, true) {
-            return;
-        }
-        let source = self.pane(from).map(|p| p.mode()).unwrap_or_default();
+        let symbol = |pane: &ChartPane| {
+            pane.instrument.borrow().as_ref().map(|i| (i.symbol.clone(), i.suffix.clone()))
+        };
+        let sent = self
+            .pane(from)
+            .and_then(|source| symbol(&source))
+            .filter(|_| self.store.setting_bool(SETTING_SYNC_CROSSHAIR, true));
         for pane in self.panes.borrow().iter() {
             if pane.id == from {
                 continue;
             }
-            // Follow to Follow, or no line: any other chart may be showing a
-            // different symbol, and a crosshair from this one would be
-            // pointing at a bar that is not the bar under the pointer.
-            let show = source == LinkMode::Follow && pane.mode() == LinkMode::Follow;
+            let show = sent.is_some() && symbol(pane) == sent;
             pane.view.set_echo(if show { echo } else { None });
         }
     }
@@ -5618,11 +5625,11 @@ impl Window {
     }
 
     pub fn open_chart_settings(self: &Rc<Self>) {
-        crate::ui::chart_settings::ChartSettings::present(self, self.store.clone());
+        crate::ui::chart_settings::ChartSettings::present(self);
     }
 
     pub fn open_indicators(self: &Rc<Self>) {
-        crate::ui::chart_settings::ChartSettings::present_indicators(self, self.store.clone());
+        crate::ui::chart_settings::ChartSettings::present_indicators(self);
     }
 
     /// The indicator picker, centred like every other picker in the app.
@@ -7391,11 +7398,7 @@ impl Window {
                     picker.view.pick(Some(id));
                     return;
                 }
-                crate::ui::chart_settings::ChartSettings::present_indicator(
-                    &this,
-                    this.store.clone(),
-                    id,
-                );
+                crate::ui::chart_settings::ChartSettings::present_indicator(&this, id);
             });
             label.add_controller(open_settings);
 
@@ -7424,11 +7427,7 @@ impl Window {
             settings.set_tooltip_text(Some("Settings"));
             let this = self.clone();
             settings.connect_clicked(move |_| {
-                crate::ui::chart_settings::ChartSettings::present_indicator(
-                    &this,
-                    this.store.clone(),
-                    id,
-                );
+                crate::ui::chart_settings::ChartSettings::present_indicator(&this, id);
             });
 
             let remove = gtk::Button::from_icon_name("user-trash-symbolic");
@@ -7489,7 +7488,7 @@ impl Window {
             }
             IndicatorEvent::Properties(indicator) => {
                 self.focus(id);
-                crate::ui::chart_settings::ChartSettings::present_indicator(self, self.store.clone(), indicator);
+                crate::ui::chart_settings::ChartSettings::present_indicator(self, indicator);
             }
             IndicatorEvent::Remove(indicator) => self.remove_indicator(&pane, indicator),
         }
@@ -9057,7 +9056,7 @@ impl Window {
         let this = self.clone();
         settings.connect_activate(move |_, _| {
             if let Some(id) = this.menu_indicator.borrow_mut().take() {
-                crate::ui::chart_settings::ChartSettings::present_indicator(&this, this.store.clone(), id);
+                crate::ui::chart_settings::ChartSettings::present_indicator(&this, id);
             }
         });
         actions.add_action(&settings);

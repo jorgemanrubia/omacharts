@@ -31,7 +31,6 @@ crop: 490,95,1580,1250 (both)
 |---|---|
 | **Bars** › **Style** | **Candles**, **OHLC bars**, or **None** to hide the bars ([Bars](/manual/charts/#bars)). **Colouring** is greyed out while they are hidden |
 | **Bars** › **Colouring** | **Filled**, **Hollow**, **Red up** or **Monochrome** for candles; **Coloured**, **Red up** or **Monochrome** for OHLC bars ([Colouring](/manual/charts/#colouring)) |
-| **Bars** › **Crosshair across Follow charts** | One switch for the whole window, not for this chart. The pointer on one Follow chart draws the same moment on the others ([The crosshair across Follow charts](/manual/watchlists/#the-crosshair-across-follow-charts)) |
 | **Scales** › **Auto scale price** | Fits the visible bars vertically. Off, the chart can be dragged up and down ([Scales](/manual/charts/#scales)) |
 | **Scales** › **Logarithmic scale** | Equal heights are equal percentage moves ([Logarithmic scale](/manual/charts/#logarithmic-scale)) |
 | **Scales** › **Gridlines** | Draws the grid. The scales and their labels stay either way |

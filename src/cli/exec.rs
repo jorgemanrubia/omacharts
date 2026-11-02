@@ -4175,10 +4175,12 @@ fn status(store: &Store, window_open: bool, as_json: bool) -> Result<String, Fau
     Ok(out)
 }
 
-/// Whether a pointer on a Follow chart draws a line on the other Follow charts.
+/// Whether a pointer on a chart draws a line on the other charts of the same
+/// symbol.
 ///
-/// One setting for the whole window rather than one per chart, which is why
-/// it reads and writes a setting rather than a pane.
+/// One setting for the whole app rather than one per chart, which is why it
+/// reads and writes a setting rather than a pane. The same key the
+/// preferences' switch writes, so `config set sync_crosshair` reaches it too.
 fn crosshair(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<String, Fault> {
     const KEY: &str = "sync_crosshair";
     let Some(state) = arg(m, "STATE") else {
@@ -4193,7 +4195,7 @@ fn crosshair(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<Strin
     said(
         as_json,
         json!({"crosshairSync": on}),
-        format!("crosshair syncing across Follow charts is {state}"),
+        format!("crosshair syncing across charts of the same symbol is {state}"),
     )
 }
 

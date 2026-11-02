@@ -277,7 +277,7 @@ codes](#exit-codes).
 | `watchlist` | Watchlists and the symbols in them | [Watchlists and sections](#watchlists-and-sections); `watchlist feed` under [The Omarchy plugin](#watchlist-feed) |
 | `section` | The sections inside a watchlist | [Watchlists and sections](#watchlists-and-sections) |
 | `chartbook` | Chartbooks | [Chartbooks](#chartbooks); `chartbook template` under [Chartbook templates](#chartbook-templates); `chartbook screenshot` under [Screenshots](#screenshots) |
-| `chart` | The charts in a chartbook | [Charts](#charts) (`set`, `range`), [Indicators](#indicators), [Drawings](#drawings), [Measuring a move](#measuring-a-move), [Arranging charts](#arranging-charts) (`list`, `split`, `close`, `focus`), [Linking](#linking) (`crosshair`), [Screenshots](#screenshots) |
+| `chart` | The charts in a chartbook | [Charts](#charts) (`set`, `range`), [Indicators](#indicators), [Drawings](#drawings), [Measuring a move](#measuring-a-move), [Arranging charts](#arranging-charts) (`list`, `split`, `close`, `focus`), [Linking](#linking), [Sharing the crosshair](#sharing-the-crosshair) (`crosshair`), [Screenshots](#screenshots) |
 | `template` | Chart templates | [Chart templates](#chart-templates) |
 | `provider` | The data feed, and signing in to one | [Market data](#market-data) |
 | `config` | Stored preferences | [Preferences](#preferences); `config bars` under [Charts](#config-bars) |
@@ -1167,11 +1167,13 @@ omacharts: NVDA not shown; the focused chart is pinned and no chart follows the 
   [exit 5]
 ```
 
-### `chart crosshair`
+## Sharing the crosshair
+
+Whether the pointer on one chart draws the same moment on every other chart of the same symbol, whatever their link mode. One setting for every chart, Preferences › Charts › Other › **Sync crosshair across charts** ([Sharing the crosshair](/manual/charts/#sharing-the-crosshair)).
 
 | Command | Does |
 |---|---|
-| `chart crosshair` | Whether the crosshair is shared across Follow charts; prints `on` or `off`. |
+| `chart crosshair` | Whether the crosshair is shared; prints `on` or `off`. |
 | `chart crosshair on` or `off` | Turns it on or off. |
 | `config set sync_crosshair on` or `off` | The same setting, by its key; see [Preferences](#preferences). |
 
@@ -1514,7 +1516,7 @@ same.
 | `chart_time_zone` | an IANA name such as `Europe/London` or `America/Chicago`, or `exchange` for each chart's exchange's own | `America/New_York` | Charts › Other › Time › Time zone | [Preferences](/manual/preferences/#time) |
 | `time_format` | `24h`, `12h` | the desktop's clock format | Charts › Other › Time › Time format | [Preferences](/manual/preferences/#time) |
 | `timeframes` | comma-separated resolutions, such as `5m,15m,1h,4h,1D,1W`; an entry that is not a resolution is skipped | `5m,15m,1h,4h,1D,1W` | Charts › Other › Preset resolutions | [Charts](/manual/charts/) |
-| `sync_crosshair` | on, off | on | Chart settings › Crosshair across Follow charts | [Chart settings](/manual/chart-settings/) |
+| `sync_crosshair` | on, off | on | Charts › Other › Chart › Sync crosshair across charts | [Charts](/manual/charts/#sharing-the-crosshair) |
 | `provider` | `yahoo`, `tos` | `yahoo` | Data › Data feed | [Market data feeds](/manual/market-data/) |
 | `screenshot_save_file` | on, off | on | General › Also save a PNG | [Screenshots](/manual/screenshots/) |
 | `screenshot_folder` | a folder; `~/` is your home; empty for the default | `<Pictures>/Omacharts` | General › Save to | [Screenshots](/manual/screenshots/) |

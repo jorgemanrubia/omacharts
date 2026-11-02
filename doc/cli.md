@@ -274,8 +274,7 @@ Each chart has a link mode: what a click in the watchlist does to it.
   Split a chart and click a symbol, and the chart in front of you takes it
   while the other keeps what it had.
 * **`follow`** takes every click. Follow charts show the same instrument: a
-  symbol typed on one moves the others, and a pointer on one draws a crosshair
-  on the rest. Make a chart Follow, split it, change the new one's resolution,
+  symbol typed on one moves the others. Make a chart Follow, split it, change the new one's resolution,
   and both walk the watchlist together.
 * **`pinned`** takes none, focused or not — for a context chart such as SPY
   beside a stock. A click that moves nothing, because the focused chart is
@@ -356,7 +355,13 @@ Three changes write nothing, which is what makes the control safe to touch:
 symbol over the Follow charts is the window's business — picking in the sidebar,
 or typing in the search — and a command names the charts it means.
 
-Whether a pointer on a Follow chart draws a line on the other Follow charts:
+## The crosshair across charts of one symbol
+
+A pointer on one chart draws a quieter crosshair at the same moment and price
+on every other chart on screen of the same symbol, whatever their link mode or
+resolution. Charts of different symbols never share one. It is one setting
+for the whole app, on by default — Preferences › Charts › Other › Sync
+crosshair across charts, or the key `sync_crosshair`:
 
 ```
 omacharts chart crosshair off

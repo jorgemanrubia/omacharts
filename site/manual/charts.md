@@ -375,9 +375,15 @@ crop: 1100,500,1460,940
 -->
 {% include figure.html src="/assets/manual/charts/crosshair.jpg" alt="An NVDA hourly chart with the crosshair and its price and time tags, and the last-price tag on its dashed line" caption="The crosshair's tags in the accent colour, and the last price in the colour of the last bar." %}
 
-The crosshair is a pair of dotted lines that cross at the centre of the bar under the pointer. The price is tagged on the price axis and the bar's time on the time axis (the date alone on daily and coarser bars), in the chosen [time zone and format](/manual/preferences/#time). When each chart reads its exchange's clock, the time ends with the zone, such as **21 Oct 2026 07:30 CT**. Over an indicator strip the price tag shows that strip's value. With [Crosshair across Follow charts](/manual/watchlists/#the-crosshair-across-follow-charts) on, the other Follow charts show the same moment and price, dimmed.
+The crosshair is a pair of dotted lines that cross at the centre of the bar under the pointer. The price is tagged on the price axis and the bar's time on the time axis (the date alone on daily and coarser bars), in the chosen [time zone and format](/manual/preferences/#time). When each chart reads its exchange's clock, the time ends with the zone, such as **21 Oct 2026 07:30 CT**. Over an indicator strip the price tag shows that strip's value.
 
 The last price is a tag on the price axis, filled in the colour of the last bar's direction, with a dashed line across the chart at its level.
+
+### Sharing the crosshair
+
+The pointer on one chart draws a dimmed crosshair at the same moment and price on every other chart on screen of the same symbol, each at its own resolution. It does not matter how the charts are linked to the watchlist. Charts of different symbols never share a crosshair.
+
+It is one switch for every chart: Preferences › Charts › Other › Chart › **Sync crosshair across charts** ([Preferences](/manual/preferences/#charts)). It is on by default.
 
 ## When a chart is empty or out of date
 

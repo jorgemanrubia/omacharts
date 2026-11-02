@@ -56,6 +56,7 @@ crop: 301,122,1958,1356
 | Templates › **Chart templates** | The list. + makes one, a row opens its editor, the pencil renames, the bin deletes. | [Chart templates](/manual/chart-templates/) |
 | Header › **In the header** | The parts every chart's header shows, in order. | [The header](/manual/charts/#the-header) |
 | Other › Chart › **Preset resolutions**, **Edit…** | Opens the Resolutions dialog. | [The preset resolutions](/manual/charts/#the-preset-resolutions) |
+| Other › Chart › **Sync crosshair across charts** | The pointer on one chart draws the same moment on every other chart of the same symbol. On by default. | [Sharing the crosshair](/manual/charts/#sharing-the-crosshair) |
 | Other › Time › **Time zone**, **Time format** | How every chart tells the time. | [Time](#time) |
 
 #### Time

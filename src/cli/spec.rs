@@ -968,7 +968,7 @@ pub const SURFACE: &[Noun] = &[
             },
             Verb {
                 name: "crosshair",
-                about: "Whether a pointer on a Follow chart draws a line on the other Follow charts",
+                about: "Whether a pointer on a chart draws a line on the other charts of the same symbol",
                 args: &[Arg::opt("STATE", "omit to read it").of(SWITCHES)],
                 flags: &[],
                 example: "omacharts chart crosshair off",
