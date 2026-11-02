@@ -21,7 +21,7 @@ use std::rc::Rc;
 use adw::prelude::*;
 use gtk::{gio, glib};
 use omacharts_engine::drawings::{
-    self, Arrow, ArrowHead, Configurations, Kind, Paint, Place, Preset, ProfileAlign, ProfileShape, Style, Text,
+    self, Arrow, ArrowHead, Configurations, Kind, Paint, Place, Preset, ProfileAlign, ProfileShape, Style, Text, VwapSource,
     CONFIGURATIONS,
 };
 use omacharts_engine::Theme;
@@ -589,6 +589,24 @@ fn describe(kind: Kind, style: &Style) -> String {
                 name_of(&look.poc)
             )
         }
+        Kind::Vwap => format!(
+            "{}, {}px, {}{}",
+            name_of(&style.colour),
+            style.width,
+            style.vwap.source.label().to_lowercase(),
+            vwap_bands(style)
+        ),
+    }
+}
+
+/// An anchored VWAP's bands in words: `±1σ, ±2σ`, or nothing for none.
+fn vwap_bands(style: &Style) -> String {
+    match style.vwap.bands.is_empty() {
+        true => String::new(),
+        false => {
+            let bands: Vec<String> = style.vwap.bands.iter().map(|m| format!("±{m}σ")).collect();
+            format!(", bands {}", bands.join(", "))
+        }
     }
 }
 
@@ -917,6 +935,67 @@ fn style_editor(window: &Rc<Window>, kind: Kind, current: Style, on_style: Rc<dy
             }
             group.add(&area);
             shows.push(Rc::new(move |s: &Style| area.set_value(s.profile.value_area * 100.0)));
+        }
+        // A line, with the price it weights and the bands round it.
+        Kind::Vwap => {
+            let (row, show) = paint_row(&theme, "Colour", &style.borrow().colour, {
+                let style = style.clone();
+                let emit = emit.clone();
+                move |paint| {
+                    style.borrow_mut().colour = paint;
+                    emit();
+                }
+            });
+            group.add(&row);
+            shows.push(Rc::new(move |s: &Style| show(&s.colour)));
+
+            let (row, show) = width_row("Thickness", style.borrow().width, {
+                let style = style.clone();
+                let emit = emit.clone();
+                move |width| {
+                    style.borrow_mut().width = width;
+                    emit();
+                }
+            });
+            group.add(&row);
+            shows.push(Rc::new(move |s: &Style| show(s.width)));
+
+            let sources = VwapSource::ALL;
+            let (row, show) = named_row(
+                "Source",
+                &sources.map(VwapSource::label),
+                sources.iter().position(|s| *s == style.borrow().vwap.source),
+                {
+                    let style = style.clone();
+                    let emit = emit.clone();
+                    move |at| {
+                        style.borrow_mut().vwap.source = sources[at];
+                        emit();
+                    }
+                },
+            );
+            group.add(&row);
+            shows.push(Rc::new(move |s: &Style| show(sources.iter().position(|x| *x == s.vwap.source))));
+
+            for multiple in drawings::VWAP_BANDS {
+                let band = adw::SwitchRow::new();
+                band.set_title(&format!("±{multiple}σ band"));
+                band.set_active(style.borrow().vwap.bands.contains(&multiple));
+                {
+                    let style = style.clone();
+                    let emit = emit.clone();
+                    let showing = showing.clone();
+                    band.connect_active_notify(move |row| {
+                        if showing.get() {
+                            return;
+                        }
+                        style.borrow_mut().vwap.set_band(multiple, row.is_active());
+                        emit();
+                    });
+                }
+                group.add(&band);
+                shows.push(Rc::new(move |s: &Style| band.set_active(s.vwap.bands.contains(&multiple))));
+            }
         }
         // A box and an ellipse have the same properties — a fill at an alpha
         // under an edge — and differ only in the outline drawn round them, so
@@ -1521,6 +1600,33 @@ fn profile_sample(cr: &gtk::cairo::Context, theme: &Theme, style: &Style, x: f64
     let _ = cr.stroke();
 }
 
+/// A small anchored VWAP in a style's look: a dot on the bar it starts from
+/// and the line settling away from it, between its bands when it has any.
+fn vwap_sample(cr: &gtk::cairo::Context, theme: &Theme, style: &Style, (x, y, w, h): (f64, f64, f64, f64), line_w: f64) {
+    let colour = style.colour.hex(theme);
+    let (x0, y0) = (x + line_w, y + h * 0.85);
+    let curve = |cr: &gtk::cairo::Context, lift: f64| {
+        cr.move_to(x0, y0 - lift * 0.3);
+        cr.curve_to(x + w * 0.2, y + h * 0.15 - lift, x + w * 0.45, y + h * 0.5 - lift, x + w, y + h * 0.4 - lift);
+    };
+    cr.set_line_cap(gtk::cairo::LineCap::Round);
+    colors::set_source_alpha(cr, &colour, drawings::VWAP_BAND_ALPHA);
+    cr.set_line_width((line_w * 0.6).max(1.0));
+    for (n, _) in style.vwap.bands.iter().enumerate() {
+        let lift = h * 0.14 * (n + 1) as f64;
+        for side in [lift, -lift] {
+            curve(cr, side);
+            let _ = cr.stroke();
+        }
+    }
+    colors::set_source(cr, &colour);
+    cr.set_line_width(line_w);
+    curve(cr, 0.0);
+    let _ = cr.stroke();
+    cr.arc(x0, y0, line_w.max(1.5), 0.0, std::f64::consts::TAU);
+    let _ = cr.fill();
+}
+
 /// A row choosing one of a few named ways, and a way to show another.
 fn named_row(
     title: &str,
@@ -1771,6 +1877,7 @@ pub fn swatch(theme: &Theme, kind: Kind, style: &Style) -> gtk::DrawingArea {
                 }
             }
             Kind::Profile => profile_sample(cr, &theme, &style, 1.0, 1.0, w - 2.0, h - 2.0),
+            Kind::Vwap => vwap_sample(cr, &theme, &style, (2.0, 2.0, w - 4.0, h - 4.0), style.width.clamp(1.0, 3.0)),
             // A swatch is thirty pixels by twelve: too small for a word, so
             // the text configuration shows the ink as a bar of it, the way
             // every other colour in the window is shown at this size.
@@ -1930,6 +2037,7 @@ fn draw_preview_figure(
             preview_text(cr, box_at, Kind::Rect, theme, style, text, scale);
         }
         Kind::Profile => profile_sample(cr, theme, style, w * 0.25, h * 0.18, w * 0.5, h * 0.64),
+        Kind::Vwap => vwap_sample(cr, theme, style, (w * 0.12, h * 0.2, w * 0.76, h * 0.6), line_w),
     }
 }
 

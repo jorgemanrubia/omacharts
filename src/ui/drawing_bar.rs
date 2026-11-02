@@ -497,6 +497,30 @@ impl DrawingBar {
                         cr.line_to(x + reach, y);
                         let _ = cr.stroke();
                     }
+                    // A curve settling as it goes, from a dot on the bar it
+                    // is anchored to, between two quieter bands: an
+                    // average that starts somewhere, which is what sets it
+                    // apart from a line drawn through two points.
+                    Some(Kind::Vwap) => {
+                        let (x0, y0) = (5.5, h - 7.5);
+                        let x1 = w - 4.5;
+                        let curve = |cr: &gtk::cairo::Context, lift: f64| {
+                            cr.move_to(x0, y0 - lift);
+                            cr.curve_to(x0 + 5.0, 7.0 - lift, x0 + 9.0, h / 2.0 - lift, x1, h / 2.0 - 1.0 - lift);
+                        };
+                        cr.set_source_rgba(r, g, b, a * 0.45);
+                        cr.set_line_width(1.0);
+                        for lift in [4.5, -4.5] {
+                            curve(cr, lift);
+                            let _ = cr.stroke();
+                        }
+                        cr.set_source_rgba(r, g, b, a);
+                        cr.set_line_width(1.5);
+                        curve(cr, 0.0);
+                        let _ = cr.stroke();
+                        cr.arc(x0, y0, 2.25, 0.0, std::f64::consts::TAU);
+                        let _ = cr.fill();
+                    }
                     Some(Kind::Text) => {
                         // A capital I with its serifs: the mark every
                         // application puts on its text tool, and the one

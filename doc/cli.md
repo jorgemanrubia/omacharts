@@ -703,7 +703,8 @@ omacharts chartbook duplicate Macro --name "Macro weekly" --switch
 ## Drawing on a chart
 
 A drawing is a line between two anchors, a box or an ellipse with them at
-opposite corners, words at one, or a volume profile of the bars between two. An anchor is a moment and a price —
+opposite corners, words at one, a volume profile of the bars between two, or an anchored VWAP
+from one. An anchor is a moment and a price —
 `2026-09-01,180.5`, or with the minute, `2026-09-01T14:30,180.5`, or unix
 seconds — which is how the chart keeps them too, so a line through two daily
 closes still passes through the same two moments on the hourly chart.
@@ -753,6 +754,18 @@ and `--fill` its background, `--border on|off` whether filled rows have it,
 `--poc-color`, `--poc-width`, `--profile-style`, `--align`, `--value-area` and
 `--transparency` are the rest. It is never moved whole, only
 re-spanned, and it takes no words.
+
+**An anchored VWAP** (`avwap`, or `vwap`) reads only the time of its anchor,
+`--from`, and runs from that bar to the last one, worked out again as bars
+arrive. `--color` and `--width` are its line, `--source` the price each bar
+adds (`hlc3`, the default, `hl2`, `ohlc4` or `close`), and `--bands` the
+standard-deviation bands either side, any of `1,2,3`, or `none`. Like a
+profile it is never moved whole, only re-anchored, and it takes no words.
+
+```
+omacharts chart drawing add avwap --from 2026-09-08,0 --bands 1,2
+omacharts chart drawing set --id 3 --from 2026-09-15,0 --source close
+```
 
 **Any other drawing can carry words.** `--text` on a line, a box or an ellipse is a
 label on it, placed by `--text-at` — `center` by default, or an edge or a
@@ -823,11 +836,12 @@ and is numbered below zero, so one id names a drawing wherever it lives.
 chart can see.
 
 By hand: Ctrl+D shows the tools, Alt+L, Alt+H, Alt+A, Alt+Z, Alt+R, Alt+C,
-Alt+T and Alt+V arm them
+Alt+T, Alt+V and Alt+W arm them
 (Escape is the pointer again; a right-click drops a drawing half laid down
 and keeps the tool), a press and a second press (or one
 press-and-drag) place a drawing — except the text tool, where one press puts
-the caret down and you type on the chart; hold Ctrl while placing one or
+the caret down and you type on the chart, and the anchored VWAP, which one
+click on a bar places; hold Ctrl while placing one or
 dragging a corner and the anchor snaps to the nearest open, high, low or
 close of the candle under it, and with a
 tool in hand the crosshair snaps with it to show where — a click selects one (Shift+click or Ctrl+click adds or removes

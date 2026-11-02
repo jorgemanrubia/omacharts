@@ -216,6 +216,7 @@ const ANCHORS: &[&str] = &["session", "week", "month", "quarter", "year"];
 const LINE_STYLES: &[&str] = &["solid", "dashed", "dotted"];
 const PROFILE_STYLES: &[&str] = &["filled", "outline"];
 const PROFILE_ALIGNS: &[&str] = &["left", "right"];
+const VWAP_SOURCES: &[&str] = &["hlc3", "hl2", "ohlc4", "close"];
 const SWITCHES: &[&str] = &["on", "off"];
 const LINKS: &[&str] = &["focus", "follow", "pinned"];
 const COLOURING: &[&str] = &["coloured", "red-up", "monochrome"];
@@ -229,7 +230,7 @@ const SORT_COLUMNS: &[&str] = &["symbol", "last", "change", "change_pct", "none"
 /// list before the parser sees anything, so an alias the engine understands
 /// and the table does not is an alias nobody can use.
 const DRAWING_KINDS: &[&str] =
-    &["line", "hline", "arrow", "zigzag", "rect", "ellipse", "circle", "text", "profile", "vp"];
+    &["line", "hline", "arrow", "zigzag", "rect", "ellipse", "circle", "text", "profile", "vp", "avwap", "vwap"];
 /// Where a figure's label sits in it.
 const PLACES: &[&str] = &[
     "center", "top", "bottom", "left", "right", "top-left", "top-right", "bottom-left",
@@ -900,7 +901,7 @@ pub const SURFACE: &[Noun] = &[
                 args: &[
                     Arg::req("ACTION", "what to do")
                         .of(&["list", "add", "set", "remove", "clear", "configs", "configure", "reset-configs"]),
-                    Arg::opt("KIND", "a line or a box between two anchors, a circle in the box they make, or words at the first")
+                    Arg::opt("KIND", "a line or a box between two anchors, a circle in the box they make, a volume profile of the bars between them, words at the first, or an anchored VWAP from the first")
                         .of(DRAWING_KINDS),
                 ],
                 flags: &[
@@ -932,6 +933,8 @@ pub const SURFACE: &[Noun] = &[
                     Flag::valued("value-area", "F", "the share of a volume profile's volume its value area holds, 0.1-1"),
                     Flag::valued("transparency", "F", "how far a volume profile's outline and background fade, 0-1"),
                     Flag::valued("poc-width", "F", "a volume profile's point of control thickness in pixels; --width is its outline's"),
+                    Flag::valued("source", "PRICE", "the price an anchored VWAP weights by volume").of(VWAP_SOURCES),
+                    Flag::valued("bands", "MULTIPLES", "an anchored VWAP's deviation bands: any of 1, 2 and 3, comma-separated, or none"),
                 ],
                 example: "omacharts chart drawing add line --from 2026-09-01,180.5 --to 2026-09-19,192 --config 4",
                 json: true,
@@ -1444,6 +1447,14 @@ mod tests {
                 kind.key()
             );
         }
+    }
+
+    /// The price sources an anchored VWAP offers, against the engine's.
+    #[test]
+    fn the_vwap_sources_on_offer_are_the_ones_that_exist() {
+        use omacharts_engine::drawings::VwapSource;
+        let engine: Vec<&str> = VwapSource::ALL.iter().map(|s| s.key()).collect();
+        assert_eq!(VWAP_SOURCES, engine.as_slice());
     }
 
     /// And the places a label can sit, the same way.

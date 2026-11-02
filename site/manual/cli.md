@@ -845,7 +845,8 @@ on](#which-chart-a-command-acts-on)). `KIND` is `line`, `hline`, `arrow`,
 `zigzag`, `rect`, `ellipse` (or `circle`), `text`, or `profile` (or `vp`: a
 volume profile of the span between `--from` and `--to`, whose prices are
 ignored; `--color` is its outline and `--fill` its background, and it takes no
-`--text`). The tools and their
+`--text`), or `avwap` (or `vwap`: an anchored VWAP from the bar at `--from` to
+the last bar, whose price is ignored; it takes no `--text`). The tools and their
 configurations are in [Drawings](/manual/drawings/). Whether a chart shows
 other charts' drawings and sends its own is `chart set --show-drawings` and
 `--send-drawings`, each `on` or `off`:
@@ -875,7 +876,7 @@ read in the chart's time zone, the one its time axis is labelled in
 | Flag | Takes | Does |
 |---|---|---|
 | `--id N` | An id from `list` | Which drawing, for `set` and `remove` |
-| `--from ANCHOR`, `--to ANCHOR` | Anchors | The two ends, or opposite corners. A text drawing takes `--from` only |
+| `--from ANCHOR`, `--to ANCHOR` | Anchors | The two ends, or opposite corners. A text drawing and an anchored VWAP take `--from` only |
 | `--point ANCHOR` | An anchor, repeated | A zig-zag's corners in order, two at least. `--from` and `--to` alone give it one leg |
 | `--config N` | 1 to 9 | The configuration it follows; for `configure`, the one to change |
 | `--color C` | A colour | A line's colour; a box's or circle's edge |
@@ -896,6 +897,8 @@ read in the chart's time zone, the one its time axis is labelled in
 | `--value-area F` | 0.1 to 1 | The share of a volume profile's volume its value area holds |
 | `--transparency F` | 0 to 1 | How far a volume profile's outline and background fade |
 | `--poc-width F` | 0.5 to 12 | A volume profile's point of control thickness; `--width` is its outline's |
+| `--source S` | `hlc3`, `hl2`, `ohlc4`, `close` | The price each bar adds to an anchored VWAP; `hlc3` by default |
+| `--bands LIST` | `1,2,3` or any of them; `none` | Which standard-deviation bands an anchored VWAP draws; none by default |
 | `--scope S` | `shared`, `local` | Whether the symbol's other charts see it. Defaults to what the chart sends |
 | `--order WHERE` | `front`, `back` | Brings it to the front or sends it to the back |
 
@@ -903,7 +906,7 @@ A colour is one of the presets `up`, `down`, `blue`, `amber`, `violet`,
 `teal`, `orange`, `cyan` and `ink`, which follow the theme, or `#rrggbb`,
 which does not. Any of `--color`, `--width`, `--arrow`, `--head`,
 `--border`, `--fill`, `--alpha`, `--text-color`, `--font`, `--font-size`,
-`--poc-color`, `--profile-style`, `--align`, `--value-area`, `--transparency` and `--poc-width` gives the drawing a look of its own, off its configuration; `--text` and
+`--poc-color`, `--profile-style`, `--align`, `--value-area`, `--transparency`, `--poc-width`, `--source` and `--bands` gives the drawing a look of its own, off its configuration; `--text` and
 `--text-at` do not. A `local` drawing has a negative id. Changing a drawing's
 scope gives it a new id.
 

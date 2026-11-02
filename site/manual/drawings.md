@@ -42,6 +42,7 @@ crop: none
 | Circle | <kbd>Alt</kbd> + <kbd>C</kbd> | Placed like a rectangle; the ellipse fills it |
 | Text | <kbd>Alt</kbd> + <kbd>T</kbd> | Click where the text goes, then type |
 | Volume profile | <kbd>Alt</kbd> + <kbd>V</kbd> | Press where the span starts, release where it ends ([Volume profiles](#volume-profiles)) |
+| Anchored VWAP | <kbd>Alt</kbd> + <kbd>W</kbd> | Click the bar it starts from ([Anchored VWAP](#anchored-vwap)) |
 
 After one drawing the tool is deselected. <kbd>Ctrl</kbd> + click a tool to keep it selected until <kbd>Esc</kbd> or another tool. The selected tool draws on whichever chart you press. A configuration is a saved look for a tool's drawings, numbered 1 to 9 ([Configurations](#configurations)).
 
@@ -167,7 +168,7 @@ crop: 1666,320,642,888   (the box above, the menu with 20px layout margin right 
 
 Across the top is a picture of the drawing, tagged with its configuration, or **Custom** when it has a look of its own. Click the picture to see the nine configurations drawn as this drawing, with its own look beside them while it has one. <kbd>Alt</kbd> + <kbd>1</kbd> … <kbd>9</kbd> works inside the dialog too. Under a **Custom** look, **Save as…** writes the look over one of the nine configurations (the one it started from is marked `*`) and puts the drawing back on that number. Every drawing on that number changes with it.
 
-A figure (any drawing but text and a volume profile) has two tabs, **General** and **Text**. <kbd>Alt</kbd> + <kbd>←</kbd> / <kbd>→</kbd> moves between them. A text drawing has no tabs, only **Colour**, **Font** and **Font size**.
+A figure (any drawing but text, a volume profile and an anchored VWAP) has two tabs, **General** and **Text**. <kbd>Alt</kbd> + <kbd>←</kbd> / <kbd>→</kbd> moves between them. A text drawing has no tabs, only **Colour**, **Font** and **Font size**.
 
 <!-- regenerate:
 theme: tokyo-night
@@ -228,6 +229,7 @@ As shipped, the nine configurations are the nine [colours](#colours) in order, 1
 | Rectangle, circle | Filled at 16% of the colour, with a 1 px edge of it |
 | Text | The colour, nothing else |
 | Volume profile | See [Volume profiles](#volume-profiles) |
+| Anchored VWAP | 1.5 px, no bands |
 
 Text in every configuration is 18 px in the system font, in the configuration's colour.
 
@@ -290,6 +292,37 @@ crop: none
 -->
 {% include figure.html src="/assets/manual/drawings/volume-profiles.jpg" alt="SPY 1h with session volume profiles, an Ink profile drawn over a week of them from the left and an Amber one over the last days from the right" caption="Two volume profile drawings over the session study: configuration 9 over one week, configuration 4 over the next." %}
 
+## Anchored VWAP
+
+The anchored VWAP tool draws the volume-weighted average price from the bar you click to the last bar on the chart: each bar's price, weighted by its volume, averaged over every bar since the anchor. It is what a buyer since that bar has paid on average, so it is anchored where something happened (an earnings gap, a swing low, the first bar of a breakout) and read as support or resistance from there. Unlike the [VWAP](/manual/indicators/averages-and-bands/#volume-weighted-average-price) study it never resets. On daily bars it follows weeks of trading from one bar.
+
+It has no end. As new bars arrive the line runs on to them, worked out again from the anchor. A click past the last bar anchors it on the last bar, and one before the first on the first. On a bar with no volume, an index's, each bar counts once.
+
+Selected, it has one grip, at the anchor. Drag it to another bar and the line is worked out from there. It cannot be moved whole or nudged with the arrow keys; a press on the line that drags pans the chart. It takes no text. On a chart of another resolution it is worked out from that chart's bars, from the same moment. A pasted copy lands a few bars to the right of the original.
+
+| Property | Does |
+|---|---|
+| **Colour** | The line, and the bands in a fainter shade of it |
+| **Thickness** | The line. The bands are drawn thinner |
+| **Source** | The price each bar adds: **Typical** (high + low + close) / 3, the usual choice; **Median** (high + low) / 2; **Average** (open + high + low + close) / 4; or **Close** |
+| **±1σ band**, **±2σ band**, **±3σ band** | Lines one, two or three standard deviations above and below, the deviation weighted by volume as the average is. All off by default |
+
+Every configuration is its colour at 1.5 px, from the typical price, with no bands.
+
+<!-- regenerate:
+theme: tokyo-night
+window: 2560x1440 @2, bin/headless-window (HOME sandboxed, theme seeded)
+state:
+  key ctrl+b
+  omacharts chart set --symbol SPY --resolution 1h
+  omacharts chart drawing add avwap --from 2026-10-20,0 --config 4 --bands 1,2
+  omacharts chart drawing add avwap --from 2026-10-27T09:30,0 --config 3
+  move 1270 1000
+capture: bin/headless-window cli chart screenshot --output /tmp/avwap.png; magick /tmp/avwap.png -quality 88 site/assets/manual/drawings/anchored-vwap.jpg
+crop: none
+-->
+{% include figure.html src="/assets/manual/drawings/anchored-vwap.jpg" alt="SPY 1h with an amber anchored VWAP from 20 October and its one and two standard-deviation bands, and a blue one from the 27 October open" caption="Two anchored VWAPs: configuration 4 from 20 October with its ±1σ and ±2σ bands, configuration 3 from the open of 27 October." %}
+
 ## Colours
 
 A drawing's colour is one of nine presets, or a hex colour.
@@ -310,7 +343,7 @@ A text drawing is text at a point. Any other drawing can carry a label, which si
 
 | Key or gesture | Does |
 |---|---|
-| <kbd>Enter</kbd>, <kbd>F2</kbd>, **Edit text**, or double-click a text drawing | Puts the caret in the selected drawing, on the chart, in its own font and colour. Not on a volume profile, which takes no text |
+| <kbd>Enter</kbd>, <kbd>F2</kbd>, **Edit text**, or double-click a text drawing | Puts the caret in the selected drawing, on the chart, in its own font and colour. Not on a volume profile or an anchored VWAP, which take no text |
 | <kbd>Enter</kbd> while typing, or a click elsewhere | Commits |
 | <kbd>Shift</kbd> + <kbd>Enter</kbd> | A new line |
 | <kbd>Ctrl</kbd> + <kbd>B</kbd>, <kbd>Ctrl</kbd> + <kbd>I</kbd> | Bold or italic, over the selection or the word the caret is in |

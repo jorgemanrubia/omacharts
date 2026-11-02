@@ -2041,7 +2041,7 @@ fn chart_drawing(
     let text = match action {
         "add" => {
             let kind = kind.ok_or_else(|| {
-                Fault::usage("`drawing add` needs a kind: line, hline, arrow, zigzag, rect, ellipse, text or profile".into())
+                Fault::usage("`drawing add` needs a kind: line, hline, arrow, zigzag, rect, ellipse, text, profile or avwap".into())
             })?;
             if !corners.is_empty() && !kind.is_path() {
                 return Err(not_a_path());
@@ -2053,13 +2053,14 @@ fn chart_drawing(
             // uses it for both. A zig-zag given its corners has its ends
             // among them and needs no --from and --to of its own. Everything
             // else spans two.
-            let (from, to) = match (kind.is_text(), corners.first(), corners.last()) {
+            let (from, to) = match (kind.one_anchor(), corners.first(), corners.last()) {
                 (_, Some(first), Some(last)) => (*first, *last),
                 (true, ..) => {
                     let Some(at) = from.or(to) else {
-                        return Err(Fault::usage(
-                            "`drawing add text` needs --from WHEN,PRICE: where the words go".into(),
-                        ));
+                        return Err(Fault::usage(match kind.is_text() {
+                            true => "`drawing add text` needs --from WHEN,PRICE: where the words go".into(),
+                            false => "`drawing add avwap` needs --from WHEN,PRICE: the bar it starts from; the price is not read".into(),
+                        }));
                     };
                     (at, at)
                 }
@@ -2455,6 +2456,13 @@ fn style_json(kind: omacharts_engine::DrawingKind, style: &omacharts_engine::Sty
             "poc_width": style.profile.poc_width,
         });
     }
+    // And only an anchored VWAP has these.
+    if kind == omacharts_engine::DrawingKind::Vwap {
+        out["vwap"] = json!({
+            "source": style.vwap.source.key(),
+            "bands": style.vwap.bands,
+        });
+    }
     out
 }
 
@@ -2472,8 +2480,10 @@ fn describe_drawing(drawing: &omacharts_engine::Drawing, configs: &omacharts_eng
         false => String::new(),
         true => format!("  {:?}", shorten(&drawing.text.markup().replace('\n', " "), 40)),
     };
-    // A word is at one point, so saying the same moment twice would be noise.
-    let span = match drawing.kind.is_text() {
+    // A word is at one point, so saying the same moment twice would be noise;
+    // an anchored VWAP is at one moment, and its price is the bars'.
+    let span = match drawing.kind.one_anchor() {
+        true if drawing.kind.reads_bars() => format!("from {}", spell_moment(drawing.from.ts, zone)),
         true => format!("{} {:.2}", spell_moment(drawing.from.ts, zone), drawing.from.price),
         false => format!(
             "{} {:.2} → {} {:.2}",
@@ -2533,6 +2543,16 @@ fn describe_style(kind: omacharts_engine::DrawingKind, style: &omacharts_engine:
                 look.value_area * 100.0
             )
         }
+        Kind::Vwap => {
+            let bands = match style.vwap.bands.is_empty() {
+                true => "no bands".to_string(),
+                false => {
+                    let each: Vec<String> = style.vwap.bands.iter().map(|m| format!("±{m}σ")).collect();
+                    format!("bands {}", each.join(" "))
+                }
+            };
+            format!("{}, {}px, {}, {bands}", style.colour.spell(), style.width, style.vwap.source.key())
+        }
     }
 }
 
@@ -2567,6 +2587,8 @@ struct StyleEdits {
     value_area: Option<f64>,
     transparency: Option<f64>,
     poc_width: Option<f64>,
+    source: Option<omacharts_engine::drawings::VwapSource>,
+    bands: Option<Vec<f64>>,
 }
 
 impl StyleEdits {
@@ -2625,7 +2647,19 @@ impl StyleEdits {
                 Fault::usage(format!("{text:?} is not an alignment; use left or right"))
             })?),
         };
+        let source = match arg(m, "source") {
+            None => None,
+            Some(text) => Some(omacharts_engine::drawings::VwapSource::from_key(text).ok_or_else(|| {
+                Fault::usage(format!("{text:?} is not a price source; use hlc3, hl2, ohlc4 or close"))
+            })?),
+        };
+        let bands = match arg(m, "bands") {
+            None => None,
+            Some(text) => Some(read_bands(text)?),
+        };
         Ok(StyleEdits {
+            source,
+            bands,
             poc: paint("poc-color")?,
             shape,
             align,
@@ -2667,6 +2701,8 @@ impl StyleEdits {
             && self.value_area.is_none()
             && self.transparency.is_none()
             && self.poc_width.is_none()
+            && self.source.is_none()
+            && self.bands.is_none()
     }
 
     fn apply(&self, style: &mut omacharts_engine::Style) {
@@ -2717,6 +2753,15 @@ impl StyleEdits {
         }
         if let Some(width) = self.poc_width {
             style.profile.poc_width = width;
+        }
+        if let Some(source) = self.source {
+            style.vwap.source = source;
+        }
+        if let Some(bands) = &self.bands {
+            style.vwap.bands.clear();
+            for multiple in bands {
+                style.vwap.set_band(*multiple, true);
+            }
         }
     }
 }
@@ -3583,6 +3628,25 @@ fn number(m: &clap::ArgMatches, id: &str) -> Result<Option<f64>, Fault> {
             .map(Some)
             .map_err(|_| Fault::usage(format!("--{id} takes a number, not {text:?}"))),
     }
+}
+
+/// An anchored VWAP's bands as a command types them: the multiples, `1,2`,
+/// or `none`. Only the ones its properties offer, so a band set here is one
+/// the dialog can show and switch off again.
+fn read_bands(text: &str) -> Result<Vec<f64>, Fault> {
+    use omacharts_engine::drawings::VWAP_BANDS;
+    if text.trim().eq_ignore_ascii_case("none") || text.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    text.split(',')
+        .map(|part| {
+            part.trim()
+                .parse::<f64>()
+                .ok()
+                .filter(|m| VWAP_BANDS.contains(m))
+                .ok_or_else(|| Fault::usage(format!("--bands takes 1, 2 and 3, comma-separated, or none — not {part:?}")))
+        })
+        .collect()
 }
 
 fn bounded(m: &clap::ArgMatches, id: &str, low: f64, high: f64) -> Result<Option<f64>, Fault> {
@@ -7179,6 +7243,45 @@ mod tests {
         let bad = run("chart drawing add profile --book Macro --from 2026-10-14,1 --to 2026-10-21,1 --align up", &store);
         assert_eq!(bad.code, crate::cli::EXIT_USAGE, "{}", bad.err);
         let configured = run("chart drawing configure profile --config 2 --profile-style outline", &store);
+        assert_eq!(configured.code, 0, "{}", configured.err);
+    }
+
+    /// An anchored VWAP is one moment, takes its source and bands from a
+    /// command as its properties dialog gives them, and refuses bands the
+    /// dialog could not show.
+    #[test]
+    fn an_anchored_vwap_is_set_up_from_a_command() {
+        let store = bare();
+        run("chartbook create Macro --symbol SPY --switch", &store);
+        let out = run(
+            "chart drawing add avwap --book Macro --from 2026-10-14,0 --source close --bands 2,1",
+            &store,
+        );
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert!(out.out.contains("avwap  from 2026-10-14"), "{}", out.out);
+        let listed = json_of(&run("chart drawing list --book Macro --json", &store));
+        let drawing = &listed["drawings"][0];
+        assert_eq!(drawing["kind"], "avwap");
+        assert_eq!(drawing["from"]["ts"], drawing["to"]["ts"], "one anchor");
+        assert_eq!(drawing["style"]["vwap"]["source"], "close");
+        assert_eq!(drawing["style"]["vwap"]["bands"], serde_json::json!([1.0, 2.0]));
+
+        let id = drawing["id"].as_i64().unwrap();
+        let moved = run(&format!("chart drawing set --book Macro --id {id} --from 2026-10-16,0 --bands none"), &store);
+        assert_eq!(moved.code, 0, "{}", moved.err);
+        let listed = json_of(&run("chart drawing list --book Macro --json", &store));
+        let drawing = &listed["drawings"][0];
+        assert_eq!(drawing["from"]["when"], "2026-10-16");
+        assert_eq!(drawing["to"]["when"], "2026-10-16", "its second anchor went with the first");
+        assert_eq!(drawing["style"]["vwap"]["bands"], serde_json::json!([]));
+
+        for bad in ["--bands 1.5", "--source vwap", "--text hello"] {
+            let out = run(&format!("chart drawing add avwap --book Macro --from 2026-10-14,0 {bad}"), &store);
+            assert_eq!(out.code, crate::cli::EXIT_USAGE, "{bad}: {}", out.err);
+        }
+        let needs = run("chart drawing add avwap --book Macro", &store);
+        assert_eq!(needs.code, crate::cli::EXIT_USAGE);
+        let configured = run("chart drawing configure avwap --config 3 --bands 1,2,3", &store);
         assert_eq!(configured.code, 0, "{}", configured.err);
     }
 
