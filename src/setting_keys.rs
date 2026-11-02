@@ -53,7 +53,6 @@ const SHARED: &[&str] = &[
     "timeframes",
     "indicators",
     "provider",
-    "sync_crosshair",
     "drawing_configurations",
     "screenshot_save_file",
     "watchlist_columns",

@@ -375,9 +375,15 @@ crop: 1100,500,1460,940
 -->
 {% include figure.html src="/assets/manual/charts/crosshair.jpg" alt="An NVDA hourly chart with the crosshair and its price and time tags, and the last-price tag on its dashed line" caption="The crosshair's tags in the accent colour, and the last price in the colour of the last bar." %}
 
-The crosshair is a pair of dotted lines that cross at the centre of the bar under the pointer. The price is tagged on the price axis and the bar's time on the time axis (the date alone on daily and coarser bars), in the chosen [time zone and format](/manual/preferences/#time). When each chart reads its exchange's clock, the time ends with the zone, such as **21 Oct 2026 07:30 CT**. Over an indicator strip the price tag shows that strip's value. With [Crosshair across Follow charts](/manual/watchlists/#the-crosshair-across-follow-charts) on, the other Follow charts show the same moment and price, dimmed.
+The crosshair is a pair of dotted lines that cross at the centre of the bar under the pointer. The price is tagged on the price axis and the bar's time on the time axis (the date alone on daily and coarser bars), in the chosen [time zone and format](/manual/preferences/#time). When each chart reads its exchange's clock, the time ends with the zone, such as **21 Oct 2026 07:30 CT**. Over an indicator strip the price tag shows that strip's value.
 
 The last price is a tag on the price axis, filled in the colour of the last bar's direction, with a dashed line across the chart at its level.
+
+### Sharing the crosshair
+
+The pointer on one chart draws a dimmed crosshair at the same moment and price on every other chart on screen of the same symbol, each at its own resolution. It does not matter how the charts are linked to the watchlist. Charts of different symbols never share a crosshair.
+
+Each chart has its own switch, on for a new chart: the chart menu's **Sync crosshair**, or the **Sync crosshair** row of [Chart settings](/manual/chart-settings/). A chart with it off neither shares its pointer nor shows anybody else's. It is kept with the chart, and a chart made by splitting it starts with the same setting.
 
 ## When a chart is empty or out of date
 
@@ -454,6 +460,7 @@ crop: 560,262,640,780   (the whole menu, 20px layout margin)
 | **Gridlines** | Ticked while the chart has them | [Gridlines](#gridlines) |
 | **Indicators** | Ticked while the chart shows its indicators, with its key | [Hiding every indicator](/manual/indicators/#hiding-every-indicator) |
 | **Drawings** | Ticked while the chart shows its drawings, with its key | [Hiding the drawings](/manual/drawings/#hiding-the-drawings) |
+| **Sync crosshair** | Ticked while the chart shares its crosshair with the other charts of its symbol | [Sharing the crosshair](#sharing-the-crosshair) |
 | **Split horizontally**, **Split vertically** | Divides the chart in two | [Splitting and arranging charts](/manual/layouts/) |
 | **Maximize** / **Restore** | Gives the chart the window, or puts it back. Only with two charts or more | [Splitting and arranging charts](/manual/layouts/#maximising-a-chart) |
 | **Close chart** | Closes it. Only with two charts or more | [Splitting and arranging charts](/manual/layouts/#closing-a-chart) |

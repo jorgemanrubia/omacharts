@@ -613,6 +613,7 @@ mod tests {
                 link: LinkMode::Focus,
                 shows_drawings: true,
                 sends_drawings: true,
+                crosshair_sync: true,
                 drawing_uid: String::new(),
                 drawings: Vec::new(),
                 auto_scale: false,
@@ -656,6 +657,43 @@ mod tests {
         assert!(workspace.books[0].panes.iter().all(|pane| pane.auto_scale));
     }
 
+    /// Every chart written before it had a crosshair switch of its own
+    /// syncs, which is what the window-wide switch did out of the box.
+    #[test]
+    fn a_chart_written_before_crosshair_switches_syncs() {
+        let workspace = parse_workspace(ONE_ARRANGEMENT).expect("the old shape should parse");
+        assert!(workspace.books[0].panes.iter().all(|pane| pane.crosshair_sync));
+    }
+
+    /// The window-wide switch turned off becomes every old chart's switch
+    /// turned off, and leaves alone a chart that already had one.
+    #[test]
+    fn a_window_wide_crosshair_switch_turned_off_is_carried_onto_each_chart() {
+        let store = Store::memory().expect("an in-memory store");
+        let mut value: serde_json::Value = serde_json::from_str(ONE_ARRANGEMENT).unwrap();
+        value["panes"][1]["crosshair_sync"] = serde_json::json!(true);
+        assert!(!upgrade_window_crosshair(&mut value, &store), "nothing to carry");
+        assert!(value["panes"][0].get("crosshair_sync").is_none());
+
+        store.set_setting_bool(OLD_SYNC_CROSSHAIR, false);
+        assert!(upgrade_window_crosshair(&mut value, &store));
+        let workspace = parse_workspace(&value.to_string()).unwrap();
+        let syncs: Vec<bool> = workspace.books[0].panes.iter().map(|p| p.crosshair_sync).collect();
+        assert_eq!(syncs, vec![false, true], "a chart with its own switch keeps it");
+    }
+
+    /// Left on, the window-wide switch changes nothing: on is what a chart
+    /// without a switch of its own reads as.
+    #[test]
+    fn a_window_wide_crosshair_switch_left_on_leaves_every_chart_on() {
+        let store = Store::memory().expect("an in-memory store");
+        store.set_setting_bool(OLD_SYNC_CROSSHAIR, true);
+        let mut value: serde_json::Value = serde_json::from_str(ONE_ARRANGEMENT).unwrap();
+        assert!(upgrade_window_crosshair(&mut value, &store), "still there to forget");
+        let workspace = parse_workspace(&value.to_string()).unwrap();
+        assert!(workspace.books[0].panes.iter().all(|pane| pane.crosshair_sync));
+    }
+
     /// Through the store rather than through serde alone: the setting is one
     /// string in one row, and the row is what a restart reads.
     #[test]
@@ -689,6 +727,7 @@ mod tests {
             link,
             shows_drawings: true,
             sends_drawings: true,
+            crosshair_sync: true,
             drawing_uid: String::new(),
             drawings: Vec::new(),
             auto_scale: true,
@@ -1436,8 +1475,11 @@ pub enum NotShown {
 const SETTING_WORKSPACE: &str = "workspace";
 /// Whether the drawing tools are on screen.
 const SHOW_DRAWING_TOOLS: &str = "show_drawing_tools";
-/// Whether a pointer on a Follow chart draws a line on the other Follow charts.
-pub const SETTING_SYNC_CROSSHAIR: &str = "sync_crosshair";
+/// The one switch that used to say, for the whole window, whether a pointer
+/// on a Follow chart drew a line on the other Follow charts. Only read now,
+/// by [`upgrade_window_crosshair`], and forgotten once every chart has a
+/// switch of its own.
+const OLD_SYNC_CROSSHAIR: &str = "sync_crosshair";
 
 /// One chart, as it is written down.
 ///
@@ -1504,6 +1546,13 @@ struct StoredPane {
     shows_drawings: bool,
     #[serde(default = "yes")]
     sends_drawings: bool,
+    /// Whether the chart shares where its pointer is with the other charts
+    /// of its symbol, and draws theirs. Missing from a chart written while
+    /// this was one switch for the whole window, which
+    /// [`upgrade_window_crosshair`] carries onto every chart before it is
+    /// read; on otherwise, which is what that switch was out of the box.
+    #[serde(default = "yes")]
+    crosshair_sync: bool,
     /// What this chart is called among the drawings it has made. Empty for
     /// a chart written down before drawings remembered who drew them, which
     /// simply means none of them name it.
@@ -1740,6 +1789,45 @@ pub(crate) fn upgrade_link_groups(workspace: &mut serde_json::Value, store: &Sto
     true
 }
 
+/// Carry the window-wide crosshair switch onto every chart written before
+/// each had its own, and say whether that switch is still there to forget.
+///
+/// Somebody who had turned it off chose quiet charts, so every chart written
+/// while it was off comes back with its own switch off rather than every one
+/// of them starting to draw lines again; a chart that already has a switch
+/// keeps the one it has. Left on, or never touched, there is nothing to
+/// carry: on is what a chart without one reads as anyway.
+///
+/// On the stored value, for the reason [`upgrade_link_groups`] is: a window
+/// and a command reading the same row arrive at the same charts. Only the
+/// window forgets the switch, once it has written the charts back down with
+/// theirs — a command may be reading a workspace it never writes.
+pub(crate) fn upgrade_window_crosshair(workspace: &mut serde_json::Value, store: &Store) -> bool {
+    use serde_json::Value;
+
+    if !store.has_setting(OLD_SYNC_CROSSHAIR) {
+        return false;
+    }
+    if store.setting_bool(OLD_SYNC_CROSSHAIR, true) {
+        return true;
+    }
+    // The arrangement from before chartbooks is one book at the top level.
+    let books: Vec<&mut Value> = match workspace.get("books").is_some() {
+        true => match workspace["books"].as_array_mut() {
+            Some(books) => books.iter_mut().collect(),
+            None => return true,
+        },
+        false => vec![workspace],
+    };
+    for book in books {
+        let Some(panes) = book.get_mut("panes").and_then(Value::as_array_mut) else { continue };
+        for fields in panes.iter_mut().filter_map(Value::as_object_mut) {
+            fields.entry("crosshair_sync").or_insert(Value::Bool(false));
+        }
+    }
+    true
+}
+
 /// The symbol and venue a chart is written down under.
 ///
 /// The instrument on screen is the answer whenever there is one. Failing that
@@ -1887,6 +1975,7 @@ pub struct Window {
     menu_indicator: RefCell<Option<u32>>,
     indicators_action: RefCell<Option<gio::SimpleAction>>,
     drawings_action: RefCell<Option<gio::SimpleAction>>,
+    crosshair_action: RefCell<Option<gio::SimpleAction>>,
     auto_scale_action: RefCell<Option<gio::SimpleAction>>,
     log_scale_action: RefCell<Option<gio::SimpleAction>>,
     drawing_config_action: RefCell<Option<gio::SimpleAction>>,
@@ -2067,6 +2156,7 @@ impl Window {
             menu_indicator: RefCell::new(None),
             indicators_action: RefCell::new(None),
             drawings_action: RefCell::new(None),
+            crosshair_action: RefCell::new(None),
             auto_scale_action: RefCell::new(None),
             log_scale_action: RefCell::new(None),
             drawing_config_action: RefCell::new(None),
@@ -2514,9 +2604,9 @@ impl Window {
             closer.change_indicators_of(&pane, kept);
         });
 
-        // The pointer on a Follow chart draws a crosshair on the other Follow
-        // charts, so you can read the same moment and the same price on all
-        // of them at once. Both halves travel as values rather than as
+        // The pointer on a chart draws a crosshair on the other charts of
+        // its symbol, so you can read the same moment and the same price on
+        // all of them at once. Both halves travel as values rather than as
         // pixels: charts at different resolutions share no bar index, and
         // charts at different zooms share no y.
         let echoer = self.clone();
@@ -2652,6 +2742,9 @@ impl Window {
         if let Some(action) = self.drawings_action.borrow().as_ref() {
             action.set_state(&pane.view.show_drawings().to_variant());
         }
+        if let Some(action) = self.crosshair_action.borrow().as_ref() {
+            action.set_state(&pane.crosshair_sync.get().to_variant());
+        }
         if let Some(action) = self.auto_scale_action.borrow().as_ref() {
             action.set_state(&pane.view.price_auto().to_variant());
         }
@@ -2714,6 +2807,7 @@ impl Window {
         added.view.set_bars_hidden(from.bars_hidden.get());
         added.view.set_show_indicators(from.view.show_indicators());
         added.view.set_show_drawings(from.view.show_drawings());
+        added.crosshair_sync.set(from.crosshair_sync.get());
         let next = self.layout.borrow().split(from.id, added.id, horizontal);
         *self.layout.borrow_mut() = next;
         self.rebuild_layout();
@@ -3353,6 +3447,7 @@ impl Window {
                     link: pane.mode(),
                     shows_drawings: pane.shows_drawings.get(),
                     sends_drawings: pane.sends_drawings.get(),
+                    crosshair_sync: pane.crosshair_sync.get(),
                     drawing_uid: pane.uid.borrow().clone(),
                     drawings: pane.local_drawings.borrow().clone(),
                     auto_scale: pane.view.price_auto(),
@@ -3409,12 +3504,22 @@ impl Window {
     /// or when what was written cannot be rebuilt.
     fn restore_workspace(self: &Rc<Self>) -> bool {
         let Some(mut json) = self.store.setting(SETTING_WORKSPACE) else { return false };
-        if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&json)
-            && upgrade_link_groups(&mut value, &self.store)
-        {
-            json = value.to_string();
+        let mut crosshair_carried = false;
+        if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&json) {
+            let links = upgrade_link_groups(&mut value, &self.store);
+            crosshair_carried = upgrade_window_crosshair(&mut value, &self.store);
+            if links || crosshair_carried {
+                json = value.to_string();
+            }
         }
         let Some(workspace) = parse_workspace(&json) else { return false };
+        // Written back before the old switch is forgotten, so that no chart
+        // is ever left without the answer it carried: a window closed before
+        // its next save would otherwise come back with every chart on.
+        if crosshair_carried {
+            self.store.set_setting(SETTING_WORKSPACE, &json);
+            self.store.remove_setting(OLD_SYNC_CROSSHAIR);
+        }
         let active = workspace.active.min(workspace.books.len() - 1);
         *self.books.borrow_mut() = workspace.books;
         self.active.set(active);
@@ -3547,6 +3652,7 @@ impl Window {
             pane.shows_drawings.set(stored.shows_drawings);
             pane.sends_drawings.set(stored.sends_drawings);
             pane.view.set_sends(stored.sends_drawings);
+            pane.crosshair_sync.set(stored.crosshair_sync);
             // Keep the name it was written down under, so the drawings that
             // name it go on naming it. A chart that has none keeps the one
             // it was just minted.
@@ -4582,31 +4688,49 @@ impl Window {
         entry.add_controller(keys);
     }
 
-    /// Draw `ts` on every Follow chart when `from` is one, and on none when
-    /// it is not: a Focus or Pinned chart is deliberately somewhere else.
+    /// Draw where the pointer on `from` is on every other chart of its
+    /// symbol, when `from` and that chart both sync their crosshair.
+    ///
+    /// Whatever their link mode or resolution: what decides it is the
+    /// symbol, since a price and a moment only mean the same thing on two
+    /// charts of the same one. A chart of another symbol is sent nothing —
+    /// and a chart that does not sync is sent nothing, so a line it was
+    /// showing goes as soon as the pointer moves.
     fn echo_crosshair(self: &Rc<Self>, from: u32, echo: Option<Echo>) {
-        if !self.store.setting_bool(SETTING_SYNC_CROSSHAIR, true) {
-            return;
-        }
-        let source = self.pane(from).map(|p| p.mode()).unwrap_or_default();
+        let Some(source) = self.pane(from) else { return };
+        let symbol = |pane: &ChartPane| {
+            pane.instrument.borrow().as_ref().map(|i| (i.symbol.clone(), i.suffix.clone()))
+        };
+        let sent = symbol(&source).filter(|_| source.crosshair_sync.get());
         for pane in self.panes.borrow().iter() {
             if pane.id == from {
                 continue;
             }
-            // Follow to Follow, or no line: any other chart may be showing a
-            // different symbol, and a crosshair from this one would be
-            // pointing at a bar that is not the bar under the pointer.
-            let show = source == LinkMode::Follow && pane.mode() == LinkMode::Follow;
+            let show = sent.is_some() && pane.crosshair_sync.get() && symbol(pane) == sent;
             pane.view.set_echo(if show { echo } else { None });
         }
     }
 
-    /// Stop every echo, for when the setting is switched off or the panes
-    /// change under it.
-    pub fn clear_echoes(self: &Rc<Self>) {
-        for pane in self.panes.borrow().iter() {
+    /// Whether the focused chart shares its crosshair with the other charts
+    /// of its symbol.
+    pub fn crosshair_sync(&self) -> bool {
+        self.focused_pane().crosshair_sync.get()
+    }
+
+    /// Have the focused chart share its crosshair with the other charts of
+    /// its symbol that do too, or keep it to itself. This chart only.
+    ///
+    /// A chart switched off takes down the line it was showing for somebody
+    /// else's pointer as it goes, rather than leaving it standing until that
+    /// pointer next moves.
+    pub fn set_crosshair_sync(self: &Rc<Self>, on: bool) {
+        let pane = self.focused_pane();
+        pane.crosshair_sync.set(on);
+        if !on {
             pane.view.set_echo(None);
         }
+        self.sync_chart_actions(&pane);
+        self.save_workspace();
     }
 
     /// What the Follow charts in the open chartbook are already showing.
@@ -5578,11 +5702,11 @@ impl Window {
     }
 
     pub fn open_chart_settings(self: &Rc<Self>) {
-        crate::ui::chart_settings::ChartSettings::present(self, self.store.clone());
+        crate::ui::chart_settings::ChartSettings::present(self);
     }
 
     pub fn open_indicators(self: &Rc<Self>) {
-        crate::ui::chart_settings::ChartSettings::present_indicators(self, self.store.clone());
+        crate::ui::chart_settings::ChartSettings::present_indicators(self);
     }
 
     /// The indicator picker, centred like every other picker in the app.
@@ -7339,11 +7463,7 @@ impl Window {
                     picker.view.pick(Some(id));
                     return;
                 }
-                crate::ui::chart_settings::ChartSettings::present_indicator(
-                    &this,
-                    this.store.clone(),
-                    id,
-                );
+                crate::ui::chart_settings::ChartSettings::present_indicator(&this, id);
             });
             label.add_controller(open_settings);
 
@@ -7372,11 +7492,7 @@ impl Window {
             settings.set_tooltip_text(Some("Settings"));
             let this = self.clone();
             settings.connect_clicked(move |_| {
-                crate::ui::chart_settings::ChartSettings::present_indicator(
-                    &this,
-                    this.store.clone(),
-                    id,
-                );
+                crate::ui::chart_settings::ChartSettings::present_indicator(&this, id);
             });
 
             let remove = gtk::Button::from_icon_name("user-trash-symbolic");
@@ -7437,7 +7553,7 @@ impl Window {
             }
             IndicatorEvent::Properties(indicator) => {
                 self.focus(id);
-                crate::ui::chart_settings::ChartSettings::present_indicator(self, self.store.clone(), indicator);
+                crate::ui::chart_settings::ChartSettings::present_indicator(self, indicator);
             }
             IndicatorEvent::Remove(indicator) => self.remove_indicator(&pane, indicator),
         }
@@ -8683,12 +8799,14 @@ impl Window {
         }
         menu.append_submenu(Some("Template"), &templates);
 
-        // With the other two choices about how the chart is drawn, and drawn
-        // as a tick: "Gridlines" as a plain row could not say whether this
-        // chart has any.
+        // With the other choices about how the chart is drawn, and drawn as
+        // a tick: "Gridlines" as a plain row could not say whether this
+        // chart has any. Sync crosshair among them, since it is about what
+        // this chart draws of the others and they of it.
         shortcuts::append(&menu, "Gridlines", "chart.grid");
         shortcuts::append(&menu, "Indicators", "chart.show-indicators");
         shortcuts::append(&menu, "Drawings", "chart.show-drawings");
+        shortcuts::append(&menu, "Sync crosshair", "chart.crosshair-sync");
 
         // The layout, in its own section: splitting and closing are about the
         // arrangement rather than about what this chart draws.
@@ -8829,7 +8947,7 @@ impl Window {
         let this = self.clone();
         settings.connect_activate(move |_, _| {
             if let Some(id) = this.menu_indicator.borrow_mut().take() {
-                crate::ui::chart_settings::ChartSettings::present_indicator(&this, this.store.clone(), id);
+                crate::ui::chart_settings::ChartSettings::present_indicator(&this, id);
             }
         });
         actions.add_action(&settings);
@@ -8894,6 +9012,12 @@ impl Window {
         shown.connect_activate(move |_, _| this.set_drawings_shown(!this.drawings_shown()));
         actions.add_action(&shown);
         *self.drawings_action.borrow_mut() = Some(shown);
+
+        let sync = gio::SimpleAction::new_stateful("crosshair-sync", None, &self.crosshair_sync().to_variant());
+        let this = self.clone();
+        sync.connect_activate(move |_, _| this.set_crosshair_sync(!this.crosshair_sync()));
+        actions.add_action(&sync);
+        *self.crosshair_action.borrow_mut() = Some(sync);
 
         let split_h = gio::SimpleAction::new("split-h", None);
         let this = self.clone();

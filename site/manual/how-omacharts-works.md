@@ -121,7 +121,7 @@ crop: none
 {% include figure.html src="/assets/manual/how-omacharts-works/desk.jpg" alt="Four NVDA charts in a two-by-two grid, daily, hourly, fifteen-minute and five-minute" caption="Four Follow charts showing NVDA at four resolutions." %}
 
 Pick AMD in the sidebar and all four charts change to AMD. The crosshair on
-one is drawn on the others. The link button in a chart's corner picks its mode, and
+one is drawn on the others, as it is on any charts showing the same symbol. The link button in a chart's corner picks its mode, and
 <kbd>Ctrl</kbd> + <kbd>L</kbd> moves the focused chart to the next mode.
 
 See [Watchlists](/manual/watchlists/) and

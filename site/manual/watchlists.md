@@ -247,14 +247,6 @@ The chain appears once there is a second chart. With one chart, Focus and
 Follow do the same thing. A lone chart shows the chain only while it is
 pinned.
 
-### The crosshair across Follow charts
-
-The pointer on a Follow chart draws the same moment on the other Follow
-charts, at their own resolutions. Focus and Pinned charts are left alone.
-**Crosshair across Follow charts** in [Chart settings](/manual/chart-settings/)
-(<kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>S</kbd>) turns it off or on for the
-whole window. It is on by default.
-
 ## See also
 
 - [Managing watchlists with the CLI](/manual/cli/#watchlists-and-sections), including export and import

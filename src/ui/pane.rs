@@ -108,6 +108,10 @@ pub struct ChartPane {
     /// made on a symbol is usually a drawing about the symbol.
     pub shows_drawings: Cell<bool>,
     pub sends_drawings: Cell<bool>,
+    /// Whether this chart shares where its pointer is with the other charts
+    /// of its symbol, and draws theirs. On by default: two charts of one
+    /// symbol are usually two looks at the same moment.
+    pub crosshair_sync: Cell<bool>,
     /// What this chart is called among the drawings it has made.
     ///
     /// Not the pane's id, which is handed out afresh every time the window
@@ -365,6 +369,7 @@ impl ChartPane {
             mode: Cell::new(mode),
             shows_drawings: Cell::new(true),
             sends_drawings: Cell::new(true),
+            crosshair_sync: Cell::new(true),
             uid: RefCell::new(gtk::glib::uuid_string_random().to_string()),
             local_drawings: RefCell::new(Vec::new()),
             link_colour,
