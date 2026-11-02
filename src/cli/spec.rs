@@ -214,6 +214,8 @@ const KINDS: &[&str] = &[
 const RANGE_PRESETS: &[&str] = &["eth", "rth", "asia", "london", "new_york", "custom"];
 const ANCHORS: &[&str] = &["session", "week", "month", "quarter", "year"];
 const LINE_STYLES: &[&str] = &["solid", "dashed", "dotted"];
+const PROFILE_STYLES: &[&str] = &["filled", "outline"];
+const PROFILE_ALIGNS: &[&str] = &["left", "right"];
 const SWITCHES: &[&str] = &["on", "off"];
 const LINKS: &[&str] = &["focus", "follow", "pinned"];
 const COLOURING: &[&str] = &["coloured", "red-up", "monochrome"];
@@ -303,6 +305,8 @@ const INDICATOR_FLAGS: &[Flag] = &[
     Flag::valued("rows", "N", "volume profile rows, or `auto` to follow the instrument's own increment"),
     Flag::valued("value-area", "F", "the share of volume the value area covers, 0-1"),
     Flag::valued("poc-color", "COLOUR", "the volume profile's point of control"),
+    Flag::valued("profile-style", "HOW", "volume profile rows filled, or only their outline").of(PROFILE_STYLES),
+    Flag::valued("align", "EDGE", "the edge of its period a volume profile grows from").of(PROFILE_ALIGNS),
     Flag::valued("up-color", "COLOUR", "volume bars of a rising session"),
     Flag::valued("down-color", "COLOUR", "volume bars of a falling session"),
     Flag::valued("d-color", "COLOUR", "the stochastic's %D line"),
@@ -939,6 +943,19 @@ pub const SURFACE: &[Noun] = &[
                 workspace: false,
             },
             Verb {
+                name: "profile",
+                about: "Merge the focused chart's volume profile at a moment into the one before it, or split a composite back into its periods; requires a window",
+                args: &[Arg::req("ACTION", "what to do").of(&["merge", "split"])],
+                flags: &[
+                    Flag::valued("at", "WHEN", "a moment inside the profile: 2026-09-01 or 2026-09-01T14:30, in the chart's clock"),
+                    Flag::valued("id", "N", "which volume profile, when the chart has more than one"),
+                ],
+                example: "omacharts chart profile merge --at 2026-09-02",
+                json: true,
+                writes: true,
+                workspace: false,
+            },
+            Verb {
                 name: "crosshair",
                 about: "Whether a pointer on a Follow chart draws a line on the other Follow charts",
                 args: &[Arg::opt("STATE", "omit to read it").of(SWITCHES)],
@@ -1337,6 +1354,7 @@ const STORED_FIELDS: &[(&str, &str, &str)] = &[
     ("template", "chart set", "--template"),
     ("indicators_shown", "chart set", "--indicators"),
     ("drawings_shown", "chart set", "--drawings"),
+    ("profile_merges", "chart profile", ""),
     ("name", "chartbook rename", ""),
     ("layout", "chart split", ""),
     ("focused", "chart focus", ""),

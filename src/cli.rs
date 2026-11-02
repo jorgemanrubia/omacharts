@@ -243,6 +243,13 @@ pub trait Live {
         Err(Fault::no_window("focused chart"))
     }
 
+    /// Merge the focused chart's volume profile holding `ts` into the one
+    /// before it, or split the composite holding it. Only the window knows
+    /// where a period begins, from its bars.
+    fn profile(&self, _id: Option<u32>, _ts: i64, _merge: bool) -> Result<String, Fault> {
+        Err(Fault::no_window("focused chart"))
+    }
+
     /// Read the arrangement back and rebuild from it.
     fn reload_workspace(&self);
     /// Draw the rail again, after a command changed a watchlist.
@@ -960,6 +967,10 @@ impl Live for Rc<crate::ui::Window> {
         anchors: Option<(omacharts_engine::Anchor, omacharts_engine::Anchor)>,
     ) -> Result<(String, Option<omacharts_engine::measurement::Measurement>), Fault> {
         Ok(crate::ui::Window::measure(self, anchors))
+    }
+
+    fn profile(&self, id: Option<u32>, ts: i64, merge: bool) -> Result<String, Fault> {
+        crate::ui::Window::change_profile_at(self, id, ts, merge).map_err(Fault::not_found)
     }
 
     fn flush_workspace(&self) {

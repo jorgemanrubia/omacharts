@@ -14,6 +14,7 @@ use omacharts_engine::indicators::{
     self, Kind, LineStyle, Params, Reset, Stroke, MAX_FILL_ALPHA, MAX_PANE_SHARE, MIN_FILL_ALPHA,
     MIN_PANE_SHARE,
 };
+use omacharts_engine::indicators::profile::{Align, Style};
 use omacharts_engine::theme::ColorChoice;
 use omacharts_engine::{BarColouring, BarStyle, Indicator, Session};
 
@@ -1761,7 +1762,43 @@ fn profile_colours(
         id,
     ));
 
+    let Params::VolumeProfile { style, align, .. } = &indicator.params else { return group };
+    group.add(&choice_row(owner, refresh, id, "Style", &Style::ALL.map(Style::label), Style::ALL.iter().position(|s| s == style), |indicator, at| {
+        if let Params::VolumeProfile { style, .. } = &mut indicator.params {
+            *style = Style::ALL[at];
+        }
+    }));
+    group.add(&choice_row(owner, refresh, id, "Alignment", &Align::ALL.map(Align::label), Align::ALL.iter().position(|a| a == align), |indicator, at| {
+        if let Params::VolumeProfile { align, .. } = &mut indicator.params {
+            *align = Align::ALL[at];
+        }
+    }));
+
     group
+}
+
+/// A row choosing one of a few named ways, applied as soon as it is picked.
+fn choice_row(
+    owner: &Rc<Owner>,
+    refresh: &Refresh,
+    id: u32,
+    title: &str,
+    names: &[&str],
+    current: Option<usize>,
+    apply: impl Fn(&mut Indicator, usize) + 'static,
+) -> adw::ComboRow {
+    let row = adw::ComboRow::new();
+    row.set_title(title);
+    row.set_model(Some(&gtk::StringList::new(names)));
+    row.set_selected(current.unwrap_or(0) as u32);
+    let owner = owner.clone();
+    let refresh = refresh.clone();
+    row.connect_selected_notify(move |row| {
+        let at = row.selected() as usize;
+        update(&owner, id, |indicator| apply(indicator, at));
+        refresh.run();
+    });
+    row
 }
 
 /// One group per band, because every band has the same half-dozen choices and

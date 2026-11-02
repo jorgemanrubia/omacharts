@@ -9,6 +9,7 @@ use omacharts_engine::theme::Mode;
 use omacharts_engine::Theme;
 
 use crate::ui::colors;
+use omacharts_engine::indicators::profile::{Align, Style};
 use omacharts_engine::indicators::{Output, Pane, Profile};
 
 use super::{frame, layout, on_screen, pane_plot, pane_range, Columns, Drawn, Frame, Row, State};
@@ -65,6 +66,29 @@ impl State {
         }
     }
 
+    /// The profile of a volume profile indicator whose period is under `x`:
+    /// where its periods start, and whether there is one before it on the
+    /// chart to merge it with.
+    pub(super) fn profile_at(&self, width: f64, height: f64, id: u32, x: f64) -> Option<ProfileSpot> {
+        let frame = frame(self, width, height)?;
+        let drawn = self.shown_indicators().find(|d| d.indicator.id == id)?;
+        let Output::Profiles(profiles) = &drawn.output else { return None };
+        let columns = &frame.columns;
+        let at = profiles.iter().position(|p| {
+            (columns.left_of(p.first_bar)..columns.left_of(p.last_bar + 1)).contains(&x)
+        })?;
+        Some(ProfileSpot { parts: profiles[at].parts.clone(), has_previous: at > 0 })
+    }
+
+    /// The profile of a volume profile indicator holding the moment `ts`: the
+    /// last one to begin at or before it.
+    pub(super) fn profile_of(&self, id: u32, ts: i64) -> Option<ProfileSpot> {
+        let drawn = self.indicators.iter().find(|d| d.indicator.id == id)?;
+        let Output::Profiles(profiles) = &drawn.output else { return None };
+        let at = profiles.iter().rposition(|p| p.start_ts <= ts)?;
+        Some(ProfileSpot { parts: profiles[at].parts.clone(), has_previous: at > 0 })
+    }
+
     /// Whether a drawing is within the clearance of a pixel.
     fn drawing_near(&self, frame: &Frame, x: f64, y: f64) -> bool {
         let (plan, scale) = (&frame.plan, &frame.scale);
@@ -93,9 +117,9 @@ fn on_overlay_line(drawn: &Drawn, columns: &Columns, to_y: &impl Fn(f64) -> f64,
                 })
         }
         Output::Profiles(profiles) => profiles.iter().any(|profile| {
-            let (left, span) = profile_box(profile, columns);
+            let area = profile_box(profile, columns, profile_look(drawn).1);
             let poc = to_y(profile.poc_price());
-            span > 0.0 && (left..=left + span).contains(&x) && (y - poc).abs() <= LINE_REACH
+            area.span > 0.0 && area.covers(x, 1.0) && (y - poc).abs() <= LINE_REACH
         }),
         Output::Volume { .. } | Output::Pane(_) | Output::Time(_) => false,
     }
@@ -106,33 +130,100 @@ fn on_overlay_line(drawn: &Drawn, columns: &Columns, to_y: &impl Fn(f64) -> f64,
 /// a press anywhere in it would pick the band rather than pan.
 fn on_overlay_shape(drawn: &Drawn, columns: &Columns, to_y: &impl Fn(f64) -> f64, x: f64, y: f64) -> bool {
     let Output::Profiles(profiles) = &drawn.output else { return false };
+    let align = profile_look(drawn).1;
     profiles.iter().any(|profile| {
-        let (left, span) = profile_box(profile, columns);
-        if span <= 0.0 || profile.max_volume <= 0.0 {
+        let area = profile_box(profile, columns, align);
+        if area.span <= 0.0 || profile.max_volume <= 0.0 {
             return false;
         }
         profile.rows.iter().any(|row| {
-            let width = span * (row.volume / profile.max_volume);
             let top = to_y(row.high);
             let bottom = top + (to_y(row.low) - top).max(1.0);
-            row.volume > 0.0 && (left..=left + width).contains(&x) && (top..=bottom).contains(&y)
+            row.volume > 0.0 && area.covers(x, row.volume / profile.max_volume) && (top..=bottom).contains(&y)
         })
     })
 }
 
-/// Where a profile is drawn across: its left edge and the width its longest
-/// row reaches, the arithmetic the profile is drawn with. Nothing for one off
-/// screen.
-pub(super) fn profile_box(profile: &Profile, columns: &Columns) -> (f64, f64) {
+/// One profile of a volume profile indicator, as a menu about it needs it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProfileSpot {
+    /// Where each of its periods starts: more than one for a composite.
+    pub parts: Vec<i64>,
+    /// Whether a profile before it is on the chart to merge it into.
+    pub has_previous: bool,
+}
+
+/// How a volume profile indicator is drawn: filled or outlined, and from
+/// which edge of its period.
+pub(super) fn profile_look(drawn: &Drawn) -> (Style, Align) {
+    match &drawn.indicator.params {
+        omacharts_engine::Params::VolumeProfile { style, align, .. } => (*style, *align),
+        _ => (Style::Filled, Align::Left),
+    }
+}
+
+/// Where a profile is drawn across: the edge its rows grow from, the width
+/// its longest row reaches, and which way they grow.
+#[derive(Clone, Copy)]
+pub(super) struct ProfileBox {
+    pub edge: f64,
+    pub span: f64,
+    /// One growing rightward from the left edge, minus one leftward from the
+    /// right.
+    pub towards: f64,
+}
+
+impl ProfileBox {
+    /// Where a row reaching `share` of the longest one begins and ends,
+    /// left to right.
+    pub fn row(&self, share: f64) -> (f64, f64) {
+        let end = self.edge + self.towards * self.span * share.max(0.0);
+        (self.edge.min(end), self.edge.max(end))
+    }
+
+    /// Whether `x` is across a row reaching `share` of the longest.
+    pub fn covers(&self, x: f64, share: f64) -> bool {
+        let (from, to) = self.row(share);
+        (from..=to).contains(&x)
+    }
+}
+
+/// Where a profile is drawn across, the arithmetic the profile is drawn
+/// with. Nothing for one off screen.
+pub(super) fn profile_box(profile: &Profile, columns: &Columns, align: Align) -> ProfileBox {
     let (first, last) = (columns.first, columns.first + columns.visible);
     if profile.last_bar < first || profile.first_bar >= last {
-        return (0.0, 0.0);
+        return ProfileBox { edge: 0.0, span: 0.0, towards: 1.0 };
     }
     let from = profile.first_bar.max(first);
     let to = profile.last_bar.min(last - 1) + 1;
+    let width = columns.width_of(from, to).max(columns.bar_w);
     // A profile may use at most this much of its own period's width, so it
     // describes the bars rather than burying them.
-    (columns.left_of(from), columns.width_of(from, to).max(columns.bar_w) * 0.4)
+    let span = width * 0.4;
+    match align {
+        Align::Left => ProfileBox { edge: columns.left_of(from), span, towards: 1.0 },
+        Align::Right => ProfileBox { edge: columns.left_of(from) + width, span, towards: -1.0 },
+    }
+}
+
+/// The shape a profile's rows make together: along the edge they grow from,
+/// and back the stepped way their ends make. Narrower than a few pixels the
+/// steps are a smear, and the edge says it alone.
+pub(super) fn profile_path(cr: &cairo::Context, area: &ProfileBox, profile: &Profile, to_y: &impl Fn(f64) -> f64) {
+    let mut rows: Vec<_> = profile.rows.iter().collect();
+    rows.sort_by(|a, b| b.high.total_cmp(&a.high));
+    let (top, bottom) = (to_y(rows[0].high), to_y(rows[rows.len() - 1].low));
+    cr.move_to(area.edge, top);
+    if area.span >= 4.0 {
+        for row in &rows {
+            let end = area.edge + area.towards * area.span * (row.volume.max(0.0) / profile.max_volume);
+            cr.line_to(end, to_y(row.high));
+            cr.line_to(end, to_y(row.low));
+        }
+    }
+    cr.line_to(area.edge, bottom);
+    cr.close_path();
 }
 
 /// On what an indicator draws in its own strip.
@@ -332,37 +423,21 @@ pub(super) fn glow_bar(cr: &cairo::Context, (x, top, w, h): (f64, f64, f64, f64)
 
 const BAR_GLOW: f64 = 2.0;
 
-/// The outline of a selected volume profile: down its left edge, and back up
-/// the stepped right edge its rows make. Stroked twice, as a wide glow and
-/// then a thin line, both in the profile's colour.
+/// The outline of a selected volume profile, the shape its rows make.
+/// Stroked twice, as a wide glow and then a thin line, both in the
+/// profile's colour.
 pub(super) fn outline_profile(
     cr: &cairo::Context,
     theme: &Theme,
     colour: &str,
     profile: &Profile,
-    columns: &Columns,
+    area: &ProfileBox,
     to_y: &impl Fn(f64) -> f64,
 ) {
-    let (left, span) = profile_box(profile, columns);
-    if span <= 0.0 || profile.max_volume <= 0.0 || profile.rows.is_empty() {
+    if area.span <= 0.0 || profile.max_volume <= 0.0 || profile.rows.is_empty() {
         return;
     }
-    let mut rows: Vec<_> = profile.rows.iter().collect();
-    rows.sort_by(|a, b| b.high.total_cmp(&a.high));
-    let (top, bottom) = (to_y(rows[0].high), to_y(rows[rows.len() - 1].low));
-    let path = |cr: &cairo::Context| {
-        cr.move_to(left, top);
-        // Narrower than this, the steps are a smear: the left edge says it.
-        if span >= 4.0 {
-            for row in &rows {
-                let right = left + span * (row.volume.max(0.0) / profile.max_volume);
-                cr.line_to(right, to_y(row.high));
-                cr.line_to(right, to_y(row.low));
-            }
-        }
-        cr.line_to(left, bottom);
-        cr.close_path();
-    };
+    let path = |cr: &cairo::Context| profile_path(cr, area, profile, to_y);
     cr.save().ok();
     cr.set_line_join(cairo::LineJoin::Round);
     cr.set_line_width(5.0);

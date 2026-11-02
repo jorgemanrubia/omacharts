@@ -137,6 +137,7 @@ pub fn dispatch(
         // A range is held by the chart on screen and nowhere else.
         ("chart", "range") => chart_range(live, m),
         ("chart", "measure") => chart_measure(live, m, json),
+        ("chart", "profile") => chart_profile(live, m, json),
         ("chartbook", _) | ("chart", _) => {
             // "The one I am looking at" needs something to be looking at. The
             // stored arrangement is what the window had when it last closed,
@@ -1245,6 +1246,30 @@ fn charts_verb(
 
     workspace.save(store);
     said(as_json, json!({"message": text}), text)
+}
+
+/// Merge or split a volume profile on the chart on screen.
+fn chart_profile(live: Option<&dyn Live>, m: &clap::ArgMatches, as_json: bool) -> Result<String, Fault> {
+    let live = live.ok_or_else(|| Fault::no_window("focused chart"))?;
+    let merge = match required(m, "ACTION")?.as_str() {
+        "merge" => true,
+        "split" => false,
+        other => return Err(Fault::usage(format!("{other:?} is not merge or split"))),
+    };
+    let Some(when) = arg(m, "at") else {
+        return Err(Fault::usage("say which profile with --at, a moment inside it".into()));
+    };
+    let ts = read_when(when, "at", live.measurement_zone())?;
+    let id = match arg(m, "id") {
+        None => None,
+        Some(text) => Some(text.parse::<u32>().map_err(|_| Fault::usage(format!("{text:?} is not an indicator id")))?),
+    };
+    let chart = live.profile(id, ts, merge)?;
+    let done = if merge { "merged the profile into the one before it" } else { "split the composite profile" };
+    Ok(match as_json {
+        true => json!({"chart": chart, "action": if merge { "merge" } else { "split" }, "at": ts}).to_string(),
+        false => format!("{done} on {chart}"),
+    })
 }
 
 fn chart_measure(
@@ -2662,22 +2687,29 @@ fn chart_zone(store: &Store, symbol: &str, suffix: Option<&str>) -> Tz {
 }
 
 fn read_anchor(text: &str, id: &str, zone: Tz) -> Result<omacharts_engine::Anchor, Fault> {
-    use chrono::{NaiveDate, NaiveDateTime, TimeZone};
     let bad = || Fault::usage(format!("--{id} takes WHEN,PRICE — like 2026-09-01,180.5 or 2026-09-01T14:30,180.5 — not {text:?}"));
     let (when, price) = text.rsplit_once(',').ok_or_else(bad)?;
     let price: f64 = price.trim().parse().map_err(|_| bad())?;
-    let when = when.trim();
-    let ts = if let Ok(seconds) = when.parse::<i64>() {
-        seconds
+    let ts = read_when(when, id, zone).map_err(|_| bad())?;
+    Ok(omacharts_engine::Anchor::new(ts, price))
+}
+
+/// A moment as a command types it: unix seconds, a day, or a day and a time
+/// in the chart's clock.
+fn read_when(text: &str, id: &str, zone: Tz) -> Result<i64, Fault> {
+    use chrono::{NaiveDate, NaiveDateTime, TimeZone};
+    let bad = || Fault::usage(format!("--{id} takes a moment like 2026-09-01 or 2026-09-01T14:30, not {text:?}"));
+    let when = text.trim();
+    if let Ok(seconds) = when.parse::<i64>() {
+        Ok(seconds)
     } else if let Ok(at) = NaiveDateTime::parse_from_str(when, "%Y-%m-%dT%H:%M") {
-        zone.from_local_datetime(&at).earliest().ok_or_else(bad)?.timestamp()
+        Ok(zone.from_local_datetime(&at).earliest().ok_or_else(bad)?.timestamp())
     } else if let Ok(day) = NaiveDate::parse_from_str(when, "%Y-%m-%d") {
         let at = day.and_hms_opt(0, 0, 0).ok_or_else(bad)?;
-        zone.from_local_datetime(&at).earliest().ok_or_else(bad)?.timestamp()
+        Ok(zone.from_local_datetime(&at).earliest().ok_or_else(bad)?.timestamp())
     } else {
-        return Err(bad());
-    };
-    Ok(omacharts_engine::Anchor::new(ts, price))
+        Err(bad())
+    }
 }
 
 /// Does this stored indicator have that kind?
@@ -2810,6 +2842,8 @@ struct Edits {
     rows: Option<Option<u64>>,
     value_area: Option<f64>,
     poc_color: Option<ColorChoice>,
+    profile_style: Option<omacharts_engine::indicators::profile::Style>,
+    align: Option<omacharts_engine::indicators::profile::Align>,
     up_color: Option<ColorChoice>,
     down_color: Option<ColorChoice>,
     color: Option<ColorChoice>,
@@ -2890,6 +2924,18 @@ impl Edits {
             },
             value_area: bounded(m, "value-area", 0.0, 1.0)?,
             poc_color: colour(m, "poc-color")?,
+            profile_style: match arg(m, "profile-style") {
+                None => None,
+                Some(text) => Some(omacharts_engine::indicators::profile::Style::from_key(text).ok_or_else(|| {
+                    Fault::usage(format!("{text:?} is not a profile style; use filled or outline"))
+                })?),
+            },
+            align: match arg(m, "align") {
+                None => None,
+                Some(text) => Some(omacharts_engine::indicators::profile::Align::from_key(text).ok_or_else(|| {
+                    Fault::usage(format!("{text:?} is not an alignment; use left or right"))
+                })?),
+            },
             up_color: colour(m, "up-color")?,
             down_color: colour(m, "down-color")?,
             color: colour(m, "color")?,
@@ -2974,6 +3020,8 @@ impl Edits {
             && self.rows.is_none()
             && self.value_area.is_none()
             && self.poc_color.is_none()
+            && self.profile_style.is_none()
+            && self.align.is_none()
             && self.up_color.is_none()
             && self.down_color.is_none()
             && self.color.is_none()
@@ -3093,6 +3141,18 @@ impl Edits {
             match kind == IndicatorKind::VolumeProfile {
                 true => params["poc_color"] = to_value(colour)?,
                 false => return Err(refuse("point of control")),
+            }
+        }
+        if let Some(style) = self.profile_style {
+            match kind == IndicatorKind::VolumeProfile {
+                true => params["style"] = json!(style.key()),
+                false => return Err(refuse("profile style")),
+            }
+        }
+        if let Some(align) = self.align {
+            match kind == IndicatorKind::VolumeProfile {
+                true => params["align"] = json!(align.key()),
+                false => return Err(refuse("alignment")),
             }
         }
         for (colour, key, what) in [

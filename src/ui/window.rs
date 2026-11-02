@@ -20,8 +20,8 @@ use gtk::glib;
 use omacharts_engine::providers;
 use omacharts_engine::refresh;
 use omacharts_engine::{
-    resample, BarColouring, BarStyle, Delivery, FetchFailure, Grid, Indicator, Instrument, Provider, SearchIndex,
-    Session,
+    resample, BarColouring, BarStyle, Delivery, FetchFailure, Grid, Indicator, Instrument, Params, Provider, Reset,
+    SearchIndex, Session,
     Timeframe,
 };
 
@@ -615,6 +615,7 @@ mod tests {
                 sends_drawings: true,
                 drawing_uid: String::new(),
                 drawings: Vec::new(),
+                profile_merges: Vec::new(),
                 auto_scale: false,
                 log_scale: true,
                 indicators_shown: true,
@@ -691,6 +692,7 @@ mod tests {
             sends_drawings: true,
             drawing_uid: String::new(),
             drawings: Vec::new(),
+            profile_merges: Vec::new(),
             auto_scale: true,
             log_scale: false,
             indicators_shown: true,
@@ -1331,6 +1333,36 @@ fn template_state(template: Option<u32>) -> glib::Variant {
     }
 }
 
+/// The periods a moving average is usually drawn at, as the indicator
+/// menu offers them.
+const AVERAGE_PERIODS: [usize; 5] = [10, 20, 50, 100, 200];
+
+/// A row of a menu holding a few answers as buttons, the current one ringed:
+/// each activates `action` with its target and closes the menu.
+fn choice_strip(choices: &[(String, glib::Variant, bool)], action: &str, what: &str) -> gtk::Widget {
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+    row.add_css_class("drawing-head-row");
+    row.set_homogeneous(true);
+    for (label, target, current) in choices {
+        let button = gtk::Button::with_label(label);
+        button.add_css_class("flat");
+        button.add_css_class("menu-choice");
+        button.set_tooltip_text(Some(&format!("{what}: {label}")));
+        if *current {
+            button.add_css_class("drawing-preview-current");
+        }
+        button.set_action_name(Some(action));
+        button.set_action_target_value(Some(target));
+        button.connect_clicked(|button| {
+            if let Some(popover) = button.ancestor(gtk::Popover::static_type()).and_downcast::<gtk::Popover>() {
+                popover.popdown();
+            }
+        });
+        row.append(&button);
+    }
+    row.upcast()
+}
+
 fn popup_menu(
     model: &gio::Menu,
     over: &impl IsA<gtk::Widget>,
@@ -1512,6 +1544,9 @@ struct StoredPane {
     /// The drawings that are this chart's alone.
     #[serde(default)]
     drawings: Vec<omacharts_engine::Drawing>,
+    /// Volume profile periods merged into composites on this chart.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    profile_merges: Vec<omacharts_engine::indicators::profile::Merge>,
 }
 
 fn yes() -> bool {
@@ -1885,6 +1920,8 @@ pub struct Window {
     bars_action: RefCell<Option<gio::SimpleAction>>,
     /// The indicator the open indicator menu is about.
     menu_indicator: RefCell<Option<u32>>,
+    /// The profile the indicator menu was opened over, for merging it.
+    menu_profile: RefCell<Option<crate::ui::chart::ProfileSpot>>,
     indicators_action: RefCell<Option<gio::SimpleAction>>,
     drawings_action: RefCell<Option<gio::SimpleAction>>,
     auto_scale_action: RefCell<Option<gio::SimpleAction>>,
@@ -2065,6 +2102,7 @@ impl Window {
             grid_action: RefCell::new(None),
             bars_action: RefCell::new(None),
             menu_indicator: RefCell::new(None),
+            menu_profile: RefCell::new(None),
             indicators_action: RefCell::new(None),
             drawings_action: RefCell::new(None),
             auto_scale_action: RefCell::new(None),
@@ -3355,6 +3393,7 @@ impl Window {
                     sends_drawings: pane.sends_drawings.get(),
                     drawing_uid: pane.uid.borrow().clone(),
                     drawings: pane.local_drawings.borrow().clone(),
+                    profile_merges: pane.profile_merges.borrow().clone(),
                     auto_scale: pane.view.price_auto(),
                     log_scale: pane.view.price_log(),
                     indicators_shown: pane.view.show_indicators(),
@@ -3554,6 +3593,7 @@ impl Window {
                 *pane.uid.borrow_mut() = stored.drawing_uid.clone();
             }
             *pane.local_drawings.borrow_mut() = stored.drawings.clone();
+            *pane.profile_merges.borrow_mut() = stored.profile_merges.clone();
             pane.view.set_price_auto(stored.auto_scale);
             pane.view.set_price_log(stored.log_scale);
             pane.bars_hidden.set(stored.bars_hidden);
@@ -6526,13 +6566,25 @@ impl Window {
             timeframe,
             self.clock_for(instrument).zone,
         );
+        let merges = pane.profile_merges.borrow();
         let drawn: Vec<Drawn> = all
             .iter()
             .zip(colors)
-            .map(|(indicator, color)| Drawn {
-                color,
-                output: omacharts_engine::indicators::compute_in(indicator, bars, &context),
-                indicator: indicator.clone(),
+            .map(|(indicator, color)| {
+                let mut indicator = indicator.clone();
+                // The chart's own composites, put into the profile only to be
+                // drawn: the indicator itself may be a template's.
+                if let omacharts_engine::Params::VolumeProfile { merged, .. } = &mut indicator.params
+                    && let Some(merge) =
+                        merges.iter().find(|m| m.indicator == indicator.id && m.symbol == instrument.symbol)
+                {
+                    *merged = merge.starts.clone();
+                }
+                Drawn {
+                    color,
+                    output: omacharts_engine::indicators::compute_in(&indicator, bars, &context),
+                    indicator,
+                }
             })
             .collect();
         drawn
@@ -7473,8 +7525,52 @@ impl Window {
     fn indicator_menu(self: &Rc<Self>, indicator: u32, x: f64, y: f64) {
         let pane = self.focused_pane();
         *self.menu_indicator.borrow_mut() = Some(indicator);
+        let params = pane.indicators.borrow().iter().find(|i| i.id == indicator).map(|i| i.params.clone());
 
         let menu = gio::Menu::new();
+        let mut rows: Vec<(String, gtk::Widget)> = Vec::new();
+
+        // The value most often changed, as a row of the usual answers: one
+        // click, where the properties are a window and a field.
+        let presets = gio::Menu::new();
+        match &params {
+            Some(Params::MovingAverage { period }) => {
+                let item = gio::MenuItem::new(Some("Period"), None);
+                item.set_attribute_value("custom", Some(&"period".to_variant()));
+                presets.append_item(&item);
+                let choices = AVERAGE_PERIODS.map(|n| (n.to_string(), (n as i32).to_variant(), n == *period));
+                rows.push(("period".to_string(), choice_strip(&choices, "chart.indicator-period", "Period")));
+            }
+            Some(Params::Vwap { reset, .. } | Params::VolumeProfile { reset, .. }) => {
+                let item = gio::MenuItem::new(Some("Reset every"), None);
+                item.set_attribute_value("custom", Some(&"reset".to_variant()));
+                presets.append_item(&item);
+                let choices = Reset::ALL.map(|r| (r.label().to_string(), r.key().to_variant(), r == *reset));
+                rows.push(("reset".to_string(), choice_strip(&choices, "chart.indicator-reset", "Reset every")));
+            }
+            _ => {}
+        }
+        if !rows.is_empty() {
+            menu.append_section(None, &presets);
+        }
+
+        // A composite is made one profile at a time, from the one under the
+        // pointer back into the one before it.
+        if matches!(params, Some(Params::VolumeProfile { .. })) {
+            let spot = pane.view.profile_at(indicator, x);
+            let profile = gio::Menu::new();
+            if spot.as_ref().is_some_and(|s| s.has_previous) {
+                profile.append(Some("Merge with previous profile"), Some("chart.profile-merge"));
+            }
+            if spot.as_ref().is_some_and(|s| s.parts.len() > 1) {
+                profile.append(Some("Split composite profile"), Some("chart.profile-split"));
+            }
+            if profile.n_items() > 0 {
+                menu.append_section(None, &profile);
+            }
+            *self.menu_profile.borrow_mut() = spot;
+        }
+
         menu.append_section(None, &self.clipboard_section("chart.indicator-delete"));
 
         let properties = gio::Menu::new();
@@ -7483,7 +7579,55 @@ impl Window {
 
         let area = pane.view.area.clone();
         let (wx, wy) = area.translate_coordinates(&self.window, x, y).unwrap_or((x, y));
-        popup_menu(&menu, &self.window, wx, wy);
+        popup_menu_with(&menu, &self.window, wx, wy, rows);
+    }
+
+    /// Change one indicator of the focused chart, wherever its indicators
+    /// are kept.
+    fn edit_indicator(self: &Rc<Self>, id: u32, edit: impl FnOnce(&mut Params)) {
+        let pane = self.focused_pane();
+        let mut all = pane.indicators.borrow().clone();
+        let Some(indicator) = all.iter_mut().find(|i| i.id == id) else { return };
+        edit(&mut indicator.params);
+        self.change_indicators_of(&pane, all);
+    }
+
+    /// Merge the profile the menu was opened over into the one before it, or
+    /// split the composite it is back into its periods. The chart's alone,
+    /// and for the symbol it is showing.
+    fn change_profile_merges(self: &Rc<Self>, id: u32, spot: &crate::ui::chart::ProfileSpot, merge: bool) {
+        let pane = self.focused_pane();
+        let Some(symbol) = pane.instrument.borrow().as_ref().map(|i| i.symbol.clone()) else { return };
+        {
+            let mut merges = pane.profile_merges.borrow_mut();
+            let at = match merges.iter().position(|m| m.indicator == id && m.symbol == symbol) {
+                Some(at) => at,
+                None => {
+                    merges.push(omacharts_engine::indicators::profile::Merge { indicator: id, symbol, starts: Vec::new() });
+                    merges.len() - 1
+                }
+            };
+            let starts = &mut merges[at].starts;
+            match merge {
+                true => {
+                    if let Some(first) = spot.parts.first()
+                        && !starts.contains(first)
+                    {
+                        starts.push(*first);
+                        starts.sort_unstable();
+                    }
+                }
+                false => starts.retain(|start| !spot.parts[1..].contains(start)),
+            }
+            merges.retain(|m| !m.starts.is_empty());
+        }
+        let instrument = pane.instrument.borrow().clone();
+        if let Some(instrument) = instrument {
+            let timeframe = pane.timeframe.get();
+            let drawn = pane.view.with_bars(|bars| self.drawn_indicators(&pane, &instrument, timeframe, bars));
+            pane.view.set_indicators(drawn);
+        }
+        self.save_workspace();
     }
 
     /// The active theme, for anything that needs to resolve a colour.
@@ -7785,6 +7929,41 @@ impl Window {
     pub fn measurement_zone(&self) -> chrono_tz::Tz {
         let pane = self.focused_pane();
         crate::clock::zone(&self.store).for_instrument(pane.instrument.borrow().as_ref())
+    }
+
+    /// Merge the focused chart's volume profile holding `ts` into the one
+    /// before it, or split the composite holding it, for a command. The
+    /// window's to answer, since only it has the bars that say where a
+    /// period begins.
+    pub fn change_profile_at(self: &Rc<Self>, id: Option<u32>, ts: i64, merge: bool) -> Result<String, String> {
+        let pane = self.focused_pane();
+        let label = self.chart_named(&pane);
+        let profiles: Vec<u32> = pane
+            .indicators
+            .borrow()
+            .iter()
+            .filter(|i| matches!(i.params, Params::VolumeProfile { .. }))
+            .filter(|i| id.is_none_or(|id| i.id == id))
+            .map(|i| i.id)
+            .collect();
+        let indicator = match profiles.as_slice() {
+            [one] => *one,
+            [] => return Err(format!("{label} has no volume profile")),
+            many => {
+                let ids: Vec<String> = many.iter().map(|id| id.to_string()).collect();
+                return Err(format!("{label} has {} volume profiles; say which with --id {}", many.len(), ids.join(" or ")));
+            }
+        };
+        let Some(spot) = pane.view.profile_of(indicator, ts) else {
+            return Err(format!("{label} draws no profile at that moment"));
+        };
+        match merge {
+            true if !spot.has_previous => return Err(format!("that is the first profile on {label}; there is none before it")),
+            false if spot.parts.len() < 2 => return Err(format!("that profile on {label} is not a composite")),
+            _ => {}
+        }
+        self.change_profile_merges(indicator, &spot, merge);
+        Ok(label)
     }
 
     /// A temporary measurement belongs to the live focused chart, never the store.
@@ -8833,6 +9012,45 @@ impl Window {
             }
         });
         actions.add_action(&settings);
+
+        // The indicator menu's presets and a profile's composites.
+        let period = gio::SimpleAction::new("indicator-period", Some(glib::VariantTy::INT32));
+        let this = self.clone();
+        period.connect_activate(move |_, value| {
+            let Some(chosen) = value.and_then(|v| v.get::<i32>()) else { return };
+            if let Some(id) = this.menu_indicator.borrow_mut().take() {
+                this.edit_indicator(id, |params| {
+                    if let Params::MovingAverage { period } = params {
+                        *period = chosen as usize;
+                    }
+                });
+            }
+        });
+        actions.add_action(&period);
+        let reset = gio::SimpleAction::new("indicator-reset", Some(glib::VariantTy::STRING));
+        let this = self.clone();
+        reset.connect_activate(move |_, value| {
+            let Some(chosen) = value.and_then(|v| v.get::<String>()).and_then(|k| Reset::from_key(&k)) else { return };
+            if let Some(id) = this.menu_indicator.borrow_mut().take() {
+                this.edit_indicator(id, |params| match params {
+                    Params::Vwap { reset, .. } | Params::VolumeProfile { reset, .. } => *reset = chosen,
+                    _ => {}
+                });
+            }
+        });
+        actions.add_action(&reset);
+        for (name, merge) in [("profile-merge", true), ("profile-split", false)] {
+            let action = gio::SimpleAction::new(name, None);
+            let this = self.clone();
+            action.connect_activate(move |_, _| {
+                let id = this.menu_indicator.borrow_mut().take();
+                let spot = this.menu_profile.borrow_mut().take();
+                if let (Some(id), Some(spot)) = (id, spot) {
+                    this.change_profile_merges(id, &spot, merge);
+                }
+            });
+            actions.add_action(&action);
+        }
 
         // What Ctrl+Alt+Shift+H flips: None and the style the bars had, which
         // hiding them never forgets.

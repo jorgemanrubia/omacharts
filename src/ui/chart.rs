@@ -21,6 +21,7 @@
 
 pub mod bench;
 mod selection;
+pub use selection::ProfileSpot;
 
 use std::borrow::Cow;
 use std::cell::RefCell;
@@ -2057,6 +2058,17 @@ impl ChartView {
             self.redraw();
             self.tell_indicator(IndicatorEvent::Picked(id));
         }
+    }
+
+    /// The profile of indicator `id` whose period is under `x`.
+    pub fn profile_at(&self, id: u32, x: f64) -> Option<selection::ProfileSpot> {
+        let s = self.state.borrow();
+        s.profile_at(self.area.width() as f64, self.area.height() as f64, id, x)
+    }
+
+    /// The profile of indicator `id` holding the moment `ts`.
+    pub fn profile_of(&self, id: u32, ts: i64) -> Option<selection::ProfileSpot> {
+        self.state.borrow().profile_of(id, ts)
     }
 
     /// The indicator under a pixel that a click there would select.
@@ -6997,40 +7009,55 @@ fn draw_profiles(
         _ => None,
     };
     let poc = state.theme.companion_or(chosen, &drawn.color);
+    let (style, align) = selection::profile_look(drawn);
 
     for profile in profiles {
         // Where a click finds it, too, so the two cannot drift apart.
-        let (left, span) = selection::profile_box(profile, columns);
-        if span <= 0.0 {
+        let area = selection::profile_box(profile, columns, align);
+        if area.span <= 0.0 || profile.max_volume <= 0.0 || profile.rows.is_empty() {
             continue;
         }
 
-        let (area_low, area_high) = profile.value_area_bounds();
-        for row in &profile.rows {
-            if row.volume <= 0.0 || profile.max_volume <= 0.0 {
-                continue;
+        match style {
+            omacharts_engine::indicators::profile::Style::Filled => {
+                let (area_low, area_high) = profile.value_area_bounds();
+                for row in &profile.rows {
+                    if row.volume <= 0.0 {
+                        continue;
+                    }
+                    let (from, to) = area.row(row.volume / profile.max_volume);
+                    let top = to_y(row.high);
+                    let height = (to_y(row.low) - top).max(1.0);
+                    let inside = row.low >= area_low && row.high <= area_high;
+                    colors::set_source_alpha(cr, &drawn.color, if inside { 0.30 } else { 0.14 });
+                    cr.rectangle(from, top, to - from, height);
+                    let _ = cr.fill();
+                }
             }
-            let width = span * (row.volume / profile.max_volume);
-            let top = to_y(row.high);
-            let height = (to_y(row.low) - top).max(1.0);
-            let inside = row.low >= area_low && row.high <= area_high;
-            colors::set_source_alpha(cr, &drawn.color, if inside { 0.30 } else { 0.14 });
-            cr.rectangle(left, top, width, height.max(1.0));
-            let _ = cr.fill();
+            // Only the shape the rows make, so the candles under it stay
+            // as plain as they are without it.
+            omacharts_engine::indicators::profile::Style::Outline => {
+                colors::set_source_alpha(cr, &drawn.color, 0.75);
+                cr.set_line_width(1.0);
+                cr.set_line_join(cairo::LineJoin::Miter);
+                selection::profile_path(cr, &area, profile, to_y);
+                let _ = cr.stroke();
+            }
         }
 
         // The point of control, across the period it belongs to, in a colour
         // set against the profile rather than the same one brighter — it is a
         // different fact about the period, drawn on top of it.
         let y = to_y(profile.poc_price()).round() + 0.5;
+        let (from, to) = area.row(1.0);
         colors::set_source_alpha(cr, &poc, 0.9);
         cr.set_line_width(1.0);
-        cr.move_to(left, y);
-        cr.line_to(left + span, y);
+        cr.move_to(from, y);
+        cr.line_to(to, y);
         let _ = cr.stroke();
 
         if state.picked == Some(drawn.indicator.id) {
-            selection::outline_profile(cr, &state.theme, &drawn.color, profile, columns, to_y);
+            selection::outline_profile(cr, &state.theme, &drawn.color, profile, &area, to_y);
         }
     }
 }
