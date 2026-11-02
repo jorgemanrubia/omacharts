@@ -345,15 +345,13 @@ or typing in the search — and a command names the charts it means.
 
 A pointer on one chart draws a quieter crosshair at the same moment and price
 on every other chart on screen of the same symbol, whatever their link mode or
-resolution. Charts of different symbols never share one. Each chart has its
-own switch, on by default, stored with the chart: a chart switched off neither
-shares its pointer nor shows anybody else's.
+resolution. Charts of different symbols never share one. It is one setting
+for the whole app, on by default — Preferences › Charts › Other › Sync
+crosshair across charts, or the key `sync_crosshair`:
 
 ```
-omacharts chart set --chart pos:1 --crosshair off
+omacharts chart crosshair off
 ```
-
-`chart list --json` reports it as `crosshair_sync`.
 
 ## Worked example: the top US semiconductors in their own watchlist
 
@@ -604,7 +602,7 @@ checked before anything is written, so you never get a half-applied chart.
 
 Besides what a chart shows, `chart set` carries how it shows it — `--style`,
 `--bars`, `--session`, `--grid`, `--auto-scale`, `--log-scale`,
-`--indicators`, `--drawings` and `--crosshair` — and those are stored with the chart,
+`--indicators` and `--drawings` — and those are stored with the chart,
 so a price axis held still with `--auto-scale off` is still held the next
 time the app opens.
 

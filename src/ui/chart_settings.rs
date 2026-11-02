@@ -320,21 +320,6 @@ fn bars_group(window: &Rc<Window>) -> adw::PreferencesGroup {
     });
     group.add(&colouring);
 
-    // This chart's, like everything else on the page: two charts of one
-    // symbol can each choose whether they show the other's pointer.
-    let sync = adw::ActionRow::new();
-    sync.set_title("Sync crosshair");
-    let switch = gtk::Switch::new();
-    switch.set_valign(gtk::Align::Center);
-    switch.set_active(window.crosshair_sync());
-    let window_for_sync = window.clone();
-    switch.connect_state_set(move |_, on| {
-        window_for_sync.set_crosshair_sync(on);
-        glib::Propagation::Proceed
-    });
-    sync.add_suffix(&switch);
-    sync.set_activatable_widget(Some(&switch));
-    group.add(&sync);
 
     group
 }

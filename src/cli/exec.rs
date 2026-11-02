@@ -133,6 +133,7 @@ pub fn dispatch(
         // These two cannot: there are no pixels in a saved layout.
         ("chart", "screenshot") => screenshot(live, m, json, false),
         ("chartbook", "screenshot") => screenshot(live, m, json, true),
+        ("chart", "crosshair") => crosshair(store, m, json),
         // A range is held by the chart on screen and nowhere else.
         ("chart", "range") => chart_range(live, m),
         ("chart", "measure") => chart_measure(live, m, json),
@@ -1524,10 +1525,6 @@ fn chart_set(
         chart["drawings_shown"] = json!(shown == "on");
         changed.push(format!("drawings {}", if shown == "on" { "shown" } else { "hidden" }));
     }
-    if let Some(sync) = switch("crosshair")? {
-        chart["crosshair_sync"] = json!(sync);
-        changed.push(format!("crosshair synced with the symbol's other charts {}", on_off(sync)));
-    }
     match template {
         None => {}
         // The template's indicators replace the chart's own, which go: the
@@ -1554,7 +1551,7 @@ fn chart_set(
         return Err(Fault::usage(
             "nothing to change; pass --symbol, --resolution, --style, --bars, --session, --link, --grid, \
              --auto-scale, --log-scale, --indicators, --drawings, --show-drawings, \
-             --send-drawings, --crosshair or --template"
+             --send-drawings or --template"
                 .into(),
         ));
     }
@@ -3426,8 +3423,6 @@ fn pane_json(pane: &Value) -> String {
         "link": stored_mode(pane).key(),
         "shows_drawings": pane["shows_drawings"].as_bool().unwrap_or(true),
         "sends_drawings": pane["sends_drawings"].as_bool().unwrap_or(true),
-        // On, before each chart had a switch of its own.
-        "crosshair_sync": pane["crosshair_sync"].as_bool().unwrap_or(true),
         "indicators": pane["indicators"]
             .as_array()
             .map(|all| all.iter().filter_map(|i| i["kind"].as_str()).collect::<Vec<_>>())
@@ -3947,6 +3942,30 @@ fn status(store: &Store, window_open: bool, as_json: bool) -> Result<String, Fau
         ));
     }
     Ok(out)
+}
+
+/// Whether a pointer on a chart draws a line on the other charts of the same
+/// symbol.
+///
+/// One setting for the whole app rather than one per chart, which is why it
+/// reads and writes a setting rather than a pane. The same key the
+/// preferences' switch writes, so `config set sync_crosshair` reaches it too.
+fn crosshair(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<String, Fault> {
+    const KEY: &str = "sync_crosshair";
+    let Some(state) = arg(m, "STATE") else {
+        let on = store.setting_bool(KEY, true);
+        return match as_json {
+            true => Ok(format!("{}\n", json!({"crosshairSync": on}))),
+            false => Ok(format!("{}\n", if on { "on" } else { "off" })),
+        };
+    };
+    let on = state == "on";
+    store.set_setting_bool(KEY, on);
+    said(
+        as_json,
+        json!({"crosshairSync": on}),
+        format!("crosshair syncing across charts of the same symbol is {state}"),
+    )
 }
 
 // -- settings and cache ---------------------------------------------------
@@ -6410,27 +6429,13 @@ mod tests {
         assert_eq!(parsed["charts"][0]["target"], "pos:0", "spelled as the other verbs take it");
     }
 
-    /// Each chart has its own crosshair switch, on until somebody turns it
-    /// off, and turning one off leaves the others alone.
     #[test]
-    fn crosshair_syncing_is_set_chart_by_chart() {
+    fn crosshair_syncing_can_be_read_and_set() {
         let store = bare();
-        run("chartbook create Macro --symbol SPY --switch", &store);
-        run("chart split horizontal --book Macro --chart pos:0", &store);
-        let syncs = |store: &Store| -> Vec<serde_json::Value> {
-            let list: serde_json::Value =
-                serde_json::from_str(&run("chart list --book Macro --json", store).out).unwrap();
-            list["charts"].as_array().unwrap().iter().map(|c| c["crosshair_sync"].clone()).collect()
-        };
-        assert_eq!(syncs(&store), vec![true, true], "on to begin with");
-
-        let off = run("chart set --book Macro --chart pos:0 --crosshair off", &store);
-        assert_eq!(off.code, 0, "{}", off.err);
-        assert!(off.out.contains("crosshair"), "{}", off.out);
-        assert_eq!(syncs(&store), vec![false, true], "the other chart keeps its own");
-
-        run("chart set --book Macro --chart pos:0 --crosshair on", &store);
-        assert_eq!(syncs(&store), vec![true, true]);
+        assert_eq!(run("chart crosshair off", &store).code, 0);
+        assert_eq!(run("chart crosshair", &store).out.trim(), "off");
+        assert_eq!(run("chart crosshair on", &store).code, 0);
+        assert_eq!(run("chart crosshair", &store).out.trim(), "on");
     }
 
     #[test]

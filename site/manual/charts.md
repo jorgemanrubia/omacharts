@@ -383,7 +383,7 @@ The last price is a tag on the price axis, filled in the colour of the last bar'
 
 The pointer on one chart draws a dimmed crosshair at the same moment and price on every other chart on screen of the same symbol, each at its own resolution. It does not matter how the charts are linked to the watchlist. Charts of different symbols never share a crosshair.
 
-Each chart has its own switch, on for a new chart: the chart menu's **Sync crosshair**, or the **Sync crosshair** row of [Chart settings](/manual/chart-settings/). A chart with it off neither shares its pointer nor shows anybody else's. It is kept with the chart, and a chart made by splitting it starts with the same setting.
+It is one switch for every chart: Preferences › Charts › Other › Chart › **Sync crosshair across charts** ([Preferences](/manual/preferences/#charts)). It is on by default.
 
 ## When a chart is empty or out of date
 
@@ -460,7 +460,6 @@ crop: 560,262,640,780   (the whole menu, 20px layout margin)
 | **Gridlines** | Ticked while the chart has them | [Gridlines](#gridlines) |
 | **Indicators** | Ticked while the chart shows its indicators, with its key | [Hiding every indicator](/manual/indicators/#hiding-every-indicator) |
 | **Drawings** | Ticked while the chart shows its drawings, with its key | [Hiding the drawings](/manual/drawings/#hiding-the-drawings) |
-| **Sync crosshair** | Ticked while the chart shares its crosshair with the other charts of its symbol | [Sharing the crosshair](#sharing-the-crosshair) |
 | **Split horizontally**, **Split vertically** | Divides the chart in two | [Splitting and arranging charts](/manual/layouts/) |
 | **Maximize** / **Restore** | Gives the chart the window, or puts it back. Only with two charts or more | [Splitting and arranging charts](/manual/layouts/#maximising-a-chart) |
 | **Close chart** | Closes it. Only with two charts or more | [Splitting and arranging charts](/manual/layouts/#closing-a-chart) |

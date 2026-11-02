@@ -844,13 +844,6 @@ pub const SURFACE: &[Noun] = &[
                     Flag::valued("drawings", "BOOL", "draw the chart's drawings, its own and the shared, or hide them all")
                         .of(&["on", "off"]),
                     Flag::valued(
-                        "crosshair",
-                        "BOOL",
-                        "share the pointer's crosshair with the other charts of its symbol that do too, \
-                         and show theirs",
-                    )
-                    .of(SWITCHES),
-                    Flag::valued(
                         "template",
                         "TEMPLATE",
                         "show a chart template's indicators in place of the chart's own, or \
@@ -943,6 +936,16 @@ pub const SURFACE: &[Noun] = &[
                 example: "omacharts chart measure --from 2026-09-01,180.5 --to 2026-09-19,192",
                 json: true,
                 writes: false,
+                workspace: false,
+            },
+            Verb {
+                name: "crosshair",
+                about: "Whether a pointer on a chart draws a line on the other charts of the same symbol",
+                args: &[Arg::opt("STATE", "omit to read it").of(SWITCHES)],
+                flags: &[],
+                example: "omacharts chart crosshair off",
+                json: true,
+                writes: true,
                 workspace: false,
             },
         ],
@@ -1323,7 +1326,6 @@ const STORED_FIELDS: &[(&str, &str, &str)] = &[
     ("link", "chart set", "--link"),
     ("shows_drawings", "chart set", "--show-drawings"),
     ("sends_drawings", "chart set", "--send-drawings"),
-    ("crosshair_sync", "chart set", "--crosshair"),
     ("drawings", "chart drawing", ""),
     (
         "drawing_uid",

@@ -36,8 +36,6 @@ impl Workspace {
         // A chart still written with a link group gets its mode the way the
         // window gives it one, so both read the same row the same way.
         crate::ui::window::upgrade_link_groups(&mut value, store);
-        // Likewise the crosshair switch the whole window used to have.
-        crate::ui::window::upgrade_window_crosshair(&mut value, store);
         Workspace { value }
     }
 
@@ -370,10 +368,6 @@ pub fn new_pane(
             "link": LinkMode::default().key(),
             "shows_drawings": defaults.shows_drawings,
             "sends_drawings": defaults.sends_drawings,
-        // Written down rather than left to the default, so the window-wide
-        // switch an older window may still be holding is never carried onto
-        // a chart that was made after it.
-        "crosshair_sync": true,
         // What the chart is called among the drawings it makes, so it can
         // take them back if it stops sending.
         "drawing_uid": gtk::glib::uuid_string_random().to_string(),
