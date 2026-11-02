@@ -985,9 +985,10 @@ and shows as much time as it shows now, at the same resolution: with ten days
 on screen, `oct 12` shows 12 October to 22 October. When that would run past
 now, the window ends now instead and starts as much earlier, so the date
 lands inside it: with ten days on screen on 1 November, `oct 28` and `today`
-both show 22 October to 1 November. Whatever of the window is past the latest
-bar is empty room, as a chart scrolled past its end has, and the bars widen
-or narrow to fit. The reply names the whole window. A date is `2026-03-12` or `2026/3/12`;
+both show 22 October to 1 November. The day typed is tinted and named on the
+time axis until the view is zoomed or panned. Whatever of the window is past
+the latest bar is empty room, as a chart scrolled past its end has, and the
+bars widen or narrow to fit. The reply names the whole window. A date is `2026-03-12` or `2026/3/12`;
 `oct 12`, `12 oct` or `10/12` with no year, the latest one that has passed;
 `mon` for the latest Monday and `2mon` for the one before, any day of the
 week and any count; `last fri`; `today` or `yesterday`; `3 weeks ago`,

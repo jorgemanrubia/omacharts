@@ -4890,6 +4890,7 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
     draw_time_ground(cr, state, &columns, &plan);
     draw_price_grid(cr, state, plot_x, plot_w, price_y, price_h, &scale, &to_y);
     draw_time_axis(cr, state, &columns.bars, columns.bars_each(), plot_x, plot_w, height, bar_w, bars_x - columns.shift());
+    draw_goto_day(cr, state, &columns, &plan, height);
     // Shaded things go under the candles; lines go over. A band drawn on top
     // of the bars hides the thing it is describing.
     //
@@ -4935,6 +4936,47 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
         draw_trouble_dot(cr, state, width);
     }
     draw_range(cr, state, width, height);
+}
+
+/// The day typed into Go to, while the chart holds the window it made: the
+/// day tinted down the whole stack and named on the time axis in the
+/// accent. Near now the window ends at now and starts before the day, so
+/// without this nothing on the chart says where the day is. It goes with
+/// the range, when a hand moves the view.
+fn draw_goto_day(cr: &cairo::Context, state: &State, columns: &Columns, plan: &Layout, height: f64) {
+    let Some(Range::Lasting(typed, ..)) = state.range else { return };
+    let utc = state.timeframe.is_calendar();
+    let date = |bar: &Bar| state.clock.read(bar.ts, utc).map(|at| at.date());
+    let Some(today) = state.bars.last().and_then(date) else { return };
+    let Some(day) = typed.first(today) else { return };
+    let from = state.bars.partition_point(|bar| date(bar).is_some_and(|d| d < day));
+    let to = state.bars.partition_point(|bar| date(bar).is_some_and(|d| d <= day));
+    // A bar longer than a day holds days it does not start on: a Tuesday
+    // is the week that started on the Monday.
+    let holds = |bar: &Bar| {
+        let end = state.clock.read(state.timeframe.shift(bar.ts, 1), utc);
+        state.timeframe.seconds() > 86_400 && end.is_some_and(|end| end.date() > day)
+    };
+    let from = match from.checked_sub(1) {
+        Some(before) if from == to && state.bars.get(before).is_some_and(holds) => before,
+        _ => from,
+    };
+    let (left, right) = (plan.plot_x, plan.plot_x + plan.plot_w);
+    let (x0, x1) = (bar_left(columns, from), bar_left(columns, to));
+    if x1 < left || x0 > right {
+        return;
+    }
+    let accent = &state.theme.ui.accent;
+    // Whole pixels, as a session's shading is.
+    let (band_left, band_right) = (x0.max(left).round(), x1.min(right).round());
+    if band_right > band_left {
+        colors::set_source_alpha(cr, accent, 0.14);
+        cr.rectangle(band_left, plan.top, band_right - band_left, plan.total_h);
+        let _ = cr.fill();
+    }
+    // Named as the card names it, over the middle of the day.
+    let label = Range::Day(typed).spelled(today);
+    label_on_time_axis(cr, &label, (x0 + x1) / 2.0, left, plan.plot_w, height, accent);
 }
 
 /// The range the view is holding to, in the corner under the price axis,
@@ -6076,19 +6118,7 @@ fn draw_crosshair(
     // where it is the time that column would be.
     if let Some(ts) = time_at_column(state, first + index_in_view.max(0.0) as i64) {
         let label = format_time_full(ts, state.timeframe, state.clock);
-        cr.select_font_face("sans-serif", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
-        cr.set_font_size(11.0);
-        if let Ok(extents) = cr.text_extents(&label) {
-            let w = extents.width() + 10.0;
-            let x = inside_plot(snapped_x, w, plot_x, plot_w);
-            let y = height - TIME_AXIS_H + 2.0;
-            colors::set_source(cr, tint);
-            cr.rectangle(x, y, w, TIME_AXIS_H - 4.0);
-            let _ = cr.fill();
-            colors::set_source(cr, colors::readable_on(tint));
-            cr.move_to(x + 5.0, y + TIME_AXIS_H - 10.0);
-            let _ = cr.show_text(&label);
-        }
+        label_on_time_axis(cr, &label, snapped_x, plot_x, plot_w, height, tint);
     }
 }
 
@@ -6154,6 +6184,22 @@ fn draw_tag(cr: &cairo::Context, text: &str, axis_x: f64, y: f64, width: f64, ta
     let _ = cr.fill();
     colors::set_source(cr, &tag.label);
     cr.move_to(axis_x + 6.0, y + 3.5);
+    let _ = cr.show_text(text);
+}
+
+/// A filled chip on the time axis, centred on `x` and kept inside the plot.
+fn label_on_time_axis(cr: &cairo::Context, text: &str, x: f64, plot_x: f64, plot_w: f64, height: f64, colour: &str) {
+    cr.select_font_face("sans-serif", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
+    cr.set_font_size(11.0);
+    let Ok(extents) = cr.text_extents(text) else { return };
+    let w = extents.width() + 10.0;
+    let x = inside_plot(x, w, plot_x, plot_w);
+    let y = height - TIME_AXIS_H + 2.0;
+    colors::set_source(cr, colour);
+    cr.rectangle(x, y, w, TIME_AXIS_H - 4.0);
+    let _ = cr.fill();
+    colors::set_source(cr, colors::readable_on(colour));
+    cr.move_to(x + 5.0, y + TIME_AXIS_H - 10.0);
     let _ = cr.show_text(text);
 }
 
