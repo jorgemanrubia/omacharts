@@ -35,21 +35,20 @@ const FEWEST_ROWS: i32 = 5;
 
 /// What the frame opens over.
 pub enum Over {
-    /// One chart: every chart fades, `ring` (the chart's pane) wears a ring
-    /// twice the focus ring's width, and the search row names it by
-    /// position, the way every command names a chart. A bare frame names
-    /// nothing: the ring says which.
-    Chart { inside: gtk::Widget, shades: Vec<gtk::Widget>, ring: gtk::Widget, at: usize },
+    /// One chart: every chart fades and `ring` (the chart's pane) wears a
+    /// ring twice the focus ring's width. The ring says which; the search
+    /// row names nothing.
+    Chart { inside: gtk::Widget, shades: Vec<gtk::Widget>, ring: gtk::Widget },
     /// The window, for a pick that changes no chart. `name` is what it does
     /// change.
     Window { inside: gtk::Widget, name: String },
 }
 
 impl Over {
-    /// Over `pane`, at `at` among `all`, the charts on screen.
-    pub fn chart<'a>(pane: &ChartPane, all: impl IntoIterator<Item = &'a ChartPane>, at: usize) -> Over {
+    /// Over `pane`, among `all`, the charts on screen.
+    pub fn chart<'a>(pane: &ChartPane, all: impl IntoIterator<Item = &'a ChartPane>) -> Over {
         let shades = all.into_iter().map(|pane| pane.shade.clone().upcast()).collect();
-        Over::Chart { inside: window_content(&pane.root), shades, ring: pane.root.clone().upcast(), at }
+        Over::Chart { inside: window_content(&pane.root), shades, ring: pane.root.clone().upcast() }
     }
 
     /// Centred on the window `from` is in, naming `name`.
@@ -81,8 +80,8 @@ pub struct PickFrame {
     content: gtk::Box,
     /// The search row: the box and the chart it acts on.
     query: gtk::Box,
-    /// "→ pos:1": which chart a pick will change. On a bare frame, the
-    /// line under the title.
+    /// "→ Semis · Memory": what a pick changes when it is not a chart. On a
+    /// bare frame, the line under the title.
     target: gtk::Label,
     /// The charts' shades, and the pane wearing the wide ring, while open.
     shade: RefCell<Option<(Vec<gtk::Widget>, gtk::Widget)>>,
@@ -383,12 +382,8 @@ impl PickFrame {
         *self.on_pick.borrow_mut() = Some(Rc::new(on_pick));
 
         let anchor = match over {
-            Over::Chart { inside, shades, ring, at } => {
-                let bare = self.overlay.borrow().is_some();
-                self.target.set_text(&match bare {
-                    true => String::new(),
-                    false => format!("→ pos:{at}"),
-                });
+            Over::Chart { inside, shades, ring } => {
+                self.target.set_text("");
                 for shade in shades {
                     shade.set_visible(true);
                 }

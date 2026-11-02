@@ -41,7 +41,7 @@ state:
   type nv
   move 960 650           # off the list, so no row is hovered
 capture: bin/headless-window shot search.png
-crop: 698,193,1163,766   (the search, 24px layout margin)
+crop: 722,217,1116,717   (the search, 24px layout margin)
 -->
 {% include figure.html src="/assets/manual/quick-start/search.png" alt="The symbol search with nv typed and NVDA highlighted at the top" caption="The search with nv typed." %}
 
