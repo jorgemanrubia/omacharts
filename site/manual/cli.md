@@ -432,7 +432,7 @@ custom range: since 11 Oct on pos:0 NVDA 1D in "Manual", now 1h
   [exit 0]
 
 $ omacharts chart range "1 week ago"
-date: 25 Oct – 23 Nov (window kept) on pos:0 NVDA 1h in "Manual"
+date: 3 Oct – 1 Nov (window kept) on pos:0 NVDA 1h in "Manual"
   [exit 0]
 
 $ omacharts chart range 2025: --resolution 1W

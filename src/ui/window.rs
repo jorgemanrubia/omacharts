@@ -7881,11 +7881,12 @@ impl Window {
     }
 
     /// `range` as the focused chart would show it: a day on its own lasts
-    /// as long as the chart shows now, from the start of that day, and
-    /// anything else is as it says.
+    /// as long as the chart shows now, from the start of that day or up to
+    /// now when that comes first, and anything else is as it says.
     pub fn as_shown(&self, range: omacharts_engine::Range) -> omacharts_engine::Range {
-        match self.focused_pane().view.seconds_shown() {
-            Some(seconds) => range.lasting(seconds),
+        let view = &self.focused_pane().view;
+        match view.seconds_shown().zip(view.now()) {
+            Some((seconds, now)) => range.lasting(seconds, now),
             None => range,
         }
     }
@@ -7929,12 +7930,18 @@ impl Window {
         };
         let fit = Fit { ladder: &ladder, bars: AIM_BARS, share, offers: &offers, reach: &reach };
         // A day on its own keeps the resolution, as it keeps the length of
-        // time on screen, unless the feed does not reach back to it there.
-        let keeps = matches!(range, omacharts_engine::Range::Lasting(..))
-            && match (reach(current), range.reach(today)) {
-                (Some(limit), Some(back)) => i64::from(limit) >= back,
-                _ => true,
-            };
+        // time on screen, unless the feed does not reach back to the day
+        // there: the day, not the start of a window moved earlier to end at
+        // now, so that moving it never changes the resolution.
+        let keeps = match range {
+            omacharts_engine::Range::Lasting(day, ..) => {
+                match (reach(current), omacharts_engine::Range::Day(day).reach(today)) {
+                    (Some(limit), Some(back)) => i64::from(limit) >= back,
+                    _ => true,
+                }
+            }
+            _ => false,
+        };
         let timeframe = forced.unwrap_or_else(|| match keeps {
             true => current,
             false => resolution_for(range, today, current, &fit),
