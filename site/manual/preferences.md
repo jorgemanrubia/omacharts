@@ -11,6 +11,8 @@ Preferences holds the settings that apply to the whole app. Open it with <kbd>Ct
 
 In a narrow window the list of sections becomes a page of its own and a section opens over it.
 
+Reopened while the app is running, the dialog comes back on the section and tab you left it on. Opening it from a chart's header still goes to Charts › Header.
+
 <!-- regenerate:
 theme: tokyo-night
 window: 2560x1040 @2, $SP/kit/hw (a short window, so the dialog is no taller than its content)
