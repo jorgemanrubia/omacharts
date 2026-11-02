@@ -1155,7 +1155,7 @@ mod tests {
         // But a session is one bar on a weekly chart, so it is promoted — and
         // saying "Session" there would describe a chart nobody is looking at.
         assert_eq!(vwap.label_for(Timeframe::weeks(1)), "VWAP · Quarter");
-        assert_eq!(vwap.label_for(Timeframe::days(1)), "VWAP · Month");
+        assert_eq!(vwap.label_for(Timeframe::days(1)), "VWAP · Week");
         // Intraday, nothing is promoted and the two agree.
         assert_eq!(vwap.label_for(Timeframe::minutes(5)), "VWAP · Session");
     }

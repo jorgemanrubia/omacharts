@@ -7546,7 +7546,25 @@ impl Window {
                 item.set_attribute_value("custom", Some(&"reset".to_variant()));
                 presets.append_item(&item);
                 let choices = Reset::ALL.map(|r| (r.label().to_string(), r.key().to_variant(), r == *reset));
-                rows.push(("reset".to_string(), choice_strip(&choices, "chart.indicator-reset", "Reset every")));
+                let strip = choice_strip(&choices, "chart.indicator-reset", "Reset every");
+                // A period the chart is too coarse for would be promoted to
+                // another the moment it was picked: greyed, and saying why,
+                // rather than a button that seems to do nothing.
+                let timeframe = pane.timeframe.get();
+                let mut child = strip.first_child();
+                for period in Reset::ALL {
+                    let Some(button) = child else { break };
+                    if !period.is_meaningful_for(timeframe) {
+                        button.set_sensitive(false);
+                        button.set_tooltip_text(Some(&format!(
+                            "Too few {} bars in a {} to draw it",
+                            timeframe.label(),
+                            period.label().to_lowercase()
+                        )));
+                    }
+                    child = button.next_sibling();
+                }
+                rows.push(("reset".to_string(), strip));
             }
             _ => {}
         }

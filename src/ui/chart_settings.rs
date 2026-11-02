@@ -1727,7 +1727,7 @@ fn profile_colours(
 ) -> adw::PreferencesGroup {
     let id = indicator.id;
     let group = adw::PreferencesGroup::new();
-    group.set_title("Colours");
+    group.set_title("Style");
 
     // Neither row has samples to repaint: a profile has no line to show.
     let unused = Ink::new(String::new);
@@ -1983,9 +1983,36 @@ fn reset_row(
     let names: Vec<&str> = Reset::ALL.iter().map(|r| r.label()).collect();
     let row = adw::ComboRow::new();
     row.set_title("Reset every");
-    row.set_subtitle("Promoted automatically when the chart is too coarse for it.");
     row.set_model(Some(&gtk::StringList::new(&names)));
     row.set_selected(Reset::ALL.iter().position(|r| *r == current).unwrap_or(0) as u32);
+    // A period the chart is too coarse for cannot be picked: it would be
+    // drawn as another. Only for a chart's own indicators — a template's
+    // are on charts of every resolution.
+    if owner.template.is_none() {
+        let timeframe = owner.app.focused_pane().timeframe.get();
+        let factory = gtk::SignalListItemFactory::new();
+        factory.connect_setup(|_, item| {
+            let label = gtk::Label::new(None);
+            label.set_xalign(0.0);
+            if let Some(item) = item.downcast_ref::<gtk::ListItem>() {
+                item.set_child(Some(&label));
+            }
+        });
+        factory.connect_bind(move |_, item| {
+            let Some(item) = item.downcast_ref::<gtk::ListItem>() else { return };
+            let Some(label) = item.child().and_downcast::<gtk::Label>() else { return };
+            let Some(period) = Reset::ALL.get(item.position() as usize).copied() else { return };
+            label.set_text(period.label());
+            let possible = period.is_meaningful_for(timeframe);
+            label.set_sensitive(possible);
+            label.set_tooltip_text((!possible).then(|| {
+                format!("Too few {} bars in a {} to draw it", timeframe.label(), period.label().to_lowercase())
+            }).as_deref());
+            item.set_selectable(possible);
+            item.set_activatable(possible);
+        });
+        row.set_list_factory(Some(&factory));
+    }
 
     let owner = owner.clone();
     let refresh = refresh.clone();

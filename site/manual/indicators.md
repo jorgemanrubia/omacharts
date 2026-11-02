@@ -261,7 +261,7 @@ The [VWAP](/manual/indicators/averages-and-bands/#volume-weighted-average-price)
 | **Quarter** | On 1 January, April, July and October |
 | **Year** | On 1 January |
 
-A period needs at least ten bars at the chart's resolution. One with fewer uses the finest period that has ten, and the legend names it. A session VWAP becomes weekly on a 4h chart, monthly on a daily chart and quarterly on a weekly chart. The chosen period is kept, and comes back on an intraday resolution.
+A period needs at least five bars at the chart's resolution. One with fewer uses the finest period that has five, and the legend names it: a session VWAP becomes weekly on a daily chart and quarterly on a weekly chart. The chosen period is kept, and comes back on a finer resolution. A period the chart is too coarse for cannot be picked: in the indicator's menu and in **Reset every** it is greyed, and pointing at it says why.
 
 ## See also
 
