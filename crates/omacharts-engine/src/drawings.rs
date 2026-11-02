@@ -495,6 +495,14 @@ impl Kind {
         matches!(self, Kind::Rect | Kind::Ellipse)
     }
 
+    /// Whether it is painted under the bars rather than over them. A profile
+    /// is shading, as the study's profiles and a band's fill are, and a
+    /// shade over the candles hides what it describes; everything else is
+    /// a mark on the chart, and goes on top.
+    pub fn under_bars(self) -> bool {
+        self == Kind::Profile
+    }
+
     /// Whether it can carry words: the text itself, and every figure. A
     /// profile cannot, since it is read for its rows and has no inside free
     /// of them.
@@ -1118,9 +1126,11 @@ pub const PROFILE_ALPHA: f64 = 0.30;
 pub const PROFILE_ROW_SHARE: f64 = 0.14 / 0.30;
 
 /// The hairline around a filled profile's silhouette, the drawing's and the
-/// study's alike. Soft on purpose: 0.55 cleared both tints by the most and
-/// read as a line drawn round the rows rather than their edge.
-pub const PROFILE_EDGE_ALPHA: f64 = 0.40;
+/// study's alike. Soft on purpose: 0.55 read as a box drawn round the rows
+/// on a light theme, and 0.45 is the lowest that is still a rim on every
+/// shipped theme, 1.59:1 on the chart and 0.05 ΔE off its own fill at worst,
+/// and stays one at 20% transparency.
+pub const PROFILE_EDGE_ALPHA: f64 = 0.45;
 
 /// The point of control's strength, the study's. Its width is its own,
 /// [`ProfileLook::poc_width`], a stroke where the study's is a hairline.
@@ -1759,6 +1769,20 @@ impl Drawing {
     /// rightward at all, since both its side grips sit on one spot and the
     /// left one is found first.
     pub fn drag_grip(&mut self, grip: Grip, at: Anchor) -> Grip {
+        // A profile's corners are its two edges: dragged past the other one,
+        // the hand holds the matching corner on the far side.
+        if self.kind == Kind::Profile {
+            let Some(side) = profile_side(grip) else { return grip };
+            let held = self.drag_grip_edge(side, at);
+            return match held == side {
+                true => grip,
+                false => mirrored(grip),
+            };
+        }
+        self.drag_grip_edge(grip, at)
+    }
+
+    fn drag_grip_edge(&mut self, grip: Grip, at: Anchor) -> Grip {
         self.move_grip(grip, at);
         let (earlier, later) = (self.from.ts.min(self.to.ts), self.from.ts.max(self.to.ts));
         let (lower, higher) = (self.from.price.min(self.to.price), self.from.price.max(self.to.price));
@@ -1795,6 +1819,14 @@ impl Drawing {
             self.to.price = at.price;
             return;
         }
+        // Whichever corner of a profile, its edge on that side.
+        let grip = match self.kind {
+            Kind::Profile => match profile_side(grip) {
+                Some(side) => side,
+                None => return,
+            },
+            _ => grip,
+        };
         if let Grip::Corner(n) = grip {
             if let Some(corner) = self.points.get_mut(n) {
                 *corner = at;
@@ -1885,12 +1917,34 @@ impl Drawing {
             // its properties, and a grip on its corner would promise a
             // stretch that is not on offer.
             Kind::Text => &[],
-            // Its two edges, which are the span it covers. Nothing moves its
-            // prices: those are the bars'.
-            Kind::Profile => &[Grip::Left, Grip::Right],
+            // A grip at each corner, where a hand looks for one, but all
+            // four move only the edge they are on: the span is all a profile
+            // has to change. Nothing moves its prices; those are the bars'.
+            Kind::Profile => &[Grip::From, Grip::FromTo, Grip::ToFrom, Grip::To],
             // Answered above, where the number of them is known.
             Kind::Zigzag => &[],
         }
+    }
+}
+
+/// The edge of a profile a corner grip moves: the left two its start, the
+/// right two its end.
+fn profile_side(grip: Grip) -> Option<Grip> {
+    match grip {
+        Grip::From | Grip::FromTo | Grip::Left => Some(Grip::Left),
+        Grip::To | Grip::ToFrom | Grip::Right => Some(Grip::Right),
+        _ => None,
+    }
+}
+
+/// The corner across from it on the other edge, at the same height.
+fn mirrored(grip: Grip) -> Grip {
+    match grip {
+        Grip::From => Grip::ToFrom,
+        Grip::ToFrom => Grip::From,
+        Grip::FromTo => Grip::To,
+        Grip::To => Grip::FromTo,
+        grip => grip,
     }
 }
 
@@ -1984,9 +2038,16 @@ impl Projected {
         }
         match (self.kind, grip) {
             (Kind::Text, _) => None,
-            (Kind::Profile, Grip::Left | Grip::Right) => {
+            // The corners of the box it fills, the left two on its start and
+            // the right two on its end, wherever its anchors are.
+            (Kind::Profile, Grip::From | Grip::FromTo | Grip::ToFrom | Grip::To) => {
                 let (left, top, w, h) = self.bounds();
-                Some((if grip == Grip::Left { left } else { left + w }, top + h / 2.0))
+                Some(match grip {
+                    Grip::From => (left, top),
+                    Grip::FromTo => (left, top + h),
+                    Grip::ToFrom => (left + w, top),
+                    _ => (left + w, top + h),
+                })
             }
             (Kind::Profile, _) => None,
             (_, Grip::From) => Some(self.from),
@@ -3416,7 +3477,11 @@ mod edge_grip_tests {
     #[test]
     fn a_profile_is_resized_by_its_edges_and_never_moved_whole() {
         let mut drawing = Drawing::new(Kind::Profile, Anchor::new(100, 10.0), Anchor::new(200, 10.0));
-        assert_eq!(drawing.grips(), vec![Grip::Left, Grip::Right]);
+        assert_eq!(drawing.grips(), vec![Grip::From, Grip::FromTo, Grip::ToFrom, Grip::To]);
+        // A top corner moves only the time of its edge.
+        drawing.move_grip(Grip::From, Anchor::new(50, 99.0));
+        assert_eq!((drawing.from.ts, drawing.from.price), (50, 10.0));
+        drawing.move_grip(Grip::From, Anchor::new(100, 99.0));
         drawing.shift(50, 1.0);
         assert_eq!((drawing.from.ts, drawing.to.ts), (100, 200), "not moved whole");
         drawing.move_grip(Grip::Right, Anchor::new(300, 0.0));

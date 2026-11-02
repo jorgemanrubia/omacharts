@@ -1607,8 +1607,10 @@ impl State {
         match grip {
             Grip::Top | Grip::Bottom => "ns-resize",
             Grip::Left | Grip::Right => "ew-resize",
-            // Not moved whole, so nothing to take hold of.
+            // Not moved whole, so nothing to take hold of; and its corners
+            // move only sideways.
             Grip::Body if drawing.kind == DrawingKind::Profile => "default",
+            _ if drawing.kind == DrawingKind::Profile => "ew-resize",
             Grip::Body => match held {
                 true => "grabbing",
                 false => "grab",
@@ -5029,10 +5031,11 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
     cr.rectangle(plot_x, price_y, plot_w, price_h);
     cr.clip();
     draw_indicator_fills(cr, state, &columns, &to_y);
+    draw_drawings(cr, state, &plan, &scale, true);
     draw_candles(cr, state, &columns, &to_y);
     draw_indicator_lines(cr, state, &columns, &to_y);
     cr.restore().ok();
-    draw_drawings(cr, state, &plan, &scale);
+    draw_drawings(cr, state, &plan, &scale, false);
 
     for (at, row) in plan.rows.iter().enumerate() {
         draw_row_edge(cr, state, &plan, at);
@@ -6546,7 +6549,11 @@ enum Lit {
 /// What has been drawn on the symbol, over the candles and the indicator
 /// lines and under the strips, clipped to the price plot so a line drawn
 /// off the top does not cross an RSI.
-fn draw_drawings(cr: &cairo::Context, state: &State, plan: &Layout, scale: &PriceScale) {
+///
+/// In two passes: `under` the bars for the kinds that are shading, and over
+/// them for the rest — with the grips of the shaded ones, since a grip under
+/// a candle is one nobody can find.
+fn draw_drawings(cr: &cairo::Context, state: &State, plan: &Layout, scale: &PriceScale, under: bool) {
     if state.drawings.is_empty() || !state.show_drawings {
         return;
     }
@@ -6554,12 +6561,21 @@ fn draw_drawings(cr: &cairo::Context, state: &State, plan: &Layout, scale: &Pric
     cr.rectangle(plan.plot_x, plan.price_y, plan.plot_w, plan.price_h);
     cr.clip();
     for (index, drawing) in state.drawings.iter().enumerate() {
+        let shaded = drawing.kind.under_bars();
+        let selected = state.selected.contains(&index);
+        if shaded != under && !(shaded && selected) {
+            continue;
+        }
         let projected = state.project(plan, scale, drawing);
         let typing = state.editing == Some(index);
-        let selected = state.selected.contains(&index);
         let lit = selected.then(|| state.lit_grip(index)).flatten();
+        if shaded && !under {
+            let colour = drawing.style(&state.configs).colour.hex(&state.theme);
+            draw_grips(cr, state, &projected, drawing, lit, &colour);
+            continue;
+        }
         let to_y = |price: f64| scale.to_y(price, plan.price_y, plan.price_h);
-        draw_drawing(cr, state, &projected, drawing, selected, typing, lit, &to_y);
+        draw_drawing(cr, state, &projected, drawing, selected && !shaded, typing, lit, &to_y);
         if typing {
             draw_editing_ground(cr, state, drawing);
         }
@@ -6710,29 +6726,41 @@ fn draw_drawing(
             let _ = cr.stroke();
             cr.set_dash(&[], 0.0);
         }
-        for grip in drawing.grips() {
-            let Some((x, y)) = projected.grip(grip) else { continue };
-            // The grip under the hand says so: without it, nothing tells a
-            // hand reaching for a point whether a press takes the point or
-            // the line, nor, once dragging, which point it has.
-            let shine = lit.filter(|(at, _)| *at == grip).map(|(_, how)| how);
-            if let Some(how) = shine {
-                let (half, alpha) = match how {
-                    Lit::Hover => (GRIP_HALO, 0.22),
-                    Lit::Held => (GRIP_HALO + 2.0, 0.32),
-                };
-                colors::set_source_alpha(cr, &colour, alpha);
-                cr.rectangle(x - half, y - half, 2.0 * half, 2.0 * half);
-                let _ = cr.fill();
-            }
-            let half = GRIP_HALF + if shine.is_some() { 1.0 } else { 0.0 };
-            colors::set_source(cr, &state.theme.ui.background);
-            cr.rectangle(x - half - 1.0, y - half - 1.0, 2.0 * half + 2.0, 2.0 * half + 2.0);
-            let _ = cr.fill();
-            colors::set_source(cr, &colour);
+        draw_grips(cr, state, projected, drawing, lit, &colour);
+    }
+}
+
+/// The squares at a selected drawing's grips, the one under the hand lit.
+fn draw_grips(
+    cr: &cairo::Context,
+    state: &State,
+    projected: &Projected,
+    drawing: &Drawing,
+    lit: Option<(Grip, Lit)>,
+    colour: &str,
+) {
+    for grip in drawing.grips() {
+        let Some((x, y)) = projected.grip(grip) else { continue };
+        // The grip under the hand says so: without it, nothing tells a
+        // hand reaching for a point whether a press takes the point or
+        // the line, nor, once dragging, which point it has.
+        let shine = lit.filter(|(at, _)| *at == grip).map(|(_, how)| how);
+        if let Some(how) = shine {
+            let (half, alpha) = match how {
+                Lit::Hover => (GRIP_HALO, 0.22),
+                Lit::Held => (GRIP_HALO + 2.0, 0.32),
+            };
+            colors::set_source_alpha(cr, colour, alpha);
             cr.rectangle(x - half, y - half, 2.0 * half, 2.0 * half);
             let _ = cr.fill();
         }
+        let half = GRIP_HALF + if shine.is_some() { 1.0 } else { 0.0 };
+        colors::set_source(cr, &state.theme.ui.background);
+        cr.rectangle(x - half - 1.0, y - half - 1.0, 2.0 * half + 2.0, 2.0 * half + 2.0);
+        let _ = cr.fill();
+        colors::set_source(cr, colour);
+        cr.rectangle(x - half, y - half, 2.0 * half, 2.0 * half);
+        let _ = cr.fill();
     }
 }
 

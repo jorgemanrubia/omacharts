@@ -251,7 +251,7 @@ crop: 800,180,960,1240
 
 The volume profile tool draws a profile of the bars in the span you drag across: how much volume traded at each price, the value area drawn stronger, and the point of control as a line across it. It covers any stretch, across sessions or inside one, over a [Volume Profile](/manual/indicators/volume/#volume-profile) study or on its own. Its height is the range of prices those bars reached.
 
-Drag its left or right edge to change the span, and the profile is worked out again. It cannot be moved whole or nudged with the arrow keys; a press on it that drags pans the chart. It takes no text. On a chart of another resolution it is worked out from that chart's bars. A pasted copy lands a few bars to the right of the original.
+It is drawn under the bars, as the study's profiles are, so the candles stay on top. Selected, it has a grip at each corner: the left two move its start and the right two its end, sideways only, and the profile is worked out again. It cannot be moved whole or nudged with the arrow keys; a press on it that drags pans the chart. It takes no text. On a chart of another resolution it is worked out from that chart's bars. A pasted copy lands a few bars to the right of the original.
 
 | Property | Does |
 |---|---|
