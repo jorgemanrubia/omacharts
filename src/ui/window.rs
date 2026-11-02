@@ -30,7 +30,7 @@ use crate::live::{Change, Live, Series, Watching, Written};
 use crate::loader::{Loader, Request, Response, BACKFILL, BACKGROUND, FOREGROUND, REFRESH};
 use crate::book_templates;
 use crate::store::{Store, DEFAULT_WATCHLIST};
-use crate::chart_defaults::{ChartDefaults, SETTING_PRICE_LINE, SETTING_SHOW_GRID};
+use crate::chart_defaults::{ChartDefaults, ChartSetting, SETTING_PRICE_LINE, SETTING_SHOW_GRID};
 use crate::theming::Theming;
 use crate::ui::chart::{Drawn, Echo};
 use crate::ui::pane::{self, ChartPane, Hideable, LadderSource, Node};
@@ -1607,12 +1607,12 @@ mod strip_window_tests {
         });
     }
 
-    /// Resetting a chart onto other trading hours lets go of its strips held
-    /// on their own scale, as choosing the hours does. Applying the defaults
-    /// to every chart never touches what is kept with its indicators, so it
-    /// keeps them: on screen and in a book that is not.
+    /// Other trading hours given one chart let go of its strips held on
+    /// their own scale, as choosing the hours does. Given every chart, they
+    /// never touch what is kept with its indicators, so it keeps them: on
+    /// screen and in a book that is not.
     #[test]
-    fn resetting_a_chart_onto_other_hours_lets_go_of_its_strips_and_applying_to_all_keeps_them() {
+    fn other_hours_for_one_chart_let_go_of_its_strips_and_for_every_chart_keep_them() {
         crate::ui::on_gtk(|| {
             let store = Rc::new(Store::memory().expect("a store"));
             let window = window(&store);
@@ -1626,18 +1626,14 @@ mod strip_window_tests {
                 Session::Regular => Session::Extended,
                 _ => Session::Regular,
             };
-            let mut defaults = ChartDefaults::load(&store);
-            defaults.template = None;
             pane.view.hold_strip_window(7, Some(omacharts_engine::IndicatorKind::Cvd), -1500.0, 2500.0);
-            defaults.session = same;
-            window.adopt_looks(&pane, &defaults);
+            window.give_setting(&pane, ChartSetting::Session(same));
             assert_eq!(pane.view.held_strip_windows().get(&7), Some(&(-1500.0, 2500.0)), "let go of on the same hours");
-            defaults.session = other;
-            window.adopt_looks(&pane, &defaults);
+            window.give_setting(&pane, ChartSetting::Session(other));
             assert_eq!(window.session(), other);
             assert!(pane.view.held_strip_windows().is_empty(), "held across other hours");
 
-            // Apply to all: the strips stay held, on screen and where a book
+            // Every chart: the strips stay held, on screen and where a book
             // not on screen is written.
             let elsewhere = {
                 let mut book = window.books.borrow()[0].clone();
@@ -1648,8 +1644,7 @@ mod strip_window_tests {
             };
             window.books.borrow_mut().push(elsewhere);
             pane.view.hold_strip_window(7, Some(omacharts_engine::IndicatorKind::Cvd), -1500.0, 2500.0);
-            defaults.session = same;
-            window.apply_chart_defaults_now(&defaults);
+            window.give_setting_everywhere(ChartSetting::Session(same));
             assert_eq!(window.session(), same, "the hours are applied");
             assert_eq!(pane.view.held_strip_windows().get(&7), Some(&(-1500.0, 2500.0)), "kept on screen");
             let books = window.books.borrow();
@@ -1699,9 +1694,8 @@ mod strip_window_tests {
             defaults.save(&store);
             let fresh = again.new_default_pane(Timeframe::days(1), Vec::new());
             assert_eq!(fresh.continuous.get(), Adjustment::AsTraded, "a new chart takes the default");
-            defaults.continuous = Adjustment::BackAdjusted;
-            again.adopt_looks(&again.focused_pane(), &defaults);
-            assert_eq!(again.continuous(), Adjustment::BackAdjusted, "and is put back on it");
+            again.change_chart_setting(ChartSetting::Continuous(Adjustment::BackAdjusted), true, || {});
+            assert_eq!(again.continuous(), Adjustment::BackAdjusted, "and every chart is put on it");
 
             // A feed whose own series is all there is offers nothing.
             let yahoo = window_on(&store, Arc::new(omacharts_engine::providers::Yahoo::new()));
@@ -1800,24 +1794,19 @@ mod legend_switch_tests {
         });
     }
 
-    /// Applying the defaults and resetting a chart put its legend back to
-    /// the default, as they do its gridlines: on screen and in a book that is
-    /// not.
+    /// The legend switched for every chart reaches every chart: on screen
+    /// and in a book that is not.
     #[test]
-    fn the_defaults_put_a_chart_s_legend_back() {
+    fn the_legend_for_every_chart_reaches_every_chart() {
         crate::ui::on_gtk(|| {
             let store = Rc::new(Store::memory().expect("a store"));
             let window = window(&store);
             window.save_workspace();
             let pane = three(&window);
-            let mut defaults = ChartDefaults::load(&store);
-            defaults.template = None;
-            defaults.shows_legend = false;
-            window.adopt_looks(&pane, &defaults);
+            window.change_chart_setting(ChartSetting::Legend(false), true, || {});
             assert!(!window.shows_legend());
             assert_eq!(named(&pane), 0);
-            defaults.shows_legend = true;
-            window.adopt_looks(&pane, &defaults);
+            window.change_chart_setting(ChartSetting::Legend(true), true, || {});
             assert_eq!(named(&pane), 2);
 
             let elsewhere = {
@@ -1827,8 +1816,7 @@ mod legend_switch_tests {
                 book
             };
             window.books.borrow_mut().push(elsewhere);
-            defaults.shows_legend = false;
-            window.apply_chart_defaults_now(&defaults);
+            window.change_chart_setting(ChartSetting::Legend(false), true, || {});
             assert!(!window.shows_legend(), "the chart on screen");
             assert!(!window.books.borrow()[1].panes[0].shows_legend, "the book written down");
         });
@@ -1836,7 +1824,7 @@ mod legend_switch_tests {
 }
 
 #[cfg(test)]
-mod apply_to_all_tests {
+mod every_chart_tests {
     use super::*;
     use crate::ui::window::trade::tests::window;
     use omacharts_engine::IndicatorKind;
@@ -1850,25 +1838,12 @@ mod apply_to_all_tests {
         vec![hidden, quiet, Indicator::new(3, IndicatorKind::Cvd)]
     }
 
-    /// Every widget under `root`.
-    fn widgets(root: gtk::Widget) -> Vec<gtk::Widget> {
-        let (mut found, mut stack) = (Vec::new(), vec![root]);
-        while let Some(widget) = stack.pop() {
-            let mut child = widget.first_child();
-            while let Some(next) = child {
-                child = next.next_sibling();
-                stack.push(next);
-            }
-            found.push(widget);
-        }
-        found
-    }
-
-    /// Apply to all, from Preferences, applies at once with nothing asked:
-    /// every chart takes the defaults but keeps its template and its
-    /// indicators as they are, on screen and in a chartbook that is not.
+    /// A row under Global applies at once with nothing asked: every chart
+    /// takes it but keeps its template and its indicators as they are, on
+    /// screen and in a chartbook that is not. The template is for new
+    /// charts only.
     #[test]
-    fn applying_to_all_keeps_every_chart_s_template_and_indicators_and_asks_nothing() {
+    fn every_chart_keeps_its_template_and_indicators_and_nothing_is_asked() {
         crate::ui::on_gtk(|| {
             let store = Rc::new(Store::memory().expect("a store"));
             let window = window(&store);
@@ -1895,34 +1870,28 @@ mod apply_to_all_tests {
             };
             window.books.borrow_mut().push(elsewhere);
 
-            // Defaults that differ from every chart, the template among them.
-            let mut defaults = ChartDefaults::load(&store);
-            defaults.template = Some(default.id);
-            defaults.log_scale = !pane.view.price_log();
-            defaults.shows_legend = !pane.shows_legend.get();
-            defaults.save(&store);
-
-            window.open_preferences_at(Some("defaults"));
-            let preferences = window.window.visible_dialog().expect("the preferences");
-            let apply = widgets(preferences.clone().upcast())
-                .into_iter()
-                .find_map(|widget| {
-                    widget.downcast::<gtk::Button>().ok().filter(|b| b.label().as_deref() == Some("Apply to all charts now"))
-                })
-                .expect("the Apply to all button");
-            apply.emit_clicked();
-
-            let shown = window.window.visible_dialog().expect("the preferences, still");
-            assert!(shown.downcast_ref::<adw::AlertDialog>().is_none(), "nothing is asked");
-            assert_eq!(shown, preferences, "nothing over the preferences");
+            // Rows that differ from every chart, the template among them.
+            let (log, legend) = (!pane.view.price_log(), !pane.shows_legend.get());
+            let settled = Rc::new(Cell::new(0));
+            for setting in [
+                ChartSetting::Template(Some(default.id)),
+                ChartSetting::LogScale(log),
+                ChartSetting::Legend(legend),
+            ] {
+                let settled = settled.clone();
+                window.change_chart_setting(setting, true, move || settled.set(settled.get() + 1));
+            }
+            assert_eq!(settled.get(), 3, "each settled at once");
+            assert!(window.window.visible_dialog().is_none(), "nothing is asked");
+            assert_eq!(ChartDefaults::load(&store).template, Some(default.id), "new charts open on it");
 
             // The chart on screen: its own indicators, settings and all, and
-            // no template; the rest of the defaults applied.
+            // no template; the rows applied.
             assert_eq!(pane.template.get(), None, "kept off the default template");
             assert_eq!(*pane.indicators.borrow(), mine, "its own indicators, as they were");
             assert_eq!(pane.view.held_strip_windows().get(&3), Some(&(-1500.0, 2500.0)), "its strip as held");
-            assert_eq!(pane.view.price_log(), defaults.log_scale);
-            assert_eq!(pane.shows_legend.get(), defaults.shows_legend);
+            assert_eq!(pane.view.price_log(), log);
+            assert_eq!(pane.shows_legend.get(), legend);
 
             // The chartbook not on screen, where it is written.
             let books = window.books.borrow();
@@ -1932,15 +1901,14 @@ mod apply_to_all_tests {
             assert_eq!(templated.template, Some(on_a.id), "kept on its own template");
             assert_eq!(templated.indicators, on_a.indicators);
             for stored in [theirs, templated] {
-                assert_eq!(stored.log_scale, defaults.log_scale);
-                assert_eq!(stored.shows_legend, defaults.shows_legend);
+                assert_eq!(stored.log_scale, log);
+                assert_eq!(stored.shows_legend, legend);
             }
             drop(books);
-            preferences.force_close();
 
             // A chart on screen on a template stays on it too.
             window.set_template(Some(on_a.id));
-            window.apply_chart_defaults();
+            window.change_chart_setting(ChartSetting::Template(None), true, || {});
             assert_eq!(pane.template.get(), Some(on_a.id), "kept on its own template");
             assert_eq!(*pane.indicators.borrow(), on_a.indicators);
         });
@@ -8377,7 +8345,7 @@ impl Window {
             self.store.clone(),
             self.theming.clone(),
             Rc::new(move || this.restyle()),
-            Rc::new(move |px| thicken.set_ohlc_thickness_everywhere(px)),
+            Rc::new(move |px| thicken.change_chart_setting(ChartSetting::Thickness(px), true, || {})),
         )
     }
 
@@ -11722,56 +11690,89 @@ impl Window {
     pub fn reset_chart_to_defaults(self: &Rc<Self>, done: impl Fn() + 'static) {
         let defaults = ChartDefaults::load(&self.store);
         let pane = self.focused_pane();
-        self.adopt_looks(&pane, &defaults);
+        pane.bars_hidden.set(false);
+        pane.view.set_bars_hidden(false);
+        pane.set_ohlc_thickness(defaults.ohlc_thickness);
+        pane.session.set(defaults.session);
+        if pane.continuous.replace(defaults.continuous) != defaults.continuous {
+            pane.view.free_strip_windows();
+        }
+        pane.view.set_price_log(defaults.log_scale);
+        self.set_pane_shows_drawings(&pane, defaults.shows_drawings);
+        self.set_pane_sends_drawings(&pane, defaults.sends_drawings);
+        if pane.shows_legend.replace(defaults.shows_legend) != defaults.shows_legend {
+            self.rebuild_legend_of(&pane);
+        }
         self.sync_chart_actions(&pane);
         self.redraw_current();
         self.save_workspace();
         self.choose_template(defaults.template, done);
     }
 
-    /// Every chart, in every chartbook, on the defaults, at once: there is
-    /// nothing to ask, since it never touches a chart's indicators.
+    /// The focused chart's settings, in the shape of the defaults.
+    pub fn focused_settings(&self) -> ChartDefaults {
+        let pane = self.focused_pane();
+        ChartDefaults {
+            session: pane.session.get(),
+            log_scale: pane.view.price_log(),
+            shows_drawings: pane.shows_drawings.get(),
+            sends_drawings: pane.sends_drawings.get(),
+            template: pane.template.get(),
+            ohlc_thickness: pane.ohlc_thickness.get(),
+            continuous: pane.continuous.get(),
+            shows_legend: pane.shows_legend.get(),
+        }
+    }
+
+    /// Give `setting` to the focused chart, or with `every` to the defaults
+    /// and every chart in every chartbook. Only that row: turning the log
+    /// scale on everywhere leaves each chart's hours as they were.
     ///
-    /// Everything of the defaults but the template. A chart's template, its
-    /// indicators and all that is kept with them, down to the strips each is
-    /// held at, are its own and stay as they are; the template a new chart
-    /// opens on is for new charts only.
-    pub fn apply_chart_defaults(self: &Rc<Self>) {
-        let defaults = ChartDefaults::load(&self.store);
-        self.apply_chart_defaults_now(&defaults);
-    }
-
-    /// How many pixels wide every chart draws its OHLC bars, in every
-    /// chartbook, and what a new chart opens with: Appearance's Thickness.
-    pub fn set_ohlc_thickness_everywhere(self: &Rc<Self>, px: u8) {
-        let px = crate::chart_defaults::clamp_thickness(px);
-        let mut defaults = ChartDefaults::load(&self.store);
-        if defaults.ohlc_thickness != px {
-            defaults.ohlc_thickness = px;
-            defaults.save(&self.store);
-        }
-        for pane in self.panes.borrow().iter() {
-            pane.set_ohlc_thickness(px);
-        }
-        // The books not on screen are only written down, so they are changed
-        // where they are written.
-        let active = self.active.get();
-        for (at, book) in self.books.borrow_mut().iter_mut().enumerate() {
-            if at != active {
-                for stored in &mut book.panes {
-                    stored.ohlc_thickness = Some(px);
-                }
+    /// Every chart takes it at once, with nothing to ask, since it never
+    /// touches a chart's indicators. `settled` runs once it is settled, which
+    /// for a template on the focused chart may be after asking, so the
+    /// caller can show what came of it.
+    pub fn change_chart_setting(
+        self: &Rc<Self>,
+        setting: ChartSetting,
+        every: bool,
+        settled: impl Fn() + 'static,
+    ) {
+        if !every {
+            if let ChartSetting::Template(template) = setting {
+                self.choose_template(template, settled);
+                return;
             }
+            let pane = self.focused_pane();
+            self.give_setting(&pane, setting);
+            self.sync_chart_actions(&pane);
+            self.redraw_current();
+            self.save_workspace();
+            settled();
+            return;
         }
-        self.redraw_current();
-        self.save_workspace();
-        self.chart_changed_elsewhere();
+        self.give_setting_everywhere(setting);
+        settled();
     }
 
-    fn apply_chart_defaults_now(self: &Rc<Self>, defaults: &ChartDefaults) {
+    /// `setting` to the defaults and every chart.
+    ///
+    /// A chart's template, its indicators and all that is kept with them,
+    /// down to the strips each is held at, are its own and stay as they are:
+    /// the template a new chart opens on is for new charts only, and other
+    /// hours keep the strips held.
+    fn give_setting_everywhere(self: &Rc<Self>, setting: ChartSetting) {
+        let mut defaults = ChartDefaults::load(&self.store);
+        defaults.set(setting);
+        defaults.save(&self.store);
         let panes = self.panes.borrow().clone();
         for pane in &panes {
-            self.adopt_chart_settings(pane, defaults);
+            match setting {
+                ChartSetting::Template(_) => {}
+                ChartSetting::Session(session) => pane.session.set(session),
+                ChartSetting::Continuous(join) => pane.continuous.set(join),
+                _ => self.give_setting(pane, setting),
+            }
         }
         // The books not on screen are only written down, so they are changed
         // where they are written.
@@ -11781,17 +11782,19 @@ impl Window {
                 continue;
             }
             for stored in &mut book.panes {
-                stored.bars_hidden = false;
-                stored.ohlc_thickness = Some(defaults.ohlc_thickness);
-                stored.session = defaults.session.key().to_string();
-                stored.continuous = Some(defaults.continuous.key().to_string());
-                stored.log_scale = defaults.log_scale;
-                stored.shows_drawings = defaults.shows_drawings;
-                stored.shows_legend = defaults.shows_legend;
-                // Not sending: turning it on or off moves a chart's drawings
-                // between it and its symbol, which only a chart on screen
-                // can do. It takes the default when its book is next open
-                // and somebody applies again.
+                match setting {
+                    ChartSetting::Session(session) => stored.session = session.key().to_string(),
+                    ChartSetting::LogScale(on) => stored.log_scale = on,
+                    ChartSetting::ShowsDrawings(on) => stored.shows_drawings = on,
+                    // Not sending: turning it on or off moves a chart's
+                    // drawings between it and its symbol, which only a chart
+                    // on screen can do.
+                    ChartSetting::SendsDrawings(_) => {}
+                    ChartSetting::Template(_) => {}
+                    ChartSetting::Thickness(px) => stored.ohlc_thickness = Some(px),
+                    ChartSetting::Continuous(join) => stored.continuous = Some(join.key().to_string()),
+                    ChartSetting::Legend(on) => stored.shows_legend = on,
+                }
             }
         }
         self.sync_chart_actions(&self.focused_pane());
@@ -11799,36 +11802,32 @@ impl Window {
         self.save_workspace();
     }
 
-    /// Everything of the defaults but the template, for a chart being put
-    /// back on what a new chart opens with: other hours let go of the strips
-    /// held, as `set_session` does.
-    fn adopt_looks(self: &Rc<Self>, pane: &Rc<ChartPane>, defaults: &ChartDefaults) {
-        let other_hours =
-            pane.session.get() != defaults.session || pane.continuous.get() != defaults.continuous;
-        self.adopt_chart_settings(pane, defaults);
-        if other_hours {
-            pane.view.free_strip_windows();
-        }
-    }
-
-    /// A chart's own settings from the defaults, drawn as it now is, and
-    /// nothing of its indicators: the legend's switch is the chart's, read
-    /// over them. Drawings move the way the switches in its own settings
-    /// move them.
-    fn adopt_chart_settings(self: &Rc<Self>, pane: &Rc<ChartPane>, defaults: &ChartDefaults) {
-        pane.bars_hidden.set(false);
-        pane.view.set_bars_hidden(false);
-        pane.set_ohlc_thickness(defaults.ohlc_thickness);
-        let theme = self.theme();
-        pane.view.restyle(theme.clone(), self.theming.borrow().bar_scheme());
-        self.apply_marks_to(pane);
-        pane.session.set(defaults.session);
-        pane.continuous.set(defaults.continuous);
-        pane.view.set_price_log(defaults.log_scale);
-        self.set_pane_shows_drawings(pane, defaults.shows_drawings);
-        self.set_pane_sends_drawings(pane, defaults.sends_drawings);
-        if pane.shows_legend.replace(defaults.shows_legend) != defaults.shows_legend {
-            self.rebuild_legend_of(pane);
+    /// One chart given `setting`, drawn as it now is. Drawings move the way
+    /// the switches in its own settings move them.
+    fn give_setting(self: &Rc<Self>, pane: &Rc<ChartPane>, setting: ChartSetting) {
+        match setting {
+            // Other hours let go of the strips held, as `set_session` does.
+            ChartSetting::Session(session) => {
+                if pane.session.replace(session) != session {
+                    pane.view.free_strip_windows();
+                }
+            }
+            ChartSetting::LogScale(on) => pane.view.set_price_log(on),
+            ChartSetting::ShowsDrawings(on) => self.set_pane_shows_drawings(pane, on),
+            ChartSetting::SendsDrawings(on) => self.set_pane_sends_drawings(pane, on),
+            ChartSetting::Template(template) => self.put_on_template(pane, template),
+            ChartSetting::Thickness(px) => pane.set_ohlc_thickness(px),
+            // Another series, asked for afresh, as `set_continuous` does.
+            ChartSetting::Continuous(join) => {
+                if pane.continuous.replace(join) != join {
+                    pane.view.free_strip_windows();
+                }
+            }
+            ChartSetting::Legend(on) => {
+                if pane.shows_legend.replace(on) != on {
+                    self.rebuild_legend_of(pane);
+                }
+            }
         }
     }
 

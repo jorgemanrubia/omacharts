@@ -4,7 +4,8 @@
 //! `VISUAL        GLOBAL / LOCAL`, the choice against the right edge. Local
 //! rather than the chart's symbol, which can be FRED:IRLTLT01GBM156N long;
 //! the symbol is in its tooltip. Picking Local greys the rows that can never
-//! be a chart's own; nothing is stored per chart yet.
+//! be a chart's own. The look is not stored per chart yet; the Charts page's
+//! settings are, and follow the choice.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -34,8 +35,9 @@ pub fn follow(window: &Window) {
 }
 
 /// The rule, for the focused chart showing `symbol`. Picking Local greys
-/// every [`GLOBAL_ONLY`] row under `pages`.
-pub fn rule(symbol: Option<String>, pages: Vec<gtk::Widget>) -> gtk::Widget {
+/// every [`GLOBAL_ONLY`] row under `pages`. `scoped` hears whether Local is
+/// picked each time that changes, and again when the focus moves while it is.
+pub fn rule(symbol: Option<String>, pages: Vec<gtk::Widget>, scoped: impl Fn(bool) + 'static) -> gtk::Widget {
     let global = choice("GLOBAL");
     let local = choice("LOCAL");
     local.add_css_class("scope-local");
@@ -57,13 +59,16 @@ pub fn rule(symbol: Option<String>, pages: Vec<gtk::Widget>) -> gtk::Widget {
     row.append(&crate::ui::preferences::rule_word("/"));
     row.append(&local);
 
+    let scoped: Rc<dyn Fn(bool)> = Rc::new(scoped);
     let rename: Rename = {
-        let (global, local) = (global.clone(), local.clone());
+        let (global, local, scoped) = (global.clone(), local.clone(), scoped.clone());
         Rc::new(move |symbol: Option<String>| {
             local.set_sensitive(symbol.is_some());
             local.set_tooltip_text(symbol.as_deref());
             if symbol.is_none() {
                 global.set_active(true);
+            } else if local.is_active() {
+                scoped(true);
             }
         })
     };
@@ -76,6 +81,7 @@ pub fn rule(symbol: Option<String>, pages: Vec<gtk::Widget>) -> gtk::Widget {
         for page in &pages {
             grey(page, !local.is_active());
         }
+        scoped(local.is_active());
     });
     row.upcast()
 }

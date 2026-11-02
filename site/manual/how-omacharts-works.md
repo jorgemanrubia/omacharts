@@ -52,7 +52,7 @@ and [Hotkeys](/manual/hotkeys/).
 A chart shows one instrument at one resolution, such as NVDA on the daily or
 SPY on the five-minute. Each chart has its own indicators, trading hours and
 price scale; how bars are drawn and coloured is the same on every chart. New charts start from Preferences ›
-Charts › Defaults ([Chart settings](/manual/chart-settings/)).
+Charts › Settings ([Chart settings](/manual/chart-settings/)).
 
 See [Symbols and search](/manual/symbols/), [Charts](/manual/charts/) and
 [Indicators](/manual/indicators/).

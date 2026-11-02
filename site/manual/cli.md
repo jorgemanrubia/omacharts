@@ -1548,13 +1548,13 @@ same.
 | `bar_up_hollow`, `bar_down_hollow`, `bar_up_border`, `bar_down_border` | on, off | off | Appearance › Bars › Up, Down: Hollow or Bordered | [Themes](/manual/themes/#bars) |
 | `bar_style` | `candles`, `ohlc` | `candles` | Appearance › Bars › Drawn as | [Bars](/manual/charts/#bars) |
 | `ohlc_thickness` | `1` to `4` | `2` | Appearance › Bars › Thickness | [Style](/manual/charts/#style) |
-| `chart_session` | `extended`, `regular` | `extended` | Charts › Defaults › Hours | [Chart settings](/manual/chart-settings/) |
+| `chart_session` | `extended`, `regular` | `extended` | Charts › Settings › Hours | [Chart settings](/manual/chart-settings/) |
 | `show_grid` | on, off | off | Overlays › Gridlines | [Gridlines](/manual/charts/#gridlines) |
 | `price_line` | on, off | on | Overlays › Last price line | [The last price line](/manual/charts/#the-last-price-line) |
-| `chart_log_scale` | on, off | off | Charts › Defaults › Logarithmic scale | [Chart settings](/manual/chart-settings/) |
-| `chart_shows_drawings` | on, off | on | Charts › Defaults › Show drawings from other charts | [Drawings](/manual/drawings/) |
-| `chart_sends_drawings` | on, off | on | Charts › Defaults › Send drawings to other charts | [Drawings](/manual/drawings/) |
-| `chart_template` | a chart template's name or `id:N`, or `none` | `Default` | Charts › Defaults › Template | [Chart templates](/manual/chart-templates/) |
+| `chart_log_scale` | on, off | off | Charts › Settings › Logarithmic scale | [Chart settings](/manual/chart-settings/) |
+| `chart_shows_drawings` | on, off | on | Charts › Settings › Show drawings from other charts | [Drawings](/manual/drawings/) |
+| `chart_sends_drawings` | on, off | on | Charts › Settings › Send drawings to other charts | [Drawings](/manual/drawings/) |
+| `chart_template` | a chart template's name or `id:N`, or `none` | `Default` | Charts › Settings › Template | [Chart templates](/manual/chart-templates/) |
 | `chart_header` | comma-separated `symbol`, `resolution`, `change`, `template`, `title`, `feed`, `stripe`; or `none` | `feed,symbol,resolution,change` | Overlays › Left | [Charts](/manual/charts/) |
 | `chart_header_center` | the same | `title` | Overlays › Center | [Charts](/manual/charts/) |
 | `chart_time_zone` | an IANA name such as `Europe/London` or `America/Chicago`, or `exchange` for each chart's exchange's own | `America/New_York` | General › Time › Time zone | [Preferences](/manual/preferences/#time) |

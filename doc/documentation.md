@@ -177,8 +177,8 @@ follows").
     [exit 0]
   ```
 
-- **Paths through the UI** with ›: Preferences › Charts › Defaults. Labels as
-  the UI spells them, in the same case, in bold: **Apply to all charts now**.
+- **Paths through the UI** with ›: Preferences › Charts › Settings. Labels as
+  the UI spells them, in the same case, in bold: **Reset to defaults**.
 - **Enumerated values** as the command takes them: `regular`, `extended`;
   `focus`, `follow`, `pinned`.
 - **The app** is Omacharts; **the command** is `omacharts`. A chart is named

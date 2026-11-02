@@ -19,7 +19,7 @@ use omacharts_engine::Session;
 
 use crate::backup;
 use crate::cache;
-use crate::chart_defaults::ChartDefaults;
+use crate::chart_defaults::{ChartDefaults, ChartSetting};
 use crate::store::Store;
 use crate::theming::Theming;
 use crate::ui::form_window;
@@ -78,9 +78,13 @@ struct Context {
     window: Rc<Window>,
     /// The list on the Templates tab, rebuilt whenever one changes.
     templates_group: RefCell<Option<adw::PreferencesGroup>>,
-    /// Puts the Defaults tab's template choice back in step with the list,
-    /// after a template is made, renamed or deleted on the tab beside it.
-    refill_default_template: RefCell<Option<Rc<dyn Fn()>>>,
+    /// Whether the Charts page changes the focused chart rather than every
+    /// chart: the rule over the sidebar, picked Local.
+    charts_local: std::cell::Cell<bool>,
+    /// Reads the Charts page's rows again: after the scope or the focused
+    /// chart changes, and after a template is made, renamed or deleted on the
+    /// tab beside it.
+    show_chart_settings: RefCell<Option<Rc<dyn Fn()>>>,
 }
 
 thread_local! {
@@ -134,11 +138,11 @@ impl Preferences {
         let data_page = adw::PreferencesPage::new();
         let trading_page = adw::PreferencesPage::new();
 
-        // Charts is two things: what a new chart opens with, and the sets of
+        // Charts is two things: a chart's settings, and the sets of
         // indicators charts can share.
         let charts_templates_page = adw::PreferencesPage::new();
         let charts = gtk::Stack::new();
-        charts.add_titled(&charts_page, Some("defaults"), "Defaults");
+        charts.add_titled(&charts_page, Some("settings"), "Settings");
         charts.add_titled(&charts_templates_page, Some("templates"), "Templates");
         // Opened from something on a chart, at the tab that is about it;
         // otherwise where it was left.
@@ -166,13 +170,9 @@ impl Preferences {
             app.push((TRADING, "Trading", "view-list-bullet-symbolic", trading_page.clone().upcast()));
         }
         let symbol = window.focused_pane().instrument.borrow().as_ref().map(|i| i.display_symbol());
-        let rule = crate::ui::scope_rule::rule(
-            symbol,
-            vec![appearance_page.clone().upcast(), overlays_page.clone().upcast()],
-        );
         let visual: [Section; 3] = [
-            ("appearance", "Appearance", "preferences-desktop-appearance-symbolic", appearance_page.upcast()),
-            ("overlays", "Overlays", "view-grid-symbolic", overlays_page.upcast()),
+            ("appearance", "Appearance", "preferences-desktop-appearance-symbolic", appearance_page.clone().upcast()),
+            ("overlays", "Overlays", "view-grid-symbolic", overlays_page.clone().upcast()),
             ("charts", "Charts", "utilities-system-monitor-symbolic", charts.upcast()),
         ];
         // Opened from a chart at the section it asked for, else where it was
@@ -199,9 +199,24 @@ impl Preferences {
             trading_page,
             window,
             templates_group: RefCell::new(None),
-            refill_default_template: RefCell::new(None),
+            charts_local: std::cell::Cell::new(false),
+            show_chart_settings: RefCell::new(None),
         });
         build_general_page(&context);
+        let rule = {
+            let context = context.clone();
+            crate::ui::scope_rule::rule(
+                symbol,
+                vec![appearance_page.upcast(), overlays_page.upcast()],
+                move |local| {
+                    context.charts_local.set(local);
+                    let show = context.show_chart_settings.borrow().clone();
+                    if let Some(show) = show {
+                        show();
+                    }
+                },
+            )
+        };
 
         // A form window, but not one `form_window` keeps: Preferences
         // remembers its own.
@@ -436,86 +451,34 @@ fn zoom_row(context: &Rc<Context>) -> adw::ActionRow {
     row
 }
 
-/// One edit to the defaults, as the rows on the Charts page make them.
-type Change = dyn Fn(&dyn Fn(&mut ChartDefaults));
-
-/// What a new chart opens with, and a way to give it to every chart there is.
+/// A chart's settings, for every chart or for the focused one, as the rule
+/// over the sidebar says.
 ///
-/// Changing a row changes only what the next chart opens with: charts already
-/// open have settings of their own, and a preference that reached into them
-/// unasked would undo whatever was set on each. Apply to all is the asking.
+/// Global, a row changes the defaults and every chart in every chartbook at
+/// once: picking Global is the asking. Local, it changes the focused chart,
+/// as its own settings would. Either way the rows show what they change, read
+/// again after every change, so a template change declined shows the old one.
 fn build_charts_page(context: &Rc<Context>) {
-    let defaults = Rc::new(std::cell::Cell::new(ChartDefaults::load(&context.store)));
-
     // Grouped as a chart's own settings are, so a row is found in the same
     // place in both.
     let scales = adw::PreferencesGroup::new();
     scales.set_title("Scales");
     let hours = adw::PreferencesGroup::new();
     hours.set_title("Session");
+    let indicators = adw::PreferencesGroup::new();
+    indicators.set_title("Indicators");
     let drawings = adw::PreferencesGroup::new();
     drawings.set_title("Drawings");
 
-    // Once something has changed: what that did, and the offer to take it
-    // further than new charts, as one line under the last group. Faded rather
-    // than removed while there is nothing to say, so nothing moves when it
-    // appears.
-    let footer = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-    footer.set_halign(gtk::Align::End);
-    footer.set_margin_top(36);
-    let note = gtk::Label::new(Some("New charts will use these options."));
-    note.add_css_class("dim-label");
-    let apply = gtk::Button::with_label("Apply to all charts now");
-    footer.append(&note);
-    footer.append(&apply);
-    let offer = |line: &gtk::Box, shown: bool| {
-        line.set_opacity(if shown { 1.0 } else { 0.0 });
-        line.set_sensitive(shown);
-        line.set_can_target(shown);
-    };
-    offer(&footer, false);
-    let window = context.window.clone();
-    let line = footer.clone();
-    // At once, with nothing to ask: every chart is drawn on the defaults as
-    // the line fades, and its indicators are left as they are.
-    apply.connect_clicked(move |_| {
-        window.apply_chart_defaults();
-        offer(&line, false);
-    });
+    // Rows announce their value as they are set, too; only a person's change
+    // is one to make.
+    let showing = Rc::new(std::cell::Cell::new(false));
+    let change: Rc<RefCell<Option<Rc<dyn Fn(ChartSetting)>>>> = Rc::default();
 
-    // Every row writes through here: the defaults are saved as they change,
-    // and the button to take them further appears.
-    let changed: Rc<Change> = {
-        let store = context.store.clone();
-        let defaults = defaults.clone();
-        let footer = footer.clone();
-        Rc::new(move |change| {
-            let mut next = defaults.get();
-            change(&mut next);
-            // Rows announce their value as they are drawn, too; only a real
-            // change is something to apply.
-            if next == defaults.get() {
-                return;
-            }
-            next.save(&store);
-            defaults.set(next);
-            offer(&footer, true);
-        })
-    };
-
-    let current = defaults.get();
     let session = adw::ComboRow::new();
     session.set_title("Hours");
     let sessions: Vec<String> = Session::ALL.iter().map(|s| s.label().to_string()).collect();
     session.set_model(Some(&string_list(&sessions)));
-    session.set_selected(Session::ALL.iter().position(|s| *s == current.session).unwrap_or(0) as u32);
-    {
-        let changed = changed.clone();
-        session.connect_selected_notify(move |row| {
-            let Some(chosen) = Session::ALL.get(row.selected() as usize).copied() else { return };
-            changed(&|d| d.session = chosen);
-        });
-    }
     hours.add(&session);
 
     let continuous = adw::ComboRow::new();
@@ -524,12 +487,6 @@ fn build_charts_page(context: &Rc<Context>) {
         use omacharts_engine::continuous::Adjustment;
         let joins: Vec<String> = Adjustment::ALL.iter().map(|a| a.label().to_string()).collect();
         continuous.set_model(Some(&string_list(&joins)));
-        continuous.set_selected(Adjustment::ALL.iter().position(|a| *a == current.continuous).unwrap_or(0) as u32);
-        let changed = changed.clone();
-        continuous.connect_selected_notify(move |row| {
-            let Some(chosen) = Adjustment::ALL.get(row.selected() as usize).copied() else { return };
-            changed(&|d| d.continuous = chosen);
-        });
     }
     // Only where some feed has a choice to make: the default of nothing is
     // no row.
@@ -537,84 +494,117 @@ fn build_charts_page(context: &Rc<Context>) {
         hours.add(&continuous);
     }
 
-    let switch = |title: &str, on: bool, set: fn(&mut ChartDefaults, bool)| {
+    let switch = |title: &str| {
         let row = adw::SwitchRow::new();
         row.set_title(title);
-        row.set_active(on);
-        let changed = changed.clone();
-        row.connect_active_notify(move |row| {
-            let on = row.is_active();
-            changed(&|d| set(d, on));
-        });
         row
     };
-    scales.add(&switch("Logarithmic scale", current.log_scale, |d, on| d.log_scale = on));
-    drawings.add(&switch("Show drawings from other charts", current.shows_drawings, |d, on| {
-        d.shows_drawings = on
-    }));
-    drawings.add(&switch("Send drawings to other charts", current.sends_drawings, |d, on| {
-        d.sends_drawings = on
-    }));
-
-    // Which template a new chart shows, as a choice like the others: "None"
-    // first, then every template. Refilled when the Templates tab changes
-    // the list, which is why the ids are kept beside the row rather than
-    // captured once.
-    let indicators = adw::PreferencesGroup::new();
-    indicators.set_title("Indicators");
+    let log = switch("Logarithmic scale");
+    scales.add(&log);
+    let shows = switch("Show drawings from other charts");
+    let sends = switch("Send drawings to other charts");
+    drawings.add(&shows);
+    drawings.add(&sends);
+    // "None" first, then every template. The ids are kept beside the row,
+    // since the list changes with the Templates tab.
     let template = adw::ComboRow::new();
     template.set_title("Template");
+    indicators.add(&template);
+    let legend = switch(crate::ui::chart_settings::LEGEND_LABEL);
+    indicators.add(&legend);
     let ids: Rc<RefCell<Vec<u32>>> = Rc::new(RefCell::new(Vec::new()));
-    let filling = Rc::new(std::cell::Cell::new(false));
-    let refill: Rc<dyn Fn()> = {
-        let window = context.window.clone();
-        let store = context.store.clone();
-        let template = template.clone();
-        let ids = ids.clone();
-        let filling = filling.clone();
-        let defaults = defaults.clone();
+
+    let show: Rc<dyn Fn()> = {
+        let context = context.clone();
+        let (session, continuous, log, shows, sends, legend, template) = (
+            session.clone(),
+            continuous.clone(),
+            log.clone(),
+            shows.clone(),
+            sends.clone(),
+            legend.clone(),
+            template.clone(),
+        );
+        let (ids, showing) = (ids.clone(), showing.clone());
         Rc::new(move || {
-            let templates = window.templates();
-            // Deleting the default's template puts new charts back on None,
-            // which this has to hear about before it shows a choice.
-            let mut current = defaults.get();
-            current.template = ChartDefaults::load(&store).template;
-            defaults.set(current);
+            let current = match context.charts_local.get() {
+                true => context.window.focused_settings(),
+                false => ChartDefaults::load(&context.store),
+            };
+            let templates = context.window.templates();
             let mut names = vec!["None".to_string()];
             names.extend(templates.iter().map(|t| t.name.clone()));
             *ids.borrow_mut() = templates.iter().map(|t| t.id).collect();
-            filling.set(true);
+            showing.set(true);
+            session.set_selected(Session::ALL.iter().position(|s| *s == current.session).unwrap_or(0) as u32);
+            {
+                use omacharts_engine::continuous::Adjustment;
+                let at = Adjustment::ALL.iter().position(|a| *a == current.continuous).unwrap_or(0);
+                continuous.set_selected(at as u32);
+            }
+            log.set_active(current.log_scale);
+            shows.set_active(current.shows_drawings);
+            sends.set_active(current.sends_drawings);
+            legend.set_active(current.shows_legend);
             template.set_model(Some(&string_list(&names)));
             let at = current
                 .template
                 .and_then(|id| templates.iter().position(|t| t.id == id))
-                .map(|at| at + 1)
-                .unwrap_or(0);
+                .map_or(0, |at| at + 1);
             template.set_selected(at as u32);
-            filling.set(false);
+            showing.set(false);
         })
     };
-    refill();
-    {
-        let changed = changed.clone();
-        template.connect_selected_notify(move |row| {
-            if filling.get() {
+    show();
+
+    let change: Rc<dyn Fn(ChartSetting)> = {
+        let context = context.clone();
+        let show = show.clone();
+        let made: Rc<dyn Fn(ChartSetting)> = Rc::new(move |setting| {
+            if showing.get() {
                 return;
             }
-            let chosen = match row.selected() as usize {
-                0 => None,
-                at => ids.borrow().get(at - 1).copied(),
-            };
-            changed(&|d| d.template = chosen);
+            let show = show.clone();
+            context.window.change_chart_setting(setting, !context.charts_local.get(), move || show());
+        });
+        *change.borrow_mut() = Some(made.clone());
+        made
+    };
+    {
+        let change = change.clone();
+        session.connect_selected_notify(move |row| {
+            let Some(chosen) = Session::ALL.get(row.selected() as usize).copied() else { return };
+            change(ChartSetting::Session(chosen));
         });
     }
-    *context.refill_default_template.borrow_mut() = Some(refill);
-    indicators.add(&template);
-    indicators.add(&switch(crate::ui::chart_settings::LEGEND_LABEL, current.shows_legend, |d, on| {
-        d.shows_legend = on
-    }));
+    let toggle = |row: &adw::SwitchRow, setting: fn(bool) -> ChartSetting| {
+        let change = change.clone();
+        row.connect_active_notify(move |row| change(setting(row.is_active())));
+    };
+    toggle(&log, ChartSetting::LogScale);
+    toggle(&shows, ChartSetting::ShowsDrawings);
+    toggle(&sends, ChartSetting::SendsDrawings);
+    toggle(&legend, ChartSetting::Legend);
+    {
+        let change = change.clone();
+        continuous.connect_selected_notify(move |row| {
+            use omacharts_engine::continuous::Adjustment;
+            let Some(chosen) = Adjustment::ALL.get(row.selected() as usize).copied() else { return };
+            change(ChartSetting::Continuous(chosen));
+        });
+    }
+    template.connect_selected_notify(move |row| {
+        let chosen = match row.selected() as usize {
+            0 => None,
+            at => match ids.borrow().get(at - 1) {
+                Some(id) => Some(*id),
+                None => return,
+            },
+        };
+        change(ChartSetting::Template(chosen));
+    });
+    *context.show_chart_settings.borrow_mut() = Some(show);
 
-    drawings.add(&footer);
     for group in [&scales, &hours, &indicators, &drawings] {
         context.charts_page.add(group);
     }
@@ -911,9 +901,9 @@ fn edit_template(context: &Rc<Context>, template: u32) {
 /// Everything showing the list of templates, read again.
 fn templates_changed(context: &Rc<Context>) {
     rebuild_templates(context);
-    let refill = context.refill_default_template.borrow().clone();
-    if let Some(refill) = refill {
-        refill();
+    let show = context.show_chart_settings.borrow().clone();
+    if let Some(show) = show {
+        show();
     }
 }
 

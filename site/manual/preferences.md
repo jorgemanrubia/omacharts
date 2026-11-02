@@ -65,13 +65,12 @@ state:
 capture: bin/headless-window shot /tmp/charts.png
 crop: 292,76,1976,1288
 -->
-{% include figure.html src="/assets/manual/preferences/charts.png" alt="Preferences on Charts, Defaults tab" caption="Preferences on Charts, Defaults tab." %}
+{% include figure.html src="/assets/manual/preferences/charts.png" alt="Preferences on Charts, Settings tab" caption="Preferences on Charts, Settings tab." %}
 
-**Defaults** is what a new chart opens with. Its rows, and **Apply to all charts now**, are in [Chart settings](/manual/chart-settings/#defaults-for-new-charts).
-
-| Tab › group › row | Does | Chapter |
+| Tab | Does | Chapter |
 |---|---|---|
-| Templates › **Chart templates** | The list. + makes one, a row opens its editor, the pencil renames, the bin deletes. | [Chart templates](/manual/chart-templates/) |
+| **Settings** | A chart's scale, session hours, template and drawings. Under **GLOBAL**, every chart's and what a new chart opens with; under **LOCAL**, the focused chart's. | [Defaults for new charts](/manual/chart-settings/#defaults-for-new-charts) |
+| **Templates** | The list of chart templates. **+** makes one, a row opens its editor, the pencil renames, the bin deletes. | [Chart templates](/manual/chart-templates/) |
 
 ### Market data
 

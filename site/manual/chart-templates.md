@@ -113,9 +113,9 @@ crop: 496,176,1568,1328   (the whole window, 12px layout margin)
 
 ## The template new charts open with
 
-Preferences › Charts › Defaults › Indicators › **Template** is the template a new chart opens on, or **None**, which it is until you choose one. A new chartbook's first chart opens on it. A chart made by splitting copies the chart it came from instead.
+Preferences › Charts › Settings › Indicators › **Template**, under **GLOBAL**, is the template a new chart opens on, or **None**. A new chartbook's first chart opens on it. A chart made by splitting copies the chart it came from instead.
 
-**Reset to defaults** in a chart's settings puts the chart on this template the way choosing it does, asking first when it would lose its own indicators ([Chart settings](/manual/chart-settings/#defaults-for-new-charts)). **Apply to all charts now** under the defaults leaves every chart's template and indicators as they are. If this template is deleted, new charts open on **None**. **Default** can be deleted like any other template, and is not recreated.
+**Reset to defaults** in a chart's settings puts the chart on this template the way choosing it does, asking first when it would lose its own indicators ([Chart settings](/manual/chart-settings/#defaults-for-new-charts)). Choosing it under **GLOBAL** leaves every chart's template and indicators as they are. If this template is deleted, new charts open on **None**. **Default** can be deleted like any other template, and is not recreated.
 
 ## See also
 

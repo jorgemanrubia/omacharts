@@ -47,7 +47,7 @@ The Indicators page lists the chart's indicators under **On the chart**, or the 
 
 ## Defaults for new charts
 
-Preferences › Charts › **Defaults** is what every new chart opens with. A chart made by splitting copies the chart it divides instead ([Layouts](/manual/layouts/)). Changing a default changes no chart already open, and changing a chart never changes the defaults.
+Preferences › Charts › **Settings** is what every new chart opens with. A chart made by splitting copies the chart it divides instead ([Layouts](/manual/layouts/)). Changing a chart in its own settings never changes the defaults.
 
 <!-- regenerate:
 theme: tokyo-night
@@ -58,7 +58,7 @@ state:
 capture: bin/headless-window shot /tmp/prefs-charts.png
 crop: 292,76,1976,1288   (the whole dialog; the Defaults page scrolls inside it)
 -->
-{% include figure.html src="/assets/manual/charts/preferences-defaults.png" alt="Preferences open on the Charts Defaults tab" caption="Preferences › Charts › Defaults." %}
+{% include figure.html src="/assets/manual/charts/preferences-defaults.png" alt="Preferences open on the Charts Settings tab" caption="Preferences › Charts › Settings." %}
 
 | Group › row | Choices | Default |
 |---|---|---|
@@ -70,9 +70,12 @@ crop: 292,76,1976,1288   (the whole dialog; the Defaults page scrolls inside it)
 
 A new chart's price scale starts by fitting the bars.
 
-### Applying the defaults to every chart
+### Every chart, or the focused one
 
-Once a row has changed, *New charts will use these options.* and **Apply to all charts now** appear under the last group. The button puts every chart in every chartbook on the defaults at once, all but the template. Each chart keeps its template and its indicators as they are, with their settings; the template only says what a new chart opens on.
+**GLOBAL / LOCAL**, on the rule above Appearance in the sidebar, says which charts the rows change.
+
+- **GLOBAL** changes the default and every chart in every chartbook at once, that row only: turning on **Logarithmic scale** leaves each chart's hours as they were. Each chart keeps its template and its indicators as they are, with their settings; the template only says what a new chart opens on.
+- **LOCAL** changes the focused chart, as its own settings do, and the rows show that chart's settings. Its symbol is in LOCAL's tooltip. The defaults stay as they are.
 
 ### Putting one chart back on the defaults
 

@@ -487,7 +487,7 @@ Each chart has two switches, in the **Drawings** group of [Chart settings](/manu
 
 Both act on existing drawings as well as new ones. Turning sending off takes this chart's drawings off the other charts, and turning it back on sends them again.
 
-New charts take their defaults from Preferences › Charts › Defaults › **Drawings**, the same two switches ([Chart settings](/manual/chart-settings/#defaults-for-new-charts)).
+New charts take their defaults from Preferences › Charts › Settings › **Drawings**, the same two switches ([Chart settings](/manual/chart-settings/#defaults-for-new-charts)).
 
 **Remove all drawings** in the chart menu removes every drawing the chart shows. <kbd>Ctrl</kbd> + <kbd>Z</kbd> brings them back.
 

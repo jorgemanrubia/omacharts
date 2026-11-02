@@ -1,8 +1,9 @@
 //! What a new chart opens with.
 //!
-//! Set in the preferences, and nowhere else: changing one chart changes that
-//! chart. A split is the exception, because it copies the chart it divides —
-//! two of what you were looking at is the point of splitting.
+//! Set in the preferences, and nowhere else, which change every chart with
+//! them: changing one chart changes that chart. A split is the exception,
+//! because it copies the chart it divides — two of what you were looking at
+//! is the point of splitting.
 
 use omacharts_engine::continuous::Adjustment;
 use omacharts_engine::{BarStyle, Session};
@@ -111,6 +112,35 @@ impl ChartDefaults {
         store.set_setting_bool(SETTING_SHOWS_LEGEND, self.shows_legend);
         let template = self.template.map(|id| id.to_string());
         store.set_setting(SETTING_TEMPLATE, template.as_deref().unwrap_or(NO_TEMPLATE));
+    }
+}
+
+/// One row of a chart's settings, changed: what Preferences › Charts hands
+/// to every chart or to the focused one.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ChartSetting {
+    Session(Session),
+    LogScale(bool),
+    ShowsDrawings(bool),
+    SendsDrawings(bool),
+    Template(Option<u32>),
+    Thickness(u8),
+    Continuous(Adjustment),
+    Legend(bool),
+}
+
+impl ChartDefaults {
+    pub fn set(&mut self, setting: ChartSetting) {
+        match setting {
+            ChartSetting::Session(session) => self.session = session,
+            ChartSetting::LogScale(on) => self.log_scale = on,
+            ChartSetting::ShowsDrawings(on) => self.shows_drawings = on,
+            ChartSetting::SendsDrawings(on) => self.sends_drawings = on,
+            ChartSetting::Template(template) => self.template = template,
+            ChartSetting::Thickness(px) => self.ohlc_thickness = clamp_thickness(px),
+            ChartSetting::Continuous(join) => self.continuous = join,
+            ChartSetting::Legend(on) => self.shows_legend = on,
+        }
     }
 }
 

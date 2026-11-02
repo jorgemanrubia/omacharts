@@ -1031,7 +1031,7 @@ Volume bars are always solid, in the candles' colours, drawn at
 `--opacity`, 0.2 to 1 and 0.85 unless set.
 
 What a new chart opens with is a handful of settings, the ones the preferences
-show under Charts › Defaults: `ohlc_thickness`, `chart_session`,
+show under Charts › Settings: `ohlc_thickness`, `chart_session`,
 `chart_log_scale`, `chart_template`, `chart_shows_drawings`,
 `chart_sends_drawings` and `chart_shows_legend`. Changing one chart never
 changes them.
