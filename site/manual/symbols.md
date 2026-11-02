@@ -30,7 +30,7 @@ state:
   omacharts chart set --resolution 1D
   click 400 400
   key ctrl+b                          # sidebar hidden
-  omacharts chart split horizontal    # pos:1, on the right, is focused
+  omacharts chart split horizontal    # the new chart, on the right, is focused
   move 1100 650
   key s
   type emi
