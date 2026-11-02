@@ -173,7 +173,7 @@ def find_script(name):
 
 
 ACTION_ARITY = {"key": 1, "type": None, "cli": None, "move": 2, "click": 2, "rclick": 2, "drag": 4, "scroll": 3, "wait": 1, "zoom": 3,
-                "terminal": 1, "focus": 1}
+                "terminal": None, "focus": 1}
 
 # The terminal a video opens beside the app, as a share of the width: enough
 # for a command and its answer to be read at 1080p, the chart still the
@@ -253,6 +253,11 @@ def voice_scenes(script):
         line = Line(scene.voice, script.pronunciation)
         key = hashlib.sha256(json.dumps([voice, line.text]).encode()).hexdigest()[:20]
         wav = CACHE / "tts" / f"{key}.wav"
+        # A scene with nothing to say is a picture alone: a moment of silence
+        # its cues fire at the start of, and its `after:` for its length.
+        if not line.text.strip() and not wav.exists():
+            run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono", "-t", "0.1", str(wav)])
+            wav.with_suffix(".json").write_text(json.dumps({"duration": 0.1, "words": []}))
         if not (wav.exists() and wav.with_suffix(".json").exists()):
             jobs.append({"text": line.text, "words": line.words, "out": str(wav)})
         spoken.append((scene, line, wav))
@@ -591,6 +596,7 @@ hl.config({{
             event["at"] = self.at(*args[:2])
         elif verb == "terminal":
             self.terminal(args[0])
+            event["args"] = args[0].split(maxsplit=1)
         elif verb == "focus":
             self.focus(args[0])
         events.append(event)
@@ -601,6 +607,7 @@ hl.config({{
     TERMINAL_CLASS = "studio-terminal"
 
     def terminal(self, what):
+        what, _, command = what.strip().partition(" ")
         if what == "close":
             # Closing goes to whatever has the focus, so only ever with the
             # terminal there to take it: with none, it would close the app.
@@ -645,7 +652,9 @@ regular6={c('cyan', '#449dab')}
 regular7={c('foreground', '#a9b1d6')}
 """)
         rc = home / ".config/foot/rc"
-        rc.write_text(f'export PATH="{tools}:$PATH"\nPS1="\\[\\e[34m\\]❯\\[\\e[0m\\] "\nclear\n')
+        # A command given opens the terminal already running it, so nothing
+        # is typed on camera that is only there to start the scene.
+        rc.write_text(f'export PATH="{tools}:$PATH"\nPS1="\\[\\e[34m\\]❯\\[\\e[0m\\] "\nclear\n{command}\n')
         self.spawn(["foot", "--app-id", self.TERMINAL_CLASS, "-c", str(config), "bash", "--rcfile", str(rc), "-i"], log="terminal.log" if hasattr(self, "work") else None)
         self._wait(lambda: self.client(self.TERMINAL_CLASS), "the terminal", timeout=15)
         self.focus("terminal")
@@ -1087,8 +1096,22 @@ def polish_plan(events, total):
                                   "scale": round(zoom, 3)})
         run.clear()
 
+    # An asked-for zoom, held until the next one, the hands' next move or a
+    # few seconds, whichever comes first.
+    asked = [e for e in events if e.get("scene") is not None and e["verb"] == "zoom" and e.get("at")]
+    for i, event in enumerate(asked):
+        later = [e["t"] for e in events if e.get("scene") is not None and e["t"] > event["t"] + 0.5
+                 and e["verb"] in ("key", "type", "cli", "zoom", "terminal", *POINTER)]
+        end = min([event["t"] + 4.5, total, *later[:1]])
+        if end - event["t"] >= 1.5:
+            zooms.append({"start": round(max(0.0, event["t"] - 0.2), 3), "end": round(end, 3),
+                          "x": round(event["at"][0] * scale_px), "y": round(event["at"][1] * scale_px),
+                          "scale": round(float(event["args"][2]), 3)})
+
     for event in events:
         if event.get("scene") is None:
+            continue
+        if event["verb"] == "zoom":
             continue
         if event["verb"] in POINTER and event.get("at"):
             if run and (event["t"] - run[-1]["t"] > 3.0 or math.hypot(event["at"][0] - run[-1]["at"][0], event["at"][1] - run[-1]["at"][1]) > 700):
@@ -1101,6 +1124,9 @@ def polish_plan(events, total):
                 keys = [KEY_NAMES.get(part, KEY_NAMES.get(part.lower(), part.upper() if len(part) == 1 else part)) for part in chord.split("+")]
                 badges.append({"start": round(event["t"], 3), "end": round(event["t"] + 1.6, 3), "keys": keys})
     close_run(total)
+    zooms.sort(key=lambda z: z["start"])
+    # Zooms never overlap: the later one waits for the earlier to let go.
+    zooms = [z for i, z in enumerate(zooms) if i == 0 or z["start"] >= zooms[i - 1]["end"]]
     # A badge that would still be showing when the next one appears gives way.
     for a, b in zip(badges, badges[1:]):
         a["end"] = min(a["end"], b["start"])
@@ -1171,6 +1197,12 @@ def compose(script, voiced, plan, raw, offset):
     inputs, parts = [], []
     for i, (v, s) in enumerate(zip(voiced, plan["scenes"])):
         scene = levelled / f"{i + 1:02d}.wav"
+        if not v["words"]:
+            # Silence, which loudnorm would only make noise of.
+            run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-t", "0.1", str(scene)])
+            inputs += ["-i", str(scene)]
+            parts.append(f"[{i}:a]anull[v{i}]")
+            continue
         run(["ffmpeg", "-v", "error", "-y", "-i", str(v["wav"]), "-af", "loudnorm=I=-16:TP=-2,aresample=48000",
              "-ac", "2", str(scene)])
         inputs += ["-i", str(scene)]
