@@ -191,6 +191,7 @@ pub fn dispatch(
                     Ok(key) if key == crate::clock::SETTING_ZONE || key == crate::clock::SETTING_FORMAT => {
                         live.adopt_clock()
                     }
+                    Ok(key) if key == crate::zoom::SETTING => live.adopt_zoom(),
                     _ => {}
                 }
             }
@@ -4588,6 +4589,14 @@ fn config_set(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<Stri
         let text = format!("charts write times as {}", format.label());
         return said(as_json, json!({"key": key, "value": format.key()}), text);
     }
+    // A sensitivity out of range would be read back clamped, which is not
+    // what was asked for, so it is refused here.
+    if key == crate::zoom::SETTING {
+        let percent = crate::zoom::parse(value).map_err(Fault::usage)?;
+        crate::zoom::save(store, percent);
+        let text = format!("charts zoom at {percent}% sensitivity");
+        return said(as_json, json!({"key": key, "value": percent.to_string()}), text);
+    }
     if key == crate::templates::SETTING {
         return Err(Fault::usage(
             "chart templates are changed with `omacharts template …`, not `config set`".into(),
@@ -4905,6 +4914,7 @@ fn backup_restore(
     if let Some(live) = live {
         live.adopt_theming();
         live.adopt_feed();
+        live.adopt_zoom();
         live.reload_watchlists();
     }
     said(

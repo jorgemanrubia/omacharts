@@ -1517,6 +1517,7 @@ same.
 | `time_format` | `24h`, `12h` | the desktop's clock format | Charts › Other › Time › Time format | [Preferences](/manual/preferences/#time) |
 | `timeframes` | comma-separated resolutions, such as `5m,15m,1h,4h,1D,1W`; an entry that is not a resolution is skipped | `5m,15m,1h,4h,1D,1W` | Charts › Other › Preset resolutions | [Charts](/manual/charts/) |
 | `sync_crosshair` | on, off | on | Charts › Other › Chart › Sync crosshair across charts | [Charts](/manual/charts/#sharing-the-crosshair) |
+| `zoom_sensitivity` | a percentage from `10` to `200`, with or without `%` | `100` | Charts › Other › Chart › Zoom sensitivity | [Charts](/manual/charts/#moving-around) |
 | `provider` | `yahoo`, `tos` | `yahoo` | Data › Data feed | [Market data feeds](/manual/market-data/) |
 | `screenshot_save_file` | on, off | on | General › Also save a PNG | [Screenshots](/manual/screenshots/) |
 | `screenshot_folder` | a folder; `~/` is your home; empty for the default | `<Pictures>/Omacharts` | General › Save to | [Screenshots](/manual/screenshots/) |
@@ -1538,10 +1539,11 @@ set theme to midnight
 
 ### When a setting is checked and takes effect
 
-`provider`, `chart_header`, `chart_template`, `chart_time_zone` and
-`time_format` are checked as they are written. A feed that does not exist, a
-header part that is not one, a header part named twice, a time zone that is
-not one or a time format that is not one is refused with exit 2; a template
+`provider`, `chart_header`, `chart_template`, `chart_time_zone`,
+`time_format` and `zoom_sensitivity` are checked as they are written. A feed
+that does not exist, a header part that is not one, a header part named
+twice, a time zone that is not one, a time format that is not one or a zoom
+sensitivity outside 10 to 200 is refused with exit 2; a template
 that does not exist with exit 3. Every other
 value is accepted as typed, and one the app cannot use counts as the
 default. `config set theme nope` succeeds, and the window opens in the first
@@ -1567,11 +1569,16 @@ omacharts: "London" is not a time zone; use an IANA name such as Europe/London, 
 $ omacharts config set time_format 12h
 charts write times as 12-hour (3:30 PM)
   [exit 0]
+
+$ omacharts config set zoom_sensitivity 50%
+charts zoom at 50% sensitivity
+  [exit 0]
 ```
 
 With a window open, a new `provider` switches the charts' feed at once, a
 new `chart_header` changes every header at once, and a new `chart_time_zone`
-or `time_format` redraws every chart's times at once. The chart defaults apply to
+or `time_format` redraws every chart's times at once, and a new
+`zoom_sensitivity` applies from the next scroll. The chart defaults apply to
 the next chart made, by a split or a new chartbook. `timeframes`
 written from a terminal is read when the window next opens.
 

@@ -20,4 +20,5 @@ pub mod setting_keys;
 pub mod store;
 pub mod templates;
 pub mod theming;
+pub mod zoom;
 pub mod ui;

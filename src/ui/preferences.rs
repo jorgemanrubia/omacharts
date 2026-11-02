@@ -34,6 +34,21 @@ pub struct Preferences;
 /// room either side of it.
 const MAX_WIDTH: i32 = 980;
 
+/// Where the dialog was when it was last looked at, for this run of the app:
+/// the section down the sidebar, by its place, and the tab shown in Charts.
+/// Opening the dialog again goes back there, so somebody adjusting one row
+/// over and over does not have to find it each time. Not kept across
+/// restarts.
+#[derive(Clone, Default)]
+struct Seen {
+    section: usize,
+    charts_tab: Option<String>,
+}
+
+thread_local! {
+    static LAST_SEEN: RefCell<Seen> = RefCell::new(Seen::default());
+}
+
 struct Context {
     store: Rc<Store>,
     theming: Rc<RefCell<Theming>>,
@@ -116,10 +131,16 @@ impl Preferences {
         charts_header_page.add(&header.group);
         charts.add_titled(&charts_header_page, Some("header"), "Header");
         charts.add_titled(&charts_other_page, Some("other"), "Other");
-        // Opened from something on a chart, at the tab that is about it.
-        if let Some(tab) = charts_tab {
-            charts.set_visible_child_name(tab);
+        // Opened from something on a chart, at the tab that is about it;
+        // otherwise where it was left.
+        let last = LAST_SEEN.with(|seen| seen.borrow().clone());
+        if let Some(tab) = charts_tab.map(str::to_string).or(last.charts_tab) {
+            charts.set_visible_child_name(&tab);
         }
+        charts.connect_visible_child_name_notify(|charts| {
+            let tab = charts.visible_child_name().map(|name| name.to_string());
+            LAST_SEEN.with(|seen| seen.borrow_mut().charts_tab = tab);
+        });
 
         let sections: [(&str, &str, gtk::Widget); 4] = [
             ("General", "preferences-system-symbolic", general_page.clone().upcast()),
@@ -127,7 +148,10 @@ impl Preferences {
             ("Theme", "applications-graphics-symbolic", page.clone().upcast()),
             ("Data", "network-server-symbolic", data_page.clone().upcast()),
         ];
-        let start = if charts_tab.is_some() { 1 } else { 0 };
+        let start = match charts_tab {
+            Some(_) => 1,
+            None => last.section.min(sections.len() - 1),
+        };
         dialog.set_child(Some(&split_view(&dialog, &sections, start)));
 
         let context = Rc::new(Context {
@@ -208,6 +232,9 @@ fn split_view(
         let Some(page) = row.and_then(|row| pages.get(row.index() as usize)) else {
             return;
         };
+        if let Some(row) = row {
+            LAST_SEEN.with(|seen| seen.borrow_mut().section = row.index() as usize);
+        }
         content.replace(std::slice::from_ref(page));
         view.set_show_content(true);
     });
@@ -254,8 +281,9 @@ fn rebuild(context: &Rc<Context>) {
 }
 
 /// A way to the resolution list from the settings, since the other way in is
-/// right-clicking a strip, which you have to know about to find; and the one
-/// switch about how the charts behave towards each other.
+/// right-clicking a strip, which you have to know about to find; the one
+/// switch about how the charts behave towards each other; and how far they
+/// zoom to the wheel and the touchpad.
 fn chart_group(context: &Rc<Context>) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     group.set_title("Chart");
@@ -296,7 +324,37 @@ fn chart_group(context: &Rc<Context>) -> adw::PreferencesGroup {
     sync.set_activatable_widget(Some(&switch));
     group.add(&sync);
 
+    group.add(&zoom_row(context));
+
     group
+}
+
+/// How far the wheel and a two-finger swipe zoom, for every chart, as a
+/// percentage of the base rate. Read by the charts on every scroll, so a
+/// change is felt on the next one. The mark is where it started.
+fn zoom_row(context: &Rc<Context>) -> adw::ActionRow {
+    use crate::zoom::{DEFAULT, MAX, MIN};
+    let row = adw::ActionRow::new();
+    row.set_title("Zoom sensitivity");
+    let scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, MIN as f64, MAX as f64, 5.0);
+    scale.set_size_request(180, -1);
+    scale.set_valign(gtk::Align::Center);
+    scale.set_draw_value(true);
+    scale.set_value_pos(gtk::PositionType::Left);
+    scale.set_digits(0);
+    scale.set_round_digits(0);
+    scale.set_format_value_func(|_, v| format!("{v:.0}%"));
+    scale.add_mark(DEFAULT as f64, gtk::PositionType::Bottom, None);
+    scale.set_value(crate::zoom::sensitivity(&context.store) as f64);
+    let store = context.store.clone();
+    scale.connect_value_changed(move |scale| {
+        let percent = scale.value().round() as u32;
+        if percent != crate::zoom::sensitivity(&store) {
+            crate::zoom::save(&store, percent);
+        }
+    });
+    row.add_suffix(&scale);
+    row
 }
 
 fn theme_group(context: &Rc<Context>) -> adw::PreferencesGroup {

@@ -271,6 +271,9 @@ pub trait Live {
     /// Draw every chart on screen in the time zone and the time format the
     /// settings now name. Nothing to do without a window.
     fn adopt_clock(&self) {}
+    /// Zoom every chart at the sensitivity the settings now name. Nothing to
+    /// do without a window.
+    fn adopt_zoom(&self) {}
 
     /// Save a picture of the focused chart, or of the whole open chartbook.
     ///
@@ -1009,6 +1012,10 @@ impl Live for Rc<crate::ui::Window> {
 
     fn adopt_clock(&self) {
         crate::ui::Window::adopt_clock(self);
+    }
+
+    fn adopt_zoom(&self) {
+        crate::ui::Window::adopt_zoom(self);
     }
 
     fn screenshot(
