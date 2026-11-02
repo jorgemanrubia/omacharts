@@ -298,7 +298,7 @@ impl Kind {
                 value_area: 0.70,
                 poc_color: None,
                 style: profile::Style::Filled,
-                outline: true,
+                outline: false,
                 outline_color: None,
                 outline_width: 1.0,
                 poc_width: 1.0,
@@ -376,10 +376,9 @@ pub enum Params {
         #[serde(default)]
         style: profile::Style,
         /// Whether filled rows wear an outline too. The outline style is
-        /// nothing but its outline, so this is for the filled one. On for a
-        /// profile written before it could be chosen too, so every profile
-        /// looks the same until somebody turns one off.
-        #[serde(default = "profile::outlined")]
+        /// nothing but its outline, so this is for the filled one. Off until
+        /// asked for.
+        #[serde(default)]
         outline: bool,
         /// The outline's colour. Unset is the profile's own.
         #[serde(default)]

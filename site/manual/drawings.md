@@ -255,7 +255,7 @@ Drag its left or right edge to change the span, and the profile is worked out ag
 
 | Property | Does |
 |---|---|
-| **Outline** | Whether filled rows have an edge round them. On by default; always on for an outline |
+| **Outline** | Whether filled rows have an edge round them. Off by default; always on for an outline. Off, the outline's colour and thickness are greyed |
 | **Outline colour** | The edge round the rows |
 | **Outline thickness** | The outline. 1 px on a filled configuration, 1.5 px on an outline |
 | **Background** | The rows |

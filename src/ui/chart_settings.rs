@@ -1748,19 +1748,6 @@ fn profile_style(
     switch.set_title("Outline");
     switch.set_active(*outline || !filled);
     switch.set_sensitive(filled);
-    {
-        let owner = owner.clone();
-        let refresh = refresh.clone();
-        switch.connect_active_notify(move |row| {
-            let on = row.is_active();
-            update(&owner, id, |indicator| {
-                if let Params::VolumeProfile { outline, .. } = &mut indicator.params {
-                    *outline = on;
-                }
-            });
-            refresh.run();
-        });
-    }
     group.add(&switch);
     let outlined = !filled || *outline;
     let shown = outline_color.as_ref().map(|c| c.resolve(&owner.theme())).unwrap_or_else(|| colour.to_string());
@@ -1787,6 +1774,22 @@ fn profile_style(
     });
     width_row.set_sensitive(outlined);
     group.add(&width_row);
+    {
+        let owner = owner.clone();
+        let refresh = refresh.clone();
+        let (colour_row, width_row) = (outline_row.clone(), width_row.clone());
+        switch.connect_active_notify(move |row| {
+            let on = row.is_active();
+            colour_row.set_sensitive(on);
+            width_row.set_sensitive(on);
+            update(&owner, id, |indicator| {
+                if let Params::VolumeProfile { outline, .. } = &mut indicator.params {
+                    *outline = on;
+                }
+            });
+            refresh.run();
+        });
+    }
 
     group.add(&colour_row(
         owner,

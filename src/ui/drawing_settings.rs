@@ -753,25 +753,9 @@ fn style_editor(window: &Rc<Window>, kind: Kind, current: Style, on_style: Rc<dy
             edge.set_title("Outline");
             edge.set_active(style.borrow().border || !filled(&style.borrow()));
             edge.set_sensitive(filled(&style.borrow()));
-            {
-                let style = style.clone();
-                let emit = emit.clone();
-                let showing = showing.clone();
-                edge.connect_active_notify(move |row| {
-                    if showing.get() || !filled(&style.borrow()) {
-                        return;
-                    }
-                    style.borrow_mut().border = row.is_active();
-                    emit();
-                });
-            }
             group.add(&edge);
-            shows.push(Rc::new(move |s: &Style| {
-                edge.set_active(s.border || !filled(s));
-                edge.set_sensitive(filled(s));
-            }));
 
-            let (row, show) = paint_row(&theme, "Outline colour", &style.borrow().colour, {
+            let (outline_row, show) = paint_row(&theme, "Outline colour", &style.borrow().colour, {
                 let style = style.clone();
                 let emit = emit.clone();
                 move |paint| {
@@ -779,10 +763,10 @@ fn style_editor(window: &Rc<Window>, kind: Kind, current: Style, on_style: Rc<dy
                     emit();
                 }
             });
-            group.add(&row);
+            group.add(&outline_row);
             shows.push(Rc::new(move |s: &Style| show(&s.colour)));
 
-            let (row, show) = width_row("Outline thickness", style.borrow().width, {
+            let (thickness_row, show) = width_row("Outline thickness", style.borrow().width, {
                 let style = style.clone();
                 let emit = emit.clone();
                 move |width| {
@@ -790,8 +774,40 @@ fn style_editor(window: &Rc<Window>, kind: Kind, current: Style, on_style: Rc<dy
                     emit();
                 }
             });
-            group.add(&row);
+            group.add(&thickness_row);
             shows.push(Rc::new(move |s: &Style| show(s.width)));
+
+            // The outline's own rows wait for there to be an outline.
+            let outlined = move |s: &Style| s.border || !filled(s);
+            for row in [outline_row.clone().upcast::<gtk::Widget>(), thickness_row.clone().upcast()] {
+                row.set_sensitive(outlined(&style.borrow()));
+            }
+            {
+                let style = style.clone();
+                let emit = emit.clone();
+                let showing = showing.clone();
+                let rows = [outline_row.clone().upcast::<gtk::Widget>(), thickness_row.clone().upcast()];
+                edge.connect_active_notify(move |row| {
+                    if showing.get() || !filled(&style.borrow()) {
+                        return;
+                    }
+                    for widget in &rows {
+                        widget.set_sensitive(row.is_active());
+                    }
+                    style.borrow_mut().border = row.is_active();
+                    emit();
+                });
+            }
+            {
+                let rows = [outline_row.upcast::<gtk::Widget>(), thickness_row.upcast()];
+                shows.push(Rc::new(move |s: &Style| {
+                    edge.set_active(outlined(s));
+                    edge.set_sensitive(filled(s));
+                    for widget in &rows {
+                        widget.set_sensitive(outlined(s));
+                    }
+                }));
+            }
 
             let (row, show) = paint_row(&theme, "Background", &style.borrow().fill, {
                 let style = style.clone();

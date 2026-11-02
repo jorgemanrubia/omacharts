@@ -1284,6 +1284,9 @@ impl Style {
         Style {
             width,
             alpha: PROFILE_ALPHA,
+            // Filled rows go without an edge until one is asked for; the
+            // outline style is nothing but one.
+            border: false,
             profile: ProfileLook { shape, align, ..ProfileLook::default() },
             ..Style::rect(preset)
         }

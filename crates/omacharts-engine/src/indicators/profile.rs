@@ -50,11 +50,6 @@ pub fn hairline() -> f64 {
     1.0
 }
 
-/// Whether filled rows wear an outline until told otherwise.
-pub fn outlined() -> bool {
-    true
-}
-
 /// How a profile's rows are painted: as solid bars, or as only the shape
 /// they make together, which leaves the candles under it in plain sight.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]

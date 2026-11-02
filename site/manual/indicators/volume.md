@@ -42,7 +42,7 @@ Drawn over the price. For each reset period, how much volume traded at each pric
 | **Reset every** | Session | Session, Week, Month, Quarter, Year ([Reset periods](/manual/indicators/#reset-periods)) |
 | **Automatic**, **Rows** | Automatic | A number of rows per period, 4 to 800 |
 | **Value area %** | 70% | 10 to 100% |
-| **Outline** | On | On, or off for filled rows with no edge. Always on in the Outline style |
+| **Outline** | Off | On for an edge round filled rows. Always on in the Outline style. Off, its colour and thickness are greyed |
 | **Outline colour** | The background colour | A palette name, or a custom colour |
 | **Outline thickness** | 1 px | 0.5 to 6 px |
 | **Background** colour | The next free colour | A palette name, or a custom colour |
