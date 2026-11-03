@@ -201,6 +201,10 @@ principles of a good screencast, which the scriptwriter also follows.
   one with a brief introduction — a sentence or two, over its chart, with
   nothing moving — saying what it is about before showing it. The first
   also says, in plain words, the idea that ties the video together.
+- **Nothing selected unless it is being worked on.** A study or drawing
+  is selected only while the cursor is acting on it — its menu, a drag, a
+  merge — and deselected (Esc) right after, so the chart shows it as it
+  looks, not with the selection's heavy outline.
 - **Film the latest main.** Videos show omacharts as it is on main —
   `bin/video` fetches it and builds it in a worktree of its own — unless the
   author asks for something else, which goes in the script as `build:`.

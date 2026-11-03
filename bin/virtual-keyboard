@@ -1,0 +1,184 @@
+#!/usr/bin/env python3
+"""Press one chord on a Wayland compositor through a keyboard with a real keymap.
+
+`wtype` brings a keyboard whose keymap holds only the keys it is about to
+type, one level each. Shift held over such a key changes nothing the key
+types, and GTK then matches no accelerator with Shift in it: Ctrl+Shift+H and
+Ctrl+Alt+Shift+H went nowhere in the studio, while the same keys on a real
+keyboard work. This one uploads the US keymap a real keyboard has
+(`xkbcli compile-keymap --layout us`) and presses the modifier keys as keys,
+so the application sees what a hand would send.
+
+    virtual-keyboard ctrl+alt+shift+h
+
+Speaks `zwp_virtual_keyboard_v1` over the Wayland socket, the way
+`virtual-pointer` speaks its protocol, so nothing has to be installed.
+"""
+
+import array
+import os
+import socket
+import struct
+import subprocess
+import sys
+import time
+
+WL_DISPLAY = 1
+MANAGER = b"zwp_virtual_keyboard_manager_v1"
+
+# zwp_virtual_keyboard_v1 requests.
+KEYMAP, KEY, MODIFIERS = 0, 1, 2
+XKB_V1 = 1
+
+# Evdev codes (linux/input-event-codes.h) and the masks the US keymap gives
+# the modifiers.
+MODIFIER_KEYS = {"shift": (42, 1), "ctrl": (29, 4), "alt": (56, 8), "super": (125, 64), "logo": (125, 64)}
+KEYS = {
+    **dict(zip("1234567890", range(2, 12))),
+    **dict(zip("qwertyuiop", range(16, 26))),
+    **dict(zip("asdfghjkl", range(30, 39))),
+    **dict(zip("zxcvbnm", range(44, 51))),
+    "Escape": 1, "minus": 12, "equal": 13, "BackSpace": 14, "Tab": 15, "Return": 28, "semicolon": 39,
+    "apostrophe": 40, "grave": 41, "backslash": 43, "comma": 51, "period": 52, "slash": 53, "space": 57,
+    "Home": 102, "Up": 103, "Page_Up": 104, "Left": 105, "Right": 106, "End": 107, "Down": 108,
+    "Page_Down": 109, "Insert": 110, "Delete": 111,
+    **{f"F{n}": 58 + n for n in range(1, 11)},
+}
+
+
+def wl_string(value):
+    padded = value + b"\0"
+    padded += b"\0" * (-len(padded) % 4)
+    return struct.pack("=I", len(value) + 1) + padded
+
+
+def read_string(body, offset):
+    (length,) = struct.unpack_from("=I", body, offset)
+    start = offset + 4
+    return body[start : start + length - 1], start + length + (-length % 4)
+
+
+class Wayland:
+    def __init__(self, path):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.connect(path)
+        self.incoming = b""
+        self.last_id = WL_DISPLAY
+
+    def new_id(self):
+        self.last_id += 1
+        return self.last_id
+
+    def request(self, obj, opcode, payload=b"", fd=None):
+        message = struct.pack("=II", obj, ((8 + len(payload)) << 16) | opcode) + payload
+        if fd is None:
+            self.sock.sendall(message)
+        else:
+            self.sock.sendmsg([message], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array("i", [fd]))])
+
+    def event(self):
+        while len(self.incoming) < 8:
+            self._read()
+        obj, word = struct.unpack("=II", self.incoming[:8])
+        size, opcode = word >> 16, word & 0xFFFF
+        while len(self.incoming) < size:
+            self._read()
+        body, self.incoming = self.incoming[8:size], self.incoming[size:]
+        if obj == WL_DISPLAY and opcode == 0:
+            sys.exit(f"virtual-keyboard: the compositor refused us: {body!r}")
+        return obj, opcode, body
+
+    def _read(self):
+        chunk = self.sock.recv(4096)
+        if not chunk:
+            sys.exit("virtual-keyboard: the compositor closed the connection")
+        self.incoming += chunk
+
+    def roundtrip(self):
+        callback = self.new_id()
+        self.request(WL_DISPLAY, 0, struct.pack("=I", callback))
+        while True:
+            obj, opcode, _ = self.event()
+            if obj == callback and opcode == 0:
+                return
+
+
+def connect():
+    runtime = os.environ.get("XDG_RUNTIME_DIR", "")
+    display = os.environ.get("WAYLAND_DISPLAY", "wayland-0")
+    path = display if display.startswith("/") else os.path.join(runtime, display)
+    conn = Wayland(path)
+    registry = conn.new_id()
+    conn.request(WL_DISPLAY, 1, struct.pack("=I", registry))
+    done = conn.new_id()
+    conn.request(WL_DISPLAY, 0, struct.pack("=I", done))
+    globals_ = {}
+    while True:
+        obj, opcode, body = conn.event()
+        if obj == registry and opcode == 0:
+            (name,) = struct.unpack_from("=I", body, 0)
+            interface, offset = read_string(body, 4)
+            (version,) = struct.unpack_from("=I", body, offset)
+            globals_[interface] = (name, version)
+        elif obj == done and opcode == 0:
+            break
+    for needed in (b"wl_seat", MANAGER):
+        if needed not in globals_:
+            sys.exit(f"virtual-keyboard: this compositor has no {needed.decode()}")
+
+    def bind(interface):
+        name, _ = globals_[interface]
+        new = conn.new_id()
+        conn.request(registry, 0, struct.pack("=I", name) + wl_string(interface) + struct.pack("=II", 1, new))
+        return new
+
+    seat, manager = bind(b"wl_seat"), bind(MANAGER)
+    keyboard = conn.new_id()
+    conn.request(manager, 0, struct.pack("=II", seat, keyboard))
+    keymap = subprocess.run(["xkbcli", "compile-keymap", "--layout", "us"], capture_output=True, check=True).stdout + b"\0"
+    fd = os.memfd_create("keymap")
+    os.write(fd, keymap)
+    conn.request(keyboard, KEYMAP, struct.pack("=II", XKB_V1, len(keymap)), fd=fd)
+    conn.roundtrip()
+    return conn, keyboard
+
+
+def main():
+    if len(sys.argv) != 2:
+        sys.exit(__doc__)
+    *mods, key = sys.argv[1].split("+")
+    code = KEYS.get(key) or KEYS.get(key.lower())
+    if code is None or any(m.lower() not in MODIFIER_KEYS for m in mods):
+        sys.exit(f"virtual-keyboard: cannot press {sys.argv[1]!r}")
+    conn, keyboard = connect()
+    # The same room wtype needs: the client has to read the new keymap before
+    # the first key, or the chord arrives as something else.
+    time.sleep(0.3)
+    started = time.monotonic()
+    now = lambda: int((time.monotonic() - started) * 1000) & 0xFFFFFFFF
+    mask = 0
+
+    def press(code, down):
+        conn.request(keyboard, KEY, struct.pack("=III", now(), code, 1 if down else 0))
+        conn.request(keyboard, MODIFIERS, struct.pack("=IIII", mask, 0, 0, 0))
+        conn.roundtrip()
+
+    for mod in mods:
+        mod_code, bit = MODIFIER_KEYS[mod.lower()]
+        mask |= bit
+        press(mod_code, True)
+        time.sleep(0.12)
+    press(code, True)
+    time.sleep(0.08)
+    press(code, False)
+    time.sleep(0.12)
+    for mod in reversed(mods):
+        mod_code, bit = MODIFIER_KEYS[mod.lower()]
+        mask &= ~bit
+        press(mod_code, False)
+        time.sleep(0.05)
+    conn.roundtrip()
+
+
+if __name__ == "__main__":
+    main()

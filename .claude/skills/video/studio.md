@@ -59,6 +59,26 @@ script.md ──► voice ──► record ──► polish ──► compose �
   snapshot of `$XDG_DATA_HOME/omacharts`, so charts look the same render
   after render (the last bar still moves with the live feed).
 
+## The terminal
+
+For a scene about the command line — an agent using it, say — `terminal open`
+tiles a real `foot` beside the app, themed from the same colours, with a shell
+whose PATH holds this studio's `omacharts` and `video/agent/vp-agent`. Typed
+commands run against the app on camera, so the chart changes as they do.
+Lessons:
+
+- Hyprland 0.56's Lua dispatchers: `hl.dispatch(hl.dsp.focus({ window =
+  "class:…" }))` to move focus, `hl.dispatch(hl.dsp.window.resize({ x = N,
+  y = 0, relative = true }))` to move the split. Which way a relative resize
+  moves the split depends on the window's side, so the studio measures and
+  corrects.
+- `hl.dsp.window.close()` closes whatever has the focus. A `terminal close`
+  with no terminal once closed the app: close only after checking the
+  terminal is there and has the focus.
+- An agent's own run is not the same twice and cannot be timed to a voice,
+  so `vp-agent` plays one: its sentences are written, every command it shows
+  is the real one, run live.
+
 ## Driving it
 
 `omacharts` CLI commands for anything the app can do (the surface is
@@ -74,6 +94,18 @@ protocol for the mouse. Lessons, each paid for:
   keymap, and a chord sent before the far end has read it arrives as the bare
   letter (which opens the symbol search). 300ms before the first key and
   120ms around modifiers are what held up while the machine was busy.
+- **Shift over a letter goes through `bin/virtual-keyboard`.** wtype's
+  keymap holds only the keys it types, one level each, and GTK then
+  matches no accelerator with Shift and a letter in it: Ctrl+Shift+H and
+  Ctrl+Alt+Shift+H did nothing in the studio (Ctrl+Shift+I only worked
+  because the app catches it by hand). `virtual-keyboard` uploads the US
+  keymap a real keyboard has and presses the modifiers as keys; `key` uses
+  it for any chord with Shift and a letter, wtype for the rest.
+- A chartbook's sidebar is its own (`sidebar_shown`, not scriptable), and a
+  new one opens with it shown: hide it with Ctrl+B once on each, after the
+  switch has settled. A chartbook switched to comes back at the zoom it had
+  but on its latest bar, and very wide views are cut down, so a span that
+  must be on screen is set after the last switch to that chartbook.
 - A fresh window ignores its first chord: the studio sends two Escapes on
   start, never anything on camera.
 - No Hyprland animations, and `disable_watchdog_warning`: a nested Hyprland
@@ -122,9 +154,16 @@ Each scene's voice is normalised to −16 LUFS into a file of its own, then
 placed at its start. In one ffmpeg graph, `loudnorm` ahead of `adelay`
 silently cancels the delay and every line starts at zero — renders shipped
 like that until the author heard the voice under the cover. Check the voice
-track is silent where it should be before handing a render over. Music
-is looped or cut to length at −27 LUFS, faded at both ends, and ducked under
-the voice by a sidechain compressor. The mix is mastered in two passes to
+track is silent where it should be before handing a render over. The
+voices are each padded to the picture with `apad=whole_dur=` before
+`amix`: padding after `amix` stops at the last word, cutting the closing
+music, and a bare `apad` there never ends — one render spun in it for six
+hours.
+Music is cut to length at −27 LUFS, faded at both ends, and ducked under
+the voice by a sidechain compressor. A track that dies away a little before
+the picture ends (up to a tenth) is slowed with `atempo` so its last note
+lands on the end; looping it, or letting it run out, left the closing lines
+over silence in the Volume profile video. Only a much shorter one loops. The mix is mastered in two passes to
 −14 LUFS integrated, −1 dBTP — measured at −14.1 on the first render.
 
 ## Speech

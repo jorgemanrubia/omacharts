@@ -172,7 +172,13 @@ def find_script(name):
     return Script(path)
 
 
-ACTION_ARITY = {"key": 1, "type": None, "cli": None, "move": 2, "click": 2, "rclick": 2, "drag": 4, "scroll": 3, "wait": 1, "zoom": 3}
+ACTION_ARITY = {"key": 1, "type": None, "cli": None, "move": 2, "click": 2, "rclick": 2, "drag": 4, "scroll": 3, "wait": 1, "zoom": 3,
+                "terminal": None, "focus": 1}
+
+# The terminal a video opens beside the app, as a share of the width: enough
+# for a command and its answer to be read at 1080p, the chart still the
+# larger of the two.
+TERMINAL_SHARE = 0.38
 
 
 def parse_action(text):
@@ -247,6 +253,11 @@ def voice_scenes(script):
         line = Line(scene.voice, script.pronunciation)
         key = hashlib.sha256(json.dumps([voice, line.text]).encode()).hexdigest()[:20]
         wav = CACHE / "tts" / f"{key}.wav"
+        # A scene with nothing to say is a picture alone: a moment of silence
+        # its cues fire at the start of, and its `after:` for its length.
+        if not line.text.strip() and not wav.exists():
+            run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono", "-t", "0.1", str(wav)])
+            wav.with_suffix(".json").write_text(json.dumps({"duration": 0.1, "words": []}))
         if not (wav.exists() and wav.with_suffix(".json").exists()):
             jobs.append({"text": line.text, "words": line.words, "out": str(wav)})
         spoken.append((scene, line, wav))
@@ -396,6 +407,12 @@ class Studio:
         shutil.copytree(theme, current / "theme", ignore=shutil.ignore_patterns("backgrounds", "*.png"))
         (current / "theme.name").write_text(self.theme + "\n")
         self.colors = dict(re.findall(r'^(\w+)\s*=\s*"(#[0-9a-fA-F]{6})"', (theme / "colors.toml").read_text(), re.M))
+        # Every theme installed on the author's desktop, so the theme picker
+        # offers the same list there as here.
+        for rel in (".local/share/omarchy/themes", ".config/omarchy/themes"):
+            source = Path.home() / rel
+            if source.is_dir():
+                shutil.copytree(source, self.home / rel, symlinks=True, ignore=shutil.ignore_patterns("backgrounds", "*.png", "*.jpg"))
         # Fonts and toolkit settings as on the author's desktop, so the window
         # looks the way it does there.
         for rel in (".config/fontconfig", ".config/gtk-3.0", ".config/gtk-4.0", ".local/share/fonts", ".local/share/icons"):
@@ -445,7 +462,8 @@ hl.config({{
     def _wait(self, probe, what, timeout=15):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            if self.hyprland.poll() is not None:
+            # An attached studio is not this process's to watch.
+            if getattr(self, "hyprland", None) and self.hyprland.poll() is not None:
                 die(f"the studio's Hyprland exited; see {self.work / 'hyprland.log'}")
             found = probe()
             if found:
@@ -535,6 +553,12 @@ hl.config({{
         # ones bin/headless-window found reliable; shorter ones lost chords
         # while the machine was busy recording.
         *mods, key = chord.split("+")
+        # Shift over a letter needs a keyboard with a real keymap: wtype's
+        # one-level keys make GTK match no accelerator with Shift in it
+        # (studio.md, "Driving it").
+        if "shift" in (m.lower() for m in mods) and len(key) == 1 and key.isalpha():
+            subprocess.run([str(ROOT / "bin/virtual-keyboard"), chord], env=self.env, check=True)
+            return
         argv = ["wtype", "-s", "300"]
         for mod in mods:
             argv += ["-M", mod, "-s", "120"]
@@ -582,7 +606,101 @@ hl.config({{
             event["at"] = self.hand.scroll(*self.at(*args[:2]), int(args[2]))
         elif verb == "zoom":
             event["at"] = self.at(*args[:2])
+        elif verb == "terminal":
+            self.terminal(args[0])
+            event["args"] = args[0].split(maxsplit=1)
+        elif verb == "focus":
+            self.focus(args[0])
         events.append(event)
+
+    # The terminal, for a scene about the command line: a real one, tiled
+    # beside the app, running a real shell whose `omacharts` is this studio's.
+
+    TERMINAL_CLASS = "studio-terminal"
+
+    def terminal(self, what):
+        what, _, command = what.strip().partition(" ")
+        if what == "close":
+            # Closing goes to whatever has the focus, so only ever with the
+            # terminal there to take it: with none, it would close the app.
+            if not self.client(self.TERMINAL_CLASS):
+                return
+            self.hyprctl("eval", f'hl.dispatch(hl.dsp.focus({{ window = "class:{self.TERMINAL_CLASS}" }}))')
+            active = json.loads(self.hyprctl("activewindow", "-j") or "{}")
+            if active.get("class") != self.TERMINAL_CLASS:
+                die("the terminal would not take the focus, so it was not closed")
+            self.hyprctl("eval", "hl.dispatch(hl.dsp.window.close())")
+            self._wait(lambda: not self.client(self.TERMINAL_CLASS), "the terminal to close")
+            return
+        if what != "open":
+            die(f"terminal is open or close, not {what!r}")
+        if self.client(self.TERMINAL_CLASS):
+            self.focus("terminal")
+            return
+        home = Path(self.env["HOME"])
+        tools = home / ".local/bin"
+        tools.mkdir(parents=True, exist_ok=True)
+        for name, target in (("omacharts", self.binary), ("vp-agent", ROOT / "video/agent/vp-agent")):
+            link = tools / name
+            if not link.exists():
+                link.symlink_to(target)
+        c = lambda name, fallback: self.colors.get(name, fallback).lstrip("#")
+        config = home / ".config/foot/foot.ini"
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text(f"""font=JetBrainsMono Nerd Font:size=12.5
+pad=18x14
+[cursor]
+color={c('background', '#1a1b26')} {c('foreground', '#a9b1d6')}
+[colors]
+background={c('background', '#1a1b26')}
+foreground={c('foreground', '#a9b1d6')}
+regular0={c('dark_background', '#13141c')}
+regular1={c('red', '#f7768e')}
+regular2={c('green', '#9ece6a')}
+regular3={c('yellow', '#e0af68')}
+regular4={c('blue', '#7aa2f7')}
+regular5={c('magenta', '#ad8ee6')}
+regular6={c('cyan', '#449dab')}
+regular7={c('foreground', '#a9b1d6')}
+""")
+        rc = home / ".config/foot/rc"
+        # A command given opens the terminal already running it, so nothing
+        # is typed on camera that is only there to start the scene.
+        rc.write_text(f'export PATH="{tools}:$PATH"\nPS1="\\[\\e[34m\\]❯\\[\\e[0m\\] "\nclear\n{command}\n')
+        self.spawn(["foot", "--app-id", self.TERMINAL_CLASS, "-c", str(config), "bash", "--rcfile", str(rc), "-i"], log="terminal.log" if hasattr(self, "work") else None)
+        self._wait(lambda: self.client(self.TERMINAL_CLASS), "the terminal", timeout=15)
+        self.focus("terminal")
+        # Tiled beside the app at half the width; nudged to its share. Which
+        # way a relative resize moves the split depends on the side the
+        # window is on, so the result is measured and the nudge corrected.
+        total = sum(client["size"][0] for client in self.clients())
+        for _ in range(3):
+            width = self.client(self.TERMINAL_CLASS)["size"][0]
+            off = round(total * TERMINAL_SHARE) - width
+            if abs(off) < 8:
+                break
+            self.hyprctl("eval", f"hl.dispatch(hl.dsp.window.resize({{ x = {off}, y = 0, relative = true }}))")
+            time.sleep(0.2)
+            if abs(round(total * TERMINAL_SHARE) - self.client(self.TERMINAL_CLASS)["size"][0]) > abs(off):
+                self.hyprctl("eval", f"hl.dispatch(hl.dsp.window.resize({{ x = {-2 * off}, y = 0, relative = true }}))")
+                time.sleep(0.2)
+        time.sleep(0.4)
+
+    def focus(self, what):
+        target = {"app": "com.jorgemanrubia.Omacharts", "terminal": self.TERMINAL_CLASS}.get(what)
+        if not target:
+            die(f"focus is app or terminal, not {what!r}")
+        self.hyprctl("eval", f'hl.dispatch(hl.dsp.focus({{ window = "class:{target}" }}))')
+        time.sleep(0.2)
+
+    def clients(self):
+        try:
+            return json.loads(self.hyprctl("clients", "-j") or "[]")
+        except json.JSONDecodeError:
+            return []
+
+    def client(self, cls):
+        return next((c for c in self.clients() if c.get("class") == cls), None)
 
 
 def session_file():
@@ -990,12 +1108,28 @@ def polish_plan(events, total):
                                   "scale": round(zoom, 3)})
         run.clear()
 
+    # An asked-for zoom, held until the next one, the hands' next move or a
+    # few seconds, whichever comes first.
+    asked = [e for e in events if e.get("scene") is not None and e["verb"] == "zoom" and e.get("at")]
+    for i, event in enumerate(asked):
+        later = [e["t"] for e in events if e.get("scene") is not None and e["t"] > event["t"] + 0.5
+                 and e["verb"] in ("key", "type", "cli", "zoom", "terminal", *POINTER)]
+        end = min([event["t"] + 8.0, total, *later[:1]])
+        if end - event["t"] >= 1.5:
+            zooms.append({"start": round(max(0.0, event["t"] - 0.2), 3), "end": round(end, 3),
+                          "x": round(event["at"][0] * scale_px), "y": round(event["at"][1] * scale_px),
+                          "scale": round(float(event["args"][2]), 3)})
+
     for event in events:
         if event.get("scene") is None:
             continue
+        if event["verb"] == "zoom":
+            continue
         if event["verb"] in POINTER and event.get("at"):
             if run and (event["t"] - run[-1]["t"] > 3.0 or math.hypot(event["at"][0] - run[-1]["at"][0], event["at"][1] - run[-1]["at"][1]) > 700):
-                close_run(event["t"])
+                # Let go before the hands move on, so the next motion is not
+                # seen through the end of this zoom.
+                close_run(event["t"] - 0.6)
             run.append(event)
         elif event["verb"] in ("key", "type", "cli"):
             close_run(event["t"] + 0.2)
@@ -1004,10 +1138,30 @@ def polish_plan(events, total):
                 keys = [KEY_NAMES.get(part, KEY_NAMES.get(part.lower(), part.upper() if len(part) == 1 else part)) for part in chord.split("+")]
                 badges.append({"start": round(event["t"], 3), "end": round(event["t"] + 1.6, 3), "keys": keys})
     close_run(total)
+    zooms.sort(key=lambda z: z["start"])
+    # Zooms never overlap: the later one waits for the earlier to let go.
+    zooms = [z for i, z in enumerate(zooms) if i == 0 or z["start"] >= zooms[i - 1]["end"]]
     # A badge that would still be showing when the next one appears gives way.
     for a, b in zip(badges, badges[1:]):
         a["end"] = min(a["end"], b["start"])
     return zooms, badges
+
+
+def split_plan(events, total):
+    """When the terminal stands beside the app, for the transitions into and
+    out of it and the labels over the two panes."""
+    splits, opened = [], None
+    for event in events:
+        if event.get("scene") is None or event["verb"] != "terminal":
+            continue
+        if event["args"][0] == "open" and opened is None:
+            opened = event["t"]
+        elif event["args"][0] == "close" and opened is not None:
+            splits.append({"start": round(opened, 3), "end": round(event["t"], 3), "share": TERMINAL_SHARE})
+            opened = None
+    if opened is not None:
+        splits.append({"start": round(opened, 3), "end": round(total, 3), "share": TERMINAL_SHARE})
+    return splits
 
 
 def polish(script, raw, offset, total):
@@ -1015,6 +1169,7 @@ def polish(script, raw, offset, total):
     key badges drawn over it. Returns the file to compose from instead of raw."""
     events = json.loads((script.out / "events.json").read_text())
     zooms, badges = polish_plan(events, total)
+    splits = split_plan(events, total)
     public = script.out / "compose-public"
     shutil.rmtree(public, ignore_errors=True)
     public.mkdir()
@@ -1026,12 +1181,12 @@ def polish(script, raw, offset, total):
     # symlinks behind, and a missing font fails the whole render.
     shutil.copy(ROOT / "site/assets/fonts/cascadia-mono-latin-700-normal.woff2", public / "cascadia-mono-700.woff2")
     props = {"src": "recording.mp4", "width": SIZE[0], "height": SIZE[1], "fps": FPS,
-             "frames": int(round(total * FPS)), "zooms": zooms, "badges": badges}
+             "frames": int(round(total * FPS)), "zooms": zooms, "badges": badges, "splits": splits}
     (script.out / "polish.json").write_text(json.dumps(props, indent=1))
     compose_dir = VIDEO / "compose"
     if not (compose_dir / "node_modules").exists():
         die("no Remotion; run bin/video setup")
-    say(f"polishing: {len(zooms)} zooms, {len(badges)} key badges (Remotion, a few minutes at 4K)")
+    say(f"polishing: {len(zooms)} zooms, {len(badges)} key badges, {len(splits)} terminal splits (Remotion, a few minutes at 4K)")
     out = script.out / "polished.mp4"
     run(["npx", "remotion", "render", "src/index.ts", "Polish", str(out), f"--props={script.out / 'polish.json'}",
          f"--public-dir={public}", "--codec=h264", "--crf=12", f"--concurrency={max(2, (os.cpu_count() or 8) // 2)}",
@@ -1056,13 +1211,21 @@ def compose(script, voiced, plan, raw, offset):
     inputs, parts = [], []
     for i, (v, s) in enumerate(zip(voiced, plan["scenes"])):
         scene = levelled / f"{i + 1:02d}.wav"
+        if not v["words"]:
+            # Silence, which loudnorm would only make noise of.
+            run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-t", "0.1", str(scene)])
+            inputs += ["-i", str(scene)]
+            parts.append(f"[{i}:a]apad=whole_dur={total:.3f}[v{i}]")
+            continue
         run(["ffmpeg", "-v", "error", "-y", "-i", str(v["wav"]), "-af", "loudnorm=I=-16:TP=-2,aresample=48000",
              "-ac", "2", str(scene)])
         inputs += ["-i", str(scene)]
         ms = int((s["start"] + intro) * 1000)
-        parts.append(f"[{i}:a]adelay={ms}|{ms}[v{i}]")
+        parts.append(f"[{i}:a]adelay={ms}|{ms},apad=whole_dur={total:.3f}[v{i}]")
     mix = "".join(f"[v{i}]" for i in range(len(voiced)))
-    graph = ";".join(parts) + f";{mix}amix=inputs={len(voiced)}:normalize=0,apad,atrim=0:{total:.3f}[out]"
+    # Every line is padded to the picture before the mix: padding after amix
+    # stops at the last word, and a bare apad there never ends at all.
+    graph = ";".join(parts) + f";{mix}amix=inputs={len(voiced)}:normalize=0,atrim=0:{total:.3f}[out]"
     run(["ffmpeg", "-v", "error", "-y", *inputs, "-filter_complex", graph, "-map", "[out]", str(voice)])
 
     track = script.meta.get("music_file")
@@ -1070,7 +1233,11 @@ def compose(script, voiced, plan, raw, offset):
     if track:
         track = (ROOT / track) if not Path(track).is_absolute() else Path(track)
         fade = max(0, total - 2.5)
-        graph = (f"[1:a]aresample=48000,aformat=channel_layouts=stereo,aloop=loop=-1:size=2e9,atrim=0:{total:.3f},"
+        # A track a little short of the picture is slowed to end with it,
+        # its last note on the last frame; only a much shorter one loops.
+        ending = audible_end(track)
+        fit = f"atempo={ending / (total - 1.0):.4f}," if 0.9 <= ending / (total - 1.0) < 1 else ""
+        graph = (f"[1:a]aresample=48000,aformat=channel_layouts=stereo,{fit}aloop=loop=-1:size=2e9,atrim=0:{total:.3f},"
                  f"loudnorm=I=-27:TP=-3,afade=t=in:d=1.2,afade=t=out:st={fade:.2f}:d=2.5[m];"
                  f"[0:a]asplit[v][key];[m][key]sidechaincompress=threshold=0.015:ratio=6:attack=40:release=600:makeup=1[ducked];"
                  f"[v][ducked]amix=inputs=2:normalize=0[out]")
@@ -1117,6 +1284,17 @@ def compose(script, voiced, plan, raw, offset):
     for made in (final, preview, out / f"{script.slug}.srt"):
         shutil.copy(made, renders / made.name)
     say(f"video/renders/{final.name} ({total:.1f}s), {preview.name} for watching; review/ in {out.relative_to(ROOT)} has a frame per cue")
+
+
+def audible_end(track):
+    """Where a track's last sound dies away, ahead of any silence it ends on."""
+    found = subprocess.run(["ffmpeg", "-hide_banner", "-i", str(track), "-af", "silencedetect=n=-45dB:d=1", "-f", "null", "-"],
+                           capture_output=True, text=True).stderr
+    length = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(track)],
+                                  capture_output=True, text=True, check=True).stdout)
+    starts = [float(m) for m in re.findall(r"silence_start: ([\d.]+)", found)]
+    ends = re.findall(r"silence_end: ([\d.]+)", found)
+    return starts[-1] if starts and len(ends) == len(starts) and float(ends[-1]) >= length - 0.05 else length
 
 
 def loudnorm(source, target):
