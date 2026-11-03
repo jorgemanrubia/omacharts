@@ -1847,6 +1847,12 @@ mod tests {
         /// Three CME sessions of one-minute ladders from 2026-10-11 22:00
         /// UTC, the halt left out, and the bars they make.
         fn sessions(instrument: &Instrument) -> (Series, Vec<Bar>) {
+            sessions_of(instrument, true)
+        }
+
+        /// [`sessions`], every print with its aggressor or, `sided` false,
+        /// none with one: a feed that never says.
+        fn sessions_of(instrument: &Instrument, sided: bool) -> (Series, Vec<Bar>) {
             let days = Days::new(instrument);
             let mut state = 0x9e37_79b9_7f4a_7c15u64;
             let mut next = move |n: u64| {
@@ -1869,6 +1875,7 @@ mod tests {
                 for _ in 0..1 + next(30) {
                     let tick = center + next(13) as i32 - 6;
                     let side = match next(12) {
+                        _ if !sided => Side::Unknown,
                         0 => Side::Unknown,
                         1..=5 => Side::Sell,
                         _ => Side::Buy,
@@ -1902,8 +1909,31 @@ mod tests {
         /// worked out here the slow way, minute by minute and price by price.
         #[test]
         fn a_profile_from_ladders_is_every_minute_summed_by_price() {
+            for sided in [true, false] {
+                every_minute_summed_by_price(sided);
+            }
+        }
+
+        /// A feed that never says the aggressor still draws its profile
+        /// from what traded at each price, and its delta is nothing.
+        #[test]
+        fn trades_with_no_aggressor_still_make_a_profile_and_no_delta() {
             let instrument = es();
-            let (series, bars) = sessions(&instrument);
+            let (series, bars) = sessions_of(&instrument, false);
+            let held = Held::of(&series);
+            let profiles = profile_of(&bars, &instrument, None, Some(&held));
+            assert_eq!(profiles.len(), 3);
+            let traded: f64 = bars.iter().map(|b| b.volume).sum();
+            assert_eq!(profiles.iter().map(|p| p.total_volume).sum::<f64>(), traded);
+            let (from, to) = (bars[0].ts, bars[bars.len() - 1].ts + 60);
+            let ladder = held.between(from, to).expect("held whole");
+            assert_eq!((ladder.total() as f64, ladder.delta()), (traded, 0));
+            assert!(ladder.levels.iter().all(|l| l.bid == 0 && l.ask == 0));
+        }
+
+        fn every_minute_summed_by_price(sided: bool) {
+            let instrument = es();
+            let (series, bars) = sessions_of(&instrument, sided);
             let held = Held::of(&series);
             for rows in [None, Some(24)] {
                 let profiles = profile_of(&bars, &instrument, rows, Some(&held));

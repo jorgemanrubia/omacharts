@@ -279,8 +279,10 @@ of data serves all of them.
 
 **The minute ladder.** For each minute of a contract: open, high, low,
 close and volume, and for each price that traded, the **bid volume**
-(sellers hitting the bid) and the **ask volume** (buyers lifting the offer).
-Each minute also keeps its totals by side (bid, ask, and volume with no
+(sellers hitting the bid) and the **ask volume** (buyers lifting the offer),
+and the volume that traded there with no known aggressor, which is in the
+price's volume and on neither side, so a feed that never says still draws
+a profile and has no delta. Each minute also keeps its totals by side (bid, ask, and volume with no
 known aggressor) and trade counts by side, so bid and ask volume per bar,
 delta and average trade size never add up the price arrays.
 

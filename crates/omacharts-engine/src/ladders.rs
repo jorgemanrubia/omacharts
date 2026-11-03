@@ -15,8 +15,10 @@
 //! end, so a year is some 250 additions of a day ladder however long it is.
 //!
 //! Sides: **bid** volume is sell-aggressor volume (traded at the bid), **ask**
-//! volume is buy-aggressor volume. A print with no known aggressor counts in a
-//! minute's volume and in [`Sides::unknown`], and on neither side of any price.
+//! volume is buy-aggressor volume. A print with no known aggressor counts at
+//! its price as [`Level::unknown`] — in the price's volume, so a profile
+//! has it — and on neither side, so delta does not. Volume a provider
+//! reports with no price at all is in [`Sides::unknown`] alone.
 
 use std::cell::{Cell, RefCell};
 
@@ -53,23 +55,29 @@ pub fn minute_of(ts: i64) -> i64 {
     ts.div_euclid(60) * 60
 }
 
-/// One price of a ladder: volume and trade count on each side.
+/// One price of a ladder: volume and trade count on each side, and the
+/// volume whose side nobody said.
 ///
 /// One array of these rather than one array per column, so a minute is one
-/// allocation and a price's four numbers sit in one cache line.
+/// allocation and a price's numbers sit in one cache line.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Level {
     /// Sell-aggressor volume.
     pub bid: u64,
     /// Buy-aggressor volume.
     pub ask: u64,
+    /// Volume traded here with no known aggressor: in the price's volume,
+    /// on neither side. Its trades are counted only in the ladder's
+    /// [`Sides::unknown_trades`].
+    pub unknown: u64,
     pub bid_trades: u32,
     pub ask_trades: u32,
 }
 
 impl Level {
+    /// Everything that traded at this price, sides or not.
     pub fn volume(&self) -> u64 {
-        self.bid + self.ask
+        self.bid + self.ask + self.unknown
     }
 
     fn is_empty(&self) -> bool {
@@ -79,6 +87,7 @@ impl Level {
     fn add(&mut self, other: &Level) {
         self.bid += other.bid;
         self.ask += other.ask;
+        self.unknown += other.unknown;
         self.bid_trades += other.bid_trades;
         self.ask_trades += other.ask_trades;
     }
@@ -86,6 +95,7 @@ impl Level {
     fn sub(&mut self, other: &Level) {
         self.bid = self.bid.saturating_sub(other.bid);
         self.ask = self.ask.saturating_sub(other.ask);
+        self.unknown = self.unknown.saturating_sub(other.unknown);
         self.bid_trades = self.bid_trades.saturating_sub(other.bid_trades);
         self.ask_trades = self.ask_trades.saturating_sub(other.ask_trades);
     }
@@ -97,7 +107,8 @@ impl Level {
 pub struct Sides {
     pub bid: u64,
     pub ask: u64,
-    /// Volume printed with no aggressor.
+    /// Volume printed with no aggressor: what the levels hold as
+    /// [`Level::unknown`], and any a provider reported with no price.
     pub unknown: u64,
     pub bid_trades: u64,
     pub ask_trades: u64,
@@ -187,7 +198,7 @@ impl Ladder {
         self.sides.delta()
     }
 
-    /// The tick that traded most, bid and ask together; the lowest of a tie.
+    /// The tick that traded most, every side together; the lowest of a tie.
     pub fn point_of_control(&self) -> Option<i32> {
         let mut best: Option<(usize, u64)> = None;
         for (i, level) in self.levels.iter().enumerate() {
@@ -240,27 +251,27 @@ impl Ladder {
 
     /// One print: `count` trades of `size` in all at `tick`.
     ///
-    /// A print with no aggressor is counted in the totals and at no price.
+    /// A print with no aggressor is counted at its price, on neither side.
     pub fn add_trade(&mut self, tick: i32, size: u64, side: Side, count: u32) {
+        self.cover(tick, tick);
+        let level = &mut self.levels[(tick - self.low_tick) as usize];
         match side {
+            Side::Buy => {
+                level.ask += size;
+                level.ask_trades += count;
+                self.sides.ask += size;
+                self.sides.ask_trades += u64::from(count);
+            }
+            Side::Sell => {
+                level.bid += size;
+                level.bid_trades += count;
+                self.sides.bid += size;
+                self.sides.bid_trades += u64::from(count);
+            }
             Side::Unknown => {
+                level.unknown += size;
                 self.sides.unknown += size;
                 self.sides.unknown_trades += u64::from(count);
-            }
-            Side::Buy | Side::Sell => {
-                self.cover(tick, tick);
-                let level = &mut self.levels[(tick - self.low_tick) as usize];
-                if side == Side::Buy {
-                    level.ask += size;
-                    level.ask_trades += count;
-                    self.sides.ask += size;
-                    self.sides.ask_trades += u64::from(count);
-                } else {
-                    level.bid += size;
-                    level.bid_trades += count;
-                    self.sides.bid += size;
-                    self.sides.bid_trades += u64::from(count);
-                }
             }
         }
     }
@@ -956,11 +967,17 @@ fn sum(parts: &[&Ladder]) -> Ladder {
 
 // -- encoding ---------------------------------------------------------------
 
-/// The encoding's version, the first byte of every blob.
-pub const ENCODING_VERSION: u8 = 1;
+/// The encoding's version, the first byte of every blob. Version 1, from
+/// before a price kept its volume with no known side, is still read: its
+/// levels read back with none, and the ladder's total with all of it.
+pub const ENCODING_VERSION: u8 = 2;
 
 /// Flag: per-price trade counts follow each level.
 const FLAG_COUNTS: u8 = 1;
+
+/// Flag: each level carries its volume with no known side. Never set in
+/// version 1.
+const FLAG_UNKNOWN: u8 = 2;
 
 /// Why a blob could not be read.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1038,6 +1055,7 @@ impl Reader<'_> {
     fn header(&mut self) -> Result<u8, DecodeError> {
         match self.byte()? {
             ENCODING_VERSION => self.byte(),
+            1 => Ok(self.byte()? & !FLAG_UNKNOWN),
             other => Err(DecodeError::Version(other)),
         }
     }
@@ -1054,10 +1072,22 @@ fn counts_complete(ladder: &Ladder) -> bool {
     bid == ladder.sides.bid_trades && ask == ladder.sides.ask_trades
 }
 
+/// Does any price carry volume with no known side? Only then is a level's
+/// written; a provider that always says the side pays nothing for it.
+fn has_unknown(ladder: &Ladder) -> bool {
+    ladder.levels.iter().any(|l| l.unknown > 0)
+}
+
+/// The flags byte for ladders written with these.
+fn flags(counts: bool, unknown: bool) -> u8 {
+    (if counts { FLAG_COUNTS } else { 0 }) | (if unknown { FLAG_UNKNOWN } else { 0 })
+}
+
 /// A ladder's body: width, the no-aggressor totals, the side trade counts
 /// unless the levels carry them, and the levels. The low tick is the
 /// caller's to write, relative to whatever suits it.
-fn put_ladder(out: &mut Vec<u8>, ladder: &Ladder, counts: bool) {
+fn put_ladder(out: &mut Vec<u8>, ladder: &Ladder, flags: u8) {
+    let (counts, unknown) = (flags & FLAG_COUNTS != 0, flags & FLAG_UNKNOWN != 0);
     put_varint(out, ladder.levels.len() as u64);
     put_varint(out, ladder.sides.unknown);
     put_varint(out, ladder.sides.unknown_trades);
@@ -1068,6 +1098,9 @@ fn put_ladder(out: &mut Vec<u8>, ladder: &Ladder, counts: bool) {
     for level in &ladder.levels {
         put_varint(out, level.bid);
         put_varint(out, level.ask);
+        if unknown {
+            put_varint(out, level.unknown);
+        }
         if counts {
             put_varint(out, u64::from(level.bid_trades));
             put_varint(out, u64::from(level.ask_trades));
@@ -1075,7 +1108,8 @@ fn put_ladder(out: &mut Vec<u8>, ladder: &Ladder, counts: bool) {
     }
 }
 
-fn read_ladder(r: &mut Reader<'_>, low_tick: i32, counts: bool) -> Result<Ladder, DecodeError> {
+fn read_ladder(r: &mut Reader<'_>, low_tick: i32, flags: u8) -> Result<Ladder, DecodeError> {
+    let (counts, unknown) = (flags & FLAG_COUNTS != 0, flags & FLAG_UNKNOWN != 0);
     let width = usize::try_from(r.varint()?).map_err(|_| DecodeError::Corrupt)?;
     // Every level is at least two bytes; a width past what is left cannot
     // be read, and must not get to ask for gigabytes first.
@@ -1090,6 +1124,9 @@ fn read_ladder(r: &mut Reader<'_>, low_tick: i32, counts: bool) -> Result<Ladder
     let mut levels = Vec::with_capacity(width);
     for _ in 0..width {
         let mut level = Level { bid: r.varint()?, ask: r.varint()?, ..Level::default() };
+        if unknown {
+            level.unknown = r.varint()?;
+        }
         if counts {
             level.bid_trades = r.u32()?;
             level.ask_trades = r.u32()?;
@@ -1108,24 +1145,24 @@ fn read_ladder(r: &mut Reader<'_>, low_tick: i32, counts: bool) -> Result<Ladder
 
 /// One minute, against the minute before it: the open and the low tick as
 /// deltas, and OHLC as ticks off the low tick.
-fn put_minute(out: &mut Vec<u8>, minute: &Minute, prev: (i64, i32), tick_size: f64, counts: bool) {
+fn put_minute(out: &mut Vec<u8>, minute: &Minute, prev: (i64, i32), tick_size: f64, flags: u8) {
     let low = minute.ladder.low_tick;
     put_zigzag(out, minute.ts - prev.0);
     put_zigzag(out, i64::from(low) - i64::from(prev.1));
     for price in [minute.open, minute.high, minute.low, minute.close] {
         put_zigzag(out, i64::from(to_tick(price, tick_size)) - i64::from(low));
     }
-    put_ladder(out, &minute.ladder, counts);
+    put_ladder(out, &minute.ladder, flags);
 }
 
-fn read_minute(r: &mut Reader<'_>, prev: (i64, i32), tick_size: f64, counts: bool) -> Result<Minute, DecodeError> {
+fn read_minute(r: &mut Reader<'_>, prev: (i64, i32), tick_size: f64, flags: u8) -> Result<Minute, DecodeError> {
     let ts = prev.0.checked_add(r.zigzag()?).ok_or(DecodeError::Corrupt)?;
     let low_tick = r.tick(i64::from(prev.1))?;
     let mut ohlc = [0.0; 4];
     for price in &mut ohlc {
         *price = to_price(r.tick(i64::from(low_tick))?, tick_size);
     }
-    let ladder = read_ladder(r, low_tick, counts)?;
+    let ladder = read_ladder(r, low_tick, flags)?;
     let [open, high, low, close] = ohlc;
     Ok(Minute { ts, open, high, low, close, volume: ladder.sides.volume(), ladder })
 }
@@ -1133,8 +1170,9 @@ fn read_minute(r: &mut Reader<'_>, prev: (i64, i32), tick_size: f64, counts: boo
 /// A day's minutes as one blob.
 ///
 /// ```text
-/// u8      version (1)
-/// u8      flags: bit 0, per-price trade counts present
+/// u8      version (2; 1 is read, and has no bit 1)
+/// u8      flags: bit 0, per-price trade counts present;
+///                bit 1, per-price volume with no known side present
 /// zigzag  day
 /// varint  minute count
 /// minute* each against the one before (the first against ts 0, tick 0):
@@ -1142,13 +1180,15 @@ fn read_minute(r: &mut Reader<'_>, prev: (i64, i32), tick_size: f64, counts: boo
 ///   zigzag  low tick delta
 ///   zigzag  open, high, low, close as ticks off this minute's low tick
 ///   varint  width (levels)
-///   varint  no-aggressor volume, then its trade count
+///   varint  no-aggressor volume, priced or not, then its trade count
 ///   varint  bid trades, ask trades           (only without per-price counts)
-///   level*  varint bid, varint ask [, varint bid trades, varint ask trades]
+///   level*  varint bid, varint ask [, varint unknown]
+///           [, varint bid trades, varint ask trades]
 /// ```
 ///
 /// Volume and the per-side volumes are not written: they are the levels'
-/// sums plus the no-aggressor volume. The low tick is against the previous
+/// sums plus the no-aggressor volume, which is written whole because a
+/// provider can report some with no price. The low tick is against the previous
 /// minute's rather than the day's first, which keeps it to a byte. OHLC is
 /// written as ticks, so a price off the tick grid reads back on it.
 pub fn encode_day(day: &Day, tick_size: f64) -> Vec<u8> {
@@ -1163,14 +1203,15 @@ pub fn encode_day(day: &Day, tick_size: f64) -> Vec<u8> {
 /// counts it lacks. Written without, the side totals stay and the per-price
 /// counts read back as zero.
 pub fn encode_day_as(day: &Day, tick_size: f64, counts: bool) -> Vec<u8> {
+    let flags = flags(counts, day.minutes.iter().any(|m| has_unknown(&m.ladder)));
     let mut out = Vec::with_capacity(64 + day.minutes.len() * 80);
     out.push(ENCODING_VERSION);
-    out.push(if counts { FLAG_COUNTS } else { 0 });
+    out.push(flags);
     put_zigzag(&mut out, day.day);
     put_varint(&mut out, day.minutes.len() as u64);
     let mut prev = (0, 0);
     for minute in &day.minutes {
-        put_minute(&mut out, minute, prev, tick_size, counts);
+        put_minute(&mut out, minute, prev, tick_size, flags);
         prev = (minute.ts, minute.ladder.low_tick);
     }
     out
@@ -1193,7 +1234,7 @@ pub fn decode_day_with_total(bytes: &[u8], total: &[u8], tick_size: f64) -> Resu
 
 fn decode_minutes(bytes: &[u8], tick_size: f64) -> Result<Day, DecodeError> {
     let mut r = Reader { bytes, at: 0 };
-    let counts = r.header()? & FLAG_COUNTS != 0;
+    let flags = r.header()?;
     let day = r.zigzag()?;
     let n = usize::try_from(r.varint()?).map_err(|_| DecodeError::Corrupt)?;
     if n > bytes.len() {
@@ -1202,7 +1243,7 @@ fn decode_minutes(bytes: &[u8], tick_size: f64) -> Result<Day, DecodeError> {
     let mut minutes: Vec<Minute> = Vec::with_capacity(n);
     let mut prev = (0, 0);
     for _ in 0..n {
-        let minute = read_minute(&mut r, prev, tick_size, counts)?;
+        let minute = read_minute(&mut r, prev, tick_size, flags)?;
         if minutes.last().is_some_and(|last| last.ts >= minute.ts) {
             return Err(DecodeError::Corrupt);
         }
@@ -1215,37 +1256,37 @@ fn decode_minutes(bytes: &[u8], tick_size: f64) -> Result<Day, DecodeError> {
 /// One ladder on its own — a day's total. Version, flags, the low tick, then
 /// the body as a minute's.
 pub fn encode_ladder(ladder: &Ladder) -> Vec<u8> {
-    let counts = counts_complete(ladder);
+    let flags = flags(counts_complete(ladder), has_unknown(ladder));
     let mut out = Vec::with_capacity(16 + ladder.levels.len() * 6);
     out.push(ENCODING_VERSION);
-    out.push(if counts { FLAG_COUNTS } else { 0 });
+    out.push(flags);
     put_zigzag(&mut out, i64::from(ladder.low_tick));
-    put_ladder(&mut out, ladder, counts);
+    put_ladder(&mut out, ladder, flags);
     out
 }
 
 pub fn decode_ladder(bytes: &[u8]) -> Result<Ladder, DecodeError> {
     let mut r = Reader { bytes, at: 0 };
-    let counts = r.header()? & FLAG_COUNTS != 0;
+    let flags = r.header()?;
     let low = r.tick(0)?;
-    read_ladder(&mut r, low, counts)
+    read_ladder(&mut r, low, flags)
 }
 
 /// One minute on its own, for a minute stored as it seals: version, flags,
 /// then the minute against ts 0 and tick 0.
 pub fn encode_minute(minute: &Minute, tick_size: f64) -> Vec<u8> {
-    let counts = counts_complete(&minute.ladder);
+    let flags = flags(counts_complete(&minute.ladder), has_unknown(&minute.ladder));
     let mut out = Vec::with_capacity(16 + minute.ladder.levels.len() * 6);
     out.push(ENCODING_VERSION);
-    out.push(if counts { FLAG_COUNTS } else { 0 });
-    put_minute(&mut out, minute, (0, 0), tick_size, counts);
+    out.push(flags);
+    put_minute(&mut out, minute, (0, 0), tick_size, flags);
     out
 }
 
 pub fn decode_minute(bytes: &[u8], tick_size: f64) -> Result<Minute, DecodeError> {
     let mut r = Reader { bytes, at: 0 };
-    let counts = r.header()? & FLAG_COUNTS != 0;
-    read_minute(&mut r, (0, 0), tick_size, counts)
+    let flags = r.header()?;
+    read_minute(&mut r, (0, 0), tick_size, flags)
 }
 
 #[cfg(test)]
@@ -1373,7 +1414,7 @@ mod tests {
     }
 
     #[test]
-    fn prints_land_on_their_side_and_unknown_ones_on_neither() {
+    fn prints_land_on_their_side_and_unknown_ones_at_their_price_on_neither() {
         let mut m = Minute::opening(0, 100.0);
         m.add_trade(400, 100.0, 5, Side::Buy, 1);
         m.add_trade(398, 99.5, 3, Side::Sell, 1);
@@ -1381,15 +1422,46 @@ mod tests {
         assert_eq!(m.volume, 10);
         assert_eq!((m.high, m.low, m.close), (100.5, 99.5, 100.5));
         assert_eq!(m.ladder.low_tick, 398);
-        assert_eq!(m.ladder.levels.len(), 3, "the unknown print takes no price");
+        assert_eq!(m.ladder.levels.len(), 5, "the unknown print takes its price");
         assert_eq!(m.ladder.at(400).ask, 5);
         assert_eq!(m.ladder.at(398).bid, 3);
+        let unknown = m.ladder.at(402);
+        assert_eq!((unknown.bid, unknown.ask, unknown.unknown, unknown.volume()), (0, 0, 2, 2));
         let s = m.ladder.sides;
         assert_eq!((s.bid, s.ask, s.unknown, s.volume(), s.delta()), (3, 5, 2, 10, 2));
         assert_eq!((s.bid_trades, s.ask_trades, s.unknown_trades), (1, 1, 1));
         assert_eq!(m.ladder.point_of_control(), Some(400));
         let prices: Vec<_> = m.ladder.prices(0.25).collect();
-        assert_eq!(prices, vec![(99.5, 3, 0), (99.75, 0, 0), (100.0, 0, 5)]);
+        assert_eq!(prices, vec![(99.5, 3, 0), (99.75, 0, 0), (100.0, 0, 5), (100.25, 0, 0), (100.5, 0, 0)]);
+    }
+
+    /// A feed that never says who took liquidity still has a volume at
+    /// every price it traded, and no delta at all.
+    #[test]
+    fn trades_with_no_aggressor_have_volume_at_price_and_no_delta() {
+        let days = Days::fixed(0);
+        let mut s = Series::new(TICK);
+        for i in 0..10 {
+            let mut m = Minute::opening(i * 60, to_price(400, TICK));
+            m.add_trade(400, to_price(400, TICK), 4, Side::Unknown, 1);
+            m.add_trade(401 + i as i32 % 2, to_price(401, TICK), 1, Side::Unknown, 1);
+            s.insert(&days, m);
+        }
+        let ladder = s.volume_at_price(0, 600);
+        assert_eq!((ladder.low_tick, ladder.levels.len()), (400, 3));
+        let volumes: Vec<u64> = ladder.levels.iter().map(Level::volume).collect();
+        assert_eq!(volumes, vec![40, 5, 5]);
+        assert_eq!(ladder.point_of_control(), Some(400));
+        assert_eq!((ladder.total(), ladder.delta()), (50, 0));
+        assert_eq!((ladder.sides.bid, ladder.sides.ask, ladder.sides.unknown), (0, 0, 50));
+        for bar in s.bars_by(0, 600, |ts| ts.div_euclid(300) * 300) {
+            assert_eq!((bar.volume, bar.ladder.delta()), (25, 0));
+            assert_eq!(bar.ladder.levels.iter().map(Level::volume).sum::<u64>(), 25);
+        }
+        // Taken back out, a day's total drops the prices it leaves empty.
+        let mut day = s.days[0].clone();
+        day.remove(0, 600);
+        assert!(day.total.levels.is_empty());
     }
 
     #[test]
@@ -1507,6 +1579,60 @@ mod tests {
         assert_eq!(decode_day_with_total(&bytes, &total, TICK).unwrap(), *day);
         let m = &day.minutes[3];
         assert_eq!(&decode_minute(&encode_minute(m, TICK), TICK).unwrap(), m);
+    }
+
+    /// Volume with no side at a price round-trips, and costs a day with
+    /// none of it nothing: its blob is laid out as version 1's was.
+    #[test]
+    fn volume_with_no_side_round_trips_and_is_written_only_when_there_is_some() {
+        let mut m = Minute::opening(60, 100.0);
+        m.add_trade(400, 100.0, 3, Side::Buy, 1);
+        m.add_trade(401, 100.25, 2, Side::Unknown, 1);
+        m.ladder.sides.unknown += 4; // reported with no price
+        m.volume += 4;
+        let day = Day { day: 0, total: m.ladder.clone(), minutes: vec![m.clone()] };
+        let bytes = encode_day(&day, TICK);
+        assert_eq!(bytes[1] & FLAG_UNKNOWN, FLAG_UNKNOWN);
+        assert_eq!(decode_day(&bytes, TICK).unwrap(), day);
+        assert_eq!(decode_ladder(&encode_ladder(&day.total)).unwrap(), day.total);
+        assert_eq!(decode_minute(&encode_minute(&m, TICK), TICK).unwrap(), m);
+
+        let mut sided = Minute::opening(60, 100.0);
+        sided.add_trade(400, 100.0, 3, Side::Buy, 1);
+        assert_eq!(encode_minute(&sided, TICK)[1] & FLAG_UNKNOWN, 0);
+    }
+
+    /// Ladders stored before a price kept its volume with no side are read
+    /// as they were written: that volume in the totals, at no price.
+    #[test]
+    fn version_1_blobs_still_decode() {
+        // One minute at 60 s: low tick 400, OHLC all on it, one level of
+        // 3 bid and 5 ask with a trade count each side, and 2 contracts
+        // in one print with no side.
+        let v1 = [1, FLAG_COUNTS, 120, 0xa0, 0x06, 0, 0, 0, 0, 1, 2, 1, 3, 5, 1, 2];
+        let m = decode_minute(&v1, TICK).unwrap();
+        assert_eq!((m.ts, m.open, m.close, m.volume), (60, 100.0, 100.0, 10));
+        assert_eq!(m.ladder.levels, vec![Level { bid: 3, ask: 5, unknown: 0, bid_trades: 1, ask_trades: 2 }]);
+        let s = m.ladder.sides;
+        assert_eq!((s.bid, s.ask, s.unknown, s.unknown_trades, s.delta()), (3, 5, 2, 1, 2));
+
+        // A whole day and a total in version 1 are version 2's bytes with
+        // no per-price unknown, under the old version byte.
+        let mut rng = Rng(5);
+        let mut day = series(&mut rng, &Days::fixed(0), 0, 1).days.remove(0);
+        for minute in &mut day.minutes {
+            for level in &mut minute.ladder.levels {
+                level.unknown = 0;
+            }
+        }
+        day.resum();
+        let mut bytes = encode_day(&day, TICK);
+        let mut total = encode_ladder(&day.total);
+        assert_eq!((bytes[1] & FLAG_UNKNOWN, total[1] & FLAG_UNKNOWN), (0, 0));
+        bytes[0] = 1;
+        total[0] = 1;
+        assert_eq!(decode_day_with_total(&bytes, &total, TICK).unwrap(), day);
+        assert_eq!(decode_day(&[9, 0], TICK), Err(DecodeError::Version(9)));
     }
 
     #[test]

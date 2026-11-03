@@ -544,13 +544,12 @@ fn smoothed_ticks(step: f64, tick: f64, span: f64) -> f64 {
     finest as f64 * tick
 }
 
-/// [`one`] from what traded at each price: every price's bid and ask volume
-/// in the row that holds it, nothing spread. Rows are whole ticks tall and
-/// cover the period's bars and its ladder both, so the price that traded at
-/// the high has a row of its own.
+/// [`one`] from what traded at each price: every price's volume — bid, ask
+/// and with no known aggressor — in the row that holds it, nothing spread.
+/// Rows are whole ticks tall and cover the period's bars and its ladder
+/// both, so the price that traded at the high has a row of its own.
 ///
-/// Volume printed with no known aggressor has no price in a ladder, and so
-/// is not in the rows.
+/// Volume a provider reported with no price at all is in no row.
 fn one_exact(
     bars: &[Bar],
     offset: usize,
