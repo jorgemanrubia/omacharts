@@ -64,28 +64,136 @@ indexes, crypto, forex) still comes from Yahoo. The choice of feed stops
 being one setting for every chart and becomes a question asked per
 instrument.
 
-- **Bars** for futures come from Rithmic: minute bars from the same request
-  as the minute ladders below, daily and weekly from its time bars.
-- **Symbols stay the app's own.** Charts, watchlists, search and stored
-  chartbooks name an instrument the way they do now (`ES`, `AAPL`), whatever
-  feed serves it. Each provider translates to its own names, as
-  `Provider::symbol_for` does today: Rithmic turns a continuous future
-  (`ES`) into the front month it asks Rithmic for (`ESZ6`) and a specific
-  contract into itself. Nothing above the provider knows a Rithmic symbol,
-  so switching feeds, or losing one, never changes what a chart is of.
+Done in three steps, in this order:
+
+1. **The window holds a list of feeds** instead of one, with Yahoo alone on
+   it and `bin/perf-compare` showing nothing changed. No Rithmic code yet.
+2. **The Rithmic provider**, in `crates/omacharts-engine/src/providers/rithmic/`
+   on top of `crates/rithmic`.
+3. **The Data page**, as below.
+
+#### The Data page
+
+An ordered list of sources. With nothing configured it is one row, Yahoo,
+and a button to add another; no brokerage, no "Experimental", no sign-in
+rows.
+
+```
+Sources                                  first match wins, top down
+  ⋮ Rithmic   CME futures, front month · live · 951        [Sign out]
+    Yahoo     Stocks, ETFs, indexes, futures, FX, crypto · delayed
+  [ Add a source… ]
+```
+
+- **Yahoo is the floor.** It cannot be removed or moved: it serves
+  everything, so a source under it would never be reached. The page refuses
+  the move rather than only hiding the handle.
+- **Add a source…** offers Rithmic and thinkorswim. Rithmic opens a dialog
+  for user ID, password, system and gateway, prefilled from what is stored;
+  "Sign in…" on its row opens the same dialog.
+- **A source's row** has a handle to drag it up or down, one action (sign
+  in, sign out, sign in again) and Remove. Its subtitle says what it serves
+  and how it stands: "live · 951", "not signed in", "session expired", or
+  Rithmic's own words for a refusal ("permission denied").
+- **thinkorswim** becomes a source added like Rithmic, still marked
+  Experimental on its row.
+- The page manages sources and nothing else. Accounts and balances come
+  back with trading (stage 4).
+
+#### Which source serves a chart
+
+- The single `provider` setting becomes `providers`: an ordered list of ids,
+  top first, with Yahoo implied last. It is shared: an order restored on a
+  machine with no Rithmic login is harmless, because a source that is not
+  signed in is passed over. `provider=tos` migrates to `providers=["tos"]`
+  (which gains its users FX and crypto, which thinkorswim does not serve);
+  `provider=yahoo`, or nothing, migrates to nothing stored.
+- A chart goes to the **first source that translates its instrument and is
+  usable**. Usable is read from the stored sign-in state when the list is
+  built and when a sign-in or sign-out finishes. It is a read from disk,
+  never a connection.
+- **A source is passed over only for a reason known before asking**: not
+  signed in, or it does not serve the instrument. **A source that fails
+  while running keeps the chart.** Somebody watching an ES footprint on
+  Rithmic must not be moved to delayed Yahoo bars with the ladders gone
+  without noticing. The chart keeps the trouble dot it shows today, and the
+  provider owns reconnecting, as the `Stream` contract already says.
+- **Each source has its own loader**, because pacing and cooldowns are per
+  provider and Yahoo's rate limit must not pace Rithmic. With Yahoo alone
+  there is one, as now.
+- **The chart's header names its source** only when more than one is
+  configured. With Yahoo alone nothing is drawn and the window is what it is
+  today. A chart passed over a source says so: "Yahoo · Rithmic not signed
+  in".
+
+#### Symbols stay the app's own
+
+`Instrument` in `crates/omacharts-engine/src/symbols.rs` is already the
+canonical identity ("`ES`, not `ES=F`"), and `Provider::symbol_for`
+returning an `Option` is already both the translation and the test of
+whether a provider serves an instrument. Nothing above the provider changes:
+charts, watchlists, search and stored chartbooks keep naming an instrument
+as they do, so switching sources, or losing one, never changes what a chart
+is of.
+
+- **Rithmic serves futures roots** that `contracts.tsv` puts on a CME
+  exchange, and declines everything else, which is what leaves stocks to
+  Yahoo.
+- **`symbol_for` stays offline.** It is called on the main thread and when
+  building cache keys, so Rithmic's answer for `ES` is `ES`. Finding that the
+  front month is `ESZ6` takes a request, and happens when bars are fetched,
+  on the provider's thread. The cache key is `rithmic:ES`, which keeps a roll
+  out of the store.
+- **A spelling no rule produces** goes in `Instrument::overrides`, as it
+  does for thinkorswim.
+
+#### Front month, and rolls
+
+- **For now, front month only, not stitched.** Rithmic's `ES` is the
+  contract trading now, with the history that contract has (about 90 days
+  intraday). That is what a prop trader watches at 1m or 5m, and it never
+  crosses a roll.
+- **At a roll the chart corrects itself.** The new contract's bars disagree
+  with the cached tail of the old one, and the loader's `OVERLAP` check
+  already treats that as history rewritten and fetches again.
+- **Stitching, later.** When long daily charts from Rithmic matter, the
+  provider fetches the earlier contracts back to the start and joins them on
+  a fixed roll date, unadjusted, all inside its own `bars()`. Back-adjusting
+  prices across rolls would be a chart option and never the default, because
+  it moves prices a trader has drawn levels on.
+- **Not a special case for daily.** Sending daily `ES` to Yahoo because
+  Rithmic is not stitched would make the source depend on the resolution and
+  break "the first that serves it". Routing stays by instrument alone.
+
+#### Dated contracts, later
+
+A chart of `ESZ6` itself is a separate change after routing. It is not a
+new kind: a futures root gets an optional contract month
+(`contract: Option<Contract>`, stored as `"Z6"` and left out when unset, so
+every stored chartbook stays valid). `ESZ6` is CME's own spelling, so it is
+neutral; each provider renders it, Rithmic as `ESZ6`, Yahoo as `ESZ26.CME`,
+thinkorswim as `/ESZ6`. Search works out the next four quarterly contracts
+of a root when what is typed reads as a root, a month code and a digit,
+rather than listing them, so the index and startup stay the size they are.
+
+#### The Rithmic session
+
 - **One session for the whole app.** CME bills a non-professional
   subscriber as a professional after two concurrent data sessions, and
   R | Trader Pro's plug-in mode, Rithmic's way around that, is Windows only.
-  So every chart shares one session, and the bar widget asks the app rather
-  than signing in itself.
-- **The Data settings are reworked** to show Yahoo as the baseline and
-  Rithmic as something added to it. See "The Data page" below.
+  So every chart shares one session, owned by the provider and closed by its
+  `retire()`, and the bar widget asks the app rather than signing in itself.
+- **Bars** come from Rithmic: minute bars from the same request as the
+  minute ladders in stage 2, daily and weekly from its time bars.
 - **The password goes in the desktop's keyring** (Secret Service, which
   gnome-keyring provides on Omarchy), never in the settings database: the
   database is backed up and can be copied to another machine. User ID,
   system and gateway are settings, and they are `Local` in
   `src/setting_keys.rs`, because a login belongs to the machine it was typed
   on.
+- **A refusal is shown in Rithmic's words.** "permission denied", which is
+  what a login gets before its Rithmic agreements are signed, is an expired
+  sign-in with Rithmic's reason, not a generic failure.
 
 ### 2. Volume at price
 
@@ -134,16 +242,29 @@ quota, so history is fetched once and cached, never asked for twice.
 ### 3. Providers say what they can do
 
 Feeds differ, and the richer ones will keep coming (Interactive Brokers is
-likely next). A provider says what it serves: bars, live trades, minute
-ladders, how far back. An indicator that needs ladders gets them when the
-chart's feed has them.
+likely next). A provider says what it serves, per timeframe as `Capability`
+does now, and richer data is added the way live streaming was: an optional
+part of a provider that answers "none" unless the provider has it, so no
+provider is asked about something it lacks.
+
+- **Ladders and trades** are a trait of their own in `provider.rs`, reached
+  through a method on `Provider` that returns `None` by default. The types,
+  a minute ladder and a trade with its side, live in a new
+  `crates/omacharts-engine/src/ladders.rs`. `Bar` does not change.
+- **Indicators say what they need**: bars, or volume at price. The volume
+  profile needs bars and keeps today's estimate from bar ranges, and is exact
+  when the chart has ladders. Footprint and delta need volume at price, and
+  on a chart whose source has none they show one line, "Needs a source with
+  volume at price", rather than an invented estimate.
 
 **Yahoo must stay exactly as fast.** Somebody who never configures anything
-pays nothing for any of this: no ladder is allocated, no query is made, no
-hot path gains a branch that costs. On a Yahoo chart the volume profile
-keeps today's estimate from bar ranges, and an indicator that cannot be
-estimated says it needs a feed with volume at price. `examples/perf.rs` is
-run before and after each change in this stage to prove it.
+pays nothing for any of this. A chart holds ladders only when its source has
+them and one of its indicators needs them; otherwise there is no ladder
+allocated, no query made and no second request. The draw path asks whether
+there are ladders once per frame, outside the loop over bars. The perf
+harness runs on the synthetic provider, and `bin/perf-compare` is run before
+and after each change in stages 1 to 3 to show the allocation counts have
+not moved.
 
 ### 4. Trading
 
