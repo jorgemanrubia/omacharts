@@ -1,9 +1,10 @@
 ---
 title: Volume profile
-stage: script
+stage: storyboard
 length: 240s
 theme: tokyo-night
 voice: narrator
+music_file: video/out/volume-profile/music/candidate-2-seed1037.flac
 music: ambient electronic, warm analog pads and a soft plucked arpeggio over a slow, deliberate pulse; patient and a little curious through the theory, steadier once the study is on screen, and in the agent section the pulse firms up and a second arpeggio layer enters as the profiles fold together; it opens up for the theme changes near the end, with room to breathe, and resolves brighter for the close
 ---
 
