@@ -136,35 +136,15 @@ pub fn order(store: &Store) -> Vec<String> {
 /// `omacharts_engine::providers`.
 pub fn ordered(store: &Store) -> Vec<Box<dyn Provider>> {
     let order = order(store);
-    if order.iter().any(|id| providers::listed(id).is_some_and(|feed| feed.form().is_some())) {
+    if order.iter().any(|id| providers::listed(id).is_some_and(trades)) {
         remember_logins(store);
     }
     providers::ordered(&order)
 }
 
-/// The logins typed into a feed's own form on the Data page, without their
-/// secrets: a JSON object of feed id to its fields by key. `Local`, because
-/// a login belongs to the machine it was typed on. A login that is a broker
-/// connection too is Trading's, and not here.
-pub const LOGINS: &str = "feed_logins";
-
-type Typed = std::collections::BTreeMap<String, String>;
-
-type Logins = std::collections::BTreeMap<String, Typed>;
-
-fn own_logins(store: &Store) -> Logins {
-    store.setting(LOGINS).map(|json| parsed(&json)).unwrap_or_default()
-}
-
-fn parsed(json: &str) -> Logins {
-    serde_json::from_str(json).unwrap_or_default()
-}
-
-fn save_own_logins(store: &Store, logins: &Logins) {
-    match logins.is_empty() {
-        true => store.remove_setting(LOGINS),
-        false => store.set_setting(LOGINS, &serde_json::to_string(logins).unwrap_or_default()),
-    }
+/// Is `feed`'s login a broker connection, kept in Preferences → Trading?
+fn trades(feed: &Listed) -> bool {
+    feed.setup.is_some_and(|setup| setup.trades())
 }
 
 /// Tell the engine which release of Omacharts is signing in: this crate's
@@ -174,36 +154,26 @@ pub fn identify() {
     providers::identify(env!("CARGO_PKG_VERSION"));
 }
 
-/// Hand every feed that signs in through a form the login the app keeps for
-/// it: a broker connection's data login, out of the logins in Preferences →
-/// Trading, or what was typed into the feed's own form on the Data page.
-/// Both are settings, `Local` in `setting_keys`; a secret is never here,
-/// it is in the keyring under the login's id. The engine keeps no database,
-/// so it is told, whenever the feeds are read and whenever a sign-in or a
-/// sign-out may have changed what is saved.
+/// Hand every feed whose login is a broker connection the data login: the
+/// login its data signs in through, out of the logins in Preferences →
+/// Trading, which are settings, `Local` in `setting_keys`. The password is
+/// never here; it is in the keyring under the login's id. The engine keeps
+/// no database, so it is told, whenever the feeds are read and whenever a
+/// sign-in or a sign-out may have changed what is saved.
 ///
-/// A few settings reads, and only for an order that names such a feed or a
+/// Two settings reads, and only for an order that names such a feed or a
 /// command about feeds: with nothing configured nothing is read, built or
-/// started. With nothing ever typed into a feed's own form on this machine
-/// there is nothing to tell those feeds, and they are told nothing.
+/// started.
 pub fn remember_logins(store: &Store) {
-    let mut own = None;
-    for feed in providers::every() {
-        let Some(setup) = feed.setup.filter(|_| feed.form().is_some()) else { continue };
-        let saved = match setup.trades() {
-            true => saved_of(store),
-            false => match own.get_or_insert_with(|| store.setting(LOGINS).map(|json| parsed(&json))) {
-                Some(logins) => own_saved(logins, feed),
-                None => continue,
-            },
-        };
-        setup.remember(saved);
+    for feed in providers::every().filter(|feed| trades(feed)) {
+        if let Some(setup) = feed.setup {
+            setup.remember(saved_of(store));
+        }
     }
 }
 
-/// The data login of the broker connections as the engine is told it: no
-/// user while it is signed out, which is what makes the data feed not
-/// signed in.
+/// The data login as the engine is told it: no user while it is signed
+/// out, which is what makes the data feed not signed in.
 pub fn saved_of(store: &Store) -> providers::Saved {
     let login = crate::trading::data_login(store);
     providers::Saved {
@@ -216,78 +186,22 @@ pub fn saved_of(store: &Store) -> providers::Saved {
     }
 }
 
-/// A feed's own login, under the feed's id.
-fn own_saved(logins: &Logins, feed: &Listed) -> providers::Saved {
-    let Some(typed) = logins.get(feed.id) else { return providers::Saved::default() };
-    providers::Saved {
-        login: Some(feed.id.to_string()),
-        user: typed.get(providers::USER).filter(|user| !user.trim().is_empty()).cloned(),
-        values: typed.iter().filter(|(key, _)| *key != providers::USER).map(|(k, v)| (k.clone(), v.clone())).collect(),
-    }
-}
-
-/// Keep what was typed into `feed`'s own form: the secrets in the keyring
-/// the feed names, under the feed's id, and the rest in [`LOGINS`]. Nothing
-/// of a secret is kept while something else stands in for the form.
-pub fn keep_login(store: &Store, feed: &'static Listed, typed: &[(&'static str, String)]) -> Result<(), String> {
-    let (Some(setup), Some(fields)) = (feed.setup, feed.form()) else {
-        return Err(format!("{} signs in without a form", feed.label));
-    };
-    let value = |key: &str| typed.iter().find(|(known, _)| *known == key).map(|(_, value)| value.trim().to_string());
-    let user = value(providers::USER).unwrap_or_default();
-    let mut kept = Typed::new();
-    let mut secret = Ok(());
-    for field in fields {
-        let typed = value(field.key).unwrap_or_default();
-        match field.kind {
-            providers::FieldKind::Secret if typed.is_empty() || setup.stood_in() => {}
-            providers::FieldKind::Secret => {
-                secret = match setup.keyring() {
-                    Some(keyring) => keyring.save(feed.id, &user, "", &typed),
-                    None => Err(format!("{} has nowhere to keep a secret", feed.label)),
-                };
-            }
-            _ => {
-                kept.insert(field.key.to_string(), typed);
-            }
-        }
-    }
-    let mut logins = own_logins(store);
-    logins.insert(feed.id.to_string(), kept);
-    save_own_logins(store, &logins);
-    remember_logins(store);
-    secret
-}
-
 /// The settings a feed's sign-in is read from: the window charts again when
 /// one changes, since which charts a login can serve may have too.
 pub fn signs_in_from(key: &str) -> bool {
-    [LOGINS, crate::trading::LOGINS, crate::trading::DATA_LOGIN].contains(&key)
+    [crate::trading::LOGINS, crate::trading::DATA_LOGIN].contains(&key)
 }
 
 /// What a feed keeps in the settings beyond its session, forgotten when it
-/// is signed out of. A broker connection's data login is marked signed out:
-/// its password went with the session, and it stays in Trading, with its
-/// accounts, for the next sign-in. A feed's own login loses its user, and
-/// keeps the rest for the next time it is typed.
+/// is signed out of. For a broker connection's feed, the data login is
+/// marked signed out: its password went with the session, and it stays in
+/// Trading, with its accounts, for the next sign-in.
 pub fn forget_login(store: &Store, id: &str) {
-    let Some(setup) = providers::listed(id).filter(|feed| feed.form().is_some()).and_then(|feed| feed.setup) else {
+    if !providers::listed(id).is_some_and(trades) {
         return;
-    };
-    match setup.trades() {
-        true => {
-            if let Some(data) = crate::trading::data_login(store) {
-                crate::trading::mark_signed_out(store, &data.id);
-            }
-        }
-        false => {
-            let mut logins = own_logins(store);
-            let feed = providers::listed(id).map_or(id, |feed| feed.id);
-            if let Some(typed) = logins.get_mut(feed) {
-                typed.remove(providers::USER);
-                save_own_logins(store, &logins);
-            }
-        }
+    }
+    if let Some(data) = crate::trading::data_login(store) {
+        crate::trading::mark_signed_out(store, &data.id);
     }
     remember_logins(store);
 }
@@ -318,10 +232,10 @@ pub fn removable(store: &Store, id: &str) -> bool {
         .any(|known| !known.eq_ignore_ascii_case(id) && providers::listed(known).is_some())
 }
 
-/// Take `id` off the stored order. For a feed signed in to through a form
-/// the session ends; the login stays, Trading's or its own, for the next
-/// time. A browser's session is the feed's own, and is signed out of from
-/// its row rather than by removing it.
+/// Take `id` off the stored order. For a broker connection's feed the data
+/// session ends; the logins it signed in through are Trading's, and stay. A
+/// feed's own session is signed out of from its row rather than by removing
+/// it.
 pub fn remove_source(store: &Store, id: &str) -> bool {
     if !removable(store, id) {
         return false;
@@ -329,7 +243,7 @@ pub fn remove_source(store: &Store, id: &str) -> bool {
     let order: Vec<String> =
         stored_order(store).into_iter().filter(|known| !known.eq_ignore_ascii_case(id)).collect();
     save_order(store, &order);
-    if let Some(setup) = providers::listed(id).filter(|feed| feed.form().is_some()).and_then(|feed| feed.setup) {
+    if let Some(setup) = providers::listed(id).filter(|feed| trades(feed)).and_then(|feed| feed.setup) {
         setup.hand_over();
         remember_logins(store);
     }
@@ -576,6 +490,10 @@ pub(crate) mod tests {
             ("src/trading.rs", "part B: the Rithmic broker adapter and its logins"),
             ("src/ui/window.rs", "part B: entitlements and the data login"),
             ("src/ui/pane.rs", "part B: the header's feed picker"),
+            // For good: a provider's own sign-in dialog is the provider's,
+            // and the registry is the one place that maps a feed to it.
+            ("src/ui/rithmic_login.rs", "Rithmic's own login dialog"),
+            ("src/ui/sign_in_dialogs.rs", "which dialog each provider signs in through"),
             // History, for good: a migration says what was stored, under the
             // names it was stored with.
             ("src/migrations.rs", "keys as they were stored"),

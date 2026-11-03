@@ -31,13 +31,11 @@ const KEYS: &[(&str, Kind)] = &[
     ("screenshot_folder", Kind::Local),
     ("cache_limit", Kind::Local),
     ("sidebar_width", Kind::Local),
-    // The broker logins — names, user IDs, systems, gateways — which one
-    // market data comes through, and the logins typed into a data feed's
-    // own form, belong to the machine they were typed on. Their passwords
-    // are in the keyring, never a setting.
+    // The broker logins — names, user IDs, systems, gateways — and which
+    // one market data comes through belong to the machine they were typed
+    // on. Their passwords are in the keyring, never a setting.
     (crate::trading::LOGINS, Kind::Local),
     (crate::trading::DATA_LOGIN, Kind::Local),
-    (crate::feeds::LOGINS, Kind::Local),
     // Each login's accounts as last listed, with their balances: rewritten
     // at every sign-in, and account numbers stay on this machine.
     ("trading_accounts", Kind::Bookkeeping),

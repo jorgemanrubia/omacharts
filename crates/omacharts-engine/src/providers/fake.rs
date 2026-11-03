@@ -1,11 +1,11 @@
 //! A second rich feed that exists only to prove the boundary holds.
 //!
 //! It has what Rithmic has — bars, a stream, minute ladders and a sign-in
-//! typed into a form — and none of it is named anywhere above this folder.
+//! typed into a dialog — and none of it is named anywhere above this folder.
 //! It is found by [`crate::providers::listed`] and never offered, and only
 //! in a build with the `fakes` feature, which is a test build: the tests
-//! that route a chart to it and draw its row and its login form on the Data
-//! page do so through the same code every real feed goes through, and the
+//! that route a chart to it and draw its row and open its dialog on the
+//! Data page do so through the same code every real feed goes through, and the
 //! day one of them needs a line naming this feed, the boundary has a hole.
 //!
 //! Its bars and its stream are [`Synthetic`]'s. What is signed in is held in
@@ -18,27 +18,19 @@ use crate::ladders::Minute;
 use crate::provider::{
     Capability, LadderSink, Ladders, Provider, ProviderError, Stream, Subscription,
 };
-use crate::providers::{Access, Field, FieldKind, How, Listed, Saved, Secrets, SignIn, Setup, Synthetic, USER};
+use crate::providers::{Access, How, Listed, Saved, Secrets, SignIn, Setup, Synthetic};
 use crate::symbols::{Instrument, InstrumentKind};
 
 /// How the fake is listed.
 pub const LISTED: Listed = Listed {
     id: "fake",
     label: "Fake Rich Feed",
-    serves: "Futures, invented, from a login typed into a form",
+    serves: "Futures, invented, from a login typed into a dialog",
     covers: "Futures, invented",
     build: || Box::new(Fake::new()),
     setup: Some(&Signing),
     experimental: false,
 };
-
-/// What its form asks for: one of every kind of field.
-pub const FIELDS: &[Field] = &[
-    Field { key: USER, title: "Member number", kind: FieldKind::Text, default: "", required: true },
-    Field { key: "token", title: "Token", kind: FieldKind::Secret, default: "", required: true },
-    Field { key: "desk", title: "Desk", kind: FieldKind::Choice(&["North", "South"]), default: "South", required: false },
-    Field { key: "server", title: "Server", kind: FieldKind::Url, default: "wss://fake.invalid", required: false },
-];
 
 const SETUP: Setup = Setup {
     explain: "Invented futures, for tests.",
@@ -162,7 +154,7 @@ impl SignIn for Signing {
     }
 
     fn how(&self) -> How {
-        How::Form(FIELDS)
+        How::Dialog
     }
 
     fn access(&self) -> Access {
@@ -204,10 +196,6 @@ impl SignIn for Signing {
 
     fn remember(&self, saved: Saved) {
         *SAVED.write().unwrap_or_else(|e| e.into_inner()) = Some(saved);
-    }
-
-    fn promise(&self) -> String {
-        "Your token is kept in memory and goes nowhere.".into()
     }
 
     fn keyring(&self) -> Option<&'static dyn Secrets> {

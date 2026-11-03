@@ -12,8 +12,9 @@
 //! connection signs in through a login in Preferences → Trading, the data
 //! login, so while there is one its row says so and leaves signing in, out
 //! and removing to that page; adding it with no login is adding a broker
-//! there. A feed with a form of its own is typed into here, in the form it
-//! declares; one that signs in in a browser opens one.
+//! there. A feed with a dialog of its own is signed in to here, in that
+//! dialog, found in `sign_in_dialogs`; one that signs in in a browser opens
+//! one.
 //!
 //! Signing in runs on a thread of its own and reports back over a channel
 //! the main loop awaits, because it waits on somebody: a browser and a
@@ -31,7 +32,7 @@ use omacharts_engine::providers::{self, Access, How, Listed};
 use crate::feeds;
 use crate::store::Store;
 use crate::ui::drop_line;
-use crate::ui::login_form::{self, Form};
+use crate::ui::sign_in_dialogs;
 
 /// What the sign-in thread sends back.
 enum Progress {
@@ -284,8 +285,8 @@ fn action_button(panel: &Rc<Panel>, feed: &'static Listed, row: &adw::ActionRow)
     }
     button.add_css_class("suggested-action");
     // A sign-in that cannot start says why on the row, rather than being a
-    // button that fails. A form is a dialog, which always can.
-    if feed.form().is_none()
+    // button that fails. A dialog always can.
+    if !feed.asks_in_a_dialog()
         && let Err(why) = providers::can_sign_in(feed.id)
     {
         button.set_sensitive(false);
@@ -293,9 +294,9 @@ fn action_button(panel: &Rc<Panel>, feed: &'static Listed, row: &adw::ActionRow)
         return button;
     }
     let anchor = row.clone();
-    button.connect_clicked(move |_| match (feed.form().is_some(), trades(feed)) {
+    button.connect_clicked(move |_| match (feed.asks_in_a_dialog(), trades(feed)) {
         (true, true) => ask_broker(&panel, &anchor),
-        (true, false) => ask_form(&panel, feed, &anchor),
+        (true, false) => ask_dialog(&panel, feed, &anchor),
         (false, _) => start_sign_in(&panel, feed),
     });
     button
@@ -418,20 +419,12 @@ fn ask_broker(panel: &Rc<Panel>, anchor: &impl IsA<gtk::Widget>) {
     }
 }
 
-/// A feed with a form of its own: what is typed is kept, and the feed signed
-/// in with it.
-fn ask_form(panel: &Rc<Panel>, feed: &'static Listed, anchor: &impl IsA<gtk::Widget>) {
-    let Some(form) = Form::for_feed(feed) else { return };
+/// A feed with a dialog of its own: the dialog keeps what is typed, and the
+/// feed is signed in with it.
+fn ask_dialog(panel: &Rc<Panel>, feed: &'static Listed, anchor: &impl IsA<gtk::Widget>) {
+    let Some(dialog) = sign_in_dialogs::feed_dialog(feed) else { return };
     let panel = panel.clone();
-    login_form::ask(anchor, form, move |typed| {
-        match feeds::keep_login(&panel.store, feed, &typed.values()) {
-            Ok(()) => start_sign_in(&panel, feed),
-            Err(error) => {
-                panel.notes.borrow_mut().insert(feed.id, format!("not saved · {error}"));
-                panel.changed();
-            }
-        }
-    });
+    dialog(Box::new(move || start_sign_in(&panel, feed))).present(Some(anchor));
 }
 
 /// Run a sign-in off the main loop, showing on the row how it goes, then
@@ -492,10 +485,7 @@ mod tests {
 
     const RITHMIC: &str = "rithmic";
 
-    /// A developer's login file stands in for the broker connection's form.
-    fn stood_in() -> bool {
-        providers::connections().filter_map(|feed| feed.setup).any(|setup| setup.stood_in())
-    }
+    use omacharts_engine::providers::rithmic::session;
 
     fn panel(store: &Rc<Store>) -> Rc<Panel> {
         Panel::new(adw::PreferencesPage::new(), store.clone(), None, Rc::new(|| {}), Vec::new())
@@ -635,7 +625,7 @@ mod tests {
     /// says so and offers neither Remove nor a sign-in of its own.
     #[test]
     fn remove_clears_the_setting_and_trading_owns_rithmics_login() {
-        if !crate::ui::gtk_ready() || stood_in() {
+        if !crate::ui::gtk_ready() || session::development() {
             return;
         }
         let store = Rc::new(Store::memory().expect("an empty database"));
@@ -673,7 +663,7 @@ mod tests {
     /// stands. Rithmic with nobody saved is not signed in.
     #[test]
     fn a_source_offers_the_action_its_state_calls_for() {
-        if !crate::ui::gtk_ready() || stood_in() {
+        if !crate::ui::gtk_ready() || session::development() {
             return;
         }
         let store = Rc::new(Store::memory().expect("an empty database"));
@@ -689,11 +679,11 @@ mod tests {
         assert!(!words.iter().any(|w| w == "Sign out"), "{words:?}");
     }
 
-    /// A feed no code here names gets its row, its form and its sign-in
-    /// from what it declares, and charts are routed to it: the fake rich
-    /// feed, which is in no list a person is offered.
+    /// A feed no code here names gets its row and its sign-in from what it
+    /// declares, its dialog from the registry, and charts routed to it: the
+    /// fake rich feed, which is in no list a person is offered.
     #[test]
-    fn a_feed_nobody_names_gets_its_row_its_form_and_its_charts() {
+    fn a_feed_nobody_names_gets_its_row_its_dialog_and_its_charts() {
         if !crate::ui::gtk_ready() {
             return;
         }
@@ -709,25 +699,16 @@ mod tests {
         assert!(words.iter().any(|w| w == "Sign in…"), "{words:?}");
         assert!(words.iter().any(|w| w == "Remove"), "{words:?}");
 
-        // Its form is the fields it declares, under its name.
-        let form = Form::for_feed(fake).expect("a form");
-        assert_eq!(form.heading, format!("Sign in to {}", fake.label));
-        let declared: Vec<&str> = fake.form().unwrap().iter().map(|field| field.title).collect();
-        assert_eq!(login_form::tests::titles(&login_form::dialog(form, |_| {})), declared);
-
-        // What the form hands over is kept, the secret in the feed's own
-        // keyring and never in a setting, and the row says it is live.
-        let typed: Vec<(&'static str, String)> = fake
-            .form()
-            .unwrap()
-            .iter()
-            .map(|field| match field.kind {
-                providers::FieldKind::Secret => (field.key, "PLANTED-SECRET".to_string()),
-                _ => (field.key, format!("typed {}", field.key)),
-            })
-            .collect();
-        feeds::keep_login(&store, fake, &typed).unwrap();
-        assert!(!store.setting(feeds::LOGINS).unwrap_or_default().contains("PLANTED-SECRET"));
+        // Its dialog is its own, found by what it declares; what it keeps
+        // signs it in, and the row says it is live.
+        assert!(feed_settings_opens_a_dialog(fake));
+        let done = Rc::new(Cell::new(false));
+        let signed = done.clone();
+        let dialog = sign_in_dialogs::feed_dialog(fake).expect("a dialog")(Box::new(move || signed.set(true)));
+        let list = dialog.extra_child().and_downcast::<gtk::ListBox>().expect("its rows");
+        list.first_child().and_downcast::<adw::EntryRow>().expect("a member number").set_text("member");
+        dialog.emit_by_name::<()>("response", &[&sign_in_dialogs::fake::SIGN_IN]);
+        assert!(done.get(), "the page is told to sign it in");
         assert!(feeds::sign_in_now(fake.id, |_| {}).is_ok());
         rebuild(&panel);
         let group = panel.group.borrow().clone().unwrap();
@@ -755,10 +736,15 @@ mod tests {
         assert_eq!(routed.route(&future).map(|(provider, _)| provider.id()), Some(fake.id));
         assert_eq!(routed.route(&stock).map(|(provider, _)| provider.id()), Some(providers::DEFAULT));
 
-        // Signed out from its row, it keeps what was typed but the user.
+        // Signed out from its row, it cannot sign in until the dialog again.
         sign_out(&panel, fake);
-        assert_eq!(providers::access(fake.id), Some(Access::Missing));
-        assert!(store.setting(feeds::LOGINS).unwrap_or_default().contains("typed server"));
+        assert!(feeds::sign_in_now(fake.id, |_| {}).is_err());
+    }
+
+    /// A feed is signed in to through a dialog of the app's only when the
+    /// registry has one for it.
+    fn feed_settings_opens_a_dialog(feed: &'static Listed) -> bool {
+        feed.asks_in_a_dialog() && !trades(feed) && sign_in_dialogs::feed_dialog(feed).is_some()
     }
 
     /// Nothing on this page may reach the network, because it is drawn the

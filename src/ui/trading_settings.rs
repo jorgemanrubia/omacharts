@@ -3,7 +3,7 @@
 //!
 //! With nothing configured it is a line and a button. "Add a broker…"
 //! offers the data feeds whose login is a broker connection too, and opens
-//! the login form that feed declares, with a Name field in front; the first
+//! that feed's own login dialog, with a Name field; the first
 //! login added also adds that feed as the first data feed, through it.
 //! Each login says how it stands — live, not signed in, or the broker's own
 //! words for a refusal — and which one is the data login; its accounts are
@@ -20,11 +20,11 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::glib;
-use omacharts_engine::providers::{self, Field, FieldKind, Listed, Secrets, USER};
+use omacharts_engine::providers::{self, Listed, Secrets};
 
 use crate::store::Store;
 use crate::trading::{self, Account, Desk, Login, Standing};
-use crate::ui::login_form::{self, Form};
+use crate::ui::sign_in_dialogs;
 
 /// The data feed whose logins this page keeps: the broker connection the
 /// logins sign in to, for orders and for charts' data.
@@ -53,34 +53,11 @@ impl Secrets for Keyring {
     }
 }
 
-/// What the trader calls a login, since there can be several: "Lucid",
-/// "Tradeify". Left empty, it is named after its system.
-const NAME: Field = Field { key: "name", title: "Name", kind: FieldKind::Text, default: "", required: false };
-
-/// The connection's form, with the name in front, prefilled from `known`
-/// when it is being signed in again.
-fn form(feed: &'static Listed, known: Option<&Login>) -> Option<Form> {
-    let mut form = Form::for_feed(feed)?;
-    form.fields.insert(0, NAME);
-    if let Some(login) = known {
-        form.known = vec![
-            (NAME.key, login.name.clone()),
-            (USER, login.user.clone()),
-            ("system", login.system.clone()),
-            ("gateway", login.gateway.clone()),
-        ];
-    }
-    Some(form)
-}
-
-/// What the form had, as a login.
-fn typed(typed: &login_form::Typed) -> trading::Typed {
-    trading::Typed {
-        name: typed.get(NAME.key),
-        user: typed.get(USER),
-        password: typed.secret(),
-        system: typed.get("system"),
-        gateway: typed.get("gateway"),
+/// Ask for a login of the connection over `anchor` — a new one, or `known`
+/// again — in the connection's own dialog.
+fn ask(anchor: &gtk::Widget, known: Option<&Login>, signed: impl Fn(trading::Typed) + 'static) {
+    if let Some(dialog) = connection().and_then(sign_in_dialogs::login_dialog) {
+        dialog(anchor, known, Box::new(signed));
     }
 }
 
@@ -159,13 +136,12 @@ impl Panel {
     }
 }
 
-/// Open the login form for a new broker over `anchor`; what the Data
+/// Open the login dialog for a new broker over `anchor`; what the Data
 /// page's "Add a data feed…" does for the connection's feed too.
 pub fn add_broker(panel: &Rc<Panel>, anchor: &gtk::Widget) {
-    let Some(form) = connection().and_then(|feed| form(feed, None)) else { return };
     let panel = panel.clone();
-    login_form::ask(anchor, form, move |what| {
-        match trading::add_login(&panel.store, panel.secrets.as_ref(), &typed(&what)) {
+    ask(anchor, None, move |typed| {
+        match trading::add_login(&panel.store, panel.secrets.as_ref(), &typed) {
             Ok(id) => {
                 panel.changed();
                 sign_in(&panel, &id);
@@ -366,15 +342,14 @@ fn add_group(panel: &Rc<Panel>, empty: bool) -> adw::PreferencesGroup {
     group
 }
 
-/// The form again, prefilled, for a login with no password to sign in
+/// The dialog again, prefilled, for a login with no password to sign in
 /// with or one the broker refused.
 fn ask_again(panel: &Rc<Panel>, id: &str, anchor: &gtk::Widget) {
     let Some(login) = trading::logins(&panel.store).into_iter().find(|login| login.id == id) else { return };
-    let Some(form) = connection().and_then(|feed| form(feed, Some(&login))) else { return };
     let panel = panel.clone();
     let id = id.to_string();
-    login_form::ask(anchor, form, move |what| {
-        if let Err(error) = trading::retype_login(&panel.store, panel.secrets.as_ref(), &id, &typed(&what)) {
+    ask(anchor, Some(&login), move |typed| {
+        if let Err(error) = trading::retype_login(&panel.store, panel.secrets.as_ref(), &id, &typed) {
             panel.notes.borrow_mut().insert(id.clone(), format!("not saved · {error}"));
         }
         panel.changed();
@@ -539,11 +514,6 @@ mod tests {
         }).collect()
     }
 
-    /// A developer's login file in charge: nothing typed is kept.
-    pub(crate) fn stood_in() -> bool {
-        connection().and_then(|feed| feed.setup).is_some_and(|setup| setup.stood_in())
-    }
-
     fn typed(name: &str) -> Typed {
         Typed {
             name: name.into(),
@@ -573,7 +543,7 @@ mod tests {
     /// the default offers to become it.
     #[test]
     fn logins_and_their_accounts_are_listed() {
-        if !crate::ui::gtk_ready() || stood_in() {
+        if !crate::ui::gtk_ready() || omacharts_engine::providers::rithmic::session::development() {
             return;
         }
         let store = Rc::new(Store::memory().unwrap());

@@ -10,7 +10,9 @@
 //! [`Provider`], a [`Listed`] describing how it is offered — with a
 //! [`SignIn`] when there is an account behind it — and whatever that feed
 //! alone needs: its symbology, its session handling, its instructions.
-//! Then an entry in [`LISTED`], and the Data page, its login form, routing,
+//! Then an entry in [`LISTED`] (and, for a feed signed in to in a dialog,
+//! that dialog and an entry in the UI's registry of them), and the Data
+//! page, routing,
 //! `provider list`, `config set provider` and the shell completions all pick
 //! it up without being told about it separately. Nothing outside this
 //! folder names a feed, which a test of the app's holds it to.
@@ -96,12 +98,14 @@ impl Listed {
         self.setup.is_some()
     }
 
-    /// The fields its sign-in asks for, when it asks in a form.
-    pub fn form(&self) -> Option<&'static [Field]> {
-        match self.setup?.how() {
-            How::Form(fields) => Some(fields),
-            How::Browser | How::External => None,
-        }
+    /// How signing in to it goes, if there is anything to sign in to.
+    pub fn how(&self) -> Option<How> {
+        Some(self.setup?.how())
+    }
+
+    /// Does it sign in through a dialog of its own in the app?
+    pub fn asks_in_a_dialog(&self) -> bool {
+        self.how() == Some(How::Dialog)
     }
 }
 
@@ -109,9 +113,10 @@ impl Listed {
 /// `provider login` do about it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum How {
-    /// A form the app draws from these fields. What is typed is the app's
-    /// to keep, and a secret goes to the keyring the feed names.
-    Form(&'static [Field]),
+    /// A dialog of the provider's own in the app, which the UI's registry of
+    /// sign-in dialogs finds for it. What is typed is the app's to keep,
+    /// and a secret goes to the keyring the feed names.
+    Dialog,
     /// A real browser the person drives themselves; the app sees neither
     /// the password nor the code, only the session it ends with.
     Browser,
@@ -119,35 +124,6 @@ pub enum How {
     /// left behind.
     External,
 }
-
-/// One thing a sign-in form asks for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Field {
-    /// What it is kept under. [`USER`] is the one that says who signs in.
-    pub key: &'static str,
-    /// The row's title.
-    pub title: &'static str,
-    pub kind: FieldKind,
-    /// What a new login starts with; empty for nothing.
-    pub default: &'static str,
-    /// Must it be filled in before the form can be sent?
-    pub required: bool,
-}
-
-/// What a field holds, and so how it is drawn and where it is kept.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FieldKind {
-    Text,
-    /// Never shown again once typed, and never kept in a setting.
-    Secret,
-    Url,
-    /// One of these.
-    Choice(&'static [&'static str]),
-}
-
-/// The key of the field that says who signs in: a login with nothing under
-/// it is a login signed out.
-pub const USER: &str = "user";
 
 /// How many sessions a login may have open at once.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -161,16 +137,16 @@ pub enum Sessions {
     Any,
 }
 
-/// A login as the app keeps it, without its secrets, for a feed whose
-/// sign-in is a form. The engine has no database of its own, so it is told,
-/// with [`SignIn::remember`].
+/// A login as the app keeps it, without its secrets, for a feed signed in
+/// to through a dialog. The engine has no database of its own, so it is
+/// told, with [`SignIn::remember`].
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Saved {
     /// The login's id, which its secrets are kept under.
     pub login: Option<String>,
-    /// Who signs in, the [`USER`] field: `None` while it is signed out.
+    /// Who signs in: `None` while it is signed out.
     pub user: Option<String>,
-    /// The rest of what was typed and is not secret, by field key.
+    /// The rest of what was typed and is not secret, by name.
     pub values: Vec<(String, String)>,
 }
 
@@ -181,7 +157,7 @@ impl Saved {
     }
 }
 
-/// Where a form's secret is kept: the desktop keyring, or a store of a
+/// Where a dialog's secret is kept: the desktop keyring, or a store of a
 /// test's own, so that nothing a test does reaches anybody's keyring.
 pub trait Secrets {
     /// Save `password` for the login `login`, `user` on `system`, replacing
@@ -192,15 +168,16 @@ pub trait Secrets {
 }
 
 /// Signing in to a feed: declared by the feed, and read by everything above
-/// the boundary — the Data and Trading pages, the login form, `provider
-/// login` and routing — none of which says which feed it is talking to.
+/// the boundary — the Data and Trading pages, `provider login` and routing
+/// — none of which says which feed it is talking to. What a dialog asks is
+/// the provider's own, in its own module in the UI.
 ///
 /// Nothing here may connect, except [`SignIn::sign_in`] and
 /// [`SignIn::connect`], which are for a thread of their own.
 pub trait SignIn: Sync + std::fmt::Debug {
     /// What signing in involves, in the feed's own words.
     fn about(&self) -> &'static Setup;
-    /// A form, a browser, or something else entirely.
+    /// A dialog, a browser, or something else entirely.
     fn how(&self) -> How;
     /// How many sessions a login may have at once.
     fn sessions(&self) -> Sessions {
@@ -233,7 +210,7 @@ pub trait SignIn: Sync + std::fmt::Debug {
     /// guessing.
     fn places(&self) -> Vec<(&'static str, String)>;
     /// The login the app has saved for it, for a feed signed in to through
-    /// a form: called whenever the app reads its settings for an order that
+    /// a dialog: called whenever the app reads its settings for an order that
     /// names the feed, and after a sign-in or a sign-out.
     fn remember(&self, _saved: Saved) {}
     /// The login is another one now, or the feed is off the order: the
@@ -244,17 +221,7 @@ pub trait SignIn: Sync + std::fmt::Debug {
     fn refusal(&self) -> Option<String> {
         None
     }
-    /// Is something other than the form in charge — a developer's own
-    /// login file, say? Then nothing need be typed, and nothing typed is
-    /// kept.
-    fn stood_in(&self) -> bool {
-        false
-    }
-    /// The line a form opens with: where what is typed goes.
-    fn promise(&self) -> String {
-        String::new()
-    }
-    /// Where the form's secret goes.
+    /// Where the dialog's secret goes.
     fn keyring(&self) -> Option<&'static dyn Secrets> {
         None
     }
@@ -894,7 +861,7 @@ mod tests {
     }
 
     /// The fake rich feed is built, routed to, and signed in to through
-    /// nothing but the boundary: a stream, ladders and a form, from one
+    /// nothing but the boundary: a stream, ladders and a dialog sign-in, from one
     /// entry in a list, and never offered.
     #[test]
     fn a_feed_nobody_names_streams_has_ladders_and_signs_in_through_the_boundary() {
@@ -906,9 +873,7 @@ mod tests {
         assert!(feeds[0].ladders().is_some());
         assert!(freshness(fake.id).contains("live"));
 
-        let form = fake.form().expect("a form");
-        assert!(form.iter().any(|field| field.key == USER && field.required));
-        assert!(form.iter().any(|field| field.kind == FieldKind::Secret));
+        assert!(fake.asks_in_a_dialog());
 
         // Not signed in: passed over, and said to have been, for a future.
         assert_eq!(access(fake.id), Some(Access::Missing));

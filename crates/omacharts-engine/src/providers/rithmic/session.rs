@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, RwLock};
 
 pub use crate::providers::{Saved, Secrets};
-use crate::providers::{Access, Field, FieldKind, How, Sessions, SignIn, Setup, USER};
+use crate::providers::{Access, How, Sessions, SignIn, Setup};
 
 /// The app name Rithmic is told, the one place it is set.
 ///
@@ -59,16 +59,7 @@ pub const SETUP: Setup = Setup {
             place an order.",
 };
 
-/// What a Rithmic login is typed as. The keys are the ones a login is kept
-/// under in Preferences → Trading; the name the trader gives it is
-/// Trading's, and not here.
-pub const FIELDS: &[Field] = &[
-    Field { key: USER, title: "User ID", kind: FieldKind::Text, default: "", required: true },
-    Field { key: "password", title: "Password", kind: FieldKind::Secret, default: "", required: false },
-    Field { key: SYSTEM, title: "System", kind: FieldKind::Text, default: rithmic::TEST_SYSTEM, required: false },
-    Field { key: GATEWAY, title: "Gateway", kind: FieldKind::Url, default: rithmic::TEST_URL, required: false },
-];
-
+/// What the system and gateway are kept under in what the app hands over.
 const SYSTEM: &str = "system";
 const GATEWAY: &str = "gateway";
 
@@ -82,7 +73,7 @@ impl SignIn for Signing {
     }
 
     fn how(&self) -> How {
-        How::Form(FIELDS)
+        How::Dialog
     }
 
     /// CME bills a second concurrent session as a professional
@@ -134,19 +125,6 @@ impl SignIn for Signing {
 
     fn refusal(&self) -> Option<String> {
         refusal()
-    }
-
-    fn stood_in(&self) -> bool {
-        development()
-    }
-
-    fn promise(&self) -> String {
-        match development() {
-            true => "A development login is in use, so its file signs in and nothing typed here goes \
-                     to the keyring."
-                .into(),
-            false => "Your password is kept in the desktop keyring and sent only to Rithmic.".into(),
-        }
     }
 
     fn keyring(&self) -> Option<&'static dyn Secrets> {
