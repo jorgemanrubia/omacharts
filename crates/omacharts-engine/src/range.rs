@@ -11,7 +11,7 @@
 //! looking at, and on a Sunday the week to date is the week that just
 //! traded.
 
-use chrono::{Datelike, Days, Months, NaiveDate, NaiveDateTime, Weekday};
+use chrono::{Datelike, Days, Duration, Months, NaiveDate, NaiveDateTime, NaiveTime, Weekday};
 
 use crate::bars::Timeframe;
 
@@ -38,9 +38,13 @@ pub enum Range {
     /// From one day on, for as long as the chart showed when it was asked:
     /// a [`Range::Day`] typed on a chart, which starts the chart at the
     /// beginning of that day and keeps the length of time on screen. The
-    /// day, then that length in seconds, from the first moment on screen
-    /// to the last as the time axis reads them, empty room included.
-    Lasting(End, i64),
+    /// day as typed, then that length in seconds, from the first moment on
+    /// screen to the last as the time axis reads them, empty room included,
+    /// then how many seconds before the day the window starts. That is none
+    /// unless the length would have run past now, when the window ends at
+    /// now instead and starts as much earlier: the day falls inside it
+    /// rather than at its left edge, and the length is still the one kept.
+    Lasting(End, i64, i64),
     /// From one end to the other, written the way pandas slices dates:
     /// `2025:` from 1 January 2025 to today, `2024:2025-06` the two whole,
     /// `:2020` from the first bar, `-2y:-1y` the year before last. Both ends
@@ -551,7 +555,12 @@ impl Range {
             },
             Range::LatestMonth(month) => format!("all of the latest {}", month_name(month)),
             Range::Day(day) => day.words(),
-            Range::Lasting(day, seconds) => match seconds / 86_400 {
+            Range::Lasting(_, seconds, early) if early > 0 => match seconds / 86_400 {
+                0 => "up to now".into(),
+                1 => "the day up to now".into(),
+                days => format!("the {days} days up to now"),
+            },
+            Range::Lasting(day, seconds, _) => match seconds / 86_400 {
                 0 => day.words(),
                 1 => format!("{} and the day after", day.words()),
                 days => format!("{} and {days} days on", day.words()),
@@ -653,7 +662,8 @@ impl Range {
             Range::Year(year) => NaiveDate::from_ymd_opt(year, 1, 1),
             Range::Month(year, month) => NaiveDate::from_ymd_opt(year, month, 1),
             Range::LatestMonth(month) => End::LatestMonth(month).first(today),
-            Range::Day(day) | Range::Lasting(day, ..) => day.first(today),
+            Range::Day(day) => day.first(today),
+            Range::Lasting(..) => self.lasting_span(today).map(|(from, _)| from.date()),
             Range::Back(count, Span::Day) => today.checked_sub_days(Days::new(u64::from(count) - 1)),
             Range::Back(count, Span::Week) => today.checked_sub_days(Days::new(7 * u64::from(count) - 1)),
             Range::Back(count, Span::Month) => back(count),
@@ -684,9 +694,9 @@ impl Range {
                 .pred_opt(),
             Range::LatestMonth(month) => End::LatestMonth(month).last(today),
             Range::Day(day) => day.last(today),
-            Range::Lasting(day, seconds) => {
-                let from = day.first(today)?.and_time(chrono::NaiveTime::MIN);
-                Some((from + chrono::Duration::seconds(seconds.max(0))).date())
+            Range::Lasting(..) => {
+                let (from, seconds) = self.lasting_span(today)?;
+                Some((from + Duration::seconds(seconds)).date())
             }
             _ => None,
         }
@@ -694,12 +704,50 @@ impl Range {
 
     /// A day on its own as a chart shows it: from the start of that day for
     /// `seconds`, the length of time the chart shows now, so it ends that
-    /// long after, wherever it falls. Anything else is as it was: a range
-    /// says how long it is.
-    pub fn lasting(self, seconds: i64) -> Range {
+    /// long after, unless that is past `now`. Then it ends at `now` and
+    /// starts as much earlier, the same length: `today` on a chart six weeks
+    /// wide is the six weeks up to now, not six weeks of room for bars still
+    /// to come. Anything else is as it was: a range says how long it is.
+    ///
+    /// `now` is on the chart's clock, the one its window is measured on, and
+    /// `today` the calendar's, the one the day is pinned to afterwards. They
+    /// differ in the evening on a chart that keeps New York time, and a day
+    /// named from the wrong one is a day out from the date it is pinned to.
+    pub fn lasting(self, seconds: i64, today: NaiveDate, now: NaiveDateTime) -> Range {
         match self {
-            Range::Day(day) => Range::Lasting(day, seconds.max(0)),
+            Range::Day(day) => {
+                let seconds = seconds.max(0);
+                let from = day.first(today).map(|first| first.and_time(NaiveTime::MIN));
+                // How far past now it would run from its day.
+                let past = from.map_or(0, |from| (from + Duration::seconds(seconds) - now).num_seconds());
+                Range::Lasting(day, seconds, past.max(0))
+            }
             range => range,
+        }
+    }
+
+    /// The moment a [`Range::Lasting`] starts and how long it lasts.
+    fn lasting_span(self, today: NaiveDate) -> Option<(NaiveDateTime, i64)> {
+        let Range::Lasting(day, seconds, early) = self else { return None };
+        Some((day.first(today)?.and_time(NaiveTime::MIN) - Duration::seconds(early), seconds))
+    }
+
+    /// Where a chart lays a [`Range::Lasting`]: the moment it starts and how
+    /// long it lasts. One moved earlier to end at now ends at `edge`
+    /// instead when that is later: the chart's live edge, its newest bar
+    /// and the room it keeps past it, so the window sits where a chart left
+    /// at its live edge does and follows bars as they come in. Never later
+    /// than the day, though: a short window on a chart whose room is long,
+    /// a year on a weekly chart with ten weeks past its last bar, would
+    /// otherwise start after the day it was asked for.
+    pub fn lasting_on(self, today: NaiveDate, edge: NaiveDateTime) -> Option<(NaiveDateTime, i64)> {
+        let (from, seconds) = self.lasting_span(today)?;
+        match self {
+            Range::Lasting(_, _, early) if early > 0 => {
+                let day = from + Duration::seconds(early);
+                Some((from.max(edge - Duration::seconds(seconds)).min(day), seconds))
+            }
+            _ => Some((from, seconds)),
         }
     }
 
@@ -728,7 +776,7 @@ impl Range {
                 Range::Month(year, month)
             }
             Range::Day(day) => Range::Day(pin(day)),
-            Range::Lasting(day, seconds) => Range::Lasting(pin(day), seconds),
+            Range::Lasting(day, seconds, early) => Range::Lasting(pin(day), seconds, early),
             Range::Slice(from, to) => Range::Slice(from.map(pin), to.map(pin)),
             range => range,
         }
@@ -736,9 +784,9 @@ impl Range {
 
     /// What the range lands on, in days, for saying before it is shown:
     /// `22 Oct – 1 Nov`, `since 11 Oct`, `12 Mar`. The year only when it is
-    /// not this one. A day on a chart names its whole window, past today
-    /// too; a slice open at the end, or reaching today, runs to today and
-    /// says since. One that needs no days to say is its description.
+    /// not this one. A day on a chart names its whole window; a slice open
+    /// at the end, or reaching today, runs to today and says since. One
+    /// that needs no days to say is its description.
     pub fn spelled(self, today: NaiveDate) -> String {
         let day = |day: NaiveDate| match day.year() == today.year() {
             true => day.format("%-d %b").to_string(),
@@ -1016,21 +1064,20 @@ fn weekdays(first: NaiveDate, last: NaiveDate) -> i64 {
 }
 
 /// Where a [`Range::Lasting`] lands on `bars`, each read on the chart's
-/// clock by `at`: the first bar on or after `day`, the columns from there to
-/// the moment `seconds` after the day began, and how many of those columns
-/// are empty room past the last bar, one to each `step` seconds as the time
-/// axis counts them there. The start stays on the day however near the last
-/// bar it is, and the columns are whatever that stretch of time takes, so the
-/// bars widen or narrow to show exactly it.
+/// clock by `at`: the first bar at or after `from`, the columns from there to
+/// the moment `seconds` after it, and how many of those columns are empty
+/// room past the last bar, one to each `step` seconds as the time axis counts
+/// them there. The start stays where it is however near the last bar it is,
+/// and the columns are whatever that stretch of time takes, so the bars widen
+/// or narrow to show exactly it.
 pub fn lasting_window<T>(
     bars: &[T],
     at: impl Fn(&T) -> Option<NaiveDateTime>,
-    day: NaiveDate,
+    from: NaiveDateTime,
     seconds: i64,
     step: i64,
 ) -> (usize, usize, usize) {
-    let from = day.and_time(chrono::NaiveTime::MIN);
-    let until = from + chrono::Duration::seconds(seconds.max(0));
+    let until = from + Duration::seconds(seconds.max(0));
     let first = bars.partition_point(|bar| at(bar).is_some_and(|t| t < from));
     let end = bars.partition_point(|bar| at(bar).is_some_and(|t| t <= until));
     if end < bars.len() {
@@ -1596,35 +1643,98 @@ mod tests {
         assert_eq!(Range::parse("oct 11:oct 21").map(|r| r.spelled(today)), Some("11 Oct – 21 Oct".into()));
     }
 
+    /// Noon on `date`, the moment the tests below call now.
+    fn noon(date: NaiveDate) -> NaiveDateTime {
+        date.and_time(NaiveTime::MIN) + Duration::hours(12)
+    }
+
     /// A date typed on a chart lasts as long as the chart shows: with ten
-    /// days on screen, every way of naming a day starts there and ends ten
-    /// days on, wherever that falls, today and past it included.
+    /// days on screen, every way of naming a day is ten days that hold it,
+    /// from the day on, or up to now when that would run past it.
     #[test]
     fn a_date_on_a_chart_lasts_as_long_as_the_view() {
         let today = day(2026, 11, 1);
+        let now = noon(today);
         let ten = 10 * 86_400;
         for text in [
             "2 days ago", "3 days ago", "5 days ago", "10/23", "yesterday", "last fri", "fri", "1 week ago",
-            "on the 28 oct", "2026/10/22", "today",
+            "on the 28 oct", "2026/10/22", "2026/10/12", "today",
         ] {
-            let range = Range::parse(text).map(|r| r.lasting(ten)).unwrap_or(Range::All);
+            let range = Range::parse(text).map(|r| r.lasting(ten, today, now)).unwrap_or(Range::All);
             let (start, end) = (range.start(today), range.end(today));
+            let typed = Range::parse(text).and_then(|r| r.start(today));
             assert!(matches!(range, Range::Lasting(..)), "{text} is a date");
             assert_eq!(end.zip(start).map(|(end, start)| (end - start).num_days()), Some(10), "{text}");
+            assert!(start <= typed && typed <= end && end <= Some(today), "{text} holds its day, up to today");
             assert!(range.holds_days(today), "{text}");
             assert!(!range.spelled(today).starts_with("since"), "{text} names its window");
         }
-        let week = Range::parse("1 week ago").map(|r| r.lasting(ten));
-        assert_eq!(week.map(|r| r.spelled(today)), Some("25 Oct – 4 Nov".into()));
+        let week = Range::parse("1 week ago").map(|r| r.lasting(ten, today, now));
+        assert_eq!(week.map(|r| r.spelled(today)), Some("22 Oct – 1 Nov".into()));
         assert_eq!(week.map(|r| r.key()), Some("1w ago".into()), "it reads back as the day");
+        let back = Range::parse("2026/10/12").map(|r| r.lasting(ten, today, now));
+        assert_eq!(back.map(|r| r.spelled(today)), Some("12 Oct – 22 Oct".into()), "far enough back, from the day");
         // Less than a day on screen is the day itself.
-        assert_eq!(Range::parse("oct 22").map(|r| r.lasting(6 * 3_600).spelled(today)), Some("22 Oct".into()));
+        assert_eq!(Range::parse("oct 22").map(|r| r.lasting(6 * 3_600, today, now).spelled(today)), Some("22 Oct".into()));
         // A custom range open at the end still runs to today.
-        assert_eq!(Range::parse("1 week ago:").map(|r| r.lasting(ten).spelled(today)), Some("since 25 Oct".into()));
+        assert_eq!(Range::parse("1 week ago:").map(|r| r.lasting(ten, today, now).spelled(today)), Some("since 25 Oct".into()));
         // Spans and ranges keep their own length.
-        assert_eq!(Range::parse("2025").map(|r| r.lasting(ten)), Some(Range::Year(2025)));
-        assert_eq!(Range::parse("1w").map(|r| r.lasting(ten)), Some(Range::Back(1, Span::Week)));
-        assert_eq!(Range::parse("oct 1:").map(|r| r.lasting(ten)), Range::parse("oct 1:"));
+        assert_eq!(Range::parse("2025").map(|r| r.lasting(ten, today, now)), Some(Range::Year(2025)));
+        assert_eq!(Range::parse("1w").map(|r| r.lasting(ten, today, now)), Some(Range::Back(1, Span::Week)));
+        assert_eq!(Range::parse("oct 1:").map(|r| r.lasting(ten, today, now)), Range::parse("oct 1:"));
+    }
+
+    /// A date near now on a chart that shows a long while would run past
+    /// now from its day on, so it ends at now and starts as much earlier:
+    /// the length kept, the day inside it. `today` on six weeks is the six
+    /// weeks up to now, and `10 days ago` on eight years the eight years.
+    #[test]
+    fn a_date_near_now_ends_at_now_and_keeps_the_length() {
+        let today = day(2026, 11, 2);
+        let now = noon(today);
+        let six_weeks = 42 * 86_400;
+        let eight_years = (today - day(2018, 11, 2)).num_days() * 86_400;
+        for (text, seconds, spelled, said) in [
+            ("today", six_weeks, "21 Sep – 2 Nov", "the 42 days up to now"),
+            ("10 days ago", eight_years, "2 Nov 2018 – 2 Nov", "the 2922 days up to now"),
+        ] {
+            let range = Range::parse(text).map(|r| r.lasting(seconds, today, now)).unwrap_or(Range::All);
+            let ends = |newest| {
+                let (from, seconds) = range.lasting_on(today, newest)?;
+                Some((from + Duration::seconds(seconds), seconds))
+            };
+            assert_eq!(ends(now - Duration::hours(3)), Some((now, seconds)), "{text} ends at now, as long as it was");
+            assert_eq!(range.end(today), Some(today), "{text}");
+            assert_eq!(range.spelled(today), spelled, "{text}");
+            assert_eq!(range.description(), said, "{text}");
+            assert_eq!(Some(range.key()), Range::parse(text).map(|r| r.key()), "{text} reads back as the day");
+            // A bar that comes in later moves the end on with it.
+            let later = now + Duration::hours(4);
+            assert_eq!(ends(later), Some((later, seconds)), "{text} stays at the live edge");
+        }
+        // Far enough back for its length to end before now, a day starts the
+        // window, and the window does not follow the bars.
+        let back = Range::parse("2026/09/01").map(|r| r.lasting(six_weeks, today, now));
+        assert_eq!(back.map(|r| r.spelled(today)), Some("1 Sep – 13 Oct".into()));
+        assert_eq!(
+            back.and_then(|r| r.lasting_on(today, now)),
+            Some((day(2026, 9, 1).and_time(NaiveTime::MIN), six_weeks))
+        );
+        // A live edge further on than the day has to spare stops at the day:
+        // a year on a weekly chart, whose ten bars of room are ten weeks.
+        let close = Range::parse("2025/12/02").map(|r| r.lasting(365 * 86_400, today, now));
+        assert_eq!(
+            close.and_then(|r| r.lasting_on(today, now + Duration::weeks(10))).map(|(from, _)| from),
+            Some(day(2025, 12, 2).and_time(NaiveTime::MIN)),
+            "the day stays on screen"
+        );
+        // Late in the evening on the chart's clock it is already tomorrow on
+        // the calendar's: a day named relative to today ends where the same
+        // date typed out does, at now.
+        let evening = day(2026, 11, 1).and_time(NaiveTime::MIN) + Duration::hours(18);
+        let spelled = |text| Range::parse(text).map(|r| r.lasting(eight_years, today, evening).pinned(today).spelled(today));
+        assert_eq!(spelled("10 days ago"), spelled("2026/10/23"));
+        assert_eq!(spelled("10 days ago").map(|s| s.ends_with("1 Nov")), Some(true), "it ends at now, on the chart's clock");
     }
 
     /// A day named on the calendar is pinned to its date before a chart,
@@ -1649,8 +1759,10 @@ mod tests {
         assert_eq!(pinned("jan:mar").map(|r| r.short_key(2026)), Some("jan:mar".into()));
         assert_eq!(pinned("june").map(|r| r.short_key(2026)), Some("jun".into()));
         assert_eq!(pinned("june 2025").map(|r| r.short_key(2026)), Some("2025-06".into()));
-        let lasting = Range::parse("1 week ago").map(|r| r.lasting(86_400).pinned(sunday));
-        assert_eq!(lasting, Some(Range::Lasting(End::Day(day(2026, 10, 25)), 86_400)));
+        let lasting = Range::parse("1 week ago").map(|r| r.lasting(86_400, sunday, noon(sunday)).pinned(sunday));
+        assert_eq!(lasting, Some(Range::Lasting(End::Day(day(2026, 10, 25)), 86_400, 0)));
+        let today = Range::parse("today").map(|r| r.lasting(86_400, sunday, noon(sunday)).pinned(sunday));
+        assert_eq!(today, Some(Range::Lasting(End::Day(sunday), 86_400, 12 * 3_600)), "pinned, it keeps its window");
     }
 
     fn utc(ts: i64) -> Option<NaiveDateTime> {
@@ -1676,17 +1788,17 @@ mod tests {
     type Shown = (i64, i64, (usize, usize, usize), String);
 
     /// A date as the window shows it: made a [`Range::Lasting`] of
-    /// `seconds` from the calendar's today, as the card and `chart range`
-    /// do, pinned to its date, and laid over `bars` from the chart's own
-    /// today, its last bar's, as the chart does. The first and last moment
-    /// its columns stand for, as the time axis reads them, and what the card
-    /// and the command call it.
+    /// `seconds` at noon on the calendar's today, as the card and `chart
+    /// range` do, pinned to its date, and laid over `bars` from the chart's
+    /// own today, its last bar's, as the chart does. The first and last
+    /// moment its columns stand for, as the time axis reads them, and what
+    /// the card and the command call it.
     fn shown(text: &str, bars: &[i64], seconds: i64, step: i64) -> Option<Shown> {
         let today = day(2026, 11, 1);
-        let range = Range::parse(text)?.lasting(seconds).pinned(today);
-        let chart_today = bars.last().and_then(|&ts| utc(ts)).map(|t| t.date())?;
-        let start = range.start(chart_today)?;
-        let window = lasting_window(bars, |&ts| utc(ts), start, seconds, step);
+        let range = Range::parse(text)?.lasting(seconds, today, noon(today)).pinned(today);
+        let newest = bars.last().and_then(|&ts| utc(ts))?;
+        let (from, seconds) = range.lasting_on(newest.date(), newest)?;
+        let window = lasting_window(bars, |&ts| utc(ts), from, seconds, step);
         let (first, columns, _) = window;
         let moment = |column: usize| match bars.get(column) {
             Some(&ts) => ts,
@@ -1697,10 +1809,11 @@ mod tests {
         Some((left, right, window, range.spelled(today)))
     }
 
-    /// Whatever the date and the resolution, the chart shows from the start
-    /// of that day to as long after it as the chart showed before: its
-    /// columns begin on the day and end at the last moment inside that
-    /// stretch, bars or the empty room past the last bar alike.
+    /// Whatever the date and the resolution, the chart shows as long as it
+    /// showed before, from the start of that day or, when that would run
+    /// past now, up to now: its columns begin where that stretch does and
+    /// end at the last moment inside it, bars or the empty room past the
+    /// last bar alike, and the day is inside it.
     #[test]
     fn a_date_shows_exactly_its_stretch_at_any_resolution() {
         for (step, length) in [(900, 2 * 86_400), (3_600, 10 * 86_400), (86_400, 30 * 86_400)] {
@@ -1720,10 +1833,11 @@ mod tests {
                 let Some((left, right, (first, columns, room), _)) = shown(text, &bars, length, step) else {
                     panic!("{text} at {step}s");
                 };
-                let from = at(date, 0);
+                let from = at(date, 0).min(at(day(2026, 11, 1), 12) - length);
                 let until = from + length;
-                assert!(left >= from, "{text} at {step}s starts on its day");
-                assert!(first == 0 || bars[first - 1] < from, "{text} at {step}s starts at the day's first bar");
+                assert!((from..=until).contains(&at(date, 0)), "{text} at {step}s holds its day");
+                assert!(left >= from, "{text} at {step}s starts where its stretch does");
+                assert!(first == 0 || bars[first - 1] < from, "{text} at {step}s starts at the stretch's first bar");
                 assert!(right <= until, "{text} at {step}s ends inside its stretch");
                 let next = match room {
                     0 => bars.get(first + columns).copied(),
@@ -1752,7 +1866,8 @@ mod tests {
     #[test]
     fn a_date_past_the_last_bar_is_all_room() {
         let bars = sessions(3_600);
-        let (first, columns, room) = lasting_window(&bars, |&ts| utc(ts), day(2026, 10, 31), 86_400, 3_600);
+        let saturday = day(2026, 10, 31).and_time(NaiveTime::MIN);
+        let (first, columns, room) = lasting_window(&bars, |&ts| utc(ts), saturday, 86_400, 3_600);
         assert_eq!((first, columns, room), (bars.len(), 28, 28), "20:00 Friday to midnight Saturday is 28 hours");
     }
 
@@ -1937,12 +2052,13 @@ mod tests {
         let start = day(2026, 10, 1);
         let end = day(2026, 10, 31);
         let seconds = (end - start).num_days() * 86_400 + 86_399;
-        let (first, columns, room) = lasting_window(&bars, |&ts| utc(ts), start, seconds, 3_600);
+        let (first, columns, room) = lasting_window(&bars, |&ts| utc(ts), start.and_time(NaiveTime::MIN), seconds, 3_600);
         assert_eq!(bars[first], at(start, 14), "the 1st's first bar");
         assert_eq!(room, 27, "20:00 Friday 30 October to the end of Saturday 31 October");
         assert_eq!(columns, bars.len() - first + room);
         // A month that is over is its own bars, edge to edge.
-        let (first, columns, room) = lasting_window(&bars, |&ts| utc(ts), day(2026, 9, 1), 29 * 86_400 + 86_399, 3_600);
+        let september = day(2026, 9, 1).and_time(NaiveTime::MIN);
+        let (first, columns, room) = lasting_window(&bars, |&ts| utc(ts), september, 29 * 86_400 + 86_399, 3_600);
         assert_eq!((utc(bars[first]).map(|t| t.date()), room), (Some(day(2026, 9, 21)), 0));
         assert_eq!(utc(bars[first + columns - 1]).map(|t| t.date()), Some(day(2026, 9, 30)));
     }

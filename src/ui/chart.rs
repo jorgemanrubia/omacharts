@@ -1931,20 +1931,25 @@ impl State {
         let date = |ts: i64| clock.read(ts, utc).map(|at| at.date());
         let Some(today) = date(last.ts) else { return };
         let len = self.bars.len();
-        // A day on its own shows from the start of that day for the length
-        // of time that was on screen, into empty room past the last bar when
-        // it gets there, counted as the time axis counts it. A month shows
-        // the whole of itself the same way, so this month runs to its end.
+        // A day on its own shows the length of time that was on screen, from
+        // the start of that day or up to now, into empty room past the last
+        // bar when it gets there, counted as the time axis counts it. A
+        // month shows the whole of itself the same way, so this month runs
+        // to its end.
         let window = match (range, range.start(today), range.end(today)) {
-            (Range::Lasting(_, seconds), Some(start), _) => Some((start, seconds)),
-            (Range::Month(..), Some(start), Some(end)) => Some((start, (end - start).num_days() * 86_400 + 86_399)),
+            (Range::Lasting(..), ..) => clock
+                .read(self.timeframe.shift(last.ts, RIGHT_MARGIN as i64), utc)
+                .and_then(|edge| range.lasting_on(today, edge)),
+            (Range::Month(..), Some(start), Some(end)) => {
+                Some((start.and_time(chrono::NaiveTime::MIN), (end - start).num_days() * 86_400 + 86_399))
+            }
             _ => None,
         };
-        if let Some((start, seconds)) = window {
+        if let Some((from, seconds)) = window {
             let (first, columns, room) = omacharts_engine::range::lasting_window(
                 &self.bars,
                 |bar| clock.read(bar.ts, utc),
-                start,
+                from,
                 seconds,
                 self.timeframe.seconds(),
             );
@@ -4052,6 +4057,12 @@ impl ChartView {
         Some(time_at_column(&state, left + columns - 1)? - time_at_column(&state, left)?)
     }
 
+    /// The moment it is now, on the clock the time axis reads.
+    pub fn now(&self) -> Option<chrono::NaiveDateTime> {
+        let state = self.state.borrow();
+        state.clock.read(chrono::Utc::now().timestamp(), state.timeframe.is_calendar())
+    }
+
     /// The day of the first bar the chart holds.
     pub fn first_day(&self) -> Option<chrono::NaiveDate> {
         let state = self.state.borrow();
@@ -4215,12 +4226,18 @@ impl ChartView {
     /// Plain wheel zooms time about the cursor. Shift pans. Ctrl scales price.
     /// Over an axis, the wheel scales that axis whatever the modifiers — the
     /// axis is the control.
+    ///
+    /// Zooming goes by how far the wheel turned or the fingers travelled,
+    /// scaled by the app's zoom sensitivity — see [`crate::zoom`]. A wheel
+    /// notch is a notch; a touchpad's pixels are a fraction of one each.
     fn wire_zoom(&self) {
         let scroll = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::BOTH_AXES);
         let state = self.state.clone();
         let area = self.area.clone();
         let pointer = self.pointer.clone();
         let on_price_auto = self.on_price_auto.clone();
+        // Time-axis steps too small to move a column yet.
+        let carry = std::cell::Cell::new(1.0);
         scroll.connect_scroll(move |controller, dx, dy| {
             if dx == 0.0 && dy == 0.0 {
                 return glib::Propagation::Proceed;
@@ -4245,10 +4262,16 @@ impl ChartView {
                 return glib::Propagation::Stop;
             }
 
+            let unit = match controller.unit() {
+                gtk::gdk::ScrollUnit::Surface => crate::zoom::Delta::Pixels,
+                _ => crate::zoom::Delta::Notches,
+            };
+            let notches = crate::zoom::notches(dy, unit, crate::zoom::current());
+
             match (region, shift, ctrl) {
                 (Region::PriceAxis, _, _) | (Region::Plot, false, true) => {
                     // Same sense as dragging the axis.
-                    s.scale_price(2f64.powf(dy / 4.0));
+                    s.scale_price(2f64.powf(notches / 4.0));
                 }
                 (Region::Plot, true, _) => {
                     let columns = s.columns() as f64;
@@ -4260,7 +4283,12 @@ impl ChartView {
                         .pointer
                         .map(|(x, _)| ((x - PAD) / plot_w).clamp(0.0, 1.0))
                         .unwrap_or(0.5);
-                    s.zoom_time(if dy > 0.0 { 1.15 } else { 1.0 / 1.15 }, anchor, plot_w);
+                    let factor = crate::zoom::time_factor(notches);
+                    let (now, next) = crate::zoom::carried(carry.get(), factor, s.columns());
+                    carry.set(next);
+                    if let Some(factor) = now {
+                        s.zoom_time(factor, anchor, plot_w);
+                    }
                 }
             }
             drop(s);
@@ -5130,6 +5158,7 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
     draw_time_ground(cr, state, &columns, &plan);
     draw_price_grid(cr, state, plot_x, plot_w, price_y, price_h, &scale, &to_y);
     draw_time_axis(cr, state, &columns.bars, columns.bars_each(), plot_x, plot_w, height, bar_w, bars_x - columns.shift());
+    draw_goto_day(cr, state, &columns, &plan, height);
     // Shaded things go under the candles; lines go over. A band drawn on top
     // of the bars hides the thing it is describing.
     //
@@ -5176,6 +5205,47 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
         draw_trouble_dot(cr, state, width);
     }
     draw_range(cr, state, width, height);
+}
+
+/// The day typed into Go to, while the chart holds the window it made: the
+/// day tinted down the whole stack and named on the time axis in the
+/// accent. Near now the window ends at now and starts before the day, so
+/// without this nothing on the chart says where the day is. It goes with
+/// the range, when a hand moves the view.
+fn draw_goto_day(cr: &cairo::Context, state: &State, columns: &Columns, plan: &Layout, height: f64) {
+    let Some(Range::Lasting(typed, ..)) = state.range else { return };
+    let utc = state.timeframe.is_calendar();
+    let date = |bar: &Bar| state.clock.read(bar.ts, utc).map(|at| at.date());
+    let Some(today) = state.bars.last().and_then(date) else { return };
+    let Some(day) = typed.first(today) else { return };
+    let from = state.bars.partition_point(|bar| date(bar).is_some_and(|d| d < day));
+    let to = state.bars.partition_point(|bar| date(bar).is_some_and(|d| d <= day));
+    // A bar longer than a day holds days it does not start on: a Tuesday
+    // is the week that started on the Monday.
+    let holds = |bar: &Bar| {
+        let end = state.clock.read(state.timeframe.shift(bar.ts, 1), utc);
+        state.timeframe.seconds() > 86_400 && end.is_some_and(|end| end.date() > day)
+    };
+    let from = match from.checked_sub(1) {
+        Some(before) if from == to && state.bars.get(before).is_some_and(holds) => before,
+        _ => from,
+    };
+    let (left, right) = (plan.plot_x, plan.plot_x + plan.plot_w);
+    let (x0, x1) = (bar_left(columns, from), bar_left(columns, to));
+    if x1 < left || x0 > right {
+        return;
+    }
+    let accent = &state.theme.ui.accent;
+    // Whole pixels, as a session's shading is.
+    let (band_left, band_right) = (x0.max(left).round(), x1.min(right).round());
+    if band_right > band_left {
+        colors::set_source_alpha(cr, accent, 0.14);
+        cr.rectangle(band_left, plan.top, band_right - band_left, plan.total_h);
+        let _ = cr.fill();
+    }
+    // Named as the card names it, over the middle of the day.
+    let label = Range::Day(typed).spelled(today);
+    label_on_time_axis(cr, &label, (x0 + x1) / 2.0, left, plan.plot_w, height, accent);
 }
 
 /// The range the view is holding to, in the corner under the price axis,
@@ -6318,19 +6388,7 @@ fn draw_crosshair(
     // where it is the time that column would be.
     if let Some(ts) = time_at_column(state, first + index_in_view.max(0.0) as i64) {
         let label = format_time_full(ts, state.timeframe, state.clock);
-        cr.select_font_face("sans-serif", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
-        cr.set_font_size(11.0);
-        if let Ok(extents) = cr.text_extents(&label) {
-            let w = extents.width() + 10.0;
-            let x = inside_plot(snapped_x, w, plot_x, plot_w);
-            let y = height - TIME_AXIS_H + 2.0;
-            colors::set_source(cr, tint);
-            cr.rectangle(x, y, w, TIME_AXIS_H - 4.0);
-            let _ = cr.fill();
-            colors::set_source(cr, colors::readable_on(tint));
-            cr.move_to(x + 5.0, y + TIME_AXIS_H - 10.0);
-            let _ = cr.show_text(&label);
-        }
+        label_on_time_axis(cr, &label, snapped_x, plot_x, plot_w, height, tint);
     }
 }
 
@@ -6396,6 +6454,22 @@ fn draw_tag(cr: &cairo::Context, text: &str, axis_x: f64, y: f64, width: f64, ta
     let _ = cr.fill();
     colors::set_source(cr, &tag.label);
     cr.move_to(axis_x + 6.0, y + 3.5);
+    let _ = cr.show_text(text);
+}
+
+/// A filled chip on the time axis, centred on `x` and kept inside the plot.
+fn label_on_time_axis(cr: &cairo::Context, text: &str, x: f64, plot_x: f64, plot_w: f64, height: f64, colour: &str) {
+    cr.select_font_face("sans-serif", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
+    cr.set_font_size(11.0);
+    let Ok(extents) = cr.text_extents(text) else { return };
+    let w = extents.width() + 10.0;
+    let x = inside_plot(x, w, plot_x, plot_w);
+    let y = height - TIME_AXIS_H + 2.0;
+    colors::set_source(cr, colour);
+    cr.rectangle(x, y, w, TIME_AXIS_H - 4.0);
+    let _ = cr.fill();
+    colors::set_source(cr, colors::readable_on(colour));
+    cr.move_to(x + 5.0, y + TIME_AXIS_H - 10.0);
     let _ = cr.show_text(text);
 }
 
@@ -7731,7 +7805,7 @@ impl Every {
 /// so many bars instead drifts against the calendar: twenty-six weeks is not
 /// six months.
 ///
-/// Which round time to use is settled on how many of them there are; what
+/// Which round time to use is settled on how far apart its ticks fall; what
 /// finally gets drawn is thinned so no two labels sit on top of each other.
 fn axis_ticks(
     total: i64,
@@ -7769,20 +7843,37 @@ fn axis_ticks(
         }
         kept
     };
-    // Counted before thinning: thinning alone would leave every rung looking
+    // Measured before thinning: thinning alone would leave every rung looking
     // like it fits, and the finest one would always win.
     //
     // A tick never lands on the first column, so n ticks share the plot with
     // the stretch before the first of them: n + 1 gaps, not n. Counting n
     // lets evenly spaced ticks — a yearly chart's, every two bars — sit just
     // under the gap, and thinning them then leaves only the last.
-    let room = (plot_w / TIME_LABEL_GAP).max(2.0) as usize - 1;
+    let room = (plot_w / TIME_LABEL_GAP).max(2.0).floor() - 1.0;
+    // The n is how many ticks the columns hold at the rung's average spacing,
+    // first tick to last, not how many are on screen: that count moves by one
+    // as a tick scrolls in or out at an edge, so a chart near the limit
+    // flipped between years and half-years while it was dragged. The spacing
+    // stays put wherever the view is.
+    let fits = |every: Every| {
+        let span = ticks(every).fold(None, |span, column| match span {
+            None => Some((column, column, 0)),
+            Some((first, _, gaps)) => Some((first, column, gaps + 1)),
+        });
+        match span {
+            Some((first, last, gaps)) if gaps > 0 => {
+                (total - 1) as f64 * gaps as f64 / (last - first) as f64 <= room
+            }
+            _ => true,
+        }
+    };
     let mut coarsest = Every::Months(240);
     for every in Every::LADDER {
         if every.seconds() < step {
             continue;
         }
-        if ticks(every).count() <= room {
+        if fits(every) {
             return (spaced(ticks(every).collect()), every.seconds());
         }
         coarsest = every;
@@ -10131,6 +10222,33 @@ mod drawing_tests {
         let plain = inked(&state);
         state.selected = vec![0];
         assert!(inked(&state) > plain * 2, "no glow round the line");
+    }
+
+    /// Daily bars, about five and a half years across 1088 pixels: the count
+    /// of half-yearly ticks on screen went 11, 12, 11 as the chart was
+    /// dragged, and the axis flipped between half-years and years with it.
+    #[test]
+    fn dragging_a_chart_keeps_its_time_axis_step() {
+        use chrono::{Datelike, TimeZone, Utc};
+        let mut weekdays = Vec::new();
+        let mut day = Utc.with_ymd_and_hms(2012, 1, 2, 0, 0, 0).unwrap();
+        while day.year() < 2024 {
+            if day.weekday().num_days_from_monday() < 5 {
+                weekdays.push(day.timestamp());
+            }
+            day += chrono::Duration::days(1);
+        }
+        let (total, plot_w) = (1_480, 1_088.0);
+        let every_at = |offset: usize| {
+            let (_, every) = axis_ticks(total, plot_w, 86_400, true, Clock::default(), |column| {
+                weekdays.get(offset + column as usize).copied()
+            });
+            every
+        };
+        let first = every_at(0);
+        for offset in 1..520 {
+            assert_eq!(every_at(offset), first, "dragged {offset} bars");
+        }
     }
 
     /// Twenty-one yearly bars across 922 pixels: ten two-yearly ticks fit by

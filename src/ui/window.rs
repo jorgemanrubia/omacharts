@@ -2051,6 +2051,7 @@ impl Window {
     ) -> Rc<Window> {
         store.seed_watchlist_if_empty(DEFAULTS);
         crate::feeds::note_running(provider.id());
+        crate::zoom::adopt(&store);
 
         let index = crate::inventory::Inventory::curated();
         let theming = Rc::new(RefCell::new(Theming::load(&store)));
@@ -3522,13 +3523,14 @@ impl Window {
     /// Show the settings a backup just put back: everything the window holds
     /// in memory that came out of them, read again.
     ///
-    /// The same four things a restore typed in a terminal asks for through
+    /// The same things a restore typed in a terminal asks for through
     /// [`crate::cli::Live`], in the same order. The arrangement goes last and
     /// without being saved first — what is on screen is exactly what was
     /// replaced, and saving it would put it back.
     pub fn adopt_restored(self: &Rc<Self>) {
         self.adopt_theming();
         self.adopt_feed();
+        self.adopt_zoom();
         self.reload_watchlists();
         self.reload_workspace();
     }
@@ -4083,6 +4085,14 @@ impl Window {
         }
         self.rebuild_book_strip();
         self.save_workspace();
+        // The keyboard to the chart that was focused in this book, once its
+        // panes are on screen. Left where GTK put it, it lands on the first
+        // button of the new book's header, which wears a focus ring and takes
+        // the next key meant for the chart.
+        let this = self.clone();
+        glib::idle_add_local_once(move || {
+            this.focused_pane().view.area.grab_focus();
+        });
     }
 
     /// Walk to the chartbook before or after this one, round the ends.
@@ -6707,6 +6717,12 @@ impl Window {
         self.live.borrow().clone()
     }
 
+    /// Zoom every chart at the sensitivity the settings now name. Read by the
+    /// charts on each scroll, so nothing on screen needs redrawing.
+    pub fn adopt_zoom(&self) {
+        crate::zoom::adopt(&self.store);
+    }
+
     /// Chart from whatever feed the settings now name, if that is not the
     /// one on screen. What the panel and `config set provider` call.
     pub fn adopt_feed(self: &Rc<Self>) {
@@ -8116,11 +8132,12 @@ impl Window {
     }
 
     /// `range` as the focused chart would show it: a day on its own lasts
-    /// as long as the chart shows now, from the start of that day, and
-    /// anything else is as it says.
+    /// as long as the chart shows now, from the start of that day or up to
+    /// now when that comes first, and anything else is as it says.
     pub fn as_shown(&self, range: omacharts_engine::Range) -> omacharts_engine::Range {
-        match self.focused_pane().view.seconds_shown() {
-            Some(seconds) => range.lasting(seconds),
+        let view = &self.focused_pane().view;
+        match view.seconds_shown().zip(view.now()) {
+            Some((seconds, now)) => range.lasting(seconds, chrono::Local::now().date_naive(), now),
             None => range,
         }
     }
@@ -8164,12 +8181,18 @@ impl Window {
         };
         let fit = Fit { ladder: &ladder, bars: AIM_BARS, share, offers: &offers, reach: &reach };
         // A day on its own keeps the resolution, as it keeps the length of
-        // time on screen, unless the feed does not reach back to it there.
-        let keeps = matches!(range, omacharts_engine::Range::Lasting(..))
-            && match (reach(current), range.reach(today)) {
-                (Some(limit), Some(back)) => i64::from(limit) >= back,
-                _ => true,
-            };
+        // time on screen, unless the feed does not reach back to the day
+        // there: the day, not the start of a window moved earlier to end at
+        // now, so that moving it never changes the resolution.
+        let keeps = match range {
+            omacharts_engine::Range::Lasting(day, ..) => {
+                match (reach(current), omacharts_engine::Range::Day(day).reach(today)) {
+                    (Some(limit), Some(back)) => i64::from(limit) >= back,
+                    _ => true,
+                }
+            }
+            _ => false,
+        };
         let timeframe = forced.unwrap_or_else(|| match keeps {
             true => current,
             false => resolution_for(range, today, current, &fit),

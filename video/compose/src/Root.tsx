@@ -11,7 +11,7 @@ export const Root = () => (
     height={2160}
     fps={60}
     durationInFrames={60}
-    defaultProps={{ src: "recording.mp4", width: 3840, height: 2160, fps: 60, frames: 60, zooms: [], badges: [] } as PolishProps}
+    defaultProps={{ src: "recording.mp4", width: 3840, height: 2160, fps: 60, frames: 60, zooms: [], badges: [], splits: [] } as PolishProps}
     calculateMetadata={({ props }) => ({
       width: props.width,
       height: props.height,
