@@ -172,6 +172,14 @@ pub fn running() -> bool {
         .is_some_and(|client| !client.inner.closed.load(Ordering::Acquire))
 }
 
+/// The contract the session last found trading for `root` on `exchange`,
+/// if it has asked lately. Never asks: for a caller that must not wait,
+/// such as a menu deciding what it can offer.
+pub fn known_front_month(root: &str, exchange: &str) -> Option<String> {
+    let session = SESSION.lock().unwrap_or_else(|e| e.into_inner());
+    session.as_ref()?.inner.fronts.get(root, exchange)
+}
+
 /// Sign out of every plant and end the session, waiting a few seconds at
 /// most for Rithmic to acknowledge. Whatever is watching hears
 /// [`Error::Closed`], and the next call to [`session`] starts afresh.
