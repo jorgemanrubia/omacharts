@@ -78,6 +78,7 @@ const SHARED: &[&str] = &[
     "chart_template",
     "chart_templates",
     "chart_header",
+    "chart_header_center",
     "chartbook_templates",
     "chart_time_zone",
     "time_format",
@@ -113,6 +114,7 @@ mod tests {
         assert_eq!(kind("chart_templates"), Kind::Shared);
         assert_eq!(kind("chart_template"), Kind::Shared);
         assert_eq!(kind("chart_header"), Kind::Shared);
+        assert_eq!(kind("chart_header_center"), Kind::Shared);
         assert_eq!(kind("chartbook_templates"), Kind::Shared);
     }
 

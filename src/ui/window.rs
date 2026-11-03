@@ -2615,7 +2615,10 @@ impl Window {
         let strip_menu = gtk::GestureClick::new();
         strip_menu.set_button(gtk::gdk::BUTTON_SECONDARY);
         let strip = pane.strip.clone();
-        strip_menu.connect_pressed(move |_, _, x, y| {
+        strip_menu.connect_pressed(move |gesture, _, x, y| {
+            // Its own menu, not the header's as well, when it is in the
+            // header's line.
+            gesture.set_state(gtk::EventSequenceState::Claimed);
             editor.focus(id);
             let model = gio::Menu::new();
             model.append(Some("Edit resolutions…"), Some("chart.edit-resolutions"));
@@ -2625,19 +2628,22 @@ impl Window {
 
         // And the header, the same way, for what it shows: one line for every
         // chart, set in the preferences, and reached from here because here
-        // is where somebody is looking when they want it changed.
-        let editor = self.clone();
-        let header_menu = gtk::GestureClick::new();
-        header_menu.set_button(gtk::gdk::BUTTON_SECONDARY);
-        let header = pane.header_row.clone();
-        header_menu.connect_pressed(move |gesture, _, x, y| {
-            gesture.set_state(gtk::EventSequenceState::Claimed);
-            editor.focus(id);
-            let model = gio::Menu::new();
-            model.append(Some("Edit header…"), Some("chart.edit-header"));
-            popup_menu(&model, &header, x, y);
-        });
-        pane.header_row.add_controller(header_menu);
+        // is where somebody is looking when they want it changed. Either of
+        // its sections.
+        for header in [pane.header_row.clone(), pane.header_center.clone()] {
+            let editor = self.clone();
+            let header_menu = gtk::GestureClick::new();
+            header_menu.set_button(gtk::gdk::BUTTON_SECONDARY);
+            let anchor = header.clone();
+            header_menu.connect_pressed(move |gesture, _, x, y| {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                editor.focus(id);
+                let model = gio::Menu::new();
+                model.append(Some("Edit header…"), Some("chart.edit-header"));
+                popup_menu(&model, &anchor, x, y);
+            });
+            header.add_controller(header_menu);
+        }
 
         let axis_owner = self.clone();
         pane.view.set_axis_menu_handler(move |x, y| {

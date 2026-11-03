@@ -143,16 +143,12 @@ impl Preferences {
         let charts_header_page = adw::PreferencesPage::new();
         let store_for_header = store.clone();
         let window_for_header = window.clone();
-        let header = crate::ui::part_list::PartList::new(
-            "In the header",
-            "Add to the header",
-            crate::header::load(&store),
-            move |parts| {
-                crate::header::save(&store_for_header, &parts);
-                window_for_header.apply_header();
-            },
-        );
-        charts_header_page.add(&header.group);
+        for section in header_sections(crate::header::load(&store), move |header| {
+            crate::header::save(&store_for_header, header);
+            window_for_header.apply_header();
+        }) {
+            charts_header_page.add(&section.group);
+        }
         charts.add_titled(&charts_header_page, Some("header"), "Header");
         charts.add_titled(&charts_other_page, Some("other"), "Other");
         // Opened from something on a chart, at the tab that is about it;
@@ -218,6 +214,60 @@ impl Preferences {
 
         dialog.present(Some(parent));
     }
+}
+
+/// The header's sections, a list each, handing every change to `changed` as
+/// the whole header.
+///
+/// A part is in the header once, so a part in one section is not offered by
+/// the other's +, and is offered again the moment it is taken out.
+fn header_sections(
+    current: crate::header::Header,
+    changed: impl Fn(&crate::header::Header) + 'static,
+) -> Vec<Rc<crate::ui::part_list::PartList<crate::header::Part>>> {
+    use crate::header::Section;
+    use crate::ui::part_list::PartList;
+    type Lists = Rc<RefCell<Vec<(Section, std::rc::Weak<PartList<crate::header::Part>>)>>>;
+    let header = Rc::new(RefCell::new(current));
+    let changed = Rc::new(changed);
+    let lists: Lists = Rc::new(RefCell::new(Vec::new()));
+    let elsewhere = |header: &crate::header::Header, section: Section| -> Vec<crate::header::Part> {
+        Section::ALL.into_iter().filter(|other| *other != section).flat_map(|other| header.section(other).to_vec()).collect()
+    };
+    let built: Vec<_> = Section::ALL
+        .into_iter()
+        .map(|section| {
+            let (edited, changed, others) = (header.clone(), changed.clone(), lists.clone());
+            let current = header.borrow().section(section).to_vec();
+            let list = PartList::new(
+                section.title(),
+                &format!("Add to the {}", section.title().to_lowercase()),
+                current,
+                move |parts| {
+                    edited.borrow_mut().set(section, parts);
+                    let now = edited.borrow().clone();
+                    for (other, list) in others.borrow().iter().filter(|(other, _)| *other != section) {
+                        if let Some(list) = list.upgrade() {
+                            list.set_elsewhere(elsewhere(&now, *other));
+                        }
+                    }
+                    changed(&now);
+                },
+            );
+            list.set_elsewhere(elsewhere(&header.borrow(), section));
+            lists.borrow_mut().push((section, Rc::downgrade(&list)));
+            list
+        })
+        .collect();
+    // Kept by their groups, which let go when the dialog is disposed: a
+    // section with no rows and nothing to offer holds nothing that would.
+    for list in &built {
+        let kept = built.clone();
+        list.group.connect_destroy(move |_| {
+            let _ = &kept;
+        });
+    }
+    built
 }
 
 /// The sections down a sidebar, the selected one beside it.
@@ -1820,6 +1870,39 @@ fn describe_count(series: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A part in one section is not offered by the other, and is offered
+    /// again once it is taken out; every change is the whole header.
+    #[test]
+    fn a_part_in_one_section_is_not_offered_in_the_other() {
+        use crate::header::{Header, Part};
+        if !crate::ui::gtk_ready() {
+            return;
+        }
+        let saved: Rc<RefCell<Vec<Header>>> = Rc::default();
+        let seen = saved.clone();
+        let sections = header_sections(Header::standard(), move |header| seen.borrow_mut().push(header.clone()));
+        let [left, center] = sections.as_slice() else { panic!("two sections") };
+        assert_eq!(left.group.title(), "Left");
+        assert_eq!(center.group.title(), "Center");
+        assert_eq!(left.parts(), vec![Part::Symbol, Part::Resolution, Part::Account]);
+        assert_eq!(center.parts(), vec![Part::Stripe]);
+        assert_eq!(left.offered(), vec![Part::Change, Part::Template]);
+        assert_eq!(center.offered(), vec![Part::Change, Part::Template]);
+
+        // Out of the center, the stripe is offered by both.
+        center.set(Vec::new());
+        assert_eq!(left.offered(), vec![Part::Change, Part::Template, Part::Stripe]);
+        assert_eq!(center.offered(), vec![Part::Change, Part::Template, Part::Stripe]);
+        // Into the left, by neither.
+        left.set(vec![Part::Symbol, Part::Stripe]);
+        assert_eq!(center.offered(), vec![Part::Resolution, Part::Change, Part::Template, Part::Account]);
+        assert!(!left.offered().contains(&Part::Stripe));
+        assert_eq!(
+            saved.borrow().last(),
+            Some(&Header { left: vec![Part::Symbol, Part::Stripe], center: Vec::new() })
+        );
+    }
 
     #[test]
     fn copies_get_ids_that_are_not_taken() {

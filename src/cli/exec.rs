@@ -192,7 +192,9 @@ pub fn dispatch(
                     // A login changed: which charts it can serve may have
                     // too.
                     Ok(key) if crate::feeds::signs_in_from(key) => live.adopt_feed(),
-                    Ok(key) if key == crate::header::SETTING => live.adopt_header(),
+                    Ok(key) if key == crate::header::SETTING || key == crate::header::CENTER_SETTING => {
+                        live.adopt_header()
+                    }
                     Ok(key) if key == crate::clock::SETTING_ZONE || key == crate::clock::SETTING_FORMAT => {
                         live.adopt_clock()
                     }
@@ -4779,12 +4781,18 @@ fn config_set(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<Stri
     // and be told it worked. So this one is checked, and stored canonically
     // so that `TOS` and `tos` are the same choice rather than two.
     // The header too, so a typo is refused here rather than read back later
-    // as a header missing a part.
-    if key == crate::header::SETTING {
+    // as a header missing a part. Either section, and a part placed in one
+    // leaves the other, as it does in the preferences.
+    if let Some(section) = crate::header::Section::ALL.into_iter().find(|section| section.setting() == key) {
         let parts = crate::header::parse(value).map_err(Fault::usage)?;
-        crate::header::save(store, &parts);
         let value = crate::header::spell(&parts);
-        let text = format!("every chart's header shows {value}");
+        let mut header = crate::header::load(store);
+        header.set(section, parts);
+        crate::header::save(store, &header);
+        let text = match section {
+            crate::header::Section::Left => format!("every chart's header shows {value}"),
+            crate::header::Section::Center => format!("every chart's header shows {value} in the center"),
+        };
         return said(as_json, json!({"key": key, "value": value}), text);
     }
     // The templates themselves are a document `template` keeps, with the
@@ -5504,13 +5512,27 @@ mod tests {
     #[test]
     fn the_header_is_one_setting_and_a_typo_is_refused() {
         let store = bare();
-        assert_eq!(crate::header::load(&store), crate::header::standard());
+        use crate::header::{Header, Part};
+        assert_eq!(crate::header::load(&store), Header::standard());
         let out = run("config set chart_header change,symbol,template", &store);
         assert_eq!(out.code, 0, "{}", out.err);
         assert_eq!(out.out, "every chart's header shows change,symbol,template\n");
         assert_eq!(run("config set chart_header symbol,price", &store).code, EXIT_USAGE);
-        use crate::header::Part;
-        assert_eq!(crate::header::load(&store), vec![Part::Change, Part::Symbol, Part::Template]);
+        assert_eq!(
+            crate::header::load(&store),
+            Header { left: vec![Part::Change, Part::Symbol, Part::Template], center: vec![Part::Stripe] }
+        );
+        // The stripe put on the left leaves the center; put back, it leaves
+        // the left.
+        assert_eq!(run("config set chart_header symbol,stripe", &store).code, 0);
+        assert_eq!(
+            crate::header::load(&store),
+            Header { left: vec![Part::Symbol, Part::Stripe], center: Vec::new() }
+        );
+        let out = run("config set chart_header_center stripe", &store);
+        assert_eq!(out.out, "every chart's header shows stripe in the center\n");
+        assert_eq!(crate::header::load(&store), Header { left: vec![Part::Symbol], center: vec![Part::Stripe] });
+        assert_eq!(run("config set chart_header_center stripe,banana", &store).code, EXIT_USAGE);
         // Not a chart's to have: there is no flag for it any more.
         assert_eq!(run("chart set --header symbol", &store).code, EXIT_USAGE);
     }
