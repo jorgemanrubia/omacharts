@@ -497,29 +497,42 @@ impl DrawingBar {
                         cr.line_to(x + reach, y);
                         let _ = cr.stroke();
                     }
-                    // A curve settling as it goes, from a dot on the bar it
-                    // is anchored to, between two quieter bands: an
-                    // average that starts somewhere, which is what sets it
-                    // apart from a line drawn through two points.
+                    // Three candles climbing, crossed by the line that is
+                    // anchored under the first of them: an open ring, and
+                    // the average rising out of it through the bars it is
+                    // worked out from. Candles rather than bands, because
+                    // what sets it apart from a line through two points is
+                    // where it starts and what it is read off.
                     Some(Kind::Vwap) => {
-                        let (x0, y0) = (5.5, h - 7.5);
-                        let x1 = w - 4.5;
-                        let curve = |cr: &gtk::cairo::Context, lift: f64| {
-                            cr.move_to(x0, y0 - lift);
-                            cr.curve_to(x0 + 5.0, 7.0 - lift, x0 + 9.0, h / 2.0 - lift, x1, h / 2.0 - 1.0 - lift);
-                        };
-                        cr.set_source_rgba(r, g, b, a * 0.45);
+                        // Each candle as (centre, body top, body bottom,
+                        // wick top, wick bottom), each body where the line
+                        // crosses it.
+                        let candles = [
+                            (9.5, h - 11.0, h - 5.0, h - 13.0, h - 3.0),
+                            (15.5, h - 16.0, h - 10.0, h - 18.5, h - 7.5),
+                            (21.5, 6.0, 12.0, 3.5, 14.5),
+                        ];
+                        let ring = (4.5, h - 4.5);
+                        // At the ink the profile's rows are, so the line is
+                        // the one thing at full strength and reads over them.
+                        cr.set_source_rgba(r, g, b, a * 0.5);
                         cr.set_line_width(1.0);
-                        for lift in [4.5, -4.5] {
-                            curve(cr, lift);
-                            let _ = cr.stroke();
+                        for (x, _, _, top, bottom) in candles {
+                            cr.move_to(x, top);
+                            cr.line_to(x, bottom);
                         }
+                        let _ = cr.stroke();
+                        for (x, top, bottom, ..) in candles {
+                            cr.rectangle(x - 2.0, top, 4.0, bottom - top);
+                        }
+                        let _ = cr.fill();
                         cr.set_source_rgba(r, g, b, a);
                         cr.set_line_width(1.5);
-                        curve(cr, 0.0);
+                        cr.move_to(ring.0 + 1.6, ring.1 - 1.6);
+                        cr.curve_to(11.0, h - 8.5, 17.0, h - 11.5, w - 2.0, 10.5);
                         let _ = cr.stroke();
-                        cr.arc(x0, y0, 2.25, 0.0, std::f64::consts::TAU);
-                        let _ = cr.fill();
+                        cr.arc(ring.0, ring.1, 2.25, 0.0, std::f64::consts::TAU);
+                        let _ = cr.stroke();
                     }
                     Some(Kind::Text) => {
                         // A capital I with its serifs: the mark every
