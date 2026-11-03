@@ -511,7 +511,9 @@ fn serve(
     }
     // What the chart holds already, and then what this has sent it.
     let mut newest = since;
-    let sent = |bar: &Bar, newest: &mut Option<i64>| {
+    // A snapshot has been sent, so the chart holds every bar up to `newest`.
+    let mut served = false;
+    let sent =|bar: &Bar, newest: &mut Option<i64>| {
         *newest = Some(newest.map_or(bar.ts, |held| held.max(bar.ts)));
     };
     for event in events {
@@ -521,8 +523,13 @@ fn serve(
         match event {
             Event::Stop => return,
             Event::Live(rithmic::Live::Watching { .. }) => {
-                // From a few bars back, so a gap left by a drop is filled.
+                // The first from a few bars before what the chart holds, as
+                // the loader overlaps. Watching again, after a drop or
+                // missed trades, is from the newest bar sent, the one the
+                // drop cut: every bar before it was whole, and the gap after
+                // it is all that is asked of the plant's quota.
                 let from = match newest {
+                    Some(newest) if served => newest,
                     Some(newest) => newest - 5 * timeframe.seconds(),
                     None => clock().div_euclid(1_000_000_000) - depth(timeframe),
                 };
@@ -532,6 +539,7 @@ fn serve(
                 }
             }
             Event::Loaded { bars: Ok(bars), at } => {
+                served = true;
                 let moved = fold.snapshot(&bars, at);
                 if let Some(last) = bars.last() {
                     sent(last, &mut newest);
@@ -951,30 +959,35 @@ mod tests {
     }
 
     /// A drop is a loss, and the session's coming back is a fresh snapshot
-    /// from a few bars before the newest the chart was sent, which fills the
-    /// gap the drop left.
+    /// from the newest bar the chart was sent, the one the drop cut, which
+    /// fills the gap the drop left and asks for nothing the chart has whole.
     #[test]
     fn a_drop_is_a_loss_and_coming_back_is_a_fresh_snapshot() {
         let (asked, froms) = mpsc::channel();
         let served = Served::start(Some(AT - 600), AT + 30, move |from| {
             asked.send(from).unwrap();
-            Ok(vec![ohlc(AT, 1.0, 1.0, 1.0, 1.0, 1.0)])
+            // The plant has every minute from `from` to the reconnect.
+            Ok((0..4).map(|i| ohlc(from.max(AT) + 60 * i, 1.0, 1.0, 1.0, 1.0, 10.0)).collect())
         });
         served.watching();
-        assert_eq!(served.snapshot().len(), 1);
-        served.at(AT + 61);
-        served.trade(AT + 61, 2.0, 3);
+        assert_eq!(served.snapshot().len(), 4);
+        served.at(AT + 241);
+        served.trade(AT + 241, 2.0, 3);
         let bar = served.bar();
-        assert_eq!((bar.ts, bar.volume), (AT + 60, 3.0));
+        assert_eq!((bar.ts, bar.volume), (AT + 240, 3.0));
         let dropped = rithmic::Error::Connection("connection closed".into());
         served.send.send(Event::Live(rithmic::Live::Lost(dropped))).unwrap();
         assert_eq!(served.next(), Update::Lost(FetchFailure::Unreachable));
+        // Back three minutes later.
+        served.at(AT + 420);
         served.watching();
-        assert!(matches!(served.next(), Update::Snapshot(_)));
+        let refill = served.snapshot();
+        assert_eq!(refill.iter().map(|bar| bar.ts).collect::<Vec<_>>(), vec![AT + 240, AT + 300, AT + 360, AT + 420]);
+        assert_eq!(refill[0].volume, 10.0, "the cut bar whole, as the plant has it");
         // The first snapshot goes back from what the chart held, the second
-        // from the bar it was last sent.
+        // from the bar the drop cut, once.
         let froms: Vec<i64> = froms.try_iter().collect();
-        assert_eq!(froms, vec![AT - 600 - 300, AT + 60 - 300]);
+        assert_eq!(froms, vec![AT - 600 - 300, AT + 240]);
         served.send.send(Event::Stop).unwrap();
         served.watching();
         assert!(served.heard.recv_timeout(std::time::Duration::from_millis(200)).is_err(), "nothing after the stop");

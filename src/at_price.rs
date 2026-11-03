@@ -18,9 +18,12 @@
 //! which minutes from the chart's first bar to now it knows nothing about —
 //! [`Store::missing_ladders`] — and only those spans go to the provider, one
 //! request each, which is what spares a provider with a data quota. A span
-//! the store knows complete is never asked for again; a disconnect leaves a
-//! hole, and the next start fills it, the provider's minutes replacing the
-//! ones built live.
+//! the store knows complete is never asked for again. A disconnect leaves a
+//! hole, and the feed coming back fills it at once: the store is asked again
+//! which minutes it is missing, and the provider's minutes replace the ones
+//! built live. The minute the feed came back in was joined part way, and is
+//! asked for once more by the first update after it has closed and
+//! [`SETTLED`] seconds have passed.
 //!
 //! **Live.** Each contract with a chart watching has one live ladder feed.
 //! Its updates land in a mailbox on the provider's thread, keeping only the
@@ -46,11 +49,17 @@ use crate::store::Store;
 /// drawn from the estimate rather than from more memory.
 pub const MAX_WHOLE_DAYS: usize = 12;
 
+/// How long after a minute closes the provider is taken to have it whole.
+pub const SETTLED: i64 = 30;
+
 /// What the registry's thread is asked to do, in order.
 enum Job {
     /// Fill the store's holes in `from..now` from the provider, then read
     /// back what a chart holds from `from` on.
     Load { key: String, symbol: String, instrument: Instrument, tick_size: f64, from: i64, now: i64 },
+    /// The feed is back: fill the store's holes in `from..now` from the
+    /// provider, and read back whole the days that changed.
+    Fill { key: String, symbol: String, instrument: Instrument, tick_size: f64, from: i64, now: i64 },
     /// One day's minutes.
     Day { key: String, day: i64 },
     /// A minute sealed live, and the span the feed knows complete.
@@ -61,6 +70,8 @@ enum Job {
 pub enum Done {
     Loaded { key: String, from: i64, held: Held, asked: Vec<(i64, i64)> },
     Day { key: String, day: Day },
+    /// A fill after the feed came back: the days it changed, whole.
+    Filled { key: String, days: Vec<Day>, asked: Vec<(i64, i64)> },
 }
 
 /// What the provider's thread leaves for the next drain: updates in order,
@@ -72,6 +83,7 @@ struct Mailbox {
 
 struct Entry {
     symbol: String,
+    instrument: Instrument,
     days: Days,
     tick_size: f64,
     held: Held,
@@ -86,6 +98,14 @@ struct Entry {
     early: Vec<Minute>,
     /// Days whose minutes have been asked for.
     asked: HashSet<i64>,
+    /// Fills on their way.
+    filling: usize,
+    /// Minutes sealed live while a fill was on its way, put back on top of
+    /// the days it reads back.
+    sealed_meanwhile: Vec<Minute>,
+    /// When the minute the feed came back in will have settled: the first
+    /// update from then on asks for it once more.
+    refill_at: Option<i64>,
 }
 
 /// One feed's volume at price.
@@ -197,6 +217,7 @@ impl AtPrice {
             key.to_string(),
             Entry {
                 symbol: symbol.to_string(),
+                instrument: instrument.clone(),
                 days: Days::new(instrument),
                 tick_size,
                 held: Held::new(tick_size),
@@ -207,6 +228,9 @@ impl AtPrice {
                 _live: live,
                 early: Vec::new(),
                 asked: HashSet::new(),
+                filling: 0,
+                sealed_meanwhile: Vec::new(),
+                refill_at: None,
             },
         );
         drop(entries);
@@ -332,15 +356,47 @@ impl AtPrice {
                 entry.held.load(day);
                 entry.watchers.iter().copied().collect()
             }
+            Done::Filled { key, days, asked } => {
+                let Some(entry) = entries.get_mut(&key) else { return Vec::new() };
+                entry.filling = entry.filling.saturating_sub(1);
+                let meanwhile = if entry.filling == 0 {
+                    std::mem::take(&mut entry.sealed_meanwhile)
+                } else {
+                    entry.sealed_meanwhile.clone()
+                };
+                if asked.is_empty() || !entry.loaded {
+                    return Vec::new();
+                }
+                let spans: Vec<String> = asked.iter().map(|(a, b)| format!("{a}..{b}")).collect();
+                eprintln!("omacharts: ladders of {key}: back after a drop, asked the provider for {}", spans.join(", "));
+                let numbers: Vec<i64> = days.iter().map(|day| day.day).collect();
+                for day in days {
+                    entry.held.load(day);
+                }
+                // What sealed after the fill read the store goes back onto
+                // the days it replaced; the others hold those minutes already.
+                for minute in meanwhile {
+                    let day = entry.days.of(minute.ts);
+                    if numbers.contains(&day) {
+                        entry.held.seal(day, minute);
+                    }
+                }
+                entry.watchers.iter().copied().collect()
+            }
         }
     }
 
     /// Fold what the live feeds sent since the last drain into memory, and
     /// hand each sealed minute to the store. The charts to compute again.
+    ///
+    /// The feed coming back asks at once for the minutes the store is
+    /// missing, behind the minutes sealed before it.
     pub fn drain(&self) -> Vec<u32> {
         self.armed.store(false, Ordering::Release);
         let mut touched = Vec::new();
         let mut appends = Vec::new();
+        let mut fills = Vec::new();
+        let now = (self.clock.get())();
         {
             let mut entries = self.entries.borrow_mut();
             for (key, entry) in entries.iter_mut() {
@@ -348,10 +404,16 @@ impl AtPrice {
                 if updates.is_empty() {
                     continue;
                 }
+                let mut fill = entry.refill_at.is_some_and(|at| now >= at);
                 for update in updates {
                     let (minute, covered) = match update {
                         LadderUpdate::Forming(minute) => {
                             entry.held.forming = Some(minute);
+                            continue;
+                        }
+                        LadderUpdate::Resumed => {
+                            fill = true;
+                            entry.refill_at = Some(now.div_euclid(60) * 60 + 60 + SETTLED);
                             continue;
                         }
                         LadderUpdate::Sealed { minute, covered } => (minute, covered),
@@ -368,16 +430,33 @@ impl AtPrice {
                         minute: minute.clone(),
                         covered,
                     });
+                    if entry.filling > 0 {
+                        entry.sealed_meanwhile.push(minute.clone());
+                    }
                     if entry.loaded {
                         entry.held.seal(day, minute);
                     } else {
                         entry.early.push(minute);
                     }
                 }
+                if fill {
+                    if entry.refill_at.is_some_and(|at| now >= at) {
+                        entry.refill_at = None;
+                    }
+                    entry.filling += 1;
+                    fills.push(Job::Fill {
+                        key: key.clone(),
+                        symbol: entry.symbol.clone(),
+                        instrument: entry.instrument.clone(),
+                        tick_size: entry.tick_size,
+                        from: entry.from,
+                        now,
+                    });
+                }
                 touched.extend(entry.watchers.iter().copied());
             }
         }
-        for job in appends {
+        for job in appends.into_iter().chain(fills) {
             self.send(job);
         }
         touched
@@ -389,6 +468,36 @@ impl AtPrice {
     }
 }
 
+/// Ask the provider for the minutes of `from..now` the store knows nothing
+/// about, one request a hole, and keep them. The spans it got.
+#[allow(clippy::too_many_arguments)]
+fn fill(
+    store: &Store,
+    ladders: &dyn omacharts_engine::Ladders,
+    key: &str,
+    symbol: &str,
+    tick_size: f64,
+    days: &Days,
+    from: i64,
+    now: i64,
+) -> Vec<(i64, i64)> {
+    // The minute trading now is the live feed's.
+    let to = now.div_euclid(60) * 60;
+    let mut asked = Vec::new();
+    for (a, b) in store.missing_ladders(key, from, to) {
+        match ladders.minutes(symbol, a, b) {
+            Ok(minutes) => {
+                if store.save_ladder_history(key, tick_size, days, a, b, &minutes).is_ok() {
+                    asked.push((a, b));
+                }
+            }
+            // Not recorded as known: asked again the next time.
+            Err(error) => eprintln!("omacharts: ladders of {key} for {a}..{b}: {error}"),
+        }
+    }
+    asked
+}
+
 /// The registry's thread: one connection to the store, and the jobs in the
 /// order they were given.
 fn work(path: &std::path::Path, provider: &dyn Provider, inbox: &mpsc::Receiver<Job>, done: &async_channel::Sender<Done>) {
@@ -398,25 +507,21 @@ fn work(path: &std::path::Path, provider: &dyn Provider, inbox: &mpsc::Receiver<
         let answer = match job {
             Job::Load { key, symbol, instrument, tick_size, from, now } => {
                 let days = Days::new(&instrument);
-                // The minute trading now is the live feed's.
-                let to = now.div_euclid(60) * 60;
-                let reach = now - i64::from(ladders.history_days()) * 86_400;
-                let from = from.max(reach);
+                let from = from.max(now - i64::from(ladders.history_days()) * 86_400);
                 let _ = store.compact_ladders(&key, days.of(now));
-                let mut asked = Vec::new();
-                for (a, b) in store.missing_ladders(&key, from, to) {
-                    match ladders.minutes(&symbol, a, b) {
-                        Ok(minutes) => {
-                            if store.save_ladder_history(&key, tick_size, &days, a, b, &minutes).is_ok() {
-                                asked.push((a, b));
-                            }
-                        }
-                        // Not recorded as known: the next start asks again.
-                        Err(error) => eprintln!("omacharts: ladders of {key} for {a}..{b}: {error}"),
-                    }
-                }
+                let asked = fill(&store, ladders, &key, &symbol, tick_size, &days, from, now);
                 let held = store.load_ladder_held(&key, &days, days.of(from), days.of(now) + 1);
                 Done::Loaded { key, from, held, asked }
+            }
+            Job::Fill { key, symbol, instrument, tick_size, from, now } => {
+                let days = Days::new(&instrument);
+                let from = from.max(now - i64::from(ladders.history_days()) * 86_400);
+                let asked = fill(&store, ladders, &key, &symbol, tick_size, &days, from, now);
+                let mut numbers: Vec<i64> = asked.iter().flat_map(|(a, b)| days.of(*a)..=days.of(b - 1)).collect();
+                numbers.sort_unstable();
+                numbers.dedup();
+                let changed = numbers.into_iter().filter_map(|day| store.load_ladder_day(&key, day)).collect();
+                Done::Filled { key, days: changed, asked }
             }
             Job::Day { key, day } => match store.load_ladder_day(&key, day) {
                 Some(day) => Done::Day { key, day },
@@ -602,6 +707,91 @@ mod tests {
         // The live minute read back from the store, and the two since.
         assert_eq!(back, 180 * 5 + 5 + 2 * 5);
         second.shutdown();
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    static CLOCK: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(NOW);
+
+    fn clock() -> i64 {
+        CLOCK.load(Ordering::SeqCst)
+    }
+
+    /// A minute the feed saw only part of: one contract, where the
+    /// provider's has five.
+    fn partial(ts: i64) -> Minute {
+        let mut minute = Minute::opening(ts, 7_625.0);
+        minute.add_trade(30_500, 7_625.0, 1, Side::Buy, 1);
+        minute
+    }
+
+    /// Wait for everything given to the thread so far: a load that asks
+    /// for nothing, of a contract nothing else touches, queued behind it.
+    fn sync(at_price: &AtPrice, pane: u32) {
+        at_price.want(pane, &format!("fake:SYNC{pane}"), "ES", &es(), clock().div_euclid(60) * 60);
+        assert!(settle(at_price).contains(&pane), "the sync's own load, after anything queued before it");
+    }
+
+    /// The feed drops and comes back four minutes later: the gap is asked
+    /// for at once, only the gap, and once; the chart's ladders are whole
+    /// again with the provider's minutes in place of the partial one. The
+    /// minute the feed came back in is asked for once more after it has
+    /// settled, and nothing after that.
+    #[test]
+    fn coming_back_after_a_drop_fills_the_gap_at_once_and_only_the_gap() {
+        let path = scratch("reconnect");
+        let asked = Arc::new(Mutex::new(Asked::default()));
+        let provider: Arc<dyn Provider> = Arc::new(Fake(asked.clone()));
+        let at_price = AtPrice::new(provider, Some(path.clone())).unwrap();
+        CLOCK.store(NOW, Ordering::SeqCst);
+        at_price.set_clock(clock);
+        at_price.want(1, KEY, "ES", &es(), NOW - HOUR);
+        settle(&at_price);
+        assert_eq!(asked.lock().unwrap().spans, vec![(NOW - HOUR, NOW)]);
+        let say = |update: LadderUpdate| (asked.lock().unwrap().sinks[0])(update);
+
+        // A minute whole, and the drop part way through the next.
+        say(LadderUpdate::Sealed { minute: minute(NOW), covered: Some((NOW, NOW + 60)) });
+        say(LadderUpdate::Forming(partial(NOW + 60)));
+        CLOCK.store(NOW + 90, Ordering::SeqCst);
+        say(LadderUpdate::Dropped(Some(partial(NOW + 60))));
+        at_price.drain();
+        sync(&at_price, 7);
+        assert_eq!(asked.lock().unwrap().spans.len(), 1, "a drop alone asks for nothing");
+        let volume = |to: i64| {
+            at_price.with_held(KEY, |held| held.unwrap().between(NOW - HOUR, to).unwrap().sides.volume())
+        };
+        assert_eq!(volume(NOW + 300), 60 * 5 + 5 + 1, "the gap, before it is filled");
+
+        // Back, ten seconds into a minute.
+        CLOCK.store(NOW + 310, Ordering::SeqCst);
+        say(LadderUpdate::Resumed);
+        assert!(at_price.drain().contains(&1));
+        assert_eq!(settle(&at_price), vec![1], "the fill comes back to the chart");
+        assert_eq!(asked.lock().unwrap().spans[1..], [(NOW + 60, NOW + 300)], "only the gap");
+        assert_eq!(volume(NOW + 300), 60 * 5 + 5 + 4 * 5, "whole again, the provider's minute in place of the partial");
+
+        // More from the feed before the minute it came back in has settled.
+        say(LadderUpdate::Forming(partial(NOW + 300)));
+        CLOCK.store(NOW + 320, Ordering::SeqCst);
+        at_price.drain();
+        sync(&at_price, 8);
+        assert_eq!(asked.lock().unwrap().spans.len(), 2, "nothing asked twice");
+
+        // That minute sealed, joined part way, and settled: asked once more.
+        CLOCK.store(NOW + 400, Ordering::SeqCst);
+        say(LadderUpdate::Sealed { minute: partial(NOW + 300), covered: None });
+        say(LadderUpdate::Forming(partial(NOW + 360)));
+        at_price.drain();
+        assert_eq!(settle(&at_price), vec![1]);
+        assert_eq!(asked.lock().unwrap().spans[2..], [(NOW + 300, NOW + 360)]);
+        assert_eq!(volume(NOW + 360), 60 * 5 + 5 + 5 * 5);
+
+        CLOCK.store(NOW + 500, Ordering::SeqCst);
+        say(LadderUpdate::Forming(partial(NOW + 360)));
+        at_price.drain();
+        sync(&at_price, 9);
+        assert_eq!(asked.lock().unwrap().spans.len(), 3, "and nothing more");
+        at_price.shutdown();
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 

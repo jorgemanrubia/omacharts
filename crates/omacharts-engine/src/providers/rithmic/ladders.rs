@@ -119,9 +119,12 @@ impl Drop for Watching {
 
 /// Fold what the session hears into `tape`, and say so: the forming minute
 /// after each print, a minute as it seals, and a drop — or a start over
-/// after prints were missed — as a drop.
+/// after prints were missed — as a drop, followed by the feed resumed once
+/// the session is watching again.
 fn fold(events: &mpsc::Receiver<Event>, mut tape: Tape, say: &dyn Fn(LadderUpdate), stop: &AtomicBool) {
     let tick_size = tape.forming.tick_size();
+    // Heard from the session at all: a Watching after this is a return.
+    let mut started = false;
     for event in events {
         if stop.load(Ordering::Acquire) {
             return;
@@ -142,14 +145,19 @@ fn fold(events: &mpsc::Receiver<Event>, mut tape: Tape, say: &dyn Fn(LadderUpdat
                     say(LadderUpdate::Forming(forming.clone()));
                 }
             }
-            // The first Watching starts the feed; a later one is the
-            // session starting over, after a reconnect or missed prints.
+            // The first Watching starts the feed; a later one, or one after
+            // a loss, is the session starting over, after a reconnect or
+            // missed prints, and what it missed can be asked for now.
             Event::Live(rithmic::Live::Watching { .. }) => {
                 if tape.forming.is_connected() || tape.forming.current().is_some() {
                     say(LadderUpdate::Dropped(tape.forming.disconnect()));
                 }
+                if std::mem::replace(&mut started, true) {
+                    say(LadderUpdate::Resumed);
+                }
             }
             Event::Live(rithmic::Live::Lost(_)) => {
+                started = true;
                 if tape.forming.is_connected() || tape.forming.current().is_some() {
                     say(LadderUpdate::Dropped(tape.forming.disconnect()));
                 }
@@ -270,8 +278,32 @@ mod tests {
             .collect();
         // Joined on the dot at 600, so 600 on is complete.
         assert_eq!(sealed, vec![(600, Some((600, 660))), (660, Some((600, 720)))]);
-        let Some(LadderUpdate::Dropped(Some(partial))) = heard.last() else { panic!("{heard:?}") };
+        let [.., LadderUpdate::Dropped(Some(partial)), LadderUpdate::Resumed] = heard.as_slice() else {
+            panic!("{heard:?}")
+        };
         assert_eq!((partial.ts, partial.volume, partial.ladder.sides.unknown), (720, 4, 1));
         assert!(heard.iter().any(|u| matches!(u, LadderUpdate::Forming(m) if m.ts == 720)));
+        assert_eq!(heard.iter().filter(|u| **u == LadderUpdate::Resumed).count(), 1, "the first Watching is no return");
+    }
+
+    /// A drop is a drop at once, and the session watching again is the feed
+    /// resumed: the cue to ask for what it missed, said once.
+    #[test]
+    fn coming_back_after_a_drop_is_the_feed_resumed() {
+        let (send, events) = mpsc::channel();
+        let watching = || Event::Live(rithmic::Live::Watching { contract: "ESZ6".into() });
+        send.send(watching()).unwrap();
+        send.send(trade(600, 7625.0, 2, Some(rithmic::Side::Buy))).unwrap();
+        send.send(Event::Live(rithmic::Live::Lost(rithmic::Error::Connection("connection closed".into())))).unwrap();
+        send.send(watching()).unwrap();
+        send.send(Event::Stop).unwrap();
+        let heard = std::cell::RefCell::new(Vec::new());
+        fold(&events, Tape::new(0.25, 1_000), &|u| heard.borrow_mut().push(u), &AtomicBool::new(false));
+        let heard = heard.into_inner();
+        let [LadderUpdate::Forming(_), LadderUpdate::Dropped(Some(partial)), LadderUpdate::Resumed] = heard.as_slice()
+        else {
+            panic!("{heard:?}")
+        };
+        assert_eq!(partial.ts, 600);
     }
 }

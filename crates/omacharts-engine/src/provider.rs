@@ -377,9 +377,12 @@ pub enum LadderUpdate {
     Sealed { minute: Minute, covered: Option<(i64, i64)> },
     /// The feed dropped, or started over after missing prints: nothing is
     /// complete from here until it is back, and this is the minute that was
-    /// forming, partial. The span missed is a gap the next start asks the
-    /// provider's history for.
+    /// forming, partial. The span missed is a gap, asked of the provider's
+    /// history once the feed is [`LadderUpdate::Resumed`].
     Dropped(Option<Minute>),
+    /// The feed is back after a drop or a start over: whatever it missed
+    /// meanwhile can be asked of the provider's history now.
+    Resumed,
 }
 
 /// Where a ladder feed puts what it hears. Called on the provider's thread,
