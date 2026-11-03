@@ -7,9 +7,10 @@
 //!
 //! What each row says comes from the feeds themselves: what a source
 //! covers, how fresh it is (asked of the provider), whether it needs
-//! signing in and how that stands. Only Rithmic's login dialog is a thing
-//! of its own, in `rithmic_login`, because it is the one source whose
-//! sign-in is typed rather than done in a browser.
+//! signing in and how that stands. Rithmic signs in through a login in
+//! Preferences → Trading, the data login, so while there is one its row
+//! says so and leaves signing in, out and removing to that page; adding
+//! Rithmic with no login is adding a broker there.
 //!
 //! Signing in runs on a thread of its own and reports back over a channel
 //! the main loop awaits, because it waits on somebody: a browser and a
@@ -22,7 +23,7 @@ use std::rc::Rc;
 use adw::prelude::*;
 use gtk::glib;
 use omacharts_engine::provider::Delivery;
-use omacharts_engine::providers::rithmic::session::{self, Secrets};
+use omacharts_engine::providers::rithmic::session;
 use omacharts_engine::providers::{self, Access, Listed};
 
 use crate::feeds;
@@ -39,11 +40,13 @@ enum Progress {
     Done(Result<(), String>),
 }
 
+/// Opens the broker login dialog, from Trading, over the widget given.
+pub type AddBroker = Rc<dyn Fn(&gtk::Widget)>;
+
 struct Panel {
     store: Rc<Store>,
-    /// Where Rithmic's password goes: the desktop keyring, or a list in
-    /// memory under test.
-    secrets: Rc<dyn Secrets>,
+    /// Adding Rithmic with no login is adding a broker in Trading.
+    add_broker: Option<AddBroker>,
     /// Has the window chart from the order now stored, and read again
     /// which sources are signed in. Called after every change here.
     on_change: Rc<dyn Fn()>,
@@ -62,29 +65,32 @@ struct Panel {
 }
 
 /// Fills the settings' data section: the sources, and the groups in
-/// `after` below them.
+/// `after` below them. Returns what draws the sources again, for Trading to
+/// call when a login changes.
 pub fn build(
     page: &adw::PreferencesPage,
     store: Rc<Store>,
     on_change: Rc<dyn Fn()>,
     after: Vec<adw::PreferencesGroup>,
-) {
+    add_broker: AddBroker,
+) -> Rc<dyn Fn()> {
     feeds::remember_logins(&store);
-    let panel = Panel::new(page.clone(), store, Rc::new(session::Keyring), on_change, after);
+    let panel = Panel::new(page.clone(), store, Some(add_broker), on_change, after);
     rebuild(&panel);
+    Rc::new(move || rebuild(&panel))
 }
 
 impl Panel {
     fn new(
         page: adw::PreferencesPage,
         store: Rc<Store>,
-        secrets: Rc<dyn Secrets>,
+        add_broker: Option<AddBroker>,
         on_change: Rc<dyn Fn()>,
         after: Vec<adw::PreferencesGroup>,
     ) -> Rc<Panel> {
         Rc::new(Panel {
             store,
-            secrets,
+            add_broker,
             on_change,
             page,
             group: RefCell::new(None),
@@ -189,7 +195,16 @@ fn fresh(id: &str) -> &'static str {
 }
 
 fn subtitle(panel: &Panel, feed: &'static Listed) -> String {
-    format!("{} · {}", feed.covers, standing(panel, feed))
+    match through_trading(panel, feed) {
+        Some(login) => format!("{} · {} · signs in through {} in Trading", feed.covers, standing(panel, feed), login.name),
+        None => format!("{} · {}", feed.covers, standing(panel, feed)),
+    }
+}
+
+/// The login a source signs in through, when that is Trading's business:
+/// Rithmic, while there is a login in Trading.
+fn through_trading(panel: &Panel, feed: &'static Listed) -> Option<crate::trading::Login> {
+    (feed.id == RITHMIC).then(|| crate::trading::data_login(&panel.store)).flatten()
 }
 
 /// Yahoo: no handle, no Remove, and nothing dropped on it lands.
@@ -230,6 +245,12 @@ fn source_row(panel: &Rc<Panel>, feed: &'static Listed, at: usize) -> adw::Actio
         tag.add_css_class("dim-label");
         tag.set_valign(gtk::Align::Center);
         row.add_suffix(&tag);
+    }
+
+    // Signed in, out and removed in Trading, with the login it is.
+    if through_trading(panel, feed).is_some() {
+        wire_reorder(panel, &row, feed, at);
+        return row;
     }
 
     if feed.needs_sign_in() {
@@ -370,12 +391,12 @@ fn add_button(panel: &Rc<Panel>, missing: Vec<&'static Listed>) -> gtk::MenuButt
     add
 }
 
-/// Rithmic is added by signing in to it: the dialog, and nothing added if
-/// it is cancelled. thinkorswim is added at once, and signed in to from its
-/// row.
+/// Rithmic is added by adding a broker login, in Trading, unless there is
+/// one already to sign in through. thinkorswim is added at once, and signed
+/// in to from its row.
 fn add_source(panel: &Rc<Panel>, feed: &'static Listed, anchor: &impl IsA<gtk::Widget>) {
     match feed.id {
-        RITHMIC => ask_rithmic(panel, anchor),
+        RITHMIC if through_trading(panel, feed).is_none() => ask_rithmic(panel, anchor),
         _ => {
             feeds::add_source(&panel.store, feed.id);
             panel.changed();
@@ -385,16 +406,14 @@ fn add_source(panel: &Rc<Panel>, feed: &'static Listed, anchor: &impl IsA<gtk::W
 
 fn remove_source(panel: &Rc<Panel>, feed: &'static Listed) {
     panel.notes.borrow_mut().remove(feed.id);
-    if let Err(error) = feeds::remove_source(&panel.store, panel.secrets.as_ref(), feed.id) {
-        eprintln!("omacharts: {error}");
-    }
+    feeds::remove_source(&panel.store, feed.id);
     panel.changed();
 }
 
 fn sign_out(panel: &Rc<Panel>, feed: &'static Listed) {
     panel.notes.borrow_mut().remove(feed.id);
     let signed_out = match feed.id {
-        RITHMIC => session::sign_out_of(panel.secrets.as_ref()),
+        RITHMIC => session::sign_out_of(&session::Keyring),
         _ => providers::sign_out(feed.id),
     };
     if let Err(error) = signed_out {
@@ -404,22 +423,12 @@ fn sign_out(panel: &Rc<Panel>, feed: &'static Listed) {
     panel.changed();
 }
 
-/// The Rithmic login dialog, and what pressing Sign In does: the login is
-/// saved, Rithmic goes on the list if it was not, and the window's session
-/// signs in with it.
+/// Rithmic with no login: a broker is added in Trading, which puts
+/// Rithmic on top of the sources and signs it in.
 fn ask_rithmic(panel: &Rc<Panel>, anchor: &impl IsA<gtk::Widget>) {
-    let panel = panel.clone();
-    let store = panel.store.clone();
-    crate::ui::rithmic_login::ask(anchor, &store, move |login| {
-        let feed = providers::listed(RITHMIC).expect("Rithmic is listed");
-        if let Err(error) = feeds::save_rithmic_login(&panel.store, panel.secrets.as_ref(), &login) {
-            panel.notes.borrow_mut().insert(feed.id, format!("not saved · {error}"));
-            rebuild(&panel);
-            return;
-        }
-        feeds::add_source(&panel.store, feed.id);
-        start_sign_in(&panel, feed);
-    });
+    if let Some(add_broker) = &panel.add_broker {
+        add_broker(anchor.upcast_ref());
+    }
 }
 
 /// Run a sign-in off the main loop, showing on the row how it goes, then
@@ -478,8 +487,8 @@ fn start_sign_in(panel: &Rc<Panel>, feed: &'static Listed) {
 mod tests {
     use super::*;
 
-    fn panel(store: &Rc<Store>, kept: Rc<crate::feeds::tests::Kept>) -> Rc<Panel> {
-        Panel::new(adw::PreferencesPage::new(), store.clone(), kept, Rc::new(|| {}), Vec::new())
+    fn panel(store: &Rc<Store>) -> Rc<Panel> {
+        Panel::new(adw::PreferencesPage::new(), store.clone(), None, Rc::new(|| {}), Vec::new())
     }
 
     /// Every [`adw::ActionRow`] under `widget`, in the order somebody reads
@@ -534,7 +543,7 @@ mod tests {
             return;
         }
         let store = Rc::new(Store::memory().expect("an empty database"));
-        let panel = panel(&store, Default::default());
+        let panel = panel(&store);
         rebuild(&panel);
         assert_eq!(titles(&panel), vec!["Yahoo Finance"]);
         let group = panel.group.borrow().clone().unwrap();
@@ -558,7 +567,7 @@ mod tests {
             return;
         }
         let store = Rc::new(Store::memory().expect("an empty database"));
-        let panel = panel(&store, Default::default());
+        let panel = panel(&store);
         let tos = providers::listed("tos").unwrap();
         let rithmic = providers::listed(RITHMIC).unwrap();
         feeds::add_source(&store, RITHMIC);
@@ -597,33 +606,43 @@ mod tests {
         assert_eq!(feeds::stored_order(&store), vec!["tos"], "Yahoo is never stored");
     }
 
-    /// Remove takes the source off the order, and for Rithmic its user ID
-    /// and its password with it. The last one removed leaves no setting.
+    /// Remove takes the source off the order; the last one removed leaves
+    /// no setting. While Rithmic signs in through a login in Trading its row
+    /// says so and offers neither Remove nor a sign-in of its own.
     #[test]
-    fn remove_clears_the_setting() {
+    fn remove_clears_the_setting_and_trading_owns_rithmics_login() {
         if !crate::ui::gtk_ready() || session::development() {
             return;
         }
         let store = Rc::new(Store::memory().expect("an empty database"));
-        let kept = Rc::new(crate::feeds::tests::Kept::default());
-        let panel = panel(&store, kept.clone());
-        let login = feeds::RithmicLogin {
+        let panel = panel(&store);
+        feeds::add_source(&store, RITHMIC);
+        rebuild(&panel);
+        let group = panel.group.borrow().clone().unwrap();
+        let words = words_under(action_rows(group.upcast_ref())[0].upcast_ref());
+        assert!(words.iter().any(|w| w == "Remove"), "{words:?}");
+        remove_source(&panel, providers::listed(RITHMIC).unwrap());
+        assert_eq!(store.setting(feeds::SETTING), None);
+        assert_eq!(titles(&panel), vec!["Yahoo Finance"]);
+
+        let kept = crate::trading::tests::Kept::default();
+        let typed = crate::trading::Typed {
+            name: "Lucid".into(),
             user: "trader".into(),
             password: "PLANTED-PASSWORD".into(),
             system: String::new(),
             gateway: String::new(),
         };
-        feeds::save_rithmic_login(&store, kept.as_ref(), &login).unwrap();
-        feeds::add_source(&store, RITHMIC);
+        crate::trading::add_login(&store, &kept, &typed).unwrap();
         rebuild(&panel);
         assert_eq!(titles(&panel), vec!["Rithmic", "Yahoo Finance"]);
-        assert_eq!(kept.0.borrow().len(), 1);
-
-        remove_source(&panel, providers::listed(RITHMIC).unwrap());
-        assert_eq!(store.setting(feeds::SETTING), None);
-        assert_eq!(store.setting(session::SETTING_USER), None);
-        assert!(kept.0.borrow().is_empty(), "the password is still kept");
-        assert_eq!(titles(&panel), vec!["Yahoo Finance"]);
+        let group = panel.group.borrow().clone().unwrap();
+        let row = &action_rows(group.upcast_ref())[0];
+        assert!(row.subtitle().unwrap_or_default().ends_with("signs in through Lucid in Trading"), "{:?}", row.subtitle());
+        let words = words_under(row.upcast_ref());
+        for absent in ["Remove", "Sign in…", "Sign out"] {
+            assert!(!words.iter().any(|w| w == absent), "{absent}: {words:?}");
+        }
     }
 
     /// A source's row offers one action, and which one follows how it
@@ -635,7 +654,7 @@ mod tests {
         }
         let store = Rc::new(Store::memory().expect("an empty database"));
         feeds::remember_logins(&store);
-        let panel = panel(&store, Default::default());
+        let panel = panel(&store);
         feeds::add_source(&store, RITHMIC);
         rebuild(&panel);
         let group = panel.group.borrow().clone().unwrap();

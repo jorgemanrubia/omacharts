@@ -30,6 +30,10 @@ use crate::ui::window::Window;
 
 pub struct Preferences;
 
+/// What opens the dialog at the Trading section rather than at a tab of
+/// Charts.
+pub const TRADING: &str = "trading";
+
 /// The sidebar plus the column a preferences page lays its rows in, with
 /// room either side of it.
 const MAX_WIDTH: i32 = 980;
@@ -65,6 +69,7 @@ struct Context {
     charts_other_page: adw::PreferencesPage,
     charts_templates_page: adw::PreferencesPage,
     data_page: adw::PreferencesPage,
+    trading_page: adw::PreferencesPage,
     groups: RefCell<Vec<adw::PreferencesGroup>>,
     /// The window, for the chart templates: they are shown on its charts,
     /// and only it knows which of its charts are using one.
@@ -88,6 +93,12 @@ impl Preferences {
         window: Rc<Window>,
         charts_tab: Option<&str>,
     ) {
+        // Trading is a section, not a tab of Charts, and is asked for by the
+        // same word: from a chart's account list.
+        let (charts_tab, at_trading) = match charts_tab {
+            Some(TRADING) => (None, true),
+            tab => (tab, false),
+        };
         let dialog = adw::Dialog::new();
         dialog.set_title("Preferences");
         // The breakpoint below needs a floor to measure against.
@@ -104,6 +115,7 @@ impl Preferences {
         let general_page = adw::PreferencesPage::new();
         let charts_page = adw::PreferencesPage::new();
         let data_page = adw::PreferencesPage::new();
+        let trading_page = adw::PreferencesPage::new();
 
         // General first: what the app does, before what it looks like.
         // Charts is four things: what a new chart opens with, the sets of
@@ -142,15 +154,17 @@ impl Preferences {
             LAST_SEEN.with(|seen| seen.borrow_mut().charts_tab = tab);
         });
 
-        let sections: [(&str, &str, gtk::Widget); 4] = [
+        let sections: [(&str, &str, gtk::Widget); 5] = [
             ("General", "preferences-system-symbolic", general_page.clone().upcast()),
             ("Charts", "utilities-system-monitor-symbolic", charts.upcast()),
             ("Theme", "applications-graphics-symbolic", page.clone().upcast()),
             ("Data", "network-server-symbolic", data_page.clone().upcast()),
+            ("Trading", "view-list-bullet-symbolic", trading_page.clone().upcast()),
         ];
-        let start = match charts_tab {
-            Some(_) => 1,
-            None => last.section.min(sections.len() - 1),
+        let start = match (charts_tab, at_trading) {
+            (_, true) => 4,
+            (Some(_), _) => 1,
+            (None, _) => last.section.min(sections.len() - 1),
         };
         dialog.set_child(Some(&split_view(&dialog, &sections, start)));
 
@@ -166,6 +180,7 @@ impl Preferences {
             charts_other_page,
             charts_templates_page,
             data_page,
+            trading_page,
             groups: RefCell::new(Vec::new()),
             window,
             templates_group: RefCell::new(None),
@@ -1244,12 +1259,21 @@ fn build_data_page(context: &Rc<Context>) {
     });
     group.add(&limit);
 
-    crate::ui::feed_settings::build(
+    let trading = crate::ui::trading_settings::build(
+        &context.trading_page,
+        context.store.clone(),
+        context.window.desk(),
+        context.on_change.clone(),
+    );
+    let adding = trading.clone();
+    let redraw = crate::ui::feed_settings::build(
         &context.data_page,
         context.store.clone(),
         context.on_change.clone(),
         vec![group, backups_group(context)],
+        Rc::new(move |anchor: &gtk::Widget| crate::ui::trading_settings::add_broker(&adding, anchor)),
     );
+    trading.redraw_data_page(redraw);
 }
 
 /// When the settings were last backed up, and the way back to any backup.

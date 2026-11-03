@@ -1,7 +1,7 @@
 //! Where a login comes from.
 //!
-//! Two places, and only two. A person's own login is a user ID and a system
-//! the app stores as settings, with the password in the desktop keyring,
+//! Two places, and only two. A person's own login is an id, a user ID and a
+//! system the app stores as settings, with the password in the desktop keyring,
 //! read at the moment of signing in and kept nowhere else. A developer's is
 //! a file outside the repo, named by [`DEV_LOGIN`]: the user ID on its first
 //! line and the password on its second, which is how `~/.rithmic` is laid
@@ -20,9 +20,10 @@ pub const DEV_LOGIN: &str = "OMACHARTS_RITHMIC_LOGIN";
 pub enum Login {
     /// Everything in hand, from a development file.
     Given(Credentials),
-    /// The password is in the keyring, under this user and system, and is
-    /// read when the session signs in.
-    Keyring { user: String, system: String, url: String },
+    /// The password is in the keyring, under the login's id (or, saved
+    /// before logins had ids, under this user and system), and is read when
+    /// the session signs in.
+    Keyring { login: String, user: String, system: String, url: String },
 }
 
 impl Login {
@@ -67,8 +68,8 @@ impl Login {
     pub(crate) async fn credentials(&self) -> Result<Credentials, Error> {
         match self {
             Login::Given(credentials) => Ok(credentials.clone()),
-            Login::Keyring { user, system, url } => {
-                let password = keyring::password(user, system).await?.ok_or_else(|| {
+            Login::Keyring { login, user, system, url } => {
+                let password = keyring::password(login, user, system).await?.ok_or_else(|| {
                     Error::NoLogin(format!("the keyring holds no Rithmic password for {system}"))
                 })?;
                 Ok(Credentials {

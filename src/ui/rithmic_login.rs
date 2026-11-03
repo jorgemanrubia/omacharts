@@ -1,24 +1,24 @@
-//! The dialog a Rithmic login is typed into: user ID, password, system and
-//! gateway.
+//! The dialog a Rithmic login is typed into: a name, user ID, password,
+//! system and gateway.
 //!
-//! Prefilled from what is stored, except the password, which is never read
-//! back out of the keyring to be shown. Left empty, the password already
-//! kept is the one used.
+//! Prefilled from the login being signed in again, except the password,
+//! which is never read back out of the keyring to be shown. Left empty, the
+//! password already kept is the one used.
 
 use std::rc::Rc;
 
 use adw::prelude::*;
 
-use crate::feeds::{self, RithmicLogin};
-use crate::store::Store;
+use crate::trading::{self, Login, Typed};
 use omacharts_engine::providers::rithmic::session;
 
 const SIGN_IN: &str = "sign-in";
 const CANCEL: &str = "cancel";
 
-/// Ask for a login over `parent`, and hand what was typed to `signed` when
-/// somebody presses Sign In. Cancelling hands over nothing.
-pub fn ask(parent: &impl IsA<gtk::Widget>, store: &Store, signed: impl Fn(RithmicLogin) + 'static) {
+/// Ask for a login over `parent` — a new one, or `known` again — and hand
+/// what was typed to `signed` when somebody presses Sign In. Cancelling
+/// hands over nothing.
+pub fn ask(parent: &impl IsA<gtk::Widget>, known: Option<&Login>, signed: impl Fn(Typed) + 'static) {
     let dialog = adw::AlertDialog::new(Some("Sign in to Rithmic"), None);
     dialog.set_body(match session::development() {
         true => "A development login is in use, so its file signs in and nothing typed here goes \
@@ -30,9 +30,16 @@ pub fn ask(parent: &impl IsA<gtk::Widget>, store: &Store, signed: impl Fn(Rithmi
     list.add_css_class("boxed-list");
     list.set_selection_mode(gtk::SelectionMode::None);
 
+    // What the trader calls it, since there can be several: "Lucid",
+    // "Tradeify". Left empty, it is named after its system.
+    let name = adw::EntryRow::new();
+    name.set_title("Name");
+    name.set_text(known.map_or("", |login| login.name.as_str()));
+    list.append(&name);
+
     let user = adw::EntryRow::new();
     user.set_title("User ID");
-    user.set_text(&store.setting(session::SETTING_USER).unwrap_or_default());
+    user.set_text(known.map_or("", |login| login.user.as_str()));
     list.append(&user);
 
     let password = adw::PasswordEntryRow::new();
@@ -41,16 +48,12 @@ pub fn ask(parent: &impl IsA<gtk::Widget>, store: &Store, signed: impl Fn(Rithmi
 
     let system = adw::EntryRow::new();
     system.set_title("System");
-    system.set_text(
-        &store.setting(session::SETTING_SYSTEM).unwrap_or_else(|| feeds::rithmic_test_system().into()),
-    );
+    system.set_text(known.map_or(trading::TEST_SYSTEM, |login| login.system.as_str()));
     list.append(&system);
 
     let gateway = adw::EntryRow::new();
     gateway.set_title("Gateway");
-    gateway.set_text(
-        &store.setting(session::SETTING_GATEWAY).unwrap_or_else(|| feeds::rithmic_test_gateway().into()),
-    );
+    gateway.set_text(known.map_or(trading::TEST_GATEWAY, |login| login.gateway.as_str()));
     list.append(&gateway);
 
     dialog.set_extra_child(Some(&list));
@@ -79,7 +82,8 @@ pub fn ask(parent: &impl IsA<gtk::Widget>, store: &Store, signed: impl Fn(Rithmi
         if response != SIGN_IN {
             return;
         }
-        signed(RithmicLogin {
+        signed(Typed {
+            name: name.text().to_string(),
             user: user.text().to_string(),
             password: password.text().to_string(),
             system: system.text().to_string(),

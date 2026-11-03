@@ -38,7 +38,7 @@ use rusqlite::{params, Connection};
 
 /// How far the migrations go. A database claiming more than this was written
 /// by a newer Omacharts than the one opening it.
-pub const LATEST: i32 = 6;
+pub const LATEST: i32 = 7;
 
 /// How far the market data file's own migrations go.
 pub const MARKET_LATEST: i32 = 2;
@@ -254,6 +254,19 @@ Migration {
          WHERE key = 'chart_header'
            AND ',' || lower(replace(value, ' ', '')) || ',' NOT LIKE '%,account,%';",
     ),
+},
+Migration {
+    version: 7,
+    name: "the Rithmic login becomes the first of a list",
+    // There can be any number of broker logins now, each with an id its
+    // password is kept under. The one login there was becomes the first,
+    // with the id "1", named after its system, and the data login. Its
+    // password stays where it is in the keyring: a login's password is
+    // looked for under its id and then, as it was saved before, under its
+    // user and system. A login that was signed out had no user ID left, and
+    // there is nothing to carry. Risky, because it drops the old rows.
+    risky: true,
+    step: Step::Rust(login_becomes_a_list),
 }];
 
 /// Everything that has ever been true of the market data file.
@@ -370,6 +383,27 @@ fn feeds_become_a_list(tx: &Connection) -> rusqlite::Result<()> {
              SELECT 'providers', json_array(trim(value)) FROM settings
              WHERE key = 'provider' AND lower(trim(value)) NOT IN ('yahoo', '');
          DELETE FROM settings WHERE key = 'provider';",
+    )
+}
+
+/// Version 7: `rithmic_user`, `rithmic_system` and `rithmic_gateway`
+/// become one login in `rithmic_logins`, which is the data login.
+fn login_becomes_a_list(tx: &Connection) -> rusqlite::Result<()> {
+    tx.execute_batch(
+        "INSERT OR REPLACE INTO settings (key, value)
+             SELECT 'rithmic_logins', json_array(json_object(
+                 'id', '1',
+                 'name', coalesce(nullif(trim(s.value), ''), 'Rithmic Test'),
+                 'user', trim(u.value),
+                 'system', coalesce(nullif(trim(s.value), ''), 'Rithmic Test'),
+                 'gateway', coalesce(nullif(trim(g.value), ''), 'wss://rituz00100.rithmic.com:443')))
+             FROM settings u
+             LEFT JOIN settings s ON s.key = 'rithmic_system'
+             LEFT JOIN settings g ON g.key = 'rithmic_gateway'
+             WHERE u.key = 'rithmic_user' AND trim(u.value) != '';
+         INSERT OR REPLACE INTO settings (key, value)
+             SELECT 'rithmic_data_login', '1' FROM settings WHERE key = 'rithmic_logins';
+         DELETE FROM settings WHERE key IN ('rithmic_user', 'rithmic_system', 'rithmic_gateway');",
     )
 }
 
@@ -632,6 +666,50 @@ mod tests {
         assert_eq!(migrated(Some("change,symbol")).as_deref(), Some("change,symbol,account"));
         assert_eq!(migrated(Some("none")).as_deref(), Some("account"));
         assert_eq!(migrated(Some("symbol, Account")).as_deref(), Some("symbol, Account"));
+    }
+
+    /// The one Rithmic login there was becomes the first of the list, and
+    /// the data login; a signed-out one, which had no user ID, leaves
+    /// nothing. The old rows go either way.
+    #[test]
+    fn the_rithmic_login_becomes_the_first_of_a_list() {
+        let migrated = |rows: &[(&str, &str)]| {
+            let conn = Connection::open_in_memory().unwrap();
+            conn.execute("ATTACH ':memory:' AS market", []).unwrap();
+            apply(&conn, MARKET, MARKET_MIGRATIONS, MARKET_LATEST, None).unwrap();
+            apply(&conn, "main", &MIGRATIONS[..6], 6, None).unwrap();
+            for (key, value) in rows {
+                conn.execute("INSERT INTO settings (key, value) VALUES (?1, ?2)", [key, value]).unwrap();
+            }
+            run(&conn, None).unwrap();
+            let read = |key: &str| -> Option<String> {
+                conn.query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| r.get(0)).ok()
+            };
+            for old in ["rithmic_user", "rithmic_system", "rithmic_gateway"] {
+                assert_eq!(read(old), None, "{old} is still there");
+            }
+            (read("rithmic_logins"), read("rithmic_data_login"))
+        };
+        assert_eq!(migrated(&[]), (None, None));
+        assert_eq!(migrated(&[("rithmic_system", "Lucid"), ("rithmic_gateway", "wss://x")]), (None, None));
+        let (logins, data) = migrated(&[("rithmic_user", " trader ")]);
+        let logins: serde_json::Value = serde_json::from_str(&logins.unwrap()).unwrap();
+        assert_eq!(
+            logins,
+            serde_json::json!([{
+                "id": "1",
+                "name": "Rithmic Test",
+                "user": "trader",
+                "system": "Rithmic Test",
+                "gateway": "wss://rituz00100.rithmic.com:443"
+            }])
+        );
+        assert_eq!(data.as_deref(), Some("1"));
+        let (logins, _) =
+            migrated(&[("rithmic_user", "trader"), ("rithmic_system", "LucidTrading"), ("rithmic_gateway", "wss://x")]);
+        let logins: serde_json::Value = serde_json::from_str(&logins.unwrap()).unwrap();
+        assert_eq!(logins[0]["name"], "LucidTrading");
+        assert_eq!(logins[0]["gateway"], "wss://x");
     }
 
     #[test]

@@ -1,11 +1,13 @@
 //! Signing in to Rithmic, as the settings, the command line and the charts
 //! see it.
 //!
-//! A login is three settings and a password. The user ID, the system and the
+//! The app keeps any number of Rithmic logins, and one of them is the data
+//! login: the one charts are fed through. Its id, user ID, system and
 //! gateway are settings the app keeps, `Local` because a login belongs to
 //! the machine it was typed on, and hands to this module with [`remember`]:
 //! the engine has no database of its own. The password is in the desktop
-//! keyring and is read only when the session signs in.
+//! keyring under the login's id, and is read only when the session signs
+//! in.
 //!
 //! A developer's login is a file instead, named by
 //! [`rithmic::DEV_LOGIN`], and when that is set it wins: work on the app
@@ -19,11 +21,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock, RwLock};
 
 use crate::providers::{Access, Setup};
-
-/// The settings a login is kept in.
-pub const SETTING_USER: &str = "rithmic_user";
-pub const SETTING_SYSTEM: &str = "rithmic_system";
-pub const SETTING_GATEWAY: &str = "rithmic_gateway";
 
 /// The app name Rithmic is told, the one place it is set.
 ///
@@ -72,9 +69,12 @@ pub const SETUP: Setup = Setup {
             place an order.",
 };
 
-/// The login as the app has it saved, without the password.
+/// The data login as the app has it saved, without the password. `user`
+/// is `None` while it is signed out.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Saved {
+    /// The login's id, which its password is kept under.
+    pub login: Option<String>,
     pub user: Option<String>,
     pub system: Option<String>,
     pub gateway: Option<String>,
@@ -136,22 +136,23 @@ static SIGNED_OUT: AtomicBool = AtomicBool::new(false);
 /// tests hand in a store of their own, so that nothing they do reaches
 /// anybody's keyring.
 pub trait Secrets {
-    /// Save `password` for `user` on `system`, replacing what was there.
-    fn save(&self, user: &str, system: &str, password: &str) -> Result<(), String>;
-    /// Forget the password for `user` on `system`, if there is one.
-    fn forget(&self, user: &str, system: &str) -> Result<(), String>;
+    /// Save `password` for the login `login`, `user` on `system`, replacing
+    /// what was there.
+    fn save(&self, login: &str, user: &str, system: &str, password: &str) -> Result<(), String>;
+    /// Forget the password for the login `login`, if there is one.
+    fn forget(&self, login: &str, user: &str, system: &str) -> Result<(), String>;
 }
 
 /// The desktop keyring, through the Secret Service.
 pub struct Keyring;
 
 impl Secrets for Keyring {
-    fn save(&self, user: &str, system: &str, password: &str) -> Result<(), String> {
-        rithmic::keyring::save(user, system, password).map_err(|error| error.to_string())
+    fn save(&self, login: &str, user: &str, system: &str, password: &str) -> Result<(), String> {
+        rithmic::keyring::save(login, user, system, password).map_err(|error| error.to_string())
     }
 
-    fn forget(&self, user: &str, system: &str) -> Result<(), String> {
-        rithmic::keyring::forget(user, system).map(|_| ()).map_err(|error| error.to_string())
+    fn forget(&self, login: &str, user: &str, system: &str) -> Result<(), String> {
+        rithmic::keyring::forget(login, user, system).map(|_| ()).map_err(|error| error.to_string())
     }
 }
 
@@ -161,14 +162,29 @@ pub fn development() -> bool {
     std::env::var_os(rithmic::DEV_LOGIN).is_some_and(|path| !path.is_empty())
 }
 
-/// Keep `password` for `user` on `system` in `secrets`. With a development
-/// login nothing is written: the file wins, and working on the app must
-/// never put a login in anybody's keyring.
-pub fn save_password(secrets: &dyn Secrets, user: &str, system: &str, password: &str) -> Result<(), String> {
+/// Keep `password` for the login `login`, `user` on `system`, in `secrets`.
+/// With a development login nothing is written: the file wins, and working
+/// on the app must never put a login in anybody's keyring.
+pub fn save_password(
+    secrets: &dyn Secrets,
+    login: &str,
+    user: &str,
+    system: &str,
+    password: &str,
+) -> Result<(), String> {
     if development() {
         return Ok(());
     }
-    secrets.save(user.trim(), system.trim(), password)
+    secrets.save(login, user.trim(), system.trim(), password)
+}
+
+/// Forget the password of the login `login` in `secrets`. With a
+/// development login nothing is touched, as nothing was written.
+pub fn forget_password(secrets: &dyn Secrets, login: &str, user: &str, system: &str) -> Result<(), String> {
+    if development() {
+        return Ok(());
+    }
+    secrets.forget(login, user.trim(), system.trim())
 }
 
 /// What the app has saved. Called whenever it reads its settings for a
@@ -208,6 +224,10 @@ fn user() -> Option<String> {
     saved().user.map(|user| user.trim().to_string()).filter(|user| !user.is_empty())
 }
 
+fn login_id() -> String {
+    saved().login.unwrap_or_default()
+}
+
 /// The login to sign in with, read again every time the session signs in.
 pub fn login() -> Result<rithmic::Login, rithmic::Error> {
     if SIGNED_OUT.load(Ordering::Acquire) {
@@ -217,7 +237,7 @@ pub fn login() -> Result<rithmic::Login, rithmic::Error> {
         return development;
     }
     match user() {
-        Some(user) => Ok(rithmic::Login::Keyring { user, system: system(), url: gateway() }),
+        Some(user) => Ok(rithmic::Login::Keyring { login: login_id(), user, system: system(), url: gateway() }),
         None => Err(rithmic::Error::NoLogin("no Rithmic user ID is saved".into())),
     }
 }
@@ -266,9 +286,7 @@ pub fn can_sign_in() -> Result<String, String> {
     }
     match user() {
         Some(_) => Ok("the password in the desktop keyring".into()),
-        None => Err(format!(
-            "No Rithmic user ID is saved. Save one with `omacharts config set {SETTING_USER} <ID>`."
-        )),
+        None => Err("No Rithmic login is signed in. Add one, or sign one in, in Preferences → Trading.".into()),
     }
 }
 
@@ -286,11 +304,13 @@ pub fn sign_in(log: impl Fn(&str)) -> Result<(), String> {
         let Some(user) = user() else {
             return Err(can_sign_in().err().unwrap_or_default());
         };
-        let held = rithmic::keyring::holds(&user, &system).map_err(|error| error.to_string())?;
+        let login = login_id();
+        let held = rithmic::keyring::holds(&login, &user, &system).map_err(|error| error.to_string())?;
         if !held {
             return Err(format!(
-                "the keyring holds no Rithmic password for {system}. Save it with: secret-tool store \
-                 --label='Omacharts: Rithmic login' application omacharts service rithmic system \
+                "the keyring holds no Rithmic password for {system}. Sign the login in again in \
+                 Preferences → Trading, or save it with: secret-tool store --label='Omacharts: \
+                 Rithmic login' application omacharts service rithmic login '{login}' system \
                  '{system}' user <your user ID>"
             ));
         }
@@ -340,13 +360,22 @@ pub fn sign_out_of(secrets: &dyn Secrets) -> Result<(), String> {
             Ok(())
         }
         (false, None) => Ok(()),
-        (false, Some(user)) => secrets.forget(&user, &system()),
+        (false, Some(user)) => secrets.forget(&login_id(), &user, &system()),
     };
     let mut saved = SAVED.write().unwrap_or_else(|e| e.into_inner());
     if let Some(saved) = saved.as_mut() {
         saved.user = None;
     }
     forgotten
+}
+
+/// The data login is another login now, or Rithmic is no longer a data
+/// source: the session signed in through the old one ends, and its refusal
+/// with it, so the next chart signs in through what [`remember`] is told.
+pub fn hand_over() {
+    rithmic::shutdown();
+    *REFUSED.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    SIGNED_OUT.store(false, Ordering::Release);
 }
 
 /// Has this process a Rithmic session?
@@ -359,7 +388,7 @@ pub fn connected() -> bool {
 pub fn places() -> Vec<(&'static str, String)> {
     let mut places = vec![(
         "Keyring item",
-        format!("application=omacharts service=rithmic system={}", system()),
+        format!("application=omacharts service=rithmic login={}", login_id()),
     )];
     if let Some(path) = std::env::var_os(rithmic::DEV_LOGIN).filter(|path| !path.is_empty()) {
         places.push(("Development login", std::path::PathBuf::from(path).display().to_string()));

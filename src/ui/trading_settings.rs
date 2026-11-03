@@ -1,0 +1,491 @@
+//! Preferences → Trading: the broker logins, each with its accounts under
+//! it, edited the way the Data page edits its data feeds.
+//!
+//! With nothing configured it is a line and a button. "Add a broker…" (only
+//! Rithmic for now) opens the Rithmic login dialog with a Name field; the
+//! first login added also adds Rithmic as the first data feed, through it.
+//! Each login says how it stands — live, not signed in, or Rithmic's own
+//! words for a refusal — and which one is the data login; its accounts are
+//! the ones its last sign-in listed, cached, so the page draws without
+//! connecting.
+//!
+//! Signing in runs on a thread of its own and reports back over a channel
+//! the main loop awaits, because it waits on Rithmic's gateway. The data
+//! login signs in its data session as well as its trading one.
+
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
+
+use adw::prelude::*;
+use gtk::glib;
+use omacharts_engine::providers::rithmic::session::{self, Secrets};
+
+use crate::store::Store;
+use crate::trading::{self, Account, Desk, Login, Standing};
+
+pub struct Panel {
+    store: Rc<Store>,
+    desk: Rc<Desk>,
+    /// Where passwords go: the desktop keyring, or a list in memory under
+    /// test.
+    secrets: Rc<dyn Secrets>,
+    /// Has the window chart from the data feeds now stored and redraw its
+    /// headers. Called after every change here.
+    on_change: Rc<dyn Fn()>,
+    /// Draws the Data page again, whose Rithmic row follows the logins.
+    data_page: RefCell<Option<Rc<dyn Fn()>>>,
+    page: adw::PreferencesPage,
+    groups: RefCell<Vec<adw::PreferencesGroup>>,
+    /// The latest word from a sign-in, by login, until the next one.
+    notes: RefCell<HashMap<String, String>>,
+    /// Keeps the desk's call to redraw alive as long as the page is.
+    redraw: RefCell<Option<Rc<dyn Fn()>>>,
+}
+
+/// Fills the Trading section.
+pub fn build(page: &adw::PreferencesPage, store: Rc<Store>, desk: Rc<Desk>, on_change: Rc<dyn Fn()>) -> Rc<Panel> {
+    let panel = Panel::new(page.clone(), store, desk, Rc::new(session::Keyring), on_change);
+    rebuild(&panel);
+    panel
+}
+
+impl Panel {
+    fn new(
+        page: adw::PreferencesPage,
+        store: Rc<Store>,
+        desk: Rc<Desk>,
+        secrets: Rc<dyn Secrets>,
+        on_change: Rc<dyn Fn()>,
+    ) -> Rc<Panel> {
+        let panel = Rc::new(Panel {
+            store,
+            desk,
+            secrets,
+            on_change,
+            data_page: RefCell::new(None),
+            page,
+            groups: RefCell::new(Vec::new()),
+            notes: RefCell::new(HashMap::new()),
+            redraw: RefCell::new(None),
+        });
+        // A balance arriving, or a session ending by itself, redraws the
+        // page while it is open; held weakly both ways.
+        let weak = Rc::downgrade(&panel);
+        let redraw: Rc<dyn Fn()> = Rc::new(move || {
+            if let Some(panel) = weak.upgrade() {
+                rebuild(&panel);
+            }
+        });
+        panel.desk.listen(&redraw);
+        *panel.redraw.borrow_mut() = Some(redraw);
+        panel
+    }
+
+    /// The Data page's redraw, for when a login changes what it says.
+    pub fn redraw_data_page(&self, redraw: Rc<dyn Fn()>) {
+        *self.data_page.borrow_mut() = Some(redraw);
+    }
+
+    fn changed(self: &Rc<Self>) {
+        (self.on_change)();
+        self.desk.tell();
+        rebuild(self);
+        if let Some(redraw) = self.data_page.borrow().clone() {
+            redraw();
+        }
+    }
+}
+
+/// Open the login dialog for a new broker over `anchor`; what the Data
+/// page's "Add a data feed…" does for Rithmic too.
+pub fn add_broker(panel: &Rc<Panel>, anchor: &gtk::Widget) {
+    let panel = panel.clone();
+    crate::ui::rithmic_login::ask(anchor, None, move |typed| {
+        match trading::add_login(&panel.store, panel.secrets.as_ref(), &typed) {
+            Ok(id) => {
+                panel.changed();
+                sign_in(&panel, &id);
+            }
+            Err(error) => {
+                eprintln!("omacharts: {error}");
+                panel.changed();
+            }
+        }
+    });
+}
+
+fn rebuild(panel: &Rc<Panel>) {
+    for group in panel.groups.borrow_mut().drain(..) {
+        panel.page.remove(&group);
+    }
+    let logins = trading::logins(&panel.store);
+    let accounts = trading::accounts(&panel.store);
+    let data = trading::data_login_id(&panel.store, &logins);
+    let default = trading::default_account(&accounts, panel.store.setting(trading::DEFAULT_ACCOUNT).as_deref())
+        .map(Account::key);
+    let mut groups = Vec::new();
+    for login in &logins {
+        let theirs: Vec<&Account> = accounts.iter().filter(|account| account.login == login.id).collect();
+        let is_data = data.as_deref() == Some(login.id.as_str());
+        groups.push(login_group(panel, login, is_data, logins.len() > 1, &theirs, default.as_deref()));
+    }
+    groups.push(add_group(panel, logins.is_empty()));
+    for group in &groups {
+        panel.page.add(group);
+    }
+    *panel.groups.borrow_mut() = groups;
+}
+
+/// How a login stands, in words: progress while a sign-in runs, else its
+/// standing, and "data" on the data login.
+fn subtitle(panel: &Panel, login: &Login, data: bool) -> String {
+    let standing = match panel.notes.borrow().get(&login.id) {
+        Some(note) => note.clone(),
+        None => panel.desk.standing(login, data).words(),
+    };
+    let mut words = vec![login.system.clone(), standing];
+    if data {
+        words.push("data".into());
+    }
+    words.join(" · ")
+}
+
+fn login_group(
+    panel: &Rc<Panel>,
+    login: &Login,
+    data: bool,
+    several: bool,
+    accounts: &[&Account],
+    default: Option<&str>,
+) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::new();
+    group.set_title(&glib::markup_escape_text(&login.name));
+    group.set_description(Some(&subtitle(panel, login, data)));
+
+    let actions = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    actions.set_valign(gtk::Align::Center);
+    // Only the data login feeds charts. Another can take over, which ends
+    // the data session and signs charts in through it from then on.
+    if several && !data {
+        let feed = gtk::Button::with_label("Use for data");
+        feed.add_css_class("flat");
+        feed.set_tooltip_text(Some("Have charts' Rithmic data come through this login"));
+        let panel_for_feed = panel.clone();
+        let id = login.id.clone();
+        feed.connect_clicked(move |_| {
+            trading::make_data_login(&panel_for_feed.store, &id);
+            panel_for_feed.changed();
+        });
+        actions.append(&feed);
+    }
+    if panel.desk.opening(&login.id) {
+        let spinner = gtk::Spinner::new();
+        spinner.start();
+        actions.append(&spinner);
+    } else {
+        actions.append(&action_button(panel, login, data));
+    }
+    let remove = gtk::Button::with_label("Remove");
+    remove.add_css_class("flat");
+    let panel_for_remove = panel.clone();
+    let id = login.id.clone();
+    remove.connect_clicked(move |_| remove_login(&panel_for_remove, &id));
+    actions.append(&remove);
+    group.set_header_suffix(Some(&actions));
+
+    if accounts.is_empty() {
+        let row = adw::ActionRow::new();
+        row.set_title("No accounts listed yet");
+        row.add_css_class("dim-label");
+        group.add(&row);
+    }
+    for account in accounts {
+        group.add(&account_row(panel, account, default == Some(account.key().as_str())));
+    }
+    group
+}
+
+/// The one thing to do about a login's sign-in: Sign out while it is live,
+/// Sign in with the password kept, or Sign in… to type one.
+fn action_button(panel: &Rc<Panel>, login: &Login, data: bool) -> gtk::Button {
+    let standing = panel.desk.standing(login, data);
+    let label = match standing {
+        Standing::Live => "Sign out",
+        Standing::Saved => "Sign in",
+        Standing::SignedOut | Standing::Refused(_) => "Sign in…",
+    };
+    let button = gtk::Button::with_label(label);
+    let panel = panel.clone();
+    let id = login.id.clone();
+    match standing {
+        Standing::Live => {
+            button.connect_clicked(move |_| sign_out(&panel, &id));
+        }
+        Standing::Saved => {
+            button.add_css_class("suggested-action");
+            button.connect_clicked(move |_| sign_in(&panel, &id));
+        }
+        Standing::SignedOut | Standing::Refused(_) => {
+            button.add_css_class("suggested-action");
+            button.connect_clicked(move |button| ask_again(&panel, &id, button.upcast_ref()));
+        }
+    }
+    button
+}
+
+fn account_row(panel: &Rc<Panel>, account: &Account, default: bool) -> adw::ActionRow {
+    let row = adw::ActionRow::new();
+    row.set_use_markup(false);
+    row.set_title(&match &account.name {
+        Some(name) if name != &account.id => format!("{} — {name}", account.id),
+        _ => account.id.clone(),
+    });
+    let mut words: Vec<String> = Vec::new();
+    words.extend(account.currency.clone());
+    words.extend(account.balance_text());
+    if !words.is_empty() {
+        row.set_subtitle(&words.join(" · "));
+    }
+    if default {
+        let tag = gtk::Label::new(Some("Default"));
+        tag.add_css_class("dim-label");
+        tag.set_valign(gtk::Align::Center);
+        row.add_suffix(&tag);
+    } else {
+        let make = gtk::Button::with_label("Make default");
+        make.add_css_class("flat");
+        make.set_valign(gtk::Align::Center);
+        let panel = panel.clone();
+        let key = account.key();
+        make.connect_clicked(move |_| {
+            trading::set_default_account(&panel.store, &key);
+            panel.changed();
+        });
+        row.add_suffix(&make);
+    }
+    row
+}
+
+fn add_group(panel: &Rc<Panel>, empty: bool) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::new();
+    if empty {
+        group.set_title("Accounts");
+        group.set_description(Some(
+            "Add the broker login a prop firm gave you to see its accounts here. The first one \
+             also becomes your Rithmic data feed.",
+        ));
+    }
+    let add = gtk::MenuButton::new();
+    add.set_label("Add a broker…");
+    add.set_halign(gtk::Align::Start);
+    let choices = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    let popover = gtk::Popover::new();
+    let rithmic = gtk::Button::with_label("Rithmic");
+    rithmic.add_css_class("flat");
+    if let Some(label) = rithmic.child().and_downcast::<gtk::Label>() {
+        label.set_xalign(0.0);
+    }
+    let shut = popover.clone();
+    let anchor = add.clone();
+    let panel = panel.clone();
+    rithmic.connect_clicked(move |_| {
+        shut.popdown();
+        add_broker(&panel, anchor.upcast_ref());
+    });
+    choices.append(&rithmic);
+    popover.set_child(Some(&choices));
+    add.set_popover(Some(&popover));
+    group.add(&add);
+    group
+}
+
+/// The dialog again, prefilled, for a login with no password to sign in
+/// with or one Rithmic refused.
+fn ask_again(panel: &Rc<Panel>, id: &str, anchor: &gtk::Widget) {
+    let Some(login) = trading::logins(&panel.store).into_iter().find(|login| login.id == id) else { return };
+    let panel = panel.clone();
+    let id = id.to_string();
+    crate::ui::rithmic_login::ask(anchor, Some(&login), move |typed| {
+        if let Err(error) = trading::retype_login(&panel.store, panel.secrets.as_ref(), &id, &typed) {
+            panel.notes.borrow_mut().insert(id.clone(), format!("not saved · {error}"));
+        }
+        panel.changed();
+        sign_in(&panel, &id);
+    });
+}
+
+fn sign_out(panel: &Rc<Panel>, id: &str) {
+    panel.desk.end(id);
+    panel.notes.borrow_mut().remove(id);
+    if let Err(error) = trading::sign_out_login(&panel.store, panel.secrets.as_ref(), id) {
+        eprintln!("omacharts: {error}");
+    }
+    panel.changed();
+}
+
+fn remove_login(panel: &Rc<Panel>, id: &str) {
+    panel.desk.end(id);
+    panel.notes.borrow_mut().remove(id);
+    if let Err(error) = trading::remove_login(&panel.store, panel.secrets.as_ref(), id) {
+        eprintln!("omacharts: {error}");
+    }
+    panel.changed();
+}
+
+/// Sign a login in off the main loop: its trading session, and for the data
+/// login its data session too. One at a time per login: the desk refuses a
+/// second while one is open or opening.
+fn sign_in(panel: &Rc<Panel>, id: &str) {
+    let logins = trading::logins(&panel.store);
+    let Some(login) = logins.iter().find(|login| login.id == id).cloned() else { return };
+    if !panel.desk.begin(id) {
+        return;
+    }
+    let data = trading::data_login_id(&panel.store, &logins).as_deref() == Some(id);
+    panel.notes.borrow_mut().insert(id.to_string(), "signing in".into());
+    rebuild(panel);
+
+    let broker = panel.desk.broker();
+    let waker = panel.desk.waker();
+    let (sender, receiver) = async_channel::bounded(1);
+    std::thread::spawn(move || {
+        let session = broker.sign_in(&login, waker);
+        let fed = match (data, &session) {
+            (true, Ok(_)) => Some(crate::feeds::sign_in_now("rithmic", |_| {})),
+            _ => None,
+        };
+        let _ = sender.send_blocking((session, fed));
+    });
+
+    let panel = panel.clone();
+    let id = id.to_string();
+    glib::spawn_future_local(async move {
+        let Ok((session, fed)) = receiver.recv().await else { return };
+        panel.notes.borrow_mut().remove(&id);
+        if let Some(Err(error)) = fed {
+            panel.notes.borrow_mut().insert(id.clone(), format!("data not signed in · {error}"));
+        }
+        panel.desk.opened(&id, session);
+        panel.desk.note(&panel.store);
+        panel.changed();
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::trading::tests::{Fake, Kept};
+    use crate::trading::Typed;
+
+    fn panel(store: &Rc<Store>, desk: Rc<Desk>) -> Rc<Panel> {
+        Panel::new(adw::PreferencesPage::new(), store.clone(), desk, Rc::new(Kept::default()), Rc::new(|| {}))
+    }
+
+    fn words_under(widget: &gtk::Widget) -> Vec<String> {
+        let mut found = Vec::new();
+        let mut next = widget.first_child();
+        while let Some(child) = next {
+            if let Ok(label) = child.clone().downcast::<gtk::Label>() {
+                found.push(label.label().to_string());
+            }
+            if let Ok(button) = child.clone().downcast::<gtk::Button>()
+                && let Some(label) = button.label()
+            {
+                found.push(label.to_string());
+            }
+            if let Ok(button) = child.clone().downcast::<gtk::MenuButton>()
+                && let Some(label) = button.label()
+            {
+                found.push(label.to_string());
+            }
+            found.extend(words_under(&child));
+            next = child.next_sibling();
+        }
+        found
+    }
+
+    fn page_words(panel: &Panel) -> Vec<String> {
+        panel.groups.borrow().iter().flat_map(|group| {
+            let mut words = vec![group.title().to_string(), group.description().unwrap_or_default().to_string()];
+            words.extend(words_under(group.upcast_ref()));
+            words
+        }).collect()
+    }
+
+    fn typed(name: &str) -> Typed {
+        Typed {
+            name: name.into(),
+            user: format!("{name}-user"),
+            password: "PLANTED-PASSWORD".into(),
+            system: String::new(),
+            gateway: "wss://example.invalid:443".into(),
+        }
+    }
+
+    /// Nothing configured: a line and the button, nothing else.
+    #[test]
+    fn nothing_configured_is_a_line_and_a_button() {
+        if !crate::ui::gtk_ready() {
+            return;
+        }
+        let store = Rc::new(Store::memory().unwrap());
+        let panel = panel(&store, Rc::new(Desk::new(Arc::new(Fake::default()))));
+        rebuild(&panel);
+        let words = page_words(&panel);
+        assert!(words.iter().any(|w| w == "Add a broker…"), "{words:?}");
+        assert!(!words.iter().any(|w| w == "Remove" || w == "Sign in…"), "{words:?}");
+    }
+
+    /// Two logins with their accounts: each says how it stands, the data
+    /// login says so and the other offers to be it, and every account but
+    /// the default offers to become it.
+    #[test]
+    fn logins_and_their_accounts_are_listed() {
+        if !crate::ui::gtk_ready() || session::development() {
+            return;
+        }
+        let store = Rc::new(Store::memory().unwrap());
+        let kept = Kept::default();
+        let lucid = trading::add_login(&store, &kept, &typed("Lucid")).unwrap();
+        let test = trading::add_login(&store, &kept, &typed("Rithmic Test")).unwrap();
+        let mut funded = crate::trading::Account {
+            login: lucid.clone(),
+            id: "1234".into(),
+            name: None,
+            currency: Some("USD".into()),
+            fcm: String::new(),
+            ib: String::new(),
+            balance: Some(50_210.0),
+        };
+        let other = crate::trading::Account { id: "1235".into(), balance: None, ..funded.clone() };
+        trading::cache_accounts(&store, &lucid, vec![funded.clone(), other]);
+        funded.login = test.clone();
+        funded.id = "951".into();
+        trading::cache_accounts(&store, &test, vec![funded]);
+        trading::sign_out_login(&store, &kept, &test).unwrap();
+
+        let panel = panel(&store, Rc::new(Desk::new(Arc::new(Fake::default()))));
+        rebuild(&panel);
+        let groups = panel.groups.borrow().clone();
+        assert_eq!(groups.len(), 3, "two logins and the button");
+        assert_eq!(groups[0].title(), "Lucid");
+        assert_eq!(groups[0].description().as_deref(), Some("Rithmic Test · signed in · data"));
+        assert_eq!(groups[1].description().as_deref(), Some("Rithmic Test · not signed in"));
+        let lucid_words = words_under(groups[0].upcast_ref());
+        for word in ["1234", "USD · $50,210", "Default", "1235", "Make default", "Sign in", "Remove"] {
+            assert!(lucid_words.iter().any(|w| w == word), "{word} missing: {lucid_words:?}");
+        }
+        assert!(!lucid_words.iter().any(|w| w == "Use for data"), "{lucid_words:?}");
+        let test_words = words_under(groups[1].upcast_ref());
+        assert!(test_words.iter().any(|w| w == "Use for data"), "{test_words:?}");
+        assert!(test_words.iter().any(|w| w == "Sign in…"), "{test_words:?}");
+
+        // Removing the data login hands data to the other.
+        remove_login(&panel, &lucid);
+        let groups = panel.groups.borrow().clone();
+        assert_eq!(groups[0].description().as_deref(), Some("Rithmic Test · not signed in · data"));
+    }
+
+    use std::sync::Arc;
+}

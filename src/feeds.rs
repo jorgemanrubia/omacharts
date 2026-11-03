@@ -145,32 +145,44 @@ pub fn identify() {
     omacharts_engine::providers::rithmic::session::identify(env!("CARGO_PKG_VERSION"));
 }
 
-/// Hand the engine the Rithmic login this machine has saved: the user ID,
-/// the system and the gateway, which are settings, `Local` in
-/// `setting_keys`. The password is never here; it is in the keyring. The
-/// engine keeps no database, so it is told, whenever the feeds are read and
-/// whenever a sign-in or a sign-out may have changed what is saved.
+/// Hand the engine the data login: the login Rithmic's data source signs in
+/// through, out of the logins in Preferences → Trading, which are settings,
+/// `Local` in `setting_keys`. The password is never here; it is in the
+/// keyring under the login's id. The engine keeps no database, so it is
+/// told, whenever the feeds are read and whenever a sign-in or a sign-out
+/// may have changed what is saved.
 ///
-/// Three settings reads, and only for an order that names Rithmic or a
+/// Two settings reads, and only for an order that names Rithmic or a
 /// command about feeds: with nothing configured nothing of Rithmic's is
 /// read, built or started.
 pub fn remember_logins(store: &Store) {
-    use omacharts_engine::providers::rithmic::session;
-    session::remember(session::Saved {
-        user: store.setting(session::SETTING_USER),
-        system: store.setting(session::SETTING_SYSTEM),
-        gateway: store.setting(session::SETTING_GATEWAY),
-    });
+    omacharts_engine::providers::rithmic::session::remember(saved_of(store));
+}
+
+/// The data login as the engine is told it: no user while it is signed
+/// out, which is what makes the data source not signed in.
+pub fn saved_of(store: &Store) -> omacharts_engine::providers::rithmic::session::Saved {
+    let login = crate::trading::data_login(store);
+    omacharts_engine::providers::rithmic::session::Saved {
+        user: login.as_ref().filter(|login| !login.signed_out).map(|login| login.user.clone()),
+        system: login.as_ref().map(|login| login.system.clone()),
+        gateway: login.as_ref().map(|login| login.gateway.clone()),
+        login: login.map(|login| login.id),
+    }
 }
 
 /// What a feed keeps in the settings beyond its session, forgotten when it
-/// is signed out of. For Rithmic, the user ID: signing out is the login
-/// going, and the system and gateway it was for are kept for next time.
+/// is signed out of. For Rithmic, the data login is marked signed out: its
+/// password went with the session, and it stays in Trading, with its
+/// accounts, for the next sign-in.
 pub fn forget_login(store: &Store, id: &str) {
-    if id.eq_ignore_ascii_case(RITHMIC) {
-        store.remove_setting(omacharts_engine::providers::rithmic::session::SETTING_USER);
-        remember_logins(store);
+    if !id.eq_ignore_ascii_case(RITHMIC) {
+        return;
     }
+    if let Some(data) = crate::trading::data_login(store) {
+        crate::trading::mark_signed_out(store, &data.id);
+    }
+    remember_logins(store);
 }
 
 /// Add `id` to the stored order, at the bottom, just above the default:
@@ -184,81 +196,18 @@ pub fn add_source(store: &Store, id: &str) {
     }
 }
 
-/// Take `id` off the stored order and forget what it keeps here. For
-/// Rithmic that is the password, out of `secrets`, and the user ID; the
-/// system and gateway are kept for the next time it is added.
-/// thinkorswim's browser session is its own, and is signed out of from its
-/// row rather than by removing it.
-pub fn remove_source(
-    store: &Store,
-    secrets: &dyn omacharts_engine::providers::rithmic::session::Secrets,
-    id: &str,
-) -> Result<(), String> {
+/// Take `id` off the stored order. For Rithmic the data session ends; the
+/// logins it signed in through are Trading's, and stay. thinkorswim's
+/// browser session is its own, and is signed out of from its row rather
+/// than by removing it.
+pub fn remove_source(store: &Store, id: &str) {
     let order: Vec<String> =
         stored_order(store).into_iter().filter(|known| !known.eq_ignore_ascii_case(id)).collect();
     save_order(store, &order);
-    if !id.eq_ignore_ascii_case(RITHMIC) {
-        return Ok(());
+    if id.eq_ignore_ascii_case(RITHMIC) {
+        omacharts_engine::providers::rithmic::session::hand_over();
+        remember_logins(store);
     }
-    remember_logins(store);
-    let forgotten = omacharts_engine::providers::rithmic::session::sign_out_of(secrets);
-    forget_login(store, RITHMIC);
-    forgotten
-}
-
-/// A Rithmic login as it is typed into the settings.
-///
-/// No `Debug`, so that it cannot be printed by accident: the password is
-/// in it.
-pub struct RithmicLogin {
-    pub user: String,
-    pub password: String,
-    pub system: String,
-    pub gateway: String,
-}
-
-/// Save a typed login: the user ID, the system and the gateway as settings,
-/// and the password into `secrets` through the provider's own code, which
-/// writes nothing while a development login is in charge. An empty password
-/// keeps whatever the keyring already holds.
-///
-/// A system or gateway left empty is the Test one, and is not stored.
-pub fn save_rithmic_login(
-    store: &Store,
-    secrets: &dyn omacharts_engine::providers::rithmic::session::Secrets,
-    login: &RithmicLogin,
-) -> Result<(), String> {
-    use omacharts_engine::providers::rithmic::session;
-
-    let user = login.user.trim();
-    let system = login.system.trim();
-    let gateway = login.gateway.trim();
-    let set = |key: &str, value: &str| match value.is_empty() {
-        true => store.remove_setting(key),
-        false => store.set_setting(key, value),
-    };
-    set(session::SETTING_USER, user);
-    set(session::SETTING_SYSTEM, system);
-    set(session::SETTING_GATEWAY, gateway);
-    remember_logins(store);
-    if login.password.is_empty() || user.is_empty() {
-        return Ok(());
-    }
-    let system = match system.is_empty() {
-        true => rithmic_test_system(),
-        false => system,
-    };
-    session::save_password(secrets, user, system, &login.password)
-}
-
-/// The system a login with none named is for.
-pub fn rithmic_test_system() -> &'static str {
-    "Rithmic Test"
-}
-
-/// The gateway a login with none named signs in at.
-pub fn rithmic_test_gateway() -> &'static str {
-    "wss://rituz00100.rithmic.com:443"
 }
 
 /// Sign in to `id`, blocking until it is done: thinkorswim's browser, or
@@ -385,66 +334,38 @@ pub(crate) mod tests {
         assert_eq!(store.setting(SETTING), None);
     }
 
-    /// A password store that is a list in memory, so that nothing a test
-    /// does reaches a keyring.
-    #[derive(Default)]
-    pub(crate) struct Kept(pub std::cell::RefCell<Vec<(String, String, String)>>);
-
-    impl omacharts_engine::providers::rithmic::session::Secrets for Kept {
-        fn save(&self, user: &str, system: &str, password: &str) -> Result<(), String> {
-            let mut kept = self.0.borrow_mut();
-            kept.retain(|(u, s, _)| !(u == user && s == system));
-            kept.push((user.into(), system.into(), password.into()));
-            Ok(())
-        }
-        fn forget(&self, user: &str, system: &str) -> Result<(), String> {
-            self.0.borrow_mut().retain(|(u, s, _)| !(u == user && s == system));
-            Ok(())
-        }
-    }
-
-    /// The user ID, system and gateway become settings; the password goes
-    /// to the secret store and is in no setting. Removing the source takes
-    /// both the user ID and the password away again, and the order with
-    /// them.
+    /// The engine is handed the data login, and nothing while it is
+    /// signed out; the password is in no setting.
     #[test]
-    fn a_rithmic_login_is_settings_and_a_secret_and_removing_it_forgets_both() {
-        use omacharts_engine::providers::rithmic::session;
-        if session::development() {
-            // The development file wins and the store is never written.
+    fn the_engine_is_handed_the_data_login() {
+        use crate::trading::{self, tests::Kept, Typed};
+        if omacharts_engine::providers::rithmic::session::development() {
             return;
         }
         let store = store();
+        assert_eq!(saved_of(&store), Default::default());
         let kept = Kept::default();
-        let login = RithmicLogin {
+        let typed = Typed {
+            name: "Lucid".into(),
             user: " trader ".into(),
             password: "PLANTED-PASSWORD".into(),
             system: String::new(),
             gateway: "wss://example.invalid:443".into(),
         };
-        save_rithmic_login(&store, &kept, &login).unwrap();
-        add_source(&store, "rithmic");
-        assert_eq!(store.setting(session::SETTING_USER).as_deref(), Some("trader"));
-        assert_eq!(store.setting(session::SETTING_SYSTEM), None, "Test is the default");
-        assert_eq!(store.setting(session::SETTING_GATEWAY).as_deref(), Some("wss://example.invalid:443"));
-        assert_eq!(
-            kept.0.borrow().as_slice(),
-            &[("trader".to_string(), "Rithmic Test".to_string(), "PLANTED-PASSWORD".to_string())]
-        );
-        for key in [SETTING, session::SETTING_USER, session::SETTING_SYSTEM, session::SETTING_GATEWAY] {
-            assert!(!store.setting(key).unwrap_or_default().contains("PLANTED"), "{key}");
-        }
+        let id = trading::add_login(&store, &kept, &typed).unwrap();
+        let saved = saved_of(&store);
+        assert_eq!(saved.login.as_deref(), Some(id.as_str()));
+        assert_eq!(saved.user.as_deref(), Some("trader"));
+        assert_eq!(saved.system.as_deref(), Some("Rithmic Test"));
+        assert_eq!(saved.gateway.as_deref(), Some("wss://example.invalid:443"));
         assert_eq!(stored_order(&store), vec!["rithmic"]);
 
-        remove_source(&store, &kept, "rithmic").unwrap();
-        assert!(kept.0.borrow().is_empty(), "the password is still kept");
-        assert_eq!(store.setting(session::SETTING_USER), None);
+        forget_login(&store, "rithmic");
+        assert_eq!(saved_of(&store).user, None, "signed out is no user");
+        assert_eq!(trading::logins(&store).len(), 1, "the login stays in Trading");
+        remove_source(&store, "rithmic");
         assert_eq!(store.setting(SETTING), None);
-        assert_eq!(
-            store.setting(session::SETTING_GATEWAY).as_deref(),
-            Some("wss://example.invalid:443"),
-            "the gateway is kept for next time"
-        );
+        assert_eq!(trading::logins(&store).len(), 1);
     }
 
     /// A source added goes at the bottom, above Yahoo, and only once.
@@ -455,7 +376,7 @@ pub(crate) mod tests {
         add_source(&store, "tos");
         add_source(&store, "TOS");
         assert_eq!(stored_order(&store), vec!["rithmic", "tos"]);
-        remove_source(&store, &Kept::default(), "tos").unwrap();
+        remove_source(&store, "tos");
         assert_eq!(stored_order(&store), vec!["rithmic"]);
     }
 

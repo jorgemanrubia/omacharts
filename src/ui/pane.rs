@@ -124,6 +124,9 @@ pub struct ChartPane {
     /// The feed somebody chose for this chart, by id; `None` follows the
     /// order, which is every chart until somebody chooses.
     pub source: RefCell<Option<String>>,
+    /// The trading account somebody chose for this chart, as `<login
+    /// id>/<account number>`; `None` is the default account.
+    pub account: RefCell<Option<String>>,
     /// The style its bars are drawn in when they are drawn: hiding them
     /// leaves it alone, so showing them again brings back the same one.
     pub bar_style: Cell<BarStyle>,
@@ -410,6 +413,7 @@ impl ChartPane {
             source_menu,
             source_label,
             source: RefCell::new(None),
+            account: RefCell::new(None),
             bar_style: Cell::new(bar_style),
             bars_hidden: Cell::new(false),
             colouring: Cell::new(Default::default()),

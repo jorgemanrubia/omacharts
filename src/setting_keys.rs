@@ -31,9 +31,13 @@ const KEYS: &[(&str, Kind)] = &[
     ("screenshot_folder", Kind::Local),
     ("cache_limit", Kind::Local),
     ("sidebar_width", Kind::Local),
-    // A Rithmic login — user ID, system, gateway — belongs to the machine it
-    // was typed on. Its password is in the keyring, never a setting.
+    // The Rithmic logins — names, user IDs, systems, gateways — and which
+    // one market data comes through belong to the machine they were typed
+    // on. Their passwords are in the keyring, never a setting.
     ("rithmic_", Kind::Local),
+    // Each login's accounts as last listed, with their balances: rewritten
+    // at every sign-in, and account numbers stay on this machine.
+    ("trading_accounts", Kind::Bookkeeping),
     ("cache_swept_at", Kind::Bookkeeping),
     ("cooldown.", Kind::Bookkeeping),
     ("last_symbol", Kind::Bookkeeping),
@@ -56,6 +60,7 @@ const SHARED: &[&str] = &[
     "timeframes",
     "indicators",
     "providers",
+    "default_account",
     "sync_crosshair",
     "drawing_configurations",
     "screenshot_save_file",
