@@ -150,11 +150,17 @@ pub const LOGINS: &str = "feed_logins";
 
 type Typed = std::collections::BTreeMap<String, String>;
 
-fn own_logins(store: &Store) -> std::collections::BTreeMap<String, Typed> {
-    store.setting(LOGINS).and_then(|json| serde_json::from_str(&json).ok()).unwrap_or_default()
+type Logins = std::collections::BTreeMap<String, Typed>;
+
+fn own_logins(store: &Store) -> Logins {
+    store.setting(LOGINS).map(|json| parsed(&json)).unwrap_or_default()
 }
 
-fn save_own_logins(store: &Store, logins: &std::collections::BTreeMap<String, Typed>) {
+fn parsed(json: &str) -> Logins {
+    serde_json::from_str(json).unwrap_or_default()
+}
+
+fn save_own_logins(store: &Store, logins: &Logins) {
     match logins.is_empty() {
         true => store.remove_setting(LOGINS),
         false => store.set_setting(LOGINS, &serde_json::to_string(logins).unwrap_or_default()),
@@ -178,14 +184,18 @@ pub fn identify() {
 ///
 /// A few settings reads, and only for an order that names such a feed or a
 /// command about feeds: with nothing configured nothing is read, built or
-/// started.
+/// started. With nothing ever typed into a feed's own form on this machine
+/// there is nothing to tell those feeds, and they are told nothing.
 pub fn remember_logins(store: &Store) {
     let mut own = None;
     for feed in providers::every() {
         let Some(setup) = feed.setup.filter(|_| feed.form().is_some()) else { continue };
         let saved = match setup.trades() {
             true => saved_of(store),
-            false => own_saved(own.get_or_insert_with(|| own_logins(store)), feed),
+            false => match own.get_or_insert_with(|| store.setting(LOGINS).map(|json| parsed(&json))) {
+                Some(logins) => own_saved(logins, feed),
+                None => continue,
+            },
         };
         setup.remember(saved);
     }
@@ -207,7 +217,7 @@ pub fn saved_of(store: &Store) -> providers::Saved {
 }
 
 /// A feed's own login, under the feed's id.
-fn own_saved(logins: &std::collections::BTreeMap<String, Typed>, feed: &Listed) -> providers::Saved {
+fn own_saved(logins: &Logins, feed: &Listed) -> providers::Saved {
     let Some(typed) = logins.get(feed.id) else { return providers::Saved::default() };
     providers::Saved {
         login: Some(feed.id.to_string()),

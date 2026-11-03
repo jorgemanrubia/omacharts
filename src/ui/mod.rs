@@ -16,7 +16,7 @@ pub mod part_list;
 pub mod pick_frame;
 pub mod preferences;
 pub mod range_card;
-pub mod rithmic_login;
+pub mod login_form;
 pub mod trading_settings;
 pub mod screenshot;
 pub mod search;

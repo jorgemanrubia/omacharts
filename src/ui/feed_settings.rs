@@ -8,14 +8,16 @@
 //!
 //! What each row says comes from the feeds themselves: what a source
 //! covers, how fresh it is (asked of the provider), whether it needs
-//! signing in and how that stands. Rithmic signs in through a login in
-//! Preferences → Trading, the data login, so while there is one its row
-//! says so and leaves signing in, out and removing to that page; adding
-//! Rithmic with no login is adding a broker there.
+//! signing in, how, and how that stands. A feed whose login is a broker
+//! connection signs in through a login in Preferences → Trading, the data
+//! login, so while there is one its row says so and leaves signing in, out
+//! and removing to that page; adding it with no login is adding a broker
+//! there. A feed with a form of its own is typed into here, in the form it
+//! declares; one that signs in in a browser opens one.
 //!
 //! Signing in runs on a thread of its own and reports back over a channel
 //! the main loop awaits, because it waits on somebody: a browser and a
-//! code off a phone for thinkorswim, Rithmic's gateway for Rithmic.
+//! code off a phone, or a gateway.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -24,14 +26,12 @@ use std::rc::Rc;
 use adw::prelude::*;
 use gtk::glib;
 use omacharts_engine::provider::Delivery;
-use omacharts_engine::providers::rithmic::session;
-use omacharts_engine::providers::{self, Access, Listed};
+use omacharts_engine::providers::{self, Access, How, Listed};
 
 use crate::feeds;
 use crate::store::Store;
 use crate::ui::drop_line;
-
-const RITHMIC: &str = "rithmic";
+use crate::ui::login_form::{self, Form};
 
 /// What the sign-in thread sends back.
 enum Progress {
@@ -46,7 +46,8 @@ pub type AddBroker = Rc<dyn Fn(&gtk::Widget)>;
 
 struct Panel {
     store: Rc<Store>,
-    /// Adding Rithmic with no login is adding a broker in Trading.
+    /// Adding a broker connection's feed with no login is adding a broker
+    /// in Trading.
     add_broker: Option<AddBroker>,
     /// Has the window chart from the order now stored, and read again
     /// which sources are signed in. Called after every change here.
@@ -172,10 +173,9 @@ fn standing(panel: &Panel, feed: &'static Listed) -> String {
     match providers::access(feed.id) {
         None | Some(Access::Signed(_)) => fresh(feed.id).into(),
         Some(Access::Missing) => "not signed in".into(),
-        Some(Access::Expired(_)) if feed.id == RITHMIC => {
-            session::refusal().unwrap_or_else(|| "session expired".into())
+        Some(Access::Expired(_)) => {
+            feed.setup.and_then(|setup| setup.refusal()).unwrap_or_else(|| "session expired".into())
         }
-        Some(Access::Expired(_)) => "session expired".into(),
     }
 }
 
@@ -198,10 +198,15 @@ fn subtitle(panel: &Panel, feed: &'static Listed) -> String {
     }
 }
 
-/// The login a source signs in through, when that is Trading's business:
-/// Rithmic, while there is a login in Trading.
+/// The login a source signs in through, when that is Trading's business: a
+/// broker connection's feed, while there is a login in Trading.
 fn through_trading(panel: &Panel, feed: &'static Listed) -> Option<crate::trading::Login> {
-    (feed.id == RITHMIC).then(|| crate::trading::data_login(&panel.store)).flatten()
+    trades(feed).then(|| crate::trading::data_login(&panel.store)).flatten()
+}
+
+/// Is `feed`'s login a broker connection, kept in Trading?
+fn trades(feed: &'static Listed) -> bool {
+    feed.setup.is_some_and(|setup| setup.trades())
 }
 
 /// A source's row. `others` is whether any other source is on the list:
@@ -279,8 +284,8 @@ fn action_button(panel: &Rc<Panel>, feed: &'static Listed, row: &adw::ActionRow)
     }
     button.add_css_class("suggested-action");
     // A sign-in that cannot start says why on the row, rather than being a
-    // button that fails. Rithmic's is a dialog, which always can.
-    if feed.id != RITHMIC
+    // button that fails. A form is a dialog, which always can.
+    if feed.form().is_none()
         && let Err(why) = providers::can_sign_in(feed.id)
     {
         button.set_sensitive(false);
@@ -288,9 +293,10 @@ fn action_button(panel: &Rc<Panel>, feed: &'static Listed, row: &adw::ActionRow)
         return button;
     }
     let anchor = row.clone();
-    button.connect_clicked(move |_| match feed.id {
-        RITHMIC => ask_rithmic(&panel, &anchor),
-        _ => start_sign_in(&panel, feed),
+    button.connect_clicked(move |_| match (feed.form().is_some(), trades(feed)) {
+        (true, true) => ask_broker(&panel, &anchor),
+        (true, false) => ask_form(&panel, feed, &anchor),
+        (false, _) => start_sign_in(&panel, feed),
     });
     button
 }
@@ -376,13 +382,13 @@ fn add_button(panel: &Rc<Panel>, missing: Vec<&'static Listed>) -> gtk::MenuButt
     add
 }
 
-/// Rithmic is added by adding a broker login, in Trading, unless there is
-/// one already to sign in through. thinkorswim is added at once, and signed
-/// in to from its row.
+/// A broker connection's feed is added by adding a broker login, in
+/// Trading, unless there is one already to sign in through. Any other is
+/// added at once, and signed in to from its row.
 fn add_source(panel: &Rc<Panel>, feed: &'static Listed, anchor: &impl IsA<gtk::Widget>) {
-    match feed.id {
-        RITHMIC if through_trading(panel, feed).is_none() => ask_rithmic(panel, anchor),
-        _ => {
+    match trades(feed) && through_trading(panel, feed).is_none() {
+        true => ask_broker(panel, anchor),
+        false => {
             feeds::add_source(&panel.store, feed.id);
             panel.changed();
         }
@@ -397,23 +403,35 @@ fn remove_source(panel: &Rc<Panel>, feed: &'static Listed) {
 
 fn sign_out(panel: &Rc<Panel>, feed: &'static Listed) {
     panel.notes.borrow_mut().remove(feed.id);
-    let signed_out = match feed.id {
-        RITHMIC => session::sign_out_of(&session::Keyring),
-        _ => providers::sign_out(feed.id),
-    };
-    if let Err(error) = signed_out {
+    if let Err(error) = providers::sign_out(feed.id) {
         eprintln!("omacharts: {error}");
     }
     feeds::forget_login(&panel.store, feed.id);
     panel.changed();
 }
 
-/// Rithmic with no login: a broker is added in Trading, which puts
-/// Rithmic on top of the sources and signs it in.
-fn ask_rithmic(panel: &Rc<Panel>, anchor: &impl IsA<gtk::Widget>) {
+/// A broker connection's feed with no login: a broker is added in Trading,
+/// which puts the feed on top of the sources and signs it in.
+fn ask_broker(panel: &Rc<Panel>, anchor: &impl IsA<gtk::Widget>) {
     if let Some(add_broker) = &panel.add_broker {
         add_broker(anchor.upcast_ref());
     }
+}
+
+/// A feed with a form of its own: what is typed is kept, and the feed signed
+/// in with it.
+fn ask_form(panel: &Rc<Panel>, feed: &'static Listed, anchor: &impl IsA<gtk::Widget>) {
+    let Some(form) = Form::for_feed(feed) else { return };
+    let panel = panel.clone();
+    login_form::ask(anchor, form, move |typed| {
+        match feeds::keep_login(&panel.store, feed, &typed.values()) {
+            Ok(()) => start_sign_in(&panel, feed),
+            Err(error) => {
+                panel.notes.borrow_mut().insert(feed.id, format!("not saved · {error}"));
+                panel.changed();
+            }
+        }
+    });
 }
 
 /// Run a sign-in off the main loop, showing on the row how it goes, then
@@ -423,9 +441,9 @@ fn start_sign_in(panel: &Rc<Panel>, feed: &'static Listed) {
         return;
     }
     panel.signing_in.set(Some(feed.id));
-    let opening = match feed.id {
-        RITHMIC => "signing in",
-        _ => "opening a browser; sign in there",
+    let opening = match feed.setup.map(|setup| setup.how()) {
+        Some(How::Browser) => "opening a browser; sign in there",
+        _ => "signing in",
     };
     panel.notes.borrow_mut().insert(feed.id, opening.into());
     rebuild(panel);
@@ -452,8 +470,8 @@ fn start_sign_in(panel: &Rc<Panel>, feed: &'static Listed) {
                     let mut notes = panel.notes.borrow_mut();
                     notes.remove(feed.id);
                     // A refusal is a state the source keeps, and the row
-                    // reads it back in Rithmic's words; anything else is
-                    // said once, here.
+                    // reads it back in the provider's words; anything else
+                    // is said once, here.
                     if let Err(error) = outcome
                         && !matches!(providers::access(feed.id), Some(Access::Expired(_)))
                     {
@@ -471,6 +489,13 @@ fn start_sign_in(panel: &Rc<Panel>, feed: &'static Listed) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const RITHMIC: &str = "rithmic";
+
+    /// A developer's login file stands in for the broker connection's form.
+    fn stood_in() -> bool {
+        providers::connections().filter_map(|feed| feed.setup).any(|setup| setup.stood_in())
+    }
 
     fn panel(store: &Rc<Store>) -> Rc<Panel> {
         Panel::new(adw::PreferencesPage::new(), store.clone(), None, Rc::new(|| {}), Vec::new())
@@ -610,7 +635,7 @@ mod tests {
     /// says so and offers neither Remove nor a sign-in of its own.
     #[test]
     fn remove_clears_the_setting_and_trading_owns_rithmics_login() {
-        if !crate::ui::gtk_ready() || session::development() {
+        if !crate::ui::gtk_ready() || stood_in() {
             return;
         }
         let store = Rc::new(Store::memory().expect("an empty database"));
@@ -648,7 +673,7 @@ mod tests {
     /// stands. Rithmic with nobody saved is not signed in.
     #[test]
     fn a_source_offers_the_action_its_state_calls_for() {
-        if !crate::ui::gtk_ready() || session::development() {
+        if !crate::ui::gtk_ready() || stood_in() {
             return;
         }
         let store = Rc::new(Store::memory().expect("an empty database"));
@@ -662,6 +687,78 @@ mod tests {
         let words = words_under(row.upcast_ref());
         assert!(words.iter().any(|w| w == "Sign in…"), "{words:?}");
         assert!(!words.iter().any(|w| w == "Sign out"), "{words:?}");
+    }
+
+    /// A feed no code here names gets its row, its form and its sign-in
+    /// from what it declares, and charts are routed to it: the fake rich
+    /// feed, which is in no list a person is offered.
+    #[test]
+    fn a_feed_nobody_names_gets_its_row_its_form_and_its_charts() {
+        if !crate::ui::gtk_ready() {
+            return;
+        }
+        let fake = providers::listed(omacharts_engine::providers::fake::LISTED.id).expect("in a test build");
+        let store = Rc::new(Store::memory().expect("an empty database"));
+        let panel = panel(&store);
+        add_source(&panel, fake, &gtk::Button::new());
+        assert_eq!(titles(&panel), vec![fake.label, "Yahoo Finance"]);
+        let group = panel.group.borrow().clone().unwrap();
+        let row = action_rows(group.upcast_ref())[0].clone();
+        assert_eq!(row.subtitle().unwrap_or_default(), format!("{} · not signed in", fake.covers));
+        let words = words_under(row.upcast_ref());
+        assert!(words.iter().any(|w| w == "Sign in…"), "{words:?}");
+        assert!(words.iter().any(|w| w == "Remove"), "{words:?}");
+
+        // Its form is the fields it declares, under its name.
+        let form = Form::for_feed(fake).expect("a form");
+        assert_eq!(form.heading, format!("Sign in to {}", fake.label));
+        let declared: Vec<&str> = fake.form().unwrap().iter().map(|field| field.title).collect();
+        assert_eq!(login_form::tests::titles(&login_form::dialog(form, |_| {})), declared);
+
+        // What the form hands over is kept, the secret in the feed's own
+        // keyring and never in a setting, and the row says it is live.
+        let typed: Vec<(&'static str, String)> = fake
+            .form()
+            .unwrap()
+            .iter()
+            .map(|field| match field.kind {
+                providers::FieldKind::Secret => (field.key, "PLANTED-SECRET".to_string()),
+                _ => (field.key, format!("typed {}", field.key)),
+            })
+            .collect();
+        feeds::keep_login(&store, fake, &typed).unwrap();
+        assert!(!store.setting(feeds::LOGINS).unwrap_or_default().contains("PLANTED-SECRET"));
+        assert!(feeds::sign_in_now(fake.id, |_| {}).is_ok());
+        rebuild(&panel);
+        let group = panel.group.borrow().clone().unwrap();
+        let row = action_rows(group.upcast_ref())[0].clone();
+        assert_eq!(row.subtitle().unwrap_or_default(), format!("{} · live", fake.covers));
+        assert!(words_under(row.upcast_ref()).iter().any(|w| w == "Sign out"));
+
+        // And charts go to it for what it serves, and to Yahoo for the rest.
+        let routed = feeds::Feeds::load(&store);
+        let instrument = |symbol: &str, kind| omacharts_engine::Instrument {
+            symbol: symbol.into(),
+            name: String::new(),
+            kind,
+            suffix: None,
+            currency: None,
+            tier: 0,
+            session_origin: 0,
+            overrides: Vec::new(),
+            exchange: None,
+            popularity: 0,
+            local_name: None,
+        };
+        let future = instrument("ES", omacharts_engine::InstrumentKind::FutureRoot);
+        let stock = instrument("AAPL", omacharts_engine::InstrumentKind::Equity);
+        assert_eq!(routed.route(&future).map(|(provider, _)| provider.id()), Some(fake.id));
+        assert_eq!(routed.route(&stock).map(|(provider, _)| provider.id()), Some(providers::DEFAULT));
+
+        // Signed out from its row, it keeps what was typed but the user.
+        sign_out(&panel, fake);
+        assert_eq!(providers::access(fake.id), Some(Access::Missing));
+        assert!(store.setting(feeds::LOGINS).unwrap_or_default().contains("typed server"));
     }
 
     /// Nothing on this page may reach the network, because it is drawn the

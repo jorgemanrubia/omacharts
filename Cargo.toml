@@ -32,6 +32,10 @@ rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 
+[dev-dependencies]
+# The fake feeds the tests prove the boundary with, never in a release.
+omacharts-engine = { path = "crates/omacharts-engine", features = ["fakes"] }
+
 [profile.release]
 opt-level = 3
 lto = "thin"

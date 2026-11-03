@@ -1,16 +1,17 @@
 //! Preferences → Trading: the broker logins, each with its accounts under
 //! it, edited the way the Data page edits its data feeds.
 //!
-//! With nothing configured it is a line and a button. "Add a broker…" (only
-//! Rithmic for now) opens the Rithmic login dialog with a Name field; the
-//! first login added also adds Rithmic as the first data feed, through it.
-//! Each login says how it stands — live, not signed in, or Rithmic's own
+//! With nothing configured it is a line and a button. "Add a broker…"
+//! offers the data feeds whose login is a broker connection too, and opens
+//! the login form that feed declares, with a Name field in front; the first
+//! login added also adds that feed as the first data feed, through it.
+//! Each login says how it stands — live, not signed in, or the broker's own
 //! words for a refusal — and which one is the data login; its accounts are
 //! the ones its last sign-in listed, cached, so the page draws without
 //! connecting.
 //!
 //! Signing in runs on a thread of its own and reports back over a channel
-//! the main loop awaits, because it waits on Rithmic's gateway. The data
+//! the main loop awaits, because it waits on the broker's gateway. The data
 //! login signs in its data session as well as its trading one.
 
 use std::cell::RefCell;
@@ -19,10 +20,69 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::glib;
-use omacharts_engine::providers::rithmic::session::{self, Secrets};
+use omacharts_engine::providers::{self, Field, FieldKind, Listed, Secrets, USER};
 
 use crate::store::Store;
 use crate::trading::{self, Account, Desk, Login, Standing};
+use crate::ui::login_form::{self, Form};
+
+/// The data feed whose logins this page keeps: the broker connection the
+/// logins sign in to, for orders and for charts' data.
+fn connection() -> Option<&'static Listed> {
+    providers::connections().next()
+}
+
+/// What the data feed is called, in a sentence about it.
+fn feed_label() -> &'static str {
+    connection().map_or("broker", |feed| feed.label)
+}
+
+/// The keyring the connection keeps its passwords in.
+struct Keyring(Option<&'static dyn Secrets>);
+
+impl Secrets for Keyring {
+    fn save(&self, login: &str, user: &str, system: &str, password: &str) -> Result<(), String> {
+        match self.0 {
+            Some(secrets) => secrets.save(login, user, system, password),
+            None => Err("there is nowhere to keep a password".into()),
+        }
+    }
+
+    fn forget(&self, login: &str, user: &str, system: &str) -> Result<(), String> {
+        self.0.map_or(Ok(()), |secrets| secrets.forget(login, user, system))
+    }
+}
+
+/// What the trader calls a login, since there can be several: "Lucid",
+/// "Tradeify". Left empty, it is named after its system.
+const NAME: Field = Field { key: "name", title: "Name", kind: FieldKind::Text, default: "", required: false };
+
+/// The connection's form, with the name in front, prefilled from `known`
+/// when it is being signed in again.
+fn form(feed: &'static Listed, known: Option<&Login>) -> Option<Form> {
+    let mut form = Form::for_feed(feed)?;
+    form.fields.insert(0, NAME);
+    if let Some(login) = known {
+        form.known = vec![
+            (NAME.key, login.name.clone()),
+            (USER, login.user.clone()),
+            ("system", login.system.clone()),
+            ("gateway", login.gateway.clone()),
+        ];
+    }
+    Some(form)
+}
+
+/// What the form had, as a login.
+fn typed(typed: &login_form::Typed) -> trading::Typed {
+    trading::Typed {
+        name: typed.get(NAME.key),
+        user: typed.get(USER),
+        password: typed.secret(),
+        system: typed.get("system"),
+        gateway: typed.get("gateway"),
+    }
+}
 
 pub struct Panel {
     store: Rc<Store>,
@@ -33,7 +93,8 @@ pub struct Panel {
     /// Has the window chart from the data feeds now stored and redraw its
     /// headers. Called after every change here.
     on_change: Rc<dyn Fn()>,
-    /// Draws the Data page again, whose Rithmic row follows the logins.
+    /// Draws the Data page again, whose row for the connection follows the
+    /// logins.
     data_page: RefCell<Option<Rc<dyn Fn()>>>,
     page: adw::PreferencesPage,
     groups: RefCell<Vec<adw::PreferencesGroup>>,
@@ -45,7 +106,8 @@ pub struct Panel {
 
 /// Fills the Trading section.
 pub fn build(page: &adw::PreferencesPage, store: Rc<Store>, desk: Rc<Desk>, on_change: Rc<dyn Fn()>) -> Rc<Panel> {
-    let panel = Panel::new(page.clone(), store, desk, Rc::new(session::Keyring), on_change);
+    let keyring = connection().and_then(|feed| feed.setup).and_then(|setup| setup.keyring());
+    let panel = Panel::new(page.clone(), store, desk, Rc::new(Keyring(keyring)), on_change);
     rebuild(&panel);
     panel
 }
@@ -97,12 +159,13 @@ impl Panel {
     }
 }
 
-/// Open the login dialog for a new broker over `anchor`; what the Data
-/// page's "Add a data feed…" does for Rithmic too.
+/// Open the login form for a new broker over `anchor`; what the Data
+/// page's "Add a data feed…" does for the connection's feed too.
 pub fn add_broker(panel: &Rc<Panel>, anchor: &gtk::Widget) {
+    let Some(form) = connection().and_then(|feed| form(feed, None)) else { return };
     let panel = panel.clone();
-    crate::ui::rithmic_login::ask(anchor, None, move |typed| {
-        match trading::add_login(&panel.store, panel.secrets.as_ref(), &typed) {
+    login_form::ask(anchor, form, move |what| {
+        match trading::add_login(&panel.store, panel.secrets.as_ref(), &typed(&what)) {
             Ok(id) => {
                 panel.changed();
                 sign_in(&panel, &id);
@@ -170,7 +233,7 @@ fn login_group(
     if several && !data {
         let feed = gtk::Button::with_label("Use for data");
         feed.add_css_class("flat");
-        feed.set_tooltip_text(Some("Have charts' Rithmic data come through this login"));
+        feed.set_tooltip_text(Some(&format!("Have charts' {} data come through this login", feed_label())));
         let panel_for_feed = panel.clone();
         let id = login.id.clone();
         feed.connect_clicked(move |_| {
@@ -271,43 +334,47 @@ fn add_group(panel: &Rc<Panel>, empty: bool) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     if empty {
         group.set_title("Accounts");
-        group.set_description(Some(
+        group.set_description(Some(&format!(
             "Add the broker login a prop firm gave you to see its accounts here. The first one \
-             also becomes your Rithmic data feed.",
-        ));
+             also becomes your {} data feed.",
+            feed_label(),
+        )));
     }
     let add = gtk::MenuButton::new();
     add.set_label("Add a broker…");
     add.set_halign(gtk::Align::Start);
     let choices = gtk::Box::new(gtk::Orientation::Vertical, 0);
     let popover = gtk::Popover::new();
-    let rithmic = gtk::Button::with_label("Rithmic");
-    rithmic.add_css_class("flat");
-    if let Some(label) = rithmic.child().and_downcast::<gtk::Label>() {
-        label.set_xalign(0.0);
+    for broker in providers::connections() {
+        let choice = gtk::Button::with_label(broker.label);
+        choice.add_css_class("flat");
+        if let Some(label) = choice.child().and_downcast::<gtk::Label>() {
+            label.set_xalign(0.0);
+        }
+        let shut = popover.clone();
+        let anchor = add.clone();
+        let panel = panel.clone();
+        choice.connect_clicked(move |_| {
+            shut.popdown();
+            add_broker(&panel, anchor.upcast_ref());
+        });
+        choices.append(&choice);
     }
-    let shut = popover.clone();
-    let anchor = add.clone();
-    let panel = panel.clone();
-    rithmic.connect_clicked(move |_| {
-        shut.popdown();
-        add_broker(&panel, anchor.upcast_ref());
-    });
-    choices.append(&rithmic);
     popover.set_child(Some(&choices));
     add.set_popover(Some(&popover));
     group.add(&add);
     group
 }
 
-/// The dialog again, prefilled, for a login with no password to sign in
-/// with or one Rithmic refused.
+/// The form again, prefilled, for a login with no password to sign in
+/// with or one the broker refused.
 fn ask_again(panel: &Rc<Panel>, id: &str, anchor: &gtk::Widget) {
     let Some(login) = trading::logins(&panel.store).into_iter().find(|login| login.id == id) else { return };
+    let Some(form) = connection().and_then(|feed| form(feed, Some(&login))) else { return };
     let panel = panel.clone();
     let id = id.to_string();
-    crate::ui::rithmic_login::ask(anchor, Some(&login), move |typed| {
-        if let Err(error) = trading::retype_login(&panel.store, panel.secrets.as_ref(), &id, &typed) {
+    login_form::ask(anchor, form, move |what| {
+        if let Err(error) = trading::retype_login(&panel.store, panel.secrets.as_ref(), &id, &typed(&what)) {
             panel.notes.borrow_mut().insert(id.clone(), format!("not saved · {error}"));
         }
         panel.changed();
@@ -326,7 +393,7 @@ fn sign_out(panel: &Rc<Panel>, id: &str) {
 
 /// Ask before removing a login, saying what becomes of the data feed when
 /// market data came through it: another login takes it over, or the
-/// trader chooses whether the Rithmic data feed goes too, or it stays
+/// trader chooses whether the data feed goes too, or it stays
 /// because it is the last data feed.
 fn confirm_remove(panel: &Rc<Panel>, id: &str, anchor: &gtk::Widget) {
     let Some(login) = trading::logins(&panel.store).into_iter().find(|login| login.id == id) else { return };
@@ -359,23 +426,24 @@ fn confirm_remove(panel: &Rc<Panel>, id: &str, anchor: &gtk::Widget) {
 
 /// The dialog's heading and body for removing the login `name`.
 fn removal_words(name: &str, removal: &trading::Removal) -> (String, String) {
+    let feed = feed_label();
     let body = match removal {
         trading::Removal::Login => "Its password leaves the keyring and its accounts leave this page.".to_string(),
         trading::Removal::HandOver { to } => format!(
-            "Its password leaves the keyring and its accounts leave this page. Charts' Rithmic data will \
+            "Its password leaves the keyring and its accounts leave this page. Charts' {feed} data will \
              now come through {to}."
         ),
-        trading::Removal::Ask => "Charts' Rithmic data comes through this login. Remove the Rithmic data \
-                                  feed too? Kept, it stays on the Data page, not signed in, ready to be \
-                                  signed in again."
-            .to_string(),
-        trading::Removal::KeepFeed => "Charts' Rithmic data comes through this login. The Rithmic data feed \
-                                       stays on the Data page, not signed in, because it is the last data \
-                                       feed."
-            .to_string(),
+        trading::Removal::Ask => format!(
+            "Charts' {feed} data comes through this login. Remove the {feed} data feed too? Kept, it \
+             stays on the Data page, not signed in, ready to be signed in again."
+        ),
+        trading::Removal::KeepFeed => format!(
+            "Charts' {feed} data comes through this login. The {feed} data feed stays on the Data page, \
+             not signed in, because it is the last data feed."
+        ),
     };
     let heading = match removal {
-        trading::Removal::Ask => "Remove the Rithmic data feed too?".to_string(),
+        trading::Removal::Ask => format!("Remove the {feed} data feed too?"),
         _ => format!("Remove {name}?"),
     };
     (heading, body)
@@ -405,11 +473,12 @@ fn sign_in(panel: &Rc<Panel>, id: &str) {
 
     let broker = panel.desk.broker();
     let waker = panel.desk.waker();
+    let feed = connection().map(|feed| feed.id);
     let (sender, receiver) = async_channel::bounded(1);
     std::thread::spawn(move || {
         let session = broker.sign_in(&login, waker);
-        let fed = match (data, &session) {
-            (true, Ok(_)) => Some(crate::feeds::sign_in_now("rithmic", |_| {})),
+        let fed = match (data, &session, feed) {
+            (true, Ok(_), Some(feed)) => Some(crate::feeds::sign_in_now(feed, |_| {})),
             _ => None,
         };
         let _ = sender.send_blocking((session, fed));
@@ -470,6 +539,11 @@ mod tests {
         }).collect()
     }
 
+    /// A developer's login file in charge: nothing typed is kept.
+    pub(crate) fn stood_in() -> bool {
+        connection().and_then(|feed| feed.setup).is_some_and(|setup| setup.stood_in())
+    }
+
     fn typed(name: &str) -> Typed {
         Typed {
             name: name.into(),
@@ -499,7 +573,7 @@ mod tests {
     /// the default offers to become it.
     #[test]
     fn logins_and_their_accounts_are_listed() {
-        if !crate::ui::gtk_ready() || session::development() {
+        if !crate::ui::gtk_ready() || stood_in() {
             return;
         }
         let store = Rc::new(Store::memory().unwrap());
