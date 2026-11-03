@@ -395,13 +395,47 @@ pub fn make_data_login(store: &Store, id: &str) {
     crate::feeds::remember_logins(store);
 }
 
+/// What removing a login does to the Rithmic data feed, which the dialog
+/// asking to remove it says.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Removal {
+    /// Not the data login: the data feed is not touched.
+    Login,
+    /// The data login, and another login takes the data over: this one.
+    HandOver { to: String },
+    /// The data login, and the last: whether the Rithmic data feed goes too
+    /// is asked.
+    Ask,
+    /// The data login, the last, and Rithmic is the last data feed, which
+    /// cannot be removed: it stays, not signed in.
+    KeepFeed,
+}
+
+/// What removing the login `id` would do to the data feed.
+pub fn removal(store: &Store, id: &str) -> Removal {
+    let logins = logins(store);
+    if data_login_id(store, &logins).as_deref() != Some(id) {
+        return Removal::Login;
+    }
+    if let Some(next) = logins.iter().find(|login| login.id != id) {
+        return Removal::HandOver { to: next.name.clone() };
+    }
+    let fed = crate::feeds::stored_order(store).iter().any(|known| known.eq_ignore_ascii_case(RITHMIC));
+    match fed && crate::feeds::removable(store, RITHMIC) {
+        true => Removal::Ask,
+        false => Removal::KeepFeed,
+    }
+}
+
 /// Remove a login, its password and its accounts. If market data came
-/// through it, it comes through the next login now, or with none left
-/// Rithmic leaves the data sources.
-pub fn remove_login(store: &Store, secrets: &dyn Secrets, id: &str) -> Result<(), String> {
+/// through it, it comes through the next login now; with none left the
+/// Rithmic data feed goes too when `feed_too` says so and it is not the last
+/// data feed, and otherwise stays, not signed in, to be signed in again.
+pub fn remove_login(store: &Store, secrets: &dyn Secrets, id: &str, feed_too: bool) -> Result<(), String> {
+    let decided = removal(store, id);
     let mut logins = logins(store);
     let Some(at) = logins.iter().position(|login| login.id == id) else { return Ok(()) };
-    let was_data = data_login_id(store, &logins).as_deref() == Some(id);
+    let was_data = decided != Removal::Login;
     let forgotten = match was_data {
         true => {
             crate::feeds::remember_logins(store);
@@ -422,19 +456,20 @@ pub fn remove_login(store: &Store, secrets: &dyn Secrets, id: &str) -> Result<()
         store.remove_setting(DEFAULT_ACCOUNT);
     }
 
-    if was_data {
-        match logins.first() {
-            Some(next) => {
+    match decided {
+        Removal::Login => {}
+        Removal::HandOver { .. } => {
+            if let Some(next) = logins.first() {
                 store.set_setting(DATA_LOGIN, &next.id);
-                session::hand_over();
             }
-            None => {
-                store.remove_setting(DATA_LOGIN);
-                let order: Vec<String> = crate::feeds::stored_order(store)
-                    .into_iter()
-                    .filter(|known| !known.eq_ignore_ascii_case(RITHMIC))
-                    .collect();
-                crate::feeds::save_order(store, &order);
+            session::hand_over();
+        }
+        Removal::Ask | Removal::KeepFeed => {
+            store.remove_setting(DATA_LOGIN);
+            if decided == Removal::Ask && feed_too {
+                crate::feeds::remove_source(store, RITHMIC);
+            } else {
+                session::hand_over();
             }
         }
     }
@@ -987,11 +1022,10 @@ pub(crate) mod tests {
         assert_eq!(data_login_id(&store, &logins(&store)), Some(lucid));
     }
 
-    /// Removing the data login hands data to the next one; removing the
-    /// last takes Rithmic off the data sources. Each takes its accounts and
-    /// its password with it.
+    /// Removing the data login hands data to the next one, with nothing to
+    /// ask. Each takes its accounts and its password with it.
     #[test]
-    fn removing_the_data_login_hands_data_over_and_the_last_takes_rithmic_away() {
+    fn removing_the_data_login_hands_data_to_another() {
         if skip() {
             return;
         }
@@ -1003,19 +1037,57 @@ pub(crate) mod tests {
         cache_accounts(&store, &test, vec![account(&test, "951")]);
         set_default_account(&store, &format!("{lucid}/1235"));
 
-        remove_login(&store, &kept, &lucid).unwrap();
+        assert_eq!(removal(&store, &test), Removal::Login, "not the data login");
+        assert_eq!(removal(&store, &lucid), Removal::HandOver { to: "Rithmic Test".into() });
+        remove_login(&store, &kept, &lucid, true).unwrap();
         assert_eq!(data_login(&store).map(|l| l.id), Some(test.clone()));
         assert_eq!(accounts(&store).iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), vec!["951"]);
         assert_eq!(store.setting(DEFAULT_ACCOUNT), None, "the default went with its login");
         assert_eq!(kept.0.borrow().iter().map(|(l, _)| l.clone()).collect::<Vec<_>>(), vec![test.clone()]);
-        assert_eq!(crate::feeds::stored_order(&store), vec!["rithmic", "yahoo"]);
+        assert_eq!(crate::feeds::stored_order(&store), vec!["rithmic", "yahoo"], "the feed stays, through the other");
+    }
 
-        remove_login(&store, &kept, &test).unwrap();
+    /// The last login, asked: keeping the data feed leaves Rithmic on the
+    /// Data page with nobody signed in; removing both takes it off.
+    #[test]
+    fn removing_the_last_login_keeps_the_data_feed_or_removes_both() {
+        if skip() {
+            return;
+        }
+        for feed_too in [false, true] {
+            let store = store();
+            let kept = Kept::default();
+            let lucid = add_login(&store, &kept, &typed("Lucid", "a")).unwrap();
+            assert_eq!(removal(&store, &lucid), Removal::Ask);
+            remove_login(&store, &kept, &lucid, feed_too).unwrap();
+            assert!(logins(&store).is_empty());
+            assert!(kept.0.borrow().is_empty());
+            assert_eq!(store.setting(ACCOUNTS), None);
+            assert_eq!(store.setting(DATA_LOGIN), None);
+            assert_eq!(crate::feeds::saved_of(&store).user, None, "nobody to sign in with");
+            let order = crate::feeds::stored_order(&store);
+            match feed_too {
+                false => assert_eq!(order, vec!["rithmic", "yahoo"], "kept, not signed in"),
+                true => assert_eq!(order, vec!["yahoo"], "removed both"),
+            }
+        }
+    }
+
+    /// When Rithmic is the last data feed, removing it is not offered: the
+    /// login goes and the feed stays, even if asked to go.
+    #[test]
+    fn the_last_data_feed_stays_when_its_login_goes() {
+        if skip() {
+            return;
+        }
+        let store = store();
+        let kept = Kept::default();
+        let lucid = add_login(&store, &kept, &typed("Lucid", "a")).unwrap();
+        assert!(crate::feeds::remove_source(&store, "yahoo"));
+        assert_eq!(removal(&store, &lucid), Removal::KeepFeed);
+        remove_login(&store, &kept, &lucid, true).unwrap();
         assert!(logins(&store).is_empty());
-        assert!(kept.0.borrow().is_empty());
-        assert_eq!(store.setting(crate::feeds::SETTING), None, "Rithmic leaves the sources");
-        assert_eq!(store.setting(ACCOUNTS), None);
-        assert_eq!(store.setting(DATA_LOGIN), None);
+        assert_eq!(crate::feeds::stored_order(&store), vec!["rithmic"]);
     }
 
     /// Signing a login out forgets its password and keeps it listed, with

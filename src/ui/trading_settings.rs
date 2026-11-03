@@ -190,7 +190,7 @@ fn login_group(
     remove.add_css_class("flat");
     let panel_for_remove = panel.clone();
     let id = login.id.clone();
-    remove.connect_clicked(move |_| remove_login(&panel_for_remove, &id));
+    remove.connect_clicked(move |button| confirm_remove(&panel_for_remove, &id, button.upcast_ref()));
     actions.append(&remove);
     group.set_header_suffix(Some(&actions));
 
@@ -324,10 +324,67 @@ fn sign_out(panel: &Rc<Panel>, id: &str) {
     panel.changed();
 }
 
-fn remove_login(panel: &Rc<Panel>, id: &str) {
+/// Ask before removing a login, saying what becomes of the data feed when
+/// market data came through it: another login takes it over, or the
+/// trader chooses whether the Rithmic data feed goes too, or it stays
+/// because it is the last data feed.
+fn confirm_remove(panel: &Rc<Panel>, id: &str, anchor: &gtk::Widget) {
+    let Some(login) = trading::logins(&panel.store).into_iter().find(|login| login.id == id) else { return };
+    let removal = trading::removal(&panel.store, id);
+    let (heading, body) = removal_words(&login.name, &removal);
+    let dialog = adw::AlertDialog::new(Some(&heading), Some(&body));
+    dialog.add_response("cancel", "Cancel");
+    match removal {
+        trading::Removal::Ask => {
+            dialog.add_response("keep", "Keep data feed");
+            dialog.add_response("both", "Remove both");
+            dialog.set_response_appearance("both", adw::ResponseAppearance::Destructive);
+        }
+        _ => {
+            dialog.add_response("remove", "Remove");
+            dialog.set_response_appearance("remove", adw::ResponseAppearance::Destructive);
+        }
+    }
+    dialog.set_default_response(Some("cancel"));
+    dialog.set_close_response("cancel");
+    let panel = panel.clone();
+    let id = id.to_string();
+    dialog.connect_response(None, move |_, response| match response {
+        "remove" | "keep" => remove_login(&panel, &id, false),
+        "both" => remove_login(&panel, &id, true),
+        _ => {}
+    });
+    dialog.present(Some(anchor));
+}
+
+/// The dialog's heading and body for removing the login `name`.
+fn removal_words(name: &str, removal: &trading::Removal) -> (String, String) {
+    let body = match removal {
+        trading::Removal::Login => "Its password leaves the keyring and its accounts leave this page.".to_string(),
+        trading::Removal::HandOver { to } => format!(
+            "Its password leaves the keyring and its accounts leave this page. Charts' Rithmic data will \
+             now come through {to}."
+        ),
+        trading::Removal::Ask => "Charts' Rithmic data comes through this login. Remove the Rithmic data \
+                                  feed too? Kept, it stays on the Data page, not signed in, ready to be \
+                                  signed in again."
+            .to_string(),
+        trading::Removal::KeepFeed => "Charts' Rithmic data comes through this login. The Rithmic data feed \
+                                       stays on the Data page, not signed in, because it is the last data \
+                                       feed."
+            .to_string(),
+    };
+    let heading = match removal {
+        trading::Removal::Ask => "Remove the Rithmic data feed too?".to_string(),
+        _ => format!("Remove {name}?"),
+    };
+    (heading, body)
+}
+
+fn remove_login(panel: &Rc<Panel>, id: &str, feed_too: bool) {
     panel.desk.end(id);
     panel.notes.borrow_mut().remove(id);
-    if let Err(error) = trading::remove_login(&panel.store, panel.secrets.as_ref(), id) {
+    if let Err(error) = trading::remove_login(&panel.store, panel.secrets.as_ref(), id, feed_too) {
         eprintln!("omacharts: {error}");
     }
     panel.changed();
@@ -481,10 +538,25 @@ mod tests {
         assert!(test_words.iter().any(|w| w == "Use for data"), "{test_words:?}");
         assert!(test_words.iter().any(|w| w == "Sign in…"), "{test_words:?}");
 
-        // Removing the data login hands data to the other.
-        remove_login(&panel, &lucid);
+        // Removing the data login hands data to the other, and says so.
+        let (_, body) = removal_words("Lucid", &trading::removal(&store, &lucid));
+        assert!(body.ends_with("now come through Rithmic Test."), "{body}");
+        remove_login(&panel, &lucid, true);
         let groups = panel.groups.borrow().clone();
         assert_eq!(groups[0].description().as_deref(), Some("Rithmic Test · not signed in · data"));
+    }
+
+    /// Each way removing a login can go is said in the dialog: nothing
+    /// about data, data handed over, the question with its two answers, and
+    /// the last data feed staying.
+    #[test]
+    fn the_dialog_says_what_becomes_of_the_data_feed() {
+        let words = |removal| removal_words("Lucid", &removal);
+        assert_eq!(words(trading::Removal::Login).0, "Remove Lucid?");
+        assert!(!words(trading::Removal::Login).1.contains("data"));
+        assert!(words(trading::Removal::HandOver { to: "Tradeify".into() }).1.contains("through Tradeify"));
+        assert_eq!(words(trading::Removal::Ask).0, "Remove the Rithmic data feed too?");
+        assert!(words(trading::Removal::KeepFeed).1.contains("last data feed"));
     }
 
     use std::sync::Arc;
