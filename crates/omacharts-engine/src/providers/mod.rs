@@ -402,6 +402,67 @@ pub fn route<'a>(
     None
 }
 
+/// The feeds in the order that have a name for `instrument`, by place: what
+/// a chart of it can be pointed at instead of the order.
+pub fn serving<'a>(feeds: impl IntoIterator<Item = &'a dyn Provider>, instrument: &Instrument) -> Vec<usize> {
+    feeds
+        .into_iter()
+        .enumerate()
+        .filter(|(_, provider)| provider.symbol_for(instrument).is_some())
+        .map(|(at, _)| at)
+        .collect()
+}
+
+/// Can a chart of `instrument` still be pointed at the feed `chosen`? Not
+/// once it is off the order, nor when it has no name for the instrument; a
+/// chart whose choice fails this goes back to following the order.
+pub fn choosable<'a>(
+    feeds: impl IntoIterator<Item = &'a dyn Provider>,
+    chosen: &str,
+    instrument: &Instrument,
+) -> bool {
+    feeds
+        .into_iter()
+        .any(|provider| provider.id().eq_ignore_ascii_case(chosen) && provider.symbol_for(instrument).is_some())
+}
+
+/// Where a chart goes when somebody has chosen its feed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Chosen {
+    /// The chosen feed serves it, or nothing was chosen and the order did.
+    Route(Route),
+    /// The chosen feed would serve it and cannot be used: the chart says so
+    /// rather than going to the next feed down without telling anybody.
+    Refused { at: usize, symbol: String },
+}
+
+/// [`route`], with the feed somebody chose for the chart first.
+///
+/// `chosen` is a feed's id. A choice the order no longer holds, or one with
+/// no name for the instrument, is no choice at all and the order decides —
+/// which is how a chart whose feed was taken off the list goes back to
+/// following it. A chosen feed is never passed over: when it cannot be used
+/// the chart is refused, with the place of the feed that refused it.
+pub fn route_chosen<'a>(
+    feeds: impl IntoIterator<Item = (&'a dyn Provider, bool)>,
+    chosen: Option<&str>,
+    instrument: &Instrument,
+) -> Option<Chosen> {
+    let feeds: Vec<(&dyn Provider, bool)> = feeds.into_iter().collect();
+    if let Some(id) = chosen {
+        let found = feeds.iter().enumerate().find(|(_, (provider, _))| provider.id().eq_ignore_ascii_case(id));
+        if let Some((at, (provider, usable))) = found
+            && let Some(symbol) = provider.symbol_for(instrument)
+        {
+            return Some(match usable {
+                true => Chosen::Route(Route { at, symbol, passed: Vec::new() }),
+                false => Chosen::Refused { at, symbol },
+            });
+        }
+    }
+    route(feeds, instrument).map(Chosen::Route)
+}
+
 /// Can `id` be charted from with what is saved on this machine? A read from
 /// disk, never a connection: a feed that needs nothing saved always can.
 ///
@@ -544,6 +605,50 @@ mod tests {
         let alone = ordered(&[]);
         let routed = route(alone.iter().map(|p| (p.as_ref(), true)), &madrid).expect("served");
         assert_eq!((routed.at, routed.passed.capacity()), (0, 0));
+    }
+
+    /// Only the feeds with a name for an instrument are offered for it.
+    #[test]
+    fn a_chart_is_offered_only_the_feeds_that_serve_it() {
+        let feeds = ordered(&["tos".to_string()]);
+        let offered = |instrument: &Instrument| serving(feeds.iter().map(|p| p.as_ref()), instrument);
+        assert_eq!(offered(&instrument(InstrumentKind::Equity, "AAPL")), vec![0, 1]);
+        let madrid = Instrument { suffix: Some("MC".into()), ..instrument(InstrumentKind::Equity, "SAN") };
+        assert_eq!(offered(&madrid), vec![1]);
+    }
+
+    /// A chosen feed serves its chart over the order, and is never passed
+    /// over: signed out, the chart is refused rather than moved. A choice the
+    /// order no longer holds, or one with no name for the instrument, leaves
+    /// the order to decide.
+    #[test]
+    fn a_chosen_feed_serves_its_chart_and_is_never_passed_over() {
+        let feeds = ordered(&["tos".to_string()]);
+        let order = |tos_usable: bool| feeds.iter().map(move |p| (p.as_ref(), p.id() != "tos" || tos_usable));
+        let apple = instrument(InstrumentKind::Equity, "AAPL");
+
+        let yahoo = route_chosen(order(true), Some("yahoo"), &apple);
+        assert!(matches!(yahoo, Some(Chosen::Route(Route { at: 1, .. }))), "{yahoo:?}");
+        let tos = route_chosen(order(true), Some("tos"), &apple);
+        assert!(matches!(tos, Some(Chosen::Route(Route { at: 0, .. }))), "{tos:?}");
+        // Signed out: refused, where the order would have passed it over.
+        let refused = route_chosen(order(false), Some("tos"), &apple);
+        assert_eq!(refused, Some(Chosen::Refused { at: 0, symbol: "AAPL".into() }));
+        assert_eq!(route_chosen(order(false), None, &apple), route(order(false), &apple).map(Chosen::Route));
+
+        // thinkorswim taken off the order: the chart follows what is left.
+        let alone = ordered(&[]);
+        let gone = route_chosen(alone.iter().map(|p| (p.as_ref(), true)), Some("tos"), &apple);
+        assert!(matches!(gone, Some(Chosen::Route(Route { at: 0, .. }))), "{gone:?}");
+        // And a choice with no name for the instrument is no choice.
+        let madrid = Instrument { suffix: Some("MC".into()), ..instrument(InstrumentKind::Equity, "SAN") };
+        let unnamed = route_chosen(order(true), Some("tos"), &madrid);
+        assert!(matches!(unnamed, Some(Chosen::Route(Route { at: 1, .. }))), "{unnamed:?}");
+
+        // Which is why both choices are dropped rather than kept.
+        assert!(choosable(feeds.iter().map(|p| p.as_ref()), "tos", &apple));
+        assert!(!choosable(alone.iter().map(|p| p.as_ref()), "tos", &apple));
+        assert!(!choosable(feeds.iter().map(|p| p.as_ref()), "tos", &madrid));
     }
 
     /// Two feeds sharing an id would share a cache namespace, and the stored
