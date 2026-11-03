@@ -579,7 +579,7 @@ fn rithmic_tick(contract: &str) -> Option<f64> {
         true => &digits[..digits.len() - 1],
         false => contract,
     };
-    omacharts_engine::providers::rithmic::ladders::tick_of(root)
+    omacharts_engine::exchanges::registry().contract_tick(root)
 }
 
 /// Rithmic's words, without "Rithmic refused…" in front of a refusal.
