@@ -681,6 +681,31 @@ mod tests {
             .collect()
     }
 
+    /// Every number a profile holds, as one hash: `{:?}` of an `f64` is its
+    /// shortest exact spelling, so two equal hashes are equal bits.
+    fn fingerprint(profiles: &[Profile]) -> u64 {
+        format!("{profiles:?}").bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3))
+    }
+
+    /// The estimate from bar ranges, held to what it computed before volume at
+    /// price existed: a chart without ladders draws exactly what it drew.
+    #[test]
+    fn without_ladders_the_profile_is_what_it_always_was() {
+        let mut bars = session(0, 333.0, 8.0);
+        bars.extend(session(1, 333.0, 2.0));
+        bars.extend(session(2, 340.0, 5.0));
+        let cases = [
+            compute(&bars, Reset::Session, 0, None, 0.7, Some(InstrumentKind::Equity), &[]),
+            compute(&bars, Reset::Session, 0, Some(50), 0.68, None, &[]),
+            compute(&bars, Reset::Week, 0, None, 0.7, Some(InstrumentKind::FutureRoot), &[]),
+            compute(&bars, Reset::Session, 3_600, None, 0.7, Some(InstrumentKind::FutureRoot), &[DAY + 3_600]),
+        ];
+        let prints: Vec<u64> = cases.iter().map(|profiles| fingerprint(profiles)).collect();
+        assert_eq!(prints, GOLDEN, "{prints:?}");
+    }
+
+    const GOLDEN: [u64; 4] = [17829156222254821403, 1918181280838795739, 7844774359875511761, 10693579781058083716];
+
     fn row_height(p: &Profile) -> f64 {
         p.rows[0].high - p.rows[0].low
     }
