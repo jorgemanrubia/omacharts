@@ -16,6 +16,18 @@ Each person's copy signs in to Rithmic directly with their own login. No
 server of ours sits in between, and no login or market data passes through
 one.
 
+## Charting first
+
+Omacharts has to keep appealing to people who never trade from it. Trading is
+strictly opt-in: until somebody adds a trading account in Preferences →
+Trading, the app is the one it was before any of this, with no new button,
+menu item, panel, tab, theme group, shortcut, empty state or message, and no
+cost in startup, memory or frame time. Preferences → Trading itself is the
+one exception, because it is where an account is added. Adding one brings
+the trading pieces in; removing the last one takes them all away again,
+without a restart. Data feeds are not trading: a richer feed is for anyone
+who charts.
+
 ## What we know works
 
 Tried on 2026-11-03 with a developer kit login, against Rithmic Test at
