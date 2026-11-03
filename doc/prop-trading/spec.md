@@ -25,9 +25,19 @@ Tried on 2026-11-03 with a developer kit login, against Rithmic Test at
   Rithmic Test takes any app name.
 - One account in USD, under FCM `Rithmic-FCM` and IB `Prospects`, which is
   how every developer kit login is set up.
-- The ES front month by asking for it: `ESZ6`.
-- 1120 one-minute bars of ESZ6 from the last 24 hours.
-- Live best bid and offer, and trades, as they happen.
+- No front month by asking: Test answers "no data" for every root. Symbol
+  search lists the contracts, and the nearest one more than 8 days from
+  expiry is ESZ6.
+- Shallow history: about 2,200 minute bars (a day and a half) whatever
+  window is asked for, and 75 sparse daily bars back to 2016. Minute bars
+  are stamped with the time they close.
+- Volume-profile minute bars, with bid and ask volume at each price: a week
+  asked for came back as 4558 minutes.
+- Live best bid and offer, and trades with their aggressor, in bursts with
+  quiet spells of several minutes.
+- A second session on the same login forces the first one out. The window
+  and anything else signed in at once kick each other out, which is one more
+  reason for one session per app.
 - The same login is refused on the production gateway, every system there
   included. It is a Test login and nothing else.
 
@@ -358,6 +368,12 @@ otherwise.
 4. **Target a firm first?** *Recommendation:* Lucid, because the author has
    accounts there. Tradeify keeps an allow-list of platforms and has to be
    asked.
+6. **Does conformance open every firm's system?** Probably not. Rithmic's
+   own answer was that each funding evaluator or broker decides which
+   applications its users may use, and Tradeify publishes an allow-list.
+   *Recommendation:* ask Rithmic whether a conformed app is blocked on a
+   firm's system until the firm enables it, ask Lucid whether it would, and
+   use nothing but Rithmic Test until a firm says yes.
 5. **History depth for ladders.** *Recommendation:* decide after stage 1
    shows how far back Rithmic goes on a prop system. Test is not a guide.
 
