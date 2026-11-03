@@ -423,7 +423,7 @@ Prices refresh as bars close. A chart does not refresh while its market is shut 
 
 ## The header
 
-The header is the line at a chart's top-left. It is the same on every chart in every chartbook, and can show these parts in any order.
+The header is the line at a chart's top-left and the row centred across its top. It is the same on every chart in every chartbook. Each part goes in one of its two sections, **Left** or **Center**, in any order.
 
 | Part | Shows |
 |---|---|
@@ -431,10 +431,11 @@ The header is the line at a chart's top-left. It is the same on every chart in e
 | **Resolution** | The resolution. Click it for the list of the strip's resolutions |
 | **Daily change** | The day's move as a percentage, in the chart's up and down colours. The same figure as the sidebar's |
 | **Chart template** | The name of the [chart template](/manual/chart-templates/) the chart is on, dimmed. Nothing on a chart that is on none |
+| **Resolutions stripe** | The preset resolutions as buttons, on the focused chart only. Hidden when the chart is too narrow for it |
 
-Out of the box it shows the symbol and the resolution.
+Out of the box the left shows the symbol and the resolution, and the center the resolutions stripe.
 
-Edit it in Preferences › Charts › **Header**, under **In the header**, or right-click the header and choose **Edit header…**, which opens the same tab. The **+** beside the title adds a part not yet there, a part's bin removes it, and dragging a part by its handle reorders it.
+Edit it in Preferences › Charts › **Header**, or right-click the header and choose **Edit header…**, which opens the same tab. The **+** beside a section's title adds a part that is in neither section, a part's bin removes it, and dragging a part by its handle reorders it. To move a part to the other section, remove it and add it there.
 
 ## The chart menu
 

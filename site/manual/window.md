@@ -31,7 +31,7 @@ crop: none (resized to 2000 wide)
 | The chart | Everything not taken by the sidebar, the tools or the strip | One or more charts, split as you arranged them. See [Charts](/manual/charts/) and [Splitting and arranging charts](/manual/layouts/). |
 | The header | Top-left of each chart | The chart's symbol and resolution, and optionally the day's change and its chart template. Click the symbol to open the [symbol search](/manual/symbols/); click the resolution for the list of [resolutions](/manual/charts/#resolutions). What it shows is [one setting for every chart](/manual/charts/#the-header). |
 | The indicator legend | Under the header, on the focused chart only | One row per indicator. See [Indicators](/manual/indicators/). |
-| The resolution strip | Centred across the top of the focused chart | The preset resolutions as buttons. Hidden when the chart is too narrow for it. The resolution in the header offers the same list. |
+| The resolution strip | Centred across the top of the focused chart, unless the header puts it on the left or leaves it out | The preset resolutions as buttons. Hidden when the chart is too narrow for it. The resolution in the header offers the same list. |
 | The chart's corner | Top-right of each chart, beside the price axis | The gear (**Chart settings**), the **Maximize** button and the link button. See [The corners](#the-corners). |
 | The window's corner | Top-right of the window | The watchlist toggle and the main menu. |
 | The sidebar | Right edge | The open chartbook's watchlist. See [Watchlists](/manual/watchlists/). |
