@@ -219,16 +219,8 @@ rather than listing them, so the index and startup stay the size they are.
   system and gateway are settings, and they are `Local` in
   `src/setting_keys.rs`, because a login belongs to the machine it was typed
   on.
-- **A refusal is shown in Rithmic's words.** "permission denied", which is
-  what a login gets before its Rithmic agreements are signed, is an expired
-  sign-in with Rithmic's reason, not a generic failure.
-- **Rithmic's agreements are the user's business.** The market data
-  agreements and the self-certification are signed by the user with Rithmic,
-  in R | Trader or the firm's onboarding. Omacharts does not show or accept
-  them. The protocol lists and shows them, but the 0.90 kit documents no
-  template for accepting one, and Rithmic Test refuses the ones `rithmic-rs`
-  guesses (1033, "template id in the request is invalid"). Rithmic Test
-  serves data and takes orders with them unsigned.
+- **A refusal is shown in Rithmic's words**, such as "permission denied",
+  not as a generic failure.
 
 ### 2. Volume at price
 
