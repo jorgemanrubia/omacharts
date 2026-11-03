@@ -105,6 +105,14 @@ pub struct ChartPane {
     /// window can fill in.
     pub header_row: gtk::Box,
     pub change_label: gtk::Label,
+    /// What the day's move is measured from: the close before the session,
+    /// and that session's day (see [`crate::cli::session_day`]). Kept when
+    /// the move is read from the cache, so a trade can move it without
+    /// reading the cache again.
+    pub change_basis: Cell<Option<(f64, i64)>>,
+    /// The move written, in hundredths of a percent: a trade that leaves it
+    /// where it is writes nothing.
+    pub change_shown: Cell<Option<i64>>,
     pub template_label: gtk::Label,
     /// The account part: which feed the chart is from, and any it was
     /// passed over, "Yahoo · thinkorswim not signed in". Clicked, it offers
@@ -396,6 +404,8 @@ impl ChartPane {
             header: RefCell::new(crate::header::standard()),
             header_row: bar,
             change_label,
+            change_basis: Cell::new(None),
+            change_shown: Cell::new(None),
             template_label,
             source_menu,
             source_label,
