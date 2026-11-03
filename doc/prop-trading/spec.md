@@ -18,12 +18,13 @@ one.
 
 ## What we know works
 
-Tried on 2026-11-03 with the developer kit login (`~/.rithmic` on the
-author's machine), against Rithmic Test at `wss://rituz00100.rithmic.com:443`:
+Tried on 2026-11-03 with a developer kit login, against Rithmic Test at
+`wss://rituz00100.rithmic.com:443`:
 
 - Sign-in to the ticker, order, PnL and history plants, as app `omacharts`.
   Rithmic Test takes any app name.
-- One account, `951`, in USD, under FCM `Rithmic-FCM` and IB `Prospects`.
+- One account in USD, under FCM `Rithmic-FCM` and IB `Prospects`, which is
+  how every developer kit login is set up.
 - The ES front month by asking for it: `ESZ6`.
 - 1120 one-minute bars of ESZ6 from the last 24 hours.
 - Live best bid and offer, and trades, as they happen.
@@ -47,6 +48,17 @@ one), and orders of any kind.
   code, and that is its authors' call.
 - **Rithmic Test for all development.** Nothing touches a live or funded
   account until the author says so for that account, in so many words.
+- **Nobody's login leaves their machine.** A user ID or password is never
+  committed, never written to a log, never printed by a test or a command,
+  and never sent anywhere but Rithmic's gateway. The app reads the password
+  from the keyring; development reads a login from the developer's own
+  `~/.rithmic`, which is outside the repo. A test that needs a login is
+  skipped without one, never fed one from the repo or CI. `Credentials`'
+  `Debug` leaves the password out, and a test holds it to that. Account
+  numbers stay out of the repo too: it is public.
+- **Exploratory until the author says otherwise.** No commands and no manual
+  pages for any of this yet; `AGENTS.md`'s rules for both apply from the
+  moment it is meant to ship.
 
 ## Stages
 
@@ -54,6 +66,12 @@ Each stage is usable on its own and is a commit series on `rithmic`, not a
 release.
 
 ### 1. Rithmic as a data source
+
+**Done when:** with nothing configured the app behaves and measures as it
+does on `main`; adding Rithmic with a Test login puts ES and NQ charts on
+Rithmic, live, while AAPL in the same chartbook stays on Yahoo; signing out
+moves the futures back to Yahoo; removing Rithmic leaves no row and no
+header label.
 
 Yahoo stays the default and serves everything it serves today. Data
 providers become an ordered list, with Yahoo always on it. Each chart is
@@ -197,6 +215,11 @@ rather than listing them, so the index and startup stay the size they are.
 
 ### 2. Volume at price
 
+**Done when:** an ES chart on Rithmic draws its volume profile from ladders,
+not bar ranges, over a week of history loaded once and read back from the
+cache on the next start; the forming minute's ladder grows with live trades;
+and a range query over the whole cached history takes under a millisecond.
+
 Volume indicators that need to know what traded at each price, and on which
 side: volume profile, bid and ask volume, delta and cumulative delta,
 footprints, imbalances, a per-bar point of control, an exact VWAP. One kind
@@ -240,6 +263,11 @@ system goes is not known yet; Rithmic is reported to keep a weekly data
 quota, so history is fetched once and cached, never asked for twice.
 
 ### 3. Providers say what they can do
+
+**Done when:** footprint, bid and ask volume and cumulative delta exist as
+indicators; on a Rithmic chart they draw, on a Yahoo chart they say what they
+need; and `bin/perf-compare` against `main` shows the same allocation counts
+for every scenario.
 
 Feeds differ, and the richer ones will keep coming (Interactive Brokers is
 likely next). A provider says what it serves, per timeframe as `Capability`
