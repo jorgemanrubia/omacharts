@@ -31,36 +31,50 @@ pub mod window;
 pub use chart::ChartView;
 pub use window::Window;
 
-/// Whether widgets can be built on this thread.
+/// Run a test that builds widgets on the one thread GTK is ever
+/// initialised on, and say whether it ran.
 ///
-/// Two bargains in one. There may be no display, in which case there is
-/// nothing to check — that is the usual answer on CI. And libtest gives every
-/// test its own thread even at `--test-threads=1`, so the first test to reach
-/// GTK claims it and `gtk::init` from the next one panics with "attempted to
-/// initialize GTK from two different threads". Asking first turns that into a
-/// skip, which is what the display-less case already does.
+/// libtest gives every test its own thread, even at `--test-threads=1`, and
+/// GTK belongs to the first thread that initialises it: a widget touched from
+/// any other panics with "attempted to initialize GTK from two different
+/// threads". So asking on the test's own thread meant the first GTK test
+/// claimed GTK and every other one quietly returned — a whole suite of
+/// window tests that passed by never running, one of them broken without
+/// anybody knowing. Instead every one is handed to a single thread that owns
+/// GTK for the life of the binary, one at a time, and its panic is carried
+/// back to the test that sent it.
 ///
-/// And GTK is asked exactly once. On a runner with no display `gtk::init`
-/// fails and leaves GTK uninitialised, so a second test asking again would
-/// call it again — and the second attempt segfaults inside GTK, which ends
-/// the whole test binary rather than failing an assertion. One GTK test
-/// never hit it; the second did, on CI and anywhere else without a display.
-/// So the first attempt's answer is kept, and every later test on any other
-/// thread gets a plain no.
+/// With no display, `gtk::init` fails, nothing runs and the answer is false,
+/// which is the usual case on CI. GTK is asked exactly once: a second attempt
+/// after a failed one segfaults inside GTK and ends the whole binary.
 #[cfg(test)]
-pub fn gtk_ready() -> bool {
-    if gtk::is_initialized_main_thread() {
-        return true;
+pub fn on_gtk(test: impl FnOnce() + Send + 'static) -> bool {
+    use std::sync::{OnceLock, mpsc};
+    type Job = (Box<dyn FnOnce() + Send>, mpsc::Sender<std::thread::Result<()>>);
+    static GTK: OnceLock<Option<mpsc::Sender<Job>>> = OnceLock::new();
+    let gtk = GTK.get_or_init(|| {
+        let (jobs, queue) = mpsc::channel::<Job>();
+        let (ready, answer) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("gtk".into())
+            .spawn(move || {
+                let ok = gtk::init().is_ok();
+                let _ = ready.send(ok);
+                if !ok {
+                    return;
+                }
+                for (test, done) in queue {
+                    let _ = done.send(std::panic::catch_unwind(std::panic::AssertUnwindSafe(test)));
+                }
+            })
+            .expect("a thread for GTK");
+        answer.recv().unwrap_or(false).then_some(jobs)
+    });
+    let Some(gtk) = gtk else { return false };
+    let (done, finished) = mpsc::channel();
+    gtk.send((Box::new(test), done)).expect("the GTK thread");
+    if let Err(panic) = finished.recv().expect("the GTK thread") {
+        std::panic::resume_unwind(panic);
     }
-    static ASKED: std::sync::Mutex<Option<bool>> = std::sync::Mutex::new(None);
-    let mut asked = ASKED.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    match *asked {
-        // Either it failed, or it succeeded on a thread that is not this one.
-        Some(_) => false,
-        None => {
-            let ok = gtk::init().is_ok();
-            *asked = Some(ok);
-            ok
-        }
-    }
+    true
 }

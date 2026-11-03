@@ -557,16 +557,15 @@ mod tests {
     /// Nothing configured: a line and the button, nothing else.
     #[test]
     fn nothing_configured_is_a_line_and_a_button() {
-        if !crate::ui::gtk_ready() {
-            return;
-        }
-        let store = Rc::new(Store::memory().unwrap());
-        let panel = panel(&store, Rc::new(Desk::new(Arc::new(Fake::default()))));
-        rebuild(&panel);
-        let words = page_words(&panel);
-        assert!(words.iter().any(|w| w == "Add a broker…"), "{words:?}");
-        assert!(!words.iter().any(|w| w == "Remove" || w == "Sign in…"), "{words:?}");
-        assert!(!words.iter().any(|w| w == "Edit trading sizes…"), "sizes with nothing to trade: {words:?}");
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().unwrap());
+            let panel = panel(&store, Rc::new(Desk::new(Arc::new(Fake::default()))));
+            rebuild(&panel);
+            let words = page_words(&panel);
+            assert!(words.iter().any(|w| w == "Add a broker…"), "{words:?}");
+            assert!(!words.iter().any(|w| w == "Remove" || w == "Sign in…"), "{words:?}");
+            assert!(!words.iter().any(|w| w == "Edit trading sizes…"), "sizes with nothing to trade: {words:?}");
+        });
     }
 
     /// Two logins with their accounts: each says how it stands, the data
@@ -574,52 +573,54 @@ mod tests {
     /// the default offers to become it.
     #[test]
     fn logins_and_their_accounts_are_listed() {
-        if !crate::ui::gtk_ready() || omacharts_engine::providers::rithmic::session::development() {
+        if omacharts_engine::providers::rithmic::session::development() {
             return;
         }
-        let store = Rc::new(Store::memory().unwrap());
-        let kept = Kept::default();
-        let lucid = trading::add_login(&store, &kept, &typed("Lucid")).unwrap();
-        let test = trading::add_login(&store, &kept, &typed("Rithmic Test")).unwrap();
-        let mut funded = crate::trading::Account {
-            login: lucid.clone(),
-            id: "1234".into(),
-            name: None,
-            currency: Some("USD".into()),
-            fcm: String::new(),
-            ib: String::new(),
-            balance: Some(50_210.0),
-        };
-        let other = crate::trading::Account { id: "1235".into(), balance: None, ..funded.clone() };
-        trading::cache_accounts(&store, &lucid, vec![funded.clone(), other]);
-        funded.login = test.clone();
-        funded.id = "951".into();
-        trading::cache_accounts(&store, &test, vec![funded]);
-        trading::sign_out_login(&store, &kept, &test).unwrap();
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().unwrap());
+            let kept = Kept::default();
+            let lucid = trading::add_login(&store, &kept, &typed("Lucid")).unwrap();
+            let test = trading::add_login(&store, &kept, &typed("Rithmic Test")).unwrap();
+            let mut funded = crate::trading::Account {
+                login: lucid.clone(),
+                id: "1234".into(),
+                name: None,
+                currency: Some("USD".into()),
+                fcm: String::new(),
+                ib: String::new(),
+                balance: Some(50_210.0),
+            };
+            let other = crate::trading::Account { id: "1235".into(), balance: None, ..funded.clone() };
+            trading::cache_accounts(&store, &lucid, vec![funded.clone(), other]);
+            funded.login = test.clone();
+            funded.id = "951".into();
+            trading::cache_accounts(&store, &test, vec![funded]);
+            trading::sign_out_login(&store, &kept, &test).unwrap();
 
-        let panel = panel(&store, Rc::new(Desk::new(Arc::new(Fake::default()))));
-        rebuild(&panel);
-        let groups = panel.groups.borrow().clone();
-        assert_eq!(groups.len(), 4, "two logins, the button and the sizes");
-        assert_eq!(groups[0].title(), "Lucid");
-        assert_eq!(groups[0].description().as_deref(), Some("Rithmic Test · signed in · data"));
-        assert_eq!(groups[1].description().as_deref(), Some("Rithmic Test · not signed in"));
-        let lucid_words = words_under(groups[0].upcast_ref());
-        for word in ["1234", "USD · $50,210", "Default", "1235", "Make default", "Sign in", "Remove"] {
-            assert!(lucid_words.iter().any(|w| w == word), "{word} missing: {lucid_words:?}");
-        }
-        assert!(!lucid_words.iter().any(|w| w == "Use for data"), "{lucid_words:?}");
-        let test_words = words_under(groups[1].upcast_ref());
-        assert!(test_words.iter().any(|w| w == "Use for data"), "{test_words:?}");
-        assert!(test_words.iter().any(|w| w == "Sign in…"), "{test_words:?}");
-        assert!(page_words(&panel).iter().any(|w| w == "Edit trading sizes…"), "no way to the sizes with a login");
+            let panel = panel(&store, Rc::new(Desk::new(Arc::new(Fake::default()))));
+            rebuild(&panel);
+            let groups = panel.groups.borrow().clone();
+            assert_eq!(groups.len(), 4, "two logins, the button and the sizes");
+            assert_eq!(groups[0].title(), "Lucid");
+            assert_eq!(groups[0].description().as_deref(), Some("Rithmic Test · signed in · data"));
+            assert_eq!(groups[1].description().as_deref(), Some("Rithmic Test · not signed in"));
+            let lucid_words = words_under(groups[0].upcast_ref());
+            for word in ["1234", "USD · $50,210", "Default", "1235", "Make default", "Sign in", "Remove"] {
+                assert!(lucid_words.iter().any(|w| w == word), "{word} missing: {lucid_words:?}");
+            }
+            assert!(!lucid_words.iter().any(|w| w == "Use for data"), "{lucid_words:?}");
+            let test_words = words_under(groups[1].upcast_ref());
+            assert!(test_words.iter().any(|w| w == "Use for data"), "{test_words:?}");
+            assert!(test_words.iter().any(|w| w == "Sign in…"), "{test_words:?}");
+            assert!(page_words(&panel).iter().any(|w| w == "Edit trading sizes…"), "no way to the sizes with a login");
 
-        // Removing the data login hands data to the other, and says so.
-        let (_, body) = removal_words("Lucid", &trading::removal(&store, &lucid));
-        assert!(body.ends_with("now come through Rithmic Test."), "{body}");
-        remove_login(&panel, &lucid, true);
-        let groups = panel.groups.borrow().clone();
-        assert_eq!(groups[0].description().as_deref(), Some("Rithmic Test · not signed in · data"));
+            // Removing the data login hands data to the other, and says so.
+            let (_, body) = removal_words("Lucid", &trading::removal(&store, &lucid));
+            assert!(body.ends_with("now come through Rithmic Test."), "{body}");
+            remove_login(&panel, &lucid, true);
+            let groups = panel.groups.borrow().clone();
+            assert_eq!(groups[0].description().as_deref(), Some("Rithmic Test · not signed in · data"));
+        });
     }
 
     /// Each way removing a login can go is said in the dialog: nothing

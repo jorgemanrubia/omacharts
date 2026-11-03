@@ -1899,21 +1899,20 @@ mod tests {
     #[test]
     fn a_hidden_part_is_neither_listed_nor_offered_and_stays_put() {
         use crate::header::{Header, Part};
-        if !crate::ui::gtk_ready() {
-            return;
-        }
-        let saved: Rc<RefCell<Vec<Header>>> = Rc::default();
-        let seen = saved.clone();
-        let sections =
-            header_sections(Header::standard(), &[Part::Size], move |header| seen.borrow_mut().push(header.clone()));
-        let [left, center] = sections.as_slice() else { panic!("two sections") };
-        assert_eq!(left.parts(), vec![Part::Symbol, Part::Resolution, Part::Account]);
-        assert!(!left.offered().contains(&Part::Size) && !center.offered().contains(&Part::Size));
-        left.set(vec![Part::Resolution, Part::Symbol]);
-        assert_eq!(
-            saved.borrow().last().map(|header| header.left.clone()),
-            Some(vec![Part::Resolution, Part::Symbol, Part::Size])
-        );
+        crate::ui::on_gtk(|| {
+            let saved: Rc<RefCell<Vec<Header>>> = Rc::default();
+            let seen = saved.clone();
+            let sections =
+                header_sections(Header::standard(), &[Part::Size], move |header| seen.borrow_mut().push(header.clone()));
+            let [left, center] = sections.as_slice() else { panic!("two sections") };
+            assert_eq!(left.parts(), vec![Part::Symbol, Part::Resolution, Part::Account]);
+            assert!(!left.offered().contains(&Part::Size) && !center.offered().contains(&Part::Size));
+            left.set(vec![Part::Resolution, Part::Symbol]);
+            assert_eq!(
+                saved.borrow().last().map(|header| header.left.clone()),
+                Some(vec![Part::Resolution, Part::Symbol, Part::Size])
+            );
+        });
     }
 
     /// A part in one section is not offered by the other, and is offered
@@ -1921,32 +1920,31 @@ mod tests {
     #[test]
     fn a_part_in_one_section_is_not_offered_in_the_other() {
         use crate::header::{Header, Part};
-        if !crate::ui::gtk_ready() {
-            return;
-        }
-        let saved: Rc<RefCell<Vec<Header>>> = Rc::default();
-        let seen = saved.clone();
-        let sections = header_sections(Header::standard(), &[], move |header| seen.borrow_mut().push(header.clone()));
-        let [left, center] = sections.as_slice() else { panic!("two sections") };
-        assert_eq!(left.group.title(), "Left");
-        assert_eq!(center.group.title(), "Center");
-        assert_eq!(left.parts(), vec![Part::Symbol, Part::Resolution, Part::Account, Part::Size]);
-        assert_eq!(center.parts(), vec![Part::Stripe]);
-        assert_eq!(left.offered(), vec![Part::Change, Part::Template]);
-        assert_eq!(center.offered(), vec![Part::Change, Part::Template]);
+        crate::ui::on_gtk(|| {
+            let saved: Rc<RefCell<Vec<Header>>> = Rc::default();
+            let seen = saved.clone();
+            let sections = header_sections(Header::standard(), &[], move |header| seen.borrow_mut().push(header.clone()));
+            let [left, center] = sections.as_slice() else { panic!("two sections") };
+            assert_eq!(left.group.title(), "Left");
+            assert_eq!(center.group.title(), "Center");
+            assert_eq!(left.parts(), vec![Part::Symbol, Part::Resolution, Part::Account, Part::Size]);
+            assert_eq!(center.parts(), vec![Part::Stripe]);
+            assert_eq!(left.offered(), vec![Part::Change, Part::Template]);
+            assert_eq!(center.offered(), vec![Part::Change, Part::Template]);
 
-        // Out of the center, the stripe is offered by both.
-        center.set(Vec::new());
-        assert_eq!(left.offered(), vec![Part::Change, Part::Template, Part::Stripe]);
-        assert_eq!(center.offered(), vec![Part::Change, Part::Template, Part::Stripe]);
-        // Into the left, by neither.
-        left.set(vec![Part::Symbol, Part::Stripe]);
-        assert_eq!(center.offered(), vec![Part::Resolution, Part::Change, Part::Template, Part::Account, Part::Size]);
-        assert!(!left.offered().contains(&Part::Stripe));
-        assert_eq!(
-            saved.borrow().last(),
-            Some(&Header { left: vec![Part::Symbol, Part::Stripe], center: Vec::new() })
-        );
+            // Out of the center, the stripe is offered by both.
+            center.set(Vec::new());
+            assert_eq!(left.offered(), vec![Part::Change, Part::Template, Part::Stripe]);
+            assert_eq!(center.offered(), vec![Part::Change, Part::Template, Part::Stripe]);
+            // Into the left, by neither.
+            left.set(vec![Part::Symbol, Part::Stripe]);
+            assert_eq!(center.offered(), vec![Part::Resolution, Part::Change, Part::Template, Part::Account, Part::Size]);
+            assert!(!left.offered().contains(&Part::Stripe));
+            assert_eq!(
+                saved.borrow().last(),
+                Some(&Header { left: vec![Part::Symbol, Part::Stripe], center: Vec::new() })
+            );
+        });
     }
 
     #[test]

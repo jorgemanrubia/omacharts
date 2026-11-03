@@ -539,23 +539,22 @@ mod tests {
     /// another. No brokerage, no "Experimental", no sign-in.
     #[test]
     fn nothing_configured_is_one_yahoo_row() {
-        if !crate::ui::gtk_ready() {
-            return;
-        }
-        let store = Rc::new(Store::memory().expect("an empty database"));
-        let panel = panel(&store);
-        rebuild(&panel);
-        assert_eq!(titles(&panel), vec!["Yahoo Finance"]);
-        let group = panel.group.borrow().clone().unwrap();
-        let words = words_under(group.upcast_ref());
-        assert!(words.iter().any(|word| word == "Add a data feed…"), "{words:?}");
-        // The sources still to add are in the button's menu, not on the page.
-        let yahoo = &action_rows(group.upcast_ref())[0];
-        let words = words_under(yahoo.upcast_ref());
-        for absent in ["Experimental", "Sign in…", "Sign out", "Remove"] {
-            assert!(!words.iter().any(|word| word == absent), "{absent} is on the page: {words:?}");
-        }
-        assert!(yahoo.subtitle().unwrap_or_default().starts_with("Stocks, ETFs"), "{:?}", yahoo.subtitle());
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("an empty database"));
+            let panel = panel(&store);
+            rebuild(&panel);
+            assert_eq!(titles(&panel), vec!["Yahoo Finance"]);
+            let group = panel.group.borrow().clone().unwrap();
+            let words = words_under(group.upcast_ref());
+            assert!(words.iter().any(|word| word == "Add a data feed…"), "{words:?}");
+            // The sources still to add are in the button's menu, not on the page.
+            let yahoo = &action_rows(group.upcast_ref())[0];
+            let words = words_under(yahoo.upcast_ref());
+            for absent in ["Experimental", "Sign in…", "Sign out", "Remove"] {
+                assert!(!words.iter().any(|word| word == absent), "{absent} is on the page: {words:?}");
+            }
+            assert!(yahoo.subtitle().unwrap_or_default().starts_with("Stocks, ETFs"), "{:?}", yahoo.subtitle());
+        });
     }
 
     /// An added source gets a row above Yahoo, with Remove, and
@@ -563,31 +562,30 @@ mod tests {
     /// drawn, and moving one writes the new order.
     #[test]
     fn the_order_is_stored_and_drawn() {
-        if !crate::ui::gtk_ready() {
-            return;
-        }
-        let store = Rc::new(Store::memory().expect("an empty database"));
-        let panel = panel(&store);
-        let tos = providers::listed("tos").unwrap();
-        let rithmic = providers::listed(RITHMIC).unwrap();
-        feeds::add_source(&store, RITHMIC);
-        feeds::add_source(&store, "tos");
-        rebuild(&panel);
-        assert_eq!(titles(&panel), vec!["Rithmic", "thinkorswim", "Yahoo Finance"]);
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("an empty database"));
+            let panel = panel(&store);
+            let tos = providers::listed("tos").unwrap();
+            let rithmic = providers::listed(RITHMIC).unwrap();
+            feeds::add_source(&store, RITHMIC);
+            feeds::add_source(&store, "tos");
+            rebuild(&panel);
+            assert_eq!(titles(&panel), vec!["Rithmic", "thinkorswim", "Yahoo Finance"]);
 
-        let group = panel.group.borrow().clone().unwrap();
-        let rows = action_rows(group.upcast_ref());
-        let tos_words = words_under(rows[1].upcast_ref());
-        assert!(tos_words.iter().any(|w| w == "Experimental"), "{tos_words:?}");
-        assert!(tos_words.iter().any(|w| w == "Remove"), "{tos_words:?}");
-        let rithmic_words = words_under(rows[0].upcast_ref());
-        assert!(!rithmic_words.iter().any(|w| w == "Experimental"), "{rithmic_words:?}");
+            let group = panel.group.borrow().clone().unwrap();
+            let rows = action_rows(group.upcast_ref());
+            let tos_words = words_under(rows[1].upcast_ref());
+            assert!(tos_words.iter().any(|w| w == "Experimental"), "{tos_words:?}");
+            assert!(tos_words.iter().any(|w| w == "Remove"), "{tos_words:?}");
+            let rithmic_words = words_under(rows[0].upcast_ref());
+            assert!(!rithmic_words.iter().any(|w| w == "Experimental"), "{rithmic_words:?}");
 
-        let order = moved(&panel.added(), 1, 0).expect("a move");
-        panel.reorder(order);
-        assert_eq!(store.setting(feeds::SETTING).as_deref(), Some(r#"["tos","rithmic","yahoo"]"#));
-        assert_eq!(titles(&panel), vec!["thinkorswim", "Rithmic", "Yahoo Finance"]);
-        assert_eq!(panel.added().iter().map(|f| f.id).collect::<Vec<_>>(), vec![tos.id, rithmic.id, "yahoo"]);
+            let order = moved(&panel.added(), 1, 0).expect("a move");
+            panel.reorder(order);
+            assert_eq!(store.setting(feeds::SETTING).as_deref(), Some(r#"["tos","rithmic","yahoo"]"#));
+            assert_eq!(titles(&panel), vec!["thinkorswim", "Rithmic", "Yahoo Finance"]);
+            assert_eq!(panel.added().iter().map(|f| f.id).collect::<Vec<_>>(), vec![tos.id, rithmic.id, "yahoo"]);
+        });
     }
 
     /// Yahoo moves like any other source, and can be removed and added back
@@ -598,26 +596,25 @@ mod tests {
         assert_eq!(moved(&order, 1, 1), None, "dropped on itself");
         assert_eq!(moved(&order, 3, 0), None, "no such source");
         assert_eq!(moved(&order, 2, 0), Some(vec!["yahoo", "rithmic", "tos"]));
-        if !crate::ui::gtk_ready() {
-            return;
-        }
-        let store = Rc::new(Store::memory().expect("an empty database"));
-        let panel = panel(&store);
-        feeds::add_source(&store, "tos");
-        rebuild(&panel);
-        assert_eq!(titles(&panel), vec!["thinkorswim", "Yahoo Finance"]);
-        let yahoo = providers::listed("yahoo").unwrap();
-        remove_source(&panel, yahoo);
-        assert_eq!(titles(&panel), vec!["thinkorswim"]);
-        let group = panel.group.borrow().clone().unwrap();
-        let words = words_under(action_rows(group.upcast_ref())[0].upcast_ref());
-        assert!(!words.iter().any(|w| w == "Remove"), "the last source: {words:?}");
-        add_source(&panel, yahoo, &gtk::Button::new());
-        assert_eq!(titles(&panel), vec!["thinkorswim", "Yahoo Finance"]);
-        let order = moved(&panel.added(), 1, 0).expect("a move");
-        panel.reorder(order);
-        assert_eq!(store.setting(feeds::SETTING).as_deref(), Some(r#"["yahoo","tos"]"#));
-        assert_eq!(titles(&panel), vec!["Yahoo Finance", "thinkorswim"]);
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("an empty database"));
+            let panel = panel(&store);
+            feeds::add_source(&store, "tos");
+            rebuild(&panel);
+            assert_eq!(titles(&panel), vec!["thinkorswim", "Yahoo Finance"]);
+            let yahoo = providers::listed("yahoo").unwrap();
+            remove_source(&panel, yahoo);
+            assert_eq!(titles(&panel), vec!["thinkorswim"]);
+            let group = panel.group.borrow().clone().unwrap();
+            let words = words_under(action_rows(group.upcast_ref())[0].upcast_ref());
+            assert!(!words.iter().any(|w| w == "Remove"), "the last source: {words:?}");
+            add_source(&panel, yahoo, &gtk::Button::new());
+            assert_eq!(titles(&panel), vec!["thinkorswim", "Yahoo Finance"]);
+            let order = moved(&panel.added(), 1, 0).expect("a move");
+            panel.reorder(order);
+            assert_eq!(store.setting(feeds::SETTING).as_deref(), Some(r#"["yahoo","tos"]"#));
+            assert_eq!(titles(&panel), vec!["Yahoo Finance", "thinkorswim"]);
+        });
     }
 
     /// Remove takes the source off the order; the last one removed leaves
@@ -625,58 +622,62 @@ mod tests {
     /// says so and offers neither Remove nor a sign-in of its own.
     #[test]
     fn remove_clears_the_setting_and_trading_owns_rithmics_login() {
-        if !crate::ui::gtk_ready() || session::development() {
+        if session::development() {
             return;
         }
-        let store = Rc::new(Store::memory().expect("an empty database"));
-        let panel = panel(&store);
-        feeds::add_source(&store, RITHMIC);
-        rebuild(&panel);
-        let group = panel.group.borrow().clone().unwrap();
-        let words = words_under(action_rows(group.upcast_ref())[0].upcast_ref());
-        assert!(words.iter().any(|w| w == "Remove"), "{words:?}");
-        remove_source(&panel, providers::listed(RITHMIC).unwrap());
-        assert_eq!(store.setting(feeds::SETTING), None);
-        assert_eq!(titles(&panel), vec!["Yahoo Finance"]);
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("an empty database"));
+            let panel = panel(&store);
+            feeds::add_source(&store, RITHMIC);
+            rebuild(&panel);
+            let group = panel.group.borrow().clone().unwrap();
+            let words = words_under(action_rows(group.upcast_ref())[0].upcast_ref());
+            assert!(words.iter().any(|w| w == "Remove"), "{words:?}");
+            remove_source(&panel, providers::listed(RITHMIC).unwrap());
+            assert_eq!(store.setting(feeds::SETTING), None);
+            assert_eq!(titles(&panel), vec!["Yahoo Finance"]);
 
-        let kept = crate::trading::tests::Kept::default();
-        let typed = crate::trading::Typed {
-            name: "Lucid".into(),
-            user: "trader".into(),
-            password: "PLANTED-PASSWORD".into(),
-            system: String::new(),
-            gateway: String::new(),
-        };
-        crate::trading::add_login(&store, &kept, &typed).unwrap();
-        rebuild(&panel);
-        assert_eq!(titles(&panel), vec!["Rithmic", "Yahoo Finance"]);
-        let group = panel.group.borrow().clone().unwrap();
-        let row = &action_rows(group.upcast_ref())[0];
-        assert!(row.subtitle().unwrap_or_default().ends_with("signs in through Lucid in Trading"), "{:?}", row.subtitle());
-        let words = words_under(row.upcast_ref());
-        for absent in ["Remove", "Sign in…", "Sign out"] {
-            assert!(!words.iter().any(|w| w == absent), "{absent}: {words:?}");
-        }
+            let kept = crate::trading::tests::Kept::default();
+            let typed = crate::trading::Typed {
+                name: "Lucid".into(),
+                user: "trader".into(),
+                password: "PLANTED-PASSWORD".into(),
+                system: String::new(),
+                gateway: String::new(),
+            };
+            crate::trading::add_login(&store, &kept, &typed).unwrap();
+            rebuild(&panel);
+            assert_eq!(titles(&panel), vec!["Rithmic", "Yahoo Finance"]);
+            let group = panel.group.borrow().clone().unwrap();
+            let row = &action_rows(group.upcast_ref())[0];
+            assert!(row.subtitle().unwrap_or_default().ends_with("signs in through Lucid in Trading"), "{:?}", row.subtitle());
+            let words = words_under(row.upcast_ref());
+            for absent in ["Remove", "Sign in…", "Sign out"] {
+                assert!(!words.iter().any(|w| w == absent), "{absent}: {words:?}");
+            }
+        });
     }
 
     /// A source's row offers one action, and which one follows how it
     /// stands. Rithmic with nobody saved is not signed in.
     #[test]
     fn a_source_offers_the_action_its_state_calls_for() {
-        if !crate::ui::gtk_ready() || session::development() {
+        if session::development() {
             return;
         }
-        let store = Rc::new(Store::memory().expect("an empty database"));
-        feeds::remember_logins(&store);
-        let panel = panel(&store);
-        feeds::add_source(&store, RITHMIC);
-        rebuild(&panel);
-        let group = panel.group.borrow().clone().unwrap();
-        let row = &action_rows(group.upcast_ref())[0];
-        assert_eq!(row.subtitle().as_deref(), Some("CME futures, front month · not signed in"));
-        let words = words_under(row.upcast_ref());
-        assert!(words.iter().any(|w| w == "Sign in…"), "{words:?}");
-        assert!(!words.iter().any(|w| w == "Sign out"), "{words:?}");
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("an empty database"));
+            feeds::remember_logins(&store);
+            let panel = panel(&store);
+            feeds::add_source(&store, RITHMIC);
+            rebuild(&panel);
+            let group = panel.group.borrow().clone().unwrap();
+            let row = &action_rows(group.upcast_ref())[0];
+            assert_eq!(row.subtitle().as_deref(), Some("CME futures, front month · not signed in"));
+            let words = words_under(row.upcast_ref());
+            assert!(words.iter().any(|w| w == "Sign in…"), "{words:?}");
+            assert!(!words.iter().any(|w| w == "Sign out"), "{words:?}");
+        });
     }
 
     /// A feed no code here names gets its row and its sign-in from what it
@@ -684,61 +685,60 @@ mod tests {
     /// fake rich feed, which is in no list a person is offered.
     #[test]
     fn a_feed_nobody_names_gets_its_row_its_dialog_and_its_charts() {
-        if !crate::ui::gtk_ready() {
-            return;
-        }
-        let fake = providers::listed(omacharts_engine::providers::fake::LISTED.id).expect("in a test build");
-        let store = Rc::new(Store::memory().expect("an empty database"));
-        let panel = panel(&store);
-        add_source(&panel, fake, &gtk::Button::new());
-        assert_eq!(titles(&panel), vec![fake.label, "Yahoo Finance"]);
-        let group = panel.group.borrow().clone().unwrap();
-        let row = action_rows(group.upcast_ref())[0].clone();
-        assert_eq!(row.subtitle().unwrap_or_default(), format!("{} · not signed in", fake.covers));
-        let words = words_under(row.upcast_ref());
-        assert!(words.iter().any(|w| w == "Sign in…"), "{words:?}");
-        assert!(words.iter().any(|w| w == "Remove"), "{words:?}");
+        crate::ui::on_gtk(|| {
+            let fake = providers::listed(omacharts_engine::providers::fake::LISTED.id).expect("in a test build");
+            let store = Rc::new(Store::memory().expect("an empty database"));
+            let panel = panel(&store);
+            add_source(&panel, fake, &gtk::Button::new());
+            assert_eq!(titles(&panel), vec![fake.label, "Yahoo Finance"]);
+            let group = panel.group.borrow().clone().unwrap();
+            let row = action_rows(group.upcast_ref())[0].clone();
+            assert_eq!(row.subtitle().unwrap_or_default(), format!("{} · not signed in", fake.covers));
+            let words = words_under(row.upcast_ref());
+            assert!(words.iter().any(|w| w == "Sign in…"), "{words:?}");
+            assert!(words.iter().any(|w| w == "Remove"), "{words:?}");
 
-        // Its dialog is its own, found by what it declares; what it keeps
-        // signs it in, and the row says it is live.
-        assert!(feed_settings_opens_a_dialog(fake));
-        let done = Rc::new(Cell::new(false));
-        let signed = done.clone();
-        let dialog = sign_in_dialogs::feed_dialog(fake).expect("a dialog")(Box::new(move || signed.set(true)));
-        let list = dialog.extra_child().and_downcast::<gtk::ListBox>().expect("its rows");
-        list.first_child().and_downcast::<adw::EntryRow>().expect("a member number").set_text("member");
-        dialog.emit_by_name::<()>("response", &[&sign_in_dialogs::fake::SIGN_IN]);
-        assert!(done.get(), "the page is told to sign it in");
-        assert!(feeds::sign_in_now(fake.id, |_| {}).is_ok());
-        rebuild(&panel);
-        let group = panel.group.borrow().clone().unwrap();
-        let row = action_rows(group.upcast_ref())[0].clone();
-        assert_eq!(row.subtitle().unwrap_or_default(), format!("{} · live", fake.covers));
-        assert!(words_under(row.upcast_ref()).iter().any(|w| w == "Sign out"));
+            // Its dialog is its own, found by what it declares; what it keeps
+            // signs it in, and the row says it is live.
+            assert!(feed_settings_opens_a_dialog(fake));
+            let done = Rc::new(Cell::new(false));
+            let signed = done.clone();
+            let dialog = sign_in_dialogs::feed_dialog(fake).expect("a dialog")(Box::new(move || signed.set(true)));
+            let list = dialog.extra_child().and_downcast::<gtk::ListBox>().expect("its rows");
+            list.first_child().and_downcast::<adw::EntryRow>().expect("a member number").set_text("member");
+            dialog.emit_by_name::<()>("response", &[&sign_in_dialogs::fake::SIGN_IN]);
+            assert!(done.get(), "the page is told to sign it in");
+            assert!(feeds::sign_in_now(fake.id, |_| {}).is_ok());
+            rebuild(&panel);
+            let group = panel.group.borrow().clone().unwrap();
+            let row = action_rows(group.upcast_ref())[0].clone();
+            assert_eq!(row.subtitle().unwrap_or_default(), format!("{} · live", fake.covers));
+            assert!(words_under(row.upcast_ref()).iter().any(|w| w == "Sign out"));
 
-        // And charts go to it for what it serves, and to Yahoo for the rest.
-        let routed = feeds::Feeds::load(&store);
-        let instrument = |symbol: &str, kind| omacharts_engine::Instrument {
-            symbol: symbol.into(),
-            name: String::new(),
-            kind,
-            suffix: None,
-            currency: None,
-            tier: 0,
-            session_origin: 0,
-            overrides: Vec::new(),
-            exchange: None,
-            popularity: 0,
-            local_name: None,
-        };
-        let future = instrument("ES", omacharts_engine::InstrumentKind::FutureRoot);
-        let stock = instrument("AAPL", omacharts_engine::InstrumentKind::Equity);
-        assert_eq!(routed.route(&future).map(|(provider, _)| provider.id()), Some(fake.id));
-        assert_eq!(routed.route(&stock).map(|(provider, _)| provider.id()), Some(providers::DEFAULT));
+            // And charts go to it for what it serves, and to Yahoo for the rest.
+            let routed = feeds::Feeds::load(&store);
+            let instrument = |symbol: &str, kind| omacharts_engine::Instrument {
+                symbol: symbol.into(),
+                name: String::new(),
+                kind,
+                suffix: None,
+                currency: None,
+                tier: 0,
+                session_origin: 0,
+                overrides: Vec::new(),
+                exchange: None,
+                popularity: 0,
+                local_name: None,
+            };
+            let future = instrument("ES", omacharts_engine::InstrumentKind::FutureRoot);
+            let stock = instrument("AAPL", omacharts_engine::InstrumentKind::Equity);
+            assert_eq!(routed.route(&future).map(|(provider, _)| provider.id()), Some(fake.id));
+            assert_eq!(routed.route(&stock).map(|(provider, _)| provider.id()), Some(providers::DEFAULT));
 
-        // Signed out from its row, it cannot sign in until the dialog again.
-        sign_out(&panel, fake);
-        assert!(feeds::sign_in_now(fake.id, |_| {}).is_err());
+            // Signed out from its row, it cannot sign in until the dialog again.
+            sign_out(&panel, fake);
+            assert!(feeds::sign_in_now(fake.id, |_| {}).is_err());
+        });
     }
 
     /// A feed is signed in to through a dialog of the app's only when the

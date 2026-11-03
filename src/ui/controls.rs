@@ -234,29 +234,28 @@ mod tests {
     /// the one guard.
     #[test]
     fn the_slider_and_the_box_show_one_figure_and_refuse_what_is_past_the_ends() {
-        if !crate::ui::gtk_ready() {
-            return;
-        }
-        let heard = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-        let heard_by_row = heard.clone();
-        let row = bounded_row("Level", None, 70.0, 0.0, 100.0, 1.0, 0, move |v| {
-            heard_by_row.borrow_mut().push(v)
+        crate::ui::on_gtk(|| {
+            let heard = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let heard_by_row = heard.clone();
+            let row = bounded_row("Level", None, 70.0, 0.0, 100.0, 1.0, 0, move |v| {
+                heard_by_row.borrow_mut().push(v)
+            });
+            assert_eq!(row.value(), 70.0);
+            assert!(heard.borrow().is_empty(), "placing the first figure is not a change");
+
+            row.set(80.0);
+            assert_eq!(heard.borrow().as_slice(), &[80.0]);
+
+            // Past the top end it is held at the top.
+            row.set(150.0);
+            assert_eq!(row.value(), 100.0);
+
+            let weak = row.downgrade();
+            weak.set(40.0);
+            assert_eq!(weak.value(), Some(40.0));
+            assert_eq!(heard.borrow().last(), Some(&40.0));
+            drop(row);
+            assert_eq!(weak.value(), None, "a weak handle does not keep the row alive");
         });
-        assert_eq!(row.value(), 70.0);
-        assert!(heard.borrow().is_empty(), "placing the first figure is not a change");
-
-        row.set(80.0);
-        assert_eq!(heard.borrow().as_slice(), &[80.0]);
-
-        // Past the top end it is held at the top.
-        row.set(150.0);
-        assert_eq!(row.value(), 100.0);
-
-        let weak = row.downgrade();
-        weak.set(40.0);
-        assert_eq!(weak.value(), Some(40.0));
-        assert_eq!(heard.borrow().last(), Some(&40.0));
-        drop(row);
-        assert_eq!(weak.value(), None, "a weak handle does not keep the row alive");
     }
 }

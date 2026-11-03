@@ -232,30 +232,29 @@ mod tests {
     /// on, and a size typed that is not one is not saved.
     #[test]
     fn templates_are_edited_and_saved_as_they_change() {
-        if !crate::ui::gtk_ready() {
-            return;
-        }
-        let store = Rc::new(Store::memory().unwrap());
-        let told = Rc::new(std::cell::Cell::new(0));
-        let counted = told.clone();
-        let page = adw::PreferencesPage::new();
-        let editor = Rc::new(Editor {
-            templates: RefCell::new(sizes::load(&store)),
-            store: store.clone(),
-            changed: Rc::new(move || counted.set(counted.get() + 1)),
-            page: page.clone(),
-            groups: RefCell::new(Vec::new()),
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().unwrap());
+            let told = Rc::new(std::cell::Cell::new(0));
+            let counted = told.clone();
+            let page = adw::PreferencesPage::new();
+            let editor = Rc::new(Editor {
+                templates: RefCell::new(sizes::load(&store)),
+                store: store.clone(),
+                changed: Rc::new(move || counted.set(counted.get() + 1)),
+                page: page.clone(),
+                groups: RefCell::new(Vec::new()),
+            });
+            rebuild(&editor);
+            let listed = titles(&page);
+            assert!(listed.contains(&"Stocks".to_string()) && listed.contains(&"Futures".to_string()), "{listed:?}");
+
+            editor.edit(1, |template| template.sizes = sizes::parse_sizes("1, 2, 5").unwrap());
+            assert_eq!(sizes::load(&store)[1].sizes, sizes::parse_sizes("1, 2, 5").unwrap());
+            assert_eq!(told.get(), 1);
+
+            add_template(&editor);
+            assert_eq!(sizes::load(&store).len(), 3);
+            assert!(titles(&page).contains(&"New template".to_string()));
         });
-        rebuild(&editor);
-        let listed = titles(&page);
-        assert!(listed.contains(&"Stocks".to_string()) && listed.contains(&"Futures".to_string()), "{listed:?}");
-
-        editor.edit(1, |template| template.sizes = sizes::parse_sizes("1, 2, 5").unwrap());
-        assert_eq!(sizes::load(&store)[1].sizes, sizes::parse_sizes("1, 2, 5").unwrap());
-        assert_eq!(told.get(), 1);
-
-        add_template(&editor);
-        assert_eq!(sizes::load(&store).len(), 3);
-        assert!(titles(&page).contains(&"New template".to_string()));
     }
 }

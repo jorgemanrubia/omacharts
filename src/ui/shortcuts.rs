@@ -280,19 +280,16 @@ mod tests {
         // Parsing one is GTK's job and GTK needs a display to say so.
         // Where there is none this checks the rest, which is still the
         // part that goes wrong.
-        let parses = crate::ui::gtk_ready();
-
         // A typo here is a shortcut that silently does nothing, and a
         // menu row that confidently advertises it.
-        for binding in BINDINGS {
-            for accel in binding.accels {
-                assert!(
-                    !parses || gtk::accelerator_parse(*accel).is_some(),
-                    "{} cannot be parsed, for {}",
-                    accel,
-                    binding.action
-                );
+        crate::ui::on_gtk(|| {
+            for binding in BINDINGS {
+                for accel in binding.accels {
+                    assert!(gtk::accelerator_parse(*accel).is_some(), "{} cannot be parsed, for {}", accel, binding.action);
+                }
             }
+        });
+        for binding in BINDINGS {
             assert!(!binding.accels.is_empty(), "{} has no key", binding.action);
             assert!(binding.action.contains('.'), "{} has no action group", binding.action);
         }
@@ -303,12 +300,11 @@ mod tests {
     /// half somebody hovered for.
     #[test]
     fn the_keys_no_action_owns_are_accelerators_too() {
-        if !crate::ui::gtk_ready() {
-            return;
-        }
-        for accel in [ADD_SYMBOL, ADD_SECTION, REMOVE_SYMBOL, ADD_INDICATOR, MAIN_MENU] {
-            assert!(accel_label(accel).is_some(), "{accel} spells nothing");
-        }
+        crate::ui::on_gtk(|| {
+            for accel in [ADD_SYMBOL, ADD_SECTION, REMOVE_SYMBOL, ADD_INDICATOR, MAIN_MENU] {
+                assert!(accel_label(accel).is_some(), "{accel} spells nothing");
+            }
+        });
     }
 
     /// A tooltip says the key after what the button does, whether the key came
@@ -316,12 +312,11 @@ mod tests {
     /// extra when there is no key, rather than inventing one.
     #[test]
     fn a_tooltip_carries_the_key_it_was_given() {
-        if !crate::ui::gtk_ready() {
-            return;
-        }
-        assert_eq!(tooltip("Watchlist", "win.watchlist"), "Watchlist (Shift+Ctrl+B)");
-        assert_eq!(tooltip_with_key("Add a symbol", ADD_SYMBOL), "Add a symbol (Ctrl+N)");
-        assert_eq!(tooltip("Turn into a watchlist", "section.promote"), "Turn into a watchlist");
+        crate::ui::on_gtk(|| {
+            assert_eq!(tooltip("Watchlist", "win.watchlist"), "Watchlist (Shift+Ctrl+B)");
+            assert_eq!(tooltip_with_key("Add a symbol", ADD_SYMBOL), "Add a symbol (Ctrl+N)");
+            assert_eq!(tooltip("Turn into a watchlist", "section.promote"), "Turn into a watchlist");
+        });
     }
 
     #[test]

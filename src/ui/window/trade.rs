@@ -1233,38 +1233,37 @@ pub(super) mod tests {
     /// with the window open.
     #[test]
     fn trading_is_nowhere_without_a_login_and_comes_and_goes_with_one() {
-        if !crate::ui::gtk_ready() {
-            return;
-        }
-        let store = Rc::new(Store::memory().expect("a store"));
-        let window = window(&store);
-        let bare = corner_buttons(&window);
-        let nothing = |window: &Window| {
-            window.trade.toggle.borrow().is_none()
-                && window.window.lookup_action("trading-panel").is_none()
-                && window.trade.paned.borrow().is_none()
-                && window.trade.toasts.borrow().is_none()
-                && window.chart_host.parent() == window.trade.with_tools.borrow().clone().map(|b| b.upcast())
-        };
-        assert!(nothing(&window), "trading in a window with no login");
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = window(&store);
+            let bare = corner_buttons(&window);
+            let nothing = |window: &Window| {
+                window.trade.toggle.borrow().is_none()
+                    && window.window.lookup_action("trading-panel").is_none()
+                    && window.trade.paned.borrow().is_none()
+                    && window.trade.toasts.borrow().is_none()
+                    && window.chart_host.parent() == window.trade.with_tools.borrow().clone().map(|b| b.upcast())
+            };
+            assert!(nothing(&window), "trading in a window with no login");
 
-        let kept = Kept::default();
-        let id = trading::add_login(&store, &kept, &typed()).expect("a login");
-        window.desk.tell();
-        assert!(window.trade.toggle.borrow().is_some());
-        assert_eq!(corner_buttons(&window), bare + 1);
-        assert!(window.window.lookup_action("trading-panel").is_some());
-        assert!(window.trade.toasts.borrow().is_some());
-        gio::prelude::ActionGroupExt::activate_action(&window.window, "trading-panel", None);
-        assert!(window.trading_panel_shown());
-        assert!(window.trade.paned.borrow().is_some());
-        assert!(store.setting_bool(SHOW_TRADING_PANEL, false), "remembered");
+            let kept = Kept::default();
+            let id = trading::add_login(&store, &kept, &typed()).expect("a login");
+            window.desk.tell();
+            assert!(window.trade.toggle.borrow().is_some());
+            assert_eq!(corner_buttons(&window), bare + 1);
+            assert!(window.window.lookup_action("trading-panel").is_some());
+            assert!(window.trade.toasts.borrow().is_some());
+            gio::prelude::ActionGroupExt::activate_action(&window.window, "trading-panel", None);
+            assert!(window.trading_panel_shown());
+            assert!(window.trade.paned.borrow().is_some());
+            assert!(store.setting_bool(SHOW_TRADING_PANEL, false), "remembered");
 
-        trading::remove_login(&store, &kept, &id, true).expect("removed");
-        window.desk.tell();
-        assert!(nothing(&window), "trading left behind by the last login");
-        assert_eq!(corner_buttons(&window), bare);
-        assert!(!window.trading_panel_shown());
+            trading::remove_login(&store, &kept, &id, true).expect("removed");
+            window.desk.tell();
+            assert!(nothing(&window), "trading left behind by the last login");
+            assert_eq!(corner_buttons(&window), bare);
+            assert!(!window.trading_panel_shown());
+        });
     }
 
     /// Every label in a menu, its sections and submenus included.
@@ -1307,93 +1306,92 @@ pub(super) mod tests {
     /// with the login.
     #[test]
     fn the_chart_menu_offers_orders_only_with_a_login() {
-        if !crate::ui::gtk_ready() {
-            return;
-        }
-        let store = Rc::new(Store::memory().expect("a store"));
-        let window = window(&store);
-        assert!(trading_rows(&window).is_empty(), "orders in a menu with no login");
-        assert!(window.trade.chart_actions.borrow().as_ref().unwrap().lookup_action("order").is_none());
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = window(&store);
+            assert!(trading_rows(&window).is_empty(), "orders in a menu with no login");
+            assert!(window.trade.chart_actions.borrow().as_ref().unwrap().lookup_action("order").is_none());
 
-        let kept = Kept::default();
-        let id = trading::add_login(&store, &kept, &typed()).expect("a login");
-        window.desk.tell();
-        assert_eq!(trading_rows(&window), vec![("Rithmic Test not signed in".to_string(), false)]);
+            let kept = Kept::default();
+            let id = trading::add_login(&store, &kept, &typed()).expect("a login");
+            window.desk.tell();
+            assert_eq!(trading_rows(&window), vec![("Rithmic Test not signed in".to_string(), false)]);
 
-        let account = trading::Account {
-            login: id.clone(),
-            id: "951".into(),
-            name: None,
-            currency: Some("USD".into()),
-            fcm: String::new(),
-            ib: String::new(),
-            balance: None,
-        };
-        let session = Arc::new(trading::tests::FakeSession::new(vec![account.clone()], Box::new(|| {})));
-        assert!(window.desk.begin(&id));
-        window.desk.opened(&id, Ok(session.clone()));
-        window.desk.note(&store);
-        window.desk.tell();
-        // The chart is on SPY: not a future.
-        assert_eq!(trading_rows(&window), vec![("SPY is not tradable on Rithmic Test".to_string(), false)]);
+            let account = trading::Account {
+                login: id.clone(),
+                id: "951".into(),
+                name: None,
+                currency: Some("USD".into()),
+                fcm: String::new(),
+                ib: String::new(),
+                balance: None,
+            };
+            let session = Arc::new(trading::tests::FakeSession::new(vec![account.clone()], Box::new(|| {})));
+            assert!(window.desk.begin(&id));
+            window.desk.opened(&id, Ok(session.clone()));
+            window.desk.note(&store);
+            window.desk.tell();
+            // The chart is on SPY: not a future.
+            assert_eq!(trading_rows(&window), vec![("SPY is not tradable on Rithmic Test".to_string(), false)]);
 
-        let es = window.index.find("ES", None).expect("ES in the curated half");
-        let pane = window.focused_pane();
-        window.show_in(&pane, es);
-        assert_eq!(trading_rows(&window), vec![("ES's contract not known yet".to_string(), false)]);
-        session.contracts.lock().unwrap().insert("ES".into(), "ESZ6".into());
-        let rows = trading_rows(&window);
-        assert_eq!(rows.first(), Some(&("Buy Market · 1 ESZ6 · Rithmic Test".to_string(), true)));
-        assert_eq!(rows.get(1), Some(&("Sell Market · 1 ESZ6 · Rithmic Test".to_string(), true)));
-        assert_eq!(rows.len(), 6);
+            let es = window.index.find("ES", None).expect("ES in the curated half");
+            let pane = window.focused_pane();
+            window.show_in(&pane, es);
+            assert_eq!(trading_rows(&window), vec![("ES's contract not known yet".to_string(), false)]);
+            session.contracts.lock().unwrap().insert("ES".into(), "ESZ6".into());
+            let rows = trading_rows(&window);
+            assert_eq!(rows.first(), Some(&("Buy Market · 1 ESZ6 · Rithmic Test".to_string(), true)));
+            assert_eq!(rows.get(1), Some(&("Sell Market · 1 ESZ6 · Rithmic Test".to_string(), true)));
+            assert_eq!(rows.len(), 6);
 
-        let value = order_target_value(Side::Buy, OrderKind::Market, &account.key(), None);
-        let actions = window.trade.chart_actions.borrow().clone().unwrap();
-        actions.activate_action("order", Some(&value.to_variant()));
-        let context = glib::MainContext::default();
-        for _ in 0..200 {
-            if pane.view.marks().0.is_some() {
-                break;
+            let value = order_target_value(Side::Buy, OrderKind::Market, &account.key(), None);
+            let actions = window.trade.chart_actions.borrow().clone().unwrap();
+            actions.activate_action("order", Some(&value.to_variant()));
+            let context = glib::MainContext::default();
+            for _ in 0..200 {
+                if pane.view.marks().0.is_some() {
+                    break;
+                }
+                context.iteration(false);
+                std::thread::sleep(std::time::Duration::from_millis(5));
             }
+            assert_eq!(session.book().position("951", "ESZ6").map(|held| held.net), Some(1), "bought through the session");
+            // The chart shows the position, and a working order once there is one.
+            assert_eq!(pane.view.marks(), (Some("▲ +1 @ 7,612.25".to_string()), Vec::new()));
+            let limit = trading::Order {
+                account: "951".into(),
+                contract: "ESZ6".into(),
+                exchange: "CME".into(),
+                side: Side::Sell,
+                qty: 1,
+                kind: OrderKind::Limit,
+                price: Some(7_620.0),
+                tag: trading::new_tag(),
+            };
+            let basket = session.place(&limit).unwrap();
+            window.desk.tell();
+            assert_eq!(pane.view.marks().1, vec!["▼ Sell Limit 1".to_string()]);
+            session.cancel("951", &basket).unwrap();
+            window.desk.tell();
+            assert!(pane.view.marks().1.is_empty(), "a cancelled order left on the chart");
+            // Answered, so the account is free for the next.
+            assert!(window.trade.placing.begin(&account.key()).is_ok(), "the first was answered");
+            window.trade.placing.done(&account.key());
+            // One on its way holds a second back, which is never sent.
+            window.trade.placing.begin(&account.key()).unwrap();
+            let before = session.book().orders.len();
+            actions.activate_action("order", Some(&value.to_variant()));
             context.iteration(false);
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        assert_eq!(session.book().position("951", "ESZ6").map(|held| held.net), Some(1), "bought through the session");
-        // The chart shows the position, and a working order once there is one.
-        assert_eq!(pane.view.marks(), (Some("▲ +1 @ 7,612.25".to_string()), Vec::new()));
-        let limit = trading::Order {
-            account: "951".into(),
-            contract: "ESZ6".into(),
-            exchange: "CME".into(),
-            side: Side::Sell,
-            qty: 1,
-            kind: OrderKind::Limit,
-            price: Some(7_620.0),
-            tag: trading::new_tag(),
-        };
-        let basket = session.place(&limit).unwrap();
-        window.desk.tell();
-        assert_eq!(pane.view.marks().1, vec!["▼ Sell Limit 1".to_string()]);
-        session.cancel("951", &basket).unwrap();
-        window.desk.tell();
-        assert!(pane.view.marks().1.is_empty(), "a cancelled order left on the chart");
-        // Answered, so the account is free for the next.
-        assert!(window.trade.placing.begin(&account.key()).is_ok(), "the first was answered");
-        window.trade.placing.done(&account.key());
-        // One on its way holds a second back, which is never sent.
-        window.trade.placing.begin(&account.key()).unwrap();
-        let before = session.book().orders.len();
-        actions.activate_action("order", Some(&value.to_variant()));
-        context.iteration(false);
-        assert_eq!(session.book().orders.len(), before, "a second order sent while the first was on its way");
-        window.trade.placing.done(&account.key());
+            assert_eq!(session.book().orders.len(), before, "a second order sent while the first was on its way");
+            window.trade.placing.done(&account.key());
 
-        trading::remove_login(&store, &kept, &id, true).expect("removed");
-        window.desk.end(&id);
-        window.desk.tell();
-        assert!(trading_rows(&window).is_empty(), "orders left behind by the last login");
-        assert!(window.trade.chart_actions.borrow().as_ref().unwrap().lookup_action("order").is_none());
-        assert_eq!(pane.view.marks(), (None, Vec::new()), "marks left behind by the last login");
+            trading::remove_login(&store, &kept, &id, true).expect("removed");
+            window.desk.end(&id);
+            window.desk.tell();
+            assert!(trading_rows(&window).is_empty(), "orders left behind by the last login");
+            assert!(window.trade.chart_actions.borrow().as_ref().unwrap().lookup_action("order").is_none());
+            assert_eq!(pane.view.marks(), (None, Vec::new()), "marks left behind by the last login");
+        });
     }
 
     /// A window on the synthetic feed with ES on its chart, signed in to
@@ -1461,41 +1459,40 @@ pub(super) mod tests {
     /// flattens it.
     #[test]
     fn the_marks_cross_cancels_an_order_and_flattens_the_position() {
-        if !crate::ui::gtk_ready() {
-            return;
-        }
-        use crate::ui::chart::TradeEvent;
-        let (window, pane, session, key) = long_es(true, true);
-        let basket = session.place(&resting(Side::Sell, OrderKind::Limit, Some(7_640.0))).unwrap();
-        window.desk.tell();
-        let orders = || pane.view.mark_states().1;
-        assert_eq!(orders(), vec![("▼ Sell Limit 1".to_string(), 7_640.0, false)]);
+        crate::ui::on_gtk(|| {
+            use crate::ui::chart::TradeEvent;
+            let (window, pane, session, key) = long_es(true, true);
+            let basket = session.place(&resting(Side::Sell, OrderKind::Limit, Some(7_640.0))).unwrap();
+            window.desk.tell();
+            let orders = || pane.view.mark_states().1;
+            assert_eq!(orders(), vec![("▼ Sell Limit 1".to_string(), 7_640.0, false)]);
 
-        // Refused: back as it was, and said.
-        *session.refuse.lock().unwrap() = Some("too late".into());
-        pane.view.drop_mark(TradeEvent::Cancel(basket.clone()));
-        assert!(orders()[0].2, "not faint at once");
-        settle(&window, || !orders().first().is_some_and(|order| order.2));
-        assert_eq!(orders(), vec![("▼ Sell Limit 1".to_string(), 7_640.0, false)], "not back after a refusal");
+            // Refused: back as it was, and said.
+            *session.refuse.lock().unwrap() = Some("too late".into());
+            pane.view.drop_mark(TradeEvent::Cancel(basket.clone()));
+            assert!(orders()[0].2, "not faint at once");
+            settle(&window, || !orders().first().is_some_and(|order| order.2));
+            assert_eq!(orders(), vec![("▼ Sell Limit 1".to_string(), 7_640.0, false)], "not back after a refusal");
 
-        // Another request on its way: nothing sent.
-        window.trade.placing.begin(&key).unwrap();
-        pane.view.drop_mark(TradeEvent::Cancel(basket.clone()));
-        settle(&window, || false);
-        assert!(session.book().order(&basket).unwrap().status.working(), "sent while another was on its way");
-        window.trade.placing.done(&key);
+            // Another request on its way: nothing sent.
+            window.trade.placing.begin(&key).unwrap();
+            pane.view.drop_mark(TradeEvent::Cancel(basket.clone()));
+            settle(&window, || false);
+            assert!(session.book().order(&basket).unwrap().status.working(), "sent while another was on its way");
+            window.trade.placing.done(&key);
 
-        pane.view.drop_mark(TradeEvent::Cancel(basket.clone()));
-        settle(&window, || orders().is_empty());
-        assert_eq!(session.book().order(&basket).map(|order| order.status.clone()), Some(Status::Cancelled));
-        assert!(orders().is_empty(), "a cancelled order left on the chart");
-        assert!(window.trade.pending.borrow().is_empty(), "still waiting on a cancel the book has answered");
+            pane.view.drop_mark(TradeEvent::Cancel(basket.clone()));
+            settle(&window, || orders().is_empty());
+            assert_eq!(session.book().order(&basket).map(|order| order.status.clone()), Some(Status::Cancelled));
+            assert!(orders().is_empty(), "a cancelled order left on the chart");
+            assert!(window.trade.pending.borrow().is_empty(), "still waiting on a cancel the book has answered");
 
-        pane.view.drop_mark(TradeEvent::Flatten);
-        assert_eq!(pane.view.mark_states().0.map(|(_, dim)| dim), Some(true), "not faint at once");
-        settle(&window, || pane.view.mark_states().0.is_none());
-        assert!(session.book().position("951", "ESZ6").is_none(), "not flattened");
-        assert!(pane.view.mark_states().0.is_none());
+            pane.view.drop_mark(TradeEvent::Flatten);
+            assert_eq!(pane.view.mark_states().0.map(|(_, dim)| dim), Some(true), "not faint at once");
+            settle(&window, || pane.view.mark_states().0.is_none());
+            assert!(session.book().position("951", "ESZ6").is_none(), "not flattened");
+            assert!(pane.view.mark_states().0.is_none());
+        });
     }
 
     /// An order's line let go at a new price moves it there: faint at the
@@ -1504,47 +1501,46 @@ pub(super) mod tests {
     /// while it was moving, or another request on its way sends nothing.
     #[test]
     fn an_order_dragged_to_a_new_price_is_moved_there() {
-        if !crate::ui::gtk_ready() {
-            return;
-        }
-        use crate::ui::chart::TradeEvent;
-        let (window, pane, session, key) = long_es(true, true);
-        settle(&window, || pane.view.last_price().is_some());
-        let last = pane.view.last_price().expect("a last price");
-        let above = |ticks: f64| (last / 0.25).round() * 0.25 + ticks * 0.25;
-        let basket = session.place(&resting(Side::Sell, OrderKind::Limit, Some(above(40.0)))).unwrap();
-        window.desk.tell();
-        let order = || pane.view.mark_states().1.first().map(|(_, price, dim)| (*price, *dim));
-        let moved = |price| TradeEvent::Move { basket: basket.clone(), price };
+        crate::ui::on_gtk(|| {
+            use crate::ui::chart::TradeEvent;
+            let (window, pane, session, key) = long_es(true, true);
+            settle(&window, || pane.view.last_price().is_some());
+            let last = pane.view.last_price().expect("a last price");
+            let above = |ticks: f64| (last / 0.25).round() * 0.25 + ticks * 0.25;
+            let basket = session.place(&resting(Side::Sell, OrderKind::Limit, Some(above(40.0)))).unwrap();
+            window.desk.tell();
+            let order = || pane.view.mark_states().1.first().map(|(_, price, dim)| (*price, *dim));
+            let moved = |price| TradeEvent::Move { basket: basket.clone(), price };
 
-        pane.view.drop_mark(moved(above(44.0)));
-        assert_eq!(order(), Some((above(44.0), true)), "not drawn faint at its new price");
-        settle(&window, || order() == Some((above(44.0), false)));
-        assert_eq!(session.book().order(&basket).and_then(|o| o.price), Some(above(44.0)));
-        assert_eq!(order(), Some((above(44.0), false)));
-        assert!(window.trade.pending.borrow().is_empty());
+            pane.view.drop_mark(moved(above(44.0)));
+            assert_eq!(order(), Some((above(44.0), true)), "not drawn faint at its new price");
+            settle(&window, || order() == Some((above(44.0), false)));
+            assert_eq!(session.book().order(&basket).and_then(|o| o.price), Some(above(44.0)));
+            assert_eq!(order(), Some((above(44.0), false)));
+            assert!(window.trade.pending.borrow().is_empty());
 
-        *session.refuse.lock().unwrap() = Some("price out of band".into());
-        pane.view.drop_mark(moved(above(48.0)));
-        settle(&window, || order() == Some((above(44.0), false)));
-        assert_eq!(order(), Some((above(44.0), false)), "not back where it was after a refusal");
+            *session.refuse.lock().unwrap() = Some("price out of band".into());
+            pane.view.drop_mark(moved(above(48.0)));
+            settle(&window, || order() == Some((above(44.0), false)));
+            assert_eq!(order(), Some((above(44.0), false)), "not back where it was after a refusal");
 
-        // Below the market a sell limit would fill: refused here.
-        pane.view.drop_mark(moved(above(-8.0)));
-        settle(&window, || false);
-        assert_eq!(session.book().order(&basket).and_then(|o| o.price), Some(above(44.0)), "moved across the market");
+            // Below the market a sell limit would fill: refused here.
+            pane.view.drop_mark(moved(above(-8.0)));
+            settle(&window, || false);
+            assert_eq!(session.book().order(&basket).and_then(|o| o.price), Some(above(44.0)), "moved across the market");
 
-        window.trade.placing.begin(&key).unwrap();
-        pane.view.drop_mark(moved(above(52.0)));
-        settle(&window, || false);
-        assert_eq!(session.book().order(&basket).and_then(|o| o.price), Some(above(44.0)), "moved while busy");
-        window.trade.placing.done(&key);
+            window.trade.placing.begin(&key).unwrap();
+            pane.view.drop_mark(moved(above(52.0)));
+            settle(&window, || false);
+            assert_eq!(session.book().order(&basket).and_then(|o| o.price), Some(above(44.0)), "moved while busy");
+            window.trade.placing.done(&key);
 
-        session.fill(&basket);
-        pane.view.drop_mark(moved(above(52.0)));
-        settle(&window, || false);
-        assert_eq!(session.book().order(&basket).map(|o| o.status.clone()), Some(Status::Filled));
-        assert!(window.trade.pending.borrow().is_empty(), "a filled order waiting to move");
+            session.fill(&basket);
+            pane.view.drop_mark(moved(above(52.0)));
+            settle(&window, || false);
+            assert_eq!(session.book().order(&basket).map(|o| o.status.clone()), Some(Status::Filled));
+            assert!(window.trade.pending.borrow().is_empty(), "a filled order waiting to move");
+        });
     }
 
     /// TP and SL pulled out of the position place a target and a stop for
@@ -1554,45 +1550,44 @@ pub(super) mod tests {
     /// the exits left behind.
     #[test]
     fn exits_pulled_out_of_the_position_are_placed_and_linked() {
-        if !crate::ui::gtk_ready() {
-            return;
-        }
-        use crate::ui::chart::TradeEvent;
-        for links in [true, false] {
-            let (window, pane, session, key) = long_es(true, links);
-            settle(&window, || pane.view.last_price().is_some());
-            let last = pane.view.last_price().expect("a last price");
-            let off = |ticks: f64| (last / 0.25).round() * 0.25 + ticks * 0.25;
-            assert_eq!(pane.view.exit_tabs(), vec![OrderKind::Limit, OrderKind::Stop]);
-            let working = || session.book().orders.iter().filter(|o| o.status.working()).count();
+        crate::ui::on_gtk(|| {
+            use crate::ui::chart::TradeEvent;
+            for links in [true, false] {
+                let (window, pane, session, key) = long_es(true, links);
+                settle(&window, || pane.view.last_price().is_some());
+                let last = pane.view.last_price().expect("a last price");
+                let off = |ticks: f64| (last / 0.25).round() * 0.25 + ticks * 0.25;
+                assert_eq!(pane.view.exit_tabs(), vec![OrderKind::Limit, OrderKind::Stop]);
+                let working = || session.book().orders.iter().filter(|o| o.status.working()).count();
 
-            pane.view.drop_mark(TradeEvent::ExitAt { kind: OrderKind::Stop, price: off(20.0) });
-            settle(&window, || false);
-            assert_eq!(working(), 0, "a long's stop placed above the market");
+                pane.view.drop_mark(TradeEvent::ExitAt { kind: OrderKind::Stop, price: off(20.0) });
+                settle(&window, || false);
+                assert_eq!(working(), 0, "a long's stop placed above the market");
 
-            pane.view.drop_mark(TradeEvent::ExitAt { kind: OrderKind::Limit, price: off(40.0) });
-            // Answered too, so the account is free for the stop.
-            settle(&window, || pane.view.exit_tabs() == vec![OrderKind::Stop] && !window.trade.placing.busy(&key));
-            let target = session.book().orders[0].clone();
-            assert_eq!((target.side, target.kind, target.qty, target.price), (Side::Sell, OrderKind::Limit, 1, Some(off(40.0))));
-            assert_eq!(pane.view.exit_tabs(), vec![OrderKind::Stop], "the TP tab stayed");
+                pane.view.drop_mark(TradeEvent::ExitAt { kind: OrderKind::Limit, price: off(40.0) });
+                // Answered too, so the account is free for the stop.
+                settle(&window, || pane.view.exit_tabs() == vec![OrderKind::Stop] && !window.trade.placing.busy(&key));
+                let target = session.book().orders[0].clone();
+                assert_eq!((target.side, target.kind, target.qty, target.price), (Side::Sell, OrderKind::Limit, 1, Some(off(40.0))));
+                assert_eq!(pane.view.exit_tabs(), vec![OrderKind::Stop], "the TP tab stayed");
 
-            pane.view.drop_mark(TradeEvent::ExitAt { kind: OrderKind::Stop, price: off(-40.0) });
-            settle(&window, || pane.view.exit_tabs().is_empty() && (!links || !session.links.lock().unwrap().is_empty()));
-            let stop = session.book().orders[0].clone();
-            assert_eq!((stop.side, stop.kind, stop.price), (Side::Sell, OrderKind::Stop, Some(off(-40.0))));
-            let linked = session.links.lock().unwrap().clone();
-            match links {
-                true => assert_eq!(linked, vec![vec![stop.basket_id.clone(), target.basket_id.clone()]]),
-                false => assert!(linked.is_empty(), "linked on a broker that does not link"),
+                pane.view.drop_mark(TradeEvent::ExitAt { kind: OrderKind::Stop, price: off(-40.0) });
+                settle(&window, || pane.view.exit_tabs().is_empty() && (!links || !session.links.lock().unwrap().is_empty()));
+                let stop = session.book().orders[0].clone();
+                assert_eq!((stop.side, stop.kind, stop.price), (Side::Sell, OrderKind::Stop, Some(off(-40.0))));
+                let linked = session.links.lock().unwrap().clone();
+                match links {
+                    true => assert_eq!(linked, vec![vec![stop.basket_id.clone(), target.basket_id.clone()]]),
+                    false => assert!(linked.is_empty(), "linked on a broker that does not link"),
+                }
+
+                pane.view.drop_mark(TradeEvent::Flatten);
+                settle(&window, || pane.view.mark_states().0.is_none() && working() == 0);
+                assert!(session.book().position("951", "ESZ6").is_none());
+                assert_eq!(working(), 0, "an exit outlived the position it was for");
+                assert!(pane.view.mark_states().1.is_empty());
             }
-
-            pane.view.drop_mark(TradeEvent::Flatten);
-            settle(&window, || pane.view.mark_states().0.is_none() && working() == 0);
-            assert!(session.book().position("951", "ESZ6").is_none());
-            assert_eq!(working(), 0, "an exit outlived the position it was for");
-            assert!(pane.view.mark_states().1.is_empty());
-        }
+        });
     }
 
     /// A position held before the chart's contract is known is drawn as
@@ -1600,28 +1595,27 @@ pub(super) mod tests {
     /// next move of the book, nor the next time the menu opens.
     #[test]
     fn marks_appear_once_the_contract_is_known() {
-        if !crate::ui::gtk_ready() {
-            return;
-        }
-        let (window, pane, session, _) = long_es(true, true);
-        session.contracts.lock().unwrap().clear();
-        window.desk.tell();
-        assert!(pane.view.mark_states().0.is_none(), "marked with no contract");
-        // The chart asks its feed for bars, and the feed finds the contract
-        // while they are on their way. The book does not move.
-        let es = pane.instrument.borrow().clone().expect("ES");
-        window.show_in(&pane, es);
-        assert!(pane.view.mark_states().0.is_none());
-        session.contracts.lock().unwrap().insert("ES".into(), "ESZ6".into());
-        let context = glib::MainContext::default();
-        for _ in 0..200 {
-            if pane.view.mark_states().0.is_some() {
-                break;
+        crate::ui::on_gtk(|| {
+            let (window, pane, session, _) = long_es(true, true);
+            session.contracts.lock().unwrap().clear();
+            window.desk.tell();
+            assert!(pane.view.mark_states().0.is_none(), "marked with no contract");
+            // The chart asks its feed for bars, and the feed finds the contract
+            // while they are on their way. The book does not move.
+            let es = pane.instrument.borrow().clone().expect("ES");
+            window.show_in(&pane, es);
+            assert!(pane.view.mark_states().0.is_none());
+            session.contracts.lock().unwrap().insert("ES".into(), "ESZ6".into());
+            let context = glib::MainContext::default();
+            for _ in 0..200 {
+                if pane.view.mark_states().0.is_some() {
+                    break;
+                }
+                context.iteration(false);
+                std::thread::sleep(std::time::Duration::from_millis(5));
             }
-            context.iteration(false);
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        assert!(pane.view.mark_states().0.is_some(), "the position waited for the book to move");
+            assert!(pane.view.mark_states().0.is_some(), "the position waited for the book to move");
+        });
     }
 
     /// What is asked shows at once, faint, and at full strength only once
@@ -1631,70 +1625,69 @@ pub(super) mod tests {
     /// filled says how much of how much.
     #[test]
     fn what_is_asked_is_pending_until_the_broker_confirms_it() {
-        if !crate::ui::gtk_ready() {
-            return;
-        }
-        use crate::ui::chart::TradeEvent;
-        use std::sync::atomic::Ordering;
-        let (window, pane, session, key) = long_es(true, true);
-        settle(&window, || pane.view.last_price().is_some());
-        let last = pane.view.last_price().expect("a last price");
-        let off = |ticks: f64| (last / 0.25).round() * 0.25 + ticks * 0.25;
-        let orders = || pane.view.mark_states().1;
-        session.holds.store(true, Ordering::Release);
+        crate::ui::on_gtk(|| {
+            use crate::ui::chart::TradeEvent;
+            use std::sync::atomic::Ordering;
+            let (window, pane, session, key) = long_es(true, true);
+            settle(&window, || pane.view.last_price().is_some());
+            let last = pane.view.last_price().expect("a last price");
+            let off = |ticks: f64| (last / 0.25).round() * 0.25 + ticks * 0.25;
+            let orders = || pane.view.mark_states().1;
+            session.holds.store(true, Ordering::Release);
 
-        // Pending, then working.
-        pane.view.drop_mark(TradeEvent::ExitAt { kind: OrderKind::Limit, price: off(40.0) });
-        assert_eq!(orders(), vec![("▼ Sell Limit 1".to_string(), off(40.0), true)], "not drawn at once, faint");
-        settle(&window, || session.book().orders.len() == 2);
-        settle(&window, || false);
-        assert_eq!(orders(), vec![("▼ Sell Limit 1".to_string(), off(40.0), true)], "received is not working");
-        let target = session.book().orders[0].basket_id.clone();
-        session.open(&target);
-        window.desk.tell();
-        assert_eq!(orders(), vec![("▼ Sell Limit 1".to_string(), off(40.0), false)], "working, yet faint");
-        assert!(window.trade.pending.borrow().is_empty());
+            // Pending, then working.
+            pane.view.drop_mark(TradeEvent::ExitAt { kind: OrderKind::Limit, price: off(40.0) });
+            assert_eq!(orders(), vec![("▼ Sell Limit 1".to_string(), off(40.0), true)], "not drawn at once, faint");
+            settle(&window, || session.book().orders.len() == 2);
+            settle(&window, || false);
+            assert_eq!(orders(), vec![("▼ Sell Limit 1".to_string(), off(40.0), true)], "received is not working");
+            let target = session.book().orders[0].basket_id.clone();
+            session.open(&target);
+            window.desk.tell();
+            assert_eq!(orders(), vec![("▼ Sell Limit 1".to_string(), off(40.0), false)], "working, yet faint");
+            assert!(window.trade.pending.borrow().is_empty());
 
-        // Refused: gone, and said.
-        *session.refuse.lock().unwrap() = Some("price out of band".into());
-        pane.view.drop_mark(TradeEvent::ExitAt { kind: OrderKind::Stop, price: off(-40.0) });
-        assert_eq!(orders().len(), 2, "the stop not drawn at once");
-        settle(&window, || orders().len() == 1);
-        assert_eq!(orders().len(), 1, "a refused stop left on the chart");
-        assert!(window.trade.pending.borrow().is_empty());
+            // Refused: gone, and said.
+            *session.refuse.lock().unwrap() = Some("price out of band".into());
+            pane.view.drop_mark(TradeEvent::ExitAt { kind: OrderKind::Stop, price: off(-40.0) });
+            assert_eq!(orders().len(), 2, "the stop not drawn at once");
+            settle(&window, || orders().len() == 1);
+            assert_eq!(orders().len(), 1, "a refused stop left on the chart");
+            assert!(window.trade.pending.borrow().is_empty());
 
-        // Never answered: still pending, however long.
-        session.silent.store(true, Ordering::Release);
-        pane.view.drop_mark(TradeEvent::ExitAt { kind: OrderKind::Stop, price: off(-40.0) });
-        settle(&window, || false);
-        assert_eq!(orders().len(), 2);
-        assert_eq!(orders()[1], ("▼ Sell Stop 1".to_string(), off(-40.0), true), "taken as done without an answer");
-        assert_eq!(window.trade.pending.borrow().len(), 1);
-        session.silent.store(false, Ordering::Release);
-        window.trade.pending.borrow_mut().clear();
+            // Never answered: still pending, however long.
+            session.silent.store(true, Ordering::Release);
+            pane.view.drop_mark(TradeEvent::ExitAt { kind: OrderKind::Stop, price: off(-40.0) });
+            settle(&window, || false);
+            assert_eq!(orders().len(), 2);
+            assert_eq!(orders()[1], ("▼ Sell Stop 1".to_string(), off(-40.0), true), "taken as done without an answer");
+            assert_eq!(window.trade.pending.borrow().len(), 1);
+            session.silent.store(false, Ordering::Release);
+            window.trade.pending.borrow_mut().clear();
 
-        // A market order: beside the last price until its fill.
-        let value = order_target_value(Side::Buy, OrderKind::Market, &key, None);
-        let actions = window.trade.chart_actions.borrow().clone().unwrap();
-        actions.activate_action("order", Some(&value.to_variant()));
-        assert!(orders().iter().any(|(words, _, dim)| words == "Buying 1…" && *dim), "no pending market order");
-        settle(&window, || session.book().orders.iter().any(|o| o.kind == OrderKind::Market && o.status == Status::Pending));
-        settle(&window, || false);
-        assert!(orders().iter().any(|(words, ..)| words == "Buying 1…"), "acknowledged is not filled");
-        assert_eq!(session.book().position("951", "ESZ6").map(|held| held.net), Some(1));
-        let bought = session.book().orders.iter().find(|o| o.kind == OrderKind::Market && o.status == Status::Pending).unwrap().basket_id.clone();
-        session.fill(&bought);
-        window.desk.tell();
-        assert!(!orders().iter().any(|(words, ..)| words == "Buying 1…"), "filled, still pending");
-        assert_eq!(session.book().position("951", "ESZ6").map(|held| held.net), Some(2));
+            // A market order: beside the last price until its fill.
+            let value = order_target_value(Side::Buy, OrderKind::Market, &key, None);
+            let actions = window.trade.chart_actions.borrow().clone().unwrap();
+            actions.activate_action("order", Some(&value.to_variant()));
+            assert!(orders().iter().any(|(words, _, dim)| words == "Buying 1…" && *dim), "no pending market order");
+            settle(&window, || session.book().orders.iter().any(|o| o.kind == OrderKind::Market && o.status == Status::Pending));
+            settle(&window, || false);
+            assert!(orders().iter().any(|(words, ..)| words == "Buying 1…"), "acknowledged is not filled");
+            assert_eq!(session.book().position("951", "ESZ6").map(|held| held.net), Some(1));
+            let bought = session.book().orders.iter().find(|o| o.kind == OrderKind::Market && o.status == Status::Pending).unwrap().basket_id.clone();
+            session.fill(&bought);
+            window.desk.tell();
+            assert!(!orders().iter().any(|(words, ..)| words == "Buying 1…"), "filled, still pending");
+            assert_eq!(session.book().position("951", "ESZ6").map(|held| held.net), Some(2));
 
-        // Part of an order filled.
-        session.holds.store(false, Ordering::Release);
-        let two = session.place(&trading::Order { qty: 2, ..resting(Side::Buy, OrderKind::Limit, Some(off(-60.0))) }).unwrap();
-        session.fill_part(&two, 1);
-        window.desk.tell();
-        assert!(orders().iter().any(|(words, ..)| words == "▲ Buy Limit 1/2"), "{:?}", orders());
-        assert_eq!(session.book().position("951", "ESZ6").map(|held| held.net), Some(3), "only what filled is held");
+            // Part of an order filled.
+            session.holds.store(false, Ordering::Release);
+            let two = session.place(&trading::Order { qty: 2, ..resting(Side::Buy, OrderKind::Limit, Some(off(-60.0))) }).unwrap();
+            session.fill_part(&two, 1);
+            window.desk.tell();
+            assert!(orders().iter().any(|(words, ..)| words == "▲ Buy Limit 1/2"), "{:?}", orders());
+            assert_eq!(session.book().position("951", "ESZ6").map(|held| held.net), Some(3), "only what filled is held");
+        });
     }
 
     /// Nothing asks first, on a live account any more than on a simulated
@@ -1702,38 +1695,37 @@ pub(super) mod tests {
     /// broker. Confirmations are off for now.
     #[test]
     fn a_live_account_never_asks_first() {
-        if !crate::ui::gtk_ready() {
-            return;
-        }
-        use crate::ui::chart::TradeEvent;
-        let (window, pane, session, key) = long_es(false, true);
-        window.window.present();
-        let basket = session.place(&resting(Side::Sell, OrderKind::Limit, Some(7_640.0))).unwrap();
-        window.desk.tell();
-        pane.view.drop_mark(TradeEvent::Move { basket: basket.clone(), price: 7_650.0 });
-        assert!(window.window.visible_dialog().is_none(), "a move asked first");
-        let free = |window: &Rc<Window>| !window.trade.placing.busy(&key);
-        settle(&window, || {
-            session.book().order(&basket).is_some_and(|order| order.price == Some(7_650.0)) && free(&window)
-        });
-        assert_eq!(session.book().order(&basket).unwrap().price, Some(7_650.0), "not moved");
-        pane.view.drop_mark(TradeEvent::Cancel(basket.clone()));
-        assert!(window.window.visible_dialog().is_none(), "a cancel asked first");
-        settle(&window, || !session.book().order(&basket).unwrap().status.working() && free(&window));
-        assert!(!session.book().order(&basket).unwrap().status.working(), "not cancelled");
+        crate::ui::on_gtk(|| {
+            use crate::ui::chart::TradeEvent;
+            let (window, pane, session, key) = long_es(false, true);
+            window.window.present();
+            let basket = session.place(&resting(Side::Sell, OrderKind::Limit, Some(7_640.0))).unwrap();
+            window.desk.tell();
+            pane.view.drop_mark(TradeEvent::Move { basket: basket.clone(), price: 7_650.0 });
+            assert!(window.window.visible_dialog().is_none(), "a move asked first");
+            let free = |window: &Rc<Window>| !window.trade.placing.busy(&key);
+            settle(&window, || {
+                session.book().order(&basket).is_some_and(|order| order.price == Some(7_650.0)) && free(&window)
+            });
+            assert_eq!(session.book().order(&basket).unwrap().price, Some(7_650.0), "not moved");
+            pane.view.drop_mark(TradeEvent::Cancel(basket.clone()));
+            assert!(window.window.visible_dialog().is_none(), "a cancel asked first");
+            settle(&window, || !session.book().order(&basket).unwrap().status.working() && free(&window));
+            assert!(!session.book().order(&basket).unwrap().status.working(), "not cancelled");
 
-        let value = order_target_value(Side::Buy, OrderKind::Market, &key, None);
-        let actions = window.trade.chart_actions.borrow().clone().unwrap();
-        actions.activate_action("order", Some(&value.to_variant()));
-        assert!(window.window.visible_dialog().is_none(), "a menu order asked first");
-        settle(&window, || session.book().position("951", "ESZ6").is_some_and(|held| held.net == 2) && free(&window));
-        actions.activate_action(BUY_MARKET, None);
-        assert!(window.window.visible_dialog().is_none(), "a key asked first");
-        settle(&window, || session.book().position("951", "ESZ6").is_some_and(|held| held.net == 3));
-        pane.view.drop_mark(TradeEvent::Flatten);
-        assert!(window.window.visible_dialog().is_none(), "a flatten asked first");
-        settle(&window, || session.book().position("951", "ESZ6").is_none());
-        assert!(session.book().position("951", "ESZ6").is_none(), "not flattened");
+            let value = order_target_value(Side::Buy, OrderKind::Market, &key, None);
+            let actions = window.trade.chart_actions.borrow().clone().unwrap();
+            actions.activate_action("order", Some(&value.to_variant()));
+            assert!(window.window.visible_dialog().is_none(), "a menu order asked first");
+            settle(&window, || session.book().position("951", "ESZ6").is_some_and(|held| held.net == 2) && free(&window));
+            actions.activate_action(BUY_MARKET, None);
+            assert!(window.window.visible_dialog().is_none(), "a key asked first");
+            settle(&window, || session.book().position("951", "ESZ6").is_some_and(|held| held.net == 3));
+            pane.view.drop_mark(TradeEvent::Flatten);
+            assert!(window.window.visible_dialog().is_none(), "a flatten asked first");
+            settle(&window, || session.book().position("951", "ESZ6").is_none());
+            assert!(session.book().position("951", "ESZ6").is_none(), "not flattened");
+        });
     }
 
     /// Without a trading account the trading keys reach nothing: there is
@@ -1741,21 +1733,20 @@ pub(super) mod tests {
     /// watchlist either, which is Ctrl+Shift+B now.
     #[test]
     fn the_trading_keys_do_nothing_without_an_account() {
-        if !crate::ui::gtk_ready() {
-            return;
-        }
-        let store = Rc::new(Store::memory().expect("a store"));
-        let window = window(&store);
-        let actions = window.trade.chart_actions.borrow().clone().unwrap();
-        for name in [BUY_MARKET, SELL_MARKET, GO_FLAT, TRADING_SIZE] {
-            assert!(!actions.has_action(name), "{name} without an account");
-        }
-        assert!(window.window.lookup_action("edit-trading-sizes").is_none());
-        let shown = window.shows_sidebar();
-        assert!(!window.on_trading_key(gtk::gdk::Key::b, 0), "Ctrl+B taken with no account");
-        assert_eq!(window.shows_sidebar(), shown, "Ctrl+B toggled the watchlist");
-        assert!(!window.on_trading_key(gtk::gdk::Key::_2, 11), "Ctrl+2 taken with no account");
-        assert!(!window.focused_pane().size_menu.property::<bool>("visible"), "a size part with no account");
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = window(&store);
+            let actions = window.trade.chart_actions.borrow().clone().unwrap();
+            for name in [BUY_MARKET, SELL_MARKET, GO_FLAT, TRADING_SIZE] {
+                assert!(!actions.has_action(name), "{name} without an account");
+            }
+            assert!(window.window.lookup_action("edit-trading-sizes").is_none());
+            let shown = window.shows_sidebar();
+            assert!(!window.on_trading_key(gtk::gdk::Key::b, 0), "Ctrl+B taken with no account");
+            assert_eq!(window.shows_sidebar(), shown, "Ctrl+B toggled the watchlist");
+            assert!(!window.on_trading_key(gtk::gdk::Key::_2, 11), "Ctrl+2 taken with no account");
+            assert!(!window.focused_pane().size_menu.property::<bool>("visible"), "a size part with no account");
+        });
     }
 
     /// With an account, Ctrl+B buys the chart's size at the market and
@@ -1764,53 +1755,52 @@ pub(super) mod tests {
     /// keeps. Ctrl+F leaves nothing held and nothing working.
     #[test]
     fn the_trading_keys_buy_sell_size_and_go_flat() {
-        if !crate::ui::gtk_ready() {
-            return;
-        }
-        let (window, pane, session, key) = long_es(true, true);
-        let held = || session.book().position("951", "ESZ6").map(|held| held.net);
-        let free = |window: &Rc<Window>| !window.trade.placing.busy(&key);
-        // A market order on its way is drawn beside the last price.
-        settle(&window, || pane.view.last_price().is_some());
-        assert_eq!(held(), Some(1));
-        assert!(pane.size_menu.property::<bool>("visible"), "no size part with an account");
-        assert_eq!(pane.size_label_text(), "1 contract");
+        crate::ui::on_gtk(|| {
+            let (window, pane, session, key) = long_es(true, true);
+            let held = || session.book().position("951", "ESZ6").map(|held| held.net);
+            let free = |window: &Rc<Window>| !window.trade.placing.busy(&key);
+            // A market order on its way is drawn beside the last price.
+            settle(&window, || pane.view.last_price().is_some());
+            assert_eq!(held(), Some(1));
+            assert!(pane.size_menu.property::<bool>("visible"), "no size part with an account");
+            assert_eq!(pane.size_label_text(), "1 contract");
 
-        assert!(window.on_trading_key(gtk::gdk::Key::b, 0));
-        settle(&window, || held() == Some(2) && free(&window));
-        assert_eq!(held(), Some(2), "Ctrl+B bought one");
+            assert!(window.on_trading_key(gtk::gdk::Key::b, 0));
+            settle(&window, || held() == Some(2) && free(&window));
+            assert_eq!(held(), Some(2), "Ctrl+B bought one");
 
-        // Ctrl+2, by the key's place on the number row.
-        assert!(window.on_trading_key(gtk::gdk::Key::_2, 11));
-        assert_eq!(pane.size_label_text(), "2 contracts");
-        assert_eq!(window.size_of(&pane).get(), 2);
-        // Pending until the broker fills it: "Buying 2…" by the last price.
-        session.holds.store(true, std::sync::atomic::Ordering::Release);
-        assert!(window.on_trading_key(gtk::gdk::Key::b, 0));
-        settle(&window, || session.book().orders.iter().filter(|order| order.qty == 2).count() == 1);
-        let buying = pane.view.mark_states().1;
-        assert!(buying.iter().any(|(words, ..)| words == "Buying 2…"), "{buying:?}");
-        let basket = session.book().orders.iter().find(|order| order.qty == 2).unwrap().basket_id.clone();
-        session.fill(&basket);
-        settle(&window, || held() == Some(4) && free(&window));
-        assert_eq!(held(), Some(4), "Ctrl+2 then Ctrl+B bought two");
-        session.holds.store(false, std::sync::atomic::Ordering::Release);
+            // Ctrl+2, by the key's place on the number row.
+            assert!(window.on_trading_key(gtk::gdk::Key::_2, 11));
+            assert_eq!(pane.size_label_text(), "2 contracts");
+            assert_eq!(window.size_of(&pane).get(), 2);
+            // Pending until the broker fills it: "Buying 2…" by the last price.
+            session.holds.store(true, std::sync::atomic::Ordering::Release);
+            assert!(window.on_trading_key(gtk::gdk::Key::b, 0));
+            settle(&window, || session.book().orders.iter().filter(|order| order.qty == 2).count() == 1);
+            let buying = pane.view.mark_states().1;
+            assert!(buying.iter().any(|(words, ..)| words == "Buying 2…"), "{buying:?}");
+            let basket = session.book().orders.iter().find(|order| order.qty == 2).unwrap().basket_id.clone();
+            session.fill(&basket);
+            settle(&window, || held() == Some(4) && free(&window));
+            assert_eq!(held(), Some(4), "Ctrl+2 then Ctrl+B bought two");
+            session.holds.store(false, std::sync::atomic::Ordering::Release);
 
-        assert!(window.on_trading_key(gtk::gdk::Key::s, 0));
-        settle(&window, || held() == Some(2) && free(&window));
-        assert_eq!(held(), Some(2), "Ctrl+S sold two");
+            assert!(window.on_trading_key(gtk::gdk::Key::s, 0));
+            settle(&window, || held() == Some(2) && free(&window));
+            assert_eq!(held(), Some(2), "Ctrl+S sold two");
 
-        // The size is the chart's, written down with it.
-        let stored = window.store.setting(super::super::SETTING_WORKSPACE).unwrap_or_default();
-        assert!(stored.contains("\"trading_size\""), "{stored}");
+            // The size is the chart's, written down with it.
+            let stored = window.store.setting(super::super::SETTING_WORKSPACE).unwrap_or_default();
+            assert!(stored.contains("\"trading_size\""), "{stored}");
 
-        // An order working in it too, then Ctrl+F: nothing left either way.
-        let resting_basket = session.place(&resting(Side::Sell, OrderKind::Limit, Some(7_640.0))).unwrap();
-        window.desk.tell();
-        assert!(window.on_trading_key(gtk::gdk::Key::f, 0));
-        settle(&window, || held().is_none() && !session.book().order(&resting_basket).unwrap().status.working());
-        assert_eq!(held(), None, "Ctrl+F left a position");
-        assert!(!session.book().order(&resting_basket).unwrap().status.working(), "Ctrl+F left an order");
+            // An order working in it too, then Ctrl+F: nothing left either way.
+            let resting_basket = session.place(&resting(Side::Sell, OrderKind::Limit, Some(7_640.0))).unwrap();
+            window.desk.tell();
+            assert!(window.on_trading_key(gtk::gdk::Key::f, 0));
+            settle(&window, || held().is_none() && !session.book().order(&resting_basket).unwrap().status.working());
+            assert_eq!(held(), None, "Ctrl+F left a position");
+            assert!(!session.book().order(&resting_basket).unwrap().status.working(), "Ctrl+F left an order");
+        });
     }
 
     /// The size part's popover lists the template's sizes with the chart's
@@ -1818,29 +1808,28 @@ pub(super) mod tests {
     /// dialog's changes reach the header at once.
     #[test]
     fn the_size_part_offers_the_templates_sizes() {
-        if !crate::ui::gtk_ready() {
-            return;
-        }
-        let (window, pane, _session, _) = long_es(true, true);
-        let popover = gtk::Popover::new();
-        window.fill_size_menu(&popover, pane.id);
-        let rows = popover.child().and_downcast::<gtk::Box>().expect("a list");
-        let mut count = 0;
-        let mut child = rows.first_child();
-        while let Some(row) = child {
-            count += 1;
-            child = row.next_sibling();
-        }
-        assert_eq!(count, 9, "one to nine contracts");
-        let menu = size_part_menu();
-        assert_eq!(labels(menu.upcast_ref()), vec![("Edit trading sizes…".to_string(), true)]);
-        assert!(window.window.lookup_action(EDIT_SIZES).is_some());
+        crate::ui::on_gtk(|| {
+            let (window, pane, _session, _) = long_es(true, true);
+            let popover = gtk::Popover::new();
+            window.fill_size_menu(&popover, pane.id);
+            let rows = popover.child().and_downcast::<gtk::Box>().expect("a list");
+            let mut count = 0;
+            let mut child = rows.first_child();
+            while let Some(row) = child {
+                count += 1;
+                child = row.next_sibling();
+            }
+            assert_eq!(count, 9, "one to nine contracts");
+            let menu = size_part_menu();
+            assert_eq!(labels(menu.upcast_ref()), vec![("Edit trading sizes…".to_string(), true)]);
+            assert!(window.window.lookup_action(EDIT_SIZES).is_some());
 
-        let mut templates = trading::sizes::load(&window.store);
-        templates[1].sizes = trading::sizes::parse_sizes("3, 6").unwrap();
-        trading::sizes::save(&window.store, &templates);
-        window.adopt_sizes();
-        assert_eq!(pane.size_label_text(), "3 contracts", "the header kept the old template");
+            let mut templates = trading::sizes::load(&window.store);
+            templates[1].sizes = trading::sizes::parse_sizes("3, 6").unwrap();
+            trading::sizes::save(&window.store, &templates);
+            window.adopt_sizes();
+            assert_eq!(pane.size_label_text(), "3 contracts", "the header kept the old template");
+        });
     }
 
     /// The titles of every preferences group under `widget`.
@@ -1862,32 +1851,31 @@ pub(super) mod tests {
     /// and removed.
     #[test]
     fn the_theme_page_speaks_of_trading_only_with_a_login() {
-        if !crate::ui::gtk_ready() {
-            return;
-        }
-        let store = Rc::new(Store::memory().expect("a store"));
-        let mut mine = omacharts_engine::theme::builtin_themes().remove(0);
-        mine.id = "custom-test".into();
-        mine.name = "Mine".into();
-        mine.source = omacharts_engine::Source::Custom;
-        store.save_theme(&mine);
-        store.set_setting(crate::theming::SETTING_THEME, "custom-test");
-        let window = window(&store);
-        crate::ui::preferences::open_next_at_theme();
-        window.open_preferences_at(None);
-        let dialog = window.window.visible_dialog().expect("the preferences");
-        let titles = || group_titles(dialog.upcast_ref());
-        assert!(titles().iter().any(|title| title == "Bars"), "an editable theme: {:?}", titles());
-        assert!(!titles().iter().any(|title| title == "Trading"), "Trading with no login");
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let mut mine = omacharts_engine::theme::builtin_themes().remove(0);
+            mine.id = "custom-test".into();
+            mine.name = "Mine".into();
+            mine.source = omacharts_engine::Source::Custom;
+            store.save_theme(&mine);
+            store.set_setting(crate::theming::SETTING_THEME, "custom-test");
+            let window = window(&store);
+            crate::ui::preferences::open_next_at_theme();
+            window.open_preferences_at(None);
+            let dialog = window.window.visible_dialog().expect("the preferences");
+            let titles = || group_titles(dialog.upcast_ref());
+            assert!(titles().iter().any(|title| title == "Bars"), "an editable theme: {:?}", titles());
+            assert!(!titles().iter().any(|title| title == "Trading"), "Trading with no login");
 
-        let kept = Kept::default();
-        let id = trading::add_login(&store, &kept, &typed()).expect("a login");
-        window.desk.tell();
-        assert!(titles().iter().any(|title| title == "Trading"), "no Trading group with a login");
+            let kept = Kept::default();
+            let id = trading::add_login(&store, &kept, &typed()).expect("a login");
+            window.desk.tell();
+            assert!(titles().iter().any(|title| title == "Trading"), "no Trading group with a login");
 
-        trading::remove_login(&store, &kept, &id, true).expect("removed");
-        window.desk.tell();
-        assert!(!titles().iter().any(|title| title == "Trading"), "Trading left behind by the last login");
+            trading::remove_login(&store, &kept, &id, true).expect("removed");
+            window.desk.tell();
+            assert!(!titles().iter().any(|title| title == "Trading"), "Trading left behind by the last login");
+        });
     }
 
     #[test]
@@ -2042,36 +2030,35 @@ pub(super) mod tests {
     /// with what it passed over.
     #[test]
     fn the_picker_with_no_account_lists_the_feeds() {
-        if !crate::ui::gtk_ready() {
-            return;
-        }
-        let store = Rc::new(Store::memory().expect("a store"));
-        let window = window_on(&store, true);
-        let pane = window.focused_pane();
-        let es = window.index.find("ES", None).expect("ES in the curated half");
-        window.show_in(&pane, es.clone());
-        assert_eq!(picker(&window, &pane), vec!["Yahoo Finance (default) ✓", "Rithmic"]);
-        assert_eq!(part(&pane).as_deref(), Some("Yahoo Finance"));
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = window_on(&store, true);
+            let pane = window.focused_pane();
+            let es = window.index.find("ES", None).expect("ES in the curated half");
+            window.show_in(&pane, es.clone());
+            assert_eq!(picker(&window, &pane), vec!["Yahoo Finance (default) ✓", "Rithmic"]);
+            assert_eq!(part(&pane).as_deref(), Some("Yahoo Finance"));
 
-        window.choose_source(pane.id, Some("rithmic".into()));
-        assert_eq!(picker(&window, &pane), vec!["Yahoo Finance (default)", "Rithmic ✓"]);
-        assert_eq!(part(&pane).as_deref(), Some("Rithmic"));
-        // Choosing the default stores nothing.
-        window.choose_source(pane.id, None);
-        assert!(pane.source.borrow().is_none());
+            window.choose_source(pane.id, Some("rithmic".into()));
+            assert_eq!(picker(&window, &pane), vec!["Yahoo Finance (default)", "Rithmic ✓"]);
+            assert_eq!(part(&pane).as_deref(), Some("Rithmic"));
+            // Choosing the default stores nothing.
+            window.choose_source(pane.id, None);
+            assert!(pane.source.borrow().is_none());
 
-        // Passed over, it says so after the feed it fell back to.
-        let before = window.routes_on_screen();
-        window.feeds()[0].usable.set(false);
-        window.reroute(&before);
-        assert_eq!(part(&pane).as_deref(), Some("Rithmic · Yahoo Finance not signed in"));
-        assert_eq!(picker(&window, &pane), vec!["Yahoo Finance (default)", "Rithmic ✓"]);
-        window.feeds()[0].usable.set(true);
+            // Passed over, it says so after the feed it fell back to.
+            let before = window.routes_on_screen();
+            window.feeds()[0].usable.set(false);
+            window.reroute(&before);
+            assert_eq!(part(&pane).as_deref(), Some("Rithmic · Yahoo Finance not signed in"));
+            assert_eq!(picker(&window, &pane), vec!["Yahoo Finance (default)", "Rithmic ✓"]);
+            window.feeds()[0].usable.set(true);
 
-        // A stock: Rithmic does not serve it, so it is not offered.
-        let spy = window.index.find("SPY", None).expect("SPY");
-        window.show_in(&pane, spy);
-        assert_eq!(picker(&window, &pane), vec!["Yahoo Finance (default) ✓"]);
+            // A stock: Rithmic does not serve it, so it is not offered.
+            let spy = window.index.find("SPY", None).expect("SPY");
+            window.show_in(&pane, spy);
+            assert_eq!(picker(&window, &pane), vec!["Yahoo Finance (default) ✓"]);
+        });
     }
 
     /// One account and two feeds: the account a heading, and under it its
@@ -2080,58 +2067,57 @@ pub(super) mod tests {
     /// account's own; trouble goes after the account.
     #[test]
     fn the_picker_with_one_account_lists_its_feeds_under_it() {
-        if !crate::ui::gtk_ready() {
-            return;
-        }
-        let store = Rc::new(Store::memory().expect("a store"));
-        let window = window_on(&store, true);
-        let pane = window.focused_pane();
-        let es = window.index.find("ES", None).expect("ES in the curated half");
-        window.show_in(&pane, es.clone());
-        let (_, session) = sign_in(&window, &store, &["951"]);
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = window_on(&store, true);
+            let pane = window.focused_pane();
+            let es = window.index.find("ES", None).expect("ES in the curated half");
+            window.show_in(&pane, es.clone());
+            let (_, session) = sign_in(&window, &store, &["951"]);
 
-        let rows = |marks: [&str; 2]| {
-            vec![
-                "Rithmic Test ✓ (heading)".to_string(),
-                format!("    Rithmic (default){}", marks[0]),
-                format!("    Yahoo Finance{}", marks[1]),
-            ]
-        };
-        assert_eq!(picker(&window, &pane), rows([" ✓", ""]));
-        assert_eq!(part(&pane).as_deref(), Some("Rithmic Test"), "on its own feed, the account alone");
-        assert_eq!(pane.source_menu.tooltip_text().as_deref(), Some(trading::PART_TOOLTIP));
+            let rows = |marks: [&str; 2]| {
+                vec![
+                    "Rithmic Test ✓ (heading)".to_string(),
+                    format!("    Rithmic (default){}", marks[0]),
+                    format!("    Yahoo Finance{}", marks[1]),
+                ]
+            };
+            assert_eq!(picker(&window, &pane), rows([" ✓", ""]));
+            assert_eq!(part(&pane).as_deref(), Some("Rithmic Test"), "on its own feed, the account alone");
+            assert_eq!(pane.source_menu.tooltip_text().as_deref(), Some(trading::PART_TOOLTIP));
 
-        window.choose_source(pane.id, Some("yahoo".into()));
-        assert_eq!(picker(&window, &pane), rows(["", " ✓"]));
-        assert_eq!(part(&pane).as_deref(), Some("Rithmic Test · Yahoo Finance"));
-        // The default chosen again is no choice: nothing is kept.
-        window.choose_source(pane.id, None);
-        assert_eq!(part(&pane).as_deref(), Some("Rithmic Test"));
+            window.choose_source(pane.id, Some("yahoo".into()));
+            assert_eq!(picker(&window, &pane), rows(["", " ✓"]));
+            assert_eq!(part(&pane).as_deref(), Some("Rithmic Test · Yahoo Finance"));
+            // The default chosen again is no choice: nothing is kept.
+            window.choose_source(pane.id, None);
+            assert_eq!(part(&pane).as_deref(), Some("Rithmic Test"));
 
-        // A chosen feed that cannot be used is said, after the account.
-        window.choose_source(pane.id, Some("yahoo".into()));
-        let before = window.routes_on_screen();
-        window.feeds()[0].usable.set(false);
-        window.reroute(&before);
-        assert_eq!(part(&pane).as_deref(), Some("Rithmic Test · Yahoo Finance not signed in"));
-        window.feeds()[0].usable.set(true);
-        window.choose_source(pane.id, None);
+            // A chosen feed that cannot be used is said, after the account.
+            window.choose_source(pane.id, Some("yahoo".into()));
+            let before = window.routes_on_screen();
+            window.feeds()[0].usable.set(false);
+            window.reroute(&before);
+            assert_eq!(part(&pane).as_deref(), Some("Rithmic Test · Yahoo Finance not signed in"));
+            window.feeds()[0].usable.set(true);
+            window.choose_source(pane.id, None);
 
-        // The login in trouble.
-        session.sign_out();
-        window.desk.tell();
-        assert_eq!(part(&pane).as_deref(), Some("Rithmic Test signed out"));
-        assert_eq!(picker(&window, &pane)[0], "Rithmic Test — signed out ✓ (heading)");
+            // The login in trouble.
+            session.sign_out();
+            window.desk.tell();
+            assert_eq!(part(&pane).as_deref(), Some("Rithmic Test signed out"));
+            assert_eq!(picker(&window, &pane)[0], "Rithmic Test — signed out ✓ (heading)");
 
-        // A stock: the account's feed does not serve it, and the default
-        // moves to the order's pick.
-        let spy = window.index.find("SPY", None).expect("SPY");
-        window.show_in(&pane, spy);
-        assert_eq!(
-            picker(&window, &pane),
-            vec!["Rithmic Test — signed out ✓ (heading)", "    Yahoo Finance (default) ✓"]
-        );
-        assert_eq!(part(&pane).as_deref(), Some("Rithmic Test signed out"));
+            // A stock: the account's feed does not serve it, and the default
+            // moves to the order's pick.
+            let spy = window.index.find("SPY", None).expect("SPY");
+            window.show_in(&pane, spy);
+            assert_eq!(
+                picker(&window, &pane),
+                vec!["Rithmic Test — signed out ✓ (heading)", "    Yahoo Finance (default) ✓"]
+            );
+            assert_eq!(part(&pane).as_deref(), Some("Rithmic Test signed out"));
+        });
     }
 
     /// Two accounts and two feeds: the accounts, the feeds under the
@@ -2139,84 +2125,81 @@ pub(super) mod tests {
     /// feed, and a chart on the default follows the default.
     #[test]
     fn choosing_an_account_forgets_the_feed() {
-        if !crate::ui::gtk_ready() {
-            return;
-        }
-        let store = Rc::new(Store::memory().expect("a store"));
-        let window = window_on(&store, true);
-        let pane = window.focused_pane();
-        let es = window.index.find("ES", None).expect("ES in the curated half");
-        window.show_in(&pane, es);
-        let (id, _session) = sign_in(&window, &store, &["951", "952"]);
-        assert_eq!(
-            picker(&window, &pane),
-            vec![
-                "Rithmic Test 951 ✓",
-                "    Rithmic (default) ✓",
-                "    Yahoo Finance",
-                "Rithmic Test 952"
-            ]
-        );
-        assert_eq!(part(&pane).as_deref(), Some("Rithmic Test 951"));
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = window_on(&store, true);
+            let pane = window.focused_pane();
+            let es = window.index.find("ES", None).expect("ES in the curated half");
+            window.show_in(&pane, es);
+            let (id, _session) = sign_in(&window, &store, &["951", "952"]);
+            assert_eq!(
+                picker(&window, &pane),
+                vec![
+                    "Rithmic Test 951 ✓",
+                    "    Rithmic (default) ✓",
+                    "    Yahoo Finance",
+                    "Rithmic Test 952"
+                ]
+            );
+            assert_eq!(part(&pane).as_deref(), Some("Rithmic Test 951"));
 
-        window.choose_source(pane.id, Some("yahoo".into()));
-        assert_eq!(part(&pane).as_deref(), Some("Rithmic Test 951 · Yahoo Finance"));
-        let other = format!("{id}/952");
-        window.choose_account(pane.id, Some(other.clone()));
-        assert_eq!(pane.account.borrow().as_deref(), Some(other.as_str()));
-        assert!(pane.source.borrow().is_none(), "the feed went with the account");
-        assert_eq!(part(&pane).as_deref(), Some("Rithmic Test 952"));
-        assert_eq!(
-            picker(&window, &pane),
-            vec![
-                "Rithmic Test 951",
-                "Rithmic Test 952 ✓",
-                "    Rithmic (default) ✓",
-                "    Yahoo Finance"
-            ]
-        );
+            window.choose_source(pane.id, Some("yahoo".into()));
+            assert_eq!(part(&pane).as_deref(), Some("Rithmic Test 951 · Yahoo Finance"));
+            let other = format!("{id}/952");
+            window.choose_account(pane.id, Some(other.clone()));
+            assert_eq!(pane.account.borrow().as_deref(), Some(other.as_str()));
+            assert!(pane.source.borrow().is_none(), "the feed went with the account");
+            assert_eq!(part(&pane).as_deref(), Some("Rithmic Test 952"));
+            assert_eq!(
+                picker(&window, &pane),
+                vec![
+                    "Rithmic Test 951",
+                    "Rithmic Test 952 ✓",
+                    "    Rithmic (default) ✓",
+                    "    Yahoo Finance"
+                ]
+            );
 
-        // Back on the default, and the default moves: the chart follows.
-        window.choose_account(pane.id, None);
-        assert_eq!(part(&pane).as_deref(), Some("Rithmic Test 951"));
-        trading::set_default_account(&store, &other);
-        window.desk.tell();
-        assert_eq!(part(&pane).as_deref(), Some("Rithmic Test 952"));
+            // Back on the default, and the default moves: the chart follows.
+            window.choose_account(pane.id, None);
+            assert_eq!(part(&pane).as_deref(), Some("Rithmic Test 951"));
+            trading::set_default_account(&store, &other);
+            window.desk.tell();
+            assert_eq!(part(&pane).as_deref(), Some("Rithmic Test 952"));
+        });
     }
 
     /// Closing the window signs the trading sessions out with the feeds,
     /// so nothing is left signed in at the broker.
     #[test]
     fn closing_the_window_signs_trading_out() {
-        if !crate::ui::gtk_ready() {
-            return;
-        }
-        let store = Rc::new(Store::memory().expect("a store"));
-        let window = window_on(&store, false);
-        let (id, session) = sign_in(&window, &store, &["951"]);
-        assert!(window.desk.live(&id));
-        // Closing asks only a window that is on screen.
-        window.window.present();
-        window.window.close();
-        assert!(session.trouble().is_some(), "still signed in after the window closed");
-        assert!(!window.desk.live(&id));
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = window_on(&store, false);
+            let (id, session) = sign_in(&window, &store, &["951"]);
+            assert!(window.desk.live(&id));
+            // Closing asks only a window that is on screen.
+            window.window.present();
+            window.window.close();
+            assert!(session.trouble().is_some(), "still signed in after the window closed");
+            assert!(!window.desk.live(&id));
+        });
     }
 
     /// Two accounts and one feed: the accounts alone, and nothing about
     /// the feed anywhere.
     #[test]
     fn the_picker_with_one_feed_lists_the_accounts_alone() {
-        if !crate::ui::gtk_ready() {
-            return;
-        }
-        let store = Rc::new(Store::memory().expect("a store"));
-        let window = window_on(&store, false);
-        let pane = window.focused_pane();
-        let es = window.index.find("ES", None).expect("ES in the curated half");
-        window.show_in(&pane, es);
-        assert_eq!(part(&pane), None, "one feed and no account: nothing");
-        sign_in(&window, &store, &["951", "952"]);
-        assert_eq!(picker(&window, &pane), vec!["Rithmic Test 951 ✓", "Rithmic Test 952"]);
-        assert_eq!(part(&pane).as_deref(), Some("Rithmic Test 951"));
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = window_on(&store, false);
+            let pane = window.focused_pane();
+            let es = window.index.find("ES", None).expect("ES in the curated half");
+            window.show_in(&pane, es);
+            assert_eq!(part(&pane), None, "one feed and no account: nothing");
+            sign_in(&window, &store, &["951", "952"]);
+            assert_eq!(picker(&window, &pane), vec!["Rithmic Test 951 ✓", "Rithmic Test 952"]);
+            assert_eq!(part(&pane).as_deref(), Some("Rithmic Test 951"));
+        });
     }
 }

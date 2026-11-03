@@ -1411,30 +1411,29 @@ mod tests {
     #[test]
     fn a_blank_account_takes_no_room_in_the_header() {
         use crate::header::{Header, Part};
-        if !crate::ui::gtk_ready() {
-            return;
-        }
-        let pane = test_pane();
-        pane.symbol_button.set_label("ES");
-        pane.write_template(Some("Footprint"));
-        let laid_out = |parts: Vec<Part>| {
-            *pane.header.borrow_mut() = Header { left: parts, center: Vec::new() };
-            pane.arrange_header();
-            let width = pane.header_row.preferred_size().1.width();
-            pane.header_row.allocate(width, SYMBOL_ROW_HEIGHT, -1, None);
-            let template = pane.template_label.compute_bounds(&pane.header_row).expect("placed").x();
-            (width, template)
-        };
-        let without = laid_out(vec![Part::Symbol, Part::Resolution, Part::Template]);
-        pane.write_source(None);
-        let blank = laid_out(vec![Part::Symbol, Part::Account, Part::Resolution, Part::Template]);
-        assert_eq!(blank, without);
-        assert!(!pane.source_menu.is_visible());
+        crate::ui::on_gtk(|| {
+            let pane = test_pane();
+            pane.symbol_button.set_label("ES");
+            pane.write_template(Some("Footprint"));
+            let laid_out = |parts: Vec<Part>| {
+                *pane.header.borrow_mut() = Header { left: parts, center: Vec::new() };
+                pane.arrange_header();
+                let width = pane.header_row.preferred_size().1.width();
+                pane.header_row.allocate(width, SYMBOL_ROW_HEIGHT, -1, None);
+                let template = pane.template_label.compute_bounds(&pane.header_row).expect("placed").x();
+                (width, template)
+            };
+            let without = laid_out(vec![Part::Symbol, Part::Resolution, Part::Template]);
+            pane.write_source(None);
+            let blank = laid_out(vec![Part::Symbol, Part::Account, Part::Resolution, Part::Template]);
+            assert_eq!(blank, without);
+            assert!(!pane.source_menu.is_visible());
 
-        // And written, it does take its room: the same measure sees it.
-        pane.write_source(Some("Rithmic"));
-        let shown = laid_out(vec![Part::Symbol, Part::Account, Part::Resolution, Part::Template]);
-        assert!(shown.0 > without.0 && shown.1 > without.1, "{shown:?} against {without:?}");
+            // And written, it does take its room: the same measure sees it.
+            pane.write_source(Some("Rithmic"));
+            let shown = laid_out(vec![Part::Symbol, Part::Account, Part::Resolution, Part::Template]);
+            assert!(shown.0 > without.0 && shown.1 > without.1, "{shown:?} against {without:?}");
+        });
     }
 
     /// Without a trading account the size says nothing and takes no room:
@@ -1442,27 +1441,26 @@ mod tests {
     #[test]
     fn a_blank_trading_size_takes_no_room_in_the_header() {
         use crate::header::{Header, Part};
-        if !crate::ui::gtk_ready() {
-            return;
-        }
-        let pane = test_pane();
-        pane.symbol_button.set_label("ES");
-        pane.write_template(Some("Footprint"));
-        let laid_out = |parts: Vec<Part>| {
-            *pane.header.borrow_mut() = Header { left: parts, center: Vec::new() };
-            pane.arrange_header();
-            let width = pane.header_row.preferred_size().1.width();
-            pane.header_row.allocate(width, SYMBOL_ROW_HEIGHT, -1, None);
-            let template = pane.template_label.compute_bounds(&pane.header_row).expect("placed").x();
-            (width, template)
-        };
-        let without = laid_out(vec![Part::Symbol, Part::Template]);
-        pane.write_size(None);
-        assert_eq!(laid_out(vec![Part::Symbol, Part::Size, Part::Template]), without);
-        assert!(!pane.size_menu.is_visible());
-        pane.write_size(Some("2 contracts"));
-        let shown = laid_out(vec![Part::Symbol, Part::Size, Part::Template]);
-        assert!(shown.0 > without.0 && shown.1 > without.1, "{shown:?} against {without:?}");
+        crate::ui::on_gtk(|| {
+            let pane = test_pane();
+            pane.symbol_button.set_label("ES");
+            pane.write_template(Some("Footprint"));
+            let laid_out = |parts: Vec<Part>| {
+                *pane.header.borrow_mut() = Header { left: parts, center: Vec::new() };
+                pane.arrange_header();
+                let width = pane.header_row.preferred_size().1.width();
+                pane.header_row.allocate(width, SYMBOL_ROW_HEIGHT, -1, None);
+                let template = pane.template_label.compute_bounds(&pane.header_row).expect("placed").x();
+                (width, template)
+            };
+            let without = laid_out(vec![Part::Symbol, Part::Template]);
+            pane.write_size(None);
+            assert_eq!(laid_out(vec![Part::Symbol, Part::Size, Part::Template]), without);
+            assert!(!pane.size_menu.is_visible());
+            pane.write_size(Some("2 contracts"));
+            let shown = laid_out(vec![Part::Symbol, Part::Size, Part::Template]);
+            assert!(shown.0 > without.0 && shown.1 > without.1, "{shown:?} against {without:?}");
+        });
     }
 
     fn test_pane() -> Rc<ChartPane> {
@@ -1487,40 +1485,39 @@ mod tests {
     #[test]
     fn the_stripe_goes_where_the_header_puts_it() {
         use crate::header::{Header, Part};
-        if !crate::ui::gtk_ready() {
-            return;
-        }
-        let pane = test_pane();
-        pane.symbol_button.set_label("ES");
-        for label in ["5m", "1h", "1D"] {
-            pane.strip.append(&gtk::ToggleButton::with_label(label));
-        }
-        pane.set_focused(true);
-        let width = |row: &gtk::Box| row.preferred_size().1.width();
-        let parent = || pane.strip.parent();
+        crate::ui::on_gtk(|| {
+            let pane = test_pane();
+            pane.symbol_button.set_label("ES");
+            for label in ["5m", "1h", "1D"] {
+                pane.strip.append(&gtk::ToggleButton::with_label(label));
+            }
+            pane.set_focused(true);
+            let width = |row: &gtk::Box| row.preferred_size().1.width();
+            let parent = || pane.strip.parent();
 
-        assert!(parent().is_some_and(|p| p == pane.header_center));
-        let line = width(&pane.header_row);
-        assert!(width(&pane.header_center) > 0);
+            assert!(parent().is_some_and(|p| p == pane.header_center));
+            let line = width(&pane.header_row);
+            assert!(width(&pane.header_center) > 0);
 
-        let header = |left: Vec<Part>, center: Vec<Part>| {
-            *pane.header.borrow_mut() = Header { left, center };
-            pane.arrange_header();
-        };
-        header(vec![Part::Symbol, Part::Resolution, Part::Account, Part::Stripe], Vec::new());
-        assert!(parent().is_some_and(|p| p == pane.header_row));
-        assert_eq!(pane.header_row.last_child(), pane.hidden_glyphs.last().map(|(_, b)| b.clone().upcast()));
-        assert!(width(&pane.header_row) > line);
-        assert_eq!(width(&pane.header_center), 0);
+            let header = |left: Vec<Part>, center: Vec<Part>| {
+                *pane.header.borrow_mut() = Header { left, center };
+                pane.arrange_header();
+            };
+            header(vec![Part::Symbol, Part::Resolution, Part::Account, Part::Stripe], Vec::new());
+            assert!(parent().is_some_and(|p| p == pane.header_row));
+            assert_eq!(pane.header_row.last_child(), pane.hidden_glyphs.last().map(|(_, b)| b.clone().upcast()));
+            assert!(width(&pane.header_row) > line);
+            assert_eq!(width(&pane.header_center), 0);
 
-        header(vec![Part::Symbol, Part::Resolution, Part::Account], Vec::new());
-        assert!(parent().is_none());
-        assert_eq!(width(&pane.header_row), line);
-        assert_eq!(width(&pane.header_center), 0);
+            header(vec![Part::Symbol, Part::Resolution, Part::Account], Vec::new());
+            assert!(parent().is_none());
+            assert_eq!(width(&pane.header_row), line);
+            assert_eq!(width(&pane.header_center), 0);
 
-        header(Header::standard().left, Header::standard().center);
-        assert!(parent().is_some_and(|p| p == pane.header_center));
-        assert_eq!(width(&pane.header_row), line);
+            header(Header::standard().left, Header::standard().center);
+            assert!(parent().is_some_and(|p| p == pane.header_center));
+            assert_eq!(width(&pane.header_row), line);
+        });
     }
 
     #[test]

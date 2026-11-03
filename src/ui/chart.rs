@@ -9962,25 +9962,24 @@ mod tests {
     /// screenshot leaving it out.
     #[test]
     fn the_pointer_layer_covers_the_chart_exactly() {
-        if !crate::ui::gtk_ready() {
-            return;
-        }
-        let theme = omacharts_engine::theme::builtin_themes()
-            .into_iter()
-            .next()
-            .expect("a built-in theme");
-        let scheme = omacharts_engine::theme::theme_bars(&theme);
-        let view = ChartView::new(theme, scheme);
+        crate::ui::on_gtk(|| {
+            let theme = omacharts_engine::theme::builtin_themes()
+                .into_iter()
+                .next()
+                .expect("a built-in theme");
+            let scheme = omacharts_engine::theme::theme_bars(&theme);
+            let view = ChartView::new(theme, scheme);
 
-        view.root.allocate(800, 600, -1, None);
+            view.root.allocate(800, 600, -1, None);
 
-        assert_eq!((view.area.width(), view.area.height()), (800, 600), "the chart");
-        assert_eq!((view.pointer.width(), view.pointer.height()), (800, 600), "the layer over it");
-        let at = view
-            .pointer
-            .compute_point(&view.area, &gtk::graphene::Point::new(0.0, 0.0))
-            .expect("the two layers are in the same window");
-        assert_eq!((at.x(), at.y()), (0.0, 0.0), "the layer is offset from the chart");
+            assert_eq!((view.area.width(), view.area.height()), (800, 600), "the chart");
+            assert_eq!((view.pointer.width(), view.pointer.height()), (800, 600), "the layer over it");
+            let at = view
+                .pointer
+                .compute_point(&view.area, &gtk::graphene::Point::new(0.0, 0.0))
+                .expect("the two layers are in the same window");
+            assert_eq!((at.x(), at.y()), (0.0, 0.0), "the layer is offset from the chart");
+        });
     }
 
     /// Alt+Shift with + and − step every selected drawing's stroke at once,
@@ -9989,74 +9988,72 @@ mod tests {
     /// a look of its own as the properties would.
     #[test]
     fn the_stroke_keys_step_every_selected_drawing() {
-        if !crate::ui::gtk_ready() {
-            return;
-        }
-        let theme = omacharts_engine::theme::builtin_themes()
-            .into_iter()
-            .next()
-            .expect("a built-in theme");
-        let scheme = omacharts_engine::theme::theme_bars(&theme);
-        let view = ChartView::new(theme, scheme);
-        {
-            let mut s = view.state.borrow_mut();
-            let (a, b) = (Anchor::new(1, 1.0), Anchor::new(5, 2.0));
-            s.drawings = [DrawingKind::Vwap, DrawingKind::Rect, DrawingKind::Profile]
+        crate::ui::on_gtk(|| {
+            let theme = omacharts_engine::theme::builtin_themes()
                 .into_iter()
-                .map(|kind| {
-                    let mut drawing = Drawing::new(kind, a, b);
-                    drawing.follow(1);
-                    drawing
-                })
-                .collect();
-            s.selected = vec![0, 1, 2];
-        }
-        let widths = |view: &Rc<ChartView>| -> Vec<f64> {
-            let s = view.state.borrow();
-            s.drawings.iter().map(|d| d.style(&s.configs).width).collect()
-        };
-        let before = widths(&view);
-        assert!(view.step_width(drawings::WIDTH_STEP));
-        let after = widths(&view);
-        for (was, now) in before.iter().zip(&after) {
-            assert_eq!(*now, was + drawings::WIDTH_STEP);
-        }
-        assert!(view.state.borrow().drawings.iter().all(|d| d.config.is_none()), "each its own look now");
-        for _ in 0..40 {
-            view.step_width(-drawings::WIDTH_STEP);
-        }
-        assert!(widths(&view).iter().all(|w| *w == drawings::MIN_WIDTH));
-        for _ in 0..40 {
-            view.step_width(drawings::WIDTH_STEP);
-        }
-        assert!(widths(&view).iter().all(|w| *w == drawings::MAX_WIDTH));
+                .next()
+                .expect("a built-in theme");
+            let scheme = omacharts_engine::theme::theme_bars(&theme);
+            let view = ChartView::new(theme, scheme);
+            {
+                let mut s = view.state.borrow_mut();
+                let (a, b) = (Anchor::new(1, 1.0), Anchor::new(5, 2.0));
+                s.drawings = [DrawingKind::Vwap, DrawingKind::Rect, DrawingKind::Profile]
+                    .into_iter()
+                    .map(|kind| {
+                        let mut drawing = Drawing::new(kind, a, b);
+                        drawing.follow(1);
+                        drawing
+                    })
+                    .collect();
+                s.selected = vec![0, 1, 2];
+            }
+            let widths = |view: &Rc<ChartView>| -> Vec<f64> {
+                let s = view.state.borrow();
+                s.drawings.iter().map(|d| d.style(&s.configs).width).collect()
+            };
+            let before = widths(&view);
+            assert!(view.step_width(drawings::WIDTH_STEP));
+            let after = widths(&view);
+            for (was, now) in before.iter().zip(&after) {
+                assert_eq!(*now, was + drawings::WIDTH_STEP);
+            }
+            assert!(view.state.borrow().drawings.iter().all(|d| d.config.is_none()), "each its own look now");
+            for _ in 0..40 {
+                view.step_width(-drawings::WIDTH_STEP);
+            }
+            assert!(widths(&view).iter().all(|w| *w == drawings::MIN_WIDTH));
+            for _ in 0..40 {
+                view.step_width(drawings::WIDTH_STEP);
+            }
+            assert!(widths(&view).iter().all(|w| *w == drawings::MAX_WIDTH));
+        });
     }
 
     /// A right-click with a drawing half laid down drops it and keeps the
     /// tool in hand, for another go.
     #[test]
     fn a_drawing_half_laid_down_is_dropped_and_the_tool_kept() {
-        if !crate::ui::gtk_ready() {
-            return;
-        }
-        let theme = omacharts_engine::theme::builtin_themes()
-            .into_iter()
-            .next()
-            .expect("a built-in theme");
-        let scheme = omacharts_engine::theme::theme_bars(&theme);
-        let view = ChartView::new(theme, scheme);
-        view.arm(Some(DrawingKind::Line));
-        assert!(!view.drop_placing(), "nothing laid down yet");
-        {
-            let mut s = view.state.borrow_mut();
-            let at = Anchor::new(1, 1.0);
-            s.placing = Some(Drawing::new(DrawingKind::Line, at, at));
-            s.drag = Some(Drag::Place { moved: true });
-        }
-        assert!(view.drop_placing());
-        let s = view.state.borrow();
-        assert!(s.placing.is_none() && s.drag.is_none(), "the drawing is gone");
-        assert_eq!(s.tool, Some(DrawingKind::Line), "the tool is still in hand");
+        crate::ui::on_gtk(|| {
+            let theme = omacharts_engine::theme::builtin_themes()
+                .into_iter()
+                .next()
+                .expect("a built-in theme");
+            let scheme = omacharts_engine::theme::theme_bars(&theme);
+            let view = ChartView::new(theme, scheme);
+            view.arm(Some(DrawingKind::Line));
+            assert!(!view.drop_placing(), "nothing laid down yet");
+            {
+                let mut s = view.state.borrow_mut();
+                let at = Anchor::new(1, 1.0);
+                s.placing = Some(Drawing::new(DrawingKind::Line, at, at));
+                s.drag = Some(Drag::Place { moved: true });
+            }
+            assert!(view.drop_placing());
+            let s = view.state.borrow();
+            assert!(s.placing.is_none() && s.drag.is_none(), "the drawing is gone");
+            assert_eq!(s.tool, Some(DrawingKind::Line), "the tool is still in hand");
+        });
     }
 
     /// The chart wears one tooltip — the trouble dot's — and GTK opens it by
@@ -10066,48 +10063,47 @@ mod tests {
     /// question.
     #[test]
     fn the_pointer_layer_lets_every_event_through_to_the_chart() {
-        if !crate::ui::gtk_ready() {
-            return;
-        }
-        let theme = omacharts_engine::theme::builtin_themes()
-            .into_iter()
-            .next()
-            .expect("a built-in theme");
-        let scheme = omacharts_engine::theme::theme_bars(&theme);
-        let view = ChartView::new(theme, scheme);
-        view.root.allocate(800, 600, -1, None);
+        crate::ui::on_gtk(|| {
+            let theme = omacharts_engine::theme::builtin_themes()
+                .into_iter()
+                .next()
+                .expect("a built-in theme");
+            let scheme = omacharts_engine::theme::theme_bars(&theme);
+            let view = ChartView::new(theme, scheme);
+            view.root.allocate(800, 600, -1, None);
 
-        // What GTK's own pick consults, and the whole of why a layer over the
-        // chart changes nothing about what the chart receives. A widget that
-        // could be targeted would be picked instead of the chart under it,
-        // and the tooltip would be asked of a widget that has none.
-        assert!(!view.pointer.can_target(), "the layer over the chart would take events");
+            // What GTK's own pick consults, and the whole of why a layer over the
+            // chart changes nothing about what the chart receives. A widget that
+            // could be targeted would be picked instead of the chart under it,
+            // and the tooltip would be asked of a widget that has none.
+            assert!(!view.pointer.can_target(), "the layer over the chart would take events");
 
-        // And the dot is where the tooltip goes looking for it, so the handler
-        // the chart carries answers when the pointer gets there.
-        view.set_series(
-            Instrument {
-                symbol: "ES".into(),
-                name: "S&P 500 futures".into(),
-                kind: omacharts_engine::symbols::InstrumentKind::FutureRoot,
-                suffix: None,
-                currency: None,
-                tier: 0,
-                session_origin: 0,
-                overrides: Vec::new(),
-                exchange: None,
-                popularity: 0,
-                local_name: None,
-            },
-            Timeframe::days(1),
-            ramp(200),
-        );
-        view.set_trouble(Some(FetchFailure::Unreachable));
-        let (dot_x, dot_y) = trouble_dot_centre(800.0);
-        assert!(
-            over_trouble_dot(&view.state.borrow(), 800.0, dot_x, dot_y),
-            "the dot is not where the tooltip looks for it"
-        );
+            // And the dot is where the tooltip goes looking for it, so the handler
+            // the chart carries answers when the pointer gets there.
+            view.set_series(
+                Instrument {
+                    symbol: "ES".into(),
+                    name: "S&P 500 futures".into(),
+                    kind: omacharts_engine::symbols::InstrumentKind::FutureRoot,
+                    suffix: None,
+                    currency: None,
+                    tier: 0,
+                    session_origin: 0,
+                    overrides: Vec::new(),
+                    exchange: None,
+                    popularity: 0,
+                    local_name: None,
+                },
+                Timeframe::days(1),
+                ramp(200),
+            );
+            view.set_trouble(Some(FetchFailure::Unreachable));
+            let (dot_x, dot_y) = trouble_dot_centre(800.0);
+            assert!(
+                over_trouble_dot(&view.state.borrow(), 800.0, dot_x, dot_y),
+                "the dot is not where the tooltip looks for it"
+            );
+        });
     }
 
     #[test]

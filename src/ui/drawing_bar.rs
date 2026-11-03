@@ -565,15 +565,14 @@ mod tests {
     #[test]
     fn a_tool_button_says_its_name_and_its_key_and_nothing_else() {
         // The key is written by GTK, which needs a display to do it.
-        if !crate::ui::gtk_ready() {
-            return;
-        }
-        assert_eq!(tooltip(Button::Pointer), "Pointer (Escape)");
-        assert_eq!(tooltip(Button::Measure), "Measure (Alt+M)");
-        assert_eq!(tooltip(Button::Draw(Kind::Rect)), "Rectangle (Alt+R)");
-        for kind in Kind::ALL {
-            let tip = tooltip(Button::Draw(kind));
-            assert!(tip.starts_with(kind.label()) && tip.ends_with(')') && !tip.contains(':'), "{tip}");
-        }
+        crate::ui::on_gtk(|| {
+            assert_eq!(tooltip(Button::Pointer), "Pointer (Escape)");
+            assert_eq!(tooltip(Button::Measure), "Measure (Alt+M)");
+            assert_eq!(tooltip(Button::Draw(Kind::Rect)), "Rectangle (Alt+R)");
+            for kind in Kind::ALL {
+                let tip = tooltip(Button::Draw(kind));
+                assert!(tip.starts_with(kind.label()) && tip.ends_with(')') && !tip.contains(':'), "{tip}");
+            }
+        });
     }
 }
