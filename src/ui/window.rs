@@ -6400,6 +6400,7 @@ impl Window {
                 // indicator and was a missing call.
                 self.recompute_indicators(pane, &instrument, timeframe, &bars);
                 pane.view.set_series(instrument.clone(), timeframe, (*bars).clone());
+                self.apply_marks_to(pane);
                 empty
             }
             (None, None) => {
@@ -7005,6 +7006,10 @@ impl Window {
             series.insert((key.to_string(), timeframe), bars.clone());
         }
         pane.view.set_series(instrument.clone(), timeframe, (*bars).clone());
+        // Bars from a feed are when it has found the contract they are
+        // from, which is what an order on the chart goes to: the marks can
+        // be drawn from here, without waiting for the book to move.
+        self.apply_marks_to(pane);
     }
 
     /// Run the indicators over the bars now on screen and hand them to the

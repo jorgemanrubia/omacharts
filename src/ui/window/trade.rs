@@ -1358,6 +1358,35 @@ pub(super) mod tests {
         }
     }
 
+    /// A position held before the chart's contract is known is drawn as
+    /// soon as bars arrive, which is when the feed has found it: not on the
+    /// next move of the book, nor the next time the menu opens.
+    #[test]
+    fn marks_appear_once_the_contract_is_known() {
+        if !crate::ui::gtk_ready() {
+            return;
+        }
+        let (window, pane, session, _) = long_es(true, true);
+        session.contracts.lock().unwrap().clear();
+        window.desk.tell();
+        assert!(pane.view.mark_states().0.is_none(), "marked with no contract");
+        // The chart asks its feed for bars, and the feed finds the contract
+        // while they are on their way. The book does not move.
+        let es = pane.instrument.borrow().clone().expect("ES");
+        window.show_in(&pane, es);
+        assert!(pane.view.mark_states().0.is_none());
+        session.contracts.lock().unwrap().insert("ES".into(), "ESZ6".into());
+        let context = glib::MainContext::default();
+        for _ in 0..200 {
+            if pane.view.mark_states().0.is_some() {
+                break;
+            }
+            context.iteration(false);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(pane.view.mark_states().0.is_some(), "the position waited for the book to move");
+    }
+
     /// On a live account the × asks first, and nothing is sent until it is
     /// answered.
     #[test]
