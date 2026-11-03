@@ -1,65 +1,68 @@
-//! Choosing a data feed, and signing in to one that needs it.
+//! The sources charts come from, in the order they are tried.
 //!
-//! A section of its own rather than a row in the settings, because picking a
-//! feed is not like picking a colour: one of them charts your brokerage
-//! account, which means a sign-in, a browser, a session that expires, and
-//! four different things that can be true of it. A combo box could hold the
-//! choice and would have nowhere to say any of that.
+//! A list rather than a choice: each chart comes from the first source that
+//! has its symbol and is signed in, so the order is the setting. Yahoo is
+//! the floor of it. It serves everything, so a source under it would never
+//! be reached, and it can be neither moved nor removed.
 //!
-//! What the page is built from comes from the feeds themselves — the list,
-//! what each one serves, how fresh it is (asked of the provider, so it stops
-//! saying "real time" the moment that stops being true), and whether it
-//! needs signing in to. Nothing about brokerages or browsers is written
-//! here, so the third feed arrives as a folder in the engine and this file
-//! does not change.
+//! What each row says comes from the feeds themselves: what a source
+//! covers, how fresh it is (asked of the provider), whether it needs
+//! signing in and how that stands. Only Rithmic's login dialog is a thing
+//! of its own, in `rithmic_login`, because it is the one source whose
+//! sign-in is typed rather than done in a browser.
 //!
-//! The sign-in runs on a thread of its own and reports back over a channel
-//! the GTK main loop polls, because it waits for a person: a browser opens,
-//! they type a password and a code off their phone, and the ten minutes that
-//! may take must not be ten minutes of frozen window. That is the same shape
-//! the loader uses for fetching bars, for the same reason.
+//! Signing in runs on a thread of its own and reports back over a channel
+//! the main loop awaits, because it waits on somebody: a browser and a
+//! code off a phone for thinkorswim, Rithmic's gateway for Rithmic.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::glib;
+use omacharts_engine::provider::Delivery;
+use omacharts_engine::providers::rithmic::session::{self, Secrets};
 use omacharts_engine::providers::{self, Access, Listed};
 
 use crate::feeds;
 use crate::store::Store;
+use crate::ui::drop_line;
+
+const RITHMIC: &str = "rithmic";
 
 /// What the sign-in thread sends back.
 enum Progress {
-    /// One line from the browser login, as it happens.
+    /// One line of how it is going, as it happens.
     Line(String),
-    /// Finished. `Err` carries what went wrong, in the client's words.
+    /// Finished. `Err` carries what went wrong, in the source's words.
     Done(Result<(), String>),
 }
 
 struct Panel {
     store: Rc<Store>,
-    /// Redraws the window's provider row and anything else the choice
-    /// shows. Called when the stored feed changes, and nowhere else.
+    /// Where Rithmic's password goes: the desktop keyring, or a list in
+    /// memory under test.
+    secrets: Rc<dyn Secrets>,
+    /// Has the window chart from the order now stored, and read again
+    /// which sources are signed in. Called after every change here.
     on_change: Rc<dyn Fn()>,
     page: adw::PreferencesPage,
-    /// The group describing the chosen feed's sign-in, rebuilt whenever
-    /// the choice or the session state changes. Held so it can be taken off
-    /// the page again — a feed that needs nothing must leave nothing behind.
-    setup: RefCell<Option<adw::PreferencesGroup>>,
-    /// What the page shows below the feeds and their sign-in, kept last as
-    /// the sign-in comes and goes.
+    /// The sources, rebuilt whenever one changes.
+    group: RefCell<Option<adw::PreferencesGroup>>,
+    /// What the page shows below the sources, kept last.
     after: Vec<adw::PreferencesGroup>,
-    /// True while a browser login is outstanding, so a second press of the
-    /// button cannot open a second browser onto the same profile.
-    ///
-    /// A bare `Cell`: the panel itself is behind an `Rc`, and everything
-    /// that reads this holds a clone of that one.
-    signing_in: std::cell::Cell<bool>,
+    /// The source a sign-in is running for, so a second press cannot start
+    /// a second one.
+    signing_in: Cell<Option<&'static str>>,
+    /// The latest word from a sign-in, by source, until the next one:
+    /// progress while it runs, and why it failed when that is not a state
+    /// the source keeps itself.
+    notes: RefCell<HashMap<&'static str, String>>,
 }
 
-/// Fills the settings' data section: the feeds, the chosen one's sign-in
-/// below them, and the groups in `after` below that.
+/// Fills the settings' data section: the sources, and the groups in
+/// `after` below them.
 pub fn build(
     page: &adw::PreferencesPage,
     store: Rc<Store>,
@@ -67,97 +70,65 @@ pub fn build(
     after: Vec<adw::PreferencesGroup>,
 ) {
     feeds::remember_logins(&store);
-    let panel = Rc::new(Panel {
-        store,
-        on_change,
-        page: page.clone(),
-        setup: RefCell::new(None),
-        after,
-        signing_in: std::cell::Cell::new(false),
-    });
-
-    panel.page.add(&feeds_group(&panel));
-    rebuild_setup(&panel);
+    let panel = Panel::new(page.clone(), store, Rc::new(session::Keyring), on_change, after);
+    rebuild(&panel);
 }
 
-/// The feeds, in the order the engine offers them: the first is the default.
-fn feeds_group(panel: &Rc<Panel>) -> adw::PreferencesGroup {
-    let group = adw::PreferencesGroup::new();
-    group.set_title("Data feed");
-    group.set_description(Some("Where prices come from."));
-
-    let chosen = feeds::stored(&panel.store).id;
-    let mut first: Option<gtk::CheckButton> = None;
-
-    for feed in providers::LISTED {
-        let row = adw::ActionRow::new();
-        row.set_title(feed.label);
-        row.set_subtitle(&providers::described(feed));
-
-        let tick = gtk::CheckButton::new();
-        tick.set_valign(gtk::Align::Center);
-        match &first {
-            // Radio buttons, by sharing the first one's group — one feed at
-            // a time, and the group is what makes clicking one release the
-            // others.
-            Some(leader) => tick.set_group(Some(leader)),
-            None => first = Some(tick.clone()),
-        }
-        tick.set_active(feed.id == chosen);
-
-        // A word, not a warning. The feed works; what it rests on is a web
-        // session and an undocumented gateway, so it can be taken away by
-        // somebody else's release. Said quietly, in the row's own small
-        // type, because this is a thing to know when choosing rather than a
-        // thing to be stopped by.
-        if feed.experimental {
-            let tag = gtk::Label::new(Some("Experimental"));
-            tag.add_css_class("caption");
-            tag.add_css_class("dim-label");
-            tag.set_valign(gtk::Align::Center);
-            row.add_suffix(&tag);
-        }
-
-        let panel_for_tick = panel.clone();
-        tick.connect_toggled(move |tick| {
-            if !tick.is_active() {
-                return;
-            }
-            choose(&panel_for_tick, feed);
-        });
-
-        row.add_prefix(&tick);
-        row.set_activatable_widget(Some(&tick));
-        group.add(&row);
+impl Panel {
+    fn new(
+        page: adw::PreferencesPage,
+        store: Rc<Store>,
+        secrets: Rc<dyn Secrets>,
+        on_change: Rc<dyn Fn()>,
+        after: Vec<adw::PreferencesGroup>,
+    ) -> Rc<Panel> {
+        Rc::new(Panel {
+            store,
+            secrets,
+            on_change,
+            page,
+            group: RefCell::new(None),
+            after,
+            signing_in: Cell::new(None),
+            notes: RefCell::new(HashMap::new()),
+        })
     }
 
-    group
+    /// The sources added, top first, as the catalogue has them.
+    fn added(&self) -> Vec<&'static Listed> {
+        feeds::stored_order(&self.store)
+            .iter()
+            .filter_map(|id| providers::listed(id))
+            .filter(|feed| feed.id != providers::DEFAULT)
+            .fold(Vec::new(), |mut added, feed| {
+                if !added.iter().any(|known: &&Listed| known.id == feed.id) {
+                    added.push(feed);
+                }
+                added
+            })
+    }
+
+    /// Write `order` down, have the window chart from it, and redraw.
+    fn reorder(self: &Rc<Self>, order: Vec<&'static Listed>) {
+        let ids: Vec<String> = order.iter().map(|feed| feed.id.to_string()).collect();
+        feeds::save_order(&self.store, &ids);
+        self.changed();
+    }
+
+    fn changed(self: &Rc<Self>) {
+        (self.on_change)();
+        rebuild(self);
+    }
 }
 
-/// Store the choice. The window reads it back and switches the charts
-/// over, with nothing to restart and nothing on this page saying so: the
-/// person ticks the other feed and the charts are from the other feed.
-///
-/// One feed ticked is an order of that feed alone above Yahoo, and Yahoo
-/// ticked is nothing stored, until this page becomes the ordered list of
-/// sources it is going to be.
-fn choose(panel: &Rc<Panel>, feed: &'static Listed) {
-    feeds::save_order(&panel.store, &[feed.id.to_string()]);
-    (panel.on_change)();
-    rebuild_setup(panel);
-}
-
-/// Replace the sign-in group with the chosen feed's, or with nothing.
-fn rebuild_setup(panel: &Rc<Panel>) {
-    if let Some(old) = panel.setup.borrow_mut().take() {
+/// Replace the sources group with one drawn from what is stored now.
+fn rebuild(panel: &Rc<Panel>) {
+    if let Some(old) = panel.group.borrow_mut().take() {
         panel.page.remove(&old);
     }
-    let feed = feeds::stored(&panel.store);
-    if feed.needs_sign_in() {
-        let group = setup_group(panel, feed);
-        panel.page.add(&group);
-        *panel.setup.borrow_mut() = Some(group);
-    }
+    let group = sources_group(panel);
+    panel.page.add(&group);
+    *panel.group.borrow_mut() = Some(group);
     for after in &panel.after {
         if after.parent().is_some() {
             panel.page.remove(after);
@@ -166,148 +137,336 @@ fn rebuild_setup(panel: &Rc<Panel>) {
     }
 }
 
-/// The chosen feed's sign-in, which is one row: the group's title names the
-/// feed, and the row is the whole of what there is to do about it.
-fn setup_group(panel: &Rc<Panel>, feed: &'static Listed) -> adw::PreferencesGroup {
+fn sources_group(panel: &Rc<Panel>) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
-    group.set_title(feed.label);
+    group.set_title("Sources");
+    group.set_description(Some(
+        "Each chart comes from the first source in this list that has its symbol.",
+    ));
 
-    let access = providers::access(feed.id).unwrap_or(Access::Missing);
-
-    // One action, and which one it is says where somebody stands: an offer
-    // to sign in means there is nothing usable saved, and an offer to sign
-    // out means there is. A row spelling the same fact out in a sentence
-    // beside them would only be a second thing to keep in agreement.
-    if access.ready() {
-        group.add(&sign_out_row(panel, feed));
-    } else {
-        group.add(&sign_in_row(panel, feed, &access));
+    let added = panel.added();
+    for (at, feed) in added.iter().enumerate() {
+        group.add(&source_row(panel, feed, at));
     }
+    group.add(&floor_row(panel, !added.is_empty()));
 
+    let missing: Vec<&'static Listed> = providers::LISTED
+        .iter()
+        .filter(|feed| feed.id != providers::DEFAULT && !added.iter().any(|known| known.id == feed.id))
+        .collect();
+    if !missing.is_empty() {
+        group.add(&add_button(panel, missing));
+    }
     group
 }
 
-/// The sign-in offer, and the reason it is not a button when it cannot work.
-fn sign_in_row(panel: &Rc<Panel>, feed: &'static Listed, access: &Access) -> adw::ActionRow {
+/// How a source stands, in a word or two: how fresh it is while it can be
+/// used, otherwise why it cannot.
+fn standing(panel: &Panel, feed: &'static Listed) -> String {
+    if let Some(note) = panel.notes.borrow().get(feed.id) {
+        return note.clone();
+    }
+    match providers::access(feed.id) {
+        None | Some(Access::Signed(_)) => fresh(feed.id).into(),
+        Some(Access::Missing) => "not signed in".into(),
+        Some(Access::Expired(_)) if feed.id == RITHMIC => {
+            session::refusal().unwrap_or_else(|| "session expired".into())
+        }
+        Some(Access::Expired(_)) => "session expired".into(),
+    }
+}
+
+/// "live", "delayed", or "refetched", from how the provider delivers.
+fn fresh(id: &str) -> &'static str {
+    let provider = providers::built_or_default(id);
+    if provider.delivery() == Delivery::Streamed {
+        return "live";
+    }
+    match providers::freshness(id).starts_with("delayed") {
+        true => "delayed",
+        false => "refetched",
+    }
+}
+
+fn subtitle(panel: &Panel, feed: &'static Listed) -> String {
+    format!("{} · {}", feed.covers, standing(panel, feed))
+}
+
+/// Yahoo: no handle, no Remove, and nothing dropped on it lands.
+fn floor_row(panel: &Rc<Panel>, beneath_others: bool) -> adw::ActionRow {
+    let feed = providers::listed(providers::DEFAULT).expect("the default is listed");
     let row = adw::ActionRow::new();
-    row.set_title(match access {
-        // A session that went bad is not a fresh install, and "again" is the
-        // whole of the difference worth saying.
-        Access::Expired(_) => "Sign in again",
-        _ => "Sign in",
-    });
-    // Plain text, and room to wrap. The subtitle is empty until the button
-    // is pressed, and then it carries the client's own lines, which can be
-    // long and can hold an ampersand that must not take the row out.
+    row.set_title(feed.label);
+    row.set_subtitle(&subtitle(panel, feed));
+    // Where the handle would be, so its name lines up with the others.
+    if beneath_others {
+        let blank = gtk::Image::from_icon_name("list-drag-handle-symbolic");
+        blank.set_opacity(0.0);
+        row.add_prefix(&blank);
+    }
+    // Refused, rather than only offered no handle: a source dropped here
+    // would be under the source that serves everything.
+    row.add_controller(drop_line::target(&row, |_| None, |_| false));
+    row
+}
+
+fn source_row(panel: &Rc<Panel>, feed: &'static Listed, at: usize) -> adw::ActionRow {
+    let row = adw::ActionRow::new();
+    row.set_title(feed.label);
     row.set_use_markup(false);
+    row.set_subtitle(&subtitle(panel, feed));
     row.set_subtitle_lines(0);
 
-    match providers::can_sign_in(feed.id) {
-        Ok(_) => {
+    let handle = gtk::Image::from_icon_name("list-drag-handle-symbolic");
+    handle.add_css_class("dim-label");
+    handle.set_tooltip_text(Some("Drag to reorder"));
+    row.add_prefix(&handle);
+
+    // A word, not a warning: the feed works, and rests on a web session
+    // somebody else's release can take away.
+    if feed.experimental {
+        let tag = gtk::Label::new(Some("Experimental"));
+        tag.add_css_class("caption");
+        tag.add_css_class("dim-label");
+        tag.set_valign(gtk::Align::Center);
+        row.add_suffix(&tag);
+    }
+
+    if feed.needs_sign_in() {
+        if panel.signing_in.get() == Some(feed.id) {
             let spinner = gtk::Spinner::new();
             spinner.set_valign(gtk::Align::Center);
-            spinner.set_visible(false);
+            spinner.start();
             row.add_suffix(&spinner);
-
-            let button = gtk::Button::with_label("Sign in…");
-            button.set_valign(gtk::Align::Center);
-            button.add_css_class("suggested-action");
-            let panel_for_click = panel.clone();
-            let progress = row.clone();
-            let spinning = spinner.clone();
-            let pressed = button.clone();
-            button.connect_clicked(move |_| {
-                start_sign_in(&panel_for_click, feed, &progress, &spinning, &pressed);
-            });
-            row.add_suffix(&button);
-        }
-        // A machine with no Chromium-family browser cannot do this at all.
-        // An enabled button that fails teaches somebody nothing; the row
-        // says what to install instead.
-        Err(why) => {
-            row.set_subtitle(&why);
-            row.add_prefix(&gtk::Image::from_icon_name("dialog-warning-symbolic"));
-            row.set_sensitive(false);
+        } else {
+            row.add_suffix(&action_button(panel, feed, &row));
         }
     }
 
+    let remove = gtk::Button::with_label("Remove");
+    remove.add_css_class("flat");
+    remove.set_valign(gtk::Align::Center);
+    let panel_for_remove = panel.clone();
+    remove.connect_clicked(move |_| remove_source(&panel_for_remove, feed));
+    row.add_suffix(&remove);
+
+    wire_reorder(panel, &row, feed, at);
     row
 }
 
-/// The way out of a session that works, and the only row shown while one
-/// does.
-fn sign_out_row(panel: &Rc<Panel>, feed: &'static Listed) -> adw::ActionRow {
-    let row = adw::ActionRow::new();
-    row.set_title("Sign out");
-
-    let button = gtk::Button::with_label("Sign out");
-    button.add_css_class("destructive-action");
+/// The one thing to do about a source's sign-in, which says where it
+/// stands: Sign in… with nothing usable saved, Sign in again after a
+/// refusal or an expiry, Sign out while it works.
+fn action_button(panel: &Rc<Panel>, feed: &'static Listed, row: &adw::ActionRow) -> gtk::Button {
+    let access = providers::access(feed.id).unwrap_or(Access::Missing);
+    let label = match &access {
+        Access::Signed(_) => "Sign out",
+        Access::Expired(_) => "Sign in again",
+        Access::Missing => "Sign in…",
+    };
+    let button = gtk::Button::with_label(label);
     button.set_valign(gtk::Align::Center);
-    let panel_for_click = panel.clone();
-    button.connect_clicked(move |_| {
-        if let Err(error) = providers::sign_out(feed.id) {
-            eprintln!("omacharts: {error}");
-        }
-        feeds::forget_login(&panel_for_click.store, feed.id);
-        rebuild_setup(&panel_for_click);
+    let panel = panel.clone();
+    if access.ready() {
+        button.connect_clicked(move |_| sign_out(&panel, feed));
+        return button;
+    }
+    button.add_css_class("suggested-action");
+    // A sign-in that cannot start says why on the row, rather than being a
+    // button that fails. Rithmic's is a dialog, which always can.
+    if feed.id != RITHMIC
+        && let Err(why) = providers::can_sign_in(feed.id)
+    {
+        button.set_sensitive(false);
+        row.set_subtitle(&format!("{} · {why}", feed.covers));
+        return button;
+    }
+    let anchor = row.clone();
+    button.connect_clicked(move |_| match feed.id {
+        RITHMIC => ask_rithmic(&panel, &anchor),
+        _ => start_sign_in(&panel, feed),
     });
-    row.add_suffix(&button);
-
-    row
+    button
 }
 
-/// Run the browser login off the main loop, showing what it says.
-fn start_sign_in(
-    panel: &Rc<Panel>,
-    feed: &'static Listed,
-    row: &adw::ActionRow,
-    spinner: &gtk::Spinner,
-    button: &gtk::Button,
-) {
-    // One browser at a time. Two logins would fight over the same profile
-    // directory, and the second one loses in a way that looks like a bug.
-    if panel.signing_in.replace(true) {
+/// Dragged by id, because the rows are rebuilt under the drag. A drop is
+/// taken out of the order and put back at the place of the row it lands
+/// on, as the header's part list does.
+fn wire_reorder(panel: &Rc<Panel>, row: &adw::ActionRow, feed: &'static Listed, onto: usize) {
+    let source = gtk::DragSource::new();
+    source.set_actions(gtk::gdk::DragAction::MOVE);
+    let payload = feed.id.to_string();
+    source.connect_prepare(move |_, _, _| Some(gtk::gdk::ContentProvider::for_value(&payload.to_value())));
+    source.connect_drag_begin(|source, _| {
+        let Some(row) = source.widget() else { return };
+        let ghost = gtk::WidgetPaintable::new(Some(&row));
+        source.set_icon(Some(&ghost), row.width() / 2, row.height() / 2);
+    });
+    row.add_controller(source);
+
+    let from = {
+        let panel = panel.clone();
+        move |value: &glib::Value| {
+            let id = value.get::<String>().ok()?;
+            panel.added().iter().position(|feed| feed.id == id)
+        }
+    };
+    let landing = from.clone();
+    let panel = panel.clone();
+    let target = drop_line::target(
+        row,
+        move |value| landing(value).and_then(|from| drop_line::edge(from, onto)),
+        move |value| {
+            let Some(from) = from(value) else { return false };
+            match moved(&panel.added(), from, onto) {
+                Some(order) => {
+                    panel.reorder(order);
+                    true
+                }
+                None => false,
+            }
+        },
+    );
+    row.add_controller(target);
+}
+
+/// `order` with the entry at `from` taken out and put back at `onto`, or
+/// `None` for a move that changes nothing or names no source.
+fn moved<T: Copy>(order: &[T], from: usize, onto: usize) -> Option<Vec<T>> {
+    if from == onto || from >= order.len() || onto >= order.len() {
+        return None;
+    }
+    let mut order = order.to_vec();
+    let lifted = order.remove(from);
+    order.insert(onto, lifted);
+    Some(order)
+}
+
+/// The sources not added yet, one press each.
+fn add_button(panel: &Rc<Panel>, missing: Vec<&'static Listed>) -> gtk::MenuButton {
+    let add = gtk::MenuButton::new();
+    add.set_label("Add a source…");
+    add.set_halign(gtk::Align::Start);
+    add.set_margin_top(12);
+    let choices = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    let popover = gtk::Popover::new();
+    for feed in missing {
+        let button = gtk::Button::with_label(feed.label);
+        button.add_css_class("flat");
+        if let Some(label) = button.child().and_downcast::<gtk::Label>() {
+            label.set_xalign(0.0);
+        }
+        let panel = panel.clone();
+        let shut = popover.clone();
+        let anchor = add.clone();
+        button.connect_clicked(move |_| {
+            shut.popdown();
+            add_source(&panel, feed, &anchor);
+        });
+        choices.append(&button);
+    }
+    popover.set_child(Some(&choices));
+    add.set_popover(Some(&popover));
+    add
+}
+
+/// Rithmic is added by signing in to it: the dialog, and nothing added if
+/// it is cancelled. thinkorswim is added at once, and signed in to from its
+/// row.
+fn add_source(panel: &Rc<Panel>, feed: &'static Listed, anchor: &impl IsA<gtk::Widget>) {
+    match feed.id {
+        RITHMIC => ask_rithmic(panel, anchor),
+        _ => {
+            feeds::add_source(&panel.store, feed.id);
+            panel.changed();
+        }
+    }
+}
+
+fn remove_source(panel: &Rc<Panel>, feed: &'static Listed) {
+    panel.notes.borrow_mut().remove(feed.id);
+    if let Err(error) = feeds::remove_source(&panel.store, panel.secrets.as_ref(), feed.id) {
+        eprintln!("omacharts: {error}");
+    }
+    panel.changed();
+}
+
+fn sign_out(panel: &Rc<Panel>, feed: &'static Listed) {
+    panel.notes.borrow_mut().remove(feed.id);
+    let signed_out = match feed.id {
+        RITHMIC => session::sign_out_of(panel.secrets.as_ref()),
+        _ => providers::sign_out(feed.id),
+    };
+    if let Err(error) = signed_out {
+        eprintln!("omacharts: {error}");
+    }
+    feeds::forget_login(&panel.store, feed.id);
+    panel.changed();
+}
+
+/// The Rithmic login dialog, and what pressing Sign In does: the login is
+/// saved, Rithmic goes on the list if it was not, and the window's session
+/// signs in with it.
+fn ask_rithmic(panel: &Rc<Panel>, anchor: &impl IsA<gtk::Widget>) {
+    let panel = panel.clone();
+    let store = panel.store.clone();
+    crate::ui::rithmic_login::ask(anchor, &store, move |login| {
+        let feed = providers::listed(RITHMIC).expect("Rithmic is listed");
+        if let Err(error) = feeds::save_rithmic_login(&panel.store, panel.secrets.as_ref(), &login) {
+            panel.notes.borrow_mut().insert(feed.id, format!("not saved · {error}"));
+            rebuild(&panel);
+            return;
+        }
+        feeds::add_source(&panel.store, feed.id);
+        start_sign_in(&panel, feed);
+    });
+}
+
+/// Run a sign-in off the main loop, showing on the row how it goes, then
+/// have the window read the sources again.
+fn start_sign_in(panel: &Rc<Panel>, feed: &'static Listed) {
+    if panel.signing_in.get().is_some() {
         return;
     }
-
-    button.set_sensitive(false);
-    spinner.set_visible(true);
-    spinner.start();
-    row.set_subtitle("Opening a browser. Sign in there — this waits for you.");
+    panel.signing_in.set(Some(feed.id));
+    let opening = match feed.id {
+        RITHMIC => "signing in",
+        _ => "opening a browser; sign in there",
+    };
+    panel.notes.borrow_mut().insert(feed.id, opening.into());
+    rebuild(panel);
 
     let (sender, receiver) = async_channel::unbounded::<Progress>();
     let lines = sender.clone();
     std::thread::spawn(move || {
-        let outcome = providers::sign_in(feed.id, move |line| {
+        let outcome = feeds::sign_in_now(feed.id, move |line| {
             let _ = lines.send_blocking(Progress::Line(line.to_string()));
         });
         let _ = sender.send_blocking(Progress::Done(outcome));
     });
 
     let panel = panel.clone();
-    let row = row.clone();
-    let spinner = spinner.clone();
-    let button = button.clone();
     glib::spawn_future_local(async move {
         while let Ok(progress) = receiver.recv().await {
             match progress {
-                // The browser's own commentary — which page it is on, that
-                // it is waiting for a login. Shown as it arrives, because
-                // ten silent minutes look like a hang.
-                Progress::Line(line) => row.set_subtitle(&line),
+                Progress::Line(line) => {
+                    panel.notes.borrow_mut().insert(feed.id, line);
+                    rebuild(&panel);
+                }
                 Progress::Done(outcome) => {
-                    spinner.stop();
-                    spinner.set_visible(false);
-                    button.set_sensitive(true);
-                    panel.signing_in.set(false);
-                    if let Err(error) = outcome {
-                        row.set_subtitle(&format!("Sign-in failed · {error}"));
-                        return;
+                    panel.signing_in.set(None);
+                    let mut notes = panel.notes.borrow_mut();
+                    notes.remove(feed.id);
+                    // A refusal is a state the source keeps, and the row
+                    // reads it back in Rithmic's words; anything else is
+                    // said once, here.
+                    if let Err(error) = outcome
+                        && !matches!(providers::access(feed.id), Some(Access::Expired(_)))
+                    {
+                        notes.insert(feed.id, format!("sign-in failed · {error}"));
                     }
-                    // Rebuilt rather than relabelled: a session that now
-                    // exists changes which rows belong here.
-                    rebuild_setup(&panel);
-                    (panel.on_change)();
+                    drop(notes);
+                    panel.changed();
                     return;
                 }
             }
@@ -319,64 +478,8 @@ fn start_sign_in(
 mod tests {
     use super::*;
 
-    /// Yahoo first, because the first feed in the list is the default and
-    /// the panel must not be the place that disagrees about which that is.
-    #[test]
-    fn the_first_feed_offered_is_the_default_one() {
-        assert_eq!(providers::LISTED[0].id, providers::DEFAULT);
-        assert_eq!(providers::LISTED[0].id, "yahoo");
-    }
-
-    /// Every feed the panel lists has a line under it, and the one that
-    /// needs signing in has instructions for doing so. A feed added to the
-    /// catalogue without either would render as a bare name.
-    #[test]
-    fn every_feed_has_something_to_say_for_itself() {
-        for feed in providers::LISTED {
-            assert!(!feed.serves.is_empty(), "{} has nothing to say", feed.id);
-            match feed.setup {
-                None => assert!(providers::access(feed.id).is_none(), "{}", feed.id),
-                Some(setup) => {
-                    assert!(!setup.explain.is_empty(), "{}", feed.id);
-                    assert!(!setup.requires.is_empty(), "{}", feed.id);
-                    assert!(!setup.scope.is_empty(), "{}", feed.id);
-                    assert!(providers::access(feed.id).is_some(), "{}", feed.id);
-                }
-            }
-        }
-    }
-
-    /// The page is built from widgets, so this needs a display. What it
-    /// checks is the thing that is easy to get wrong and invisible in a
-    /// screenshot: that choosing a feed writes the setting, and that the
-    /// rows for the feed that needs a sign-in appear and disappear with it.
-    #[test]
-    fn choosing_a_feed_stores_it_and_brings_its_setup_with_it() {
-        if !crate::ui::gtk_ready() {
-            return;
-        }
-        let store = Rc::new(Store::memory().expect("an empty database"));
-        let page = adw::PreferencesPage::new();
-        let panel = Rc::new(Panel {
-            store: store.clone(),
-            on_change: Rc::new(|| {}),
-            page,
-            setup: RefCell::new(None),
-            after: Vec::new(),
-            signing_in: std::cell::Cell::new(false),
-        });
-        rebuild_setup(&panel);
-        assert!(panel.setup.borrow().is_none(), "Yahoo needs no sign-in rows");
-
-        let tos = providers::listed("tos").expect("thinkorswim is listed");
-        choose(&panel, tos);
-        assert_eq!(store.setting(feeds::SETTING).as_deref(), Some(r#"["tos"]"#));
-        assert!(panel.setup.borrow().is_some(), "thinkorswim's sign-in rows are missing");
-
-        let yahoo = providers::listed("yahoo").expect("yahoo is listed");
-        choose(&panel, yahoo);
-        assert_eq!(store.setting(feeds::SETTING), None);
-        assert!(panel.setup.borrow().is_none(), "rows for a feed nobody chose");
+    fn panel(store: &Rc<Store>, kept: Rc<crate::feeds::tests::Kept>) -> Rc<Panel> {
+        Panel::new(adw::PreferencesPage::new(), store.clone(), kept, Rc::new(|| {}), Vec::new())
     }
 
     /// Every [`adw::ActionRow`] under `widget`, in the order somebody reads
@@ -394,145 +497,153 @@ mod tests {
         found
     }
 
-    /// The same rows as title and subtitle, which is what most of these
-    /// tests are asking about.
-    fn rows_under(widget: &gtk::Widget) -> Vec<(String, String)> {
-        action_rows(widget)
-            .into_iter()
-            .map(|row| (row.title().to_string(), row.subtitle().unwrap_or_default().to_string()))
-            .collect()
-    }
-
-    /// The words of every label under `widget`. A badge is a label the row
-    /// carries, not a property of the row, so there is no other way to ask
-    /// what one says.
-    fn labels_under(widget: &gtk::Widget) -> Vec<String> {
+    /// The words of every label and button under `widget`.
+    fn words_under(widget: &gtk::Widget) -> Vec<String> {
         let mut found = Vec::new();
         let mut next = widget.first_child();
         while let Some(child) = next {
             if let Ok(label) = child.clone().downcast::<gtk::Label>() {
                 found.push(label.label().to_string());
             }
-            found.extend(labels_under(&child));
+            if let Ok(button) = child.clone().downcast::<gtk::Button>()
+                && let Some(label) = button.label()
+            {
+                found.push(label.to_string());
+            }
+            if let Ok(button) = child.clone().downcast::<gtk::MenuButton>()
+                && let Some(label) = button.label()
+            {
+                found.push(label.to_string());
+            }
+            found.extend(words_under(&child));
             next = child.next_sibling();
         }
         found
     }
 
-    /// One row, and which one it is is the whole of what the group says
-    /// about the session: sign in while there is nothing usable saved, sign
-    /// out while there is. Nothing describes the state in words, and the row
-    /// on screen is the row that says which browser a login opens, because
-    /// there is no other row left to say it.
+    fn titles(panel: &Panel) -> Vec<String> {
+        let group = panel.group.borrow().clone().expect("the sources are drawn");
+        action_rows(group.upcast_ref()).iter().map(|row| row.title().to_string()).collect()
+    }
+
+    /// With nothing configured, one row, Yahoo, and the button to add
+    /// another. No brokerage, no "Experimental", no sign-in.
     #[test]
-    fn the_group_offers_one_action_and_it_follows_the_session() {
+    fn nothing_configured_is_one_yahoo_row() {
         if !crate::ui::gtk_ready() {
             return;
         }
         let store = Rc::new(Store::memory().expect("an empty database"));
-        let panel = Rc::new(Panel {
-            store,
-            on_change: Rc::new(|| {}),
-            page: adw::PreferencesPage::new(),
-            setup: RefCell::new(None),
-            after: Vec::new(),
-            signing_in: std::cell::Cell::new(false),
-        });
-        let tos = providers::listed("tos").expect("thinkorswim is listed");
-        assert!(tos.needs_sign_in(), "thinkorswim needs signing in to");
-        let group = setup_group(&panel, tos);
-        let rows = rows_under(group.upcast_ref::<gtk::Widget>());
-
-        assert_eq!(rows.len(), 1, "one action and nothing else: {rows:?}");
-        let (title, subtitle) = &rows[0];
-
-        // Whichever state this machine's saved session is in, the row must
-        // agree with it: sign out while it is good, sign in while it is not.
-        let access = providers::access(tos.id).expect("thinkorswim keeps a session");
-        if access.ready() {
-            assert_eq!(title, "Sign out", "{}", access.line());
-        } else {
-            assert!(title.starts_with("Sign in"), "{} offers {title}", access.line());
+        let panel = panel(&store, Default::default());
+        rebuild(&panel);
+        assert_eq!(titles(&panel), vec!["Yahoo Finance"]);
+        let group = panel.group.borrow().clone().unwrap();
+        let words = words_under(group.upcast_ref());
+        assert!(words.iter().any(|word| word == "Add a source…"), "{words:?}");
+        // The sources still to add are in the button's menu, not on the page.
+        let yahoo = &action_rows(group.upcast_ref())[0];
+        let words = words_under(yahoo.upcast_ref());
+        for absent in ["Experimental", "Sign in…", "Sign out", "Remove"] {
+            assert!(!words.iter().any(|word| word == absent), "{absent} is on the page: {words:?}");
         }
+        assert!(yahoo.subtitle().unwrap_or_default().starts_with("Stocks, ETFs"), "{:?}", yahoo.subtitle());
+    }
 
-        // A title and a button, and no sentence under either. The one
-        // exception is a machine with no browser to open: that row is a
-        // refusal rather than an offer, and has to say what to install.
-        let expected = match access.ready() {
-            true => String::new(),
-            false => providers::can_sign_in(tos.id).err().unwrap_or_default(),
+    /// An added source gets a row above Yahoo, with Remove, and
+    /// thinkorswim's says Experimental. The order written is the order
+    /// drawn, and moving one writes the new order.
+    #[test]
+    fn the_order_is_stored_and_drawn() {
+        if !crate::ui::gtk_ready() {
+            return;
+        }
+        let store = Rc::new(Store::memory().expect("an empty database"));
+        let panel = panel(&store, Default::default());
+        let tos = providers::listed("tos").unwrap();
+        let rithmic = providers::listed(RITHMIC).unwrap();
+        feeds::add_source(&store, RITHMIC);
+        feeds::add_source(&store, "tos");
+        rebuild(&panel);
+        assert_eq!(titles(&panel), vec!["Rithmic", "thinkorswim", "Yahoo Finance"]);
+
+        let group = panel.group.borrow().clone().unwrap();
+        let rows = action_rows(group.upcast_ref());
+        let tos_words = words_under(rows[1].upcast_ref());
+        assert!(tos_words.iter().any(|w| w == "Experimental"), "{tos_words:?}");
+        assert!(tos_words.iter().any(|w| w == "Remove"), "{tos_words:?}");
+        let rithmic_words = words_under(rows[0].upcast_ref());
+        assert!(!rithmic_words.iter().any(|w| w == "Experimental"), "{rithmic_words:?}");
+
+        let order = moved(&panel.added(), 1, 0).expect("a move");
+        panel.reorder(order);
+        assert_eq!(store.setting(feeds::SETTING).as_deref(), Some(r#"["tos","rithmic"]"#));
+        assert_eq!(titles(&panel), vec!["thinkorswim", "Rithmic", "Yahoo Finance"]);
+        assert_eq!(panel.added().iter().map(|f| f.id).collect::<Vec<_>>(), vec![tos.id, rithmic.id]);
+    }
+
+    /// Yahoo cannot move: it is not among the sources that can be dragged,
+    /// a move past the end of them is refused, and nothing it would do
+    /// lands in the stored order.
+    #[test]
+    fn yahoo_cannot_move() {
+        let order = ["rithmic", "tos"];
+        assert_eq!(moved(&order, 0, 2), None, "below the sources is Yahoo's place");
+        assert_eq!(moved(&order, 2, 0), None, "Yahoo is not a source to lift");
+        assert_eq!(moved(&order, 1, 1), None, "dropped on itself");
+        assert_eq!(moved(&order, 1, 0), Some(vec!["tos", "rithmic"]));
+
+        let store = Store::memory().expect("an empty database");
+        feeds::save_order(&store, &["yahoo".to_string(), "tos".to_string()]);
+        assert_eq!(feeds::stored_order(&store), vec!["tos"], "Yahoo is never stored");
+    }
+
+    /// Remove takes the source off the order, and for Rithmic its user ID
+    /// and its password with it. The last one removed leaves no setting.
+    #[test]
+    fn remove_clears_the_setting() {
+        if !crate::ui::gtk_ready() || session::development() {
+            return;
+        }
+        let store = Rc::new(Store::memory().expect("an empty database"));
+        let kept = Rc::new(crate::feeds::tests::Kept::default());
+        let panel = panel(&store, kept.clone());
+        let login = feeds::RithmicLogin {
+            user: "trader".into(),
+            password: "PLANTED-PASSWORD".into(),
+            system: String::new(),
+            gateway: String::new(),
         };
-        assert_eq!(subtitle, &expected, "{title} has something to say for itself");
+        feeds::save_rithmic_login(&store, kept.as_ref(), &login).unwrap();
+        feeds::add_source(&store, RITHMIC);
+        rebuild(&panel);
+        assert_eq!(titles(&panel), vec!["Rithmic", "Yahoo Finance"]);
+        assert_eq!(kept.0.borrow().len(), 1);
+
+        remove_source(&panel, providers::listed(RITHMIC).unwrap());
+        assert_eq!(store.setting(feeds::SETTING), None);
+        assert_eq!(store.setting(session::SETTING_USER), None);
+        assert!(kept.0.borrow().is_empty(), "the password is still kept");
+        assert_eq!(titles(&panel), vec!["Yahoo Finance"]);
     }
 
-    /// The feed that rests on somebody else's web client says so where it
-    /// is chosen, and the feed that rests on nothing of the sort says
-    /// nothing. The word is the engine's, so the row cannot be the place
-    /// that disagrees about which feed it belongs to.
+    /// A source's row offers one action, and which one follows how it
+    /// stands. Rithmic with nobody saved is not signed in.
     #[test]
-    fn the_experimental_feed_is_the_only_one_that_says_so() {
-        if !crate::ui::gtk_ready() {
+    fn a_source_offers_the_action_its_state_calls_for() {
+        if !crate::ui::gtk_ready() || session::development() {
             return;
         }
         let store = Rc::new(Store::memory().expect("an empty database"));
-        let panel = Rc::new(Panel {
-            store,
-            on_change: Rc::new(|| {}),
-            page: adw::PreferencesPage::new(),
-            setup: RefCell::new(None),
-            after: Vec::new(),
-            signing_in: std::cell::Cell::new(false),
-        });
-        let group = feeds_group(&panel);
-
-        let rows = action_rows(group.upcast_ref::<gtk::Widget>());
-        assert_eq!(rows.len(), providers::LISTED.len(), "a row per feed");
-        for row in rows {
-            let feed = providers::LISTED
-                .iter()
-                .find(|feed| feed.label == row.title())
-                .expect("every row is a feed");
-            let said = labels_under(row.upcast_ref::<gtk::Widget>())
-                .iter()
-                .any(|text| text == "Experimental");
-            assert_eq!(said, feed.experimental, "{} is labelled wrong", feed.id);
-        }
-
-        assert!(providers::listed("tos").expect("thinkorswim is listed").experimental);
-        assert!(!providers::listed("yahoo").expect("yahoo is listed").experimental);
-    }
-
-    /// The group is one action row. Every sentence that used to sit beside
-    /// it — the session state, the prerequisites, the file paths, the small
-    /// print — is somewhere a person can read it, and none of those places
-    /// is this panel.
-    #[test]
-    fn nothing_in_the_group_describes_itself() {
-        if !crate::ui::gtk_ready() {
-            return;
-        }
-        let store = Rc::new(Store::memory().expect("an empty database"));
-        let panel = Rc::new(Panel {
-            store,
-            on_change: Rc::new(|| {}),
-            page: adw::PreferencesPage::new(),
-            setup: RefCell::new(None),
-            after: Vec::new(),
-            signing_in: std::cell::Cell::new(false),
-        });
-        let tos = providers::listed("tos").expect("thinkorswim is listed");
-        let group = setup_group(&panel, tos);
-
-        assert!(
-            group.description().is_none_or(|text| text.is_empty()),
-            "the group explains itself again"
-        );
-        for (title, _) in rows_under(group.upcast_ref::<gtk::Widget>()) {
-            assert!(
-                !matches!(title.as_str(), "Session" | "Needs" | "Browser profile" | "What it does"),
-                "{title} is back"
-            );
-        }
+        feeds::remember_logins(&store);
+        let panel = panel(&store, Default::default());
+        feeds::add_source(&store, RITHMIC);
+        rebuild(&panel);
+        let group = panel.group.borrow().clone().unwrap();
+        let row = &action_rows(group.upcast_ref())[0];
+        assert_eq!(row.subtitle().as_deref(), Some("CME futures, front month · not signed in"));
+        let words = words_under(row.upcast_ref());
+        assert!(words.iter().any(|w| w == "Sign in…"), "{words:?}");
+        assert!(!words.iter().any(|w| w == "Sign out"), "{words:?}");
     }
 
     /// Nothing on this page may reach the network, because it is drawn the
@@ -542,6 +653,14 @@ mod tests {
         for feed in providers::LISTED {
             let _ = providers::access(feed.id);
             assert!(!providers::connected(feed.id), "{} connected", feed.id);
+        }
+    }
+
+    /// Every source has a few words for its row.
+    #[test]
+    fn every_source_says_what_it_covers() {
+        for feed in providers::LISTED {
+            assert!(!feed.covers.is_empty(), "{} has nothing to say", feed.id);
         }
     }
 }
