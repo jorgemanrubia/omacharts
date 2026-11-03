@@ -28,6 +28,37 @@ the trading pieces in; removing the last one takes them all away again,
 without a restart. Data feeds are not trading: a richer feed is for anyone
 who charts.
 
+## A generic foundation
+
+Rithmic is the first rich data feed and the first broker, not the shape of
+the app. This branch is done only when what it builds is a foundation other
+feeds and brokers plug into (Interactive Brokers is the likely next one;
+thinkorswim already is a feed):
+
+- **Data feeds**: one boundary in the engine. What a feed serves, how it
+  delivers (polled or streamed), what richer data it has (minute ladders,
+  trades, later depth), how far back, and what it needs to sign in, are all
+  declared by the feed and read by routing, the loader, indicators and the
+  Data page without code naming any one feed.
+- **Data elements**: bars, minute ladders, day totals, trades and ticks are
+  the engine's own types, with no feed's quirks in them; a feed maps into
+  them at its edge.
+- **Brokers, accounts and orders**: one boundary in the app. Accounts,
+  positions, P&L, orders, order statuses and refusals are neutral types; a
+  broker says which order kinds it supports and whether an account is
+  simulated; the panel, the chart menu and the chart's lines know no broker.
+- **Connections**: a login shared by a data feed and a broker is one
+  connection owned once and used by both, whatever the broker.
+- **Setup**: a feed or broker describes the fields and secrets it needs, so
+  the Data and Trading pages have no per-feed screens.
+
+**Done when:** nothing above those boundaries names Rithmic or thinkorswim
+or encodes their quirks (checked by an architecture review of the whole
+branch, with every finding fixed or written down with its reason); and a
+second fake feed and a second fake broker, in tests, provide streaming,
+ladders, sign-in, accounts and orders without any change above the
+boundaries.
+
 ## What we know works
 
 Tried on 2026-11-03 with a developer kit login, against Rithmic Test at
