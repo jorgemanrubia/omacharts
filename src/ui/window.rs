@@ -110,18 +110,22 @@ fn source_text<'a>(serving: &str, passed: impl Iterator<Item = (&'a str, &'a str
     text
 }
 
-/// What the account's list says under a feed: whether it is signed in. A
-/// feed with nothing to sign in to says nothing.
+/// What the account's list says under a feed: only trouble, in words
+/// somebody can act on — "Not signed in", "Session expired", Rithmic's own.
+/// A feed that works says nothing, and so does one with nothing to sign in
+/// to: "Signed in" under every row that works told nobody anything.
 fn source_state(feed: &Feed) -> Option<String> {
     providers::access(feed.provider.id())?;
-    Some(match feed.usable.get() {
-        true => "Signed in".to_string(),
-        false => {
-            let why = feed.unusable_because.get();
-            let mut letters = why.chars();
-            letters.next().map(|first| first.to_uppercase().chain(letters).collect()).unwrap_or_default()
-        }
-    })
+    feed_trouble(feed.usable.get(), feed.unusable_because.get())
+}
+
+/// The words under a feed that is or is not usable, for why it is not.
+fn feed_trouble(usable: bool, why: &str) -> Option<String> {
+    if usable {
+        return None;
+    }
+    let mut letters = why.chars();
+    letters.next().map(|first| first.to_uppercase().chain(letters).collect())
 }
 
 /// How often we look for a desktop theme change. Cheap enough to be invisible,
@@ -393,6 +397,16 @@ mod tests {
             source_text("Yahoo", [("thinkorswim", "not signed in")].into_iter()),
             "Yahoo · thinkorswim not signed in"
         );
+    }
+
+    /// The account's list says something under a feed only when there is
+    /// something to do about it: a working feed says nothing.
+    #[test]
+    fn a_feed_row_says_only_trouble() {
+        assert_eq!(feed_trouble(true, ""), None);
+        assert_eq!(feed_trouble(false, "not signed in").as_deref(), Some("Not signed in"));
+        assert_eq!(feed_trouble(false, "session expired").as_deref(), Some("Session expired"));
+        assert_eq!(feed_trouble(false, ""), None);
     }
 
     /// The source somebody chose comes back with the chart after a restart,
@@ -3503,7 +3517,7 @@ impl Window {
     /// the account it is, then every account with its broker and balance. A
     /// Data feed list when there is more than one feed: Automatic, then
     /// every feed in the order with a name for its instrument, each with
-    /// whether it is signed in. Each with a mark on the one in force, a
+    /// what is wrong with it, if anything is. Each with a mark on the one in force, a
     /// caption over each only when both show, and a way to Trading under
     /// them once there is an account at all.
     fn fill_source_menu(self: &Rc<Self>, popover: &gtk::Popover, id: u32) {
