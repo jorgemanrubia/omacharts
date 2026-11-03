@@ -35,6 +35,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::store::Store;
 
+pub mod sizes;
+
+pub use sizes::Quantity;
+
 /// The logins, as a JSON list in the order they were added.
 pub const LOGINS: &str = "rithmic_logins";
 
@@ -1321,6 +1325,38 @@ pub struct Order {
     pub tag: String,
 }
 
+impl Order {
+    /// The order a trader asks for, before it goes to a broker: `quantity`
+    /// of `contract` on the account numbered `account`, `side` and `kind`,
+    /// at `price` for a limit or a stop and at the market for a market
+    /// order. Refused in words when the price and the kind disagree: a
+    /// limit with no price is not an order.
+    pub fn request(
+        account: &str,
+        contract: &Contract,
+        side: Side,
+        kind: OrderKind,
+        quantity: Quantity,
+        price: Option<f64>,
+    ) -> Result<Order, String> {
+        let price = match (kind, price) {
+            (OrderKind::Market, _) => None,
+            (_, Some(price)) if price.is_finite() => Some(price),
+            (_, _) => return Err(format!("A {} order needs a price", kind.word().to_lowercase())),
+        };
+        Ok(Order {
+            account: account.to_string(),
+            contract: contract.symbol.clone(),
+            exchange: contract.exchange.clone(),
+            side,
+            qty: quantity.get(),
+            kind,
+            price,
+            tag: new_tag(),
+        })
+    }
+}
+
 /// A fresh tag for an order placed now.
 pub fn new_tag() -> String {
     let nanos = std::time::SystemTime::now()
@@ -1343,6 +1379,38 @@ pub struct Target {
     /// The session says its account is simulated.
     pub simulated: bool,
     pub capabilities: Capabilities,
+}
+
+impl Target {
+    /// The contract its orders go to.
+    pub fn contract(&self) -> Contract {
+        Contract { symbol: self.contract.clone(), exchange: self.exchange.clone(), tick: self.tick }
+    }
+}
+
+/// What going flat in a contract takes: the orders working in it to
+/// cancel, by basket, and whether a position is held to flatten.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Flat {
+    pub cancel: Vec<String>,
+    pub flatten: bool,
+}
+
+impl Flat {
+    /// Already flat: nothing held and nothing working.
+    pub fn is_empty(&self) -> bool {
+        self.cancel.is_empty() && !self.flatten
+    }
+}
+
+/// Going flat in `contract` on the account with the key `account`:
+/// every order working in it, and the position if there is one. Orders in
+/// other contracts, and other accounts', are left alone.
+pub fn flat_plan(book: &Book, account: &str, contract: &str) -> Flat {
+    Flat {
+        cancel: book.working(account, contract).map(|order| order.basket_id.clone()).collect(),
+        flatten: book.position(account, contract).is_some(),
+    }
 }
 
 impl Target {
@@ -1705,6 +1773,11 @@ impl Placing {
             true => Ok(()),
             false => Err("The last order is still on its way".into()),
         }
+    }
+
+    /// Is something on its way to `account`?
+    pub fn busy(&self, account: &str) -> bool {
+        self.0.borrow().contains(account)
     }
 
     /// The broker answered, either way.
@@ -2999,5 +3072,54 @@ pub(crate) mod tests {
 
         session.sign_out();
         assert!(session.place(&limit).is_err(), "a session that is gone refuses, and nothing retries");
+    }
+
+    /// What a trader asks for becomes an order the same way from a key, a
+    /// menu or a drag: the account, the contract and its exchange, the side,
+    /// the kind and the size, with a price only where the kind takes one.
+    #[test]
+    fn an_order_request_is_built_from_what_was_asked() {
+        let contract = Contract { symbol: "ESZ6".into(), exchange: "CME".into(), tick: Some(0.25) };
+        let two = Quantity::new(2).unwrap();
+        let market = Order::request("951", &contract, Side::Buy, OrderKind::Market, two, Some(7_600.0)).unwrap();
+        assert_eq!(
+            (market.account.as_str(), market.contract.as_str(), market.exchange.as_str()),
+            ("951", "ESZ6", "CME")
+        );
+        assert_eq!((market.side, market.kind, market.qty, market.price), (Side::Buy, OrderKind::Market, 2, None));
+        assert!(market.tag.starts_with("omacharts:"));
+        let limit = Order::request("951", &contract, Side::Sell, OrderKind::Limit, two, Some(7_620.0)).unwrap();
+        assert_eq!((limit.kind, limit.price), (OrderKind::Limit, Some(7_620.0)));
+        assert_eq!(
+            Order::request("951", &contract, Side::Sell, OrderKind::Stop, two, None),
+            Err("A stop order needs a price".to_string())
+        );
+        assert!(Order::request("951", &contract, Side::Sell, OrderKind::Limit, two, Some(f64::NAN)).is_err());
+    }
+
+    /// Going flat in a contract cancels every order working in it, entries
+    /// and exits alike, and flattens what is held; nothing in another
+    /// contract or account, and nothing at all when already flat.
+    #[test]
+    fn going_flat_takes_every_working_order_in_the_contract_and_the_position() {
+        let mut book = Book::default();
+        assert!(flat_plan(&book, "t/951", "ESZ6").is_empty());
+        book.orders.push(order("a", Side::Buy, OrderKind::Limit, Some(7_600.0), Status::Working));
+        book.orders.push(order("b", Side::Sell, OrderKind::Stop, Some(7_590.0), Status::Pending));
+        book.orders.push(order("c", Side::Sell, OrderKind::Limit, Some(7_640.0), Status::Filled));
+        book.orders.push(WorkingOrder { contract: "NQZ6".into(), ..order("d", Side::Buy, OrderKind::Limit, Some(1.0), Status::Working) });
+        book.orders.push(WorkingOrder { account: "t/952".into(), ..order("e", Side::Buy, OrderKind::Limit, Some(1.0), Status::Working) });
+        assert_eq!(flat_plan(&book, "t/951", "ESZ6"), Flat { cancel: vec!["a".into(), "b".into()], flatten: false });
+        book.positions.push(Position {
+            account: "t/951".into(),
+            contract: "ESZ6".into(),
+            exchange: "CME".into(),
+            net: -2,
+            avg: Some(7_612.25),
+            open_pnl: None,
+            tick: Some(0.25),
+        });
+        assert!(flat_plan(&book, "t/951", "ESZ6").flatten);
+        assert!(!flat_plan(&book, "t/951", "NQZ6").flatten);
     }
 }

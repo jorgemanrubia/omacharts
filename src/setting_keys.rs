@@ -63,6 +63,9 @@ const SHARED: &[&str] = &[
     "indicators",
     "providers",
     "default_account",
+    // The lists of trading sizes a chart picks from: a trader's choice, the
+    // same on every machine they trade from.
+    "trading_size_templates",
     "sync_crosshair",
     "drawing_configurations",
     "screenshot_save_file",
