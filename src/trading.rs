@@ -572,8 +572,7 @@ pub trait Session: Send + Sync {
     fn balance(&self, account: &str) -> Option<f64>;
     /// What its orders can be.
     fn capabilities(&self) -> Capabilities;
-    /// Is this a simulated account, where an order costs nothing? Then
-    /// nothing asks before placing one.
+    /// Is this a simulated account, where an order costs nothing?
     fn is_simulated(&self) -> bool;
     /// The contract an order on `instrument` goes to, from what the
     /// session already knows. Never waits on the broker.
@@ -1413,12 +1412,6 @@ pub fn flat_plan(book: &Book, account: &str, contract: &str) -> Flat {
     }
 }
 
-impl Target {
-    /// Money is at stake: anything not simulated.
-    pub fn live(&self) -> bool {
-        !self.simulated
-    }
-}
 
 /// Where an order from a chart of `instrument`, on the account `chosen`,
 /// would go, or why it cannot: the one rule the menu and the click both
@@ -1569,12 +1562,6 @@ pub fn sibling_exit<'a>(
         .find(|order| order.status.working() && order.contract == contract && order.side == side && order.kind == other)
 }
 
-/// The question before something dragged on a live account goes to the
-/// broker: what it is, then the account and the system, as an order's.
-pub fn confirm_drag_text(what: &str, target: &Target) -> String {
-    format!("{what} on {} {} · {}?", target.login.name, target.account.id, target.login.system)
-}
-
 /// How far from an order's line, in pixels, the pointer may be for the
 /// menu to offer cancelling it.
 pub const NEAR: f64 = 6.0;
@@ -1607,24 +1594,6 @@ pub fn menu_text(side: Side, kind: OrderKind, price: &str, contract: &str, accou
         OrderKind::Market => format!("{} · 1 {contract} · {account}", order_words(side, kind)),
         _ => format!("{} {price}", order_words(side, kind)),
     }
-}
-
-/// The question before an order on a live account: "Buy 1 ESZ6 at market
-/// on Lucid 1234 · LucidTrading?".
-pub fn confirm_text(side: Side, kind: OrderKind, price: &str, target: &Target) -> String {
-    let at = match kind {
-        OrderKind::Market => "at market".to_string(),
-        OrderKind::Limit => format!("limit {price}"),
-        OrderKind::Stop => format!("stop {price}"),
-    };
-    format!(
-        "{} 1 {} {at} on {} {} · {}?",
-        side.word(),
-        target.contract,
-        target.login.name,
-        target.account.id,
-        target.login.system
-    )
 }
 
 /// What a toast says when an order placed or cancelled here moves on:
@@ -2921,32 +2890,10 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn what_the_menu_toasts_and_dialog_say() {
+    fn what_the_menu_and_toasts_say() {
         assert_eq!(menu_text(Side::Buy, OrderKind::Market, "", "ESZ6", "951"), "Buy Market · 1 ESZ6 · 951");
         assert_eq!(menu_text(Side::Sell, OrderKind::Limit, "7,620.00", "ESZ6", "951"), "Sell Limit 7,620.00");
         assert_eq!(menu_text(Side::Buy, OrderKind::Stop, "7,630.25", "ESZ6", "951"), "Buy Stop 7,630.25");
-        let target = Target {
-            account: account("l", "1234"),
-            login: test_login("l", "Lucid", "LucidTrading"),
-            contract: "ESZ6".into(),
-            exchange: "CME".into(),
-            tick: Some(0.25),
-            simulated: false,
-            capabilities: Capabilities {
-                kinds: vec![OrderKind::Market],
-                flatten: true,
-                cancel_all: true,
-                modify: true,
-                link: true,
-            },
-        };
-        assert!(target.live());
-        assert_eq!(confirm_text(Side::Buy, OrderKind::Market, "", &target), "Buy 1 ESZ6 at market on Lucid 1234 · LucidTrading?");
-        assert_eq!(
-            confirm_text(Side::Sell, OrderKind::Limit, "7,620.00", &target),
-            "Sell 1 ESZ6 limit 7,620.00 on Lucid 1234 · LucidTrading?"
-        );
-        assert!(!Target { simulated: true, ..target }.live(), "the session says so, not the system's name");
 
         let mut bought = order("a", Side::Buy, OrderKind::Market, None, Status::Filled);
         bought.fill_price = Some(7_612.25);

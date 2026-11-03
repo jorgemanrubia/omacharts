@@ -494,9 +494,11 @@ request that is never answered stays pending rather than being taken as
 done. Part of an order filled reads "Sell Limit 1/2", and the position
 holds only what filled. Toasts say only what the broker has confirmed.
 
-Every order on a live account asks for confirmation until the trader turns
-that off for that account. The order ticket says which account and system it
-is about to use, every time.
+**No confirmations, for now.** Nothing asks first, on Rithmic Test or on a
+live account: an order from the menu, a key or a drag, a move, a cancel and
+a flatten go to the broker at once, and the pending look is the feedback.
+Whether a live account should ask, and how, is to be decided again before
+trading ships.
 
 ### 5. Conformance
 
