@@ -3,12 +3,12 @@
 //! Nothing here is stored. A tick, volume or range chart is drawn from this
 //! buffer while the app runs, and the minute ladders in [`crate::ladders`]
 //! are what is kept. Every bar folded out of trades — the forming minute
-//! included — is a [`Minute`] built through [`Minute::add_trade`], so there
-//! is one way a print becomes OHLC, volume and a ladder.
+//! included — is a [`LadderBar`] built through [`LadderBar::add_trade`], so
+//! there is one way a print becomes OHLC, volume and a ladder.
 
 use std::collections::VecDeque;
 
-use crate::ladders::{to_price, Forming, Minute, Side};
+use crate::ladders::{to_price, Forming, LadderBar, Minute, Side};
 
 /// One print.
 ///
@@ -165,7 +165,7 @@ pub struct TradeBar {
     pub end_nanos: i64,
     /// Prints in it, a split print counted where it started.
     pub trades: u64,
-    pub bar: Minute,
+    pub bar: LadderBar,
 }
 
 /// Bars of a [`Rule`], built a print at a time.
@@ -249,7 +249,7 @@ impl Fold {
             start_nanos: trade.ts_nanos,
             end_nanos: trade.ts_nanos,
             trades: 0,
-            bar: Minute::opening(trade.ts_nanos.div_euclid(NANOS), price),
+            bar: LadderBar::opening(trade.ts_nanos.div_euclid(NANOS), price),
         });
         bar.end_nanos = trade.ts_nanos;
         bar

@@ -280,9 +280,9 @@ impl Ladder {
         }
     }
 
-    /// Add a minute's ladder in.
-    pub fn add(&mut self, minute: &Minute) {
-        self.add_ladder(&minute.ladder);
+    /// Add a bar's ladder in.
+    pub fn add(&mut self, bar: &LadderBar) {
+        self.add_ladder(&bar.ladder);
     }
 
     /// Add another ladder in, growing the range as needed.
@@ -324,27 +324,42 @@ impl Ladder {
     }
 }
 
-/// One minute of a contract: its bar and its ladder.
+/// A bar with its ladder: OHLC and volume, and what traded at each price.
 ///
-/// Also the shape of any bar folded out of minutes or trades — a footprint
-/// bar, a tick bar — in which case `ts` is where that bar opens.
+/// Any length: a minute, a footprint bar folded from minutes, a tick,
+/// volume or range bar folded from trades. `ts` is where it opens.
 #[derive(Clone, PartialEq, Debug, Default)]
-pub struct Minute {
-    /// Where the minute opens, unix seconds.
+pub struct LadderBar {
+    /// Where the bar opens, unix seconds.
     pub ts: i64,
     pub open: f64,
     pub high: f64,
     pub low: f64,
     pub close: f64,
-    /// Everything that traded, aggressor known or not.
+    /// Everything that traded, aggressor known or not, in contracts.
+    ///
+    /// Whole, where [`crate::Bar::volume`] is an `f64`: a ladder counts
+    /// prints, which are whole contracts on every market that has ladders,
+    /// and adding and taking minutes out of a day's total has to come back
+    /// exactly. A bar's volume comes from feeds that report fractions — a
+    /// crypto pair's, an adjusted series' — and is only ever drawn. A bar
+    /// made from one of these takes its volume `as f64`, which is exact up
+    /// to 2^53 contracts.
     pub volume: u64,
     pub ladder: Ladder,
 }
 
-impl Minute {
-    /// A minute opened by a print at `price`, with nothing traded yet.
-    pub fn opening(ts: i64, price: f64) -> Minute {
-        Minute { ts, open: price, high: price, low: price, close: price, volume: 0, ladder: Ladder::with_capacity(32) }
+/// One minute of a contract: the grain ladders are kept in — fetched,
+/// stored, sealed live — and every longer [`LadderBar`] is folded from.
+///
+/// The same type, named for what it holds wherever it is always one
+/// minute long; a bar of any other length is a [`LadderBar`].
+pub type Minute = LadderBar;
+
+impl LadderBar {
+    /// A bar opened by a print at `price`, with nothing traded yet.
+    pub fn opening(ts: i64, price: f64) -> LadderBar {
+        LadderBar { ts, open: price, high: price, low: price, close: price, volume: 0, ladder: Ladder::with_capacity(32) }
     }
 
     /// One print: OHLC, volume and the ladder together. Every fold of
@@ -359,7 +374,7 @@ impl Minute {
     }
 
     /// Fold a later bar into this one: the high, low, close, volume and ladder.
-    pub fn merge(&mut self, later: &Minute) {
+    pub fn merge(&mut self, later: &LadderBar) {
         self.high = self.high.max(later.high);
         self.low = self.low.min(later.low);
         self.close = later.close;
@@ -617,13 +632,13 @@ impl Series {
     /// The minutes opening in `from..to` folded into bars of `timeframe`
     /// along `grid`, each with its ladder: footprints. One allocation per
     /// bar, none per minute.
-    pub fn bars(&self, from: i64, to: i64, timeframe: Timeframe, grid: &Grid) -> Vec<Minute> {
+    pub fn bars(&self, from: i64, to: i64, timeframe: Timeframe, grid: &Grid) -> Vec<LadderBar> {
         self.bars_by(from, to, |ts| bucket_of(ts, timeframe, grid))
     }
 
     /// [`Self::bars`] with any rule for where a bar opens.
-    pub fn bars_by(&self, from: i64, to: i64, mut bucket: impl FnMut(i64) -> i64) -> Vec<Minute> {
-        let mut out: Vec<Minute> = Vec::new();
+    pub fn bars_by(&self, from: i64, to: i64, mut bucket: impl FnMut(i64) -> i64) -> Vec<LadderBar> {
+        let mut out: Vec<LadderBar> = Vec::new();
         let (a, b) = self.day_span(from, to);
         for day in &self.days[a..b] {
             let (i, j) = day.span(from, to);
@@ -631,7 +646,7 @@ impl Series {
                 let ts = bucket(minute.ts);
                 match out.last_mut() {
                     Some(bar) if bar.ts == ts => bar.merge(minute),
-                    _ => out.push(Minute { ts, ladder: minute.ladder.clone(), ..*minute }),
+                    _ => out.push(LadderBar { ts, ladder: minute.ladder.clone(), ..*minute }),
                 }
             }
         }
