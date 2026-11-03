@@ -1,0 +1,10 @@
+[package]
+name = "rithmic"
+version = "0.1.0"
+edition = "2021"
+description = "A Rithmic account: sign in, its accounts, and live data."
+license = "MIT"
+
+[dependencies]
+rithmic-rs = "3.3.0"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
