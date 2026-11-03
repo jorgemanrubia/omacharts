@@ -41,7 +41,7 @@ use rusqlite::{params, Connection};
 pub const LATEST: i32 = 5;
 
 /// How far the market data file's own migrations go.
-pub const MARKET_LATEST: i32 = 1;
+pub const MARKET_LATEST: i32 = 2;
 
 /// The schema the market data file is attached as.
 pub const MARKET: &str = "market";
@@ -273,6 +273,45 @@ pub const MARKET_MIGRATIONS: &[Migration] = &[Migration {
              previous_at INTEGER
          );",
     ),
+},
+Migration {
+    version: 2,
+    name: "minute ladders",
+    risky: false,
+    // Volume at price, one row per contract per trading day: the minutes as
+    // one blob and their sum as another, so a range reads day totals and
+    // never sums a day again. A minute sealed live goes into `ladder_tail`
+    // on its own and is folded into its day later; `ladder_coverage` is
+    // which minutes are known, so a gap is told from a quiet market. The
+    // layouts, and why, are in `crate::store`'s ladder section.
+    step: Step::Sql(
+        "CREATE TABLE market.ladder_days (
+             key        TEXT NOT NULL,
+             day        INTEGER NOT NULL,
+             tick_size  REAL NOT NULL,
+             minutes    INTEGER NOT NULL,
+             first_ts   INTEGER NOT NULL,
+             last_ts    INTEGER NOT NULL,
+             fetched_at INTEGER NOT NULL,
+             data       BLOB NOT NULL,
+             total      BLOB NOT NULL,
+             PRIMARY KEY (key, day)
+         );
+         CREATE TABLE market.ladder_tail (
+             key       TEXT NOT NULL,
+             ts        INTEGER NOT NULL,
+             day       INTEGER NOT NULL,
+             tick_size REAL NOT NULL,
+             data      BLOB NOT NULL,
+             PRIMARY KEY (key, ts)
+         );
+         CREATE TABLE market.ladder_coverage (
+             key     TEXT NOT NULL,
+             from_ts INTEGER NOT NULL,
+             to_ts   INTEGER NOT NULL,
+             PRIMARY KEY (key, from_ts)
+         );",
+    ),
 }];
 
 /// Version 4: the bars and quotes over to the market data file, then out of
@@ -416,6 +455,9 @@ mod tests {
             tables(&conn, MARKET),
             vec![
                 "bar_series:key,interval,first_ts,last_ts,count,fetched_at,ts,open,high,low,close,volume",
+                "ladder_coverage:key,from_ts,to_ts",
+                "ladder_days:key,day,tick_size,minutes,first_ts,last_ts,fetched_at,data,total",
+                "ladder_tail:key,ts,day,tick_size,data",
                 "quotes:key,last,previous,at,fetched_at,previous_at",
             ]
         );

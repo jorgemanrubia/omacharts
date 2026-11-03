@@ -11,6 +11,7 @@ pub mod drawings;
 pub mod exchanges;
 pub mod frame;
 pub mod indicators;
+pub mod ladders;
 pub mod ink;
 pub mod link;
 pub mod measurement;
@@ -23,6 +24,7 @@ pub mod providers;
 pub mod range;
 pub mod stream;
 pub mod symbols;
+pub mod ticks;
 pub mod theme;
 
 pub use bars::{
