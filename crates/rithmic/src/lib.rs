@@ -127,6 +127,30 @@ pub struct Bar {
     pub volume: u64,
 }
 
+/// One minute of volume at price, as the history plant sends it: its bar,
+/// and for each price that traded the volume and trade count on each side.
+/// The arrays run side by side, one entry per price.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LadderMinute {
+    /// When it opened, in unix seconds.
+    pub start: i64,
+    pub open: f64,
+    pub high: f64,
+    pub low: f64,
+    pub close: f64,
+    pub volume: u64,
+    pub prices: Vec<f64>,
+    /// Sell-aggressor volume: sellers hitting the bid.
+    pub bid: Vec<u64>,
+    /// Buy-aggressor volume: buyers lifting the offer.
+    pub ask: Vec<u64>,
+    /// Volume with no known aggressor.
+    pub unknown: Vec<u64>,
+    pub bid_trades: Vec<u32>,
+    pub ask_trades: Vec<u32>,
+    pub unknown_trades: Vec<u32>,
+}
+
 /// Which side started a trade.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Side {

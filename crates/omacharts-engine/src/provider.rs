@@ -9,6 +9,7 @@ use std::fmt;
 use std::time::{Duration, Instant};
 
 use crate::bars::{Bar, Timeframe};
+use crate::ladders::Minute;
 use crate::symbols::{Instrument, InstrumentKind};
 
 #[derive(Debug)]
@@ -364,6 +365,55 @@ pub trait Stream: Send + Sync {
 /// An open subscription. It has no methods: dropping it is how it ends.
 pub trait Subscription: Send {}
 
+/// One piece of news from a live ladder feed, in the order it was heard.
+#[derive(Clone, Debug, PartialEq)]
+pub enum LadderUpdate {
+    /// The minute trading now, as it stands after the latest print.
+    Forming(Minute),
+    /// A minute that closed, final, and the span of minute opens the feed
+    /// now knows complete — every print in it seen — if it knows one. A
+    /// minute the feed joined part way through is sealed with a span that
+    /// leaves it out.
+    Sealed { minute: Minute, covered: Option<(i64, i64)> },
+    /// The feed dropped, or started over after missing prints: nothing is
+    /// complete from here until it is back, and this is the minute that was
+    /// forming, partial. The span missed is a gap the next start asks the
+    /// provider's history for.
+    Dropped(Option<Minute>),
+}
+
+/// Where a ladder feed puts what it hears. Called on the provider's thread,
+/// cheap by contract, as a [`Sink`] is.
+pub type LadderSink = Box<dyn Fn(LadderUpdate) + Send + Sync>;
+
+/// A provider's volume at price: minute ladders as history and live.
+///
+/// A capability of its own, reached through [`Provider::ladders`], which is
+/// `None` unless a provider has them, so no provider is ever asked about
+/// something it lacks and a chart of one without them holds nothing.
+pub trait Ladders: Send + Sync {
+    /// The size of one tick of `symbol`, which every price in its ladders
+    /// is a whole number of. Offline, as [`Provider::symbol_for`] is; `None`
+    /// for a symbol it has no ladders for.
+    fn tick_size(&self, symbol: &str) -> Option<f64>;
+
+    /// How far back its history goes, in days. A request is never made for
+    /// further back than this.
+    fn history_days(&self) -> u32;
+
+    /// The minutes of `symbol` opening in `from..to`, unix seconds, oldest
+    /// first. One request, made now, on the caller's thread, which is never
+    /// the one drawing the window. What it returns is the whole truth about
+    /// the span: a minute it leaves out traded nothing.
+    fn minutes(&self, symbol: &str, from: i64, to: i64) -> Result<Vec<Minute>, ProviderError>;
+
+    /// Start delivering `symbol`'s live ladders into `sink` until the handle
+    /// is dropped. The rules of [`Stream::subscribe`]: it returns before
+    /// anything touches the network, reconnecting is the provider's, and
+    /// dropping the handle ends it without blocking.
+    fn watch(&self, symbol: &str, sink: LadderSink) -> Result<Box<dyn Subscription>, ProviderError>;
+}
+
 pub trait Provider: Send + Sync {
     /// Stable id, used as the `adapter` key in stored symbol mappings.
     fn id(&self) -> &'static str;
@@ -481,6 +531,17 @@ pub trait Provider: Send + Sync {
     /// about to push anyway, while one that is polled and claimed to stream
     /// would leave every chart stale with nothing on screen to say so.
     fn stream(&self) -> Option<&dyn Stream> {
+        None
+    }
+
+    /// Volume at price, for a provider that has it: what traded at each
+    /// price and on which side, minute by minute.
+    ///
+    /// `None` by default, and asked once per chart rather than per bar: a
+    /// chart of a provider without ladders allocates none, queries nothing
+    /// and sends no second request, and its volume profile is the estimate
+    /// from bar ranges it has always been.
+    fn ladders(&self) -> Option<&dyn Ladders> {
         None
     }
 

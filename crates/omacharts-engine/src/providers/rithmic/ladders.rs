@@ -1,0 +1,277 @@
+//! Rithmic's volume at price: minute ladders from the history plant, and
+//! live ones folded from the trades the session already hears.
+//!
+//! History is the plant's volume-profile minute bars as they come: bid and
+//! ask volume and trade counts at each price, minute by minute, nothing
+//! rebuilt from ticks. Live, each trade on the front month goes into a
+//! [`Tape`] — the session's trade buffer and the forming minute — through a
+//! watch on the one subscription the session holds for the contract: a
+//! chart's bars and its ladders are two listeners on one feed, and Rithmic
+//! is asked for the contract's trades once.
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc};
+
+use crate::ladders::{to_tick, Ladder, Minute, Side};
+use crate::provider::{LadderSink, LadderUpdate, Ladders, ProviderError, Subscription};
+use crate::ticks::{Tape, Trade, DEFAULT_CAPACITY};
+
+use super::{exchange_of, map_err, session, Rithmic};
+
+/// How far back the history plant's minute ladders go, in days. On Rithmic
+/// Test a month asked came back as about fifteen days.
+const HISTORY_DAYS: u32 = 30;
+
+/// One tick of each root a chart may want ladders for. A root not listed has
+/// no ladders here, and its charts keep the estimate.
+const TICKS: &[(&str, f64)] = &[
+    ("ES", 0.25),
+    ("MES", 0.25),
+    ("NQ", 0.25),
+    ("MNQ", 0.25),
+    ("RTY", 0.1),
+    ("M2K", 0.1),
+    ("YM", 1.0),
+    ("MYM", 1.0),
+    ("ZN", 1.0 / 64.0),
+    ("ZF", 1.0 / 128.0),
+    ("ZT", 1.0 / 256.0),
+    ("ZB", 1.0 / 32.0),
+    ("UB", 1.0 / 32.0),
+    ("ZC", 0.25),
+    ("ZS", 0.25),
+    ("ZW", 0.25),
+    ("CL", 0.01),
+    ("MCL", 0.01),
+    ("NG", 0.001),
+    ("GC", 0.1),
+    ("MGC", 0.1),
+    ("SI", 0.005),
+    ("HG", 0.0005),
+    ("6E", 0.00005),
+    ("6J", 0.000_000_5),
+    ("6B", 0.0001),
+];
+
+pub fn tick_of(root: &str) -> Option<f64> {
+    TICKS.iter().find(|(name, _)| *name == root).map(|(_, tick)| *tick)
+}
+
+/// A minute from the plant, as a ladder of whole ticks.
+pub fn minute_of(found: &rithmic::LadderMinute, tick_size: f64) -> Minute {
+    let mut ladder = Ladder::with_capacity(found.prices.len());
+    for (i, price) in found.prices.iter().enumerate() {
+        let tick = to_tick(*price, tick_size);
+        let at = |values: &[u64]| values.get(i).copied().unwrap_or(0);
+        let count = |values: &[u32]| values.get(i).copied().unwrap_or(0);
+        for (size, side, trades) in [
+            (at(&found.bid), Side::Sell, count(&found.bid_trades)),
+            (at(&found.ask), Side::Buy, count(&found.ask_trades)),
+            (at(&found.unknown), Side::Unknown, count(&found.unknown_trades)),
+        ] {
+            if size > 0 || trades > 0 {
+                ladder.add_trade(tick, size, side, trades);
+            }
+        }
+    }
+    // The bar's volume is the plant's; anything it counts that no price
+    // carries is volume with no known side.
+    let priced = ladder.sides.volume();
+    ladder.sides.unknown += found.volume.saturating_sub(priced);
+    Minute {
+        ts: found.start,
+        open: found.open,
+        high: found.high,
+        low: found.low,
+        close: found.close,
+        volume: found.volume.max(priced),
+        ladder,
+    }
+}
+
+fn side_of(trade: &rithmic::Trade) -> Side {
+    match trade.aggressor {
+        Some(rithmic::Side::Buy) => Side::Buy,
+        Some(rithmic::Side::Sell) => Side::Sell,
+        None => Side::Unknown,
+    }
+}
+
+/// What the watch's thread hears.
+enum Event {
+    Live(rithmic::Live),
+    Stop,
+}
+
+struct Watching {
+    stop: Arc<AtomicBool>,
+    events: mpsc::Sender<Event>,
+}
+
+impl Subscription for Watching {}
+
+impl Drop for Watching {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        let _ = self.events.send(Event::Stop);
+    }
+}
+
+/// Fold what the session hears into `tape`, and say so: the forming minute
+/// after each print, a minute as it seals, and a drop — or a start over
+/// after prints were missed — as a drop.
+fn fold(events: &mpsc::Receiver<Event>, mut tape: Tape, say: &dyn Fn(LadderUpdate), stop: &AtomicBool) {
+    let tick_size = tape.forming.tick_size();
+    for event in events {
+        if stop.load(Ordering::Acquire) {
+            return;
+        }
+        match event {
+            Event::Stop => return,
+            Event::Live(rithmic::Live::Trade(trade)) => {
+                let print = Trade {
+                    ts_nanos: trade.at_nanos,
+                    price_tick: to_tick(trade.price, tick_size),
+                    size: trade.size,
+                    side: side_of(&trade),
+                };
+                if let Some(sealed) = tape.push(print) {
+                    say(LadderUpdate::Sealed { minute: sealed, covered: tape.forming.covered() });
+                }
+                if let Some(forming) = tape.forming.current() {
+                    say(LadderUpdate::Forming(forming.clone()));
+                }
+            }
+            // The first Watching starts the feed; a later one is the
+            // session starting over, after a reconnect or missed prints.
+            Event::Live(rithmic::Live::Watching { .. }) => {
+                if tape.forming.is_connected() || tape.forming.current().is_some() {
+                    say(LadderUpdate::Dropped(tape.forming.disconnect()));
+                }
+            }
+            Event::Live(rithmic::Live::Lost(_)) => {
+                if tape.forming.is_connected() || tape.forming.current().is_some() {
+                    say(LadderUpdate::Dropped(tape.forming.disconnect()));
+                }
+            }
+        }
+    }
+}
+
+impl Ladders for Rithmic {
+    fn tick_size(&self, symbol: &str) -> Option<f64> {
+        tick_of(symbol)
+    }
+
+    fn history_days(&self) -> u32 {
+        HISTORY_DAYS
+    }
+
+    fn minutes(&self, symbol: &str, from: i64, to: i64) -> Result<Vec<Minute>, ProviderError> {
+        let tick_size = tick_of(symbol).ok_or_else(|| ProviderError::Unsupported(format!("ladders of {symbol}")))?;
+        if !session::here() {
+            return Err(ProviderError::NeedsSetup(
+                "Rithmic ladders are served by the open window, which holds the one session".into(),
+            ));
+        }
+        let client = session::client().map_err(map_err)?;
+        let exchange = exchange_of(symbol);
+        let contract = client.front_month(symbol, exchange).map_err(map_err)?;
+        let found = client.ladders(&contract, exchange, from, to).map_err(map_err)?;
+        Ok(found.iter().map(|m| minute_of(m, tick_size)).collect())
+    }
+
+    fn watch(&self, symbol: &str, sink: LadderSink) -> Result<Box<dyn Subscription>, ProviderError> {
+        let tick_size = tick_of(symbol).ok_or_else(|| ProviderError::Unsupported(format!("ladders of {symbol}")))?;
+        let stop = Arc::new(AtomicBool::new(false));
+        let (events, inbox) = mpsc::channel();
+        let sender = events.clone();
+        let stopping = stop.clone();
+        let root = symbol.to_string();
+        std::thread::Builder::new()
+            .name("omacharts rithmic ladders".into())
+            .spawn(move || {
+                let say = |update: LadderUpdate| {
+                    if !stopping.load(Ordering::Acquire) {
+                        sink(update);
+                    }
+                };
+                let Ok(client) = session::client() else { return };
+                let _watch = client.watch(&root, exchange_of(&root), move |live| {
+                    let _ = sender.send(Event::Live(live));
+                });
+                fold(&inbox, Tape::new(tick_size, DEFAULT_CAPACITY), &say, &stopping);
+            })
+            .map_err(|error| ProviderError::Network(error.to_string()))?;
+        Ok(Box::new(Watching { stop, events }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn trade(seconds: i64, price: f64, size: u64, aggressor: Option<rithmic::Side>) -> Event {
+        Event::Live(rithmic::Live::Trade(rithmic::Trade { price, size, aggressor, at_nanos: seconds * 1_000_000_000 }))
+    }
+
+    /// A plant minute becomes a ladder of whole ticks, each side where the
+    /// plant put it, and volume no price carries is volume with no side.
+    #[test]
+    fn a_plant_minute_is_a_ladder_of_whole_ticks() {
+        let found = rithmic::LadderMinute {
+            start: 600,
+            open: 7625.0,
+            high: 7625.5,
+            low: 7625.0,
+            close: 7625.25,
+            volume: 40,
+            prices: vec![7625.0, 7625.25, 7625.5],
+            bid: vec![10, 0, 3],
+            ask: vec![2, 15, 0],
+            unknown: vec![0, 0, 0],
+            bid_trades: vec![4, 0, 1],
+            ask_trades: vec![1, 6, 0],
+            unknown_trades: vec![0, 0, 0],
+        };
+        let minute = minute_of(&found, 0.25);
+        assert_eq!(minute.ts, 600);
+        assert_eq!(minute.ladder.low_tick, 30_500);
+        assert_eq!(minute.ladder.at(30_500).bid, 10);
+        assert_eq!(minute.ladder.at(30_501).ask, 15);
+        assert_eq!(minute.ladder.at(30_502).bid_trades, 1);
+        assert_eq!((minute.ladder.sides.bid, minute.ladder.sides.ask, minute.ladder.sides.unknown), (13, 17, 10));
+        assert_eq!(minute.volume, 40);
+    }
+
+    /// Trades go into the forming minute, which seals when one arrives for
+    /// the next; the feed starting over is a drop, so the minute it was in
+    /// is never taken as complete.
+    #[test]
+    fn trades_build_minutes_and_a_start_over_is_a_drop() {
+        let (send, events) = mpsc::channel();
+        let watching = || Event::Live(rithmic::Live::Watching { contract: "ESZ6".into() });
+        send.send(watching()).unwrap();
+        send.send(trade(600, 7625.0, 2, Some(rithmic::Side::Buy))).unwrap();
+        send.send(trade(660, 7625.0, 1, Some(rithmic::Side::Sell))).unwrap();
+        send.send(trade(725, 7625.25, 3, Some(rithmic::Side::Buy))).unwrap();
+        send.send(trade(726, 7625.25, 1, None)).unwrap();
+        send.send(watching()).unwrap();
+        send.send(Event::Stop).unwrap();
+        let heard = std::cell::RefCell::new(Vec::new());
+        fold(&events, Tape::new(0.25, 1_000), &|u| heard.borrow_mut().push(u), &AtomicBool::new(false));
+        let heard = heard.into_inner();
+        let sealed: Vec<(i64, Option<(i64, i64)>)> = heard
+            .iter()
+            .filter_map(|u| match u {
+                LadderUpdate::Sealed { minute, covered } => Some((minute.ts, *covered)),
+                _ => None,
+            })
+            .collect();
+        // Joined on the dot at 600, so 600 on is complete.
+        assert_eq!(sealed, vec![(600, Some((600, 660))), (660, Some((600, 720)))]);
+        let Some(LadderUpdate::Dropped(Some(partial))) = heard.last() else { panic!("{heard:?}") };
+        assert_eq!((partial.ts, partial.volume, partial.ladder.sides.unknown), (720, 4, 1));
+        assert!(heard.iter().any(|u| matches!(u, LadderUpdate::Forming(m) if m.ts == 720)));
+    }
+}

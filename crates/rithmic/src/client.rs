@@ -17,12 +17,12 @@ use rithmic_rs::rti::LastTrade;
 use rithmic_rs::{
     ConnectStrategy, RithmicConfig, RithmicEnv, RithmicError, RithmicHistoryPlant,
     RithmicHistoryPlantHandle, RithmicResponse, RithmicTickerPlant, RithmicTickerPlantHandle,
-    TimeBarType,
+    TimeBarType, VolumeProfileMinuteBarsRequest,
 };
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{mpsc, oneshot, watch};
 
-use crate::{Bar, Error, Live, Login, Period, Side, Trade, APP_NAME};
+use crate::{Bar, Error, LadderMinute, Live, Login, Period, Side, Trade, APP_NAME};
 
 /// How long a call waits for the session to be signed in before it gives up
 /// and says why it is not.
@@ -303,6 +303,35 @@ impl Client {
             }
         })?;
         bars_of(&responses, period)
+    }
+
+    /// Minute ladders of `contract` for minutes opening in `from..to`, unix
+    /// seconds, oldest first: the history plant's volume-profile minute
+    /// bars, bid and ask volume and trade counts at each price.
+    ///
+    /// One request, however long the window: the plant continues a reply it
+    /// cut short by itself. Rithmic keeps a data quota, so a caller asks for
+    /// a span once and keeps it.
+    pub fn ladders(&self, contract: &str, exchange: &str, from: i64, to: i64) -> Result<Vec<LadderMinute>, Error> {
+        let handles = self.up()?;
+        let request = VolumeProfileMinuteBarsRequest::new()
+            .symbol(contract)
+            .exchange(exchange)
+            .bar_type_period(1)
+            .start_time_sec(wire_seconds(from))
+            .end_time_sec(wire_seconds(to))
+            .resume_bars(true)
+            .build()
+            .map_err(error_of)?;
+        let replay = handles.history.load_volume_profile_minute_bars(request);
+        let responses = self.inner.handle.block_on(async {
+            match tokio::time::timeout(REPLAY, replay).await {
+                Ok(result) => result.map_err(error_of),
+                Err(_) => Err(Error::Timeout),
+            }
+        })?;
+        let minutes = ladders_of(&responses)?;
+        Ok(minutes.into_iter().filter(|m| (from..to).contains(&m.start)).collect())
     }
 
     /// Cut the connection the way a dropped network does, from underneath:
@@ -860,6 +889,50 @@ fn bars_of(responses: &[RithmicResponse], period: Period) -> Result<Vec<Bar>, Er
     bars.sort_by_key(|bar| bar.start);
     bars.dedup_by_key(|bar| bar.start);
     Ok(bars)
+}
+
+/// The minutes of a volume-profile replay, oldest first. Marked, as minute
+/// bars are, with the time they close.
+fn ladders_of(responses: &[RithmicResponse]) -> Result<Vec<LadderMinute>, Error> {
+    let mut minutes: Vec<LadderMinute> = Vec::with_capacity(responses.len());
+    for response in responses {
+        let RithmicMessage::ResponseVolumeProfileMinuteBars(bar) = &response.message else { continue };
+        let (Some(marker), Some(open), Some(high), Some(low), Some(close)) =
+            (bar.marker, bar.open_price, bar.high_price, bar.low_price, bar.close_price)
+        else {
+            continue;
+        };
+        let n = bar.profile_price.len();
+        let wide = |values: &[i32]| -> Vec<u64> {
+            (0..n).map(|i| values.get(i).map_or(0, |v| u64::try_from(*v).unwrap_or(0))).collect()
+        };
+        let count = |values: &[i32]| -> Vec<u32> {
+            (0..n).map(|i| values.get(i).map_or(0, |v| u32::try_from(*v).unwrap_or(0))).collect()
+        };
+        minutes.push(LadderMinute {
+            start: i64::from(marker) - 60,
+            open,
+            high,
+            low,
+            close,
+            volume: bar.volume.unwrap_or(0),
+            prices: bar.profile_price.clone(),
+            bid: wide(&bar.profile_bid_volume),
+            ask: wide(&bar.profile_ask_volume),
+            unknown: wide(&bar.profile_no_aggressor_volume),
+            bid_trades: count(&bar.profile_bid_aggressor_trades),
+            ask_trades: count(&bar.profile_ask_aggressor_trades),
+            unknown_trades: count(&bar.profile_no_aggressor_trades),
+        });
+    }
+    if minutes.is_empty()
+        && let Some(error) = responses.last().and_then(|end| end.error.as_ref())
+    {
+        return Err(rejected(error));
+    }
+    minutes.sort_by_key(|m| m.start);
+    minutes.dedup_by_key(|m| m.start);
+    Ok(minutes)
 }
 
 fn now_seconds() -> i64 {

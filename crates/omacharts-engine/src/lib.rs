@@ -34,7 +34,8 @@ pub use bars::{
 pub use indicators::{palette_colors, Indicator, Kind as IndicatorKind, Output, Params, Reset};
 pub use link::LinkMode;
 pub use provider::{
-    Capability, Closes, Delivery, FetchFailure, Pacing, Provider, ProviderError, SharedCooldown,
+    Capability, Closes, Delivery, FetchFailure, LadderSink, LadderUpdate, Ladders, Pacing, Provider,
+    ProviderError, SharedCooldown,
     Sink, Stream, Subscription, Update,
 };
 pub use range::Range;

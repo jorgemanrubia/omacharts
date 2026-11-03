@@ -11,6 +11,7 @@
 //! which the loader already treats as history rewritten. Front month only,
 //! not stitched: a long daily chart starts where the contract does.
 
+pub mod ladders;
 pub mod session;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,7 +20,7 @@ use std::sync::{mpsc, Arc};
 use crate::bars::{Bar, Timeframe, Unit};
 use crate::exchanges::registry;
 use crate::provider::{
-    Capability, FetchFailure, Provider, ProviderError, Sink, Stream, Subscription, Update,
+    Capability, FetchFailure, Ladders, Provider, ProviderError, Sink, Stream, Subscription, Update,
 };
 use crate::symbols::{Instrument, InstrumentKind};
 
@@ -463,6 +464,11 @@ impl Provider for Rithmic {
     }
 
     fn stream(&self) -> Option<&dyn Stream> {
+        Some(self)
+    }
+
+    /// Minute ladders, history and live: see [`ladders`].
+    fn ladders(&self) -> Option<&dyn Ladders> {
         Some(self)
     }
 
