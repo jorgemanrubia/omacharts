@@ -15,7 +15,7 @@ state:
   omacharts chartbook delete "Chartbook 1"
   omacharts chart set --resolution 1D
   omacharts config set chart_header symbol,resolution,change,template
-  key ctrl+b
+  key ctrl+shift+b
 capture: bin/headless-window cli chart screenshot --output /tmp/candles.png
 crop: none (resized to 2000 wide)
 -->
@@ -59,7 +59,7 @@ state:
   omacharts chartbook delete "Chartbook 1"
   omacharts chart set --resolution 1D
   click 400 400
-  key ctrl+b                # sidebar hidden
+  key ctrl+shift+b                # sidebar hidden
   move 640 600
   key 4
   type h
@@ -211,7 +211,7 @@ theme: tokyo-night
 window: 2560x1440 @2, bin/headless-window (HOME sandboxed, theme seeded)
 state:
   omacharts chart set --symbol NVDA --resolution 1D
-  key ctrl+b                          # sidebar hidden
+  key ctrl+shift+b                          # sidebar hidden
   omacharts chart split horizontal    # so the left chart's price axis is mid-window and the menu has room
   omacharts chart set --chart pos:0 --style candles
   omacharts chart set --chart pos:1 --style candles

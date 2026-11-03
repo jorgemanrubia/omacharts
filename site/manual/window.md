@@ -17,7 +17,7 @@ state:
   omacharts chart set --symbol NVDA --resolution 1D
   omacharts chart indicator add sma --period 50 --color Blue
   omacharts config set chart_header symbol,resolution,change,template
-  key ctrl+d
+  key ctrl+shift+d
   move 1279 400
 capture: bin/headless-window shot /tmp/anatomy.png
 crop: none (resized to 2000 wide)
@@ -60,9 +60,9 @@ crop: 1060,0,1500,170
 | Gear | While the pointer is on the chart | Opens **Chart settings** for that chart. See [Chart settings](/manual/chart-settings/). |
 | **Maximize** (two diagonal arrows) | While the pointer is on the chart and the chartbook has two charts or more | Gives the chart the whole window, or puts it back. The arrows point inward while it is maximised. See [Maximising a chart](/manual/layouts/#maximising-a-chart). |
 | Link button | When the chartbook has two charts or more, or always on a Pinned chart | Opens the chart's link modes. One link on a Focus chart, only under the pointer; a chain on a Follow chart and a pin on a Pinned chart, always shown and in the accent colour. See [Linking charts to the watchlist](/manual/watchlists/#linking-charts-to-the-watchlist). |
-| Watchlist toggle | Always, in the window's corner | Shows or hides the sidebar, like <kbd>Ctrl</kbd> + <kbd>B</kbd>. The key also puts the keyboard in the sidebar, and gives it back to the chart when hiding it. Lit while the sidebar is out. |
+| Watchlist toggle | Always, in the window's corner | Shows or hides the sidebar, like <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>B</kbd>. The key also puts the keyboard in the sidebar, and gives it back to the chart when hiding it. Lit while the sidebar is out. |
 | Main menu | Always, in the window's corner | Opens the [main menu](#the-main-menu). <kbd>F10</kbd> opens it too. |
-| Drawing tools' toggle | Always, in the window's top-left corner | Shows or hides the tools, like <kbd>Ctrl</kbd> + <kbd>D</kbd>. |
+| Drawing tools' toggle | Always, in the window's top-left corner | Shows or hides the tools, like <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>D</kbd>. |
 
 Clicking another chart's gear or corner focuses that chart first. A chart's buttons hide when the keyboard moves the focus to another chart, and come back when the pointer moves. With the sidebar closed, the window's corner sits over the top-right chart, whose buttons move left.
 
@@ -111,7 +111,7 @@ crop: 490,68,1580,1304   (the whole dialog, 16px layout margin above and below, 
 -->
 {% include figure.html src="/assets/manual/window/shortcuts-sheet.png" alt="The Keyboard shortcuts sheet with ctrl alt typed, listing the chartbook, watchlist and split keys that use it" caption="The sheet filtered to the rows that use Ctrl+Alt." %}
 
-[Hotkeys](/manual/hotkeys/) lists the same keys and the mouse gestures. A button's tooltip names its key in brackets, as in **Watchlist (Ctrl+B)**.
+[Hotkeys](/manual/hotkeys/) lists the same keys and the mouse gestures. A button's tooltip names its key in brackets, as in **Watchlist (Shift+Ctrl+B)**.
 
 ## Dialogs
 

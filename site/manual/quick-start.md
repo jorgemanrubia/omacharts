@@ -114,7 +114,7 @@ remove them. See [Indicators](/manual/indicators/).
 
 ## 7. Edit the watchlist
 
-<kbd>Ctrl</kbd> + <kbd>B</kbd> puts the keyboard in the sidebar (press it
+<kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>B</kbd> puts the keyboard in the sidebar (press it
 twice if the sidebar is already open, since the first press hides it).
 <kbd>↑</kbd> and <kbd>↓</kbd> move through the symbols,
 <kbd>Ctrl</kbd> + <kbd>↑</kbd> and <kbd>↓</kbd> jump a section, and
@@ -131,8 +131,8 @@ theme: tokyo-night
 window: 2560x1440 @2, bin/headless-window
 state:
   (as step 6)
-  key ctrl+b
-  key ctrl+b
+  key ctrl+shift+b
+  key ctrl+shift+b
   key ctrl+shift+n
   type Metals
   key Return

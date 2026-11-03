@@ -20,7 +20,7 @@ The indicators come in families, each with a page that has every indicator in it
 theme: tokyo-night
 window: 1600x1200 @2, scratchpad kit (bin/headless-window, sandboxed HOME)
 state:
-  key ctrl+b
+  key ctrl+shift+b
   omacharts chart set --template none
   omacharts chart indicator add sma --period 50
   omacharts chart indicator add sma --period 200
@@ -43,7 +43,7 @@ theme: tokyo-night
 window: 1600x1900 @2, bin/headless-window (HOME sandboxed with ~/.local/share/omarchy/themes/tokyo-night copied in; tall enough for the whole list)
 state:
   omacharts config set theme omarchy:tokyo-night
-  key ctrl+b
+  key ctrl+shift+b
   omacharts chart set --template none
   omacharts chart indicator add sma --period 50
   omacharts chart indicator add sma --period 200
@@ -71,7 +71,7 @@ window: 1600x2200 @2, bin/headless-window (HOME sandboxed with ~/.local/share/om
 state:
   omacharts config set theme omarchy:tokyo-night
   move 795 1095
-  key ctrl+b
+  key ctrl+shift+b
   omacharts chart set --template none
   omacharts chart indicator add sma --period 50
   omacharts chart indicator add sma --period 200
@@ -104,7 +104,7 @@ A strip takes a share of the chart's height, set with **Pane height %** in its s
 theme: tokyo-night
 window: 1600x1200 @2, scratchpad kit
 state:
-  key ctrl+b
+  key ctrl+shift+b
   omacharts chart set --template none
   omacharts chart indicator add sma --period 50
   omacharts chart indicator add sma --period 200
@@ -141,7 +141,7 @@ theme: tokyo-night
 window: 2560x1440 @2, bin/headless-window (HOME sandboxed with ~/.local/share/omarchy/themes/tokyo-night copied in)
 state:
   omacharts config set theme omarchy:tokyo-night
-  key ctrl+b
+  key ctrl+shift+b
   omacharts template create Momentum
   omacharts template indicator add Momentum rsi
   omacharts template indicator add Momentum macd
@@ -193,7 +193,7 @@ state:
   omacharts chart indicator add sma --period 50
   omacharts chart indicator add bollinger
   omacharts chart indicator add volume
-  key ctrl+b               # the rail away
+  key ctrl+shift+b               # the rail away
   click 300 262            # on the band's middle line
   move 1270 300            # off the plot, so no crosshair
 capture: bin/headless-window shot /tmp/selected.png

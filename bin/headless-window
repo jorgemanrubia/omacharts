@@ -10,7 +10,7 @@
 #
 #   eval "$(bin/headless-window start)"
 #   bin/headless-window app
-#   bin/headless-window key ctrl+b
+#   bin/headless-window key ctrl+shift+b
 #   bin/headless-window click 753 24
 #   bin/headless-window shot /tmp/after.png
 #   bin/headless-window stop
@@ -35,7 +35,7 @@ headless-window — drive omacharts inside a compositor with no screen
   app [ARG...]                     launch the built binary inside; prints its pid
   cli ARG...                       run a command against that same window
   run CMD [ARG...]                 run anything inside the session
-  key CHORD...                     ctrl+b, Escape, question, ctrl+shift+s
+  key CHORD...                     ctrl+shift+b, Escape, question, ctrl+shift+s
   type TEXT                        type literal text
   move X Y                         move the pointer, pressing nothing
   click X Y                        press and release where it lands

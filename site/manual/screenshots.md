@@ -30,7 +30,7 @@ state:
   omacharts chart set --chart pos:1 --resolution 1h
   omacharts chart set --chart pos:2 --resolution 15m
   omacharts chart focus pos:0
-  key ctrl+b            # sidebar open
+  key ctrl+shift+b            # sidebar open
   move 300 300; move 302 301
 capture: bin/headless-window shot /tmp/whole.png (cropped 0,0,1000,1440) and bin/headless-window cli chart screenshot --output /tmp/onechart.png, each resized to 1200 high and joined side by side with a 40-pixel gap
 crop: as described

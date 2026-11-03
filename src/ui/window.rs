@@ -184,7 +184,7 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
     (
         "Watchlist",
         &[
-            ("Ctrl+B", "Show or hide the watchlist"),
+            ("Ctrl+Shift+B", "Show or hide the watchlist"),
             ("↑ ↓", "Next or previous symbol"),
             ("Ctrl+↑ ↓", "Next or previous section"),
             ("Enter", "Fold or unfold a section"),
@@ -192,7 +192,7 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             // row says where it works: pressed over a chart it does
             // nothing, and nothing is hard to ask a question about.
             ("Ctrl+Alt+Shift+↑ ↓", "Previous or next watchlist, in the sidebar"),
-            ("Ctrl+1 … 9", "Watchlist N, in the switcher's order"),
+            ("Ctrl+Shift+1 … 9", "Watchlist N, in the switcher's order"),
             ("Ctrl+N", "Add a symbol, in the sidebar"),
             ("Ctrl+Shift+N", "Add a section, in the sidebar"),
             ("Delete", "Remove the symbol"),
@@ -246,7 +246,7 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Alt+V", "Draw a volume profile of the bars dragged across"),
             ("Alt+W", "Anchor a VWAP: click the bar it starts from"),
             ("Alt+M", "Measure: click the start, then the end"),
-            ("Ctrl+D", "Show or hide the drawing tools"),
+            ("Ctrl+Shift+D", "Show or hide the drawing tools"),
             ("Alt+1 … 9", "Configuration N, for the selected drawing or the one about to be drawn"),
             ("Enter / F2", "Put the caret in the selected drawing's text"),
             ("Alt+Enter", "The selected drawing's or indicator's properties"),
@@ -1289,7 +1289,7 @@ mod tests {
     fn a_heading_counts_as_part_of_the_rows_under_it() {
         let rail = found("watchlist");
         assert!(rail.iter().any(|row| row.contains("Next or previous symbol")));
-        assert!(rail.iter().any(|row| row.contains("Ctrl+B")));
+        assert!(rail.iter().any(|row| row.contains("Ctrl+Shift+B")));
     }
 
     /// The gridlines have a key of their own, and the sheet is where somebody
@@ -2128,7 +2128,7 @@ pub struct Window {
     /// to because a chart's maximize button is in that corner too, and has to
     /// step aside when the rail is closed and the two would be in one place.
     corner: RefCell<Option<gtk::WindowHandle>>,
-    /// The corner's watchlist button. Held because Ctrl+B decides what to do
+    /// The corner's watchlist button. Held because Ctrl+Shift+B decides what to do
     /// and the button is what does it: showing the rail through the button is
     /// what keeps its pressed state honest and the corner clearance correct.
     watchlist_toggle: RefCell<Option<gtk::ToggleButton>>,
@@ -5119,7 +5119,7 @@ impl Window {
         action.connect_activate(move |_, _| this.toggle_drawing_tools());
         self.window.add_action(&action);
 
-        // Ctrl+B shows the rail with the keyboard in it, and hides it with the
+        // Ctrl+Shift+B shows the rail with the keyboard in it, and hides it with the
         // keyboard back on the chart. A plain toggle: it used to focus a rail
         // that was open but not focused, so after a click on a chart it took
         // two presses to close what was plainly open.
@@ -5467,17 +5467,18 @@ impl Window {
                 }
             }
 
-            // Ctrl and a digit shows that watchlist, counting down the
+            // Ctrl+Shift and a digit shows that watchlist, counting down the
             // switcher from 1. From anywhere, rail open or not: nothing is
-            // typed with Ctrl held, and bare digits are the resolution's and
-            // Alt with one a drawing configuration's, so this is the one
-            // modifier a digit had left.
+            // typed with Ctrl held. Bare digits are the resolution's, Alt
+            // with one a drawing configuration's and Ctrl with one the
+            // trading size's. By where the key is, as the templates' are,
+            // since Shift changes what the row types.
             if ctrl
                 && !alt
-                && !shift
-                && let Some(n) = key.to_unicode().and_then(|c| c.to_digit(10))
+                && shift
+                && let Some(n) = number_row(keycode).filter(|n| *n > 0)
                 && let Some(rail) = this.watchlist.borrow().clone()
-                && rail.show_numbered(n as usize)
+                && rail.show_numbered(n)
             {
                 return glib::Propagation::Stop;
             }
@@ -9475,7 +9476,7 @@ impl Window {
         }
     }
 
-    /// Show or hide the drawing tools. Ctrl+D, and the toggle top-left.
+    /// Show or hide the drawing tools. Ctrl+Shift+D, and the toggle top-left.
     pub fn toggle_drawing_tools(self: &Rc<Self>) {
         let Some(bar) = self.drawing_bar.borrow().clone() else { return };
         let shown = !bar.is_shown();

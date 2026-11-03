@@ -846,7 +846,7 @@ and is numbered below zero, so one id names a drawing wherever it lives.
 `list` names the symbol and both switches; `clear` removes everything the
 chart can see.
 
-By hand: Ctrl+D shows the tools, Alt+L, Alt+H, Alt+A, Alt+Z, Alt+R, Alt+C,
+By hand: Ctrl+Shift+D shows the tools, Alt+L, Alt+H, Alt+A, Alt+Z, Alt+R, Alt+C,
 Alt+T, Alt+V and Alt+W arm them
 (Escape is the pointer again; a right-click drops a drawing half laid down
 and keeps the tool), a press and a second press (or one

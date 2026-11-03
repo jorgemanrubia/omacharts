@@ -45,8 +45,12 @@ const fn careful(action: &'static str, accels: &'static [&'static str]) -> Bindi
 pub const BINDINGS: &[Binding] = &[
     // Nothing here can be typed into a box, so the application can own
     // them outright.
-    global("win.find", &["<Ctrl>k", "<Ctrl>f"]),
-    global("win.watchlist", &["<Ctrl>b"]),
+    // Ctrl+F was a second key for this until trading took it for going
+    // flat: Ctrl+K and / are the ways to a symbol.
+    global("win.find", &["<Ctrl>k"]),
+    // With Shift since trading took Ctrl+B to buy, the way the drawing
+    // tools beside it took Ctrl+Shift+D.
+    global("win.watchlist", &["<Ctrl><Shift>b"]),
     global("win.preferences", &["<Ctrl>comma"]),
     global("chart.indicators", &["<Ctrl>i"]),
     // A letter, because Shift and punctuation together is a trap. GTK
@@ -93,8 +97,9 @@ pub const BINDINGS: &[Binding] = &[
     global("chart.draw-avwap", &["<Alt>w"]),
     global("chart.measure", &["<Alt>m"]),
     // The bar itself is a panel, so its key is the watchlist's neighbour:
-    // Ctrl+B for the rail on the right, Ctrl+D for the tools on the left.
-    global("win.drawing-tools", &["<Ctrl>d"]),
+    // Ctrl+Shift+B for the rail on the right, Ctrl+Shift+D for the tools on
+    // the left.
+    global("win.drawing-tools", &["<Ctrl><Shift>d"]),
     global("chart.reset-view", &["<Ctrl>Escape"]),
     global("chart.split-h", &["<Ctrl><Alt>h"]),
     global("chart.maximize", &["<Ctrl>m"]),
@@ -171,7 +176,7 @@ pub fn lend_to_text_editor(app: &adw::Application, lend: bool) {
         }
         match lend {
             // Only the lent chord goes; an action with another accelerator
-            // keeps it, so Ctrl+K still finds a symbol while Ctrl+F is away.
+            // keeps the rest of its keys.
             true => {
                 let left: Vec<&str> = binding
                     .accels
@@ -307,7 +312,7 @@ mod tests {
         if !crate::ui::gtk_ready() {
             return;
         }
-        assert_eq!(tooltip("Watchlist", "win.watchlist"), "Watchlist (Ctrl+B)");
+        assert_eq!(tooltip("Watchlist", "win.watchlist"), "Watchlist (Shift+Ctrl+B)");
         assert_eq!(tooltip_with_key("Add a symbol", ADD_SYMBOL), "Add a symbol (Ctrl+N)");
         assert_eq!(tooltip("Turn into a watchlist", "section.promote"), "Turn into a watchlist");
     }

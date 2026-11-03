@@ -102,7 +102,7 @@ protocol for the mouse. Lessons, each paid for:
   keymap a real keyboard has and presses the modifiers as keys; `key` uses
   it for any chord with Shift and a letter, wtype for the rest.
 - A chartbook's sidebar is its own (`sidebar_shown`, not scriptable), and a
-  new one opens with it shown: hide it with Ctrl+B once on each, after the
+  new one opens with it shown: hide it with Ctrl+Shift+B once on each, after the
   switch has settled. A chartbook switched to comes back at the zoom it had
   but on its latest bar, and very wide views are cut down, so a span that
   must be on screen is set after the last switch to that chartbook.

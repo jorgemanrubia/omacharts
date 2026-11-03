@@ -16,7 +16,7 @@ window: 1600x1200 @2, bin/headless-window (HOME sandboxed with ~/.local/share/om
 state:
   omacharts config set theme omarchy:tokyo-night
   omacharts config set time_format 24h
-  key ctrl+b
+  key ctrl+shift+b
   omacharts chartbook create Sessions --symbol ES --switch
   omacharts chart set --resolution 5m --template none
   omacharts chart indicator add session_times
@@ -85,7 +85,7 @@ window: 1600x2200 @2, bin/headless-window (HOME sandboxed with ~/.local/share/om
 state:
   omacharts config set theme omarchy:tokyo-night
   omacharts config set time_format 24h
-  key ctrl+b
+  key ctrl+shift+b
   omacharts chartbook create Sessions --symbol ES --switch
   omacharts chart set --resolution 5m --template none
   omacharts chart indicator add session_times
