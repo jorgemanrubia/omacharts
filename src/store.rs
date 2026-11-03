@@ -373,6 +373,31 @@ impl Store {
             .flatten()
     }
 
+    /// The last bar of the most recently fetched intraday series of `key`,
+    /// as its stamp, when that series was fetched, and its close.
+    ///
+    /// The sidebar asks this for every row, every time a quote moves, so the
+    /// close column is read for the one series chosen, not for each of them.
+    pub fn latest_intraday_close(&self, key: &str) -> Option<(i64, i64, f64)> {
+        let mut series = self
+            .conn
+            .prepare_cached("SELECT interval, last_ts, fetched_at FROM bar_series WHERE key = ?1")
+            .ok()?;
+        let (interval, last_ts, fetched_at) = series
+            .query_map(params![key], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)))
+            .ok()?
+            .filter_map(Result::ok)
+            .filter(|(interval, ..)| Timeframe::parse(interval).is_some_and(Timeframe::is_intraday))
+            .max_by_key(|&(_, last_ts, fetched_at)| (fetched_at, last_ts))?;
+        let close: Vec<u8> = self
+            .conn
+            .prepare_cached("SELECT substr(close, -8) FROM bar_series WHERE key = ?1 AND interval = ?2")
+            .ok()?
+            .query_row(params![key, interval], |r| r.get(0))
+            .ok()?;
+        Some((last_ts, fetched_at, f64::from_le_bytes(close.try_into().ok()?)))
+    }
+
     /// Note that we asked and the provider had nothing new to add.
     ///
     /// `fetched_at` means what its name says — when this series was last
