@@ -6366,17 +6366,10 @@ fn draw_crosshair(
 
     // Price under the pointer, only while it is over the price plot.
     if py >= price_y && py <= price_y + price_h {
-        let price = scale.price_at(py, price_y, price_h);
-        let step = scale.step(price_h);
-        let decimals = omacharts_engine::price_decimals(
-            step,
-            price,
-            state.instrument.as_ref().map(|i| i.kind),
-        );
         label_on_axis(
             cr,
             state,
-            &grouped_decimals(price, decimals),
+            &price_under_pointer(state, scale, py, price_y, price_h),
             plot_x + plot_w,
             below_cover(state, py.round() + 0.5),
             width,
@@ -6389,6 +6382,25 @@ fn draw_crosshair(
     if let Some(ts) = time_at_column(state, first + index_in_view.max(0.0) as i64) {
         let label = format_time_full(ts, state.timeframe, state.clock);
         label_on_time_axis(cr, &label, snapped_x, plot_x, plot_w, height, tint);
+    }
+}
+
+/// The price the crosshair names at height `py` of the price plot: on the
+/// step the series trades in, when it shows one.
+///
+/// A pixel falls between ticks. Written as it came, ES read 7,627.55 beside
+/// a last price of 7,620.25 — a price no trade can print, which looks like
+/// the feed is wrong rather than the pointer being between two prices.
+fn price_under_pointer(state: &State, scale: &PriceScale, py: f64, price_y: f64, price_h: f64) -> String {
+    let price = scale.price_at(py, price_y, price_h);
+    let decimals =
+        omacharts_engine::price_decimals(scale.step(price_h), price, state.instrument.as_ref().map(|i| i.kind));
+    match omacharts_engine::tick_of(&state.bars) {
+        Some(tick) => {
+            let (price, places) = omacharts_engine::on_tick(price, tick);
+            grouped_decimals(price, decimals.max(places))
+        }
+        None => grouped_decimals(price, decimals),
     }
 }
 
@@ -8685,6 +8697,42 @@ mod tests {
         let crosshair = frame(w, h, |cr| draw_pointer(cr, w, h, &state));
         // Two lines across a 600x400 chart, and the chips at the ends of them.
         assert!(painted(&crosshair) > 500, "the crosshair drew {} pixels", painted(&crosshair));
+    }
+
+    /// ES trades in quarters, and a price written beside its axis has to be
+    /// one it could have traded at. The crosshair's is read off a pixel,
+    /// which falls between ticks: 7,627.55 beside a last price of 7,620.25,
+    /// on a chart whose every bar is on the 0.25 grid.
+    #[test]
+    fn the_crosshair_names_a_price_on_the_series_tick() {
+        let (w, h) = (600.0, 400.0);
+        let mut state = charted(120);
+        state.bars = (0..120)
+            .map(|i| {
+                let base = 7_600.0 + (i % 23) as f64 * 1.25;
+                Bar {
+                    ts: 1_600_000_000 + i as i64 * 60,
+                    open: base,
+                    high: base + 2.75,
+                    low: base - 1.5,
+                    close: base + 0.25,
+                    volume: 10.0,
+                }
+            })
+            .collect();
+        let (first, visible, _) = state.view();
+        let plan = layout(&state, w, h);
+        let scale = price_range(&state, &state.bars[first..first + visible], &plan).unwrap();
+        let mut off = Vec::new();
+        for row in 0..plan.price_h as usize {
+            let py = plan.price_y + row as f64 + 0.5;
+            let text = price_under_pointer(&state, &scale, py, plan.price_y, plan.price_h);
+            let price: f64 = text.replace(',', "").parse().unwrap();
+            if (price * 4.0 - (price * 4.0).round()).abs() > 1e-9 {
+                off.push(text);
+            }
+        }
+        assert!(off.is_empty(), "off the 0.25 grid: {off:?}");
     }
 
     #[test]

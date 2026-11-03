@@ -28,8 +28,8 @@ pub mod ticks;
 pub mod theme;
 
 pub use bars::{
-    bucket_of, drawable, drawable_from, grouped_decimals, price_decimals, repair_continuous_opens, resample, Bar,
-    BarStyle, Grid, Timeframe,
+    bucket_of, drawable, drawable_from, grouped_decimals, on_tick, price_decimals, repair_continuous_opens, resample,
+    tick_of, Bar, BarStyle, Grid, Timeframe,
 };
 pub use indicators::{palette_colors, Indicator, Kind as IndicatorKind, Output, Params, Reset};
 pub use link::LinkMode;
