@@ -85,9 +85,10 @@ pub fn limit_label(bytes: i64) -> String {
         .unwrap_or_else(|| format!("{} MB", bytes / (1024 * 1024)))
 }
 
-/// How many of the oldest series to drop to get `before` down to `target`.
+/// How many of the oldest series and ladder days to drop to get `before`
+/// down to `target`.
 ///
-/// `sizes` is every series' payload, oldest first. The payload is a little
+/// `sizes` is every one's payload, oldest first. The payload is a little
 /// under what the series costs in pages, so this errs towards dropping one
 /// more rather than one fewer, which is the right way to be wrong when the
 /// alternative is still being over the limit afterwards.
@@ -106,45 +107,53 @@ fn drop_count(sizes: &[i64], before: i64, target: i64) -> usize {
     droppable
 }
 
-/// Drop the oldest series until the database is back under its limit.
+/// One thing the sweep can drop: a whole bar series, or one trading day of
+/// a contract's minute ladders.
+#[derive(Clone, PartialEq, Debug)]
+enum Evictable {
+    Series { key: String, interval: String },
+    LadderDay { key: String, day: i64 },
+}
+
+/// Drop the oldest series and ladder days until the database is back under
+/// its limit.
 ///
-/// Oldest by `fetched_at`, which is when a series was last *written* rather
-/// than last read. That is a closer proxy for use than it sounds: the app
-/// refetches a series whenever a chart that needs new bars is opened, so
-/// anything looked at regularly keeps a recent stamp. What it mistakes is a
-/// chart opened often that never needs new bars — and those are the cheapest
-/// possible things to fetch again. A true last-read column would cost a write
-/// on every chart opened, every day, to sharpen an eviction that happens
-/// twice a day at most and only once a cache has grown past a gigabyte.
+/// Oldest by `fetched_at`, which is when a series or a day was last
+/// *written* rather than last read. That is a closer proxy for use than it
+/// sounds: the app refetches a series whenever a chart that needs new bars is
+/// opened, so anything looked at regularly keeps a recent stamp. What it
+/// mistakes is a chart opened often that never needs new bars — and those are
+/// the cheapest possible things to fetch again. A true last-read column would
+/// cost a write on every chart opened, every day, to sharpen an eviction that
+/// happens twice a day at most and only once a cache has grown past a
+/// gigabyte.
+///
+/// A contract's ladder days are usually written together, so they tie on
+/// `fetched_at` and go oldest trading day first: a sweep trims the far end
+/// of a contract's history rather than punching holes in it. A day dropped
+/// takes its coverage with it, so the loader knows to fetch it again.
 pub fn evict(conn: &Connection, limit: i64) -> rusqlite::Result<Swept> {
     let before = used_bytes(conn);
     if before <= limit {
         return Ok(Swept { dropped: 0, before, after: before });
     }
 
-    // The order here and the order in the delete below have to be the same
-    // one, or the rows that were measured are not the rows that go. Neither
-    // is `fetched_at` alone, which ties.
-    const ORDER: &str = "ORDER BY fetched_at, key, interval";
-    let mut stmt = conn.prepare(&format!(
-        "SELECT LENGTH(ts) + LENGTH(open) + LENGTH(high) + LENGTH(low)
-              + LENGTH(close) + LENGTH(volume)
-         FROM bar_series {ORDER}"
-    ))?;
-    let sizes: Vec<i64> = stmt.query_map([], |row| row.get(0))?.flatten().collect();
-    drop(stmt);
-
+    let rows = evictable(conn)?;
+    let sizes: Vec<i64> = rows.iter().map(|r| r.1).collect();
     let dropped = drop_count(&sizes, before, (limit as f64 * KEEP) as i64);
     if dropped == 0 {
         return Ok(Swept { dropped: 0, before, after: before });
     }
-    conn.execute(
-        &format!(
-            "DELETE FROM bar_series WHERE (key, interval) IN
-                 (SELECT key, interval FROM bar_series {ORDER} LIMIT ?1)"
-        ),
-        [dropped as i64],
-    )?;
+    let tx = conn.unchecked_transaction()?;
+    for (_, _, what) in rows.iter().take(dropped) {
+        match what {
+            Evictable::Series { key, interval } => {
+                tx.execute("DELETE FROM bar_series WHERE key = ?1 AND interval = ?2", [key, interval])?;
+            }
+            Evictable::LadderDay { key, day } => crate::store::forget_ladder_day(&tx, key, *day)?,
+        }
+    }
+    tx.commit()?;
 
     // Freeing a few hundred megabytes writes a few hundred megabytes of
     // journal, and nothing else is going to come along and fold it back in
@@ -153,6 +162,39 @@ pub fn evict(conn: &Connection, limit: i64) -> rusqlite::Result<Swept> {
     let _ = conn.pragma_update(None, "wal_checkpoint", "PASSIVE");
 
     Ok(Swept { dropped, before, after: used_bytes(conn) })
+}
+
+/// Every series and ladder day, as `(fetched_at, payload bytes, what)`, in
+/// the order they go.
+///
+/// The order measured is the order dropped, so it has to be total:
+/// `fetched_at` alone ties. Among rows written in the same second, ladder
+/// days go first and by trading day, oldest first, then series by key.
+fn evictable(conn: &Connection) -> rusqlite::Result<Vec<(i64, i64, Evictable)>> {
+    let mut rows: Vec<(i64, i64, Evictable)> = Vec::new();
+    let mut stmt = conn.prepare(
+        "SELECT fetched_at, LENGTH(ts) + LENGTH(open) + LENGTH(high) + LENGTH(low)
+              + LENGTH(close) + LENGTH(volume), key, interval
+         FROM bar_series",
+    )?;
+    let series = stmt.query_map([], |row| {
+        Ok((row.get(0)?, row.get(1)?, Evictable::Series { key: row.get(2)?, interval: row.get(3)? }))
+    })?;
+    rows.extend(series.flatten());
+    let mut stmt = conn.prepare("SELECT fetched_at, LENGTH(data) + LENGTH(total), key, day FROM ladder_days")?;
+    let days = stmt.query_map([], |row| {
+        Ok((row.get(0)?, row.get(1)?, Evictable::LadderDay { key: row.get(2)?, day: row.get(3)? }))
+    })?;
+    rows.extend(days.flatten());
+    rows.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| order(&a.2).cmp(&order(&b.2))));
+    Ok(rows)
+}
+
+fn order(what: &Evictable) -> (u8, i64, &str, &str) {
+    match what {
+        Evictable::LadderDay { key, day } => (0, *day, key, ""),
+        Evictable::Series { key, interval } => (1, 0, key, interval),
+    }
 }
 
 /// Sweep on a thread of its own, and say what happened once it is done.
