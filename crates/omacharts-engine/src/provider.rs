@@ -118,21 +118,21 @@ impl FetchFailure {
     pub fn message(self) -> &'static str {
         match self {
             FetchFailure::RateLimited => {
-                "Rate limited by the data provider. Prices fill in shortly."
+                "Rate limited by the data feed. Prices fill in shortly."
             }
             FetchFailure::Offline => "No network connection. Prices fill in when there is one.",
             FetchFailure::Unreachable => {
-                "The data provider is not answering. Prices fill in when it does."
+                "The data feed is not answering. Prices fill in when it does."
             }
-            FetchFailure::Garbled => "The data provider sent a reply this could not read.",
-            FetchFailure::Unsupported => "The data provider does not serve this resolution.",
-            FetchFailure::NoSuchSymbol => "The data provider does not have this symbol.",
+            FetchFailure::Garbled => "The data feed sent a reply this could not read.",
+            FetchFailure::Unsupported => "The data feed does not serve this resolution.",
+            FetchFailure::NoSuchSymbol => "The data feed does not have this symbol.",
             FetchFailure::LocalCache => "Could not open the local price cache.",
             FetchFailure::NeedsSignIn => {
-                "This data provider is not signed in. Open Preferences → Market data → Provider."
+                "This data feed is not signed in. Open Preferences → Data."
             }
             FetchFailure::Unserved => {
-                "This data provider cannot chart this symbol. Another one may be able to."
+                "No data feed in Preferences → Data charts this symbol."
             }
         }
     }

@@ -119,7 +119,7 @@ pub enum Needs {
 
 /// The line an indicator that needs volume at price shows on a chart whose
 /// source has none.
-pub const NEEDS_VOLUME_AT_PRICE: &str = "Needs a source with volume at price";
+pub const NEEDS_VOLUME_AT_PRICE: &str = "Needs a data feed with volume at price";
 
 /// What an indicator that needs `needs` shows instead of itself on a chart
 /// of `context`, if it cannot be computed there: one line, rather than an
@@ -1976,7 +1976,7 @@ mod tests {
 
             // What a footprint would declare.
             let footprint = Needs::VolumeAtPrice;
-            assert_eq!(unmet(footprint, &bare), Some(Output::Unmet("Needs a source with volume at price")));
+            assert_eq!(unmet(footprint, &bare), Some(Output::Unmet("Needs a data feed with volume at price")));
             assert_eq!(unmet(footprint, &rich), None);
 
             for kind in Kind::ALL {

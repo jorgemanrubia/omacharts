@@ -7144,7 +7144,7 @@ fn over_trouble_dot(state: &State, width: f64, x: f64, y: f64) -> bool {
 }
 
 /// The one line an indicator shows on a chart whose source lacks what it
-/// needs — "Needs a source with volume at price" — at the foot of the price
+/// needs — "Needs a data feed with volume at price" — at the foot of the price
 /// box, one above another if there are several. Nothing is drawn per bar.
 fn draw_unmet(cr: &cairo::Context, state: &State, plot_x: f64, bottom: f64) {
     let mut y = bottom - 10.0;
@@ -8047,7 +8047,7 @@ mod tests {
         // "No data for this symbol", which blames the ticker.
         let unserved = placeholder_text(true, false, Some(FetchFailure::Unserved));
         assert_eq!(unserved, FetchFailure::Unserved.message());
-        assert!(unserved.contains("cannot chart this symbol"), "{unserved}");
+        assert!(unserved.contains("charts this symbol"), "{unserved}");
         assert_ne!(unserved, FetchFailure::NoSuchSymbol.message());
     }
 

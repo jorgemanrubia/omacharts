@@ -145,9 +145,9 @@ fn rebuild(panel: &Rc<Panel>) {
 
 fn sources_group(panel: &Rc<Panel>) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
-    group.set_title("Sources");
+    group.set_title("Data feeds");
     group.set_description(Some(
-        "Each chart comes from the first source in this list that has its symbol.",
+        "Each chart comes from the first data feed in this list that has its symbol.",
     ));
 
     let added = panel.added();
@@ -351,7 +351,7 @@ fn moved<T: Copy>(order: &[T], from: usize, onto: usize) -> Option<Vec<T>> {
 /// The sources not added yet, one press each.
 fn add_button(panel: &Rc<Panel>, missing: Vec<&'static Listed>) -> gtk::MenuButton {
     let add = gtk::MenuButton::new();
-    add.set_label("Add a source…");
+    add.set_label("Add a data feed…");
     add.set_halign(gtk::Align::Start);
     add.set_margin_top(12);
     let choices = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -533,7 +533,7 @@ mod tests {
         assert_eq!(titles(&panel), vec!["Yahoo Finance"]);
         let group = panel.group.borrow().clone().unwrap();
         let words = words_under(group.upcast_ref());
-        assert!(words.iter().any(|word| word == "Add a source…"), "{words:?}");
+        assert!(words.iter().any(|word| word == "Add a data feed…"), "{words:?}");
         // The sources still to add are in the button's menu, not on the page.
         let yahoo = &action_rows(group.upcast_ref())[0];
         let words = words_under(yahoo.upcast_ref());
