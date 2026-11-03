@@ -1,12 +1,15 @@
 //! Trade one contract on Rithmic Test and print what comes back: a buy
-//! limit at the price given, cancelled; a market buy; then flatten, and the
-//! account left with nothing held and nothing working.
+//! limit at the first price given, moved a point lower, then cancelled; a
+//! market buy; a sell limit at the second price and a sell stop at the
+//! first, linked; the limit cancelled, which takes the linked stop with it;
+//! then flatten, and the account left with nothing held and nothing
+//! working.
 //!
 //! Reads the login from the file `OMACHARTS_RITHMIC_LOGIN` names (user ID on
 //! the first line, password on the second), on Rithmic Test only, and does
 //! nothing without one. The account number is never printed.
 //!
-//!     OMACHARTS_RITHMIC_LOGIN=~/.rithmic cargo run -p rithmic --example trade -- ESZ6 7400
+//!     OMACHARTS_RITHMIC_LOGIN=~/.rithmic cargo run -p rithmic --example trade -- ESZ6 7400 7800
 
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -90,6 +93,12 @@ fn main() {
     {
         settle(4);
         show("limit working", &trading.book());
+        match trading.modify(&account, &basket, price - 1.0) {
+            Ok(()) => println!("modify: taken"),
+            Err(error) => println!("modify: {}", hide(error.to_string())),
+        }
+        settle(4);
+        show("limit moved a point lower", &trading.book());
         if let Err(error) = trading.cancel(&account, &basket) {
             println!("cancel: {}", hide(error.to_string()));
         }
@@ -100,6 +109,31 @@ fn main() {
     report("market buy", trading.place(&order(Side::Buy, Kind::Market, None)));
     settle(8);
     show("bought", &trading.book());
+
+    // A target above and a stop below, linked: cancelling the target
+    // cancels the stop on Rithmic's side.
+    let above = std::env::args().nth(3).and_then(|price| price.parse::<f64>().ok());
+    if let (Some(below), Some(above)) = (below, above) {
+        let target = report("sell limit", trading.place(&order(Side::Sell, Kind::Limit, Some(above))));
+        let stop = report("sell stop", trading.place(&order(Side::Sell, Kind::Stop, Some(below))));
+        settle(4);
+        if let (Some(target), Some(stop)) = (target, stop) {
+            match trading.link(&account, &[target.clone(), stop.clone()]) {
+                Ok(()) => println!("link: taken"),
+                Err(error) => println!("link: {}", hide(error.to_string())),
+            }
+            settle(3);
+            show("target and stop working, linked", &trading.book());
+            if let Err(error) = trading.cancel(&account, &target) {
+                println!("cancel target: {}", hide(error.to_string()));
+            }
+            settle(6);
+            let book = trading.book();
+            show("target cancelled", &book);
+            let status = book.orders.iter().find(|order| order.basket_id == stop).map(|order| order.status.clone());
+            println!("the linked stop: {status:?}");
+        }
+    }
 
     if let Err(error) = trading.flatten(&account, &contract, "CME") {
         println!("flatten: {}", hide(error.to_string()));

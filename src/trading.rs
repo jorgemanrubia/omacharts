@@ -492,6 +492,12 @@ pub struct Capabilities {
     pub kinds: Vec<OrderKind>,
     pub flatten: bool,
     pub cancel_all: bool,
+    /// A working order's price can be changed where it stands.
+    pub modify: bool,
+    /// Working orders can be linked on the broker's side, so that one
+    /// filling or cancelled cancels the others: a stop and a target that
+    /// do not both outlive the position.
+    pub link: bool,
 }
 
 /// What an order on an instrument is sent as: the contract trading now,
@@ -526,7 +532,7 @@ pub enum Refusal {
 /// Accounts are named by their number here: a session is one login's, and
 /// [`Desk::book`] puts the login in front.
 ///
-/// Placing, cancelling and flattening block until the broker has answered,
+/// Placing, moving, linking, cancelling and flattening block until the broker has answered,
 /// so they are for a thread of their own; what becomes of an order arrives
 /// later on the book, with `changed`. [`Session::contract_for`] does not
 /// block: it is asked on the main thread, as a menu opens.
@@ -547,6 +553,12 @@ pub trait Session: Send + Sync {
     /// Place `order` and return the broker's id for it. Never retried.
     fn place(&self, order: &Order) -> Result<String, String>;
     fn cancel(&self, account: &str, basket: &str) -> Result<(), String>;
+    /// Move the working order `basket` to `price`, keeping everything else
+    /// about it. Only when [`Capabilities::modify`] says so.
+    fn modify(&self, account: &str, basket: &str, price: f64) -> Result<(), String>;
+    /// Link working orders so that one filling or cancelled cancels the
+    /// rest, held by the broker. Only when [`Capabilities::link`] says so.
+    fn link(&self, account: &str, baskets: &[String]) -> Result<(), String>;
     fn cancel_all(&self, account: &str) -> Result<(), String>;
     fn flatten(&self, account: &str, contract: &str, exchange: &str) -> Result<(), String>;
     /// Why it is no longer signed in, if it ended by itself.
@@ -623,7 +635,13 @@ impl Session for RithmicSession {
     }
 
     fn capabilities(&self) -> Capabilities {
-        Capabilities { kinds: vec![OrderKind::Market, OrderKind::Limit, OrderKind::Stop], flatten: true, cancel_all: true }
+        Capabilities {
+            kinds: vec![OrderKind::Market, OrderKind::Limit, OrderKind::Stop],
+            flatten: true,
+            cancel_all: true,
+            modify: true,
+            link: true,
+        }
     }
 
     fn is_simulated(&self) -> bool {
@@ -729,6 +747,14 @@ impl Session for RithmicSession {
 
     fn cancel(&self, account: &str, basket: &str) -> Result<(), String> {
         self.trading.cancel(account, basket).map_err(said)
+    }
+
+    fn modify(&self, account: &str, basket: &str, price: f64) -> Result<(), String> {
+        self.trading.modify(account, basket, price).map_err(said)
+    }
+
+    fn link(&self, account: &str, baskets: &[String]) -> Result<(), String> {
+        self.trading.link(account, baskets).map_err(said)
     }
 
     fn cancel_all(&self, account: &str) -> Result<(), String> {
@@ -1684,6 +1710,13 @@ pub(crate) mod tests {
         pub contracts: Mutex<HashMap<String, String>>,
         pub simulated: bool,
         pub kinds: Vec<OrderKind>,
+        /// What it says it can do beyond placing and cancelling.
+        pub modifies: bool,
+        pub links_orders: bool,
+        /// The groups linked, each cancelled whole when one of it ends.
+        pub links: Mutex<Vec<Vec<String>>>,
+        /// Refuse whatever is asked next, in these words.
+        pub refuse: Mutex<Option<String>>,
     }
 
     impl FakeSession {
@@ -1699,7 +1732,48 @@ pub(crate) mod tests {
                 contracts: Mutex::default(),
                 simulated: true,
                 kinds: vec![OrderKind::Market, OrderKind::Limit, OrderKind::Stop],
+                modifies: true,
+                links_orders: true,
+                links: Mutex::default(),
+                refuse: Mutex::default(),
             }
+        }
+
+        fn refused(&self) -> Result<(), String> {
+            match self.refuse.lock().unwrap().take() {
+                Some(why) => Err(why),
+                None => Ok(()),
+            }
+        }
+
+        /// End `basket` and cancel every order linked to it, as a broker
+        /// holding the link would.
+        fn end_linked(&self, book: &mut Book, basket: &str) {
+            let links = self.links.lock().unwrap();
+            for group in links.iter().filter(|group| group.iter().any(|b| b == basket)) {
+                for other in group.iter().filter(|b| *b != basket) {
+                    if let Some(order) = book.orders.iter_mut().find(|o| o.basket_id == *other && o.status.working()) {
+                        order.status = Status::Cancelled;
+                    }
+                }
+            }
+        }
+
+        /// The market reaches the working order `basket`: it fills at its
+        /// price, and whatever is linked to it is cancelled.
+        pub(crate) fn fill(&self, basket: &str) {
+            let mut book = self.book.lock().unwrap();
+            let Some(order) = book.orders.iter_mut().find(|o| o.basket_id == basket && o.status.working()) else {
+                return;
+            };
+            order.status = Status::Filled;
+            order.fill_price = order.price;
+            let order = order.clone();
+            let bought = if order.side == Side::Buy { order.qty as i32 } else { -(order.qty as i32) };
+            FakeSession::hold(&mut book, &order.account, &order.contract, &order.exchange, bought, order.price.unwrap_or(0.0));
+            self.end_linked(&mut book, basket);
+            drop(book);
+            (self.changed)();
         }
 
         fn hold(book: &mut Book, account: &str, contract: &str, exchange: &str, bought: i32, at: f64) {
@@ -1730,7 +1804,13 @@ pub(crate) mod tests {
             self.accounts.iter().find(|a| a.id == account).and_then(|a| a.balance)
         }
         fn capabilities(&self) -> Capabilities {
-            Capabilities { kinds: self.kinds.clone(), flatten: true, cancel_all: true }
+            Capabilities {
+                kinds: self.kinds.clone(),
+                flatten: true,
+                cancel_all: true,
+                modify: self.modifies,
+                link: self.links_orders,
+            }
         }
         fn is_simulated(&self) -> bool {
             self.simulated
@@ -1749,6 +1829,7 @@ pub(crate) mod tests {
             if self.gone.load(Ordering::Acquire) {
                 return Err("the session was signed out".into());
             }
+            self.refused()?;
             let basket = format!("B{}", self.baskets.fetch_add(1, Ordering::AcqRel));
             let last = *self.last.lock().unwrap();
             let filled = order.kind == OrderKind::Market;
@@ -1781,12 +1862,29 @@ pub(crate) mod tests {
             Ok(basket)
         }
         fn cancel(&self, _: &str, basket: &str) -> Result<(), String> {
+            self.refused()?;
             let mut book = self.book.lock().unwrap();
             let order = book.orders.iter_mut().find(|order| order.basket_id == basket && order.status.working());
             let Some(order) = order else { return Err("not working".into()) };
             order.status = Status::Cancelled;
+            self.end_linked(&mut book, basket);
             drop(book);
             (self.changed)();
+            Ok(())
+        }
+        fn modify(&self, _: &str, basket: &str, price: f64) -> Result<(), String> {
+            self.refused()?;
+            let mut book = self.book.lock().unwrap();
+            let order = book.orders.iter_mut().find(|order| order.basket_id == basket && order.status.working());
+            let Some(order) = order else { return Err("not working".into()) };
+            order.price = Some(price);
+            drop(book);
+            (self.changed)();
+            Ok(())
+        }
+        fn link(&self, _: &str, baskets: &[String]) -> Result<(), String> {
+            self.refused()?;
+            self.links.lock().unwrap().push(baskets.to_vec());
             Ok(())
         }
         fn cancel_all(&self, account: &str) -> Result<(), String> {
@@ -2285,7 +2383,13 @@ pub(crate) mod tests {
         assert!(side_allowed(OrderKind::Market, Side::Sell, 0.0, last));
 
         // Only what the broker takes is offered.
-        let all = Capabilities { kinds: vec![OrderKind::Stop, OrderKind::Market, OrderKind::Limit], flatten: true, cancel_all: true };
+        let all = Capabilities {
+            kinds: vec![OrderKind::Stop, OrderKind::Market, OrderKind::Limit],
+            flatten: true,
+            cancel_all: true,
+            modify: true,
+            link: true,
+        };
         assert_eq!(menu_orders(&all).len(), 6);
         assert_eq!(menu_orders(&all)[..2], [(Side::Buy, OrderKind::Market), (Side::Sell, OrderKind::Market)]);
         let no_stops = Capabilities { kinds: vec![OrderKind::Market, OrderKind::Limit], ..all };
@@ -2328,7 +2432,13 @@ pub(crate) mod tests {
             exchange: "CME".into(),
             tick: Some(0.25),
             simulated: false,
-            capabilities: Capabilities { kinds: vec![OrderKind::Market], flatten: true, cancel_all: true },
+            capabilities: Capabilities {
+                kinds: vec![OrderKind::Market],
+                flatten: true,
+                cancel_all: true,
+                modify: true,
+                link: true,
+            },
         };
         assert!(target.live());
         assert_eq!(confirm_text(Side::Buy, OrderKind::Market, "", &target), "Buy 1 ESZ6 at market on Lucid 1234 · LucidTrading?");

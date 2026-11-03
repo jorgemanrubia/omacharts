@@ -9,7 +9,8 @@
 //! to a plant again; keeping to one is the caller's, which holds them by
 //! login.
 //!
-//! The order plant also places, cancels and flattens, and pushes what
+//! The order plant also places, moves, links, cancels and flattens, and
+//! pushes what
 //! becomes of every order; the PnL plant pushes positions and balances.
 //! Both land in one [`Book`] the session keeps, which a caller reads
 //! whenever `changed` says something moved. Nothing here polls.
@@ -31,7 +32,7 @@ use rithmic_rs::rti::{
 };
 use rithmic_rs::{
     ConnectStrategy, ManualOrAutoEntry, OrderSide, OrderStatus, OrderType, RithmicAccount, RithmicCancelAllOrders,
-    RithmicCancelOrder, RithmicExitPosition, RithmicOrder, RithmicOrderPlant, RithmicOrderPlantHandle,
+    RithmicCancelOrder, RithmicExitPosition, RithmicLinkOrders, RithmicModifyOrder, RithmicOrder, RithmicOrderPlant, RithmicOrderPlantHandle,
     RithmicPnlPlant, RithmicPnlPlantHandle, RithmicResponse, TimeInForce,
 };
 use tokio::sync::broadcast::error::RecvError;
@@ -621,6 +622,49 @@ impl Trading {
             RithmicCancelOrder::new().id(basket).manual_or_auto(ManualOrAutoEntry::Manual).build().map_err(error_of)?;
         let replies = self.inner.handle.block_on(within(REQUEST, desk.cancel_order(cancel)))?;
         match replies.iter().find_map(|reply| reply.error.clone()) {
+            Some(error) => Err(error_of(error)),
+            None => Ok(()),
+        }
+    }
+
+    /// Move the working order `basket` on `account` to `price`, blocking
+    /// until Rithmic has taken the request. A modify restates the order, so
+    /// everything else is carried over from what the book has of it. What
+    /// becomes of it arrives on the book.
+    pub fn modify(&self, account: &str, basket: &str, price: f64) -> Result<(), Error> {
+        let desk = self.desk(account)?;
+        let known = self.inner.state.lock().unwrap_or_else(|e| e.into_inner()).order_mut(basket).cloned();
+        let order = known
+            .filter(|order| order.status.working())
+            .ok_or_else(|| Error::NotFound("such working order".into()))?;
+        let modify = RithmicModifyOrder::new()
+            .id(basket)
+            .symbol(&order.contract)
+            .exchange(&order.exchange)
+            .quantity(i32::try_from(order.qty).unwrap_or(1))
+            .manual_or_auto(ManualOrAutoEntry::Manual);
+        let modify = match order.kind {
+            Kind::Limit => modify.price_type(OrderType::Limit).price(price),
+            Kind::Stop => modify.price_type(OrderType::StopMarket).trigger_price(price),
+            Kind::Market => return Err(Error::Rejected("a market order has no price to move".into())),
+        };
+        let modify = modify.build().map_err(error_of)?;
+        let replies = self.inner.handle.block_on(within(REQUEST, desk.modify_order(modify)))?;
+        match replies.iter().find_map(|reply| reply.error.clone()) {
+            Some(error) => Err(error_of(error)),
+            None => Ok(()),
+        }
+    }
+
+    /// Link working orders on `account` into one group, held on Rithmic's
+    /// servers: when one of them fills or is cancelled, Rithmic cancels the
+    /// rest. A stop and a target on one position, so that whichever goes
+    /// first takes the other with it.
+    pub fn link(&self, account: &str, baskets: &[String]) -> Result<(), Error> {
+        let desk = self.desk(account)?;
+        let link = RithmicLinkOrders::new().basket_ids(baskets.iter().cloned()).build().map_err(error_of)?;
+        let reply = self.inner.handle.block_on(within(REQUEST, desk.link_orders(link)))?;
+        match reply.error {
             Some(error) => Err(error_of(error)),
             None => Ok(()),
         }
