@@ -562,6 +562,11 @@ impl Window {
                     Side::Sell => look.sell.clone(),
                 };
                 Some(crate::ui::chart::OrderMark {
+                    basket: order.basket_id.clone(),
+                    side: order.side,
+                    kind: order.kind,
+                    qty: order.qty,
+                    dim: false,
                     price: at,
                     words: format!(
                         "{} {} {}",
@@ -582,6 +587,18 @@ impl Window {
                 true => (Side::Buy, look.long.clone()),
                 false => (Side::Sell, look.short.clone()),
             };
+            // A tab for each exit the broker takes and the position still
+            // has room for, in the look of the order it would make.
+            let exit_colour = match trading::exit_side(held.net) {
+                Side::Buy => look.buy.clone(),
+                Side::Sell => look.sell.clone(),
+            };
+            let exits = [(OrderKind::Limit, look.limit), (OrderKind::Stop, look.stop)]
+                .into_iter()
+                .filter(|(kind, _)| target.capabilities.kinds.contains(kind))
+                .filter(|(kind, _)| trading::exit_offered(view.book.working(&key, &target.contract), held.net, *kind))
+                .map(|(kind, style)| crate::ui::chart::ExitTab { kind, colour: exit_colour.clone(), style })
+                .collect();
             Some(crate::ui::chart::PositionMark {
                 price: at,
                 words: format!("{} {}", side.glyph(), trading::position_text(held, places, currency.as_deref())),
@@ -592,6 +609,9 @@ impl Window {
                     true => look.loss.clone(),
                     false => look.profit.clone(),
                 }),
+                net: held.net,
+                exits,
+                dim: false,
             })
         });
         pane.view.set_marks(position, orders);
