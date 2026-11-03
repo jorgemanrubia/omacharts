@@ -7,11 +7,13 @@
 //! # Adding a feed
 //!
 //! One folder here, and three things in it: an implementation of
-//! [`Provider`], a [`Listed`] describing how it is offered, and whatever that
-//! feed alone needs — its symbology, its session handling, its instructions.
-//! Then an arm in [`Feed`] and an entry in [`LISTED`], and the settings
-//! panel, `provider list`, `config set provider` and the shell completions
-//! all pick it up without being told about it separately.
+//! [`Provider`], a [`Listed`] describing how it is offered — with a
+//! [`SignIn`] when there is an account behind it — and whatever that feed
+//! alone needs: its symbology, its session handling, its instructions.
+//! Then an entry in [`LISTED`], and the Data page, its login form, routing,
+//! `provider list`, `config set provider` and the shell completions all pick
+//! it up without being told about it separately. Nothing outside this
+//! folder names a feed, which a test of the app's holds it to.
 //!
 //! A heavy client with dependencies of its own is a workspace crate instead
 //! (`crates/tos-market`), and the folder here is the thin layer that turns it
@@ -29,10 +31,15 @@
 //! by the first feed that can be used and has a name for its instrument —
 //! see [`ordered`] and [`route`].
 
+#[cfg(any(test, feature = "fakes"))]
+pub mod fake;
 pub mod rithmic;
 pub mod synthetic;
 pub mod tos;
 pub mod yahoo;
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::OnceLock;
 
 use crate::provider::{Delivery, Provider};
 use crate::symbols::{Instrument, InstrumentKind};
@@ -42,9 +49,9 @@ pub use synthetic::Synthetic;
 pub use tos::Tos;
 pub use yahoo::Yahoo;
 
-/// A feed as it is offered: what to call it, what it serves, and whether
-/// picking it is the end of the matter or the start of signing in to
-/// something.
+/// A feed as it is offered: what to call it, what it serves, how to build
+/// it, and whether picking it is the end of the matter or the start of
+/// signing in to something.
 ///
 /// Plain data, and deliberately so. It is read to draw a settings row, to
 /// answer `provider list`, and to decide whether a name typed at
@@ -64,14 +71,16 @@ pub struct Listed {
     /// the kinds of instrument, as somebody choosing between sources thinks
     /// of them.
     pub covers: &'static str,
-    /// What signing in to it involves, for a feed that charts an account's
-    /// own data. `None` for a feed anybody can use the moment they pick it,
+    /// The feed, built and connected to nothing: see [`built`].
+    pub build: fn() -> Box<dyn Provider>,
+    /// How signing in to it goes, for a feed that charts an account's own
+    /// data. `None` for a feed anybody can use the moment they pick it,
     /// which is both the better kind and, so far, the default one.
     ///
     /// Its presence is also the answer to "does this feed need signing in
-    /// to" — one fact in one place, rather than a boolean beside a block of
-    /// text that can come to disagree with it.
-    pub setup: Option<&'static Setup>,
+    /// to" — one fact in one place, rather than a boolean beside it that
+    /// can come to disagree.
+    pub setup: Option<&'static dyn SignIn>,
     /// Does this feed rest on something that can be taken away?
     ///
     /// True for a feed that talks to an undocumented gateway through a
@@ -85,6 +94,169 @@ impl Listed {
     /// Is there anything to do after picking it?
     pub fn needs_sign_in(&self) -> bool {
         self.setup.is_some()
+    }
+
+    /// The fields its sign-in asks for, when it asks in a form.
+    pub fn form(&self) -> Option<&'static [Field]> {
+        match self.setup?.how() {
+            How::Form(fields) => Some(fields),
+            How::Browser | How::External => None,
+        }
+    }
+}
+
+/// How a feed is signed in to, which decides what the Data page and
+/// `provider login` do about it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum How {
+    /// A form the app draws from these fields. What is typed is the app's
+    /// to keep, and a secret goes to the keyring the feed names.
+    Form(&'static [Field]),
+    /// A real browser the person drives themselves; the app sees neither
+    /// the password nor the code, only the session it ends with.
+    Browser,
+    /// Something outside the app signs in, and the feed only reads what it
+    /// left behind.
+    External,
+}
+
+/// One thing a sign-in form asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Field {
+    /// What it is kept under. [`USER`] is the one that says who signs in.
+    pub key: &'static str,
+    /// The row's title.
+    pub title: &'static str,
+    pub kind: FieldKind,
+    /// What a new login starts with; empty for nothing.
+    pub default: &'static str,
+    /// Must it be filled in before the form can be sent?
+    pub required: bool,
+}
+
+/// What a field holds, and so how it is drawn and where it is kept.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldKind {
+    Text,
+    /// Never shown again once typed, and never kept in a setting.
+    Secret,
+    Url,
+    /// One of these.
+    Choice(&'static [&'static str]),
+}
+
+/// The key of the field that says who signs in: a login with nothing under
+/// it is a login signed out.
+pub const USER: &str = "user";
+
+/// How many sessions a login may have open at once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sessions {
+    /// One, because a second costs somebody something or pushes the first
+    /// out: only the process holding the window opens it, and anywhere else
+    /// — the bar widget, a command with no window open — the feed is passed
+    /// over. See [`serve_from_here`].
+    OnePerLogin,
+    /// As many as there are processes asking.
+    Any,
+}
+
+/// A login as the app keeps it, without its secrets, for a feed whose
+/// sign-in is a form. The engine has no database of its own, so it is told,
+/// with [`SignIn::remember`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Saved {
+    /// The login's id, which its secrets are kept under.
+    pub login: Option<String>,
+    /// Who signs in, the [`USER`] field: `None` while it is signed out.
+    pub user: Option<String>,
+    /// The rest of what was typed and is not secret, by field key.
+    pub values: Vec<(String, String)>,
+}
+
+impl Saved {
+    /// What was typed for `key`, if anything.
+    pub fn value(&self, key: &str) -> Option<&str> {
+        self.values.iter().find(|(known, _)| known == key).map(|(_, value)| value.as_str())
+    }
+}
+
+/// Where a form's secret is kept: the desktop keyring, or a store of a
+/// test's own, so that nothing a test does reaches anybody's keyring.
+pub trait Secrets {
+    /// Save `password` for the login `login`, `user` on `system`, replacing
+    /// what was there.
+    fn save(&self, login: &str, user: &str, system: &str, password: &str) -> Result<(), String>;
+    /// Forget the password for the login `login`, if there is one.
+    fn forget(&self, login: &str, user: &str, system: &str) -> Result<(), String>;
+}
+
+/// Signing in to a feed: declared by the feed, and read by everything above
+/// the boundary — the Data and Trading pages, the login form, `provider
+/// login` and routing — none of which says which feed it is talking to.
+///
+/// Nothing here may connect, except [`SignIn::sign_in`] and
+/// [`SignIn::connect`], which are for a thread of their own.
+pub trait SignIn: Sync + std::fmt::Debug {
+    /// What signing in involves, in the feed's own words.
+    fn about(&self) -> &'static Setup;
+    /// A form, a browser, or something else entirely.
+    fn how(&self) -> How;
+    /// How many sessions a login may have at once.
+    fn sessions(&self) -> Sessions {
+        Sessions::Any
+    }
+    /// Is the login a broker connection too, kept in Preferences → Trading
+    /// and signed in to by the broker as well? Then the feed signs in
+    /// through that one connection rather than one of its own.
+    fn trades(&self) -> bool {
+        false
+    }
+    /// What is saved, read from memory or disk, never by connecting.
+    fn access(&self) -> Access;
+    /// How a sign-in would go, or why it cannot start at all.
+    fn can_sign_in(&self) -> Result<String, String>;
+    /// Sign in, blocking until it is done. `log` is handed one progress line
+    /// at a time.
+    fn sign_in(&self, log: Box<dyn Fn(&str) + Send + Sync>) -> Result<(), String>;
+    /// After [`SignIn::sign_in`], in the process holding the window: open
+    /// the session now, so that the answer is the provider's. Most have
+    /// nothing to do.
+    fn connect(&self) -> Result<(), String> {
+        Ok(())
+    }
+    /// Forget what is saved.
+    fn sign_out(&self) -> Result<(), String>;
+    /// Has this feed connected to anything in this process?
+    fn connected(&self) -> bool;
+    /// The files and keyring items it keeps, for showing rather than
+    /// guessing.
+    fn places(&self) -> Vec<(&'static str, String)>;
+    /// The login the app has saved for it, for a feed signed in to through
+    /// a form: called whenever the app reads its settings for an order that
+    /// names the feed, and after a sign-in or a sign-out.
+    fn remember(&self, _saved: Saved) {}
+    /// The login is another one now, or the feed is off the order: the
+    /// session signed in through the old one ends.
+    fn hand_over(&self) {}
+    /// The provider's own words for why it last turned the login down, for
+    /// a row with room for a few.
+    fn refusal(&self) -> Option<String> {
+        None
+    }
+    /// Is something other than the form in charge — a developer's own
+    /// login file, say? Then nothing need be typed, and nothing typed is
+    /// kept.
+    fn stood_in(&self) -> bool {
+        false
+    }
+    /// The line a form opens with: where what is typed goes.
+    fn promise(&self) -> String {
+        String::new()
+    }
+    /// Where the form's secret goes.
+    fn keyring(&self) -> Option<&'static dyn Secrets> {
+        None
     }
 }
 
@@ -143,19 +315,14 @@ impl Access {
 
 /// What is saved for `id`, or `None` for a feed that needs nothing saved.
 pub fn access(id: &str) -> Option<Access> {
-    match listed(id)?.id {
-        "tos" => Some(tos::session::access()),
-        "rithmic" => Some(rithmic::session::access()),
-        _ => None,
-    }
+    Some(listed(id)?.setup?.access())
 }
 
-/// The browser a sign-in would use, or why it cannot start at all.
+/// How a sign-in would go, or why it cannot start at all.
 pub fn can_sign_in(id: &str) -> Result<String, String> {
-    match listed(id).map(|feed| feed.id) {
-        Some("tos") => tos::session::can_sign_in(),
-        Some("rithmic") => rithmic::session::can_sign_in(),
-        Some(other) => Err(format!("{other} needs no signing in")),
+    match listed(id) {
+        Some(Listed { setup: Some(setup), .. }) => setup.can_sign_in(),
+        Some(feed) => Err(format!("{} needs no signing in", feed.id)),
         None => Err(format!("no such data feed: {id}")),
     }
 }
@@ -163,20 +330,18 @@ pub fn can_sign_in(id: &str) -> Result<String, String> {
 /// Signs in to `id`, blocking until the person is done. `log` is handed one
 /// progress line at a time.
 pub fn sign_in(id: &str, log: impl Fn(&str) + Send + Sync + 'static) -> Result<(), String> {
-    match listed(id).map(|feed| feed.id) {
-        Some("tos") => tos::session::sign_in(log),
-        Some("rithmic") => rithmic::session::sign_in(log),
-        Some(other) => Err(format!("{other} needs no signing in")),
+    match listed(id) {
+        Some(Listed { setup: Some(setup), .. }) => setup.sign_in(Box::new(log)),
+        Some(feed) => Err(format!("{} needs no signing in", feed.id)),
         None => Err(format!("no such data feed: {id}")),
     }
 }
 
 /// Forgets what is saved for `id`.
 pub fn sign_out(id: &str) -> Result<(), String> {
-    match listed(id).map(|feed| feed.id) {
-        Some("tos") => tos::session::sign_out(),
-        Some("rithmic") => rithmic::session::sign_out(),
-        Some(other) => Err(format!("{other} has nothing saved to forget")),
+    match listed(id) {
+        Some(Listed { setup: Some(setup), .. }) => setup.sign_out(),
+        Some(feed) => Err(format!("{} has nothing saved to forget", feed.id)),
         None => Err(format!("no such data feed: {id}")),
     }
 }
@@ -187,22 +352,54 @@ pub fn sign_out(id: &str) -> Result<(), String> {
 /// settings, reading a session state, or merely choosing a feed must not
 /// build a connection. Only fetching bars may.
 pub fn connected(id: &str) -> bool {
-    match listed(id).map(|feed| feed.id) {
-        Some("tos") => tos::session::connected(),
-        Some("rithmic") => rithmic::session::connected(),
-        _ => false,
-    }
+    listed(id).and_then(|feed| feed.setup).is_some_and(|setup| setup.connected())
 }
 
 /// The files a feed keeps on this machine, for showing rather than
 /// guessing: a signed-in brokerage session is something somebody is
 /// entitled to know the location of, and to delete.
 pub fn places(id: &str) -> Vec<(&'static str, String)> {
-    match listed(id).map(|feed| feed.id) {
-        Some("tos") => tos::session::places(),
-        Some("rithmic") => rithmic::session::places(),
-        _ => Vec::new(),
-    }
+    listed(id).and_then(|feed| feed.setup).map(|setup| setup.places()).unwrap_or_default()
+}
+
+/// The feeds whose login is a broker connection too, kept in Preferences →
+/// Trading: what "Add a broker…" offers, in the order of [`LISTED`].
+pub fn connections() -> impl Iterator<Item = &'static Listed> {
+    LISTED.iter().filter(|feed| feed.setup.is_some_and(|setup| setup.trades()))
+}
+
+/// The app's version, as a feed that asks tells its vendor: handed over by
+/// the binary at startup with [`identify`], because the engine's own crate
+/// version is not the app's.
+static VERSION: OnceLock<&'static str> = OnceLock::new();
+
+/// Say which release of the app is asking. The binary calls this once at
+/// startup with its own `CARGO_PKG_VERSION`; a later call is ignored.
+pub fn identify(version: &'static str) {
+    let _ = VERSION.set(version);
+}
+
+/// The release [`identify`] was told, if it was.
+pub fn app_version() -> Option<&'static str> {
+    VERSION.get().copied()
+}
+
+/// Does this process hold the window? See [`serve_from_here`].
+static HERE: AtomicBool = AtomicBool::new(false);
+
+/// This process holds the window, and is the one that opens the sessions a
+/// login may have only one of ([`Sessions::OnePerLogin`]).
+///
+/// Any other — the bar widget asking from a fresh process, a command run
+/// with no window open — passes such a feed over and charts from the next,
+/// rather than signing in a session of its own.
+pub fn serve_from_here() {
+    HERE.store(true, Ordering::Release);
+}
+
+/// May this process open a session a login may have only one of?
+pub fn here() -> bool {
+    HERE.load(Ordering::Acquire)
 }
 
 /// Every feed, in the order they are offered.
@@ -211,6 +408,21 @@ pub fn places(id: &str) -> Vec<(&'static str, String)> {
 /// like this, and a feed added at the end cannot change what an existing
 /// install is using.
 pub const LISTED: &[Listed] = &[yahoo::LISTED, tos::LISTED, rithmic::LISTED];
+
+/// Feeds that exist only to prove the boundary holds: found by [`listed`],
+/// and so routed to and drawn on the Data page once an order names one, but
+/// never offered. Built only into tests.
+#[cfg(any(test, feature = "fakes"))]
+const FAKES: &[Listed] = &[fake::LISTED];
+#[cfg(not(any(test, feature = "fakes")))]
+const FAKES: &[Listed] = &[];
+
+/// Every feed this build knows, offered or not: [`LISTED`], then any fake.
+/// For handing each its saved login, where one that is never offered still
+/// has to be told.
+pub fn every() -> impl Iterator<Item = &'static Listed> {
+    LISTED.iter().chain(FAKES)
+}
 
 /// What runs when nothing has been chosen.
 pub const DEFAULT: &str = LISTED[0].id;
@@ -301,7 +513,7 @@ pub fn described(feed: &Listed) -> String {
 /// setting is typed by hand as often as it is clicked.
 pub fn listed(id: &str) -> Option<&'static Listed> {
     let id = id.trim();
-    LISTED.iter().find(|feed| feed.id.eq_ignore_ascii_case(id))
+    every().find(|feed| feed.id.eq_ignore_ascii_case(id))
 }
 
 /// The feed with this id, built and connected to nothing, or `None` for an
@@ -318,11 +530,7 @@ pub fn listed(id: &str) -> Option<&'static Listed> {
 /// one description of what a feed can do, and it is object-safe, so this is
 /// the whole dispatch.
 pub fn built(id: &str) -> Option<Box<dyn Provider>> {
-    match listed(id)?.id {
-        "tos" => Some(Box::new(Tos::new())),
-        "rithmic" => Some(Box::new(Rithmic::new())),
-        _ => Some(Box::new(Yahoo::new())),
-    }
+    Some((listed(id)?.build)())
 }
 
 /// The feed with this id, or the default for one nobody has heard of. For
@@ -469,15 +677,15 @@ pub fn route_chosen<'a>(
 /// Can `id` be charted from with what is saved on this machine? A read from
 /// disk, never a connection: a feed that needs nothing saved always can.
 ///
-/// Rithmic only in the process holding the window: anywhere else — the bar
-/// widget, a command with no window open — it is passed over rather than
-/// signed in a second time, because CME counts sessions. See
-/// [`rithmic::session::serve_from_here`].
+/// A feed whose login may have one session only is usable only in the
+/// process holding the window: anywhere else it is passed over rather than
+/// signed in a second time. See [`serve_from_here`].
 pub fn usable(id: &str) -> bool {
-    if listed(id).is_some_and(|feed| feed.id == "rithmic") && !rithmic::session::here() {
+    let Some(setup) = listed(id).and_then(|feed| feed.setup) else { return true };
+    if setup.sessions() == Sessions::OnePerLogin && !here() {
         return false;
     }
-    access(id).is_none_or(|access| access.ready())
+    setup.access().ready()
 }
 
 #[cfg(test)]
@@ -677,11 +885,55 @@ mod tests {
         ids.sort_unstable();
         ids.dedup();
         assert_eq!(ids.len(), total, "duplicate feed id");
-        for feed in LISTED {
+        for feed in LISTED.iter().chain(FAKES) {
             let built = built_or_default(feed.id);
             assert_eq!(built.id(), feed.id);
             assert_eq!(built.label(), feed.label);
             assert!(!feed.serves.is_empty(), "{} says nothing about what it serves", feed.id);
         }
+    }
+
+    /// The fake rich feed is built, routed to, and signed in to through
+    /// nothing but the boundary: a stream, ladders and a form, from one
+    /// entry in a list, and never offered.
+    #[test]
+    fn a_feed_nobody_names_streams_has_ladders_and_signs_in_through_the_boundary() {
+        let fake = listed(fake::LISTED.id).expect("found by its id");
+        assert!(!LISTED.iter().any(|feed| feed.id == fake.id), "never offered");
+
+        let feeds = ordered(&[fake.id.to_string(), DEFAULT.to_string()]);
+        assert_eq!(feeds[0].delivery(), Delivery::Streamed);
+        assert!(feeds[0].ladders().is_some());
+        assert!(freshness(fake.id).contains("live"));
+
+        let form = fake.form().expect("a form");
+        assert!(form.iter().any(|field| field.key == USER && field.required));
+        assert!(form.iter().any(|field| field.kind == FieldKind::Secret));
+
+        // Not signed in: passed over, and said to have been, for a future.
+        assert_eq!(access(fake.id), Some(Access::Missing));
+        assert!(!usable(fake.id));
+        let es = instrument(InstrumentKind::FutureRoot, "ES");
+        let order = || feeds.iter().map(|p| (p.as_ref(), usable(p.id())));
+        let passed = route(order(), &es).expect("served");
+        assert_eq!((passed.at, passed.passed.as_slice()), (1, &[0][..]));
+        assert!(sign_in(fake.id, |_| {}).is_err(), "nothing kept to sign in with");
+
+        // Signed in: it serves the future, and a stock still goes to Yahoo.
+        let setup = fake.setup.expect("a sign-in");
+        let login = "fake-login";
+        setup.keyring().expect("a keyring").save(login, "member", "", "token").unwrap();
+        setup.remember(Saved {
+            login: Some(login.into()),
+            user: Some("member".into()),
+            values: vec![("desk".into(), "North".into())],
+        });
+        assert_eq!(access(fake.id), Some(Access::Signed("North".into())));
+        assert!(sign_in(fake.id, |_| {}).is_ok());
+        let routed = route(order(), &es).expect("served");
+        assert_eq!((routed.at, routed.passed.as_slice()), (0, &[][..]));
+        let apple = instrument(InstrumentKind::Equity, "AAPL");
+        assert_eq!(route(order(), &apple).map(|r| r.at), Some(1));
+        assert!(!connected(fake.id));
     }
 }

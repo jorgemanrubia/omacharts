@@ -136,57 +136,148 @@ pub fn order(store: &Store) -> Vec<String> {
 /// `omacharts_engine::providers`.
 pub fn ordered(store: &Store) -> Vec<Box<dyn Provider>> {
     let order = order(store);
-    if order.iter().any(|id| id.eq_ignore_ascii_case(RITHMIC)) {
+    if order.iter().any(|id| providers::listed(id).is_some_and(|feed| feed.form().is_some())) {
         remember_logins(store);
     }
     providers::ordered(&order)
 }
 
-const RITHMIC: &str = "rithmic";
+/// The logins typed into a feed's own form on the Data page, without their
+/// secrets: a JSON object of feed id to its fields by key. `Local`, because
+/// a login belongs to the machine it was typed on. A login that is a broker
+/// connection too is Trading's, and not here.
+pub const LOGINS: &str = "feed_logins";
 
-/// Tell the engine which release of Omacharts signs in to Rithmic: this
-/// crate's version, the app's, which no library crate's is. Called once at
+type Typed = std::collections::BTreeMap<String, String>;
+
+fn own_logins(store: &Store) -> std::collections::BTreeMap<String, Typed> {
+    store.setting(LOGINS).and_then(|json| serde_json::from_str(&json).ok()).unwrap_or_default()
+}
+
+fn save_own_logins(store: &Store, logins: &std::collections::BTreeMap<String, Typed>) {
+    match logins.is_empty() {
+        true => store.remove_setting(LOGINS),
+        false => store.set_setting(LOGINS, &serde_json::to_string(logins).unwrap_or_default()),
+    }
+}
+
+/// Tell the engine which release of Omacharts is signing in: this crate's
+/// version, the app's, which no library crate's is. Called once at
 /// startup.
 pub fn identify() {
-    omacharts_engine::providers::rithmic::session::identify(env!("CARGO_PKG_VERSION"));
+    providers::identify(env!("CARGO_PKG_VERSION"));
 }
 
-/// Hand the engine the data login: the login Rithmic's data source signs in
-/// through, out of the logins in Preferences → Trading, which are settings,
-/// `Local` in `setting_keys`. The password is never here; it is in the
-/// keyring under the login's id. The engine keeps no database, so it is
-/// told, whenever the feeds are read and whenever a sign-in or a sign-out
-/// may have changed what is saved.
+/// Hand every feed that signs in through a form the login the app keeps for
+/// it: a broker connection's data login, out of the logins in Preferences →
+/// Trading, or what was typed into the feed's own form on the Data page.
+/// Both are settings, `Local` in `setting_keys`; a secret is never here,
+/// it is in the keyring under the login's id. The engine keeps no database,
+/// so it is told, whenever the feeds are read and whenever a sign-in or a
+/// sign-out may have changed what is saved.
 ///
-/// Two settings reads, and only for an order that names Rithmic or a
-/// command about feeds: with nothing configured nothing of Rithmic's is
-/// read, built or started.
+/// A few settings reads, and only for an order that names such a feed or a
+/// command about feeds: with nothing configured nothing is read, built or
+/// started.
 pub fn remember_logins(store: &Store) {
-    omacharts_engine::providers::rithmic::session::remember(saved_of(store));
+    let mut own = None;
+    for feed in providers::every() {
+        let Some(setup) = feed.setup.filter(|_| feed.form().is_some()) else { continue };
+        let saved = match setup.trades() {
+            true => saved_of(store),
+            false => own_saved(own.get_or_insert_with(|| own_logins(store)), feed),
+        };
+        setup.remember(saved);
+    }
 }
 
-/// The data login as the engine is told it: no user while it is signed
-/// out, which is what makes the data source not signed in.
-pub fn saved_of(store: &Store) -> omacharts_engine::providers::rithmic::session::Saved {
+/// The data login of the broker connections as the engine is told it: no
+/// user while it is signed out, which is what makes the data feed not
+/// signed in.
+pub fn saved_of(store: &Store) -> providers::Saved {
     let login = crate::trading::data_login(store);
-    omacharts_engine::providers::rithmic::session::Saved {
+    providers::Saved {
         user: login.as_ref().filter(|login| !login.signed_out).map(|login| login.user.clone()),
-        system: login.as_ref().map(|login| login.system.clone()),
-        gateway: login.as_ref().map(|login| login.gateway.clone()),
+        values: login
+            .as_ref()
+            .map(|login| vec![("system".into(), login.system.clone()), ("gateway".into(), login.gateway.clone())])
+            .unwrap_or_default(),
         login: login.map(|login| login.id),
     }
 }
 
-/// What a feed keeps in the settings beyond its session, forgotten when it
-/// is signed out of. For Rithmic, the data login is marked signed out: its
-/// password went with the session, and it stays in Trading, with its
-/// accounts, for the next sign-in.
-pub fn forget_login(store: &Store, id: &str) {
-    if !id.eq_ignore_ascii_case(RITHMIC) {
-        return;
+/// A feed's own login, under the feed's id.
+fn own_saved(logins: &std::collections::BTreeMap<String, Typed>, feed: &Listed) -> providers::Saved {
+    let Some(typed) = logins.get(feed.id) else { return providers::Saved::default() };
+    providers::Saved {
+        login: Some(feed.id.to_string()),
+        user: typed.get(providers::USER).filter(|user| !user.trim().is_empty()).cloned(),
+        values: typed.iter().filter(|(key, _)| *key != providers::USER).map(|(k, v)| (k.clone(), v.clone())).collect(),
     }
-    if let Some(data) = crate::trading::data_login(store) {
-        crate::trading::mark_signed_out(store, &data.id);
+}
+
+/// Keep what was typed into `feed`'s own form: the secrets in the keyring
+/// the feed names, under the feed's id, and the rest in [`LOGINS`]. Nothing
+/// of a secret is kept while something else stands in for the form.
+pub fn keep_login(store: &Store, feed: &'static Listed, typed: &[(&'static str, String)]) -> Result<(), String> {
+    let (Some(setup), Some(fields)) = (feed.setup, feed.form()) else {
+        return Err(format!("{} signs in without a form", feed.label));
+    };
+    let value = |key: &str| typed.iter().find(|(known, _)| *known == key).map(|(_, value)| value.trim().to_string());
+    let user = value(providers::USER).unwrap_or_default();
+    let mut kept = Typed::new();
+    let mut secret = Ok(());
+    for field in fields {
+        let typed = value(field.key).unwrap_or_default();
+        match field.kind {
+            providers::FieldKind::Secret if typed.is_empty() || setup.stood_in() => {}
+            providers::FieldKind::Secret => {
+                secret = match setup.keyring() {
+                    Some(keyring) => keyring.save(feed.id, &user, "", &typed),
+                    None => Err(format!("{} has nowhere to keep a secret", feed.label)),
+                };
+            }
+            _ => {
+                kept.insert(field.key.to_string(), typed);
+            }
+        }
+    }
+    let mut logins = own_logins(store);
+    logins.insert(feed.id.to_string(), kept);
+    save_own_logins(store, &logins);
+    remember_logins(store);
+    secret
+}
+
+/// The settings a feed's sign-in is read from: the window charts again when
+/// one changes, since which charts a login can serve may have too.
+pub fn signs_in_from(key: &str) -> bool {
+    [LOGINS, crate::trading::LOGINS, crate::trading::DATA_LOGIN].contains(&key)
+}
+
+/// What a feed keeps in the settings beyond its session, forgotten when it
+/// is signed out of. A broker connection's data login is marked signed out:
+/// its password went with the session, and it stays in Trading, with its
+/// accounts, for the next sign-in. A feed's own login loses its user, and
+/// keeps the rest for the next time it is typed.
+pub fn forget_login(store: &Store, id: &str) {
+    let Some(setup) = providers::listed(id).filter(|feed| feed.form().is_some()).and_then(|feed| feed.setup) else {
+        return;
+    };
+    match setup.trades() {
+        true => {
+            if let Some(data) = crate::trading::data_login(store) {
+                crate::trading::mark_signed_out(store, &data.id);
+            }
+        }
+        false => {
+            let mut logins = own_logins(store);
+            let feed = providers::listed(id).map_or(id, |feed| feed.id);
+            if let Some(typed) = logins.get_mut(feed) {
+                typed.remove(providers::USER);
+                save_own_logins(store, &logins);
+            }
+        }
     }
     remember_logins(store);
 }
@@ -217,10 +308,10 @@ pub fn removable(store: &Store, id: &str) -> bool {
         .any(|known| !known.eq_ignore_ascii_case(id) && providers::listed(known).is_some())
 }
 
-/// Take `id` off the stored order. For Rithmic the data session ends; the
-/// logins it signed in through are Trading's, and stay. thinkorswim's
-/// browser session is its own, and is signed out of from its row rather
-/// than by removing it.
+/// Take `id` off the stored order. For a feed signed in to through a form
+/// the session ends; the login stays, Trading's or its own, for the next
+/// time. A browser's session is the feed's own, and is signed out of from
+/// its row rather than by removing it.
 pub fn remove_source(store: &Store, id: &str) -> bool {
     if !removable(store, id) {
         return false;
@@ -228,22 +319,19 @@ pub fn remove_source(store: &Store, id: &str) -> bool {
     let order: Vec<String> =
         stored_order(store).into_iter().filter(|known| !known.eq_ignore_ascii_case(id)).collect();
     save_order(store, &order);
-    if id.eq_ignore_ascii_case(RITHMIC) {
-        omacharts_engine::providers::rithmic::session::hand_over();
+    if let Some(setup) = providers::listed(id).filter(|feed| feed.form().is_some()).and_then(|feed| feed.setup) {
+        setup.hand_over();
         remember_logins(store);
     }
     true
 }
 
-/// Sign in to `id`, blocking until it is done: thinkorswim's browser, or
-/// Rithmic's check of what is saved followed by the window's own session
-/// signing in, so that the answer is Rithmic's. For a thread of its own.
+/// Sign in to `id`, blocking until it is done: a browser the person drives,
+/// or a check of what is saved followed by the window's own session signing
+/// in, so that the answer is the provider's. For a thread of its own.
 pub fn sign_in_now(id: &str, log: impl Fn(&str) + Send + Sync + 'static) -> Result<(), String> {
     providers::sign_in(id, log)?;
-    match id.eq_ignore_ascii_case(RITHMIC) {
-        true => omacharts_engine::providers::rithmic::session::connect(),
-        false => Ok(()),
-    }
+    providers::listed(id).and_then(|feed| feed.setup).map_or(Ok(()), |setup| setup.connect())
 }
 
 /// A process's feeds with whether each can be used, for routing a chart to
@@ -387,8 +475,8 @@ pub(crate) mod tests {
         let saved = saved_of(&store);
         assert_eq!(saved.login.as_deref(), Some(id.as_str()));
         assert_eq!(saved.user.as_deref(), Some("trader"));
-        assert_eq!(saved.system.as_deref(), Some("Rithmic Test"));
-        assert_eq!(saved.gateway.as_deref(), Some("wss://example.invalid:443"));
+        assert_eq!(saved.value("system"), Some("Rithmic Test"));
+        assert_eq!(saved.value("gateway"), Some("wss://example.invalid:443"));
         assert_eq!(stored_order(&store), vec!["rithmic", "yahoo"]);
 
         forget_login(&store, "rithmic");

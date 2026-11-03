@@ -12,7 +12,7 @@
 //! which is what lets a settings panel show it without charging somebody a
 //! network round trip for opening Preferences.
 
-use crate::providers::{Access, Setup};
+use crate::providers::{Access, How, SignIn, Setup};
 
 /// What signing in to this feed involves, in the words the panel shows.
 ///
@@ -32,6 +32,45 @@ pub const SETUP: Setup = Setup {
             place an order. Schwab expires a session after a while: when yours goes, charts \
             stop updating and say so, and signing in again here is the fix.",
 };
+
+/// Signing in to thinkorswim, as the boundary asks it of every feed: in a
+/// browser the person drives.
+#[derive(Debug)]
+pub struct Signing;
+
+impl SignIn for Signing {
+    fn about(&self) -> &'static Setup {
+        &SETUP
+    }
+
+    fn how(&self) -> How {
+        How::Browser
+    }
+
+    fn access(&self) -> Access {
+        access()
+    }
+
+    fn can_sign_in(&self) -> Result<String, String> {
+        can_sign_in()
+    }
+
+    fn sign_in(&self, log: Box<dyn Fn(&str) + Send + Sync>) -> Result<(), String> {
+        sign_in(log)
+    }
+
+    fn sign_out(&self) -> Result<(), String> {
+        sign_out()
+    }
+
+    fn connected(&self) -> bool {
+        connected()
+    }
+
+    fn places(&self) -> Vec<(&'static str, String)> {
+        places()
+    }
+}
 
 /// What is saved, without connecting to anything.
 pub fn access() -> Access {

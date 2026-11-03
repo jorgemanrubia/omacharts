@@ -189,9 +189,9 @@ pub fn dispatch(
                     Ok(key) if key == crate::feeds::SETTING || key == crate::feeds::ONE_FEED => {
                         live.adopt_feed()
                     }
-                    // A Rithmic login changed: which charts it can serve may
-                    // have too.
-                    Ok(key) if key.starts_with("rithmic_") => live.adopt_feed(),
+                    // A login changed: which charts it can serve may have
+                    // too.
+                    Ok(key) if crate::feeds::signs_in_from(key) => live.adopt_feed(),
                     Ok(key) if key == crate::header::SETTING => live.adopt_header(),
                     Ok(key) if key == crate::clock::SETTING_ZONE || key == crate::clock::SETTING_FORMAT => {
                         live.adopt_clock()
@@ -4677,13 +4677,13 @@ fn provider_login(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<
             feed.label
         )));
     }
-    let how = providers::can_sign_in(feed.id).map_err(|why| Fault::new(super::EXIT_ERROR, why))?;
+    let with = providers::can_sign_in(feed.id).map_err(|why| Fault::new(super::EXIT_ERROR, why))?;
 
-    // thinkorswim's sign-in is a browser the person drives; Rithmic's is a
-    // check of what is saved, which the window's session then signs in with.
-    match feed.id {
-        "tos" => eprintln!("a browser is opening at {}; sign in there", feed.label),
-        _ => eprintln!("checking the {} login: {how}", feed.label),
+    // A browser sign-in is one the person drives; a form's is a check of
+    // what is saved, which the window's session then signs in with.
+    match feed.setup.map(|setup| setup.how()) {
+        Some(providers::How::Browser) => eprintln!("a browser is opening at {}; sign in there", feed.label),
+        _ => eprintln!("checking the {} login: {with}", feed.label),
     }
     providers::sign_in(feed.id, |line| eprintln!("{line}"))
         .map_err(|error| Fault::new(super::EXIT_ERROR, error))?;
@@ -4840,7 +4840,9 @@ fn config_set(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<Stri
     // where it goes, and left out to chart without it.
     if key == crate::feeds::SETTING {
         let order: Vec<String> = serde_json::from_str(value).map_err(|_| {
-            Fault::usage(format!("{key} is a JSON list of feeds, such as [\"tos\"]"))
+            let example = providers::LISTED.iter().map(|feed| feed.id).find(|id| *id != providers::DEFAULT);
+            let example = example.unwrap_or(providers::DEFAULT);
+            Fault::usage(format!("{key} is a JSON list of feeds, such as [\"{example}\"]"))
         })?;
         if let Some(unknown) = order.iter().find(|id| providers::listed(id).is_none()) {
             return Err(Fault::usage(format!(

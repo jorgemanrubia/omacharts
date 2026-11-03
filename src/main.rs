@@ -187,7 +187,7 @@ fn main() -> glib::ExitCode {
             && let Some(feed) = asked_for
             && window.provider().id() != feed.id
         {
-            if feed.id == omacharts_engine::providers::rithmic::LISTED.id
+            if feed.form().is_some()
                 && let Ok(store) = Store::open()
             {
                 omacharts::feeds::remember_logins(&store);

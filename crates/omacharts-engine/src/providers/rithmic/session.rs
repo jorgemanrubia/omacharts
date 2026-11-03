@@ -18,9 +18,10 @@
 //! and a settings row drawn, without a round trip to Chicago.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock, RwLock};
+use std::sync::{Mutex, RwLock};
 
-use crate::providers::{Access, Setup};
+pub use crate::providers::{Saved, Secrets};
+use crate::providers::{Access, Field, FieldKind, How, Sessions, SignIn, Setup, USER};
 
 /// The app name Rithmic is told, the one place it is set.
 ///
@@ -33,22 +34,11 @@ pub const APP_NAME: &str = match option_env!("OMACHARTS_RITHMIC_APP_NAME") {
     None => "omacharts",
 };
 
-/// The app's version, as Rithmic is told it: the release, handed over by
-/// the binary at startup with [`identify`], because the engine's own crate
-/// version is not the app's.
-static VERSION: OnceLock<&'static str> = OnceLock::new();
-
-/// Tell Rithmic which release of the app is signing in. The binary calls
-/// this once at startup with its own `CARGO_PKG_VERSION`; a later call is
-/// ignored.
-pub fn identify(version: &'static str) {
-    let _ = VERSION.set(version);
-}
-
-/// The app as Rithmic is told it. Without [`identify`] there is none, and
+/// The app as Rithmic is told it: the release
+/// [`crate::providers::identify`] was handed. Without it there is none, and
 /// no session starts, rather than one that reports a wrong version.
 pub fn app() -> Result<rithmic::App, rithmic::Error> {
-    match VERSION.get() {
+    match crate::providers::app_version() {
         Some(version) => Ok(rithmic::App { name: APP_NAME, version }),
         None => Err(rithmic::Error::Connection("the app never said which version it is".into())),
     }
@@ -69,15 +59,99 @@ pub const SETUP: Setup = Setup {
             place an order.",
 };
 
-/// The data login as the app has it saved, without the password. `user`
-/// is `None` while it is signed out.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Saved {
-    /// The login's id, which its password is kept under.
-    pub login: Option<String>,
-    pub user: Option<String>,
-    pub system: Option<String>,
-    pub gateway: Option<String>,
+/// What a Rithmic login is typed as. The keys are the ones a login is kept
+/// under in Preferences → Trading; the name the trader gives it is
+/// Trading's, and not here.
+pub const FIELDS: &[Field] = &[
+    Field { key: USER, title: "User ID", kind: FieldKind::Text, default: "", required: true },
+    Field { key: "password", title: "Password", kind: FieldKind::Secret, default: "", required: false },
+    Field { key: SYSTEM, title: "System", kind: FieldKind::Text, default: rithmic::TEST_SYSTEM, required: false },
+    Field { key: GATEWAY, title: "Gateway", kind: FieldKind::Url, default: rithmic::TEST_URL, required: false },
+];
+
+const SYSTEM: &str = "system";
+const GATEWAY: &str = "gateway";
+
+/// Signing in to Rithmic, as the boundary asks it of every feed.
+#[derive(Debug)]
+pub struct Signing;
+
+impl SignIn for Signing {
+    fn about(&self) -> &'static Setup {
+        &SETUP
+    }
+
+    fn how(&self) -> How {
+        How::Form(FIELDS)
+    }
+
+    /// CME bills a second concurrent session as a professional
+    /// subscription.
+    fn sessions(&self) -> Sessions {
+        Sessions::OnePerLogin
+    }
+
+    /// A prop firm's login is for its orders as much as for its charts.
+    fn trades(&self) -> bool {
+        true
+    }
+
+    fn access(&self) -> Access {
+        access()
+    }
+
+    fn can_sign_in(&self) -> Result<String, String> {
+        can_sign_in()
+    }
+
+    fn sign_in(&self, log: Box<dyn Fn(&str) + Send + Sync>) -> Result<(), String> {
+        sign_in(log)
+    }
+
+    fn connect(&self) -> Result<(), String> {
+        connect()
+    }
+
+    fn sign_out(&self) -> Result<(), String> {
+        sign_out()
+    }
+
+    fn connected(&self) -> bool {
+        connected()
+    }
+
+    fn places(&self) -> Vec<(&'static str, String)> {
+        places()
+    }
+
+    fn remember(&self, saved: Saved) {
+        remember(saved)
+    }
+
+    fn hand_over(&self) {
+        hand_over()
+    }
+
+    fn refusal(&self) -> Option<String> {
+        refusal()
+    }
+
+    fn stood_in(&self) -> bool {
+        development()
+    }
+
+    fn promise(&self) -> String {
+        match development() {
+            true => "A development login is in use, so its file signs in and nothing typed here goes \
+                     to the keyring."
+                .into(),
+            false => "Your password is kept in the desktop keyring and sent only to Rithmic.".into(),
+        }
+    }
+
+    fn keyring(&self) -> Option<&'static dyn Secrets> {
+        Some(&Keyring)
+    }
 }
 
 static SAVED: RwLock<Option<Saved>> = RwLock::new(None);
@@ -123,27 +197,13 @@ fn adopt(exchanges: Option<Vec<String>>) -> bool {
     changed
 }
 
-/// Does this process chart from Rithmic? Only the one holding the window
-/// does, so that the bar widget and a command run with no window open never
-/// open a second session beside it: see [`serve_from_here`].
-static HERE: AtomicBool = AtomicBool::new(false);
-
 /// Signed out in this process with a development login, which is a file
 /// and cannot be forgotten: until the next sign-in it counts as no login.
 static SIGNED_OUT: AtomicBool = AtomicBool::new(false);
 
-/// Where a password is kept. The desktop keyring, through [`Keyring`];
-/// tests hand in a store of their own, so that nothing they do reaches
-/// anybody's keyring.
-pub trait Secrets {
-    /// Save `password` for the login `login`, `user` on `system`, replacing
-    /// what was there.
-    fn save(&self, login: &str, user: &str, system: &str, password: &str) -> Result<(), String>;
-    /// Forget the password for the login `login`, if there is one.
-    fn forget(&self, login: &str, user: &str, system: &str) -> Result<(), String>;
-}
-
-/// The desktop keyring, through the Secret Service.
+/// The desktop keyring, through the Secret Service. Tests hand in a
+/// [`Secrets`] of their own, so that nothing they do reaches anybody's
+/// keyring.
 pub struct Keyring;
 
 impl Secrets for Keyring {
@@ -197,27 +257,32 @@ fn saved() -> Saved {
     SAVED.read().unwrap_or_else(|e| e.into_inner()).clone().unwrap_or_default()
 }
 
-/// This process holds the window, and is the one that charts from Rithmic.
-///
-/// Any other — the bar widget asking from a fresh process, a command run
-/// with no window open — passes Rithmic over and charts from the next feed,
-/// rather than signing in a session of its own: CME bills a second
-/// concurrent session as a professional subscription.
+/// This process holds the window: see [`crate::providers::serve_from_here`].
 pub fn serve_from_here() {
-    HERE.store(true, Ordering::Release);
+    crate::providers::serve_from_here();
 }
 
-/// May this process chart from Rithmic at all?
+/// May this process chart from Rithmic at all? Only the one holding the
+/// window does, so that the bar widget and a command run with no window open
+/// never open a second session beside it.
 pub fn here() -> bool {
-    HERE.load(Ordering::Acquire)
+    crate::providers::here()
 }
 
 fn system() -> String {
-    saved().system.filter(|system| !system.trim().is_empty()).unwrap_or_else(|| rithmic::TEST_SYSTEM.into())
+    let saved = saved();
+    match saved.value(SYSTEM).map(str::trim) {
+        Some(system) if !system.is_empty() => system.to_string(),
+        _ => rithmic::TEST_SYSTEM.into(),
+    }
 }
 
 fn gateway() -> String {
-    saved().gateway.filter(|url| !url.trim().is_empty()).unwrap_or_else(|| rithmic::TEST_URL.into())
+    let saved = saved();
+    match saved.value(GATEWAY).map(str::trim) {
+        Some(url) if !url.is_empty() => url.to_string(),
+        _ => rithmic::TEST_URL.into(),
+    }
 }
 
 fn user() -> Option<String> {
