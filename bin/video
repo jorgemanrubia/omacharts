@@ -1121,7 +1121,9 @@ def polish_plan(events, total):
             continue
         if event["verb"] in POINTER and event.get("at"):
             if run and (event["t"] - run[-1]["t"] > 3.0 or math.hypot(event["at"][0] - run[-1]["at"][0], event["at"][1] - run[-1]["at"][1]) > 700):
-                close_run(event["t"])
+                # Let go before the hands move on, so the next motion is not
+                # seen through the end of this zoom.
+                close_run(event["t"] - 0.6)
             run.append(event)
         elif event["verb"] in ("key", "type", "cli"):
             close_run(event["t"] + 0.2)
@@ -1207,15 +1209,17 @@ def compose(script, voiced, plan, raw, offset):
             # Silence, which loudnorm would only make noise of.
             run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-t", "0.1", str(scene)])
             inputs += ["-i", str(scene)]
-            parts.append(f"[{i}:a]anull[v{i}]")
+            parts.append(f"[{i}:a]apad=whole_dur={total:.3f}[v{i}]")
             continue
         run(["ffmpeg", "-v", "error", "-y", "-i", str(v["wav"]), "-af", "loudnorm=I=-16:TP=-2,aresample=48000",
              "-ac", "2", str(scene)])
         inputs += ["-i", str(scene)]
         ms = int((s["start"] + intro) * 1000)
-        parts.append(f"[{i}:a]adelay={ms}|{ms}[v{i}]")
+        parts.append(f"[{i}:a]adelay={ms}|{ms},apad=whole_dur={total:.3f}[v{i}]")
     mix = "".join(f"[v{i}]" for i in range(len(voiced)))
-    graph = ";".join(parts) + f";{mix}amix=inputs={len(voiced)}:normalize=0,apad,atrim=0:{total:.3f}[out]"
+    # Every line is padded to the picture before the mix: padding after amix
+    # stops at the last word, and a bare apad there never ends at all.
+    graph = ";".join(parts) + f";{mix}amix=inputs={len(voiced)}:normalize=0,atrim=0:{total:.3f}[out]"
     run(["ffmpeg", "-v", "error", "-y", *inputs, "-filter_complex", graph, "-map", "[out]", str(voice)])
 
     track = script.meta.get("music_file")
@@ -1223,7 +1227,11 @@ def compose(script, voiced, plan, raw, offset):
     if track:
         track = (ROOT / track) if not Path(track).is_absolute() else Path(track)
         fade = max(0, total - 2.5)
-        graph = (f"[1:a]aresample=48000,aformat=channel_layouts=stereo,aloop=loop=-1:size=2e9,atrim=0:{total:.3f},"
+        # A track a little short of the picture is slowed to end with it,
+        # its last note on the last frame; only a much shorter one loops.
+        ending = audible_end(track)
+        fit = f"atempo={ending / (total - 1.0):.4f}," if 0.9 <= ending / (total - 1.0) < 1 else ""
+        graph = (f"[1:a]aresample=48000,aformat=channel_layouts=stereo,{fit}aloop=loop=-1:size=2e9,atrim=0:{total:.3f},"
                  f"loudnorm=I=-27:TP=-3,afade=t=in:d=1.2,afade=t=out:st={fade:.2f}:d=2.5[m];"
                  f"[0:a]asplit[v][key];[m][key]sidechaincompress=threshold=0.015:ratio=6:attack=40:release=600:makeup=1[ducked];"
                  f"[v][ducked]amix=inputs=2:normalize=0[out]")
@@ -1270,6 +1278,17 @@ def compose(script, voiced, plan, raw, offset):
     for made in (final, preview, out / f"{script.slug}.srt"):
         shutil.copy(made, renders / made.name)
     say(f"video/renders/{final.name} ({total:.1f}s), {preview.name} for watching; review/ in {out.relative_to(ROOT)} has a frame per cue")
+
+
+def audible_end(track):
+    """Where a track's last sound dies away, ahead of any silence it ends on."""
+    found = subprocess.run(["ffmpeg", "-hide_banner", "-i", str(track), "-af", "silencedetect=n=-45dB:d=1", "-f", "null", "-"],
+                           capture_output=True, text=True).stderr
+    length = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(track)],
+                                  capture_output=True, text=True, check=True).stdout)
+    starts = [float(m) for m in re.findall(r"silence_start: ([\d.]+)", found)]
+    ends = re.findall(r"silence_end: ([\d.]+)", found)
+    return starts[-1] if starts and len(ends) == len(starts) and float(ends[-1]) >= length - 0.05 else length
 
 
 def loudnorm(source, target):

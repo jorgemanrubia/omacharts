@@ -121,11 +121,14 @@ const Sweep = ({ moment, t, width }: { moment: number; t: number; width: number 
   );
 };
 
-// What each half is while the terminal stands beside the app: a small label
-// at the top of each pane, the chart's with a beat that says it is live.
+// What each half is as the terminal comes in beside the app: a small label
+// under the top of each pane, the chart's with a beat that says it is live,
+// gone before the agent's output reaches it.
+const LABEL_HOLD = 3.2;
+
 const PaneLabels = ({ split, t, width, height }: { split: Split; t: number; width: number; height: number }) => {
   const unit = height / 2160;
-  const opacity = interpolate(t, [split.start + SPLIT_MOVE, split.start + SPLIT_MOVE + 0.4, split.end - 0.3, split.end], [0, 1, 1, 0], {
+  const opacity = interpolate(t, [split.start + SPLIT_MOVE, split.start + SPLIT_MOVE + 0.4, split.start + LABEL_HOLD, split.start + LABEL_HOLD + 0.5], [0, 1, 1, 0], {
     extrapolateLeft: "clamp",
     extrapolateRight: "clamp",
   });
@@ -134,7 +137,7 @@ const PaneLabels = ({ split, t, width, height }: { split: Split; t: number; widt
     <div
       style={{
         position: "absolute",
-        top: 34 * unit,
+        top: 150 * unit,
         left: x,
         transform: "translateX(-50%)",
         display: "flex",

@@ -203,7 +203,7 @@ price. When price leaves value, the market tests the move. Either it's
 rejected and price comes back, or it's accepted and new value builds
 there.
 
-    zoom: zoom 62% 68% 2.0
+    zoom: zoom 73% 68% 2.0
     after: 0.8
 
 ### 5. A profile you draw
@@ -232,7 +232,7 @@ its volume traded. {grip}Stretch it a few bars, and it's worked out again.
 
     tool: key alt+v
     drag: drag 50% 50.5% 78.8% 7.8%
-    grip: drag 78.8% 7.8% 83% 7.8%
+    grip: drag 78.8% 7.8% 83% 7.8%; move 40% 99.3%
     after: 1.0
 
 ### 7. One for every period
@@ -344,7 +344,7 @@ only brushes the next one stays apart. The agent works out the rest. {go}
     open:  terminal open vp-agent --pace 0.8; move 140% 97%
     ask:   type Merge neighbouring profiles that share a balance: value areas overlapping at least 50%
     go:    key Return
-    after: 0.3
+    after: 1.8
 
 ### 13. The run
 
@@ -370,8 +370,8 @@ is on screen and read before the scene ends.
 lands. It keeps April apart: that month trended through the range rather
 than sat in it.
 
-    merge: zoom 85% 18% 1.8
-    after: 11
+    merge: zoom 23% 18% 1.8
+    after: 9.5
 
 ### 14. The result
 
@@ -406,7 +406,7 @@ up in the gap.
 **Voice.** And it all follows the theme, {prefs}composites included.
 
     prefs: key ctrl+comma; wait 0.8; click 27.6% 21.4%; wait 0.6; click 69.5% 16.7%; wait 0.5; click 69.1% 29.8%; wait 0.6; key Escape; move 40% 99.3%; wait 2.0; key ctrl+comma; wait 0.8; click 27.6% 21.4%; wait 0.6; click 69.5% 16.7%; wait 0.5; click 69.1% 33.2%; wait 0.6; key Escape; move 40% 99.3%
-    after: 13.5
+    after: 15.5
 
 ### 16. Close
 

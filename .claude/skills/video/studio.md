@@ -154,9 +154,16 @@ Each scene's voice is normalised to −16 LUFS into a file of its own, then
 placed at its start. In one ffmpeg graph, `loudnorm` ahead of `adelay`
 silently cancels the delay and every line starts at zero — renders shipped
 like that until the author heard the voice under the cover. Check the voice
-track is silent where it should be before handing a render over. Music
-is looped or cut to length at −27 LUFS, faded at both ends, and ducked under
-the voice by a sidechain compressor. The mix is mastered in two passes to
+track is silent where it should be before handing a render over. The
+voices are each padded to the picture with `apad=whole_dur=` before
+`amix`: padding after `amix` stops at the last word, cutting the closing
+music, and a bare `apad` there never ends — one render spun in it for six
+hours.
+Music is cut to length at −27 LUFS, faded at both ends, and ducked under
+the voice by a sidechain compressor. A track that dies away a little before
+the picture ends (up to a tenth) is slowed with `atempo` so its last note
+lands on the end; looping it, or letting it run out, left the closing lines
+over silence in the Volume profile video. Only a much shorter one loops. The mix is mastered in two passes to
 −14 LUFS integrated, −1 dBTP — measured at −14.1 on the first render.
 
 ## Speech
