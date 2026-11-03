@@ -369,7 +369,7 @@ const HISTORY: usize = 200;
 /// This is the whole of the direct-manipulation model: the chart body pans,
 /// the price axis scales price, the time axis scales time. Same as every other
 /// charting tool, because muscle memory is the feature.
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug)]
 enum Drag {
     Pan { left: i64, offset: f64 },
     PriceScale { zoom: f64 },
@@ -390,6 +390,34 @@ enum Drag {
     /// Shift and a press on empty chart: a box dragged out from `from`,
     /// in pixels, that selects every drawing it touches as it goes.
     Marquee { from: (f64, f64), to: (f64, f64) },
+    /// An exit pulled out of the position's tab, or an order's line taken
+    /// to another price: `at` is where the hand has it, on the tick, and
+    /// `allowed` whether it may go there with the market where it is. Only
+    /// a preview until the release; nothing is sent from here.
+    Mark { what: MarkDrag, at: f64, allowed: bool },
+}
+
+/// What a drag on the marks is doing.
+#[derive(Clone, PartialEq, Debug)]
+enum MarkDrag {
+    /// Placing an exit of this kind for the position.
+    Exit(OrderKind),
+    /// Moving the working order with this basket.
+    Move(String),
+}
+
+/// What the hand did to the marks, for the window, which owns the session:
+/// the chart previews and says, and never sends anything itself.
+#[derive(Clone, PartialEq, Debug)]
+pub enum TradeEvent {
+    /// An exit of `kind` for the position, at `price`.
+    ExitAt { kind: OrderKind, price: f64 },
+    /// The working order `basket`, to `price`.
+    Move { basket: String, price: f64 },
+    /// The working order's ×.
+    Cancel(String),
+    /// The position's ×.
+    Flatten,
 }
 
 /// One row of the chart's vertical stack: the price plot, or one indicator's
@@ -2110,6 +2138,7 @@ pub struct ChartView {
     /// Told when a drawing was added, moved or deleted, so it can be written
     /// down. The chart never touches the store.
     on_drawing: Handler<dyn Fn(DrawingEvent)>,
+    on_trade: Handler<dyn Fn(TradeEvent)>,
     /// Right-clicking a drawing, which has a menu of its own: about the
     /// drawing and nothing else.
     on_drawing_menu: Handler<dyn Fn(f64, f64)>,
@@ -2172,6 +2201,7 @@ impl ChartView {
             on_pane_move: Rc::new(RefCell::new(None)),
             on_axis_menu: Rc::new(RefCell::new(None)),
             on_drawing: Rc::new(RefCell::new(None)),
+            on_trade: Rc::new(RefCell::new(None)),
             on_drawing_menu: Rc::new(RefCell::new(None)),
             on_drawing_properties: Rc::new(RefCell::new(None)),
             on_indicator: Rc::new(RefCell::new(None)),
@@ -2193,6 +2223,24 @@ impl ChartView {
 
     pub fn set_drawing_handler(&self, handler: impl Fn(DrawingEvent) + 'static) {
         *self.on_drawing.borrow_mut() = Some(Box::new(handler));
+    }
+
+    /// Who hears what the hand does to the orders and the position.
+    pub fn set_trade_handler(&self, handler: impl Fn(TradeEvent) + 'static) {
+        *self.on_trade.borrow_mut() = Some(Box::new(handler));
+    }
+
+    fn tell_trade(&self, event: TradeEvent) {
+        if let Some(handler) = self.on_trade.borrow().as_ref() {
+            handler(event);
+        }
+    }
+
+    /// Let go of a mark as a hand would have: what the release says, to
+    /// whoever hears it. For the window's tests, which have no hand.
+    #[cfg(test)]
+    pub fn drop_mark(&self, event: TradeEvent) {
+        self.tell_trade(event);
     }
 
     pub fn set_drawing_menu_handler(&self, handler: impl Fn(f64, f64) + 'static) {
@@ -2539,7 +2587,13 @@ impl ChartView {
             if matches!(s.drag, Some(Drag::Place { .. })) {
                 s.drag = None;
             }
-            busy || s.picked.is_some()
+            // An order being dragged goes back where it was, unsent.
+            let dragging = matches!(s.drag, Some(Drag::Mark { .. }));
+            if dragging {
+                s.drag = None;
+                self.pointer.queue_draw();
+            }
+            busy || dragging || s.picked.is_some()
         };
         self.pick(None);
         self.arm(None);
@@ -3987,6 +4041,12 @@ impl ChartView {
                 return;
             }
             state.marks = marks;
+            // What was being dragged filled, or went, under the hand.
+            if let Some(Drag::Mark { what, .. }) = &state.drag
+                && state.mark_dragged(what).is_none()
+            {
+                state.drag = None;
+            }
         }
         self.redraw();
     }
@@ -4237,8 +4297,12 @@ impl ChartView {
                     && !over_edge
                     && !over_control
                     && s.indicator_at(w, h, x, y).is_some();
-                let holding = match s.drag {
-                    Some(Drag::Grip { index, grip, .. }) => Some(s.grip_cursor(index, grip, true)),
+                let holding = match &s.drag {
+                    Some(Drag::Grip { index, grip, .. }) => Some(s.grip_cursor(*index, *grip, true)),
+                    // An order in hand: where it may not go, the pointer says
+                    // so before the release does nothing.
+                    Some(Drag::Mark { allowed: false, .. }) => Some("not-allowed"),
+                    Some(Drag::Mark { .. }) => Some("ns-resize"),
                     _ => None,
                 };
                 (
@@ -4338,6 +4402,10 @@ impl ChartView {
 
             let (width, height) = (area.width() as f64, area.height() as f64);
             let mut s = state.borrow_mut();
+            // The scale stays put under an order being dragged.
+            if matches!(s.drag, Some(Drag::Mark { .. })) {
+                return glib::Propagation::Stop;
+            }
             let was_auto = s.price_auto;
             let region = s
                 .pointer
@@ -4399,11 +4467,29 @@ impl ChartView {
         let area = self.area.clone();
         let on_close = self.on_pane_close.clone();
         let on_move = self.on_pane_move.clone();
+        // A mark's × pressed: said on the release, if the hand is still on
+        // it, so a press that slides off cancels nothing.
+        let pressed_mark: Rc<RefCell<Option<MarkHit>>> = Rc::default();
+        let pressed = pressed_mark.clone();
         controls.connect_pressed(move |gesture, _, x, y| {
-            let hit = {
+            let (hit, mark) = {
                 let s = state.borrow();
-                layout(&s, area.width() as f64, area.height() as f64).control_at(x, y)
+                let (w, h) = (area.width() as f64, area.height() as f64);
+                let plan = layout(&s, w, h);
+                let hit = plan.control_at(x, y);
+                // After the ruler, a drawing being placed and a pane's edge.
+                let free = s.placing.is_none() && plan.edge_at(y).is_none() && hit.is_none();
+                let mark = free
+                    .then(|| s.mark_under(w, h, x, y))
+                    .flatten()
+                    .filter(|mark| matches!(mark, MarkHit::Close(_) | MarkHit::Flatten));
+                (hit, mark)
             };
+            if let Some(mark) = mark {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                *pressed.borrow_mut() = Some(mark);
+                return;
+            }
             let Some((id, control)) = hit else { return };
             gesture.set_state(gtk::EventSequenceState::Claimed);
             match control {
@@ -4422,6 +4508,23 @@ impl ChartView {
                         handler(id, direction);
                     }
                 }
+            }
+        });
+        let state = self.state.clone();
+        let area = self.area.clone();
+        let view = Rc::downgrade(self);
+        controls.connect_released(move |_, _, x, y| {
+            let Some(mark) = pressed_mark.borrow_mut().take() else { return };
+            let still = state.borrow().mark_under(area.width() as f64, area.height() as f64, x, y);
+            if still.as_ref() != Some(&mark) {
+                return;
+            }
+            let event = match mark {
+                MarkHit::Close(basket) => TradeEvent::Cancel(basket),
+                _ => TradeEvent::Flatten,
+            };
+            if let Some(view) = view.upgrade() {
+                view.tell_trade(event);
             }
         });
         self.area.add_controller(controls);
@@ -4536,6 +4639,20 @@ impl ChartView {
             return;
         }
         let region = region_at(x, y, width, height);
+        // A mark's tab, pulled out: an exit follows the hand, at the price
+        // under it, until the release says where.
+        if region == Region::Plot
+            && let Some(MarkHit::Exit(kind)) = s.mark_under(width, height, x, y)
+            && let Some((at, _)) = s.tick_price_at(width, height, y)
+        {
+            let what = MarkDrag::Exit(kind);
+            let allowed = s.mark_allowed(&what, at);
+            s.drag = Some(Drag::Mark { what, at, allowed });
+            s.hover_mark = None;
+            drop(s);
+            redraw(&area, &pointer);
+            return;
+        }
         // The indicator the press selects, if it lands on no drawing: chosen
         // under the borrow, said once it is let go.
         let mut pick = None;
@@ -4595,6 +4712,19 @@ impl ChartView {
                     view.tell_indicator(IndicatorEvent::Picked(None));
                 }
             };
+            // An order's line, under no drawing: taken to another price,
+            // starting where it is so nothing jumps.
+            if drawing.is_none()
+                && !shift_only
+                && let Some(MarkHit::Line(basket)) = s.mark_under(width, height, x, y)
+                && let Some(at) = s.marks.orders.iter().find(|order| order.basket == basket).map(|order| order.price)
+            {
+                s.drag = Some(Drag::Mark { what: MarkDrag::Move(basket), at, allowed: true });
+                s.hover_mark = None;
+                drop(s);
+                pointer.queue_draw();
+                return;
+            }
             match drawing {
                 Some((index, grip)) if shift && (shift_only || grip == Grip::Body) => {
                     match s.selected.iter().position(|i| *i == index) {
@@ -4689,7 +4819,7 @@ impl ChartView {
         let view = Rc::downgrade(self);
         drag.connect_drag_update(move |gesture, offset_x, offset_y| {
             let mut s = state.borrow_mut();
-            let Some(drag) = s.drag else { return };
+            let Some(drag) = s.drag.clone() else { return };
             let plot_w = (area.width() as f64 - PRICE_AXIS_W - PAD).max(1.0);
             let (width, height) = (area.width() as f64, area.height() as f64);
             let hand = gesture.start_point().map(|(sx, sy)| (sx + offset_x, sy + offset_y));
@@ -4697,6 +4827,23 @@ impl ChartView {
             s.magnet = snap;
 
             match drag {
+                Drag::Mark { what, .. } => {
+                    let Some((_, y)) = hand else { return };
+                    // Gone from under the hand: filled, or cancelled elsewhere.
+                    if s.mark_dragged(&what).is_none() {
+                        s.drag = None;
+                        drop(s);
+                        pointer.queue_draw();
+                        return;
+                    }
+                    let Some((at, _)) = s.tick_price_at(width, height, y) else { return };
+                    let allowed = s.mark_allowed(&what, at);
+                    s.drag = Some(Drag::Mark { what, at, allowed });
+                    drop(s);
+                    // A preview, on the pointer layer: the chart is as it was.
+                    pointer.queue_draw();
+                    return;
+                }
                 Drag::Place { moved } => {
                     let Some((x, y)) = hand else { return };
                     if let Some(anchor) = s.locate_with(width, height, x, y, snap)
@@ -4865,7 +5012,9 @@ impl ChartView {
                     s.range = None;
                     s.trim_room(plot_w);
                 }
-                Drag::Place { .. } | Drag::Grip { .. } | Drag::Marquee { .. } => unreachable!("handled above"),
+                Drag::Place { .. } | Drag::Grip { .. } | Drag::Marquee { .. } | Drag::Mark { .. } => {
+                    unreachable!("handled above")
+                }
             }
             drop(s);
             redraw(&area, &pointer);
@@ -4874,11 +5023,31 @@ impl ChartView {
         let state = self.state.clone();
         let on_resize = self.on_pane_resize.clone();
         let view = Rc::downgrade(self);
-        drag.connect_drag_end(move |_, _, _| {
+        drag.connect_drag_end(move |_, offset_x, offset_y| {
             let finished = state.borrow_mut().drag.take();
             // Stored when the drag ends rather than on every motion event,
             // which would be a database write per pixel of travel.
             match finished {
+                // Let go: said, if it may go there, and otherwise nothing.
+                Some(Drag::Mark { what, at, allowed }) => {
+                    let Some(view) = view.upgrade() else { return };
+                    view.pointer.queue_draw();
+                    let from = state.borrow().mark_dragged(&what).map(|dragged| dragged.from);
+                    // A tab pressed and let go where it was is no exit: it
+                    // would be one at the position's own price.
+                    let travelled = offset_x.hypot(offset_y) > drag_threshold();
+                    let event = match (what, from) {
+                        (_, None) => return,
+                        _ if !allowed => return,
+                        (MarkDrag::Exit(_), Some(_)) if !travelled => return,
+                        (MarkDrag::Exit(kind), Some(_)) => TradeEvent::ExitAt { kind, price: at },
+                        // Back where it was: nothing to move.
+                        (MarkDrag::Move(_), Some(from)) if (from - at).abs() < 1e-9 => return,
+                        (MarkDrag::Move(basket), Some(_)) => TradeEvent::Move { basket, price: at },
+                    };
+                    view.tell_trade(event);
+                    return;
+                }
                 // Pressed and released in place: the first anchor is down
                 // and the second waits for the next press.
                 Some(Drag::Place { moved: false }) => return,
@@ -5420,6 +5589,10 @@ fn draw_pointer(cr: &cairo::Context, width: f64, height: f64, state: &State) {
 
     if let Some((from, to, _)) = state.ruler {
         draw_ruler(cr, state, &plan, &scale, from, to);
+    }
+
+    if let Some(Drag::Mark { what, at, allowed }) = &state.drag {
+        draw_mark_preview(cr, state, &plan, width, what, *at, *allowed, &to_y);
     }
 
     // The selection box, while a hand drags one out.
@@ -6501,7 +6674,77 @@ impl Marks {
     }
 }
 
+/// What a dragged mark is: its side, kind, size, look, and the price its
+/// ticks are counted from.
+struct Dragged<'a> {
+    side: Side,
+    kind: OrderKind,
+    qty: u32,
+    from: f64,
+    colour: &'a str,
+    style: LineStyle,
+}
+
 impl State {
+    /// The order or exit a drag is about, while it is still on the chart.
+    fn mark_dragged(&self, what: &MarkDrag) -> Option<Dragged<'_>> {
+        match what {
+            MarkDrag::Exit(kind) => {
+                let held = self.marks.position.as_ref().filter(|held| !held.dim)?;
+                let tab = held.exits.iter().find(|tab| tab.kind == *kind)?;
+                Some(Dragged {
+                    side: crate::trading::exit_side(held.net),
+                    kind: *kind,
+                    qty: held.net.unsigned_abs(),
+                    from: held.price,
+                    colour: &tab.colour,
+                    style: tab.style,
+                })
+            }
+            MarkDrag::Move(basket) => {
+                let order = self.marks.orders.iter().find(|order| order.basket == *basket && !order.dim)?;
+                Some(Dragged {
+                    side: order.side,
+                    kind: order.kind,
+                    qty: order.qty,
+                    from: order.price,
+                    colour: &order.colour,
+                    style: order.style,
+                })
+            }
+        }
+    }
+
+    /// The price at height `y` of the price plot, on the series' tick, and
+    /// the places it is written to.
+    fn tick_price_at(&self, width: f64, height: f64, y: f64) -> Option<(f64, usize)> {
+        let (first, visible, _) = self.view();
+        if visible == 0 {
+            return None;
+        }
+        let plan = layout(self, width, height);
+        let scale = price_range(self, &self.bars[first..first + visible], &plan)?;
+        let price = scale.price_at(y.clamp(plan.price_y, plan.price_y + plan.price_h), plan.price_y, plan.price_h);
+        Some(match omacharts_engine::tick_of(&self.bars) {
+            Some(tick) => omacharts_engine::on_tick(price, tick),
+            None => (price, 2),
+        })
+    }
+
+    /// May the drag `what` let go at `at`, with the market at the last
+    /// bar's close?
+    fn mark_allowed(&self, what: &MarkDrag, at: f64) -> bool {
+        let Some(last) = self.bars.last().map(|bar| bar.close) else { return false };
+        match (what, self.mark_dragged(what)) {
+            (MarkDrag::Exit(kind), Some(_)) => {
+                let net = self.marks.position.as_ref().map_or(0, |held| held.net);
+                crate::trading::exit_allowed(*kind, net, at, last)
+            }
+            (MarkDrag::Move(_), Some(order)) => crate::trading::side_allowed(order.kind, order.side, at, last),
+            (_, None) => false,
+        }
+    }
+
     /// What of the marks is under the pointer at `(x, y)`, on a chart
     /// `width` by `height`: nothing at all while a tool or the ruler is in
     /// hand, which the press belongs to.
@@ -6712,6 +6955,85 @@ fn draw_marks(
     moved
 }
 
+/// An order being dragged: a ghost of its line in its own look where the
+/// hand has it, a pill saying what it would be and how far it has come,
+/// and its price on the axis. Muted, saying why, where it may not go.
+#[allow(clippy::too_many_arguments)]
+fn draw_mark_preview(
+    cr: &cairo::Context,
+    state: &State,
+    plan: &Layout,
+    width: f64,
+    what: &MarkDrag,
+    at: f64,
+    allowed: bool,
+    to_y: &impl Fn(f64) -> f64,
+) {
+    let Some(dragged) = state.mark_dragged(what) else { return };
+    let y = to_y(at).round();
+    if y < plan.price_y || y > plan.price_y + plan.price_h {
+        return;
+    }
+    let tick = omacharts_engine::tick_of(&state.bars);
+    let places = tick.map_or(2, |tick| omacharts_engine::on_tick(at, tick).1);
+    let price = grouped_decimals(at, places);
+    let text = match allowed {
+        true => crate::trading::preview_text(
+            dragged.side,
+            dragged.kind,
+            dragged.qty,
+            &price,
+            tick.map(|tick| crate::trading::ticks_between(dragged.from, at, tick)),
+        ),
+        false => {
+            let last = state.bars.last().map_or(at, |bar| bar.close);
+            crate::trading::refused_text(dragged.kind, at, last)
+        }
+    };
+    let colour = match allowed {
+        true => dragged.colour,
+        false => state.theme.ui.text_muted.as_str(),
+    };
+    cr.save().ok();
+    mark_font(cr);
+    let line_y = y + 0.5;
+    cr.set_line_width(1.5);
+    cr.set_dash(&dragged.style.dashes(1.5), 0.0);
+    colors::set_source_alpha(cr, colour, 0.6);
+    cr.move_to(plan.plot_x, line_y);
+    cr.line_to(plan.plot_x + plan.plot_w, line_y);
+    let _ = cr.stroke();
+    cr.set_dash(&[], 0.0);
+    let row = mark_row(cr, plan.plot_x, plan.plot_w, &text, &[]);
+    let h = AXIS_CHIP_H;
+    let box_at = |cr: &cairo::Context, x: f64, w: f64, round: bool| {
+        match round {
+            true => pill_path(cr, x, line_y - h / 2.0, w, h),
+            false => cr.rectangle(x + 0.5, line_y - h / 2.0 + 0.5, w - 1.0, h - 1.0),
+        }
+        colors::set_source(cr, &state.theme.ui.background);
+        let _ = cr.fill_preserve();
+        cr.set_line_width(1.0);
+        colors::set_source(cr, colour);
+        let _ = cr.stroke();
+    };
+    // The pill where the order's own would be, its × place left empty.
+    let pill_x = row.pill_x + MARK_GAP + MARK_CLOSE;
+    box_at(cr, pill_x, row.pill_w, true);
+    colors::set_source(cr, if allowed { &state.theme.ui.text } else { colour });
+    cr.move_to(pill_x + 7.0, line_y + 3.5);
+    let _ = cr.show_text(&text);
+    let axis_x = plan.plot_x + plan.plot_w;
+    if let Ok(extents) = cr.text_extents(&price) {
+        let w = (extents.width() + 10.0).min(width - axis_x - 2.0);
+        box_at(cr, axis_x + 1.0, w, false);
+        colors::set_source(cr, &state.theme.ui.text);
+        cr.move_to(axis_x + 6.0, line_y + 3.5);
+        let _ = cr.show_text(&price);
+    }
+    cr.restore().ok();
+}
+
 #[allow(clippy::too_many_arguments)]
 fn draw_last_price(
     cr: &cairo::Context,
@@ -6832,8 +7154,10 @@ fn draw_crosshair(
     let _ = cr.stroke();
     cr.restore().ok();
 
-    // Price under the pointer, only while it is over the price plot.
-    if py >= price_y && py <= price_y + price_h {
+    // Price under the pointer, only while it is over the price plot, and
+    // not while an order is dragged: its own price is on the axis then.
+    let dragging = matches!(state.drag, Some(Drag::Mark { .. }));
+    if py >= price_y && py <= price_y + price_h && !dragging {
         label_on_axis(
             cr,
             state,
@@ -9265,6 +9589,46 @@ mod tests {
         state.tool = None;
         state.ruler_armed = true;
         assert_eq!(state.mark_under(w, h, 200.0, order_y), None, "so does the ruler");
+    }
+
+    /// What an order in hand is and where it may go: an exit is the side
+    /// that closes the position, counted from its price, and goes only on
+    /// its own side of the market; a moved order keeps its own side and
+    /// kind. Once what is dragged has gone from the chart there is nothing
+    /// to let go of.
+    #[test]
+    fn an_order_in_hand_goes_only_where_it_may() {
+        let mut state = marked();
+        let last = state.bars.last().unwrap().close;
+        let stop = MarkDrag::Exit(OrderKind::Stop);
+        let dragged = state.mark_dragged(&stop).unwrap();
+        assert_eq!((dragged.side, dragged.kind, dragged.qty), (Side::Sell, OrderKind::Stop, 1));
+        assert_eq!(dragged.from, state.marks.position.as_ref().unwrap().price);
+        assert!(state.mark_allowed(&stop, last - 5.0), "a long's stop below the market");
+        assert!(!state.mark_allowed(&stop, last + 5.0));
+        let target = MarkDrag::Exit(OrderKind::Limit);
+        assert!(state.mark_allowed(&target, last + 5.0));
+        assert!(!state.mark_allowed(&target, last - 5.0));
+        let moved = MarkDrag::Move("B1".into());
+        assert!(state.mark_allowed(&moved, last + 5.0), "a sell limit stays above");
+        assert!(!state.mark_allowed(&moved, last - 5.0));
+        assert!(state.mark_dragged(&MarkDrag::Move("B9".into())).is_none());
+
+        // The preview is drawn on the layer over the chart, allowed or not.
+        let (w, h) = (600.0, 400.0);
+        let quiet = frame(w, h, |cr| draw_pointer(cr, w, h, &state));
+        state.drag = Some(Drag::Mark { what: target.clone(), at: last + 5.0, allowed: true });
+        let shown = frame(w, h, |cr| draw_pointer(cr, w, h, &state));
+        assert!(painted(&shown) > painted(&quiet) + 200, "no preview");
+        state.drag = Some(Drag::Mark { what: target.clone(), at: last - 5.0, allowed: false });
+        let refused = frame(w, h, |cr| draw_pointer(cr, w, h, &state));
+        assert!(painted(&refused) > painted(&quiet) + 200, "no refused preview");
+        assert!(refused != shown);
+
+        // Filled under the hand: the position and its tabs are gone.
+        state.marks.position = None;
+        assert!(state.mark_dragged(&target).is_none());
+        assert!(!state.mark_allowed(&target, last + 5.0));
     }
 
     /// The handles are drawn: a chart with marks paints more than the same
