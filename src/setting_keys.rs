@@ -52,7 +52,7 @@ const SHARED: &[&str] = &[
     "workspace",
     "timeframes",
     "indicators",
-    "provider",
+    "providers",
     "sync_crosshair",
     "drawing_configurations",
     "screenshot_save_file",

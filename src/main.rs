@@ -186,9 +186,12 @@ fn main() -> glib::ExitCode {
             && let Some(feed) = asked_for
             && window.provider().id() != feed.id
         {
-            window.switch_feed(std::sync::Arc::from(
-                omacharts_engine::providers::selected(Some(feed.id)),
-            ));
+            window.switch_feeds(
+                omacharts_engine::providers::ordered(&[feed.id.to_string()])
+                    .into_iter()
+                    .map(std::sync::Arc::from)
+                    .collect(),
+            );
             command_line.printerr_literal(&format!(
                 "omacharts: charting from {} for this window; `omacharts config set \
                  provider {}` makes it the default\n",

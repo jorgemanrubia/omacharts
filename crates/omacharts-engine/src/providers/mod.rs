@@ -1,8 +1,8 @@
 //! The data feeds, one folder each.
 //!
 //! Yahoo is the default, and the first entry in [`LISTED`] is what "default"
-//! means — there is no second place that says so. A stored `provider` setting
-//! picks another; the choice is read when the process starts.
+//! means — there is no second place that says so. A stored `providers`
+//! setting puts others above it.
 //!
 //! # Adding a feed
 //!
@@ -22,15 +22,19 @@
 //! What a feed must never do is cost anything to the people not using it.
 //! Everything in [`LISTED`] is read at startup, so it is plain data;
 //! everything expensive — a connection, a thread, a runtime, a browser —
-//! belongs to the first fetch, which is why [`selected`] can be called to
+//! belongs to the first fetch, which is why [`built`] can be called to
 //! build any feed in the list and still touch nothing.
+//!
+//! Feeds are an ordered list, with Yahoo always last: each chart is served
+//! by the first feed that can be used and has a name for its instrument —
+//! see [`ordered`] and [`route`].
 
 pub mod synthetic;
 pub mod tos;
 pub mod yahoo;
 
 use crate::provider::{Delivery, Provider};
-use crate::symbols::InstrumentKind;
+use crate::symbols::{Instrument, InstrumentKind};
 
 pub use synthetic::Synthetic;
 pub use tos::Tos;
@@ -213,7 +217,7 @@ pub const DEFAULT: &str = LISTED[0].id;
 /// for real: the provider reports [`Delivery::Streamed`], and this changes
 /// with it rather than waiting to be noticed.
 pub fn freshness(id: &str) -> String {
-    let provider = selected(Some(id));
+    let provider = built_or_default(id);
     if provider.delivery() == Delivery::Streamed {
         return "live, as each print arrives".into();
     }
@@ -288,13 +292,11 @@ pub fn listed(id: &str) -> Option<&'static Listed> {
     LISTED.iter().find(|feed| feed.id.eq_ignore_ascii_case(id))
 }
 
-/// The feed a stored setting names, or the default.
+/// The feed with this id, built and connected to nothing, or `None` for an
+/// id that is not one of ours.
 ///
 /// Constructing one connects to nothing, opens nothing and starts no thread:
-/// see the module docs. An unknown name falls back to the default rather than
-/// failing, because a settings file is not a command line — refusing to start
-/// over a word in a database would be a worse answer than charting from
-/// Yahoo and saying so in the settings.
+/// see the module docs.
 ///
 /// Behind the trait, not behind an enum of the feeds. An enum here was
 /// ninety lines re-stating every method of [`Provider`] to forward it, which
@@ -303,11 +305,94 @@ pub fn listed(id: &str) -> Option<&'static Listed> {
 /// exactly the kind of thing that gets forgotten. The trait is already the
 /// one description of what a feed can do, and it is object-safe, so this is
 /// the whole dispatch.
-pub fn selected(stored: Option<&str>) -> Box<dyn Provider> {
-    match stored.and_then(listed) {
-        Some(feed) if feed.id == tos::LISTED.id => Box::new(Tos::new()),
-        _ => Box::new(Yahoo::new()),
+pub fn built(id: &str) -> Option<Box<dyn Provider>> {
+    match listed(id)?.id {
+        "tos" => Some(Box::new(Tos::new())),
+        _ => Some(Box::new(Yahoo::new())),
     }
+}
+
+/// The feed with this id, or the default for one nobody has heard of. For
+/// asking a feed about itself — how fresh it is, how it delivers — where an
+/// unknown name has nowhere better to go.
+pub fn built_or_default(id: &str) -> Box<dyn Provider> {
+    built(id).unwrap_or_else(|| Box::new(Yahoo::new()))
+}
+
+/// The feeds a stored order names, top first, and always ending with the
+/// default.
+///
+/// The default is the floor: it serves everything, so a feed listed below
+/// it would never be reached, and it is never stored, so an order is only
+/// the feeds somebody added. An id nobody has heard of is dropped rather
+/// than refused — a setting written by a newer build, or by hand, charts
+/// from what this build knows — and an id named twice is built once.
+/// Constructing them connects to nothing.
+pub fn ordered(ids: &[String]) -> Vec<Box<dyn Provider>> {
+    let mut seen: Vec<&'static str> = Vec::with_capacity(ids.len() + 1);
+    let mut feeds: Vec<Box<dyn Provider>> = Vec::with_capacity(ids.len() + 1);
+    for id in ids {
+        let Some(feed) = listed(id) else { continue };
+        if feed.id == DEFAULT || seen.contains(&feed.id) {
+            continue;
+        }
+        if let Some(provider) = built(feed.id) {
+            seen.push(feed.id);
+            feeds.push(provider);
+        }
+    }
+    feeds.push(Box::new(Yahoo::new()));
+    feeds
+}
+
+/// Which feed serves a chart, and what it is called there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Route {
+    /// The feed's place in the order.
+    pub at: usize,
+    /// The instrument in that feed's spelling.
+    pub symbol: String,
+    /// Feeds above it that would have served the instrument and were passed
+    /// over because they cannot be used: not signed in, or signed out. For
+    /// the header, which says so. Empty, and unallocated, when nothing was.
+    pub passed: Vec<usize>,
+}
+
+/// The first feed that can be used and serves `instrument`, top first.
+///
+/// `feeds` is the order with whether each can be used — read from what is
+/// saved, never by connecting. A feed is passed over only for a reason
+/// known before anything is asked of it: it cannot be used, or it has no
+/// name for the instrument. A feed that fails while running keeps its
+/// charts, and that is the caller's to keep to: this is asked when a chart
+/// is put on screen and when the order or a sign-in changes, never because
+/// a request failed.
+///
+/// `None` when nothing in the order serves it, which with the default at
+/// the bottom means an instrument even it has no name for.
+pub fn route<'a>(
+    feeds: impl IntoIterator<Item = (&'a dyn Provider, bool)>,
+    instrument: &Instrument,
+) -> Option<Route> {
+    let mut passed = Vec::new();
+    for (at, (provider, usable)) in feeds.into_iter().enumerate() {
+        if !usable {
+            if provider.symbol_for(instrument).is_some() {
+                passed.push(at);
+            }
+            continue;
+        }
+        if let Some(symbol) = provider.symbol_for(instrument) {
+            return Some(Route { at, symbol, passed });
+        }
+    }
+    None
+}
+
+/// Can `id` be charted from with what is saved on this machine? A read from
+/// disk, never a connection: a feed that needs nothing saved always can.
+pub fn usable(id: &str) -> bool {
+    access(id).is_none_or(|access| access.ready())
 }
 
 #[cfg(test)]
@@ -322,7 +407,7 @@ mod tests {
     #[test]
     fn choosing_a_feed_connects_to_nothing() {
         for feed in LISTED {
-            assert_eq!(selected(Some(feed.id)).id(), feed.id);
+            assert_eq!(built(feed.id).map(|p| p.id()), Some(feed.id));
         }
         assert!(!tos_market::connected(), "a chosen feed must not have connected");
     }
@@ -330,16 +415,18 @@ mod tests {
     #[test]
     fn nothing_stored_and_nothing_recognised_are_both_the_default() {
         assert_eq!(DEFAULT, "yahoo");
-        assert_eq!(selected(None).id(), DEFAULT);
-        assert_eq!(selected(Some("")).id(), DEFAULT);
-        assert_eq!(selected(Some("a feed we have never heard of")).id(), DEFAULT);
+        assert!(built("").is_none());
+        assert!(built("a feed we have never heard of").is_none());
+        assert_eq!(built_or_default("a feed we have never heard of").id(), DEFAULT);
+        let ids = |feeds: Vec<Box<dyn Provider>>| feeds.iter().map(|p| p.id()).collect::<Vec<_>>();
+        assert_eq!(ids(ordered(&[])), vec![DEFAULT]);
     }
 
     /// A setting is typed as often as it is clicked, and " TOS " out of a
     /// shell script is the same choice as "tos".
     #[test]
     fn a_name_is_matched_however_it_was_typed() {
-        assert_eq!(selected(Some("  TOS ")).id(), "tos");
+        assert_eq!(built("  TOS ").map(|p| p.id()), Some("tos"));
         assert_eq!(listed("Yahoo").map(|f| f.id), Some("yahoo"));
         assert!(listed("tosx").is_none());
     }
@@ -359,7 +446,7 @@ mod tests {
         // The day it stopped streaming this line would change on its own.
         let tos = freshness("tos");
         assert_eq!(
-            selected(Some("tos")).delivery(),
+            built_or_default("tos").delivery(),
             Delivery::Streamed,
             "the claim below is only honest while this holds"
         );
@@ -376,6 +463,67 @@ mod tests {
         }
     }
 
+    fn instrument(kind: InstrumentKind, symbol: &str) -> Instrument {
+        Instrument {
+            symbol: symbol.into(),
+            name: String::new(),
+            kind,
+            suffix: None,
+            currency: None,
+            tier: 0,
+            session_origin: 0,
+            overrides: Vec::new(),
+            exchange: None,
+            popularity: 0,
+            local_name: None,
+        }
+    }
+
+    /// The order is what was stored, with the default always at the bottom,
+    /// never twice, and nothing this build has not heard of.
+    #[test]
+    fn an_order_always_ends_with_the_default() {
+        let ids = |stored: &[&str]| {
+            let stored: Vec<String> = stored.iter().map(|id| id.to_string()).collect();
+            ordered(&stored).iter().map(|p| p.id()).collect::<Vec<_>>()
+        };
+        assert_eq!(ids(&[]), vec!["yahoo"]);
+        assert_eq!(ids(&["tos"]), vec!["tos", "yahoo"]);
+        assert_eq!(ids(&["yahoo", "tos"]), vec!["tos", "yahoo"]);
+        assert_eq!(ids(&["tos", "TOS", "bloomberg"]), vec!["tos", "yahoo"]);
+    }
+
+    /// The first usable feed with a name for the instrument serves it. One
+    /// that cannot be used is passed over, and said to have been only when it
+    /// would have served the chart; one with no name for it is passed over
+    /// silently, because that is not something anybody can fix.
+    #[test]
+    fn the_first_usable_feed_that_serves_an_instrument_serves_it() {
+        let feeds = ordered(&["tos".to_string()]);
+        let order = |tos_usable: bool| {
+            feeds.iter().map(move |p| (p.as_ref(), p.id() != "tos" || tos_usable))
+        };
+        let apple = instrument(InstrumentKind::Equity, "AAPL");
+        // thinkorswim leaves a Madrid listing alone; Yahoo has it.
+        let madrid = Instrument { suffix: Some("MC".into()), ..instrument(InstrumentKind::Equity, "SAN") };
+
+        let on_top = route(order(true), &apple).expect("served");
+        assert_eq!((on_top.at, on_top.passed.as_slice()), (0, &[][..]));
+
+        let signed_out = route(order(false), &apple).expect("served");
+        assert_eq!((signed_out.at, signed_out.passed.as_slice()), (1, &[0][..]));
+        assert_eq!(signed_out.symbol, "AAPL");
+
+        let untranslated = route(order(true), &madrid).expect("served");
+        assert_eq!((untranslated.at, untranslated.passed.as_slice()), (1, &[][..]));
+        assert_eq!(untranslated.symbol, "SAN.MC");
+
+        // With nothing but the default, the default serves everything.
+        let alone = ordered(&[]);
+        let routed = route(alone.iter().map(|p| (p.as_ref(), true)), &madrid).expect("served");
+        assert_eq!((routed.at, routed.passed.capacity()), (0, 0));
+    }
+
     /// Two feeds sharing an id would share a cache namespace, and the stored
     /// setting would stop naming one thing.
     #[test]
@@ -386,7 +534,7 @@ mod tests {
         ids.dedup();
         assert_eq!(ids.len(), total, "duplicate feed id");
         for feed in LISTED {
-            let built = selected(Some(feed.id));
+            let built = built_or_default(feed.id);
             assert_eq!(built.id(), feed.id);
             assert_eq!(built.label(), feed.label);
             assert!(!feed.serves.is_empty(), "{} says nothing about what it serves", feed.id);

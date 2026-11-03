@@ -186,7 +186,9 @@ pub fn dispatch(
                 && let Some(live) = live
             {
                 match required(m, "KEY") {
-                    Ok(key) if key == crate::feeds::SETTING => live.adopt_feed(),
+                    Ok(key) if key == crate::feeds::SETTING || key == crate::feeds::ONE_FEED => {
+                        live.adopt_feed()
+                    }
                     Ok(key) if key == crate::header::SETTING => live.adopt_header(),
                     Ok(key) if key == crate::clock::SETTING_ZONE || key == crate::clock::SETTING_FORMAT => {
                         live.adopt_clock()
@@ -4425,7 +4427,7 @@ fn provider_list(store: &Store, as_json: bool) -> Result<String, Fault> {
                     "label": feed.label,
                     "serves": feed.serves,
                     "freshness": providers::freshness(feed.id),
-                    "delivery": providers::selected(Some(feed.id)).delivery().word(),
+                    "delivery": providers::built_or_default(feed.id).delivery().word(),
                     "stored": feed.id == stored,
                     "inUse": feed.id == in_use,
                     "needsSignIn": feed.needs_sign_in(),
@@ -4486,7 +4488,7 @@ fn provider_status(store: &Store, live: Option<&dyn Live>, as_json: bool) -> Res
     let access = providers::access(in_use.id);
     let browser = providers::can_sign_in(in_use.id);
     let places = providers::places(in_use.id);
-    let delivery = providers::selected(Some(in_use.id)).delivery();
+    let delivery = providers::built_or_default(in_use.id).delivery();
     let streaming = live.map(|live| live.streaming());
 
     if as_json {
@@ -4813,18 +4815,34 @@ fn config_set(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<Stri
         store.set_setting(key, &value);
         return said(as_json, json!({"key": key, "value": value}), text);
     }
-    let value = match key == crate::feeds::SETTING {
-        false => value.to_string(),
-        true => providers::listed(value)
-            .ok_or_else(|| {
-                Fault::usage(format!(
-                    "no such data feed: {value:?}; the feeds are {}",
-                    feed_names()
-                ))
-            })?
-            .id
-            .to_string(),
-    };
+    // One feed, as there used to be: it goes on top of the order, and the
+    // order is what is stored. Said back as what was asked for.
+    if key == crate::feeds::ONE_FEED {
+        let feed = providers::listed(value).ok_or_else(|| {
+            Fault::usage(format!("no such data feed: {value:?}; the feeds are {}", feed_names()))
+        })?;
+        crate::feeds::put_on_top(store, feed);
+        let text = format!("set {key} to {}", feed.id);
+        return said(as_json, json!({"key": key, "value": feed.id}), text);
+    }
+    // The order itself: a list of feeds this build knows, written back
+    // without the default, which is implied.
+    if key == crate::feeds::SETTING {
+        let order: Vec<String> = serde_json::from_str(value).map_err(|_| {
+            Fault::usage(format!("{key} is a JSON list of feeds, such as [\"tos\"]"))
+        })?;
+        if let Some(unknown) = order.iter().find(|id| providers::listed(id).is_none()) {
+            return Err(Fault::usage(format!(
+                "no such data feed: {unknown:?}; the feeds are {}",
+                feed_names()
+            )));
+        }
+        crate::feeds::save_order(store, &order);
+        let stored = crate::feeds::stored_order(store);
+        let text = format!("set {key} to {}", serde_json::to_string(&stored).unwrap_or_default());
+        return said(as_json, json!({"key": key, "value": stored}), text);
+    }
+    let value = value.to_string();
 
     store.set_setting(key, &value);
     said(as_json, json!({"key": key, "value": value}), format!("set {key} to {value}"))

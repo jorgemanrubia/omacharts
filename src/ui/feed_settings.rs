@@ -136,8 +136,12 @@ fn feeds_group(panel: &Rc<Panel>) -> adw::PreferencesGroup {
 /// Store the choice. The window reads it back and switches the charts
 /// over, with nothing to restart and nothing on this page saying so: the
 /// person ticks the other feed and the charts are from the other feed.
+///
+/// One feed ticked is an order of that feed alone above Yahoo, and Yahoo
+/// ticked is nothing stored, until this page becomes the ordered list of
+/// sources it is going to be.
 fn choose(panel: &Rc<Panel>, feed: &'static Listed) {
-    panel.store.set_setting(feeds::SETTING, feed.id);
+    feeds::save_order(&panel.store, &[feed.id.to_string()]);
     (panel.on_change)();
     rebuild_setup(panel);
 }
@@ -364,12 +368,12 @@ mod tests {
 
         let tos = providers::listed("tos").expect("thinkorswim is listed");
         choose(&panel, tos);
-        assert_eq!(store.setting(feeds::SETTING).as_deref(), Some("tos"));
+        assert_eq!(store.setting(feeds::SETTING).as_deref(), Some(r#"["tos"]"#));
         assert!(panel.setup.borrow().is_some(), "thinkorswim's sign-in rows are missing");
 
         let yahoo = providers::listed("yahoo").expect("yahoo is listed");
         choose(&panel, yahoo);
-        assert_eq!(store.setting(feeds::SETTING).as_deref(), Some("yahoo"));
+        assert_eq!(store.setting(feeds::SETTING), None);
         assert!(panel.setup.borrow().is_none(), "rows for a feed nobody chose");
     }
 

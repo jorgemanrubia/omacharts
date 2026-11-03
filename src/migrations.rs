@@ -38,7 +38,7 @@ use rusqlite::{params, Connection};
 
 /// How far the migrations go. A database claiming more than this was written
 /// by a newer Omacharts than the one opening it.
-pub const LATEST: i32 = 4;
+pub const LATEST: i32 = 5;
 
 /// How far the market data file's own migrations go.
 pub const MARKET_LATEST: i32 = 1;
@@ -225,6 +225,17 @@ Migration {
     // file is snapshotted first like any step that drops something.
     risky: true,
     step: Step::Rust(move_market_data),
+},
+Migration {
+    version: 5,
+    name: "data feeds become an ordered list",
+    // One feed for every chart becomes a list of them, top first, with Yahoo
+    // implied at the bottom and never stored. So Yahoo, or nothing, is an
+    // empty list and nothing is written; any other feed is a list of one.
+    // Risky, because it drops the old row, though what it held is carried
+    // into the new one in the same transaction.
+    risky: true,
+    step: Step::Rust(feeds_become_a_list),
 }];
 
 /// Everything that has ever been true of the market data file.
@@ -286,6 +297,22 @@ fn move_market_data(tx: &Connection) -> rusqlite::Result<()> {
          FROM main.quotes;
          DROP TABLE main.bar_series;
          DROP TABLE main.quotes;",
+    )
+}
+
+/// Version 5: `provider=X` becomes `providers=["X"]`, and `provider=yahoo`
+/// becomes nothing at all.
+///
+/// The id is written as the JSON array the app reads, quoted by SQLite's own
+/// `json_array` so that a hand-typed value with a quote in it cannot make
+/// the row unreadable. Case and spacing are left as they were typed: the app
+/// matches an id however it was written, as it always has.
+fn feeds_become_a_list(tx: &Connection) -> rusqlite::Result<()> {
+    tx.execute_batch(
+        "INSERT OR REPLACE INTO settings (key, value)
+             SELECT 'providers', json_array(trim(value)) FROM settings
+             WHERE key = 'provider' AND lower(trim(value)) NOT IN ('yahoo', '');
+         DELETE FROM settings WHERE key = 'provider';",
     )
 }
 
@@ -495,6 +522,33 @@ mod tests {
             .query_row("SELECT value FROM settings WHERE key = 'theme'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(theme, "midnight");
+    }
+
+    /// The feed somebody chose comes along as a list of one; the default,
+    /// or nothing chosen, leaves nothing stored at all.
+    #[test]
+    fn the_chosen_feed_becomes_the_top_of_a_list() {
+        let migrated = |stored: Option<&str>| {
+            let conn = Connection::open_in_memory().unwrap();
+            conn.execute("ATTACH ':memory:' AS market", []).unwrap();
+            apply(&conn, MARKET, MARKET_MIGRATIONS, MARKET_LATEST, None).unwrap();
+            apply(&conn, "main", &MIGRATIONS[..4], 4, None).unwrap();
+            if let Some(value) = stored {
+                conn.execute("INSERT INTO settings (key, value) VALUES ('provider', ?1)", [value])
+                    .unwrap();
+            }
+            run(&conn, None).unwrap();
+            let read = |key: &str| -> Option<String> {
+                conn.query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| r.get(0)).ok()
+            };
+            assert_eq!(read("provider"), None, "the old row goes");
+            read("providers")
+        };
+        assert_eq!(migrated(None), None);
+        assert_eq!(migrated(Some("yahoo")), None);
+        assert_eq!(migrated(Some(" Yahoo ")), None);
+        assert_eq!(migrated(Some("tos")).as_deref(), Some(r#"["tos"]"#));
+        assert_eq!(migrated(Some("a\"b")).as_deref(), Some(r#"["a\"b"]"#));
     }
 
     #[test]
