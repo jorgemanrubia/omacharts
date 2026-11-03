@@ -19,10 +19,13 @@ pub enum Part {
     /// The name of the chart template the chart is on; nothing when it is on
     /// none.
     Template,
+    /// Which data source the chart is from, and any it was passed over.
+    /// Nothing at all while there is only one source to be from.
+    Account,
 }
 
 impl Part {
-    pub const ALL: [Part; 4] = [Part::Symbol, Part::Resolution, Part::Change, Part::Template];
+    pub const ALL: [Part; 5] = [Part::Symbol, Part::Resolution, Part::Change, Part::Template, Part::Account];
 
     /// How it is written down and typed.
     pub fn key(self) -> &'static str {
@@ -31,6 +34,7 @@ impl Part {
             Part::Resolution => "resolution",
             Part::Change => "change",
             Part::Template => "template",
+            Part::Account => "account",
         }
     }
 
@@ -45,13 +49,15 @@ impl Part {
             Part::Resolution => "Resolution",
             Part::Change => "Daily change",
             Part::Template => "Chart template",
+            Part::Account => "Account",
         }
     }
 }
 
-/// What a chart shows when nobody has chosen.
+/// What a chart shows when nobody has chosen. The account is in it because
+/// it costs nothing: with one source it draws nothing and takes no room.
 pub fn standard() -> Vec<Part> {
-    vec![Part::Symbol, Part::Resolution]
+    vec![Part::Symbol, Part::Resolution, Part::Account]
 }
 
 /// The parts named in `keys`, in order, skipping any this build does not

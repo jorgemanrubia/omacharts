@@ -38,7 +38,7 @@ use rusqlite::{params, Connection};
 
 /// How far the migrations go. A database claiming more than this was written
 /// by a newer Omacharts than the one opening it.
-pub const LATEST: i32 = 5;
+pub const LATEST: i32 = 6;
 
 /// How far the market data file's own migrations go.
 pub const MARKET_LATEST: i32 = 2;
@@ -236,6 +236,24 @@ Migration {
     // into the new one in the same transaction.
     risky: true,
     step: Step::Rust(feeds_become_a_list),
+},
+Migration {
+    version: 6,
+    name: "the header gains its account",
+    // Which source a chart is from was a note after the header's parts,
+    // whatever they were; now it is a part, and a header somebody chose gets
+    // it where the note sat. A header nobody chose is not stored, and the
+    // standard one has it already. Nothing is lost, so nothing to snapshot.
+    risky: false,
+    step: Step::Sql(
+        "UPDATE settings
+             SET value = CASE
+                 WHEN lower(trim(value)) IN ('none', '') THEN 'account'
+                 ELSE value || ',account'
+             END
+         WHERE key = 'chart_header'
+           AND ',' || lower(replace(value, ' ', '')) || ',' NOT LIKE '%,account,%';",
+    ),
 }];
 
 /// Everything that has ever been true of the market data file.
@@ -591,6 +609,29 @@ mod tests {
         assert_eq!(migrated(Some(" Yahoo ")), None);
         assert_eq!(migrated(Some("tos")).as_deref(), Some(r#"["tos"]"#));
         assert_eq!(migrated(Some("a\"b")).as_deref(), Some(r#"["a\"b"]"#));
+    }
+
+    /// A header somebody chose gets the account where the note on it sat,
+    /// after everything else; one nobody chose is left unstored.
+    #[test]
+    fn a_chosen_header_gains_the_account_at_its_end() {
+        let migrated = |stored: Option<&str>| {
+            let conn = Connection::open_in_memory().unwrap();
+            conn.execute("ATTACH ':memory:' AS market", []).unwrap();
+            apply(&conn, MARKET, MARKET_MIGRATIONS, MARKET_LATEST, None).unwrap();
+            apply(&conn, "main", &MIGRATIONS[..5], 5, None).unwrap();
+            if let Some(value) = stored {
+                conn.execute("INSERT INTO settings (key, value) VALUES ('chart_header', ?1)", [value])
+                    .unwrap();
+            }
+            run(&conn, None).unwrap();
+            conn.query_row("SELECT value FROM settings WHERE key = 'chart_header'", [], |r| r.get::<_, String>(0))
+                .ok()
+        };
+        assert_eq!(migrated(None), None);
+        assert_eq!(migrated(Some("change,symbol")).as_deref(), Some("change,symbol,account"));
+        assert_eq!(migrated(Some("none")).as_deref(), Some("account"));
+        assert_eq!(migrated(Some("symbol, Account")).as_deref(), Some("symbol, Account"));
     }
 
     #[test]

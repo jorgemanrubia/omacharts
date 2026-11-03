@@ -106,11 +106,16 @@ pub struct ChartPane {
     pub header_row: gtk::Box,
     pub change_label: gtk::Label,
     pub template_label: gtk::Label,
-    /// Which feed the chart is from, and any it was passed over: "Yahoo ·
-    /// thinkorswim not signed in". Not a part anybody chooses — it is shown
-    /// only while more than one feed is configured, and with one there is
-    /// nothing to say, so nothing is drawn.
-    pub source_label: gtk::Label,
+    /// The account part: which feed the chart is from, and any it was
+    /// passed over, "Yahoo · thinkorswim not signed in". Clicked, it offers
+    /// the feeds that could serve it instead. Hidden while only one feed is
+    /// configured, which leaves nothing to say and nothing to choose, and a
+    /// hidden child of the row takes no room at all.
+    pub source_menu: gtk::MenuButton,
+    source_label: gtk::Label,
+    /// The feed somebody chose for this chart, by id; `None` follows the
+    /// order, which is every chart until somebody chooses.
+    pub source: RefCell<Option<String>>,
     /// The style its bars are drawn in when they are drawn: hiding them
     /// leaves it alone, so showing them again brings back the same one.
     pub bar_style: Cell<BarStyle>,
@@ -242,14 +247,22 @@ impl ChartPane {
         template_label.add_css_class("readout-symbol");
         template_label.add_css_class("dim-label");
         template_label.set_valign(gtk::Align::Center);
+        // A button like the resolution beside it, with no chevron for the
+        // same reason, and dim like the template: it is a note on the chart
+        // more than its title.
         let source_label = gtk::Label::new(None);
-        source_label.add_css_class("readout-symbol");
-        source_label.add_css_class("dim-label");
-        source_label.set_valign(gtk::Align::Center);
-        source_label.set_visible(false);
+        let source_menu = gtk::MenuButton::new();
+        source_menu.add_css_class("flat");
+        source_menu.add_css_class("readout-symbol");
+        source_menu.add_css_class("dim-label");
+        source_menu.set_valign(gtk::Align::Center);
+        source_menu.set_tooltip_text(Some("Account: click to choose where this chart's data comes from"));
+        source_menu.set_child(Some(&source_label));
+        source_menu.set_always_show_arrow(false);
+        source_menu.set_visible(false);
         // The padding the two buttons beside them have, so the four sit
         // evenly apart whichever order they are in.
-        for label in [&change_label, &template_label, &source_label] {
+        for label in [&change_label, &template_label] {
             label.set_margin_start(8);
             label.set_margin_end(8);
         }
@@ -384,7 +397,9 @@ impl ChartPane {
             header_row: bar,
             change_label,
             template_label,
+            source_menu,
             source_label,
+            source: RefCell::new(None),
             bar_style: Cell::new(bar_style),
             bars_hidden: Cell::new(false),
             colouring: Cell::new(Default::default()),
@@ -541,11 +556,12 @@ impl ChartPane {
     /// Put the header's parts on its line in the chart's order, and take off
     /// the ones it does not show.
     pub fn arrange_header(&self) {
-        let parts: [(crate::header::Part, gtk::Widget); 4] = [
+        let parts: [(crate::header::Part, gtk::Widget); 5] = [
             (crate::header::Part::Symbol, self.symbol_button.clone().upcast()),
             (crate::header::Part::Resolution, self.timeframe_menu.clone().upcast()),
             (crate::header::Part::Change, self.change_label.clone().upcast()),
             (crate::header::Part::Template, self.template_label.clone().upcast()),
+            (crate::header::Part::Account, self.source_menu.clone().upcast()),
         ];
         for (_, widget) in &parts {
             if widget.parent().is_some() {
@@ -557,13 +573,6 @@ impl ChartPane {
                 self.header_row.append(widget);
             }
         }
-        // After the chosen parts, whatever they are: where the bars come
-        // from is not a part of the header but a note on it, and hidden it
-        // takes no room.
-        if self.source_label.parent().is_some() {
-            self.header_row.remove(&self.source_label);
-        }
-        self.header_row.append(&self.source_label);
         // Last, whatever the header shows: it says what is missing from this
         // chart, not what it is.
         for (_, button) in &self.hidden_glyphs {
@@ -586,12 +595,13 @@ impl ChartPane {
         self.template_label.set_visible(name.is_some());
     }
 
-    /// Where the bars come from, or nothing at all.
+    /// Where the bars come from, or nothing at all: hidden, the part takes
+    /// no width and no spacing, as though it were not in the header.
     pub fn write_source(&self, source: Option<&str>) {
         if self.source_label.text() != source.unwrap_or("") {
             self.source_label.set_text(source.unwrap_or(""));
         }
-        self.source_label.set_visible(source.is_some());
+        self.source_menu.set_visible(source.is_some());
     }
 
     /// The day's move, in `colour`; nothing at all until there is one.
@@ -1307,6 +1317,50 @@ impl Node {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// With one source the account says nothing, and a header with it laid
+    /// out is a header without it: the same width, and the part after it
+    /// starting at the same place. No gap where it would be, no room taken.
+    #[test]
+    fn a_blank_account_takes_no_room_in_the_header() {
+        use crate::header::Part;
+        if !crate::ui::gtk_ready() {
+            return;
+        }
+        let theme = omacharts_engine::theme::builtin_themes().into_iter().next().expect("a built-in theme");
+        let scheme = omacharts_engine::theme::theme_bars(&theme);
+        let pane = ChartPane::new(
+            1,
+            theme,
+            scheme,
+            Timeframe::days(1),
+            Vec::new(),
+            BarStyle::default(),
+            Session::default(),
+            true,
+            LinkMode::default(),
+        );
+        pane.symbol_button.set_label("ES");
+        pane.write_template(Some("Footprint"));
+        let laid_out = |parts: Vec<Part>| {
+            *pane.header.borrow_mut() = parts;
+            pane.arrange_header();
+            let width = pane.header_row.preferred_size().1.width();
+            pane.header_row.allocate(width, SYMBOL_ROW_HEIGHT, -1, None);
+            let template = pane.template_label.compute_bounds(&pane.header_row).expect("placed").x();
+            (width, template)
+        };
+        let without = laid_out(vec![Part::Symbol, Part::Resolution, Part::Template]);
+        pane.write_source(None);
+        let blank = laid_out(vec![Part::Symbol, Part::Account, Part::Resolution, Part::Template]);
+        assert_eq!(blank, without);
+        assert!(!pane.source_menu.is_visible());
+
+        // And written, it does take its room: the same measure sees it.
+        pane.write_source(Some("Rithmic"));
+        let shown = laid_out(vec![Part::Symbol, Part::Account, Part::Resolution, Part::Template]);
+        assert!(shown.0 > without.0 && shown.1 > without.1, "{shown:?} against {without:?}");
+    }
 
     #[test]
     fn the_strip_shows_only_where_it_clears_both_corners() {
