@@ -6,7 +6,7 @@
 //! in, hands out the plants, notices a drop, reconnects with a doubling wait
 //! and subscribes again to whatever is still watched.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -254,7 +254,6 @@ impl Client {
             state,
             fronts: fronts.clone(),
             watched: HashMap::new(),
-            subscribed: HashMap::new(),
         };
         runtime.spawn(supervisor.run());
         Ok(Client {
@@ -480,9 +479,114 @@ struct Supervisor {
     state: watch::Sender<State>,
     fronts: Arc<Fronts>,
     watched: HashMap<u64, Watched>,
+}
+
+/// What a watch asks of the ticker plant, apart from the trades it then
+/// hears: which contract is a root's front month, and subscribing to one.
+/// The plant itself, or a test's.
+pub(crate) trait Plant: Clone + Send + Sync + 'static {
+    fn front_month(&self, root: String, exchange: String) -> impl Future<Output = Result<String, Error>> + Send;
+    fn subscribe(&self, contract: String, exchange: String) -> impl Future<Output = Result<(), Error>> + Send;
+    fn unsubscribe(&self, contract: String, exchange: String) -> impl Future<Output = ()> + Send;
+}
+
+impl Plant for Arc<Handles> {
+    async fn front_month(&self, root: String, exchange: String) -> Result<String, Error> {
+        front_month(&self.ticker, &root, &exchange).await
+    }
+
+    async fn subscribe(&self, contract: String, exchange: String) -> Result<(), Error> {
+        let response = within(REQUEST, self.ticker.subscribe(&contract, &exchange)).await?;
+        match &response.error {
+            Some(error) => Err(rejected(error)),
+            None => Ok(()),
+        }
+    }
+
+    async fn unsubscribe(&self, contract: String, exchange: String) {
+        let _ = within(REQUEST, self.ticker.unsubscribe(&contract, &exchange)).await;
+    }
+}
+
+/// A request to the plant that watches were waiting on, answered.
+enum Settled {
+    /// A root's front month, or why there is none.
+    Resolved { root: String, exchange: String, outcome: Result<String, Error> },
+    /// A contract subscribed to, or why it could not be.
+    Subscribed { contract: String, exchange: String, outcome: Result<(), Error> },
+    /// A contract nothing watches any more, unsubscribed.
+    Unsubscribed { contract: String, exchange: String },
+}
+
+/// The subscriptions of one signed-in connection, and the requests for them
+/// still out.
+///
+/// A request is a round trip to Chicago, and the loop that asks is the one
+/// that hands every trade on. So none is waited for there: each runs as a
+/// task of its own and its answer comes back as a [`Settled`], while the
+/// trades of every contract already watched go on arriving. Dropped with
+/// its connection, so an answer meant for one that is gone is never heard.
+struct Subscriptions<P> {
+    plant: P,
     /// How many watches each subscribed contract has, by contract and
     /// exchange.
     subscribed: HashMap<(String, String), usize>,
+    /// Roots whose front month is being asked, and the watches waiting on
+    /// each.
+    resolving: HashMap<(String, String), Vec<u64>>,
+    /// Contracts being subscribed, or waiting for an unsubscribe of theirs
+    /// to finish first, and the watches waiting on each.
+    subscribing: HashMap<(String, String), Vec<u64>>,
+    /// Contracts being unsubscribed. A subscribe to one waits for it, or
+    /// the two could reach the plant the wrong way round.
+    unsubscribing: HashSet<(String, String)>,
+    answers: mpsc::UnboundedSender<Settled>,
+    settled: mpsc::UnboundedReceiver<Settled>,
+}
+
+impl<P: Plant> Subscriptions<P> {
+    fn new(plant: P) -> Subscriptions<P> {
+        let (answers, settled) = mpsc::unbounded_channel();
+        Subscriptions {
+            plant,
+            subscribed: HashMap::new(),
+            resolving: HashMap::new(),
+            subscribing: HashMap::new(),
+            unsubscribing: HashSet::new(),
+            answers,
+            settled,
+        }
+    }
+
+    fn resolve(&self, root: &str, exchange: &str) {
+        let (plant, answers) = (self.plant.clone(), self.answers.clone());
+        let (root, exchange) = (root.to_string(), exchange.to_string());
+        tokio::spawn(async move {
+            let outcome = plant.front_month(root.clone(), exchange.clone()).await;
+            let _ = answers.send(Settled::Resolved { root, exchange, outcome });
+        });
+    }
+
+    fn subscribe(&self, contract: &str, exchange: &str) {
+        let (plant, answers) = (self.plant.clone(), self.answers.clone());
+        let (contract, exchange) = (contract.to_string(), exchange.to_string());
+        tokio::spawn(async move {
+            let outcome = plant.subscribe(contract.clone(), exchange.clone()).await;
+            let _ = answers.send(Settled::Subscribed { contract, exchange, outcome });
+        });
+    }
+
+    fn unsubscribe(&mut self, key: (String, String)) {
+        if !self.unsubscribing.insert(key.clone()) {
+            return;
+        }
+        let (plant, answers) = (self.plant.clone(), self.answers.clone());
+        tokio::spawn(async move {
+            let (contract, exchange) = key;
+            plant.unsubscribe(contract.clone(), exchange.clone()).await;
+            let _ = answers.send(Settled::Unsubscribed { contract, exchange });
+        });
+    }
 }
 
 /// Why the supervisor stopped looking after a connection.
@@ -525,10 +629,6 @@ impl Supervisor {
                 within(REQUEST, connection.handles.ticker.list_exchange_permissions(&connection.user)).await
             {
                 entitle(exchanges_of(&responses));
-            }
-            let ids: Vec<u64> = self.watched.keys().copied().collect();
-            for id in ids {
-                self.begin(id, &connection.handles).await;
             }
             match self.serve(connection).await {
                 Ended::Dropped(error) => {
@@ -588,6 +688,11 @@ impl Supervisor {
 
     /// Run a signed-in session until it drops or is stopped.
     async fn serve(&mut self, mut connection: Connection) -> Ended {
+        let mut subscriptions = Subscriptions::new(connection.handles.clone());
+        let ids: Vec<u64> = self.watched.keys().copied().collect();
+        for id in ids {
+            self.begin(id, &mut subscriptions);
+        }
         let ended = loop {
             tokio::select! {
                 command = self.inbox.recv() => match command {
@@ -595,14 +700,15 @@ impl Supervisor {
                     Some(Command::Stop { done }) => break Ended::Stopped(done),
                     Some(Command::Watch { id, root, exchange, sink }) => {
                         self.watched.insert(id, Watched { root, exchange, sink, contract: None, told_lost: false });
-                        self.begin(id, &connection.handles).await;
+                        self.begin(id, &mut subscriptions);
                     }
-                    Some(Command::Unwatch { id }) => self.end(id, &connection.handles).await,
+                    Some(Command::Unwatch { id }) => self.end(id, &mut subscriptions),
                     Some(Command::Sever) => {
                         connection.ticker_updates.abort();
                         connection.history_updates.abort();
                     }
                 },
+                Some(settled) = subscriptions.settled.recv() => self.settle(settled, &mut subscriptions),
                 update = connection.ticker_updates.subscription_receiver.recv() => match update {
                     Ok(update) => {
                         if matches!(update.message, RithmicMessage::ForcedLogout(_)) {
@@ -649,7 +755,6 @@ impl Supervisor {
         connection.history_updates.abort();
         let _ = tokio::time::timeout(Duration::from_secs(3), connection.ticker.await_shutdown()).await;
         let _ = tokio::time::timeout(Duration::from_secs(3), connection.history.await_shutdown()).await;
-        self.subscribed.clear();
         for watched in self.watched.values_mut() {
             watched.contract = None;
         }
@@ -657,50 +762,120 @@ impl Supervisor {
         ended
     }
 
-    /// Subscribe watch `id` to its root's front month, and tell it so.
-    async fn begin(&mut self, id: u64, handles: &Handles) {
+    /// Subscribe watch `id` to its root's front month, and tell it so once
+    /// it is. Returns at once: what the plant has to be asked is asked by a
+    /// task, and its answer [`Supervisor::settle`]d when it comes.
+    fn begin<P: Plant>(&mut self, id: u64, subscriptions: &mut Subscriptions<P>) {
         let Some((root, exchange)) = self.watched.get(&id).map(|w| (w.root.clone(), w.exchange.clone())) else {
             return;
         };
-        let contract = match self.fronts.get(&root, &exchange) {
-            Some(contract) => Ok(contract),
-            None => front_month(&handles.ticker, &root, &exchange).await,
-        };
-        let contract = match contract {
-            Ok(contract) => contract,
-            Err(error) => return self.tell(id, Live::Lost(error)),
-        };
-        self.fronts.put(&root, &exchange, &contract);
-        let key = (contract.clone(), exchange.clone());
-        if !self.subscribed.contains_key(&key) {
-            match within(REQUEST, handles.ticker.subscribe(&contract, &exchange)).await {
-                Ok(response) => {
-                    if let Some(error) = &response.error {
-                        return self.tell(id, Live::Lost(rejected(error)));
-                    }
-                }
-                Err(error) => return self.tell(id, Live::Lost(error)),
+        if let Some(contract) = self.fronts.get(&root, &exchange) {
+            return self.attach(id, contract, subscriptions);
+        }
+        let key = (root, exchange);
+        match subscriptions.resolving.get_mut(&key) {
+            Some(waiting) => waiting.push(id),
+            None => {
+                subscriptions.resolve(&key.0, &key.1);
+                subscriptions.resolving.insert(key, vec![id]);
             }
         }
-        *self.subscribed.entry(key).or_insert(0) += 1;
-        if let Some(watched) = self.watched.get_mut(&id) {
-            watched.contract = Some(contract.clone());
-            watched.told_lost = false;
+    }
+
+    /// Watch `id` is on `contract`: watching at once if that is subscribed
+    /// already, and otherwise once it is.
+    fn attach<P: Plant>(&mut self, id: u64, contract: String, subscriptions: &mut Subscriptions<P>) {
+        let Some(exchange) = self.watched.get(&id).map(|w| w.exchange.clone()) else { return };
+        let key = (contract, exchange);
+        if subscriptions.subscribed.contains_key(&key) {
+            return self.subscribed(id, &key, subscriptions);
         }
-        self.tell(id, Live::Watching { contract });
+        match subscriptions.subscribing.get_mut(&key) {
+            Some(waiting) => waiting.push(id),
+            None => {
+                if !subscriptions.unsubscribing.contains(&key) {
+                    subscriptions.subscribe(&key.0, &key.1);
+                }
+                subscriptions.subscribing.insert(key, vec![id]);
+            }
+        }
+    }
+
+    /// Watch `id` is on `key`, which is subscribed: tell it so.
+    fn subscribed<P: Plant>(&mut self, id: u64, key: &(String, String), subscriptions: &mut Subscriptions<P>) {
+        let Some(watched) = self.watched.get_mut(&id) else { return };
+        *subscriptions.subscribed.entry(key.clone()).or_insert(0) += 1;
+        watched.contract = Some(key.0.clone());
+        watched.told_lost = false;
+        self.tell(id, Live::Watching { contract: key.0.clone() });
+    }
+
+    /// The plant answered a request that watches were waiting on.
+    fn settle<P: Plant>(&mut self, settled: Settled, subscriptions: &mut Subscriptions<P>) {
+        match settled {
+            Settled::Resolved { root, exchange, outcome } => {
+                let waiting = subscriptions.resolving.remove(&(root.clone(), exchange.clone())).unwrap_or_default();
+                match outcome {
+                    Ok(contract) => {
+                        self.fronts.put(&root, &exchange, &contract);
+                        for id in waiting {
+                            self.attach(id, contract.clone(), subscriptions);
+                        }
+                    }
+                    Err(error) => {
+                        for id in waiting {
+                            self.tell(id, Live::Lost(error.clone()));
+                        }
+                    }
+                }
+            }
+            Settled::Subscribed { contract, exchange, outcome } => {
+                let key = (contract, exchange);
+                let waiting: Vec<u64> = subscriptions
+                    .subscribing
+                    .remove(&key)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|id| self.watched.contains_key(id))
+                    .collect();
+                match outcome {
+                    // Everything that wanted it went while it was asked for.
+                    Ok(()) if waiting.is_empty() => subscriptions.unsubscribe(key),
+                    Ok(()) => {
+                        for id in waiting {
+                            self.subscribed(id, &key, subscriptions);
+                        }
+                    }
+                    Err(error) => {
+                        for id in waiting {
+                            self.tell(id, Live::Lost(error.clone()));
+                        }
+                    }
+                }
+            }
+            Settled::Unsubscribed { contract, exchange } => {
+                let key = (contract, exchange);
+                subscriptions.unsubscribing.remove(&key);
+                // Watched again while it was being let go.
+                if subscriptions.subscribing.contains_key(&key) {
+                    subscriptions.subscribe(&key.0, &key.1);
+                }
+            }
+        }
     }
 
     /// Forget watch `id`, and unsubscribe its contract if nothing else
-    /// watches it.
-    async fn end(&mut self, id: u64, handles: &Handles) {
+    /// watches it. Returns at once.
+    fn end<P: Plant>(&mut self, id: u64, subscriptions: &mut Subscriptions<P>) {
         let Some(watched) = self.watched.remove(&id) else { return };
+        // Still waiting for its contract: the answer finds it gone.
         let Some(contract) = watched.contract else { return };
         let key = (contract, watched.exchange);
-        let Some(count) = self.subscribed.get_mut(&key) else { return };
+        let Some(count) = subscriptions.subscribed.get_mut(&key) else { return };
         *count -= 1;
         if *count == 0 {
-            self.subscribed.remove(&key);
-            let _ = within(REQUEST, handles.ticker.unsubscribe(&key.0, &key.1)).await;
+            subscriptions.subscribed.remove(&key);
+            subscriptions.unsubscribe(key);
         }
     }
 
@@ -715,6 +890,11 @@ impl Supervisor {
         let (Some(symbol), Some(exchange)) = (trade.symbol.as_deref(), trade.exchange.as_deref()) else {
             return;
         };
+        self.deliver(symbol, exchange, found);
+    }
+
+    /// A trade on `symbol`, to everything watching it.
+    fn deliver(&self, symbol: &str, exchange: &str, found: Trade) {
         for watched in self.watched.values() {
             if watched.contract.as_deref() == Some(symbol) && watched.exchange == exchange {
                 (watched.sink)(Live::Trade(found));
@@ -1127,5 +1307,153 @@ mod tests {
         let refused = signed_in(Err(Error::Rejected("permission denied".into()))).unwrap_err();
         assert_eq!(refused, Error::Refused("permission denied".into()));
         assert_eq!(refused.to_string(), "Rithmic refused the login: permission denied");
+    }
+
+    /// A ticker plant that answers a front month at once, and subscribes to
+    /// a contract named in `slow` only when the test lets it.
+    #[derive(Clone)]
+    struct Fake {
+        slow: Arc<Mutex<HashSet<String>>>,
+        gate: Arc<tokio::sync::Semaphore>,
+        subscribes: Arc<Mutex<Vec<String>>>,
+        unsubscribes: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl Plant for Fake {
+        async fn front_month(&self, root: String, _exchange: String) -> Result<String, Error> {
+            Ok(format!("{root}Z6"))
+        }
+
+        async fn subscribe(&self, contract: String, _exchange: String) -> Result<(), Error> {
+            self.subscribes.lock().unwrap().push(contract.clone());
+            let slow = self.slow.lock().unwrap().contains(&contract);
+            if slow {
+                self.gate.acquire().await.unwrap().forget();
+            }
+            Ok(())
+        }
+
+        async fn unsubscribe(&self, contract: String, _exchange: String) {
+            self.unsubscribes.lock().unwrap().push(contract);
+        }
+    }
+
+    impl Default for Fake {
+        fn default() -> Fake {
+            Fake {
+                slow: Arc::default(),
+                gate: Arc::new(tokio::sync::Semaphore::new(0)),
+                subscribes: Arc::default(),
+                unsubscribes: Arc::default(),
+            }
+        }
+    }
+
+    type Heard = Arc<Mutex<Vec<(u64, Live)>>>;
+
+    fn supervisor() -> Supervisor {
+        Supervisor {
+            app: App { name: "test", version: "0" },
+            source: Arc::new(|| Err(Error::NoLogin("a test signs in to nothing".into()))),
+            inbox: mpsc::unbounded_channel().1,
+            state: watch::channel(State::Connecting).0,
+            fronts: Arc::new(Fronts::default()),
+            watched: HashMap::new(),
+        }
+    }
+
+    fn watch_root(supervisor: &mut Supervisor, subscriptions: &mut Subscriptions<Fake>, id: u64, root: &str, heard: &Heard) {
+        let heard = heard.clone();
+        let sink: Sink = Arc::new(move |live| heard.lock().unwrap().push((id, live)));
+        let watched = Watched { root: root.into(), exchange: "CME".into(), sink, contract: None, told_lost: false };
+        supervisor.watched.insert(id, watched);
+        supervisor.begin(id, subscriptions);
+    }
+
+    /// Take the plant's next answer, as the session's loop would.
+    async fn settle_next(supervisor: &mut Supervisor, subscriptions: &mut Subscriptions<Fake>) {
+        let settled = tokio::time::timeout(Duration::from_secs(5), subscriptions.settled.recv())
+            .await
+            .expect("an answer")
+            .expect("the channel is open");
+        supervisor.settle(settled, subscriptions);
+    }
+
+    fn print(seconds: i64) -> Trade {
+        Trade { price: 7_625.0, size: 1, aggressor: None, at_nanos: seconds * 1_000_000_000 }
+    }
+
+    /// Opening a chart on a contract the session has not subscribed to
+    /// takes a round trip or two to the plant, and the contracts already
+    /// watched go on hearing their trades all the while.
+    #[tokio::test]
+    async fn subscribing_to_a_contract_does_not_hold_back_the_trades_of_another() {
+        let fake = Fake::default();
+        fake.slow.lock().unwrap().insert("NQZ6".into());
+        let mut subscriptions = Subscriptions::new(fake.clone());
+        let mut supervisor = supervisor();
+        let heard: Heard = Arc::default();
+
+        watch_root(&mut supervisor, &mut subscriptions, 1, "ES", &heard);
+        settle_next(&mut supervisor, &mut subscriptions).await;
+        settle_next(&mut supervisor, &mut subscriptions).await;
+        assert_eq!(heard.lock().unwrap().as_slice(), &[(1, Live::Watching { contract: "ESZ6".into() })]);
+
+        // NQ's front month is answered, and its subscribe is held up.
+        watch_root(&mut supervisor, &mut subscriptions, 2, "NQ", &heard);
+        settle_next(&mut supervisor, &mut subscriptions).await;
+        let pending = tokio::time::timeout(Duration::from_millis(50), subscriptions.settled.recv()).await;
+        assert!(pending.is_err(), "the subscribe to NQZ6 is still out");
+        assert_eq!(fake.subscribes.lock().unwrap().as_slice(), &["ESZ6", "NQZ6"]);
+
+        for second in 0..3 {
+            supervisor.deliver("ESZ6", "CME", print(second));
+        }
+        let trades = heard.lock().unwrap().iter().filter(|(id, live)| *id == 1 && matches!(live, Live::Trade(_))).count();
+        assert_eq!(trades, 3, "ES trades arrive while NQ is being subscribed");
+        assert!(heard.lock().unwrap().iter().all(|(id, _)| *id == 1), "NQ hears nothing yet");
+
+        fake.gate.add_permits(1);
+        settle_next(&mut supervisor, &mut subscriptions).await;
+        supervisor.deliver("NQZ6", "CME", print(10));
+        let nq: Vec<Live> = heard.lock().unwrap().iter().filter(|(id, _)| *id == 2).map(|(_, l)| l.clone()).collect();
+        assert_eq!(nq, vec![Live::Watching { contract: "NQZ6".into() }, Live::Trade(print(10))]);
+    }
+
+    /// Two charts opened on one contract while it is being subscribed share
+    /// one subscribe; a chart closed before its subscribe lands leaves
+    /// nothing subscribed behind it.
+    #[tokio::test]
+    async fn a_contract_is_subscribed_once_and_let_go_when_nothing_waits_for_it() {
+        let fake = Fake::default();
+        fake.slow.lock().unwrap().insert("ESZ6".into());
+        let mut subscriptions = Subscriptions::new(fake.clone());
+        let mut supervisor = supervisor();
+        let heard: Heard = Arc::default();
+
+        watch_root(&mut supervisor, &mut subscriptions, 1, "ES", &heard);
+        watch_root(&mut supervisor, &mut subscriptions, 2, "ES", &heard);
+        settle_next(&mut supervisor, &mut subscriptions).await;
+        fake.gate.add_permits(1);
+        settle_next(&mut supervisor, &mut subscriptions).await;
+        assert_eq!(fake.subscribes.lock().unwrap().as_slice(), &["ESZ6"]);
+        assert_eq!(heard.lock().unwrap().len(), 2, "both are watching");
+
+        // Another root, closed before its subscribe answers.
+        fake.slow.lock().unwrap().insert("NQZ6".into());
+        watch_root(&mut supervisor, &mut subscriptions, 3, "NQ", &heard);
+        settle_next(&mut supervisor, &mut subscriptions).await;
+        supervisor.end(3, &mut subscriptions);
+        fake.gate.add_permits(1);
+        settle_next(&mut supervisor, &mut subscriptions).await;
+        settle_next(&mut supervisor, &mut subscriptions).await;
+        assert_eq!(fake.unsubscribes.lock().unwrap().as_slice(), &["NQZ6"]);
+        assert!(heard.lock().unwrap().iter().all(|(id, _)| *id != 3));
+
+        supervisor.end(1, &mut subscriptions);
+        assert_eq!(fake.unsubscribes.lock().unwrap().len(), 1, "ES still has a watch");
+        supervisor.end(2, &mut subscriptions);
+        settle_next(&mut supervisor, &mut subscriptions).await;
+        assert_eq!(fake.unsubscribes.lock().unwrap().as_slice(), &["NQZ6", "ESZ6"]);
     }
 }
