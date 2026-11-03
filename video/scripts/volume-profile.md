@@ -1,6 +1,6 @@
 ---
 title: Volume profile
-stage: storyboard
+stage: render
 length: 240s
 theme: tokyo-night
 voice: narrator
