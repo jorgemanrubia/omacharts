@@ -1088,4 +1088,47 @@ mod tests {
         live.shutdown();
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// A streamed feed's history is fetched once. What its first snapshot
+    /// brought is in the cache when the window closes, and the next start
+    /// subscribes from the newest bar the cache holds — which is what a
+    /// Rithmic stream asks its history plant from, a few bars back — rather
+    /// than from nothing, which would ask for the month again.
+    #[test]
+    fn a_streamed_series_is_cached_and_the_next_start_asks_only_from_its_edge() {
+        let dir = std::env::temp_dir().join(format!("omacharts-live-restart-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("omacharts.db");
+        let store = Store::open_at(&path).unwrap();
+        let history: Vec<Bar> = (0..600).map(|i| bar(i * 60, 100.0 + i as f64)).collect();
+
+        let inner = Arc::new(Mutex::new(FakeState::default()));
+        let provider: Arc<dyn Provider> = Arc::new(Fake { inner: inner.clone() });
+        let first = Live::new(provider.clone(), Some(path.clone()));
+        let since = store.coverage("fake:ES", M1).map(|c| c.last_ts);
+        assert_eq!(since, None, "a first start has nothing");
+        first.watch(1, series("ES", M1), "ES", since);
+        push(&inner, "ES", M1, Update::Snapshot(history.clone()));
+        first.drain();
+        let Ok(Written::Merged { series: merged, bars }) = first.written().recv_blocking() else {
+            panic!("a merge first");
+        };
+        first.merged(&merged, bars);
+        push(&inner, "ES", M1, Update::Bar(bar(600 * 60, 700.0)));
+        first.drain();
+        first.shutdown();
+        drop(first);
+
+        // The window again, the cache read as `show_in` reads it.
+        let cached = store.load_bars("fake:ES", M1);
+        assert_eq!(cached.len(), 601, "the snapshot and the tick after it are kept");
+        let since = store.coverage("fake:ES", M1).map(|c| c.last_ts);
+        assert_eq!(since, Some(600 * 60));
+        let second = Live::new(provider, Some(path.clone()));
+        second.watch(1, series("ES", M1), "ES", since);
+        assert_eq!(inner.lock().unwrap().opened.last().map(|o| o.2), Some(Some(600 * 60)));
+        second.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
