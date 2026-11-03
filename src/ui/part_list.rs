@@ -47,6 +47,9 @@ pub struct PartList<P: Part> {
     pub group: adw::PreferencesGroup,
     add: gtk::MenuButton,
     parts: RefCell<Vec<P>>,
+    /// Parts the + does not offer, because they are somewhere else: in the
+    /// header's other section, for one.
+    elsewhere: RefCell<Vec<P>>,
     rows: RefCell<Vec<gtk::Widget>>,
     changed: Box<dyn Fn(Vec<P>)>,
 }
@@ -70,6 +73,7 @@ impl<P: Part> PartList<P> {
             group,
             add,
             parts: RefCell::new(current),
+            elsewhere: RefCell::new(Vec::new()),
             rows: RefCell::new(Vec::new()),
             changed: Box::new(changed),
         });
@@ -77,7 +81,26 @@ impl<P: Part> PartList<P> {
         list
     }
 
-    fn set(self: &Rc<Self>, parts: Vec<P>) {
+    /// Stop offering `parts`, which are somewhere else now, and offer again
+    /// what no longer is.
+    pub fn set_elsewhere(self: &Rc<Self>, parts: Vec<P>) {
+        *self.elsewhere.borrow_mut() = parts;
+        self.rebuild();
+    }
+
+    /// What it holds, in order.
+    pub fn parts(&self) -> Vec<P> {
+        self.parts.borrow().clone()
+    }
+
+    /// What the + offers, in its order.
+    pub fn offered(&self) -> Vec<P> {
+        let parts = self.parts.borrow();
+        let elsewhere = self.elsewhere.borrow();
+        P::every().into_iter().filter(|p| !parts.contains(p) && !elsewhere.contains(p)).collect()
+    }
+
+    pub(crate) fn set(self: &Rc<Self>, parts: Vec<P>) {
         *self.parts.borrow_mut() = parts.clone();
         (self.changed)(parts);
         self.rebuild();
@@ -169,7 +192,7 @@ impl<P: Part> PartList<P> {
         }
 
         // The + offers what is not there yet, and goes when nothing is left.
-        let missing: Vec<P> = P::every().into_iter().filter(|p| !parts.contains(p)).collect();
+        let missing = self.offered();
         self.add.set_visible(!missing.is_empty());
         let choices = gtk::Box::new(gtk::Orientation::Vertical, 0);
         let popover = gtk::Popover::new();
