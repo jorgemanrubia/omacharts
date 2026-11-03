@@ -472,6 +472,18 @@ The first version of order entry:
 - the account's balance and Rithmic's loss limits (RMS), shown but not
   enforced.
 
+On the chart, a working order's line can be dragged to another price,
+and the position's pill has a TP and an SL tab beside it, dragged out to
+place a target or a stop for the whole position. While it is dragged it
+is a preview: its line in the order's look, what it would be, and how
+many ticks it has come; where it may not go with the market where it is,
+it says why and letting go does nothing. Every pill ends in a ×, which
+cancels an order or flattens the position. A new exit is linked to the
+other one working on the position when the broker links orders (Rithmic
+does, on its servers), so whichever fills first cancels the other; a
+broker that does not is said to, and flattening cancels the exits left
+behind. Tried on Rithmic Test on 2026-11-03.
+
 Every order on a live account asks for confirmation until the trader turns
 that off for that account. The order ticket says which account and system it
 is about to use, every time.

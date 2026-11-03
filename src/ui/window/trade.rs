@@ -509,6 +509,17 @@ impl Window {
     /// Send `order` off the main loop, one at a time per account. A failure
     /// is said and never retried.
     fn place(self: &Rc<Self>, target: trading::Target, order: trading::Order) {
+        self.place_then(target, order, |_, _| {});
+    }
+
+    /// [`Self::place`], and `then` with its basket once the broker has
+    /// taken it.
+    fn place_then(
+        self: &Rc<Self>,
+        target: trading::Target,
+        order: trading::Order,
+        then: impl FnOnce(&Rc<Self>, String) + 'static,
+    ) {
         let key = target.account.key();
         if let Err(why) = self.trade.placing.begin(&key) {
             return self.toast(&why);
@@ -528,9 +539,10 @@ impl Window {
             this.trade.placing.done(&key);
             match outcome {
                 Ok(basket) => {
-                    this.trade.placed.borrow_mut().insert(basket, Status::Pending);
+                    this.trade.placed.borrow_mut().insert(basket.clone(), Status::Pending);
                     // What it has done already, the book may say now.
                     this.desk.tell();
+                    then(&this, basket);
                 }
                 Err(why) => this.toast(&format!("Not placed: {why}")),
             }
@@ -556,7 +568,7 @@ impl Window {
             TradeEvent::Cancel(basket) => self.cancel_mark(&pane, &basket),
             TradeEvent::Flatten => self.flatten_mark(&pane),
             TradeEvent::Move { basket, price } => self.move_mark(&pane, &basket, price),
-            TradeEvent::ExitAt { .. } => {}
+            TradeEvent::ExitAt { kind, price } => self.exit_mark(&pane, kind, price),
         }
     }
 
@@ -641,6 +653,70 @@ impl Window {
         });
     }
 
+    /// A tab pulled out to `price`: an exit of `kind` for the whole of the
+    /// position, asked first on a live account, and linked to the other
+    /// exit when there is one and the broker links orders.
+    fn exit_mark(self: &Rc<Self>, pane: &ChartPane, kind: OrderKind, price: f64) {
+        let target = match self.order_target(pane) {
+            Ok(target) => target,
+            Err(why) => return self.toast(&format!("{why} · not placed")),
+        };
+        let key = target.account.key();
+        let held = self.trading.borrow().book.position(&key, &target.contract).cloned();
+        let Some(held) = held else { return self.toast("Nothing held · not placed") };
+        if !target.capabilities.kinds.contains(&kind) {
+            return self.toast(&format!("{} takes no {} orders · not placed", target.login.name, kind.word()));
+        }
+        if let Some(last) = pane.view.last_price()
+            && !trading::exit_allowed(kind, held.net, price, last)
+        {
+            return self.toast(&format!("{} · not placed", trading::refused_text(kind, price, last)));
+        }
+        let side = trading::exit_side(held.net);
+        let qty = held.net.unsigned_abs();
+        let tick = Self::tick_of(pane, &target);
+        let places = tick.map_or(2, |tick| omacharts_engine::on_tick(price, tick).1);
+        let ticks = tick.zip(held.avg).map(|(tick, from)| trading::ticks_between(from, price, tick));
+        let preview =
+            trading::preview_text(side, kind, qty, &omacharts_engine::grouped_decimals(price, places), ticks);
+        let order = trading::Order {
+            account: target.account.id.clone(),
+            contract: target.contract.clone(),
+            exchange: target.exchange.clone(),
+            side,
+            qty,
+            kind,
+            price: Some(price),
+            tag: trading::new_tag(),
+        };
+        let button = format!("{} {}", trading::order_words(side, kind), target.contract);
+        self.ask_then(&target.clone(), &preview, &button, move |this| {
+            let linking = target.clone();
+            this.place_then(target.clone(), order.clone(), move |this, basket| this.link_exit(&linking, side, kind, basket));
+        });
+    }
+
+    /// The exit just placed as `basket`, linked to the other one working
+    /// on the position, so that whichever goes first takes the other with
+    /// it; said when the broker cannot.
+    fn link_exit(self: &Rc<Self>, target: &trading::Target, side: Side, kind: OrderKind, basket: String) {
+        let key = target.account.key();
+        let sibling = {
+            let view = self.trading.borrow();
+            let working = view.book.working(&key, &target.contract).filter(|order| order.basket_id != basket);
+            trading::sibling_exit(working, &target.contract, side, kind).map(|order| order.basket_id.clone())
+        };
+        let Some(sibling) = sibling else { return };
+        if !target.capabilities.link {
+            return self.toast("Stop and target not linked on this broker");
+        }
+        let baskets = vec![basket, sibling];
+        self.send(target, move |session, number| session.link(number, &baskets), |this, outcome| match outcome {
+            Ok(()) => this.toast("Linked: stop cancels target"),
+            Err(why) => this.toast(&format!("Not linked: {why}")),
+        });
+    }
+
     /// An order's line let go at `price`: move it there, asked first on a
     /// live account. Drawn faint at its new price until the book has it
     /// there; back where it was, and said, if the broker refuses.
@@ -704,19 +780,46 @@ impl Window {
         let Some(held) = held else { return self.toast("Nothing held · not flattened") };
         let question = format!("Flatten {} {}", trading::net_text(held.net), target.contract);
         self.ask_then(&target.clone(), &question, "Flatten", move |this| {
+            // The exits working on it, to cancel once it is flat: a stop
+            // left behind would open a position of its own.
+            let exits: Vec<String> = {
+                let view = this.trading.borrow();
+                let side = trading::exit_side(held.net);
+                view.book
+                    .working(&key, &target.contract)
+                    .filter(|order| order.side == side && order.kind != OrderKind::Market)
+                    .map(|order| order.basket_id.clone())
+                    .collect()
+            };
             let pending = (key.clone(), target.contract.clone());
             this.trade.flattening.borrow_mut().insert(pending.clone());
             this.apply_marks();
             let (contract, exchange) = (target.contract.clone(), target.exchange.clone());
+            let (target, pending) = (target.clone(), pending.clone());
             this.send(
-                &target,
+                &target.clone(),
                 move |session, number| session.flatten(number, &contract, &exchange),
                 move |this, outcome| {
                     if let Err(why) = outcome {
                         this.trade.flattening.borrow_mut().remove(&pending);
                         this.apply_marks();
-                        this.toast(&format!("Not flattened: {why}"));
+                        return this.toast(&format!("Not flattened: {why}"));
                     }
+                    // One the broker cancelled itself, or a link took with
+                    // its sibling, is not working any more: nothing to say.
+                    if exits.is_empty() {
+                        return;
+                    }
+                    this.send(
+                        &target,
+                        move |session, number| {
+                            for basket in &exits {
+                                let _ = session.cancel(number, basket);
+                            }
+                            Ok(())
+                        },
+                        |_, _: Result<(), String>| {},
+                    );
                 },
             );
         });
@@ -1059,8 +1162,8 @@ pub(super) mod tests {
 
     /// A window on the synthetic feed with ES on its chart, signed in to
     /// the tests' session on account 951, which trades ES as ESZ6 and is
-    /// simulated or not; long one at 7,612.25.
-    fn long_es(simulated: bool) -> (Rc<Window>, Rc<ChartPane>, Arc<trading::tests::FakeSession>, String) {
+    /// simulated or not and links orders or not; long one at 7,612.25.
+    fn long_es(simulated: bool, links: bool) -> (Rc<Window>, Rc<ChartPane>, Arc<trading::tests::FakeSession>, String) {
         let store = Rc::new(Store::memory().expect("a store"));
         let window = window(&store);
         let es = window.index.find("ES", None).expect("ES in the curated half");
@@ -1078,6 +1181,7 @@ pub(super) mod tests {
         };
         let mut session = trading::tests::FakeSession::new(vec![account.clone()], Box::new(|| {}));
         session.simulated = simulated;
+        session.links_orders = links;
         session.contracts.lock().unwrap().insert("ES".into(), "ESZ6".into());
         let session = Arc::new(session);
         assert!(window.desk.begin(&id));
@@ -1125,7 +1229,7 @@ pub(super) mod tests {
             return;
         }
         use crate::ui::chart::TradeEvent;
-        let (window, pane, session, key) = long_es(true);
+        let (window, pane, session, key) = long_es(true, true);
         let basket = session.place(&resting(Side::Sell, OrderKind::Limit, Some(7_640.0))).unwrap();
         window.desk.tell();
         let orders = || pane.view.mark_states().1;
@@ -1168,7 +1272,7 @@ pub(super) mod tests {
             return;
         }
         use crate::ui::chart::TradeEvent;
-        let (window, pane, session, key) = long_es(true);
+        let (window, pane, session, key) = long_es(true, true);
         settle(&window, || pane.view.last_price().is_some());
         let last = pane.view.last_price().expect("a last price");
         let above = |ticks: f64| (last / 0.25).round() * 0.25 + ticks * 0.25;
@@ -1207,6 +1311,53 @@ pub(super) mod tests {
         assert!(window.trade.moving.borrow().is_empty(), "a filled order waiting to move");
     }
 
+    /// TP and SL pulled out of the position place a target and a stop for
+    /// all of it, each tab going once its exit is working; the second is
+    /// linked to the first. One on the wrong side of the market is not
+    /// placed. Without links, nothing is linked, and flattening cancels
+    /// the exits left behind.
+    #[test]
+    fn exits_pulled_out_of_the_position_are_placed_and_linked() {
+        if !crate::ui::gtk_ready() {
+            return;
+        }
+        use crate::ui::chart::TradeEvent;
+        for links in [true, false] {
+            let (window, pane, session, _) = long_es(true, links);
+            settle(&window, || pane.view.last_price().is_some());
+            let last = pane.view.last_price().expect("a last price");
+            let off = |ticks: f64| (last / 0.25).round() * 0.25 + ticks * 0.25;
+            assert_eq!(pane.view.exit_tabs(), vec![OrderKind::Limit, OrderKind::Stop]);
+            let working = || session.book().orders.iter().filter(|o| o.status.working()).count();
+
+            pane.view.drop_mark(TradeEvent::ExitAt { kind: OrderKind::Stop, price: off(20.0) });
+            settle(&window, || false);
+            assert_eq!(working(), 0, "a long's stop placed above the market");
+
+            pane.view.drop_mark(TradeEvent::ExitAt { kind: OrderKind::Limit, price: off(40.0) });
+            settle(&window, || pane.view.exit_tabs() == vec![OrderKind::Stop]);
+            let target = session.book().orders[0].clone();
+            assert_eq!((target.side, target.kind, target.qty, target.price), (Side::Sell, OrderKind::Limit, 1, Some(off(40.0))));
+            assert_eq!(pane.view.exit_tabs(), vec![OrderKind::Stop], "the TP tab stayed");
+
+            pane.view.drop_mark(TradeEvent::ExitAt { kind: OrderKind::Stop, price: off(-40.0) });
+            settle(&window, || pane.view.exit_tabs().is_empty() && (!links || !session.links.lock().unwrap().is_empty()));
+            let stop = session.book().orders[0].clone();
+            assert_eq!((stop.side, stop.kind, stop.price), (Side::Sell, OrderKind::Stop, Some(off(-40.0))));
+            let linked = session.links.lock().unwrap().clone();
+            match links {
+                true => assert_eq!(linked, vec![vec![stop.basket_id.clone(), target.basket_id.clone()]]),
+                false => assert!(linked.is_empty(), "linked on a broker that does not link"),
+            }
+
+            pane.view.drop_mark(TradeEvent::Flatten);
+            settle(&window, || pane.view.mark_states().0.is_none() && working() == 0);
+            assert!(session.book().position("951", "ESZ6").is_none());
+            assert_eq!(working(), 0, "an exit outlived the position it was for");
+            assert!(pane.view.mark_states().1.is_empty());
+        }
+    }
+
     /// On a live account the × asks first, and nothing is sent until it is
     /// answered.
     #[test]
@@ -1215,7 +1366,7 @@ pub(super) mod tests {
             return;
         }
         use crate::ui::chart::TradeEvent;
-        let (window, pane, session, _) = long_es(false);
+        let (window, pane, session, _) = long_es(false, true);
         let basket = session.place(&resting(Side::Sell, OrderKind::Limit, Some(7_640.0))).unwrap();
         window.desk.tell();
         window.window.present();
