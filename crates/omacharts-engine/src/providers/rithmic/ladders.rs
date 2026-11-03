@@ -211,10 +211,10 @@ mod tests {
         let minute = minute_of(&found, 0.25);
         assert_eq!(minute.ts, 600);
         assert_eq!(minute.ladder.low_tick, 30_500);
-        assert_eq!(minute.ladder.at(30_500).bid, 10);
-        assert_eq!(minute.ladder.at(30_501).ask, 15);
+        assert_eq!(minute.ladder.at(30_500).at_bid, 10);
+        assert_eq!(minute.ladder.at(30_501).at_ask, 15);
         assert_eq!(minute.ladder.at(30_502).bid_trades, 1);
-        assert_eq!((minute.ladder.sides.bid, minute.ladder.sides.ask, minute.ladder.sides.unknown), (13, 17, 10));
+        assert_eq!((minute.ladder.sides.at_bid, minute.ladder.sides.at_ask, minute.ladder.sides.unknown), (13, 17, 10));
         assert_eq!(minute.volume, 40);
     }
 

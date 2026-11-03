@@ -14,8 +14,10 @@
 //! A range is answered as whole days' totals plus the loose minutes at either
 //! end, so a year is some 250 additions of a day ladder however long it is.
 //!
-//! Sides: **bid** volume is sell-aggressor volume (traded at the bid), **ask**
-//! volume is buy-aggressor volume. A print with no known aggressor counts at
+//! Sides: volume **at the bid** (`at_bid`) is sell-aggressor volume, a seller
+//! hitting the bid; volume **at the ask** (`at_ask`) is buy-aggressor volume.
+//! Both are what traded, never what was resting in the book: the sizes on
+//! offer at a price are depth, which is another thing. A print with no known aggressor counts at
 //! its price as [`Level::unknown`] — in the price's volume, so a profile
 //! has it — and on neither side, so delta does not. Volume a provider
 //! reports with no price at all is in [`Sides::unknown`] alone.
@@ -62,10 +64,10 @@ pub fn minute_of(ts: i64) -> i64 {
 /// allocation and a price's numbers sit in one cache line.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Level {
-    /// Sell-aggressor volume.
-    pub bid: u64,
-    /// Buy-aggressor volume.
-    pub ask: u64,
+    /// Sell-aggressor volume: traded at the bid, not the size bid.
+    pub at_bid: u64,
+    /// Buy-aggressor volume: traded at the ask, not the size offered.
+    pub at_ask: u64,
     /// Volume traded here with no known aggressor: in the price's volume,
     /// on neither side. Its trades are counted only in the ladder's
     /// [`Sides::unknown_trades`].
@@ -77,7 +79,7 @@ pub struct Level {
 impl Level {
     /// Everything that traded at this price, sides or not.
     pub fn volume(&self) -> u64 {
-        self.bid + self.ask + self.unknown
+        self.at_bid + self.at_ask + self.unknown
     }
 
     fn is_empty(&self) -> bool {
@@ -85,16 +87,16 @@ impl Level {
     }
 
     fn add(&mut self, other: &Level) {
-        self.bid += other.bid;
-        self.ask += other.ask;
+        self.at_bid += other.at_bid;
+        self.at_ask += other.at_ask;
         self.unknown += other.unknown;
         self.bid_trades += other.bid_trades;
         self.ask_trades += other.ask_trades;
     }
 
     fn sub(&mut self, other: &Level) {
-        self.bid = self.bid.saturating_sub(other.bid);
-        self.ask = self.ask.saturating_sub(other.ask);
+        self.at_bid = self.at_bid.saturating_sub(other.at_bid);
+        self.at_ask = self.at_ask.saturating_sub(other.at_ask);
         self.unknown = self.unknown.saturating_sub(other.unknown);
         self.bid_trades = self.bid_trades.saturating_sub(other.bid_trades);
         self.ask_trades = self.ask_trades.saturating_sub(other.ask_trades);
@@ -105,8 +107,10 @@ impl Level {
 /// volume, delta and trade counts never sum its price array.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Sides {
-    pub bid: u64,
-    pub ask: u64,
+    /// Sell-aggressor volume, as [`Level::at_bid`].
+    pub at_bid: u64,
+    /// Buy-aggressor volume, as [`Level::at_ask`].
+    pub at_ask: u64,
     /// Volume printed with no aggressor: what the levels hold as
     /// [`Level::unknown`], and any a provider reported with no price.
     pub unknown: u64,
@@ -118,12 +122,12 @@ pub struct Sides {
 impl Sides {
     /// Everything that traded, sides or not.
     pub fn volume(&self) -> u64 {
-        self.bid + self.ask + self.unknown
+        self.at_bid + self.at_ask + self.unknown
     }
 
     /// Buyers less sellers: ask volume less bid volume.
     pub fn delta(&self) -> i64 {
-        self.ask as i64 - self.bid as i64
+        self.at_ask as i64 - self.at_bid as i64
     }
 
     pub fn trades(&self) -> u64 {
@@ -131,8 +135,8 @@ impl Sides {
     }
 
     pub fn add(&mut self, other: &Sides) {
-        self.bid += other.bid;
-        self.ask += other.ask;
+        self.at_bid += other.at_bid;
+        self.at_ask += other.at_ask;
         self.unknown += other.unknown;
         self.bid_trades += other.bid_trades;
         self.ask_trades += other.ask_trades;
@@ -140,8 +144,8 @@ impl Sides {
     }
 
     fn sub(&mut self, other: &Sides) {
-        self.bid = self.bid.saturating_sub(other.bid);
-        self.ask = self.ask.saturating_sub(other.ask);
+        self.at_bid = self.at_bid.saturating_sub(other.at_bid);
+        self.at_ask = self.at_ask.saturating_sub(other.at_ask);
         self.unknown = self.unknown.saturating_sub(other.unknown);
         self.bid_trades = self.bid_trades.saturating_sub(other.bid_trades);
         self.ask_trades = self.ask_trades.saturating_sub(other.ask_trades);
@@ -215,9 +219,9 @@ impl Ladder {
         self.levels.iter().enumerate().map(|(i, level)| (self.low_tick + i as i32, level))
     }
 
-    /// Every level as `(price, bid, ask)`, lowest first.
+    /// Every level as `(price, at_bid, at_ask)`, lowest first.
     pub fn prices(&self, tick_size: f64) -> impl Iterator<Item = (f64, u64, u64)> + '_ {
-        self.iter().map(move |(tick, l)| (to_price(tick, tick_size), l.bid, l.ask))
+        self.iter().map(move |(tick, l)| (to_price(tick, tick_size), l.at_bid, l.at_ask))
     }
 
     /// Empty it, keeping the allocation.
@@ -257,15 +261,15 @@ impl Ladder {
         let level = &mut self.levels[(tick - self.low_tick) as usize];
         match side {
             Side::Buy => {
-                level.ask += size;
+                level.at_ask += size;
                 level.ask_trades += count;
-                self.sides.ask += size;
+                self.sides.at_ask += size;
                 self.sides.ask_trades += u64::from(count);
             }
             Side::Sell => {
-                level.bid += size;
+                level.at_bid += size;
                 level.bid_trades += count;
-                self.sides.bid += size;
+                self.sides.at_bid += size;
                 self.sides.bid_trades += u64::from(count);
             }
             Side::Unknown => {
@@ -1096,8 +1100,8 @@ fn put_ladder(out: &mut Vec<u8>, ladder: &Ladder, flags: u8) {
         put_varint(out, ladder.sides.ask_trades);
     }
     for level in &ladder.levels {
-        put_varint(out, level.bid);
-        put_varint(out, level.ask);
+        put_varint(out, level.at_bid);
+        put_varint(out, level.at_ask);
         if unknown {
             put_varint(out, level.unknown);
         }
@@ -1123,7 +1127,7 @@ fn read_ladder(r: &mut Reader<'_>, low_tick: i32, flags: u8) -> Result<Ladder, D
     }
     let mut levels = Vec::with_capacity(width);
     for _ in 0..width {
-        let mut level = Level { bid: r.varint()?, ask: r.varint()?, ..Level::default() };
+        let mut level = Level { at_bid: r.varint()?, at_ask: r.varint()?, ..Level::default() };
         if unknown {
             level.unknown = r.varint()?;
         }
@@ -1133,8 +1137,8 @@ fn read_ladder(r: &mut Reader<'_>, low_tick: i32, flags: u8) -> Result<Ladder, D
             sides.bid_trades += u64::from(level.bid_trades);
             sides.ask_trades += u64::from(level.ask_trades);
         }
-        sides.bid += level.bid;
-        sides.ask += level.ask;
+        sides.at_bid += level.at_bid;
+        sides.at_ask += level.at_ask;
         levels.push(level);
     }
     if width > 0 && i64::from(low_tick) + width as i64 - 1 > i64::from(i32::MAX) {
@@ -1423,12 +1427,12 @@ mod tests {
         assert_eq!((m.high, m.low, m.close), (100.5, 99.5, 100.5));
         assert_eq!(m.ladder.low_tick, 398);
         assert_eq!(m.ladder.levels.len(), 5, "the unknown print takes its price");
-        assert_eq!(m.ladder.at(400).ask, 5);
-        assert_eq!(m.ladder.at(398).bid, 3);
+        assert_eq!(m.ladder.at(400).at_ask, 5);
+        assert_eq!(m.ladder.at(398).at_bid, 3);
         let unknown = m.ladder.at(402);
-        assert_eq!((unknown.bid, unknown.ask, unknown.unknown, unknown.volume()), (0, 0, 2, 2));
+        assert_eq!((unknown.at_bid, unknown.at_ask, unknown.unknown, unknown.volume()), (0, 0, 2, 2));
         let s = m.ladder.sides;
-        assert_eq!((s.bid, s.ask, s.unknown, s.volume(), s.delta()), (3, 5, 2, 10, 2));
+        assert_eq!((s.at_bid, s.at_ask, s.unknown, s.volume(), s.delta()), (3, 5, 2, 10, 2));
         assert_eq!((s.bid_trades, s.ask_trades, s.unknown_trades), (1, 1, 1));
         assert_eq!(m.ladder.point_of_control(), Some(400));
         let prices: Vec<_> = m.ladder.prices(0.25).collect();
@@ -1453,7 +1457,7 @@ mod tests {
         assert_eq!(volumes, vec![40, 5, 5]);
         assert_eq!(ladder.point_of_control(), Some(400));
         assert_eq!((ladder.total(), ladder.delta()), (50, 0));
-        assert_eq!((ladder.sides.bid, ladder.sides.ask, ladder.sides.unknown), (0, 0, 50));
+        assert_eq!((ladder.sides.at_bid, ladder.sides.at_ask, ladder.sides.unknown), (0, 0, 50));
         for bar in s.bars_by(0, 600, |ts| ts.div_euclid(300) * 300) {
             assert_eq!((bar.volume, bar.ladder.delta()), (25, 0));
             assert_eq!(bar.ladder.levels.iter().map(Level::volume).sum::<u64>(), 25);
@@ -1552,7 +1556,7 @@ mod tests {
         let sealed = f.add_trade(61, 100.0, 4, Side::Unknown).unwrap();
         assert_eq!((sealed.ts, sealed.open, sealed.high, sealed.low, sealed.close), (0, 100.0, 100.25, 99.75, 100.25));
         assert_eq!(sealed.volume, 6);
-        assert_eq!(sealed.ladder.sides.ask, 5);
+        assert_eq!(sealed.ladder.sides.at_ask, 5);
         assert_eq!(f.current().map(|m| m.ts), Some(60));
         // Quiet minutes 2 and 3 are complete; the print in minute 4 seals 1.
         assert!(f.add_trade(250, 100.0, 1, Side::Buy).is_some());
@@ -1612,9 +1616,9 @@ mod tests {
         let v1 = [1, FLAG_COUNTS, 120, 0xa0, 0x06, 0, 0, 0, 0, 1, 2, 1, 3, 5, 1, 2];
         let m = decode_minute(&v1, TICK).unwrap();
         assert_eq!((m.ts, m.open, m.close, m.volume), (60, 100.0, 100.0, 10));
-        assert_eq!(m.ladder.levels, vec![Level { bid: 3, ask: 5, unknown: 0, bid_trades: 1, ask_trades: 2 }]);
+        assert_eq!(m.ladder.levels, vec![Level { at_bid: 3, at_ask: 5, unknown: 0, bid_trades: 1, ask_trades: 2 }]);
         let s = m.ladder.sides;
-        assert_eq!((s.bid, s.ask, s.unknown, s.unknown_trades, s.delta()), (3, 5, 2, 1, 2));
+        assert_eq!((s.at_bid, s.at_ask, s.unknown, s.unknown_trades, s.delta()), (3, 5, 2, 1, 2));
 
         // A whole day and a total in version 1 are version 2's bytes with
         // no per-price unknown, under the old version byte.

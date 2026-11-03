@@ -90,9 +90,9 @@ fn minute(rng: &mut Rng, ts: i64, center: &mut i32, rth: bool) -> Minute {
     for _ in 0..width {
         let (bid, ask) = (rng.below(per_side), rng.below(per_side));
         let size = 1 + rng.below(3);
-        let level = Level { bid, ask, unknown: 0, bid_trades: bid.div_ceil(size) as u32, ask_trades: ask.div_ceil(size) as u32 };
-        sides.bid += level.bid;
-        sides.ask += level.ask;
+        let level = Level { at_bid: bid, at_ask: ask, unknown: 0, bid_trades: bid.div_ceil(size) as u32, ask_trades: ask.div_ceil(size) as u32 };
+        sides.at_bid += level.at_bid;
+        sides.at_ask += level.at_ask;
         sides.bid_trades += u64::from(level.bid_trades);
         sides.ask_trades += u64::from(level.ask_trades);
         levels.push(level);

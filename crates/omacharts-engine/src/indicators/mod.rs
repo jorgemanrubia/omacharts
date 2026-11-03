@@ -1928,7 +1928,7 @@ mod tests {
             let (from, to) = (bars[0].ts, bars[bars.len() - 1].ts + 60);
             let ladder = held.between(from, to).expect("held whole");
             assert_eq!((ladder.total() as f64, ladder.delta()), (traded, 0));
-            assert!(ladder.levels.iter().all(|l| l.bid == 0 && l.ask == 0));
+            assert!(ladder.levels.iter().all(|l| l.at_bid == 0 && l.at_ask == 0));
         }
 
         fn every_minute_summed_by_price(sided: bool) {

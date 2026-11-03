@@ -379,9 +379,9 @@ mod tests {
             vec![trade(0.0, 100, 3, Side::Buy), trade(1.0, 101, 9, Side::Sell), trade(2.0, 102, 1, Side::Buy)];
         let bars = fold(&trades, Rule::Volume(5), TICK);
         assert_eq!(bars.iter().map(|b| b.bar.volume).collect::<Vec<_>>(), vec![5, 5, 3]);
-        assert_eq!(bars[0].bar.ladder.at(101).bid, 2);
-        assert_eq!(bars[1].bar.ladder.at(101).bid, 5);
-        assert_eq!(bars[2].bar.ladder.at(101).bid, 2);
+        assert_eq!(bars[0].bar.ladder.at(101).at_bid, 2);
+        assert_eq!(bars[1].bar.ladder.at(101).at_bid, 5);
+        assert_eq!(bars[2].bar.ladder.at(101).at_bid, 2);
         // The split print counts once, where it started.
         assert_eq!(bars.iter().map(|b| b.trades).sum::<u64>(), 3);
         assert_eq!(bars[0].trades, 2);
