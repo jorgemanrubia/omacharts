@@ -228,6 +228,9 @@ of data serves all of them.
 **The minute ladder.** For each minute of a contract: open, high, low,
 close and volume, and for each price that traded, the **bid volume**
 (sellers hitting the bid) and the **ask volume** (buyers lifting the offer).
+Each minute also keeps its totals by side (bid, ask, and volume with no
+known aggressor) and trade counts by side, so bid and ask volume per bar,
+delta and average trade size never add up the price arrays.
 
 - It is what Rithmic serves as history, as it is: "volume profile minute
   bars". On Rithmic Test a week of ESZ6 came back as 4558 minutes and 27,936
@@ -251,23 +254,38 @@ same sum over its own minutes.
 per trading day, the ladders as compact blobs. A day is the unit the cache
 evicts, as a series is now.
 
-**Live.** Each trade arrives with its aggressor. It is added to the current
-minute's ladder in memory, and the chart is told as it is told about a
-forming bar now. When the minute closes its ladder is final and the trades
-are gone; ticks are never stored. On the next load Rithmic's own minute
-replaces the one built live.
+**Ticks, in memory.** Each trade arrives with its price, size, time to the
+nanosecond and aggressor. It goes into a bounded buffer of the contract's
+trades for the session (about 5 million, the oldest whole minutes dropped
+first) and into the forming minute's ladder, without allocating. The buffer
+is what tick, volume and range bars are built from, each with a ladder of
+its own, and later a time and sales list. Ticks are never stored.
 
-**Limits.** No history finer than a minute: tick or seconds charts would be
-live only, unless tick replay is added later. How far back a prop firm's
+**Live feeds history.** When a minute closes it is saved, cheaply and
+incrementally, without rewriting its day. The store knows which minutes it
+holds, so the next start asks the provider only for what is missing, which
+also spares Rithmic's data quota. A disconnect is recorded as a gap, not as
+quiet minutes, so it is filled from history. When the provider's own minute
+arrives for a span that was built live, it replaces the live one: it has the
+trades a disconnect missed.
+
+**Limits.** No history finer than a minute: tick, volume, range and seconds
+bars are live only, unless tick replay is added later.
+
+**Built for more than the profile.** Footprints, bid and ask volume bars,
+delta and cumulative delta, imbalances and a per-bar point of control are
+not part of this work, but the data is shaped for them: each is an indicator
+over minute ladders, ticks and side totals, and adding one needs no new
+storage, no new feed and no migration. How far back a prop firm's
 system goes is not known yet; Rithmic is reported to keep a weekly data
 quota, so history is fetched once and cached, never asked for twice.
 
 ### 3. Providers say what they can do
 
-**Done when:** footprint, bid and ask volume and cumulative delta exist as
-indicators; on a Rithmic chart they draw, on a Yahoo chart they say what they
-need; and `bin/perf-compare` against `main` shows the same allocation counts
-for every scenario.
+**Done when:** an indicator can declare that it needs volume at price and
+gets ladders exactly when its chart's source has them; the volume profile
+uses them and keeps its estimate otherwise; and `bin/perf-compare` against
+`main` shows the same allocation counts for every scenario.
 
 Feeds differ, and the richer ones will keep coming (Interactive Brokers is
 likely next). A provider says what it serves, per timeframe as `Capability`
@@ -281,9 +299,10 @@ provider is asked about something it lacks.
   `crates/omacharts-engine/src/ladders.rs`. `Bar` does not change.
 - **Indicators say what they need**: bars, or volume at price. The volume
   profile needs bars and keeps today's estimate from bar ranges, and is exact
-  when the chart has ladders. Footprint and delta need volume at price, and
-  on a chart whose source has none they show one line, "Needs a source with
-  volume at price", rather than an invented estimate.
+  when the chart has ladders. An indicator that needs volume at price (none
+  yet; footprint and delta later) shows one line on a chart whose source has
+  none, "Needs a source with volume at price", rather than an invented
+  estimate.
 
 **Yahoo must stay exactly as fast.** Somebody who never configures anything
 pays nothing for any of this. A chart holds ladders only when its source has
