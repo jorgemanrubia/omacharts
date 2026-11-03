@@ -55,11 +55,14 @@ release.
 
 ### 1. Rithmic as a data source
 
-Yahoo stays the default and serves everything it serves today. Somebody who
-configures Rithmic gets their futures from Rithmic; everything else (stocks,
-indexes, crypto, forex) keeps coming from Yahoo, because Rithmic has none of
-it. So the choice of feed stops being one setting for every chart and
-becomes a question asked per instrument.
+Yahoo stays the default and serves everything it serves today. Data
+providers become an ordered list, with Yahoo always on it. Each chart is
+served by the first provider in that order that serves its instrument. Yahoo
+serves futures too, delayed, so the order decides: with Rithmic above Yahoo,
+futures come from Rithmic, and everything Rithmic does not have (stocks,
+indexes, crypto, forex) still comes from Yahoo. The choice of feed stops
+being one setting for every chart and becomes a question asked per
+instrument.
 
 - **Bars** for futures come from Rithmic: minute bars from the same request
   as the minute ladders below, daily and weekly from its time bars.
