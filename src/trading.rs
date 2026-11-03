@@ -488,10 +488,24 @@ pub trait Broker: Send + Sync {
 }
 
 /// A login's signed-in trading session.
+///
+/// Accounts are named by their number here: a session is one login's, and
+/// [`Desk::book`] puts the login in front.
+///
+/// Placing, cancelling and flattening block until the broker has answered,
+/// so they are for a thread of their own; what becomes of an order arrives
+/// later on the book, with `changed`.
 pub trait Session: Send + Sync {
     /// The accounts, as the broker listed them at sign-in.
     fn accounts(&self) -> Vec<Account>;
     fn balance(&self, account: &str) -> Option<f64>;
+    /// Every order, position and balance it has heard of.
+    fn book(&self) -> Book;
+    /// Place `order` and return the broker's id for it. Never retried.
+    fn place(&self, order: &Order) -> Result<String, String>;
+    fn cancel(&self, account: &str, basket: &str) -> Result<(), String>;
+    fn cancel_all(&self, account: &str) -> Result<(), String>;
+    fn flatten(&self, account: &str, contract: &str, exchange: &str) -> Result<(), String>;
     /// Why it is no longer signed in, if it ended by itself.
     fn trouble(&self) -> Option<String>;
     fn sign_out(&self);
@@ -503,11 +517,22 @@ pub struct Rithmic;
 impl Broker for Rithmic {
     fn sign_in(&self, login: &Login, changed: Box<dyn Fn() + Send + Sync>) -> Result<Arc<dyn Session>, String> {
         let app = session::app().map_err(|error| error.to_string())?;
-        let trading = rithmic::Trading::sign_in(app, &login.rithmic(), changed).map_err(|error| match error {
-            rithmic::Error::Refused(why) => why,
-            error => error.to_string(),
-        })?;
+        // A developer's login file wins over the keyring, which it never
+        // touches, as it does for the data session.
+        let signing = match rithmic::Login::from_env(&login.system, &login.gateway) {
+            Some(development) => development.map_err(|error| error.to_string())?,
+            None => login.rithmic(),
+        };
+        let trading = rithmic::Trading::sign_in(app, &signing, changed).map_err(said)?;
         Ok(Arc::new(RithmicSession { login: login.id.clone(), trading }))
+    }
+}
+
+/// Rithmic's words, without "Rithmic refused…" in front of a refusal.
+fn said(error: rithmic::Error) -> String {
+    match error {
+        rithmic::Error::Refused(why) | rithmic::Error::Rejected(why) => why,
+        error => error.to_string(),
     }
 }
 
@@ -535,6 +560,99 @@ impl Session for RithmicSession {
 
     fn balance(&self, account: &str) -> Option<f64> {
         self.trading.balance(account)
+    }
+
+    fn book(&self) -> Book {
+        let book = self.trading.book();
+        let side = |side| match side {
+            rithmic::Side::Buy => Side::Buy,
+            rithmic::Side::Sell => Side::Sell,
+        };
+        Book {
+            accounts: book
+                .accounts
+                .into_iter()
+                .map(|money| AccountPnl {
+                    key: money.account,
+                    balance: money.balance,
+                    realized_day: money.realized_day,
+                    unrealized: money.unrealized,
+                })
+                .collect(),
+            positions: book
+                .positions
+                .into_iter()
+                .map(|held| Position {
+                    account: held.account,
+                    contract: held.contract,
+                    exchange: held.exchange,
+                    net: held.net,
+                    avg: held.avg,
+                    open_pnl: held.open_pnl,
+                })
+                .collect(),
+            orders: book
+                .orders
+                .into_iter()
+                .map(|order| WorkingOrder {
+                    account: order.account,
+                    basket_id: order.basket_id,
+                    contract: order.contract,
+                    exchange: order.exchange,
+                    side: side(order.side),
+                    qty: order.qty,
+                    kind: match order.kind {
+                        rithmic::Kind::Market => Kind::Market,
+                        rithmic::Kind::Limit => Kind::Limit,
+                        rithmic::Kind::Stop => Kind::Stop,
+                    },
+                    price: order.price,
+                    status: match order.status {
+                        rithmic::Status::Pending => Status::Pending,
+                        rithmic::Status::Working => Status::Working,
+                        rithmic::Status::Filled => Status::Filled,
+                        rithmic::Status::Cancelled => Status::Cancelled,
+                        rithmic::Status::Rejected(why) => Status::Rejected(why),
+                    },
+                    fill_price: order.fill_price,
+                    at: order.at,
+                    tag: order.tag,
+                })
+                .collect(),
+        }
+    }
+
+    fn place(&self, order: &Order) -> Result<String, String> {
+        let placed = rithmic::Order {
+            account: order.account.clone(),
+            contract: order.contract.clone(),
+            exchange: order.exchange.clone(),
+            side: match order.side {
+                Side::Buy => rithmic::Side::Buy,
+                Side::Sell => rithmic::Side::Sell,
+            },
+            qty: order.qty,
+            kind: match order.kind {
+                Kind::Market => rithmic::Kind::Market,
+                Kind::Limit => rithmic::Kind::Limit,
+                Kind::Stop => rithmic::Kind::Stop,
+            },
+            price: order.price,
+            tag: order.tag.clone(),
+        };
+        self.trading.place(&placed).map_err(said)
+    }
+
+    fn cancel(&self, account: &str, basket: &str) -> Result<(), String> {
+        self.trading.cancel(account, basket).map_err(said)
+    }
+
+    fn cancel_all(&self, account: &str) -> Result<(), String> {
+        self.trading.cancel_all(account).map_err(said)
+    }
+
+    fn flatten(&self, account: &str, contract: &str, exchange: &str) -> Result<(), String> {
+        self.trading.flatten(account, contract, exchange).map_err(said)
     }
 
     fn trouble(&self) -> Option<String> {
@@ -741,6 +859,23 @@ impl Desk {
         }
         changed
     }
+
+    /// Every live session's book, one, its accounts named by key: the
+    /// login's id before the number. Logins in the order given.
+    pub fn book(&self, logins: &[Login]) -> Book {
+        let mut book = Book::default();
+        for login in logins {
+            let Some(session) = self.session(&login.id) else { continue };
+            let theirs = session.book();
+            let key = |number: String| format!("{}/{number}", login.id);
+            book.accounts.extend(theirs.accounts.into_iter().map(|money| AccountPnl { key: key(money.key), ..money }));
+            book.positions
+                .extend(theirs.positions.into_iter().map(|held| Position { account: key(held.account), ..held }));
+            book.orders.extend(theirs.orders.into_iter().map(|order| WorkingOrder { account: key(order.account), ..order }));
+        }
+        book.orders.sort_by_key(|order| std::cmp::Reverse(order.at));
+        book
+    }
 }
 
 /// What the window keeps of Trading to draw headers from without asking
@@ -754,6 +889,9 @@ pub struct View {
     /// stale.
     pub default: Option<String>,
     pub data_login: Option<String>,
+    /// What the live sessions know of orders, positions and money; empty
+    /// with none signed in. The window fills it from [`Desk::book`].
+    pub book: Book,
 }
 
 impl View {
@@ -767,7 +905,14 @@ impl View {
             default: store.setting(DEFAULT_ACCOUNT),
             data_login: data_login_id(store, &logins),
             logins,
+            book: Book::default(),
         }
+    }
+
+    /// Is trading anywhere to be seen? Only with a login: without one there
+    /// is no panel, no toggle, no order in a menu and nothing on a chart.
+    pub fn trades(&self) -> bool {
+        !self.logins.is_empty()
     }
 
     pub fn login(&self, id: &str) -> Option<&Login> {
@@ -788,6 +933,383 @@ impl View {
     pub fn trouble(&self, desk: &Desk, account: &Account) -> Option<String> {
         let login = self.login(&account.login)?;
         desk.standing(login, self.data_login.as_deref() == Some(login.id.as_str())).trouble()
+    }
+}
+
+// -- orders -----------------------------------------------------------------
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Side {
+    Buy,
+    Sell,
+}
+
+impl Side {
+    pub fn word(self) -> &'static str {
+        match self {
+            Side::Buy => "Buy",
+            Side::Sell => "Sell",
+        }
+    }
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Side::Buy => "buy",
+            Side::Sell => "sell",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Side> {
+        [Side::Buy, Side::Sell].into_iter().find(|side| side.key() == key)
+    }
+}
+
+/// How an order is priced. A stop is a stop-market.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    Market,
+    Limit,
+    Stop,
+}
+
+impl Kind {
+    pub fn word(self) -> &'static str {
+        match self {
+            Kind::Market => "Market",
+            Kind::Limit => "Limit",
+            Kind::Stop => "Stop",
+        }
+    }
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Kind::Market => "market",
+            Kind::Limit => "limit",
+            Kind::Stop => "stop",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Kind> {
+        [Kind::Market, Kind::Limit, Kind::Stop].into_iter().find(|kind| kind.key() == key)
+    }
+}
+
+/// Where an order stands.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Status {
+    Pending,
+    Working,
+    Filled,
+    Cancelled,
+    Rejected(String),
+}
+
+impl Status {
+    /// Still to fill or be cancelled, so it can be cancelled.
+    pub fn working(&self) -> bool {
+        matches!(self, Status::Pending | Status::Working)
+    }
+
+    pub fn word(&self) -> &'static str {
+        match self {
+            Status::Pending => "Pending",
+            Status::Working => "Working",
+            Status::Filled => "Filled",
+            Status::Cancelled => "Cancelled",
+            Status::Rejected(_) => "Rejected",
+        }
+    }
+}
+
+/// An account's money, as its broker pushed it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AccountPnl {
+    /// [`Account::key`] on the desk; the number inside a session.
+    pub key: String,
+    pub balance: Option<f64>,
+    pub realized_day: Option<f64>,
+    pub unrealized: Option<f64>,
+}
+
+/// A position held in one contract.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Position {
+    /// The account's key on the desk; its number inside a session.
+    pub account: String,
+    pub contract: String,
+    pub exchange: String,
+    /// Positive long, negative short.
+    pub net: i32,
+    pub avg: Option<f64>,
+    /// As the broker worked it out, never from point values here.
+    pub open_pnl: Option<f64>,
+}
+
+/// An order the broker has told of, working or done.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorkingOrder {
+    /// The account's key on the desk; its number inside a session.
+    pub account: String,
+    pub basket_id: String,
+    pub contract: String,
+    pub exchange: String,
+    pub side: Side,
+    pub qty: u32,
+    pub kind: Kind,
+    pub price: Option<f64>,
+    pub status: Status,
+    pub fill_price: Option<f64>,
+    /// Unix seconds.
+    pub at: i64,
+    pub tag: Option<String>,
+}
+
+/// What every live session knows of orders, positions and money.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Book {
+    pub accounts: Vec<AccountPnl>,
+    pub positions: Vec<Position>,
+    /// Newest first.
+    pub orders: Vec<WorkingOrder>,
+}
+
+impl Book {
+    pub fn money(&self, key: &str) -> Option<&AccountPnl> {
+        self.accounts.iter().find(|money| money.key == key)
+    }
+
+    /// `account`'s position in `contract`, while one is held.
+    pub fn position(&self, account: &str, contract: &str) -> Option<&Position> {
+        self.positions.iter().find(|held| held.account == account && held.contract == contract && held.net != 0)
+    }
+
+    /// `account`'s working orders in `contract`.
+    pub fn working<'a>(&'a self, account: &'a str, contract: &'a str) -> impl Iterator<Item = &'a WorkingOrder> {
+        self.orders
+            .iter()
+            .filter(move |order| order.account == account && order.contract == contract && order.status.working())
+    }
+
+    pub fn order(&self, basket: &str) -> Option<&WorkingOrder> {
+        self.orders.iter().find(|order| order.basket_id == basket)
+    }
+}
+
+/// An order to place: one contract, good for the day, entered by hand.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Order {
+    /// The account's number, inside its login's session.
+    pub account: String,
+    pub contract: String,
+    pub exchange: String,
+    pub side: Side,
+    pub qty: u32,
+    pub kind: Kind,
+    pub price: Option<f64>,
+    /// `omacharts:<nanos>`, to know it again.
+    pub tag: String,
+}
+
+/// A fresh tag for an order placed now.
+pub fn new_tag() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.as_nanos())
+        .unwrap_or_default();
+    format!("omacharts:{nanos}")
+}
+
+/// Where an order from a chart goes: its account, inside a login that is
+/// signed in, and the contract its futures root trades as now.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Target {
+    pub account: Account,
+    pub login: Login,
+    pub contract: String,
+    pub exchange: String,
+}
+
+impl Target {
+    /// Rithmic Test fills against a simulation; anything else is money.
+    pub fn live(&self) -> bool {
+        self.login.system != TEST_SYSTEM
+    }
+}
+
+/// Where an order from a chart of `instrument`, on the account `chosen`,
+/// would go, or why it cannot: the one rule the menu and the click both
+/// ask. `live` says whether a login is signed in; `contract_of` is the
+/// front month a root trades as, when it is known.
+pub fn order_target(
+    view: &View,
+    live: impl Fn(&str) -> bool,
+    chosen: Option<&str>,
+    instrument: Option<&omacharts_engine::Instrument>,
+    contract_of: impl Fn(&str) -> Option<(String, String)>,
+) -> Result<Target, String> {
+    let account = view.account_of(chosen).ok_or_else(|| "No trading account".to_string())?;
+    let name = account_name(account, &view.logins);
+    let login = view.login(&account.login).ok_or_else(|| format!("{name} has no login"))?;
+    let instrument = instrument.ok_or_else(|| "Nothing on this chart to trade".to_string())?;
+    if instrument.kind != omacharts_engine::InstrumentKind::FutureRoot {
+        return Err(format!("{} is not tradable on {name}", instrument.symbol));
+    }
+    if !live(&login.id) {
+        return Err(format!("{name} not signed in"));
+    }
+    let (contract, exchange) =
+        contract_of(&instrument.symbol).ok_or_else(|| format!("{}'s contract not known yet", instrument.symbol))?;
+    Ok(Target { account: account.clone(), login: login.clone(), contract, exchange })
+}
+
+/// May a `side` `kind` order go in at `price` with the market at `last`?
+/// A limit waits for a better price and a stop for a worse one, so each is
+/// only on one side of the market; at the market itself neither is.
+pub fn side_allowed(kind: Kind, side: Side, price: f64, last: f64) -> bool {
+    match (kind, side) {
+        (Kind::Market, _) => true,
+        (Kind::Limit, Side::Buy) | (Kind::Stop, Side::Sell) => price < last,
+        (Kind::Limit, Side::Sell) | (Kind::Stop, Side::Buy) => price > last,
+    }
+}
+
+/// Which side of the market a refused price was on, for the toast.
+pub fn crossed_text(price: &str, kind: Kind, side: Side) -> String {
+    let above = matches!((kind, side), (Kind::Limit, Side::Buy) | (Kind::Stop, Side::Sell));
+    let which = if above { "above" } else { "below" };
+    format!("{price} is now {which} the market · not placed")
+}
+
+/// How far from an order's line, in pixels, the pointer may be for the
+/// menu to offer cancelling it.
+pub const NEAR: f64 = 6.0;
+
+/// The working order whose line is nearest `y`, within [`NEAR`]: `to_y`
+/// puts a price on the chart.
+pub fn order_near<'a>(
+    orders: impl IntoIterator<Item = &'a WorkingOrder>,
+    y: f64,
+    to_y: impl Fn(f64) -> f64,
+) -> Option<&'a WorkingOrder> {
+    orders
+        .into_iter()
+        .filter(|order| order.status.working())
+        .filter_map(|order| Some((order, (to_y(order.price?) - y).abs())))
+        .filter(|(_, off)| *off <= NEAR)
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(order, _)| order)
+}
+
+/// "Buy Limit", "Sell Stop".
+pub fn order_words(side: Side, kind: Kind) -> String {
+    format!("{} {}", side.word(), kind.word())
+}
+
+/// A row of the chart menu: "Buy Market · 1 ESZ6 · 951", "Sell Limit
+/// 7,620.00".
+pub fn menu_text(side: Side, kind: Kind, price: &str, contract: &str, account: &str) -> String {
+    match kind {
+        Kind::Market => format!("{} · 1 {contract} · {account}", order_words(side, kind)),
+        _ => format!("{} {price}", order_words(side, kind)),
+    }
+}
+
+/// The question before an order on a live account: "Buy 1 ESZ6 at market
+/// on Lucid 1234 · LucidTrading?".
+pub fn confirm_text(side: Side, kind: Kind, price: &str, target: &Target) -> String {
+    let at = match kind {
+        Kind::Market => "at market".to_string(),
+        Kind::Limit => format!("limit {price}"),
+        Kind::Stop => format!("stop {price}"),
+    };
+    format!(
+        "{} 1 {} {at} on {} {} · {}?",
+        side.word(),
+        target.contract,
+        target.login.name,
+        target.account.id,
+        target.login.system
+    )
+}
+
+/// What a toast says when an order placed here moves on: filled, working,
+/// or rejected. Nothing for a step that is neither.
+pub fn outcome_text(order: &WorkingOrder, before: &Status, decimals: usize, account: &str) -> Option<String> {
+    if *before == order.status {
+        return None;
+    }
+    let price = |price: Option<f64>| price.map(|price| omacharts_engine::grouped_decimals(price, decimals));
+    match &order.status {
+        Status::Filled => {
+            let done = match order.side {
+                Side::Buy => "Bought",
+                Side::Sell => "Sold",
+            };
+            Some(match price(order.fill_price) {
+                Some(at) => format!("{done} {} {} at {at} · {account}", order.qty, order.contract),
+                None => format!("{done} {} {} · {account}", order.qty, order.contract),
+            })
+        }
+        Status::Working if order.kind != Kind::Market && *before == Status::Pending => {
+            Some(format!("Working: {} {}", order_words(order.side, order.kind), price(order.price).unwrap_or_default()))
+        }
+        Status::Rejected(why) => Some(format!("Rejected: {why}")),
+        _ => None,
+    }
+}
+
+/// Money as a P&L reads: "+$125.00", "-$3.94", "+12.50 EUR".
+pub fn pnl_text(value: f64, currency: Option<&str>) -> String {
+    let sign = if value < 0.0 { "-" } else { "+" };
+    let whole = grouped(value.abs().trunc() as u64);
+    let cents = ((value.abs().fract() * 100.0).round() as u64).min(99);
+    match currency {
+        None | Some("USD") => format!("{sign}${whole}.{cents:02}"),
+        Some(currency) => format!("{sign}{whole}.{cents:02} {currency}"),
+    }
+}
+
+/// Money as a balance reads: "$1,000,000.00".
+pub fn money_text(value: f64, currency: Option<&str>) -> String {
+    let text = pnl_text(value, currency);
+    match value < 0.0 {
+        true => text,
+        false => text.trim_start_matches('+').to_string(),
+    }
+}
+
+/// A position's size: "+1", "-2".
+pub fn net_text(net: i32) -> String {
+    format!("{net:+}")
+}
+
+/// What a position's pill says: its size and Rithmic's open P&L, or its
+/// price until the P&L has arrived.
+pub fn position_text(held: &Position, decimals: usize, currency: Option<&str>) -> String {
+    match (held.open_pnl, held.avg) {
+        (Some(pnl), _) => format!("{} · {}", net_text(held.net), pnl_text(pnl, currency)),
+        (None, Some(avg)) => format!("{} @ {}", net_text(held.net), omacharts_engine::grouped_decimals(avg, decimals)),
+        (None, None) => net_text(held.net),
+    }
+}
+
+/// The accounts with an order on its way, so a second click does not send
+/// a second order before the first is acknowledged.
+#[derive(Default)]
+pub struct Placing(RefCell<HashSet<String>>);
+
+impl Placing {
+    /// Start placing on `account`; refused while one is on its way.
+    pub fn begin(&self, account: &str) -> Result<(), String> {
+        match self.0.borrow_mut().insert(account.to_string()) {
+            true => Ok(()),
+            false => Err("Still placing".into()),
+        }
+    }
+
+    /// The broker answered, either way.
+    pub fn done(&self, account: &str) {
+        self.0.borrow_mut().remove(account);
     }
 }
 
@@ -928,10 +1450,49 @@ pub(crate) mod tests {
         pub signed_out: Arc<AtomicUsize>,
     }
 
-    struct FakeSession {
-        accounts: Vec<Account>,
+    /// A session that fills a market order at once, at `last`, and holds a
+    /// limit or a stop until it is cancelled. Its book is the one a real
+    /// session would push, with `changed` called after each move.
+    pub(crate) struct FakeSession {
+        pub accounts: Vec<Account>,
         signed_out: Arc<AtomicUsize>,
         gone: std::sync::atomic::AtomicBool,
+        pub book: Mutex<Book>,
+        pub last: Mutex<f64>,
+        pub changed: Box<dyn Fn() + Send + Sync>,
+        baskets: AtomicUsize,
+    }
+
+    impl FakeSession {
+        pub(crate) fn new(accounts: Vec<Account>, changed: Box<dyn Fn() + Send + Sync>) -> FakeSession {
+            FakeSession {
+                accounts,
+                signed_out: Arc::default(),
+                gone: Default::default(),
+                book: Mutex::default(),
+                last: Mutex::new(7_612.25),
+                changed,
+                baskets: AtomicUsize::new(1),
+            }
+        }
+
+        fn hold(book: &mut Book, account: &str, contract: &str, exchange: &str, bought: i32, at: f64) {
+            match book.positions.iter_mut().find(|held| held.account == account && held.contract == contract) {
+                Some(held) => {
+                    held.net += bought;
+                    held.avg = (held.net != 0).then_some(at);
+                }
+                None => book.positions.push(Position {
+                    account: account.into(),
+                    contract: contract.into(),
+                    exchange: exchange.into(),
+                    net: bought,
+                    avg: Some(at),
+                    open_pnl: None,
+                }),
+            }
+            book.positions.retain(|held| held.net != 0);
+        }
     }
 
     impl Session for FakeSession {
@@ -940,6 +1501,69 @@ pub(crate) mod tests {
         }
         fn balance(&self, account: &str) -> Option<f64> {
             self.accounts.iter().find(|a| a.id == account).and_then(|a| a.balance)
+        }
+        fn book(&self) -> Book {
+            self.book.lock().unwrap().clone()
+        }
+        fn place(&self, order: &Order) -> Result<String, String> {
+            if self.gone.load(Ordering::Acquire) {
+                return Err("the session was signed out".into());
+            }
+            let basket = format!("B{}", self.baskets.fetch_add(1, Ordering::AcqRel));
+            let last = *self.last.lock().unwrap();
+            let filled = order.kind == Kind::Market;
+            let mut book = self.book.lock().unwrap();
+            book.orders.insert(
+                0,
+                WorkingOrder {
+                    account: order.account.clone(),
+                    basket_id: basket.clone(),
+                    contract: order.contract.clone(),
+                    exchange: order.exchange.clone(),
+                    side: order.side,
+                    qty: order.qty,
+                    kind: order.kind,
+                    price: order.price,
+                    status: if filled { Status::Filled } else { Status::Working },
+                    fill_price: filled.then_some(last),
+                    at: 0,
+                    tag: Some(order.tag.clone()),
+                },
+            );
+            if filled {
+                let bought = if order.side == Side::Buy { order.qty as i32 } else { -(order.qty as i32) };
+                FakeSession::hold(&mut book, &order.account, &order.contract, &order.exchange, bought, last);
+            }
+            drop(book);
+            (self.changed)();
+            Ok(basket)
+        }
+        fn cancel(&self, _: &str, basket: &str) -> Result<(), String> {
+            let mut book = self.book.lock().unwrap();
+            let order = book.orders.iter_mut().find(|order| order.basket_id == basket && order.status.working());
+            let Some(order) = order else { return Err("not working".into()) };
+            order.status = Status::Cancelled;
+            drop(book);
+            (self.changed)();
+            Ok(())
+        }
+        fn cancel_all(&self, account: &str) -> Result<(), String> {
+            let mut book = self.book.lock().unwrap();
+            for order in book.orders.iter_mut().filter(|order| order.account == account && order.status.working()) {
+                order.status = Status::Cancelled;
+            }
+            drop(book);
+            (self.changed)();
+            Ok(())
+        }
+        fn flatten(&self, account: &str, contract: &str, exchange: &str) -> Result<(), String> {
+            let last = *self.last.lock().unwrap();
+            let mut book = self.book.lock().unwrap();
+            let net = book.position(account, contract).map_or(0, |held| held.net);
+            FakeSession::hold(&mut book, account, contract, exchange, -net, last);
+            drop(book);
+            (self.changed)();
+            Ok(())
         }
         fn trouble(&self) -> Option<String> {
             self.gone.load(Ordering::Acquire).then(|| "signed out".into())
@@ -951,14 +1575,11 @@ pub(crate) mod tests {
     }
 
     impl Broker for Fake {
-        fn sign_in(&self, login: &Login, _: Box<dyn Fn() + Send + Sync>) -> Result<Arc<dyn Session>, String> {
+        fn sign_in(&self, login: &Login, changed: Box<dyn Fn() + Send + Sync>) -> Result<Arc<dyn Session>, String> {
             self.signed_in.fetch_add(1, Ordering::AcqRel);
             let accounts = self.accounts.lock().unwrap().get(&login.name).cloned().unwrap_or_default();
-            Ok(Arc::new(FakeSession {
-                accounts: accounts.into_iter().map(|a| Account { login: login.id.clone(), ..a }).collect(),
-                signed_out: self.signed_out.clone(),
-                gone: Default::default(),
-            }))
+            let accounts = accounts.into_iter().map(|a| Account { login: login.id.clone(), ..a }).collect();
+            Ok(Arc::new(FakeSession { signed_out: self.signed_out.clone(), ..FakeSession::new(accounts, changed) }))
         }
     }
 
@@ -1277,5 +1898,221 @@ pub(crate) mod tests {
         held.currency = Some("EUR".into());
         held.balance = Some(999.0);
         assert_eq!(held.balance_text().as_deref(), Some("999 EUR"));
+    }
+
+    fn instrument(symbol: &str, kind: omacharts_engine::InstrumentKind) -> omacharts_engine::Instrument {
+        omacharts_engine::Instrument {
+            symbol: symbol.into(),
+            name: symbol.into(),
+            kind,
+            suffix: None,
+            currency: Some("USD".into()),
+            tier: 0,
+            session_origin: 0,
+            overrides: Vec::new(),
+            exchange: None,
+            popularity: 0,
+            local_name: None,
+        }
+    }
+
+    fn test_login(id: &str, name: &str, system: &str) -> Login {
+        Login {
+            id: id.into(),
+            name: name.into(),
+            user: "u".into(),
+            system: system.into(),
+            gateway: TEST_GATEWAY.into(),
+            signed_out: false,
+        }
+    }
+
+    fn order(basket: &str, side: Side, kind: Kind, price: Option<f64>, status: Status) -> WorkingOrder {
+        WorkingOrder {
+            account: "t/951".into(),
+            basket_id: basket.into(),
+            contract: "ESZ6".into(),
+            exchange: "CME".into(),
+            side,
+            qty: 1,
+            kind,
+            price,
+            status,
+            fill_price: None,
+            at: 0,
+            tag: None,
+        }
+    }
+
+    /// A limit waits for a better price and a stop for a worse one; at the
+    /// market neither is allowed, and a market order always is.
+    #[test]
+    fn a_limit_and_a_stop_are_each_on_one_side_of_the_market() {
+        let last = 7_612.25;
+        assert!(side_allowed(Kind::Limit, Side::Buy, 7_600.0, last));
+        assert!(!side_allowed(Kind::Limit, Side::Buy, 7_620.0, last));
+        assert!(side_allowed(Kind::Limit, Side::Sell, 7_620.0, last));
+        assert!(!side_allowed(Kind::Limit, Side::Sell, 7_600.0, last));
+        assert!(side_allowed(Kind::Stop, Side::Buy, 7_620.0, last));
+        assert!(!side_allowed(Kind::Stop, Side::Buy, 7_600.0, last));
+        assert!(side_allowed(Kind::Stop, Side::Sell, 7_600.0, last));
+        assert!(!side_allowed(Kind::Stop, Side::Sell, 7_620.0, last));
+        for kind in [Kind::Limit, Kind::Stop] {
+            for side in [Side::Buy, Side::Sell] {
+                assert!(!side_allowed(kind, side, last, last), "{kind:?} {side:?} at the market");
+            }
+        }
+        assert!(side_allowed(Kind::Market, Side::Sell, 0.0, last));
+        assert_eq!(crossed_text("7,612.50", Kind::Limit, Side::Buy), "7,612.50 is now above the market · not placed");
+        assert_eq!(crossed_text("7,600.00", Kind::Limit, Side::Sell), "7,600.00 is now below the market · not placed");
+    }
+
+    /// The menu offers to cancel the working order whose line the pointer
+    /// is on, within six pixels, the nearest of two, and never a done one.
+    #[test]
+    fn the_order_near_the_pointer_is_the_nearest_working_one() {
+        let orders = vec![
+            order("a", Side::Sell, Kind::Limit, Some(7_620.0), Status::Working),
+            order("b", Side::Sell, Kind::Stop, Some(7_622.0), Status::Working),
+            order("c", Side::Buy, Kind::Limit, Some(7_600.0), Status::Cancelled),
+            order("d", Side::Buy, Kind::Market, None, Status::Pending),
+        ];
+        // A point a pixel.
+        let to_y = |price: f64| 8_000.0 - price;
+        let near = |y: f64| order_near(&orders, y, to_y).map(|order| order.basket_id.as_str());
+        assert_eq!(near(380.0), Some("a"));
+        assert_eq!(near(379.5), Some("a"));
+        assert_eq!(near(378.4), Some("b"), "nearer the stop");
+        assert_eq!(near(386.0), Some("a"), "six pixels is near");
+        assert_eq!(near(386.5), None);
+        assert_eq!(near(400.0), None, "a cancelled order is not offered");
+    }
+
+    #[test]
+    fn what_the_menu_toasts_and_dialog_say() {
+        assert_eq!(menu_text(Side::Buy, Kind::Market, "", "ESZ6", "951"), "Buy Market · 1 ESZ6 · 951");
+        assert_eq!(menu_text(Side::Sell, Kind::Limit, "7,620.00", "ESZ6", "951"), "Sell Limit 7,620.00");
+        assert_eq!(menu_text(Side::Buy, Kind::Stop, "7,630.25", "ESZ6", "951"), "Buy Stop 7,630.25");
+        let target = Target {
+            account: account("l", "1234"),
+            login: test_login("l", "Lucid", "LucidTrading"),
+            contract: "ESZ6".into(),
+            exchange: "CME".into(),
+        };
+        assert!(target.live());
+        assert_eq!(confirm_text(Side::Buy, Kind::Market, "", &target), "Buy 1 ESZ6 at market on Lucid 1234 · LucidTrading?");
+        assert_eq!(
+            confirm_text(Side::Sell, Kind::Limit, "7,620.00", &target),
+            "Sell 1 ESZ6 limit 7,620.00 on Lucid 1234 · LucidTrading?"
+        );
+        assert!(!Target { login: test_login("t", "Test", TEST_SYSTEM), ..target }.live());
+
+        let mut bought = order("a", Side::Buy, Kind::Market, None, Status::Filled);
+        bought.fill_price = Some(7_612.25);
+        assert_eq!(outcome_text(&bought, &Status::Pending, 2, "951").as_deref(), Some("Bought 1 ESZ6 at 7,612.25 · 951"));
+        assert_eq!(outcome_text(&bought, &Status::Filled, 2, "951"), None, "said once");
+        let working = order("b", Side::Sell, Kind::Limit, Some(7_620.0), Status::Working);
+        assert_eq!(outcome_text(&working, &Status::Pending, 2, "951").as_deref(), Some("Working: Sell Limit 7,620.00"));
+        let refused = order("c", Side::Buy, Kind::Limit, Some(1.0), Status::Rejected("price out of band".into()));
+        assert_eq!(outcome_text(&refused, &Status::Pending, 2, "951").as_deref(), Some("Rejected: price out of band"));
+        assert_eq!(outcome_text(&order("d", Side::Buy, Kind::Limit, Some(1.0), Status::Cancelled), &Status::Working, 2, "951"), None);
+
+        let mut held = Position {
+            account: "t/951".into(),
+            contract: "ESZ6".into(),
+            exchange: "CME".into(),
+            net: 1,
+            avg: Some(7_612.25),
+            open_pnl: None,
+        };
+        assert_eq!(position_text(&held, 2, Some("USD")), "+1 @ 7,612.25");
+        held.open_pnl = Some(125.0);
+        assert_eq!(position_text(&held, 2, Some("USD")), "+1 · +$125.00");
+        held.net = -2;
+        held.open_pnl = Some(-3.94);
+        assert_eq!(position_text(&held, 2, None), "-2 · -$3.94");
+        assert_eq!(money_text(1_000_000.0, Some("USD")), "$1,000,000.00");
+        assert_eq!(pnl_text(12.5, Some("EUR")), "+12.50 EUR");
+    }
+
+    /// Every way a chart cannot take an order, in the words the menu shows.
+    #[test]
+    fn an_order_target_says_why_it_cannot_be_had() {
+        use omacharts_engine::InstrumentKind;
+        let view = View {
+            logins: vec![test_login("t", "Rithmic Test", TEST_SYSTEM)],
+            accounts: vec![account("t", "951")],
+            ..View::default()
+        };
+        let es = instrument("ES", InstrumentKind::FutureRoot);
+        let aapl = instrument("AAPL", InstrumentKind::Equity);
+        let front = |root: &str| (root == "ES").then(|| ("ESZ6".to_string(), "CME".to_string()));
+        let target = |live: bool, what: &omacharts_engine::Instrument| order_target(&view, |_| live, None, Some(what), front);
+        let found = target(true, &es).unwrap();
+        assert_eq!((found.contract.as_str(), found.account.id.as_str()), ("ESZ6", "951"));
+        assert_eq!(target(true, &aapl).unwrap_err(), "AAPL is not tradable on 951");
+        assert_eq!(target(false, &es).unwrap_err(), "951 not signed in");
+        let nq = instrument("NQ", InstrumentKind::FutureRoot);
+        assert_eq!(target(true, &nq).unwrap_err(), "NQ's contract not known yet");
+        assert_eq!(order_target(&View::default(), |_| true, None, Some(&es), front).unwrap_err(), "No trading account");
+    }
+
+    #[test]
+    fn a_second_order_waits_for_the_first_to_be_answered() {
+        let placing = Placing::default();
+        assert!(placing.begin("t/951").is_ok());
+        assert_eq!(placing.begin("t/951").unwrap_err(), "Still placing");
+        assert!(placing.begin("l/1234").is_ok(), "another account is not held up");
+        placing.done("t/951");
+        assert!(placing.begin("t/951").is_ok());
+    }
+
+    /// The desk's book is every live session's, under the accounts' keys:
+    /// a market order fills and is held, a limit works until cancelled, and
+    /// flattening leaves nothing held. Each move calls `changed`.
+    #[test]
+    fn the_desks_book_follows_what_the_sessions_push() {
+        let desk = Desk::new(Arc::new(Fake::default()));
+        let login = test_login("t", "Rithmic Test", TEST_SYSTEM);
+        let moved = Arc::new(AtomicUsize::new(0));
+        let counted = moved.clone();
+        let session = Arc::new(FakeSession::new(
+            vec![account("t", "951")],
+            Box::new(move || {
+                counted.fetch_add(1, Ordering::AcqRel);
+            }),
+        ));
+        assert!(desk.begin("t"));
+        desk.opened("t", Ok(session.clone()));
+        let logins = vec![login];
+        assert_eq!(desk.book(&logins), Book::default());
+
+        let buy = Order {
+            account: "951".into(),
+            contract: "ESZ6".into(),
+            exchange: "CME".into(),
+            side: Side::Buy,
+            qty: 1,
+            kind: Kind::Market,
+            price: None,
+            tag: new_tag(),
+        };
+        session.place(&buy).unwrap();
+        let book = desk.book(&logins);
+        let held = book.position("t/951", "ESZ6").expect("held");
+        assert_eq!((held.net, held.avg), (1, Some(7_612.25)));
+        assert_eq!(book.orders[0].status, Status::Filled);
+
+        let limit = Order { side: Side::Sell, kind: Kind::Limit, price: Some(7_620.0), ..buy };
+        let basket = session.place(&limit).unwrap();
+        assert_eq!(desk.book(&logins).working("t/951", "ESZ6").count(), 1);
+        session.cancel("951", &basket).unwrap();
+        assert_eq!(desk.book(&logins).working("t/951", "ESZ6").count(), 0);
+        session.flatten("951", "ESZ6", "CME").unwrap();
+        assert!(desk.book(&logins).position("t/951", "ESZ6").is_none());
+        assert_eq!(moved.load(Ordering::Acquire), 4);
+
+        session.sign_out();
+        assert!(session.place(&limit).is_err(), "a session that is gone refuses, and nothing retries");
     }
 }

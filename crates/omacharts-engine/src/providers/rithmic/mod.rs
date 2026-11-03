@@ -107,6 +107,14 @@ fn exchange_of(root: &str) -> &'static str {
     CME_GROUP.into_iter().find(|exchange| Some(*exchange) == listed).unwrap_or("CME")
 }
 
+/// The contract an order on the futures root `root` goes to, and its
+/// exchange: the front month the data session last found for it. Never
+/// asks, so `None` until a chart of it has charted from Rithmic.
+pub fn contract_of(root: &str) -> Option<(String, &'static str)> {
+    let exchange = exchange_of(root);
+    rithmic::known_front_month(root, exchange).map(|contract| (contract, exchange))
+}
+
 fn period_of(timeframe: Timeframe) -> Result<rithmic::Period, ProviderError> {
     match (timeframe.unit, timeframe.count) {
         (Unit::Minute, count @ (1 | 2 | 5 | 15 | 30 | 90)) => Ok(rithmic::Period::Minutes(count)),
