@@ -1374,6 +1374,99 @@ pub fn crossed_text(price: &str, kind: OrderKind, side: Side) -> String {
     format!("{price} is now {which} the market · not placed")
 }
 
+/// The side that closes a position of `net`: selling a long, buying back
+/// a short.
+pub fn exit_side(net: i32) -> Side {
+    match net > 0 {
+        true => Side::Sell,
+        false => Side::Buy,
+    }
+}
+
+/// May an exit of `kind` go in at `price`, closing a position of `net`,
+/// with the market at `last`? A target is a limit and a stop a stop, on
+/// the side that closes it, so each has only one side of the market.
+pub fn exit_allowed(kind: OrderKind, net: i32, price: f64, last: f64) -> bool {
+    net != 0 && kind != OrderKind::Market && side_allowed(kind, exit_side(net), price, last)
+}
+
+/// What a position's tab for an exit of `kind` says: TP for the target,
+/// SL for the stop.
+pub fn exit_tab(kind: OrderKind) -> &'static str {
+    match kind {
+        OrderKind::Stop => "SL",
+        _ => "TP",
+    }
+}
+
+/// Whether a position of `net` still has room for an exit of `kind`:
+/// not while the working ones of that kind already close all of it.
+pub fn exit_offered<'a>(orders: impl IntoIterator<Item = &'a WorkingOrder>, net: i32, kind: OrderKind) -> bool {
+    let side = exit_side(net);
+    let covered: u32 = orders
+        .into_iter()
+        .filter(|order| order.status.working() && order.side == side && order.kind == kind)
+        .map(|order| order.qty)
+        .sum();
+    net != 0 && covered < net.unsigned_abs()
+}
+
+/// How many ticks `to` is from `from`: positive above, negative below.
+pub fn ticks_between(from: f64, to: f64, tick: f64) -> i64 {
+    match tick > 0.0 {
+        true => ((to - from) / tick).round() as i64,
+        false => 0,
+    }
+}
+
+/// What an order dragged to a price says beside the hand, and what a
+/// live account is asked: "Sell Limit 1 · 7,640.00 · +11 ticks", the
+/// ticks from where it started when the chart knows its tick.
+pub fn preview_text(side: Side, kind: OrderKind, qty: u32, price: &str, ticks: Option<i64>) -> String {
+    let words = format!("{} {qty} · {price}", order_words(side, kind));
+    match ticks {
+        Some(0) => format!("{words} · 0 ticks"),
+        Some(ticks) if ticks.abs() == 1 => format!("{words} · {ticks:+} tick"),
+        Some(ticks) => format!("{words} · {ticks:+} ticks"),
+        None => words,
+    }
+}
+
+/// Why a dragged order cannot go where the hand is: "Stop above market ·
+/// not allowed".
+pub fn refused_text(kind: OrderKind, price: f64, last: f64) -> String {
+    let at = match price.total_cmp(&last) {
+        std::cmp::Ordering::Greater => "above market",
+        std::cmp::Ordering::Less => "below market",
+        std::cmp::Ordering::Equal => "at market",
+    };
+    format!("{} {at} · not allowed", kind.word())
+}
+
+/// The working exit a new one of `kind` on `side` pairs with: the stop for
+/// a target, the target for a stop, in the same contract.
+pub fn sibling_exit<'a>(
+    orders: impl IntoIterator<Item = &'a WorkingOrder>,
+    contract: &str,
+    side: Side,
+    kind: OrderKind,
+) -> Option<&'a WorkingOrder> {
+    let other = match kind {
+        OrderKind::Limit => OrderKind::Stop,
+        OrderKind::Stop => OrderKind::Limit,
+        OrderKind::Market => return None,
+    };
+    orders
+        .into_iter()
+        .find(|order| order.status.working() && order.contract == contract && order.side == side && order.kind == other)
+}
+
+/// The question before something dragged on a live account goes to the
+/// broker: what it is, then the account and the system, as an order's.
+pub fn confirm_drag_text(what: &str, target: &Target) -> String {
+    format!("{what} on {} {} · {}?", target.login.name, target.account.id, target.login.system)
+}
+
 /// How far from an order's line, in pixels, the pointer may be for the
 /// menu to offer cancelling it.
 pub const NEAR: f64 = 6.0;
@@ -2360,6 +2453,102 @@ pub(crate) mod tests {
             tag: None,
             tick: Some(0.25),
         }
+    }
+
+    /// A long closes by selling and a short by buying back; its target is
+    /// a limit on the far side of the market and its stop a stop on the
+    /// near side, and a tab goes once the exits of its kind close it all.
+    #[test]
+    fn an_exit_closes_the_position_on_its_own_side_of_the_market() {
+        assert_eq!(exit_side(2), Side::Sell);
+        assert_eq!(exit_side(-1), Side::Buy);
+        let last = 7_612.25;
+        assert!(exit_allowed(OrderKind::Limit, 1, 7_640.0, last), "a long's target above");
+        assert!(!exit_allowed(OrderKind::Limit, 1, 7_600.0, last));
+        assert!(exit_allowed(OrderKind::Stop, 1, 7_600.0, last), "a long's stop below");
+        assert!(!exit_allowed(OrderKind::Stop, 1, 7_640.0, last));
+        assert!(exit_allowed(OrderKind::Limit, -1, 7_600.0, last), "a short's target below");
+        assert!(exit_allowed(OrderKind::Stop, -1, 7_640.0, last), "a short's stop above");
+        assert!(!exit_allowed(OrderKind::Stop, 1, last, last), "at the market itself");
+        assert!(!exit_allowed(OrderKind::Limit, 0, 7_640.0, last), "nothing held");
+        assert_eq!((exit_tab(OrderKind::Limit), exit_tab(OrderKind::Stop)), ("TP", "SL"));
+
+        let target = order("T", Side::Sell, OrderKind::Limit, Some(7_640.0), Status::Working);
+        assert!(!exit_offered([&target], 1, OrderKind::Limit), "a one-lot already has its target");
+        assert!(exit_offered([&target], 1, OrderKind::Stop));
+        assert!(exit_offered([&target], 2, OrderKind::Limit), "one of two still open");
+        let gone = order("G", Side::Sell, OrderKind::Limit, Some(7_640.0), Status::Cancelled);
+        assert!(exit_offered([&gone], 1, OrderKind::Limit), "a cancelled one closes nothing");
+    }
+
+    /// The words beside a dragged order and the reason one is refused.
+    #[test]
+    fn what_a_dragged_order_says() {
+        assert_eq!(ticks_between(7_612.25, 7_615.0, 0.25), 11);
+        assert_eq!(ticks_between(7_612.25, 7_612.0, 0.25), -1);
+        assert_eq!(
+            preview_text(Side::Sell, OrderKind::Limit, 1, "7,640.00", Some(11)),
+            "Sell Limit 1 · 7,640.00 · +11 ticks"
+        );
+        assert_eq!(preview_text(Side::Buy, OrderKind::Stop, 2, "7,600.00", Some(-1)), "Buy Stop 2 · 7,600.00 · -1 tick");
+        assert_eq!(preview_text(Side::Buy, OrderKind::Stop, 1, "7,600.00", Some(0)), "Buy Stop 1 · 7,600.00 · 0 ticks");
+        assert_eq!(preview_text(Side::Buy, OrderKind::Limit, 1, "7,600.00", None), "Buy Limit 1 · 7,600.00");
+        assert_eq!(refused_text(OrderKind::Stop, 7_640.0, 7_612.25), "Stop above market · not allowed");
+        assert_eq!(refused_text(OrderKind::Limit, 7_600.0, 7_612.25), "Limit below market · not allowed");
+        assert_eq!(refused_text(OrderKind::Limit, 7_612.25, 7_612.25), "Limit at market · not allowed");
+    }
+
+    /// A new target pairs with the stop already working on the same side
+    /// of the same contract, and a new stop with the target.
+    #[test]
+    fn a_new_exit_pairs_with_the_other_kind_on_its_side() {
+        let stop = order("S", Side::Sell, OrderKind::Stop, Some(7_600.0), Status::Working);
+        let buy_stop = order("BS", Side::Buy, OrderKind::Stop, Some(7_650.0), Status::Working);
+        let target = order("T", Side::Sell, OrderKind::Limit, Some(7_640.0), Status::Working);
+        let orders = [buy_stop, stop];
+        let found = sibling_exit(&orders, "ESZ6", Side::Sell, OrderKind::Limit).map(|o| o.basket_id.as_str());
+        assert_eq!(found, Some("S"));
+        assert!(sibling_exit(&orders, "NQZ6", Side::Sell, OrderKind::Limit).is_none(), "another contract");
+        assert!(sibling_exit(&orders, "ESZ6", Side::Sell, OrderKind::Stop).is_none(), "a stop pairs with a target");
+        let found = sibling_exit([&target], "ESZ6", Side::Sell, OrderKind::Stop).map(|o| o.basket_id.as_str());
+        assert_eq!(found, Some("T"));
+    }
+
+    /// The tests' session moves a working order and refuses one that is
+    /// not; linked orders go together, by a cancel or a fill.
+    #[test]
+    fn the_tests_session_moves_links_and_cancels_together() {
+        let session = FakeSession::new(vec![account("1", "951")], Box::new(|| {}));
+        let place = |side, kind, price| {
+            session
+                .place(&Order {
+                    account: "951".into(),
+                    contract: "ESZ6".into(),
+                    exchange: "CME".into(),
+                    side,
+                    qty: 1,
+                    kind,
+                    price: Some(price),
+                    tag: new_tag(),
+                })
+                .unwrap()
+        };
+        let target = place(Side::Sell, OrderKind::Limit, 7_640.0);
+        let stop = place(Side::Sell, OrderKind::Stop, 7_600.0);
+        session.modify("951", &target, 7_645.0).unwrap();
+        assert_eq!(session.book().order(&target).and_then(|o| o.price), Some(7_645.0));
+        session.link("951", &[target.clone(), stop.clone()]).unwrap();
+        session.cancel("951", &target).unwrap();
+        assert_eq!(session.book().order(&stop).map(|o| o.status.clone()), Some(Status::Cancelled));
+        assert!(session.modify("951", &stop, 7_590.0).is_err(), "moved after it was cancelled");
+
+        let target = place(Side::Sell, OrderKind::Limit, 7_640.0);
+        let stop = place(Side::Sell, OrderKind::Stop, 7_600.0);
+        session.link("951", &[target.clone(), stop.clone()]).unwrap();
+        session.fill(&stop);
+        assert_eq!(session.book().order(&target).map(|o| o.status.clone()), Some(Status::Cancelled));
+        *session.refuse.lock().unwrap() = Some("price out of band".into());
+        assert_eq!(session.cancel("951", &target), Err("price out of band".into()));
     }
 
     /// A limit waits for a better price and a stop for a worse one; at the
