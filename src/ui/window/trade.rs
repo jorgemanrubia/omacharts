@@ -1086,8 +1086,6 @@ pub(super) mod tests {
                 "Rithmic Test ✓ (heading)".to_string(),
                 format!("    Rithmic (default){}", marks[0]),
                 format!("    Yahoo Finance{}", marks[1]),
-                "──".to_string(),
-                "Trading accounts…".to_string(),
             ]
         };
         assert_eq!(picker(&window, &pane), rows([" ✓", ""]));
@@ -1122,7 +1120,7 @@ pub(super) mod tests {
         window.show_in(&pane, spy);
         assert_eq!(
             picker(&window, &pane),
-            vec!["Rithmic Test ✓ — signed out (heading)", "    Yahoo Finance (default) ✓", "──", "Trading accounts…"]
+            vec!["Rithmic Test ✓ — signed out (heading)", "    Yahoo Finance (default) ✓"]
         );
         assert_eq!(part(&pane).as_deref(), Some("Rithmic Test signed out"));
     }
@@ -1147,9 +1145,7 @@ pub(super) mod tests {
                 "Rithmic Test 951 ✓",
                 "    Rithmic (default) ✓",
                 "    Yahoo Finance",
-                "Rithmic Test 952",
-                "──",
-                "Trading accounts…"
+                "Rithmic Test 952"
             ]
         );
         assert_eq!(part(&pane).as_deref(), Some("Rithmic Test 951"));
@@ -1167,9 +1163,7 @@ pub(super) mod tests {
                 "Rithmic Test 951",
                 "Rithmic Test 952 ✓",
                 "    Rithmic (default) ✓",
-                "    Yahoo Finance",
-                "──",
-                "Trading accounts…"
+                "    Yahoo Finance"
             ]
         );
 
@@ -1213,7 +1207,7 @@ pub(super) mod tests {
         window.show_in(&pane, es);
         assert_eq!(part(&pane), None, "one feed and no account: nothing");
         sign_in(&window, &store, &["951", "952"]);
-        assert_eq!(picker(&window, &pane), vec!["Rithmic Test 951 ✓", "Rithmic Test 952", "──", "Trading accounts…"]);
+        assert_eq!(picker(&window, &pane), vec!["Rithmic Test 951 ✓", "Rithmic Test 952"]);
         assert_eq!(part(&pane).as_deref(), Some("Rithmic Test 951"));
     }
 }

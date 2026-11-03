@@ -444,9 +444,9 @@ other accounts stay collapsed, and a single account is a heading.
 Choosing another account closes it and puts the chart on that account's
 default feed. The account's default feed is marked "(default)", and
 choosing it stores nothing. With no account it is a flat list of the
-feeds, the order's pick marked "(default)". A row has a line under it only
-for trouble, and "Trading accounts…" at the bottom opens Preferences →
-Trading.
+feeds, the order's pick marked "(default)". An account's row has a line
+under it only for trouble; a feed's row is its name alone. The popover
+lists accounts and feeds and nothing else.
 
 #### Orders
 

@@ -113,24 +113,6 @@ fn source_text<'a>(serving: &str, passed: impl Iterator<Item = (&'a str, &'a str
     text
 }
 
-/// What the account's list says under a feed: only trouble, in words
-/// somebody can act on — "Not signed in", "Session expired", Rithmic's own.
-/// A feed that works says nothing, and so does one with nothing to sign in
-/// to: "Signed in" under every row that works told nobody anything.
-fn source_state(feed: &Feed) -> Option<String> {
-    providers::access(feed.provider.id())?;
-    feed_trouble(feed.usable.get(), feed.unusable_because.get())
-}
-
-/// The words under a feed that is or is not usable, for why it is not.
-fn feed_trouble(usable: bool, why: &str) -> Option<String> {
-    if usable {
-        return None;
-    }
-    let mut letters = why.chars();
-    letters.next().map(|first| first.to_uppercase().chain(letters).collect())
-}
-
 /// How often we look for a desktop theme change. Cheap enough to be invisible,
 /// often enough to feel immediate.
 const THEME_POLL_SECONDS: u32 = 2;
@@ -400,16 +382,6 @@ mod tests {
             source_text("Yahoo", [("thinkorswim", "not signed in")].into_iter()),
             "Yahoo · thinkorswim not signed in"
         );
-    }
-
-    /// The account's list says something under a feed only when there is
-    /// something to do about it: a working feed says nothing.
-    #[test]
-    fn a_feed_row_says_only_trouble() {
-        assert_eq!(feed_trouble(true, ""), None);
-        assert_eq!(feed_trouble(false, "not signed in").as_deref(), Some("Not signed in"));
-        assert_eq!(feed_trouble(false, "session expired").as_deref(), Some("Session expired"));
-        assert_eq!(feed_trouble(false, ""), None);
     }
 
     /// The source somebody chose comes back with the chart after a restart,
@@ -3530,8 +3502,8 @@ impl Window {
     /// under the chart's own, indented, those feeds once there is more than
     /// one feed, the account's default marked "(default)"; the other
     /// accounts stay collapsed. A single account is a heading that cannot
-    /// be clicked. A mark on what is in force, a line under a row only for
-    /// trouble, and a way to Trading under them once there is an account.
+    /// be clicked. A mark on what is in force, and a line under an account
+    /// only for its trouble; a feed's row is its name alone.
     ///
     /// Choosing a default stores nothing, so the chart keeps following it;
     /// choosing another account forgets the chart's feed.
@@ -3623,7 +3595,7 @@ impl Window {
                 let this = self.clone();
                 row(
                     &label,
-                    source_state(feed),
+                    None,
                     Some(in_force == Some(own)),
                     indent,
                     Some(Rc::new(move || this.choose_source(id, source.clone()))),
@@ -3653,15 +3625,6 @@ impl Window {
                     feed_rows(true);
                 }
             }
-            menu.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-            let this = self.clone();
-            row(
-                "Trading accounts…",
-                None,
-                None,
-                false,
-                Some(Rc::new(move || this.open_preferences_at(Some(crate::ui::preferences::TRADING)))),
-            );
         }
         popover.set_child(Some(&menu));
     }
