@@ -1009,6 +1009,26 @@ button.list-row-action { min-height: 0; min-width: 0; padding: 3px; }
    went, and because the time axis is already down here — the eye is not
    pulled off the prices to find it. One hairline above it, and nothing else:
    at this height a border on every side is a box, and a box is furniture. */
+/* The trading panel under the charts, set like the strip: one hairline
+   above it, and its tables in the rail's quiet type. */
+.trading-panel {
+  border-top: 1px solid alpha(currentColor, 0.08);
+}
+.trading-tabs {
+  padding: 3px 6px;
+}
+.trading-table {
+  padding: 4px 12px 8px 12px;
+  font-size: 0.9em;
+}
+.trading-heading {
+  opacity: 0.55;
+  font-size: 0.85em;
+}
+.trading-table button {
+  padding: 0 8px;
+  min-height: 22px;
+}
 .chartbook-strip {
   /* No padding on the left: the drawing tools' tab sits flush with the
      window's edge, the way a tab on a drawer does. */

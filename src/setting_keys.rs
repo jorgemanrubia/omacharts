@@ -46,6 +46,7 @@ const KEYS: &[(&str, Kind)] = &[
     ("bar_widget_offered", Kind::Bookkeeping),
     ("active_watchlist", Kind::Bookkeeping),
     ("show_watchlist", Kind::Bookkeeping),
+    ("show_trading_panel", Kind::Bookkeeping),
     ("show_drawing_tools", Kind::Bookkeeping),
 ];
 

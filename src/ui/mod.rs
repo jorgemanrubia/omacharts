@@ -23,6 +23,7 @@ pub mod search;
 pub mod shortcuts;
 pub mod text;
 pub mod text_editor;
+pub mod trading_panel;
 pub mod watchlist;
 pub mod window;
 

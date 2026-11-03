@@ -46,6 +46,9 @@ use crate::ui::shortcuts;
 use crate::ui::watchlist::{Quote, Watchlist, DEFAULTS};
 use gtk::gio;
 
+mod trade;
+use trade::Trade;
+
 /// How often the rail's missing prices are looked for.
 ///
 /// Not a pacing knob — the provider owns pacing, and this never fetches. It is
@@ -2192,6 +2195,9 @@ pub struct Window {
     /// headers to draw from. Read when the window opens and whenever Trading
     /// changes.
     trading: RefCell<crate::trading::View>,
+    /// Everything trading puts in the window, none of it built until there
+    /// is a login.
+    trade: Trade,
     /// Which feed a loader reply belongs to. Bumped by a switch, so a reply
     /// the old worker had already sent is recognised and dropped rather
     /// than painted onto a chart that has moved on.
@@ -2336,6 +2342,7 @@ impl Window {
             feeds: RefCell::new(feeds),
             desk: Rc::new(crate::trading::Desk::new(Arc::new(crate::trading::Rithmic))),
             trading: RefCell::new(crate::trading::View::load(&store)),
+            trade: Trade::default(),
             feed_generation: Cell::new(0),
             refresh_timer_on: Cell::new(false),
             drain_scheduled: Cell::new(false),
@@ -2407,6 +2414,7 @@ impl Window {
         let with_tools = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         with_tools.append(&bar.root);
         with_tools.append(&chart_host);
+        *this.trade.with_tools.borrow_mut() = Some(with_tools.clone());
         bar.set_shown(store.setting_bool(SHOW_DRAWING_TOOLS, false));
         *this.drawing_bar.borrow_mut() = Some(bar);
         split.set_start_child(Some(&with_tools));
@@ -2427,6 +2435,8 @@ impl Window {
         let overlay = gtk::Overlay::new();
         overlay.set_child(Some(&root));
         overlay.add_overlay(&corner);
+        *this.trade.overlay.borrow_mut() = Some(overlay.clone());
+        *this.trade.root.borrow_mut() = Some(root.clone());
         // The drawing tools' toggle, in the top-left corner: the mirror of
         // the rail's in the top-right, so both edges open the same way.
         if let Some(bar) = this.drawing_bar.borrow().as_ref() {
@@ -2458,6 +2468,8 @@ impl Window {
         // After the first pane: the chart menu's radio items are built from
         // the focused chart, and until now there was not one.
         this.install_chart_actions();
+        // Trading's furniture, if there is a login to trade through.
+        this.sync_trading();
 
         this.wire_shortcuts();
         this.wire_hush();
@@ -5132,6 +5144,7 @@ impl Window {
         cluster.set_size_request(crate::ui::chart::PRICE_AXIS_W as i32, -1);
         cluster.append(&toggle);
         cluster.append(&menu_button);
+        *self.trade.cluster.borrow_mut() = Some(cluster.clone());
 
         let handle = gtk::WindowHandle::new();
         handle.set_child(Some(&cluster));
@@ -7389,9 +7402,11 @@ impl Window {
     /// Read Trading again — the logins, their accounts, the default — and
     /// redraw every chart's account part from it.
     pub fn adopt_trading(self: &Rc<Self>) {
-        let view = crate::trading::View::load(&self.store);
+        let mut view = crate::trading::View::load(&self.store);
+        view.book = self.desk.book(&view.logins);
         *self.trading.borrow_mut() = view;
         self.reroute(&self.routes_on_screen());
+        self.sync_trading();
     }
 
     /// Keep the cache and the headers in step with the trading sessions: a
@@ -7399,13 +7414,24 @@ impl Window {
     /// main loop and every chart's part redrawn. Pushed by the session's
     /// thread, never looked for.
     fn watch_trading(self: &Rc<Self>) {
+        // Told by the Trading page after every change it makes, and by the
+        // loop below after every push: a login added or removed, an order
+        // moving. The window reads Trading again either way.
+        let weak = Rc::downgrade(self);
+        let adopt: Rc<dyn Fn()> = Rc::new(move || {
+            if let Some(this) = weak.upgrade() {
+                this.adopt_trading();
+            }
+        });
+        self.desk.listen(&adopt);
+        *self.trade.listener.borrow_mut() = Some(adopt);
+
         let woken = self.desk.woken();
         let weak = Rc::downgrade(self);
         glib::spawn_future_local(async move {
             while woken.recv().await.is_ok() {
                 let Some(this) = weak.upgrade() else { return };
                 this.desk.note(&this.store);
-                this.adopt_trading();
                 this.desk.tell();
             }
         });
