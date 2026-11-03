@@ -484,6 +484,16 @@ does, on its servers), so whichever fills first cancels the other; a
 broker that does not is said to, and flattening cancels the exits left
 behind. Tried on Rithmic Test on 2026-11-03.
 
+Whatever is asked shows at once, faint, and at full strength only once the
+broker's book confirms it: a new order once the exchange has it working
+(not when Rithmic has merely received it), a market order as "Buying 1…"
+beside the last price until its fill, a move once the order is reported
+at its new price, a cancel once it is reported cancelled, a flatten once
+nothing is held. A refusal takes it away with the broker's reason; a
+request that is never answered stays pending rather than being taken as
+done. Part of an order filled reads "Sell Limit 1/2", and the position
+holds only what filled. Toasts say only what the broker has confirmed.
+
 Every order on a live account asks for confirmation until the trader turns
 that off for that account. The order ticket says which account and system it
 is about to use, every time.

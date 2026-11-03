@@ -519,6 +519,32 @@ pub enum Refusal {
     NotKnownYet,
 }
 
+/// Why a request to a broker did not go through, which decides what the
+/// window shows for it: a refusal undoes what was drawn for it, and a
+/// request nobody answered stays drawn as pending until the book says what
+/// became of it, since it may well have arrived.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Failure {
+    /// The broker answered no, or nothing was sent: in its words.
+    Refused(String),
+    /// Sent, and no answer came: a drop, a timeout, a session ending.
+    Unanswered(String),
+}
+
+impl Failure {
+    pub fn words(&self) -> &str {
+        match self {
+            Failure::Refused(why) | Failure::Unanswered(why) => why,
+        }
+    }
+}
+
+impl std::fmt::Display for Failure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.words())
+    }
+}
+
 /// A login's signed-in trading session.
 ///
 /// **The seam for brokers.** [`Broker`] and this are everything the window,
@@ -551,16 +577,16 @@ pub trait Session: Send + Sync {
     /// Every order, position and balance it has heard of.
     fn book(&self) -> Book;
     /// Place `order` and return the broker's id for it. Never retried.
-    fn place(&self, order: &Order) -> Result<String, String>;
-    fn cancel(&self, account: &str, basket: &str) -> Result<(), String>;
+    fn place(&self, order: &Order) -> Result<String, Failure>;
+    fn cancel(&self, account: &str, basket: &str) -> Result<(), Failure>;
     /// Move the working order `basket` to `price`, keeping everything else
     /// about it. Only when [`Capabilities::modify`] says so.
-    fn modify(&self, account: &str, basket: &str, price: f64) -> Result<(), String>;
+    fn modify(&self, account: &str, basket: &str, price: f64) -> Result<(), Failure>;
     /// Link working orders so that one filling or cancelled cancels the
     /// rest, held by the broker. Only when [`Capabilities::link`] says so.
-    fn link(&self, account: &str, baskets: &[String]) -> Result<(), String>;
-    fn cancel_all(&self, account: &str) -> Result<(), String>;
-    fn flatten(&self, account: &str, contract: &str, exchange: &str) -> Result<(), String>;
+    fn link(&self, account: &str, baskets: &[String]) -> Result<(), Failure>;
+    fn cancel_all(&self, account: &str) -> Result<(), Failure>;
+    fn flatten(&self, account: &str, contract: &str, exchange: &str) -> Result<(), Failure>;
     /// Why it is no longer signed in, if it ended by itself.
     fn trouble(&self) -> Option<String>;
     fn sign_out(&self);
@@ -603,6 +629,17 @@ fn said(error: rithmic::Error) -> String {
     match error {
         rithmic::Error::Refused(why) | rithmic::Error::Rejected(why) => why,
         error => error.to_string(),
+    }
+}
+
+/// A request's failure, as the window needs it: a drop, a timeout or a
+/// session ending on the way is no answer, not a no.
+fn failed(error: rithmic::Error) -> Failure {
+    match error {
+        rithmic::Error::Connection(_) | rithmic::Error::Timeout | rithmic::Error::Closed => {
+            Failure::Unanswered(said(error))
+        }
+        error => Failure::Refused(said(error)),
     }
 }
 
@@ -702,6 +739,7 @@ impl Session for RithmicSession {
                     exchange: order.exchange,
                     side: side(order.side),
                     qty: order.qty,
+                    filled: order.filled,
                     kind: match order.kind {
                         rithmic::Kind::Market => OrderKind::Market,
                         rithmic::Kind::Limit => OrderKind::Limit,
@@ -724,7 +762,7 @@ impl Session for RithmicSession {
         }
     }
 
-    fn place(&self, order: &Order) -> Result<String, String> {
+    fn place(&self, order: &Order) -> Result<String, Failure> {
         let placed = rithmic::Order {
             account: order.account.clone(),
             contract: order.contract.clone(),
@@ -742,27 +780,27 @@ impl Session for RithmicSession {
             price: order.price,
             tag: order.tag.clone(),
         };
-        self.trading.place(&placed).map_err(said)
+        self.trading.place(&placed).map_err(failed)
     }
 
-    fn cancel(&self, account: &str, basket: &str) -> Result<(), String> {
-        self.trading.cancel(account, basket).map_err(said)
+    fn cancel(&self, account: &str, basket: &str) -> Result<(), Failure> {
+        self.trading.cancel(account, basket).map_err(failed)
     }
 
-    fn modify(&self, account: &str, basket: &str, price: f64) -> Result<(), String> {
-        self.trading.modify(account, basket, price).map_err(said)
+    fn modify(&self, account: &str, basket: &str, price: f64) -> Result<(), Failure> {
+        self.trading.modify(account, basket, price).map_err(failed)
     }
 
-    fn link(&self, account: &str, baskets: &[String]) -> Result<(), String> {
-        self.trading.link(account, baskets).map_err(said)
+    fn link(&self, account: &str, baskets: &[String]) -> Result<(), Failure> {
+        self.trading.link(account, baskets).map_err(failed)
     }
 
-    fn cancel_all(&self, account: &str) -> Result<(), String> {
-        self.trading.cancel_all(account).map_err(said)
+    fn cancel_all(&self, account: &str) -> Result<(), Failure> {
+        self.trading.cancel_all(account).map_err(failed)
     }
 
-    fn flatten(&self, account: &str, contract: &str, exchange: &str) -> Result<(), String> {
-        self.trading.flatten(account, contract, exchange).map_err(said)
+    fn flatten(&self, account: &str, contract: &str, exchange: &str) -> Result<(), Failure> {
+        self.trading.flatten(account, contract, exchange).map_err(failed)
     }
 
     fn trouble(&self) -> Option<String> {
@@ -1215,6 +1253,8 @@ pub struct WorkingOrder {
     pub exchange: String,
     pub side: Side,
     pub qty: u32,
+    /// How much of it has filled so far.
+    pub filled: u32,
     pub kind: OrderKind,
     pub price: Option<f64>,
     pub status: Status,
@@ -1519,24 +1559,27 @@ pub fn confirm_text(side: Side, kind: OrderKind, price: &str, target: &Target) -
     )
 }
 
-/// What a toast says when an order placed here moves on: filled, working,
-/// or rejected. Nothing for a step that is neither.
+/// What a toast says when an order placed or cancelled here moves on:
+/// working, filled (or part of it), cancelled or rejected, each only once
+/// the broker has said so. Nothing for a step that is none of them.
 pub fn outcome_text(order: &WorkingOrder, before: &Status, decimals: usize, account: &str) -> Option<String> {
     if *before == order.status {
         return None;
     }
     let price = |price: Option<f64>| price.map(|price| omacharts_engine::grouped_decimals(price, decimals));
     match &order.status {
-        Status::Filled => {
-            let done = match order.side {
-                Side::Buy => "Bought",
-                Side::Sell => "Sold",
-            };
-            Some(match price(order.fill_price) {
-                Some(at) => format!("{done} {} {} at {at} · {account}", order.qty, order.contract),
-                None => format!("{done} {} {} · {account}", order.qty, order.contract),
-            })
+        Status::Filled => Some(match price(order.fill_price) {
+            Some(at) => format!("Filled {} {} at {at} · {account}", order.qty, order.contract),
+            None => format!("Filled {} {} · {account}", order.qty, order.contract),
+        }),
+        Status::PartiallyFilled if order.filled > 0 => {
+            Some(format!("Filled {} of {} {} · {account}", order.filled, order.qty, order.contract))
         }
+        Status::Cancelled if order.kind != OrderKind::Market => Some(format!(
+            "Cancelled {} {}",
+            order_words(order.side, order.kind),
+            price(order.price).unwrap_or_default()
+        )),
         Status::Working if order.kind != OrderKind::Market && *before == Status::Pending => {
             Some(format!("Working: {} {}", order_words(order.side, order.kind), price(order.price).unwrap_or_default()))
         }
@@ -1578,6 +1621,75 @@ pub fn position_text(held: &Position, decimals: usize, currency: Option<&str>) -
         (None, Some(avg)) => format!("{} @ {}", net_text(held.net), omacharts_engine::grouped_decimals(avg, decimals)),
         (None, None) => net_text(held.net),
     }
+}
+
+/// Something the window asked of a broker, by what it was asked about.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Request {
+    /// A new order, by its tag.
+    Place(String),
+    /// A working order to another price, by basket.
+    Move(String),
+    /// A working order cancelled, by basket.
+    Cancel(String),
+    /// A position closed, by the account's key and the contract.
+    Flatten(String, String),
+}
+
+/// What was asked, as it is drawn until the broker's book says what became
+/// of it: faint, never to be taken for something the broker has confirmed.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Pending {
+    /// The order as sent, on the account with the key `key`.
+    Place { key: String, order: Order },
+    /// To this price.
+    Move(f64),
+    Cancel,
+    Flatten,
+}
+
+/// Has the book answered `request`? An order is answered once the exchange
+/// has it working (a market order once it has filled), or once it is done
+/// whatever became of it; a move once the book has the order at the new
+/// price; a cancel once the order is no longer working; a flatten once
+/// nothing is held. Nothing that is not in the book is taken as answered:
+/// a request that never hears back stays pending.
+pub fn answered(request: &Request, pending: &Pending, book: &Book) -> bool {
+    match (request, pending) {
+        (Request::Place(tag), Pending::Place { key, order }) => {
+            let found = book.orders.iter().find(|known| known.tag.as_deref() == Some(tag) && known.account == *key);
+            match found {
+                None => false,
+                Some(known) if order.kind == OrderKind::Market => !known.status.working(),
+                Some(known) => known.status != Status::Pending,
+            }
+        }
+        (Request::Move(basket), Pending::Move(price)) => book
+            .order(basket)
+            .is_some_and(|known| !known.status.working() || known.price == Some(*price)),
+        (Request::Cancel(basket), _) => book.order(basket).is_some_and(|known| !known.status.working()),
+        (Request::Flatten(key, contract), _) => book.position(key, contract).is_none(),
+        _ => true,
+    }
+}
+
+/// What a market order on its way says beside the last price, until it
+/// fills: "Buying 1…".
+pub fn buying_text(side: Side, qty: u32) -> String {
+    match side {
+        Side::Buy => format!("Buying {qty}…"),
+        Side::Sell => format!("Selling {qty}…"),
+    }
+}
+
+/// What a working order's pill says: "▼ Sell Limit 1", and once some of it
+/// has filled, how much of how much: "▼ Sell Limit 1/2".
+pub fn order_pill_text(order: &WorkingOrder) -> String {
+    let size = match order.status {
+        Status::PartiallyFilled => format!("{}/{}", order.filled, order.qty),
+        _ => order.qty.to_string(),
+    };
+    format!("{} {} {size}", order.side.glyph(), order_words(order.side, order.kind))
 }
 
 /// The accounts with an order on its way, so a second click does not send
@@ -1811,6 +1923,13 @@ pub(crate) mod tests {
         pub links: Mutex<Vec<Vec<String>>>,
         /// Refuse whatever is asked next, in these words.
         pub refuse: Mutex<Option<String>>,
+        /// Answer nothing at all from now on: every request is lost on the
+        /// way, and nothing in the book moves.
+        pub silent: std::sync::atomic::AtomicBool,
+        /// Hold what is placed as the broker's Pending, as an order is
+        /// before the exchange has it, until [`FakeSession::open`] or
+        /// [`FakeSession::fill`]; a market order too.
+        pub holds: std::sync::atomic::AtomicBool,
     }
 
     impl FakeSession {
@@ -1830,14 +1949,49 @@ pub(crate) mod tests {
                 links_orders: true,
                 links: Mutex::default(),
                 refuse: Mutex::default(),
+                silent: Default::default(),
+                holds: Default::default(),
             }
         }
 
-        fn refused(&self) -> Result<(), String> {
+        fn refused(&self) -> Result<(), Failure> {
+            if self.silent.load(Ordering::Acquire) {
+                return Err(Failure::Unanswered("no answer in time".into()));
+            }
             match self.refuse.lock().unwrap().take() {
-                Some(why) => Err(why),
+                Some(why) => Err(Failure::Refused(why)),
                 None => Ok(()),
             }
+        }
+
+        /// The exchange has the order `basket`: it is working.
+        pub(crate) fn open(&self, basket: &str) {
+            let mut book = self.book.lock().unwrap();
+            if let Some(order) = book.orders.iter_mut().find(|o| o.basket_id == basket && o.status == Status::Pending) {
+                order.status = Status::Working;
+            }
+            drop(book);
+            (self.changed)();
+        }
+
+        /// `qty` of the working order `basket` fills at its price, the rest
+        /// still working.
+        pub(crate) fn fill_part(&self, basket: &str, qty: u32) {
+            let mut book = self.book.lock().unwrap();
+            let Some(order) = book.orders.iter_mut().find(|o| o.basket_id == basket && o.status.working()) else {
+                return;
+            };
+            order.filled = (order.filled + qty).min(order.qty);
+            order.status = match order.filled == order.qty {
+                true => Status::Filled,
+                false => Status::PartiallyFilled,
+            };
+            order.fill_price = order.price;
+            let order = order.clone();
+            let bought = if order.side == Side::Buy { qty as i32 } else { -(qty as i32) };
+            FakeSession::hold(&mut book, &order.account, &order.contract, &order.exchange, bought, order.price.unwrap_or(0.0));
+            drop(book);
+            (self.changed)();
         }
 
         /// End `basket` and cancel every order linked to it, as a broker
@@ -1857,14 +2011,17 @@ pub(crate) mod tests {
         /// price, and whatever is linked to it is cancelled.
         pub(crate) fn fill(&self, basket: &str) {
             let mut book = self.book.lock().unwrap();
+            let last = *self.last.lock().unwrap();
             let Some(order) = book.orders.iter_mut().find(|o| o.basket_id == basket && o.status.working()) else {
                 return;
             };
+            let left = order.qty - order.filled;
             order.status = Status::Filled;
-            order.fill_price = order.price;
+            order.filled = order.qty;
+            order.fill_price = order.price.or(Some(last));
             let order = order.clone();
-            let bought = if order.side == Side::Buy { order.qty as i32 } else { -(order.qty as i32) };
-            FakeSession::hold(&mut book, &order.account, &order.contract, &order.exchange, bought, order.price.unwrap_or(0.0));
+            let bought = if order.side == Side::Buy { left as i32 } else { -(left as i32) };
+            FakeSession::hold(&mut book, &order.account, &order.contract, &order.exchange, bought, order.fill_price.unwrap_or(last));
             self.end_linked(&mut book, basket);
             drop(book);
             (self.changed)();
@@ -1919,14 +2076,15 @@ pub(crate) mod tests {
         fn book(&self) -> Book {
             self.book.lock().unwrap().clone()
         }
-        fn place(&self, order: &Order) -> Result<String, String> {
+        fn place(&self, order: &Order) -> Result<String, Failure> {
             if self.gone.load(Ordering::Acquire) {
-                return Err("the session was signed out".into());
+                return Err(Failure::Refused("the session was signed out".into()));
             }
             self.refused()?;
             let basket = format!("B{}", self.baskets.fetch_add(1, Ordering::AcqRel));
             let last = *self.last.lock().unwrap();
-            let filled = order.kind == OrderKind::Market;
+            let held = self.holds.load(Ordering::Acquire);
+            let filled = order.kind == OrderKind::Market && !held;
             let mut book = self.book.lock().unwrap();
             book.orders.insert(
                 0,
@@ -1938,9 +2096,14 @@ pub(crate) mod tests {
                     exchange: order.exchange.clone(),
                     side: order.side,
                     qty: order.qty,
+                    filled: if filled { order.qty } else { 0 },
                     kind: order.kind,
                     price: order.price,
-                    status: if filled { Status::Filled } else { Status::Working },
+                    status: match (filled, held) {
+                        (true, _) => Status::Filled,
+                        (false, true) => Status::Pending,
+                        (false, false) => Status::Working,
+                    },
                     fill_price: filled.then_some(last),
                     at: 0,
                     tag: Some(order.tag.clone()),
@@ -1955,33 +2118,34 @@ pub(crate) mod tests {
             (self.changed)();
             Ok(basket)
         }
-        fn cancel(&self, _: &str, basket: &str) -> Result<(), String> {
+        fn cancel(&self, _: &str, basket: &str) -> Result<(), Failure> {
             self.refused()?;
             let mut book = self.book.lock().unwrap();
             let order = book.orders.iter_mut().find(|order| order.basket_id == basket && order.status.working());
-            let Some(order) = order else { return Err("not working".into()) };
+            let Some(order) = order else { return Err(Failure::Refused("not working".into())) };
             order.status = Status::Cancelled;
             self.end_linked(&mut book, basket);
             drop(book);
             (self.changed)();
             Ok(())
         }
-        fn modify(&self, _: &str, basket: &str, price: f64) -> Result<(), String> {
+        fn modify(&self, _: &str, basket: &str, price: f64) -> Result<(), Failure> {
             self.refused()?;
             let mut book = self.book.lock().unwrap();
             let order = book.orders.iter_mut().find(|order| order.basket_id == basket && order.status.working());
-            let Some(order) = order else { return Err("not working".into()) };
+            let Some(order) = order else { return Err(Failure::Refused("not working".into())) };
             order.price = Some(price);
             drop(book);
             (self.changed)();
             Ok(())
         }
-        fn link(&self, _: &str, baskets: &[String]) -> Result<(), String> {
+        fn link(&self, _: &str, baskets: &[String]) -> Result<(), Failure> {
             self.refused()?;
             self.links.lock().unwrap().push(baskets.to_vec());
             Ok(())
         }
-        fn cancel_all(&self, account: &str) -> Result<(), String> {
+        fn cancel_all(&self, account: &str) -> Result<(), Failure> {
+            self.refused()?;
             let mut book = self.book.lock().unwrap();
             for order in book.orders.iter_mut().filter(|order| order.account == account && order.status.working()) {
                 order.status = Status::Cancelled;
@@ -1990,7 +2154,8 @@ pub(crate) mod tests {
             (self.changed)();
             Ok(())
         }
-        fn flatten(&self, account: &str, contract: &str, exchange: &str) -> Result<(), String> {
+        fn flatten(&self, account: &str, contract: &str, exchange: &str) -> Result<(), Failure> {
+            self.refused()?;
             let last = *self.last.lock().unwrap();
             let mut book = self.book.lock().unwrap();
             let net = book.position(account, contract).map_or(0, |held| held.net);
@@ -2446,6 +2611,7 @@ pub(crate) mod tests {
             exchange: "CME".into(),
             side,
             qty: 1,
+            filled: 0,
             kind,
             price,
             status,
@@ -2515,6 +2681,77 @@ pub(crate) mod tests {
         assert_eq!(found, Some("T"));
     }
 
+    /// What becomes of each request, read off the book: an order only once
+    /// the exchange has it working, a market order only on its fill, a
+    /// move once the book has the new price, a cancel once it is not
+    /// working, a flatten once nothing is held; and nothing that is not in
+    /// the book at all.
+    #[test]
+    fn a_request_is_answered_only_by_what_the_book_says() {
+        let mut book = Book::default();
+        let sent = Order {
+            account: "951".into(),
+            contract: "ESZ6".into(),
+            exchange: "CME".into(),
+            side: Side::Sell,
+            qty: 1,
+            kind: OrderKind::Limit,
+            price: Some(7_640.0),
+            tag: "omacharts:1".into(),
+        };
+        let place = Request::Place("omacharts:1".into());
+        let pending = Pending::Place { key: "t/951".into(), order: sent.clone() };
+        assert!(!answered(&place, &pending, &book), "never heard of: still pending");
+        let mut known = order("B1", Side::Sell, OrderKind::Limit, Some(7_640.0), Status::Pending);
+        known.tag = Some("omacharts:1".into());
+        book.orders.push(known);
+        assert!(!answered(&place, &pending, &book), "received is not working");
+        book.orders[0].status = Status::Working;
+        assert!(answered(&place, &pending, &book));
+        book.orders[0].status = Status::Rejected("no".into());
+        assert!(answered(&place, &pending, &book), "a rejection is an answer");
+
+        let market = Pending::Place { key: "t/951".into(), order: Order { kind: OrderKind::Market, price: None, ..sent } };
+        book.orders[0].kind = OrderKind::Market;
+        book.orders[0].status = Status::Working;
+        assert!(!answered(&place, &market, &book), "a market order is answered by its fill");
+        book.orders[0].status = Status::Filled;
+        assert!(answered(&place, &market, &book));
+
+        book.orders[0] = order("B1", Side::Sell, OrderKind::Limit, Some(7_640.0), Status::Working);
+        let moved = Request::Move("B1".into());
+        assert!(!answered(&moved, &Pending::Move(7_645.0), &book));
+        book.orders[0].price = Some(7_645.0);
+        assert!(answered(&moved, &Pending::Move(7_645.0), &book));
+        assert!(!answered(&Request::Move("B9".into()), &Pending::Move(1.0), &book), "not in the book");
+
+        let cancel = Request::Cancel("B1".into());
+        assert!(!answered(&cancel, &Pending::Cancel, &book));
+        book.orders[0].status = Status::Cancelled;
+        assert!(answered(&cancel, &Pending::Cancel, &book));
+
+        let flatten = Request::Flatten("t/951".into(), "ESZ6".into());
+        book.positions.push(Position {
+            account: "t/951".into(),
+            contract: "ESZ6".into(),
+            exchange: "CME".into(),
+            net: 1,
+            avg: Some(7_612.25),
+            open_pnl: None,
+            tick: Some(0.25),
+        });
+        assert!(!answered(&flatten, &Pending::Flatten, &book));
+        book.positions.clear();
+        assert!(answered(&flatten, &Pending::Flatten, &book));
+
+        let mut part = order("P", Side::Sell, OrderKind::Limit, Some(7_640.0), Status::PartiallyFilled);
+        (part.qty, part.filled) = (2, 1);
+        assert_eq!(order_pill_text(&part), "▼ Sell Limit 1/2");
+        part.status = Status::Working;
+        assert_eq!(order_pill_text(&part), "▼ Sell Limit 2");
+        assert_eq!(buying_text(Side::Buy, 1), "Buying 1…");
+    }
+
     /// The tests' session moves a working order and refuses one that is
     /// not; linked orders go together, by a cancel or a fill.
     #[test]
@@ -2549,7 +2786,7 @@ pub(crate) mod tests {
         session.fill(&stop);
         assert_eq!(session.book().order(&target).map(|o| o.status.clone()), Some(Status::Cancelled));
         *session.refuse.lock().unwrap() = Some("price out of band".into());
-        assert_eq!(session.cancel("951", &target), Err("price out of band".into()));
+        assert_eq!(session.cancel("951", &target), Err(Failure::Refused("price out of band".into())));
     }
 
     /// A limit waits for a better price and a stop for a worse one; at the
@@ -2640,13 +2877,20 @@ pub(crate) mod tests {
 
         let mut bought = order("a", Side::Buy, OrderKind::Market, None, Status::Filled);
         bought.fill_price = Some(7_612.25);
-        assert_eq!(outcome_text(&bought, &Status::Pending, 2, "951").as_deref(), Some("Bought 1 ESZ6 at 7,612.25 · 951"));
+        assert_eq!(outcome_text(&bought, &Status::Pending, 2, "951").as_deref(), Some("Filled 1 ESZ6 at 7,612.25 · 951"));
         assert_eq!(outcome_text(&bought, &Status::Filled, 2, "951"), None, "said once");
         let working = order("b", Side::Sell, OrderKind::Limit, Some(7_620.0), Status::Working);
         assert_eq!(outcome_text(&working, &Status::Pending, 2, "951").as_deref(), Some("Working: Sell Limit 7,620.00"));
         let refused = order("c", Side::Buy, OrderKind::Limit, Some(1.0), Status::Rejected("price out of band".into()));
         assert_eq!(outcome_text(&refused, &Status::Pending, 2, "951").as_deref(), Some("Rejected: price out of band"));
-        assert_eq!(outcome_text(&order("d", Side::Buy, OrderKind::Limit, Some(1.0), Status::Cancelled), &Status::Working, 2, "951"), None);
+        assert_eq!(
+            outcome_text(&order("d", Side::Buy, OrderKind::Limit, Some(7_620.0), Status::Cancelled), &Status::Working, 2, "951")
+                .as_deref(),
+            Some("Cancelled Buy Limit 7,620.00")
+        );
+        let mut part = order("e", Side::Sell, OrderKind::Limit, Some(7_620.0), Status::PartiallyFilled);
+        (part.qty, part.filled) = (2, 1);
+        assert_eq!(outcome_text(&part, &Status::Working, 2, "951").as_deref(), Some("Filled 1 of 2 ESZ6 · 951"));
 
         let mut held = Position {
             account: "t/951".into(),

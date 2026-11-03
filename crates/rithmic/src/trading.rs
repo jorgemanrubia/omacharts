@@ -124,6 +124,8 @@ pub struct WorkingOrder {
     pub exchange: String,
     pub side: Side,
     pub qty: u32,
+    /// How much of it has filled so far.
+    pub filled: u32,
     pub kind: Kind,
     pub price: Option<f64>,
     pub status: Status,
@@ -249,6 +251,7 @@ impl State {
             exchange: order.exchange.clone(),
             side: order.side,
             qty: order.qty,
+            filled: 0,
             kind: order.kind,
             price: order.price,
             status: Status::Pending,
@@ -280,6 +283,7 @@ impl State {
             exchange: String::new(),
             side: Side::Buy,
             qty: 0,
+            filled: 0,
             kind: Kind::Market,
             price: None,
             status: Status::Pending,
@@ -326,6 +330,9 @@ impl State {
         }
         if let Some(tag) = given(&update.user_tag) {
             order.tag = Some(tag);
+        }
+        if let Some(done) = update.total_fill_size.and_then(|size| u32::try_from(size).ok()).filter(|size| *size > 0) {
+            order.filled = done;
         }
         let filled = update.total_fill_size.unwrap_or(0) > 0;
         // The exchange's notification carries the reason and comes first;
@@ -378,6 +385,9 @@ impl State {
             Some("fill") => {
                 if let Some(price) = update.avg_fill_price.or(update.fill_price).filter(|price| *price != 0.0) {
                     order.fill_price = Some(price);
+                }
+                if let Some(left) = update.total_unfilled_size.and_then(|left| u32::try_from(left).ok()) {
+                    order.filled = order.qty.saturating_sub(left);
                 }
                 match update.total_unfilled_size {
                     Some(0) => order.status = Status::Filled,
@@ -568,9 +578,12 @@ impl Trading {
     }
 
     /// The order handle for `account`, while the session is signed in.
+    ///
+    /// Signed out already, nothing is sent, which is a refusal and not a
+    /// request left unanswered: said as one.
     fn desk(&self, account: &str) -> Result<&RithmicOrderPlantHandle, Error> {
         if let Some(trouble) = self.trouble() {
-            return Err(trouble);
+            return Err(Error::Rejected(trouble.to_string()));
         }
         self.inner.desks.get(account).ok_or_else(|| Error::NotFound("such account on this login".into()))
     }

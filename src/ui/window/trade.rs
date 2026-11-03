@@ -9,14 +9,14 @@
 //! both while the window is open.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
 
 use super::Window;
-use crate::trading::{self, OrderKind, Side, Status};
+use crate::trading::{self, Failure, OrderKind, Pending, Request, Side, Status};
 use crate::ui::pane::ChartPane;
 use crate::ui::trading_panel::{Hands, TradingPanel};
 
@@ -55,15 +55,12 @@ pub(super) struct Trade {
     pub chart_actions: RefCell<Option<gio::SimpleActionGroup>>,
     /// The accounts with an order on its way: a place, a move or a cancel.
     pub placing: trading::Placing,
-    /// Orders whose × was pressed, by basket: drawn faint until the book
-    /// says they are gone.
-    pub cancelling: RefCell<HashSet<String>>,
-    /// Positions being flattened, by account key and contract: drawn faint
-    /// until the book says they are flat.
-    pub flattening: RefCell<HashSet<(String, String)>>,
-    /// Orders dragged to a new price, by basket: drawn faint there until
-    /// the book has them at it.
-    pub moving: RefCell<HashMap<String, f64>>,
+    /// Everything asked of a broker from here that its book has not
+    /// answered yet: a new order, a move, a cancel, a flatten. Each is
+    /// drawn as pending, faint, from the moment it is asked until the book
+    /// says what became of it, or the broker refuses it. One that is never
+    /// answered stays pending: nothing here assumes it was done.
+    pub pending: RefCell<HashMap<Request, Pending>>,
 }
 
 /// The `chart.order` target: `side:kind:account:price`, the price empty at
@@ -111,16 +108,39 @@ impl Window {
         self.apply_marks();
     }
 
-    /// Forget what was asked of the broker once the book has answered: an
-    /// order cancelled, a position flat.
+    /// Forget what was asked of a broker once its book has answered.
     fn settle_pending(&self) {
         let view = self.trading.borrow();
-        let working = |basket: &String| view.book.order(basket).is_some_and(|order| order.status.working());
-        self.trade.cancelling.borrow_mut().retain(working);
-        self.trade.flattening.borrow_mut().retain(|(key, contract)| view.book.position(key, contract).is_some());
-        self.trade.moving.borrow_mut().retain(|basket, price| {
-            view.book.order(basket).is_some_and(|order| order.status.working() && order.price != Some(*price))
-        });
+        self.trade.pending.borrow_mut().retain(|request, pending| !trading::answered(request, pending, &view.book));
+    }
+
+    /// Draw `request` as pending from now.
+    fn ask(self: &Rc<Self>, request: Request, pending: Pending) {
+        self.trade.pending.borrow_mut().insert(request, pending);
+        self.apply_marks();
+    }
+
+    /// What the broker said to `request` when it was sent: a refusal takes
+    /// what was drawn for it away and says why; no answer leaves it
+    /// pending, since it may well have arrived, and says so.
+    fn heard<T>(self: &Rc<Self>, request: &Request, outcome: Result<T, Failure>, not: &str) -> Option<T> {
+        match outcome {
+            Ok(value) => {
+                // The book may already say what became of it.
+                self.desk.tell();
+                Some(value)
+            }
+            Err(Failure::Refused(why)) => {
+                self.trade.pending.borrow_mut().remove(request);
+                self.apply_marks();
+                self.toast(&format!("{not}: {why}"));
+                None
+            }
+            Err(Failure::Unanswered(why)) => {
+                self.toast(&format!("No answer yet: {why}"));
+                None
+            }
+        }
     }
 
     fn install_trading(self: &Rc<Self>) {
@@ -218,9 +238,7 @@ impl Window {
             overlay.set_child(Some(&root));
         }
         self.trade.placed.borrow_mut().clear();
-        self.trade.cancelling.borrow_mut().clear();
-        self.trade.flattening.borrow_mut().clear();
-        self.trade.moving.borrow_mut().clear();
+        self.trade.pending.borrow_mut().clear();
         for pane in self.panes.borrow().iter() {
             pane.view.set_marks(None, Vec::new());
         }
@@ -344,7 +362,7 @@ impl Window {
     pub(super) fn on_session(
         self: &Rc<Self>,
         account: &str,
-        job: impl FnOnce(&dyn trading::Session, &str) -> Result<(), String> + Send + 'static,
+        job: impl FnOnce(&dyn trading::Session, &str) -> Result<(), Failure> + Send + 'static,
     ) {
         let Some((login, number)) = account.split_once('/') else { return };
         let Some(session) = self.desk.session(login).filter(|_| self.desk.live(login)) else {
@@ -360,7 +378,7 @@ impl Window {
         glib::spawn_future_local(async move {
             let Ok(outcome) = receiver.recv().await else { return };
             if let (Some(this), Err(why)) = (this.upgrade(), outcome) {
-                this.toast(&why);
+                this.toast(why.words());
             }
         });
     }
@@ -524,27 +542,15 @@ impl Window {
         if let Err(why) = self.trade.placing.begin(&key) {
             return self.toast(&why);
         }
-        let Some(session) = self.desk.session(&target.login.id).filter(|_| self.desk.live(&target.login.id)) else {
-            self.trade.placing.done(&key);
-            return self.toast(&format!("{} not signed in · not placed", self.account_label(&key)));
-        };
-        let (sender, receiver) = async_channel::bounded(1);
-        std::thread::spawn(move || {
-            let _ = sender.send_blocking(session.place(&order));
-        });
-        let this = Rc::downgrade(self);
-        glib::spawn_future_local(async move {
-            let outcome = receiver.recv().await.unwrap_or_else(|_| Err("the session went away".into()));
-            let Some(this) = this.upgrade() else { return };
+        // Drawn at once, faint, until the exchange has it working.
+        let request = Request::Place(order.tag.clone());
+        self.ask(request.clone(), Pending::Place { key: key.clone(), order: order.clone() });
+        self.send(&target, move |session, _| session.place(&order), move |this, outcome| {
             this.trade.placing.done(&key);
-            match outcome {
-                Ok(basket) => {
-                    this.trade.placed.borrow_mut().insert(basket.clone(), Status::Pending);
-                    // What it has done already, the book may say now.
-                    this.desk.tell();
-                    then(&this, basket);
-                }
-                Err(why) => this.toast(&format!("Not placed: {why}")),
+            if let Some(basket) = this.heard(&request, outcome, "Not placed") {
+                this.trade.placed.borrow_mut().insert(basket.clone(), Status::Pending);
+                this.desk.tell();
+                then(this, basket);
             }
         });
     }
@@ -598,12 +604,13 @@ impl Window {
     fn send<T: Send + 'static>(
         self: &Rc<Self>,
         target: &trading::Target,
-        job: impl FnOnce(&dyn trading::Session, &str) -> Result<T, String> + Send + 'static,
-        then: impl FnOnce(&Rc<Self>, Result<T, String>) + 'static,
+        job: impl FnOnce(&dyn trading::Session, &str) -> Result<T, Failure> + Send + 'static,
+        then: impl FnOnce(&Rc<Self>, Result<T, Failure>) + 'static,
     ) {
         let login = target.login.id.clone();
         let Some(session) = self.desk.session(&login).filter(|_| self.desk.live(&login)) else {
-            return then(self, Err(format!("{} not signed in", self.account_label(&target.account.key()))));
+            let why = format!("{} not signed in", self.account_label(&target.account.key()));
+            return then(self, Err(Failure::Refused(why)));
         };
         let number = target.account.id.clone();
         let (sender, receiver) = async_channel::bounded(1);
@@ -612,7 +619,8 @@ impl Window {
         });
         let this = Rc::downgrade(self);
         glib::spawn_future_local(async move {
-            let outcome = receiver.recv().await.unwrap_or_else(|_| Err("the session went away".into()));
+            let outcome =
+                receiver.recv().await.unwrap_or_else(|_| Err(Failure::Unanswered("the session went away".into())));
             if let Some(this) = this.upgrade() {
                 then(&this, outcome);
             }
@@ -639,16 +647,14 @@ impl Window {
             if let Err(why) = this.trade.placing.begin(&key) {
                 return this.toast(&why);
             }
-            this.trade.cancelling.borrow_mut().insert(basket.clone());
-            this.apply_marks();
-            let (key, sent, basket) = (key.clone(), basket.clone(), basket.clone());
+            let request = Request::Cancel(basket.clone());
+            this.ask(request.clone(), Pending::Cancel);
+            // Said once the book has it cancelled.
+            this.trade.placed.borrow_mut().insert(basket.clone(), order.status.clone());
+            let (key, sent) = (key.clone(), basket.clone());
             this.send(&target, move |session, number| session.cancel(number, &sent), move |this, outcome| {
                 this.trade.placing.done(&key);
-                if let Err(why) = outcome {
-                    this.trade.cancelling.borrow_mut().remove(&basket);
-                    this.apply_marks();
-                    this.toast(&format!("Not cancelled: {why}"));
-                }
+                this.heard(&request, outcome, "Not cancelled");
             });
         });
     }
@@ -754,16 +760,12 @@ impl Window {
             if let Err(why) = this.trade.placing.begin(&key) {
                 return this.toast(&why);
             }
-            this.trade.moving.borrow_mut().insert(basket.clone(), price);
-            this.apply_marks();
-            let (key, sent, basket) = (key.clone(), basket.clone(), basket.clone());
+            let request = Request::Move(basket.clone());
+            this.ask(request.clone(), Pending::Move(price));
+            let (key, sent) = (key.clone(), basket.clone());
             this.send(&target, move |session, number| session.modify(number, &sent, price), move |this, outcome| {
                 this.trade.placing.done(&key);
-                if let Err(why) = outcome {
-                    this.trade.moving.borrow_mut().remove(&basket);
-                    this.apply_marks();
-                    this.toast(&format!("Not moved: {why}"));
-                }
+                this.heard(&request, outcome, "Not moved");
             });
         });
     }
@@ -791,19 +793,16 @@ impl Window {
                     .map(|order| order.basket_id.clone())
                     .collect()
             };
-            let pending = (key.clone(), target.contract.clone());
-            this.trade.flattening.borrow_mut().insert(pending.clone());
-            this.apply_marks();
+            let request = Request::Flatten(key.clone(), target.contract.clone());
+            this.ask(request.clone(), Pending::Flatten);
             let (contract, exchange) = (target.contract.clone(), target.exchange.clone());
-            let (target, pending) = (target.clone(), pending.clone());
+            let target = target.clone();
             this.send(
                 &target.clone(),
                 move |session, number| session.flatten(number, &contract, &exchange),
                 move |this, outcome| {
-                    if let Err(why) = outcome {
-                        this.trade.flattening.borrow_mut().remove(&pending);
-                        this.apply_marks();
-                        return this.toast(&format!("Not flattened: {why}"));
+                    if this.heard(&request, outcome, "Not flattened").is_none() {
+                        return;
                     }
                     // One the broker cancelled itself, or a link took with
                     // its sibling, is not working any more: nothing to say.
@@ -818,7 +817,7 @@ impl Window {
                             }
                             Ok(())
                         },
-                        |_, _: Result<(), String>| {},
+                        |_, _: Result<(), Failure>| {},
                     );
                 },
             );
@@ -851,12 +850,17 @@ impl Window {
         let places = crate::ui::trading_panel::decimals_of(Self::tick_of(pane, &target));
         let price = |price: f64| omacharts_engine::grouped_decimals(price, places);
         let view = self.trading.borrow();
-        let orders = view
+        let pending = self.trade.pending.borrow();
+        let mut orders: Vec<crate::ui::chart::OrderMark> = view
             .book
             .working(&key, &target.contract)
             .filter_map(|order| {
                 // On its way to a new price: drawn there, faint.
-                let moving = self.trade.moving.borrow().get(&order.basket_id).copied();
+                let moving = match pending.get(&Request::Move(order.basket_id.clone())) {
+                    Some(Pending::Move(price)) => Some(*price),
+                    _ => None,
+                };
+                let cancelling = pending.contains_key(&Request::Cancel(order.basket_id.clone()));
                 let at = moving.or(order.price)?;
                 let style = match order.kind {
                     OrderKind::Limit => look.limit,
@@ -872,20 +876,54 @@ impl Window {
                     side: order.side,
                     kind: order.kind,
                     qty: order.qty,
-                    dim: moving.is_some() || self.trade.cancelling.borrow().contains(&order.basket_id),
+                    // Not yet working at the exchange, or asked to move or go.
+                    dim: order.status == Status::Pending || moving.is_some() || cancelling,
                     price: at,
-                    words: format!(
-                        "{} {} {}",
-                        order.side.glyph(),
-                        trading::order_words(order.side, order.kind),
-                        order.qty
-                    ),
+                    words: trading::order_pill_text(order),
                     price_text: price(at),
                     colour,
                     style,
                 })
             })
             .collect();
+        // Orders asked for and not yet in the book: a limit or a stop at its
+        // price, a market order beside the last price until it fills.
+        let last = pane.view.last_price();
+        for (request, asked) in pending.iter() {
+            let (Request::Place(tag), Pending::Place { key: on, order }) = (request, asked) else { continue };
+            if *on != key || order.contract != target.contract {
+                continue;
+            }
+            let known = view.book.orders.iter().any(|known| known.tag.as_deref() == Some(tag.as_str()));
+            let (at, words, style) = match (order.kind, order.price) {
+                (OrderKind::Market, _) => match last {
+                    Some(last) => (last, trading::buying_text(order.side, order.qty), look.position),
+                    None => continue,
+                },
+                (_, Some(_)) if known => continue,
+                (kind, Some(at)) => (
+                    at,
+                    format!("{} {} {}", order.side.glyph(), trading::order_words(order.side, kind), order.qty),
+                    if kind == OrderKind::Stop { look.stop } else { look.limit },
+                ),
+                (_, None) => continue,
+            };
+            orders.push(crate::ui::chart::OrderMark {
+                basket: String::new(),
+                side: order.side,
+                kind: order.kind,
+                qty: order.qty,
+                dim: true,
+                price: at,
+                words,
+                price_text: price(at),
+                colour: match order.side {
+                    Side::Buy => look.buy.clone(),
+                    Side::Sell => look.sell.clone(),
+                },
+                style,
+            });
+        }
         let currency = target.account.currency.clone();
         let position = view.book.position(&key, &target.contract).and_then(|held| {
             let at = held.avg?;
@@ -917,14 +955,15 @@ impl Window {
                 }),
                 net: held.net,
                 exits,
-                dim: self.trade.flattening.borrow().contains(&(key.clone(), target.contract.clone())),
+                dim: pending.contains_key(&Request::Flatten(key.clone(), target.contract.clone())),
             })
         });
+        drop(pending);
         pane.view.set_marks(position, orders);
     }
 
-    /// Toast each step of an order placed here, once: filled, working,
-    /// rejected.
+    /// Toast each step of an order placed or cancelled here, once, when
+    /// the broker has said so: working, filled, cancelled, rejected.
     fn report_orders(&self) {
         let mut said = Vec::new();
         {
@@ -1253,7 +1292,7 @@ pub(super) mod tests {
         settle(&window, || orders().is_empty());
         assert_eq!(session.book().order(&basket).map(|order| order.status.clone()), Some(Status::Cancelled));
         assert!(orders().is_empty(), "a cancelled order left on the chart");
-        assert!(window.trade.cancelling.borrow().is_empty(), "still waiting on a cancel the book has answered");
+        assert!(window.trade.pending.borrow().is_empty(), "still waiting on a cancel the book has answered");
 
         pane.view.drop_mark(TradeEvent::Flatten);
         assert_eq!(pane.view.mark_states().0.map(|(_, dim)| dim), Some(true), "not faint at once");
@@ -1286,7 +1325,7 @@ pub(super) mod tests {
         settle(&window, || order() == Some((above(44.0), false)));
         assert_eq!(session.book().order(&basket).and_then(|o| o.price), Some(above(44.0)));
         assert_eq!(order(), Some((above(44.0), false)));
-        assert!(window.trade.moving.borrow().is_empty());
+        assert!(window.trade.pending.borrow().is_empty());
 
         *session.refuse.lock().unwrap() = Some("price out of band".into());
         pane.view.drop_mark(moved(above(48.0)));
@@ -1308,7 +1347,7 @@ pub(super) mod tests {
         pane.view.drop_mark(moved(above(52.0)));
         settle(&window, || false);
         assert_eq!(session.book().order(&basket).map(|o| o.status.clone()), Some(Status::Filled));
-        assert!(window.trade.moving.borrow().is_empty(), "a filled order waiting to move");
+        assert!(window.trade.pending.borrow().is_empty(), "a filled order waiting to move");
     }
 
     /// TP and SL pulled out of the position place a target and a stop for
@@ -1385,6 +1424,79 @@ pub(super) mod tests {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
         assert!(pane.view.mark_states().0.is_some(), "the position waited for the book to move");
+    }
+
+    /// What is asked shows at once, faint, and at full strength only once
+    /// the exchange has it: an order until it is working, a market order
+    /// beside the last price until it fills. A refusal takes it away; a
+    /// request that is never answered stays pending. Part of an order
+    /// filled says how much of how much.
+    #[test]
+    fn what_is_asked_is_pending_until_the_broker_confirms_it() {
+        if !crate::ui::gtk_ready() {
+            return;
+        }
+        use crate::ui::chart::TradeEvent;
+        use std::sync::atomic::Ordering;
+        let (window, pane, session, key) = long_es(true, true);
+        settle(&window, || pane.view.last_price().is_some());
+        let last = pane.view.last_price().expect("a last price");
+        let off = |ticks: f64| (last / 0.25).round() * 0.25 + ticks * 0.25;
+        let orders = || pane.view.mark_states().1;
+        session.holds.store(true, Ordering::Release);
+
+        // Pending, then working.
+        pane.view.drop_mark(TradeEvent::ExitAt { kind: OrderKind::Limit, price: off(40.0) });
+        assert_eq!(orders(), vec![("▼ Sell Limit 1".to_string(), off(40.0), true)], "not drawn at once, faint");
+        settle(&window, || session.book().orders.len() == 2);
+        settle(&window, || false);
+        assert_eq!(orders(), vec![("▼ Sell Limit 1".to_string(), off(40.0), true)], "received is not working");
+        let target = session.book().orders[0].basket_id.clone();
+        session.open(&target);
+        window.desk.tell();
+        assert_eq!(orders(), vec![("▼ Sell Limit 1".to_string(), off(40.0), false)], "working, yet faint");
+        assert!(window.trade.pending.borrow().is_empty());
+
+        // Refused: gone, and said.
+        *session.refuse.lock().unwrap() = Some("price out of band".into());
+        pane.view.drop_mark(TradeEvent::ExitAt { kind: OrderKind::Stop, price: off(-40.0) });
+        assert_eq!(orders().len(), 2, "the stop not drawn at once");
+        settle(&window, || orders().len() == 1);
+        assert_eq!(orders().len(), 1, "a refused stop left on the chart");
+        assert!(window.trade.pending.borrow().is_empty());
+
+        // Never answered: still pending, however long.
+        session.silent.store(true, Ordering::Release);
+        pane.view.drop_mark(TradeEvent::ExitAt { kind: OrderKind::Stop, price: off(-40.0) });
+        settle(&window, || false);
+        assert_eq!(orders().len(), 2);
+        assert_eq!(orders()[1], ("▼ Sell Stop 1".to_string(), off(-40.0), true), "taken as done without an answer");
+        assert_eq!(window.trade.pending.borrow().len(), 1);
+        session.silent.store(false, Ordering::Release);
+        window.trade.pending.borrow_mut().clear();
+
+        // A market order: beside the last price until its fill.
+        let value = order_target_value(Side::Buy, OrderKind::Market, &key, None);
+        let actions = window.trade.chart_actions.borrow().clone().unwrap();
+        actions.activate_action("order", Some(&value.to_variant()));
+        assert!(orders().iter().any(|(words, _, dim)| words == "Buying 1…" && *dim), "no pending market order");
+        settle(&window, || session.book().orders.iter().any(|o| o.kind == OrderKind::Market && o.status == Status::Pending));
+        settle(&window, || false);
+        assert!(orders().iter().any(|(words, ..)| words == "Buying 1…"), "acknowledged is not filled");
+        assert_eq!(session.book().position("951", "ESZ6").map(|held| held.net), Some(1));
+        let bought = session.book().orders.iter().find(|o| o.kind == OrderKind::Market && o.status == Status::Pending).unwrap().basket_id.clone();
+        session.fill(&bought);
+        window.desk.tell();
+        assert!(!orders().iter().any(|(words, ..)| words == "Buying 1…"), "filled, still pending");
+        assert_eq!(session.book().position("951", "ESZ6").map(|held| held.net), Some(2));
+
+        // Part of an order filled.
+        session.holds.store(false, Ordering::Release);
+        let two = session.place(&trading::Order { qty: 2, ..resting(Side::Buy, OrderKind::Limit, Some(off(-60.0))) }).unwrap();
+        session.fill_part(&two, 1);
+        window.desk.tell();
+        assert!(orders().iter().any(|(words, ..)| words == "▲ Buy Limit 1/2"), "{:?}", orders());
+        assert_eq!(session.book().position("951", "ESZ6").map(|held| held.net), Some(3), "only what filled is held");
     }
 
     /// On a live account the × asks first, and nothing is sent until it is

@@ -6545,8 +6545,10 @@ pub struct OrderMark {
     pub price_text: String,
     pub colour: String,
     pub style: LineStyle,
-    /// Asked to move or go, and not yet answered: drawn faint, and not
-    /// to be taken hold of again until it is.
+    /// Pending: not yet working at the exchange, or asked to move or go
+    /// and not yet answered. Drawn faint, and not to be taken hold of
+    /// until it is. A market order is always this, beside the last price,
+    /// until it fills.
     pub dim: bool,
 }
 
@@ -6901,6 +6903,15 @@ fn draw_marks(
     for order in &state.marks.orders {
         let y = to_y(order.price).round();
         if !shown(y) {
+            continue;
+        }
+        // A market order on its way has no price of its own: its pill
+        // beside the last price, and nothing else, until it fills.
+        if order.kind == OrderKind::Market {
+            faint(cr, true, &|cr| {
+                let row = mark_row(cr, plot_x, plot_w, &order.words, &[]);
+                boxed(cr, row.pill_x, y, row.pill_w, &order.words, &Boxed::Outlined(&order.colour), true);
+            });
             continue;
         }
         faint(cr, order.dim, &|cr| {
