@@ -143,7 +143,13 @@ impl Preferences {
         let charts_header_page = adw::PreferencesPage::new();
         let store_for_header = store.clone();
         let window_for_header = window.clone();
-        for section in header_sections(crate::header::load(&store), move |header| {
+        // The trading size is a part only for somebody who trades: without
+        // a login it is neither listed nor offered, and stays where it is.
+        let hidden = match crate::trading::View::load(&store).trades() {
+            true => Vec::new(),
+            false => vec![crate::header::Part::Size],
+        };
+        for section in header_sections(crate::header::load(&store), &hidden, move |header| {
             crate::header::save(&store_for_header, header);
             window_for_header.apply_header();
         }) {
@@ -220,9 +226,12 @@ impl Preferences {
 /// the whole header.
 ///
 /// A part is in the header once, so a part in one section is not offered by
-/// the other's +, and is offered again the moment it is taken out.
+/// the other's +, and is offered again the moment it is taken out. The
+/// `hidden` parts are neither listed nor offered, and kept where they are,
+/// at the end of their section, whatever is changed around them.
 fn header_sections(
     current: crate::header::Header,
+    hidden: &[crate::header::Part],
     changed: impl Fn(&crate::header::Header) + 'static,
 ) -> Vec<Rc<crate::ui::part_list::PartList<crate::header::Part>>> {
     use crate::header::Section;
@@ -231,24 +240,36 @@ fn header_sections(
     let header = Rc::new(RefCell::new(current));
     let changed = Rc::new(changed);
     let lists: Lists = Rc::new(RefCell::new(Vec::new()));
-    let elsewhere = |header: &crate::header::Header, section: Section| -> Vec<crate::header::Part> {
-        Section::ALL.into_iter().filter(|other| *other != section).flat_map(|other| header.section(other).to_vec()).collect()
-    };
+    let hidden: Rc<Vec<crate::header::Part>> = Rc::new(hidden.to_vec());
+    let concealed = hidden.clone();
+    let elsewhere = Rc::new(move |header: &crate::header::Header, section: Section| -> Vec<crate::header::Part> {
+        Section::ALL
+            .into_iter()
+            .filter(|other| *other != section)
+            .flat_map(|other| header.section(other).to_vec())
+            .chain(concealed.iter().copied())
+            .collect()
+    });
     let built: Vec<_> = Section::ALL
         .into_iter()
         .map(|section| {
             let (edited, changed, others) = (header.clone(), changed.clone(), lists.clone());
-            let current = header.borrow().section(section).to_vec();
+            let (hidden, elsewhere_now) = (hidden.clone(), elsewhere.clone());
+            let current: Vec<_> =
+                header.borrow().section(section).iter().copied().filter(|part| !hidden.contains(part)).collect();
             let list = PartList::new(
                 section.title(),
                 &format!("Add to the {}", section.title().to_lowercase()),
                 current,
-                move |parts| {
+                move |mut parts: Vec<crate::header::Part>| {
+                    let kept: Vec<_> =
+                        edited.borrow().section(section).iter().copied().filter(|part| hidden.contains(part)).collect();
+                    parts.extend(kept);
                     edited.borrow_mut().set(section, parts);
                     let now = edited.borrow().clone();
                     for (other, list) in others.borrow().iter().filter(|(other, _)| *other != section) {
                         if let Some(list) = list.upgrade() {
-                            list.set_elsewhere(elsewhere(&now, *other));
+                            list.set_elsewhere(elsewhere_now(&now, *other));
                         }
                     }
                     changed(&now);
@@ -1435,6 +1456,8 @@ fn build_data_page(context: &Rc<Context>) {
         context.window.desk(),
         context.on_change.clone(),
     );
+    let window = context.window.clone();
+    trading.set_edit_sizes(Rc::new(move |anchor: &gtk::Widget| window.edit_trading_sizes(anchor)));
     let adding = trading.clone();
     let redraw = crate::ui::feed_settings::build(
         &context.data_page,
@@ -1871,6 +1894,28 @@ fn describe_count(series: i64) -> String {
 mod tests {
     use super::*;
 
+    /// Without a trading login the trading size is neither listed nor
+    /// offered, and a change around it keeps it where it was.
+    #[test]
+    fn a_hidden_part_is_neither_listed_nor_offered_and_stays_put() {
+        use crate::header::{Header, Part};
+        if !crate::ui::gtk_ready() {
+            return;
+        }
+        let saved: Rc<RefCell<Vec<Header>>> = Rc::default();
+        let seen = saved.clone();
+        let sections =
+            header_sections(Header::standard(), &[Part::Size], move |header| seen.borrow_mut().push(header.clone()));
+        let [left, center] = sections.as_slice() else { panic!("two sections") };
+        assert_eq!(left.parts(), vec![Part::Symbol, Part::Resolution, Part::Account]);
+        assert!(!left.offered().contains(&Part::Size) && !center.offered().contains(&Part::Size));
+        left.set(vec![Part::Resolution, Part::Symbol]);
+        assert_eq!(
+            saved.borrow().last().map(|header| header.left.clone()),
+            Some(vec![Part::Resolution, Part::Symbol, Part::Size])
+        );
+    }
+
     /// A part in one section is not offered by the other, and is offered
     /// again once it is taken out; every change is the whole header.
     #[test]
@@ -1881,11 +1926,11 @@ mod tests {
         }
         let saved: Rc<RefCell<Vec<Header>>> = Rc::default();
         let seen = saved.clone();
-        let sections = header_sections(Header::standard(), move |header| seen.borrow_mut().push(header.clone()));
+        let sections = header_sections(Header::standard(), &[], move |header| seen.borrow_mut().push(header.clone()));
         let [left, center] = sections.as_slice() else { panic!("two sections") };
         assert_eq!(left.group.title(), "Left");
         assert_eq!(center.group.title(), "Center");
-        assert_eq!(left.parts(), vec![Part::Symbol, Part::Resolution, Part::Account]);
+        assert_eq!(left.parts(), vec![Part::Symbol, Part::Resolution, Part::Account, Part::Size]);
         assert_eq!(center.parts(), vec![Part::Stripe]);
         assert_eq!(left.offered(), vec![Part::Change, Part::Template]);
         assert_eq!(center.offered(), vec![Part::Change, Part::Template]);
@@ -1896,7 +1941,7 @@ mod tests {
         assert_eq!(center.offered(), vec![Part::Change, Part::Template, Part::Stripe]);
         // Into the left, by neither.
         left.set(vec![Part::Symbol, Part::Stripe]);
-        assert_eq!(center.offered(), vec![Part::Resolution, Part::Change, Part::Template, Part::Account]);
+        assert_eq!(center.offered(), vec![Part::Resolution, Part::Change, Part::Template, Part::Account, Part::Size]);
         assert!(!left.offered().contains(&Part::Stripe));
         assert_eq!(
             saved.borrow().last(),

@@ -17,6 +17,7 @@ pub mod pick_frame;
 pub mod preferences;
 pub mod range_card;
 pub mod sign_in_dialogs;
+pub mod size_templates;
 pub mod trading_settings;
 pub mod screenshot;
 pub mod search;

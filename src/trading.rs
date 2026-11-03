@@ -1412,7 +1412,6 @@ pub fn flat_plan(book: &Book, account: &str, contract: &str) -> Flat {
     }
 }
 
-
 /// Where an order from a chart of `instrument`, on the account `chosen`,
 /// would go, or why it cannot: the one rule the menu and the click both
 /// ask. `session` is a login's session while it is signed in.
@@ -1587,12 +1586,12 @@ pub fn order_words(side: Side, kind: OrderKind) -> String {
     format!("{} {}", side.word(), kind.word())
 }
 
-/// A row of the chart menu: "Buy Market · 1 ESZ6 · 951", "Sell Limit
-/// 7,620.00".
-pub fn menu_text(side: Side, kind: OrderKind, price: &str, contract: &str, account: &str) -> String {
+/// A row of the chart menu, for `size` of the contract: "Buy Market · 2
+/// ESZ6 · 951", "Sell Limit 2 @ 7,620.00".
+pub fn menu_text(side: Side, kind: OrderKind, size: Quantity, price: &str, contract: &str, account: &str) -> String {
     match kind {
-        OrderKind::Market => format!("{} · 1 {contract} · {account}", order_words(side, kind)),
-        _ => format!("{} {price}", order_words(side, kind)),
+        OrderKind::Market => format!("{} · {size} {contract} · {account}", order_words(side, kind)),
+        _ => format!("{} {size} @ {price}", order_words(side, kind)),
     }
 }
 
@@ -2891,9 +2890,12 @@ pub(crate) mod tests {
 
     #[test]
     fn what_the_menu_and_toasts_say() {
-        assert_eq!(menu_text(Side::Buy, OrderKind::Market, "", "ESZ6", "951"), "Buy Market · 1 ESZ6 · 951");
-        assert_eq!(menu_text(Side::Sell, OrderKind::Limit, "7,620.00", "ESZ6", "951"), "Sell Limit 7,620.00");
-        assert_eq!(menu_text(Side::Buy, OrderKind::Stop, "7,630.25", "ESZ6", "951"), "Buy Stop 7,630.25");
+        let one = Quantity::ONE;
+        let two = Quantity::new(2).unwrap();
+        assert_eq!(menu_text(Side::Buy, OrderKind::Market, one, "", "ESZ6", "951"), "Buy Market · 1 ESZ6 · 951");
+        assert_eq!(menu_text(Side::Buy, OrderKind::Market, two, "", "ESZ6", "951"), "Buy Market · 2 ESZ6 · 951");
+        assert_eq!(menu_text(Side::Sell, OrderKind::Limit, two, "7,620.00", "ESZ6", "951"), "Sell Limit 2 @ 7,620.00");
+        assert_eq!(menu_text(Side::Buy, OrderKind::Stop, one, "7,630.25", "ESZ6", "951"), "Buy Stop 1 @ 7,630.25");
 
         let mut bought = order("a", Side::Buy, OrderKind::Market, None, Status::Filled);
         bought.fill_price = Some(7_612.25);

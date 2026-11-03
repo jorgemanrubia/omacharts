@@ -27,6 +27,14 @@ pub const SHOW_TRADING_PANEL: &str = "show_trading_panel";
 /// drawn greyed.
 const UNAVAILABLE: &str = "chart.order-unavailable";
 
+/// The chart actions the trading keys reach, there only while trading is.
+/// Without them the keys do nothing at all.
+pub(super) const BUY_MARKET: &str = "buy-market";
+pub(super) const SELL_MARKET: &str = "sell-market";
+pub(super) const GO_FLAT: &str = "go-flat";
+/// Entry N of the focused chart's size template, counting from 1.
+pub(super) const TRADING_SIZE: &str = "trading-size";
+
 /// The window's trading furniture, all of it built only once there is a
 /// login.
 #[derive(Default)]
@@ -61,7 +69,20 @@ pub(super) struct Trade {
     /// says what became of it, or the broker refuses it. One that is never
     /// answered stays pending: nothing here assumes it was done.
     pub pending: RefCell<HashMap<Request, Pending>>,
+    /// The size templates, read when trading comes in and again whenever
+    /// they are edited.
+    pub sizes: RefCell<Vec<trading::sizes::SizeTemplate>>,
 }
+
+/// What a right click on a chart's Trading size offers.
+pub(super) fn size_part_menu() -> gio::Menu {
+    let model = gio::Menu::new();
+    model.append(Some("Edit trading sizes…"), Some(&format!("win.{EDIT_SIZES}")));
+    model
+}
+
+/// The window's action that opens the Trading sizes dialog.
+const EDIT_SIZES: &str = "edit-trading-sizes";
 
 /// The `chart.order` target: `side:kind:account:price`, the price empty at
 /// the market.
@@ -172,9 +193,34 @@ impl Window {
         });
         self.window.add_action(&action);
 
-        // The chart menu's orders. No key reaches them: an order is placed
-        // with a click on a menu that says what it is about to do.
+        let edit = gio::SimpleAction::new(EDIT_SIZES, None);
+        let this = self.clone();
+        edit.connect_activate(move |_, _| this.edit_trading_sizes(&this.window));
+        self.window.add_action(&edit);
+
+        *self.trade.sizes.borrow_mut() = trading::sizes::load(&self.store);
+
+        // The chart menu's orders, and what the trading keys reach: buy and
+        // sell the chart's size at the market, go flat, and pick the size.
         if let Some(actions) = self.trade.chart_actions.borrow().as_ref() {
+            for (name, side) in [(BUY_MARKET, Side::Buy), (SELL_MARKET, Side::Sell)] {
+                let market = gio::SimpleAction::new(name, None);
+                let this = self.clone();
+                market.connect_activate(move |_, _| this.market_from_keys(side));
+                actions.add_action(&market);
+            }
+            let flat = gio::SimpleAction::new(GO_FLAT, None);
+            let this = self.clone();
+            flat.connect_activate(move |_, _| this.flat_from_keys());
+            actions.add_action(&flat);
+            let size = gio::SimpleAction::new(TRADING_SIZE, Some(glib::VariantTy::INT32));
+            let this = self.clone();
+            size.connect_activate(move |_, value| {
+                if let Some(n) = value.and_then(|value| value.get::<i32>()).and_then(|n| usize::try_from(n).ok()) {
+                    this.pick_size(this.focused.get(), n);
+                }
+            });
+            actions.add_action(&size);
             let order = gio::SimpleAction::new("order", Some(glib::VariantTy::STRING));
             let this = self.clone();
             order.connect_activate(move |_, value| {
@@ -226,10 +272,14 @@ impl Window {
             rail.clear_corner(0);
         }
         self.window.remove_action("trading-panel");
+        self.window.remove_action(EDIT_SIZES);
         if let Some(actions) = self.trade.chart_actions.borrow().as_ref() {
             actions.remove_action("order");
             actions.remove_action("cancel-order");
             actions.remove_action("order-unavailable");
+            for name in [BUY_MARKET, SELL_MARKET, GO_FLAT, TRADING_SIZE] {
+                actions.remove_action(name);
+            }
         }
         let overlay = self.trade.overlay.borrow().clone();
         let root = self.trade.root.borrow().clone();
@@ -241,6 +291,7 @@ impl Window {
         self.trade.pending.borrow_mut().clear();
         for pane in self.panes.borrow().iter() {
             pane.view.set_marks(None, Vec::new());
+            self.write_size_of(pane);
         }
         self.sync_corner_clearance();
     }
@@ -431,13 +482,15 @@ impl Window {
             None => (price, 2),
         });
         let last = pane.view.last_price();
+        let size = self.size_of(&pane);
         for (side, kind) in trading::menu_orders(&target.capabilities) {
             let price = (kind != OrderKind::Market).then_some(at).flatten();
             let text = match (kind, price) {
-                (OrderKind::Market, _) => trading::menu_text(side, kind, "", &target.contract, &name),
+                (OrderKind::Market, _) => trading::menu_text(side, kind, size, "", &target.contract, &name),
                 (_, Some((price, places))) => trading::menu_text(
                     side,
                     kind,
+                    size,
                     &omacharts_engine::grouped_decimals(price, places),
                     &target.contract,
                     &name,
@@ -495,17 +548,11 @@ impl Window {
         {
             return self.toast(&trading::crossed_text(&price_text, kind, side));
         }
-        let order = trading::Order {
-            account: target.account.id.clone(),
-            contract: target.contract.clone(),
-            exchange: target.exchange.clone(),
-            side,
-            qty: 1,
-            kind,
-            price,
-            tag: trading::new_tag(),
-        };
-        self.place(target, order);
+        let size = self.size_of(&pane);
+        match trading::Order::request(&target.account.id, &target.contract(), side, kind, size, price) {
+            Ok(order) => self.place(target, order),
+            Err(why) => self.toast(&format!("{why} · not placed")),
+        }
     }
 
     /// Send `order` off the main loop, one at a time per account. A failure
@@ -753,6 +800,226 @@ impl Window {
         );
     }
 
+    /// Ctrl+B and Ctrl+S: buy or sell the focused chart's size at the
+    /// market, at once. "Buying 2…" beside the last price until it fills.
+    pub(super) fn market_from_keys(self: &Rc<Self>, side: Side) {
+        let pane = self.focused_pane();
+        let target = match self.order_target(&pane) {
+            Ok(target) => target,
+            Err(why) => return self.toast(&format!("{why} · not placed")),
+        };
+        if !target.capabilities.kinds.contains(&OrderKind::Market) {
+            return self.toast(&format!("{} takes no market orders · not placed", target.login.name));
+        }
+        let size = self.size_of(&pane);
+        match trading::Order::request(&target.account.id, &target.contract(), side, OrderKind::Market, size, None) {
+            Ok(order) => self.place(target, order),
+            Err(why) => self.toast(&format!("{why} · not placed")),
+        }
+    }
+
+    /// Ctrl+F: nothing left in the focused chart's contract. Every order
+    /// working in it is cancelled and the position flattened, each faint
+    /// until the book says so.
+    pub(super) fn flat_from_keys(self: &Rc<Self>) {
+        let pane = self.focused_pane();
+        let target = match self.order_target(&pane) {
+            Ok(target) => target,
+            Err(why) => return self.toast(&format!("{why} · not flattened")),
+        };
+        let key = target.account.key();
+        let flat = trading::flat_plan(&self.trading.borrow().book, &key, &target.contract);
+        if flat.is_empty() {
+            return self.toast(&format!("Already flat in {}", target.contract));
+        }
+        let flatten = Request::Flatten(key.clone(), target.contract.clone());
+        {
+            let mut pending = self.trade.pending.borrow_mut();
+            for basket in &flat.cancel {
+                pending.insert(Request::Cancel(basket.clone()), Pending::Cancel);
+            }
+            if flat.flatten {
+                pending.insert(flatten.clone(), Pending::Flatten);
+            }
+        }
+        self.apply_marks();
+        let (contract, exchange) = (target.contract.clone(), target.exchange.clone());
+        let cancels = flat.cancel.clone();
+        // The orders first, so that none of them fills into the position
+        // being closed; then the position.
+        self.send(
+            &target,
+            move |session, number| {
+                let mut failed = None;
+                for basket in &flat.cancel {
+                    if let Err(why) = session.cancel(number, basket) {
+                        failed.get_or_insert(why);
+                    }
+                }
+                if flat.flatten
+                    && let Err(why) = session.flatten(number, &contract, &exchange)
+                {
+                    failed.get_or_insert(why);
+                }
+                failed.map_or(Ok(()), Err)
+            },
+            move |this, outcome| {
+                if let Err(Failure::Refused(_)) = &outcome {
+                    // Refused: drawn as it stands again. What the book has
+                    // already answered is settled either way.
+                    let mut pending = this.trade.pending.borrow_mut();
+                    for basket in &cancels {
+                        pending.remove(&Request::Cancel(basket.clone()));
+                    }
+                }
+                this.heard(&flatten, outcome, "Not flattened");
+            },
+        );
+    }
+
+    /// A trading key, Ctrl held and nothing being typed: true when it
+    /// reached one of trading's actions, which are there only with a
+    /// trading account. See `trading_key` for which key is which.
+    pub(super) fn on_trading_key(self: &Rc<Self>, key: gtk::gdk::Key, keycode: u32) -> bool {
+        let Some((name, target)) = super::trading_key(key, keycode) else { return false };
+        let actions = self.trade.chart_actions.borrow().clone();
+        match actions.filter(|actions| actions.has_action(name)) {
+            Some(actions) => {
+                actions.activate_action(name, target.as_ref());
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The size an order from `pane` is for: the one picked for it, else
+    /// the first of its template; one when no template applies.
+    pub(super) fn size_of(&self, pane: &ChartPane) -> trading::Quantity {
+        let instrument = pane.instrument.borrow();
+        let templates = self.trade.sizes.borrow();
+        instrument
+            .as_ref()
+            .and_then(|instrument| trading::sizes::size_for(&templates, instrument, pane.trading_size.borrow().as_ref()))
+            .unwrap_or(trading::Quantity::ONE)
+    }
+
+    /// Ctrl and a digit, or a row of the size part: the chart's size to
+    /// entry `n` of its template. Sticks with the chart.
+    pub(super) fn pick_size(self: &Rc<Self>, id: u32, n: usize) {
+        let Some(pane) = self.pane(id) else { return };
+        let picked = {
+            let instrument = pane.instrument.borrow();
+            let templates = self.trade.sizes.borrow();
+            instrument.as_ref().and_then(|instrument| trading::sizes::pick(&templates, instrument, n))
+        };
+        let Some(picked) = picked else { return };
+        if pane.trading_size.borrow().as_ref() == Some(&picked) {
+            return;
+        }
+        pane.trading_size.replace(Some(picked));
+        self.write_size_of(&pane);
+        self.save_workspace();
+    }
+
+    /// The Trading size part: the chart's size in words while it has an
+    /// account and a template applies; nothing at all, and no room taken,
+    /// otherwise.
+    pub(super) fn write_size_of(&self, pane: &ChartPane) {
+        let text = match self.trade.shown.get() {
+            false => None,
+            true => {
+                let view = self.trading.borrow();
+                let account = view.account_of(pane.account.borrow().as_deref());
+                let instrument = pane.instrument.borrow();
+                let templates = self.trade.sizes.borrow();
+                account.and(instrument.as_ref()).and_then(|instrument| {
+                    let size = trading::sizes::size_for(&templates, instrument, pane.trading_size.borrow().as_ref())?;
+                    Some(trading::sizes::size_text(size, instrument.kind))
+                })
+            }
+        };
+        pane.write_size(text.as_deref());
+    }
+
+    /// Read the size templates again, after the dialog changed them, and
+    /// say every chart's size from them.
+    pub fn adopt_sizes(self: &Rc<Self>) {
+        *self.trade.sizes.borrow_mut() = trading::sizes::load(&self.store);
+        let panes = self.panes.borrow().clone();
+        for pane in &panes {
+            self.write_size_of(pane);
+        }
+    }
+
+    /// The Trading sizes dialog over `parent`, every chart saying its size
+    /// from what it saves as it is changed.
+    pub fn edit_trading_sizes(self: &Rc<Self>, parent: &impl IsA<gtk::Widget>) {
+        let this = Rc::downgrade(self);
+        crate::ui::size_templates::present(
+            parent,
+            self.store.clone(),
+            Rc::new(move || {
+                if let Some(this) = this.upgrade() {
+                    this.adopt_sizes();
+                }
+            }),
+        );
+    }
+
+    /// The size part's popover: the template's sizes, the chart's marked,
+    /// each with the key that picks it, picked with a click.
+    pub(super) fn fill_size_menu(self: &Rc<Self>, popover: &gtk::Popover, id: u32) {
+        let Some(pane) = self.pane(id) else { return };
+        let menu = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let (sizes, kind) = {
+            let instrument = pane.instrument.borrow();
+            let templates = self.trade.sizes.borrow();
+            let sizes = instrument
+                .as_ref()
+                .and_then(|instrument| trading::sizes::template_for(&templates, instrument))
+                .map(|template| template.sizes.clone())
+                .unwrap_or_default();
+            (sizes, instrument.as_ref().map(|instrument| instrument.kind))
+        };
+        let current = self.size_of(&pane);
+        for (at, size) in sizes.iter().enumerate() {
+            let button = gtk::Button::new();
+            button.add_css_class("flat");
+            button.add_css_class("link-row");
+            let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            let label = match kind {
+                Some(kind) => trading::sizes::size_text(*size, kind),
+                None => size.to_string(),
+            };
+            let title = gtk::Label::new(Some(&label));
+            title.set_xalign(0.0);
+            title.set_hexpand(true);
+            line.append(&title);
+            if at < 9 {
+                let key = crate::ui::shortcuts::accel_label(&format!("<Ctrl>{}", at + 1)).unwrap_or_default();
+                let key = gtk::Label::new(Some(&key));
+                key.add_css_class("dim-label");
+                line.append(&key);
+            }
+            // Kept in place when not drawn, so the column does not move.
+            let mark = gtk::Image::from_icon_name("object-select-symbolic");
+            mark.set_opacity(if *size == current { 1.0 } else { 0.0 });
+            line.append(&mark);
+            button.set_child(Some(&line));
+            let this = self.clone();
+            let closing = popover.downgrade();
+            button.connect_clicked(move |_| {
+                if let Some(popover) = closing.upgrade() {
+                    popover.popdown();
+                }
+                this.focus(id);
+                this.pick_size(id, at + 1);
+            });
+            menu.append(&button);
+        }
+        popover.set_child(Some(&menu));
+    }
+
     /// Mark every chart with its account's position and working orders in
     /// what it shows, or with nothing.
     pub(super) fn apply_marks(self: &Rc<Self>) {
@@ -768,6 +1035,7 @@ impl Window {
         if !self.trade.shown.get() {
             return;
         }
+        self.write_size_of(pane);
         let Ok(target) = self.order_target(pane) else {
             return pane.view.set_marks(None, Vec::new());
         };
@@ -1430,7 +1698,7 @@ pub(super) mod tests {
     }
 
     /// Nothing asks first, on a live account any more than on a simulated
-    /// one: the ×, a drag, and a menu order all go straight to the
+    /// one: the ×, a drag, a menu order and the keys all go straight to the
     /// broker. Confirmations are off for now.
     #[test]
     fn a_live_account_never_asks_first() {
@@ -1459,10 +1727,120 @@ pub(super) mod tests {
         actions.activate_action("order", Some(&value.to_variant()));
         assert!(window.window.visible_dialog().is_none(), "a menu order asked first");
         settle(&window, || session.book().position("951", "ESZ6").is_some_and(|held| held.net == 2) && free(&window));
+        actions.activate_action(BUY_MARKET, None);
+        assert!(window.window.visible_dialog().is_none(), "a key asked first");
+        settle(&window, || session.book().position("951", "ESZ6").is_some_and(|held| held.net == 3));
         pane.view.drop_mark(TradeEvent::Flatten);
         assert!(window.window.visible_dialog().is_none(), "a flatten asked first");
         settle(&window, || session.book().position("951", "ESZ6").is_none());
         assert!(session.book().position("951", "ESZ6").is_none(), "not flattened");
+    }
+
+    /// Without a trading account the trading keys reach nothing: there is
+    /// no action for Ctrl+B to buy with, and it does not show the
+    /// watchlist either, which is Ctrl+Shift+B now.
+    #[test]
+    fn the_trading_keys_do_nothing_without_an_account() {
+        if !crate::ui::gtk_ready() {
+            return;
+        }
+        let store = Rc::new(Store::memory().expect("a store"));
+        let window = window(&store);
+        let actions = window.trade.chart_actions.borrow().clone().unwrap();
+        for name in [BUY_MARKET, SELL_MARKET, GO_FLAT, TRADING_SIZE] {
+            assert!(!actions.has_action(name), "{name} without an account");
+        }
+        assert!(window.window.lookup_action("edit-trading-sizes").is_none());
+        let shown = window.shows_sidebar();
+        assert!(!window.on_trading_key(gtk::gdk::Key::b, 0), "Ctrl+B taken with no account");
+        assert_eq!(window.shows_sidebar(), shown, "Ctrl+B toggled the watchlist");
+        assert!(!window.on_trading_key(gtk::gdk::Key::_2, 11), "Ctrl+2 taken with no account");
+        assert!(!window.focused_pane().size_menu.property::<bool>("visible"), "a size part with no account");
+    }
+
+    /// With an account, Ctrl+B buys the chart's size at the market and
+    /// Ctrl+S sells it; Ctrl+2 makes the size the template's second, two
+    /// contracts, which the header says, the next Ctrl+B buys and the chart
+    /// keeps. Ctrl+F leaves nothing held and nothing working.
+    #[test]
+    fn the_trading_keys_buy_sell_size_and_go_flat() {
+        if !crate::ui::gtk_ready() {
+            return;
+        }
+        let (window, pane, session, key) = long_es(true, true);
+        let held = || session.book().position("951", "ESZ6").map(|held| held.net);
+        let free = |window: &Rc<Window>| !window.trade.placing.busy(&key);
+        // A market order on its way is drawn beside the last price.
+        settle(&window, || pane.view.last_price().is_some());
+        assert_eq!(held(), Some(1));
+        assert!(pane.size_menu.property::<bool>("visible"), "no size part with an account");
+        assert_eq!(pane.size_label_text(), "1 contract");
+
+        assert!(window.on_trading_key(gtk::gdk::Key::b, 0));
+        settle(&window, || held() == Some(2) && free(&window));
+        assert_eq!(held(), Some(2), "Ctrl+B bought one");
+
+        // Ctrl+2, by the key's place on the number row.
+        assert!(window.on_trading_key(gtk::gdk::Key::_2, 11));
+        assert_eq!(pane.size_label_text(), "2 contracts");
+        assert_eq!(window.size_of(&pane).get(), 2);
+        // Pending until the broker fills it: "Buying 2…" by the last price.
+        session.holds.store(true, std::sync::atomic::Ordering::Release);
+        assert!(window.on_trading_key(gtk::gdk::Key::b, 0));
+        settle(&window, || session.book().orders.iter().filter(|order| order.qty == 2).count() == 1);
+        let buying = pane.view.mark_states().1;
+        assert!(buying.iter().any(|(words, ..)| words == "Buying 2…"), "{buying:?}");
+        let basket = session.book().orders.iter().find(|order| order.qty == 2).unwrap().basket_id.clone();
+        session.fill(&basket);
+        settle(&window, || held() == Some(4) && free(&window));
+        assert_eq!(held(), Some(4), "Ctrl+2 then Ctrl+B bought two");
+        session.holds.store(false, std::sync::atomic::Ordering::Release);
+
+        assert!(window.on_trading_key(gtk::gdk::Key::s, 0));
+        settle(&window, || held() == Some(2) && free(&window));
+        assert_eq!(held(), Some(2), "Ctrl+S sold two");
+
+        // The size is the chart's, written down with it.
+        let stored = window.store.setting(super::super::SETTING_WORKSPACE).unwrap_or_default();
+        assert!(stored.contains("\"trading_size\""), "{stored}");
+
+        // An order working in it too, then Ctrl+F: nothing left either way.
+        let resting_basket = session.place(&resting(Side::Sell, OrderKind::Limit, Some(7_640.0))).unwrap();
+        window.desk.tell();
+        assert!(window.on_trading_key(gtk::gdk::Key::f, 0));
+        settle(&window, || held().is_none() && !session.book().order(&resting_basket).unwrap().status.working());
+        assert_eq!(held(), None, "Ctrl+F left a position");
+        assert!(!session.book().order(&resting_basket).unwrap().status.working(), "Ctrl+F left an order");
+    }
+
+    /// The size part's popover lists the template's sizes with the chart's
+    /// marked; a right click on it offers to edit the templates, and the
+    /// dialog's changes reach the header at once.
+    #[test]
+    fn the_size_part_offers_the_templates_sizes() {
+        if !crate::ui::gtk_ready() {
+            return;
+        }
+        let (window, pane, _session, _) = long_es(true, true);
+        let popover = gtk::Popover::new();
+        window.fill_size_menu(&popover, pane.id);
+        let rows = popover.child().and_downcast::<gtk::Box>().expect("a list");
+        let mut count = 0;
+        let mut child = rows.first_child();
+        while let Some(row) = child {
+            count += 1;
+            child = row.next_sibling();
+        }
+        assert_eq!(count, 9, "one to nine contracts");
+        let menu = size_part_menu();
+        assert_eq!(labels(menu.upcast_ref()), vec![("Edit trading sizes…".to_string(), true)]);
+        assert!(window.window.lookup_action(EDIT_SIZES).is_some());
+
+        let mut templates = trading::sizes::load(&window.store);
+        templates[1].sizes = trading::sizes::parse_sizes("3, 6").unwrap();
+        trading::sizes::save(&window.store, &templates);
+        window.adopt_sizes();
+        assert_eq!(pane.size_label_text(), "3 contracts", "the header kept the old template");
     }
 
     /// The titles of every preferences group under `widget`.

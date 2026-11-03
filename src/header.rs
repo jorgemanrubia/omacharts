@@ -54,18 +54,21 @@ pub enum Part {
     /// Which data source the chart is from, and any it was passed over.
     /// Nothing at all while there is only one source to be from.
     Account,
+    /// How many an order from the chart is for. Nothing at all without a
+    /// trading account.
+    Size,
     /// The preset resolutions as a row of buttons, on the focused chart only.
     Stripe,
 }
 
 impl Part {
-    pub const ALL: [Part; 6] =
-        [Part::Symbol, Part::Resolution, Part::Change, Part::Template, Part::Account, Part::Stripe];
+    pub const ALL: [Part; 7] =
+        [Part::Symbol, Part::Resolution, Part::Change, Part::Template, Part::Account, Part::Size, Part::Stripe];
 
     /// The section it is in until somebody places it, or `None` for a part
-    /// that is only there once somebody adds it. The account is at home on
-    /// the left because it costs nothing: with one source it draws nothing
-    /// and takes no room.
+    /// that is only there once somebody adds it. The account and the size
+    /// are at home on the left because they cost nothing: with one source,
+    /// or with no trading account, each draws nothing and takes no room.
     pub fn home(self) -> Option<Section> {
         match self {
             Part::Symbol => Some(Section::Left),
@@ -73,6 +76,7 @@ impl Part {
             Part::Change => None,
             Part::Template => None,
             Part::Account => Some(Section::Left),
+            Part::Size => Some(Section::Left),
             Part::Stripe => Some(Section::Center),
         }
     }
@@ -85,6 +89,7 @@ impl Part {
             Part::Change => "change",
             Part::Template => "template",
             Part::Account => "account",
+            Part::Size => "size",
             Part::Stripe => "stripe",
         }
     }
@@ -101,6 +106,7 @@ impl Part {
             Part::Change => "Daily change",
             Part::Template => "Chart template",
             Part::Account => "Account",
+            Part::Size => "Trading size",
             Part::Stripe => "Resolutions stripe",
         }
     }
@@ -265,7 +271,7 @@ mod tests {
     #[test]
     fn the_standard_header_is_the_line_on_the_left_and_the_stripe_in_the_center() {
         let header = Header::standard();
-        assert_eq!(header.left, vec![Part::Symbol, Part::Resolution, Part::Account]);
+        assert_eq!(header.left, vec![Part::Symbol, Part::Resolution, Part::Account, Part::Size]);
         assert_eq!(header.center, vec![Part::Stripe]);
     }
 

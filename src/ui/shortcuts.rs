@@ -120,6 +120,13 @@ pub const BINDINGS: &[Binding] = &[
     global("win.close-chartbook", &["<Ctrl><Shift><Alt>x"]),
     // A bare key, which an entry has to see first.
     careful("win.shortcuts", &["question"]),
+    // The trading keys, there only with a trading account. Never while
+    // something is typed, and never taken from a label being written, so
+    // the window's key controller handles them, not an accelerator: an
+    // order is not something a key in a box should ever place.
+    careful("chart.buy-market", &["<Ctrl>b"]),
+    careful("chart.sell-market", &["<Ctrl>s"]),
+    careful("chart.go-flat", &["<Ctrl>f"]),
 ];
 
 /// The keys no action owns, for saying so where somebody is looking.
@@ -328,6 +335,25 @@ mod tests {
         }
     }
 
+    /// Trading took Ctrl+B, Ctrl+S and Ctrl+F; the sidebars moved to Shift
+    /// and finding a symbol kept Ctrl+K.
+    #[test]
+    fn the_sidebars_moved_to_shift_for_trading() {
+        assert_eq!(binding("win.watchlist").unwrap().accels, ["<Ctrl><Shift>b"]);
+        assert_eq!(binding("win.drawing-tools").unwrap().accels, ["<Ctrl><Shift>d"]);
+        assert_eq!(binding("win.find").unwrap().accels, ["<Ctrl>k"]);
+        for (action, key) in
+            [("chart.buy-market", "<Ctrl>b"), ("chart.sell-market", "<Ctrl>s"), ("chart.go-flat", "<Ctrl>f")]
+        {
+            assert_eq!(accel(action), Some(key));
+        }
+        // None of the three is an accelerator the application installs.
+        assert!(!BINDINGS
+            .iter()
+            .filter(|binding| binding.global)
+            .any(|binding| binding.accels.iter().any(|a| ["<Ctrl>b", "<Ctrl>s", "<Ctrl>f", "<Ctrl>d"].contains(a))));
+    }
+
     /// Screenshots went on Ctrl+O, and link modes on Ctrl+L, so that Ctrl+P
     /// is free for a command palette.
     #[test]
@@ -340,8 +366,9 @@ mod tests {
         // The one that would break typing a question mark. If it is ever
         // marked global, the bug it causes is somebody else's afternoon.
         // Splitting and closing are not among them any more: they are on
-        // Ctrl+Alt, which nothing types.
-        for action in ["win.shortcuts"] {
+        // Ctrl+Alt, which nothing types. Nor are the trading keys: a key
+        // pressed in a box must never place an order.
+        for action in ["win.shortcuts", "chart.buy-market", "chart.sell-market", "chart.go-flat"] {
             let binding = binding(action).expect(action);
             assert!(!binding.global, "{action} must stay out of the accelerator table");
         }

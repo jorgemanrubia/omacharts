@@ -61,6 +61,9 @@ fn ask(anchor: &gtk::Widget, known: Option<&Login>, signed: impl Fn(trading::Typ
     }
 }
 
+/// Opens the Trading sizes dialog over the widget it is given.
+type EditSizes = Rc<dyn Fn(&gtk::Widget)>;
+
 pub struct Panel {
     store: Rc<Store>,
     desk: Rc<Desk>,
@@ -74,6 +77,7 @@ pub struct Panel {
     /// logins.
     data_page: RefCell<Option<Rc<dyn Fn()>>>,
     page: adw::PreferencesPage,
+    edit_sizes: RefCell<Option<EditSizes>>,
     groups: RefCell<Vec<adw::PreferencesGroup>>,
     /// The latest word from a sign-in, by login, until the next one.
     notes: RefCell<HashMap<String, String>>,
@@ -104,6 +108,7 @@ impl Panel {
             on_change,
             data_page: RefCell::new(None),
             page,
+            edit_sizes: RefCell::new(None),
             groups: RefCell::new(Vec::new()),
             notes: RefCell::new(HashMap::new()),
             redraw: RefCell::new(None),
@@ -119,6 +124,12 @@ impl Panel {
         panel.desk.listen(&redraw);
         *panel.redraw.borrow_mut() = Some(redraw);
         panel
+    }
+
+    /// What "Edit trading sizes…" opens.
+    pub fn set_edit_sizes(self: &Rc<Self>, edit: EditSizes) {
+        *self.edit_sizes.borrow_mut() = Some(edit);
+        rebuild(self);
     }
 
     /// The Data page's redraw, for when a login changes what it says.
@@ -170,6 +181,10 @@ fn rebuild(panel: &Rc<Panel>) {
         groups.push(login_group(panel, login, is_data, logins.len() > 1, &theirs, default.as_deref()));
     }
     groups.push(add_group(panel, logins.is_empty()));
+    // Sizes are for somebody who trades: only once there is a login.
+    if let Some(edit) = panel.edit_sizes.borrow().clone().filter(|_| !logins.is_empty()) {
+        groups.push(sizes_group(edit));
+    }
     for group in &groups {
         panel.page.add(group);
     }
@@ -304,6 +319,18 @@ fn account_row(panel: &Rc<Panel>, account: &Account, default: bool) -> adw::Acti
         row.add_suffix(&make);
     }
     row
+}
+
+/// The size templates every chart picks its trading size from, behind a
+/// button.
+fn sizes_group(edit: EditSizes) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::new();
+    group.set_title("Trading sizes");
+    let button = gtk::Button::with_label("Edit trading sizes…");
+    button.set_halign(gtk::Align::Start);
+    button.connect_clicked(move |button| edit(button.upcast_ref()));
+    group.add(&button);
+    group
 }
 
 fn add_group(panel: &Rc<Panel>, empty: bool) -> adw::PreferencesGroup {
@@ -480,7 +507,10 @@ mod tests {
     use crate::trading::Typed;
 
     fn panel(store: &Rc<Store>, desk: Rc<Desk>) -> Rc<Panel> {
-        Panel::new(adw::PreferencesPage::new(), store.clone(), desk, Rc::new(Kept::default()), Rc::new(|| {}))
+        let panel =
+            Panel::new(adw::PreferencesPage::new(), store.clone(), desk, Rc::new(Kept::default()), Rc::new(|| {}));
+        panel.set_edit_sizes(Rc::new(|_: &gtk::Widget| {}));
+        panel
     }
 
     fn words_under(widget: &gtk::Widget) -> Vec<String> {
@@ -536,6 +566,7 @@ mod tests {
         let words = page_words(&panel);
         assert!(words.iter().any(|w| w == "Add a broker…"), "{words:?}");
         assert!(!words.iter().any(|w| w == "Remove" || w == "Sign in…"), "{words:?}");
+        assert!(!words.iter().any(|w| w == "Edit trading sizes…"), "sizes with nothing to trade: {words:?}");
     }
 
     /// Two logins with their accounts: each says how it stands, the data
@@ -569,7 +600,7 @@ mod tests {
         let panel = panel(&store, Rc::new(Desk::new(Arc::new(Fake::default()))));
         rebuild(&panel);
         let groups = panel.groups.borrow().clone();
-        assert_eq!(groups.len(), 3, "two logins and the button");
+        assert_eq!(groups.len(), 4, "two logins, the button and the sizes");
         assert_eq!(groups[0].title(), "Lucid");
         assert_eq!(groups[0].description().as_deref(), Some("Rithmic Test · signed in · data"));
         assert_eq!(groups[1].description().as_deref(), Some("Rithmic Test · not signed in"));
@@ -581,6 +612,7 @@ mod tests {
         let test_words = words_under(groups[1].upcast_ref());
         assert!(test_words.iter().any(|w| w == "Use for data"), "{test_words:?}");
         assert!(test_words.iter().any(|w| w == "Sign in…"), "{test_words:?}");
+        assert!(page_words(&panel).iter().any(|w| w == "Edit trading sizes…"), "no way to the sizes with a login");
 
         // Removing the data login hands data to the other, and says so.
         let (_, body) = removal_words("Lucid", &trading::removal(&store, &lucid));

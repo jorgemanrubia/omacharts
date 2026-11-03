@@ -130,6 +130,14 @@ pub struct ChartPane {
     /// The trading account somebody chose for this chart, as `<login
     /// id>/<account number>`; `None` is the default account.
     pub account: RefCell<Option<String>>,
+    /// The Trading size part: how many an order from this chart is for,
+    /// "2 contracts". Clicked, it offers the template's sizes. Hidden, and
+    /// taking no room, without a trading account.
+    pub size_menu: gtk::MenuButton,
+    size_label: gtk::Label,
+    /// The size somebody picked for this chart, and from which template;
+    /// `None` is the first size of whichever template applies.
+    pub trading_size: RefCell<Option<crate::trading::sizes::Picked>>,
     /// The style its bars are drawn in when they are drawn: hiding them
     /// leaves it alone, so showing them again brings back the same one.
     pub bar_style: Cell<BarStyle>,
@@ -274,6 +282,15 @@ impl ChartPane {
         source_menu.set_child(Some(&source_label));
         source_menu.set_always_show_arrow(false);
         source_menu.set_visible(false);
+        // The same kind of button, not dim: it is what the next order spends.
+        let size_label = gtk::Label::new(None);
+        let size_menu = gtk::MenuButton::new();
+        size_menu.add_css_class("flat");
+        size_menu.add_css_class("readout-symbol");
+        size_menu.set_valign(gtk::Align::Center);
+        size_menu.set_child(Some(&size_label));
+        size_menu.set_always_show_arrow(false);
+        size_menu.set_visible(false);
         // The padding the two buttons beside them have, so the four sit
         // evenly apart whichever order they are in.
         for label in [&change_label, &template_label] {
@@ -440,6 +457,9 @@ impl ChartPane {
             source_label,
             source: RefCell::new(None),
             account: RefCell::new(None),
+            size_menu,
+            size_label,
+            trading_size: RefCell::new(None),
             bar_style: Cell::new(bar_style),
             bars_hidden: Cell::new(false),
             colouring: Cell::new(Default::default()),
@@ -597,12 +617,13 @@ impl ChartPane {
     /// take off the ones it does not show.
     pub fn arrange_header(&self) {
         use crate::header::Part;
-        let parts: [(Part, gtk::Widget); 6] = [
+        let parts: [(Part, gtk::Widget); 7] = [
             (Part::Symbol, self.symbol_button.clone().upcast()),
             (Part::Resolution, self.timeframe_menu.clone().upcast()),
             (Part::Change, self.change_label.clone().upcast()),
             (Part::Template, self.template_label.clone().upcast()),
             (Part::Account, self.source_menu.clone().upcast()),
+            (Part::Size, self.size_menu.clone().upcast()),
             (Part::Stripe, self.strip.clone().upcast()),
         ];
         for (_, widget) in &parts {
@@ -649,6 +670,23 @@ impl ChartPane {
             self.source_label.set_text(source.unwrap_or(""));
         }
         self.source_menu.set_visible(source.is_some());
+    }
+
+    /// How many the next order is for, or nothing at all: hidden, the part
+    /// takes no width and no spacing.
+    pub fn write_size(&self, size: Option<&str>) {
+        if self.size_label.text() != size.unwrap_or("") {
+            self.size_label.set_text(size.unwrap_or(""));
+        }
+        if self.size_menu.is_visible() != size.is_some() {
+            self.size_menu.set_visible(size.is_some());
+        }
+    }
+
+    /// What the Trading size part says.
+    #[cfg(test)]
+    pub fn size_label_text(&self) -> String {
+        self.size_label.text().to_string()
     }
 
     /// The day's move, in `colour`; nothing at all until there is one.
@@ -1396,6 +1434,34 @@ mod tests {
         // And written, it does take its room: the same measure sees it.
         pane.write_source(Some("Rithmic"));
         let shown = laid_out(vec![Part::Symbol, Part::Account, Part::Resolution, Part::Template]);
+        assert!(shown.0 > without.0 && shown.1 > without.1, "{shown:?} against {without:?}");
+    }
+
+    /// Without a trading account the size says nothing and takes no room:
+    /// the same width as a header without it. Written, it does.
+    #[test]
+    fn a_blank_trading_size_takes_no_room_in_the_header() {
+        use crate::header::{Header, Part};
+        if !crate::ui::gtk_ready() {
+            return;
+        }
+        let pane = test_pane();
+        pane.symbol_button.set_label("ES");
+        pane.write_template(Some("Footprint"));
+        let laid_out = |parts: Vec<Part>| {
+            *pane.header.borrow_mut() = Header { left: parts, center: Vec::new() };
+            pane.arrange_header();
+            let width = pane.header_row.preferred_size().1.width();
+            pane.header_row.allocate(width, SYMBOL_ROW_HEIGHT, -1, None);
+            let template = pane.template_label.compute_bounds(&pane.header_row).expect("placed").x();
+            (width, template)
+        };
+        let without = laid_out(vec![Part::Symbol, Part::Template]);
+        pane.write_size(None);
+        assert_eq!(laid_out(vec![Part::Symbol, Part::Size, Part::Template]), without);
+        assert!(!pane.size_menu.is_visible());
+        pane.write_size(Some("2 contracts"));
+        let shown = laid_out(vec![Part::Symbol, Part::Size, Part::Template]);
         assert!(shown.0 > without.0 && shown.1 > without.1, "{shown:?} against {without:?}");
     }
 

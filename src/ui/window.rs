@@ -273,6 +273,18 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
     ),
 ];
 
+/// The trading keys, which the sheet lists only once there is a trading
+/// login: with none they do nothing.
+const TRADING_SHORTCUTS: (&str, &[(&str, &str)]) = (
+    "Trading",
+    &[
+        ("Ctrl+B", "Buy this chart's trading size at market"),
+        ("Ctrl+S", "Sell this chart's trading size at market"),
+        ("Ctrl+F", "Flatten this chart's contract and cancel its orders"),
+        ("Ctrl+1 … 9", "Set this chart's trading size to size N"),
+    ],
+);
+
 /// Whether one shortcut row answers what was typed into the sheet's box.
 ///
 /// Both halves of a row are searched, because people arrive holding either
@@ -393,6 +405,8 @@ mod tests {
         let mut pinned = stored_pane(1, "ES", LinkMode::Focus);
         pinned.source = Some("rithmic".into());
         pinned.account = Some("1/951".into());
+        let two = crate::trading::Quantity::new(2).unwrap();
+        pinned.trading_size = Some(crate::trading::sizes::Picked { template: "Futures".into(), size: two });
         let book = book_of("Futures", vec![pinned, stored_pane(2, "NQ", LinkMode::Focus)]);
         let json = serde_json::to_string(&Workspace { books: vec![book], active: 0 }).unwrap();
         assert_eq!(json.matches("\"source\"").count(), 1, "only the chosen one is written: {json}");
@@ -408,6 +422,11 @@ mod tests {
         let accounts: Vec<Option<&str>> = back.books[0].panes.iter().map(|p| p.account.as_deref()).collect();
         assert_eq!(accounts, vec![Some("1/951"), None]);
         assert!(old.books[0].panes.iter().all(|pane| pane.account.is_none()));
+        // And the trading size the same way.
+        assert_eq!(json.matches("\"trading_size\"").count(), 1, "{json}");
+        assert_eq!(back.books[0].panes[0].trading_size.as_ref().map(|picked| picked.size), Some(two));
+        assert!(back.books[0].panes[1].trading_size.is_none());
+        assert!(old.books[0].panes.iter().all(|pane| pane.trading_size.is_none()));
     }
 
     #[test]
@@ -670,6 +689,7 @@ mod tests {
                 profile_merges: Vec::new(),
                 source: None,
                 account: None,
+                trading_size: None,
                 auto_scale: false,
                 log_scale: true,
                 indicators_shown: true,
@@ -749,6 +769,7 @@ mod tests {
             profile_merges: Vec::new(),
             source: None,
             account: None,
+            trading_size: None,
             auto_scale: true,
             log_scale: false,
             indicators_shown: true,
@@ -1338,6 +1359,21 @@ fn number_row(keycode: u32) -> Option<usize> {
     }
 }
 
+/// The chart action a trading key reaches, and its target: Ctrl+B, Ctrl+S
+/// and Ctrl+F by letter, Ctrl and the number row by where the key is.
+fn trading_key(key: gtk::gdk::Key, keycode: u32) -> Option<(&'static str, Option<glib::Variant>)> {
+    use gtk::gdk::Key;
+    if let Some(n) = number_row(keycode).filter(|n| *n > 0) {
+        return Some((trade::TRADING_SIZE, Some((n as i32).to_variant())));
+    }
+    match key {
+        Key::b | Key::B => Some((trade::BUY_MARKET, None)),
+        Key::s | Key::S => Some((trade::SELL_MARKET, None)),
+        Key::f | Key::F => Some((trade::GO_FLAT, None)),
+        _ => None,
+    }
+}
+
 /// Where stepping `by` from `current` lands among None and the templates,
 /// wrapping at either end. Positions, with 0 for None.
 fn step_round(current: usize, count: usize, by: i32) -> usize {
@@ -1720,6 +1756,11 @@ struct StoredPane {
     /// the default again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     account: Option<String>,
+    /// The trading size somebody picked for this chart, and the size
+    /// template it was picked from. Missing for a chart on the first size
+    /// of its template, which is every chart until somebody picks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    trading_size: Option<crate::trading::sizes::Picked>,
 }
 
 fn yes() -> bool {
@@ -2591,6 +2632,28 @@ impl Window {
         let filler = self.clone();
         sources.connect_show(move |popover| filler.fill_source_menu(popover, id));
         pane.source_menu.set_popover(Some(&sources));
+
+        // The size opens the sizes of the chart's template, and on a right
+        // click offers to edit the templates, as the strip does its list.
+        let sizes = gtk::Popover::new();
+        sizes.set_has_arrow(false);
+        let filler = self.clone();
+        sizes.connect_show(move |popover| filler.fill_size_menu(popover, id));
+        pane.size_menu.set_popover(Some(&sizes));
+        let editor = self.clone();
+        let size_menu = gtk::GestureClick::new();
+        size_menu.set_button(gtk::gdk::BUTTON_SECONDARY);
+        let (part, anchor) = (pane.size_menu.clone(), pane.header_row.clone());
+        size_menu.connect_pressed(move |gesture, _, x, y| {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            editor.focus(id);
+            // Over the line it is in, since the button has a popover of its
+            // own already.
+            let at = part.compute_point(&anchor, &gtk::graphene::Point::new(x as f32, y as f32));
+            let (x, y) = at.map_or((x, y), |at| (at.x() as f64, at.y() as f64));
+            popup_menu(&trade::size_part_menu(), &anchor, x, y);
+        });
+        pane.size_menu.add_controller(size_menu);
 
         // The chain opens the three modes rather than toggling one: "off" is
         // two answers, taking the click when focused and never taking it.
@@ -3743,6 +3806,7 @@ impl Window {
                     profile_merges: pane.profile_merges.borrow().clone(),
                     source: pane.source.borrow().clone(),
                     account: pane.account.borrow().clone(),
+                    trading_size: pane.trading_size.borrow().clone(),
                     auto_scale: pane.view.price_auto(),
                     log_scale: pane.view.price_log(),
                     indicators_shown: pane.view.show_indicators(),
@@ -3946,6 +4010,7 @@ impl Window {
             *pane.profile_merges.borrow_mut() = stored.profile_merges.clone();
             *pane.source.borrow_mut() = stored.source.clone();
             *pane.account.borrow_mut() = stored.account.clone();
+            *pane.trading_size.borrow_mut() = stored.trading_size.clone();
             pane.view.set_price_auto(stored.auto_scale);
             pane.view.set_price_log(stored.log_scale);
             pane.bars_hidden.set(stored.bars_hidden);
@@ -5483,6 +5548,15 @@ impl Window {
                 return glib::Propagation::Stop;
             }
 
+            // The trading keys, only with a trading account and never while
+            // something is being typed: Ctrl+B buys and Ctrl+S sells the
+            // focused chart's size at the market, Ctrl+F goes flat in its
+            // contract, Ctrl and a digit picks its size. With no account
+            // there are no actions for them, and they do nothing at all.
+            if ctrl && !alt && !shift && !this.is_typing() && this.on_trading_key(key, keycode) {
+                return glib::Propagation::Stop;
+            }
+
             match key {
                 // Ctrl+G: go to a stretch of time. Only off a box: in one,
                 // Ctrl+G is the box's.
@@ -6071,7 +6145,10 @@ impl Window {
         type Row = (adw::ActionRow, &'static str, &'static str, &'static str);
         let mut listed: Vec<(adw::PreferencesGroup, Vec<Row>)> = Vec::new();
 
-        for (title, shortcuts) in SHORTCUT_SECTIONS {
+        // Trading's keys only for somebody who trades: with no login they
+        // do nothing, and the sheet does not list them.
+        let trading = self.trading.borrow().trades().then_some(TRADING_SHORTCUTS);
+        for (title, shortcuts) in SHORTCUT_SECTIONS.iter().chain(trading.iter()) {
             let group = adw::PreferencesGroup::new();
             group.set_title(title);
             let mut rows = Vec::new();
