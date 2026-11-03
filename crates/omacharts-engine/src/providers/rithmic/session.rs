@@ -16,7 +16,7 @@
 //! and a settings row drawn, without a round trip to Chicago.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, RwLock};
+use std::sync::{Mutex, OnceLock, RwLock};
 
 use crate::providers::{Access, Setup};
 
@@ -24,6 +24,38 @@ use crate::providers::{Access, Setup};
 pub const SETTING_USER: &str = "rithmic_user";
 pub const SETTING_SYSTEM: &str = "rithmic_system";
 pub const SETTING_GATEWAY: &str = "rithmic_gateway";
+
+/// The app name Rithmic is told, the one place it is set.
+///
+/// Rithmic Test takes any name; production takes only the one Rithmic
+/// registers for the app when it passes conformance, prefixed with four
+/// characters of theirs (`abcd:omacharts`). That name goes here. A build
+/// can set it instead with `OMACHARTS_RITHMIC_APP_NAME`.
+pub const APP_NAME: &str = match option_env!("OMACHARTS_RITHMIC_APP_NAME") {
+    Some(name) => name,
+    None => "omacharts",
+};
+
+/// The app's version, as Rithmic is told it: the release, handed over by
+/// the binary at startup with [`identify`], because the engine's own crate
+/// version is not the app's.
+static VERSION: OnceLock<&'static str> = OnceLock::new();
+
+/// Tell Rithmic which release of the app is signing in. The binary calls
+/// this once at startup with its own `CARGO_PKG_VERSION`; a later call is
+/// ignored.
+pub fn identify(version: &'static str) {
+    let _ = VERSION.set(version);
+}
+
+/// The app as Rithmic is told it. Without [`identify`] there is none, and
+/// no session starts, rather than one that reports a wrong version.
+pub fn app() -> Result<rithmic::App, rithmic::Error> {
+    match VERSION.get() {
+        Some(version) => Ok(rithmic::App { name: APP_NAME, version }),
+        None => Err(rithmic::Error::Connection("the app never said which version it is".into())),
+    }
+}
 
 /// What signing in involves, in the words a settings page shows.
 pub const SETUP: Setup = Setup {
@@ -192,7 +224,7 @@ pub fn login() -> Result<rithmic::Login, rithmic::Error> {
 
 /// The session, started on first use.
 pub fn client() -> Result<rithmic::Client, rithmic::Error> {
-    rithmic::session(login)
+    rithmic::session(app()?, login)
 }
 
 /// Rithmic turned the login down: remembered, so that the settings and

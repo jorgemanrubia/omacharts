@@ -22,7 +22,7 @@ use rithmic_rs::{
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{mpsc, oneshot, watch};
 
-use crate::{Bar, Error, LadderMinute, Live, Login, Period, Side, Trade, APP_NAME};
+use crate::{Bar, Error, LadderMinute, Live, Login, Period, Side, Trade, App, Credentials};
 
 /// How long a call waits for the session to be signed in before it gives up
 /// and says why it is not.
@@ -143,7 +143,7 @@ static SESSION: Mutex<Option<Client>> = Mutex::new(None);
 
 /// The session, started if there is none yet.
 ///
-/// `login` is asked for the login each time the session signs in, which is
+/// `app` is who Rithmic is told is signing in. `login` is asked for the login each time the session signs in, which is
 /// when it starts and after every drop, so a password changed in the keyring
 /// is the one the next sign-in uses. It runs on the session's thread and may
 /// be slow; it must not block on the session.
@@ -151,14 +151,14 @@ static SESSION: Mutex<Option<Client>> = Mutex::new(None);
 /// Starting is the only thing here that costs anything — a runtime on two
 /// threads, then a connection — and nothing calls this until a chart asks
 /// Rithmic for something.
-pub fn session(login: impl Fn() -> Result<Login, Error> + Send + Sync + 'static) -> Result<Client, Error> {
+pub fn session(app: App, login: impl Fn() -> Result<Login, Error> + Send + Sync + 'static) -> Result<Client, Error> {
     let mut session = SESSION.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(client) = session.as_ref()
         && !client.inner.closed.load(Ordering::Acquire)
     {
         return Ok(client.clone());
     }
-    let client = Client::start(Arc::new(login))?;
+    let client = Client::start(app, Arc::new(login))?;
     *session = Some(client.clone());
     Ok(client)
 }
@@ -237,7 +237,7 @@ pub fn shutdown() {
 }
 
 impl Client {
-    fn start(source: Source) -> Result<Client, Error> {
+    fn start(app: App, source: Source) -> Result<Client, Error> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .thread_name("rithmic")
@@ -248,6 +248,7 @@ impl Client {
         let (state, states) = watch::channel(State::Connecting);
         let fronts = Arc::new(Fronts::default());
         let supervisor = Supervisor {
+            app,
             source,
             inbox,
             state,
@@ -456,7 +457,24 @@ struct Connection {
     user: String,
 }
 
+/// What the plants are connected with: the login, and the app it is for.
+fn config(app: App, credentials: &Credentials) -> Result<RithmicConfig, Error> {
+    RithmicConfig::builder(RithmicEnv::Test)
+        .url(&credentials.url)
+        // Only read by a strategy that alternates, and required regardless.
+        .beta_url(&credentials.url)
+        .user(&credentials.user)
+        .password(&credentials.password)
+        .system_name(&credentials.system)
+        .app_name(app.name)
+        .app_version(app.version)
+        .connect_attempt_timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|_| Error::NoLogin("the Rithmic login is incomplete".into()))
+}
+
 struct Supervisor {
+    app: App,
     source: Source,
     inbox: mpsc::UnboundedReceiver<Command>,
     state: watch::Sender<State>,
@@ -540,18 +558,7 @@ impl Supervisor {
     async fn connect(&mut self) -> Result<Connection, Error> {
         let login = (self.source)()?;
         let credentials = login.credentials().await?;
-        let config = RithmicConfig::builder(RithmicEnv::Test)
-            .url(&credentials.url)
-            // Only read by a strategy that alternates, and required regardless.
-            .beta_url(&credentials.url)
-            .user(&credentials.user)
-            .password(&credentials.password)
-            .system_name(&credentials.system)
-            .app_name(APP_NAME)
-            .app_version(env!("CARGO_PKG_VERSION"))
-            .connect_attempt_timeout(Duration::from_secs(10))
-            .build()
-            .map_err(|_| Error::NoLogin("the Rithmic login is incomplete".into()))?;
+        let config = config(self.app, &credentials)?;
         // Kept to ask which exchanges it is entitled to; never logged.
         let user = credentials.user.clone();
         drop(credentials);
@@ -1050,6 +1057,22 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Rithmic is told the caller's name and version, not this crate's.
+    #[test]
+    fn the_plants_are_told_the_app_the_caller_names() {
+        let app = App { name: "abcd:omacharts", version: "9.8.7" };
+        let credentials = Credentials {
+            user: "someone".into(),
+            password: "secret".into(),
+            system: crate::TEST_SYSTEM.into(),
+            url: crate::TEST_URL.into(),
+        };
+        let config = config(app, &credentials).expect("a config");
+        assert_eq!(config.app_name, "abcd:omacharts");
+        assert_eq!(config.app_version, "9.8.7");
+        assert_ne!(config.app_version, env!("CARGO_PKG_VERSION"));
+    }
 
     #[test]
     fn dates_go_both_ways() {

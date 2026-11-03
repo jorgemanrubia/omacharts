@@ -8,13 +8,17 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+/// Who Rithmic Test is told is signing in, which takes any name. The app's
+/// own is set in the engine's `providers/rithmic/session.rs`.
+const APP: rithmic::App = rithmic::App { name: "omacharts", version: "example" };
+
 fn main() {
     let seconds = std::env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(20);
     let login = || {
         rithmic::Login::from_env(rithmic::TEST_SYSTEM, rithmic::TEST_URL)
             .unwrap_or_else(|| Err(rithmic::Error::NoLogin(format!("set {}", rithmic::DEV_LOGIN))))
     };
-    let client = match rithmic::session(login) {
+    let client = match rithmic::session(APP, login) {
         Ok(client) => client,
         Err(error) => return eprintln!("{error}"),
     };

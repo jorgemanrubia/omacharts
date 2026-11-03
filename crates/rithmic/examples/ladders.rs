@@ -4,6 +4,10 @@
 use rithmic_rs::{rti::messages::RithmicMessage, ConnectStrategy, RithmicConfig, RithmicEnv,
     RithmicHistoryPlant, VolumeProfileMinuteBarsRequest};
 
+/// Who Rithmic Test is told is signing in, which takes any name. The app's
+/// own is set in the engine's `providers/rithmic/session.rs`.
+const APP: rithmic::App = rithmic::App { name: "omacharts", version: "example" };
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let text = std::fs::read_to_string(std::path::Path::new(&std::env::var("HOME")?).join(".rithmic"))?;
@@ -11,7 +15,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = RithmicConfig::builder(RithmicEnv::Test)
         .url(rithmic::TEST_URL).beta_url(rithmic::TEST_URL)
         .user(lines.next().unwrap_or_default()).password(lines.next().unwrap_or_default())
-        .system_name(rithmic::TEST_SYSTEM).app_name(rithmic::APP_NAME).app_version("0")
+        .system_name(rithmic::TEST_SYSTEM).app_name(APP.name).app_version(APP.version)
         .build()?;
     let plant = RithmicHistoryPlant::connect(&config, ConnectStrategy::Simple).await?;
     let handle = plant.get_handle();

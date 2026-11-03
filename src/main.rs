@@ -16,6 +16,7 @@ use omacharts::ui::Window;
 const APP_ID: &str = "com.jorgemanrubia.Omacharts";
 
 fn main() -> glib::ExitCode {
+    omacharts::feeds::identify();
     let launch = cli::caller_paths(std::env::args().collect::<Vec<String>>());
 
     // The launch options come off first, so that everything below reads a

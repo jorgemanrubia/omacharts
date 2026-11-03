@@ -138,6 +138,13 @@ pub fn ordered(store: &Store) -> Vec<Box<dyn Provider>> {
 
 const RITHMIC: &str = "rithmic";
 
+/// Tell the engine which release of Omacharts signs in to Rithmic: this
+/// crate's version, the app's, which no library crate's is. Called once at
+/// startup.
+pub fn identify() {
+    omacharts_engine::providers::rithmic::session::identify(env!("CARGO_PKG_VERSION"));
+}
+
 /// Hand the engine the Rithmic login this machine has saved: the user ID,
 /// the system and the gateway, which are settings, `Local` in
 /// `setting_keys`. The password is never here; it is in the keyring. The
@@ -327,6 +334,23 @@ pub(crate) mod tests {
 
     fn store() -> Store {
         Store::memory().expect("an empty database")
+    }
+
+    /// Rithmic is told the release in the root Cargo.toml, not the version
+    /// of the engine or the rithmic crate, which stay at 0.1.0.
+    #[test]
+    fn rithmic_is_told_the_apps_version() {
+        identify();
+        let app = omacharts_engine::providers::rithmic::session::app().expect("identified");
+        let manifest = include_str!("../Cargo.toml");
+        let release = manifest
+            .lines()
+            .find_map(|line| line.strip_prefix("version = \""))
+            .and_then(|rest| rest.strip_suffix('"'))
+            .expect("the package's version");
+        assert_eq!(app.version, release);
+        assert_ne!(app.version, "0.1.0");
+        assert_eq!(app.name, omacharts_engine::providers::rithmic::session::APP_NAME);
     }
 
     #[test]

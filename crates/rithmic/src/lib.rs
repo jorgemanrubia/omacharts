@@ -37,9 +37,17 @@ mod login;
 pub use client::{entitled_exchanges, on_entitlements, running, session, shutdown, Client, Watch};
 pub use login::{Login, DEV_LOGIN};
 
-/// The app name Rithmic knows this app by. Rithmic Test takes any name;
-/// production takes only one that has passed conformance.
-pub const APP_NAME: &str = "omacharts";
+/// The app signing in, as Rithmic is told it: its name and its version.
+///
+/// The caller's, never this crate's. Rithmic Test takes any name;
+/// production takes only the one Rithmic registered for the app at
+/// conformance, and the version is the app's release, which a library's own
+/// version is not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct App {
+    pub name: &'static str,
+    pub version: &'static str,
+}
 
 /// Rithmic's test system, which every developer kit login can use.
 pub const TEST_SYSTEM: &str = "Rithmic Test";

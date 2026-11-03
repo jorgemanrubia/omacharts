@@ -14,6 +14,9 @@ fn login() -> Option<impl Fn() -> Result<Login, Error> + Send + Sync + 'static> 
     Some(|| Login::from_env(rithmic::TEST_SYSTEM, rithmic::TEST_URL).unwrap_or(Err(Error::Closed)))
 }
 
+/// Who Rithmic Test is told is signing in, which takes any name.
+const APP: rithmic::App = rithmic::App { name: "omacharts", version: "test" };
+
 /// One session, all the way through: the front month, its bars, its trades,
 /// a connection cut from underneath, and the session back by itself.
 #[test]
@@ -22,7 +25,7 @@ fn a_session_signs_in_serves_bars_and_survives_a_drop() {
         eprintln!("skipped: {} is not set", rithmic::DEV_LOGIN);
         return;
     };
-    let client = rithmic::session(login).expect("a session");
+    let client = rithmic::session(APP, login).expect("a session");
     client.sign_in().expect("signed in");
     assert!(rithmic::running());
 
