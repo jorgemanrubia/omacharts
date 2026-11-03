@@ -93,6 +93,11 @@ pub struct ChartPane {
     pub header_row: gtk::Box,
     pub change_label: gtk::Label,
     pub template_label: gtk::Label,
+    /// Which feed the chart is from, and any it was passed over: "Yahoo ·
+    /// thinkorswim not signed in". Not a part anybody chooses — it is shown
+    /// only while more than one feed is configured, and with one there is
+    /// nothing to say, so nothing is drawn.
+    pub source_label: gtk::Label,
     /// The style its bars are drawn in when they are drawn: hiding them
     /// leaves it alone, so showing them again brings back the same one.
     pub bar_style: Cell<BarStyle>,
@@ -224,9 +229,14 @@ impl ChartPane {
         template_label.add_css_class("readout-symbol");
         template_label.add_css_class("dim-label");
         template_label.set_valign(gtk::Align::Center);
+        let source_label = gtk::Label::new(None);
+        source_label.add_css_class("readout-symbol");
+        source_label.add_css_class("dim-label");
+        source_label.set_valign(gtk::Align::Center);
+        source_label.set_visible(false);
         // The padding the two buttons beside them have, so the four sit
         // evenly apart whichever order they are in.
-        for label in [&change_label, &template_label] {
+        for label in [&change_label, &template_label, &source_label] {
             label.set_margin_start(8);
             label.set_margin_end(8);
         }
@@ -360,6 +370,7 @@ impl ChartPane {
             header_row: bar,
             change_label,
             template_label,
+            source_label,
             bar_style: Cell::new(bar_style),
             bars_hidden: Cell::new(false),
             colouring: Cell::new(Default::default()),
@@ -532,6 +543,13 @@ impl ChartPane {
                 self.header_row.append(widget);
             }
         }
+        // After the chosen parts, whatever they are: where the bars come
+        // from is not a part of the header but a note on it, and hidden it
+        // takes no room.
+        if self.source_label.parent().is_some() {
+            self.header_row.remove(&self.source_label);
+        }
+        self.header_row.append(&self.source_label);
         // Last, whatever the header shows: it says what is missing from this
         // chart, not what it is.
         for (_, button) in &self.hidden_glyphs {
@@ -552,6 +570,14 @@ impl ChartPane {
     pub fn write_template(&self, name: Option<&str>) {
         self.template_label.set_text(name.unwrap_or(""));
         self.template_label.set_visible(name.is_some());
+    }
+
+    /// Where the bars come from, or nothing at all.
+    pub fn write_source(&self, source: Option<&str>) {
+        if self.source_label.text() != source.unwrap_or("") {
+            self.source_label.set_text(source.unwrap_or(""));
+        }
+        self.source_label.set_visible(source.is_some());
     }
 
     /// The day's move, in `colour`; nothing at all until there is one.

@@ -99,6 +99,16 @@ fn worth_warming(delivery: Delivery, cached: bool) -> bool {
     delivery == Delivery::Polled || !cached
 }
 
+/// What a chart's header says about where its bars come from: the feed
+/// serving it, then each it was passed over and why.
+fn source_text<'a>(serving: &str, passed: impl Iterator<Item = (&'a str, &'a str)>) -> String {
+    let mut text = serving.to_string();
+    for (label, why) in passed {
+        text.push_str(&format!(" · {label} {why}"));
+    }
+    text
+}
+
 /// How often we look for a desktop theme change. Cheap enough to be invisible,
 /// often enough to feel immediate.
 const THEME_POLL_SECONDS: u32 = 2;
@@ -360,6 +370,16 @@ mod tests {
     /// that installs it is a function of its own and this holds that. A
     /// provider that streams gets no timer at all — nothing to poll, nothing
     /// to time — and the one that is polled gets it without anybody asking.
+    /// A chart passed over a feed says so, after the feed it is from.
+    #[test]
+    fn the_header_names_the_source_and_what_it_passed_over() {
+        assert_eq!(source_text("Yahoo", std::iter::empty()), "Yahoo");
+        assert_eq!(
+            source_text("Yahoo", [("thinkorswim", "not signed in")].into_iter()),
+            "Yahoo · thinkorswim not signed in"
+        );
+    }
+
     #[test]
     fn a_streamed_provider_gets_no_refresh_timer() {
         assert!(!wants_refresh_timer(Delivery::Streamed));
@@ -1515,6 +1535,8 @@ struct Routed {
     feed: Rc<Feed>,
     /// The instrument in that feed's spelling.
     symbol: String,
+    /// Feeds above it that would have served it and cannot be used.
+    passed: Vec<Rc<Feed>>,
 }
 
 impl Routed {
@@ -6069,10 +6091,11 @@ impl Window {
             return;
         };
         let key = routed.key();
-        let Routed { feed, symbol, .. } = routed;
+        let Routed { feed, symbol, passed } = routed;
         let native = timeframe.native();
         // Whatever this chart streamed from another feed, it is this one's now.
         self.release_pane_elsewhere(pane.id, &feed);
+        self.write_source_of(pane, Some(&feed), &passed);
 
         *pane.instrument.borrow_mut() = Some(instrument.clone());
         // Whatever this chart was waiting for, it is not waiting any more. A
@@ -6191,6 +6214,7 @@ impl Window {
         *pane.instrument.borrow_mut() = Some(instrument.clone());
         *pane.pending.borrow_mut() = None;
         pane.write_readout();
+        self.write_source_of(pane, None, &[]);
         // Whatever this chart was streaming, it is not showing it now.
         self.release_pane(pane.id);
         if pane.id == self.focused.get() {
@@ -6880,7 +6904,8 @@ impl Window {
             instrument,
         )?;
         let feed = feeds.get(route.at)?.clone();
-        Some(Routed { feed, symbol: route.symbol })
+        let passed = route.passed.iter().filter_map(|at| feeds.get(*at).cloned()).collect();
+        Some(Routed { feed, symbol: route.symbol, passed })
     }
 
     /// The feed whose cache key this is.
@@ -7491,6 +7516,24 @@ impl Window {
         if pane.shows(Part::Change) {
             self.write_change_of(pane);
         }
+    }
+
+    /// Say which feed a chart is from, when there is more than one to be
+    /// from, and which it was passed over: "Yahoo · thinkorswim not signed
+    /// in". With one feed nothing is written and nothing is drawn.
+    fn write_source_of(&self, pane: &ChartPane, serving: Option<&Rc<Feed>>, passed: &[Rc<Feed>]) {
+        if self.feeds.borrow().len() < 2 {
+            pane.write_source(None);
+            return;
+        }
+        let Some(serving) = serving else {
+            pane.write_source(None);
+            return;
+        };
+        pane.write_source(Some(&source_text(
+            serving.provider.label(),
+            passed.iter().map(|feed| (feed.provider.label(), feed.unusable_because.get())),
+        )));
     }
 
     /// Every chart's day's move, after quotes have moved.
