@@ -49,8 +49,11 @@ thinkorswim already is a feed):
   simulated; the panel, the chart menu and the chart's lines know no broker.
 - **Connections**: a login shared by a data feed and a broker is one
   connection owned once and used by both, whatever the broker.
-- **Setup**: a feed or broker describes the fields and secrets it needs, so
-  the Data and Trading pages have no per-feed screens.
+- **Setup**: each feed and broker keeps its own sign-in handling (Rithmic's
+  dialog, thinkorswim's browser flow), reached through one seam: the feed
+  says which kind of sign-in it needs, and one registry in the UI maps it to
+  its dialog. Adding a provider is its dialog and one registry entry, not a
+  generic form.
 
 **Done when:** nothing above those boundaries names Rithmic or thinkorswim
 or encodes their quirks (checked by an architecture review of the whole
