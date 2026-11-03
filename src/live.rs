@@ -869,6 +869,25 @@ mod tests {
         .expect("bars in memory");
     }
 
+    /// Every update after a drain wakes the loop for the next frame, a trade
+    /// in the bar still forming as much as one that opens a new bar: nothing
+    /// waits for a bar to close, and no wake is left for a timer to find.
+    #[test]
+    fn every_tick_after_a_drain_wakes_the_next_frame() {
+        let (live, fake) = live();
+        live.watch(1, series("ES", M1), "ES", None);
+        push(&fake, "ES", M1, Update::Snapshot(vec![bar(0, 1.0), bar(60, 2.0)]));
+        assert_eq!(live.nudges().try_recv().ok(), Some(()));
+        live.drain();
+        for close in [2.25, 2.5, 2.0, 1.75] {
+            push(&fake, "ES", M1, Update::Bar(bar(60, close)));
+            assert_eq!(live.nudges().try_recv().ok(), Some(()), "a wake for the trade at {close}");
+            let drained = live.drain();
+            assert_eq!(drained.changes, vec![Change::Tail { series: series("ES", M1), from: 1 }]);
+            assert_eq!(live.with_bars(&series("ES", M1), |bars| bars[1].close), Some(close));
+        }
+    }
+
     /// Ticks that arrive before there is a series to apply them to are not
     /// lost: they land on top of the snapshot once it comes.
     #[test]

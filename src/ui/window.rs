@@ -1796,6 +1796,11 @@ struct Workspace {
     active: usize,
 }
 
+/// A move as the header writes it, in whole hundredths of a percent.
+fn hundredths(change_pct: f64) -> i64 {
+    (change_pct * 100.0).round() as i64
+}
+
 /// What a chart's bars are painted in: the theme's candle colours, the way
 /// this chart paints them.
 fn pane_scheme(pane: &ChartPane, theme: &omacharts_engine::Theme) -> omacharts_engine::BarScheme {
@@ -7607,6 +7612,11 @@ impl Window {
                         continue;
                     }
                     pane.view.apply_tail(&tail);
+                    if let Some(newest) = tail.last()
+                        && pane.shows(crate::header::Part::Change)
+                    {
+                        self.write_live_change_of(&pane, newest);
+                    }
                     // The memo this chart was painted from has to agree with
                     // the chart, or the next switch back paints yesterday.
                     let memo = {
@@ -8038,11 +8048,36 @@ impl Window {
         let direction = |change: f64| omacharts_engine::Direction::of_change(change);
         match quote {
             Some(quote) => {
+                pane.change_basis.set(Some((quote.last - quote.change, crate::cli::session_day(quote.as_of))));
+                pane.change_shown.set(Some(hundredths(quote.change_pct)));
                 let colour = scheme.outline(direction(quote.change)).to_string();
                 pane.write_change(Some((quote.change_pct, &colour)));
             }
-            None => pane.write_change(None),
+            None => {
+                pane.change_basis.set(None);
+                pane.change_shown.set(None);
+                pane.write_change(None);
+            }
         }
+    }
+
+    /// The day's move again, from a bar that just arrived: on the frame the
+    /// trade is drawn on, rather than when the cache next catches up. Only
+    /// a bar of the session the move was last read for, and only written
+    /// when the figure shown changes.
+    fn write_live_change_of(self: &Rc<Self>, pane: &Rc<ChartPane>, newest: &omacharts_engine::Bar) {
+        let Some((previous, day)) = pane.change_basis.get() else { return };
+        if previous == 0.0 || crate::cli::session_day(newest.ts) != day {
+            return;
+        }
+        let change = newest.close - previous;
+        let change_pct = change / previous * 100.0;
+        if pane.change_shown.replace(Some(hundredths(change_pct))) == Some(hundredths(change_pct)) {
+            return;
+        }
+        let scheme = pane_scheme(pane, &self.theme());
+        let colour = scheme.outline(omacharts_engine::Direction::of_change(change)).to_string();
+        pane.write_change(Some((change_pct, &colour)));
     }
 
     /// Delete a template. Its charts keep what it was showing them.
