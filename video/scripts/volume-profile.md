@@ -232,7 +232,7 @@ its volume traded. {grip}Stretch it a few bars, and it's worked out again.
 
     tool: key alt+v
     drag: drag 50% 50.5% 78.8% 7.8%
-    grip: drag 78.8% 7.8% 83% 7.8%; move 40% 99.3%
+    grip: drag 78.8% 7.8% 83% 7.8%; wait 0.6; key Escape; move 40% 99.3%
     after: 1.0
 
 ### 7. One for every period
@@ -266,11 +266,11 @@ week, {menu2}or {month}every month.
 
     add:   key ctrl+shift+i
     pick:  type profile; key Return
-    done:  key ctrl+Return
+    done:  key ctrl+Return; wait 0.6; key Escape
     menu1: rclick 53.1% 22.9%
     week:  click 58.9% 24.5%
     menu2: rclick 53.4% 28.6%
-    month: click 62.8% 30.3%
+    month: click 62.8% 30.3%; wait 0.6; key Escape
     after: 1.0
 
 ### 9. Zoom out, hide the bars
@@ -313,7 +313,7 @@ in one profile.
     menu2:  rclick 47% 46%
     merge2: click 52.5% 50.8%
     menu3:  rclick 52% 51.9%
-    merge3: click 57.5% 56.8%; move 50% 98%
+    merge3: click 57.5% 56.8%; wait 0.6; key Escape; move 50% 98%
     after: 1.2
 
 ### 11. Ask an agent
@@ -393,24 +393,27 @@ value. The gaps between them are where it went looking for the next.
 
 **Picture.** The chart from scene 14, held while the section is
 introduced. Then Ctrl and comma opens Preferences over the middle of the
-window. A click on **Theme** in its sidebar, a click on the **Theme**
-row's drop-down, and a click on **Carbon**: the window, the candles, the
-profiles and the composites turn to Carbon at once: a black ground,
-saturated blue profiles, red and green candles.
-Escape closes Preferences and the full chart holds in Carbon for about
-two seconds. Ctrl and comma again, **Theme**, the drop-down, **Paper**:
-everything goes light, warm off-white with ink text, the profiles
-recoloured to match. Escape, and the full chart holds in Paper, the music
-up in the gap.
+window. A click on **Theme** in its sidebar and a click on the **Theme**
+row's drop-down: Omacharts' own themes, then every Omarchy theme installed
+on the desktop, the same list the author sees. The wheel runs the list
+down to its end, and a click on **Rose Pine**: the window, the candles,
+the profiles and the composites turn to it at once, a warm light ground.
+Escape closes Preferences and the full chart holds in Rose Pine for about
+two seconds. Ctrl and comma again, straight back on Theme, the drop-down,
+**Everforest**: everything goes dark green-grey, the profiles recoloured
+to match. Escape, and the full chart holds in Everforest, the music up in
+the gap. (The studio copies the author's installed Omarchy themes, so the
+list matches theirs.)
 
-**Voice.** And it all follows the theme, {prefs}composites included.
+**Voice.** And it all follows the theme, {prefs}any of your Omarchy
+themes, composites included.
 
-    prefs: key ctrl+comma; wait 0.8; click 27.6% 21.4%; wait 0.6; click 69.5% 16.7%; wait 0.5; click 69.1% 29.8%; wait 0.6; key Escape; move 40% 99.3%; wait 2.0; key ctrl+comma; wait 0.8; click 27.6% 21.4%; wait 0.6; click 69.5% 16.7%; wait 0.5; click 69.1% 33.2%; wait 0.6; key Escape; move 40% 99.3%
-    after: 15.5
+    prefs: key ctrl+comma; wait 0.8; click 27.6% 21.4%; wait 0.6; click 69.5% 16.7%; wait 0.8; scroll 69.5% 40% 10; wait 0.6; scroll 69.5% 40% 10; wait 0.8; click 68.4% 40.9%; wait 0.6; key Escape; move 40% 99.3%; wait 2.5; key ctrl+comma; wait 0.8; click 69.5% 16.7%; wait 0.6; click 68.4% 50.2%; wait 0.6; key Escape; move 40% 99.3%
+    after: 17.5
 
 ### 16. Close
 
-**Picture.** SPY four-hour in Paper, bars and composites showing, held.
+**Picture.** SPY four-hour in Everforest, bars and composites showing, held.
 The cursor rests off the chart.
 
 **Voice.** A profile shows you where the market agreed, and where it

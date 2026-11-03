@@ -407,6 +407,12 @@ class Studio:
         shutil.copytree(theme, current / "theme", ignore=shutil.ignore_patterns("backgrounds", "*.png"))
         (current / "theme.name").write_text(self.theme + "\n")
         self.colors = dict(re.findall(r'^(\w+)\s*=\s*"(#[0-9a-fA-F]{6})"', (theme / "colors.toml").read_text(), re.M))
+        # Every theme installed on the author's desktop, so the theme picker
+        # offers the same list there as here.
+        for rel in (".local/share/omarchy/themes", ".config/omarchy/themes"):
+            source = Path.home() / rel
+            if source.is_dir():
+                shutil.copytree(source, self.home / rel, symlinks=True, ignore=shutil.ignore_patterns("backgrounds", "*.png", "*.jpg"))
         # Fonts and toolkit settings as on the author's desktop, so the window
         # looks the way it does there.
         for rel in (".config/fontconfig", ".config/gtk-3.0", ".config/gtk-4.0", ".local/share/fonts", ".local/share/icons"):
