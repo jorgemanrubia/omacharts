@@ -175,7 +175,61 @@ pub fn running() -> bool {
 /// Sign out of every plant and end the session, waiting a few seconds at
 /// most for Rithmic to acknowledge. Whatever is watching hears
 /// [`Error::Closed`], and the next call to [`session`] starts afresh.
+/// The exchanges the signed-in login has level 1 market data for, once the
+/// session has asked: `None` before the first sign-in, and after a
+/// shutdown.
+pub fn entitled_exchanges() -> Option<Vec<String>> {
+    ENTITLED.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// Call `listener` whenever [`entitled_exchanges`] changes, on the
+/// session's thread. One listener per process; a second replaces the first.
+pub fn on_entitlements(listener: impl Fn() + Send + Sync + 'static) {
+    *LISTENER.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(listener));
+}
+
+static ENTITLED: Mutex<Option<Vec<String>>> = Mutex::new(None);
+type Listener = Arc<dyn Fn() + Send + Sync>;
+static LISTENER: Mutex<Option<Listener>> = Mutex::new(None);
+
+fn entitle(exchanges: Vec<String>) {
+    let changed = {
+        let mut held = ENTITLED.lock().unwrap_or_else(|e| e.into_inner());
+        let changed = held.as_ref() != Some(&exchanges);
+        *held = Some(exchanges);
+        changed
+    };
+    let listener = LISTENER.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    if changed && let Some(listener) = listener {
+        listener();
+    }
+}
+
+/// The exchanges a permissions reply grants level 1 market data on, sorted.
+fn exchanges_of(responses: &[RithmicResponse]) -> Vec<String> {
+    let mut exchanges: Vec<String> = responses
+        .iter()
+        .filter_map(|response| match &response.message {
+            RithmicMessage::ResponseListExchangePermissions(found) => {
+                let level_1 = found.level_1_market_data.as_deref()?;
+                granted(level_1).then(|| found.exchange.clone()).flatten()
+            }
+            _ => None,
+        })
+        .collect();
+    exchanges.sort();
+    exchanges.dedup();
+    exchanges
+}
+
+/// Does an entitlement status say yes? Rithmic spells it as a word.
+fn granted(status: &str) -> bool {
+    let status = status.trim().to_ascii_lowercase();
+    matches!(status.as_str(), "enabled" | "enable" | "true" | "yes" | "1" | "granted" | "allowed")
+}
+
 pub fn shutdown() {
+    *ENTITLED.lock().unwrap_or_else(|e| e.into_inner()) = None;
     let client = SESSION.lock().unwrap_or_else(|e| e.into_inner()).take();
     if let Some(client) = client {
         client.close();
@@ -398,6 +452,8 @@ struct Connection {
     ticker_updates: RithmicTickerPlantHandle,
     history_updates: RithmicHistoryPlantHandle,
     handles: Arc<Handles>,
+    /// Who signed in, for asking what they may see.
+    user: String,
 }
 
 struct Supervisor {
@@ -444,6 +500,14 @@ impl Supervisor {
             };
             let up_since = Instant::now();
             let _ = self.state.send(State::Up(connection.handles.clone()));
+            // Which exchanges this login has market data for. Asked once a
+            // sign-in, before anything is watched; a failure to answer
+            // leaves what was known, and charts as if all were entitled.
+            if let Ok(responses) =
+                within(REQUEST, connection.handles.ticker.list_exchange_permissions(&connection.user)).await
+            {
+                entitle(exchanges_of(&responses));
+            }
             let ids: Vec<u64> = self.watched.keys().copied().collect();
             for id in ids {
                 self.begin(id, &connection.handles).await;
@@ -488,6 +552,8 @@ impl Supervisor {
             .connect_attempt_timeout(Duration::from_secs(10))
             .build()
             .map_err(|_| Error::NoLogin("the Rithmic login is incomplete".into()))?;
+        // Kept to ask which exchanges it is entitled to; never logged.
+        let user = credentials.user.clone();
         drop(credentials);
 
         let ticker = within(REQUEST, RithmicTickerPlant::connect(&config, ConnectStrategy::Simple)).await?;
@@ -510,7 +576,7 @@ impl Supervisor {
             return Err(error);
         }
         let handles = Arc::new(Handles { ticker: ticker.get_handle(), history: history.get_handle() });
-        Ok(Connection { ticker, history, ticker_updates, history_updates, handles })
+        Ok(Connection { ticker, history, ticker_updates, history_updates, handles, user })
     }
 
     /// Run a signed-in session until it drops or is stopped.
@@ -992,6 +1058,17 @@ mod tests {
         assert_eq!(date_start(20261103), Some(20_760 * 86_400));
         assert_eq!(date_number(20_760 * 86_400 + 3_600), 20261103);
         assert_eq!(date_start(20261340), None);
+    }
+
+    /// Rithmic Test answers "enabled" for each of CME, CBOT, NYMEX and
+    /// COMEX; anything else is a no.
+    #[test]
+    fn an_entitlement_is_granted_only_when_it_says_so() {
+        assert!(granted("enabled"));
+        assert!(granted(" Enabled "));
+        assert!(!granted("disabled"));
+        assert!(!granted(""));
+        assert!(!granted("pending"));
     }
 
     #[test]

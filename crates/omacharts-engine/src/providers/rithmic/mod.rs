@@ -80,7 +80,16 @@ impl Rithmic {
 /// This instrument in Rithmic's spelling, if Rithmic serves it: a futures
 /// root on a CME group exchange, as itself. Pure and offline, because it is
 /// asked on the main thread and to build cache keys.
+///
+/// Once a session has said which exchanges the login is entitled to, a root
+/// on any other is not served either, and goes to the next source: Rithmic
+/// Test's login sees CME and CBOT, so GC, CL and NG chart from Yahoo there.
 pub fn rithmic_symbol(instrument: &Instrument) -> Option<String> {
+    symbol_under(instrument, session::entitled)
+}
+
+/// [`rithmic_symbol`] with `entitled` saying which exchanges may be charted.
+fn symbol_under(instrument: &Instrument, entitled: impl Fn(&str) -> bool) -> Option<String> {
     if let Some(explicit) = instrument.override_for("rithmic") {
         return Some(explicit.to_string());
     }
@@ -88,7 +97,7 @@ pub fn rithmic_symbol(instrument: &Instrument) -> Option<String> {
         return None;
     }
     let exchange = registry().contract_exchange(&instrument.symbol)?;
-    CME_GROUP.contains(&exchange).then(|| instrument.symbol.clone())
+    (CME_GROUP.contains(&exchange) && entitled(exchange)).then(|| instrument.symbol.clone())
 }
 
 /// The exchange Rithmic is asked on for a root. A root only an override
@@ -510,6 +519,23 @@ mod tests {
         ] {
             assert_eq!(rithmic.symbol_for(&instrument(kind, symbol)), None, "{symbol}");
         }
+    }
+
+    /// What the session says the login may see decides what Rithmic serves:
+    /// with CME and CBOT alone, as on Rithmic Test, the metals and energy go
+    /// to the next source, and before any session has said, all of it is
+    /// Rithmic's as before.
+    #[test]
+    fn a_root_on_an_exchange_the_login_is_not_entitled_to_is_not_served() {
+        let test_login = |exchange: &str| matches!(exchange, "CME" | "CBOT");
+        for root in ["ES", "NQ", "ZN", "ZB", "6E"] {
+            assert!(symbol_under(&instrument(InstrumentKind::FutureRoot, root), test_login).is_some(), "{root}");
+        }
+        for root in ["GC", "SI", "CL", "NG"] {
+            assert_eq!(symbol_under(&instrument(InstrumentKind::FutureRoot, root), test_login), None, "{root}");
+            assert!(symbol_under(&instrument(InstrumentKind::FutureRoot, root), |_| true).is_some(), "{root}");
+        }
+        assert!(session::entitled("NYMEX") || rithmic::entitled_exchanges().is_some(), "unknown means entitled");
     }
 
     #[test]

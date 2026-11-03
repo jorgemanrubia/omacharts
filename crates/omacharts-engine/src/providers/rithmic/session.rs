@@ -54,6 +54,43 @@ static SAVED: RwLock<Option<Saved>> = RwLock::new(None);
 /// until somebody signs in again.
 static REFUSED: Mutex<Option<String>> = Mutex::new(None);
 
+/// The exchanges the signed-in login is entitled to, as the window last
+/// adopted them: `None` until a session has said, which charts as if every
+/// CME group exchange were. See [`adopt_entitlements`].
+static ENTITLED: RwLock<Option<Vec<String>>> = RwLock::new(None);
+
+/// May this login chart from `exchange`? Yes until a session has said
+/// otherwise. Pure and offline: a read of what was adopted.
+pub fn entitled(exchange: &str) -> bool {
+    ENTITLED
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .is_none_or(|exchanges| exchanges.iter().any(|e| e == exchange))
+}
+
+/// Take on what the session last heard about entitlements, so that
+/// [`entitled`], and with it routing, follows it. Separate from the session
+/// hearing it, so the window can note where every chart is served from
+/// first, and move only the charts whose source changes. True when it
+/// changed anything.
+pub fn adopt_entitlements() -> bool {
+    adopt(rithmic::entitled_exchanges())
+}
+
+/// Call `listener`, on the session's thread, whenever the session hears a
+/// different set of entitlements; [`adopt_entitlements`] takes it on.
+pub fn on_entitlements(listener: impl Fn() + Send + Sync + 'static) {
+    rithmic::on_entitlements(listener);
+}
+
+fn adopt(exchanges: Option<Vec<String>>) -> bool {
+    let mut held = ENTITLED.write().unwrap_or_else(|e| e.into_inner());
+    let changed = *held != exchanges;
+    *held = exchanges;
+    changed
+}
+
 /// Does this process chart from Rithmic? Only the one holding the window
 /// does, so that the bar widget and a command run with no window open never
 /// open a second session beside it: see [`serve_from_here`].

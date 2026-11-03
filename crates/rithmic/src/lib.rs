@@ -34,7 +34,7 @@ mod client;
 pub mod keyring;
 mod login;
 
-pub use client::{session, shutdown, running, Client, Watch};
+pub use client::{entitled_exchanges, on_entitlements, running, session, shutdown, Client, Watch};
 pub use login::{Login, DEV_LOGIN};
 
 /// The app name Rithmic knows this app by. Rithmic Test takes any name;

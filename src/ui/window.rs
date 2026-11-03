@@ -2384,6 +2384,7 @@ impl Window {
         this.wire_backfill();
         this.wire_refresh();
         this.wire_live();
+        this.wire_entitlements();
         this.wire_close();
 
         // The widget is part of the app, so it arrives with it rather than
@@ -6871,6 +6872,29 @@ impl Window {
                 self.wire_at_price(at_price.clone());
             }
         }
+    }
+
+    /// Re-route the charts when a Rithmic session says which exchanges its
+    /// login is entitled to, or that changes: a root on one it is not, GC on
+    /// Rithmic Test, goes to the next source. Where every chart is served
+    /// from is noted before the new set is taken on, so only the charts
+    /// whose source changes are shown again. Nothing listens until a
+    /// session exists to say anything.
+    fn wire_entitlements(self: &Rc<Self>) {
+        let (said, heard) = async_channel::unbounded::<()>();
+        providers::rithmic::session::on_entitlements(move || {
+            let _ = said.try_send(());
+        });
+        let this = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            while heard.recv().await.is_ok() {
+                let Some(this) = this.upgrade() else { return };
+                let before = this.routes_on_screen();
+                if providers::rithmic::session::adopt_entitlements() {
+                    this.reroute(&before);
+                }
+            }
+        });
     }
 
     /// The same for a feed's volume at price: its live wakes drain on the
