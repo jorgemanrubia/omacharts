@@ -3968,6 +3968,46 @@ impl ChartView {
         self.redraw();
     }
 
+    /// The price at height `y` of the chart, on the scale it is drawn at,
+    /// while `y` is over the price plot.
+    pub fn price_under(&self, y: f64) -> Option<f64> {
+        let (width, height) = (self.area.width() as f64, self.area.height() as f64);
+        let state = self.state.borrow();
+        let (first, visible, _) = state.view();
+        if visible == 0 {
+            return None;
+        }
+        let plan = layout(&state, width, height);
+        if y < plan.price_y || y > plan.price_y + plan.price_h {
+            return None;
+        }
+        let scale = price_range(&state, &state.bars[first..first + visible], &plan)?;
+        Some(scale.price_at(y, plan.price_y, plan.price_h))
+    }
+
+    /// The height `price` is drawn at, on the scale on screen.
+    pub fn y_of(&self, price: f64) -> Option<f64> {
+        let (width, height) = (self.area.width() as f64, self.area.height() as f64);
+        let state = self.state.borrow();
+        let (first, visible, _) = state.view();
+        if visible == 0 {
+            return None;
+        }
+        let plan = layout(&state, width, height);
+        let scale = price_range(&state, &state.bars[first..first + visible], &plan)?;
+        Some(scale.to_y(price, plan.price_y, plan.price_h))
+    }
+
+    /// The last price on the chart: the latest bar's close.
+    pub fn last_price(&self) -> Option<f64> {
+        self.state.borrow().bars.last().map(|bar| bar.close)
+    }
+
+    /// The step the series trades in, when it shows one.
+    pub fn tick(&self) -> Option<f64> {
+        omacharts_engine::tick_of(&self.state.borrow().bars)
+    }
+
     /// Whether a fetch is outstanding for what is on screen.
     ///
     /// An empty chart that is still loading and an empty chart that came back

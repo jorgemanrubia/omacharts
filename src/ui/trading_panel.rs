@@ -10,15 +10,20 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 
-use crate::trading::{self, Kind, Status, View};
+use crate::trading::{self, OrderKind, Status, View};
+
+/// A call about an account and an order: the account's key, the basket.
+pub type OnOrder = Box<dyn Fn(&str, &str)>;
+/// A call about an account's position: its key, the contract, the exchange.
+pub type OnPosition = Box<dyn Fn(&str, &str, &str)>;
 
 /// What the panel asks of the window: the orders and positions belong to
 /// sessions only the window can reach.
 pub struct Hands {
     /// Cancel the order `basket` on the account with this key.
-    pub cancel: Box<dyn Fn(&str, &str)>,
+    pub cancel: OnOrder,
     /// Flatten the account's position in a contract, on an exchange.
-    pub flatten: Box<dyn Fn(&str, &str, &str)>,
+    pub flatten: OnPosition,
     /// Cancel every working order on the account with this key.
     pub cancel_all: Box<dyn Fn(&str)>,
 }
@@ -35,28 +40,15 @@ pub struct TradingPanel {
     hands: Rc<Hands>,
 }
 
-/// How many places a contract's prices are written to: its tick's, when
-/// its root is known, else two.
-pub fn decimals_of(contract: &str) -> usize {
-    let root = contract_root(contract);
-    omacharts_engine::providers::rithmic::ladders::tick_of(root)
-        .map(|tick| omacharts_engine::on_tick(0.0, tick).1)
-        .unwrap_or(2)
+/// How many places a price is written to: its tick's, when the broker said
+/// it, else two.
+pub fn decimals_of(tick: Option<f64>) -> usize {
+    tick.map(|tick| omacharts_engine::on_tick(0.0, tick).1).unwrap_or(2)
 }
 
-/// "ES" for "ESZ6", "6E" for "6EZ26": the month letter and the year off the
-/// end.
-pub fn contract_root(contract: &str) -> &str {
-    let digits = contract.trim_end_matches(|c: char| c.is_ascii_digit());
-    match digits.len() < contract.len() && digits.len() > 1 {
-        true => &digits[..digits.len() - 1],
-        false => contract,
-    }
-}
-
-fn price_text(price: Option<f64>, contract: &str) -> String {
+fn price_text(price: Option<f64>, tick: Option<f64>) -> String {
     match price {
-        Some(price) => omacharts_engine::grouped_decimals(price, decimals_of(contract)),
+        Some(price) => omacharts_engine::grouped_decimals(price, decimals_of(tick)),
         None => "—".into(),
     }
 }
@@ -174,6 +166,8 @@ impl TradingPanel {
             .as_deref()
             .is_some_and(|key| view.book.orders.iter().any(|order| order.account == key && order.status.working()));
         self.cancel_all.set_sensitive(working);
+        let can = default.as_deref().and_then(|key| view.book.capabilities_of(key)).is_none_or(|can| can.cancel_all);
+        self.cancel_all.set_visible(can);
         let tip = match view.default_account() {
             Some(account) => format!("Cancel every working order on {}", trading::account_name(account, &view.logins)),
             None => "Cancel every working order".to_string(),
@@ -236,6 +230,7 @@ impl TradingPanel {
                 let hands = self.hands.clone();
                 let (account, contract, exchange) = (held.account.clone(), held.contract.clone(), held.exchange.clone());
                 flatten.connect_clicked(move |_| (hands.flatten)(&account, &contract, &exchange));
+                flatten.set_visible(view.book.capabilities_of(&held.account).is_some_and(|can| can.flatten));
                 let pnl = held
                     .open_pnl
                     .map(|pnl| trading::pnl_text(pnl, Self::currency_of(view, &held.account)))
@@ -244,7 +239,7 @@ impl TradingPanel {
                     cell(&Self::name_of(view, &held.account), false).upcast(),
                     cell(&held.contract, false).upcast(),
                     cell(&trading::net_text(held.net), true).upcast(),
-                    cell(&price_text(held.avg, &held.contract), true).upcast(),
+                    cell(&price_text(held.avg, held.tick), true).upcast(),
                     cell(&pnl, true).upcast(),
                     flatten.upcast(),
                 ]
@@ -269,8 +264,8 @@ impl TradingPanel {
                     status => status.word().to_string(),
                 };
                 let price = match order.kind {
-                    Kind::Market => "Market".to_string(),
-                    _ => price_text(order.price, &order.contract),
+                    OrderKind::Market => "Market".to_string(),
+                    _ => price_text(order.price, order.tick),
                 };
                 let status_cell = cell(&status, false);
                 status_cell.set_ellipsize(gtk::pango::EllipsizeMode::End);
@@ -287,7 +282,7 @@ impl TradingPanel {
                     cell(order.kind.word(), false).upcast(),
                     cell(&price, true).upcast(),
                     status_cell.upcast(),
-                    cell(&price_text(order.fill_price, &order.contract), true).upcast(),
+                    cell(&price_text(order.fill_price, order.tick), true).upcast(),
                 ];
                 if order.status.working() {
                     let cancel = gtk::Button::with_label("Cancel");
@@ -325,12 +320,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_contract_is_written_to_its_roots_tick() {
-        assert_eq!(contract_root("ESZ6"), "ES");
-        assert_eq!(contract_root("6EZ26"), "6E");
-        assert_eq!(contract_root("ES"), "ES");
-        assert_eq!(decimals_of("ESZ6"), 2);
-        assert_eq!(decimals_of("NGF7"), 3);
-        assert_eq!(decimals_of("??"), 2);
+    fn a_price_is_written_to_its_tick() {
+        assert_eq!(decimals_of(Some(0.25)), 2);
+        assert_eq!(decimals_of(Some(0.001)), 3);
+        assert_eq!(decimals_of(None), 2);
+        assert_eq!(price_text(Some(7_612.25), Some(0.25)), "7,612.25");
     }
 }

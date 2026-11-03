@@ -9844,6 +9844,22 @@ impl Window {
     }
 
     fn chart_menu(self: &Rc<Self>, x: f64, y: f64) {
+        let menu = self.chart_menu_model(y);
+
+        // Hung off the window rather than the chart it was opened on: a menu
+        // parented to one pane of a split has only that pane's height to fit
+        // in, and GTK answers a menu that does not fit by making it scroll.
+        let area = self.focused_pane().view.area.clone();
+        let (wx, wy) = area
+            .translate_coordinates(&self.window, x, y)
+            .unwrap_or((x, y));
+        let popover = popup_menu(&menu, &self.window, wx, wy);
+        self.number_row_picks_templates(&popover);
+    }
+
+    /// What the chart's menu holds, opened at height `y` of the focused
+    /// chart.
+    fn chart_menu_model(self: &Rc<Self>, y: f64) -> gio::Menu {
         let menu = gio::Menu::new();
 
         // Paste first: it is the one thing in this menu that puts something
@@ -9853,6 +9869,12 @@ impl Window {
             let paste = gio::Menu::new();
             shortcuts::append_with_key(&paste, "Paste", "chart.paste", "<Ctrl>v");
             menu.append_section(None, &paste);
+        }
+
+        // Orders at the price under the pointer, with a login to send them
+        // through; with none, not a trace.
+        if let Some(orders) = self.order_section(y) {
+            menu.append_section(None, &orders);
         }
 
         // Not the tools. They were here when the only way to reach them was
@@ -9972,16 +9994,10 @@ impl Window {
         shortcuts::append(&settings, "Indicators…", "chart.indicators");
         shortcuts::append(&settings, "Chart settings…", "chart.settings");
         menu.append_section(None, &settings);
+        menu
+    }
 
-        // Hung off the window rather than the chart it was opened on: a menu
-        // parented to one pane of a split has only that pane's height to fit
-        // in, and GTK answers a menu that does not fit by making it scroll.
-        let area = self.focused_pane().view.area.clone();
-        let (wx, wy) = area
-            .translate_coordinates(&self.window, x, y)
-            .unwrap_or((x, y));
-        let popover = popup_menu(&menu, &self.window, wx, wy);
-
+    fn number_row_picks_templates(self: &Rc<Self>, popover: &gtk::PopoverMenu) {
         // The template rows' keys are drawn, and GTK also binds what they
         // draw while the menu is open — by what the key types, which on a
         // layout whose number row types other digits with Shift held picks a
@@ -10440,6 +10456,7 @@ impl Window {
         actions.add_action(&drawing_back);
 
         self.window.insert_action_group("chart", Some(&actions));
+        *self.trade.chart_actions.borrow_mut() = Some(actions);
     }
 
     /// One key for the whole watchlist, doing the obvious next thing.

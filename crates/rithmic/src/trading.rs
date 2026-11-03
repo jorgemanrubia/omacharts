@@ -97,6 +97,8 @@ pub enum Status {
     Pending,
     /// Working: resting at its price, or waiting for its stop.
     Working,
+    /// Some filled, the rest still working.
+    PartiallyFilled,
     Filled,
     Cancelled,
     /// Refused, in Rithmic's words.
@@ -106,7 +108,7 @@ pub enum Status {
 impl Status {
     /// Still to fill or be cancelled.
     pub fn working(&self) -> bool {
-        matches!(self, Status::Pending | Status::Working)
+        matches!(self, Status::Pending | Status::Working | Status::PartiallyFilled)
     }
 }
 
@@ -344,6 +346,7 @@ impl State {
                 // Pending again once working is a modify or a cancel on its
                 // way: still working.
                 OrderStatus::OpenPending | OrderStatus::Pending if order.status == Status::Pending => Status::Pending,
+                _ if order.status.working() && filled => Status::PartiallyFilled,
                 _ if order.status.working() => Status::Working,
                 _ => order.status.clone(),
             };
@@ -365,8 +368,10 @@ impl State {
                 if let Some(price) = update.avg_fill_price.or(update.fill_price).filter(|price| *price != 0.0) {
                     order.fill_price = Some(price);
                 }
-                if update.total_unfilled_size == Some(0) {
-                    order.status = Status::Filled;
+                match update.total_unfilled_size {
+                    Some(0) => order.status = Status::Filled,
+                    Some(_) if order.status.working() => order.status = Status::PartiallyFilled,
+                    _ => {}
                 }
             }
             Some("reject") => {

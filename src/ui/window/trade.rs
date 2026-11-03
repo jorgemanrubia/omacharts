@@ -16,11 +16,12 @@ use adw::prelude::*;
 use gtk::{gio, glib};
 
 use super::Window;
-use crate::trading::{self, Status};
+use crate::trading::{self, OrderKind, Side, Status};
+use crate::ui::pane::ChartPane;
 use crate::ui::trading_panel::{Hands, TradingPanel};
 
 /// Whether the panel is open, remembered for the next launch.
-pub(super) const SHOW_TRADING_PANEL: &str = "show_trading_panel";
+pub const SHOW_TRADING_PANEL: &str = "show_trading_panel";
 
 /// The window's trading furniture, all of it built only once there is a
 /// login.
@@ -45,6 +46,34 @@ pub(super) struct Trade {
     pub placed: RefCell<HashMap<String, Status>>,
     /// The desk's call to read Trading again, kept alive with the window.
     pub listener: RefCell<Option<Rc<dyn Fn()>>>,
+    /// The chart's actions, which `chart.order` and `chart.cancel-order`
+    /// join while there is a login.
+    pub chart_actions: RefCell<Option<gio::SimpleActionGroup>>,
+    /// The accounts with an order on its way.
+    pub placing: trading::Placing,
+}
+
+/// The `chart.order` target: `side:kind:account:price`, the price empty at
+/// the market.
+pub(super) fn order_target_value(side: Side, kind: OrderKind, account: &str, price: Option<f64>) -> String {
+    let price = price.map(|price| price.to_string()).unwrap_or_default();
+    format!("{}:{}:{account}:{price}", side.key(), kind.key())
+}
+
+/// The other way: what a `chart.order` target asks for.
+pub(super) fn parse_order_target(value: &str) -> Option<(Side, OrderKind, String, Option<f64>)> {
+    let mut parts = value.splitn(4, ':');
+    let side = Side::from_key(parts.next()?)?;
+    let kind = OrderKind::from_key(parts.next()?)?;
+    let account = parts.next()?.to_string();
+    let price = match parts.next()? {
+        "" => None,
+        price => Some(price.parse::<f64>().ok()?),
+    };
+    match (kind, price) {
+        (OrderKind::Market, _) | (_, Some(_)) => Some((side, kind, account, price)),
+        _ => None,
+    }
 }
 
 impl Window {
@@ -91,6 +120,27 @@ impl Window {
         });
         self.window.add_action(&action);
 
+        // The chart menu's orders. No key reaches them: an order is placed
+        // with a click on a menu that says what it is about to do.
+        if let Some(actions) = self.trade.chart_actions.borrow().as_ref() {
+            let order = gio::SimpleAction::new("order", Some(glib::VariantTy::STRING));
+            let this = self.clone();
+            order.connect_activate(move |_, value| {
+                if let Some(asked) = value.and_then(|value| value.str().and_then(parse_order_target)) {
+                    this.order_from_chart(asked);
+                }
+            });
+            actions.add_action(&order);
+            let cancel = gio::SimpleAction::new("cancel-order", Some(glib::VariantTy::STRING));
+            let this = self.clone();
+            cancel.connect_activate(move |_, value| {
+                if let Some(basket) = value.and_then(|value| value.str().map(str::to_string)) {
+                    this.cancel_from_chart(&basket);
+                }
+            });
+            actions.add_action(&cancel);
+        }
+
         // Toasts lie over the whole window, rail included.
         let overlay = self.trade.overlay.borrow().clone();
         let root = self.trade.root.borrow().clone();
@@ -117,6 +167,10 @@ impl Window {
             cluster.remove(&toggle);
         }
         self.window.remove_action("trading-panel");
+        if let Some(actions) = self.trade.chart_actions.borrow().as_ref() {
+            actions.remove_action("order");
+            actions.remove_action("cancel-order");
+        }
         let overlay = self.trade.overlay.borrow().clone();
         let root = self.trade.root.borrow().clone();
         if let (Some(overlay), Some(root), Some(toasts)) = (overlay, root, self.trade.toasts.borrow_mut().take()) {
@@ -265,6 +319,183 @@ impl Window {
         });
     }
 
+    /// Where an order from `pane` would go, or why it cannot: the one
+    /// resolver the menu and the click both ask.
+    pub(super) fn order_target(&self, pane: &ChartPane) -> Result<trading::Target, String> {
+        let view = self.trading.borrow();
+        let chosen = pane.account.borrow().clone();
+        let instrument = pane.instrument.borrow().clone();
+        trading::order_target(
+            &view,
+            |login| self.desk.session(login).filter(|_| self.desk.live(login)),
+            chosen.as_deref(),
+            instrument.as_ref(),
+        )
+    }
+
+    /// The step `pane`'s prices move in: what its bars show, else what the
+    /// broker says of the contract.
+    fn tick_of(pane: &ChartPane, target: &trading::Target) -> Option<f64> {
+        pane.view.tick().or(target.tick)
+    }
+
+    /// The chart menu's orders, at height `y` of the focused chart: buy and
+    /// sell at the market, then a limit and a stop each way at the price
+    /// there. One that would be on the wrong side of the market is greyed;
+    /// a chart that cannot trade says why in one greyed row. With no login,
+    /// nothing at all.
+    pub(super) fn order_section(self: &Rc<Self>, y: f64) -> Option<gio::Menu> {
+        if !self.trading.borrow().trades() {
+            return None;
+        }
+        let section = gio::Menu::new();
+        let pane = self.focused_pane();
+        let target = match self.order_target(&pane) {
+            Ok(target) => target,
+            Err(why) => {
+                section.append(Some(&why), None);
+                return Some(section);
+            }
+        };
+        let key = target.account.key();
+        let name = self.account_label(&key);
+        let tick = Self::tick_of(&pane, &target);
+        let at = pane.view.price_under(y).map(|price| match tick {
+            Some(tick) => omacharts_engine::on_tick(price, tick),
+            None => (price, 2),
+        });
+        let last = pane.view.last_price();
+        for (side, kind) in trading::menu_orders(&target.capabilities) {
+            let price = (kind != OrderKind::Market).then_some(at).flatten();
+            let text = match (kind, price) {
+                (OrderKind::Market, _) => trading::menu_text(side, kind, "", &target.contract, &name),
+                (_, Some((price, places))) => trading::menu_text(
+                    side,
+                    kind,
+                    &omacharts_engine::grouped_decimals(price, places),
+                    &target.contract,
+                    &name,
+                ),
+                (_, None) => trading::order_words(side, kind),
+            };
+            let item = gio::MenuItem::new(Some(&text), None);
+            let allowed = match (kind, price, last) {
+                (OrderKind::Market, _, _) => true,
+                (_, Some((price, _)), Some(last)) => trading::side_allowed(kind, side, price, last),
+                _ => false,
+            };
+            if allowed {
+                let value = order_target_value(side, kind, &key, price.map(|(price, _)| price));
+                item.set_action_and_target_value(Some("chart.order"), Some(&value.to_variant()));
+            }
+            section.append_item(&item);
+        }
+
+        // Cancelling the order whose line the pointer is on.
+        let view = self.trading.borrow();
+        let near = trading::order_near(view.book.working(&key, &target.contract), y, |price| {
+            pane.view.y_of(price).unwrap_or(f64::INFINITY)
+        });
+        if let Some(order) = near {
+            let places = tick.map_or(2, |tick| omacharts_engine::on_tick(0.0, tick).1);
+            let price = order.price.map(|price| omacharts_engine::grouped_decimals(price, places)).unwrap_or_default();
+            let text = format!("Cancel {} {price}", trading::order_words(order.side, order.kind));
+            let item = gio::MenuItem::new(Some(&text), None);
+            item.set_action_and_target_value(Some("chart.cancel-order"), Some(&order.basket_id.to_variant()));
+            section.append_item(&item);
+        }
+        Some(section)
+    }
+
+    /// `chart.order`: check again what the menu offered, ask on a live
+    /// account, and place it.
+    fn order_from_chart(self: &Rc<Self>, (side, kind, account, price): (Side, OrderKind, String, Option<f64>)) {
+        let pane = self.focused_pane();
+        // Resolved again: the chart, its account or the login may have
+        // changed since the menu opened.
+        let target = match self.order_target(&pane) {
+            Ok(target) => target,
+            Err(why) => return self.toast(&format!("{why} · not placed")),
+        };
+        if target.account.key() != account {
+            return self.toast("The chart's account changed · not placed");
+        }
+        let places = Self::tick_of(&pane, &target).map_or(2, |tick| omacharts_engine::on_tick(0.0, tick).1);
+        let price_text = price.map(|price| omacharts_engine::grouped_decimals(price, places)).unwrap_or_default();
+        if let (Some(at), Some(last)) = (price, pane.view.last_price())
+            && !trading::side_allowed(kind, side, at, last)
+        {
+            return self.toast(&trading::crossed_text(&price_text, kind, side));
+        }
+        let order = trading::Order {
+            account: target.account.id.clone(),
+            contract: target.contract.clone(),
+            exchange: target.exchange.clone(),
+            side,
+            qty: 1,
+            kind,
+            price,
+            tag: trading::new_tag(),
+        };
+        if !target.live() {
+            return self.place(target, order);
+        }
+        // Money: asked every time, naming the account and the system.
+        let dialog = adw::AlertDialog::new(Some(&trading::confirm_text(side, kind, &price_text, &target)), None);
+        dialog.add_response("cancel", "Cancel");
+        dialog.add_response("place", &format!("{} {}", side.word(), target.contract));
+        dialog.set_response_appearance("place", adw::ResponseAppearance::Suggested);
+        dialog.set_default_response(Some("cancel"));
+        dialog.set_close_response("cancel");
+        let this = self.clone();
+        dialog.connect_response(None, move |_, response| {
+            if response == "place" {
+                this.place(target.clone(), order.clone());
+            }
+        });
+        dialog.present(Some(&self.window));
+    }
+
+    /// Send `order` off the main loop, one at a time per account. A failure
+    /// is said and never retried.
+    fn place(self: &Rc<Self>, target: trading::Target, order: trading::Order) {
+        let key = target.account.key();
+        if let Err(why) = self.trade.placing.begin(&key) {
+            return self.toast(&why);
+        }
+        let Some(session) = self.desk.session(&target.login.id).filter(|_| self.desk.live(&target.login.id)) else {
+            self.trade.placing.done(&key);
+            return self.toast(&format!("{} not signed in · not placed", self.account_label(&key)));
+        };
+        let (sender, receiver) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let _ = sender.send_blocking(session.place(&order));
+        });
+        let this = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let outcome = receiver.recv().await.unwrap_or_else(|_| Err("the session went away".into()));
+            let Some(this) = this.upgrade() else { return };
+            this.trade.placing.done(&key);
+            match outcome {
+                Ok(basket) => {
+                    this.trade.placed.borrow_mut().insert(basket, Status::Pending);
+                    // What it has done already, the book may say now.
+                    this.desk.tell();
+                }
+                Err(why) => this.toast(&format!("Not placed: {why}")),
+            }
+        });
+    }
+
+    /// `chart.cancel-order`: cancel the working order `basket`, no
+    /// question asked.
+    fn cancel_from_chart(self: &Rc<Self>, basket: &str) {
+        let account = self.trading.borrow().book.order(basket).map(|order| order.account.clone());
+        let Some(account) = account else { return };
+        let basket = basket.to_string();
+        self.on_session(&account, move |session, number| session.cancel(number, &basket));
+    }
+
     /// Toast each step of an order placed here, once: filled, working,
     /// rejected.
     fn report_orders(&self) {
@@ -274,7 +505,7 @@ impl Window {
             let mut placed = self.trade.placed.borrow_mut();
             for (basket, before) in placed.iter_mut() {
                 let Some(order) = view.book.order(basket) else { continue };
-                let decimals = crate::ui::trading_panel::decimals_of(&order.contract);
+                let decimals = crate::ui::trading_panel::decimals_of(order.tick);
                 let name = view
                     .accounts
                     .iter()
@@ -301,6 +532,7 @@ pub(super) mod tests {
     use super::*;
     use crate::store::Store;
     use crate::trading::tests::Kept;
+    use crate::trading::Session as _;
 
     /// A real window on a store in memory, charting from the synthetic
     /// feed: nothing reaches a network, a keyring or the session bus.
@@ -370,5 +602,120 @@ pub(super) mod tests {
         assert!(nothing(&window), "trading left behind by the last login");
         assert_eq!(corner_buttons(&window), bare);
         assert!(!window.trading_panel_shown());
+    }
+
+    /// Every label in a menu, its sections and submenus included.
+    fn labels(model: &gio::MenuModel) -> Vec<(String, bool)> {
+        let mut found = Vec::new();
+        for at in 0..model.n_items() {
+            let label = model.item_attribute_value(at, "label", None).and_then(|v| v.str().map(str::to_string));
+            let action = model.item_attribute_value(at, "action", None).is_some();
+            if let Some(label) = label {
+                found.push((label, action));
+            }
+            for link in ["section", "submenu"] {
+                if let Some(inner) = model.item_link(at, link) {
+                    found.extend(labels(&inner));
+                }
+            }
+        }
+        found
+    }
+
+    fn trading_rows(window: &Rc<Window>) -> Vec<(String, bool)> {
+        let model = window.chart_menu_model(100.0);
+        labels(model.upcast_ref())
+            .into_iter()
+            .filter(|(label, _)| {
+                ["Buy ", "Sell ", "Cancel ", "not signed in", "not tradable", "not known yet"]
+                    .iter()
+                    .any(|word| label.contains(word))
+            })
+            .collect()
+    }
+
+    /// The chart menu has no orders without a login, says why it cannot
+    /// trade with one that is not signed in, offers the six orders once it
+    /// is, places a market order through the session, and loses all of it
+    /// with the login.
+    #[test]
+    fn the_chart_menu_offers_orders_only_with_a_login() {
+        if !crate::ui::gtk_ready() {
+            return;
+        }
+        let store = Rc::new(Store::memory().expect("a store"));
+        let window = window(&store);
+        assert!(trading_rows(&window).is_empty(), "orders in a menu with no login");
+        assert!(window.trade.chart_actions.borrow().as_ref().unwrap().lookup_action("order").is_none());
+
+        let kept = Kept::default();
+        let id = trading::add_login(&store, &kept, &typed()).expect("a login");
+        window.desk.tell();
+        assert_eq!(trading_rows(&window), vec![("Rithmic Test not signed in".to_string(), false)]);
+
+        let account = trading::Account {
+            login: id.clone(),
+            id: "951".into(),
+            name: None,
+            currency: Some("USD".into()),
+            fcm: String::new(),
+            ib: String::new(),
+            balance: None,
+        };
+        let session = Arc::new(trading::tests::FakeSession::new(vec![account.clone()], Box::new(|| {})));
+        assert!(window.desk.begin(&id));
+        window.desk.opened(&id, Ok(session.clone()));
+        window.desk.note(&store);
+        window.desk.tell();
+        // The chart is on SPY: not a future.
+        assert_eq!(trading_rows(&window), vec![("SPY is not tradable on 951".to_string(), false)]);
+
+        let es = window.index.find("ES", None).expect("ES in the curated half");
+        let pane = window.focused_pane();
+        window.show_in(&pane, es);
+        assert_eq!(trading_rows(&window), vec![("ES's contract not known yet".to_string(), false)]);
+        session.contracts.lock().unwrap().insert("ES".into(), "ESZ6".into());
+        let rows = trading_rows(&window);
+        assert_eq!(rows.first(), Some(&("Buy Market · 1 ESZ6 · 951".to_string(), true)));
+        assert_eq!(rows.get(1), Some(&("Sell Market · 1 ESZ6 · 951".to_string(), true)));
+        assert_eq!(rows.len(), 6);
+
+        let value = order_target_value(Side::Buy, OrderKind::Market, &account.key(), None);
+        let actions = window.trade.chart_actions.borrow().clone().unwrap();
+        actions.activate_action("order", Some(&value.to_variant()));
+        let context = glib::MainContext::default();
+        for _ in 0..200 {
+            if session.book().position("951", "ESZ6").is_some() {
+                break;
+            }
+            context.iteration(false);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(session.book().position("951", "ESZ6").map(|held| held.net), Some(1), "bought through the session");
+        // Answered, so the account is free for the next.
+        assert!(window.trade.placing.begin(&account.key()).is_ok(), "the first was answered");
+        window.trade.placing.done(&account.key());
+        // One on its way holds a second back, which is never sent.
+        window.trade.placing.begin(&account.key()).unwrap();
+        actions.activate_action("order", Some(&value.to_variant()));
+        context.iteration(false);
+        assert_eq!(session.book().orders.len(), 1, "a second order sent while the first was on its way");
+        window.trade.placing.done(&account.key());
+
+        trading::remove_login(&store, &kept, &id, true).expect("removed");
+        window.desk.end(&id);
+        window.desk.tell();
+        assert!(trading_rows(&window).is_empty(), "orders left behind by the last login");
+        assert!(window.trade.chart_actions.borrow().as_ref().unwrap().lookup_action("order").is_none());
+    }
+
+    #[test]
+    fn an_order_target_value_reads_back() {
+        let value = order_target_value(Side::Sell, OrderKind::Limit, "1a2b/951", Some(7_620.25));
+        assert_eq!(value, "sell:limit:1a2b/951:7620.25");
+        assert_eq!(parse_order_target(&value), Some((Side::Sell, OrderKind::Limit, "1a2b/951".into(), Some(7_620.25))));
+        assert_eq!(parse_order_target("buy:market:x/1:"), Some((Side::Buy, OrderKind::Market, "x/1".into(), None)));
+        assert_eq!(parse_order_target("buy:limit:x/1:"), None, "a limit with no price");
+        assert_eq!(parse_order_target("hold:market:x/1:"), None);
     }
 }
