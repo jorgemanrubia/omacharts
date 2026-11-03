@@ -2121,7 +2121,7 @@ pub(super) mod tests {
         session.sign_out();
         window.desk.tell();
         assert_eq!(part(&pane).as_deref(), Some("Rithmic Test signed out"));
-        assert_eq!(picker(&window, &pane)[0], "Rithmic Test ✓ — signed out (heading)");
+        assert_eq!(picker(&window, &pane)[0], "Rithmic Test — signed out ✓ (heading)");
 
         // A stock: the account's feed does not serve it, and the default
         // moves to the order's pick.
@@ -2129,7 +2129,7 @@ pub(super) mod tests {
         window.show_in(&pane, spy);
         assert_eq!(
             picker(&window, &pane),
-            vec!["Rithmic Test ✓ — signed out (heading)", "    Yahoo Finance (default) ✓"]
+            vec!["Rithmic Test — signed out ✓ (heading)", "    Yahoo Finance (default) ✓"]
         );
         assert_eq!(part(&pane).as_deref(), Some("Rithmic Test signed out"));
     }

@@ -6433,7 +6433,6 @@ impl Window {
         let native = timeframe.native();
         // Whatever this chart streamed from another feed, it is this one's now.
         self.release_pane_elsewhere(pane.id, &feed);
-        self.write_source_of(pane, Some(&feed), &passed);
         // Where its volume at price would come from: only a feed with
         // ladders of this contract, and nothing is asked until one of its
         // indicators wants them.
@@ -6450,6 +6449,9 @@ impl Window {
         }
 
         *pane.instrument.borrow_mut() = Some(instrument.clone());
+        // After the instrument, which is what says whether the feed is the
+        // chart's default and so goes unnamed.
+        self.write_source_of(pane, Some(&feed), &passed);
         self.apply_marks_to(pane);
         // Whatever this chart was waiting for, it is not waiting any more. A
         // chart somebody has since pointed somewhere else must not be moved
