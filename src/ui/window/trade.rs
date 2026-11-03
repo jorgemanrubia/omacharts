@@ -94,6 +94,7 @@ impl Window {
             panel.redraw(&self.trading.borrow());
         }
         self.report_orders();
+        self.apply_marks();
     }
 
     fn install_trading(self: &Rc<Self>) {
@@ -178,6 +179,9 @@ impl Window {
             overlay.set_child(Some(&root));
         }
         self.trade.placed.borrow_mut().clear();
+        for pane in self.panes.borrow().iter() {
+            pane.view.set_marks(None, Vec::new());
+        }
         self.sync_corner_clearance();
     }
 
@@ -496,6 +500,71 @@ impl Window {
         self.on_session(&account, move |session, number| session.cancel(number, &basket));
     }
 
+    /// Mark every chart with its account's position and working orders in
+    /// what it shows, or with nothing.
+    pub(super) fn apply_marks(self: &Rc<Self>) {
+        let panes = self.panes.borrow().clone();
+        for pane in &panes {
+            self.apply_marks_to(pane);
+        }
+    }
+
+    /// Mark one chart: only one whose instrument trades as the contract,
+    /// on the account the chart is about.
+    pub(super) fn apply_marks_to(self: &Rc<Self>, pane: &ChartPane) {
+        if !self.trade.shown.get() {
+            return;
+        }
+        let Ok(target) = self.order_target(pane) else {
+            return pane.view.set_marks(None, Vec::new());
+        };
+        let key = target.account.key();
+        let theme = self.theming.borrow().theme();
+        let scheme = super::pane_scheme(pane, &theme);
+        let look = omacharts_engine::theme_trading(&theme, &scheme);
+        let places = crate::ui::trading_panel::decimals_of(Self::tick_of(pane, &target));
+        let price = |price: f64| omacharts_engine::grouped_decimals(price, places);
+        let view = self.trading.borrow();
+        let orders = view
+            .book
+            .working(&key, &target.contract)
+            .filter_map(|order| {
+                let at = order.price?;
+                let look = match (order.side, order.kind) {
+                    (Side::Buy, OrderKind::Limit) => &look.buy_limit,
+                    (Side::Sell, OrderKind::Limit) => &look.sell_limit,
+                    (Side::Buy, OrderKind::Stop) => &look.buy_stop,
+                    (Side::Sell, OrderKind::Stop) => &look.sell_stop,
+                    (_, OrderKind::Market) => return None,
+                };
+                Some(crate::ui::chart::OrderMark {
+                    price: at,
+                    words: format!("{} {}", trading::order_words(order.side, order.kind), order.qty),
+                    price_text: price(at),
+                    look: look.clone(),
+                })
+            })
+            .collect();
+        let currency = target.account.currency.clone();
+        let position = view.book.position(&key, &target.contract).and_then(|held| {
+            let at = held.avg?;
+            let pill = match held.open_pnl {
+                Some(pnl) if pnl < 0.0 => scheme.down.clone(),
+                Some(_) => scheme.up.clone(),
+                None if held.net > 0 => look.long.color.clone(),
+                None => look.short.color.clone(),
+            };
+            Some(crate::ui::chart::PositionMark {
+                price: at,
+                words: trading::position_text(held, places, currency.as_deref()),
+                price_text: price(at),
+                look: if held.net > 0 { look.long.clone() } else { look.short.clone() },
+                pill,
+            })
+        });
+        pane.view.set_marks(position, orders);
+    }
+
     /// Toast each step of an order placed here, once: filled, working,
     /// rejected.
     fn report_orders(&self) {
@@ -685,21 +754,40 @@ pub(super) mod tests {
         actions.activate_action("order", Some(&value.to_variant()));
         let context = glib::MainContext::default();
         for _ in 0..200 {
-            if session.book().position("951", "ESZ6").is_some() {
+            if pane.view.marks().0.is_some() {
                 break;
             }
             context.iteration(false);
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
         assert_eq!(session.book().position("951", "ESZ6").map(|held| held.net), Some(1), "bought through the session");
+        // The chart shows the position, and a working order once there is one.
+        assert_eq!(pane.view.marks(), (Some("+1 @ 7,612.25".to_string()), Vec::new()));
+        let limit = trading::Order {
+            account: "951".into(),
+            contract: "ESZ6".into(),
+            exchange: "CME".into(),
+            side: Side::Sell,
+            qty: 1,
+            kind: OrderKind::Limit,
+            price: Some(7_620.0),
+            tag: trading::new_tag(),
+        };
+        let basket = session.place(&limit).unwrap();
+        window.desk.tell();
+        assert_eq!(pane.view.marks().1, vec!["Sell Limit 1".to_string()]);
+        session.cancel("951", &basket).unwrap();
+        window.desk.tell();
+        assert!(pane.view.marks().1.is_empty(), "a cancelled order left on the chart");
         // Answered, so the account is free for the next.
         assert!(window.trade.placing.begin(&account.key()).is_ok(), "the first was answered");
         window.trade.placing.done(&account.key());
         // One on its way holds a second back, which is never sent.
         window.trade.placing.begin(&account.key()).unwrap();
+        let before = session.book().orders.len();
         actions.activate_action("order", Some(&value.to_variant()));
         context.iteration(false);
-        assert_eq!(session.book().orders.len(), 1, "a second order sent while the first was on its way");
+        assert_eq!(session.book().orders.len(), before, "a second order sent while the first was on its way");
         window.trade.placing.done(&account.key());
 
         trading::remove_login(&store, &kept, &id, true).expect("removed");
@@ -707,6 +795,7 @@ pub(super) mod tests {
         window.desk.tell();
         assert!(trading_rows(&window).is_empty(), "orders left behind by the last login");
         assert!(window.trade.chart_actions.borrow().as_ref().unwrap().lookup_action("order").is_none());
+        assert_eq!(pane.view.marks(), (None, Vec::new()), "marks left behind by the last login");
     }
 
     /// The titles of every preferences group under `widget`.

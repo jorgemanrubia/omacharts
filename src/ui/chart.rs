@@ -225,6 +225,10 @@ struct State {
     /// the marker could ever be reached, because a chart with no bars returns
     /// before it is drawn.
     trouble: Option<FetchFailure>,
+    /// This chart's account's position and working orders in what it
+    /// shows, pushed by the window; empty, which costs nothing, without a
+    /// login.
+    marks: Marks,
     loading: bool,
     /// Multiplier on the auto-fitted price range. 1.0 shows exactly what the
     /// visible bars need; above that is zoomed in.
@@ -1202,6 +1206,7 @@ impl State {
             clock: Clock::default(),
             drag: None,
             trouble: None,
+            marks: Marks::default(),
             loading: false,
             price_zoom: 1.0,
             price_offset: 0.0,
@@ -3968,6 +3973,29 @@ impl ChartView {
         self.redraw();
     }
 
+    /// Show this chart's account's position and working orders on it, or
+    /// nothing. Redrawn only when they change.
+    pub fn set_marks(&self, position: Option<PositionMark>, orders: Vec<OrderMark>) {
+        let marks = Marks { position, orders };
+        {
+            let mut state = self.state.borrow_mut();
+            if state.marks == marks {
+                return;
+            }
+            state.marks = marks;
+        }
+        self.redraw();
+    }
+
+    /// What the chart is marked with: the position's words, and each
+    /// order's.
+    #[cfg(test)]
+    pub fn marks(&self) -> (Option<String>, Vec<String>) {
+        let state = self.state.borrow();
+        let position = state.marks.position.as_ref().map(|held| held.words.clone());
+        (position, state.marks.orders.iter().map(|order| order.words.clone()).collect())
+    }
+
     /// The price at height `y` of the chart, on the scale it is drawn at,
     /// while `y` is over the price plot.
     pub fn price_under(&self, y: f64) -> Option<f64> {
@@ -5240,7 +5268,8 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
     }
 
     draw_axis_fade(cr, state, plot_x + plot_w, width);
-    draw_last_price(cr, state, plot_x, plot_w, price_y, width, decimals, &to_y);
+    let tag_at = draw_marks(cr, state, plot_x, plot_w, price_y, price_y + price_h, width, &to_y);
+    draw_last_price(cr, state, plot_x, plot_w, price_y, width, decimals, &to_y, tag_at);
 
     if state.trouble.is_some() {
         draw_trouble_dot(cr, state, width);
@@ -6287,6 +6316,153 @@ fn stroke_pane_line(
     cr.restore().ok();
 }
 
+/// A working order on the chart: its line at its price, its price on the
+/// axis and its words inside the plot, all in its look.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OrderMark {
+    pub price: f64,
+    /// "Buy Limit 1".
+    pub words: String,
+    pub price_text: String,
+    pub look: omacharts_engine::LineLook,
+}
+
+/// The position held, at its average price: a heavier line, and a pill
+/// filled in `pill`, which says whether it is in profit.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PositionMark {
+    pub price: f64,
+    /// "+1 · +$125.00", or "+1 @ 7,612.25" until the P&L has come.
+    pub words: String,
+    pub price_text: String,
+    pub look: omacharts_engine::LineLook,
+    pub pill: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Marks {
+    position: Option<PositionMark>,
+    orders: Vec<OrderMark>,
+}
+
+impl Marks {
+    fn is_empty(&self) -> bool {
+        self.position.is_none() && self.orders.is_empty()
+    }
+}
+
+/// A rounded box, for a pill.
+fn pill_path(cr: &cairo::Context, x: f64, y: f64, w: f64, h: f64) {
+    let r = h / 2.0;
+    cr.new_sub_path();
+    cr.arc(x + w - r, y + r, r, -std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2);
+    cr.arc(x + r, y + r, r, std::f64::consts::FRAC_PI_2, 3.0 * std::f64::consts::FRAC_PI_2);
+    cr.close_path();
+}
+
+/// The orders and the position, drawn under the last price: lines across
+/// the plot, words in pills at their right end, prices on the axis spread
+/// apart with the last price's where they would cover each other. Returns
+/// where the last price's chip goes, when it had to move.
+#[allow(clippy::too_many_arguments)]
+fn draw_marks(
+    cr: &cairo::Context,
+    state: &State,
+    plot_x: f64,
+    plot_w: f64,
+    price_y: f64,
+    floor: f64,
+    width: f64,
+    to_y: &impl Fn(f64) -> f64,
+) -> Option<f64> {
+    if state.marks.is_empty() {
+        return None;
+    }
+    let shown = |y: f64| y >= price_y && y <= floor;
+    cr.save().ok();
+    cr.select_font_face("sans-serif", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
+    cr.set_font_size(11.0);
+    let pill_h = AXIS_CHIP_H;
+    let pill = |cr: &cairo::Context, y: f64, text: &str, fill: &str, edge: &str, ink: &str| {
+        let Ok(extents) = cr.text_extents(text) else { return };
+        let w = extents.width() + 14.0;
+        let x = plot_x + plot_w - w - 8.0;
+        pill_path(cr, x, y - pill_h / 2.0, w, pill_h);
+        colors::set_source(cr, fill);
+        let _ = cr.fill_preserve();
+        cr.set_line_width(1.0);
+        colors::set_source(cr, edge);
+        let _ = cr.stroke();
+        colors::set_source(cr, ink);
+        cr.move_to(x + 7.0, y + 3.5);
+        let _ = cr.show_text(text);
+    };
+    let line = |cr: &cairo::Context, y: f64, look: &omacharts_engine::LineLook, weight: f64| {
+        cr.set_line_width(weight);
+        cr.set_dash(&look.style.dashes(weight), 0.0);
+        colors::set_source(cr, &look.color);
+        cr.move_to(plot_x, y);
+        cr.line_to(plot_x + plot_w, y);
+        let _ = cr.stroke();
+        cr.set_dash(&[], 0.0);
+    };
+    let background = state.theme.ui.background.as_str();
+
+    // Each chip: its height, its text, its colour, and filled or outlined.
+    // The last price is among them so that they are spread around it.
+    let mut chips: Vec<(f64, &str, &str, bool, bool)> = Vec::with_capacity(state.marks.orders.len() + 2);
+    for order in &state.marks.orders {
+        let y = to_y(order.price).round() + 0.5;
+        if !shown(y) {
+            continue;
+        }
+        line(cr, y, &order.look, 1.0);
+        pill(cr, y, &order.words, background, &order.look.color, &order.look.color);
+        chips.push((y, &order.price_text, &order.look.color, false, false));
+    }
+    if let Some(held) = &state.marks.position {
+        let y = to_y(held.price).round();
+        if shown(y) {
+            line(cr, y, &held.look, 2.0);
+            pill(cr, y, &held.words, &held.pill, &held.pill, colors::readable_on(&held.pill));
+            chips.push((y, &held.price_text, &held.look.color, true, false));
+        }
+    }
+    let last = state.bars.last().map(|bar| to_y(bar.close).round() + 0.5).filter(|y| shown(*y));
+    if let Some(y) = last {
+        chips.push((below_cover(state, y), "", "", true, true));
+    }
+    chips.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut ys: Vec<f64> = chips.iter().map(|chip| chip.0).collect();
+    spread_chips(&mut ys, AXIS_CHIP_H, floor);
+    let axis_x = plot_x + plot_w;
+    let mut moved = None;
+    for ((_, text, colour, filled, is_last), y) in chips.iter().zip(ys) {
+        let y = y.round() + 0.5;
+        if *is_last {
+            moved = Some(y);
+            continue;
+        }
+        match filled {
+            true => label_on_axis(cr, state, text, axis_x, y, width, colour),
+            false => {
+                let Ok(extents) = cr.text_extents(text) else { continue };
+                let w = (extents.width() + 10.0).min(width - axis_x - 2.0);
+                cr.rectangle(axis_x + 1.5, y - AXIS_CHIP_H / 2.0 + 0.5, w - 1.0, AXIS_CHIP_H - 1.0);
+                colors::set_source(cr, background);
+                let _ = cr.fill_preserve();
+                cr.set_line_width(1.0);
+                colors::set_source(cr, colour);
+                let _ = cr.stroke();
+                cr.move_to(axis_x + 6.0, y + 3.5);
+                let _ = cr.show_text(text);
+            }
+        }
+    }
+    cr.restore().ok();
+    moved
+}
+
 #[allow(clippy::too_many_arguments)]
 fn draw_last_price(
     cr: &cairo::Context,
@@ -6297,6 +6473,8 @@ fn draw_last_price(
     width: f64,
     decimals: usize,
     to_y: &impl Fn(f64) -> f64,
+    // Where the tag goes when orders on the axis moved it.
+    tag_at: Option<f64>,
 ) {
     let Some(last) = state.bars.last() else { return };
     let y = to_y(last.close).round() + 0.5;
@@ -6322,7 +6500,7 @@ fn draw_last_price(
         cr,
         &grouped_decimals(last.close, decimals),
         plot_x + plot_w,
-        below_cover(state, y),
+        tag_at.unwrap_or_else(|| below_cover(state, y)),
         width,
         tag,
     );

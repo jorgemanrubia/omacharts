@@ -5906,6 +5906,7 @@ impl Window {
         }
         for pane in self.panes.borrow().iter() {
             pane.view.restyle(theme.clone(), pane_scheme(pane, &theme));
+            self.apply_marks_to(pane);
             // The colour is the theme's answer about the mode, which has just
             // changed.
             let mode = pane.mode();
@@ -6377,6 +6378,7 @@ impl Window {
         }
 
         *pane.instrument.borrow_mut() = Some(instrument.clone());
+        self.apply_marks_to(pane);
         // Whatever this chart was waiting for, it is not waiting any more. A
         // chart somebody has since pointed somewhere else must not be moved
         // back when the catalogue lands.
@@ -6491,6 +6493,7 @@ impl Window {
         let timeframe = pane.timeframe.get();
 
         *pane.instrument.borrow_mut() = Some(instrument.clone());
+        self.apply_marks_to(pane);
         *pane.pending.borrow_mut() = None;
         pane.write_readout();
         self.write_source_of(pane, None, &[]);
@@ -6524,6 +6527,7 @@ impl Window {
         let timeframe = pane.timeframe.get();
         let key = refused.key();
         *pane.instrument.borrow_mut() = Some(instrument.clone());
+        self.apply_marks_to(pane);
         *pane.pending.borrow_mut() = None;
         pane.write_readout();
         self.write_header_of(pane);
@@ -7379,6 +7383,7 @@ impl Window {
             return;
         }
         pane.account.replace(account);
+        self.apply_marks_to(&pane);
         self.reroute(&self.routes_on_screen());
         self.save_workspace();
     }
