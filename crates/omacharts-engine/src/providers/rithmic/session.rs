@@ -350,9 +350,22 @@ pub fn sign_out() -> Result<(), String> {
 
 /// [`sign_out`], forgetting the password in `secrets`.
 pub fn sign_out_of(secrets: &dyn Secrets) -> Result<(), String> {
+    let remembered = user().map(|user| (login_id(), user, system()));
+    end_and_forget(secrets, remembered)
+}
+
+/// [`sign_out_of`] for the login `login`, `user` on `system`, named by the
+/// caller rather than read from what was last remembered — which is the
+/// process's, and so somebody else's in a test running beside this one.
+pub fn sign_out_login(secrets: &dyn Secrets, login: &str, user: &str, system: &str) -> Result<(), String> {
+    let named = (!user.trim().is_empty()).then(|| (login.to_string(), user.trim().to_string(), system.trim().to_string()));
+    end_and_forget(secrets, named)
+}
+
+fn end_and_forget(secrets: &dyn Secrets, login: Option<(String, String, String)>) -> Result<(), String> {
     rithmic::shutdown();
     *REFUSED.lock().unwrap_or_else(|e| e.into_inner()) = None;
-    let forgotten = match (development(), user()) {
+    let forgotten = match (development(), login) {
         // A development login is a file of the developer's own, and is
         // never the keyring's. It counts as no login until the next sign-in.
         (true, _) => {
@@ -360,7 +373,7 @@ pub fn sign_out_of(secrets: &dyn Secrets) -> Result<(), String> {
             Ok(())
         }
         (false, None) => Ok(()),
-        (false, Some(user)) => secrets.forget(&login_id(), &user, &system()),
+        (false, Some((login, user, system))) => secrets.forget(&login, &user, &system),
     };
     let mut saved = SAVED.write().unwrap_or_else(|e| e.into_inner());
     if let Some(saved) = saved.as_mut() {

@@ -358,11 +358,10 @@ pub fn sign_out_login(store: &Store, secrets: &dyn Secrets, id: &str) -> Result<
     let mut logins = logins(store);
     let data = data_login_id(store, &logins);
     let Some(login) = logins.iter_mut().find(|login| login.id == id) else { return Ok(()) };
+    // The login is named rather than read back from what the engine was
+    // last told: that is the process's, and another test's beside this one.
     let forgotten = match data.as_deref() == Some(id) {
-        true => {
-            crate::feeds::remember_logins(store);
-            session::sign_out_of(secrets)
-        }
+        true => session::sign_out_login(secrets, &login.id, &login.user, &login.system),
         false => session::forget_password(secrets, &login.id, &login.user, &login.system),
     };
     login.signed_out = true;
@@ -436,15 +435,10 @@ pub fn remove_login(store: &Store, secrets: &dyn Secrets, id: &str, feed_too: bo
     let mut logins = logins(store);
     let Some(at) = logins.iter().position(|login| login.id == id) else { return Ok(()) };
     let was_data = decided != Removal::Login;
+    let login = &logins[at];
     let forgotten = match was_data {
-        true => {
-            crate::feeds::remember_logins(store);
-            session::sign_out_of(secrets)
-        }
-        false => {
-            let login = &logins[at];
-            session::forget_password(secrets, &login.id, &login.user, &login.system)
-        }
+        true => session::sign_out_login(secrets, &login.id, &login.user, &login.system),
+        false => session::forget_password(secrets, &login.id, &login.user, &login.system),
     };
     logins.remove(at);
     save_logins(store, &logins);
