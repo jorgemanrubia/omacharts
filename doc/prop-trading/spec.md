@@ -53,65 +53,94 @@ one), and orders of any kind.
 Each stage is usable on its own and is a commit series on `rithmic`, not a
 release.
 
-### 1. A Rithmic account in Preferences
+### 1. Rithmic as a data source
 
-A **Trading** section in Preferences, after Data, with one group for
-Rithmic.
+Yahoo stays the default and serves everything it serves today. Somebody who
+configures Rithmic gets their futures from Rithmic; everything else (stocks,
+indexes, crypto, forex) keeps coming from Yahoo, because Rithmic has none of
+it. So the choice of feed stops being one setting for every chart and
+becomes a question asked per instrument.
 
-- **What it asks for:** user ID, password, system and gateway. System and
-  gateway start as Rithmic Test and its URL; somebody with a prop-firm login
-  types theirs, as the firm's welcome email gives them.
-- **Sign in** connects, and a row says what is happening while it does:
-  connecting, asking for accounts, asking for history. A refusal shows
-  Rithmic's own words ("permission denied").
-- **Once signed in** it shows:
-  - the accounts, with each one's balance and profit when the PnL plant
-    gives one;
-  - the front-month ES contract it is watching, with its last trade and the
-    best bid and offer, updating as they arrive;
-  - how much history there was: "1120 minute bars in the last day".
-- **Sign out** ends the session.
+- **Bars** for futures come from Rithmic: minute bars from the same request
+  as the minute ladders below, daily and weekly from its time bars.
+- **Symbols stay the app's own.** Charts, watchlists, search and stored
+  chartbooks name an instrument the way they do now (`ES`, `AAPL`), whatever
+  feed serves it. Each provider translates to its own names, as
+  `Provider::symbol_for` does today: Rithmic turns a continuous future
+  (`ES`) into the front month it asks Rithmic for (`ESZ6`) and a specific
+  contract into itself. Nothing above the provider knows a Rithmic symbol,
+  so switching feeds, or losing one, never changes what a chart is of.
+- **One session for the whole app.** CME bills a non-professional
+  subscriber as a professional after two concurrent data sessions, and
+  R | Trader Pro's plug-in mode, Rithmic's way around that, is Windows only.
+  So every chart shares one session, and the bar widget asks the app rather
+  than signing in itself.
+- **The Data settings are reworked** to show Yahoo as the baseline and
+  Rithmic as something added to it. See "The Data page" below.
 - **The password goes in the desktop's keyring** (Secret Service, which
   gnome-keyring provides on Omarchy), never in the settings database: the
   database is backed up and can be copied to another machine. User ID,
   system and gateway are settings, and they are `Local` in
   `src/setting_keys.rs`, because a login belongs to the machine it was typed
   on.
-- No command yet. This stage is exploratory, and the CLI rule in
-  `AGENTS.md` applies from stage 2, when there is something to script.
 
-Done when: the author signs in with `~/.rithmic`'s login from the dialog and
-sees account 951, ES moving and the history count.
+### 2. Volume at price
 
-### 2. Rithmic as a chart feed
+Volume indicators that need to know what traded at each price, and on which
+side: volume profile, bid and ask volume, delta and cumulative delta,
+footprints, imbalances, a per-bar point of control, an exact VWAP. One kind
+of data serves all of them.
 
-Rithmic joins the feeds on the Data page, next to Yahoo and thinkorswim.
+**The minute ladder.** For each minute of a contract: open, high, low,
+close and volume, and for each price that traded, the **bid volume**
+(sellers hitting the bid) and the **ask volume** (buyers lifting the offer).
 
-- **History** comes from the history plant's time bars, which carry volume
-  and bid and ask volume. Live bars come from the ticker plant's trades.
-- **Symbols.** A chart on a continuous future (`ES`, `NQ`, `CL`) is served
-  the front month, asked of Rithmic. A specific contract (`ESZ6`) is served
-  as written.
-- **One session for the whole app.** CME bills a non-professional
-  subscriber as a professional after two concurrent data sessions, and
-  R | Trader Pro's plug-in mode, Rithmic's way around that, is Windows only.
-  So every chart, the settings page and later the order ticket share the
-  session stage 1 opens, and the bar widget asks the app rather than signing
-  in itself.
-- Commands for signing in and out, and the session's state, follow the
-  feeds' existing commands.
+- It is what Rithmic serves as history, as it is: "volume profile minute
+  bars". On Rithmic Test a week of ESZ6 came back as 4558 minutes and 27,936
+  price cells in 0.8 seconds. Nothing is rebuilt from ticks.
+- It is the finest grain a chart of a minute or longer needs. A bar on any
+  timeframe is the sum of its minutes, so footprints and delta are exact at
+  1m, 5m, 1h or daily.
+- It is small. Real ES trades about 30 prices a minute; with prices stored
+  as whole ticks and volumes as varints that is in the order of 100 KB per
+  contract per trading day, some 30 MB a year, under the cache limit that
+  exists today.
 
-### 3. Better volume
+**The question every indicator asks** is how much traded at each price, bid
+and ask, between two times. Each stored day also keeps its **day ladder**,
+the sum of its minutes, so a range is the whole days inside it plus the
+loose minutes at either end. A year is some 250 day ladders and at most two
+partial days: microseconds, however long the range. A footprint bar is the
+same sum over its own minutes.
 
-Accurate volume profiles and footprints from Rithmic's own data instead of
-bars:
+**Stored** in a table of its own beside `bar_series`, one row per contract
+per trading day, the ladders as compact blobs. A day is the unit the cache
+evicts, as a series is now.
 
-- volume-profile minute bars (bid and ask volume at each price, each
-  minute) for history;
-- live trades, with their aggressor, from then on.
+**Live.** Each trade arrives with its aggressor. It is added to the current
+minute's ladder in memory, and the chart is told as it is told about a
+forming bar now. When the minute closes its ladder is final and the trades
+are gone; ticks are never stored. On the next load Rithmic's own minute
+replaces the one built live.
 
-This needs a data type beside `Bar`, which the engine does not have. It gets
-a spec of its own when stage 2 is done.
+**Limits.** No history finer than a minute: tick or seconds charts would be
+live only, unless tick replay is added later. How far back a prop firm's
+system goes is not known yet; Rithmic is reported to keep a weekly data
+quota, so history is fetched once and cached, never asked for twice.
+
+### 3. Providers say what they can do
+
+Feeds differ, and the richer ones will keep coming (Interactive Brokers is
+likely next). A provider says what it serves: bars, live trades, minute
+ladders, how far back. An indicator that needs ladders gets them when the
+chart's feed has them.
+
+**Yahoo must stay exactly as fast.** Somebody who never configures anything
+pays nothing for any of this: no ladder is allocated, no query is made, no
+hot path gains a branch that costs. On a Yahoo chart the volume profile
+keeps today's estimate from bar ranges, and an indicator that cannot be
+estimated says it needs a feed with volume at price. `examples/perf.rs` is
+run before and after each change in this stage to prove it.
 
 ### 4. Trading
 
@@ -139,7 +168,7 @@ the registered name, keep the session well behaved (heartbeats, no
 reconnect storms, a clean logout), and answer their questions. After that,
 each prop firm decides whether its traders may use Omacharts.
 
-Ask Rithmic for the process and the terms once stage 2 works, because a
+Ask Rithmic for the process and the terms once stage 1 works, because a
 working feed is what conformance looks at.
 
 ## Open decisions
@@ -158,7 +187,7 @@ otherwise.
 4. **Target a firm first?** *Recommendation:* Lucid, because the author has
    accounts there. Tradeify keeps an allow-list of platforms and has to be
    asked.
-5. **History depth for profiles.** *Recommendation:* decide after stage 2
+5. **History depth for ladders.** *Recommendation:* decide after stage 1
    shows how far back Rithmic goes on a prop system. Test is not a guide.
 
 ## Not in scope
