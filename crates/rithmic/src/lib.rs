@@ -21,7 +21,10 @@
 //! ([`Live::Watching`] again), which is a caller's cue to load a fresh
 //! snapshot. A login Rithmic refuses is not retried: the same password
 //! would only be refused again, and a storm of refused logins is exactly
-//! what Rithmic's conformance review looks for.
+//! what Rithmic's conformance review looks for. Nor is a forced logout,
+//! which is what Rithmic does to a session when the same login signs in
+//! somewhere else: signing back in would log the other one out, and the two
+//! would take turns for ever.
 //!
 //! **Nobody's password leaves here except to the gateway.** [`Credentials`]'
 //! `Debug` leaves it out, no [`Error`] is built from one, and nothing in this

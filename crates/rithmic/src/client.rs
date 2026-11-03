@@ -51,6 +51,10 @@ const FRONT_FRESH: Duration = Duration::from_secs(3_600);
 /// quarterly index contracts about eight days early.
 const ROLL_DAYS: i64 = 8;
 
+/// What a forced logout is reported as.
+const EVICTED: &str = "Rithmic signed this session out, as it does when the same login signs in \
+                       somewhere else";
+
 type Sink = Arc<dyn Fn(Live) + Send + Sync>;
 type Source = Arc<dyn Fn() -> Result<Login, Error> + Send + Sync>;
 
@@ -381,6 +385,10 @@ struct Supervisor {
 /// Why the supervisor stopped looking after a connection.
 enum Ended {
     Dropped(Error),
+    /// Rithmic logged the session out, which it does when the same login
+    /// signs in somewhere else. Signing straight back in would log that one
+    /// out in turn, and the two would take turns for ever.
+    Evicted,
     Stopped(oneshot::Sender<()>),
     /// Every client went away.
     Abandoned,
@@ -421,6 +429,10 @@ impl Supervisor {
                         return;
                     }
                     backoff = (backoff * 2).min(BACKOFF_CEILING);
+                }
+                Ended::Evicted => {
+                    self.refuse(Error::Refused(EVICTED.into())).await;
+                    return;
                 }
                 Ended::Stopped(done) => {
                     let _ = done.send(());
@@ -491,6 +503,9 @@ impl Supervisor {
                 },
                 update = connection.ticker_updates.subscription_receiver.recv() => match update {
                     Ok(update) => {
+                        if matches!(update.message, RithmicMessage::ForcedLogout(_)) {
+                            break Ended::Evicted;
+                        }
                         if let Some(error) = dropped(&update) {
                             break Ended::Dropped(error);
                         }
@@ -505,6 +520,9 @@ impl Supervisor {
                 },
                 update = connection.history_updates.subscription_receiver.recv() => match update {
                     Ok(update) => {
+                        if matches!(update.message, RithmicMessage::ForcedLogout(_)) {
+                            break Ended::Evicted;
+                        }
                         if let Some(error) = dropped(&update) {
                             break Ended::Dropped(error);
                         }
@@ -514,7 +532,7 @@ impl Supervisor {
                 },
             }
         };
-        let graceful = !matches!(ended, Ended::Dropped(_));
+        let graceful = matches!(ended, Ended::Stopped(_) | Ended::Abandoned);
         if graceful {
             let _ = within(Duration::from_secs(2), connection.ticker_updates.disconnect()).await;
             let _ = within(Duration::from_secs(2), connection.history_updates.disconnect()).await;
