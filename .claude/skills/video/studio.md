@@ -94,6 +94,18 @@ protocol for the mouse. Lessons, each paid for:
   keymap, and a chord sent before the far end has read it arrives as the bare
   letter (which opens the symbol search). 300ms before the first key and
   120ms around modifiers are what held up while the machine was busy.
+- **Shift over a letter goes through `bin/virtual-keyboard`.** wtype's
+  keymap holds only the keys it types, one level each, and GTK then
+  matches no accelerator with Shift and a letter in it: Ctrl+Shift+H and
+  Ctrl+Alt+Shift+H did nothing in the studio (Ctrl+Shift+I only worked
+  because the app catches it by hand). `virtual-keyboard` uploads the US
+  keymap a real keyboard has and presses the modifiers as keys; `key` uses
+  it for any chord with Shift and a letter, wtype for the rest.
+- A chartbook's sidebar is its own (`sidebar_shown`, not scriptable), and a
+  new one opens with it shown: hide it with Ctrl+B once on each, after the
+  switch has settled. A chartbook switched to comes back at the zoom it had
+  but on its latest bar, and very wide views are cut down, so a span that
+  must be on screen is set after the last switch to that chartbook.
 - A fresh window ignores its first chord: the studio sends two Escapes on
   start, never anything on camera.
 - No Hyprland animations, and `disable_watchdog_warning`: a nested Hyprland

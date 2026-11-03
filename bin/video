@@ -547,6 +547,12 @@ hl.config({{
         # ones bin/headless-window found reliable; shorter ones lost chords
         # while the machine was busy recording.
         *mods, key = chord.split("+")
+        # Shift over a letter needs a keyboard with a real keymap: wtype's
+        # one-level keys make GTK match no accelerator with Shift in it
+        # (studio.md, "Driving it").
+        if "shift" in (m.lower() for m in mods) and len(key) == 1 and key.isalpha():
+            subprocess.run([str(ROOT / "bin/virtual-keyboard"), chord], env=self.env, check=True)
+            return
         argv = ["wtype", "-s", "300"]
         for mod in mods:
             argv += ["-M", mod, "-s", "120"]

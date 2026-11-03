@@ -5,7 +5,10 @@ Asked to merge the volume profiles on screen whose value areas overlap, it
 does what an agent with the Omacharts skill does: reads the profiles with
 `omacharts chart profile list`, and walks them right to left, merging each
 into the one before it when their value areas overlap by at least half of
-the narrower one, reading again after every merge. Every command it shows is
+the narrower one, reading again after every merge. A pair where one value
+area is more than twice as wide as the other stays apart however much they
+overlap: the wide one is a month that trended through the other's value, not
+one that shared it. Every command it shows is
 the real one, run against the open chart, which changes as it goes; only the
 sentences around them are written in advance, so the video can be timed.
 
@@ -19,6 +22,9 @@ import time
 
 PACE = 0.9
 THRESHOLD = 0.5
+# How much wider one value area may be than its neighbour's and still be
+# the same balance; wider than this, it is a trend through it.
+SPREAD = 2.0
 for i, arg in enumerate(sys.argv):
     if arg == "--pace":
         PACE = float(sys.argv[i + 1])
@@ -56,6 +62,15 @@ def overlap(a, b):
     return max(0.0, high - low) / narrow if narrow > 0 else 0.0
 
 
+def width(profile):
+    return profile["value_area_high"] - profile["value_area_low"]
+
+
+def spread(a, b):
+    narrow = min(width(a), width(b))
+    return max(width(a), width(b)) / narrow if narrow > 0 else float("inf")
+
+
 def month(profile):
     return time.strftime("%b %Y", time.strptime(profile["start_text"][:7], "%Y-%m"))
 
@@ -71,7 +86,8 @@ def main():
     out()
     slowly(f"{GREEN}●{RESET} I'll read the volume profiles on screen, then walk them right to left,")
     slowly("  merging each into the one before it when their value areas overlap by")
-    slowly(f"  at least half. I'll read them again after every merge.", )
+    slowly("  at least half, unless one is more than twice as wide: that's a trend")
+    slowly("  through the other's value, not a balance. I'll read them again after every merge.")
     out(pause=PACE)
     omacharts("chart", "profile", "list", "--on-screen", "--json")
     profiles = visible()
@@ -85,7 +101,9 @@ def main():
         a, b = profiles[at - 1], profiles[at]
         share = overlap(a, b)
         name = f"{month(b)} with {month(a)}"
-        if share >= THRESHOLD:
+        if share >= THRESHOLD and spread(a, b) > SPREAD:
+            out(f"{DIM}○ {name}: {share:.0%}, but {spread(a, b):.1f}x as wide, kept apart{RESET}", PACE * 0.45)
+        elif share >= THRESHOLD:
             out(f"{GREEN}●{RESET} {name}: {share:.0%} overlap, merging")
             omacharts("chart", "profile", "merge", "--at", str(b["start"]))
             merges += 1

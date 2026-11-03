@@ -103,28 +103,42 @@ idea that ties the video together.
 
 Four chartbooks, one per stretch of the video, in strip order: SPY (the
 teaser: four-hour, monthly profiles, eighteen months, bars hidden), Auction
-(SPY five-minute, regular session, session profiles), QQQ (daily, six
+(SPY fifteen-minute, regular session, session profiles), QQQ (daily, six
 months, nothing on it) and Study (SPY four-hour, three months, nothing on
 it yet). New charts open on no chart template, so nothing leaks into the
-Default template. The sidebar is hidden for the whole video.
+Default template. The sidebar is hidden for the whole video: it is each
+chartbook's own, and a new one opens with it shown, so every chartbook is
+visited once at the end and Ctrl and B hides it there. A span set with
+`chart range` picks its own resolution unless one is given, and a chartbook
+switched to comes back at the same zoom but on its latest bar, so the
+teaser's eighteen months are set last, on SPY, and the Auction chart is on
+fifteen-minute bars, where a week of sessions survives the switch.
 
     cli template default none
     cli chartbook rename "Chartbook 1" SPY
-    cli chart set --symbol SPY --resolution 4h --template none --bars off
+    cli chart set --symbol SPY --template none --bars off
     cli chart indicator add volume_profile --anchor month
-    cli chart range 18m
     cli chartbook create Auction --symbol SPY --switch
-    cli chart set --resolution 5m --session regular
+    cli chart set --session regular
     cli chart indicator add volume_profile
-    cli chart range "oct 27:oct 30"
+    cli chart range "oct 27:oct 30" --resolution 15m
     cli chartbook create QQQ --symbol QQQ --switch
-    cli chart set --resolution 1D
-    cli chart range 6m
+    cli chart range 6m --resolution 1D
     cli chartbook create Study --symbol SPY --switch
-    cli chart set --resolution 4h
-    cli chart range 3m
-    cli chartbook switch SPY
+    cli chart range 3m --resolution 4h
+    wait 1.5
     key ctrl+b
+    cli chartbook switch QQQ
+    wait 1.5
+    key ctrl+b
+    cli chartbook switch Auction
+    wait 1.5
+    key ctrl+b
+    cli chartbook switch SPY
+    wait 1.5
+    key ctrl+b
+    cli chart range 18m --resolution 4h
+    wait 1.0
 
 ## Script
 
@@ -160,8 +174,8 @@ the months that traded at the same prices folded into one.
 ### 3. An auction
 
 **Picture.** Ctrl and Alt and right arrow: the Auction chartbook, SPY on
-five-minute bars over four regular sessions, a session profile at the
-start of each, the value area stronger and the point of control a line
+fifteen-minute bars over the last week's regular sessions, a session
+profile at the start of each, the value area stronger and the point of control a line
 across it. Nothing else moves.
 
 **Voice.** {next}A volume profile is the volume traded at each price,
@@ -176,7 +190,7 @@ profile; out of balance, it leaves to find new value.
 ### 4. Value
 
 **Picture.** The same chart. On "value area", one zoom of about two times
-on the third session's profile, framing its stronger band and the point
+on Friday's profile, the widest of the week, framing its stronger band and the point
 of control line together. Nothing else acts in the scene, so it holds
 for the composer's longest, eight seconds, through the value area and
 point of control lines and into "When price leaves value", then eases back
@@ -188,7 +202,7 @@ price. When price leaves value, the market tests the move. Either it's
 rejected and price comes back, or it's accepted and new value builds
 there.
 
-    zoom: zoom 58% 50% 2.0
+    zoom: zoom 62% 68% 2.0
     after: 0.8
 
 ### 5. A profile you draw
@@ -216,8 +230,8 @@ worked out again.
 its volume traded. {grip}Stretch it a few bars, and it's worked out again.
 
     tool: key alt+v
-    drag: drag 34% 72% 62% 30%
-    grip: drag 62% 30% 67% 30%
+    drag: drag 50% 50.5% 78.8% 7.8%
+    grip: drag 78.8% 7.8% 83% 7.8%
     after: 1.0
 
 ### 7. One for every period
@@ -252,10 +266,10 @@ week, {menu2}or {month}every month.
     add:   key ctrl+shift+i
     pick:  type profile; key Return
     done:  key ctrl+Return
-    menu1: rclick 50% 45%
-    week:  click 55% 48%
-    menu2: rclick 50% 45%
-    month: click 58% 48%
+    menu1: rclick 53.1% 22.9%
+    week:  click 58.9% 24.5%
+    menu2: rclick 53.4% 28.6%
+    month: click 62.8% 30.3%
     after: 1.0
 
 ### 9. Zoom out, hide the bars
@@ -272,7 +286,7 @@ Shift and H hides the bars. With only the profiles left, you can see where
 price found balance at a glance: months stacked at the same prices,
 building the same value.
 
-    out:  scroll 88% 50% 8
+    out:  scroll 88% 50% 11
     hide: key ctrl+alt+shift+h
     after: 1.2
 
@@ -293,12 +307,12 @@ control, one value area. {menu2}February overlaps too, {merge2}and
 {menu3}so does {merge3}March. That's the whole balance, December to March,
 in one profile.
 
-    menu1:  rclick 41% 42%
-    merge1: click 46% 51%
-    menu2:  rclick 46% 42%
-    merge2: click 51% 51%
-    menu3:  rclick 51% 42%
-    merge3: click 56% 51%
+    menu1:  rclick 41.8% 44.3%
+    merge1: click 47.3% 49.1%
+    menu2:  rclick 47% 46%
+    merge2: click 52.5% 50.8%
+    menu3:  rclick 52% 51.9%
+    merge3: click 57.5% 56.8%; move 50% 98%
     after: 1.2
 
 ### 11. Ask an agent
@@ -338,20 +352,23 @@ chart profile list --on-screen --json` and how many profiles it found.
 Then it walks them right to left, a line per pair: a merge prints its
 overlap and the real `omacharts chart profile merge --at …`, and the
 profile on the left folds into its neighbour as it lands; a pair that
-doesn't overlap enough says "kept apart" in grey. On "Each", timed to the
+doesn't overlap enough says "kept apart" in grey, and so does April
+2026 against the December to March composite: they overlap, but April's
+value area is more than twice as wide, a month that trended through that
+value rather than shared it. On "Each", timed to the
 first merge (October 2026 into September), one zoom of about 1.8 times on
 those two profiles at the right of the chart pane, held until it eases
 back for the rest, which run at their own pace. It ends on its summary
 line, how many merges and how many profiles there are now. The run takes
-about seventeen seconds at this pace, six merges and eight pairs kept
-apart; the storyboard measures it and sets `after:` so the summary line
+about seventeen seconds at this pace, six merges and nine pairs kept
+apart, leaving the four composites of scene 1; the storyboard measures it and sets `after:` so the summary line
 is on screen and read before the scene ends.
 
 **Voice.** It reads the profiles on screen and walks them right to left.
 {merge}Each merge is a real Omacharts command, and the chart changes as it
 lands.
 
-    merge: zoom 85% 45% 1.8
+    merge: zoom 85% 18% 1.8; wait 13
     after: 12
 
 ### 14. The result
@@ -385,7 +402,7 @@ up in the gap.
 
 **Voice.** And it all follows the theme, {prefs}composites included.
 
-    prefs: key ctrl+comma; wait 0.8; click 33% 30%; wait 0.6; click 62% 22%; wait 0.5; click 62% 36%; wait 0.6; key Escape; wait 2.0; key ctrl+comma; wait 0.8; click 33% 30%; wait 0.6; click 62% 22%; wait 0.5; click 62% 39%; wait 0.6; key Escape
+    prefs: key ctrl+comma; wait 0.8; click 27.6% 21.4%; wait 0.6; click 69.5% 16.7%; wait 0.5; click 69.1% 29.8%; wait 0.6; key Escape; wait 2.0; key ctrl+comma; wait 0.8; click 27.6% 21.4%; wait 0.6; click 69.5% 16.7%; wait 0.5; click 69.1% 33.2%; wait 0.6; key Escape; move 98% 55%
     after: 13.5
 
 ### 16. Close
@@ -403,3 +420,7 @@ didn't. The Volume page of the manual has the rest.
 - SPY: S P Y
 - QQQ: triple Q
 - Omacharts: Oma-charts
+
+## Storyboard
+
+![Storyboard](../storyboards/volume-profile.jpg)
