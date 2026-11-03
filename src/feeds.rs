@@ -550,4 +550,122 @@ pub(crate) mod tests {
             for_this_launch().map(|f| f.id).unwrap_or("tos"),
         );
     }
+
+    /// Nothing above the boundary names a feed: no identifier and no string
+    /// in the app or the engine's core says Rithmic or thinkorswim. What a
+    /// feed is, what it serves and how it signs in are the feed's to
+    /// declare, in its folder under `providers`, and everything else reads
+    /// that — which is what makes the next feed one entry in a list rather
+    /// than a hunt through the UI.
+    ///
+    /// Read off the source up to each file's tests module, comments left
+    /// out: a test may name the feed it exercises, and a comment may say
+    /// which feed a rule was written for. When this fails, move what the
+    /// line knows behind `providers::SignIn` or the provider, rather than
+    /// adding the file to the list below.
+    #[test]
+    fn the_app_names_no_feed() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        // Below the boundary: the feeds themselves. Their clients,
+        // `crates/rithmic` and `crates/tos-market`, are not read at all.
+        let below = ["crates/omacharts-engine/src/providers/"];
+        // Above it still, and why. Part B of the foundations work takes the
+        // broker adapter out of trading.rs and the last feed names out of
+        // the window and the pane, and these three go from the list with it.
+        let allowed = [
+            ("src/trading.rs", "part B: the Rithmic broker adapter and its logins"),
+            ("src/ui/window.rs", "part B: entitlements and the data login"),
+            ("src/ui/pane.rs", "part B: the header's feed picker"),
+            // History, for good: a migration says what was stored, under the
+            // names it was stored with.
+            ("src/migrations.rs", "keys as they were stored"),
+        ];
+        let mut found = Vec::new();
+        for dir in ["src", "crates/omacharts-engine/src"] {
+            for path in sources(&root.join(dir)) {
+                let name = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().replace('\\', "/");
+                if below.iter().any(|prefix| name.starts_with(prefix))
+                    || allowed.iter().any(|(file, _)| name == *file)
+                {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&path).unwrap_or_default();
+                for (at, line) in live_code(&text).lines().enumerate() {
+                    if names_a_feed(line) {
+                        found.push(format!("{name}:{}: {}", at + 1, line.trim()));
+                    }
+                }
+            }
+        }
+        assert!(found.is_empty(), "a feed named above the boundary:\n{}", found.join("\n"));
+    }
+
+    fn sources(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let mut out = Vec::new();
+        let Ok(entries) = std::fs::read_dir(dir) else { return out };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                out.extend(sources(&path));
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                out.push(path);
+            }
+        }
+        out.sort();
+        out
+    }
+
+    /// The file up to its tests module, every line comment blanked and each
+    /// line kept where it was, so that a line number is still the file's.
+    fn live_code(text: &str) -> String {
+        let lines: Vec<&str> = text.lines().collect();
+        let tests = lines
+            .windows(2)
+            .position(|pair| pair[0].trim() == "#[cfg(test)]" && pair[1].contains("mod tests"))
+            .unwrap_or(lines.len());
+        let mut out = String::new();
+        for line in &lines[..tests] {
+            let mut in_string = false;
+            let mut escaped = false;
+            let mut chars = line.chars().peekable();
+            while let Some(c) = chars.next() {
+                if !in_string && c == '/' && chars.peek() == Some(&'/') {
+                    break;
+                }
+                if c == '"' && !escaped {
+                    in_string = !in_string;
+                }
+                escaped = in_string && c == '\\' && !escaped;
+                out.push(c);
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    /// Does this line of code say a feed's name, in an identifier or a
+    /// string? Not "logarithmic", and not "tos" inside another word.
+    fn names_a_feed(line: &str) -> bool {
+        let line = line.to_ascii_lowercase();
+        let word = |name: &str| {
+            line.match_indices(name).any(|(at, _)| {
+                let apart = |c: Option<char>| c.is_none_or(|c| !c.is_ascii_alphabetic());
+                apart(line[..at].chars().next_back()) && apart(line[at + name.len()..].chars().next())
+            })
+        };
+        line.contains("thinkorswim") || word("rithmic") || word("tos")
+    }
+
+    #[test]
+    fn a_feed_is_told_by_its_name_and_nothing_else_is() {
+        assert!(names_a_feed(r#"const RITHMIC: &str = "rithmic";"#));
+        assert!(names_a_feed("use omacharts_engine::providers::rithmic::session;"));
+        assert!(names_a_feed(r#"Ok(key) if key.starts_with("rithmic_") => {}"#));
+        assert!(names_a_feed(r#""tos" => eprintln!("a browser"),"#));
+        assert!(names_a_feed("tos_market::connected()"));
+        assert!(names_a_feed(r#"Some("Sign in to thinkorswim")"#));
+        assert!(!names_a_feed(r#"row.set_title("Logarithmic scale");"#));
+        assert!(!names_a_feed("let photos = stops;"));
+        assert_eq!(live_code("let a = 1; // rithmic\nlet b = \"//\"; // tos\n"), "let a = 1; \nlet b = \"//\"; \n");
+    }
 }
