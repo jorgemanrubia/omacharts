@@ -267,7 +267,7 @@ impl ChartPane {
         source_menu.add_css_class("readout-symbol");
         source_menu.add_css_class("dim-label");
         source_menu.set_valign(gtk::Align::Center);
-        source_menu.set_tooltip_text(Some("Account: click to choose where this chart's data comes from"));
+        source_menu.set_tooltip_text(Some(crate::trading::PART_TOOLTIP));
         source_menu.set_child(Some(&source_label));
         source_menu.set_always_show_arrow(false);
         source_menu.set_visible(false);

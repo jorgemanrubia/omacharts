@@ -302,14 +302,14 @@ impl Window {
         }
     }
 
-    /// The name an account goes by here: "951", or "Lucid 1234" with
-    /// several logins.
+    /// The name an account goes by here: "Lucid", or "Lucid 1234" when
+    /// the login holds several.
     pub(super) fn account_label(&self, key: &str) -> String {
         let view = self.trading.borrow();
         view.accounts
             .iter()
             .find(|account| account.key() == key)
-            .map(|account| trading::account_name(account, &view.logins))
+            .map(|account| view.account_name(account))
             .unwrap_or_else(|| key.rsplit('/').next().unwrap_or(key).to_string())
     }
 
@@ -611,7 +611,7 @@ impl Window {
                     .accounts
                     .iter()
                     .find(|account| account.key() == order.account)
-                    .map(|account| trading::account_name(account, &view.logins))
+                    .map(|account| view.account_name(account))
                     .unwrap_or_default();
                 if let Some(text) = trading::outcome_text(order, before, decimals, &name) {
                     said.push(text);
@@ -773,7 +773,7 @@ pub(super) mod tests {
         window.desk.note(&store);
         window.desk.tell();
         // The chart is on SPY: not a future.
-        assert_eq!(trading_rows(&window), vec![("SPY is not tradable on 951".to_string(), false)]);
+        assert_eq!(trading_rows(&window), vec![("SPY is not tradable on Rithmic Test".to_string(), false)]);
 
         let es = window.index.find("ES", None).expect("ES in the curated half");
         let pane = window.focused_pane();
@@ -781,8 +781,8 @@ pub(super) mod tests {
         assert_eq!(trading_rows(&window), vec![("ES's contract not known yet".to_string(), false)]);
         session.contracts.lock().unwrap().insert("ES".into(), "ESZ6".into());
         let rows = trading_rows(&window);
-        assert_eq!(rows.first(), Some(&("Buy Market · 1 ESZ6 · 951".to_string(), true)));
-        assert_eq!(rows.get(1), Some(&("Sell Market · 1 ESZ6 · 951".to_string(), true)));
+        assert_eq!(rows.first(), Some(&("Buy Market · 1 ESZ6 · Rithmic Test".to_string(), true)));
+        assert_eq!(rows.get(1), Some(&("Sell Market · 1 ESZ6 · Rithmic Test".to_string(), true)));
         assert_eq!(rows.len(), 6);
 
         let value = order_target_value(Side::Buy, OrderKind::Market, &account.key(), None);
@@ -889,5 +889,313 @@ pub(super) mod tests {
         assert_eq!(parse_order_target("buy:market:x/1:"), Some((Side::Buy, OrderKind::Market, "x/1".into(), None)));
         assert_eq!(parse_order_target("buy:limit:x/1:"), None, "a limit with no price");
         assert_eq!(parse_order_target("hold:market:x/1:"), None);
+    }
+
+    /// A feed in memory that goes by a real feed's name, so the window
+    /// treats it as that feed: Rithmic serving futures only, Yahoo serving
+    /// everything. Its bars are the synthetic feed's; nothing is fetched.
+    struct Posing {
+        id: &'static str,
+        label: &'static str,
+        futures_only: bool,
+        bars: omacharts_engine::providers::Synthetic,
+    }
+
+    impl Posing {
+        fn feed(id: &'static str, label: &'static str, futures_only: bool) -> Arc<dyn omacharts_engine::Provider> {
+            Arc::new(Posing { id, label, futures_only, bars: omacharts_engine::providers::Synthetic::new(None) })
+        }
+    }
+
+    impl omacharts_engine::Provider for Posing {
+        fn id(&self) -> &'static str {
+            self.id
+        }
+        fn label(&self) -> &'static str {
+            self.label
+        }
+        fn delay_minutes(&self, _: omacharts_engine::InstrumentKind) -> u32 {
+            0
+        }
+        fn symbol_for(&self, instrument: &omacharts_engine::Instrument) -> Option<String> {
+            let future = instrument.kind == omacharts_engine::InstrumentKind::FutureRoot;
+            (future || !self.futures_only).then(|| instrument.symbol.clone())
+        }
+        fn capabilities(&self) -> &'static [omacharts_engine::Capability] {
+            self.bars.capabilities()
+        }
+        fn bars(
+            &self,
+            symbol: &str,
+            timeframe: omacharts_engine::Timeframe,
+            since: Option<i64>,
+        ) -> Result<Vec<omacharts_engine::Bar>, omacharts_engine::ProviderError> {
+            self.bars.bars(symbol, timeframe, since)
+        }
+    }
+
+    /// A window charting from Yahoo then Rithmic, both usable whatever
+    /// this machine has saved, or from Yahoo alone.
+    fn window_on(store: &Rc<Store>, both: bool) -> Rc<Window> {
+        let _ = adw::init();
+        let app = adw::Application::new(None::<&str>, gio::ApplicationFlags::NON_UNIQUE);
+        let mut feeds = vec![Posing::feed("yahoo", "Yahoo Finance", false)];
+        if both {
+            feeds.push(Posing::feed("rithmic", "Rithmic", true));
+        }
+        let window = Window::build_with(&app, store.clone(), feeds);
+        for feed in window.feeds() {
+            feed.usable.set(true);
+        }
+        window
+    }
+
+    /// Sign in a login with `numbers` as its accounts, through a fake
+    /// session, and tell the window. Its id and the session.
+    fn sign_in(window: &Rc<Window>, store: &Rc<Store>, numbers: &[&str]) -> (String, Arc<trading::tests::FakeSession>) {
+        let id = trading::add_login(store, &Kept::default(), &typed()).expect("a login");
+        let accounts = numbers
+            .iter()
+            .map(|number| trading::Account {
+                login: id.clone(),
+                id: number.to_string(),
+                name: None,
+                currency: Some("USD".into()),
+                fcm: String::new(),
+                ib: String::new(),
+                balance: None,
+            })
+            .collect();
+        let session = Arc::new(trading::tests::FakeSession::new(accounts, Box::new(|| {})));
+        assert!(window.desk.begin(&id));
+        window.desk.opened(&id, Ok(session.clone()));
+        window.desk.note(store);
+        window.desk.tell();
+        (id, session)
+    }
+
+    /// What the account's popover shows for `pane`, a line a row: indented
+    /// under its account, "✓" on the one in force, a line under it after
+    /// "—", "(heading)" on one that cannot be clicked, and "──" for the rule.
+    fn picker(window: &Rc<Window>, pane: &ChartPane) -> Vec<String> {
+        let popover = gtk::Popover::new();
+        window.fill_source_menu(&popover, pane.id);
+        let menu = popover.child().expect("a list");
+        let mut rows = Vec::new();
+        let mut next = menu.first_child();
+        while let Some(child) = next {
+            next = child.next_sibling();
+            if child.is::<gtk::Separator>() {
+                rows.push("──".to_string());
+                continue;
+            }
+            let button = child.downcast::<gtk::Button>().expect("a row");
+            let line = button.child().expect("a line");
+            let mut text = if line.margin_start() == 24 { "    ".to_string() } else { String::new() };
+            let mut part = line.first_child();
+            while let Some(widget) = part {
+                part = widget.next_sibling();
+                if let Some(mark) = widget.downcast_ref::<gtk::Image>() {
+                    if mark.opacity() == 1.0 {
+                        text.push_str(" ✓");
+                    }
+                    continue;
+                }
+                let mut word = widget.first_child();
+                let mut first = true;
+                while let Some(label) = word {
+                    word = label.next_sibling();
+                    let label = label.downcast::<gtk::Label>().expect("words");
+                    if !first {
+                        text.push_str(" — ");
+                    }
+                    text.push_str(&label.label());
+                    first = false;
+                }
+            }
+            if !button.is_sensitive() {
+                text.push_str(" (heading)");
+            }
+            rows.push(text);
+        }
+        rows
+    }
+
+    fn part(pane: &ChartPane) -> Option<String> {
+        pane.source_menu.get_visible().then(|| {
+            let label = pane.source_menu.child().and_downcast::<gtk::Label>().expect("the part's words");
+            label.label().to_string()
+        })
+    }
+
+    /// No account and two feeds: a flat list of the feeds that serve the
+    /// chart, the order's pick the default, and the header naming the feed
+    /// with what it passed over.
+    #[test]
+    fn the_picker_with_no_account_lists_the_feeds() {
+        if !crate::ui::gtk_ready() {
+            return;
+        }
+        let store = Rc::new(Store::memory().expect("a store"));
+        let window = window_on(&store, true);
+        let pane = window.focused_pane();
+        let es = window.index.find("ES", None).expect("ES in the curated half");
+        window.show_in(&pane, es.clone());
+        assert_eq!(picker(&window, &pane), vec!["Yahoo Finance (default) ✓", "Rithmic"]);
+        assert_eq!(part(&pane).as_deref(), Some("Yahoo Finance"));
+
+        window.choose_source(pane.id, Some("rithmic".into()));
+        assert_eq!(picker(&window, &pane), vec!["Yahoo Finance (default)", "Rithmic ✓"]);
+        assert_eq!(part(&pane).as_deref(), Some("Rithmic"));
+        // Choosing the default stores nothing.
+        window.choose_source(pane.id, None);
+        assert!(pane.source.borrow().is_none());
+
+        // Passed over, it says so after the feed it fell back to.
+        let before = window.routes_on_screen();
+        window.feeds()[0].usable.set(false);
+        window.reroute(&before);
+        assert_eq!(part(&pane).as_deref(), Some("Rithmic · Yahoo Finance not signed in"));
+        assert_eq!(picker(&window, &pane), vec!["Yahoo Finance (default)", "Rithmic ✓"]);
+        window.feeds()[0].usable.set(true);
+
+        // A stock: Rithmic does not serve it, so it is not offered.
+        let spy = window.index.find("SPY", None).expect("SPY");
+        window.show_in(&pane, spy);
+        assert_eq!(picker(&window, &pane), vec!["Yahoo Finance (default) ✓"]);
+    }
+
+    /// One account and two feeds: the account a heading, and under it its
+    /// feeds with its own login's the default, ahead of the order. The
+    /// header names the account, and the feed only once it is not the
+    /// account's own; trouble goes after the account.
+    #[test]
+    fn the_picker_with_one_account_lists_its_feeds_under_it() {
+        if !crate::ui::gtk_ready() {
+            return;
+        }
+        let store = Rc::new(Store::memory().expect("a store"));
+        let window = window_on(&store, true);
+        let pane = window.focused_pane();
+        let es = window.index.find("ES", None).expect("ES in the curated half");
+        window.show_in(&pane, es.clone());
+        let (_, session) = sign_in(&window, &store, &["951"]);
+
+        let rows = |marks: [&str; 2]| {
+            vec![
+                "Rithmic Test ✓ (heading)".to_string(),
+                format!("    Rithmic (default){}", marks[0]),
+                format!("    Yahoo Finance{}", marks[1]),
+                "──".to_string(),
+                "Trading accounts…".to_string(),
+            ]
+        };
+        assert_eq!(picker(&window, &pane), rows([" ✓", ""]));
+        assert_eq!(part(&pane).as_deref(), Some("Rithmic Test"), "on its own feed, the account alone");
+        assert_eq!(pane.source_menu.tooltip_text().as_deref(), Some(trading::PART_TOOLTIP));
+
+        window.choose_source(pane.id, Some("yahoo".into()));
+        assert_eq!(picker(&window, &pane), rows(["", " ✓"]));
+        assert_eq!(part(&pane).as_deref(), Some("Rithmic Test · Yahoo Finance"));
+        // The default chosen again is no choice: nothing is kept.
+        window.choose_source(pane.id, None);
+        assert_eq!(part(&pane).as_deref(), Some("Rithmic Test"));
+
+        // A chosen feed that cannot be used is said, after the account.
+        window.choose_source(pane.id, Some("yahoo".into()));
+        let before = window.routes_on_screen();
+        window.feeds()[0].usable.set(false);
+        window.reroute(&before);
+        assert_eq!(part(&pane).as_deref(), Some("Rithmic Test · Yahoo Finance not signed in"));
+        window.feeds()[0].usable.set(true);
+        window.choose_source(pane.id, None);
+
+        // The login in trouble.
+        session.sign_out();
+        window.desk.tell();
+        assert_eq!(part(&pane).as_deref(), Some("Rithmic Test signed out"));
+        assert_eq!(picker(&window, &pane)[0], "Rithmic Test ✓ — signed out (heading)");
+
+        // A stock: the account's feed does not serve it, and the default
+        // moves to the order's pick.
+        let spy = window.index.find("SPY", None).expect("SPY");
+        window.show_in(&pane, spy);
+        assert_eq!(
+            picker(&window, &pane),
+            vec!["Rithmic Test ✓ — signed out (heading)", "    Yahoo Finance (default) ✓", "──", "Trading accounts…"]
+        );
+        assert_eq!(part(&pane).as_deref(), Some("Rithmic Test signed out"));
+    }
+
+    /// Two accounts and two feeds: the accounts, the feeds under the
+    /// chart's own only. Choosing another account forgets the chart's
+    /// feed, and a chart on the default follows the default.
+    #[test]
+    fn choosing_an_account_forgets_the_feed() {
+        if !crate::ui::gtk_ready() {
+            return;
+        }
+        let store = Rc::new(Store::memory().expect("a store"));
+        let window = window_on(&store, true);
+        let pane = window.focused_pane();
+        let es = window.index.find("ES", None).expect("ES in the curated half");
+        window.show_in(&pane, es);
+        let (id, _session) = sign_in(&window, &store, &["951", "952"]);
+        assert_eq!(
+            picker(&window, &pane),
+            vec![
+                "Rithmic Test 951 ✓",
+                "    Rithmic (default) ✓",
+                "    Yahoo Finance",
+                "Rithmic Test 952",
+                "──",
+                "Trading accounts…"
+            ]
+        );
+        assert_eq!(part(&pane).as_deref(), Some("Rithmic Test 951"));
+
+        window.choose_source(pane.id, Some("yahoo".into()));
+        assert_eq!(part(&pane).as_deref(), Some("Rithmic Test 951 · Yahoo Finance"));
+        let other = format!("{id}/952");
+        window.choose_account(pane.id, Some(other.clone()));
+        assert_eq!(pane.account.borrow().as_deref(), Some(other.as_str()));
+        assert!(pane.source.borrow().is_none(), "the feed went with the account");
+        assert_eq!(part(&pane).as_deref(), Some("Rithmic Test 952"));
+        assert_eq!(
+            picker(&window, &pane),
+            vec![
+                "Rithmic Test 951",
+                "Rithmic Test 952 ✓",
+                "    Rithmic (default) ✓",
+                "    Yahoo Finance",
+                "──",
+                "Trading accounts…"
+            ]
+        );
+
+        // Back on the default, and the default moves: the chart follows.
+        window.choose_account(pane.id, None);
+        assert_eq!(part(&pane).as_deref(), Some("Rithmic Test 951"));
+        trading::set_default_account(&store, &other);
+        window.desk.tell();
+        assert_eq!(part(&pane).as_deref(), Some("Rithmic Test 952"));
+    }
+
+    /// Two accounts and one feed: the accounts alone, and nothing about
+    /// the feed anywhere.
+    #[test]
+    fn the_picker_with_one_feed_lists_the_accounts_alone() {
+        if !crate::ui::gtk_ready() {
+            return;
+        }
+        let store = Rc::new(Store::memory().expect("a store"));
+        let window = window_on(&store, false);
+        let pane = window.focused_pane();
+        let es = window.index.find("ES", None).expect("ES in the curated half");
+        window.show_in(&pane, es);
+        assert_eq!(part(&pane), None, "one feed and no account: nothing");
+        sign_in(&window, &store, &["951", "952"]);
+        assert_eq!(picker(&window, &pane), vec!["Rithmic Test 951 ✓", "Rithmic Test 952", "──", "Trading accounts…"]);
+        assert_eq!(part(&pane).as_deref(), Some("Rithmic Test 951"));
     }
 }

@@ -3525,30 +3525,52 @@ impl Window {
 
     /// The account's list, for the chart `id` as it is now.
     ///
-    /// An Account list when there is more than one account: Default, naming
-    /// the account it is, then every account with its broker and balance. A
-    /// Data feed list when there is more than one feed: Automatic, then
-    /// every feed in the order with a name for its instrument, each with
-    /// what is wrong with it, if anything is. Each with a mark on the one in force, a
-    /// caption over each only when both show, and a way to Trading under
-    /// them once there is an account at all.
+    /// With no account, the feeds that serve the chart's instrument, the
+    /// order's pick marked "(default)". With accounts, one row each, and
+    /// under the chart's own, indented, those feeds once there is more than
+    /// one feed, the account's default marked "(default)"; the other
+    /// accounts stay collapsed. A single account is a heading that cannot
+    /// be clicked. A mark on what is in force, a line under a row only for
+    /// trouble, and a way to Trading under them once there is an account.
+    ///
+    /// Choosing a default stores nothing, so the chart keeps following it;
+    /// choosing another account forgets the chart's feed.
     fn fill_source_menu(self: &Rc<Self>, popover: &gtk::Popover, id: u32) {
         let Some(pane) = self.pane(id) else { return };
         let instrument = pane.instrument.borrow().clone();
-        let chosen = pane.source.borrow().clone();
         let feeds = self.feeds();
-        let serving = match &instrument {
-            Some(instrument) => providers::serving(feeds.iter().map(|feed| feed.provider.as_ref()), instrument),
+        let view = self.trading.borrow().clone();
+        let account = view.account_of(pane.account.borrow().as_deref()).cloned();
+        let mut serving: Vec<Rc<Feed>> = match &instrument {
+            Some(instrument) => providers::serving(feeds.iter().map(|feed| feed.provider.as_ref()), instrument)
+                .into_iter()
+                .filter_map(|at| feeds.get(at).cloned())
+                .collect(),
             None => Vec::new(),
         };
-        let view = self.trading.borrow().clone();
-        let offer = crate::trading::Offer::of(view.accounts.len(), feeds.len());
+        let default = instrument.as_ref().and_then(|instrument| {
+            crate::trading::default_feed(
+                &view,
+                account.as_ref(),
+                feeds.iter().map(|feed| feed.provider.as_ref() as &dyn Provider),
+                instrument,
+            )
+        });
+        // The default first, as the one nobody has to choose; the rest in
+        // the order.
+        serving.sort_by_key(|feed| Some(feed.provider.id()) != default);
+        let in_force = instrument.as_ref().and_then(|instrument| match self.route_chosen(&pane, instrument)? {
+            Ok(routed) | Err(routed) => Some(routed.feed.provider.id()),
+        });
         let menu = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        let row = |label: &str, state: Option<String>, marked: Option<bool>, chosen: Rc<dyn Fn()>| {
+        let row = |label: &str, state: Option<String>, marked: Option<bool>, indent: bool, chosen: Option<Rc<dyn Fn()>>| {
             let button = gtk::Button::new();
             button.add_css_class("flat");
             button.add_css_class("link-row");
             let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            if indent {
+                line.set_margin_start(24);
+            }
             let words = gtk::Box::new(gtk::Orientation::Vertical, 0);
             words.set_hexpand(true);
             let title = gtk::Label::new(Some(label));
@@ -3571,78 +3593,74 @@ impl Window {
                 line.append(&mark);
             }
             button.set_child(Some(&line));
-            let this = self.clone();
-            let closing = popover.downgrade();
-            button.connect_clicked(move |_| {
-                if let Some(popover) = closing.upgrade() {
-                    popover.popdown();
+            match chosen {
+                // A heading: there is nothing else to choose.
+                None => button.set_sensitive(false),
+                Some(chosen) => {
+                    let this = self.clone();
+                    let closing = popover.downgrade();
+                    button.connect_clicked(move |_| {
+                        if let Some(popover) = closing.upgrade() {
+                            popover.popdown();
+                        }
+                        this.focus(id);
+                        chosen();
+                    });
                 }
-                this.focus(id);
-                chosen();
-            });
+            }
             menu.append(&button);
         };
-        let caption = |text: &str| {
-            let label = gtk::Label::new(Some(text));
-            label.set_xalign(0.0);
-            label.add_css_class("caption-heading");
-            label.add_css_class("dim-label");
-            label.set_margin_start(12);
-            label.set_margin_top(6);
-            label.set_margin_bottom(2);
-            menu.append(&label);
-        };
-        if offer.accounts {
-            if offer.captions() {
-                caption("Account");
-            }
-            let own = pane.account.borrow().clone();
-            let default = view
-                .default_account()
-                .map(|account| format!("Default ({})", crate::trading::account_name(account, &view.logins)))
-                .unwrap_or_else(|| "Default".into());
-            let this = self.clone();
-            row(&default, None, Some(own.is_none()), Rc::new(move || this.choose_account(id, None)));
-            for account in &view.accounts {
-                let broker = view.login(&account.login).map(|login| login.name.clone());
-                let state = [broker, account.balance_text()].into_iter().flatten().collect::<Vec<_>>().join(" · ");
-                let key = account.key();
-                let marked = own.as_deref() == Some(key.as_str());
+        let feed_rows = |indent: bool| {
+            for feed in &serving {
+                let own = feed.provider.id();
+                let label = match Some(own) == default {
+                    true => format!("{} (default)", feed.provider.label()),
+                    false => feed.provider.label().to_string(),
+                };
+                // The default is no choice at all: the chart goes on
+                // following it.
+                let source = (Some(own) != default).then(|| own.to_string());
                 let this = self.clone();
                 row(
-                    &crate::trading::account_name(account, &view.logins),
-                    (!state.is_empty()).then_some(state),
-                    Some(marked),
-                    Rc::new(move || this.choose_account(id, Some(key.clone()))),
-                );
-            }
-        }
-        if offer.feeds {
-            if offer.captions() {
-                caption("Data feed");
-            }
-            let this = self.clone();
-            row("Automatic", None, Some(chosen.is_none()), Rc::new(move || this.choose_source(id, None)));
-            for feed in serving.iter().filter_map(|at| feeds.get(*at)) {
-                let source = Some(feed.provider.id().to_string());
-                let marked = source == chosen;
-                let this = self.clone();
-                row(
-                    feed.provider.label(),
+                    &label,
                     source_state(feed),
-                    Some(marked),
-                    Rc::new(move || this.choose_source(id, source.clone())),
+                    Some(in_force == Some(own)),
+                    indent,
+                    Some(Rc::new(move || this.choose_source(id, source.clone()))),
                 );
             }
-        }
-        if !view.accounts.is_empty() {
+        };
+        if view.accounts.is_empty() {
+            feed_rows(false);
+        } else {
+            let several = view.accounts.len() > 1;
+            let default_account = view.default_account().map(crate::trading::Account::key);
+            for listed in &view.accounts {
+                let key = listed.key();
+                let current = account.as_ref().is_some_and(|account| account.key() == key);
+                let trouble = view.trouble(&self.desk, listed);
+                let chosen: Option<Rc<dyn Fn()>> = match (several, current) {
+                    (false, _) => None,
+                    (true, true) => Some(Rc::new(|| {})),
+                    (true, false) => {
+                        let this = self.clone();
+                        let stored = (default_account.as_deref() != Some(key.as_str())).then_some(key);
+                        Some(Rc::new(move || this.choose_account(id, stored.clone())))
+                    }
+                };
+                row(&view.account_name(listed), trouble, Some(current), false, chosen);
+                if current && feeds.len() > 1 {
+                    feed_rows(true);
+                }
+            }
             menu.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
             let this = self.clone();
             row(
                 "Trading accounts…",
                 None,
                 None,
-                Rc::new(move || this.open_preferences_at(Some(crate::ui::preferences::TRADING))),
+                false,
+                Some(Rc::new(move || this.open_preferences_at(Some(crate::ui::preferences::TRADING)))),
             );
         }
         popover.set_child(Some(&menu));
@@ -7319,17 +7337,20 @@ impl Window {
 
     /// [`Window::route_pane`], keeping a refusal: `Err` is the chosen feed
     /// that cannot be used, with the instrument in its spelling.
+    ///
+    /// The feed is the one [`crate::trading::feed_of`] points the chart at
+    /// — chosen for it, or its account's own — else the order's.
     fn route_chosen(&self, pane: &ChartPane, instrument: &Instrument) -> Option<Result<Routed, Routed>> {
-        let chosen = pane.source.borrow();
+        let source = pane.source.borrow();
+        let feeds = self.feeds.borrow();
+        let usable = || feeds.iter().map(|feed| (feed.provider.as_ref() as &dyn Provider, feed.usable.get()));
+        let view = self.trading.borrow();
+        let account = view.account_of(pane.account.borrow().as_deref());
+        let chosen = crate::trading::feed_of(&view, account, source.as_deref(), usable(), instrument);
         if chosen.is_none() {
             return self.route(instrument).map(Ok);
         }
-        let feeds = self.feeds.borrow();
-        let route = providers::route_chosen(
-            feeds.iter().map(|feed| (feed.provider.as_ref() as &dyn Provider, feed.usable.get())),
-            chosen.as_deref(),
-            instrument,
-        )?;
+        let route = providers::route_chosen(usable(), chosen, instrument)?;
         Some(match route {
             providers::Chosen::Route(route) => {
                 let feed = feeds.get(route.at)?.clone();
@@ -7376,24 +7397,29 @@ impl Window {
     }
 
     /// Put one chart on an account, or back on the default with `None`,
-    /// and say so in its header.
+    /// and say so in its header. The chart's feed is forgotten with the
+    /// account it was chosen on: it goes back to the new account's default.
     fn choose_account(self: &Rc<Self>, id: u32, account: Option<String>) {
         let Some(pane) = self.pane(id) else { return };
         if *pane.account.borrow() == account {
             return;
         }
+        let before = self.routes_on_screen();
         pane.account.replace(account);
+        pane.source.replace(None);
         self.apply_marks_to(&pane);
-        self.reroute(&self.routes_on_screen());
+        self.reroute(&before);
         self.save_workspace();
     }
 
     /// Drop a chart's account if it is no longer listed, say because its
-    /// login was removed: it is on the default again. True when it did.
+    /// login was removed: it is on the default again, and on that
+    /// account's default feed. True when it did.
     fn settle_account(&self, pane: &ChartPane) -> bool {
         let stale = crate::trading::stale(&self.trading.borrow().accounts, pane.account.borrow().as_deref());
         if stale {
             pane.account.replace(None);
+            pane.source.replace(None);
         }
         stale
     }
@@ -7407,10 +7433,13 @@ impl Window {
     /// Read Trading again — the logins, their accounts, the default — and
     /// redraw every chart's account part from it.
     pub fn adopt_trading(self: &Rc<Self>) {
+        // Where every chart is served from before, so that a chart whose
+        // account's feed changed with the default is shown again.
+        let before = self.routes_on_screen();
         let mut view = crate::trading::View::load(&self.store);
         view.book = self.desk.book(&view.logins);
         *self.trading.borrow_mut() = view;
-        self.reroute(&self.routes_on_screen());
+        self.reroute(&before);
         self.sync_trading();
     }
 
@@ -8181,44 +8210,64 @@ impl Window {
         }
     }
 
-    /// Say which account and feed a chart is on, naming only what can be
-    /// chosen: the feed when there is more than one, "Yahoo · thinkorswim
-    /// not signed in"; the account when there is more than one, "951 ·
-    /// Rithmic"; and an account in trouble, "951 signed out". With one feed
-    /// and one account nothing is written and nothing is drawn. See
-    /// [`crate::trading::part_text`].
+    /// Say which account and feed a chart is on: the account whenever there
+    /// is one, "Lucid 1234", and the feed only when it is not the account's
+    /// own, "Lucid 1234 · Yahoo", each with its trouble after it. With no
+    /// account, the feed and what it was passed over, "Yahoo · Rithmic not
+    /// signed in". With one feed and at most one account nothing is written
+    /// and nothing is drawn. See [`crate::trading::part_text`].
     fn write_source_of(&self, pane: &ChartPane, serving: Option<&Rc<Feed>>, passed: &[Rc<Feed>]) {
-        let text = serving.and_then(|serving| {
-            self.account_part(pane, || {
-                source_text(
-                    serving.provider.label(),
-                    passed.iter().map(|feed| (feed.provider.label(), feed.unusable_because.get())),
-                )
-            })
+        let text = self.account_part(pane, serving.map(|feed| feed.provider.id()), |account| match serving {
+            Some(serving) => source_text(
+                serving.provider.label(),
+                // With an account, falling back is said by naming the feed
+                // fallen back to; the account's own trouble is on the account.
+                passed
+                    .iter()
+                    .filter(|_| !account)
+                    .map(|feed| (feed.provider.label(), feed.unusable_because.get())),
+            ),
+            None if account => "no data feed".into(),
+            None => "No data feed".into(),
         });
         pane.write_source(text.as_deref());
     }
 
     /// Say that a chart's chosen feed cannot serve it, and why: "Rithmic ·
-    /// not signed in".
+    /// Yahoo not signed in".
     fn write_refused_source(&self, pane: &ChartPane, feed: &Rc<Feed>) {
-        let text = self.account_part(pane, || format!("{} · {}", feed.provider.label(), feed.unusable_because.get()));
+        let text = self.account_part(pane, None, |_| format!("{} {}", feed.provider.label(), feed.unusable_because.get()));
         pane.write_source(text.as_deref());
     }
 
-    /// The account part's words for `pane`, `feed` making the feed's, and
-    /// its tooltip set to what clicking it offers.
-    fn account_part(&self, pane: &ChartPane, feed: impl FnOnce() -> String) -> Option<String> {
+    /// The account part's words for `pane`, on the feed `serving`, `feed`
+    /// making the feed's when they are said — told whether the chart has an
+    /// account — and its tooltip set.
+    fn account_part(&self, pane: &ChartPane, serving: Option<&str>, feed: impl FnOnce(bool) -> String) -> Option<String> {
         let view = self.trading.borrow();
-        let offer = crate::trading::Offer::of(view.accounts.len(), self.feeds.borrow().len());
+        let feeds = self.feeds.borrow();
+        let offer = crate::trading::Offer::of(view.accounts.len(), feeds.len());
         if !offer.any() {
             return None;
         }
-        pane.source_menu.set_tooltip_text(Some(offer.tooltip()));
+        pane.source_menu.set_tooltip_text(Some(crate::trading::PART_TOOLTIP));
         let account = view.account_of(pane.account.borrow().as_deref());
         let trouble = account.and_then(|account| view.trouble(&self.desk, account));
-        crate::trading::part_text(offer, account.map(|account| (account, view.logins.as_slice())), trouble.as_deref(), feed)
+        let name = account.map(|account| view.account_name(account));
+        let feed_is_default = serving.is_some()
+            && pane.source.borrow().is_none()
+            && pane.instrument.borrow().as_ref().is_some_and(|instrument| {
+                crate::trading::default_feed(
+                    &view,
+                    account,
+                    feeds.iter().map(|feed| feed.provider.as_ref() as &dyn Provider),
+                    instrument,
+                ) == serving
+            });
+        drop(feeds);
+        crate::trading::part_text(offer, name.as_deref(), trouble.as_deref(), feed_is_default, || feed(account.is_some()))
     }
+
 
     /// Every chart's day's move, after quotes have moved.
     ///

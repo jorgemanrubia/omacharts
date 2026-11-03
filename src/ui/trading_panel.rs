@@ -181,7 +181,7 @@ impl TradingPanel {
         let can = default.as_deref().and_then(|key| view.book.capabilities_of(key)).is_none_or(|can| can.cancel_all);
         self.cancel_all.set_visible(can);
         let tip = match view.default_account() {
-            Some(account) => format!("Cancel every working order on {}", trading::account_name(account, &view.logins)),
+            Some(account) => format!("Cancel every working order on {}", view.account_name(account)),
             None => "Cancel every working order".to_string(),
         };
         self.cancel_all.set_tooltip_text(Some(&tip));
@@ -193,7 +193,7 @@ impl TradingPanel {
         view.accounts
             .iter()
             .find(|account| account.key() == key)
-            .map(|account| trading::account_name(account, &view.logins))
+            .map(|account| view.account_name(account))
             .unwrap_or_else(|| key.rsplit('/').next().unwrap_or(key).to_string())
     }
 
@@ -213,7 +213,7 @@ impl TradingPanel {
                     None => "—".to_string(),
                 };
                 vec![
-                    cell(&trading::account_name(account, &view.logins), false).upcast(),
+                    cell(&view.account_name(account), false).upcast(),
                     cell(currency.unwrap_or("—"), false).upcast(),
                     cell(&balance, true).upcast(),
                     pnl_cell(money.and_then(|m| m.realized_day), currency).upcast(),
