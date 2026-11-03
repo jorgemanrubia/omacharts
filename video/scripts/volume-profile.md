@@ -122,7 +122,7 @@ fifteen-minute bars, where a week of sessions survives the switch.
     cli chartbook create Auction --symbol SPY --switch
     cli chart set --session regular
     cli chart indicator add volume_profile
-    cli chart range "oct 27:oct 30" --resolution 15m
+    cli chart range "oct 28:oct 30" --resolution 15m
     cli chartbook create QQQ --symbol QQQ --switch
     cli chart range 6m --resolution 1D
     cli chartbook create Study --symbol SPY --switch
@@ -288,7 +288,7 @@ price found balance at a glance: months stacked at the same prices,
 building the same value.
 
     out:  scroll 88% 50% 11
-    hide: key ctrl+alt+shift+h
+    hide: key ctrl+alt+shift+h; wait 0.4; move 40% 99.3%
     after: 1.2
 
 ### 10. Composites
@@ -341,8 +341,8 @@ value areas overlapping at least 50%". Enter sends it.
 same commands you'd type. {ask}The rule is at least half, so a month that
 only brushes the next one stays apart. The agent works out the rest. {go}
 
-    open:  terminal open vp-agent --pace 0.8
-    ask:   type Merge neighbouring profiles with value areas overlapping at least 50%
+    open:  terminal open vp-agent --pace 0.8; move 140% 97%
+    ask:   type Merge neighbouring profiles that share a balance: value areas overlapping at least 50%
     go:    key Return
     after: 0.3
 
@@ -367,10 +367,11 @@ is on screen and read before the scene ends.
 
 **Voice.** It reads the profiles on screen and walks them right to left.
 {merge}Each merge is a real Omacharts command, and the chart changes as it
-lands.
+lands. It keeps April apart: that month trended through the range rather
+than sat in it.
 
-    merge: zoom 85% 18% 1.8; wait 13
-    after: 12
+    merge: zoom 85% 18% 1.8
+    after: 11
 
 ### 14. The result
 
@@ -384,7 +385,7 @@ candles come back over the profiles. Held, the cursor off the chart.
 value. The gaps between them are where it went looking for the next.
 {bars}The same keys bring the bars back.
 
-    close: terminal close; focus app
+    close: terminal close; focus app; move 40% 99.3%
     bars:  key ctrl+alt+shift+h
     after: 1.5
 
@@ -394,7 +395,8 @@ value. The gaps between them are where it went looking for the next.
 introduced. Then Ctrl and comma opens Preferences over the middle of the
 window. A click on **Theme** in its sidebar, a click on the **Theme**
 row's drop-down, and a click on **Carbon**: the window, the candles, the
-profiles and the composites turn to Carbon's neutral greys at once.
+profiles and the composites turn to Carbon at once: a black ground,
+saturated blue profiles, red and green candles.
 Escape closes Preferences and the full chart holds in Carbon for about
 two seconds. Ctrl and comma again, **Theme**, the drop-down, **Paper**:
 everything goes light, warm off-white with ink text, the profiles
@@ -403,7 +405,7 @@ up in the gap.
 
 **Voice.** And it all follows the theme, {prefs}composites included.
 
-    prefs: key ctrl+comma; wait 0.8; click 27.6% 21.4%; wait 0.6; click 69.5% 16.7%; wait 0.5; click 69.1% 29.8%; wait 0.6; key Escape; wait 2.0; key ctrl+comma; wait 0.8; click 27.6% 21.4%; wait 0.6; click 69.5% 16.7%; wait 0.5; click 69.1% 33.2%; wait 0.6; key Escape; move 98% 55%
+    prefs: key ctrl+comma; wait 0.8; click 27.6% 21.4%; wait 0.6; click 69.5% 16.7%; wait 0.5; click 69.1% 29.8%; wait 0.6; key Escape; move 40% 99.3%; wait 2.0; key ctrl+comma; wait 0.8; click 27.6% 21.4%; wait 0.6; click 69.5% 16.7%; wait 0.5; click 69.1% 33.2%; wait 0.6; key Escape; move 40% 99.3%
     after: 13.5
 
 ### 16. Close

@@ -641,7 +641,7 @@ hl.config({{
         c = lambda name, fallback: self.colors.get(name, fallback).lstrip("#")
         config = home / ".config/foot/foot.ini"
         config.parent.mkdir(parents=True, exist_ok=True)
-        config.write_text(f"""font=JetBrainsMono Nerd Font:size=10
+        config.write_text(f"""font=JetBrainsMono Nerd Font:size=12.5
 pad=18x14
 [cursor]
 color={c('background', '#1a1b26')} {c('foreground', '#a9b1d6')}

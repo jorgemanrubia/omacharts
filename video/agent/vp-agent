@@ -72,7 +72,11 @@ def spread(a, b):
 
 
 def month(profile):
-    return time.strftime("%b %Y", time.strptime(profile["start_text"][:7], "%Y-%m"))
+    first = time.strftime("%b %Y", time.strptime(profile["start_text"][:7], "%Y-%m"))
+    if not profile.get("composite"):
+        return first
+    last = time.strftime("%b %Y", time.strptime(profile["end_text"][:7], "%Y-%m"))
+    return f"{first[:3]} {first[4:]}–{last}" if first[4:] != last[4:] else f"{first[:3]}–{last}"
 
 
 def visible():
@@ -84,10 +88,13 @@ def main():
     sys.stdout.flush()
     sys.stdin.readline()
     out()
-    slowly(f"{GREEN}●{RESET} I'll read the volume profiles on screen, then walk them right to left,")
-    slowly("  merging each into the one before it when their value areas overlap by")
-    slowly("  at least half, unless one is more than twice as wide: that's a trend")
-    slowly("  through the other's value, not a balance. I'll read them again after every merge.")
+    # Wrapped short: the terminal is a third of the screen, at a size that
+    # reads at 1080p.
+    slowly(f"{GREEN}●{RESET} I'll read the profiles on screen and walk them right to")
+    slowly("  left, merging each into the one before it when their value")
+    slowly("  areas overlap by at least half. One more than twice as wide")
+    slowly("  is a trend through the other's value, not a balance, so it")
+    slowly("  stays apart. I'll read them again after every merge.")
     out(pause=PACE)
     omacharts("chart", "profile", "list", "--on-screen", "--json")
     profiles = visible()
@@ -102,10 +109,10 @@ def main():
         share = overlap(a, b)
         name = f"{month(b)} with {month(a)}"
         if share >= THRESHOLD and spread(a, b) > SPREAD:
-            out(f"{DIM}○ {name}: {share:.0%}, but {spread(a, b):.1f}x as wide, kept apart{RESET}", PACE * 0.45)
+            out(f"{DIM}○ {name}: {share:.0%}, {spread(a, b):.1f}x as wide, apart{RESET}", PACE * 0.45)
         elif share >= THRESHOLD:
             out(f"{GREEN}●{RESET} {name}: {share:.0%} overlap, merging")
-            omacharts("chart", "profile", "merge", "--at", str(b["start"]))
+            omacharts("chart", "profile", "merge", "--at", b["start_text"][:10])
             merges += 1
             out(pause=PACE)
         else:
@@ -113,8 +120,7 @@ def main():
         at -= 1
     last = len(visible())
     out()
-    slowly(f"{GREEN}●{RESET} {merges} merges: {first} profiles became {last}. Each composite is a range")
-    slowly("  the market spent accepting one value.")
+    slowly(f"{GREEN}●{RESET} {merges} merges: {first} profiles became {last}.")
     out()
 
 
