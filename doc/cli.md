@@ -757,14 +757,25 @@ re-spanned, and it takes no words.
 
 **An anchored VWAP** (`avwap`, or `vwap`) reads only the time of its anchor,
 `--from`, and runs from that bar to the last one, worked out again as bars
-arrive. `--color` and `--width` are its line, `--source` the price each bar
-adds (`hlc3`, the default, `hl2`, `ohlc4` or `close`), and `--bands` the
-standard-deviation bands either side, any of `1,2,3`, or `none`. Like a
-profile it is never moved whole, only re-anchored, and it takes no words.
+arrive. Its properties are the VWAP study's, by the study's names where it
+has them. `--color`, `--width` (0, no line, leaves only its bands) and
+`--style` (`solid`, `dashed`, `dotted`) are its line, and `--source` the price
+each bar adds (`hlc3`, the default, `hl2`, `ohlc4` or `close`). It has the
+study's three bands, at 1, 1.5 and 2 standard deviations and all off:
+`--bands` says which are drawn, any of `1,2,3` by place, or `none`. The
+`--band-*` flags change a band's look: `--band-deviations` (0.1 to 6),
+`--band-shaded on|off`, `--band-alpha` (0 to 1), `--band-color` (a colour, or
+`line` for the line's own), `--band-width` (0 to 12, 0 for no edges) and
+`--band-style`. `--band N` says which band they change; without it they
+change all three, except `--band-deviations`, which needs one. Every one of
+these is part of the style, so `configure avwap --config N` takes them all.
+Like a profile it is never moved whole, only re-anchored, and it takes no
+words.
 
 ```
-omacharts chart drawing add avwap --from 2026-09-08,0 --bands 1,2
+omacharts chart drawing add avwap --from 2026-09-08,0 --bands 1,3
 omacharts chart drawing set --id 3 --from 2026-09-15,0 --source close
+omacharts chart drawing set --id 3 --band 3 --band-deviations 2.5 --band-color violet
 ```
 
 **Any other drawing can carry words.** `--text` on a line, a box or an ellipse is a

@@ -1089,18 +1089,29 @@ pub struct Style {
     pub vwap: VwapLook,
 }
 
-/// An anchored VWAP's own properties: the price it weights, and the bands
-/// drawn round it. The line is the drawing's colour and width.
-#[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
+/// An anchored VWAP's own properties: the study's, as one drawing carries
+/// them. The line is the drawing's colour at its width, drawn in `line`'s
+/// pattern; the price it weights and the three bands round it are here.
+///
+/// All of it is part of the style, so all of it is part of a configuration:
+/// a look saved as configuration N brings its bands back with it.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct VwapLook {
     #[serde(default)]
     pub source: VwapSource,
-    /// The multiples of the standard deviation a band is drawn at, either
-    /// side of the line, and empty for none. Off by default: the line is
-    /// what an anchored VWAP is read for, and the study's bands are off for
-    /// the same reason.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub bands: Vec<f64>,
+    #[serde(default)]
+    pub line: LineStyle,
+    /// Always the study's three, innermost first, each switched on or off
+    /// rather than added or taken away, so a band keeps its look while it
+    /// is hidden.
+    #[serde(default = "vwap_bands", deserialize_with = "stored_vwap_bands")]
+    pub bands: Vec<VwapBand>,
+}
+
+impl Default for VwapLook {
+    fn default() -> VwapLook {
+        VwapLook { source: VwapSource::default(), line: LineStyle::default(), bands: vwap_bands() }
+    }
 }
 
 impl VwapLook {
@@ -1108,25 +1119,79 @@ impl VwapLook {
         *self == VwapLook::default()
     }
 
-    /// Draw a band at `multiple`, or stop drawing it, keeping the rest in
-    /// order from the line out.
-    pub fn set_band(&mut self, multiple: f64, on: bool) {
-        self.bands.retain(|m| *m != multiple);
-        if on {
-            self.bands.push(multiple);
-            self.bands.sort_by(f64::total_cmp);
-        }
+    /// The bands that are drawn.
+    pub fn shown(&self) -> impl Iterator<Item = &VwapBand> {
+        self.bands.iter().filter(|band| band.enabled)
     }
 }
 
-/// The bands an anchored VWAP offers, as multiples of the deviation: the
-/// three every charting tool that draws one ships with.
-pub const VWAP_BANDS: [f64; 3] = [1.0, 2.0, 3.0];
+/// One band round an anchored VWAP: the study's band, in a drawing's paint.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub struct VwapBand {
+    /// Standard deviations from the line.
+    pub deviations: f64,
+    pub enabled: bool,
+    /// `None` is the line's own colour, and follows it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub colour: Option<Paint>,
+    /// Shade the area between this band's edges.
+    pub fill: bool,
+    /// How much of the colour that shading gets.
+    pub fill_alpha: f64,
+    /// Its two edges. A width of zero draws none, which is how the inner
+    /// band is a shade with no outline.
+    pub stroke: Stroke,
+}
 
-/// How much of a band's line shows, under the full strength of the VWAP it
-/// is round: a band is read against the line, not as a second one.
-pub const VWAP_BAND_ALPHA: f64 = 0.55;
+impl VwapBand {
+    /// The colour it is drawn in, under a line of `line`.
+    pub fn paint<'a>(&'a self, line: &'a Paint) -> &'a Paint {
+        self.colour.as_ref().unwrap_or(line)
+    }
+}
 
+/// The study's three bands, as it ships them and off: the drawing's are
+/// read from the same list, so the two cannot come to disagree.
+pub fn vwap_bands() -> Vec<VwapBand> {
+    crate::indicators::vwap::default_bands()
+        .into_iter()
+        .map(|band| VwapBand {
+            deviations: band.deviations,
+            enabled: band.enabled,
+            colour: None,
+            fill: band.fill,
+            fill_alpha: band.alpha(),
+            stroke: band.stroke,
+        })
+        .collect()
+}
+
+/// The bands as stored, or the study's three when what is stored is not a
+/// list of them: the first builds of the anchored VWAP kept only the
+/// multiples that were on, and a drawing saved by one should open rather
+/// than fail.
+fn stored_vwap_bands<'de, D: serde::Deserializer<'de>>(from: D) -> Result<Vec<VwapBand>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Stored {
+        Bands(Vec<VwapBand>),
+        Other(serde::de::IgnoredAny),
+    }
+    Ok(match Stored::deserialize(from)? {
+        Stored::Bands(bands) if bands.len() == VWAP_BAND_COUNT => bands,
+        _ => vwap_bands(),
+    })
+}
+
+/// How many bands an anchored VWAP has: the study's three.
+pub const VWAP_BAND_COUNT: usize = 3;
+
+/// How near and how far a band may be set, in standard deviations: the
+/// study's dialog's ends, in tenths.
+pub const MIN_VWAP_DEVIATIONS: f64 = 0.1;
+pub const MAX_VWAP_DEVIATIONS: f64 = 6.0;
+
+pub use crate::indicators::{LineStyle, Stroke};
 pub use crate::indicators::vwap::Source as VwapSource;
 
 /// A volume profile drawing's own properties: the study's, as one drawing
@@ -3625,27 +3690,73 @@ mod edge_grip_tests {
         assert!(projected.touches((18.0, 35.0, 4.0, 10.0)));
     }
 
+    /// Its properties are the study's, with the study's defaults: a solid
+    /// line, and three bands at 1, 1.5 and 2 deviations, all off, the first
+    /// shaded with no outline, the second dashed, the third plain.
     #[test]
-    fn an_anchored_vwap_starts_without_bands_and_keeps_them_in_order() {
+    fn an_anchored_vwap_starts_with_the_studys_properties() {
         let configs = Configurations::default();
         assert!((1..=9).all(|n| configs.of(Kind::Vwap, n).vwap == VwapLook::default()));
         assert_eq!(configs.of(Kind::Vwap, 1).colour, Paint::preset(Preset::Up));
-        let mut look = VwapLook::default();
-        look.set_band(3.0, true);
-        look.set_band(1.0, true);
-        look.set_band(1.0, true);
-        assert_eq!(look.bands, vec![1.0, 3.0], "in order, and once each");
-        look.set_band(3.0, false);
-        assert_eq!(look.bands, vec![1.0]);
+        assert_eq!(configs.of(Kind::Vwap, 1).width, 1.5, "the study's thickness");
+        let look = VwapLook::default();
+        assert_eq!(look.line, LineStyle::Solid);
+        assert_eq!(look.shown().count(), 0, "no band drawn until asked");
+        let study = crate::indicators::vwap::default_bands();
+        assert_eq!(look.bands.len(), study.len());
+        for (band, theirs) in look.bands.iter().zip(&study) {
+            assert_eq!(band.deviations, theirs.deviations);
+            assert_eq!((band.fill, band.stroke), (theirs.fill, theirs.stroke));
+            assert_eq!(band.fill_alpha, theirs.alpha());
+            assert_eq!(band.colour, None, "the line's colour");
+        }
+        assert_eq!(look.bands[1].paint(&Paint::preset(Preset::Amber)), &Paint::preset(Preset::Amber));
+    }
 
-        // A line's stored style says nothing about a VWAP, and a VWAP's
-        // reads back as it was written.
+    /// Every property it has is in its style, so a configuration saved from
+    /// one brings all of it back, bands and their looks included, through
+    /// the store.
+    #[test]
+    fn a_configuration_saved_with_bands_brings_them_back() {
+        let mut style = Style::vwap(Preset::Amber);
+        style.width = 2.5;
+        style.vwap.source = VwapSource::Close;
+        style.vwap.line = LineStyle::Dotted;
+        style.vwap.bands[0].enabled = true;
+        style.vwap.bands[2] = VwapBand {
+            deviations: 2.5,
+            enabled: true,
+            colour: Some(Paint::preset(Preset::Violet)),
+            fill: true,
+            fill_alpha: 0.3,
+            stroke: Stroke::new(2.5, LineStyle::Dashed),
+        };
+        let mut configs = Configurations::default();
+        configs.set(Kind::Vwap, 7, style.clone());
+        let stored = serde_json::to_string(&configs).unwrap();
+        let read: Configurations = serde_json::from_str(&stored).unwrap();
+        assert_eq!(read.of(Kind::Vwap, 7), &style);
+        assert!(!read.is_default(Kind::Vwap, 7));
+
+        // A drawing following it wears all of it.
+        let mut drawing = Drawing::new(Kind::Vwap, Anchor::new(100, 0.0), Anchor::new(100, 0.0));
+        drawing.follow(7);
+        assert_eq!(drawing.style(&read), &style);
+
+        // A line's stored style says nothing about a VWAP.
         let plain = serde_json::to_value(Style::line(Preset::Up)).unwrap();
         assert!(plain.get("vwap").is_none(), "{plain}");
-        let mut style = Style::vwap(Preset::Amber);
-        style.vwap = VwapLook { source: VwapSource::Close, bands: vec![1.0, 2.0] };
-        let json = serde_json::to_string(&style).unwrap();
-        assert_eq!(serde_json::from_str::<Style>(&json).unwrap(), style);
+    }
+
+    /// The first builds kept only the multiples of the bands that were on.
+    /// A style saved by one opens, with the study's bands.
+    #[test]
+    fn an_anchored_vwap_saved_with_band_multiples_opens_with_the_studys_bands() {
+        let mut stored = serde_json::to_value(Style::vwap(Preset::Teal)).unwrap();
+        stored["vwap"] = serde_json::json!({ "source": "close", "bands": [1.0, 2.0] });
+        let style: Style = serde_json::from_value(stored).unwrap();
+        assert_eq!(style.vwap.source, VwapSource::Close);
+        assert_eq!(style.vwap.bands, vwap_bands());
     }
 
     /// A store written before the anchored VWAP existed has no list for it,

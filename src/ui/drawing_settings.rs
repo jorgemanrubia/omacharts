@@ -22,11 +22,13 @@ use adw::prelude::*;
 use gtk::{gio, glib};
 use omacharts_engine::drawings::{
     self, Arrow, ArrowHead, Configurations, Kind, Paint, Place, Preset, ProfileAlign, ProfileShape, Style, Text, VwapSource,
-    CONFIGURATIONS,
+    LineStyle, Stroke, CONFIGURATIONS,
 };
 use omacharts_engine::Theme;
 
 use crate::store::Store;
+use crate::ui::chart_settings::{self, Ink};
+use crate::ui::controls;
 use crate::ui::colors;
 use crate::ui::dialogs;
 use crate::ui::palette;
@@ -148,6 +150,9 @@ pub fn present(window: &Rc<Window>, store: &Rc<Store>, pane: &Rc<ChartPane>) {
     };
     let editor = style_editor(window, kind, drawing.style(&configs_now).clone(), on_style.clone());
     page.add(&editor.group);
+    for group in &editor.more {
+        page.add(group);
+    }
 
     // A figure's words are a subject of their own, behind a tab. A text
     // drawing *is* its words, and `style_editor` has already put the three
@@ -429,6 +434,9 @@ pub fn present_configurations(window: &Rc<Window>, store: &Rc<Store>, kind: Kind
                 let editor = style_editor(&window, kind, current, on_style);
                 let sub = adw::PreferencesPage::new();
                 sub.add(&editor.group);
+                for group in &editor.more {
+                    sub.add(group);
+                }
                 if let Some(text) = &editor.text {
                     sub.add(text);
                 }
@@ -590,9 +598,13 @@ fn describe(kind: Kind, style: &Style) -> String {
             )
         }
         Kind::Vwap => format!(
-            "{}, {}px, {}{}",
+            "{}, {}px{}, {}{}",
             name_of(&style.colour),
             style.width,
+            match style.vwap.line {
+                LineStyle::Solid => String::new(),
+                other => format!(" {}", other.label().to_lowercase()),
+            },
             style.vwap.source.label().to_lowercase(),
             vwap_bands(style)
         ),
@@ -601,12 +613,10 @@ fn describe(kind: Kind, style: &Style) -> String {
 
 /// An anchored VWAP's bands in words: `±1σ, ±2σ`, or nothing for none.
 fn vwap_bands(style: &Style) -> String {
-    match style.vwap.bands.is_empty() {
+    let bands: Vec<String> = style.vwap.shown().map(|band| format!("±{}σ", band.deviations)).collect();
+    match bands.is_empty() {
         true => String::new(),
-        false => {
-            let bands: Vec<String> = style.vwap.bands.iter().map(|m| format!("±{m}σ")).collect();
-            format!(", bands {}", bands.join(", "))
-        }
+        false => format!(", bands {}", bands.join(", ")),
     }
 }
 
@@ -625,6 +635,9 @@ fn name_of(paint: &Paint) -> String {
 #[derive(Clone)]
 struct Editor {
     group: adw::PreferencesGroup,
+    /// The groups after it, for a kind whose properties are several
+    /// subjects: an anchored VWAP's line, and each of its bands.
+    more: Vec<adw::PreferencesGroup>,
     /// How the kind's words are set, for the kinds that are a shape and so
     /// keep that apart from their own rows.
     ///
@@ -674,6 +687,7 @@ fn style_editor(window: &Rc<Window>, kind: Kind, current: Style, on_style: Rc<dy
     };
 
     let mut shows: Vec<Shower<Style>> = Vec::new();
+    let mut more = Vec::new();
 
     match kind {
         Kind::Line | Kind::Horizontal | Kind::Arrow | Kind::Zigzag => {
@@ -936,30 +950,10 @@ fn style_editor(window: &Rc<Window>, kind: Kind, current: Style, on_style: Rc<dy
             group.add(&area);
             shows.push(Rc::new(move |s: &Style| area.set_value(s.profile.value_area * 100.0)));
         }
-        // A line, with the price it weights and the bands round it.
+        // The study's rows, in the study's order and groups: what it is
+        // worked out from, the line, then a group for each band.
         Kind::Vwap => {
-            let (row, show) = paint_row(&theme, "Colour", &style.borrow().colour, {
-                let style = style.clone();
-                let emit = emit.clone();
-                move |paint| {
-                    style.borrow_mut().colour = paint;
-                    emit();
-                }
-            });
-            group.add(&row);
-            shows.push(Rc::new(move |s: &Style| show(&s.colour)));
-
-            let (row, show) = width_row("Thickness", style.borrow().width, {
-                let style = style.clone();
-                let emit = emit.clone();
-                move |width| {
-                    style.borrow_mut().width = width;
-                    emit();
-                }
-            });
-            group.add(&row);
-            shows.push(Rc::new(move |s: &Style| show(s.width)));
-
+            group.set_title("Parameters");
             let sources = VwapSource::ALL;
             let (row, show) = named_row(
                 "Source",
@@ -977,24 +971,56 @@ fn style_editor(window: &Rc<Window>, kind: Kind, current: Style, on_style: Rc<dy
             group.add(&row);
             shows.push(Rc::new(move |s: &Style| show(sources.iter().position(|x| *x == s.vwap.source))));
 
-            for multiple in drawings::VWAP_BANDS {
-                let band = adw::SwitchRow::new();
-                band.set_title(&format!("±{multiple}σ band"));
-                band.set_active(style.borrow().vwap.bands.contains(&multiple));
-                {
-                    let style = style.clone();
-                    let emit = emit.clone();
-                    let showing = showing.clone();
-                    band.connect_active_notify(move |row| {
-                        if showing.get() {
-                            return;
-                        }
-                        style.borrow_mut().vwap.set_band(multiple, row.is_active());
-                        emit();
-                    });
+            let line = adw::PreferencesGroup::new();
+            line.set_title("Line");
+            let ink = {
+                let style = style.clone();
+                let theme = theme.clone();
+                Ink::new(move || style.borrow().colour.hex(&theme))
+            };
+            // The bands' samples too: a band with no colour of its own is
+            // drawn in the line's.
+            let inks: Rc<RefCell<Vec<Ink>>> = Rc::new(RefCell::new(vec![ink.clone()]));
+            let (row, show) = paint_row(&theme, "Colour", &style.borrow().colour, {
+                let style = style.clone();
+                let emit = emit.clone();
+                let inks = inks.clone();
+                move |paint| {
+                    style.borrow_mut().colour = paint;
+                    for ink in inks.borrow().iter() {
+                        ink.repaint();
+                    }
+                    emit();
                 }
-                group.add(&band);
-                shows.push(Rc::new(move |s: &Style| band.set_active(s.vwap.bands.contains(&multiple))));
+            });
+            line.add(&row);
+            shows.push(Rc::new(move |s: &Style| show(&s.colour)));
+            let current = Stroke::new(style.borrow().width, style.borrow().vwap.line);
+            for (row, show) in stroke_rows(&ink, current, &showing, {
+                let style = style.clone();
+                let emit = emit.clone();
+                move |stroke: Stroke| {
+                    let mut style = style.borrow_mut();
+                    style.width = stroke.width;
+                    style.vwap.line = stroke.style;
+                    drop(style);
+                    emit();
+                }
+            }) {
+                line.add(&row);
+                shows.push(Rc::new(move |s: &Style| show(Stroke::new(s.width, s.vwap.line))));
+            }
+            {
+                let ink = ink.clone();
+                shows.push(Rc::new(move |_: &Style| ink.repaint()));
+            }
+            more.push(line);
+
+            for index in 0..drawings::VWAP_BAND_COUNT {
+                let (group, band_ink, band_shows) = vwap_band_group(&theme, &style, &showing, &emit, index);
+                more.push(group);
+                inks.borrow_mut().push(band_ink);
+                shows.extend(band_shows);
             }
         }
         // A box and an ellipse have the same properties — a fill at an alpha
@@ -1129,7 +1155,7 @@ fn style_editor(window: &Rc<Window>, kind: Kind, current: Style, on_style: Rc<dy
             showing.set(false);
         })
     };
-    Editor { group, text, show }
+    Editor { group, more, text, show }
 }
 
 /// The Text tab of a figure's properties: what it says, where that sits, and
@@ -1601,30 +1627,302 @@ fn profile_sample(cr: &gtk::cairo::Context, theme: &Theme, style: &Style, x: f64
 }
 
 /// A small anchored VWAP in a style's look: a dot on the bar it starts from
-/// and the line settling away from it, between its bands when it has any.
+/// and the line settling away from it, between the bands it shows, each
+/// shaded and edged as the chart draws it.
 fn vwap_sample(cr: &gtk::cairo::Context, theme: &Theme, style: &Style, (x, y, w, h): (f64, f64, f64, f64), line_w: f64) {
     let colour = style.colour.hex(theme);
     let (x0, y0) = (x + line_w, y + h * 0.85);
+    // The line, lifted by `lift`; and back along it lowered by as much,
+    // which closes a band's shading.
     let curve = |cr: &gtk::cairo::Context, lift: f64| {
         cr.move_to(x0, y0 - lift * 0.3);
         cr.curve_to(x + w * 0.2, y + h * 0.15 - lift, x + w * 0.45, y + h * 0.5 - lift, x + w, y + h * 0.4 - lift);
     };
-    cr.set_line_cap(gtk::cairo::LineCap::Round);
-    colors::set_source_alpha(cr, &colour, drawings::VWAP_BAND_ALPHA);
-    cr.set_line_width((line_w * 0.6).max(1.0));
-    for (n, _) in style.vwap.bands.iter().enumerate() {
-        let lift = h * 0.14 * (n + 1) as f64;
-        for side in [lift, -lift] {
+    let back = |cr: &gtk::cairo::Context, lift: f64| {
+        cr.line_to(x + w, y + h * 0.4 + lift);
+        cr.curve_to(x + w * 0.45, y + h * 0.5 + lift, x + w * 0.2, y + h * 0.15 + lift, x0, y0 + lift * 0.3);
+        cr.close_path();
+    };
+    // Spread by place rather than by multiple, so three bands at nearly the
+    // same one still read as three.
+    let lift = |n: usize| h * 0.12 * (n + 1) as f64;
+    for (n, band) in style.vwap.bands.iter().enumerate().filter(|(_, b)| b.enabled && b.fill) {
+        colors::set_source_alpha(cr, &band.paint(&style.colour).hex(theme), band.fill_alpha);
+        curve(cr, lift(n));
+        back(cr, lift(n));
+        let _ = cr.fill();
+    }
+    for (n, band) in style.vwap.bands.iter().enumerate().filter(|(_, b)| b.enabled && !b.stroke.is_hidden()) {
+        colors::set_source(cr, &band.paint(&style.colour).hex(theme));
+        cr.set_line_width(band.stroke.width);
+        cr.set_dash(&band.stroke.style.dashes(band.stroke.width), 0.0);
+        for side in [lift(n), -lift(n)] {
             curve(cr, side);
             let _ = cr.stroke();
         }
     }
+    cr.set_dash(&[], 0.0);
+    if style.width <= 0.0 {
+        return;
+    }
     colors::set_source(cr, &colour);
     cr.set_line_width(line_w);
+    cr.set_line_cap(gtk::cairo::LineCap::Round);
+    cr.set_dash(&style.vwap.line.dashes(line_w), 0.0);
     curve(cr, 0.0);
     let _ = cr.stroke();
+    cr.set_dash(&[], 0.0);
     cr.arc(x0, y0, line_w.max(1.5), 0.0, std::f64::consts::TAU);
     let _ = cr.fill();
+}
+
+/// One of an anchored VWAP's bands, as the study's settings show one of
+/// its own: whether it is drawn, how far out, its shading, its colour, and
+/// its edges.
+fn vwap_band_group(
+    theme: &Theme,
+    style: &Rc<RefCell<Style>>,
+    showing: &Rc<Cell<bool>>,
+    emit: &Rc<dyn Fn()>,
+    index: usize,
+) -> (adw::PreferencesGroup, Ink, Vec<Shower<Style>>) {
+    let group = adw::PreferencesGroup::new();
+    group.set_title(&format!("Band {}", index + 1));
+    let mut shows: Vec<Shower<Style>> = Vec::new();
+    let band = style.borrow().vwap.bands[index].clone();
+    // Every change to a band goes through here, and none while a style is
+    // being shown.
+    let edit = {
+        let style = style.clone();
+        let emit = emit.clone();
+        let showing = showing.clone();
+        Rc::new(move |change: &dyn Fn(&mut drawings::VwapBand)| {
+            if showing.get() {
+                return;
+            }
+            if let Some(band) = style.borrow_mut().vwap.bands.get_mut(index) {
+                change(band);
+            }
+            emit();
+        })
+    };
+
+    let switch_row = |title: &str, subtitle: Option<&str>, on: bool, apply: fn(&mut drawings::VwapBand, bool)| {
+        let row = adw::SwitchRow::new();
+        row.set_title(title);
+        if let Some(subtitle) = subtitle {
+            row.set_subtitle(subtitle);
+        }
+        row.set_active(on);
+        let edit = edit.clone();
+        row.connect_active_notify(move |row| {
+            let on = row.is_active();
+            edit(&|band| apply(band, on));
+        });
+        row
+    };
+
+    let show = switch_row("Show", None, band.enabled, |band, on| band.enabled = on);
+    group.add(&show);
+    shows.push(Rc::new(move |s: &Style| show.set_active(s.vwap.bands[index].enabled)));
+
+    // Tenths, as the study's: one, one and a half and two are the figures
+    // people reach for.
+    let deviations = controls::bounded_row(
+        "Standard deviations",
+        None,
+        band.deviations,
+        drawings::MIN_VWAP_DEVIATIONS,
+        drawings::MAX_VWAP_DEVIATIONS,
+        0.1,
+        1,
+        {
+            let edit = edit.clone();
+            move |value| edit(&|band| band.deviations = value)
+        },
+    );
+    group.add(&deviations.row);
+    {
+        let adjustment = deviations.adjustment.clone();
+        shows.push(Rc::new(move |s: &Style| adjustment.set_value(s.vwap.bands[index].deviations)));
+    }
+
+    let shaded = switch_row("Shaded", Some("Fill the area between this band's edges"), band.fill, |band, on| {
+        band.fill = on
+    });
+    group.add(&shaded);
+    shows.push(Rc::new(move |s: &Style| shaded.set_active(s.vwap.bands[index].fill)));
+
+    let shading = controls::bounded_row(
+        "Shading %",
+        None,
+        band.fill_alpha * 100.0,
+        omacharts_engine::indicators::bands::MIN_FILL_ALPHA * 100.0,
+        omacharts_engine::indicators::bands::MAX_FILL_ALPHA * 100.0,
+        1.0,
+        0,
+        {
+            let edit = edit.clone();
+            move |percent| edit(&|band| band.fill_alpha = percent / 100.0)
+        },
+    );
+    group.add(&shading.row);
+    {
+        let adjustment = shading.adjustment.clone();
+        shows.push(Rc::new(move |s: &Style| adjustment.set_value(s.vwap.bands[index].fill_alpha * 100.0)));
+    }
+
+    // The band's own colour, or the line's while it has none: the same
+    // answer the chart draws.
+    let ink = {
+        let style = style.clone();
+        let theme = theme.clone();
+        Ink::new(move || {
+            let style = style.borrow();
+            style.vwap.bands[index].paint(&style.colour).hex(&theme)
+        })
+    };
+    let reset = gtk::Button::with_label("Reset");
+    reset.add_css_class("flat");
+    reset.add_css_class("subtle-link");
+    reset.set_valign(gtk::Align::Center);
+    reset.set_tooltip_text(Some("Back to the line's colour"));
+    reset.set_sensitive(band.colour.is_some());
+    let (button, show_paint) = paint_button(theme, band.paint(&style.borrow().colour), {
+        let edit = edit.clone();
+        let ink = ink.clone();
+        let reset = reset.downgrade();
+        move |paint| {
+            edit(&|band| band.colour = Some(paint.clone()));
+            if let Some(reset) = reset.upgrade() {
+                reset.set_sensitive(true);
+            }
+            ink.repaint();
+        }
+    });
+    {
+        let edit = edit.clone();
+        let ink = ink.clone();
+        let style = style.clone();
+        let show_paint = show_paint.clone();
+        reset.connect_clicked(move |reset| {
+            edit(&|band| band.colour = None);
+            reset.set_sensitive(false);
+            let line = style.borrow().colour.clone();
+            show_paint(&line);
+            ink.repaint();
+        });
+    }
+    let colour = adw::ActionRow::new();
+    colour.set_title("Colour");
+    colour.add_suffix(&reset);
+    colour.add_suffix(&button);
+    group.add(&colour);
+    {
+        let ink = ink.clone();
+        shows.push(Rc::new(move |s: &Style| {
+            let band = &s.vwap.bands[index];
+            show_paint(band.paint(&s.colour));
+            reset.set_sensitive(band.colour.is_some());
+            ink.repaint();
+        }));
+    }
+    for (row, show) in stroke_rows(&ink, band.stroke, showing, {
+        let edit = edit.clone();
+        move |stroke: Stroke| edit(&|band| band.stroke = stroke)
+    }) {
+        group.add(&row);
+        shows.push(Rc::new(move |s: &Style| show(s.vwap.bands[index].stroke)));
+    }
+    (group, ink, shows)
+}
+
+/// A row of stroke samples, and a way to show it another stroke.
+type StrokeRow = (adw::ActionRow, Rc<dyn Fn(Stroke)>);
+
+/// A thickness and a pattern, picked from drawn samples: the rows a study's
+/// line is set with, with the same choices, so an anchored VWAP and the
+/// study are set the same way.
+fn stroke_rows(
+    ink: &Ink,
+    current: Stroke,
+    showing: &Rc<Cell<bool>>,
+    on_pick: impl Fn(Stroke) + Clone + 'static,
+) -> Vec<StrokeRow> {
+    // What is set now, which a pick changes half of.
+    let now = Rc::new(Cell::new(current));
+    let widths: Vec<(f64, Stroke)> = chart_settings::WIDTHS
+        .iter()
+        .map(|width| (*width, Stroke::new(*width, current.style)))
+        .collect();
+    let styles: Vec<(f64, Stroke)> = LineStyle::ALL
+        .iter()
+        .map(|style| (chart_settings::LINE_SAMPLE_WIDTH, Stroke::new(chart_settings::LINE_SAMPLE_WIDTH, *style)))
+        .collect();
+    let mut rows = Vec::new();
+    for (title, options, by_width) in [("Thickness", widths, true), ("Line style", styles, false)] {
+        let row = adw::ActionRow::new();
+        row.set_title(title);
+        let strip = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        strip.add_css_class("linked");
+        strip.add_css_class("stroke-picker");
+        strip.set_valign(gtk::Align::Center);
+        let matches = move |option: &Stroke, stroke: Stroke| match by_width {
+            true => (option.width - stroke.width).abs() < 0.01,
+            false => option.style == stroke.style,
+        };
+        let mut first: Option<gtk::ToggleButton> = None;
+        let mut buttons = Vec::new();
+        for (sample, option) in options {
+            let button = gtk::ToggleButton::new();
+            button.add_css_class("flat");
+            let style = match by_width {
+                true => now.get().style,
+                false => option.style,
+            };
+            let area = chart_settings::stroke_sample(sample, style, ink);
+            ink.watch(&area);
+            button.set_child(Some(&area));
+            button.set_tooltip_text(Some(&chart_settings::describe_stroke(sample, style)));
+            match &first {
+                Some(anchor) => button.set_group(Some(anchor)),
+                None => first = Some(button.clone()),
+            }
+            button.set_active(matches(&option, current));
+            let now = now.clone();
+            let showing = showing.clone();
+            let on_pick = on_pick.clone();
+            button.connect_toggled(move |button| {
+                if !button.is_active() || showing.get() {
+                    return;
+                }
+                let picked = match by_width {
+                    true => Stroke::new(option.width, now.get().style),
+                    false => Stroke::new(now.get().width, option.style),
+                };
+                now.set(picked);
+                on_pick(picked);
+            });
+            strip.append(&button);
+            buttons.push((button, option));
+        }
+        row.add_suffix(&strip);
+        let now = now.clone();
+        let show: Rc<dyn Fn(Stroke)> = Rc::new(move |stroke: Stroke| {
+            now.set(stroke);
+            for (button, option) in &buttons {
+                button.set_active(matches(option, stroke));
+            }
+            // A thickness nobody offered, from the keyboard, presses none.
+            if !buttons.iter().any(|(_, option)| matches(option, stroke)) {
+                for (button, _) in &buttons {
+                    button.set_active(false);
+                }
+            }
+        });
+        rows.push((row, show));
+    }
+    rows
 }
 
 /// A row choosing one of a few named ways, and a way to show another.
@@ -1683,6 +1981,17 @@ fn paint_row(
 ) -> (adw::ActionRow, Shower<Paint>) {
     let row = adw::ActionRow::new();
     row.set_title(title);
+    let (button, show) = paint_button(theme, current, on_pick);
+    row.add_suffix(&button);
+    (row, show)
+}
+
+/// The swatch that opens the presets and the wheel, for a row of its own.
+fn paint_button(
+    theme: &Theme,
+    current: &Paint,
+    on_pick: impl Fn(Paint) + Clone + 'static,
+) -> (gtk::MenuButton, Shower<Paint>) {
     let shown = palette::swatch_area(&current.hex(theme), false);
     let button = gtk::MenuButton::new();
     button.set_child(Some(&shown));
@@ -1755,11 +2064,10 @@ fn paint_row(
     content.append(&custom);
     popover.set_child(Some(&content));
     button.set_popover(Some(&popover));
-    row.add_suffix(&button);
 
     let theme = theme.clone();
     let shown_for_show = shown.clone();
-    (row, Rc::new(move |paint: &Paint| palette::paint(&shown_for_show, &paint.hex(&theme), false)))
+    (button, Rc::new(move |paint: &Paint| palette::paint(&shown_for_show, &paint.hex(&theme), false)))
 }
 
 // ---------------------------------------------------------------------------

@@ -243,7 +243,7 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Alt+Shift+← → ↑ ↓", "Put a selected drawing's label against that edge"),
             ("Alt+Shift+.", "Put it back in the middle"),
             ("Alt+Shift+A", "Step the selected drawing's arrowhead: none, filled, open, barb"),
-            ("Alt+Shift++ / Alt+Shift+−", "Thicken or thin a selected drawing's line or edge"),
+            ("Alt+Shift++ / Alt+Shift+−", "Thicken or thin the selected drawings' lines or edges, or the selected indicator's line"),
             ("Enter", "The selected drawing's properties"),
             ("← → ↑ ↓", "Nudge the selected drawing a pixel; ten with Shift"),
             ("Ctrl+Shift+↑ ↓", "Bring the selected drawing to the front, or send it to the back"),
@@ -7493,6 +7493,16 @@ impl Window {
                 crate::ui::chart_settings::ChartSettings::present_indicator(self, indicator);
             }
             IndicatorEvent::Remove(indicator) => self.remove_indicator(&pane, indicator),
+            IndicatorEvent::StepWidth(indicator, thicker) => {
+                let mut indicators = pane.indicators.borrow().clone();
+                let stepped = indicators
+                    .iter_mut()
+                    .find(|i| i.id == indicator)
+                    .is_some_and(|i| i.step_width(thicker));
+                if stepped {
+                    self.change_indicators_of(&pane, indicators);
+                }
+            }
         }
     }
 

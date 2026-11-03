@@ -182,6 +182,8 @@ Click an indicator on the chart to select it: a line, a bar of the volume strip 
 
 A selected indicator glows in its own colour, under the lines and bars it draws, and each of its lines wears a dot at its latest value. A volume profile is outlined instead. Its name in the legend is at full strength with a ring round its dot, and a strip's name takes its colour.
 
+<kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>+</kbd> and <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>−</kbd> thicken and thin the selected indicator's line, the **Thickness** of its settings, a step at a time through 1, 1.5, 2.5 and 4 px. On a volume profile they change the **Outline thickness**, by half a pixel from 0.5 to 6 px. The volume bars and Session Times have no line to change.
+
 <!-- regenerate:
 theme: tokyo-night
 window: 2560x1440 @2, bin/headless-window (HOME sandboxed with ~/.local/share/omarchy/themes/tokyo-night copied in)

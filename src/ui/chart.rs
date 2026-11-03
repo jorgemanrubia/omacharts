@@ -328,6 +328,8 @@ pub enum IndicatorEvent {
     Properties(u32),
     /// Delete.
     Remove(u32),
+    /// Alt+Shift with + or −: its line a step thicker, or thinner.
+    StepWidth(u32, bool),
 }
 
 /// Something that happened to a drawing, for whoever keeps them.
@@ -2870,22 +2872,22 @@ impl ChartView {
                     }
                 }
                 // Alt+Shift and the size keys: the stroke of whatever is
-                // selected. Ctrl with the same keys is the text's size, and
-                // bare they are the chart's zoom — three things that all
-                // mean "bigger", kept apart by which modifier is held and
-                // what is selected.
-                Key::plus | Key::equal | Key::KP_Add
+                // selected, a drawing's or an indicator's. Ctrl with the
+                // same keys is the text's size, and bare they are the
+                // chart's zoom — three things that all mean "bigger", kept
+                // apart by which modifier is held and what is selected.
+                // Ctrl+Shift would be no fourth: Shift is how + is typed on
+                // the main row, so it is Ctrl and + already.
+                Key::plus | Key::equal | Key::KP_Add | Key::minus | Key::underscore | Key::KP_Subtract
                     if alt(modifiers) && shift(modifiers) && !ctrl(modifiers) =>
                 {
-                    match view.step_width(drawings::WIDTH_STEP) {
-                        true => glib::Propagation::Stop,
-                        false => glib::Propagation::Proceed,
+                    let thicker = matches!(key, Key::plus | Key::equal | Key::KP_Add);
+                    if let Some(id) = view.picked() {
+                        view.tell_indicator(IndicatorEvent::StepWidth(id, thicker));
+                        return glib::Propagation::Stop;
                     }
-                }
-                Key::minus | Key::underscore | Key::KP_Subtract
-                    if alt(modifiers) && shift(modifiers) && !ctrl(modifiers) =>
-                {
-                    match view.step_width(-drawings::WIDTH_STEP) {
+                    let by = if thicker { drawings::WIDTH_STEP } else { -drawings::WIDTH_STEP };
+                    match view.step_width(by) {
                         true => glib::Propagation::Stop,
                         false => glib::Propagation::Proceed,
                     }
@@ -6671,6 +6673,14 @@ fn draw_drawings(cr: &cairo::Context, state: &State, plan: &Layout, scale: &Pric
     for (index, drawing) in state.drawings.iter().enumerate() {
         let shaded = drawing.kind.under_bars();
         let selected = state.selected.contains(&index);
+        // An anchored VWAP's shaded bands are shading, as the study's are,
+        // and go under the bars; its lines go over them with the rest.
+        if under && drawing.kind == DrawingKind::Vwap {
+            let projected = state.project(plan, scale, drawing);
+            let to_y = |price: f64| scale.to_y(price, plan.price_y, plan.price_h);
+            draw_vwap_shading(cr, state, &projected, drawing, &to_y);
+            continue;
+        }
         if shaded != under && !(shaded && selected) {
             continue;
         }
@@ -6809,7 +6819,7 @@ fn draw_drawing(
         // at all, which is the right picture of a caret waiting.
         DrawingKind::Text => {}
         DrawingKind::Profile => draw_profile_drawing(cr, state, projected, drawing, style, &colour, to_y),
-        DrawingKind::Vwap => draw_vwap_drawing(cr, state, projected, drawing, style, &colour, to_y),
+        DrawingKind::Vwap => draw_vwap_drawing(cr, state, projected, drawing, style, &colour, to_y, selected),
     }
     if !typing {
         draw_label(cr, state, projected, drawing, style);
@@ -7403,8 +7413,14 @@ fn draw_profile_drawing(
 }
 
 /// An anchored VWAP drawing: its line, from the anchor bar to the last, in
-/// the drawing's colour at its width, and a band either side at each
-/// multiple of the deviation it asks for, thinner and quieter than the line.
+/// the drawing's colour, width and pattern, and the edges of each band it
+/// shows, as the study draws its own: each band in its colour, or the
+/// line's, at its own width and pattern. The shading is drawn under the
+/// bars, by [`draw_vwap_shading`].
+///
+/// Selected, it glows as a selected study does, under everything it draws.
+/// The bands do not: the line is the drawing, and its one grip is enough.
+#[allow(clippy::too_many_arguments)]
 fn draw_vwap_drawing(
     cr: &cairo::Context,
     state: &State,
@@ -7413,47 +7429,114 @@ fn draw_vwap_drawing(
     style: &drawings::Style,
     colour: &str,
     to_y: &dyn Fn(f64) -> f64,
+    selected: bool,
 ) {
     let Some((start, line)) = state.anchored_vwap(drawing) else { return };
-    cr.set_line_cap(cairo::LineCap::Round);
-    cr.set_line_join(cairo::LineJoin::Round);
     let range = state.vwap_on_screen(start, line.len());
     let xs: Vec<f64> = projected.corners.iter().map(|(x, _)| *x).collect();
-    if !style.vwap.bands.is_empty() {
-        colors::set_source_alpha(cr, colour, drawings::VWAP_BAND_ALPHA);
-        cr.set_line_width((style.width * 0.6).max(1.0));
-        for multiple in &style.vwap.bands {
-            for side in [1.0, -1.0] {
-                for (n, index) in range.clone().enumerate() {
-                    let Some(x) = xs.get(n) else { break };
-                    let value = line[index - start];
-                    let y = to_y(value.vwap + side * multiple * value.deviation);
-                    match n {
-                        0 => cr.move_to(*x, y),
-                        _ => cr.line_to(*x, y),
-                    }
-                }
-                let _ = cr.stroke();
-            }
+    let single = projected.corners.len() == 1;
+    if selected {
+        match single {
+            false => selection::glow_path(
+                cr,
+                &state.theme,
+                colour,
+                style.width,
+                projected.corners.iter().map(|at| Some(*at)),
+            ),
+            true => selection::glow_dot(cr, &state.theme, colour, projected.corners[0], style.width.max(1.5) + 3.0),
         }
     }
+    cr.save().ok();
+    cr.set_line_join(cairo::LineJoin::Round);
+    for band in style.vwap.shown() {
+        if band.stroke.is_hidden() {
+            continue;
+        }
+        colors::set_source(cr, &band.paint(&style.colour).hex(&state.theme));
+        cr.set_line_width(band.stroke.width);
+        cr.set_dash(&band.stroke.style.dashes(band.stroke.width), 0.0);
+        for side in [1.0, -1.0] {
+            for (n, index) in range.clone().enumerate() {
+                let Some(x) = xs.get(n) else { break };
+                let value = line[index - start];
+                let y = to_y(value.vwap + side * band.deviations * value.deviation);
+                match n {
+                    0 => cr.move_to(*x, y),
+                    _ => cr.line_to(*x, y),
+                }
+            }
+            let _ = cr.stroke();
+        }
+    }
+    cr.restore().ok();
+    if style.width <= 0.0 {
+        return;
+    }
+    cr.save().ok();
     colors::set_source(cr, colour);
-    cr.set_line_width(style.width);
-    let segments = projected.segments();
-    match projected.corners.len() {
+    match single {
         // One bar from the anchor: a dot where the line will start.
-        1 => {
+        true => {
             let (x, y) = projected.corners[0];
             cr.arc(x, y, style.width.max(1.5), 0.0, std::f64::consts::TAU);
             let _ = cr.fill();
         }
-        _ => {
-            for (a, b) in &segments {
-                cr.move_to(a.0, a.1);
-                cr.line_to(b.0, b.1);
+        false => {
+            cr.set_line_join(cairo::LineJoin::Round);
+            cr.set_line_width(style.width);
+            cr.set_dash(&style.vwap.line.dashes(style.width), 0.0);
+            // One path, so a dashed line's pattern runs on across the bars
+            // rather than starting again at each.
+            for (n, (x, y)) in projected.corners.iter().enumerate() {
+                match n {
+                    0 => cr.move_to(*x, *y),
+                    _ => cr.line_to(*x, *y),
+                }
             }
             let _ = cr.stroke();
         }
+    }
+    cr.restore().ok();
+}
+
+/// The shading of an anchored VWAP's shaded bands, between each one's two
+/// edges, under the bars as the study's is.
+fn draw_vwap_shading(
+    cr: &cairo::Context,
+    state: &State,
+    projected: &Projected,
+    drawing: &Drawing,
+    to_y: &dyn Fn(f64) -> f64,
+) {
+    let style = drawing.style(&state.configs);
+    if !style.vwap.shown().any(|band| band.fill) {
+        return;
+    }
+    let Some((start, line)) = state.anchored_vwap(drawing) else { return };
+    let range = state.vwap_on_screen(start, line.len());
+    let xs: Vec<f64> = projected.corners.iter().map(|(x, _)| *x).collect();
+    if xs.len() < 2 {
+        return;
+    }
+    for band in style.vwap.shown().filter(|band| band.fill) {
+        colors::set_source_alpha(cr, &band.paint(&style.colour).hex(&state.theme), band.fill_alpha);
+        let edge = |index: usize, side: f64| {
+            let value = line[index - start];
+            to_y(value.vwap + side * band.deviations * value.deviation)
+        };
+        let points: Vec<(f64, usize)> = xs.iter().copied().zip(range.clone()).collect();
+        for (n, (x, index)) in points.iter().enumerate() {
+            match n {
+                0 => cr.move_to(*x, edge(*index, 1.0)),
+                _ => cr.line_to(*x, edge(*index, 1.0)),
+            }
+        }
+        for (x, index) in points.iter().rev() {
+            cr.line_to(*x, edge(*index, -1.0));
+        }
+        cr.close_path();
+        let _ = cr.fill();
     }
 }
 
@@ -8783,6 +8866,55 @@ mod tests {
         assert_eq!((at.x(), at.y()), (0.0, 0.0), "the layer is offset from the chart");
     }
 
+    /// Alt+Shift with + and − step every selected drawing's stroke at once,
+    /// whatever the kind calls it — an anchored VWAP's line, a box's edge, a
+    /// profile's outline — by half a pixel, held to 0.5 to 12, and give each
+    /// a look of its own as the properties would.
+    #[test]
+    fn the_stroke_keys_step_every_selected_drawing() {
+        if !crate::ui::gtk_ready() {
+            return;
+        }
+        let theme = omacharts_engine::theme::builtin_themes()
+            .into_iter()
+            .next()
+            .expect("a built-in theme");
+        let scheme = omacharts_engine::theme::theme_bars(&theme);
+        let view = ChartView::new(theme, scheme);
+        {
+            let mut s = view.state.borrow_mut();
+            let (a, b) = (Anchor::new(1, 1.0), Anchor::new(5, 2.0));
+            s.drawings = [DrawingKind::Vwap, DrawingKind::Rect, DrawingKind::Profile]
+                .into_iter()
+                .map(|kind| {
+                    let mut drawing = Drawing::new(kind, a, b);
+                    drawing.follow(1);
+                    drawing
+                })
+                .collect();
+            s.selected = vec![0, 1, 2];
+        }
+        let widths = |view: &Rc<ChartView>| -> Vec<f64> {
+            let s = view.state.borrow();
+            s.drawings.iter().map(|d| d.style(&s.configs).width).collect()
+        };
+        let before = widths(&view);
+        assert!(view.step_width(drawings::WIDTH_STEP));
+        let after = widths(&view);
+        for (was, now) in before.iter().zip(&after) {
+            assert_eq!(*now, was + drawings::WIDTH_STEP);
+        }
+        assert!(view.state.borrow().drawings.iter().all(|d| d.config.is_none()), "each its own look now");
+        for _ in 0..40 {
+            view.step_width(-drawings::WIDTH_STEP);
+        }
+        assert!(widths(&view).iter().all(|w| *w == drawings::MIN_WIDTH));
+        for _ in 0..40 {
+            view.step_width(drawings::WIDTH_STEP);
+        }
+        assert!(widths(&view).iter().all(|w| *w == drawings::MAX_WIDTH));
+    }
+
     /// A right-click with a drawing half laid down drops it and keeps the
     /// tool in hand, for another go.
     #[test]
@@ -9938,7 +10070,53 @@ mod drawing_tests {
         let (w, h) = (800.0, 400.0);
         let anchor = Anchor::new(state.bars[10].ts, 0.0);
         let mut drawing = Drawing::new(DrawingKind::Vwap, anchor, anchor);
-        let paint = |state: &State| -> Vec<u8> {
+        let paint = |state: &State, under: bool| -> Vec<u8> {
+            let mut surface = cairo::ImageSurface::create(cairo::Format::ARgb32, w as i32, h as i32).unwrap();
+            {
+                let cr = cairo::Context::new(&surface).unwrap();
+                let (first, visible) = state.slice();
+                let plan = layout(state, w, h);
+                let scale = price_range(state, &state.bars[first..first + visible], &plan).unwrap();
+                draw_drawings(&cr, state, &plan, &scale, under);
+            }
+            surface.flush();
+            surface.data().unwrap().to_vec()
+        };
+        let inked = |pixels: &[u8]| pixels.chunks(4).filter(|p| p[3] > 0).count();
+        let empty = paint(&state, false);
+        state.drawings = vec![drawing.clone()];
+        let line = paint(&state, false);
+        assert_ne!(line, empty, "the line painted nothing");
+        assert_eq!(inked(&paint(&state, true)), 0, "nothing shaded before a band is");
+
+        // The outer band is a plain line either side, over the bars.
+        let configs = state.configs.clone();
+        drawing.edit_style(&configs, |s| s.vwap.bands[2].enabled = true);
+        state.drawings = vec![drawing.clone()];
+        let banded = paint(&state, false);
+        assert!(inked(&banded) > inked(&line), "the bands added nothing");
+
+        // The inner one is shading with no outline: under the bars, and
+        // nothing over them.
+        drawing.edit_style(&configs, |s| {
+            s.vwap.bands[2].enabled = false;
+            s.vwap.bands[0].enabled = true;
+        });
+        state.drawings = vec![drawing];
+        assert_eq!(paint(&state, false), line, "a shade with no outline draws no line");
+        assert!(inked(&paint(&state, true)) > 0, "the shading went missing");
+    }
+
+    /// Selected, it glows as a selected study does: wider than the line,
+    /// under it.
+    #[test]
+    fn a_selected_anchored_vwap_glows() {
+        let mut state = charted(60);
+        state.visible = 60;
+        let (w, h) = (800.0, 400.0);
+        let anchor = Anchor::new(state.bars[10].ts, 0.0);
+        state.drawings = vec![Drawing::new(DrawingKind::Vwap, anchor, anchor)];
+        let inked = |state: &State| {
             let mut surface = cairo::ImageSurface::create(cairo::Format::ARgb32, w as i32, h as i32).unwrap();
             {
                 let cr = cairo::Context::new(&surface).unwrap();
@@ -9948,18 +10126,11 @@ mod drawing_tests {
                 draw_drawings(&cr, state, &plan, &scale, false);
             }
             surface.flush();
-            surface.data().unwrap().to_vec()
+            surface.data().unwrap().chunks(4).filter(|p| p[3] > 0).count()
         };
-        let empty = paint(&state);
-        state.drawings = vec![drawing.clone()];
-        let line = paint(&state);
-        assert_ne!(line, empty, "the line painted nothing");
-        let configs = state.configs.clone();
-        drawing.edit_style(&configs, |s| s.vwap.set_band(2.0, true));
-        state.drawings = vec![drawing];
-        let banded = paint(&state);
-        let inked = |pixels: &[u8]| pixels.chunks(4).filter(|p| p[3] > 0).count();
-        assert!(inked(&banded) > inked(&line), "the bands added nothing");
+        let plain = inked(&state);
+        state.selected = vec![0];
+        assert!(inked(&state) > plain * 2, "no glow round the line");
     }
 
     /// Twenty-one yearly bars across 922 pixels: ten two-yearly ticks fit by

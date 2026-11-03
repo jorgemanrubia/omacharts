@@ -516,7 +516,44 @@ fn listed() -> bool {
     true
 }
 
+/// The thicknesses a study's line is picked from: four, and none, which is
+/// how a VWAP band is a shade with no outline.
+pub const STROKE_WIDTHS: [f64; 5] = [0.0, 1.0, 1.5, 2.5, 4.0];
+
+/// How thin and how thick a volume profile's outline and point of control
+/// may be set, and the step between: half a pixel to six, by halves.
+pub const MIN_OUTLINE_WIDTH: f64 = 0.5;
+pub const MAX_OUTLINE_WIDTH: f64 = 6.0;
+pub const OUTLINE_WIDTH_STEP: f64 = 0.5;
+
 impl Indicator {
+    /// One step thicker or thinner, as Alt+Shift with + and − asks: the
+    /// thickness its settings call its line's, along the choices they
+    /// offer, or a volume profile's outline by its own step. Never down to
+    /// no line, which would take the selected line out from under the hand.
+    /// `false` for what has no line to change, the volume bars and session
+    /// shading.
+    pub fn step_width(&mut self, thicker: bool) -> bool {
+        match &mut self.params {
+            Params::Volume { .. } | Params::SessionTimes { .. } => false,
+            Params::VolumeProfile { outline_width, .. } => {
+                let by = if thicker { OUTLINE_WIDTH_STEP } else { -OUTLINE_WIDTH_STEP };
+                *outline_width = (*outline_width + by).clamp(MIN_OUTLINE_WIDTH, MAX_OUTLINE_WIDTH);
+                true
+            }
+            _ => {
+                let now = self.stroke.width;
+                let mut drawn = STROKE_WIDTHS.iter().copied().filter(|width| *width > 0.0);
+                let next = match thicker {
+                    true => drawn.find(|width| *width > now + 1e-9).unwrap_or(now.max(STROKE_WIDTHS[4])),
+                    false => drawn.rev().find(|width| *width < now - 1e-9).unwrap_or(STROKE_WIDTHS[1]),
+                };
+                self.stroke.width = next;
+                true
+            }
+        }
+    }
+
     pub fn new(id: u32, kind: Kind) -> Indicator {
         Indicator {
             id,
@@ -1058,6 +1095,46 @@ pub fn search(query: &str) -> Vec<Kind> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Alt+Shift with + and − walks a study's line along the thicknesses
+    /// its settings offer and stops at the ends, never at no line; a volume
+    /// profile's outline goes by halves from half a pixel to six.
+    #[test]
+    fn a_studys_line_steps_along_the_thicknesses_its_settings_offer() {
+        let mut sma = Indicator::new(1, Kind::Sma);
+        let mut seen = vec![sma.stroke.width];
+        for _ in 0..4 {
+            assert!(sma.step_width(true));
+            seen.push(sma.stroke.width);
+        }
+        assert_eq!(seen, [1.5, 2.5, 4.0, 4.0, 4.0]);
+        for _ in 0..5 {
+            sma.step_width(false);
+        }
+        assert_eq!(sma.stroke.width, 1.0, "never down to no line");
+        sma.stroke.width = 2.0;
+        sma.step_width(true);
+        assert_eq!(sma.stroke.width, 2.5, "from between two, to the next");
+        sma.stroke.width = 0.0;
+        sma.step_width(true);
+        assert_eq!(sma.stroke.width, 1.0);
+
+        let mut profile = Indicator::new(2, Kind::VolumeProfile);
+        for _ in 0..20 {
+            profile.step_width(true);
+        }
+        let Params::VolumeProfile { outline_width, .. } = profile.params else { unreachable!() };
+        assert_eq!(outline_width, MAX_OUTLINE_WIDTH);
+        for _ in 0..20 {
+            profile.step_width(false);
+        }
+        let Params::VolumeProfile { outline_width, .. } = profile.params else { unreachable!() };
+        assert_eq!(outline_width, MIN_OUTLINE_WIDTH);
+        assert_eq!(profile.stroke, Stroke::default(), "the profile's line is its outline");
+
+        assert!(!Indicator::new(3, Kind::Volume).step_width(true), "bars have no line");
+        assert!(!Indicator::new(4, Kind::SessionTimes).step_width(true));
+    }
 
     fn bars(closes: &[f64]) -> Vec<Bar> {
         closes

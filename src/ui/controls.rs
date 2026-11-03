@@ -24,7 +24,8 @@ use gtk::glib;
 pub struct Bounded {
     /// The row, ready to be added to a group.
     pub row: adw::ActionRow,
-    adjustment: gtk::Adjustment,
+    /// What it holds, for showing it another figure.
+    pub adjustment: gtk::Adjustment,
 }
 
 /// Build a row for a figure between `min` and `max`.

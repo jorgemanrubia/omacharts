@@ -158,6 +158,7 @@ With an indicator selected:
 | Key | Does | See |
 |---|---|---|
 | <kbd>Alt</kbd> + <kbd>Enter</kbd> | Its settings | [Indicators](/manual/indicators/#selecting-an-indicator) |
+| <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>+</kbd> / <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>−</kbd> | Thickens or thins its line, or a volume profile's outline | [Indicators](/manual/indicators/#selecting-an-indicator) |
 | <kbd>Ctrl</kbd> + <kbd>X</kbd> / <kbd>Ctrl</kbd> + <kbd>C</kbd> / <kbd>Ctrl</kbd> + <kbd>V</kbd> | Cuts or copies it, and pastes it on the focused chart | [Indicators](/manual/indicators/#selecting-an-indicator) |
 | <kbd>Delete</kbd> / <kbd>Backspace</kbd> | Removes it | [Indicators](/manual/indicators/#selecting-an-indicator) |
 | <kbd>Esc</kbd> | Clears the selection | [Indicators](/manual/indicators/#selecting-an-indicator) |
