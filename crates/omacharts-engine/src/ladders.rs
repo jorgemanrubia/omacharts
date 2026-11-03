@@ -733,6 +733,208 @@ impl Forming {
     }
 }
 
+// -- what a chart holds ------------------------------------------------------
+
+/// One trading day as a chart holds it: always its total, and its minutes
+/// only when a span cuts through it.
+#[derive(Clone, PartialEq, Debug, Default)]
+pub struct HeldDay {
+    /// The day, its total, and its minutes when `whole` — none otherwise.
+    pub day: Day,
+    /// The first and last minute it holds, read beside the total so a day
+    /// can be placed without its minutes.
+    pub first_ts: i64,
+    pub last_ts: i64,
+    /// Are `day.minutes` loaded?
+    pub whole: bool,
+}
+
+impl HeldDay {
+    /// A day with its minutes.
+    pub fn whole(day: Day) -> Option<HeldDay> {
+        let (first_ts, last_ts) = (day.first_ts()?, day.last_ts()?);
+        Some(HeldDay { day, first_ts, last_ts, whole: true })
+    }
+
+    /// A day known only by its total.
+    pub fn total(number: i64, first_ts: i64, last_ts: i64, total: Ladder) -> HeldDay {
+        HeldDay { day: Day { day: number, minutes: Vec::new(), total }, first_ts, last_ts, whole: false }
+    }
+
+    fn inside(&self, from: i64, to: i64) -> bool {
+        self.first_ts >= from && self.last_ts < to
+    }
+
+    fn touches(&self, from: i64, to: i64) -> bool {
+        self.last_ts >= from && self.first_ts < to
+    }
+}
+
+/// What a chart holds of a contract's ladders: the total of every day its
+/// bars reach, the minutes of only the days a period cuts, and the minute
+/// forming now.
+///
+/// A year of minutes decoded is some 280 MB, and a session profile is
+/// answered by day totals alone, so minutes are loaded a day at a time as a
+/// span needs them — see [`Held::cut`] — and a span this cannot answer
+/// exactly is answered with `None`, never with part of it.
+#[derive(Clone, PartialEq, Debug, Default)]
+pub struct Held {
+    pub tick_size: f64,
+    /// Ordered by day.
+    pub days: Vec<HeldDay>,
+    /// The minute trading now, which no day holds yet.
+    pub forming: Option<Minute>,
+    /// Where the ladders begin: the provider's history goes no further
+    /// back, so a span that starts before this is not known whole.
+    pub floor: i64,
+    /// The first trading day held from its start, for spans counted in days.
+    pub floor_day: i64,
+}
+
+impl Held {
+    pub fn new(tick_size: f64) -> Held {
+        Held { tick_size, ..Held::default() }
+    }
+
+    /// Everything in `series`, minutes and all, trusted from its first
+    /// minute on; whole days from the one after it.
+    pub fn of(series: &Series) -> Held {
+        let days: Vec<HeldDay> = series.days.iter().cloned().filter_map(HeldDay::whole).collect();
+        let floor = days.first().map_or(i64::MAX, |d| d.first_ts);
+        let floor_day = days.first().map_or(i64::MAX, |d| d.day.day + 1);
+        Held { tick_size: series.tick_size, days, forming: None, floor, floor_day }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.days.is_empty() && self.forming.is_none()
+    }
+
+    /// Roughly what it holds, in bytes.
+    pub fn bytes(&self) -> usize {
+        let ladder = |l: &Ladder| l.levels.capacity() * std::mem::size_of::<Level>();
+        let minute = |m: &Minute| ladder(&m.ladder) + std::mem::size_of::<Minute>();
+        self.days
+            .iter()
+            .map(|d| {
+                std::mem::size_of::<HeldDay>()
+                    + ladder(&d.day.total)
+                    + d.day.minutes.iter().map(minute).sum::<usize>()
+                    + (d.day.minutes.capacity() - d.day.minutes.len()) * std::mem::size_of::<Minute>()
+            })
+            .sum::<usize>()
+            + self.forming.as_ref().map_or(0, minute)
+    }
+
+    fn span(&self, from: i64, to: i64) -> impl Iterator<Item = &HeldDay> + '_ {
+        let a = self.days.partition_point(|d| d.last_ts < from);
+        let b = self.days.partition_point(|d| d.first_ts < to).max(a);
+        self.days[a..b].iter().filter(move |d| d.touches(from, to))
+    }
+
+    /// The days `from..to` cuts through whose minutes are not loaded: what
+    /// to read before [`Self::between`] can answer it.
+    pub fn cut(&self, from: i64, to: i64) -> Vec<i64> {
+        self.span(from, to).filter(|d| !d.whole && !d.inside(from, to)).map(|d| d.day.day).collect()
+    }
+
+    /// Put a day's minutes in, in place of its total alone.
+    pub fn load(&mut self, day: Day) {
+        let Some(held) = HeldDay::whole(day) else { return };
+        match self.days.binary_search_by_key(&held.day.day, |d| d.day.day) {
+            Ok(at) => self.days[at] = held,
+            Err(at) => self.days.insert(at, held),
+        }
+    }
+
+    /// What traded at each price in the minutes opening in `from..to`, the
+    /// forming one included: whole days by their totals, the loose minutes
+    /// at either end one by one. `None` when that cannot be told exactly:
+    /// the span starts before [`Self::floor`], or cuts a day whose minutes
+    /// are not loaded.
+    pub fn between(&self, from: i64, to: i64) -> Option<Ladder> {
+        if from < self.floor {
+            return None;
+        }
+        let mut parts: Vec<&Ladder> = Vec::new();
+        for held in self.span(from, to) {
+            if held.inside(from, to) {
+                parts.push(&held.day.total);
+            } else if held.whole {
+                let (i, j) = held.day.span(from, to);
+                parts.extend(held.day.minutes[i..j].iter().map(|m| &m.ladder));
+            } else {
+                return None;
+            }
+        }
+        if let Some(forming) = self.forming.as_ref().filter(|m| (from..to).contains(&m.ts)) {
+            parts.push(&forming.ladder);
+        }
+        Some(sum(&parts))
+    }
+
+    /// The trading days numbered `from_day..to_day` by their totals, and the
+    /// forming minute if it is in one of them: for bars a day or longer.
+    /// `None` when the first of them is before [`Self::floor_day`].
+    pub fn days_between(&self, from_day: i64, to_day: i64, days: &Days) -> Option<Ladder> {
+        if from_day < self.floor_day {
+            return None;
+        }
+        let a = self.days.partition_point(|d| d.day.day < from_day);
+        let b = self.days.partition_point(|d| d.day.day < to_day).max(a);
+        let mut parts: Vec<&Ladder> = self.days[a..b].iter().map(|d| &d.day.total).collect();
+        if let Some(forming) = self.forming.as_ref().filter(|m| (from_day..to_day).contains(&days.of(m.ts))) {
+            parts.push(&forming.ladder);
+        }
+        Some(sum(&parts))
+    }
+
+    /// A minute that closed, into trading day `number`: in place of one at
+    /// its `ts` in a day whose minutes are loaded, onto the total of one
+    /// whose are not — which live only ever hands minutes newer than it
+    /// holds.
+    pub fn seal(&mut self, number: i64, minute: Minute) {
+        if self.forming.as_ref().is_some_and(|f| f.ts <= minute.ts) {
+            self.forming = None;
+        }
+        let at = match self.days.binary_search_by_key(&number, |d| d.day.day) {
+            Ok(at) => at,
+            Err(at) => {
+                let fresh = HeldDay { day: Day::new(number), first_ts: minute.ts, last_ts: minute.ts, whole: true };
+                self.days.insert(at, fresh);
+                at
+            }
+        };
+        let held = &mut self.days[at];
+        held.first_ts = held.first_ts.min(minute.ts);
+        held.last_ts = held.last_ts.max(minute.ts);
+        if held.whole {
+            held.day.insert(minute);
+        } else {
+            held.day.total.add(&minute);
+        }
+    }
+}
+
+/// The sum of `parts`, sized once.
+fn sum(parts: &[&Ladder]) -> Ladder {
+    let (mut low, mut high) = (i32::MAX, i32::MIN);
+    for part in parts {
+        if let Some(top) = part.high_tick() {
+            low = low.min(part.low_tick);
+            high = high.max(top);
+        }
+    }
+    let mut total = Ladder::new();
+    if low <= high {
+        total.cover(low, high);
+    }
+    for part in parts {
+        sum_into(&mut total, part);
+    }
+    total
+}
+
 // -- encoding ---------------------------------------------------------------
 
 /// The encoding's version, the first byte of every blob.
@@ -1319,5 +1521,81 @@ mod tests {
         assert_eq!(decode_day(&future, TICK), Err(DecodeError::Version(99)));
         assert!(decode_day(&[], TICK).is_err());
         assert!(decode_ladder(&[1, 0, 0, 0xff, 0xff, 0xff, 0xff, 0x0f]).is_err());
+    }
+
+    /// The days of `series` by their totals alone, as a chart first holds
+    /// them, trusted from its first minute.
+    fn by_totals(series: &Series) -> Held {
+        let days = series
+            .days
+            .iter()
+            .map(|d| HeldDay::total(d.day, d.first_ts().unwrap(), d.last_ts().unwrap(), d.total.clone()))
+            .collect::<Vec<_>>();
+        let floor = days.first().map_or(i64::MAX, |d| d.first_ts);
+        Held { tick_size: series.tick_size, days, forming: None, floor, floor_day: i64::MIN }
+    }
+
+    /// A chart holds day totals and loads a day's minutes only when a span
+    /// cuts it; what it answers is what summing every minute answers, and a
+    /// span it cannot answer whole it does not answer at all.
+    #[test]
+    fn a_chart_answers_from_day_totals_and_loads_only_the_days_it_cuts() {
+        let instrument = es();
+        let days = Days::new(&instrument);
+        let mut rng = Rng(0x5eed_1ad);
+        let start = at(2026, 10, 12, 0, 0);
+        let series = series(&mut rng, &days, start, 5);
+        let mut held = by_totals(&series);
+        let floor = held.floor;
+
+        // Whole days: their totals, no minutes needed.
+        let (whole_from, whole_to) = (days.start(series.days[1].day), days.start(series.days[3].day));
+        assert!(held.cut(whole_from, whole_to).is_empty());
+        assert_eq!(trimmed(&held.between(whole_from, whole_to).unwrap()), trimmed(&brute(&series, whole_from, whole_to)));
+
+        // A span that cuts two days asks for exactly those two, and is
+        // answered once they are in.
+        let (from, to) = (whole_from + 3 * 3_600 + 60 * 7, whole_to + 5 * 3_600);
+        assert_eq!(held.between(from, to), None);
+        let cut = held.cut(from, to);
+        assert_eq!(cut, vec![series.days[1].day, series.days[3].day]);
+        for number in cut {
+            held.load(series.days.iter().find(|d| d.day == number).unwrap().clone());
+        }
+        assert_eq!(trimmed(&held.between(from, to).unwrap()), trimmed(&brute(&series, from, to)));
+        assert_eq!(held.days.iter().filter(|d| d.whole).count(), 2, "only the days it cut");
+
+        // Before the floor nothing is known whole.
+        assert_eq!(held.between(floor - 60, floor + 600), None);
+
+        // Live: a sealed minute joins its day, and the forming one counts
+        // until it is sealed, once.
+        let last = series.days.last().unwrap();
+        let next = last.last_ts().unwrap() + 60;
+        let mut forming = Minute::opening(next, 7_500.0);
+        forming.add_trade(30_000, 7_500.0, 5, Side::Buy, 1);
+        held.forming = Some(forming.clone());
+        let everything = |held: &Held| held.between(floor, next + 60).unwrap().sides.volume();
+        let before = brute(&series, floor, next).sides.volume();
+        assert_eq!(everything(&held), before + 5);
+        held.seal(days.of(next), forming);
+        assert_eq!(held.forming, None);
+        assert_eq!(everything(&held), before + 5);
+    }
+
+    /// Spans counted in days, for daily bars: the totals of the days named,
+    /// and nothing before the first day held from its start.
+    #[test]
+    fn whole_days_are_their_totals() {
+        let instrument = es();
+        let days = Days::new(&instrument);
+        let mut rng = Rng(77);
+        let series = series(&mut rng, &days, at(2026, 10, 12, 0, 0), 4);
+        let mut held = by_totals(&series);
+        let (a, b) = (series.days[1].day, series.days[3].day);
+        let expected = brute(&series, days.start(a), days.start(b));
+        assert_eq!(trimmed(&held.days_between(a, b, &days).unwrap()), trimmed(&expected));
+        held.floor_day = a + 1;
+        assert_eq!(held.days_between(a, b, &days), None);
     }
 }

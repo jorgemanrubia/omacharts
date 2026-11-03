@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use chrono_tz::Tz;
 
 use crate::bars::{Bar, Timeframe};
+use crate::ladders::{Days, Held, Ladder};
 use crate::symbols::Instrument;
 use crate::theme::{ColorChoice, Theme, SWATCH_SEQUENCE};
 
@@ -106,6 +107,30 @@ pub enum Kind {
     SessionTimes,
 }
 
+/// What an indicator is computed from.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Needs {
+    /// Bars, which every source has.
+    Bars,
+    /// What traded at each price and on which side: ladders, which only some
+    /// sources have. See [`unmet`].
+    VolumeAtPrice,
+}
+
+/// The line an indicator that needs volume at price shows on a chart whose
+/// source has none.
+pub const NEEDS_VOLUME_AT_PRICE: &str = "Needs a source with volume at price";
+
+/// What an indicator that needs `needs` shows instead of itself on a chart
+/// of `context`, if it cannot be computed there: one line, rather than an
+/// invented estimate. `None` when it can.
+pub fn unmet(needs: Needs, context: &Context) -> Option<Output> {
+    match needs {
+        Needs::Bars => None,
+        Needs::VolumeAtPrice => context.ladders.is_none().then_some(Output::Unmet(NEEDS_VOLUME_AT_PRICE)),
+    }
+}
+
 /// The families the picker and the manual sort indicators into.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Category {
@@ -168,6 +193,22 @@ impl Kind {
             Kind::Rsi | Kind::Macd | Kind::Atr | Kind::Stochastic => Category::Momentum,
             Kind::SessionTimes => Category::Time,
         }
+    }
+
+    /// What it cannot be computed without. Every indicator there is needs
+    /// bars and nothing more; one that needs volume at price — a footprint,
+    /// delta — is shown on a chart whose source has none as one line saying
+    /// so, never as an estimate.
+    pub fn needs(self) -> Needs {
+        Needs::Bars
+    }
+
+    /// Whether it draws more exactly from volume at price when the chart's
+    /// source has it. Only the volume profile, which otherwise spreads each
+    /// bar's volume over its range. A chart holds ladders only while one of
+    /// its indicators says yes here or needs them outright.
+    pub fn uses_volume_at_price(self) -> bool {
+        matches!(self, Kind::VolumeProfile) || self.needs() == Needs::VolumeAtPrice
     }
 
     /// Whether a new one is named in the chart's legend. Session shading is
@@ -693,6 +734,9 @@ pub enum Output {
     Pane(Pane),
     /// Stretches of time shaded behind the bars.
     Time(Time),
+    /// Nothing to draw, and the one line that says why: what it needs, this
+    /// chart's source does not have. See [`unmet`].
+    Unmet(&'static str),
 }
 
 /// An indicator that cannot share the price scale, and so gets a strip of its
@@ -886,6 +930,10 @@ pub struct Context<'a> {
     pub instrument: Option<&'a Instrument>,
     /// The clock the chart reads, which a range of hours typed in it keeps.
     pub zone: Tz,
+    /// What traded at each price, when the chart's source has it and one of
+    /// its indicators wants it. `None` on every chart of a source without
+    /// ladders, which is then computed exactly as it always was.
+    pub ladders: Option<&'a Held>,
 }
 
 impl<'a> Context<'a> {
@@ -897,7 +945,26 @@ impl<'a> Context<'a> {
             kind: Some(instrument.kind),
             instrument: Some(instrument),
             zone,
+            ladders: None,
         }
+    }
+
+    /// The same chart, with its ladders.
+    pub fn with_ladders(self, ladders: Option<&'a Held>) -> Context<'a> {
+        Context { ladders, ..self }
+    }
+}
+
+/// The ladder of a run of bars on a chart of `context`, from its held
+/// ladders: by minutes for intraday bars, by whole trading days for daily
+/// and longer ones, whose stamps are their trading dates.
+fn ladder_of(held: &Held, days: &Days, timeframe: Timeframe, bars: &[Bar]) -> Option<Ladder> {
+    let (first, last) = (bars.first()?, bars.last()?);
+    if timeframe.is_intraday() {
+        held.between(first.ts, last.ts + timeframe.seconds())
+    } else {
+        let end = timeframe.shift(last.ts, 1);
+        held.days_between(first.ts.div_euclid(86_400), end.div_euclid(86_400), days)
     }
 }
 
@@ -922,6 +989,7 @@ pub fn compute(
         kind,
         instrument: None,
         zone: crate::clock::ChartZone::default().for_instrument(None),
+        ladders: None,
     };
     compute_in(indicator, bars, &context)
 }
@@ -929,6 +997,9 @@ pub fn compute(
 /// Compute an indicator over `bars`, on a chart of what `context` says.
 pub fn compute_in(indicator: &Indicator, bars: &[Bar], context: &Context) -> Output {
     let Context { session_origin, timeframe, kind, .. } = *context;
+    if let Some(unmet) = unmet(indicator.kind.needs(), context) {
+        return unmet;
+    }
     let schedule = || time::schedule_for(context.instrument);
     match (&indicator.kind, &indicator.params) {
         (Kind::Sma, Params::MovingAverage { period }) => Output::Line(sma(bars, *period)),
@@ -996,7 +1067,18 @@ pub fn compute_in(indicator: &Indicator, bars: &[Bar], context: &Context) -> Out
             height: height.clamp(MIN_PANE_SHARE, MAX_PANE_SHARE),
         },
         (Kind::VolumeProfile, Params::VolumeProfile { reset, rows, value_area, merged, .. }) => {
-            Output::Profiles(profile::compute(
+            // Days are cut by the exchange's calendar, which needs the
+            // instrument; a chart without one has no ladders either.
+            let days = context.ladders.and(context.instrument).map(Days::new);
+            let of = |run: &[Bar]| match (context.ladders, &days) {
+                (Some(held), Some(days)) => ladder_of(held, days, timeframe, run),
+                _ => None,
+            };
+            let at_price = context
+                .ladders
+                .filter(|_| days.is_some())
+                .map(|held| profile::AtPrice { tick_size: held.tick_size, of: &of });
+            Output::Profiles(profile::compute_with(
                 bars,
                 reset.effective_for(timeframe),
                 session_origin,
@@ -1004,6 +1086,7 @@ pub fn compute_in(indicator: &Indicator, bars: &[Bar], context: &Context) -> Out
                 *value_area,
                 kind,
                 merged,
+                at_price.as_ref(),
             ))
         }
         (Kind::SessionTimes, Params::SessionTimes { ranges }) => {
@@ -1736,5 +1819,172 @@ mod tests {
         let indicator: Indicator = serde_json::from_str(json).expect("an older MACD");
         let Params::Macd { signal_color, .. } = &indicator.params else { panic!("not a MACD") };
         assert_eq!(*signal_color, None);
+    }
+
+    mod at_price {
+        use super::*;
+        use crate::ladders::{to_price, Minute, Series, Side};
+        use crate::symbols::InstrumentKind;
+
+        const TICK: f64 = 0.25;
+
+        fn es() -> Instrument {
+            Instrument {
+                symbol: "ES".into(),
+                name: "E-mini S&P 500".into(),
+                kind: InstrumentKind::FutureRoot,
+                suffix: None,
+                currency: Some("USD".into()),
+                tier: 0,
+                session_origin: 79_200,
+                overrides: Vec::new(),
+                exchange: None,
+                popularity: 0,
+                local_name: None,
+            }
+        }
+
+        /// Three CME sessions of one-minute ladders from 2026-10-11 22:00
+        /// UTC, the halt left out, and the bars they make.
+        fn sessions(instrument: &Instrument) -> (Series, Vec<Bar>) {
+            let days = Days::new(instrument);
+            let mut state = 0x9e37_79b9_7f4a_7c15u64;
+            let mut next = move |n: u64| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                state % n.max(1)
+            };
+            let mut series = Series::new(TICK);
+            // 2026-10-11 22:00 UTC, Sunday 17:00 Chicago: the week opens.
+            let start: i64 = 1_791_842_400;
+            let mut center = 26_000i32;
+            for i in 0..3 * 1_440 {
+                let ts = start + i * 60;
+                if ts.rem_euclid(86_400) / 3_600 == 21 {
+                    continue; // the daily halt, 16:00 to 17:00 Chicago
+                }
+                center += next(9) as i32 - 4;
+                let mut minute = Minute::opening(ts, to_price(center, TICK));
+                for _ in 0..1 + next(30) {
+                    let tick = center + next(13) as i32 - 6;
+                    let side = match next(12) {
+                        0 => Side::Unknown,
+                        1..=5 => Side::Sell,
+                        _ => Side::Buy,
+                    };
+                    minute.add_trade(tick, to_price(tick, TICK), 1 + next(25), side, 1);
+                }
+                series.insert(&days, minute);
+            }
+            let bars = series
+                .minutes()
+                .map(|m| Bar { ts: m.ts, open: m.open, high: m.high, low: m.low, close: m.close, volume: m.volume as f64 })
+                .collect();
+            (series, bars)
+        }
+
+        fn profile_of(bars: &[Bar], instrument: &Instrument, rows: Option<usize>, ladders: Option<&Held>) -> Vec<Profile> {
+            let mut indicator = Indicator::new(1, Kind::VolumeProfile);
+            if let Params::VolumeProfile { rows: r, reset, .. } = &mut indicator.params {
+                *r = rows;
+                *reset = Reset::Session;
+            }
+            let context = Context::of(instrument, Timeframe::minutes(1), chrono_tz::UTC).with_ladders(ladders);
+            match compute_in(&indicator, bars, &context) {
+                Output::Profiles(profiles) => profiles,
+                other => panic!("not profiles: {other:?}"),
+            }
+        }
+
+        /// The profile drawn from ladders is the sum, row by row, of what
+        /// every minute in the period traded at each price in that row,
+        /// worked out here the slow way, minute by minute and price by price.
+        #[test]
+        fn a_profile_from_ladders_is_every_minute_summed_by_price() {
+            let instrument = es();
+            let (series, bars) = sessions(&instrument);
+            let held = Held::of(&series);
+            for rows in [None, Some(24)] {
+                let profiles = profile_of(&bars, &instrument, rows, Some(&held));
+                assert_eq!(profiles.len(), 3, "{rows:?}");
+                for profile in &profiles {
+                    let (from, to) = (bars[profile.first_bar].ts, bars[profile.last_bar].ts + 60);
+                    let mut expected = vec![0.0; profile.rows.len()];
+                    let mut total = 0u64;
+                    for minute in series.minutes().filter(|m| (from..to).contains(&m.ts)) {
+                        for (tick, level) in minute.ladder.iter() {
+                            let price = to_price(tick, TICK);
+                            let row = profile
+                                .rows
+                                .iter()
+                                .position(|r| price >= r.low - 1e-6 && price < r.high - 1e-6)
+                                .expect("every price has a row");
+                            expected[row] += level.volume() as f64;
+                            total += level.volume();
+                        }
+                    }
+                    let got: Vec<f64> = profile.rows.iter().map(|r| r.volume).collect();
+                    assert_eq!(got, expected, "{rows:?} at {from}");
+                    assert_eq!(profile.total_volume, total as f64);
+                    for row in &profile.rows {
+                        let ticks = (row.high - row.low) / TICK;
+                        assert!((ticks - ticks.round()).abs() < 1e-9 && ticks >= 1.0, "rows are whole ticks: {ticks}");
+                    }
+                }
+            }
+        }
+
+        /// A period from before the ladders begin keeps the estimate, and
+        /// one after it does not; a chart with no ladders is the estimate
+        /// throughout, by the very code it always ran.
+        #[test]
+        fn a_period_before_the_ladders_begin_keeps_the_estimate() {
+            let instrument = es();
+            let (series, bars) = sessions(&instrument);
+            let mut held = Held::of(&series);
+            held.floor = bars[2_000].ts;
+            let exact = profile_of(&bars, &instrument, Some(24), Some(&held));
+            let estimate = profile_of(&bars, &instrument, Some(24), None);
+            let plain = profile::compute(
+                &bars,
+                Reset::Session,
+                79_200,
+                Some(24),
+                0.7,
+                Some(InstrumentKind::FutureRoot),
+                &[],
+            );
+            assert_eq!(estimate, plain, "no ladders is the old code path");
+            // Spread over ranges, an estimate's rows are fractions; counted
+            // from ladders they are whole contracts.
+            let whole = |p: &Profile| p.rows.iter().all(|r| r.volume.fract() == 0.0);
+            assert!(!whole(&exact[0]) && !whole(&exact[1]), "before the floor");
+            assert!(whole(&exact[2]), "after it");
+        }
+
+        /// The mechanism an indicator that needs volume at price stands on:
+        /// on a chart with ladders it is computed, on one without it is one
+        /// line, and nothing that needs only bars is ever stopped.
+        #[test]
+        fn an_indicator_that_needs_volume_at_price_says_so_on_a_chart_without() {
+            let instrument = es();
+            let (series, _) = sessions(&instrument);
+            let held = Held::of(&series);
+            let bare = Context::of(&instrument, Timeframe::minutes(1), chrono_tz::UTC);
+            let rich = bare.with_ladders(Some(&held));
+
+            // What a footprint would declare.
+            let footprint = Needs::VolumeAtPrice;
+            assert_eq!(unmet(footprint, &bare), Some(Output::Unmet("Needs a source with volume at price")));
+            assert_eq!(unmet(footprint, &rich), None);
+
+            for kind in Kind::ALL {
+                assert_eq!(kind.needs(), Needs::Bars, "{kind:?}");
+                assert_eq!(unmet(kind.needs(), &bare), None);
+            }
+            let users: Vec<Kind> = Kind::ALL.into_iter().filter(|k| k.uses_volume_at_price()).collect();
+            assert_eq!(users, vec![Kind::VolumeProfile]);
+        }
     }
 }

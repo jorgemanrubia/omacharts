@@ -5173,6 +5173,7 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
     draw_drawings(cr, state, &plan, &scale, true);
     draw_candles(cr, state, &columns, &to_y);
     draw_indicator_lines(cr, state, &columns, &to_y);
+    draw_unmet(cr, state, plot_x, price_y + price_h);
     cr.restore().ok();
     draw_drawings(cr, state, &plan, &scale, false);
 
@@ -7142,6 +7143,23 @@ fn over_trouble_dot(state: &State, width: f64, x: f64, y: f64) -> bool {
     (x - cx).hypot(y - cy) <= TROUBLE_DOT_REACH
 }
 
+/// The one line an indicator shows on a chart whose source lacks what it
+/// needs — "Needs a source with volume at price" — at the foot of the price
+/// box, one above another if there are several. Nothing is drawn per bar.
+fn draw_unmet(cr: &cairo::Context, state: &State, plot_x: f64, bottom: f64) {
+    let mut y = bottom - 10.0;
+    for drawn in state.shown_indicators() {
+        let Output::Unmet(why) = &drawn.output else { continue };
+        let text = format!("{} · {why}", drawn.indicator.kind.short_name());
+        colors::set_source_alpha(cr, &state.theme.ui.text_muted, 0.8);
+        cr.select_font_face("sans-serif", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
+        cr.set_font_size(12.0);
+        cr.move_to(plot_x + 10.0, y);
+        let _ = cr.show_text(&text);
+        y -= 16.0;
+    }
+}
+
 /// Band shading and volume profiles, beneath the bars.
 fn draw_indicator_fills(
     cr: &cairo::Context,
@@ -7170,7 +7188,7 @@ fn draw_indicator_fills(
             // These draw in a strip of their own, where the price scale does
             // not reach, so there is nothing to do over the candles; and time
             // has its own ground beneath everything.
-            Output::Volume { .. } | Output::Pane(_) | Output::Line(_) | Output::Time(_) => {}
+            Output::Volume { .. } | Output::Pane(_) | Output::Line(_) | Output::Time(_) | Output::Unmet(_) => {}
         }
     }
 }
@@ -7266,7 +7284,7 @@ fn draw_indicator_lines(
                     }
                 }
             }
-            Output::Profiles(_) | Output::Volume { .. } | Output::Pane(_) | Output::Time(_) => {}
+            Output::Profiles(_) | Output::Volume { .. } | Output::Pane(_) | Output::Time(_) | Output::Unmet(_) => {}
         }
     }
 }
