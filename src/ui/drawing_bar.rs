@@ -522,8 +522,11 @@ impl DrawingBar {
                             cr.rectangle(x - 3.0, mid - 4.0, 6.0, 8.0);
                         }
                         let _ = cr.stroke();
+                        // Thinner than the other tools' lines: it is read
+                        // through the candles, and at full weight it is the
+                        // only thing anybody sees.
                         cr.set_source_rgba(r, g, b, a);
-                        cr.set_line_width(1.5);
+                        cr.set_line_width(1.0);
                         // From the ring's edge, so the line does not show
                         // inside it.
                         let length = (end.0 - ring.0).hypot(end.1 - ring.1);
@@ -531,6 +534,7 @@ impl DrawingBar {
                         cr.move_to(ring.0 + step.0 * 2.25, ring.1 + step.1 * 2.25);
                         cr.line_to(end.0, end.1);
                         let _ = cr.stroke();
+                        cr.set_line_width(1.25);
                         cr.arc(ring.0, ring.1, 2.25, 0.0, std::f64::consts::TAU);
                         let _ = cr.stroke();
                     }
