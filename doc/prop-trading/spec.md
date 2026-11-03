@@ -494,6 +494,18 @@ request that is never answered stays pending rather than being taken as
 done. Part of an order filled reads "Sell Limit 1/2", and the position
 holds only what filled. Toasts say only what the broker has confirmed.
 
+Every order from a chart is for the chart's **trading size**, shown in
+its header ("2 contracts") and picked there, or with Ctrl and a digit,
+from the size template that applies to its instrument: a named list of
+sizes for stocks or futures, optionally narrowed to some roots, the
+narrowest winning (Preferences → Trading → Edit trading sizes…). Out of
+the box stocks go 100 to 900 and futures 1 to 9. With a trading account,
+Ctrl+B buys the size at market, Ctrl+S sells it, and Ctrl+F cancels every
+order working in the chart's contract and flattens it; the sidebars moved
+to Ctrl+Shift+B and Ctrl+Shift+D, and watchlist N to Ctrl+Shift and a
+digit, to make room. Tried on Rithmic Test on 2026-11-04: Ctrl+2 then
+Ctrl+B on ES filled 2, and Ctrl+F left the account flat.
+
 **No confirmations, for now.** Nothing asks first, on Rithmic Test or on a
 live account: an order from the menu, a key or a drag, a move, a cancel and
 a flatten go to the broker at once, and the pending look is the feedback.

@@ -1360,10 +1360,13 @@ fn number_row(keycode: u32) -> Option<usize> {
 }
 
 /// The chart action a trading key reaches, and its target: Ctrl+B, Ctrl+S
-/// and Ctrl+F by letter, Ctrl and the number row by where the key is.
+/// and Ctrl+F by letter, Ctrl and a digit by the digit or the number row.
 fn trading_key(key: gtk::gdk::Key, keycode: u32) -> Option<(&'static str, Option<glib::Variant>)> {
     use gtk::gdk::Key;
-    if let Some(n) = number_row(keycode).filter(|n| *n > 0) {
+    // The digit typed, or where the key is when the layout types something
+    // else there without Shift, as AZERTY's row does.
+    let digit = key.to_unicode().and_then(|c| c.to_digit(10)).map(|n| n as usize);
+    if let Some(n) = digit.or_else(|| number_row(keycode)).filter(|n| *n > 0) {
         return Some((trade::TRADING_SIZE, Some((n as i32).to_variant())));
     }
     match key {
