@@ -945,7 +945,7 @@ pub(crate) mod tests {
         crate::feeds::add_source(&store, "tos");
         let kept = Kept::default();
         let lucid = add_login(&store, &kept, &typed("Lucid", "trader")).unwrap();
-        assert_eq!(crate::feeds::stored_order(&store), vec!["rithmic", "tos"]);
+        assert_eq!(crate::feeds::stored_order(&store), vec!["rithmic", "tos", "yahoo"]);
         assert_eq!(data_login(&store).map(|l| l.id), Some(lucid.clone()));
         assert_eq!(kept.0.borrow().as_slice(), &[(lucid.clone(), "PLANTED-PASSWORD".to_string())]);
         assert!(!store.setting(LOGINS).unwrap().contains("PLANTED"));
@@ -1008,7 +1008,7 @@ pub(crate) mod tests {
         assert_eq!(accounts(&store).iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), vec!["951"]);
         assert_eq!(store.setting(DEFAULT_ACCOUNT), None, "the default went with its login");
         assert_eq!(kept.0.borrow().iter().map(|(l, _)| l.clone()).collect::<Vec<_>>(), vec![test.clone()]);
-        assert_eq!(crate::feeds::stored_order(&store), vec!["rithmic"]);
+        assert_eq!(crate::feeds::stored_order(&store), vec!["rithmic", "yahoo"]);
 
         remove_login(&store, &kept, &test).unwrap();
         assert!(logins(&store).is_empty());

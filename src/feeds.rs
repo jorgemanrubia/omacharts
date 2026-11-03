@@ -2,7 +2,8 @@
 //!
 //! Two ways to say it, and they answer different questions. The stored
 //! `providers` setting is the default — the feeds this machine charts from,
-//! top first, with Yahoo implied at the bottom and never written down —
+//! top first, Yahoo among them wherever it was put, or not at all once it
+//! was removed; nothing stored is Yahoo alone —
 //! changed by the settings panel or by `config set provider`, which puts a
 //! feed on top. `--provider` on the launch is this run only, for trying a
 //! feed out, for a script that wants one particular source, and for saying
@@ -35,7 +36,8 @@ use omacharts_engine::Provider;
 use crate::store::Store;
 
 /// The setting the stored order lives in: a JSON array of feed ids, top
-/// first. Yahoo is never in it.
+/// first, Yahoo included where it is in the order. Not stored at all while
+/// the order is Yahoo alone, which is what a machine that never chose has.
 pub const SETTING: &str = "providers";
 
 /// What `config set` still answers to: the one feed a machine charted from
@@ -74,58 +76,62 @@ pub fn for_this_launch() -> Option<&'static Listed> {
 
 /// The stored order, top first, as it was written: ids this build does not
 /// know are kept, so a setting from a newer build survives being read.
-/// Nothing stored, or something that is not a list, is no order at all.
+/// Nothing stored, or something that is not a list, or an empty one, is the
+/// default alone.
 pub fn stored_order(store: &Store) -> Vec<String> {
     store
         .setting(SETTING)
         .and_then(|json| serde_json::from_str::<Vec<String>>(&json).ok())
-        .unwrap_or_default()
+        .filter(|order| !order.is_empty())
+        .unwrap_or_else(|| vec![providers::DEFAULT.to_string()])
 }
 
-/// Write `order` down, without the default, which is implied. An empty
-/// order is no row at all, which is what a machine that never chose has.
+/// Write `order` down, each id once. The default alone, or nothing, is no
+/// row at all, which is what a machine that never chose has.
 pub fn save_order(store: &Store, order: &[String]) {
     let kept: Vec<&str> = order
         .iter()
         .map(|id| providers::listed(id).map_or(id.as_str(), |feed| feed.id))
-        .filter(|id| *id != providers::DEFAULT)
         .fold(Vec::new(), |mut kept, id| {
             if !kept.contains(&id) {
                 kept.push(id);
             }
             kept
         });
-    match kept.is_empty() {
-        true => store.remove_setting(SETTING),
-        false => store.set_setting(SETTING, &serde_json::to_string(&kept).unwrap_or_default()),
+    match kept.as_slice() {
+        [] => store.remove_setting(SETTING),
+        [only] if *only == providers::DEFAULT => store.remove_setting(SETTING),
+        _ => store.set_setting(SETTING, &serde_json::to_string(&kept).unwrap_or_default()),
     }
 }
 
 /// Put `feed` on top of the stored order, which is what choosing one feed
-/// means now that there are several. The default on top is the default
-/// alone: it serves everything, so nothing under it would be reached.
+/// means now that there are several. The rest of the order stays under it.
 pub fn put_on_top(store: &Store, feed: &'static Listed) {
-    if feed.id == providers::DEFAULT {
-        save_order(store, &[]);
-        return;
-    }
     let mut order = vec![feed.id.to_string()];
     order.extend(stored_order(store).into_iter().filter(|id| !id.eq_ignore_ascii_case(feed.id)));
     save_order(store, &order);
 }
 
-/// The order this process charts from: the launch flag's feed alone above
-/// the default, otherwise what is stored. Without the default, which
-/// [`providers::ordered`] adds.
+/// What `--provider` charts from: that feed alone above Yahoo, or Yahoo
+/// alone.
+pub fn launch_order(feed: &'static Listed) -> Vec<String> {
+    match feed.id == providers::DEFAULT {
+        true => vec![feed.id.to_string()],
+        false => vec![feed.id.to_string(), providers::DEFAULT.to_string()],
+    }
+}
+
+/// The order this process charts from: the launch flag's, otherwise what
+/// is stored.
 pub fn order(store: &Store) -> Vec<String> {
     match for_this_launch() {
-        Some(feed) if feed.id == providers::DEFAULT => Vec::new(),
-        Some(feed) => vec![feed.id.to_string()],
+        Some(feed) => launch_order(feed),
         None => stored_order(store),
     }
 }
 
-/// The feeds themselves, top first, ending with the default, each ready to
+/// The feeds themselves, top first, each ready to
 /// be asked for bars. Cheap: building them connects to nothing. See
 /// `omacharts_engine::providers`.
 pub fn ordered(store: &Store) -> Vec<Box<dyn Provider>> {
@@ -185,22 +191,40 @@ pub fn forget_login(store: &Store, id: &str) {
     remember_logins(store);
 }
 
-/// Add `id` to the stored order, at the bottom, just above the default:
-/// a source somebody has just added is tried after the ones they already
-/// put in order. Adding one already there changes nothing.
+/// Add `id` to the stored order, after the feeds already there and just
+/// above Yahoo while Yahoo is on it: a feed somebody has just added is tried
+/// after the ones they already put in order, and under Yahoo, which serves
+/// nearly everything, it would hardly ever be reached. Yahoo itself goes at
+/// the bottom. Adding one already there changes nothing.
 pub fn add_source(store: &Store, id: &str) {
     let mut order = stored_order(store);
-    if !order.iter().any(|known| known.eq_ignore_ascii_case(id)) {
-        order.push(id.to_string());
-        save_order(store, &order);
+    if order.iter().any(|known| known.eq_ignore_ascii_case(id)) {
+        return;
     }
+    let yahoo = order.iter().position(|known| known.eq_ignore_ascii_case(providers::DEFAULT));
+    match yahoo {
+        Some(at) if !id.eq_ignore_ascii_case(providers::DEFAULT) => order.insert(at, id.to_string()),
+        _ => order.push(id.to_string()),
+    }
+    save_order(store, &order);
+}
+
+/// May `id` be taken off the order? Not when it is the only feed this
+/// build knows on it: with none at all no chart could draw.
+pub fn removable(store: &Store, id: &str) -> bool {
+    stored_order(store)
+        .iter()
+        .any(|known| !known.eq_ignore_ascii_case(id) && providers::listed(known).is_some())
 }
 
 /// Take `id` off the stored order. For Rithmic the data session ends; the
 /// logins it signed in through are Trading's, and stay. thinkorswim's
 /// browser session is its own, and is signed out of from its row rather
 /// than by removing it.
-pub fn remove_source(store: &Store, id: &str) {
+pub fn remove_source(store: &Store, id: &str) -> bool {
+    if !removable(store, id) {
+        return false;
+    }
     let order: Vec<String> =
         stored_order(store).into_iter().filter(|known| !known.eq_ignore_ascii_case(id)).collect();
     save_order(store, &order);
@@ -208,6 +232,7 @@ pub fn remove_source(store: &Store, id: &str) {
         omacharts_engine::providers::rithmic::session::hand_over();
         remember_logins(store);
     }
+    true
 }
 
 /// Sign in to `id`, blocking until it is done: thinkorswim's browser, or
@@ -312,26 +337,32 @@ pub(crate) mod tests {
     #[test]
     fn a_stored_feed_is_used() {
         let store = store();
-        store.set_setting(SETTING, r#"["tos"]"#);
+        store.set_setting(SETTING, r#"["tos","yahoo"]"#);
         assert_eq!(stored(&store).id, "tos");
         let ids: Vec<&str> = providers::ordered(&stored_order(&store)).iter().map(|p| p.id()).collect();
         assert_eq!(ids, vec!["tos", "yahoo"]);
+        // Without Yahoo, only what is listed.
+        store.set_setting(SETTING, r#"["tos"]"#);
+        let ids: Vec<&str> = providers::ordered(&stored_order(&store)).iter().map(|p| p.id()).collect();
+        assert_eq!(ids, vec!["tos"]);
     }
 
     /// Choosing one feed puts it on top and keeps the rest of the order;
-    /// choosing the default is the default alone.
+    /// Yahoo the same as any other.
     #[test]
     fn a_feed_put_on_top_goes_first() {
         let store = store();
         let tos = providers::listed("tos").unwrap();
         let yahoo = providers::listed("yahoo").unwrap();
         put_on_top(&store, tos);
-        assert_eq!(store.setting(SETTING).as_deref(), Some(r#"["tos"]"#));
+        assert_eq!(store.setting(SETTING).as_deref(), Some(r#"["tos","yahoo"]"#));
         store.set_setting(SETTING, r#"["later","tos"]"#);
         put_on_top(&store, tos);
         assert_eq!(stored_order(&store), vec!["tos", "later"]);
         put_on_top(&store, yahoo);
-        assert_eq!(store.setting(SETTING), None);
+        assert_eq!(stored_order(&store), vec!["yahoo", "tos", "later"]);
+        save_order(&store, &["yahoo".into()]);
+        assert_eq!(store.setting(SETTING), None, "Yahoo alone is the default");
     }
 
     /// The engine is handed the data login, and nothing while it is
@@ -358,26 +389,44 @@ pub(crate) mod tests {
         assert_eq!(saved.user.as_deref(), Some("trader"));
         assert_eq!(saved.system.as_deref(), Some("Rithmic Test"));
         assert_eq!(saved.gateway.as_deref(), Some("wss://example.invalid:443"));
-        assert_eq!(stored_order(&store), vec!["rithmic"]);
+        assert_eq!(stored_order(&store), vec!["rithmic", "yahoo"]);
 
         forget_login(&store, "rithmic");
         assert_eq!(saved_of(&store).user, None, "signed out is no user");
         assert_eq!(trading::logins(&store).len(), 1, "the login stays in Trading");
-        remove_source(&store, "rithmic");
+        assert!(remove_source(&store, "rithmic"));
         assert_eq!(store.setting(SETTING), None);
         assert_eq!(trading::logins(&store).len(), 1);
     }
 
-    /// A source added goes at the bottom, above Yahoo, and only once.
+    /// A feed added goes after the others, above Yahoo, and only once.
     #[test]
     fn an_added_source_goes_last_above_yahoo() {
         let store = store();
         add_source(&store, "rithmic");
         add_source(&store, "tos");
         add_source(&store, "TOS");
-        assert_eq!(stored_order(&store), vec!["rithmic", "tos"]);
-        remove_source(&store, "tos");
+        assert_eq!(stored_order(&store), vec!["rithmic", "tos", "yahoo"]);
+        assert!(remove_source(&store, "tos"));
+        assert_eq!(stored_order(&store), vec!["rithmic", "yahoo"]);
+    }
+
+    /// Yahoo is a feed like the others: it can be removed, added back, at
+    /// the bottom, and moved above another. The last feed cannot go.
+    #[test]
+    fn yahoo_can_be_removed_added_back_and_moved_but_the_last_feed_stays() {
+        let store = store();
+        assert!(!removable(&store, "yahoo"), "Yahoo alone is the last feed");
+        assert!(!remove_source(&store, "yahoo"));
+        add_source(&store, "rithmic");
+        assert!(remove_source(&store, "yahoo"));
+        assert_eq!(store.setting(SETTING).as_deref(), Some(r#"["rithmic"]"#));
+        assert!(!remove_source(&store, "rithmic"), "the last feed");
         assert_eq!(stored_order(&store), vec!["rithmic"]);
+        add_source(&store, "yahoo");
+        assert_eq!(stored_order(&store), vec!["rithmic", "yahoo"]);
+        save_order(&store, &["yahoo".into(), "rithmic".into()]);
+        assert_eq!(store.setting(SETTING).as_deref(), Some(r#"["yahoo","rithmic"]"#));
     }
 
     /// A setting written by a future version, or by hand. Charting from

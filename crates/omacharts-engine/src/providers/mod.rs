@@ -332,21 +332,22 @@ pub fn built_or_default(id: &str) -> Box<dyn Provider> {
     built(id).unwrap_or_else(|| Box::new(Yahoo::new()))
 }
 
-/// The feeds a stored order names, top first, and always ending with the
-/// default.
+/// The feeds a stored order names, top first, exactly as stored.
 ///
-/// The default is the floor: it serves everything, so a feed listed below
-/// it would never be reached, and it is never stored, so an order is only
-/// the feeds somebody added. An id nobody has heard of is dropped rather
-/// than refused — a setting written by a newer build, or by hand, charts
-/// from what this build knows — and an id named twice is built once.
-/// Constructing them connects to nothing.
+/// Yahoo is a feed like the others: it is wherever the order puts it, and
+/// not there at all once somebody has removed it, when an instrument no
+/// other feed serves is served by nothing. An id nobody has heard of is
+/// dropped rather than refused — a setting written by a newer build, or by
+/// hand, charts from what this build knows — and an id named twice is built
+/// once. An order left with nothing in it is the default alone, since with
+/// no feed at all no chart could draw. Constructing them connects to
+/// nothing.
 pub fn ordered(ids: &[String]) -> Vec<Box<dyn Provider>> {
-    let mut seen: Vec<&'static str> = Vec::with_capacity(ids.len() + 1);
-    let mut feeds: Vec<Box<dyn Provider>> = Vec::with_capacity(ids.len() + 1);
+    let mut seen: Vec<&'static str> = Vec::with_capacity(ids.len());
+    let mut feeds: Vec<Box<dyn Provider>> = Vec::with_capacity(ids.len().max(1));
     for id in ids {
         let Some(feed) = listed(id) else { continue };
-        if feed.id == DEFAULT || seen.contains(&feed.id) {
+        if seen.contains(&feed.id) {
             continue;
         }
         if let Some(provider) = built(feed.id) {
@@ -354,7 +355,9 @@ pub fn ordered(ids: &[String]) -> Vec<Box<dyn Provider>> {
             feeds.push(provider);
         }
     }
-    feeds.push(Box::new(Yahoo::new()));
+    if feeds.is_empty() {
+        feeds.push(Box::new(Yahoo::new()));
+    }
     feeds
 }
 
@@ -381,8 +384,8 @@ pub struct Route {
 /// is put on screen and when the order or a sign-in changes, never because
 /// a request failed.
 ///
-/// `None` when nothing in the order serves it, which with the default at
-/// the bottom means an instrument even it has no name for.
+/// `None` when nothing in the order serves it: an instrument no feed has a
+/// name for, or one only Yahoo had once Yahoo is off the order.
 pub fn route<'a>(
     feeds: impl IntoIterator<Item = (&'a dyn Provider, bool)>,
     instrument: &Instrument,
@@ -562,18 +565,32 @@ mod tests {
         }
     }
 
-    /// The order is what was stored, with the default always at the bottom,
-    /// never twice, and nothing this build has not heard of.
+    /// The order is what was stored, Yahoo included wherever it was put,
+    /// never twice, and nothing this build has not heard of; nothing left is
+    /// the default alone.
     #[test]
-    fn an_order_always_ends_with_the_default() {
+    fn an_order_is_what_was_stored() {
         let ids = |stored: &[&str]| {
             let stored: Vec<String> = stored.iter().map(|id| id.to_string()).collect();
             ordered(&stored).iter().map(|p| p.id()).collect::<Vec<_>>()
         };
         assert_eq!(ids(&[]), vec!["yahoo"]);
-        assert_eq!(ids(&["tos"]), vec!["tos", "yahoo"]);
-        assert_eq!(ids(&["yahoo", "tos"]), vec!["tos", "yahoo"]);
-        assert_eq!(ids(&["tos", "TOS", "bloomberg"]), vec!["tos", "yahoo"]);
+        assert_eq!(ids(&["bloomberg"]), vec!["yahoo"]);
+        assert_eq!(ids(&["tos"]), vec!["tos"]);
+        assert_eq!(ids(&["yahoo", "tos"]), vec!["yahoo", "tos"]);
+        assert_eq!(ids(&["tos", "TOS", "bloomberg", "yahoo"]), vec!["tos", "yahoo"]);
+    }
+
+    /// With Yahoo removed, a stock only Yahoo had is served by nothing,
+    /// rather than by a Yahoo nobody listed.
+    #[test]
+    fn without_yahoo_a_stock_is_served_by_nothing() {
+        let feeds = ordered(&["rithmic".to_string()]);
+        let apple = instrument(InstrumentKind::Equity, "AAPL");
+        assert_eq!(route(feeds.iter().map(|p| (p.as_ref(), true)), &apple), None);
+        assert!(serving(feeds.iter().map(|p| p.as_ref()), &apple).is_empty());
+        let es = instrument(InstrumentKind::FutureRoot, "ES");
+        assert_eq!(route(feeds.iter().map(|p| (p.as_ref(), true)), &es).map(|r| r.at), Some(0));
     }
 
     /// The first usable feed with a name for the instrument serves it. One
@@ -582,7 +599,7 @@ mod tests {
     /// silently, because that is not something anybody can fix.
     #[test]
     fn the_first_usable_feed_that_serves_an_instrument_serves_it() {
-        let feeds = ordered(&["tos".to_string()]);
+        let feeds = ordered(&["tos".to_string(), "yahoo".to_string()]);
         let order = |tos_usable: bool| {
             feeds.iter().map(move |p| (p.as_ref(), p.id() != "tos" || tos_usable))
         };
@@ -610,7 +627,7 @@ mod tests {
     /// Only the feeds with a name for an instrument are offered for it.
     #[test]
     fn a_chart_is_offered_only_the_feeds_that_serve_it() {
-        let feeds = ordered(&["tos".to_string()]);
+        let feeds = ordered(&["tos".to_string(), "yahoo".to_string()]);
         let offered = |instrument: &Instrument| serving(feeds.iter().map(|p| p.as_ref()), instrument);
         assert_eq!(offered(&instrument(InstrumentKind::Equity, "AAPL")), vec![0, 1]);
         let madrid = Instrument { suffix: Some("MC".into()), ..instrument(InstrumentKind::Equity, "SAN") };
@@ -623,7 +640,7 @@ mod tests {
     /// the order to decide.
     #[test]
     fn a_chosen_feed_serves_its_chart_and_is_never_passed_over() {
-        let feeds = ordered(&["tos".to_string()]);
+        let feeds = ordered(&["tos".to_string(), "yahoo".to_string()]);
         let order = |tos_usable: bool| feeds.iter().map(move |p| (p.as_ref(), p.id() != "tos" || tos_usable));
         let apple = instrument(InstrumentKind::Equity, "AAPL");
 

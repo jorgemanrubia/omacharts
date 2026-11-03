@@ -38,7 +38,7 @@ use rusqlite::{params, Connection};
 
 /// How far the migrations go. A database claiming more than this was written
 /// by a newer Omacharts than the one opening it.
-pub const LATEST: i32 = 7;
+pub const LATEST: i32 = 8;
 
 /// How far the market data file's own migrations go.
 pub const MARKET_LATEST: i32 = 2;
@@ -267,6 +267,26 @@ Migration {
     // there is nothing to carry. Risky, because it drops the old rows.
     risky: true,
     step: Step::Rust(login_becomes_a_list),
+},
+Migration {
+    version: 8,
+    name: "Yahoo becomes a feed in the order like the others",
+    // Yahoo was implied at the bottom of every stored order; now it is in
+    // the order where it is, and can be taken out. An order that does not
+    // name it gets it at the bottom, where it was, so nothing is routed
+    // differently. Nothing stored stays nothing, which is Yahoo alone.
+    risky: false,
+    step: Step::Sql(
+        "UPDATE settings
+             SET value = json_insert(value, '$[#]', 'yahoo')
+         WHERE key = 'providers'
+           AND json_valid(value)
+           AND json_type(value) = 'array'
+           AND NOT EXISTS (
+               SELECT 1 FROM json_each(settings.value) AS feed
+               WHERE lower(trim(feed.value)) = 'yahoo'
+           );",
+    ),
 }];
 
 /// Everything that has ever been true of the market data file.
@@ -641,8 +661,9 @@ mod tests {
         assert_eq!(migrated(None), None);
         assert_eq!(migrated(Some("yahoo")), None);
         assert_eq!(migrated(Some(" Yahoo ")), None);
-        assert_eq!(migrated(Some("tos")).as_deref(), Some(r#"["tos"]"#));
-        assert_eq!(migrated(Some("a\"b")).as_deref(), Some(r#"["a\"b"]"#));
+        // And from version 8, Yahoo after it, where it was implied.
+        assert_eq!(migrated(Some("tos")).as_deref(), Some(r#"["tos","yahoo"]"#));
+        assert_eq!(migrated(Some("a\"b")).as_deref(), Some(r#"["a\"b","yahoo"]"#));
     }
 
     /// A header somebody chose gets the account where the note on it sat,
@@ -710,6 +731,28 @@ mod tests {
         let logins: serde_json::Value = serde_json::from_str(&logins.unwrap()).unwrap();
         assert_eq!(logins[0]["name"], "LucidTrading");
         assert_eq!(logins[0]["gateway"], "wss://x");
+    }
+
+    /// An order that does not name Yahoo gets it at the bottom, where it
+    /// was implied; one that names it, or nothing stored, is left alone.
+    #[test]
+    fn yahoo_is_appended_to_an_order_that_does_not_name_it() {
+        let migrated = |stored: Option<&str>| {
+            let conn = Connection::open_in_memory().unwrap();
+            conn.execute("ATTACH ':memory:' AS market", []).unwrap();
+            apply(&conn, MARKET, MARKET_MIGRATIONS, MARKET_LATEST, None).unwrap();
+            apply(&conn, "main", &MIGRATIONS[..7], 7, None).unwrap();
+            if let Some(value) = stored {
+                conn.execute("INSERT INTO settings (key, value) VALUES ('providers', ?1)", [value]).unwrap();
+            }
+            run(&conn, None).unwrap();
+            conn.query_row("SELECT value FROM settings WHERE key = 'providers'", [], |r| r.get::<_, String>(0)).ok()
+        };
+        assert_eq!(migrated(None), None);
+        assert_eq!(migrated(Some(r#"["rithmic","tos"]"#)).as_deref(), Some(r#"["rithmic","tos","yahoo"]"#));
+        assert_eq!(migrated(Some(r#"["tos"]"#)).as_deref(), Some(r#"["tos","yahoo"]"#));
+        assert_eq!(migrated(Some(r#"["Yahoo","tos"]"#)).as_deref(), Some(r#"["Yahoo","tos"]"#));
+        assert_eq!(migrated(Some("not a list")).as_deref(), Some("not a list"));
     }
 
     #[test]

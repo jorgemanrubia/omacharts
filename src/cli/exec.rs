@@ -4836,8 +4836,8 @@ fn config_set(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<Stri
         let text = format!("set {key} to {}", feed.id);
         return said(as_json, json!({"key": key, "value": feed.id}), text);
     }
-    // The order itself: a list of feeds this build knows, written back
-    // without the default, which is implied.
+    // The order itself: a list of feeds this build knows, Yahoo included
+    // where it goes, and left out to chart without it.
     if key == crate::feeds::SETTING {
         let order: Vec<String> = serde_json::from_str(value).map_err(|_| {
             Fault::usage(format!("{key} is a JSON list of feeds, such as [\"tos\"]"))

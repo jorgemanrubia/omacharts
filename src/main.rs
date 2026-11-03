@@ -193,7 +193,7 @@ fn main() -> glib::ExitCode {
                 omacharts::feeds::remember_logins(&store);
             }
             window.switch_feeds(
-                omacharts_engine::providers::ordered(&[feed.id.to_string()])
+                omacharts_engine::providers::ordered(&omacharts::feeds::launch_order(feed))
                     .into_iter()
                     .map(std::sync::Arc::from)
                     .collect(),

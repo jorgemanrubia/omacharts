@@ -1,9 +1,10 @@
 //! The sources charts come from, in the order they are tried.
 //!
 //! A list rather than a choice: each chart comes from the first source that
-//! has its symbol and is signed in, so the order is the setting. Yahoo is
-//! the floor of it. It serves everything, so a source under it would never
-//! be reached, and it can be neither moved nor removed.
+//! has its symbol and is signed in, so the order is the setting. Yahoo is a
+//! source like the others, moved and removed the same way; only the last
+//! source left cannot be removed, since with none no chart could draw. A
+//! chart of something no remaining source has says so.
 //!
 //! What each row says comes from the feeds themselves: what a source
 //! covers, how fresh it is (asked of the provider), whether it needs
@@ -105,7 +106,6 @@ impl Panel {
         feeds::stored_order(&self.store)
             .iter()
             .filter_map(|id| providers::listed(id))
-            .filter(|feed| feed.id != providers::DEFAULT)
             .fold(Vec::new(), |mut added, feed| {
                 if !added.iter().any(|known: &&Listed| known.id == feed.id) {
                     added.push(feed);
@@ -152,14 +152,11 @@ fn sources_group(panel: &Rc<Panel>) -> adw::PreferencesGroup {
 
     let added = panel.added();
     for (at, feed) in added.iter().enumerate() {
-        group.add(&source_row(panel, feed, at));
+        group.add(&source_row(panel, feed, at, added.len() > 1));
     }
-    group.add(&floor_row(panel, !added.is_empty()));
 
-    let missing: Vec<&'static Listed> = providers::LISTED
-        .iter()
-        .filter(|feed| feed.id != providers::DEFAULT && !added.iter().any(|known| known.id == feed.id))
-        .collect();
+    let missing: Vec<&'static Listed> =
+        providers::LISTED.iter().filter(|feed| !added.iter().any(|known| known.id == feed.id)).collect();
     if !missing.is_empty() {
         group.add(&add_button(panel, missing));
     }
@@ -207,35 +204,21 @@ fn through_trading(panel: &Panel, feed: &'static Listed) -> Option<crate::tradin
     (feed.id == RITHMIC).then(|| crate::trading::data_login(&panel.store)).flatten()
 }
 
-/// Yahoo: no handle, no Remove, and nothing dropped on it lands.
-fn floor_row(panel: &Rc<Panel>, beneath_others: bool) -> adw::ActionRow {
-    let feed = providers::listed(providers::DEFAULT).expect("the default is listed");
-    let row = adw::ActionRow::new();
-    row.set_title(feed.label);
-    row.set_subtitle(&subtitle(panel, feed));
-    // Where the handle would be, so its name lines up with the others.
-    if beneath_others {
-        let blank = gtk::Image::from_icon_name("list-drag-handle-symbolic");
-        blank.set_opacity(0.0);
-        row.add_prefix(&blank);
-    }
-    // Refused, rather than only offered no handle: a source dropped here
-    // would be under the source that serves everything.
-    row.add_controller(drop_line::target(&row, |_| None, |_| false));
-    row
-}
-
-fn source_row(panel: &Rc<Panel>, feed: &'static Listed, at: usize) -> adw::ActionRow {
+/// A source's row. `others` is whether any other source is on the list:
+/// the last one left offers no Remove, and has nothing to be dragged past.
+fn source_row(panel: &Rc<Panel>, feed: &'static Listed, at: usize, others: bool) -> adw::ActionRow {
     let row = adw::ActionRow::new();
     row.set_title(feed.label);
     row.set_use_markup(false);
     row.set_subtitle(&subtitle(panel, feed));
     row.set_subtitle_lines(0);
 
-    let handle = gtk::Image::from_icon_name("list-drag-handle-symbolic");
-    handle.add_css_class("dim-label");
-    handle.set_tooltip_text(Some("Drag to reorder"));
-    row.add_prefix(&handle);
+    if others {
+        let handle = gtk::Image::from_icon_name("list-drag-handle-symbolic");
+        handle.add_css_class("dim-label");
+        handle.set_tooltip_text(Some("Drag to reorder"));
+        row.add_prefix(&handle);
+    }
 
     // A word, not a warning: the feed works, and rests on a web session
     // somebody else's release can take away.
@@ -264,12 +247,14 @@ fn source_row(panel: &Rc<Panel>, feed: &'static Listed, at: usize) -> adw::Actio
         }
     }
 
-    let remove = gtk::Button::with_label("Remove");
-    remove.add_css_class("flat");
-    remove.set_valign(gtk::Align::Center);
-    let panel_for_remove = panel.clone();
-    remove.connect_clicked(move |_| remove_source(&panel_for_remove, feed));
-    row.add_suffix(&remove);
+    if others {
+        let remove = gtk::Button::with_label("Remove");
+        remove.add_css_class("flat");
+        remove.set_valign(gtk::Align::Center);
+        let panel_for_remove = panel.clone();
+        remove.connect_clicked(move |_| remove_source(&panel_for_remove, feed));
+        row.add_suffix(&remove);
+    }
 
     wire_reorder(panel, &row, feed, at);
     row
@@ -585,25 +570,39 @@ mod tests {
 
         let order = moved(&panel.added(), 1, 0).expect("a move");
         panel.reorder(order);
-        assert_eq!(store.setting(feeds::SETTING).as_deref(), Some(r#"["tos","rithmic"]"#));
+        assert_eq!(store.setting(feeds::SETTING).as_deref(), Some(r#"["tos","rithmic","yahoo"]"#));
         assert_eq!(titles(&panel), vec!["thinkorswim", "Rithmic", "Yahoo Finance"]);
-        assert_eq!(panel.added().iter().map(|f| f.id).collect::<Vec<_>>(), vec![tos.id, rithmic.id]);
+        assert_eq!(panel.added().iter().map(|f| f.id).collect::<Vec<_>>(), vec![tos.id, rithmic.id, "yahoo"]);
     }
 
-    /// Yahoo cannot move: it is not among the sources that can be dragged,
-    /// a move past the end of them is refused, and nothing it would do
-    /// lands in the stored order.
+    /// Yahoo moves like any other source, and can be removed and added back
+    /// through the button; the last source left offers no Remove.
     #[test]
-    fn yahoo_cannot_move() {
-        let order = ["rithmic", "tos"];
-        assert_eq!(moved(&order, 0, 2), None, "below the sources is Yahoo's place");
-        assert_eq!(moved(&order, 2, 0), None, "Yahoo is not a source to lift");
+    fn yahoo_moves_and_goes_like_any_other_but_the_last_stays() {
+        let order = ["rithmic", "tos", "yahoo"];
         assert_eq!(moved(&order, 1, 1), None, "dropped on itself");
-        assert_eq!(moved(&order, 1, 0), Some(vec!["tos", "rithmic"]));
-
-        let store = Store::memory().expect("an empty database");
-        feeds::save_order(&store, &["yahoo".to_string(), "tos".to_string()]);
-        assert_eq!(feeds::stored_order(&store), vec!["tos"], "Yahoo is never stored");
+        assert_eq!(moved(&order, 3, 0), None, "no such source");
+        assert_eq!(moved(&order, 2, 0), Some(vec!["yahoo", "rithmic", "tos"]));
+        if !crate::ui::gtk_ready() {
+            return;
+        }
+        let store = Rc::new(Store::memory().expect("an empty database"));
+        let panel = panel(&store);
+        feeds::add_source(&store, "tos");
+        rebuild(&panel);
+        assert_eq!(titles(&panel), vec!["thinkorswim", "Yahoo Finance"]);
+        let yahoo = providers::listed("yahoo").unwrap();
+        remove_source(&panel, yahoo);
+        assert_eq!(titles(&panel), vec!["thinkorswim"]);
+        let group = panel.group.borrow().clone().unwrap();
+        let words = words_under(action_rows(group.upcast_ref())[0].upcast_ref());
+        assert!(!words.iter().any(|w| w == "Remove"), "the last source: {words:?}");
+        add_source(&panel, yahoo, &gtk::Button::new());
+        assert_eq!(titles(&panel), vec!["thinkorswim", "Yahoo Finance"]);
+        let order = moved(&panel.added(), 1, 0).expect("a move");
+        panel.reorder(order);
+        assert_eq!(store.setting(feeds::SETTING).as_deref(), Some(r#"["yahoo","tos"]"#));
+        assert_eq!(titles(&panel), vec!["Yahoo Finance", "thinkorswim"]);
     }
 
     /// Remove takes the source off the order; the last one removed leaves
