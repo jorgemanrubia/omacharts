@@ -12,50 +12,16 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 
+use crate::exchanges::registry;
 use crate::ladders::{to_tick, Ladder, Minute, Side};
 use crate::provider::{LadderSink, LadderUpdate, Ladders, ProviderError, Subscription};
 use crate::ticks::{Tape, Trade, DEFAULT_CAPACITY};
 
-use super::{exchange_of, map_err, session, Rithmic};
+use super::{exchange_of, map_err, session, Rithmic, CME_GROUP};
 
 /// How far back the history plant's minute ladders go, in days. On Rithmic
 /// Test a month asked came back as about fifteen days.
 const HISTORY_DAYS: u32 = 30;
-
-/// One tick of each root a chart may want ladders for. A root not listed has
-/// no ladders here, and its charts keep the estimate.
-const TICKS: &[(&str, f64)] = &[
-    ("ES", 0.25),
-    ("MES", 0.25),
-    ("NQ", 0.25),
-    ("MNQ", 0.25),
-    ("RTY", 0.1),
-    ("M2K", 0.1),
-    ("YM", 1.0),
-    ("MYM", 1.0),
-    ("ZN", 1.0 / 64.0),
-    ("ZF", 1.0 / 128.0),
-    ("ZT", 1.0 / 256.0),
-    ("ZB", 1.0 / 32.0),
-    ("UB", 1.0 / 32.0),
-    ("ZC", 0.25),
-    ("ZS", 0.25),
-    ("ZW", 0.25),
-    ("CL", 0.01),
-    ("MCL", 0.01),
-    ("NG", 0.001),
-    ("GC", 0.1),
-    ("MGC", 0.1),
-    ("SI", 0.005),
-    ("HG", 0.0005),
-    ("6E", 0.00005),
-    ("6J", 0.000_000_5),
-    ("6B", 0.0001),
-];
-
-pub fn tick_of(root: &str) -> Option<f64> {
-    TICKS.iter().find(|(name, _)| *name == root).map(|(_, tick)| *tick)
-}
 
 /// A minute from the plant, as a ladder of whole ticks.
 pub fn minute_of(found: &rithmic::LadderMinute, tick_size: f64) -> Minute {
@@ -167,16 +133,17 @@ fn fold(events: &mpsc::Receiver<Event>, mut tape: Tape, say: &dyn Fn(LadderUpdat
 }
 
 impl Ladders for Rithmic {
-    fn tick_size(&self, symbol: &str) -> Option<f64> {
-        tick_of(symbol)
+    /// Every contract on a CME group exchange: the history plant has
+    /// volume-profile minute bars for any of them.
+    fn serves(&self, symbol: &str) -> bool {
+        registry().contract_exchange(symbol).is_some_and(|exchange| CME_GROUP.contains(&exchange))
     }
 
     fn history_days(&self) -> u32 {
         HISTORY_DAYS
     }
 
-    fn minutes(&self, symbol: &str, from: i64, to: i64) -> Result<Vec<Minute>, ProviderError> {
-        let tick_size = tick_of(symbol).ok_or_else(|| ProviderError::Unsupported(format!("ladders of {symbol}")))?;
+    fn minutes(&self, symbol: &str, tick_size: f64, from: i64, to: i64) -> Result<Vec<Minute>, ProviderError> {
         if !session::here() {
             return Err(ProviderError::NeedsSetup(
                 "Rithmic ladders are served by the open window, which holds the one session".into(),
@@ -189,8 +156,7 @@ impl Ladders for Rithmic {
         Ok(found.iter().map(|m| minute_of(m, tick_size)).collect())
     }
 
-    fn watch(&self, symbol: &str, sink: LadderSink) -> Result<Box<dyn Subscription>, ProviderError> {
-        let tick_size = tick_of(symbol).ok_or_else(|| ProviderError::Unsupported(format!("ladders of {symbol}")))?;
+    fn watch(&self, symbol: &str, tick_size: f64, sink: LadderSink) -> Result<Box<dyn Subscription>, ProviderError> {
         let stop = Arc::new(AtomicBool::new(false));
         let (events, inbox) = mpsc::channel();
         let sender = events.clone();

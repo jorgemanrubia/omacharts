@@ -171,6 +171,18 @@ impl Instrument {
             .map(|(_, s)| s.as_str())
     }
 
+    /// The size of one tick of its price, which every price it trades at is
+    /// a whole number of: the contract's, from `contracts.tsv`, for a futures
+    /// root. `None` for anything else, and for a root whose tick is not
+    /// known — a stock's tick depends on its price and its venue, and is no
+    /// one number.
+    pub fn tick_size(&self) -> Option<f64> {
+        match self.kind {
+            InstrumentKind::FutureRoot => crate::exchanges::registry().contract_tick(&self.symbol),
+            _ => None,
+        }
+    }
+
     /// What the UI shows as the instrument's ticker.
     /// Where it trades, in the form people say out loud.
     ///

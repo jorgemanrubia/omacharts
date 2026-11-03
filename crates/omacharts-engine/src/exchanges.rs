@@ -145,8 +145,17 @@ impl Exchange {
 pub struct Registry {
     exchanges: Vec<Exchange>,
     hours: Vec<Hours>,
-    /// A futures root, the exchange it trades on, and the hours it keeps.
-    contracts: Vec<(String, usize, usize)>,
+    contracts: Vec<Contract>,
+}
+
+/// A futures root: the exchange it trades on, the hours it keeps there, and
+/// the size of one tick of its price when the table knows it.
+#[derive(Debug)]
+struct Contract {
+    root: String,
+    exchange: usize,
+    hours: usize,
+    tick: Option<f64>,
 }
 
 /// The tables, read once.
@@ -179,6 +188,15 @@ fn list(field: &str) -> Vec<String> {
     dash(field)
         .map(|text| text.split(',').map(|s| s.trim().to_string()).collect())
         .unwrap_or_default()
+}
+
+/// A tick size: a decimal, or a fraction such as `1/64`, above zero.
+fn tick(text: &str) -> Option<f64> {
+    let value = match text.split_once('/') {
+        Some((top, bottom)) => top.trim().parse::<f64>().ok()? / bottom.trim().parse::<f64>().ok()?,
+        None => text.parse::<f64>().ok()?,
+    };
+    (value.is_finite() && value > 0.0).then_some(value)
 }
 
 /// `HH:MM`, in minutes past midnight.
@@ -262,10 +280,14 @@ impl Registry {
         let mut parsed_contracts = Vec::new();
         for fields in rows(contracts) {
             let row = (|| {
-                let [root, exchange, hours, ..] = fields.as_slice() else { return None };
+                let [root, exchange, hours, rest @ ..] = fields.as_slice() else { return None };
                 let exchange = parsed_exchanges.iter().position(|e| e.code == *exchange)?;
                 let hours = parsed_hours.iter().position(|h| h.id == *hours)?;
-                Some((root.to_string(), exchange, hours))
+                let tick = match rest.first().and_then(|field| dash(field)) {
+                    Some(text) => Some(tick(text)?),
+                    None => None,
+                };
+                Some(Contract { root: root.to_string(), exchange, hours, tick })
             })();
             match row {
                 Some(row) => parsed_contracts.push(row),
@@ -294,8 +316,19 @@ impl Registry {
     /// this guesses nothing: a feed deciding whether it serves a root must
     /// not serve one on the strength of a default.
     pub fn contract_exchange(&self, root: &str) -> Option<&str> {
-        let (_, exchange, _) = self.contracts.iter().find(|(listed, ..)| listed == root)?;
-        self.exchanges.get(*exchange).map(|exchange| exchange.code.as_str())
+        let contract = self.contract(root)?;
+        self.exchanges.get(contract.exchange).map(|exchange| exchange.code.as_str())
+    }
+
+    /// The size of one tick of a futures root's price, as `contracts.tsv`
+    /// gives it: every price it trades at is a whole number of these. `None`
+    /// for a root it does not list, or lists without one.
+    pub fn contract_tick(&self, root: &str) -> Option<f64> {
+        self.contract(root)?.tick
+    }
+
+    fn contract(&self, root: &str) -> Option<&Contract> {
+        self.contracts.iter().find(|contract| contract.root == root)
     }
 
     fn by_code(&self, code: &str) -> Option<usize> {
@@ -319,8 +352,8 @@ impl Registry {
     pub fn for_instrument(&self, instrument: &Instrument) -> Option<Schedule<'_>> {
         match instrument.kind {
             InstrumentKind::FutureRoot => {
-                return match self.contracts.iter().find(|(root, ..)| *root == instrument.symbol) {
-                    Some((_, exchange, hours)) => self.schedule(*exchange, Some(*hours)),
+                return match self.contract(&instrument.symbol) {
+                    Some(contract) => self.schedule(contract.exchange, Some(contract.hours)),
                     None => self.schedule(self.by_code("CME")?, None),
                 };
             }
@@ -575,11 +608,56 @@ mod tests {
     fn every_shipped_futures_root_has_its_exchange() {
         for root in crate::symbols::seed().iter().filter(|i| i.kind == InstrumentKind::FutureRoot) {
             assert!(
-                registry().contracts.iter().any(|(r, ..)| *r == root.symbol),
+                registry().contract(&root.symbol).is_some(),
                 "{} has no row in contracts.tsv",
                 root.symbol
             );
         }
+    }
+
+    /// A tick is the contract's, read from the table: decimals and
+    /// fractions both, and every root listed has one.
+    #[test]
+    fn every_root_has_its_tick() {
+        let r = registry();
+        for (root, tick) in [
+            ("ES", 0.25),
+            ("MES", 0.25),
+            ("NQ", 0.25),
+            ("MNQ", 0.25),
+            ("YM", 1.0),
+            ("RTY", 0.1),
+            ("CL", 0.01),
+            ("NG", 0.001),
+            ("GC", 0.1),
+            ("SI", 0.005),
+            ("ZN", 1.0 / 64.0),
+            ("ZB", 1.0 / 32.0),
+            ("ZT", 1.0 / 256.0),
+            ("6E", 0.00005),
+            ("6J", 0.000_000_5),
+            ("ZC", 0.25),
+        ] {
+            assert_eq!(r.contract_tick(root), Some(tick), "{root}");
+        }
+        for contract in &r.contracts {
+            assert!(contract.tick.is_some(), "{} has no tick in contracts.tsv", contract.root);
+        }
+        assert_eq!(r.contract_tick("NOPE"), None);
+        assert_eq!(instrument(InstrumentKind::FutureRoot, "ES", None).tick_size(), Some(0.25));
+        assert_eq!(instrument(InstrumentKind::Equity, "ES", None).tick_size(), None, "a stock has no one tick");
+    }
+
+    #[test]
+    fn a_tick_is_a_decimal_or_a_fraction_above_zero() {
+        assert_eq!(tick("0.25"), Some(0.25));
+        assert_eq!(tick("1/64"), Some(0.015625));
+        for refused in ["0", "-1", "1/0", "x", "nan"] {
+            assert_eq!(tick(refused), None, "{refused}");
+        }
+        let parsed = Registry::parse(EXCHANGES, HOURS, "ES\tCME\tcme_equity_index\tquarter\nNQ\tCME\tcme_equity_index\t-\n");
+        assert_eq!(parsed.rejected.len(), 1, "a tick that does not read is a row refused");
+        assert_eq!(parsed.registry.contract_tick("NQ"), None, "and one left as - is not known");
     }
 
     #[test]

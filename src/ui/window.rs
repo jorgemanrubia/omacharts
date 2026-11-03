@@ -6354,7 +6354,7 @@ impl Window {
         let source = feed
             .at_price
             .as_ref()
-            .filter(|at_price| at_price.serves(&symbol))
+            .filter(|at_price| at_price.serves(&symbol, &instrument))
             .map(|at_price| LadderSource { at_price: at_price.clone(), key: key.clone(), symbol: symbol.clone() });
         let was = pane.ladders.replace(source);
         if let Some(was) = was

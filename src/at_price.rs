@@ -170,9 +170,14 @@ impl AtPrice {
         self.done.clone()
     }
 
-    /// Does the provider have ladders of `symbol` at all? Offline.
-    pub fn serves(&self, symbol: &str) -> bool {
-        self.provider.ladders().and_then(|ladders| ladders.tick_size(symbol)).is_some()
+    /// Are there ladders of `instrument`, `symbol` to the provider? Offline.
+    ///
+    /// Two questions, asked of whoever answers each: whether the feed has
+    /// ladders of the symbol, and whether the instrument has a tick for them
+    /// to be counted in. A stock has no one tick, so a feed that served its
+    /// trades would still have no ladders of it here.
+    pub fn serves(&self, symbol: &str, instrument: &Instrument) -> bool {
+        instrument.tick_size().is_some() && self.provider.ladders().is_some_and(|ladders| ladders.serves(symbol))
     }
 
     fn send(&self, job: Job) {
@@ -186,7 +191,7 @@ impl AtPrice {
     /// contract loads it and opens its live feed; a chart reaching further
     /// back than anything loaded so far loads again from there.
     pub fn want(&self, pane: u32, key: &str, symbol: &str, instrument: &Instrument, from: i64) {
-        let Some(tick_size) = self.provider.ladders().and_then(|ladders| ladders.tick_size(symbol)) else {
+        let Some(tick_size) = instrument.tick_size().filter(|_| self.serves(symbol, instrument)) else {
             return;
         };
         let moved = self.by_pane.borrow().get(&pane).map(String::as_str) != Some(key);
@@ -212,7 +217,7 @@ impl AtPrice {
             return;
         }
         let mailbox = Arc::new(Mutex::new(Mailbox::default()));
-        let live = self.open(symbol, &mailbox);
+        let live = self.open(symbol, tick_size, &mailbox);
         entries.insert(
             key.to_string(),
             Entry {
@@ -244,7 +249,7 @@ impl AtPrice {
         });
     }
 
-    fn open(&self, symbol: &str, mailbox: &Arc<Mutex<Mailbox>>) -> Option<Box<dyn Subscription>> {
+    fn open(&self, symbol: &str, tick_size: f64, mailbox: &Arc<Mutex<Mailbox>>) -> Option<Box<dyn Subscription>> {
         let ladders = self.provider.ladders()?;
         let into = mailbox.clone();
         let armed = self.armed.clone();
@@ -263,7 +268,7 @@ impl AtPrice {
                 let _ = nudge.try_send(());
             }
         });
-        ladders.watch(symbol, sink).ok()
+        ladders.watch(symbol, tick_size, sink).ok()
     }
 
     /// Chart `pane` no longer wants ladders. The last chart of a contract to
@@ -485,7 +490,7 @@ fn fill(
     let to = now.div_euclid(60) * 60;
     let mut asked = Vec::new();
     for (a, b) in store.missing_ladders(key, from, to) {
-        match ladders.minutes(symbol, a, b) {
+        match ladders.minutes(symbol, tick_size, a, b) {
             Ok(minutes) => {
                 if store.save_ladder_history(key, tick_size, days, a, b, &minutes).is_ok() {
                     asked.push((a, b));
@@ -578,18 +583,20 @@ mod tests {
         minute
     }
 
+    /// A feed with ladders of anything it is asked about, so whether a
+    /// chart gets them is the instrument's to say.
     impl Ladders for Fake {
-        fn tick_size(&self, _: &str) -> Option<f64> {
-            Some(0.25)
+        fn serves(&self, _: &str) -> bool {
+            true
         }
         fn history_days(&self) -> u32 {
             30
         }
-        fn minutes(&self, _: &str, from: i64, to: i64) -> Result<Vec<Minute>, ProviderError> {
+        fn minutes(&self, _: &str, _: f64, from: i64, to: i64) -> Result<Vec<Minute>, ProviderError> {
             self.0.lock().unwrap().spans.push((from, to));
             Ok((from..to).step_by(60).map(minute).collect())
         }
-        fn watch(&self, _: &str, sink: LadderSink) -> Result<Box<dyn Subscription>, ProviderError> {
+        fn watch(&self, _: &str, _: f64, sink: LadderSink) -> Result<Box<dyn Subscription>, ProviderError> {
             self.0.lock().unwrap().sinks.push(sink);
             Ok(Box::new(Open))
         }
@@ -633,6 +640,33 @@ mod tests {
             popularity: 0,
             local_name: None,
         }
+    }
+
+    fn aapl() -> Instrument {
+        Instrument { symbol: "AAPL".into(), name: "Apple".into(), kind: InstrumentKind::Equity, session_origin: 0, ..es() }
+    }
+
+    /// The feed says it has ladders of both; only the root has a tick to
+    /// count them in, so only the root's chart gets them, and the stock's
+    /// asks the feed for nothing.
+    #[test]
+    fn ladders_are_served_for_a_root_with_a_tick_and_not_for_a_stock() {
+        let path = scratch("serves");
+        let asked = Arc::new(Mutex::new(Asked::default()));
+        let at_price = AtPrice::new(Arc::new(Fake(asked.clone())), Some(path.clone())).unwrap();
+        at_price.set_clock(now);
+        assert!(at_price.serves("ES", &es()));
+        assert!(!at_price.serves("AAPL", &aapl()));
+
+        at_price.want(1, "fake:AAPL", "AAPL", &aapl(), NOW - HOUR);
+        at_price.want(2, KEY, "ES", &es(), NOW - HOUR);
+        assert_eq!(settle(&at_price), vec![2], "the root's load, and nothing before it");
+        assert_eq!(asked.lock().unwrap().spans, vec![(NOW - HOUR, NOW)]);
+        assert_eq!(asked.lock().unwrap().sinks.len(), 1, "one live feed, the root's");
+        assert!(at_price.with_held("fake:AAPL", |held| held.is_none()));
+        assert_eq!(at_price.with_held(KEY, |held| held.unwrap().tick_size), 0.25, "the contract's tick");
+        at_price.shutdown();
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     fn scratch(name: &str) -> PathBuf {

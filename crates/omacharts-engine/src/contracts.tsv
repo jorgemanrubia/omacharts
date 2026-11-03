@@ -1,48 +1,53 @@
-# root	exchange	hours
-# Which exchange each futures root trades on, and on which of its hours.
+# root	exchange	hours	tick
+# Which exchange each futures root trades on, on which of its hours, and the
+# size of one tick of its price: the step every price it trades at is a
+# whole number of, in the units it is quoted in (grains and livestock in
+# cents, Treasuries in points, so 1/64 is half a thirty-second). A fraction
+# is written as one. A tick left as - is not known, and nothing that needs
+# one, volume at price among them, is offered for that root.
 # One exchange keeps different hours for different products: the CME's
 # livestock closes at lunchtime while its equity index contracts trade all
 # night. A root not listed here is taken to be on Globex's equity index hours,
 # which is what most of what gets charted keeps.
-ES	CME	cme_equity_index
-MES	CME	cme_equity_index
-NQ	CME	cme_equity_index
-MNQ	CME	cme_equity_index
-RTY	CME	cme_equity_index
-M2K	CME	cme_equity_index
-YM	CBOT	cme_equity_index
-MYM	CBOT	cme_equity_index
-6E	CME	cme_rates_and_fx
-6J	CME	cme_rates_and_fx
-6B	CME	cme_rates_and_fx
-6A	CME	cme_rates_and_fx
-6C	CME	cme_rates_and_fx
-6S	CME	cme_rates_and_fx
-ZB	CBOT	cme_rates_and_fx
-ZN	CBOT	cme_rates_and_fx
-ZF	CBOT	cme_rates_and_fx
-ZT	CBOT	cme_rates_and_fx
-ZC	CBOT	cme_grains
-ZS	CBOT	cme_grains
-ZW	CBOT	cme_grains
-ZL	CBOT	cme_grains
-ZM	CBOT	cme_grains
-LE	CME	cme_livestock
-HE	CME	cme_livestock
-CL	NYMEX	nymex_energy
-MCL	NYMEX	nymex_energy
-BZ	NYMEX	nymex_energy
-NG	NYMEX	nymex_energy
-RB	NYMEX	nymex_energy
-HO	NYMEX	nymex_energy
-PL	NYMEX	nymex_platinum
-PA	NYMEX	nymex_platinum
-GC	COMEX	comex_metals
-MGC	COMEX	comex_metals
-SI	COMEX	comex_silver
-SIL	COMEX	comex_silver
-HG	COMEX	comex_copper
-KC	ICEUS	ice_us_softs
-SB	ICEUS	ice_us_sugar
-CC	ICEUS	ice_us_cocoa
-CT	ICEUS	ice_us_cotton
+ES	CME	cme_equity_index	0.25
+MES	CME	cme_equity_index	0.25
+NQ	CME	cme_equity_index	0.25
+MNQ	CME	cme_equity_index	0.25
+RTY	CME	cme_equity_index	0.1
+M2K	CME	cme_equity_index	0.1
+YM	CBOT	cme_equity_index	1
+MYM	CBOT	cme_equity_index	1
+6E	CME	cme_rates_and_fx	0.00005
+6J	CME	cme_rates_and_fx	0.0000005
+6B	CME	cme_rates_and_fx	0.0001
+6A	CME	cme_rates_and_fx	0.00005
+6C	CME	cme_rates_and_fx	0.00005
+6S	CME	cme_rates_and_fx	0.00005
+ZB	CBOT	cme_rates_and_fx	1/32
+ZN	CBOT	cme_rates_and_fx	1/64
+ZF	CBOT	cme_rates_and_fx	1/128
+ZT	CBOT	cme_rates_and_fx	1/256
+ZC	CBOT	cme_grains	0.25
+ZS	CBOT	cme_grains	0.25
+ZW	CBOT	cme_grains	0.25
+ZL	CBOT	cme_grains	0.01
+ZM	CBOT	cme_grains	0.1
+LE	CME	cme_livestock	0.025
+HE	CME	cme_livestock	0.025
+CL	NYMEX	nymex_energy	0.01
+MCL	NYMEX	nymex_energy	0.01
+BZ	NYMEX	nymex_energy	0.01
+NG	NYMEX	nymex_energy	0.001
+RB	NYMEX	nymex_energy	0.0001
+HO	NYMEX	nymex_energy	0.0001
+PL	NYMEX	nymex_platinum	0.1
+PA	NYMEX	nymex_platinum	0.5
+GC	COMEX	comex_metals	0.1
+MGC	COMEX	comex_metals	0.1
+SI	COMEX	comex_silver	0.005
+SIL	COMEX	comex_silver	0.005
+HG	COMEX	comex_copper	0.0005
+KC	ICEUS	ice_us_softs	0.05
+SB	ICEUS	ice_us_sugar	0.01
+CC	ICEUS	ice_us_cocoa	1
+CT	ICEUS	ice_us_cotton	0.01

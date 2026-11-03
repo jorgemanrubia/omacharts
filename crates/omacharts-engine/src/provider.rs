@@ -395,26 +395,32 @@ pub type LadderSink = Box<dyn Fn(LadderUpdate) + Send + Sync>;
 /// `None` unless a provider has them, so no provider is ever asked about
 /// something it lacks and a chart of one without them holds nothing.
 pub trait Ladders: Send + Sync {
-    /// The size of one tick of `symbol`, which every price in its ladders
-    /// is a whole number of. Offline, as [`Provider::symbol_for`] is; `None`
-    /// for a symbol it has no ladders for.
-    fn tick_size(&self, symbol: &str) -> Option<f64>;
+    /// Does it have ladders of `symbol`, in its own spelling? Offline, as
+    /// [`Provider::symbol_for`] is.
+    ///
+    /// Only the feed's half of the question. The tick every price is a whole
+    /// number of is the instrument's — [`crate::Instrument::tick_size`] —
+    /// and is handed to [`Self::minutes`] and [`Self::watch`], so a feed
+    /// keeps no table of contracts of its own.
+    fn serves(&self, symbol: &str) -> bool;
 
     /// How far back its history goes, in days. A request is never made for
     /// further back than this.
     fn history_days(&self) -> u32;
 
     /// The minutes of `symbol` opening in `from..to`, unix seconds, oldest
-    /// first. One request, made now, on the caller's thread, which is never
-    /// the one drawing the window. What it returns is the whole truth about
-    /// the span: a minute it leaves out traded nothing.
-    fn minutes(&self, symbol: &str, from: i64, to: i64) -> Result<Vec<Minute>, ProviderError>;
+    /// first, priced in whole ticks of `tick_size`. One request, made now,
+    /// on the caller's thread, which is never the one drawing the window.
+    /// What it returns is the whole truth about the span: a minute it leaves
+    /// out traded nothing.
+    fn minutes(&self, symbol: &str, tick_size: f64, from: i64, to: i64) -> Result<Vec<Minute>, ProviderError>;
 
-    /// Start delivering `symbol`'s live ladders into `sink` until the handle
-    /// is dropped. The rules of [`Stream::subscribe`]: it returns before
-    /// anything touches the network, reconnecting is the provider's, and
-    /// dropping the handle ends it without blocking.
-    fn watch(&self, symbol: &str, sink: LadderSink) -> Result<Box<dyn Subscription>, ProviderError>;
+    /// Start delivering `symbol`'s live ladders, in whole ticks of
+    /// `tick_size`, into `sink` until the handle is dropped. The rules of
+    /// [`Stream::subscribe`]: it returns before anything touches the
+    /// network, reconnecting is the provider's, and dropping the handle ends
+    /// it without blocking.
+    fn watch(&self, symbol: &str, tick_size: f64, sink: LadderSink) -> Result<Box<dyn Subscription>, ProviderError>;
 }
 
 pub trait Provider: Send + Sync {
