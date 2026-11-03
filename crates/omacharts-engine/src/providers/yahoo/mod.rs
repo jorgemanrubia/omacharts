@@ -187,6 +187,7 @@ pub const LISTED: crate::providers::Listed = crate::providers::Listed {
     id: "yahoo",
     label: "Yahoo Finance",
     serves: "Every listing the symbol search covers",
+    covers: "Stocks, ETFs, indexes, futures, FX, crypto",
     setup: None,
     experimental: false,
 };

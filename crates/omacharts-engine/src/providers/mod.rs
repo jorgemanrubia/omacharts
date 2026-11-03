@@ -60,6 +60,10 @@ pub struct Listed {
     /// The line under the name: what it serves. How *fresh* it is does not
     /// belong here — see [`freshness`], which asks the provider instead.
     pub serves: &'static str,
+    /// The same, in the few words a row in a list of sources has room for:
+    /// the kinds of instrument, as somebody choosing between sources thinks
+    /// of them.
+    pub covers: &'static str,
     /// What signing in to it involves, for a feed that charts an account's
     /// own data. `None` for a feed anybody can use the moment they pick it,
     /// which is both the better kind and, so far, the default one.

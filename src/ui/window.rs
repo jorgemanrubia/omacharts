@@ -1478,6 +1478,9 @@ struct Feed {
     /// the other: a backfill paused for five minutes must not also stop the
     /// chart somebody is watching from keeping itself current.
     refresh_quiet_until: Cell<Option<Instant>>,
+    /// Taken off the order while the rest of it stayed: whatever its worker
+    /// still sends is for charts that have moved on.
+    retired: Cell<bool>,
 }
 
 impl Feed {
@@ -1495,6 +1498,7 @@ impl Feed {
             unusable_because: Cell::new(""),
             backfill_quiet_until: Cell::new(None),
             refresh_quiet_until: Cell::new(None),
+            retired: Cell::new(false),
         };
         feed.read_access();
         feed
@@ -5553,6 +5557,9 @@ impl Window {
                     break;
                 }
                 let Some(feed) = feed.upgrade() else { break };
+                if feed.retired.get() {
+                    break;
+                }
                 match response {
                     // The rail reads the newer of a row's bars and its closes,
                     // so a batch the widget asked for moves its prices too.
@@ -6937,20 +6944,96 @@ impl Window {
             feeds.len() == wanted.len()
                 && feeds.iter().zip(&wanted).all(|(feed, want)| feed.provider.id() == want.id())
         };
+        // Where every chart is served from now, before anything changes, so
+        // that only the charts whose source changes are shown again.
+        let before = self.routes_on_screen();
         if !same {
-            self.switch_feeds(wanted.into_iter().map(Arc::from).collect());
+            self.regroup_feeds(wanted.into_iter().map(Arc::from).collect());
+            self.reroute(&before);
             return;
         }
         // The same feeds. Only a change in which can be used moves a chart,
-        // and then only the charts that change routes, by showing everything
-        // again: a chart whose feed did not change finds its series where
-        // it left it.
+        // and then only the charts that change routes.
         let mut changed = false;
         for feed in self.feeds() {
             changed |= feed.read_access();
         }
         if changed {
-            self.reshow_all();
+            self.reroute(&before);
+        }
+    }
+
+    /// Each chart on screen with the cache key of the feed serving it.
+    fn routes_on_screen(&self) -> Vec<(u32, Option<String>)> {
+        let panes: Vec<Rc<ChartPane>> = self.panes.borrow().clone();
+        panes
+            .iter()
+            .filter_map(|pane| {
+                let instrument = pane.instrument.borrow().clone()?;
+                Some((pane.id, self.route(&instrument).map(|routed| routed.key())))
+            })
+            .collect()
+    }
+
+    /// Chart from `providers`, top first, keeping the feeds that stay on
+    /// the order as they are: their loaders, their streams and their
+    /// sessions. Only the feeds taken off are retired, and only the new
+    /// ones are built. What [`Window::adopt_feed`] does when the Data page
+    /// adds, removes or reorders a source; [`Window::switch_feeds`] is the
+    /// whole replacement.
+    fn regroup_feeds(self: &Rc<Self>, providers: Vec<Arc<dyn Provider>>) {
+        let old = self.feeds();
+        let mut receivers = Vec::new();
+        let mut lives = Vec::new();
+        let feeds: Vec<Rc<Feed>> = providers
+            .into_iter()
+            .map(|provider| {
+                if let Some(kept) = old.iter().find(|feed| feed.provider.id() == provider.id()) {
+                    kept.read_access();
+                    return kept.clone();
+                }
+                let (sender, receiver) = async_channel::unbounded::<Response>();
+                let feed = Rc::new(Feed::new(provider, &self.store, sender));
+                receivers.push((Rc::downgrade(&feed), receiver));
+                lives.extend(feed.live.clone());
+                feed
+            })
+            .collect();
+        for gone in old.iter().filter(|feed| !feeds.iter().any(|kept| Rc::ptr_eq(kept, feed))) {
+            Window::retire_feed(gone);
+        }
+        if let Some(top) = feeds.first() {
+            crate::feeds::note_running(top.provider.id());
+        }
+        *self.feeds.borrow_mut() = feeds;
+        for (feed, receiver) in receivers {
+            self.wire_responses(feed, receiver);
+        }
+        for live in lives {
+            self.wire_live_of(live);
+        }
+        self.wire_refresh();
+    }
+
+    /// Show again the charts whose feed is no longer the one in `before`,
+    /// and only rewrite the header of the rest: a chart still on the feed
+    /// it was on keeps its series and its stream as they are.
+    fn reroute(self: &Rc<Self>, before: &[(u32, Option<String>)]) {
+        let panes: Vec<Rc<ChartPane>> = self.panes.borrow().clone();
+        for pane in panes {
+            let instrument = pane.instrument.borrow().clone();
+            let Some(instrument) = instrument else { continue };
+            let was = before.iter().find(|(id, _)| *id == pane.id).and_then(|(_, key)| key.clone());
+            match self.route(&instrument) {
+                Some(routed) if was.as_deref() == Some(routed.key().as_str()) => {
+                    self.write_source_of(&pane, Some(&routed.feed), &routed.passed);
+                }
+                _ => self.show_in(&pane, instrument),
+            }
+        }
+        if let Some(watchlist) = self.watchlist.borrow().as_ref() {
+            watchlist.refresh_quotes();
+            self.write_changes();
         }
     }
 
@@ -7036,16 +7119,22 @@ impl Window {
     fn retire_feeds(self: &Rc<Self>) {
         self.feed_generation.set(self.feed_generation.get() + 1);
         for feed in self.feeds() {
-            if let Some(live) = &feed.live {
-                live.shutdown();
-            }
-            feed.loader.drop_prefetches();
-            feed.loader.drop_backfill();
-            // Whatever the provider holds beyond its value: a connection, a
-            // session on a gateway. The worker still finishing a request on
-            // it gets a failure it already knows how to report, and drops it.
-            feed.provider.retire();
+            Window::retire_feed(&feed);
         }
+    }
+
+    /// Stop one feed, as [`Window::retire_feeds`] stops them all.
+    fn retire_feed(feed: &Feed) {
+        feed.retired.set(true);
+        if let Some(live) = &feed.live {
+            live.shutdown();
+        }
+        feed.loader.drop_prefetches();
+        feed.loader.drop_backfill();
+        // Whatever the provider holds beyond its value: a connection, a
+        // session on a gateway. The worker still finishing a request on
+        // it gets a failure it already knows how to report, and drops it.
+        feed.provider.retire();
     }
 
     /// Drain on the next frame, once, however many wakes arrive before it.

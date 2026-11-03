@@ -53,6 +53,7 @@ pub const LISTED: crate::providers::Listed = crate::providers::Listed {
     id: "rithmic",
     label: "Rithmic",
     serves: "CME futures, front month, from your Rithmic login",
+    covers: "CME futures, front month",
     setup: Some(&session::SETUP),
     experimental: false,
 };

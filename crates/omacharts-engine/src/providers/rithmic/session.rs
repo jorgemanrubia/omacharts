@@ -59,6 +59,49 @@ static REFUSED: Mutex<Option<String>> = Mutex::new(None);
 /// open a second session beside it: see [`serve_from_here`].
 static HERE: AtomicBool = AtomicBool::new(false);
 
+/// Signed out in this process with a development login, which is a file
+/// and cannot be forgotten: until the next sign-in it counts as no login.
+static SIGNED_OUT: AtomicBool = AtomicBool::new(false);
+
+/// Where a password is kept. The desktop keyring, through [`Keyring`];
+/// tests hand in a store of their own, so that nothing they do reaches
+/// anybody's keyring.
+pub trait Secrets {
+    /// Save `password` for `user` on `system`, replacing what was there.
+    fn save(&self, user: &str, system: &str, password: &str) -> Result<(), String>;
+    /// Forget the password for `user` on `system`, if there is one.
+    fn forget(&self, user: &str, system: &str) -> Result<(), String>;
+}
+
+/// The desktop keyring, through the Secret Service.
+pub struct Keyring;
+
+impl Secrets for Keyring {
+    fn save(&self, user: &str, system: &str, password: &str) -> Result<(), String> {
+        rithmic::keyring::save(user, system, password).map_err(|error| error.to_string())
+    }
+
+    fn forget(&self, user: &str, system: &str) -> Result<(), String> {
+        rithmic::keyring::forget(user, system).map(|_| ()).map_err(|error| error.to_string())
+    }
+}
+
+/// Is a development login in charge? Then the keyring is never read or
+/// written, whatever is typed.
+pub fn development() -> bool {
+    std::env::var_os(rithmic::DEV_LOGIN).is_some_and(|path| !path.is_empty())
+}
+
+/// Keep `password` for `user` on `system` in `secrets`. With a development
+/// login nothing is written: the file wins, and working on the app must
+/// never put a login in anybody's keyring.
+pub fn save_password(secrets: &dyn Secrets, user: &str, system: &str, password: &str) -> Result<(), String> {
+    if development() {
+        return Ok(());
+    }
+    secrets.save(user.trim(), system.trim(), password)
+}
+
 /// What the app has saved. Called whenever it reads its settings for a
 /// feed list that names Rithmic, and after a sign-in or a sign-out.
 pub fn remember(saved: Saved) {
@@ -98,6 +141,9 @@ fn user() -> Option<String> {
 
 /// The login to sign in with, read again every time the session signs in.
 pub fn login() -> Result<rithmic::Login, rithmic::Error> {
+    if SIGNED_OUT.load(Ordering::Acquire) {
+        return Err(rithmic::Error::NoLogin("signed out".into()));
+    }
     if let Some(development) = rithmic::Login::from_env(&system(), &gateway()) {
         return development;
     }
@@ -118,7 +164,8 @@ pub fn refused(why: &str) {
     *REFUSED.lock().unwrap_or_else(|e| e.into_inner()) = Some(why.to_string());
 }
 
-fn refusal() -> Option<String> {
+/// Rithmic's own words for the last refusal, such as "permission denied".
+pub fn refusal() -> Option<String> {
     REFUSED.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
@@ -127,6 +174,9 @@ fn refusal() -> Option<String> {
 pub fn access() -> Access {
     let system = system();
     if let Some(development) = rithmic::Login::from_env(&system, &gateway()) {
+        if SIGNED_OUT.load(Ordering::Acquire) {
+            return Access::Missing;
+        }
         return match (development, refusal()) {
             (Err(error), _) => Access::Expired(error.to_string()),
             (Ok(_), Some(why)) => Access::Expired(format!("Rithmic said: {why}")),
@@ -178,20 +228,50 @@ pub fn sign_in(log: impl Fn(&str)) -> Result<(), String> {
         log(&format!("found the password for {system} in the keyring"));
     }
     *REFUSED.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    SIGNED_OUT.store(false, Ordering::Release);
     rithmic::shutdown();
     Ok(())
+}
+
+/// Sign the process's one session in now, and wait for Rithmic's answer:
+/// what the settings do after [`sign_in`], so that the row can say how it
+/// went. The session is the one every chart shares, never a second; a
+/// process that does not hold the window has none to sign in, and is told
+/// so. A refusal is remembered in Rithmic's words, which is what comes
+/// back.
+pub fn connect() -> Result<(), String> {
+    if !here() {
+        return Err("only the window signs in to Rithmic".into());
+    }
+    match client().and_then(|client| client.sign_in()) {
+        Ok(()) => Ok(()),
+        Err(rithmic::Error::Refused(why)) => {
+            refused(&why);
+            Err(why)
+        }
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 /// Sign out: the session ends, and the password leaves the keyring. The
 /// user ID is the app's to forget, which it does beside this.
 pub fn sign_out() -> Result<(), String> {
+    sign_out_of(&Keyring)
+}
+
+/// [`sign_out`], forgetting the password in `secrets`.
+pub fn sign_out_of(secrets: &dyn Secrets) -> Result<(), String> {
     rithmic::shutdown();
     *REFUSED.lock().unwrap_or_else(|e| e.into_inner()) = None;
-    let forgotten = match (rithmic::Login::from_env(&system(), &gateway()), user()) {
+    let forgotten = match (development(), user()) {
         // A development login is a file of the developer's own, and is
-        // never the keyring's.
-        (Some(_), _) | (None, None) => Ok(()),
-        (None, Some(user)) => rithmic::keyring::forget(&user, &system()).map(|_| ()).map_err(|error| error.to_string()),
+        // never the keyring's. It counts as no login until the next sign-in.
+        (true, _) => {
+            SIGNED_OUT.store(true, Ordering::Release);
+            Ok(())
+        }
+        (false, None) => Ok(()),
+        (false, Some(user)) => secrets.forget(&user, &system()),
     };
     let mut saved = SAVED.write().unwrap_or_else(|e| e.into_inner());
     if let Some(saved) = saved.as_mut() {

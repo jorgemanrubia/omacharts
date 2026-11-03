@@ -76,6 +76,7 @@ pub const LISTED: crate::providers::Listed = crate::providers::Listed {
     id: "tos",
     label: "thinkorswim",
     serves: "US listings, from your thinkorswim account",
+    covers: "US stocks, ETFs, indexes, futures",
     setup: Some(&session::SETUP),
     experimental: true,
 };
