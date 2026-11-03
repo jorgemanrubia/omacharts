@@ -110,6 +110,26 @@ fn source_text<'a>(serving: &str, passed: impl Iterator<Item = (&'a str, &'a str
     text
 }
 
+/// What the account part says with `feeds` configured: nothing at all with
+/// one, since there is nowhere else the bars could be from.
+fn account_text(feeds: usize, text: impl FnOnce() -> String) -> Option<String> {
+    (feeds > 1).then(text)
+}
+
+/// What the account's list says under a feed: whether it is signed in. A
+/// feed with nothing to sign in to says nothing.
+fn source_state(feed: &Feed) -> Option<String> {
+    providers::access(feed.provider.id())?;
+    Some(match feed.usable.get() {
+        true => "Signed in".to_string(),
+        false => {
+            let why = feed.unusable_because.get();
+            let mut letters = why.chars();
+            letters.next().map(|first| first.to_uppercase().chain(letters).collect()).unwrap_or_default()
+        }
+    })
+}
+
 /// How often we look for a desktop theme change. Cheap enough to be invisible,
 /// often enough to feel immediate.
 const THEME_POLL_SECONDS: u32 = 2;
@@ -381,6 +401,34 @@ mod tests {
         );
     }
 
+    /// With Yahoo alone the account part has nothing to say, and says it by
+    /// drawing nothing; with a second source it names the one serving.
+    #[test]
+    fn the_account_is_blank_with_one_source() {
+        assert_eq!(account_text(1, || "Yahoo Finance".into()), None);
+        assert_eq!(account_text(2, || "Rithmic".into()).as_deref(), Some("Rithmic"));
+    }
+
+    /// The source somebody chose comes back with the chart after a restart,
+    /// and a chart that follows the order writes nothing for it, so every
+    /// arrangement stored before there was a choice reads as following it.
+    #[test]
+    fn a_chosen_source_survives_a_restart_and_none_is_written_for_automatic() {
+        let store = Store::memory().expect("an in-memory store");
+        let mut pinned = stored_pane(1, "ES", LinkMode::Focus);
+        pinned.source = Some("rithmic".into());
+        let book = book_of("Futures", vec![pinned, stored_pane(2, "NQ", LinkMode::Focus)]);
+        let json = serde_json::to_string(&Workspace { books: vec![book], active: 0 }).unwrap();
+        assert_eq!(json.matches("\"source\"").count(), 1, "only the chosen one is written: {json}");
+        store.set_setting(SETTING_WORKSPACE, &json);
+
+        let back = parse_workspace(&store.setting(SETTING_WORKSPACE).unwrap()).unwrap();
+        let sources: Vec<Option<&str>> = back.books[0].panes.iter().map(|p| p.source.as_deref()).collect();
+        assert_eq!(sources, vec![Some("rithmic"), None]);
+        let old = parse_workspace(ONE_ARRANGEMENT).unwrap();
+        assert!(old.books[0].panes.iter().all(|pane| pane.source.is_none()));
+    }
+
     #[test]
     fn a_streamed_provider_gets_no_refresh_timer() {
         assert!(!wants_refresh_timer(Delivery::Streamed));
@@ -639,6 +687,7 @@ mod tests {
                 drawing_uid: String::new(),
                 drawings: Vec::new(),
                 profile_merges: Vec::new(),
+                source: None,
                 auto_scale: false,
                 log_scale: true,
                 indicators_shown: true,
@@ -716,6 +765,7 @@ mod tests {
             drawing_uid: String::new(),
             drawings: Vec::new(),
             profile_merges: Vec::new(),
+            source: None,
             auto_scale: true,
             log_scale: false,
             indicators_shown: true,
@@ -1676,6 +1726,11 @@ struct StoredPane {
     /// Volume profile periods merged into composites on this chart.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     profile_merges: Vec<omacharts_engine::indicators::profile::Merge>,
+    /// The data source somebody chose for this chart, by id. Missing for a
+    /// chart that follows the order of sources, which is every chart until
+    /// somebody chooses and every chart written before anybody could.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source: Option<String>,
 }
 
 fn yes() -> bool {
@@ -2514,6 +2569,15 @@ impl Window {
             expander.focus(id);
             expander.toggle_maximized();
         });
+
+        // The account opens the feeds that could serve this chart, built
+        // afresh each time it opens: which feeds there are, which can be used
+        // and what the chart is of all change underneath it.
+        let sources = gtk::Popover::new();
+        sources.set_has_arrow(false);
+        let filler = self.clone();
+        sources.connect_show(move |popover| filler.fill_source_menu(popover, id));
+        pane.source_menu.set_popover(Some(&sources));
 
         // The chain opens the three modes rather than toggling one: "off" is
         // two answers, taking the click when focused and never taking it.
@@ -3418,6 +3482,62 @@ impl Window {
         popover
     }
 
+    /// The account's list, for the chart `id` as it is now: Automatic, then
+    /// every feed in the order with a name for its instrument, each with
+    /// whether it is signed in, and a mark on the one it is set to.
+    fn fill_source_menu(self: &Rc<Self>, popover: &gtk::Popover, id: u32) {
+        let Some(pane) = self.pane(id) else { return };
+        let instrument = pane.instrument.borrow().clone();
+        let chosen = pane.source.borrow().clone();
+        let feeds = self.feeds();
+        let serving = match &instrument {
+            Some(instrument) => providers::serving(feeds.iter().map(|feed| feed.provider.as_ref()), instrument),
+            None => Vec::new(),
+        };
+        let menu = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let row = |label: &str, state: Option<String>, source: Option<String>| {
+            let button = gtk::Button::new();
+            button.add_css_class("flat");
+            button.add_css_class("link-row");
+            let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            let words = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            words.set_hexpand(true);
+            let title = gtk::Label::new(Some(label));
+            title.set_xalign(0.0);
+            words.append(&title);
+            if let Some(state) = state {
+                let subtitle = gtk::Label::new(Some(&state));
+                subtitle.set_xalign(0.0);
+                subtitle.add_css_class("dim-label");
+                subtitle.add_css_class("caption");
+                words.append(&subtitle);
+            }
+            line.append(&words);
+            // Kept in place when not drawn, as in the chain's menu, so the
+            // column does not move with the choice.
+            let mark = gtk::Image::from_icon_name("object-select-symbolic");
+            mark.set_valign(gtk::Align::Center);
+            mark.set_opacity(if source == chosen { 1.0 } else { 0.0 });
+            line.append(&mark);
+            button.set_child(Some(&line));
+            let this = self.clone();
+            let closing = popover.downgrade();
+            button.connect_clicked(move |_| {
+                if let Some(popover) = closing.upgrade() {
+                    popover.popdown();
+                }
+                this.focus(id);
+                this.choose_source(id, source.clone());
+            });
+            menu.append(&button);
+        };
+        row("Automatic", None, None);
+        for feed in serving.iter().filter_map(|at| feeds.get(*at)) {
+            row(feed.provider.label(), source_state(feed), Some(feed.provider.id().to_string()));
+        }
+        popover.set_child(Some(&menu));
+    }
+
     /// Move the divider the focused chart sits against, by a nudge.
     ///
     /// Through the handle on screen rather than through the tree, so that one
@@ -3520,6 +3640,7 @@ impl Window {
                     drawing_uid: pane.uid.borrow().clone(),
                     drawings: pane.local_drawings.borrow().clone(),
                     profile_merges: pane.profile_merges.borrow().clone(),
+                    source: pane.source.borrow().clone(),
                     auto_scale: pane.view.price_auto(),
                     log_scale: pane.view.price_log(),
                     indicators_shown: pane.view.show_indicators(),
@@ -3721,6 +3842,7 @@ impl Window {
             }
             *pane.local_drawings.borrow_mut() = stored.drawings.clone();
             *pane.profile_merges.borrow_mut() = stored.profile_merges.clone();
+            *pane.source.borrow_mut() = stored.source.clone();
             pane.view.set_price_auto(stored.auto_scale);
             pane.view.set_price_log(stored.log_scale);
             pane.bars_hidden.set(stored.bars_hidden);
@@ -6104,9 +6226,21 @@ impl Window {
     /// in the background.
     fn show_in(self: &Rc<Self>, pane: &Rc<ChartPane>, instrument: Instrument) {
         let timeframe = pane.timeframe.get();
-        let Some(routed) = self.route(&instrument) else {
-            self.show_unserved(pane, instrument);
-            return;
+        // A chart moved to something its chosen feed has no name for, or
+        // whose feed has gone from the order, follows the order again.
+        if self.settle_source(pane, &instrument) {
+            self.save_soon();
+        }
+        let routed = match self.route_chosen(pane, &instrument) {
+            Some(Ok(routed)) => routed,
+            Some(Err(refused)) => {
+                self.show_refused(pane, instrument, refused);
+                return;
+            }
+            None => {
+                self.show_unserved(pane, instrument);
+                return;
+            }
         };
         let key = routed.key();
         let Routed { feed, symbol, passed } = routed;
@@ -6264,6 +6398,39 @@ impl Window {
         pane.view.set_series(instrument, timeframe, Vec::new());
         pane.view.set_loading(false);
         pane.view.set_trouble(Some(FetchFailure::Unserved));
+    }
+
+    /// Chart an instrument on the feed somebody chose for it, which cannot
+    /// be used: not signed in, or its session expired.
+    ///
+    /// The chart is not moved to the next feed down, which is what the order
+    /// does with a feed it passes over. It was pointed at this one, so it
+    /// shows what this feed's cache already holds, asks for nothing, and says
+    /// why in its header and over its bars.
+    fn show_refused(self: &Rc<Self>, pane: &Rc<ChartPane>, instrument: Instrument, refused: Routed) {
+        let timeframe = pane.timeframe.get();
+        let key = refused.key();
+        *pane.instrument.borrow_mut() = Some(instrument.clone());
+        *pane.pending.borrow_mut() = None;
+        pane.write_readout();
+        self.write_header_of(pane);
+        self.write_refused_source(pane, &refused.feed);
+        self.release_pane(pane.id);
+        if pane.id == self.focused.get() {
+            self.store.set_setting(LAST_SYMBOL, &instrument.symbol);
+            self.store
+                .set_setting(LAST_SUFFIX, instrument.suffix.as_deref().unwrap_or(""));
+            if let Some(watchlist) = self.watchlist.borrow().as_ref() {
+                watchlist.highlight(&instrument);
+            }
+        }
+        let cached = self.store.load_bars(&key, timeframe.native());
+        self.paint(pane, &key, &instrument, timeframe, cached);
+        pane.view.set_loading(false);
+        pane.view.set_trouble(Some(FetchFailure::NeedsSignIn));
+        pane.view.set_configurations(self.store.drawing_configurations());
+        let shared = self.store.drawings(&instrument.symbol, instrument.suffix.as_deref());
+        pane.view.set_drawings(self.drawings_for(pane, &shared));
     }
 
     /// Fetch ahead around the selection, nearest first.
@@ -6560,7 +6727,7 @@ impl Window {
             let Some(pane) = self.pane(id) else { continue };
             let instrument = pane.instrument.borrow().clone();
             let Some(instrument) = instrument else { continue };
-            let Some(routed) = self.route(&instrument) else { continue };
+            let Some(routed) = self.route_pane(&pane, &instrument) else { continue };
             // A feed that has just refused is left alone until its pause
             // runs out, and its charts with it.
             if feeds.iter().zip(&quiet).any(|(feed, quiet)| *quiet && Rc::ptr_eq(feed, &routed.feed)) {
@@ -6660,7 +6827,7 @@ impl Window {
                         .instrument
                         .borrow()
                         .as_ref()
-                        .and_then(|i| self.route(i))
+                        .and_then(|i| self.route_pane(pane, i))
                         .map(|routed| routed.key() == key)
                         .unwrap_or(false)
             })
@@ -7022,6 +7189,75 @@ impl Window {
         Some(Routed { feed, symbol: route.symbol, passed })
     }
 
+    /// Which feed serves `pane`'s chart of `instrument`: the one somebody
+    /// chose for it, or the order's answer when nobody did.
+    ///
+    /// `None` when nothing serves it, and when the chosen feed cannot be
+    /// used — a chosen feed is never passed over, so nothing is fetched and
+    /// [`Window::show_in`] says why. Everything that asks for a chart's bars
+    /// asks this rather than [`Window::route`].
+    fn route_pane(&self, pane: &ChartPane, instrument: &Instrument) -> Option<Routed> {
+        self.route_chosen(pane, instrument)?.ok()
+    }
+
+    /// [`Window::route_pane`], keeping a refusal: `Err` is the chosen feed
+    /// that cannot be used, with the instrument in its spelling.
+    fn route_chosen(&self, pane: &ChartPane, instrument: &Instrument) -> Option<Result<Routed, Routed>> {
+        let chosen = pane.source.borrow();
+        if chosen.is_none() {
+            return self.route(instrument).map(Ok);
+        }
+        let feeds = self.feeds.borrow();
+        let route = providers::route_chosen(
+            feeds.iter().map(|feed| (feed.provider.as_ref() as &dyn Provider, feed.usable.get())),
+            chosen.as_deref(),
+            instrument,
+        )?;
+        Some(match route {
+            providers::Chosen::Route(route) => {
+                let feed = feeds.get(route.at)?.clone();
+                let passed = route.passed.iter().filter_map(|at| feeds.get(*at).cloned()).collect();
+                Ok(Routed { feed, symbol: route.symbol, passed })
+            }
+            providers::Chosen::Refused { at, symbol } => {
+                Err(Routed { feed: feeds.get(at)?.clone(), symbol, passed: Vec::new() })
+            }
+        })
+    }
+
+    /// Drop a chart's chosen feed if it can no longer be chosen for
+    /// `instrument`: taken off the order, or with no name for it. The chart
+    /// goes back to following the order. True when it did.
+    fn settle_source(&self, pane: &ChartPane, instrument: &Instrument) -> bool {
+        let stale = match pane.source.borrow().as_deref() {
+            None => false,
+            Some(id) => {
+                let feeds = self.feeds.borrow();
+                !providers::choosable(feeds.iter().map(|feed| feed.provider.as_ref()), id, instrument)
+            }
+        };
+        if stale {
+            pane.source.replace(None);
+        }
+        stale
+    }
+
+    /// Point one chart at a feed, or back at the order with `None`, and
+    /// show it again from there. Only this chart: the others keep what they
+    /// are showing.
+    fn choose_source(self: &Rc<Self>, id: u32, source: Option<String>) {
+        let Some(pane) = self.pane(id) else { return };
+        if *pane.source.borrow() == source {
+            return;
+        }
+        pane.source.replace(source);
+        let instrument = pane.instrument.borrow().clone();
+        if let Some(instrument) = instrument {
+            self.show_in(&pane, instrument);
+        }
+        self.save_workspace();
+    }
+
     /// The feed whose cache key this is.
     fn feed_of(&self, key: &str) -> Option<Rc<Feed>> {
         self.feeds.borrow().iter().find(|feed| feed.owns(key)).cloned()
@@ -7073,7 +7309,7 @@ impl Window {
             .iter()
             .filter_map(|pane| {
                 let instrument = pane.instrument.borrow().clone()?;
-                Some((pane.id, self.route(&instrument).map(|routed| routed.key())))
+                Some((pane.id, self.route_pane(pane, &instrument).map(|routed| routed.key())))
             })
             .collect()
     }
@@ -7128,16 +7364,22 @@ impl Window {
     /// it was on keeps its series and its stream as they are.
     fn reroute(self: &Rc<Self>, before: &[(u32, Option<String>)]) {
         let panes: Vec<Rc<ChartPane>> = self.panes.borrow().clone();
+        let mut settled = false;
         for pane in panes {
             let instrument = pane.instrument.borrow().clone();
             let Some(instrument) = instrument else { continue };
             let was = before.iter().find(|(id, _)| *id == pane.id).and_then(|(_, key)| key.clone());
-            match self.route(&instrument) {
+            // A chart whose chosen feed has left the order follows it again.
+            settled |= self.settle_source(&pane, &instrument);
+            match self.route_pane(&pane, &instrument) {
                 Some(routed) if was.as_deref() == Some(routed.key().as_str()) => {
                     self.write_source_of(&pane, Some(&routed.feed), &routed.passed);
                 }
                 _ => self.show_in(&pane, instrument),
             }
+        }
+        if settled {
+            self.save_workspace();
         }
         if let Some(watchlist) = self.watchlist.borrow().as_ref() {
             watchlist.refresh_quotes();
@@ -7752,18 +7994,24 @@ impl Window {
     /// from, and which it was passed over: "Yahoo · thinkorswim not signed
     /// in". With one feed nothing is written and nothing is drawn.
     fn write_source_of(&self, pane: &ChartPane, serving: Option<&Rc<Feed>>, passed: &[Rc<Feed>]) {
-        if self.feeds.borrow().len() < 2 {
-            pane.write_source(None);
-            return;
-        }
-        let Some(serving) = serving else {
-            pane.write_source(None);
-            return;
-        };
-        pane.write_source(Some(&source_text(
-            serving.provider.label(),
-            passed.iter().map(|feed| (feed.provider.label(), feed.unusable_because.get())),
-        )));
+        let text = serving.and_then(|serving| {
+            account_text(self.feeds.borrow().len(), || {
+                source_text(
+                    serving.provider.label(),
+                    passed.iter().map(|feed| (feed.provider.label(), feed.unusable_because.get())),
+                )
+            })
+        });
+        pane.write_source(text.as_deref());
+    }
+
+    /// Say that a chart's chosen feed cannot serve it, and why: "Rithmic ·
+    /// not signed in".
+    fn write_refused_source(&self, pane: &ChartPane, feed: &Rc<Feed>) {
+        let text = account_text(self.feeds.borrow().len(), || {
+            format!("{} · {}", feed.provider.label(), feed.unusable_because.get())
+        });
+        pane.write_source(text.as_deref());
     }
 
     /// Every chart's day's move, after quotes have moved.
@@ -7781,7 +8029,7 @@ impl Window {
     fn write_change_of(self: &Rc<Self>, pane: &Rc<ChartPane>) {
         let instrument = pane.instrument.borrow().clone();
         let quote = instrument.and_then(|instrument| {
-            let routed = self.route(&instrument)?;
+            let routed = self.route_pane(pane, &instrument)?;
             crate::cli::quote(&self.store, routed.feed.provider.as_ref(), &instrument)
         });
         // In the chart's own colours for a rise and a fall, as its candles
@@ -8666,7 +8914,7 @@ impl Window {
                 fits: true,
             };
         };
-        let provider = match self.route(&instrument) {
+        let provider = match self.route_pane(&pane, &instrument) {
             Some(routed) => routed.feed.provider.clone(),
             None => self.provider(),
         };

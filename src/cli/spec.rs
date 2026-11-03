@@ -1377,6 +1377,12 @@ const STORED_FIELDS: &[(&str, &str, &str)] = &[
     ("indicators_shown", "chart set", "--indicators"),
     ("drawings_shown", "chart set", "--drawings"),
     ("profile_merges", "chart profile", ""),
+    (
+        "source",
+        "",
+        "exploratory: which data source a chart is pinned to is chosen from its header for now, \
+         and the command comes with the feature shipping",
+    ),
     ("name", "chartbook rename", ""),
     ("layout", "chart split", ""),
     ("focused", "chart focus", ""),
