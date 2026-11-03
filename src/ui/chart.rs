@@ -140,6 +140,16 @@ struct ProfileKey {
     value_area: u64,
 }
 
+/// What an anchored VWAP drawing's line depends on, for keeping it: the bar
+/// it starts from, the bars after it, and the price it weights.
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct VwapKey {
+    start: (usize, i64),
+    len: usize,
+    last: (i64, u64, u64, u64, u64),
+    source: drawings::VwapSource,
+}
+
 struct State {
     bars: Vec<Bar>,
     /// Where another chart's pointer is, drawn here as a quieter crosshair.
@@ -154,6 +164,9 @@ struct State {
     /// a drawing is projected on every motion of the pointer, and its
     /// profile only changes with its span or the bars.
     profile_cache: RefCell<Vec<(ProfileKey, Option<Profile>)>>,
+    /// The lines the anchored VWAP drawings show, kept for the same reason:
+    /// asked on every motion, changed only by the anchor or the bars.
+    vwap_cache: RefCell<Vec<(VwapKey, Rc<Vec<omacharts_engine::indicators::vwap::Anchored>>)>>,
     timeframe: Timeframe,
     /// Leftmost visible bar.
     first: usize,
@@ -315,6 +328,8 @@ pub enum IndicatorEvent {
     Properties(u32),
     /// Delete.
     Remove(u32),
+    /// Alt+Shift with + or −: its line a step thicker, or thinner.
+    StepWidth(u32, bool),
 }
 
 /// Something that happened to a drawing, for whoever keeps them.
@@ -819,9 +834,9 @@ fn shift_by_columns(
     scale: &PriceScale,
     by_price: f64,
 ) {
-    // Moved whole, a profile would be a profile of other bars: its edges
-    // are what change the span.
-    if drawing.kind == DrawingKind::Profile {
+    // Moved whole, a profile would be a profile of other bars, and a VWAP a
+    // VWAP from another bar: their anchors are what change what they cover.
+    if drawing.kind.reads_bars() {
         return;
     }
     let move_anchor = |anchor: &mut Anchor| {
@@ -842,6 +857,17 @@ fn shift_by_columns(
     if let (Some(first), Some(last)) = (drawing.points.first(), drawing.points.last()) {
         drawing.from = *first;
         drawing.to = *last;
+    }
+}
+
+/// An anchor pulled onto a bar the chart has: a press past the last bar is
+/// the last, and one before the first the first. An anchored VWAP from a
+/// moment no bar has reached yet would be a drawing with nothing to draw.
+fn anchor_on_a_bar(bars: &[Bar], at: Anchor) -> Anchor {
+    match (bars.first(), bars.last()) {
+        (Some(first), _) if at.ts < first.ts => Anchor::new(first.ts, at.price),
+        (_, Some(last)) if at.ts > last.ts => Anchor::new(last.ts, at.price),
+        _ => at,
     }
 }
 
@@ -1155,6 +1181,7 @@ impl State {
             scheme,
             instrument: None,
             profile_cache: RefCell::new(Vec::new()),
+            vwap_cache: RefCell::new(Vec::new()),
             timeframe: Timeframe::days(1),
             first: 0,
             visible: 160,
@@ -1424,6 +1451,45 @@ impl State {
         profile
     }
 
+    /// The anchored VWAP a VWAP drawing shows, and the bar it starts from:
+    /// every bar from the one at its anchor to the last, on this chart's
+    /// own bars, so it grows as they arrive. `None` before the first bar
+    /// reaches the anchor.
+    fn anchored_vwap(&self, drawing: &Drawing) -> Option<(usize, Rc<Vec<omacharts_engine::indicators::vwap::Anchored>>)> {
+        let start = self.bars.partition_point(|bar| bar.ts < drawing.from.ts);
+        let last = self.bars.last()?;
+        if start >= self.bars.len() {
+            return None;
+        }
+        let source = drawing.style(&self.configs).vwap.source;
+        // The last bar whole, as for a profile: a live bar grows in place.
+        let key = VwapKey {
+            start: (start, self.bars[start].ts),
+            len: self.bars.len(),
+            last: (last.ts, last.volume.to_bits(), last.high.to_bits(), last.low.to_bits(), last.close.to_bits()),
+            source,
+        };
+        if let Some((_, line)) = self.vwap_cache.borrow().iter().find(|(k, _)| *k == key) {
+            return Some((start, line.clone()));
+        }
+        let line = Rc::new(omacharts_engine::indicators::vwap::anchored(&self.bars[start..], source));
+        let mut cache = self.vwap_cache.borrow_mut();
+        if cache.len() >= 32 {
+            cache.remove(0);
+        }
+        cache.push((key, line.clone()));
+        Some((start, line))
+    }
+
+    /// The bars of an anchored VWAP that are on screen, with one either side
+    /// so the line runs off the edge rather than stopping short of it.
+    fn vwap_on_screen(&self, start: usize, count: usize) -> std::ops::Range<usize> {
+        let (first, visible, _) = self.view();
+        let from = first.saturating_sub(1).max(start);
+        let to = (first + visible + 1).min(start + count);
+        from..to.max(from)
+    }
+
     /// Where a bar's column begins, in pixels.
     fn column_edge(&self, plan: &Layout, index: f64) -> f64 {
         let (first, _, lead) = self.view();
@@ -1444,6 +1510,25 @@ impl State {
             let left = self.column_edge(plan, profile.first_bar as f64);
             let right = self.column_edge(plan, profile.last_bar as f64 + 1.0);
             return Projected::new(drawing.kind, (left, to_y(high.high)), (right, to_y(low.low)));
+        }
+        // An anchored VWAP is the line through its values, one a bar, from
+        // the anchor on; its anchor is where the line starts, at the
+        // anchor bar's own value rather than wherever the hand clicked.
+        if drawing.kind == DrawingKind::Vwap {
+            let Some((start, line)) = self.anchored_vwap(drawing) else {
+                return Projected::new(drawing.kind, point(&drawing.from), point(&drawing.from));
+            };
+            let at = |index: usize| {
+                let value = line[index - start].vwap;
+                (
+                    self.column_edge(plan, index as f64 + 0.5),
+                    scale.to_y(value, plan.price_y, plan.price_h),
+                )
+            };
+            let corners: Vec<(f64, f64)> = self.vwap_on_screen(start, line.len()).map(at).collect();
+            let anchor = at(start);
+            let end = corners.last().copied().unwrap_or(anchor);
+            return Projected { from: anchor, to: end, ..Projected::through(drawing.kind, corners) };
         }
         let projected = match drawing.kind.is_path() {
             true => Projected::through(drawing.kind, drawing.corners().iter().map(point).collect()),
@@ -1514,7 +1599,8 @@ impl State {
             shift_by_columns(bars, &mut copy, by_index, &scale, by_price);
             // A profile is not moved whole, but a copy put down exactly on
             // its original would be one nobody could see: its span moves.
-            if copy.kind == DrawingKind::Profile {
+            // So does an anchored VWAP's anchor.
+            if copy.kind.reads_bars() {
                 for anchor in [&mut copy.from, &mut copy.to] {
                     anchor.ts = ts_at(bars, index_of_ts(bars, anchor.ts) + by_index);
                 }
@@ -1609,8 +1695,8 @@ impl State {
             Grip::Left | Grip::Right => "ew-resize",
             // Not moved whole, so nothing to take hold of; and its corners
             // move only sideways.
-            Grip::Body if drawing.kind == DrawingKind::Profile => "default",
-            _ if drawing.kind == DrawingKind::Profile => "ew-resize",
+            Grip::Body if drawing.kind.reads_bars() => "default",
+            _ if drawing.kind.reads_bars() => "ew-resize",
             Grip::Body => match held {
                 true => "grabbing",
                 false => "grab",
@@ -2791,22 +2877,22 @@ impl ChartView {
                     }
                 }
                 // Alt+Shift and the size keys: the stroke of whatever is
-                // selected. Ctrl with the same keys is the text's size, and
-                // bare they are the chart's zoom — three things that all
-                // mean "bigger", kept apart by which modifier is held and
-                // what is selected.
-                Key::plus | Key::equal | Key::KP_Add
+                // selected, a drawing's or an indicator's. Ctrl with the
+                // same keys is the text's size, and bare they are the
+                // chart's zoom — three things that all mean "bigger", kept
+                // apart by which modifier is held and what is selected.
+                // Ctrl+Shift would be no fourth: Shift is how + is typed on
+                // the main row, so it is Ctrl and + already.
+                Key::plus | Key::equal | Key::KP_Add | Key::minus | Key::underscore | Key::KP_Subtract
                     if alt(modifiers) && shift(modifiers) && !ctrl(modifiers) =>
                 {
-                    match view.step_width(drawings::WIDTH_STEP) {
-                        true => glib::Propagation::Stop,
-                        false => glib::Propagation::Proceed,
+                    let thicker = matches!(key, Key::plus | Key::equal | Key::KP_Add);
+                    if let Some(id) = view.picked() {
+                        view.tell_indicator(IndicatorEvent::StepWidth(id, thicker));
+                        return glib::Propagation::Stop;
                     }
-                }
-                Key::minus | Key::underscore | Key::KP_Subtract
-                    if alt(modifiers) && shift(modifiers) && !ctrl(modifiers) =>
-                {
-                    match view.step_width(-drawings::WIDTH_STEP) {
+                    let by = if thicker { drawings::WIDTH_STEP } else { -drawings::WIDTH_STEP };
+                    match view.step_width(by) {
                         true => glib::Propagation::Stop,
                         false => glib::Propagation::Proceed,
                     }
@@ -4376,6 +4462,22 @@ impl ChartView {
                 }
                 return;
             }
+            // The anchored VWAP has no second anchor either: the press is
+            // the bar it starts from, and the line is there at once.
+            if s.tool == Some(DrawingKind::Vwap) {
+                let placed = s.begin_placing(width, height, x, y, false);
+                s.drag = None;
+                let State { bars, placing, .. } = &mut *s;
+                if placed && let Some(placing) = placing.as_mut() {
+                    let at = anchor_on_a_bar(bars, placing.from);
+                    placing.move_grip(Grip::From, at);
+                }
+                drop(s);
+                if placed && let Some(view) = view.upgrade() {
+                    view.commit_placing();
+                }
+                return;
+            }
             if s.tool.is_some() {
                 s.begin_placing(width, height, x, y, ctrl);
                 // A zig-zag is laid down by pressing, a corner at a time,
@@ -4424,9 +4526,10 @@ impl ChartView {
                     }
                     s.selected.push(index);
                     // A profile's body selects it and nothing more: what
-                    // follows is the chart's, so a drag across one pans.
+                    // follows is the chart's, so a drag across one pans. An
+                    // anchored VWAP's line the same.
                     let still = grip == Grip::Body
-                        && s.drawings.get(index).is_some_and(|d| d.kind == DrawingKind::Profile);
+                        && s.drawings.get(index).is_some_and(|d| d.kind.reads_bars());
                     if still {
                         let left = s.left_edge();
                         s.drag = Some(Drag::Pan { left, offset: s.price_offset });
@@ -4592,8 +4695,15 @@ impl ChartView {
                         }
                         grip => {
                             // A corner is one drawing's own.
-                            let Some(drawing) = s.drawings.get_mut(index) else {
+                            let State { bars, drawings, .. } = &mut *s;
+                            let Some(drawing) = drawings.get_mut(index) else {
                                 return;
+                            };
+                            // An anchored VWAP's anchor stays on a bar the
+                            // chart has, as it did when it was put down.
+                            let now = match drawing.kind {
+                                DrawingKind::Vwap => anchor_on_a_bar(bars, now),
+                                _ => now,
                             };
                             // An edge pulled past its opposite is that side
                             // from here on.
@@ -6637,6 +6747,14 @@ fn draw_drawings(cr: &cairo::Context, state: &State, plan: &Layout, scale: &Pric
     for (index, drawing) in state.drawings.iter().enumerate() {
         let shaded = drawing.kind.under_bars();
         let selected = state.selected.contains(&index);
+        // An anchored VWAP's shaded bands are shading, as the study's are,
+        // and go under the bars; its lines go over them with the rest.
+        if under && drawing.kind == DrawingKind::Vwap {
+            let projected = state.project(plan, scale, drawing);
+            let to_y = |price: f64| scale.to_y(price, plan.price_y, plan.price_h);
+            draw_vwap_shading(cr, state, &projected, drawing, &to_y);
+            continue;
+        }
         if shaded != under && !(shaded && selected) {
             continue;
         }
@@ -6775,6 +6893,7 @@ fn draw_drawing(
         // at all, which is the right picture of a caret waiting.
         DrawingKind::Text => {}
         DrawingKind::Profile => draw_profile_drawing(cr, state, projected, drawing, style, &colour, to_y),
+        DrawingKind::Vwap => draw_vwap_drawing(cr, state, projected, drawing, style, &colour, to_y, selected),
     }
     if !typing {
         draw_label(cr, state, projected, drawing, style);
@@ -7365,6 +7484,134 @@ fn draw_profile_drawing(
     cr.move_to(from, y);
     cr.line_to(to, y);
     let _ = cr.stroke();
+}
+
+/// An anchored VWAP drawing: its line, from the anchor bar to the last, in
+/// the drawing's colour, width and pattern, and the edges of each band it
+/// shows, as the study draws its own: each band in its colour, or the
+/// line's, at its own width and pattern. The shading is drawn under the
+/// bars, by [`draw_vwap_shading`].
+///
+/// Selected, it glows as a selected study does, under everything it draws.
+/// The bands do not: the line is the drawing, and its one grip is enough.
+#[allow(clippy::too_many_arguments)]
+fn draw_vwap_drawing(
+    cr: &cairo::Context,
+    state: &State,
+    projected: &Projected,
+    drawing: &Drawing,
+    style: &drawings::Style,
+    colour: &str,
+    to_y: &dyn Fn(f64) -> f64,
+    selected: bool,
+) {
+    let Some((start, line)) = state.anchored_vwap(drawing) else { return };
+    let range = state.vwap_on_screen(start, line.len());
+    let xs: Vec<f64> = projected.corners.iter().map(|(x, _)| *x).collect();
+    let single = projected.corners.len() == 1;
+    if selected {
+        match single {
+            false => selection::glow_path(
+                cr,
+                &state.theme,
+                colour,
+                style.width,
+                projected.corners.iter().map(|at| Some(*at)),
+            ),
+            true => selection::glow_dot(cr, &state.theme, colour, projected.corners[0], style.width.max(1.5) + 3.0),
+        }
+    }
+    cr.save().ok();
+    cr.set_line_join(cairo::LineJoin::Round);
+    for band in style.vwap.shown() {
+        if band.stroke.is_hidden() {
+            continue;
+        }
+        colors::set_source(cr, &band.paint(&style.colour).hex(&state.theme));
+        cr.set_line_width(band.stroke.width);
+        cr.set_dash(&band.stroke.style.dashes(band.stroke.width), 0.0);
+        for side in [1.0, -1.0] {
+            for (n, index) in range.clone().enumerate() {
+                let Some(x) = xs.get(n) else { break };
+                let value = line[index - start];
+                let y = to_y(value.vwap + side * band.deviations * value.deviation);
+                match n {
+                    0 => cr.move_to(*x, y),
+                    _ => cr.line_to(*x, y),
+                }
+            }
+            let _ = cr.stroke();
+        }
+    }
+    cr.restore().ok();
+    if style.width <= 0.0 {
+        return;
+    }
+    cr.save().ok();
+    colors::set_source(cr, colour);
+    match single {
+        // One bar from the anchor: a dot where the line will start.
+        true => {
+            let (x, y) = projected.corners[0];
+            cr.arc(x, y, style.width.max(1.5), 0.0, std::f64::consts::TAU);
+            let _ = cr.fill();
+        }
+        false => {
+            cr.set_line_join(cairo::LineJoin::Round);
+            cr.set_line_width(style.width);
+            cr.set_dash(&style.vwap.line.dashes(style.width), 0.0);
+            // One path, so a dashed line's pattern runs on across the bars
+            // rather than starting again at each.
+            for (n, (x, y)) in projected.corners.iter().enumerate() {
+                match n {
+                    0 => cr.move_to(*x, *y),
+                    _ => cr.line_to(*x, *y),
+                }
+            }
+            let _ = cr.stroke();
+        }
+    }
+    cr.restore().ok();
+}
+
+/// The shading of an anchored VWAP's shaded bands, between each one's two
+/// edges, under the bars as the study's is.
+fn draw_vwap_shading(
+    cr: &cairo::Context,
+    state: &State,
+    projected: &Projected,
+    drawing: &Drawing,
+    to_y: &dyn Fn(f64) -> f64,
+) {
+    let style = drawing.style(&state.configs);
+    if !style.vwap.shown().any(|band| band.fill) {
+        return;
+    }
+    let Some((start, line)) = state.anchored_vwap(drawing) else { return };
+    let range = state.vwap_on_screen(start, line.len());
+    let xs: Vec<f64> = projected.corners.iter().map(|(x, _)| *x).collect();
+    if xs.len() < 2 {
+        return;
+    }
+    for band in style.vwap.shown().filter(|band| band.fill) {
+        colors::set_source_alpha(cr, &band.paint(&style.colour).hex(&state.theme), band.fill_alpha);
+        let edge = |index: usize, side: f64| {
+            let value = line[index - start];
+            to_y(value.vwap + side * band.deviations * value.deviation)
+        };
+        let points: Vec<(f64, usize)> = xs.iter().copied().zip(range.clone()).collect();
+        for (n, (x, index)) in points.iter().enumerate() {
+            match n {
+                0 => cr.move_to(*x, edge(*index, 1.0)),
+                _ => cr.line_to(*x, edge(*index, 1.0)),
+            }
+        }
+        for (x, index) in points.iter().rev() {
+            cr.line_to(*x, edge(*index, -1.0));
+        }
+        cr.close_path();
+        let _ = cr.fill();
+    }
 }
 
 /// Where a series indexed by bar is drawn in one column, if it has a value
@@ -8710,6 +8957,55 @@ mod tests {
         assert_eq!((at.x(), at.y()), (0.0, 0.0), "the layer is offset from the chart");
     }
 
+    /// Alt+Shift with + and − step every selected drawing's stroke at once,
+    /// whatever the kind calls it — an anchored VWAP's line, a box's edge, a
+    /// profile's outline — by half a pixel, held to 0.5 to 12, and give each
+    /// a look of its own as the properties would.
+    #[test]
+    fn the_stroke_keys_step_every_selected_drawing() {
+        if !crate::ui::gtk_ready() {
+            return;
+        }
+        let theme = omacharts_engine::theme::builtin_themes()
+            .into_iter()
+            .next()
+            .expect("a built-in theme");
+        let scheme = omacharts_engine::theme::theme_bars(&theme);
+        let view = ChartView::new(theme, scheme);
+        {
+            let mut s = view.state.borrow_mut();
+            let (a, b) = (Anchor::new(1, 1.0), Anchor::new(5, 2.0));
+            s.drawings = [DrawingKind::Vwap, DrawingKind::Rect, DrawingKind::Profile]
+                .into_iter()
+                .map(|kind| {
+                    let mut drawing = Drawing::new(kind, a, b);
+                    drawing.follow(1);
+                    drawing
+                })
+                .collect();
+            s.selected = vec![0, 1, 2];
+        }
+        let widths = |view: &Rc<ChartView>| -> Vec<f64> {
+            let s = view.state.borrow();
+            s.drawings.iter().map(|d| d.style(&s.configs).width).collect()
+        };
+        let before = widths(&view);
+        assert!(view.step_width(drawings::WIDTH_STEP));
+        let after = widths(&view);
+        for (was, now) in before.iter().zip(&after) {
+            assert_eq!(*now, was + drawings::WIDTH_STEP);
+        }
+        assert!(view.state.borrow().drawings.iter().all(|d| d.config.is_none()), "each its own look now");
+        for _ in 0..40 {
+            view.step_width(-drawings::WIDTH_STEP);
+        }
+        assert!(widths(&view).iter().all(|w| *w == drawings::MIN_WIDTH));
+        for _ in 0..40 {
+            view.step_width(drawings::WIDTH_STEP);
+        }
+        assert!(widths(&view).iter().all(|w| *w == drawings::MAX_WIDTH));
+    }
+
     /// A right-click with a drawing half laid down drops it and keeps the
     /// tool in hand, for another go.
     #[test]
@@ -9792,6 +10088,140 @@ mod drawing_tests {
         );
         assert_ne!(inside, outside, "the box painted nothing");
         assert_ne!(inside, solid, "the box is opaque");
+    }
+
+    /// An anchored VWAP is the engine's line from the bar it is anchored to,
+    /// projected onto the chart: it starts on that bar at that bar's own
+    /// value, goes on to the last bar, and grows when a bar arrives.
+    #[test]
+    fn an_anchored_vwap_runs_from_its_bar_to_the_last() {
+        let mut state = charted(60);
+        state.visible = 60;
+        let (w, h) = (800.0, 400.0);
+        let (first, visible) = state.slice();
+        let plan = layout(&state, w, h);
+        let scale = price_range(&state, &state.bars[first..first + visible], &plan).unwrap();
+        let start = 40;
+        let anchor = Anchor::new(state.bars[start].ts, 0.0);
+        let drawing = Drawing::new(DrawingKind::Vwap, anchor, anchor);
+
+        let projected = state.project(&plan, &scale, &drawing);
+        let expected = omacharts_engine::indicators::vwap::anchored(
+            &state.bars[start..],
+            omacharts_engine::drawings::VwapSource::Hlc3,
+        );
+        assert_eq!(projected.corners.len(), 60 - start, "a point a bar, anchor to last");
+        let to_y = |price: f64| scale.to_y(price, plan.price_y, plan.price_h);
+        for (n, (point, value)) in projected.corners.iter().zip(&expected).enumerate() {
+            assert!((point.1 - to_y(value.vwap)).abs() < 1e-9, "point {n}");
+        }
+        // Its anchor is the line's first point, on the anchor bar, at the
+        // anchor bar's typical price rather than the price it was given.
+        let bar = &state.bars[start];
+        assert_eq!(projected.from, projected.corners[0]);
+        assert!((projected.from.1 - to_y((bar.high + bar.low + bar.close) / 3.0)).abs() < 1e-9);
+        assert_eq!(projected.hit(projected.from.0, projected.from.1), Some(Grip::From));
+
+        // A bar arrives: the line reaches it, and its earlier values stand.
+        let mut next = *state.bars.last().unwrap();
+        next.ts += 3600;
+        next.volume = 50.0;
+        next.close += 10.0;
+        next.high += 10.0;
+        state.bars.push(next);
+        state.visible = 61;
+        let (first, visible) = state.slice();
+        let scale = price_range(&state, &state.bars[first..first + visible], &plan).unwrap();
+        let grown = state.project(&plan, &scale, &drawing);
+        assert_eq!(grown.corners.len(), 61 - start, "the new bar is on the line");
+        let (_, line) = state.anchored_vwap(&drawing).unwrap();
+        assert_eq!(line[..expected.len()], expected[..], "what was there is unchanged");
+        assert!(line.last().unwrap().vwap > expected.last().unwrap().vwap, "pulled up by the heavy bar");
+    }
+
+    /// One click with the tool is the whole drawing, and a click past the
+    /// last bar anchors it on the last.
+    #[test]
+    fn an_anchored_vwap_clicked_past_the_end_starts_on_the_last_bar() {
+        let state = charted(60);
+        let last = state.bars.last().unwrap().ts;
+        let later = Anchor::new(last + 5 * 3600, 1.0);
+        assert_eq!(anchor_on_a_bar(&state.bars, later).ts, last);
+        let earlier = Anchor::new(state.bars[0].ts - 3600, 1.0);
+        assert_eq!(anchor_on_a_bar(&state.bars, earlier).ts, state.bars[0].ts);
+        let on = Anchor::new(state.bars[7].ts, 1.0);
+        assert_eq!(anchor_on_a_bar(&state.bars, on), on);
+    }
+
+    /// The bands are drawn round the line when asked for, and not otherwise.
+    #[test]
+    fn an_anchored_vwap_paints_its_bands_only_when_asked() {
+        let mut state = charted(60);
+        state.visible = 60;
+        let (w, h) = (800.0, 400.0);
+        let anchor = Anchor::new(state.bars[10].ts, 0.0);
+        let mut drawing = Drawing::new(DrawingKind::Vwap, anchor, anchor);
+        let paint = |state: &State, under: bool| -> Vec<u8> {
+            let mut surface = cairo::ImageSurface::create(cairo::Format::ARgb32, w as i32, h as i32).unwrap();
+            {
+                let cr = cairo::Context::new(&surface).unwrap();
+                let (first, visible) = state.slice();
+                let plan = layout(state, w, h);
+                let scale = price_range(state, &state.bars[first..first + visible], &plan).unwrap();
+                draw_drawings(&cr, state, &plan, &scale, under);
+            }
+            surface.flush();
+            surface.data().unwrap().to_vec()
+        };
+        let inked = |pixels: &[u8]| pixels.chunks(4).filter(|p| p[3] > 0).count();
+        let empty = paint(&state, false);
+        state.drawings = vec![drawing.clone()];
+        let line = paint(&state, false);
+        assert_ne!(line, empty, "the line painted nothing");
+        assert_eq!(inked(&paint(&state, true)), 0, "nothing shaded before a band is");
+
+        // The outer band is a plain line either side, over the bars.
+        let configs = state.configs.clone();
+        drawing.edit_style(&configs, |s| s.vwap.bands[2].enabled = true);
+        state.drawings = vec![drawing.clone()];
+        let banded = paint(&state, false);
+        assert!(inked(&banded) > inked(&line), "the bands added nothing");
+
+        // The inner one is shading with no outline: under the bars, and
+        // nothing over them.
+        drawing.edit_style(&configs, |s| {
+            s.vwap.bands[2].enabled = false;
+            s.vwap.bands[0].enabled = true;
+        });
+        state.drawings = vec![drawing];
+        assert_eq!(paint(&state, false), line, "a shade with no outline draws no line");
+        assert!(inked(&paint(&state, true)) > 0, "the shading went missing");
+    }
+
+    /// Selected, it glows as a selected study does: wider than the line,
+    /// under it.
+    #[test]
+    fn a_selected_anchored_vwap_glows() {
+        let mut state = charted(60);
+        state.visible = 60;
+        let (w, h) = (800.0, 400.0);
+        let anchor = Anchor::new(state.bars[10].ts, 0.0);
+        state.drawings = vec![Drawing::new(DrawingKind::Vwap, anchor, anchor)];
+        let inked = |state: &State| {
+            let mut surface = cairo::ImageSurface::create(cairo::Format::ARgb32, w as i32, h as i32).unwrap();
+            {
+                let cr = cairo::Context::new(&surface).unwrap();
+                let (first, visible) = state.slice();
+                let plan = layout(state, w, h);
+                let scale = price_range(state, &state.bars[first..first + visible], &plan).unwrap();
+                draw_drawings(&cr, state, &plan, &scale, false);
+            }
+            surface.flush();
+            surface.data().unwrap().chunks(4).filter(|p| p[3] > 0).count()
+        };
+        let plain = inked(&state);
+        state.selected = vec![0];
+        assert!(inked(&state) > plain * 2, "no glow round the line");
     }
 
     /// Daily bars, about five and a half years across 1088 pixels: the count

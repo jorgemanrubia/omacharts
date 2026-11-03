@@ -230,6 +230,7 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Alt+C", "Draw a circle, dragged to any shape"),
             ("Alt+T", "Write on the chart: click, then type"),
             ("Alt+V", "Draw a volume profile of the bars dragged across"),
+            ("Alt+W", "Anchor a VWAP: click the bar it starts from"),
             ("Alt+M", "Measure: click the start, then the end"),
             ("Ctrl+D", "Show or hide the drawing tools"),
             ("Alt+1 … 9", "Configuration N, for the selected drawing or the one about to be drawn"),
@@ -242,7 +243,7 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Alt+Shift+← → ↑ ↓", "Put a selected drawing's label against that edge"),
             ("Alt+Shift+.", "Put it back in the middle"),
             ("Alt+Shift+A", "Step the selected drawing's arrowhead: none, filled, open, barb"),
-            ("Alt+Shift++ / Alt+Shift+−", "Thicken or thin a selected drawing's line or edge"),
+            ("Alt+Shift++ / Alt+Shift+−", "Thicken or thin the selected drawings' lines or edges, or the selected indicator's line"),
             ("Enter", "The selected drawing's properties"),
             ("← → ↑ ↓", "Nudge the selected drawing a pixel; ten with Shift"),
             ("Ctrl+Shift+↑ ↓", "Bring the selected drawing to the front, or send it to the back"),
@@ -7508,6 +7509,16 @@ impl Window {
                 crate::ui::chart_settings::ChartSettings::present_indicator(self, indicator);
             }
             IndicatorEvent::Remove(indicator) => self.remove_indicator(&pane, indicator),
+            IndicatorEvent::StepWidth(indicator, thicker) => {
+                let mut indicators = pane.indicators.borrow().clone();
+                let stepped = indicators
+                    .iter_mut()
+                    .find(|i| i.id == indicator)
+                    .is_some_and(|i| i.step_width(thicker));
+                if stepped {
+                    self.change_indicators_of(&pane, indicators);
+                }
+            }
         }
     }
 
@@ -9345,6 +9356,11 @@ impl Window {
             this.arm_drawing(omacharts_engine::DrawingKind::Profile)
         });
         actions.add_action(&draw_profile);
+
+        let draw_avwap = gio::SimpleAction::new("draw-avwap", None);
+        let this = self.clone();
+        draw_avwap.connect_activate(move |_, _| this.arm_drawing(omacharts_engine::DrawingKind::Vwap));
+        actions.add_action(&draw_avwap);
 
         let measure = gio::SimpleAction::new("measure", None);
         let this = self.clone();

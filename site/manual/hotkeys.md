@@ -131,6 +131,7 @@ Tools and configurations:
 | <kbd>Alt</kbd> + <kbd>C</kbd> | A circle, dragged to any shape | [Drawings](/manual/drawings/) |
 | <kbd>Alt</kbd> + <kbd>T</kbd> | Text: click, then type | [Drawings](/manual/drawings/) |
 | <kbd>Alt</kbd> + <kbd>V</kbd> | A volume profile of the span dragged across | [Drawings](/manual/drawings/#volume-profiles) |
+| <kbd>Alt</kbd> + <kbd>W</kbd> | An anchored VWAP from the bar clicked | [Drawings](/manual/drawings/#anchored-vwap) |
 | <kbd>Alt</kbd> + <kbd>M</kbd> | Measure: click the start, then the end | [Drawings](/manual/drawings/#measuring-a-move) |
 | <kbd>Alt</kbd> + <kbd>1</kbd> … <kbd>9</kbd> | Configuration N, for the selected drawing or the one about to be drawn | [Drawings](/manual/drawings/) |
 | <kbd>Ctrl</kbd>, held | A point being placed or dragged snaps to the open, high, low or close of the candle under it | [Drawings](/manual/drawings/) |
@@ -157,6 +158,7 @@ With an indicator selected:
 | Key | Does | See |
 |---|---|---|
 | <kbd>Alt</kbd> + <kbd>Enter</kbd> | Its settings | [Indicators](/manual/indicators/#selecting-an-indicator) |
+| <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>+</kbd> / <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>−</kbd> | Thickens or thins its line, or a volume profile's outline | [Indicators](/manual/indicators/#selecting-an-indicator) |
 | <kbd>Ctrl</kbd> + <kbd>X</kbd> / <kbd>Ctrl</kbd> + <kbd>C</kbd> / <kbd>Ctrl</kbd> + <kbd>V</kbd> | Cuts or copies it, and pastes it on the focused chart | [Indicators](/manual/indicators/#selecting-an-indicator) |
 | <kbd>Delete</kbd> / <kbd>Backspace</kbd> | Removes it | [Indicators](/manual/indicators/#selecting-an-indicator) |
 | <kbd>Esc</kbd> | Clears the selection | [Indicators](/manual/indicators/#selecting-an-indicator) |

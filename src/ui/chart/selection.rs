@@ -360,6 +360,19 @@ pub(super) fn glow_line(
     columns: &Columns,
     point: impl Fn(usize) -> Option<(f64, f64)>,
 ) {
+    glow_path(cr, theme, colour, width, (0..columns.len()).map(point));
+}
+
+/// The same glow through any run of points, a `None` breaking it: what an
+/// anchored VWAP drawing glows with, so a selected one and a selected study
+/// look the same.
+pub(super) fn glow_path(
+    cr: &cairo::Context,
+    theme: &Theme,
+    colour: &str,
+    width: f64,
+    points: impl Iterator<Item = Option<(f64, f64)>>,
+) {
     cr.save().ok();
     cr.set_dash(&[], 0.0);
     cr.set_line_cap(cairo::LineCap::Round);
@@ -367,8 +380,8 @@ pub(super) fn glow_line(
     cr.set_line_width((width + 6.0).max(7.0));
     colors::set_source_alpha(cr, colour, glow_alpha(theme));
     let mut pen_down = false;
-    for at in 0..columns.len() {
-        match point(at) {
+    for point in points {
+        match point {
             Some((x, y)) if pen_down => cr.line_to(x, y),
             Some((x, y)) => {
                 cr.move_to(x, y);
@@ -378,6 +391,15 @@ pub(super) fn glow_line(
         }
     }
     let _ = cr.stroke();
+    cr.restore().ok();
+}
+
+/// The glow as a disc of `radius`, for a line that is still one point.
+pub(super) fn glow_dot(cr: &cairo::Context, theme: &Theme, colour: &str, (x, y): (f64, f64), radius: f64) {
+    cr.save().ok();
+    colors::set_source_alpha(cr, colour, glow_alpha(theme));
+    cr.arc(x, y, radius, 0.0, std::f64::consts::TAU);
+    let _ = cr.fill();
     cr.restore().ok();
 }
 

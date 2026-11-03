@@ -410,13 +410,20 @@ pub enum Kind {
     /// not moved whole, since a profile somewhere else is a different
     /// profile: its two edges change the span instead.
     Profile,
+    /// A VWAP anchored at a bar: the volume-weighted average price from that
+    /// bar to the last one on the chart, growing as bars arrive. One anchor,
+    /// like a word, and only its moment means anything; the line's height
+    /// comes from the bars. Moved by its anchor alone, since moved whole it
+    /// would be a VWAP from another bar.
+    Vwap,
 }
 
 impl Kind {
     /// Every kind, in the order the tools are offered: the plain line
     /// first, then the two that are a line with one thing added, then the
-    /// shapes, then the words, then the profile.
-    pub const ALL: [Kind; 8] = [
+    /// shapes, then the words, then the two that are read off the bars: the
+    /// profile, and the anchored VWAP under it.
+    pub const ALL: [Kind; 9] = [
         Kind::Line,
         Kind::Horizontal,
         Kind::Arrow,
@@ -425,6 +432,7 @@ impl Kind {
         Kind::Ellipse,
         Kind::Text,
         Kind::Profile,
+        Kind::Vwap,
     ];
 
     /// The kinds that are a shape, which is every kind that can carry text
@@ -452,6 +460,7 @@ impl Kind {
             Kind::Ellipse => "Circle",
             Kind::Text => "Text",
             Kind::Profile => "Volume profile",
+            Kind::Vwap => "Anchored VWAP",
         }
     }
 
@@ -465,6 +474,7 @@ impl Kind {
             Kind::Ellipse => "ellipse",
             Kind::Text => "text",
             Kind::Profile => "profile",
+            Kind::Vwap => "avwap",
         }
     }
 
@@ -488,6 +498,12 @@ impl Kind {
                     .any(|name| key.eq_ignore_ascii_case(name))
                     .then_some(Kind::Profile)
             })
+            .or_else(|| {
+                ["vwap", "anchored-vwap"]
+                    .iter()
+                    .any(|name| key.eq_ignore_ascii_case(name))
+                    .then_some(Kind::Vwap)
+            })
     }
 
     /// Whether this kind has an inside: a fill, and room for text in it.
@@ -507,7 +523,21 @@ impl Kind {
     /// profile cannot, since it is read for its rows and has no inside free
     /// of them.
     pub fn takes_text(self) -> bool {
-        self != Kind::Profile
+        !self.reads_bars()
+    }
+
+    /// Whether what it draws is worked out from the bars it covers rather
+    /// than drawn through its anchors' prices: the profile and the anchored
+    /// VWAP. Neither is moved whole, since moved it would describe other
+    /// bars; its anchors are what change what it covers.
+    pub fn reads_bars(self) -> bool {
+        matches!(self, Kind::Profile | Kind::Vwap)
+    }
+
+    /// Whether it is pinned at one point rather than spanning two: words,
+    /// and the anchored VWAP, whose second anchor is its first.
+    pub fn one_anchor(self) -> bool {
+        matches!(self, Kind::Text | Kind::Vwap)
     }
 
     /// Whether the drawing is the text itself, rather than a shape that may
@@ -1053,7 +1083,116 @@ pub struct Style {
     /// stored style, which would only ever carry the defaults.
     #[serde(default, skip_serializing_if = "ProfileLook::is_default")]
     pub profile: ProfileLook,
+    /// What only an anchored VWAP has, left out of every other kind's the
+    /// same way.
+    #[serde(default, skip_serializing_if = "VwapLook::is_default")]
+    pub vwap: VwapLook,
 }
+
+/// An anchored VWAP's own properties: the study's, as one drawing carries
+/// them. The line is the drawing's colour at its width, drawn in `line`'s
+/// pattern; the price it weights and the three bands round it are here.
+///
+/// All of it is part of the style, so all of it is part of a configuration:
+/// a look saved as configuration N brings its bands back with it.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub struct VwapLook {
+    #[serde(default)]
+    pub source: VwapSource,
+    #[serde(default)]
+    pub line: LineStyle,
+    /// Always the study's three, innermost first, each switched on or off
+    /// rather than added or taken away, so a band keeps its look while it
+    /// is hidden.
+    #[serde(default = "vwap_bands", deserialize_with = "stored_vwap_bands")]
+    pub bands: Vec<VwapBand>,
+}
+
+impl Default for VwapLook {
+    fn default() -> VwapLook {
+        VwapLook { source: VwapSource::default(), line: LineStyle::default(), bands: vwap_bands() }
+    }
+}
+
+impl VwapLook {
+    fn is_default(&self) -> bool {
+        *self == VwapLook::default()
+    }
+
+    /// The bands that are drawn.
+    pub fn shown(&self) -> impl Iterator<Item = &VwapBand> {
+        self.bands.iter().filter(|band| band.enabled)
+    }
+}
+
+/// One band round an anchored VWAP: the study's band, in a drawing's paint.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub struct VwapBand {
+    /// Standard deviations from the line.
+    pub deviations: f64,
+    pub enabled: bool,
+    /// `None` is the line's own colour, and follows it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub colour: Option<Paint>,
+    /// Shade the area between this band's edges.
+    pub fill: bool,
+    /// How much of the colour that shading gets.
+    pub fill_alpha: f64,
+    /// Its two edges. A width of zero draws none, which is how the inner
+    /// band is a shade with no outline.
+    pub stroke: Stroke,
+}
+
+impl VwapBand {
+    /// The colour it is drawn in, under a line of `line`.
+    pub fn paint<'a>(&'a self, line: &'a Paint) -> &'a Paint {
+        self.colour.as_ref().unwrap_or(line)
+    }
+}
+
+/// The study's three bands, as it ships them and off: the drawing's are
+/// read from the same list, so the two cannot come to disagree.
+pub fn vwap_bands() -> Vec<VwapBand> {
+    crate::indicators::vwap::default_bands()
+        .into_iter()
+        .map(|band| VwapBand {
+            deviations: band.deviations,
+            enabled: band.enabled,
+            colour: None,
+            fill: band.fill,
+            fill_alpha: band.alpha(),
+            stroke: band.stroke,
+        })
+        .collect()
+}
+
+/// The bands as stored, or the study's three when what is stored is not a
+/// list of them: the first builds of the anchored VWAP kept only the
+/// multiples that were on, and a drawing saved by one should open rather
+/// than fail.
+fn stored_vwap_bands<'de, D: serde::Deserializer<'de>>(from: D) -> Result<Vec<VwapBand>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Stored {
+        Bands(Vec<VwapBand>),
+        Other(serde::de::IgnoredAny),
+    }
+    Ok(match Stored::deserialize(from)? {
+        Stored::Bands(bands) if bands.len() == VWAP_BAND_COUNT => bands,
+        _ => vwap_bands(),
+    })
+}
+
+/// How many bands an anchored VWAP has: the study's three.
+pub const VWAP_BAND_COUNT: usize = 3;
+
+/// How near and how far a band may be set, in standard deviations: the
+/// study's dialog's ends, in tenths.
+pub const MIN_VWAP_DEVIATIONS: f64 = 0.1;
+pub const MAX_VWAP_DEVIATIONS: f64 = 6.0;
+
+pub use crate::indicators::{LineStyle, Stroke};
+pub use crate::indicators::vwap::Source as VwapSource;
 
 /// A volume profile drawing's own properties: the study's, as one drawing
 /// carries them. The rows are the drawing's fill, the value area at its
@@ -1207,6 +1346,7 @@ impl Style {
             alpha: FILL_ALPHA,
             text: TextStyle::of(preset),
             profile: ProfileLook::default(),
+            vwap: VwapLook::default(),
         }
     }
 
@@ -1224,6 +1364,7 @@ impl Style {
             alpha: FILL_ALPHA,
             text: TextStyle::of(preset),
             profile: ProfileLook::default(),
+            vwap: VwapLook::default(),
         }
     }
 
@@ -1302,6 +1443,12 @@ impl Style {
         }
     }
 
+    /// An anchored VWAP is a line, and starts as one: the preset's colour
+    /// at the chart's stroke, with no bands.
+    pub fn vwap(preset: Preset) -> Style {
+        Style::line(preset)
+    }
+
     /// The configuration this kind starts from.
     pub fn of(kind: Kind, preset: Preset) -> Style {
         match kind {
@@ -1313,6 +1460,7 @@ impl Style {
             Kind::Ellipse => Style::ellipse(preset),
             Kind::Text => Style::text(preset),
             Kind::Profile => Style::profile(preset),
+            Kind::Vwap => Style::vwap(preset),
         }
     }
 
@@ -1359,6 +1507,8 @@ pub struct Configurations {
     pub zigzag: Vec<Style>,
     #[serde(default)]
     pub profile: Vec<Style>,
+    #[serde(default)]
+    pub vwap: Vec<Style>,
 }
 
 /// How many configurations each kind has.
@@ -1376,6 +1526,7 @@ impl Default for Configurations {
             ellipse: nine(Style::ellipse),
             text: nine(Style::text),
             profile: nine(Style::profile),
+            vwap: nine(Style::vwap),
         }
     }
 }
@@ -1437,6 +1588,7 @@ impl Configurations {
             Kind::Ellipse => &self.ellipse,
             Kind::Text => &self.text,
             Kind::Profile => &self.profile,
+            Kind::Vwap => &self.vwap,
         }
     }
 
@@ -1450,6 +1602,7 @@ impl Configurations {
             Kind::Ellipse => &mut self.ellipse,
             Kind::Text => &mut self.text,
             Kind::Profile => &mut self.profile,
+            Kind::Vwap => &mut self.vwap,
         }
     }
 
@@ -1801,7 +1954,8 @@ impl Drawing {
         // moved both go: nothing reads the second, and letting them drift
         // apart would leave a drawing whose box depends on which grip was
         // last dragged.
-        if self.kind.is_text() {
+        // An anchored VWAP is the same: one anchor, and its grip moves it.
+        if self.kind.one_anchor() {
             self.from = at;
             self.to = at;
             return;
@@ -1872,7 +2026,7 @@ impl Drawing {
     /// A volume profile stays where it is: moved, it would be a profile of
     /// other bars, which is a change of span its edges are for.
     pub fn shift(&mut self, by_ts: i64, by_price: f64) {
-        if self.kind == Kind::Profile {
+        if self.kind.reads_bars() {
             return;
         }
         for anchor in [&mut self.from, &mut self.to] {
@@ -1921,6 +2075,9 @@ impl Drawing {
             // four move only the edge they are on: the span is all a profile
             // has to change. Nothing moves its prices; those are the bars'.
             Kind::Profile => &[Grip::From, Grip::FromTo, Grip::ToFrom, Grip::To],
+            // The anchor, on the bar the line starts from: dragged to
+            // another bar, the VWAP starts from that one.
+            Kind::Vwap => &[Grip::From],
             // Answered above, where the number of them is known.
             Kind::Zigzag => &[],
         }
@@ -2034,7 +2191,10 @@ impl Projected {
     /// Where a grip is on screen.
     pub fn grip(&self, grip: Grip) -> Option<(f64, f64)> {
         if let Grip::Corner(n) = grip {
-            return self.corners.get(n).copied();
+            return match self.kind {
+                Kind::Vwap => None,
+                _ => self.corners.get(n).copied(),
+            };
         }
         match (self.kind, grip) {
             (Kind::Text, _) => None,
@@ -2050,6 +2210,10 @@ impl Projected {
                 })
             }
             (Kind::Profile, _) => None,
+            // Its anchor, where the line starts. The rest of the line is
+            // its corners, and none of them is a grip.
+            (Kind::Vwap, Grip::From) => Some(self.from),
+            (Kind::Vwap, _) => None,
             (_, Grip::From) => Some(self.from),
             (_, Grip::To) => Some(self.to),
             (Kind::Rect | Kind::Ellipse, Grip::FromTo) => Some((self.from.0, self.to.1)),
@@ -2078,6 +2242,9 @@ impl Projected {
         // `From` for the first point — and moving `from` moves nothing that
         // is drawn.
         let fixed: &[Grip] = match self.corners.is_empty() {
+            // The line a VWAP is drawn as is points worked out from the
+            // bars, not corners anybody put there; its anchor is its grip.
+            _ if self.kind == Kind::Vwap => &[Grip::From],
             true => &[
                 Grip::From,
                 Grip::To,
@@ -2127,7 +2294,7 @@ impl Projected {
             // Every kind that is a stroke is picked the same way: near the
             // segment. What differs between them is what is drawn on it, not
             // where it is.
-            Kind::Line | Kind::Horizontal | Kind::Arrow | Kind::Zigzag => self
+            Kind::Line | Kind::Horizontal | Kind::Arrow | Kind::Zigzag | Kind::Vwap => self
                 .segments()
                 .iter()
                 .any(|(a, b)| distance_to_segment((x, y), *a, *b) <= reach),
@@ -2166,7 +2333,7 @@ impl Projected {
             return true;
         }
         match self.kind {
-            Kind::Line | Kind::Horizontal | Kind::Arrow | Kind::Zigzag => self
+            Kind::Line | Kind::Horizontal | Kind::Arrow | Kind::Zigzag | Kind::Vwap => self
                 .segments()
                 .iter()
                 .any(|(a, b)| segment_meets_box(*a, *b, left, top, right, bottom)),
@@ -3488,6 +3655,119 @@ mod edge_grip_tests {
         assert_eq!((drawing.from.ts, drawing.to.ts), (100, 300));
         assert!(!Kind::Profile.takes_text());
         assert_eq!(Kind::from_key("vp"), Some(Kind::Profile));
+    }
+
+    #[test]
+    fn an_anchored_vwap_is_one_anchor_moved_by_its_grip_alone() {
+        let mut drawing = Drawing::new(Kind::Vwap, Anchor::new(100, 10.0), Anchor::new(100, 10.0));
+        assert_eq!(drawing.grips(), vec![Grip::From]);
+        // Its grip takes both anchors to the bar it is dropped on.
+        drawing.drag_grip(Grip::From, Anchor::new(300, 42.0));
+        assert_eq!((drawing.from.ts, drawing.to.ts), (300, 300));
+        // Moved whole it would be a VWAP from another bar, so it is not.
+        drawing.shift(50, 1.0);
+        assert_eq!((drawing.from.ts, drawing.from.price), (300, 42.0), "not moved whole");
+        assert!(!Kind::Vwap.takes_text());
+        assert!(Kind::Vwap.one_anchor() && Kind::Vwap.reads_bars());
+        for key in ["avwap", "vwap", "anchored-vwap", "AVWAP"] {
+            assert_eq!(Kind::from_key(key), Some(Kind::Vwap), "{key}");
+        }
+        // Offered straight after the profile: its button is the one under it.
+        assert_eq!(Kind::ALL[Kind::ALL.len() - 2..], [Kind::Profile, Kind::Vwap]);
+    }
+
+    /// The line it is drawn as is points worked out from the bars, and none
+    /// of them is a grip: only the anchor is, and the line is its body.
+    #[test]
+    fn an_anchored_vwap_is_held_by_its_anchor_and_picked_on_its_line() {
+        let line = vec![(10.0, 50.0), (20.0, 40.0), (30.0, 45.0)];
+        let projected = Projected { from: (10.0, 50.0), ..Projected::through(Kind::Vwap, line) };
+        assert_eq!(projected.hit(10.0, 50.0), Some(Grip::From));
+        assert_eq!(projected.hit(30.0, 45.0), Some(Grip::Body), "the last point is no grip");
+        assert_eq!(projected.grip(Grip::Corner(1)), None);
+        assert_eq!(projected.hit(25.0, 42.5), Some(Grip::Body));
+        assert_eq!(projected.hit(25.0, 80.0), None);
+        assert!(projected.touches((18.0, 35.0, 4.0, 10.0)));
+    }
+
+    /// Its properties are the study's, with the study's defaults: a solid
+    /// line, and three bands at 1, 1.5 and 2 deviations, all off, the first
+    /// shaded with no outline, the second dashed, the third plain.
+    #[test]
+    fn an_anchored_vwap_starts_with_the_studys_properties() {
+        let configs = Configurations::default();
+        assert!((1..=9).all(|n| configs.of(Kind::Vwap, n).vwap == VwapLook::default()));
+        assert_eq!(configs.of(Kind::Vwap, 1).colour, Paint::preset(Preset::Up));
+        assert_eq!(configs.of(Kind::Vwap, 1).width, 1.5, "the study's thickness");
+        let look = VwapLook::default();
+        assert_eq!(look.line, LineStyle::Solid);
+        assert_eq!(look.shown().count(), 0, "no band drawn until asked");
+        let study = crate::indicators::vwap::default_bands();
+        assert_eq!(look.bands.len(), study.len());
+        for (band, theirs) in look.bands.iter().zip(&study) {
+            assert_eq!(band.deviations, theirs.deviations);
+            assert_eq!((band.fill, band.stroke), (theirs.fill, theirs.stroke));
+            assert_eq!(band.fill_alpha, theirs.alpha());
+            assert_eq!(band.colour, None, "the line's colour");
+        }
+        assert_eq!(look.bands[1].paint(&Paint::preset(Preset::Amber)), &Paint::preset(Preset::Amber));
+    }
+
+    /// Every property it has is in its style, so a configuration saved from
+    /// one brings all of it back, bands and their looks included, through
+    /// the store.
+    #[test]
+    fn a_configuration_saved_with_bands_brings_them_back() {
+        let mut style = Style::vwap(Preset::Amber);
+        style.width = 2.5;
+        style.vwap.source = VwapSource::Close;
+        style.vwap.line = LineStyle::Dotted;
+        style.vwap.bands[0].enabled = true;
+        style.vwap.bands[2] = VwapBand {
+            deviations: 2.5,
+            enabled: true,
+            colour: Some(Paint::preset(Preset::Violet)),
+            fill: true,
+            fill_alpha: 0.3,
+            stroke: Stroke::new(2.5, LineStyle::Dashed),
+        };
+        let mut configs = Configurations::default();
+        configs.set(Kind::Vwap, 7, style.clone());
+        let stored = serde_json::to_string(&configs).unwrap();
+        let read: Configurations = serde_json::from_str(&stored).unwrap();
+        assert_eq!(read.of(Kind::Vwap, 7), &style);
+        assert!(!read.is_default(Kind::Vwap, 7));
+
+        // A drawing following it wears all of it.
+        let mut drawing = Drawing::new(Kind::Vwap, Anchor::new(100, 0.0), Anchor::new(100, 0.0));
+        drawing.follow(7);
+        assert_eq!(drawing.style(&read), &style);
+
+        // A line's stored style says nothing about a VWAP.
+        let plain = serde_json::to_value(Style::line(Preset::Up)).unwrap();
+        assert!(plain.get("vwap").is_none(), "{plain}");
+    }
+
+    /// The first builds kept only the multiples of the bands that were on.
+    /// A style saved by one opens, with the study's bands.
+    #[test]
+    fn an_anchored_vwap_saved_with_band_multiples_opens_with_the_studys_bands() {
+        let mut stored = serde_json::to_value(Style::vwap(Preset::Teal)).unwrap();
+        stored["vwap"] = serde_json::json!({ "source": "close", "bands": [1.0, 2.0] });
+        let style: Style = serde_json::from_value(stored).unwrap();
+        assert_eq!(style.vwap.source, VwapSource::Close);
+        assert_eq!(style.vwap.bands, vwap_bands());
+    }
+
+    /// A store written before the anchored VWAP existed has no list for it,
+    /// and opens with its nine as shipped.
+    #[test]
+    fn configurations_written_before_the_anchored_vwap_read_its_defaults() {
+        let mut stored = serde_json::to_value(Configurations::default()).unwrap();
+        stored.as_object_mut().unwrap().remove("vwap");
+        let configs: Configurations = serde_json::from_value(stored).unwrap();
+        assert_eq!(configs.list(Kind::Vwap).len(), CONFIGURATIONS as usize);
+        assert!(configs.is_default(Kind::Vwap, 4));
     }
 
     #[test]

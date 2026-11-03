@@ -666,25 +666,25 @@ impl IndicatorList {
 /// They ask for the colour every time they are drawn instead, and the colour
 /// row repaints them when it changes one.
 #[derive(Clone)]
-struct Ink {
+pub(crate) struct Ink {
     colour: Rc<dyn Fn() -> String>,
     samples: Rc<RefCell<Vec<glib::WeakRef<gtk::DrawingArea>>>>,
 }
 
 impl Ink {
-    fn new(colour: impl Fn() -> String + 'static) -> Ink {
+    pub(crate) fn new(colour: impl Fn() -> String + 'static) -> Ink {
         Ink { colour: Rc::new(colour), samples: Rc::new(RefCell::new(Vec::new())) }
     }
 
-    fn colour(&self) -> String {
+    pub(crate) fn colour(&self) -> String {
         (self.colour)()
     }
 
-    fn watch(&self, area: &gtk::DrawingArea) {
+    pub(crate) fn watch(&self, area: &gtk::DrawingArea) {
         self.samples.borrow_mut().push(area.downgrade());
     }
 
-    fn repaint(&self) {
+    pub(crate) fn repaint(&self) {
         for area in self.samples.borrow().iter() {
             if let Some(area) = area.upgrade() {
                 area.queue_draw();
@@ -1298,11 +1298,11 @@ fn stroke_rows(
 /// question nobody has an opinion about; what people want is a thicker line or
 /// a thinner one, and they want to see which. Zero stays because a VWAP band
 /// uses it to draw its fill with no outline.
-const WIDTHS: [f64; 5] = [0.0, 1.0, 1.5, 2.5, 4.0];
+pub(crate) const WIDTHS: [f64; 5] = omacharts_engine::indicators::STROKE_WIDTHS;
 
 /// What a style sample is drawn at, so dashes and dots are legible whatever
 /// weight the line itself is set to.
-const LINE_SAMPLE_WIDTH: f64 = 1.5;
+pub(crate) const LINE_SAMPLE_WIDTH: f64 = 1.5;
 
 /// A row of drawn samples, one of them pressed.
 ///
@@ -1365,7 +1365,7 @@ fn picker_row(
     row
 }
 
-fn describe_stroke(width: f64, style: LineStyle) -> String {
+pub(crate) fn describe_stroke(width: f64, style: LineStyle) -> String {
     if width <= 0.0 {
         return "No line".to_string();
     }
@@ -1373,7 +1373,7 @@ fn describe_stroke(width: f64, style: LineStyle) -> String {
 }
 
 /// One option, drawn as the line it would produce.
-fn stroke_sample(width: f64, style: LineStyle, ink: &Ink) -> gtk::DrawingArea {
+pub(crate) fn stroke_sample(width: f64, style: LineStyle, ink: &Ink) -> gtk::DrawingArea {
     let area = gtk::DrawingArea::new();
     area.set_content_width(34);
     area.set_content_height(18);
@@ -1828,7 +1828,8 @@ fn thickness_row(
     current: f64,
     apply: impl Fn(&mut Indicator, f64) + 'static,
 ) -> adw::SpinRow {
-    let row = adw::SpinRow::with_range(0.5, 6.0, 0.5);
+    use omacharts_engine::indicators::{MAX_OUTLINE_WIDTH, MIN_OUTLINE_WIDTH, OUTLINE_WIDTH_STEP};
+    let row = adw::SpinRow::with_range(MIN_OUTLINE_WIDTH, MAX_OUTLINE_WIDTH, OUTLINE_WIDTH_STEP);
     row.set_title(title);
     row.set_digits(1);
     row.set_value(current);

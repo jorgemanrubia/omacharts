@@ -15,7 +15,7 @@ use chrono_tz::Tz;
 use omacharts_engine::indicators::time::{MAX_ALPHA, MIN_ALPHA};
 use omacharts_engine::indicators::{
     bollinger::MAX_DEVIATIONS, Hours, LineStyle, Preset, Stroke, TimeRange, MAX_FILL_ALPHA,
-    MAX_PANE_SHARE, MIN_FILL_ALPHA, MIN_PANE_SHARE,
+    MAX_OUTLINE_WIDTH, MAX_PANE_SHARE, MIN_FILL_ALPHA, MIN_OUTLINE_WIDTH, MIN_PANE_SHARE,
 };
 use omacharts_engine::providers;
 use omacharts_engine::theme::{
@@ -2042,7 +2042,7 @@ fn chart_drawing(
     let text = match action {
         "add" => {
             let kind = kind.ok_or_else(|| {
-                Fault::usage("`drawing add` needs a kind: line, hline, arrow, zigzag, rect, ellipse, text or profile".into())
+                Fault::usage("`drawing add` needs a kind: line, hline, arrow, zigzag, rect, ellipse, text, profile or avwap".into())
             })?;
             if !corners.is_empty() && !kind.is_path() {
                 return Err(not_a_path());
@@ -2054,13 +2054,14 @@ fn chart_drawing(
             // uses it for both. A zig-zag given its corners has its ends
             // among them and needs no --from and --to of its own. Everything
             // else spans two.
-            let (from, to) = match (kind.is_text(), corners.first(), corners.last()) {
+            let (from, to) = match (kind.one_anchor(), corners.first(), corners.last()) {
                 (_, Some(first), Some(last)) => (*first, *last),
                 (true, ..) => {
                     let Some(at) = from.or(to) else {
-                        return Err(Fault::usage(
-                            "`drawing add text` needs --from WHEN,PRICE: where the words go".into(),
-                        ));
+                        return Err(Fault::usage(match kind.is_text() {
+                            true => "`drawing add text` needs --from WHEN,PRICE: where the words go".into(),
+                            false => "`drawing add avwap` needs --from WHEN,PRICE: the bar it starts from; the price is not read".into(),
+                        }));
                     };
                     (at, at)
                 }
@@ -2090,6 +2091,7 @@ fn chart_drawing(
             drawing.origin = chart["drawing_uid"].as_str().map(str::to_string).filter(|u| !u.is_empty());
             drawing.follow(config.unwrap_or(1));
             if !style.is_empty() {
+                style.check(drawing.kind)?;
                 drawing.edit_style(&configs, |s| style.apply(s));
             }
             if !words.is_empty() {
@@ -2151,6 +2153,7 @@ fn chart_drawing(
                 drawing.follow(n);
             }
             if !style.is_empty() {
+                style.check(drawing.kind)?;
                 drawing.edit_style(&configs, |s| style.apply(s));
             }
             if !words.is_empty() {
@@ -2285,6 +2288,7 @@ fn configurations_verb(
             if edits.is_empty() {
                 return Err(Fault::usage("nothing to configure: give --color, --width, --arrow, --head, --border, --fill or --alpha".into()));
             }
+            edits.check(kind)?;
             let mut configs = store.drawing_configurations();
             let mut style = configs.of(kind, n).clone();
             edits.apply(&mut style);
@@ -2456,6 +2460,24 @@ fn style_json(kind: omacharts_engine::DrawingKind, style: &omacharts_engine::Sty
             "poc_width": style.profile.poc_width,
         });
     }
+    // And only an anchored VWAP has these.
+    if kind == omacharts_engine::DrawingKind::Vwap {
+        out["vwap"] = json!({
+            "source": style.vwap.source.key(),
+            "style": style.vwap.line.label().to_lowercase(),
+            "bands": style.vwap.bands.iter().enumerate().map(|(n, band)| json!({
+                "band": n + 1,
+                "enabled": band.enabled,
+                "deviations": band.deviations,
+                // Null for the line's own colour, which it follows.
+                "color": band.colour.as_ref().map(|paint| paint.spell()),
+                "shaded": band.fill,
+                "band_alpha": band.fill_alpha,
+                "width": band.stroke.width,
+                "style": band.stroke.style.label().to_lowercase(),
+            })).collect::<Vec<_>>(),
+        });
+    }
     out
 }
 
@@ -2473,8 +2495,10 @@ fn describe_drawing(drawing: &omacharts_engine::Drawing, configs: &omacharts_eng
         false => String::new(),
         true => format!("  {:?}", shorten(&drawing.text.markup().replace('\n', " "), 40)),
     };
-    // A word is at one point, so saying the same moment twice would be noise.
-    let span = match drawing.kind.is_text() {
+    // A word is at one point, so saying the same moment twice would be noise;
+    // an anchored VWAP is at one moment, and its price is the bars'.
+    let span = match drawing.kind.one_anchor() {
+        true if drawing.kind.reads_bars() => format!("from {}", spell_moment(drawing.from.ts, zone)),
         true => format!("{} {:.2}", spell_moment(drawing.from.ts, zone), drawing.from.price),
         false => format!(
             "{} {:.2} → {} {:.2}",
@@ -2534,6 +2558,18 @@ fn describe_style(kind: omacharts_engine::DrawingKind, style: &omacharts_engine:
                 look.value_area * 100.0
             )
         }
+        Kind::Vwap => {
+            let shown: Vec<String> = style.vwap.shown().map(|band| format!("±{}σ", band.deviations)).collect();
+            let bands = match shown.is_empty() {
+                true => "no bands".to_string(),
+                false => format!("bands {}", shown.join(" ")),
+            };
+            let pattern = match style.vwap.line {
+                LineStyle::Solid => String::new(),
+                other => format!(" {}", other.label().to_lowercase()),
+            };
+            format!("{}, {}px{pattern}, {}, {bands}", style.colour.spell(), style.width, style.vwap.source.key())
+        }
     }
 }
 
@@ -2568,6 +2604,20 @@ struct StyleEdits {
     value_area: Option<f64>,
     transparency: Option<f64>,
     poc_width: Option<f64>,
+    source: Option<omacharts_engine::drawings::VwapSource>,
+    /// An anchored VWAP's line pattern.
+    line: Option<LineStyle>,
+    /// Which of its bands are drawn, by place from the line out.
+    bands: Option<Vec<usize>>,
+    /// The band the `--band-*` flags change, by place, or every one.
+    band: Option<usize>,
+    band_deviations: Option<f64>,
+    band_shaded: Option<bool>,
+    band_alpha: Option<f64>,
+    /// `Some(None)` for the line's own colour.
+    band_colour: Option<Option<omacharts_engine::Paint>>,
+    band_width: Option<f64>,
+    band_style: Option<LineStyle>,
 }
 
 impl StyleEdits {
@@ -2581,9 +2631,12 @@ impl StyleEdits {
                 ))
             })
         };
+        // From nothing, which only an anchored VWAP takes — `check` says so
+        // once the kind is known — since its line, like the study's, can be
+        // left out to show only its bands.
         let width = match number(m, "width")? {
             None => None,
-            Some(w) if (MIN_WIDTH..=MAX_WIDTH).contains(&w) => Some(w),
+            Some(w) if (0.0..=MAX_WIDTH).contains(&w) && (w == 0.0 || w >= MIN_WIDTH) => Some(w),
             Some(w) => {
                 return Err(Fault::usage(format!(
                     "--width is {w}, which is outside {MIN_WIDTH} to {MAX_WIDTH}"
@@ -2626,7 +2679,64 @@ impl StyleEdits {
                 Fault::usage(format!("{text:?} is not an alignment; use left or right"))
             })?),
         };
+        let source = match arg(m, "source") {
+            None => None,
+            Some(text) => Some(omacharts_engine::drawings::VwapSource::from_key(text).ok_or_else(|| {
+                Fault::usage(format!("{text:?} is not a price source; use hlc3, hl2, ohlc4 or close"))
+            })?),
+        };
+        let pattern = |id: &str| -> Result<Option<LineStyle>, Fault> {
+            use LineStyle;
+            let Some(text) = arg(m, id) else { return Ok(None) };
+            LineStyle::ALL
+                .into_iter()
+                .find(|style| style.label().eq_ignore_ascii_case(text))
+                .map(Some)
+                .ok_or_else(|| Fault::usage(format!("--{id} is solid, dashed or dotted, not {text:?}")))
+        };
+        let bands = match arg(m, "bands") {
+            None => None,
+            Some(text) => Some(read_bands(text)?),
+        };
+        let band = match arg(m, "band") {
+            None => None,
+            Some(text) => Some(read_bands(text).ok().filter(|at| at.len() == 1).map(|at| at[0]).ok_or_else(|| {
+                Fault::usage(format!("--band is 1, 2 or 3, not {text:?}"))
+            })?),
+        };
+        let band_colour = match arg(m, "band-color") {
+            None => None,
+            Some(text) if text.eq_ignore_ascii_case("line") => Some(None),
+            Some(_) => Some(paint("band-color")?),
+        };
+        let band_shaded = match arg(m, "band-shaded").map(String::as_str) {
+            None => None,
+            Some("on") => Some(true),
+            Some("off") => Some(false),
+            Some(other) => return Err(Fault::usage(format!("--band-shaded is on or off, not {other:?}"))),
+        };
+        let band_deviations = bounded(
+            m,
+            "band-deviations",
+            omacharts_engine::drawings::MIN_VWAP_DEVIATIONS,
+            omacharts_engine::drawings::MAX_VWAP_DEVIATIONS,
+        )?;
+        // One multiple for one band: the three sit at different ones on
+        // purpose, as the study's do.
+        if band_deviations.is_some() && band.is_none() {
+            return Err(Fault::usage("--band-deviations needs --band: the three bands sit at different multiples".into()));
+        }
         Ok(StyleEdits {
+            source,
+            line: pattern("style")?,
+            bands,
+            band,
+            band_deviations,
+            band_shaded,
+            band_alpha: bounded(m, "band-alpha", MIN_FILL_ALPHA, MAX_FILL_ALPHA)?,
+            band_colour,
+            band_width: bounded(m, "band-width", 0.0, MAX_WIDTH)?,
+            band_style: pattern("band-style")?,
             poc: paint("poc-color")?,
             shape,
             align,
@@ -2668,6 +2778,49 @@ impl StyleEdits {
             && self.value_area.is_none()
             && self.transparency.is_none()
             && self.poc_width.is_none()
+            && self.source.is_none()
+            && self.line.is_none()
+            && self.bands.is_none()
+            && self.band.is_none()
+            && !self.edits_a_band()
+    }
+
+    /// Whether anything is said about the look of a band, as opposed to
+    /// which are drawn.
+    fn edits_a_band(&self) -> bool {
+        self.band_deviations.is_some()
+            || self.band_shaded.is_some()
+            || self.band_alpha.is_some()
+            || self.band_colour.is_some()
+            || self.band_width.is_some()
+            || self.band_style.is_some()
+    }
+
+    /// Refuse what this kind has not got rather than store it where nothing
+    /// reads it: a line of no width is a line nobody can find, except on an
+    /// anchored VWAP, whose bands are still there to see.
+    fn check(&self, kind: omacharts_engine::DrawingKind) -> Result<(), Fault> {
+        if self.width == Some(0.0) && kind != omacharts_engine::DrawingKind::Vwap {
+            return Err(Fault::usage(format!(
+                "--width 0 leaves only an anchored VWAP's bands; a {} needs {} to {}",
+                kind.label().to_lowercase(),
+                omacharts_engine::drawings::MIN_WIDTH,
+                omacharts_engine::drawings::MAX_WIDTH
+            )));
+        }
+        let vwap_only = self.source.is_some() || self.line.is_some() || self.bands.is_some() || self.band.is_some() || self.edits_a_band();
+        if vwap_only && kind != omacharts_engine::DrawingKind::Vwap {
+            return Err(Fault::usage(format!(
+                "--source, --style and the --band flags are an anchored VWAP's; a {} has none",
+                kind.label().to_lowercase()
+            )));
+        }
+        if self.band.is_some() && !self.edits_a_band() {
+            return Err(Fault::usage(
+                "--band says which band the --band-* flags change; give one of them too".into(),
+            ));
+        }
+        Ok(())
     }
 
     fn apply(&self, style: &mut omacharts_engine::Style) {
@@ -2718,6 +2871,40 @@ impl StyleEdits {
         }
         if let Some(width) = self.poc_width {
             style.profile.poc_width = width;
+        }
+        if let Some(source) = self.source {
+            style.vwap.source = source;
+        }
+        if let Some(line) = self.line {
+            style.vwap.line = line;
+        }
+        if let Some(shown) = &self.bands {
+            for (at, band) in style.vwap.bands.iter_mut().enumerate() {
+                band.enabled = shown.contains(&at);
+            }
+        }
+        for (at, band) in style.vwap.bands.iter_mut().enumerate() {
+            if self.band.is_some_and(|only| only != at) {
+                continue;
+            }
+            if let Some(deviations) = self.band_deviations {
+                band.deviations = deviations;
+            }
+            if let Some(fill) = self.band_shaded {
+                band.fill = fill;
+            }
+            if let Some(alpha) = self.band_alpha {
+                band.fill_alpha = alpha;
+            }
+            if let Some(colour) = &self.band_colour {
+                band.colour = colour.clone();
+            }
+            if let Some(width) = self.band_width {
+                band.stroke.width = width;
+            }
+            if let Some(style) = self.band_style {
+                band.stroke.style = style;
+            }
         }
     }
 }
@@ -3067,8 +3254,8 @@ impl Edits {
                 Some(other) => return Err(Fault::usage(format!("--outline is on or off, not {other:?}"))),
             },
             outline_color: colour(m, "outline-color")?,
-            outline_width: bounded(m, "outline-width", 0.5, 6.0)?,
-            poc_width: bounded(m, "poc-width", 0.5, 6.0)?,
+            outline_width: bounded(m, "outline-width", MIN_OUTLINE_WIDTH, MAX_OUTLINE_WIDTH)?,
+            poc_width: bounded(m, "poc-width", MIN_OUTLINE_WIDTH, MAX_OUTLINE_WIDTH)?,
             profile_style: match arg(m, "profile-style") {
                 None => None,
                 Some(text) => Some(omacharts_engine::indicators::profile::Style::from_key(text).ok_or_else(|| {
@@ -3584,6 +3771,25 @@ fn number(m: &clap::ArgMatches, id: &str) -> Result<Option<f64>, Fault> {
             .map(Some)
             .map_err(|_| Fault::usage(format!("--{id} takes a number, not {text:?}"))),
     }
+}
+
+/// An anchored VWAP's bands as a command types them, as the study's are:
+/// by place from the line out, `1,2`, or `none`. Handed back from zero.
+fn read_bands(text: &str) -> Result<Vec<usize>, Fault> {
+    use omacharts_engine::drawings::VWAP_BAND_COUNT;
+    if text.trim().eq_ignore_ascii_case("none") || text.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    text.split(',')
+        .map(|part| {
+            part.trim()
+                .parse::<usize>()
+                .ok()
+                .filter(|n| (1..=VWAP_BAND_COUNT).contains(n))
+                .map(|n| n - 1)
+                .ok_or_else(|| Fault::usage(format!("--bands takes 1, 2 and 3, comma-separated, or none — not {part:?}")))
+        })
+        .collect()
 }
 
 fn bounded(m: &clap::ArgMatches, id: &str, low: f64, high: f64) -> Result<Option<f64>, Fault> {
@@ -7190,6 +7396,104 @@ mod tests {
         assert_eq!(bad.code, crate::cli::EXIT_USAGE, "{}", bad.err);
         let configured = run("chart drawing configure profile --config 2 --profile-style outline", &store);
         assert_eq!(configured.code, 0, "{}", configured.err);
+    }
+
+    /// An anchored VWAP is one moment, and takes every property its dialog
+    /// offers from a command: the study's, by the study's names.
+    #[test]
+    fn an_anchored_vwap_is_set_up_from_a_command() {
+        let store = bare();
+        run("chartbook create Macro --symbol SPY --switch", &store);
+        let out = run(
+            "chart drawing add avwap --book Macro --from 2026-10-14,0 --source close --style dashed --bands 3,1",
+            &store,
+        );
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert!(out.out.contains("avwap  from 2026-10-14"), "{}", out.out);
+        let listed = json_of(&run("chart drawing list --book Macro --json", &store));
+        let drawing = &listed["drawings"][0];
+        assert_eq!(drawing["kind"], "avwap");
+        assert_eq!(drawing["from"]["ts"], drawing["to"]["ts"], "one anchor");
+        let vwap = &drawing["style"]["vwap"];
+        assert_eq!(vwap["source"], "close");
+        assert_eq!(vwap["style"], "dashed");
+        let shown: Vec<bool> = (0..3).map(|n| vwap["bands"][n]["enabled"].as_bool().unwrap()).collect();
+        assert_eq!(shown, [true, false, true], "by place, as the study's");
+        assert_eq!(vwap["bands"][1]["deviations"], 1.5, "the study's multiples");
+
+        // A band's own look, by --band; every band's without it.
+        let id = drawing["id"].as_i64().unwrap();
+        let set = run(
+            &format!(
+                "chart drawing set --book Macro --id {id} --from 2026-10-16,0 --band 2 --band-deviations 2.5 \
+                 --band-shaded on --band-color violet --band-width 2.5 --band-style dotted"
+            ),
+            &store,
+        );
+        assert_eq!(set.code, 0, "{}", set.err);
+        let every = run(&format!("chart drawing set --book Macro --id {id} --band-alpha 0.3 --width 0"), &store);
+        assert_eq!(every.code, 0, "{}", every.err);
+        let listed = json_of(&run("chart drawing list --book Macro --json", &store));
+        let drawing = &listed["drawings"][0];
+        assert_eq!(drawing["from"]["when"], "2026-10-16");
+        assert_eq!(drawing["to"]["when"], "2026-10-16", "its second anchor went with the first");
+        assert_eq!(drawing["style"]["width"], 0.0, "only its bands");
+        let band = &drawing["style"]["vwap"]["bands"][1];
+        assert_eq!(band["deviations"], 2.5);
+        assert_eq!(band["shaded"], true);
+        assert_eq!(band["color"], "violet");
+        assert_eq!(band["width"], 2.5);
+        assert_eq!(band["style"], "dotted");
+        for n in 0..3 {
+            assert_eq!(drawing["style"]["vwap"]["bands"][n]["band_alpha"], 0.3, "band {}", n + 1);
+        }
+        assert_eq!(drawing["style"]["vwap"]["bands"][0]["deviations"], 1.0, "only the band named");
+        let back = run(&format!("chart drawing set --book Macro --id {id} --band 2 --band-color line --bands none"), &store);
+        assert_eq!(back.code, 0, "{}", back.err);
+        let listed = json_of(&run("chart drawing list --book Macro --json", &store));
+        assert_eq!(listed["drawings"][0]["style"]["vwap"]["bands"][1]["color"], Value::Null);
+        assert_eq!(listed["drawings"][0]["style"]["vwap"]["bands"][1]["enabled"], false);
+
+        for bad in [
+            "--bands 4",
+            "--source vwap",
+            "--text hello",
+            "--band-deviations 2",
+            "--band 2 --band-deviations 7",
+            "--band 2",
+            "--band-style wavy",
+        ] {
+            let out = run(&format!("chart drawing add avwap --book Macro --from 2026-10-14,0 {bad}"), &store);
+            assert_eq!(out.code, crate::cli::EXIT_USAGE, "{bad}: {}", out.err);
+        }
+        // Only an anchored VWAP has them, and only it can have no line.
+        for bad in ["--bands 1", "--style dashed", "--width 0"] {
+            let out = run(&format!("chart drawing add line --book Macro --from 2026-10-14,1 --to 2026-10-16,2 {bad}"), &store);
+            assert_eq!(out.code, crate::cli::EXIT_USAGE, "{bad}: {}", out.err);
+        }
+        let needs = run("chart drawing add avwap --book Macro", &store);
+        assert_eq!(needs.code, crate::cli::EXIT_USAGE);
+    }
+
+    /// Every property of an anchored VWAP is part of its configuration, so
+    /// a drawing that follows one wears its bands.
+    #[test]
+    fn an_anchored_vwap_configuration_carries_its_bands() {
+        let store = bare();
+        run("chartbook create Macro --symbol SPY --switch", &store);
+        let configured = run(
+            "chart drawing configure avwap --config 3 --bands 1,2,3 --band 3 --band-color amber --style dotted",
+            &store,
+        );
+        assert_eq!(configured.code, 0, "{}", configured.err);
+        assert!(configured.out.contains("bands ±1σ ±1.5σ ±2σ"), "{}", configured.out);
+        let added = run("chart drawing add avwap --book Macro --from 2026-10-14,0 --config 3", &store);
+        assert_eq!(added.code, 0, "{}", added.err);
+        let listed = json_of(&run("chart drawing list --book Macro --json", &store));
+        let vwap = &listed["drawings"][0]["style"]["vwap"];
+        assert_eq!(vwap["style"], "dotted");
+        assert!((0..3).all(|n| vwap["bands"][n]["enabled"] == true), "{vwap}");
+        assert_eq!(vwap["bands"][2]["color"], "amber");
     }
 
     /// A drawing belongs to the symbol: added through one chart, it is listed

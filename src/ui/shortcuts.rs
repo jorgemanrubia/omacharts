@@ -88,6 +88,9 @@ pub const BINDINGS: &[Binding] = &[
     // V for volume: P is a profile, but Alt+P is a menu's mnemonic often
     // enough that a tool there would be found by accident.
     global("chart.draw-profile", &["<Alt>v"]),
+    // W for weighted: V went to the volume profile above it, and A is the
+    // arrow's.
+    global("chart.draw-avwap", &["<Alt>w"]),
     global("chart.measure", &["<Alt>m"]),
     // The bar itself is a panel, so its key is the watchlist's neighbour:
     // Ctrl+B for the rail on the right, Ctrl+D for the tools on the left.
