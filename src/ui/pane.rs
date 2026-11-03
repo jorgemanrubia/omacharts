@@ -21,6 +21,15 @@ use omacharts_engine::{
 use crate::ui::chart::{ChartView, Hidden};
 use crate::ui::shortcuts;
 
+/// A chart's feed of volume at price, and the contract in it.
+#[derive(Clone)]
+pub struct LadderSource {
+    pub at_price: Rc<crate::at_price::AtPrice>,
+    /// The cache key, `provider:symbol`.
+    pub key: String,
+    pub symbol: String,
+}
+
 /// One chart filling the window, and the way back.
 pub const MAXIMIZE: &str = "Maximize";
 pub const RESTORE: &str = "Restore";
@@ -69,6 +78,10 @@ pub struct ChartPane {
     /// Which way the expand glyph points, and which word its tooltip uses.
     expand_state: Rc<Cell<bool>>,
     pub instrument: RefCell<Option<Instrument>>,
+    /// Where this chart's volume at price comes from, when its feed has
+    /// ladders of what it shows; `None` for every other chart, which then
+    /// holds none and asks for none.
+    pub ladders: RefCell<Option<LadderSource>>,
     /// The symbol and venue this chart was asked for and the index could not
     /// name yet.
     ///
@@ -362,6 +375,7 @@ impl ChartPane {
             expand_icon,
             expand_state,
             instrument: RefCell::new(None),
+            ladders: RefCell::new(None),
             pending: RefCell::new(None),
             timeframe: Cell::new(timeframe),
             indicators: RefCell::new(indicators),

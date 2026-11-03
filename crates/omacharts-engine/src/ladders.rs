@@ -18,7 +18,7 @@
 //! volume is buy-aggressor volume. A print with no known aggressor counts in a
 //! minute's volume and in [`Sides::unknown`], and on neither side of any price.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 use chrono::NaiveDate;
 
@@ -790,6 +790,9 @@ pub struct Held {
     pub floor: i64,
     /// The first trading day held from its start, for spans counted in days.
     pub floor_day: i64,
+    /// Days a span was asked of and could not be answered for want of their
+    /// minutes, for the caller to load: see [`Held::take_wanted`].
+    pub wanted: RefCell<Vec<i64>>,
 }
 
 impl Held {
@@ -803,11 +806,19 @@ impl Held {
         let days: Vec<HeldDay> = series.days.iter().cloned().filter_map(HeldDay::whole).collect();
         let floor = days.first().map_or(i64::MAX, |d| d.first_ts);
         let floor_day = days.first().map_or(i64::MAX, |d| d.day.day + 1);
-        Held { tick_size: series.tick_size, days, forming: None, floor, floor_day }
+        Held { tick_size: series.tick_size, days, forming: None, floor, floor_day, wanted: RefCell::default() }
     }
 
     pub fn is_empty(&self) -> bool {
         self.days.is_empty() && self.forming.is_none()
+    }
+
+    /// The days [`Self::between`] was asked about and could not answer for
+    /// want of their minutes, newest first, taken.
+    pub fn take_wanted(&self) -> Vec<i64> {
+        let mut wanted = std::mem::take(&mut *self.wanted.borrow_mut());
+        wanted.sort_unstable_by(|a, b| b.cmp(a));
+        wanted
     }
 
     /// Roughly what it holds, in bytes.
@@ -857,6 +868,7 @@ impl Held {
             return None;
         }
         let mut parts: Vec<&Ladder> = Vec::new();
+        let mut short = false;
         for held in self.span(from, to) {
             if held.inside(from, to) {
                 parts.push(&held.day.total);
@@ -864,8 +876,15 @@ impl Held {
                 let (i, j) = held.day.span(from, to);
                 parts.extend(held.day.minutes[i..j].iter().map(|m| &m.ladder));
             } else {
-                return None;
+                let mut wanted = self.wanted.borrow_mut();
+                if !wanted.contains(&held.day.day) {
+                    wanted.push(held.day.day);
+                }
+                short = true;
             }
+        }
+        if short {
+            return None;
         }
         if let Some(forming) = self.forming.as_ref().filter(|m| (from..to).contains(&m.ts)) {
             parts.push(&forming.ladder);
@@ -1532,7 +1551,7 @@ mod tests {
             .map(|d| HeldDay::total(d.day, d.first_ts().unwrap(), d.last_ts().unwrap(), d.total.clone()))
             .collect::<Vec<_>>();
         let floor = days.first().map_or(i64::MAX, |d| d.first_ts);
-        Held { tick_size: series.tick_size, days, forming: None, floor, floor_day: i64::MIN }
+        Held { tick_size: series.tick_size, days, forming: None, floor, floor_day: i64::MIN, wanted: RefCell::default() }
     }
 
     /// A chart holds day totals and loads a day's minutes only when a span

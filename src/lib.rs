@@ -6,6 +6,7 @@
 pub mod backup;
 pub mod book_templates;
 pub mod bar_plugin;
+pub mod at_price;
 pub mod cache;
 pub mod chart_defaults;
 pub mod clock;

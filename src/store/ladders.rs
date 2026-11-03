@@ -26,7 +26,8 @@
 //! to the sum of its minutes as they change.
 
 use omacharts_engine::ladders::{
-    decode_day_with_total, decode_minute, encode_day, encode_ladder, encode_minute, Day, Days, Minute, Series,
+    decode_day_with_total, decode_ladder, decode_minute, encode_day, encode_ladder, encode_minute, Day, Days, Held,
+    HeldDay, Minute, Series,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 
@@ -198,6 +199,72 @@ impl Store {
             missing.push((at, to));
         }
         missing
+    }
+
+    /// What a chart holds of `key` over the trading days
+    /// `from_day..=to_day`: each day's stored total and nothing more, so a
+    /// month is a few hundred kilobytes rather than a month of decoded
+    /// minutes. A day with minutes sealed live and not yet folded into its
+    /// row comes whole, its tail applied. The floor is the first minute
+    /// stored for `key` at all: the provider's history goes no further.
+    pub fn load_ladder_held(&self, key: &str, days: &Days, from_day: i64, to_day: i64) -> Held {
+        let mut held = Held::new(0.0);
+        let tailed: Vec<i64> = self
+            .conn
+            .prepare_cached("SELECT DISTINCT day FROM ladder_tail WHERE key = ?1 AND day BETWEEN ?2 AND ?3")
+            .and_then(|mut s| s.query_map(params![key, from_day, to_day], |r| r.get(0))?.collect())
+            .unwrap_or_default();
+        if let Ok(mut statement) = self.conn.prepare_cached(
+            "SELECT day, tick_size, first_ts, last_ts, total FROM ladder_days
+             WHERE key = ?1 AND day BETWEEN ?2 AND ?3 ORDER BY day",
+        ) {
+            let rows = statement.query_map(params![key, from_day, to_day], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, f64>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?, r.get::<_, Vec<u8>>(4)?))
+            });
+            if let Ok(rows) = rows {
+                for (day, tick_size, first, last, total) in rows.flatten() {
+                    held.tick_size = tick_size;
+                    if tailed.contains(&day) {
+                        continue;
+                    }
+                    if let Ok(total) = decode_ladder(&total) {
+                        held.days.push(HeldDay::total(day, first, last, total));
+                    }
+                }
+            }
+        }
+        for number in tailed {
+            if let Ok(Some(day)) = read_day(&self.conn, key, number) {
+                if let Some((_, tick_size, _)) = tail(&self.conn, key, number, number).first() {
+                    held.tick_size = *tick_size;
+                }
+                held.load(day);
+            }
+        }
+        let floor: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT MIN(ts) FROM (SELECT MIN(first_ts) AS ts FROM ladder_days WHERE key = ?1
+                                      UNION ALL SELECT MIN(ts) FROM ladder_tail WHERE key = ?1)",
+                params![key],
+                |r| r.get(0),
+            )
+            .ok()
+            .flatten();
+        held.floor = floor.unwrap_or(i64::MAX);
+        held.floor_day = match floor {
+            Some(floor) => {
+                let day = days.of(floor);
+                if floor <= days.start(day) { day } else { day + 1 }
+            }
+            None => i64::MAX,
+        };
+        held
+    }
+
+    /// One trading day of `key`, minutes and all, its tail applied.
+    pub fn load_ladder_day(&self, key: &str, day: i64) -> Option<Day> {
+        read_day(&self.conn, key, day).ok().flatten()
     }
 
     /// Every day stored for `key`, as `(day, minutes)`, oldest first.
