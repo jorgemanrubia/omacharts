@@ -61,6 +61,9 @@ pub(super) struct Trade {
     /// Positions being flattened, by account key and contract: drawn faint
     /// until the book says they are flat.
     pub flattening: RefCell<HashSet<(String, String)>>,
+    /// Orders dragged to a new price, by basket: drawn faint there until
+    /// the book has them at it.
+    pub moving: RefCell<HashMap<String, f64>>,
 }
 
 /// The `chart.order` target: `side:kind:account:price`, the price empty at
@@ -115,6 +118,9 @@ impl Window {
         let working = |basket: &String| view.book.order(basket).is_some_and(|order| order.status.working());
         self.trade.cancelling.borrow_mut().retain(working);
         self.trade.flattening.borrow_mut().retain(|(key, contract)| view.book.position(key, contract).is_some());
+        self.trade.moving.borrow_mut().retain(|basket, price| {
+            view.book.order(basket).is_some_and(|order| order.status.working() && order.price != Some(*price))
+        });
     }
 
     fn install_trading(self: &Rc<Self>) {
@@ -214,6 +220,7 @@ impl Window {
         self.trade.placed.borrow_mut().clear();
         self.trade.cancelling.borrow_mut().clear();
         self.trade.flattening.borrow_mut().clear();
+        self.trade.moving.borrow_mut().clear();
         for pane in self.panes.borrow().iter() {
             pane.view.set_marks(None, Vec::new());
         }
@@ -548,7 +555,8 @@ impl Window {
         match event {
             TradeEvent::Cancel(basket) => self.cancel_mark(&pane, &basket),
             TradeEvent::Flatten => self.flatten_mark(&pane),
-            TradeEvent::ExitAt { .. } | TradeEvent::Move { .. } => {}
+            TradeEvent::Move { basket, price } => self.move_mark(&pane, &basket, price),
+            TradeEvent::ExitAt { .. } => {}
         }
     }
 
@@ -633,6 +641,57 @@ impl Window {
         });
     }
 
+    /// An order's line let go at `price`: move it there, asked first on a
+    /// live account. Drawn faint at its new price until the book has it
+    /// there; back where it was, and said, if the broker refuses.
+    fn move_mark(self: &Rc<Self>, pane: &ChartPane, basket: &str, price: f64) {
+        let target = match self.order_target(pane) {
+            Ok(target) => target,
+            Err(why) => return self.toast(&format!("{why} · not moved")),
+        };
+        if !target.capabilities.modify {
+            return self.toast(&format!("{} cannot move an order · not moved", target.login.name));
+        }
+        let key = target.account.key();
+        let order = self.trading.borrow().book.order(basket).filter(|order| order.account == key).cloned();
+        let Some(order) = order.filter(|order| order.status.working()) else {
+            return self.toast("Filled while moving");
+        };
+        // The market may have crossed it while the hand was letting go.
+        if let Some(last) = pane.view.last_price()
+            && !trading::side_allowed(order.kind, order.side, price, last)
+        {
+            return self.toast(&format!("{} · not moved", trading::refused_text(order.kind, price, last)));
+        }
+        let tick = Self::tick_of(pane, &target);
+        let places = tick.map_or(2, |tick| omacharts_engine::on_tick(price, tick).1);
+        let ticks = tick.zip(order.price).map(|(tick, from)| trading::ticks_between(from, price, tick));
+        let preview = trading::preview_text(
+            order.side,
+            order.kind,
+            order.qty,
+            &omacharts_engine::grouped_decimals(price, places),
+            ticks,
+        );
+        let basket = basket.to_string();
+        self.ask_then(&target.clone(), &format!("Move {preview}"), "Move order", move |this| {
+            if let Err(why) = this.trade.placing.begin(&key) {
+                return this.toast(&why);
+            }
+            this.trade.moving.borrow_mut().insert(basket.clone(), price);
+            this.apply_marks();
+            let (key, sent, basket) = (key.clone(), basket.clone(), basket.clone());
+            this.send(&target, move |session, number| session.modify(number, &sent, price), move |this, outcome| {
+                this.trade.placing.done(&key);
+                if let Err(why) = outcome {
+                    this.trade.moving.borrow_mut().remove(&basket);
+                    this.apply_marks();
+                    this.toast(&format!("Not moved: {why}"));
+                }
+            });
+        });
+    }
+
     /// The position's ×: flatten it, asked first on a live account. Faint
     /// at once, gone when the book says it is flat.
     fn flatten_mark(self: &Rc<Self>, pane: &ChartPane) {
@@ -693,7 +752,9 @@ impl Window {
             .book
             .working(&key, &target.contract)
             .filter_map(|order| {
-                let at = order.price?;
+                // On its way to a new price: drawn there, faint.
+                let moving = self.trade.moving.borrow().get(&order.basket_id).copied();
+                let at = moving.or(order.price)?;
                 let style = match order.kind {
                     OrderKind::Limit => look.limit,
                     OrderKind::Stop => look.stop,
@@ -708,7 +769,7 @@ impl Window {
                     side: order.side,
                     kind: order.kind,
                     qty: order.qty,
-                    dim: self.trade.cancelling.borrow().contains(&order.basket_id),
+                    dim: moving.is_some() || self.trade.cancelling.borrow().contains(&order.basket_id),
                     price: at,
                     words: format!(
                         "{} {} {}",
@@ -1095,6 +1156,55 @@ pub(super) mod tests {
         settle(&window, || pane.view.mark_states().0.is_none());
         assert!(session.book().position("951", "ESZ6").is_none(), "not flattened");
         assert!(pane.view.mark_states().0.is_none());
+    }
+
+    /// An order's line let go at a new price moves it there: faint at the
+    /// new price at once, as it was once the book has it. A refusal puts it
+    /// back where it was; a price the market has crossed, an order filled
+    /// while it was moving, or another request on its way sends nothing.
+    #[test]
+    fn an_order_dragged_to_a_new_price_is_moved_there() {
+        if !crate::ui::gtk_ready() {
+            return;
+        }
+        use crate::ui::chart::TradeEvent;
+        let (window, pane, session, key) = long_es(true);
+        settle(&window, || pane.view.last_price().is_some());
+        let last = pane.view.last_price().expect("a last price");
+        let above = |ticks: f64| (last / 0.25).round() * 0.25 + ticks * 0.25;
+        let basket = session.place(&resting(Side::Sell, OrderKind::Limit, Some(above(40.0)))).unwrap();
+        window.desk.tell();
+        let order = || pane.view.mark_states().1.first().map(|(_, price, dim)| (*price, *dim));
+        let moved = |price| TradeEvent::Move { basket: basket.clone(), price };
+
+        pane.view.drop_mark(moved(above(44.0)));
+        assert_eq!(order(), Some((above(44.0), true)), "not drawn faint at its new price");
+        settle(&window, || order() == Some((above(44.0), false)));
+        assert_eq!(session.book().order(&basket).and_then(|o| o.price), Some(above(44.0)));
+        assert_eq!(order(), Some((above(44.0), false)));
+        assert!(window.trade.moving.borrow().is_empty());
+
+        *session.refuse.lock().unwrap() = Some("price out of band".into());
+        pane.view.drop_mark(moved(above(48.0)));
+        settle(&window, || order() == Some((above(44.0), false)));
+        assert_eq!(order(), Some((above(44.0), false)), "not back where it was after a refusal");
+
+        // Below the market a sell limit would fill: refused here.
+        pane.view.drop_mark(moved(above(-8.0)));
+        settle(&window, || false);
+        assert_eq!(session.book().order(&basket).and_then(|o| o.price), Some(above(44.0)), "moved across the market");
+
+        window.trade.placing.begin(&key).unwrap();
+        pane.view.drop_mark(moved(above(52.0)));
+        settle(&window, || false);
+        assert_eq!(session.book().order(&basket).and_then(|o| o.price), Some(above(44.0)), "moved while busy");
+        window.trade.placing.done(&key);
+
+        session.fill(&basket);
+        pane.view.drop_mark(moved(above(52.0)));
+        settle(&window, || false);
+        assert_eq!(session.book().order(&basket).map(|o| o.status.clone()), Some(Status::Filled));
+        assert!(window.trade.moving.borrow().is_empty(), "a filled order waiting to move");
     }
 
     /// On a live account the × asks first, and nothing is sent until it is
