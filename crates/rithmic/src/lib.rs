@@ -1,28 +1,38 @@
-//! A Rithmic account: sign in to it, see what it holds, and watch it.
+//! A Rithmic login, as a charting app needs one: signed in once, asked for
+//! bars, and watched for trades.
 //!
 //! Rithmic is reached over R | Protocol, protocol buffers on a WebSocket,
 //! which `rithmic-rs` speaks. Its plants are separate logins: the ticker
-//! plant for live prices, the order plant for accounts and orders, the PnL
-//! plant for balances, the history plant for bars. A session here signs in to
-//! each of them and reports what it learns as [`Event`]s, so the caller
-//! needs neither tokio nor anything from `rithmic-rs` to use it.
+//! plant for live prices and reference data, the history plant for bars.
+//! Everything here is the protocol's business, so the app above it needs
+//! neither tokio nor anything from `rithmic-rs`: it calls plain blocking
+//! functions and is handed plain values.
 //!
-//! `rithmic-rs` is async and the app is not, so a session runs a runtime on a
-//! thread of its own and hands its events to a callback. Dropping the
-//! [`Session`] ends it: the thread logs out of every plant and stops.
+//! **One session per process.** CME bills a non-professional subscriber as a
+//! professional after two concurrent data sessions, so every chart shares the
+//! one [`Client`] that [`session`] hands out. It owns a tokio runtime on two
+//! threads of its own, built the first time anything asks and not before: a
+//! process that never charts from Rithmic never has one. [`shutdown`] logs
+//! out of every plant and stops the threads.
 //!
-//! Only the ticker plant's login is required. Rithmic Test, for one, may have
-//! no accounts and little history, and a sign-in that works should still say
-//! so when the history plant has nothing for it.
+//! **It looks after its own connection.** A drop is reported to everything
+//! watching ([`Live::Lost`]), the client reconnects with a doubling wait,
+//! subscribes again to what is still watched, and says so
+//! ([`Live::Watching`] again), which is a caller's cue to load a fresh
+//! snapshot. A login Rithmic refuses is not retried: the same password
+//! would only be refused again, and a storm of refused logins is exactly
+//! what Rithmic's conformance review looks for.
+//!
+//! **Nobody's password leaves here except to the gateway.** [`Credentials`]'
+//! `Debug` leaves it out, no [`Error`] is built from one, and nothing in this
+//! crate logs.
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+mod client;
+pub mod keyring;
+mod login;
 
-use rithmic_rs::{
-    rti::messages::RithmicMessage, ConnectStrategy, RithmicAccount, RithmicConfig, RithmicEnv,
-    RithmicHistoryPlant, RithmicOrderPlant, RithmicPnlPlant, RithmicResponse, RithmicTickerPlant,
-    TimeBarType,
-};
-use tokio::sync::oneshot;
+pub use client::{session, shutdown, running, Client, Watch};
+pub use login::{Login, DEV_LOGIN};
 
 /// The app name Rithmic knows this app by. Rithmic Test takes any name;
 /// production takes only one that has passed conformance.
@@ -32,15 +42,8 @@ pub const APP_NAME: &str = "omacharts";
 pub const TEST_SYSTEM: &str = "Rithmic Test";
 pub const TEST_URL: &str = "wss://rituz00100.rithmic.com:443";
 
-/// The contract a session watches, as the root of a CME future. The front
-/// month is asked for rather than written down, so it never goes stale.
-const WATCHED: (&str, &str) = ("ES", "CME");
-
-/// How long any one request may take before the session says so and moves on.
-const PATIENCE: Duration = Duration::from_secs(15);
-
 /// Who to sign in as, and where.
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Credentials {
     pub user: String,
     pub password: String,
@@ -61,370 +64,99 @@ impl std::fmt::Debug for Credentials {
     }
 }
 
-/// An account the login can trade.
+/// What went wrong, in words a person can be shown.
+///
+/// Built from what Rithmic said and from this crate's own sentences, never
+/// from a login: nothing here can carry a password.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error {
+    /// There is nothing to sign in with: no user saved, or no password for it
+    /// in the keyring.
+    NoLogin(String),
+    /// Rithmic turned the login down, in its own words ("permission
+    /// denied"). Signing in again with something else is the only fix.
+    Refused(String),
+    /// The gateway could not be reached, or the connection dropped.
+    Connection(String),
+    /// Rithmic did not answer in time.
+    Timeout,
+    /// Rithmic answered and said no to the request, in its own words.
+    Rejected(String),
+    /// Rithmic has nothing by this name.
+    NotFound(String),
+    /// The session was signed out while this was waiting.
+    Closed,
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Error::NoLogin(why) => write!(f, "{why}"),
+            Error::Refused(why) => write!(f, "Rithmic refused the login: {why}"),
+            Error::Connection(why) => write!(f, "could not reach Rithmic: {why}"),
+            Error::Timeout => write!(f, "Rithmic did not answer in time"),
+            Error::Rejected(why) => write!(f, "Rithmic refused the request: {why}"),
+            Error::NotFound(what) => write!(f, "Rithmic has no {what}"),
+            Error::Closed => write!(f, "the Rithmic session was signed out"),
+        }
+    }
+}
+
+impl std::error::Error for Error {}
+
+/// How long each bar of a request lasts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Period {
+    Minutes(u32),
+    Days(u32),
+}
+
+/// One bar, as the history plant sends it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Bar {
+    /// When it opened, in unix seconds. A daily bar opens at midnight UTC of
+    /// the trading date it is named for.
+    pub start: i64,
+    pub open: f64,
+    pub high: f64,
+    pub low: f64,
+    pub close: f64,
+    pub volume: u64,
+}
+
+/// Which side started a trade.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Side {
+    /// A buyer lifted the offer.
+    Buy,
+    /// A seller hit the bid.
+    Sell,
+}
+
+/// One trade on a watched contract.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Trade {
+    pub price: f64,
+    pub size: u64,
+    /// `None` when the exchange did not say.
+    pub aggressor: Option<Side>,
+    /// When the exchange matched it, in nanoseconds since 1970.
+    pub at_nanos: i64,
+}
+
+/// What a watch hears, in the order the session hears it.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Account {
-    pub id: String,
-    pub name: String,
-    pub currency: String,
-}
-
-/// What a session has learned, in the order it learns it.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Event {
-    /// What it is doing now, for somebody watching it work.
-    Step(String),
-    /// The ticker plant accepted the login.
-    SignedIn { fcm: String, ib: String },
-    /// The accounts the order plant lists, possibly none.
-    Accounts(Vec<Account>),
-    /// An account's balance and profit, as the PnL plant reports them.
-    Balance { account: String, balance: String, open_pnl: String, closed_pnl: String },
-    /// The contract the session watches, once the front month is known.
-    Watching { symbol: String, exchange: String },
-    /// A trade on the watched contract.
-    Trade { price: f64, size: u64 },
-    /// The best bid and offer on the watched contract.
-    Quote { bid: f64, bid_size: u64, ask: f64, ask_size: u64 },
-    /// How much of the last day's minute bars the history plant returned.
-    History { bars: usize, last_close: Option<f64> },
-    /// A plant that is not essential could not be used. The session goes on.
-    Unavailable { what: String, why: String },
-    /// The session could not start, or lost its connection. Nothing follows.
-    Failed(String),
-}
-
-/// A running session. Dropping it signs out.
-pub struct Session {
-    stop: Option<oneshot::Sender<()>>,
-}
-
-impl Drop for Session {
-    fn drop(&mut self) {
-        if let Some(stop) = self.stop.take() {
-            let _ = stop.send(());
-        }
-    }
-}
-
-/// Sign in and report on a thread of its own. `on_event` is called on that
-/// thread.
-pub fn connect(credentials: Credentials, on_event: impl Fn(Event) + Send + 'static) -> Session {
-    let (stop, stopped) = oneshot::channel();
-    std::thread::spawn(move || {
-        let runtime = match tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .enable_all()
-            .build()
-        {
-            Ok(runtime) => runtime,
-            Err(error) => return on_event(Event::Failed(error.to_string())),
-        };
-        runtime.block_on(run(credentials, &on_event, stopped));
-    });
-    Session { stop: Some(stop) }
-}
-
-fn config(credentials: &Credentials) -> Result<RithmicConfig, String> {
-    RithmicConfig::builder(RithmicEnv::Test)
-        .url(&credentials.url)
-        // Only read by a strategy that alternates, and required regardless.
-        .beta_url(&credentials.url)
-        .user(&credentials.user)
-        .password(&credentials.password)
-        .system_name(&credentials.system)
-        .app_name(APP_NAME)
-        .app_version(env!("CARGO_PKG_VERSION"))
-        .connect_attempt_timeout(Duration::from_secs(10))
-        .build()
-        .map_err(|error| error.to_string())
-}
-
-async fn within<T, E: std::fmt::Display>(
-    future: impl std::future::Future<Output = Result<T, E>>,
-) -> Result<T, String> {
-    match tokio::time::timeout(PATIENCE, future).await {
-        Ok(result) => result.map_err(|error| error.to_string()),
-        Err(_) => Err("no answer in time".to_string()),
-    }
-}
-
-/// A refusal comes back as a response with its error set, not as an `Err`.
-fn refused(response: &RithmicResponse) -> Option<String> {
-    response.error.as_ref().map(ToString::to_string)
-}
-
-async fn run(credentials: Credentials, on_event: &impl Fn(Event), stopped: oneshot::Receiver<()>) {
-    let config = match config(&credentials) {
-        Ok(config) => config,
-        Err(error) => return on_event(Event::Failed(error)),
-    };
-
-    on_event(Event::Step(format!("Connecting to {}", credentials.system)));
-    let ticker = match within(RithmicTickerPlant::connect(&config, ConnectStrategy::Simple)).await {
-        Ok(plant) => plant,
-        Err(error) => return on_event(Event::Failed(format!("Could not connect: {error}"))),
-    };
-    let mut prices = ticker.get_handle();
-    let login = match within(prices.login()).await {
-        Ok(login) => login,
-        Err(error) => return on_event(Event::Failed(format!("Sign-in refused: {error}"))),
-    };
-    if let Some(error) = refused(&login) {
-        return on_event(Event::Failed(format!("Sign-in refused: {error}")));
-    }
-    let (fcm, ib) = match &login.message {
-        RithmicMessage::ResponseLogin(login) => {
-            (login.fcm_id.clone().unwrap_or_default(), login.ib_id.clone().unwrap_or_default())
-        }
-        _ => Default::default(),
-    };
-    on_event(Event::SignedIn { fcm: fcm.clone(), ib: ib.clone() });
-
-    // Accounts, and then each one's balance. Neither is essential: a
-    // developer login may have nothing to trade.
-    on_event(Event::Step("Asking for accounts".to_string()));
-    let orders = within(RithmicOrderPlant::connect(&config, ConnectStrategy::Simple)).await;
-    let mut accounts = Vec::new();
-    let order_handle = match orders {
-        Ok(plant) => {
-            let handle = plant.get_handle(&RithmicAccount::new(&fcm, &ib, ""));
-            match within(handle.login()).await {
-                Ok(_) => match within(handle.get_account_list()).await {
-                    Ok(listed) => {
-                        accounts = listed
-                            .iter()
-                            .filter_map(|response| match &response.message {
-                                RithmicMessage::ResponseAccountList(account) => {
-                                    Some(Account {
-                                        id: account.account_id.clone()?,
-                                        name: account.account_name.clone().unwrap_or_default(),
-                                        currency: account
-                                            .account_currency
-                                            .clone()
-                                            .unwrap_or_default(),
-                                    })
-                                }
-                                _ => None,
-                            })
-                            .collect();
-                        on_event(Event::Accounts(accounts.clone()));
-                    }
-                    Err(why) => on_event(Event::Unavailable { what: "Accounts".into(), why }),
-                },
-                Err(why) => on_event(Event::Unavailable { what: "Accounts".into(), why }),
-            }
-            Some((plant, handle))
-        }
-        Err(why) => {
-            on_event(Event::Unavailable { what: "Accounts".into(), why });
-            None
-        }
-    };
-
-    // Every account's updates arrive on one channel, whichever handle they
-    // came from.
-    let (balance_sender, mut balance_updates) = tokio::sync::mpsc::unbounded_channel();
-    let mut balances = Vec::new();
-    let mut pnl_plant = None;
-    if !accounts.is_empty() {
-        match within(RithmicPnlPlant::connect(&config, ConnectStrategy::Simple)).await {
-            Ok(plant) => {
-                for account in &accounts {
-                    let handle = plant.get_handle(&RithmicAccount::new(&fcm, &ib, &account.id));
-                    if let Err(why) = within(handle.login()).await {
-                        on_event(Event::Unavailable { what: "Balances".into(), why });
-                        break;
-                    }
-                    if let Ok(snapshot) = within(handle.get_pnl_position_snapshot()).await {
-                        report_balance(&snapshot.message, on_event);
-                    }
-                    let _ = within(handle.subscribe_pnl_updates()).await;
-                    let mut updates = handle.subscription_receiver.resubscribe();
-                    let sender = balance_sender.clone();
-                    tokio::spawn(async move {
-                        while let Ok(update) = updates.recv().await {
-                            if sender.send(update.message).is_err() {
-                                return;
-                            }
-                        }
-                    });
-                    balances.push(handle);
-                }
-                pnl_plant = Some(plant);
-            }
-            Err(why) => on_event(Event::Unavailable { what: "Balances".into(), why }),
-        }
-    }
-
-    // The contract to watch.
-    let front = within(prices.get_front_month_contract(WATCHED.0, WATCHED.1, false)).await;
-    let symbol = match &front {
-        Ok(response) => match &response.message {
-            RithmicMessage::ResponseFrontMonthContract(front) => front
-                .trading_symbol
-                .clone()
-                .or_else(|| front.symbol.clone())
-                .filter(|symbol| !symbol.is_empty()),
-            _ => None,
-        },
-        Err(_) => None,
-    }
-    .unwrap_or_else(|| guess_front_month(WATCHED.0));
-    on_event(Event::Watching { symbol: symbol.clone(), exchange: WATCHED.1.to_string() });
-
-    // A day of minute bars, to see what the history plant has.
-    on_event(Event::Step("Asking for history".to_string()));
-    match within(RithmicHistoryPlant::connect(&config, ConnectStrategy::Simple)).await {
-        Ok(plant) => {
-            let handle = plant.get_handle();
-            match within(handle.login()).await {
-                Ok(_) => {
-                    let now = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .map(|elapsed| elapsed.as_secs() as i32)
-                        .unwrap_or_default();
-                    let bars = within(handle.load_time_bars(
-                        symbol.clone(),
-                        WATCHED.1.to_string(),
-                        TimeBarType::MinuteBar,
-                        1,
-                        now - 24 * 60 * 60,
-                        now,
-                    ))
-                    .await;
-                    match bars {
-                        Ok(bars) => {
-                            let closes: Vec<f64> = bars
-                                .iter()
-                                .filter_map(|response| match &response.message {
-                                    RithmicMessage::ResponseTimeBarReplay(bar) => bar.close_price,
-                                    _ => None,
-                                })
-                                .collect();
-                            on_event(Event::History {
-                                bars: closes.len(),
-                                last_close: closes.last().copied(),
-                            });
-                        }
-                        Err(why) => on_event(Event::Unavailable { what: "History".into(), why }),
-                    }
-                    let _ = within(handle.disconnect()).await;
-                }
-                Err(why) => on_event(Event::Unavailable { what: "History".into(), why }),
-            }
-        }
-        Err(why) => on_event(Event::Unavailable { what: "History".into(), why }),
-    }
-
-    // And then live prices, until the session is dropped.
-    match within(prices.subscribe(&symbol, WATCHED.1)).await {
-        Ok(response) => {
-            if let Some(why) = refused(&response) {
-                on_event(Event::Unavailable { what: "Live prices".into(), why });
-            }
-        }
-        Err(why) => on_event(Event::Unavailable { what: "Live prices".into(), why }),
-    }
-    on_event(Event::Step(String::new()));
-
-    drop(balance_sender);
-    let mut stopped = stopped;
-    loop {
-        tokio::select! {
-            _ = &mut stopped => break,
-            update = prices.subscription_receiver.recv() => match update {
-                Ok(update) => match &update.message {
-                    RithmicMessage::LastTrade(trade) => {
-                        if let Some(price) = trade.trade_price.filter(|price| *price > 0.0) {
-                            on_event(Event::Trade {
-                                price,
-                                size: trade.trade_size.unwrap_or_default().max(0) as u64,
-                            });
-                        }
-                    }
-                    RithmicMessage::BestBidOffer(quote) => on_event(Event::Quote {
-                        bid: quote.bid_price.unwrap_or_default(),
-                        bid_size: quote.bid_size.unwrap_or_default().max(0) as u64,
-                        ask: quote.ask_price.unwrap_or_default(),
-                        ask_size: quote.ask_size.unwrap_or_default().max(0) as u64,
-                    }),
-                    RithmicMessage::ConnectionError
-                    | RithmicMessage::HeartbeatTimeout
-                    | RithmicMessage::ForcedLogout(_) => {
-                        on_event(Event::Failed(match &update.error {
-                            Some(error) => format!("Disconnected: {error}"),
-                            None => "Disconnected".to_string(),
-                        }));
-                        break;
-                    }
-                    _ => {}
-                },
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                    on_event(Event::Failed("Disconnected".to_string()));
-                    break;
-                }
-            },
-            Some(message) = balance_updates.recv() => report_balance(&message, on_event),
-        }
-    }
-
-    let _ = within(prices.disconnect()).await;
-    for handle in &balances {
-        let _ = within(handle.disconnect()).await;
-    }
-    if let Some((_, handle)) = &order_handle {
-        let _ = within(handle.disconnect()).await;
-    }
-    drop(pnl_plant);
-}
-
-fn report_balance(message: &RithmicMessage, on_event: &impl Fn(Event)) {
-    if let RithmicMessage::AccountPnLPositionUpdate(pnl) = message {
-        on_event(Event::Balance {
-            account: pnl.account_id.clone().unwrap_or_default(),
-            balance: pnl.account_balance.clone().unwrap_or_default(),
-            open_pnl: pnl.open_position_pnl.clone().unwrap_or_default(),
-            closed_pnl: pnl.closed_position_pnl.clone().unwrap_or_default(),
-        });
-    }
-}
-
-/// The quarterly contract trading now, for when the server will not say:
-/// March, June, September and December, rolled a week before they expire.
-fn guess_front_month(root: &str) -> String {
-    let days = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_secs() / 86_400)
-        .unwrap_or_default() as i64;
-    let (year, month, day) = civil(days);
-    let quarter_month = ((month - 1) / 3 + 1) * 3;
-    let (year, quarter_month) = if month == quarter_month && day >= 12 {
-        if quarter_month == 12 { (year + 1, 3) } else { (year, quarter_month + 3) }
-    } else {
-        (year, quarter_month)
-    };
-    let code = match quarter_month {
-        3 => 'H',
-        6 => 'M',
-        9 => 'U',
-        _ => 'Z',
-    };
-    format!("{root}{code}{}", year % 10)
-}
-
-/// A day count since 1970 as year, month and day.
-fn civil(days: i64) -> (i64, i64, i64) {
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    (yoe + era * 400 + i64::from(month <= 2), month, day)
+pub enum Live {
+    /// Trades on `contract` follow from here. Sent when the watch starts and
+    /// again after every reconnect, and after trades were missed, so it is
+    /// also the cue to load a snapshot: anything from before it may be
+    /// incomplete.
+    Watching { contract: String },
+    Trade(Trade),
+    /// Nothing more until the next [`Live::Watching`], and this is why. The
+    /// session is reconnecting by itself unless the error says it cannot
+    /// ([`Error::Refused`], [`Error::NoLogin`], [`Error::Closed`]).
+    Lost(Error),
 }
 
 #[cfg(test)]
@@ -442,11 +174,5 @@ mod tests {
         let printed = format!("{credentials:?}");
         assert!(!printed.contains("SECRET"), "{printed}");
         assert!(printed.contains("trader"), "{printed}");
-    }
-
-    #[test]
-    fn days_are_read_as_dates() {
-        assert_eq!(civil(0), (1970, 1, 1));
-        assert_eq!(civil(20_760), (2026, 11, 3));
     }
 }

@@ -1,25 +1,42 @@
-//! Run a session for a while and print what it reports.
+//! Sign in, find the ES front month, load a day of minute bars and print the
+//! trades that arrive for a while.
 //!
-//! Reads the user from the first line of `~/.rithmic` and the password from
-//! the second, and signs in to Rithmic Test:
+//! Reads the login from the file `OMACHARTS_RITHMIC_LOGIN` names (user ID on
+//! the first line, password on the second) and signs in to Rithmic Test:
 //!
-//!     cargo run -p rithmic --example session -- 30
+//!     OMACHARTS_RITHMIC_LOGIN=~/.rithmic cargo run -p rithmic --example session -- 30
 
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 fn main() {
     let seconds = std::env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(20);
-    let path = std::path::Path::new(&std::env::var("HOME").unwrap_or_default()).join(".rithmic");
-    let text = std::fs::read_to_string(path).unwrap_or_default();
-    let mut lines = text.lines();
-    let credentials = rithmic::Credentials {
-        user: lines.next().unwrap_or_default().to_string(),
-        password: lines.next().unwrap_or_default().to_string(),
-        system: rithmic::TEST_SYSTEM.to_string(),
-        url: rithmic::TEST_URL.to_string(),
+    let login = || {
+        rithmic::Login::from_env(rithmic::TEST_SYSTEM, rithmic::TEST_URL)
+            .unwrap_or_else(|| Err(rithmic::Error::NoLogin(format!("set {}", rithmic::DEV_LOGIN))))
     };
-    let session = rithmic::connect(credentials, |event| println!("{event:?}"));
+    let client = match rithmic::session(login) {
+        Ok(client) => client,
+        Err(error) => return eprintln!("{error}"),
+    };
+    if let Err(error) = client.sign_in() {
+        return eprintln!("{error}");
+    }
+    let contract = match client.front_month("ES", "CME") {
+        Ok(contract) => contract,
+        Err(error) => return eprintln!("{error}"),
+    };
+    println!("front month: {contract}");
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+    match client.bars(&contract, "CME", rithmic::Period::Minutes(1), now - 86_400, now) {
+        Ok(bars) => println!("{} minute bars, the last {:?}", bars.len(), bars.last()),
+        Err(error) => println!("bars: {error}"),
+    }
+    match client.bars(&contract, "CME", rithmic::Period::Days(1), now - 400 * 86_400, now) {
+        Ok(bars) => println!("{} daily bars, the last {:?}", bars.len(), bars.last()),
+        Err(error) => println!("daily bars: {error}"),
+    }
+    let watch = client.watch("ES", "CME", |live| println!("{live:?}"));
     std::thread::sleep(Duration::from_secs(seconds));
-    drop(session);
-    std::thread::sleep(Duration::from_secs(2));
+    drop(watch);
+    rithmic::shutdown();
 }
