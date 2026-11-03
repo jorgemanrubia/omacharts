@@ -458,7 +458,7 @@ struct Connection {
 }
 
 /// What the plants are connected with: the login, and the app it is for.
-fn config(app: App, credentials: &Credentials) -> Result<RithmicConfig, Error> {
+pub(crate) fn config(app: App, credentials: &Credentials) -> Result<RithmicConfig, Error> {
     RithmicConfig::builder(RithmicEnv::Test)
         .url(&credentials.url)
         // Only read by a strategy that alternates, and required regardless.
@@ -799,7 +799,7 @@ impl Supervisor {
     }
 }
 
-async fn within<T>(
+pub(crate) async fn within<T>(
     patience: Duration,
     future: impl std::future::Future<Output = Result<T, RithmicError>>,
 ) -> Result<T, Error> {
@@ -811,7 +811,7 @@ async fn within<T>(
 
 /// A login's outcome: a refusal is the login's fault and final, a broken
 /// connection is worth another go.
-fn signed_in(outcome: Result<RithmicResponse, Error>) -> Result<(), Error> {
+pub(crate) fn signed_in(outcome: Result<RithmicResponse, Error>) -> Result<(), Error> {
     match outcome {
         Ok(_) => Ok(()),
         Err(Error::Rejected(why)) => Err(Error::Refused(why)),
@@ -819,7 +819,7 @@ fn signed_in(outcome: Result<RithmicResponse, Error>) -> Result<(), Error> {
     }
 }
 
-fn error_of(error: RithmicError) -> Error {
+pub(crate) fn error_of(error: RithmicError) -> Error {
     if error.is_connection_issue() {
         return Error::Connection(error.to_string());
     }

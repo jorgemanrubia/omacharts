@@ -26,6 +26,11 @@
 //! somewhere else: signing back in would log the other one out, and the two
 //! would take turns for ever.
 //!
+//! **Trading is a session of its own per login** ([`Trading`]): the order
+//! plant, which lists a login's accounts, and the PnL plant, which pushes
+//! their balances. Any number of logins can trade; only one supplies market
+//! data.
+//!
 //! **Nobody's password leaves here except to the gateway.** [`Credentials`]'
 //! `Debug` leaves it out, no [`Error`] is built from one, and nothing in this
 //! crate logs.
@@ -33,9 +38,11 @@
 mod client;
 pub mod keyring;
 mod login;
+mod trading;
 
 pub use client::{entitled_exchanges, on_entitlements, running, session, shutdown, Client, Watch};
 pub use login::{Login, DEV_LOGIN};
+pub use trading::{Account, Trading};
 
 /// The app signing in, as Rithmic is told it: its name and its version.
 ///
