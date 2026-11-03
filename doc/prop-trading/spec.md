@@ -325,9 +325,73 @@ not moved.
 
 ### 4. Trading
 
-Orders from the chart, through the order plant. The first version:
+#### Logins, accounts and data feeds
 
-- an account selector, for somebody with several prop accounts;
+Three things, kept apart, so the broker an order goes to and the feed a chart
+is drawn from can be combined freely:
+
+- **A login** is a broker connection: a name the trader chooses ("Lucid",
+  "Tradeify", "Rithmic Test"), the Rithmic user ID, system and gateway, and
+  the password in the keyring under that login. There can be any number of
+  them. Each login has its own session; one login is one session, because a
+  second sign-in on the same login forces the first one out.
+- **An account** is one of the account IDs inside a login, listed by the
+  order plant after sign-in. A prop trader usually has several under one
+  login. The list is cached on the machine (bookkeeping, never in a backup)
+  so the page and the header draw without connecting.
+- **A data feed** is a source on the Data page. Only one Rithmic login
+  supplies market data, the first added unless the trader picks another;
+  the others connect for orders, positions and P&L only. Several logins each
+  streaming quotes could count as several data sessions under CME's
+  two-session rule, and whether sessions with different firms count apart is
+  not known.
+
+**Preferences → Trading** lists the logins, each with its accounts under it,
+edited the way the Data page edits sources: "Add a broker…" (Rithmic for
+now) opens the same login dialog. Adding the first login also adds Rithmic
+as the first data source, through that login. Removing a login removes its
+accounts; if it was the data login, Rithmic data moves to another login, or
+the Rithmic source goes if none is left. Nothing else on the Data page is
+touched.
+
+```
+Accounts
+  Lucid — LucidTrading · live                    [Sign out] [Remove]
+      1234   USD · $50,210 · Default
+      1235   USD · $48,900                        [Make default]
+  Rithmic Test — Rithmic Test · live · data      [Sign out] [Remove]
+      951    USD · $1,000,000
+  [ Add a broker… ]
+```
+
+**The chart's account and feed.** A default account, and an optional
+account per chart, stored the way the chart's feed is. The feed's
+"Automatic" stays the ordered list. One function decides a chart's
+account, for the header and for the order ticket alike, so they can never
+disagree. A chart whose account's login was removed falls back to the
+default.
+
+**The header's Account part** names the chart's account and feed, and
+clicking it opens the picker. It is offered when there is more than one
+account or more than one feed; otherwise it is blank, takes no space and
+cannot be clicked. The popover shows an ACCOUNT list when there is more than
+one account and a DATA list when there is more than one feed. The text names
+only what can be chosen, plus any trouble: `Rithmic` or `Yahoo` with one
+account; `951 · Rithmic` with several; `Lucid 1234 · Rithmic` once there are
+several logins; `951 signed out` when it is.
+
+#### Orders
+
+Tried on Rithmic Test on 2026-11-03: the Test account is a simulated
+$1,000,000 account (loss limit $999,999, 20 contracts a side, 40 an order).
+A one-lot market buy of ESZ6 filled and a flatten closed it, with about
+$1.97 commission a side. An order reports each step (received, open
+pending, at the gateway, sent to the exchange, open, fill, complete);
+flatten is one request and Rithmic places the closing order; positions and
+P&L arrive as pushed updates, and the snapshot request returns nothing.
+
+The first version of order entry:
+
 - buy and sell at the market, and limit and stop orders from the chart:
   click to place, drag to move;
 - brackets with a stop and a target, held on Rithmic's servers so they
