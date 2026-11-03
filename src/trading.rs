@@ -49,6 +49,10 @@ pub const ACCOUNTS: &str = "trading_accounts";
 /// `<login id>/<account number>`. One that is no longer listed is ignored.
 pub const DEFAULT_ACCOUNT: &str = "default_account";
 
+/// How long closing waits for the trading sessions to sign out: what the
+/// data session waits.
+pub const SIGN_OUT_WAIT: std::time::Duration = rithmic::SIGN_OUT_WAIT;
+
 /// The system and gateway of a login with none named.
 pub const TEST_SYSTEM: &str = "Rithmic Test";
 pub const TEST_GATEWAY: &str = "wss://rituz00100.rithmic.com:443";
@@ -887,6 +891,34 @@ impl Desk {
         self.refused.borrow_mut().remove(login);
         if let Some(session) = self.sessions.borrow_mut().remove(login) {
             session.sign_out();
+        }
+    }
+
+    /// Sign every session out, as the window closes, each on a thread of
+    /// its own, and wait until they all have or `wait` has passed. A
+    /// session that has not finished by then is left to the process
+    /// ending; nothing stays signed in that was told to sign out.
+    pub fn sign_out_all(&self, wait: std::time::Duration) {
+        self.opening.borrow_mut().clear();
+        let sessions: Vec<Arc<dyn Session>> = self.sessions.borrow_mut().drain().map(|(_, session)| session).collect();
+        if sessions.is_empty() {
+            return;
+        }
+        let (done, finished) = std::sync::mpsc::channel();
+        for session in &sessions {
+            let session = session.clone();
+            let done = done.clone();
+            std::thread::spawn(move || {
+                session.sign_out();
+                let _ = done.send(());
+            });
+        }
+        let until = std::time::Instant::now() + wait;
+        for _ in &sessions {
+            let left = until.saturating_duration_since(std::time::Instant::now());
+            if finished.recv_timeout(left).is_err() {
+                break;
+            }
         }
     }
 
@@ -1991,6 +2023,25 @@ pub(crate) mod tests {
         desk.opened(&login.id, late);
         assert!(!desk.live(&login.id));
         assert_eq!(fake.signed_out.load(Ordering::Acquire), 3);
+    }
+
+    /// Closing signs every session out, and waits for them.
+    #[test]
+    fn closing_signs_every_session_out() {
+        let fake = Arc::new(Fake::default());
+        let desk = Desk::new(fake.clone());
+        let logins = [test_login("1", "Lucid", TEST_SYSTEM), test_login("2", "Tradeify", TEST_SYSTEM)];
+        for login in &logins {
+            assert!(desk.begin(&login.id));
+            desk.opened(&login.id, desk.broker().sign_in(login, Box::new(|| {})));
+        }
+        assert!(desk.begin("3"), "one still signing in");
+        desk.sign_out_all(SIGN_OUT_WAIT);
+        assert_eq!(fake.signed_out.load(Ordering::Acquire), 2);
+        assert!(logins.iter().all(|login| !desk.live(&login.id)));
+        assert!(!desk.opening("3"), "and one signing in is not kept when it comes back");
+        desk.sign_out_all(SIGN_OUT_WAIT);
+        assert_eq!(fake.signed_out.load(Ordering::Acquire), 2, "each once");
     }
 
     /// A live session's accounts land in the cache, under their login, and

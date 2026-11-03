@@ -28,6 +28,11 @@ use crate::{Bar, Error, LadderMinute, Live, Login, Period, Side, Trade, App, Cre
 /// and says why it is not.
 const PATIENCE: Duration = Duration::from_secs(20);
 
+/// How long closing waits for a session to sign out before it lets go:
+/// long enough for Rithmic to hear the logout, short enough that quitting
+/// is not held up by a gateway that has gone quiet.
+pub const SIGN_OUT_WAIT: Duration = Duration::from_secs(4);
+
 /// How long one ordinary request may take.
 const REQUEST: Duration = Duration::from_secs(15);
 
@@ -283,7 +288,7 @@ impl Client {
         }
         let (done, finished) = oneshot::channel();
         if self.inner.commands.send(Command::Stop { done }).is_ok() {
-            let _ = self.inner.handle.block_on(async { tokio::time::timeout(Duration::from_secs(4), finished).await });
+            let _ = self.inner.handle.block_on(async { tokio::time::timeout(SIGN_OUT_WAIT, finished).await });
         }
     }
 

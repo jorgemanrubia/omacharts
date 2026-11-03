@@ -1181,6 +1181,24 @@ pub(super) mod tests {
         assert_eq!(part(&pane).as_deref(), Some("Rithmic Test 952"));
     }
 
+    /// Closing the window signs the trading sessions out with the feeds,
+    /// so nothing is left signed in at the broker.
+    #[test]
+    fn closing_the_window_signs_trading_out() {
+        if !crate::ui::gtk_ready() {
+            return;
+        }
+        let store = Rc::new(Store::memory().expect("a store"));
+        let window = window_on(&store, false);
+        let (id, session) = sign_in(&window, &store, &["951"]);
+        assert!(window.desk.live(&id));
+        // Closing asks only a window that is on screen.
+        window.window.present();
+        window.window.close();
+        assert!(session.trouble().is_some(), "still signed in after the window closed");
+        assert!(!window.desk.live(&id));
+    }
+
     /// Two accounts and one feed: the accounts alone, and nothing about
     /// the feed anywhere.
     #[test]

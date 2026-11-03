@@ -40,7 +40,9 @@ pub mod keyring;
 mod login;
 mod trading;
 
-pub use client::{entitled_exchanges, known_front_month, on_entitlements, running, session, shutdown, Client, Watch};
+pub use client::{
+    entitled_exchanges, known_front_month, on_entitlements, running, session, shutdown, Client, Watch, SIGN_OUT_WAIT,
+};
 pub use login::{Login, DEV_LOGIN};
 pub use trading::{Account, AccountPnl, Book, Kind, Order, Position, Status, Trading, WorkingOrder};
 

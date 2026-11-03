@@ -7277,11 +7277,14 @@ impl Window {
     /// The window closing is the one exit nothing else covers: ten seconds
     /// of ticks are in memory and nowhere else, and a feed's threads are
     /// still running. The same retirement a feed switch does, with nothing
-    /// installed after it.
+    /// installed after it. Every trading session is signed out too, so a
+    /// closed app leaves nothing signed in at the broker, waiting no longer
+    /// than the data session does.
     fn wire_close(self: &Rc<Self>) {
         let this = self.clone();
         self.window.connect_close_request(move |_| {
             this.retire_feeds();
+            this.desk.sign_out_all(crate::trading::SIGN_OUT_WAIT);
             glib::Propagation::Proceed
         });
     }
