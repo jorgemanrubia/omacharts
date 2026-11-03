@@ -126,6 +126,11 @@ impl Theming {
 
     /// What new charts paint their bars in, and what the watchlist and the
     /// bar widget say up and down in.
+    /// How the bars are coloured: filled, hollow, red up or monochrome.
+    pub fn colouring(&self) -> omacharts_engine::BarColouring {
+        omacharts_engine::BarColouring::from_key(&self.scheme_id).unwrap_or_default()
+    }
+
     pub fn bar_scheme(&self) -> BarScheme {
         self.bar_scheme_for(&self.theme())
     }
@@ -208,7 +213,8 @@ impl Theming {
             Mode::Light => adw::ColorScheme::ForceLight,
         });
 
-        let css = stylesheet(&theme, &self.bar_scheme());
+        let mut css = stylesheet(&theme, &self.bar_scheme());
+        css.push_str(&trading_css(&theme, self.colouring()));
         let provider = self.provider.get_or_insert_with(|| {
             let provider = gtk::CssProvider::new();
             if let Some(display) = gtk::gdk::Display::default() {
@@ -257,6 +263,17 @@ pub(crate) const CORNER_PAD_START: i32 = 8;
 /// and `padding-top` of `.window-corner` below, 2 + 8. The rail's + stands
 /// at the same height, beside the toggle. The two change together.
 pub(crate) const CORNER_BUTTON_TOP: i32 = 10;
+
+/// The trading look's profit and loss as named colours, and the classes a
+/// signed P&L is written in with them.
+pub fn trading_css(theme: &Theme, colouring: omacharts_engine::BarColouring) -> String {
+    let look = omacharts_engine::theme_trading(theme, colouring);
+    format!(
+        "@define-color omacharts_profit {};\n@define-color omacharts_loss {};\n\
+         .pnl-gain {{ color: @omacharts_profit; }}\n.pnl-loss {{ color: @omacharts_loss; }}\n",
+        look.profit, look.loss
+    )
+}
 
 /// The app's CSS: libadwaita's named colours, redefined from the theme, plus
 /// the few classes we add ourselves.
@@ -1176,6 +1193,20 @@ paned.chart-split > separator:active {{ background-color: @omacharts_gutter_hove
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A signed P&L is written in the trading look's profit and loss, which
+    /// Red up turns round and Monochrome does not.
+    #[test]
+    fn profit_and_loss_are_named_colours_from_the_trading_look() {
+        let theme = &builtin_themes()[0];
+        let bars = omacharts_engine::theme::theme_bars(theme);
+        let css = trading_css(theme, omacharts_engine::BarColouring::Monochrome);
+        assert!(css.contains(&format!("@define-color omacharts_profit {};", bars.up)), "{css}");
+        assert!(css.contains(&format!("@define-color omacharts_loss {};", bars.down)), "{css}");
+        assert!(css.contains(".pnl-gain { color: @omacharts_profit; }"));
+        let red_up = trading_css(theme, omacharts_engine::BarColouring::RedUp);
+        assert!(red_up.contains(&format!("@define-color omacharts_profit {};", bars.down)), "{red_up}");
+    }
 
     #[test]
     fn the_stylesheet_redefines_the_platform_colours() {

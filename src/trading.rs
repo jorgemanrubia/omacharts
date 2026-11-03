@@ -672,6 +672,7 @@ impl Session for RithmicSession {
                 .orders
                 .into_iter()
                 .map(|order| WorkingOrder {
+                    said: order.said.clone(),
                     tick: rithmic_tick(&order.contract),
                     account: order.account,
                     basket_id: order.basket_id,
@@ -1039,6 +1040,15 @@ impl Side {
         }
     }
 
+    /// A shape for the side, so it is not told by colour alone: ▲ to buy,
+    /// ▼ to sell.
+    pub fn glyph(self) -> &'static str {
+        match self {
+            Side::Buy => "▲",
+            Side::Sell => "▼",
+        }
+    }
+
     pub fn from_key(key: &str) -> Option<Side> {
         [Side::Buy, Side::Sell].into_iter().find(|side| side.key() == key)
     }
@@ -1151,6 +1161,8 @@ pub struct WorkingOrder {
     pub tag: Option<String>,
     /// The step its price moves in, when the broker knows it.
     pub tick: Option<f64>,
+    /// What the broker last said of it in its own words, for display.
+    pub said: Option<String>,
 }
 
 /// What every live session knows of orders, positions and money.
@@ -1659,6 +1671,7 @@ pub(crate) mod tests {
             book.orders.insert(
                 0,
                 WorkingOrder {
+                    said: None,
                     account: order.account.clone(),
                     basket_id: basket.clone(),
                     contract: order.contract.clone(),
@@ -2073,6 +2086,7 @@ pub(crate) mod tests {
 
     fn order(basket: &str, side: Side, kind: OrderKind, price: Option<f64>, status: Status) -> WorkingOrder {
         WorkingOrder {
+            said: None,
             account: "t/951".into(),
             basket_id: basket.into(),
             contract: "ESZ6".into(),

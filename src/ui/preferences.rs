@@ -876,66 +876,37 @@ fn has_logins(context: &Context) -> bool {
     !crate::trading::logins(&context.store).is_empty()
 }
 
-/// How orders and positions are drawn on a chart: a colour and a line
-/// style for each. Only on a theme of somebody's own, like the bars.
+/// How orders and positions are drawn on a chart: a colour for each of buy,
+/// sell, long, short, profit and loss, and a pattern for each kind of line.
+/// Only on a theme of somebody's own, like the bars, and each row saves
+/// only itself: what nobody set keeps following the theme.
 fn trading_look_group(context: &Rc<Context>) -> adw::PreferencesGroup {
     use omacharts_engine::indicators::LineStyle;
-    use omacharts_engine::TradingSlot;
+    use omacharts_engine::{TradingColour, TradingLine, TradingLook};
 
     let group = adw::PreferencesGroup::new();
     group.set_title("Trading");
-    let look = omacharts_engine::editable_trading(&context.theming.borrow().theme());
-    // Saves one slot's line, changed by `edit`, into the theme.
-    let save = |ctx: &Rc<Context>, slot: TradingSlot, edit: &dyn Fn(&mut omacharts_engine::LineLook)| {
+    let theme = context.theming.borrow().theme();
+    let colouring = context.theming.borrow().colouring();
+    let shown = omacharts_engine::theme_trading(&theme, colouring);
+    // Change the theme's own look by `edit`, and nothing else in it.
+    let save = |ctx: &Rc<Context>, edit: &dyn Fn(&mut TradingLook)| {
         let mut theme = ctx.theming.borrow().theme();
         if !theme.source.is_editable() {
             return;
         }
         let mut look = omacharts_engine::editable_trading(&theme);
-        edit(look.get_mut(slot));
-        theme.trading = Some(look);
+        edit(&mut look);
+        theme.trading = Some(Box::new(look));
         ctx.store.save_theme(&theme);
         ctx.theming.borrow_mut().reload_custom(&ctx.store);
         apply(ctx);
     };
-    for slot in TradingSlot::ALL {
-        let line = look.get(slot).clone();
+
+    for slot in TradingColour::ALL {
         let row = adw::ActionRow::new();
         row.set_title(slot.label());
-
-        let colour = Rc::new(RefCell::new(line.color.clone()));
-        let ink = {
-            let colour = colour.clone();
-            crate::ui::chart_settings::Ink::new(move || colour.borrow().clone())
-        };
-        let strip = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        strip.add_css_class("linked");
-        strip.add_css_class("stroke-picker");
-        strip.set_valign(gtk::Align::Center);
-        let mut first: Option<gtk::ToggleButton> = None;
-        let mut samples = Vec::new();
-        for style in LineStyle::ALL {
-            let button = gtk::ToggleButton::new();
-            button.add_css_class("flat");
-            button.set_tooltip_text(Some(style.label()));
-            let sample = crate::ui::chart_settings::stroke_sample(crate::ui::chart_settings::LINE_SAMPLE_WIDTH, style, &ink);
-            button.set_child(Some(&sample));
-            samples.push(sample);
-            match &first {
-                Some(anchor) => button.set_group(Some(anchor)),
-                None => first = Some(button.clone()),
-            }
-            button.set_active(style == line.style);
-            let ctx = context.clone();
-            button.connect_toggled(move |button| {
-                if button.is_active() {
-                    save(&ctx, slot, &|line| line.style = style);
-                }
-            });
-            strip.append(&button);
-        }
-
-        let button = color_button(&line.color);
+        let button = color_button(shown.colour(slot));
         let ctx = context.clone();
         button.connect_rgba_notify(move |button| {
             let rgba = button.rgba();
@@ -945,14 +916,45 @@ fn trading_look_group(context: &Rc<Context>) -> adw::PreferencesGroup {
                 (rgba.green() * 255.0).round() as u8,
                 (rgba.blue() * 255.0).round() as u8,
             );
-            *colour.borrow_mut() = hex.clone();
-            for sample in &samples {
-                sample.queue_draw();
-            }
-            save(&ctx, slot, &|line| line.color = hex.clone());
+            save(&ctx, &|look| *look.colour_mut(slot) = Some(omacharts_engine::ColorChoice::Fixed { hex: hex.clone() }));
         });
-        row.add_suffix(&strip);
         row.add_suffix(&button);
+        group.add(&row);
+    }
+
+    let ink = {
+        let text = theme.ui.text.clone();
+        crate::ui::chart_settings::Ink::new(move || text.clone())
+    };
+    for slot in TradingLine::ALL {
+        let row = adw::ActionRow::new();
+        row.set_title(slot.label());
+        let strip = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        strip.add_css_class("linked");
+        strip.add_css_class("stroke-picker");
+        strip.set_valign(gtk::Align::Center);
+        let mut first: Option<gtk::ToggleButton> = None;
+        for style in LineStyle::ALL {
+            let button = gtk::ToggleButton::new();
+            button.add_css_class("flat");
+            button.set_tooltip_text(Some(style.label()));
+            let sample =
+                crate::ui::chart_settings::stroke_sample(crate::ui::chart_settings::LINE_SAMPLE_WIDTH, style, &ink);
+            button.set_child(Some(&sample));
+            match &first {
+                Some(anchor) => button.set_group(Some(anchor)),
+                None => first = Some(button.clone()),
+            }
+            button.set_active(style == shown.line(slot));
+            let ctx = context.clone();
+            button.connect_toggled(move |button| {
+                if button.is_active() {
+                    save(&ctx, &|look| *look.line_mut(slot) = Some(style));
+                }
+            });
+            strip.append(&button);
+        }
+        row.add_suffix(&strip);
         group.add(&row);
     }
     group

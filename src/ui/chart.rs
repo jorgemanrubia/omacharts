@@ -35,7 +35,7 @@ use omacharts_engine::drawings::{
 };
 use omacharts_engine::bars::Unit;
 use omacharts_engine::clock::{ChartZone, TimeFormat};
-use omacharts_engine::indicators::{self as indicators, BandSeries, Output, Profile};
+use omacharts_engine::indicators::{self as indicators, BandSeries, LineStyle, Output, Profile};
 use omacharts_engine::{
     grouped_decimals, Bar, BarScheme, BarStyle, Direction, FetchFailure, Indicator, Instrument,
     Range, Tag, Theme, Timeframe,
@@ -6317,26 +6317,31 @@ fn stroke_pane_line(
 }
 
 /// A working order on the chart: its line at its price, its price on the
-/// axis and its words inside the plot, all in its look.
+/// axis and its words inside the plot, in its side's colour and its kind's
+/// pattern.
 #[derive(Clone, Debug, PartialEq)]
 pub struct OrderMark {
     pub price: f64,
-    /// "Buy Limit 1".
+    /// "▲ Buy Limit 1".
     pub words: String,
     pub price_text: String,
-    pub look: omacharts_engine::LineLook,
+    pub colour: String,
+    pub style: LineStyle,
 }
 
-/// The position held, at its average price: a heavier line, and a pill
-/// filled in `pill`, which says whether it is in profit.
+/// The position held, at its average price: a heavier line in the long or
+/// short colour, and a pill and a chip filled in the profit or loss colour
+/// once the broker's P&L has come, outlined until then.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PositionMark {
     pub price: f64,
-    /// "+1 · +$125.00", or "+1 @ 7,612.25" until the P&L has come.
+    /// "▲ +1 · +$125.00", or "▲ +1 @ 7,612.25" until the P&L has come.
     pub words: String,
     pub price_text: String,
-    pub look: omacharts_engine::LineLook,
-    pub pill: String,
+    pub colour: String,
+    pub style: LineStyle,
+    /// The profit or loss colour, once there is a P&L to colour.
+    pub pill: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -6358,6 +6363,14 @@ fn pill_path(cr: &cairo::Context, x: f64, y: f64, w: f64, h: f64) {
     cr.arc(x + w - r, y + r, r, -std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2);
     cr.arc(x + r, y + r, r, std::f64::consts::FRAC_PI_2, 3.0 * std::f64::consts::FRAC_PI_2);
     cr.close_path();
+}
+
+/// How a mark's words and price are boxed: filled with the contrast the
+/// last-price tag is held to, or outlined in the colour, the text in the
+/// theme's own so it reads on any ground.
+enum Boxed<'a> {
+    Filled(Tag),
+    Outlined(&'a str),
 }
 
 /// The orders and the position, drawn under the last price: lines across
@@ -6382,82 +6395,93 @@ fn draw_marks(
     cr.save().ok();
     cr.select_font_face("sans-serif", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
     cr.set_font_size(11.0);
-    let pill_h = AXIS_CHIP_H;
-    let pill = |cr: &cairo::Context, y: f64, text: &str, fill: &str, edge: &str, ink: &str| {
-        let Ok(extents) = cr.text_extents(text) else { return };
-        let w = extents.width() + 14.0;
-        let x = plot_x + plot_w - w - 8.0;
-        pill_path(cr, x, y - pill_h / 2.0, w, pill_h);
-        colors::set_source(cr, fill);
-        let _ = cr.fill_preserve();
-        cr.set_line_width(1.0);
-        colors::set_source(cr, edge);
-        let _ = cr.stroke();
-        colors::set_source(cr, ink);
-        cr.move_to(x + 7.0, y + 3.5);
+    let background = state.theme.ui.background.as_str();
+    let ink = state.theme.ui.text.as_str();
+    // A box at `x`, `w` wide, centred on `y`, its text `text`.
+    let boxed = |cr: &cairo::Context, x: f64, y: f64, w: f64, text: &str, look: &Boxed, round: bool| {
+        let h = AXIS_CHIP_H;
+        match round {
+            true => pill_path(cr, x, y - h / 2.0, w, h),
+            false => cr.rectangle(x + 0.5, y - h / 2.0 + 0.5, w - 1.0, h - 1.0),
+        }
+        let text_colour = match look {
+            Boxed::Filled(tag) => {
+                colors::set_source(cr, &tag.fill);
+                let _ = cr.fill();
+                tag.label.as_str()
+            }
+            Boxed::Outlined(colour) => {
+                colors::set_source(cr, background);
+                let _ = cr.fill_preserve();
+                cr.set_line_width(1.0);
+                colors::set_source(cr, colour);
+                let _ = cr.stroke();
+                ink
+            }
+        };
+        colors::set_source(cr, text_colour);
+        cr.move_to(x + if round { 7.0 } else { 5.0 }, y + 3.5);
         let _ = cr.show_text(text);
     };
-    let line = |cr: &cairo::Context, y: f64, look: &omacharts_engine::LineLook, weight: f64| {
+    let pill = |cr: &cairo::Context, y: f64, text: &str, look: &Boxed| {
+        let Ok(extents) = cr.text_extents(text) else { return };
+        let w = extents.x_advance() + 14.0;
+        boxed(cr, plot_x + plot_w - w - 8.0, y, w, text, look, true);
+    };
+    let line = |cr: &cairo::Context, y: f64, colour: &str, style: LineStyle, weight: f64| {
         cr.set_line_width(weight);
-        cr.set_dash(&look.style.dashes(weight), 0.0);
-        colors::set_source(cr, &look.color);
+        cr.set_dash(&style.dashes(weight), 0.0);
+        colors::set_source(cr, colour);
         cr.move_to(plot_x, y);
         cr.line_to(plot_x + plot_w, y);
         let _ = cr.stroke();
         cr.set_dash(&[], 0.0);
     };
-    let background = state.theme.ui.background.as_str();
 
-    // Each chip: its height, its text, its colour, and filled or outlined.
-    // The last price is among them so that they are spread around it.
-    let mut chips: Vec<(f64, &str, &str, bool, bool)> = Vec::with_capacity(state.marks.orders.len() + 2);
+    // Each chip: its height, its text and its box. The last price is among
+    // them, with no box, so that they are spread around it.
+    let mut chips: Vec<(f64, &str, Option<Boxed>)> = Vec::with_capacity(state.marks.orders.len() + 2);
     for order in &state.marks.orders {
-        let y = to_y(order.price).round() + 0.5;
+        let y = to_y(order.price).round();
         if !shown(y) {
             continue;
         }
-        line(cr, y, &order.look, 1.0);
-        pill(cr, y, &order.words, background, &order.look.color, &order.look.color);
-        chips.push((y, &order.price_text, &order.look.color, false, false));
+        // An order's line is 1.5 px, so a dashed one can never be taken for
+        // the last price's thinner dashes.
+        line(cr, y, &order.colour, order.style, 1.5);
+        pill(cr, y, &order.words, &Boxed::Outlined(&order.colour));
+        chips.push((y + 0.5, &order.price_text, Some(Boxed::Outlined(&order.colour))));
     }
     if let Some(held) = &state.marks.position {
         let y = to_y(held.price).round();
         if shown(y) {
-            line(cr, y, &held.look, 2.0);
-            pill(cr, y, &held.words, &held.pill, &held.pill, colors::readable_on(&held.pill));
-            chips.push((y, &held.price_text, &held.look.color, true, false));
+            line(cr, y, &held.colour, held.style, 2.0);
+            let look = || match &held.pill {
+                Some(fill) => Boxed::Filled(Tag::on(fill)),
+                None => Boxed::Outlined(&held.colour),
+            };
+            pill(cr, y, &held.words, &look());
+            chips.push((y + 0.5, &held.price_text, Some(look())));
         }
     }
     let last = state.bars.last().map(|bar| to_y(bar.close).round() + 0.5).filter(|y| shown(*y));
     if let Some(y) = last {
-        chips.push((below_cover(state, y), "", "", true, true));
+        chips.push((below_cover(state, y), "", None));
     }
     chips.sort_by(|a, b| a.0.total_cmp(&b.0));
     let mut ys: Vec<f64> = chips.iter().map(|chip| chip.0).collect();
     spread_chips(&mut ys, AXIS_CHIP_H, floor);
     let axis_x = plot_x + plot_w;
     let mut moved = None;
-    for ((_, text, colour, filled, is_last), y) in chips.iter().zip(ys) {
+    for ((_, text, look), y) in chips.iter().zip(ys) {
         let y = y.round() + 0.5;
-        if *is_last {
+        let Some(look) = look else {
             moved = Some(y);
             continue;
-        }
-        match filled {
-            true => label_on_axis(cr, state, text, axis_x, y, width, colour),
-            false => {
-                let Ok(extents) = cr.text_extents(text) else { continue };
-                let w = (extents.width() + 10.0).min(width - axis_x - 2.0);
-                cr.rectangle(axis_x + 1.5, y - AXIS_CHIP_H / 2.0 + 0.5, w - 1.0, AXIS_CHIP_H - 1.0);
-                colors::set_source(cr, background);
-                let _ = cr.fill_preserve();
-                cr.set_line_width(1.0);
-                colors::set_source(cr, colour);
-                let _ = cr.stroke();
-                cr.move_to(axis_x + 6.0, y + 3.5);
-                let _ = cr.show_text(text);
-            }
-        }
+        };
+        let Ok(extents) = cr.text_extents(text) else { continue };
+        let w = (extents.width() + 10.0).min(width - axis_x - 2.0);
+        boxed(cr, axis_x + 1.0, y, w, text, look, false);
     }
     cr.restore().ok();
     moved

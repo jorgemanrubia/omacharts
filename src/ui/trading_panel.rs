@@ -69,6 +69,18 @@ fn cell(text: &str, numeric: bool) -> gtk::Label {
     label
 }
 
+/// A signed P&L, in the theme's profit or loss colour.
+fn pnl_cell(value: Option<f64>, currency: Option<&str>) -> gtk::Label {
+    let Some(value) = value else { return cell("—", true) };
+    let label = cell(&trading::pnl_text(value, currency), true);
+    match value {
+        value if value > 0.0 => label.add_css_class("pnl-gain"),
+        value if value < 0.0 => label.add_css_class("pnl-loss"),
+        _ => {}
+    }
+    label
+}
+
 fn heading(text: &str, numeric: bool) -> gtk::Label {
     let label = cell(text, numeric);
     label.add_css_class("trading-heading");
@@ -196,17 +208,16 @@ impl TradingPanel {
             .map(|account| {
                 let money = view.book.money(&account.key());
                 let currency = account.currency.as_deref();
-                let amount = |value: Option<f64>, signed: bool| match value {
-                    Some(value) if signed => trading::pnl_text(value, currency),
+                let balance = match money.and_then(|m| m.balance).or(account.balance) {
                     Some(value) => trading::money_text(value, currency),
                     None => "—".to_string(),
                 };
                 vec![
                     cell(&trading::account_name(account, &view.logins), false).upcast(),
                     cell(currency.unwrap_or("—"), false).upcast(),
-                    cell(&amount(money.and_then(|m| m.balance).or(account.balance), false), true).upcast(),
-                    cell(&amount(money.and_then(|m| m.realized_day), true), true).upcast(),
-                    cell(&amount(money.and_then(|m| m.unrealized), true), true).upcast(),
+                    cell(&balance, true).upcast(),
+                    pnl_cell(money.and_then(|m| m.realized_day), currency).upcast(),
+                    pnl_cell(money.and_then(|m| m.unrealized), currency).upcast(),
                 ]
             })
             .collect();
@@ -231,16 +242,12 @@ impl TradingPanel {
                 let (account, contract, exchange) = (held.account.clone(), held.contract.clone(), held.exchange.clone());
                 flatten.connect_clicked(move |_| (hands.flatten)(&account, &contract, &exchange));
                 flatten.set_visible(view.book.capabilities_of(&held.account).is_some_and(|can| can.flatten));
-                let pnl = held
-                    .open_pnl
-                    .map(|pnl| trading::pnl_text(pnl, Self::currency_of(view, &held.account)))
-                    .unwrap_or_else(|| "—".into());
                 vec![
                     cell(&Self::name_of(view, &held.account), false).upcast(),
                     cell(&held.contract, false).upcast(),
                     cell(&trading::net_text(held.net), true).upcast(),
                     cell(&price_text(held.avg, held.tick), true).upcast(),
-                    cell(&pnl, true).upcast(),
+                    pnl_cell(held.open_pnl, Self::currency_of(view, &held.account)).upcast(),
                     flatten.upcast(),
                 ]
             })
@@ -261,6 +268,10 @@ impl TradingPanel {
             .map(|order| {
                 let status = match &order.status {
                     Status::Rejected(why) => format!("Rejected: {why}"),
+                    Status::Cancelled => match &order.said {
+                        Some(said) => format!("Cancelled: {said}"),
+                        None => "Cancelled".to_string(),
+                    },
                     status => status.word().to_string(),
                 };
                 let price = match order.kind {
@@ -270,14 +281,12 @@ impl TradingPanel {
                 let status_cell = cell(&status, false);
                 status_cell.set_ellipsize(gtk::pango::EllipsizeMode::End);
                 status_cell.set_max_width_chars(40);
-                if let Status::Rejected(why) = &order.status {
-                    status_cell.set_tooltip_text(Some(why));
-                }
+                status_cell.set_tooltip_text(Some(&status));
                 let mut cells: Vec<gtk::Widget> = vec![
                     cell(&time_text(order.at), true).upcast(),
                     cell(&Self::name_of(view, &order.account), false).upcast(),
                     cell(&order.contract, false).upcast(),
-                    cell(order.side.word(), false).upcast(),
+                    cell(&format!("{} {}", order.side.glyph(), order.side.word()), false).upcast(),
                     cell(&order.qty.to_string(), true).upcast(),
                     cell(order.kind.word(), false).upcast(),
                     cell(&price, true).upcast(),

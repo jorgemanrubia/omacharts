@@ -23,6 +23,10 @@ use crate::ui::trading_panel::{Hands, TradingPanel};
 /// Whether the panel is open, remembered for the next launch.
 pub const SHOW_TRADING_PANEL: &str = "show_trading_panel";
 
+/// The disabled action a row the menu cannot offer points at, so it is
+/// drawn greyed.
+const UNAVAILABLE: &str = "chart.order-unavailable";
+
 /// The window's trading furniture, all of it built only once there is a
 /// login.
 #[derive(Default)]
@@ -140,6 +144,10 @@ impl Window {
                 }
             });
             actions.add_action(&cancel);
+            // What a greyed row points at: GTK greys a row by its action.
+            let unavailable = gio::SimpleAction::new("order-unavailable", None);
+            unavailable.set_enabled(false);
+            actions.add_action(&unavailable);
         }
 
         // Toasts lie over the whole window, rail included.
@@ -171,6 +179,7 @@ impl Window {
         if let Some(actions) = self.trade.chart_actions.borrow().as_ref() {
             actions.remove_action("order");
             actions.remove_action("cancel-order");
+            actions.remove_action("order-unavailable");
         }
         let overlay = self.trade.overlay.borrow().clone();
         let root = self.trade.root.borrow().clone();
@@ -357,12 +366,14 @@ impl Window {
         let target = match self.order_target(&pane) {
             Ok(target) => target,
             Err(why) => {
-                section.append(Some(&why), None);
+                section.append(Some(&why), Some(UNAVAILABLE));
                 return Some(section);
             }
         };
         let key = target.account.key();
         let name = self.account_label(&key);
+        // The contract may have become known since the book last moved.
+        self.apply_marks_to(&pane);
         let tick = Self::tick_of(&pane, &target);
         let at = pane.view.price_under(y).map(|price| match tick {
             Some(tick) => omacharts_engine::on_tick(price, tick),
@@ -391,6 +402,8 @@ impl Window {
             if allowed {
                 let value = order_target_value(side, kind, &key, price.map(|(price, _)| price));
                 item.set_action_and_target_value(Some("chart.order"), Some(&value.to_variant()));
+            } else {
+                item.set_action_and_target_value(Some(UNAVAILABLE), None);
             }
             section.append_item(&item);
         }
@@ -520,8 +533,9 @@ impl Window {
         };
         let key = target.account.key();
         let theme = self.theming.borrow().theme();
-        let scheme = super::pane_scheme(pane, &theme);
-        let look = omacharts_engine::theme_trading(&theme, &scheme);
+        // The theme's trading colours, with only the chart's Red up turning
+        // profit and loss round; never its candles' colours.
+        let look = omacharts_engine::theme_trading(&theme, pane.colouring.get());
         let places = crate::ui::trading_panel::decimals_of(Self::tick_of(pane, &target));
         let price = |price: f64| omacharts_engine::grouped_decimals(price, places);
         let view = self.trading.borrow();
@@ -530,36 +544,46 @@ impl Window {
             .working(&key, &target.contract)
             .filter_map(|order| {
                 let at = order.price?;
-                let look = match (order.side, order.kind) {
-                    (Side::Buy, OrderKind::Limit) => &look.buy_limit,
-                    (Side::Sell, OrderKind::Limit) => &look.sell_limit,
-                    (Side::Buy, OrderKind::Stop) => &look.buy_stop,
-                    (Side::Sell, OrderKind::Stop) => &look.sell_stop,
-                    (_, OrderKind::Market) => return None,
+                let style = match order.kind {
+                    OrderKind::Limit => look.limit,
+                    OrderKind::Stop => look.stop,
+                    OrderKind::Market => return None,
+                };
+                let colour = match order.side {
+                    Side::Buy => look.buy.clone(),
+                    Side::Sell => look.sell.clone(),
                 };
                 Some(crate::ui::chart::OrderMark {
                     price: at,
-                    words: format!("{} {}", trading::order_words(order.side, order.kind), order.qty),
+                    words: format!(
+                        "{} {} {}",
+                        order.side.glyph(),
+                        trading::order_words(order.side, order.kind),
+                        order.qty
+                    ),
                     price_text: price(at),
-                    look: look.clone(),
+                    colour,
+                    style,
                 })
             })
             .collect();
         let currency = target.account.currency.clone();
         let position = view.book.position(&key, &target.contract).and_then(|held| {
             let at = held.avg?;
-            let pill = match held.open_pnl {
-                Some(pnl) if pnl < 0.0 => scheme.down.clone(),
-                Some(_) => scheme.up.clone(),
-                None if held.net > 0 => look.long.color.clone(),
-                None => look.short.color.clone(),
+            let (side, colour) = match held.net > 0 {
+                true => (Side::Buy, look.long.clone()),
+                false => (Side::Sell, look.short.clone()),
             };
             Some(crate::ui::chart::PositionMark {
                 price: at,
-                words: trading::position_text(held, places, currency.as_deref()),
+                words: format!("{} {}", side.glyph(), trading::position_text(held, places, currency.as_deref())),
                 price_text: price(at),
-                look: if held.net > 0 { look.long.clone() } else { look.short.clone() },
-                pill,
+                colour,
+                style: look.position,
+                pill: held.open_pnl.map(|pnl| match pnl < 0.0 {
+                    true => look.loss.clone(),
+                    false => look.profit.clone(),
+                }),
             })
         });
         pane.view.set_marks(position, orders);
@@ -678,7 +702,11 @@ pub(super) mod tests {
         let mut found = Vec::new();
         for at in 0..model.n_items() {
             let label = model.item_attribute_value(at, "label", None).and_then(|v| v.str().map(str::to_string));
-            let action = model.item_attribute_value(at, "action", None).is_some();
+            // Offered: pointing at an action that can run.
+            let action = model
+                .item_attribute_value(at, "action", None)
+                .and_then(|v| v.str().map(str::to_string))
+                .is_some_and(|action| format!("chart.{}", action.trim_start_matches("chart.")) != UNAVAILABLE);
             if let Some(label) = label {
                 found.push((label, action));
             }
@@ -762,7 +790,7 @@ pub(super) mod tests {
         }
         assert_eq!(session.book().position("951", "ESZ6").map(|held| held.net), Some(1), "bought through the session");
         // The chart shows the position, and a working order once there is one.
-        assert_eq!(pane.view.marks(), (Some("+1 @ 7,612.25".to_string()), Vec::new()));
+        assert_eq!(pane.view.marks(), (Some("▲ +1 @ 7,612.25".to_string()), Vec::new()));
         let limit = trading::Order {
             account: "951".into(),
             contract: "ESZ6".into(),
@@ -775,7 +803,7 @@ pub(super) mod tests {
         };
         let basket = session.place(&limit).unwrap();
         window.desk.tell();
-        assert_eq!(pane.view.marks().1, vec!["Sell Limit 1".to_string()]);
+        assert_eq!(pane.view.marks().1, vec!["▼ Sell Limit 1".to_string()]);
         session.cancel("951", &basket).unwrap();
         window.desk.tell();
         assert!(pane.view.marks().1.is_empty(), "a cancelled order left on the chart");

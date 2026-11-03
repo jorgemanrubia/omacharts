@@ -131,6 +131,8 @@ pub struct WorkingOrder {
     /// When Rithmic last said anything of it, in unix seconds.
     pub at: i64,
     pub tag: Option<String>,
+    /// What Rithmic last said of it in words, when it said anything.
+    pub said: Option<String>,
 }
 
 /// A position in one contract, as the PnL plant pushed it.
@@ -252,6 +254,7 @@ impl State {
             fill_price: None,
             at,
             tag: Some(order.tag.clone()),
+            said: None,
         });
     }
 
@@ -282,6 +285,7 @@ impl State {
             fill_price: None,
             at: 0,
             tag: None,
+            said: None,
         });
         let given = |text: &Option<String>| text.as_ref().filter(|text| !text.is_empty()).cloned();
         if let Some(account) = given(&update.account_id) {
@@ -315,6 +319,9 @@ impl State {
         }
         if let Some(at) = update.ssboe {
             order.at = i64::from(at);
+        }
+        if let Some(said) = reason([update.report_text.as_ref(), update.text.as_ref()]) {
+            order.said = Some(said);
         }
         if let Some(tag) = given(&update.user_tag) {
             order.tag = Some(tag);
@@ -363,6 +370,9 @@ impl State {
         let Some(basket) = update.basket_id.as_deref().filter(|id| !id.is_empty()) else { return false };
         let Some(order) = self.order_mut(basket) else { return false };
         let before = order.clone();
+        if let Some(said) = reason([update.report_text.as_ref(), update.text.as_ref()]) {
+            order.said = Some(said);
+        }
         match update.report_type.as_deref().map(str::to_ascii_lowercase).as_deref() {
             Some("fill") => {
                 if let Some(price) = update.avg_fill_price.or(update.fill_price).filter(|price| *price != 0.0) {
