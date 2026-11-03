@@ -518,6 +518,12 @@ const ADD_TIP: &str = "Add a symbol or a section";
 const NEW_LIST_TIP: &str = "New watchlist";
 
 impl Watchlist {
+    /// Stand the + clear of `extra` more pixels of the window's corner, which
+    /// grows a button while there is a trading login.
+    pub fn clear_corner(&self, extra: i32) {
+        self.add.set_margin_end(crate::ui::window::RAIL_ADD_END + extra);
+    }
+
     pub fn new(
         store: Rc<Store>,
         index: crate::inventory::Inventory,

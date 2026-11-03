@@ -114,6 +114,11 @@ impl Window {
             cluster.prepend(&toggle);
         }
         *self.trade.toggle.borrow_mut() = Some(toggle.clone());
+        // The corner is a button wider; the rail's + steps over for it.
+        let (_, wide, _, _) = toggle.measure(gtk::Orientation::Horizontal, -1);
+        if let Some(rail) = self.watchlist.borrow().as_ref() {
+            rail.clear_corner(wide);
+        }
 
         let action = gio::SimpleAction::new("trading-panel", None);
         let this = self.clone();
@@ -174,6 +179,9 @@ impl Window {
             && let Some(cluster) = self.trade.cluster.borrow().as_ref()
         {
             cluster.remove(&toggle);
+        }
+        if let Some(rail) = self.watchlist.borrow().as_ref() {
+            rail.clear_corner(0);
         }
         self.window.remove_action("trading-panel");
         if let Some(actions) = self.trade.chart_actions.borrow().as_ref() {
