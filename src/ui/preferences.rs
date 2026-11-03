@@ -9,7 +9,7 @@
 //! makes a copy you own, which is both simpler to reason about and means a
 //! fiddled palette can always be abandoned by switching back.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use adw::prelude::*;
@@ -53,6 +53,13 @@ thread_local! {
     static LAST_SEEN: RefCell<Seen> = RefCell::new(Seen::default());
 }
 
+/// Have the dialog open next at the Theme section, for a test that reads
+/// what is on it.
+#[cfg(test)]
+pub(crate) fn open_next_at_theme() {
+    LAST_SEEN.with(|seen| seen.borrow_mut().section = 2);
+}
+
 struct Context {
     store: Rc<Store>,
     theming: Rc<RefCell<Theming>>,
@@ -71,6 +78,11 @@ struct Context {
     data_page: adw::PreferencesPage,
     trading_page: adw::PreferencesPage,
     groups: RefCell<Vec<adw::PreferencesGroup>>,
+    /// Whether the Theme page was last drawn with a login, and so with its
+    /// Trading group; and the desk's call to draw it again when that
+    /// changes, kept alive with the dialog.
+    trading_shown: Cell<bool>,
+    trading_listener: RefCell<Option<Rc<dyn Fn()>>>,
     /// The window, for the chart templates: they are shown on its charts,
     /// and only it knows which of its charts are using one.
     window: Rc<Window>,
@@ -182,11 +194,26 @@ impl Preferences {
             data_page,
             trading_page,
             groups: RefCell::new(Vec::new()),
+            trading_shown: Cell::new(false),
+            trading_listener: RefCell::new(None),
             window,
             templates_group: RefCell::new(None),
             refill_default_template: RefCell::new(None),
         });
         rebuild(&context);
+        // A login added or removed on the Trading page puts the Trading
+        // group on the Theme page or takes it off; nothing else the desk
+        // is told of redraws it.
+        let weak = Rc::downgrade(&context);
+        let listener: Rc<dyn Fn()> = Rc::new(move || {
+            if let Some(context) = weak.upgrade()
+                && context.trading_shown.get() != has_logins(&context)
+            {
+                rebuild(&context);
+            }
+        });
+        context.window.desk().listen(&listener);
+        *context.trading_listener.borrow_mut() = Some(listener);
         build_general_page(&context);
 
         dialog.present(Some(parent));
@@ -280,9 +307,13 @@ fn rebuild(context: &Rc<Context>) {
 
     groups.push(theme_group(context));
     let theme = context.theming.borrow().theme();
+    context.trading_shown.set(has_logins(context));
     if theme.source.is_editable() {
         let [backgrounds, text, other] = UiSlot::GROUPS;
         groups.push(bar_colors_group(context));
+        if has_logins(context) {
+            groups.push(trading_look_group(context));
+        }
         groups.push(theme_colors_group(context, backgrounds));
         groups.push(theme_colors_group(context, text));
         groups.push(palette_group(context));
@@ -834,6 +865,93 @@ fn bar_colors_group(context: &Rc<Context>) -> adw::PreferencesGroup {
             ctx.theming.borrow_mut().reload_custom(&ctx.store);
             apply(&ctx);
         });
+        row.add_suffix(&button);
+        group.add(&row);
+    }
+    group
+}
+
+/// Is there a broker login? Only then does anything here speak of trading.
+fn has_logins(context: &Context) -> bool {
+    !crate::trading::logins(&context.store).is_empty()
+}
+
+/// How orders and positions are drawn on a chart: a colour and a line
+/// style for each. Only on a theme of somebody's own, like the bars.
+fn trading_look_group(context: &Rc<Context>) -> adw::PreferencesGroup {
+    use omacharts_engine::indicators::LineStyle;
+    use omacharts_engine::TradingSlot;
+
+    let group = adw::PreferencesGroup::new();
+    group.set_title("Trading");
+    let look = omacharts_engine::editable_trading(&context.theming.borrow().theme());
+    // Saves one slot's line, changed by `edit`, into the theme.
+    let save = |ctx: &Rc<Context>, slot: TradingSlot, edit: &dyn Fn(&mut omacharts_engine::LineLook)| {
+        let mut theme = ctx.theming.borrow().theme();
+        if !theme.source.is_editable() {
+            return;
+        }
+        let mut look = omacharts_engine::editable_trading(&theme);
+        edit(look.get_mut(slot));
+        theme.trading = Some(look);
+        ctx.store.save_theme(&theme);
+        ctx.theming.borrow_mut().reload_custom(&ctx.store);
+        apply(ctx);
+    };
+    for slot in TradingSlot::ALL {
+        let line = look.get(slot).clone();
+        let row = adw::ActionRow::new();
+        row.set_title(slot.label());
+
+        let colour = Rc::new(RefCell::new(line.color.clone()));
+        let ink = {
+            let colour = colour.clone();
+            crate::ui::chart_settings::Ink::new(move || colour.borrow().clone())
+        };
+        let strip = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        strip.add_css_class("linked");
+        strip.add_css_class("stroke-picker");
+        strip.set_valign(gtk::Align::Center);
+        let mut first: Option<gtk::ToggleButton> = None;
+        let mut samples = Vec::new();
+        for style in LineStyle::ALL {
+            let button = gtk::ToggleButton::new();
+            button.add_css_class("flat");
+            button.set_tooltip_text(Some(style.label()));
+            let sample = crate::ui::chart_settings::stroke_sample(crate::ui::chart_settings::LINE_SAMPLE_WIDTH, style, &ink);
+            button.set_child(Some(&sample));
+            samples.push(sample);
+            match &first {
+                Some(anchor) => button.set_group(Some(anchor)),
+                None => first = Some(button.clone()),
+            }
+            button.set_active(style == line.style);
+            let ctx = context.clone();
+            button.connect_toggled(move |button| {
+                if button.is_active() {
+                    save(&ctx, slot, &|line| line.style = style);
+                }
+            });
+            strip.append(&button);
+        }
+
+        let button = color_button(&line.color);
+        let ctx = context.clone();
+        button.connect_rgba_notify(move |button| {
+            let rgba = button.rgba();
+            let hex = format!(
+                "#{:02x}{:02x}{:02x}",
+                (rgba.red() * 255.0).round() as u8,
+                (rgba.green() * 255.0).round() as u8,
+                (rgba.blue() * 255.0).round() as u8,
+            );
+            *colour.borrow_mut() = hex.clone();
+            for sample in &samples {
+                sample.queue_draw();
+            }
+            save(&ctx, slot, &|line| line.color = hex.clone());
+        });
+        row.add_suffix(&strip);
         row.add_suffix(&button);
         group.add(&row);
     }

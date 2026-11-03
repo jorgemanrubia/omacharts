@@ -18,6 +18,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::bars::BarStyle;
+use crate::indicators::LineStyle;
 
 /// Which way the platform stylesheet should lean.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
@@ -163,6 +164,112 @@ pub struct Theme {
     /// scheme's id, name and source mean nothing here — it is the colours.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bars: Option<BarScheme>,
+    /// How orders and positions are drawn, set by hand on a theme of its
+    /// own. Absent, from the candles' colours; see [`theme_trading`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trading: Option<TradingLook>,
+}
+
+/// A line's colour and pattern.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct LineLook {
+    pub color: String,
+    pub style: LineStyle,
+}
+
+/// How a chart draws orders and positions: one look for each kind of
+/// working order, and one for a position each way.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct TradingLook {
+    pub buy_limit: LineLook,
+    pub sell_limit: LineLook,
+    pub buy_stop: LineLook,
+    pub sell_stop: LineLook,
+    pub long: LineLook,
+    pub short: LineLook,
+}
+
+/// One of a [`TradingLook`]'s six lines, by what it draws.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TradingSlot {
+    BuyLimit,
+    SellLimit,
+    BuyStop,
+    SellStop,
+    Long,
+    Short,
+}
+
+impl TradingSlot {
+    pub const ALL: [TradingSlot; 6] = [
+        TradingSlot::BuyLimit,
+        TradingSlot::SellLimit,
+        TradingSlot::BuyStop,
+        TradingSlot::SellStop,
+        TradingSlot::Long,
+        TradingSlot::Short,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            TradingSlot::BuyLimit => "Buy limit",
+            TradingSlot::SellLimit => "Sell limit",
+            TradingSlot::BuyStop => "Buy stop",
+            TradingSlot::SellStop => "Sell stop",
+            TradingSlot::Long => "Position (long)",
+            TradingSlot::Short => "Position (short)",
+        }
+    }
+}
+
+impl TradingLook {
+    /// From the candles: a buy and a long in the up colour, a sell and a
+    /// short in the down; a limit and a position solid, a stop dashed.
+    pub fn from_bars(bars: &BarScheme) -> TradingLook {
+        let line = |color: &str, style| LineLook { color: color.to_string(), style };
+        TradingLook {
+            buy_limit: line(&bars.up, LineStyle::Solid),
+            sell_limit: line(&bars.down, LineStyle::Solid),
+            buy_stop: line(&bars.up, LineStyle::Dashed),
+            sell_stop: line(&bars.down, LineStyle::Dashed),
+            long: line(&bars.up, LineStyle::Solid),
+            short: line(&bars.down, LineStyle::Solid),
+        }
+    }
+
+    pub fn get(&self, slot: TradingSlot) -> &LineLook {
+        match slot {
+            TradingSlot::BuyLimit => &self.buy_limit,
+            TradingSlot::SellLimit => &self.sell_limit,
+            TradingSlot::BuyStop => &self.buy_stop,
+            TradingSlot::SellStop => &self.sell_stop,
+            TradingSlot::Long => &self.long,
+            TradingSlot::Short => &self.short,
+        }
+    }
+
+    pub fn get_mut(&mut self, slot: TradingSlot) -> &mut LineLook {
+        match slot {
+            TradingSlot::BuyLimit => &mut self.buy_limit,
+            TradingSlot::SellLimit => &mut self.sell_limit,
+            TradingSlot::BuyStop => &mut self.buy_stop,
+            TradingSlot::SellStop => &mut self.sell_stop,
+            TradingSlot::Long => &mut self.long,
+            TradingSlot::Short => &mut self.short,
+        }
+    }
+}
+
+/// How `theme` draws orders and positions, over candles in `bars`: its own
+/// look if somebody set one, otherwise the candles'.
+pub fn theme_trading(theme: &Theme, bars: &BarScheme) -> TradingLook {
+    theme.trading.clone().unwrap_or_else(|| TradingLook::from_bars(bars))
+}
+
+/// The look a theme holds as written: its own, or the one its own candles
+/// give, which is what an edit starts from.
+pub fn editable_trading(theme: &Theme) -> TradingLook {
+    theme.trading.clone().unwrap_or_else(|| TradingLook::from_bars(&theme_bars(theme)))
 }
 
 impl Theme {
@@ -563,6 +670,7 @@ fn midnight() -> Theme {
             "#58a6ff", "#d29922", "#bc8cff", "#39c5cf", "#ff7b72", "#3fb950", "#ff9b50", "#76e4f7",
         ]),
         bars: None,
+        trading: None,
     }
 }
 
@@ -590,6 +698,7 @@ fn carbon() -> Theme {
             "#3584e4", "#f5c211", "#9141ac", "#33d17a", "#e01b24", "#26a269", "#ff7800", "#62a0ea",
         ]),
         bars: None,
+        trading: None,
     }
 }
 
@@ -622,6 +731,7 @@ fn paper() -> Theme {
             "#1f6feb", "#b8860b", "#7d3c98", "#0d665f", "#b03a2e", "#2f7d52", "#c2601c", "#1f7a8c",
         ]),
         bars: None,
+        trading: None,
     }
 }
 
@@ -651,6 +761,7 @@ fn daylight() -> Theme {
             "#0969da", "#9a6700", "#8250df", "#0f6a71", "#cf222e", "#1a7f37", "#bc4c00", "#0a7ea4",
         ]),
         bars: None,
+        trading: None,
     }
 }
 
@@ -1263,6 +1374,50 @@ pub fn rgb(hex: &str) -> Option<(u8, u8, u8)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Orders and positions follow the candles until somebody sets them:
+    /// buys and longs up, sells and shorts down, stops dashed.
+    #[test]
+    fn the_trading_look_comes_from_the_candles_until_it_is_set() {
+        let theme = builtin_themes().remove(0);
+        assert_eq!(theme.trading, None);
+        let bars = theme_bars(&theme);
+        let look = theme_trading(&theme, &bars);
+        assert_eq!(look.buy_limit, LineLook { color: bars.up.clone(), style: LineStyle::Solid });
+        assert_eq!(look.sell_stop, LineLook { color: bars.down.clone(), style: LineStyle::Dashed });
+        assert_eq!((look.long.color.as_str(), look.short.color.as_str()), (bars.up.as_str(), bars.down.as_str()));
+        assert_eq!(look.buy_stop.style, LineStyle::Dashed);
+        assert_eq!(look.short.style, LineStyle::Solid);
+        assert_eq!(editable_trading(&theme), look);
+        // A different scheme on screen moves the look with it.
+        let red_up = BarScheme { up: "#ff0000".into(), ..bars.clone() };
+        assert_eq!(theme_trading(&theme, &red_up).long.color, "#ff0000");
+
+        let mut set = theme.clone();
+        let mut mine = look.clone();
+        mine.get_mut(TradingSlot::BuyLimit).color = "#123456".into();
+        set.trading = Some(mine.clone());
+        assert_eq!(theme_trading(&set, &red_up), mine, "set by hand, kept");
+        assert_eq!(TradingSlot::ALL.map(|slot| slot.label())[4], "Position (long)");
+    }
+
+    /// A theme saved before there was a trading look reads as one without,
+    /// and one without writes nothing for it.
+    #[test]
+    fn a_theme_without_a_trading_look_reads_and_writes_as_before() {
+        let theme = builtin_themes().remove(0);
+        let json = serde_json::to_string(&theme).unwrap();
+        assert!(!json.contains("trading"), "{json}");
+        let back: Theme = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, theme);
+
+        let mut set = theme.clone();
+        set.trading = Some(TradingLook::from_bars(&theme_bars(&theme)));
+        let json = serde_json::to_string(&set).unwrap();
+        assert!(json.contains("\"buy_limit\""));
+        assert!(json.contains("\"dashed\""));
+        assert_eq!(serde_json::from_str::<Theme>(&json).unwrap(), set);
+    }
 
     #[test]
     fn every_builtin_theme_carries_the_full_swatch_palette() {

@@ -709,6 +709,53 @@ pub(super) mod tests {
         assert!(window.trade.chart_actions.borrow().as_ref().unwrap().lookup_action("order").is_none());
     }
 
+    /// The titles of every preferences group under `widget`.
+    fn group_titles(widget: &gtk::Widget) -> Vec<String> {
+        let mut found = Vec::new();
+        if let Some(group) = widget.downcast_ref::<adw::PreferencesGroup>() {
+            found.push(group.title().to_string());
+        }
+        let mut child = widget.first_child();
+        while let Some(inner) = child {
+            found.extend(group_titles(&inner));
+            child = inner.next_sibling();
+        }
+        found
+    }
+
+    /// The Theme page of a theme of one's own has a Trading group only
+    /// while there is a login, and the open dialog follows a login added
+    /// and removed.
+    #[test]
+    fn the_theme_page_speaks_of_trading_only_with_a_login() {
+        if !crate::ui::gtk_ready() {
+            return;
+        }
+        let store = Rc::new(Store::memory().expect("a store"));
+        let mut mine = omacharts_engine::theme::builtin_themes().remove(0);
+        mine.id = "custom-test".into();
+        mine.name = "Mine".into();
+        mine.source = omacharts_engine::Source::Custom;
+        store.save_theme(&mine);
+        store.set_setting(crate::theming::SETTING_THEME, "custom-test");
+        let window = window(&store);
+        crate::ui::preferences::open_next_at_theme();
+        window.open_preferences_at(None);
+        let dialog = window.window.visible_dialog().expect("the preferences");
+        let titles = || group_titles(dialog.upcast_ref());
+        assert!(titles().iter().any(|title| title == "Bars"), "an editable theme: {:?}", titles());
+        assert!(!titles().iter().any(|title| title == "Trading"), "Trading with no login");
+
+        let kept = Kept::default();
+        let id = trading::add_login(&store, &kept, &typed()).expect("a login");
+        window.desk.tell();
+        assert!(titles().iter().any(|title| title == "Trading"), "no Trading group with a login");
+
+        trading::remove_login(&store, &kept, &id, true).expect("removed");
+        window.desk.tell();
+        assert!(!titles().iter().any(|title| title == "Trading"), "Trading left behind by the last login");
+    }
+
     #[test]
     fn an_order_target_value_reads_back() {
         let value = order_target_value(Side::Sell, OrderKind::Limit, "1a2b/951", Some(7_620.25));
