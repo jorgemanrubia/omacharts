@@ -4084,6 +4084,14 @@ impl Window {
         }
         self.rebuild_book_strip();
         self.save_workspace();
+        // The keyboard to the chart that was focused in this book, once its
+        // panes are on screen. Left where GTK put it, it lands on the first
+        // button of the new book's header, which wears a focus ring and takes
+        // the next key meant for the chart.
+        let this = self.clone();
+        glib::idle_add_local_once(move || {
+            this.focused_pane().view.area.grab_focus();
+        });
     }
 
     /// Walk to the chartbook before or after this one, round the ends.
