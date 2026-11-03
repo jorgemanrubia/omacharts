@@ -374,22 +374,41 @@ const TICK_PRICES: usize = 12;
 /// contract's tick, and the prices are what a chart has to agree with.
 /// `None` where nothing is a step — a split-adjusted share, which is a
 /// quotient — or too few prices to tell.
+///
+/// The crosshair asks on every frame, so this allocates nothing: counting
+/// prices only has to reach [`TICK_PRICES`], and whether a step fits is the
+/// same question asked of a price twice as of it once.
 pub fn tick_of(bars: &[Bar]) -> Option<f64> {
     let newest = &bars[bars.len().saturating_sub(TICK_BARS)..];
-    let mut prices: Vec<f64> = newest
-        .iter()
-        .flat_map(|bar| [bar.open, bar.high, bar.low, bar.close])
-        .filter(|price| price.is_finite() && *price > 0.0)
-        .collect();
-    prices.sort_by(f64::total_cmp);
-    prices.dedup();
-    if prices.len() < TICK_PRICES {
+    let prices = || {
+        newest
+            .iter()
+            .flat_map(|bar| [bar.open, bar.high, bar.low, bar.close])
+            .filter(|price| price.is_finite() && *price > 0.0)
+    };
+    let mut seen = [0.0; TICK_PRICES];
+    let mut distinct = 0;
+    for price in prices() {
+        if !seen[..distinct].contains(&price) {
+            seen[distinct] = price;
+            distinct += 1;
+            if distinct == TICK_PRICES {
+                break;
+            }
+        }
+    }
+    if distinct < TICK_PRICES {
         return None;
     }
-    let on = |step: f64| prices.iter().all(|p| ((p / step) - (p / step).round()).abs() < 1e-3);
-    let decimal = (-8..=4).flat_map(|power| [1.0, 2.0, 2.5, 5.0].map(|m| m * 10f64.powi(power)));
-    let binary = (1..=8).map(|n| 0.5f64.powi(n));
-    decimal.chain(binary).filter(|step| on(*step)).max_by(f64::total_cmp)
+    let on = |step: f64| prices().all(|p| ((p / step) - (p / step).round()).abs() < 1e-3);
+    // Coarsest first, so the first step that fits is the answer and the
+    // coarser ones that do not are turned away by their first price or two.
+    let mut decimal = (-8..=4).rev().flat_map(|power| [5.0, 2.5, 2.0, 1.0].map(|m| m * 10f64.powi(power)));
+    let mut binary = (1..=8).map(|n| 0.5f64.powi(n));
+    match (decimal.find(|step| on(*step)), binary.find(|step| on(*step))) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (a, b) => a.or(b),
+    }
 }
 
 /// `price` on the nearest whole number of `tick`, and the decimals that
