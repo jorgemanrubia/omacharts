@@ -25,6 +25,7 @@ use omacharts_engine::{
     Timeframe,
 };
 
+use crate::at_price::AtPrice;
 use crate::live::{Change, Live, Series, Watching, Written};
 use crate::loader::{Loader, Request, Response, BACKFILL, BACKGROUND, FOREGROUND, REFRESH};
 use crate::book_templates;
@@ -32,7 +33,7 @@ use crate::store::{Store, DEFAULT_WATCHLIST};
 use crate::chart_defaults::ChartDefaults;
 use crate::theming::Theming;
 use crate::ui::chart::{Drawn, Echo};
-use crate::ui::pane::{self, ChartPane, Hideable, Node};
+use crate::ui::pane::{self, ChartPane, Hideable, LadderSource, Node};
 use crate::ui::drop_line;
 use crate::ui::screenshot;
 use omacharts_engine::link;
@@ -1463,6 +1464,9 @@ struct Feed {
     /// that does not, which then pays nothing: no registry, no writer
     /// thread, no wake.
     live: Option<Rc<Live>>,
+    /// Its volume at price, for a feed whose provider has ladders. `None`
+    /// for every other, which then pays nothing: no thread, no query.
+    at_price: Option<Rc<AtPrice>>,
     /// Can it be charted from with what is saved? Read from disk when the
     /// list is built and when a sign-in or sign-out finishes, never by
     /// connecting. A feed that cannot is passed over by [`Window::route`].
@@ -1490,10 +1494,12 @@ impl Feed {
             .stream()
             .is_some()
             .then(|| Rc::new(Live::new(provider.clone(), store.path().map(Path::to_path_buf))));
+        let at_price = AtPrice::new(provider.clone(), store.path().map(Path::to_path_buf)).map(Rc::new);
         let feed = Feed {
             provider,
             loader,
             live,
+            at_price,
             usable: Cell::new(true),
             unusable_because: Cell::new(""),
             backfill_quiet_until: Cell::new(None),
@@ -6107,6 +6113,20 @@ impl Window {
         // Whatever this chart streamed from another feed, it is this one's now.
         self.release_pane_elsewhere(pane.id, &feed);
         self.write_source_of(pane, Some(&feed), &passed);
+        // Where its volume at price would come from: only a feed with
+        // ladders of this contract, and nothing is asked until one of its
+        // indicators wants them.
+        let source = feed
+            .at_price
+            .as_ref()
+            .filter(|at_price| at_price.serves(&symbol))
+            .map(|at_price| LadderSource { at_price: at_price.clone(), key: key.clone(), symbol: symbol.clone() });
+        let was = pane.ladders.replace(source);
+        if let Some(was) = was
+            && pane.ladders.borrow().as_ref().is_none_or(|now| now.key != was.key)
+        {
+            was.at_price.unwatch(pane.id);
+        }
 
         *pane.instrument.borrow_mut() = Some(instrument.clone());
         // Whatever this chart was waiting for, it is not waiting any more. A
@@ -6759,26 +6779,43 @@ impl Window {
             self.clock_for(instrument).zone,
         );
         let merges = pane.profile_merges.borrow();
-        let drawn: Vec<Drawn> = all
-            .iter()
-            .zip(colors)
-            .map(|(indicator, color)| {
-                let mut indicator = indicator.clone();
-                // The chart's own composites, put into the profile only to be
-                // drawn: the indicator itself may be a template's.
-                if let omacharts_engine::Params::VolumeProfile { merged, reset, .. } = &mut indicator.params {
-                    let reset = reset.effective_for(timeframe);
-                    if let Some(merge) = merges.iter().find(|m| m.is(indicator.id, instrument, reset)) {
-                        *merged = merge.starts.clone();
+        let compute = |context: &omacharts_engine::indicators::Context| -> Vec<Drawn> {
+            all.iter()
+                .zip(colors.iter().cloned())
+                .map(|(indicator, color)| {
+                    let mut indicator = indicator.clone();
+                    // The chart's own composites, put into the profile only to
+                    // be drawn: the indicator itself may be a template's.
+                    if let omacharts_engine::Params::VolumeProfile { merged, reset, .. } = &mut indicator.params {
+                        let reset = reset.effective_for(timeframe);
+                        if let Some(merge) = merges.iter().find(|m| m.is(indicator.id, instrument, reset)) {
+                            *merged = merge.starts.clone();
+                        }
                     }
-                }
-                Drawn {
-                    color,
-                    output: omacharts_engine::indicators::compute_in(&indicator, bars, &context),
-                    indicator,
-                }
-            })
-            .collect();
+                    Drawn {
+                        color,
+                        output: omacharts_engine::indicators::compute_in(&indicator, bars, context),
+                        indicator,
+                    }
+                })
+                .collect()
+        };
+        // Volume at price, asked once per computation and never per bar: a
+        // chart whose feed has no ladders has no source, and goes straight
+        // to the bars.
+        let source = pane.ladders.borrow().clone();
+        let Some(source) = source else { return compute(&context) };
+        if !all.iter().any(|indicator| indicator.kind.uses_volume_at_price()) {
+            source.at_price.unwatch(pane.id);
+            return compute(&context);
+        }
+        if let Some(first) = bars.first() {
+            source.at_price.want(pane.id, &source.key, &source.symbol, instrument, first.ts);
+        }
+        let drawn = source.at_price.with_held(&source.key, |held| compute(&context.with_ladders(held)));
+        // Days a period cut and whose minutes are not in memory yet: read,
+        // and the chart drawn again when they are.
+        source.at_price.load_wanted(&source.key);
         drawn
     }
 
@@ -6830,6 +6867,48 @@ impl Window {
             if let Some(live) = &feed.live {
                 self.wire_live_of(live.clone());
             }
+            if let Some(at_price) = &feed.at_price {
+                self.wire_at_price(at_price.clone());
+            }
+        }
+    }
+
+    /// The same for a feed's volume at price: its live wakes drain on the
+    /// frame clock with the streams', and what its thread loads is put in
+    /// place and drawn by the charts that wanted it.
+    fn wire_at_price(self: &Rc<Self>, at_price: Rc<AtPrice>) {
+        let this = self.clone();
+        let nudges = at_price.nudges();
+        glib::spawn_future_local(async move {
+            while nudges.recv().await.is_ok() {
+                this.schedule_drain();
+            }
+        });
+        let this = self.clone();
+        let done = at_price.done();
+        glib::spawn_future_local(async move {
+            while let Ok(done) = done.recv().await {
+                let panes = at_price.finished(done);
+                this.recompute_panes(&panes);
+            }
+        });
+    }
+
+    /// Work out the indicators of the charts `ids` again, over the bars
+    /// they hold.
+    fn recompute_panes(self: &Rc<Self>, ids: &[u32]) {
+        let mut seen: Vec<u32> = Vec::with_capacity(ids.len());
+        for &id in ids {
+            if seen.contains(&id) {
+                continue;
+            }
+            seen.push(id);
+            let Some(pane) = self.pane(id) else { continue };
+            let instrument = pane.instrument.borrow().clone();
+            let Some(instrument) = instrument else { continue };
+            let timeframe = pane.timeframe.get();
+            let drawn = pane.view.with_bars(|bars| self.drawn_indicators(&pane, &instrument, timeframe, bars));
+            pane.view.set_indicators(drawn);
         }
     }
 
@@ -6985,6 +7064,7 @@ impl Window {
         let old = self.feeds();
         let mut receivers = Vec::new();
         let mut lives = Vec::new();
+        let mut at_prices = Vec::new();
         let feeds: Vec<Rc<Feed>> = providers
             .into_iter()
             .map(|provider| {
@@ -6996,6 +7076,7 @@ impl Window {
                 let feed = Rc::new(Feed::new(provider, &self.store, sender));
                 receivers.push((Rc::downgrade(&feed), receiver));
                 lives.extend(feed.live.clone());
+                at_prices.extend(feed.at_price.clone());
                 feed
             })
             .collect();
@@ -7011,6 +7092,9 @@ impl Window {
         }
         for live in lives {
             self.wire_live_of(live);
+        }
+        for at_price in at_prices {
+            self.wire_at_price(at_price);
         }
         self.wire_refresh();
     }
@@ -7129,6 +7213,9 @@ impl Window {
         if let Some(live) = &feed.live {
             live.shutdown();
         }
+        if let Some(at_price) = &feed.at_price {
+            at_price.shutdown();
+        }
         feed.loader.drop_prefetches();
         feed.loader.drop_backfill();
         // Whatever the provider holds beyond its value: a connection, a
@@ -7175,6 +7262,10 @@ impl Window {
         self.drain_scheduled.set(false);
         let mut retry = false;
         for feed in self.feeds() {
+            if let Some(at_price) = &feed.at_price {
+                let touched = at_price.drain();
+                self.recompute_panes(&touched);
+            }
             let Some(live) = &feed.live else { continue };
             let drained = live.drain();
             for change in drained.changes {
@@ -7316,6 +7407,14 @@ impl Window {
                 Window::schedule_reap(live);
             }
         }
+        if let Some(pane) = self.pane(id) {
+            pane.ladders.borrow_mut().take();
+        }
+        for feed in self.feeds() {
+            if let Some(at_price) = &feed.at_price {
+                at_price.unwatch(id);
+            }
+        }
     }
 
     /// Chart `id` is showing something from `serving` now, so whatever it
@@ -7330,6 +7429,9 @@ impl Window {
             {
                 Window::schedule_reap(live.clone());
             }
+            if let Some(at_price) = &feed.at_price {
+                at_price.unwatch(id);
+            }
         }
     }
 
@@ -7338,6 +7440,14 @@ impl Window {
         for live in self.lives() {
             if live.unwatch_all() {
                 Window::schedule_reap(live);
+            }
+        }
+        for pane in self.panes.borrow().iter() {
+            pane.ladders.borrow_mut().take();
+        }
+        for feed in self.feeds() {
+            if let Some(at_price) = &feed.at_price {
+                at_price.unwatch_all();
             }
         }
     }

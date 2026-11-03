@@ -50,7 +50,7 @@ pub const MAX_WHOLE_DAYS: usize = 12;
 enum Job {
     /// Fill the store's holes in `from..now` from the provider, then read
     /// back what a chart holds from `from` on.
-    Load { key: String, symbol: String, instrument: Instrument, tick_size: f64, from: i64 },
+    Load { key: String, symbol: String, instrument: Instrument, tick_size: f64, from: i64, now: i64 },
     /// One day's minutes.
     Day { key: String, day: i64 },
     /// A minute sealed live, and the span the feed knows complete.
@@ -98,6 +98,12 @@ pub struct AtPrice {
     armed: Arc<AtomicBool>,
     jobs: Mutex<Option<mpsc::Sender<Job>>>,
     done: async_channel::Receiver<Done>,
+    /// Unix seconds now: the wall clock, or a test's.
+    clock: std::cell::Cell<fn() -> i64>,
+}
+
+fn wall_clock() -> i64 {
+    chrono::Utc::now().timestamp()
 }
 
 impl AtPrice {
@@ -124,7 +130,13 @@ impl AtPrice {
             armed: Arc::new(AtomicBool::new(false)),
             jobs: Mutex::new(Some(jobs)),
             done,
+            clock: std::cell::Cell::new(wall_clock),
         })
+    }
+
+    /// Read the time from `clock` rather than the wall: for tests.
+    pub fn set_clock(&self, clock: fn() -> i64) {
+        self.clock.set(clock);
     }
 
     /// Wakes, one per pending drain.
@@ -157,8 +169,8 @@ impl AtPrice {
         let Some(tick_size) = self.provider.ladders().and_then(|ladders| ladders.tick_size(symbol)) else {
             return;
         };
-        let previous = self.by_pane.borrow().get(&pane).cloned();
-        if previous.as_deref() != Some(key) {
+        let moved = self.by_pane.borrow().get(&pane).map(String::as_str) != Some(key);
+        if moved {
             self.unwatch(pane);
             self.by_pane.borrow_mut().insert(pane, key.to_string());
         }
@@ -174,6 +186,7 @@ impl AtPrice {
                     instrument: instrument.clone(),
                     tick_size,
                     from,
+                    now: (self.clock.get())(),
                 });
             }
             return;
@@ -203,6 +216,7 @@ impl AtPrice {
             instrument: instrument.clone(),
             tick_size,
             from,
+            now: (self.clock.get())(),
         });
     }
 
@@ -382,9 +396,8 @@ fn work(path: &std::path::Path, provider: &dyn Provider, inbox: &mpsc::Receiver<
     let Some(ladders) = provider.ladders() else { return };
     while let Ok(job) = inbox.recv() {
         let answer = match job {
-            Job::Load { key, symbol, instrument, tick_size, from } => {
+            Job::Load { key, symbol, instrument, tick_size, from, now } => {
                 let days = Days::new(&instrument);
-                let now = chrono::Utc::now().timestamp();
                 // The minute trading now is the live feed's.
                 let to = now.div_euclid(60) * 60;
                 let reach = now - i64::from(ladders.history_days()) * 86_400;
@@ -417,5 +430,209 @@ fn work(path: &std::path::Path, provider: &dyn Provider, inbox: &mpsc::Receiver<
         if done.send_blocking(answer).is_err() {
             return;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use omacharts_engine::ladders::Side;
+    use omacharts_engine::{Bar, Capability, InstrumentKind, LadderSink, Ladders, ProviderError, Timeframe};
+
+    use super::*;
+
+    const KEY: &str = "fake:ES";
+    /// A whole minute, 2026-11-03 03:20 UTC: an ES session in progress.
+    const NOW: i64 = 1_793_700_000;
+    const HOUR: i64 = 3_600;
+
+    fn now() -> i64 {
+        NOW
+    }
+
+    fn later() -> i64 {
+        NOW + 180
+    }
+
+    #[derive(Default)]
+    struct Asked {
+        spans: Vec<(i64, i64)>,
+        sinks: Vec<LadderSink>,
+    }
+
+    struct Fake(Arc<Mutex<Asked>>);
+
+    struct Open;
+    impl Subscription for Open {}
+
+    fn minute(ts: i64) -> Minute {
+        let mut minute = Minute::opening(ts, 7_625.0);
+        minute.add_trade(30_500, 7_625.0, 3, Side::Buy, 1);
+        minute.add_trade(30_499, 7_624.75, 2, Side::Sell, 1);
+        minute
+    }
+
+    impl Ladders for Fake {
+        fn tick_size(&self, _: &str) -> Option<f64> {
+            Some(0.25)
+        }
+        fn history_days(&self) -> u32 {
+            30
+        }
+        fn minutes(&self, _: &str, from: i64, to: i64) -> Result<Vec<Minute>, ProviderError> {
+            self.0.lock().unwrap().spans.push((from, to));
+            Ok((from..to).step_by(60).map(minute).collect())
+        }
+        fn watch(&self, _: &str, sink: LadderSink) -> Result<Box<dyn Subscription>, ProviderError> {
+            self.0.lock().unwrap().sinks.push(sink);
+            Ok(Box::new(Open))
+        }
+    }
+
+    impl Provider for Fake {
+        fn id(&self) -> &'static str {
+            "fake"
+        }
+        fn label(&self) -> &'static str {
+            "Fake"
+        }
+        fn delay_minutes(&self, _: InstrumentKind) -> u32 {
+            0
+        }
+        fn symbol_for(&self, instrument: &Instrument) -> Option<String> {
+            Some(instrument.symbol.clone())
+        }
+        fn capabilities(&self) -> &'static [Capability] {
+            &[]
+        }
+        fn bars(&self, _: &str, _: Timeframe, _: Option<i64>) -> Result<Vec<Bar>, ProviderError> {
+            Ok(Vec::new())
+        }
+        fn ladders(&self) -> Option<&dyn Ladders> {
+            Some(self)
+        }
+    }
+
+    fn es() -> Instrument {
+        Instrument {
+            symbol: "ES".into(),
+            name: "E-mini S&P 500".into(),
+            kind: InstrumentKind::FutureRoot,
+            suffix: None,
+            currency: Some("USD".into()),
+            tier: 0,
+            session_origin: 79_200,
+            overrides: Vec::new(),
+            exchange: None,
+            popularity: 0,
+            local_name: None,
+        }
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("omacharts-at-price-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("omacharts.db")
+    }
+
+    fn settle(at_price: &AtPrice) -> Vec<u32> {
+        let done = at_price.done().recv_blocking().expect("the thread answers");
+        at_price.finished(done)
+    }
+
+    /// The store knows two hours of the last three; a chart reaching back
+    /// three hours asks the provider for the one hour between, once. Live
+    /// minutes are stored as they seal, so the next start asks for nothing
+    /// but the minutes since, and draws the live one from the store.
+    #[test]
+    fn only_what_the_store_does_not_know_is_asked_for_and_live_minutes_persist() {
+        let path = scratch("missing");
+        let days = Days::new(&es());
+        {
+            let store = Store::open_at(&path).unwrap();
+            for (a, b) in [(NOW - 3 * HOUR, NOW - 2 * HOUR), (NOW - HOUR, NOW)] {
+                let minutes: Vec<Minute> = (a..b).step_by(60).map(minute).collect();
+                store.save_ladder_history(KEY, 0.25, &days, a, b, &minutes).unwrap();
+            }
+        }
+        let asked = Arc::new(Mutex::new(Asked::default()));
+        let provider: Arc<dyn Provider> = Arc::new(Fake(asked.clone()));
+
+        let first = AtPrice::new(provider.clone(), Some(path.clone())).expect("a feed with ladders");
+        first.set_clock(now);
+        first.want(1, KEY, "ES", &es(), NOW - 3 * HOUR);
+        assert_eq!(settle(&first), vec![1]);
+        assert_eq!(asked.lock().unwrap().spans, vec![(NOW - 2 * HOUR, NOW - HOUR)]);
+        let whole = first.with_held(KEY, |held| held.unwrap().between(NOW - 3 * HOUR, NOW).unwrap().sides.volume());
+        assert_eq!(whole, 180 * 5, "three hours of minutes, five contracts each");
+
+        // A second chart of the same contract shares it and asks nothing.
+        first.want(2, KEY, "ES", &es(), NOW - 3 * HOUR);
+        assert_eq!(asked.lock().unwrap().spans.len(), 1);
+        assert_eq!(asked.lock().unwrap().sinks.len(), 1, "one live feed per contract");
+
+        // Live: the minute at NOW seals, complete, and the next is forming.
+        {
+            let asked = asked.lock().unwrap();
+            let sink = &asked.sinks[0];
+            sink(LadderUpdate::Forming(minute(NOW)));
+            sink(LadderUpdate::Sealed { minute: minute(NOW), covered: Some((NOW, NOW + 60)) });
+            sink(LadderUpdate::Forming(minute(NOW + 60)));
+        }
+        let mut touched = first.drain();
+        touched.sort_unstable();
+        assert_eq!(touched, vec![1, 2]);
+        let live = first.with_held(KEY, |held| held.unwrap().between(NOW - 3 * HOUR, NOW + 120).unwrap().sides.volume());
+        assert_eq!(live, 180 * 5 + 10, "the sealed minute and the forming one on top");
+        // A load of another contract queued behind the append proves it written.
+        first.want(3, "fake:NQ", "NQ", &es(), NOW - 60);
+        settle(&first);
+        first.shutdown();
+        asked.lock().unwrap().spans.clear();
+
+        // The next start: nothing it knows is asked for again.
+        let second = AtPrice::new(provider, Some(path.clone())).unwrap();
+        second.set_clock(later);
+        second.want(1, KEY, "ES", &es(), NOW - 3 * HOUR);
+        settle(&second);
+        assert_eq!(asked.lock().unwrap().spans, vec![(NOW + 60, NOW + 180)], "only the minutes since");
+        let back = second.with_held(KEY, |held| held.unwrap().between(NOW - 3 * HOUR, NOW + 180).unwrap().sides.volume());
+        // The live minute read back from the store, and the two since.
+        assert_eq!(back, 180 * 5 + 5 + 2 * 5);
+        second.shutdown();
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// A provider without ladders gets no registry at all: no thread, no
+    /// query, nothing to ask.
+    #[test]
+    fn a_feed_without_ladders_has_none() {
+        struct Plain;
+        impl Provider for Plain {
+            fn id(&self) -> &'static str {
+                "plain"
+            }
+            fn label(&self) -> &'static str {
+                "Plain"
+            }
+            fn delay_minutes(&self, _: InstrumentKind) -> u32 {
+                0
+            }
+            fn symbol_for(&self, instrument: &Instrument) -> Option<String> {
+                Some(instrument.symbol.clone())
+            }
+            fn capabilities(&self) -> &'static [Capability] {
+                &[]
+            }
+            fn bars(&self, _: &str, _: Timeframe, _: Option<i64>) -> Result<Vec<Bar>, ProviderError> {
+                Ok(Vec::new())
+            }
+        }
+        assert!(AtPrice::new(Arc::new(Plain), Some(scratch("plain"))).is_none());
+        let yahoo: Arc<dyn Provider> = Arc::new(omacharts_engine::providers::Yahoo::new());
+        assert!(yahoo.ladders().is_none());
+        assert!(AtPrice::new(yahoo, Some(scratch("yahoo"))).is_none());
     }
 }
