@@ -189,6 +189,9 @@ pub fn dispatch(
                     Ok(key) if key == crate::feeds::SETTING || key == crate::feeds::ONE_FEED => {
                         live.adopt_feed()
                     }
+                    // A Rithmic login changed: which charts it can serve may
+                    // have too.
+                    Ok(key) if key.starts_with("rithmic_") => live.adopt_feed(),
                     Ok(key) if key == crate::header::SETTING => live.adopt_header(),
                     Ok(key) if key == crate::clock::SETTING_ZONE || key == crate::clock::SETTING_FORMAT => {
                         live.adopt_clock()
@@ -4416,6 +4419,7 @@ fn crosshair(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<Strin
 /// another is stored, and that is worth seeing at a glance rather than
 /// being a thing somebody discovers from a chart.
 fn provider_list(store: &Store, as_json: bool) -> Result<String, Fault> {
+    crate::feeds::remember_logins(store);
     let stored = crate::feeds::stored(store).id;
     let in_use = crate::feeds::in_use(store).id;
     if as_json {
@@ -4483,6 +4487,7 @@ fn suffixed(note: &str) -> String {
 /// session, the files it lives in and the state of every subscription are
 /// spelled out for somebody who needs them.
 fn provider_status(store: &Store, live: Option<&dyn Live>, as_json: bool) -> Result<String, Fault> {
+    crate::feeds::remember_logins(store);
     let stored = crate::feeds::stored(store);
     let in_use = crate::feeds::in_use(store);
     let access = providers::access(in_use.id);
@@ -4664,6 +4669,7 @@ fn ago_text(ago: std::time::Duration) -> String {
 /// result because they are progress rather than an answer: `--json` stays
 /// one object on stdout, which is what something parsing this needs.
 fn provider_login(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<String, Fault> {
+    crate::feeds::remember_logins(store);
     let feed = named_or_chosen(store, m)?;
     if !feed.needs_sign_in() {
         return Err(Fault::refused(format!(
@@ -4671,11 +4677,14 @@ fn provider_login(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<
             feed.label
         )));
     }
-    if let Err(why) = providers::can_sign_in(feed.id) {
-        return Err(Fault::new(super::EXIT_ERROR, why));
-    }
+    let how = providers::can_sign_in(feed.id).map_err(|why| Fault::new(super::EXIT_ERROR, why))?;
 
-    eprintln!("a browser is opening at {}; sign in there", feed.label);
+    // thinkorswim's sign-in is a browser the person drives; Rithmic's is a
+    // check of what is saved, which the window's session then signs in with.
+    match feed.id {
+        "tos" => eprintln!("a browser is opening at {}; sign in there", feed.label),
+        _ => eprintln!("checking the {} login: {how}", feed.label),
+    }
     providers::sign_in(feed.id, |line| eprintln!("{line}"))
         .map_err(|error| Fault::new(super::EXIT_ERROR, error))?;
 
@@ -4697,8 +4706,10 @@ fn provider_logout(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result
     }
     // Saying what was there beats "ok": somebody signing out twice should
     // be able to tell the difference.
+    crate::feeds::remember_logins(store);
     let had = providers::access(feed.id).is_some_and(|access| !matches!(access, providers::Access::Missing));
     providers::sign_out(feed.id).map_err(|error| Fault::new(super::EXIT_ERROR, error))?;
+    crate::feeds::forget_login(store, feed.id);
     said(
         as_json,
         json!({"id": feed.id, "forgotten": had}),

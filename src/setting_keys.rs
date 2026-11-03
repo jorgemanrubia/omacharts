@@ -31,6 +31,9 @@ const KEYS: &[(&str, Kind)] = &[
     ("screenshot_folder", Kind::Local),
     ("cache_limit", Kind::Local),
     ("sidebar_width", Kind::Local),
+    // A Rithmic login — user ID, system, gateway — belongs to the machine it
+    // was typed on. Its password is in the keyring, never a setting.
+    ("rithmic_", Kind::Local),
     ("cache_swept_at", Kind::Bookkeeping),
     ("cooldown.", Kind::Bookkeeping),
     ("last_symbol", Kind::Bookkeeping),

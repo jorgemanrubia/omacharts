@@ -29,6 +29,7 @@
 //! by the first feed that can be used and has a name for its instrument —
 //! see [`ordered`] and [`route`].
 
+pub mod rithmic;
 pub mod synthetic;
 pub mod tos;
 pub mod yahoo;
@@ -36,6 +37,7 @@ pub mod yahoo;
 use crate::provider::{Delivery, Provider};
 use crate::symbols::{Instrument, InstrumentKind};
 
+pub use rithmic::Rithmic;
 pub use synthetic::Synthetic;
 pub use tos::Tos;
 pub use yahoo::Yahoo;
@@ -139,6 +141,7 @@ impl Access {
 pub fn access(id: &str) -> Option<Access> {
     match listed(id)?.id {
         "tos" => Some(tos::session::access()),
+        "rithmic" => Some(rithmic::session::access()),
         _ => None,
     }
 }
@@ -147,6 +150,7 @@ pub fn access(id: &str) -> Option<Access> {
 pub fn can_sign_in(id: &str) -> Result<String, String> {
     match listed(id).map(|feed| feed.id) {
         Some("tos") => tos::session::can_sign_in(),
+        Some("rithmic") => rithmic::session::can_sign_in(),
         Some(other) => Err(format!("{other} needs no signing in")),
         None => Err(format!("no such data feed: {id}")),
     }
@@ -157,6 +161,7 @@ pub fn can_sign_in(id: &str) -> Result<String, String> {
 pub fn sign_in(id: &str, log: impl Fn(&str) + Send + Sync + 'static) -> Result<(), String> {
     match listed(id).map(|feed| feed.id) {
         Some("tos") => tos::session::sign_in(log),
+        Some("rithmic") => rithmic::session::sign_in(log),
         Some(other) => Err(format!("{other} needs no signing in")),
         None => Err(format!("no such data feed: {id}")),
     }
@@ -166,6 +171,7 @@ pub fn sign_in(id: &str, log: impl Fn(&str) + Send + Sync + 'static) -> Result<(
 pub fn sign_out(id: &str) -> Result<(), String> {
     match listed(id).map(|feed| feed.id) {
         Some("tos") => tos::session::sign_out(),
+        Some("rithmic") => rithmic::session::sign_out(),
         Some(other) => Err(format!("{other} has nothing saved to forget")),
         None => Err(format!("no such data feed: {id}")),
     }
@@ -179,6 +185,7 @@ pub fn sign_out(id: &str) -> Result<(), String> {
 pub fn connected(id: &str) -> bool {
     match listed(id).map(|feed| feed.id) {
         Some("tos") => tos::session::connected(),
+        Some("rithmic") => rithmic::session::connected(),
         _ => false,
     }
 }
@@ -189,6 +196,7 @@ pub fn connected(id: &str) -> bool {
 pub fn places(id: &str) -> Vec<(&'static str, String)> {
     match listed(id).map(|feed| feed.id) {
         Some("tos") => tos::session::places(),
+        Some("rithmic") => rithmic::session::places(),
         _ => Vec::new(),
     }
 }
@@ -198,7 +206,7 @@ pub fn places(id: &str) -> Vec<(&'static str, String)> {
 /// Order is the interface: the first is the default, the panel lists them
 /// like this, and a feed added at the end cannot change what an existing
 /// install is using.
-pub const LISTED: &[Listed] = &[yahoo::LISTED, tos::LISTED];
+pub const LISTED: &[Listed] = &[yahoo::LISTED, tos::LISTED, rithmic::LISTED];
 
 /// What runs when nothing has been chosen.
 pub const DEFAULT: &str = LISTED[0].id;
@@ -308,6 +316,7 @@ pub fn listed(id: &str) -> Option<&'static Listed> {
 pub fn built(id: &str) -> Option<Box<dyn Provider>> {
     match listed(id)?.id {
         "tos" => Some(Box::new(Tos::new())),
+        "rithmic" => Some(Box::new(Rithmic::new())),
         _ => Some(Box::new(Yahoo::new())),
     }
 }
@@ -391,7 +400,15 @@ pub fn route<'a>(
 
 /// Can `id` be charted from with what is saved on this machine? A read from
 /// disk, never a connection: a feed that needs nothing saved always can.
+///
+/// Rithmic only in the process holding the window: anywhere else — the bar
+/// widget, a command with no window open — it is passed over rather than
+/// signed in a second time, because CME counts sessions. See
+/// [`rithmic::session::serve_from_here`].
 pub fn usable(id: &str) -> bool {
+    if listed(id).is_some_and(|feed| feed.id == "rithmic") && !rithmic::session::here() {
+        return false;
+    }
     access(id).is_none_or(|access| access.ready())
 }
 
@@ -410,6 +427,7 @@ mod tests {
             assert_eq!(built(feed.id).map(|p| p.id()), Some(feed.id));
         }
         assert!(!tos_market::connected(), "a chosen feed must not have connected");
+        assert!(!::rithmic::running(), "a chosen feed must not have started a session");
     }
 
     #[test]

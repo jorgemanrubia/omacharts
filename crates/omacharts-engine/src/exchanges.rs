@@ -288,6 +288,16 @@ impl Registry {
         self.exchanges.iter().find(|e| e.answers_to(name))
     }
 
+    /// The code of the exchange `contracts.tsv` puts a futures root on, or
+    /// `None` for a root it does not list. Unlike [`Registry::for_instrument`],
+    /// which takes an unlisted root to be on Globex so that it has hours,
+    /// this guesses nothing: a feed deciding whether it serves a root must
+    /// not serve one on the strength of a default.
+    pub fn contract_exchange(&self, root: &str) -> Option<&str> {
+        let (_, exchange, _) = self.contracts.iter().find(|(listed, ..)| listed == root)?;
+        self.exchanges.get(*exchange).map(|exchange| exchange.code.as_str())
+    }
+
     fn by_code(&self, code: &str) -> Option<usize> {
         self.exchanges.iter().position(|e| e.code == code)
     }

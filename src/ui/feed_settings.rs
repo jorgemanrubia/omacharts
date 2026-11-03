@@ -66,6 +66,7 @@ pub fn build(
     on_change: Rc<dyn Fn()>,
     after: Vec<adw::PreferencesGroup>,
 ) {
+    feeds::remember_logins(&store);
     let panel = Rc::new(Panel {
         store,
         on_change,
@@ -247,6 +248,7 @@ fn sign_out_row(panel: &Rc<Panel>, feed: &'static Listed) -> adw::ActionRow {
         if let Err(error) = providers::sign_out(feed.id) {
             eprintln!("omacharts: {error}");
         }
+        feeds::forget_login(&panel_for_click.store, feed.id);
         rebuild_setup(&panel_for_click);
     });
     row.add_suffix(&button);

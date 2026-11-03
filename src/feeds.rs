@@ -129,7 +129,41 @@ pub fn order(store: &Store) -> Vec<String> {
 /// be asked for bars. Cheap: building them connects to nothing. See
 /// `omacharts_engine::providers`.
 pub fn ordered(store: &Store) -> Vec<Box<dyn Provider>> {
-    providers::ordered(&order(store))
+    let order = order(store);
+    if order.iter().any(|id| id.eq_ignore_ascii_case(RITHMIC)) {
+        remember_logins(store);
+    }
+    providers::ordered(&order)
+}
+
+const RITHMIC: &str = "rithmic";
+
+/// Hand the engine the Rithmic login this machine has saved: the user ID,
+/// the system and the gateway, which are settings, `Local` in
+/// `setting_keys`. The password is never here; it is in the keyring. The
+/// engine keeps no database, so it is told, whenever the feeds are read and
+/// whenever a sign-in or a sign-out may have changed what is saved.
+///
+/// Three settings reads, and only for an order that names Rithmic or a
+/// command about feeds: with nothing configured nothing of Rithmic's is
+/// read, built or started.
+pub fn remember_logins(store: &Store) {
+    use omacharts_engine::providers::rithmic::session;
+    session::remember(session::Saved {
+        user: store.setting(session::SETTING_USER),
+        system: store.setting(session::SETTING_SYSTEM),
+        gateway: store.setting(session::SETTING_GATEWAY),
+    });
+}
+
+/// What a feed keeps in the settings beyond its session, forgotten when it
+/// is signed out of. For Rithmic, the user ID: signing out is the login
+/// going, and the system and gateway it was for are kept for next time.
+pub fn forget_login(store: &Store, id: &str) {
+    if id.eq_ignore_ascii_case(RITHMIC) {
+        store.remove_setting(omacharts_engine::providers::rithmic::session::SETTING_USER);
+        remember_logins(store);
+    }
 }
 
 /// A process's feeds with whether each can be used, for routing a chart to

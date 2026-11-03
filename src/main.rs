@@ -186,6 +186,11 @@ fn main() -> glib::ExitCode {
             && let Some(feed) = asked_for
             && window.provider().id() != feed.id
         {
+            if feed.id == omacharts_engine::providers::rithmic::LISTED.id
+                && let Ok(store) = Store::open()
+            {
+                omacharts::feeds::remember_logins(&store);
+            }
             window.switch_feeds(
                 omacharts_engine::providers::ordered(&[feed.id.to_string()])
                     .into_iter()
