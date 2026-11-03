@@ -9,7 +9,7 @@
 //! both while the window is open.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use adw::prelude::*;
@@ -53,8 +53,14 @@ pub(super) struct Trade {
     /// The chart's actions, which `chart.order` and `chart.cancel-order`
     /// join while there is a login.
     pub chart_actions: RefCell<Option<gio::SimpleActionGroup>>,
-    /// The accounts with an order on its way.
+    /// The accounts with an order on its way: a place, a move or a cancel.
     pub placing: trading::Placing,
+    /// Orders whose × was pressed, by basket: drawn faint until the book
+    /// says they are gone.
+    pub cancelling: RefCell<HashSet<String>>,
+    /// Positions being flattened, by account key and contract: drawn faint
+    /// until the book says they are flat.
+    pub flattening: RefCell<HashSet<(String, String)>>,
 }
 
 /// The `chart.order` target: `side:kind:account:price`, the price empty at
@@ -98,7 +104,17 @@ impl Window {
             panel.redraw(&self.trading.borrow());
         }
         self.report_orders();
+        self.settle_pending();
         self.apply_marks();
+    }
+
+    /// Forget what was asked of the broker once the book has answered: an
+    /// order cancelled, a position flat.
+    fn settle_pending(&self) {
+        let view = self.trading.borrow();
+        let working = |basket: &String| view.book.order(basket).is_some_and(|order| order.status.working());
+        self.trade.cancelling.borrow_mut().retain(working);
+        self.trade.flattening.borrow_mut().retain(|(key, contract)| view.book.position(key, contract).is_some());
     }
 
     fn install_trading(self: &Rc<Self>) {
@@ -196,6 +212,8 @@ impl Window {
             overlay.set_child(Some(&root));
         }
         self.trade.placed.borrow_mut().clear();
+        self.trade.cancelling.borrow_mut().clear();
+        self.trade.flattening.borrow_mut().clear();
         for pane in self.panes.borrow().iter() {
             pane.view.set_marks(None, Vec::new());
         }
@@ -521,6 +539,130 @@ impl Window {
         self.on_session(&account, move |session, number| session.cancel(number, &basket));
     }
 
+    /// What the hand did to the marks on the chart `id`: the chart only
+    /// says, and this is what sends.
+    pub(super) fn trade_from_chart(self: &Rc<Self>, id: u32, event: crate::ui::chart::TradeEvent) {
+        use crate::ui::chart::TradeEvent;
+        let Some(pane) = self.pane(id) else { return };
+        self.focus(id);
+        match event {
+            TradeEvent::Cancel(basket) => self.cancel_mark(&pane, &basket),
+            TradeEvent::Flatten => self.flatten_mark(&pane),
+            TradeEvent::ExitAt { .. } | TradeEvent::Move { .. } => {}
+        }
+    }
+
+    /// On a live account, ask `question` first, with `button` to go ahead;
+    /// on a simulated one, go ahead.
+    fn ask_then(self: &Rc<Self>, target: &trading::Target, question: &str, button: &str, go: impl Fn(&Rc<Self>) + 'static) {
+        if !target.live() {
+            return go(self);
+        }
+        let dialog = adw::AlertDialog::new(Some(&trading::confirm_drag_text(question, target)), None);
+        dialog.add_response("cancel", "Cancel");
+        dialog.add_response("go", button);
+        dialog.set_response_appearance("go", adw::ResponseAppearance::Suggested);
+        dialog.set_default_response(Some("cancel"));
+        dialog.set_close_response("cancel");
+        let this = self.clone();
+        dialog.connect_response(None, move |_, response| {
+            if response == "go" {
+                go(&this);
+            }
+        });
+        dialog.present(Some(&self.window));
+    }
+
+    /// Run `job` on the session of `target`, off the main loop, and hand
+    /// what it says to `then` back on it.
+    fn send<T: Send + 'static>(
+        self: &Rc<Self>,
+        target: &trading::Target,
+        job: impl FnOnce(&dyn trading::Session, &str) -> Result<T, String> + Send + 'static,
+        then: impl FnOnce(&Rc<Self>, Result<T, String>) + 'static,
+    ) {
+        let login = target.login.id.clone();
+        let Some(session) = self.desk.session(&login).filter(|_| self.desk.live(&login)) else {
+            return then(self, Err(format!("{} not signed in", self.account_label(&target.account.key()))));
+        };
+        let number = target.account.id.clone();
+        let (sender, receiver) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let _ = sender.send_blocking(job(session.as_ref(), &number));
+        });
+        let this = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let outcome = receiver.recv().await.unwrap_or_else(|_| Err("the session went away".into()));
+            if let Some(this) = this.upgrade() {
+                then(&this, outcome);
+            }
+        });
+    }
+
+    /// An order's ×: cancel it, asked first on a live account. Faint at
+    /// once, gone when the book says so, back if the broker refuses.
+    fn cancel_mark(self: &Rc<Self>, pane: &ChartPane, basket: &str) {
+        let target = match self.order_target(pane) {
+            Ok(target) => target,
+            Err(why) => return self.toast(&format!("{why} · not cancelled")),
+        };
+        let key = target.account.key();
+        let order = self.trading.borrow().book.order(basket).filter(|order| order.account == key).cloned();
+        let Some(order) = order.filter(|order| order.status.working()) else {
+            return self.toast("Already done · not cancelled");
+        };
+        let places = Self::tick_of(pane, &target).map_or(2, |tick| omacharts_engine::on_tick(0.0, tick).1);
+        let price = order.price.map(|price| omacharts_engine::grouped_decimals(price, places)).unwrap_or_default();
+        let question = format!("Cancel {} {} {price}", trading::order_words(order.side, order.kind), order.qty);
+        let basket = basket.to_string();
+        self.ask_then(&target.clone(), &question, "Cancel order", move |this| {
+            if let Err(why) = this.trade.placing.begin(&key) {
+                return this.toast(&why);
+            }
+            this.trade.cancelling.borrow_mut().insert(basket.clone());
+            this.apply_marks();
+            let (key, sent, basket) = (key.clone(), basket.clone(), basket.clone());
+            this.send(&target, move |session, number| session.cancel(number, &sent), move |this, outcome| {
+                this.trade.placing.done(&key);
+                if let Err(why) = outcome {
+                    this.trade.cancelling.borrow_mut().remove(&basket);
+                    this.apply_marks();
+                    this.toast(&format!("Not cancelled: {why}"));
+                }
+            });
+        });
+    }
+
+    /// The position's ×: flatten it, asked first on a live account. Faint
+    /// at once, gone when the book says it is flat.
+    fn flatten_mark(self: &Rc<Self>, pane: &ChartPane) {
+        let target = match self.order_target(pane) {
+            Ok(target) => target,
+            Err(why) => return self.toast(&format!("{why} · not flattened")),
+        };
+        let key = target.account.key();
+        let held = self.trading.borrow().book.position(&key, &target.contract).cloned();
+        let Some(held) = held else { return self.toast("Nothing held · not flattened") };
+        let question = format!("Flatten {} {}", trading::net_text(held.net), target.contract);
+        self.ask_then(&target.clone(), &question, "Flatten", move |this| {
+            let pending = (key.clone(), target.contract.clone());
+            this.trade.flattening.borrow_mut().insert(pending.clone());
+            this.apply_marks();
+            let (contract, exchange) = (target.contract.clone(), target.exchange.clone());
+            this.send(
+                &target,
+                move |session, number| session.flatten(number, &contract, &exchange),
+                move |this, outcome| {
+                    if let Err(why) = outcome {
+                        this.trade.flattening.borrow_mut().remove(&pending);
+                        this.apply_marks();
+                        this.toast(&format!("Not flattened: {why}"));
+                    }
+                },
+            );
+        });
+    }
+
     /// Mark every chart with its account's position and working orders in
     /// what it shows, or with nothing.
     pub(super) fn apply_marks(self: &Rc<Self>) {
@@ -566,7 +708,7 @@ impl Window {
                     side: order.side,
                     kind: order.kind,
                     qty: order.qty,
-                    dim: false,
+                    dim: self.trade.cancelling.borrow().contains(&order.basket_id),
                     price: at,
                     words: format!(
                         "{} {} {}",
@@ -611,7 +753,7 @@ impl Window {
                 }),
                 net: held.net,
                 exits,
-                dim: false,
+                dim: self.trade.flattening.borrow().contains(&(key.clone(), target.contract.clone())),
             })
         });
         pane.view.set_marks(position, orders);
@@ -852,6 +994,132 @@ pub(super) mod tests {
         assert!(trading_rows(&window).is_empty(), "orders left behind by the last login");
         assert!(window.trade.chart_actions.borrow().as_ref().unwrap().lookup_action("order").is_none());
         assert_eq!(pane.view.marks(), (None, Vec::new()), "marks left behind by the last login");
+    }
+
+    /// A window on the synthetic feed with ES on its chart, signed in to
+    /// the tests' session on account 951, which trades ES as ESZ6 and is
+    /// simulated or not; long one at 7,612.25.
+    fn long_es(simulated: bool) -> (Rc<Window>, Rc<ChartPane>, Arc<trading::tests::FakeSession>, String) {
+        let store = Rc::new(Store::memory().expect("a store"));
+        let window = window(&store);
+        let es = window.index.find("ES", None).expect("ES in the curated half");
+        let pane = window.focused_pane();
+        window.show_in(&pane, es);
+        let id = trading::add_login(&store, &Kept::default(), &typed()).expect("a login");
+        let account = trading::Account {
+            login: id.clone(),
+            id: "951".into(),
+            name: None,
+            currency: Some("USD".into()),
+            fcm: String::new(),
+            ib: String::new(),
+            balance: None,
+        };
+        let mut session = trading::tests::FakeSession::new(vec![account.clone()], Box::new(|| {}));
+        session.simulated = simulated;
+        session.contracts.lock().unwrap().insert("ES".into(), "ESZ6".into());
+        let session = Arc::new(session);
+        assert!(window.desk.begin(&id));
+        window.desk.opened(&id, Ok(session.clone()));
+        window.desk.note(&store);
+        session.place(&resting(Side::Buy, OrderKind::Market, None)).unwrap();
+        window.desk.tell();
+        assert!(pane.view.mark_states().0.is_some(), "no position on the chart");
+        (window, pane, session, account.key())
+    }
+
+    fn resting(side: Side, kind: OrderKind, price: Option<f64>) -> trading::Order {
+        trading::Order {
+            account: "951".into(),
+            contract: "ESZ6".into(),
+            exchange: "CME".into(),
+            side,
+            qty: 1,
+            kind,
+            price,
+            tag: trading::new_tag(),
+        }
+    }
+
+    /// Run the main loop until `done`, or for a second at most.
+    fn settle(window: &Rc<Window>, done: impl Fn() -> bool) {
+        let context = glib::MainContext::default();
+        for _ in 0..200 {
+            window.desk.tell();
+            if done() {
+                return;
+            }
+            context.iteration(false);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    /// An order's × cancels it: faint at once, gone when the book says so;
+    /// back as it was when the broker refuses, and not sent at all while
+    /// another request to the account is on its way. The position's ×
+    /// flattens it.
+    #[test]
+    fn the_marks_cross_cancels_an_order_and_flattens_the_position() {
+        if !crate::ui::gtk_ready() {
+            return;
+        }
+        use crate::ui::chart::TradeEvent;
+        let (window, pane, session, key) = long_es(true);
+        let basket = session.place(&resting(Side::Sell, OrderKind::Limit, Some(7_640.0))).unwrap();
+        window.desk.tell();
+        let orders = || pane.view.mark_states().1;
+        assert_eq!(orders(), vec![("▼ Sell Limit 1".to_string(), 7_640.0, false)]);
+
+        // Refused: back as it was, and said.
+        *session.refuse.lock().unwrap() = Some("too late".into());
+        pane.view.drop_mark(TradeEvent::Cancel(basket.clone()));
+        assert!(orders()[0].2, "not faint at once");
+        settle(&window, || !orders().first().is_some_and(|order| order.2));
+        assert_eq!(orders(), vec![("▼ Sell Limit 1".to_string(), 7_640.0, false)], "not back after a refusal");
+
+        // Another request on its way: nothing sent.
+        window.trade.placing.begin(&key).unwrap();
+        pane.view.drop_mark(TradeEvent::Cancel(basket.clone()));
+        settle(&window, || false);
+        assert!(session.book().order(&basket).unwrap().status.working(), "sent while another was on its way");
+        window.trade.placing.done(&key);
+
+        pane.view.drop_mark(TradeEvent::Cancel(basket.clone()));
+        settle(&window, || orders().is_empty());
+        assert_eq!(session.book().order(&basket).map(|order| order.status.clone()), Some(Status::Cancelled));
+        assert!(orders().is_empty(), "a cancelled order left on the chart");
+        assert!(window.trade.cancelling.borrow().is_empty(), "still waiting on a cancel the book has answered");
+
+        pane.view.drop_mark(TradeEvent::Flatten);
+        assert_eq!(pane.view.mark_states().0.map(|(_, dim)| dim), Some(true), "not faint at once");
+        settle(&window, || pane.view.mark_states().0.is_none());
+        assert!(session.book().position("951", "ESZ6").is_none(), "not flattened");
+        assert!(pane.view.mark_states().0.is_none());
+    }
+
+    /// On a live account the × asks first, and nothing is sent until it is
+    /// answered.
+    #[test]
+    fn a_live_account_asks_before_the_cross_does_anything() {
+        if !crate::ui::gtk_ready() {
+            return;
+        }
+        use crate::ui::chart::TradeEvent;
+        let (window, pane, session, _) = long_es(false);
+        let basket = session.place(&resting(Side::Sell, OrderKind::Limit, Some(7_640.0))).unwrap();
+        window.desk.tell();
+        window.window.present();
+        pane.view.drop_mark(TradeEvent::Cancel(basket.clone()));
+        let dialog = window.window.visible_dialog().expect("a question");
+        let dialog = dialog.downcast::<adw::AlertDialog>().expect("an alert");
+        assert!(dialog.heading().unwrap().starts_with("Cancel Sell Limit 1 7,640.00 on Rithmic Test 951"), "{:?}", dialog.heading());
+        settle(&window, || false);
+        assert!(session.book().order(&basket).unwrap().status.working(), "cancelled without asking");
+        assert!(!pane.view.mark_states().1[0].2, "faint before it was answered");
+        dialog.close();
+        pane.view.drop_mark(TradeEvent::Flatten);
+        assert!(window.window.visible_dialog().is_some(), "flattened without asking");
+        assert!(session.book().position("951", "ESZ6").is_some());
     }
 
     /// The titles of every preferences group under `widget`.

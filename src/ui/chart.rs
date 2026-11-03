@@ -4060,6 +4060,24 @@ impl ChartView {
         (position, state.marks.orders.iter().map(|order| order.words.clone()).collect())
     }
 
+    /// Each mark as it is drawn: the position's words and whether it is
+    /// faint, then each order's words, price and whether it is faint.
+    #[cfg(test)]
+    #[allow(clippy::type_complexity)]
+    pub fn mark_states(&self) -> (Option<(String, bool)>, Vec<(String, f64, bool)>) {
+        let state = self.state.borrow();
+        let position = state.marks.position.as_ref().map(|held| (held.words.clone(), held.dim));
+        let orders = state.marks.orders.iter().map(|order| (order.words.clone(), order.price, order.dim)).collect();
+        (position, orders)
+    }
+
+    /// The exit tabs the position wears.
+    #[cfg(test)]
+    pub fn exit_tabs(&self) -> Vec<OrderKind> {
+        let state = self.state.borrow();
+        state.marks.position.as_ref().map(|held| held.exits.iter().map(|tab| tab.kind).collect()).unwrap_or_default()
+    }
+
     /// The price at height `y` of the chart, on the scale it is drawn at,
     /// while `y` is over the price plot.
     pub fn price_under(&self, y: f64) -> Option<f64> {

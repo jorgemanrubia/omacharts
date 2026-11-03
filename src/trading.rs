@@ -1581,7 +1581,8 @@ pub fn position_text(held: &Position, decimals: usize, currency: Option<&str>) -
 }
 
 /// The accounts with an order on its way, so a second click does not send
-/// a second order before the first is acknowledged.
+/// a second order before the first is acknowledged. Placing, moving and
+/// cancelling share it: one request to an account at a time.
 #[derive(Default)]
 pub struct Placing(RefCell<HashSet<String>>);
 
@@ -1590,7 +1591,7 @@ impl Placing {
     pub fn begin(&self, account: &str) -> Result<(), String> {
         match self.0.borrow_mut().insert(account.to_string()) {
             true => Ok(()),
-            false => Err("Still placing".into()),
+            false => Err("The last order is still on its way".into()),
         }
     }
 
@@ -2699,7 +2700,7 @@ pub(crate) mod tests {
     fn a_second_order_waits_for_the_first_to_be_answered() {
         let placing = Placing::default();
         assert!(placing.begin("t/951").is_ok());
-        assert_eq!(placing.begin("t/951").unwrap_err(), "Still placing");
+        assert_eq!(placing.begin("t/951").unwrap_err(), "The last order is still on its way");
         assert!(placing.begin("l/1234").is_ok(), "another account is not held up");
         placing.done("t/951");
         assert!(placing.begin("t/951").is_ok());

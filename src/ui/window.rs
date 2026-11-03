@@ -2655,6 +2655,10 @@ impl Window {
         // and every chart showing that symbol is told.
         let keeper = self.clone();
         pane.view.set_drawing_handler(move |event| keeper.record_drawing(id, event));
+        // What the hand did to the orders and the position on it, which the
+        // window sends, never the chart.
+        let trader = self.clone();
+        pane.view.set_trade_handler(move |event| trader.trade_from_chart(id, event));
 
         let menu_owner = self.clone();
         pane.view.set_drawing_menu_handler(move |x, y| {
