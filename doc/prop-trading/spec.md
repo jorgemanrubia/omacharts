@@ -408,21 +408,45 @@ Accounts
   [ Add a broker… ]
 ```
 
-**The chart's account and feed.** A default account, and an optional
-account per chart, stored the way the chart's feed is. The feed's
-"Automatic" stays the ordered list. One function decides a chart's
-account, for the header and for the order ticket alike, so they can never
-disagree. A chart whose account's login was removed falls back to the
-default.
+**The chart's account and feed.** Every chart has an account, whose money
+its orders spend: the default, or one chosen for it. A chart's default
+feed is its account's own, Rithmic through the data login, when that
+serves the instrument, and otherwise the Data page's order; nothing is
+stored for it. A feed chosen for the chart overrides it until the feed
+stops serving the instrument or the chart changes account. One function
+decides a chart's account and one its feed, for the header and for the
+order ticket alike, so they can never disagree. A chart on the default
+follows it when the default changes, and a chart whose account's login was
+removed goes back to the default account and its default feed.
 
 **The header's Account part** names the chart's account and feed, and
 clicking it opens the picker. It is offered when there is more than one
 account or more than one feed; otherwise it is blank, takes no space and
-cannot be clicked. The popover shows an ACCOUNT list when there is more than
-one account and a DATA list when there is more than one feed. The text names
-only what can be chosen, plus any trouble: `Rithmic` or `Yahoo` with one
-account; `951 · Rithmic` with several; `Lucid 1234 · Rithmic` once there are
-several logins; `951 signed out` when it is.
+cannot be clicked. An account is named by its login, `Lucid`, with its
+number only when the login holds several or another login has the same
+name, `Lucid 1234`. The text names the account whenever there is one, and
+the feed only when it is not the account's default; trouble goes after the
+thing in trouble:
+
+| Case | Text |
+|---|---|
+| No account, several feeds | `Yahoo`, or `Yahoo · Rithmic not signed in` when one was passed over |
+| An account on its default feed | `Rithmic`, `Lucid 1234` |
+| A feed chosen, or fallen back to | `Rithmic · Yahoo`, `Lucid 1234 · Yahoo` |
+| Several accounts and one feed | `Lucid 1234` |
+| The login in trouble | `Rithmic signed out`, `Lucid 1234 signed out · Yahoo` |
+| The chosen feed refused | `Rithmic · Yahoo not signed in` |
+| No feed serves the instrument | `Rithmic · no data feed` |
+
+The popover lists the accounts, and under the chart's own, indented, the
+feeds that serve its instrument, once there is more than one feed. The
+other accounts stay collapsed, and a single account is a heading.
+Choosing another account closes it and puts the chart on that account's
+default feed. The account's default feed is marked "(default)", and
+choosing it stores nothing. With no account it is a flat list of the
+feeds, the order's pick marked "(default)". A row has a line under it only
+for trouble, and "Trading accounts…" at the bottom opens Preferences →
+Trading.
 
 #### Orders
 
