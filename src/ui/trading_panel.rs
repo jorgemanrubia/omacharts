@@ -1,5 +1,6 @@
 //! The trading panel, under the charts: the accounts, the positions held
-//! and the orders of the day, with "Cancel all" for the default account.
+//! and the orders of the day, with "Cancel all · Lucid" for the default
+//! account.
 //!
 //! Only ever built once a broker login exists, and only the first time it
 //! is shown: a window with no login has no panel, no divider for it and no
@@ -170,11 +171,11 @@ impl TradingPanel {
         self.cancel_all.set_sensitive(working);
         let can = default.as_deref().and_then(|key| view.book.capabilities_of(key)).is_none_or(|can| can.cancel_all);
         self.cancel_all.set_visible(can);
-        let tip = match view.default_account() {
-            Some(account) => format!("Cancel every working order on {}", view.account_name(account)),
-            None => "Cancel every working order".to_string(),
+        let label = match view.default_account() {
+            Some(account) => format!("Cancel all · {}", view.account_name(account)),
+            None => "Cancel all".to_string(),
         };
-        self.cancel_all.set_tooltip_text(Some(&tip));
+        self.cancel_all.set_label(&label);
         // Read when it is pressed, so it cancels on the default in force.
         *self.default.borrow_mut() = default;
     }
@@ -222,7 +223,7 @@ impl TradingPanel {
                 ("Liquidates at", true),
             ],
             rows,
-            "No accounts listed yet",
+            "No accounts",
         );
     }
 
@@ -251,7 +252,7 @@ impl TradingPanel {
             .collect();
         table(
             &self.positions,
-            &[("Account", false), ("Contract", false), ("Qty", true), ("Avg", true), ("Open P&L", true), ("", false)],
+            &[("Account", false), ("Contract", false), ("Qty", true), ("Average", true), ("Open P&L", true), ("", false)],
             rows,
             "No positions",
         );
@@ -264,7 +265,7 @@ impl TradingPanel {
             .iter()
             .map(|order| {
                 let status = match (order.status.stage, &order.status.said) {
-                    (Stage::Rejected | Stage::Cancelled, Some(said)) => format!("{}: {said}", order.status.word()),
+                    (Stage::Rejected | Stage::Cancelled, Some(said)) => format!("{} · {said}", order.status.word()),
                     _ => order.status.word().to_string(),
                 };
                 let price = match order.kind {
@@ -308,7 +309,7 @@ impl TradingPanel {
                 ("Type", false),
                 ("Price", true),
                 ("Status", false),
-                ("Fill", true),
+                ("Filled at", true),
                 ("", false),
             ],
             rows,
