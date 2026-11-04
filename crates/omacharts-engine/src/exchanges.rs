@@ -149,13 +149,15 @@ pub struct Registry {
 }
 
 /// A futures root: the exchange it trades on, the hours it keeps there, and
-/// the size of one tick of its price when the table knows it.
+/// the size of one tick of its price and what a point of it is worth when
+/// the table knows them.
 #[derive(Debug)]
 struct Contract {
     root: String,
     exchange: usize,
     hours: usize,
     tick: Option<f64>,
+    point: Option<f64>,
 }
 
 /// The tables, read once.
@@ -283,11 +285,12 @@ impl Registry {
                 let [root, exchange, hours, rest @ ..] = fields.as_slice() else { return None };
                 let exchange = parsed_exchanges.iter().position(|e| e.code == *exchange)?;
                 let hours = parsed_hours.iter().position(|h| h.id == *hours)?;
-                let tick = match rest.first().and_then(|field| dash(field)) {
-                    Some(text) => Some(tick(text)?),
-                    None => None,
+                // A point is read as a tick is: a number above zero.
+                let positive = |at: usize| match rest.get(at).and_then(|field| dash(field)) {
+                    Some(text) => tick(text).map(Some),
+                    None => Some(None),
                 };
-                Some(Contract { root: root.to_string(), exchange, hours, tick })
+                Some(Contract { root: root.to_string(), exchange, hours, tick: positive(0)?, point: positive(1)? })
             })();
             match row {
                 Some(row) => parsed_contracts.push(row),
@@ -325,6 +328,13 @@ impl Registry {
     /// for a root it does not list, or lists without one.
     pub fn contract_tick(&self, root: &str) -> Option<f64> {
         self.contract(root)?.tick
+    }
+
+    /// What one whole point of a futures root's price is worth on one
+    /// contract, in the currency it trades in, as `contracts.tsv` gives it:
+    /// 50 for ES. `None` for a root it does not list, or lists without one.
+    pub fn contract_point(&self, root: &str) -> Option<f64> {
+        self.contract(root)?.point
     }
 
     fn contract(&self, root: &str) -> Option<&Contract> {
@@ -646,6 +656,33 @@ mod tests {
         assert_eq!(r.contract_tick("NOPE"), None);
         assert_eq!(instrument(InstrumentKind::FutureRoot, "ES", None).tick_size(), Some(0.25));
         assert_eq!(instrument(InstrumentKind::Equity, "ES", None).tick_size(), None, "a stock has no one tick");
+    }
+
+    /// What a point is worth, so that a tick of it comes to what the
+    /// exchange says a tick is worth, and every root listed has one.
+    #[test]
+    fn every_root_has_its_point_value() {
+        let r = registry();
+        for (root, tick_value) in [
+            ("ES", 12.5),
+            ("MES", 1.25),
+            ("NQ", 5.0),
+            ("YM", 5.0),
+            ("CL", 10.0),
+            ("NG", 10.0),
+            ("GC", 10.0),
+            ("ZN", 15.625),
+            ("6E", 6.25),
+            ("ZC", 12.5),
+            ("KC", 18.75),
+        ] {
+            let value = r.contract_point(root).unwrap() * r.contract_tick(root).unwrap();
+            assert!((value - tick_value).abs() < 1e-9, "{root}: a tick is {value}");
+        }
+        for contract in &r.contracts {
+            assert!(contract.point.is_some(), "{} has no point in contracts.tsv", contract.root);
+        }
+        assert_eq!(r.contract_point("NOPE"), None);
     }
 
     #[test]

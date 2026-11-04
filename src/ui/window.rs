@@ -7588,6 +7588,10 @@ impl Window {
         glib::spawn_future_local(async move {
             while let Ok(wake) = woken.recv().await {
                 let Some(this) = weak.upgrade() else { return };
+                if matches!(wake, crate::trading::Wake::Priced) {
+                    this.mark_to_market();
+                    continue;
+                }
                 // A data feed signed in with its login changes which feeds
                 // can be used.
                 let fed = matches!(&wake, crate::trading::Wake::Opened(_, _, Some(_)));

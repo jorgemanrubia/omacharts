@@ -49,12 +49,17 @@ pub enum Change {
     /// Signed in again after a drop. What was working may have finished
     /// meanwhile: the cue to [`Session::refresh`] and then reconcile.
     Back,
+    /// A contract held traded at a new price: the positions and the money
+    /// to mark again, and nothing else to read.
+    Priced,
 }
 
 /// What wakes the main loop, from a session's thread or a desk's.
 pub enum Wake {
     /// A session's book moved.
     Moved,
+    /// A contract held traded at a new price.
+    Priced,
     /// The login's session is back after a drop, and wants refreshing.
     Back(String),
     /// The login's session was refreshed, after it came back.
@@ -127,6 +132,16 @@ pub trait Session: Send + Sync {
     /// either is refused. Never waits: `None` for a side not known.
     fn price_limits(&self, _instrument: &omacharts_engine::Instrument) -> (Option<f64>, Option<f64>) {
         (None, None)
+    }
+    /// The last trade the broker's own market data has heard in
+    /// `contract`, one of the book's positions, for marking it to the
+    /// market: [`Desk::book`] asks for every position held each time it is
+    /// read. Never waits: asking starts listening where the broker can, and
+    /// a new price is told with [`Change::Priced`] while the contract is
+    /// held. `None` until a trade has been heard, and for a broker with no
+    /// data, whose positions keep the figure it gives.
+    fn price_of(&self, _contract: &str) -> Option<f64> {
+        None
     }
     /// Every order, position and balance it has heard of.
     fn book(&self) -> Book;
@@ -210,6 +225,7 @@ impl Desk {
         Box::new(move |change| {
             let _ = wake.try_send(match change {
                 Change::Moved => Wake::Moved,
+                Change::Priced => Wake::Priced,
                 Change::Back => Wake::Back(login.clone()),
             });
         })
@@ -226,7 +242,7 @@ impl Desk {
     /// book again.
     pub fn take(&self, wake: Wake) {
         match wake {
-            Wake::Moved => {}
+            Wake::Moved | Wake::Priced => {}
             Wake::Back(login) => self.refresh(&login),
             Wake::Refreshed(login) => *self.refreshes.borrow_mut().entry(login).or_default() += 1,
             Wake::Opened(login, outcome, data) => {
@@ -456,7 +472,8 @@ impl Desk {
         let mut book = Book { refreshed: true, ..Book::default() };
         for login in logins {
             let Some(session) = self.session(&login.id) else { continue };
-            let theirs = session.book();
+            let mut theirs = session.book();
+            theirs.mark(|held| session.price_of(&held.contract));
             book.refreshed &= theirs.refreshed;
             book.capabilities.insert(login.id.clone(), session.capabilities());
             let key = |number: String| format!("{}/{number}", login.id);
@@ -785,6 +802,7 @@ mod tests {
                 avg: Some(7_600.0),
                 open_pnl: Some(62.5),
                 tick: Some(0.25),
+                point: Some(50.0),
             }],
             accounts: vec![Money {
                 key: "FAKE-1".into(),

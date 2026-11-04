@@ -390,10 +390,23 @@ pub struct Position {
     /// Positive long, negative short.
     pub net: i32,
     pub avg: Option<f64>,
-    /// As the broker worked it out, never from point values here.
+    /// Open now: marked to the last trade by [`Book::mark`] while one is
+    /// heard, else as the broker worked it out.
     pub open_pnl: Option<f64>,
     /// The step its price moves in, when the broker knows it.
     pub tick: Option<f64>,
+    /// What one whole point of its price is worth on one contract, in the
+    /// account's currency, when it is known: 50 for ES.
+    pub point: Option<f64>,
+}
+
+impl Position {
+    /// What it is up or down at `last`: long gains as the price rises,
+    /// short as it falls. `None` without the price it was opened at or
+    /// what a point is worth.
+    pub fn open_pnl_at(&self, last: f64) -> Option<f64> {
+        Some((last - self.avg?) * f64::from(self.net) * self.point?)
+    }
 }
 
 /// An order the broker has told of, at any stage.
@@ -473,6 +486,40 @@ impl Book {
 
     pub fn order(&self, basket: &str) -> Option<&Order> {
         self.orders.iter().find(|order| order.basket_id == basket)
+    }
+
+    /// Mark every position held to the last trade `price` gives for it,
+    /// and each account's open and day P&L with them, so that the panel,
+    /// the chart's pill and the day's total move with the market rather
+    /// than when the broker next says. A position with no price heard, or
+    /// no point value, keeps the broker's figure, and so does an account
+    /// with such a position; what the broker counts as closed today is
+    /// always its own.
+    pub fn mark(&mut self, price: impl Fn(&Position) -> Option<f64>) {
+        let mut marked: HashMap<String, (f64, bool)> = HashMap::new();
+        for held in self.positions.iter_mut().filter(|held| held.net != 0) {
+            let at = price(held).and_then(|last| held.open_pnl_at(last));
+            if at.is_some() {
+                held.open_pnl = at;
+            }
+            let account = marked.entry(held.account.clone()).or_insert((0.0, true));
+            account.0 += held.open_pnl.unwrap_or(0.0);
+            account.1 &= at.is_some();
+        }
+        for (key, (open, all)) in marked {
+            if !all {
+                continue;
+            }
+            match self.accounts.iter_mut().find(|money| money.key == key) {
+                Some(money) => {
+                    // The broker's day less its open part is what it closed.
+                    money.day_pnl = money.day_pnl.map(|day| day - money.unrealized.unwrap_or(0.0) + open);
+                    money.unrealized = Some(open);
+                }
+                // Its money not told yet: what is open is known all the same.
+                None => self.accounts.push(Money { key, unrealized: Some(open), ..Money::default() }),
+            }
+        }
     }
 }
 
@@ -570,5 +617,57 @@ mod tests {
             Err("a stop order needs a price".to_string())
         );
         assert!(OrderRequest::request("951", &contract, Side::Sell, OrderKind::Limit, two, Some(f64::NAN)).is_err());
+    }
+
+    fn held(account: &str, contract: &str, net: i32, avg: f64, broker: Option<f64>) -> Position {
+        Position {
+            account: account.into(),
+            contract: contract.into(),
+            exchange: "CME".into(),
+            net,
+            avg: Some(avg),
+            open_pnl: broker,
+            tick: Some(0.25),
+            point: Some(50.0),
+        }
+    }
+
+    /// A short gains as the price falls and a long as it rises, by what a
+    /// point is worth: two ES short from 6,950 at 6,940 is up $1,000.
+    #[test]
+    fn a_position_is_up_or_down_by_its_points() {
+        assert_eq!(held("a", "ESZ6", -2, 6_950.0, None).open_pnl_at(6_940.0), Some(1_000.0));
+        assert_eq!(held("a", "ESZ6", 1, 6_950.0, None).open_pnl_at(6_940.0), Some(-500.0));
+        let unknown = Position { point: None, ..held("a", "ESZ6", 1, 6_950.0, None) };
+        assert_eq!(unknown.open_pnl_at(6_940.0), None, "without what a point is worth, nothing is made up");
+    }
+
+    /// Marking moves the position, the account's open P&L and its day with
+    /// the market, the broker's closed part kept: Rithmic Test says open is
+    /// zero however the market moves, and the day is what was closed.
+    #[test]
+    fn the_book_is_marked_to_the_last_trade() {
+        let mut book = Book {
+            positions: vec![held("a", "ESZ6", -2, 6_950.0, Some(0.0)), held("b", "NQZ6", 1, 25_000.0, Some(40.0))],
+            accounts: vec![
+                Money { key: "a".into(), unrealized: Some(0.0), day_pnl: Some(-752.58), ..Money::default() },
+                Money { key: "b".into(), unrealized: Some(40.0), day_pnl: Some(100.0), ..Money::default() },
+            ],
+            ..Book::default()
+        };
+        book.mark(|held| (held.contract == "ESZ6").then_some(6_940.0));
+        assert_eq!(book.position("a", "ESZ6").and_then(|held| held.open_pnl), Some(1_000.0));
+        let money = book.money("a").unwrap();
+        assert_eq!(money.unrealized, Some(1_000.0));
+        assert!((money.day_pnl.unwrap() - 247.42).abs() < 1e-9, "closed -752.58 and open +1,000");
+        // No price heard for NQ: the broker's figure stands, and its account's.
+        assert_eq!(book.position("b", "NQZ6").and_then(|held| held.open_pnl), Some(40.0));
+        assert_eq!((book.money("b").unwrap().unrealized, book.money("b").unwrap().day_pnl), (Some(40.0), Some(100.0)));
+
+        // An account whose money the broker has not told yet still has
+        // what is open.
+        let mut untold = Book { positions: vec![held("c", "ESZ6", 1, 6_950.0, None)], ..Book::default() };
+        untold.mark(|_| Some(6_951.0));
+        assert_eq!(untold.money("c").map(|money| (money.unrealized, money.day_pnl)), Some((Some(50.0), None)));
     }
 }

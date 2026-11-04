@@ -145,8 +145,8 @@ pub fn net_text(net: i32) -> String {
     format!("{net:+}")
 }
 
-/// What a position's pill says: its size and the broker's open P&L, or its
-/// price until the P&L has arrived.
+/// What a position's pill says: its size and its open P&L, or its price
+/// until the P&L is known.
 pub fn position_text(held: &Position, decimals: usize, currency: Option<&str>) -> String {
     match (held.open_pnl, held.avg) {
         (Some(pnl), _) => format!("{} · {}", net_text(held.net), pnl_text(pnl, currency)),
@@ -240,6 +240,7 @@ mod tests {
             avg: Some(7_612.25),
             open_pnl: None,
             tick: Some(0.25),
+            point: Some(50.0),
         };
         assert_eq!(position_text(&held, 2, Some("USD")), "+1 at 7,612.25");
         held.open_pnl = Some(125.0);

@@ -1,6 +1,6 @@
 //! Rithmic's order and PnL plants, as a [`Broker`] and its [`Session`].
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -93,19 +93,29 @@ impl Broker for Rithmic {
             changed,
             connection,
             prices: Mutex::default(),
+            held: Arc::default(),
+            told: Arc::default(),
         }))
     }
 }
 
-/// The step a Rithmic contract's price moves in, from its root: "ES" for
-/// "ESZ6", "6E" for "6EZ26".
+/// The step a Rithmic contract's price moves in, from its root.
 fn rithmic_tick(contract: &str) -> Option<f64> {
+    omacharts_engine::exchanges::registry().contract_tick(root_of(contract))
+}
+
+/// What a point of a Rithmic contract's price is worth, from its root.
+fn rithmic_point(contract: &str) -> Option<f64> {
+    omacharts_engine::exchanges::registry().contract_point(root_of(contract))
+}
+
+/// A contract's root: "ES" for "ESZ6", "6E" for "6EZ26".
+fn root_of(contract: &str) -> &str {
     let digits = contract.trim_end_matches(|c: char| c.is_ascii_digit());
-    let root = match digits.len() < contract.len() && digits.len() > 1 {
+    match digits.len() < contract.len() && digits.len() > 1 {
         true => &digits[..digits.len() - 1],
         false => contract,
-    };
-    omacharts_engine::exchanges::registry().contract_tick(root)
+    }
 }
 
 /// Rithmic's words, without "Rithmic refused…" in front of a refusal.
@@ -204,15 +214,23 @@ struct RithmicSession {
     /// asked for is known.
     changed: Arc<dyn Fn(Change) + Send + Sync>,
     connection: rithmic::Connection,
-    /// The last trade on each root an order was asked about, by root,
-    /// heard on the login's own data half.
+    /// The last trade on each root an order was asked about or a position
+    /// is held in, by root, heard on the login's own data half.
     prices: Mutex<HashMap<String, Priced>>,
+    /// The roots a position is held in, as the book last said: a new price
+    /// on one of them is told, so the position is marked to it.
+    held: Arc<Mutex<HashSet<String>>>,
+    /// A new price was told and the book not read since: told once until
+    /// it is, however busy the market.
+    told: Arc<AtomicBool>,
 }
 
 /// A root's trades being watched for their price.
 struct Priced {
     _watch: rithmic::Watch,
     last: Arc<Mutex<Option<f64>>>,
+    /// The contract the trades are in: the root's front month.
+    contract: Arc<Mutex<Option<String>>>,
     /// The watch ended for good: closed, or refused. Watched afresh when
     /// asked again.
     ended: Arc<AtomicBool>,
@@ -226,17 +244,27 @@ impl RithmicSession {
             return;
         }
         let last = Arc::new(Mutex::new(None));
+        let contract = Arc::new(Mutex::new(None));
         let ended = Arc::new(AtomicBool::new(false));
         let watch = self.connection.data().watch(root, exchange, {
-            let (last, ended) = (last.clone(), ended.clone());
+            let (last, contract, ended) = (last.clone(), contract.clone(), ended.clone());
+            let (held, told, changed, root) = (self.held.clone(), self.told.clone(), self.changed.clone(), root.to_string());
             move |live| match live {
-                rithmic::Live::Trade(trade) => *last.lock().unwrap_or_else(|e| e.into_inner()) = Some(trade.price),
+                rithmic::Live::Trade(trade) => {
+                    let before = last.lock().unwrap_or_else(|e| e.into_inner()).replace(trade.price);
+                    let holding = held.lock().unwrap_or_else(|e| e.into_inner()).contains(&root);
+                    if before != Some(trade.price) && holding && !told.swap(true, Ordering::AcqRel) {
+                        changed(Change::Priced);
+                    }
+                }
                 rithmic::Live::Lost(rithmic::Error::Connection(_) | rithmic::Error::Timeout) => {}
                 rithmic::Live::Lost(_) => ended.store(true, Ordering::Release),
-                rithmic::Live::Watching { .. } => {}
+                rithmic::Live::Watching { contract: watched } => {
+                    *contract.lock().unwrap_or_else(|e| e.into_inner()) = Some(watched);
+                }
             }
         });
-        prices.insert(root.to_string(), Priced { _watch: watch, last, ended });
+        prices.insert(root.to_string(), Priced { _watch: watch, last, contract, ended });
     }
 }
 
@@ -304,8 +332,26 @@ impl Session for RithmicSession {
         }
     }
 
+    /// Its front month's last trade, heard on the login's own data half;
+    /// a position in any other month is not marked here.
+    fn price_of(&self, contract: &str) -> Option<f64> {
+        let root = root_of(contract);
+        self.watch_price(root, omacharts_engine::providers::rithmic::exchange_of(root));
+        let prices = self.prices.lock().unwrap_or_else(|e| e.into_inner());
+        let priced = prices.get(root)?;
+        let watched = priced.contract.lock().unwrap_or_else(|e| e.into_inner());
+        if watched.as_deref() != Some(contract) {
+            return None;
+        }
+        *priced.last.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     fn book(&self) -> Book {
         let book = self.trading.book();
+        // Read from here on: the next new price is told again.
+        self.told.store(false, Ordering::Release);
+        *self.held.lock().unwrap_or_else(|e| e.into_inner()) =
+            book.positions.iter().filter(|held| held.net != 0).map(|held| root_of(&held.contract).to_string()).collect();
         Book {
             capabilities: HashMap::new(),
             refreshed: book.refreshed,
@@ -334,6 +380,7 @@ impl Session for RithmicSession {
                 .into_iter()
                 .map(|held| Position {
                     tick: rithmic_tick(&held.contract),
+                    point: rithmic_point(&held.contract),
                     account: held.account,
                     contract: held.contract,
                     exchange: held.exchange,
@@ -411,6 +458,18 @@ impl Session for RithmicSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A contract is known by its root for its tick and what a point of it
+    /// is worth, which is what marks a position to the market.
+    #[test]
+    fn a_contract_s_tick_and_point_come_from_its_root() {
+        assert_eq!(root_of("ESZ6"), "ES");
+        assert_eq!(root_of("6EZ26"), "6E");
+        assert_eq!(root_of("MNQH7"), "MNQ");
+        assert_eq!((rithmic_tick("ESZ6"), rithmic_point("ESZ6")), (Some(0.25), Some(50.0)));
+        assert_eq!((rithmic_tick("NQH7"), rithmic_point("NQH7")), (Some(0.25), Some(20.0)));
+        assert_eq!(rithmic_point("XXZ6"), None);
+    }
 
     #[test]
     fn a_band_rejection_gives_the_band_at_the_order_s_scale() {

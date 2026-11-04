@@ -591,6 +591,7 @@ mod tests {
             avg: Some(7_612.25),
             open_pnl: None,
             tick: Some(0.25),
+            point: Some(50.0),
         });
         assert!(!answered(&flatten, &Pending::Flatten, &book));
         book.positions.clear();
@@ -713,6 +714,7 @@ mod tests {
             avg: Some(7_612.25),
             open_pnl: None,
             tick: Some(0.25),
+            point: Some(50.0),
         });
         assert!(flat_plan(&book, "t/951", "ESZ6").flatten);
         assert!(!flat_plan(&book, "t/951", "NQZ6").flatten);

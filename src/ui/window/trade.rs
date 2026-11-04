@@ -83,7 +83,15 @@ pub(super) struct Trade {
     /// The size templates, read when trading comes in and again whenever
     /// they are edited.
     pub sizes: RefCell<Vec<trading::sizes::SizeTemplate>>,
+    /// When the positions were last marked to a new price, and whether a
+    /// marking is waiting its turn: a busy market is marked a few times a
+    /// second, and its last price never left out.
+    pub marked_at: Cell<Option<std::time::Instant>>,
+    pub marking: Cell<bool>,
 }
+
+/// How often at most the positions are marked to a moving market.
+const MARK_EVERY: std::time::Duration = std::time::Duration::from_millis(200);
 
 /// The toggle's glyph: the sidebars' icon turned on its side. Adwaita's
 /// `sidebar-show-right-symbolic` is a rounded frame with a divider and the
@@ -198,6 +206,35 @@ impl Window {
         self.say_session_trouble();
         self.report_orders();
         self.settle_pending();
+        self.apply_marks();
+    }
+
+    /// A contract held traded at a new price: read the book again, which
+    /// marks the positions to it, and redraw the panel and the charts'
+    /// positions. Nothing else about Trading is read, as nothing else moved.
+    pub(super) fn mark_to_market(self: &Rc<Self>) {
+        if !self.trade.shown.get() || self.trade.marking.get() {
+            return;
+        }
+        let since = self.trade.marked_at.get().map(|at| at.elapsed());
+        if let Some(wait) = since.and_then(|since| MARK_EVERY.checked_sub(since)) {
+            self.trade.marking.set(true);
+            let this = Rc::downgrade(self);
+            glib::timeout_add_local_once(wait, move || {
+                if let Some(this) = this.upgrade() {
+                    this.trade.marking.set(false);
+                    this.mark_to_market();
+                }
+            });
+            return;
+        }
+        self.trade.marked_at.set(Some(std::time::Instant::now()));
+        let book = self.desk.book(&self.trading.borrow().logins);
+        self.trading.borrow_mut().book = book;
+        let panel = self.trade.panel.borrow().clone();
+        if let Some(panel) = panel {
+            panel.redraw(&self.trading.borrow());
+        }
         self.apply_marks();
     }
 
@@ -1885,6 +1922,35 @@ pub(super) mod tests {
             assert_eq!(offered("Sell Limit"), Some(false), "below the account's market, though above the chart's");
             assert_eq!(offered("Buy Limit"), Some(true));
             assert_eq!(offered("Sell Stop"), Some(true));
+        });
+    }
+
+    /// A position is marked to the account's own market as it trades: the
+    /// chart's pill, the Positions tab and the account's open P&L move with
+    /// each new price, whatever the broker last said, and a busy market is
+    /// marked a few times a second with its last price never left out.
+    #[test]
+    fn open_p_and_l_moves_with_the_market() {
+        crate::ui::on_gtk(|| {
+            let (window, pane, session, key) = long_es(true);
+            let pill = || pane.view.mark_states().0.map(|(words, _)| words).unwrap_or_default();
+            let open = |window: &Window| window.trading.borrow().book.money(&key).and_then(|money| money.unrealized);
+            assert!(pill().contains("at 7,612.25"), "{}", pill());
+
+            *session.market.lock().unwrap() = Some(7_622.25);
+            window.mark_to_market();
+            assert!(pill().ends_with("+$500.00"), "{}", pill());
+            assert_eq!(window.trading.borrow().book.position(&key, "ESZ6").and_then(|held| held.open_pnl), Some(500.0));
+            assert_eq!(open(&window), Some(500.0));
+
+            // Again at once: held back, then marked at the price it got to.
+            *session.market.lock().unwrap() = Some(7_602.25);
+            window.mark_to_market();
+            *session.market.lock().unwrap() = Some(7_592.25);
+            window.mark_to_market();
+            assert!(pill().ends_with("+$500.00"), "marked again within {MARK_EVERY:?}");
+            settle(&window, || pill().ends_with("-$1,000.00"));
+            assert_eq!(open(&window), Some(-1_000.0));
         });
     }
 

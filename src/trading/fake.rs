@@ -84,8 +84,8 @@ pub struct FakeSession {
     /// How many times it was refreshed.
     pub refreshes: AtomicUsize,
     pub last: Mutex<f64>,
-    /// What [`Session::last_price`] says: the broker's own market, which
-    /// need not be the chart's.
+    /// What [`Session::last_price`] and [`Session::price_of`] say: the
+    /// broker's own market, which need not be the chart's.
     pub market: Mutex<Option<f64>>,
     /// What [`Session::price_limits`] says.
     pub limits: Mutex<(Option<f64>, Option<f64>)>,
@@ -253,6 +253,7 @@ impl FakeSession {
                 avg: Some(at),
                 open_pnl: None,
                 tick: Some(0.25),
+                point: Some(50.0),
             }),
         }
         book.positions.retain(|held| held.net != 0);
@@ -289,6 +290,9 @@ impl Session for FakeSession {
     }
     fn price_limits(&self, _instrument: &omacharts_engine::Instrument) -> (Option<f64>, Option<f64>) {
         *self.limits.lock().unwrap()
+    }
+    fn price_of(&self, _contract: &str) -> Option<f64> {
+        *self.market.lock().unwrap()
     }
     fn book(&self) -> Book {
         self.book.lock().unwrap().clone()
