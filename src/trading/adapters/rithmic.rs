@@ -77,16 +77,19 @@ impl Broker for Rithmic {
         // and how the session stands again; coming back after a drop is the
         // cue to refresh it too.
         let connection = rithmic::connection(app, &login.id, source).map_err(said)?;
+        let changed: Arc<dyn Fn(Change) + Send + Sync> = Arc::from(changed);
+        let told = changed.clone();
         let trading = connection
             .trading(move |pulse| match pulse {
-                rithmic::Pulse::Back => changed(Change::Back),
-                rithmic::Pulse::Moved | rithmic::Pulse::Lost(_) => changed(Change::Moved),
+                rithmic::Pulse::Back => told(Change::Back),
+                rithmic::Pulse::Moved | rithmic::Pulse::Lost(_) => told(Change::Moved),
             })
             .map_err(said)?;
         Ok(Arc::new(RithmicSession {
             login: login.id.clone(),
             simulated: system_of(login) == rithmic::TEST_SYSTEM,
             trading,
+            changed,
         }))
     }
 }
@@ -165,6 +168,9 @@ struct RithmicSession {
     /// Signed in to Rithmic Test, which fills against a simulation.
     simulated: bool,
     trading: rithmic::Trading,
+    /// What the window is told when the book moves, or when a contract
+    /// asked for is known.
+    changed: Arc<dyn Fn(Change) + Send + Sync>,
 }
 
 impl Session for RithmicSession {
@@ -198,14 +204,19 @@ impl Session for RithmicSession {
         self.simulated
     }
 
-    /// A futures root on a CME group exchange, as the front month the data
-    /// session last found for it.
+    /// A futures root on a CME group exchange, as its front month: the one
+    /// a data session last found, whatever feeds the chart, or asked for now
+    /// and told with a change once it is known.
     fn contract_for(&self, instrument: &omacharts_engine::Instrument) -> Result<Contract, Refusal> {
         if instrument.kind != omacharts_engine::InstrumentKind::FutureRoot {
             return Err(Refusal::NotTradable);
         }
-        let (symbol, exchange) =
-            omacharts_engine::providers::rithmic::contract_of(&instrument.symbol).ok_or(Refusal::NotKnownYet)?;
+        let exchange = omacharts_engine::providers::rithmic::exchange_of(&instrument.symbol);
+        let changed = self.changed.clone();
+        let symbol = self
+            .trading
+            .front_month(&instrument.symbol, exchange, move || changed(Change::Moved))
+            .ok_or(Refusal::NotKnownYet)?;
         Ok(Contract { tick: rithmic_tick(&symbol), symbol, exchange: exchange.to_string() })
     }
 

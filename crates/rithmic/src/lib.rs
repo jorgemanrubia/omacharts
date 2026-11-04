@@ -45,7 +45,7 @@ mod login;
 mod trading;
 
 pub use client::{entitled_exchanges, on_entitlements, Client, Watch};
-pub use connection::{close, connection, known_front_month, running, shutdown, Connection, SIGN_OUT_WAIT};
+pub use connection::{close, connection, running, shutdown, Connection, SIGN_OUT_WAIT};
 pub use login::{Login, DEV_LOGIN};
 pub use trading::{Account, AccountPnl, Book, Fill, Kind, Limits, Order, Position, Pulse, Status, Trading, WorkingOrder};
 

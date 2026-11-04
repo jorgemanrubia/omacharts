@@ -84,19 +84,40 @@ impl Fronts {
         (at.elapsed() < FRONT_FRESH).then(|| contract.clone())
     }
 
+    /// Remembered here, and in [`FOUND`] for the trading half.
     fn put(&self, root: &str, exchange: &str, contract: &str) {
+        let key = (root.to_string(), exchange.to_string());
         let mut fronts = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        fronts.insert((root.to_string(), exchange.to_string()), (contract.to_string(), Instant::now()));
+        fronts.insert(key.clone(), (contract.to_string(), Instant::now()));
+        let mut found = FOUND.lock().unwrap_or_else(|e| e.into_inner());
+        found.get_or_insert_with(HashMap::new).insert(key, (contract.to_string(), Instant::now()));
     }
 
     fn forget(&self, root: &str, exchange: &str) {
-        let mut fronts = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        fronts.remove(&(root.to_string(), exchange.to_string()));
+        let key = (root.to_string(), exchange.to_string());
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).remove(&key);
+        if let Some(found) = FOUND.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+            found.remove(&key);
+        }
     }
 
     fn clear(&self) {
         self.0.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
+}
+
+/// Every front month found in this process, by root and exchange, and when:
+/// kept when the data half that asked closes or drops, because an order on
+/// a chart fed from elsewhere goes to it all the same.
+static FOUND: Mutex<Option<Found>> = Mutex::new(None);
+type Found = HashMap<(String, String), (String, Instant)>;
+
+/// The front month last found for `root` on `exchange` by any connection,
+/// and whether it is fresh enough not to ask again.
+pub(crate) fn found_front_month(root: &str, exchange: &str) -> Option<(String, bool)> {
+    let found = FOUND.lock().unwrap_or_else(|e| e.into_inner());
+    let (contract, at) = found.as_ref()?.get(&(root.to_string(), exchange.to_string()))?;
+    Some((contract.clone(), at.elapsed() < FRONT_FRESH))
 }
 
 /// The exchanges the signed-in login has level 1 market data for, once the

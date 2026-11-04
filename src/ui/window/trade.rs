@@ -1385,7 +1385,7 @@ pub(super) mod tests {
         labels(model.upcast_ref())
             .into_iter()
             .filter(|(label, _)| {
-                ["Buy ", "Sell ", "Cancel ", "not signed in", "not tradable", "not known yet"]
+                ["Buy ", "Sell ", "Cancel ", "not signed in", "not tradable", "Finding "]
                     .iter()
                     .any(|word| label.contains(word))
             })
@@ -1427,7 +1427,7 @@ pub(super) mod tests {
             let es = window.index.find("ES", None).expect("ES in the curated half");
             let pane = window.focused_pane();
             window.show_in(&pane, es);
-            assert_eq!(trading_rows(&window), vec![("ES's contract not known yet".to_string(), false)]);
+            assert_eq!(trading_rows(&window), vec![("Finding ES's contract…".to_string(), false)]);
             session.contracts.lock().unwrap().insert("ES".into(), "ESZ6".into());
             let rows = trading_rows(&window);
             assert_eq!(rows.first(), Some(&("Buy 1 ESZ6 at market".to_string(), true)));

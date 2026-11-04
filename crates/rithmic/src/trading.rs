@@ -19,7 +19,7 @@
 //! Once back it says so ([`Pulse::Back`]), the cue for [`Trading::refresh`],
 //! which asks for everything the accounts hold, are working and did today.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -37,12 +37,16 @@ use rithmic_rs::{
 use rithmic_rs::FillHistoryRange;
 use tokio::sync::{broadcast, oneshot, watch};
 
-use crate::client::{config, error_of, signed_in, within};
+use crate::client::{self, config, error_of, signed_in, within};
 use crate::connection::{Connection, Inner, Opened, Phase};
-use crate::{App, Credentials, Error, Side};
+use crate::{App, Credentials, Error, Live, Side};
 
 /// How long one request may take.
 const REQUEST: Duration = Duration::from_secs(15);
+
+/// How long the trading half waits on a data half to say which contract a
+/// root trades as: a sign-in and two requests.
+const FRONT_PATIENCE: Duration = Duration::from_secs(45);
 
 /// One account inside a login, as the order plant lists it.
 #[derive(Clone, PartialEq)]
@@ -804,6 +808,65 @@ impl Trading {
     /// Every order, position and balance the half has heard of.
     pub fn book(&self) -> Book {
         self.inner.book.lock().unwrap_or_else(|e| e.into_inner()).book()
+    }
+
+    /// The contract an order on the futures root `root` goes to on
+    /// `exchange`: the front month any data half last found, even one closed
+    /// since. When none has, or not lately, this login's data half is asked
+    /// in the background, opened for it if no chart has, and `found` is
+    /// called once it answers. Never waits: `None` until then.
+    pub fn front_month(&self, root: &str, exchange: &str, found: impl FnOnce() + Send + 'static) -> Option<String> {
+        let known = client::found_front_month(root, exchange);
+        if !matches!(known, Some((_, true))) {
+            self.ask_front_month(root, exchange, found);
+        }
+        known.map(|(contract, _)| contract)
+    }
+
+    /// Watch `root` until the data half says which contract it subscribed
+    /// to, which remembers it as the front month, and stop watching. One
+    /// question at a time for each root.
+    fn ask_front_month(&self, root: &str, exchange: &str, found: impl FnOnce() + Send + 'static) {
+        static ASKING: Mutex<Option<HashSet<(String, String)>>> = Mutex::new(None);
+        let key = (root.to_string(), exchange.to_string());
+        let done = {
+            let key = key.clone();
+            move || {
+                if let Some(asking) = ASKING.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+                    asking.remove(&key);
+                }
+            }
+        };
+        if !ASKING.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashSet::new).insert(key) {
+            return;
+        }
+        let (told, heard) = std::sync::mpsc::channel();
+        let told = Mutex::new(told);
+        let watch = Connection::of(self.inner.clone()).data().watch(root, exchange, move |live| {
+            let _ = told.lock().unwrap_or_else(|e| e.into_inner()).send(live);
+        });
+        let asking = std::thread::Builder::new().name("rithmic-front".into()).spawn({
+            let done = done.clone();
+            move || {
+                let deadline = Instant::now() + FRONT_PATIENCE;
+                let answered = loop {
+                    match heard.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                        Ok(Live::Watching { .. }) => break true,
+                        // Reconnecting by itself: the answer may still come.
+                        Ok(Live::Lost(Error::Connection(_) | Error::Timeout) | Live::Trade(_)) => continue,
+                        Ok(Live::Lost(_)) | Err(_) => break false,
+                    }
+                };
+                drop(watch);
+                done();
+                if answered {
+                    found();
+                }
+            }
+        });
+        if asking.is_err() {
+            done();
+        }
     }
 
     /// Why the half is not signed in now: dropped and coming back, signed

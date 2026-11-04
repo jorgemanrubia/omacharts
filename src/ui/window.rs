@@ -6469,6 +6469,12 @@ impl Window {
         if self.settle_feed(pane, &instrument) {
             self.save_soon();
         }
+        // An order from it goes to a contract whichever feed charts it.
+        for login in &self.trading.borrow().logins {
+            if let Some(session) = self.desk.session(&login.id) {
+                let _ = session.contract_for(&instrument);
+            }
+        }
         let routed = match self.route_chosen(pane, &instrument) {
             Some(Ok(routed)) => routed,
             Some(Err(refused)) => {
@@ -7586,7 +7592,14 @@ impl Window {
                 // A data feed signed in with its login changes which feeds
                 // can be used.
                 let fed = matches!(&wake, crate::trading::Wake::Opened(_, _, Some(_)));
+                let opened = match &wake {
+                    crate::trading::Wake::Opened(login, Ok(_), _) => Some(login.id.clone()),
+                    _ => None,
+                };
                 this.desk.take(wake);
+                if let Some(login) = opened {
+                    this.find_contracts(&login);
+                }
                 this.desk.note(&this.store);
                 if fed {
                     this.adopt_feed();
@@ -7594,6 +7607,19 @@ impl Window {
                 this.desk.tell();
             }
         });
+    }
+
+    /// Ask `login`'s session which contract every chart on screen trades
+    /// as, so that its menu offers Buy and Sell by the time it is opened,
+    /// whichever feed charts it. Never waits: what is not known yet is
+    /// asked for, and arrives as a change.
+    fn find_contracts(&self, login: &str) {
+        let Some(session) = self.desk.session(login) else { return };
+        for pane in self.panes.borrow().iter() {
+            if let Some(instrument) = pane.instrument.borrow().as_ref() {
+                let _ = session.contract_for(instrument);
+            }
+        }
     }
 
     /// Sign the saved trading logins in, once, after the window's first

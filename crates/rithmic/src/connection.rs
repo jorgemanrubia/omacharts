@@ -214,13 +214,6 @@ pub fn running() -> bool {
     !feeding().is_empty()
 }
 
-/// The contract the data half last found trading for `root` on `exchange`,
-/// if it has asked lately. Never asks: for a caller that must not wait,
-/// such as a menu deciding what it can offer.
-pub fn known_front_month(root: &str, exchange: &str) -> Option<String> {
-    feeding().iter().find_map(|connection| connection.inner.fronts.get(root, exchange))
-}
-
 /// Close the data half of every connection, waiting a few seconds at most
 /// for Rithmic to acknowledge: what charting is done with. Whatever is
 /// watching hears [`Error::Closed`], and the next [`Connection::data`]
@@ -1081,5 +1074,33 @@ mod tests {
         assert_eq!(next(&hearing), Live::Lost(Error::Closed));
         assert!(connection.inner.ended.load(Ordering::Acquire));
         drop(watch);
+    }
+
+    /// An order on a chart fed from elsewhere still finds its contract: the
+    /// trading half asks the data half, opening it to ask, watches only
+    /// until it is answered, and remembers the answer once the data half
+    /// has closed.
+    #[test]
+    fn trading_finds_a_front_month_no_chart_asked_for() {
+        let gateway = Arc::new(Gateway::default());
+        let (connection, _) = faked(&gateway);
+        let trading = connection.trading(|_| {}).expect("signed in");
+        assert_eq!(client::found_front_month("RTY", "CME"), None);
+
+        let (found, finding) = std::sync::mpsc::channel();
+        let once = found.clone();
+        assert_eq!(trading.front_month("RTY", "CME", move || once.send(()).unwrap()), None, "never waits");
+        assert_eq!(trading.front_month("RTY", "CME", move || found.send(()).unwrap()), None);
+        next(&finding);
+        assert!(finding.recv_timeout(Duration::from_millis(300)).is_err(), "asked once");
+        assert_eq!(gateway.dialled(), ["trading", "data"], "the data half opened to ask");
+        assert_eq!(trading.front_month("RTY", "CME", || panic!("known")), Some("RTYZ6".into()));
+        assert_eq!(gateway.plant.subscribes.lock().unwrap().as_slice(), ["RTYZ6"]);
+
+        connection.close_data();
+        let kept = client::found_front_month("RTY", "CME");
+        assert_eq!(kept, Some(("RTYZ6".into(), true)), "kept past the data half");
+        assert_eq!(trading.front_month("RTY", "CME", || panic!("known")), Some("RTYZ6".into()));
+        connection.close();
     }
 }

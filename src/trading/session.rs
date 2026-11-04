@@ -111,8 +111,9 @@ pub trait Session: Send + Sync {
     fn capabilities(&self) -> Capabilities;
     /// Is this a simulated account, where an order costs nothing?
     fn is_simulated(&self) -> bool;
-    /// The contract an order on `instrument` goes to, from what the
-    /// session already knows. Never waits on the broker.
+    /// The contract an order on `instrument` goes to, whatever feed charts
+    /// it. Never waits on the broker: what it does not know yet it asks for,
+    /// and tells with a change once it does.
     fn contract_for(&self, instrument: &omacharts_engine::Instrument) -> Result<Contract, Refusal>;
     /// Every order, position and balance it has heard of.
     fn book(&self) -> Book;

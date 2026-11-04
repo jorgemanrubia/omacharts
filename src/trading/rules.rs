@@ -88,7 +88,7 @@ pub fn order_target(
     let session = session(&login.id).ok_or_else(|| format!("{name} not signed in"))?;
     let contract = session.contract_for(instrument).map_err(|refusal| match refusal {
         Refusal::NotTradable => format!("{} is not tradable on {name}", instrument.symbol),
-        Refusal::NotKnownYet => format!("{}'s contract not known yet", instrument.symbol),
+        Refusal::NotKnownYet => format!("Finding {}'s contract…", instrument.symbol),
     })?;
     Ok(Target {
         account: account.clone(),
@@ -679,7 +679,7 @@ mod tests {
         assert_eq!(target(true, &aapl).unwrap_err(), "AAPL is not tradable on Rithmic Test");
         assert_eq!(target(false, &es).unwrap_err(), "Rithmic Test not signed in");
         let nq = instrument("NQ", InstrumentKind::FutureRoot);
-        assert_eq!(target(true, &nq).unwrap_err(), "NQ's contract not known yet");
+        assert_eq!(target(true, &nq).unwrap_err(), "Finding NQ's contract…");
         let unlisted = View { accounts: Vec::new(), ..view.clone() };
         assert_eq!(order_target(&unlisted, |_| None, None, Some(&es)).unwrap_err(), "Rithmic Test not signed in");
         assert_eq!(order_target(&View::default(), |_| None, None, Some(&es)).unwrap_err(), "No trading account");

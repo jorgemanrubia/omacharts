@@ -128,8 +128,8 @@ pub struct Contract {
 pub enum Refusal {
     /// The broker does not trade it at all.
     NotTradable,
-    /// It does, and which contract is not known yet; the session will not
-    /// stop to ask.
+    /// It does, and which contract is not known yet: the session is asking,
+    /// without stopping for the answer, and says so with a change.
     NotKnownYet,
 }
 

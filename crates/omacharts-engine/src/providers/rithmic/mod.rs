@@ -101,19 +101,11 @@ fn symbol_under(instrument: &Instrument, entitled: impl Fn(&str) -> bool) -> Opt
     (CME_GROUP.contains(&exchange) && entitled(exchange)).then(|| instrument.symbol.clone())
 }
 
-/// The exchange Rithmic is asked on for a root. A root only an override
-/// names is taken to be on CME.
-fn exchange_of(root: &str) -> &'static str {
+/// The exchange Rithmic is asked on for a root, and an order on it goes
+/// to. A root only an override names is taken to be on CME.
+pub fn exchange_of(root: &str) -> &'static str {
     let listed = registry().contract_exchange(root);
     CME_GROUP.into_iter().find(|exchange| Some(*exchange) == listed).unwrap_or("CME")
-}
-
-/// The contract an order on the futures root `root` goes to, and its
-/// exchange: the front month the data session last found for it. Never
-/// asks, so `None` until a chart of it has charted from Rithmic.
-pub fn contract_of(root: &str) -> Option<(String, &'static str)> {
-    let exchange = exchange_of(root);
-    rithmic::known_front_month(root, exchange).map(|contract| (contract, exchange))
 }
 
 fn period_of(timeframe: Timeframe) -> Result<rithmic::Period, ProviderError> {
