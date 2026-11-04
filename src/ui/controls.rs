@@ -67,8 +67,11 @@ pub fn bounded_row(
     slider.set_size_request(180, -1);
     slider.set_valign(gtk::Align::Center);
 
+    let entry = entry(&adjustment, step, digits);
+    scroll_the_page(&slider);
+    scroll_the_page(&entry);
     row.add_suffix(&slider);
-    row.add_suffix(&entry(&adjustment, step, digits));
+    row.add_suffix(&entry);
 
     adjustment.connect_value_changed(move |adjustment| changed(adjustment.value()));
 
@@ -97,6 +100,46 @@ fn entry(adjustment: &gtk::Adjustment, step: f64, digits: u32) -> gtk::SpinButto
     entry.set_width_chars(chars);
     entry.set_max_width_chars(chars);
     entry
+}
+
+/// Let a wheel that passes over `widget` scroll the page it sits on.
+///
+/// A slider and a spin box both take the wheel as "change the figure", so
+/// scrolling down a settings page whose pointer happened to cross one walked
+/// that figure to the bottom of its range on the way past: a VWAP band of one
+/// deviation came back as 0.1. A figure changes by wheel only once its control
+/// has been clicked into; until then the wheel is the page's.
+fn scroll_the_page(widget: &impl IsA<gtk::Widget>) {
+    let scroll = gtk::EventControllerScroll::new(
+        gtk::EventControllerScrollFlags::BOTH_AXES | gtk::EventControllerScrollFlags::KINETIC,
+    );
+    scroll.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let widget = widget.as_ref();
+    // Weak: the controller lives on the widget, and a strong hold back
+    // would keep the pair alive past the dialog.
+    let held = widget.downgrade();
+    scroll.connect_scroll(move |controller, dx, dy| {
+        let Some(widget) = held.upgrade() else { return glib::Propagation::Proceed };
+        if widget.state_flags().contains(gtk::StateFlags::FOCUS_WITHIN) {
+            return glib::Propagation::Proceed;
+        }
+        let Some(page) = widget.ancestor(gtk::ScrolledWindow::static_type()).and_downcast::<gtk::ScrolledWindow>()
+        else {
+            return glib::Propagation::Stop;
+        };
+        // A notch of a wheel moves the page as far as GTK's own scrolling
+        // would; a touchpad already speaks in pixels.
+        let notch = |adjustment: &gtk::Adjustment| match controller.unit() {
+            gtk::gdk::ScrollUnit::Wheel => adjustment.page_size().powf(2.0 / 3.0),
+            _ => 1.0,
+        };
+        let vertical = page.vadjustment();
+        vertical.set_value(vertical.value() + dy * notch(&vertical));
+        let horizontal = page.hadjustment();
+        horizontal.set_value(horizontal.value() + dx * notch(&horizontal));
+        glib::Propagation::Stop
+    });
+    widget.add_controller(scroll);
 }
 
 /// How many characters the widest figure in the range takes to print.

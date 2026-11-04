@@ -8165,7 +8165,7 @@ fn draw_indicator_fills(
                     }
                     let colour = band_colour(band, drawn, &state.theme);
                     colors::set_source_alpha(cr, &colour, band.fill_alpha);
-                    fill_between(cr, &band.upper, &band.lower, columns, to_y);
+                    fill_between(cr, &band.upper, &band.lower, &bands.starts, columns, to_y);
                 }
             }
             Output::Profiles(profiles) => {
@@ -8202,7 +8202,7 @@ fn draw_indicator_lines(
                 cr.set_dash(&stroke.style.dashes(stroke.width), 0.0);
                 colors::set_source(cr, &drawn.color);
                 cr.set_line_width(stroke.width);
-                stroke_series(cr, values, columns, to_y);
+                stroke_series(cr, values, &[], columns, to_y);
                 cr.restore().ok();
                 if lit {
                     let latest = selection::latest(values);
@@ -8248,8 +8248,8 @@ fn draw_indicator_lines(
                     cr.set_dash(&band.stroke.style.dashes(band.stroke.width), 0.0);
                     cr.set_line_width(band.stroke.width);
                     colors::set_source(cr, &band_colour(band, drawn, &state.theme));
-                    stroke_series(cr, &band.upper, columns, to_y);
-                    stroke_series(cr, &band.lower, columns, to_y);
+                    stroke_series(cr, &band.upper, &bands.starts, columns, to_y);
+                    stroke_series(cr, &band.lower, &bands.starts, columns, to_y);
                 }
                 cr.restore().ok();
 
@@ -8259,7 +8259,7 @@ fn draw_indicator_lines(
                     cr.set_dash(&stroke.style.dashes(stroke.width), 0.0);
                     colors::set_source(cr, &drawn.color);
                     cr.set_line_width(stroke.width);
-                    stroke_series(cr, &bands.center, columns, to_y);
+                    stroke_series(cr, &bands.center, &bands.starts, columns, to_y);
                     cr.restore().ok();
                 }
                 if lit {
@@ -8641,17 +8641,27 @@ fn series_point(
     values.get(columns.source(at)).copied().flatten().map(|value| (columns.x(at), to_y(value)))
 }
 
-/// Stroke a series, breaking the path wherever it has no value.
+/// Stroke a series, breaking the path wherever it has no value, and where
+/// `starts` says a new period begins.
 fn stroke_series(
     cr: &cairo::Context,
     values: &[Option<f64>],
+    starts: &[bool],
     columns: &Columns,
     to_y: &impl Fn(f64) -> f64,
 ) {
     let mut drawing = false;
+    let mut last = usize::MAX;
     for at in 0..columns.len() {
         let x = columns.x(at);
-        match values.get(columns.source(at)).copied().flatten() {
+        let source = columns.source(at);
+        // A period that starts over is a new line, not the old one bent down
+        // to its first price.
+        if starts_between(starts, last, source) {
+            drawing = false;
+        }
+        last = source;
+        match values.get(source).copied().flatten() {
             Some(value) => {
                 let y = to_y(value);
                 if drawing {
@@ -8669,11 +8679,22 @@ fn stroke_series(
     let _ = cr.stroke();
 }
 
+/// Whether a period starts after bar `last` and by bar `source`: the bars a
+/// column took in since the one before it. A column that stands for several
+/// bars is read from its last, so the start can be any of them.
+fn starts_between(starts: &[bool], last: usize, source: usize) -> bool {
+    if last == usize::MAX || source <= last {
+        return false;
+    }
+    starts.get(last + 1..=source).is_some_and(|span| span.contains(&true))
+}
+
 /// Fill the region between two series.
 fn fill_between(
     cr: &cairo::Context,
     upper: &[Option<f64>],
     lower: &[Option<f64>],
+    starts: &[bool],
     columns: &Columns,
     to_y: &impl Fn(f64) -> f64,
 ) {
@@ -8695,12 +8716,15 @@ fn fill_between(
         run.clear();
     };
 
+    let mut last = usize::MAX;
     for at in 0..columns.len() {
         let x = columns.x(at);
-        match (
-            upper.get(columns.source(at)).copied().flatten(),
-            lower.get(columns.source(at)).copied().flatten(),
-        ) {
+        let source = columns.source(at);
+        if starts_between(starts, last, source) {
+            flush(&mut run);
+        }
+        last = source;
+        match (upper.get(source).copied().flatten(), lower.get(source).copied().flatten()) {
             (Some(a), Some(b)) => run.push((x, to_y(a), to_y(b))),
             _ => flush(&mut run),
         }
@@ -9235,6 +9259,61 @@ mod tests {
 
     fn lowest(bars: &[Bar]) -> f64 {
         bars.iter().map(|bar| bar.low).fold(f64::MAX, f64::min)
+    }
+
+    /// Ink at one pixel of a surface a series was drawn on.
+    fn inked_at(surface: &mut cairo::ImageSurface, x: usize, y: usize) -> bool {
+        let stride = surface.stride() as usize;
+        let data = surface.data().unwrap();
+        data[y * stride + x * 4 + 3] > 0
+    }
+
+    /// A yearly VWAP's bands jump at the new year: the old year's envelope
+    /// is wide and the new one starts on the line. Drawn as one path, that
+    /// jump is a stroke straight down the chart; it has to be two lines.
+    #[test]
+    fn a_line_and_its_shading_break_where_a_period_starts_over() {
+        let bars = ramp(20);
+        let columns = Columns::of(&bars, 0, 20, 0.0, 200.0);
+        let mut upper = vec![Some(150.0); 10];
+        upper.extend(vec![Some(20.0); 10]);
+        let lower: Vec<Option<f64>> = upper.iter().map(|v| v.map(|v| v + 10.0)).collect();
+        let mut starts = vec![false; 20];
+        starts[10] = true;
+        let to_y = |value: f64| value;
+
+        for (breaks, joined) in [(&starts[..], false), (&[][..], true)] {
+            let mut surface = cairo::ImageSurface::create(cairo::Format::ARgb32, 200, 200).unwrap();
+            {
+                let cr = cairo::Context::new(&surface).unwrap();
+                cr.set_source_rgb(1.0, 1.0, 1.0);
+                cr.set_line_width(2.0);
+                stroke_series(&cr, &upper, breaks, &columns, &to_y);
+            }
+            // Between the last bar of one period and the first of the next,
+            // half way down the jump.
+            assert_eq!(inked_at(&mut surface, 100, 85), joined, "stroke, breaks {:?}", !breaks.is_empty());
+
+            let mut surface = cairo::ImageSurface::create(cairo::Format::ARgb32, 200, 200).unwrap();
+            {
+                let cr = cairo::Context::new(&surface).unwrap();
+                cr.set_source_rgb(1.0, 1.0, 1.0);
+                fill_between(&cr, &upper, &lower, breaks, &columns, &to_y);
+            }
+            assert_eq!(inked_at(&mut surface, 100, 85), joined, "fill, breaks {:?}", !breaks.is_empty());
+        }
+    }
+
+    /// Zoomed out, a column stands for several bars and is read from the
+    /// last of them, so the start of a period can fall on any bar it took in.
+    #[test]
+    fn a_period_that_starts_inside_a_column_still_breaks_the_line() {
+        let mut starts = vec![false; 12];
+        starts[5] = true;
+        assert!(starts_between(&starts, 3, 7), "taken in by the column");
+        assert!(!starts_between(&starts, 7, 11), "already behind");
+        assert!(!starts_between(&starts, usize::MAX, 7), "nothing before the first column to break from");
+        assert!(!starts_between(&[], 3, 7), "a series with no periods never breaks");
     }
 
     /// The case every chart at a normal zoom is in, and the one that has to
