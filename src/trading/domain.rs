@@ -107,6 +107,15 @@ pub struct Capabilities {
     /// filling or cancelled cancels the others: a stop and a target that
     /// do not both outlive the position.
     pub link: bool,
+    /// Past orders can be asked for, with [`Session::history`].
+    pub history: bool,
+    /// What is held and working now can be asked for, with
+    /// [`Session::refresh`], rather than only heard of as it moves.
+    pub snapshot: bool,
+    /// The broker says what its risk system holds an account to.
+    pub limits: bool,
+    /// The broker says an account's balance and P&L.
+    pub pnl: bool,
 }
 
 /// What an order on an instrument is sent as: the contract trading now,
@@ -345,6 +354,8 @@ pub struct Limits {
     /// The most that may be held long, and short.
     pub buy_limit: Option<u32>,
     pub sell_limit: Option<u32>,
+    /// The balance below which the account is liquidated, as it stands now.
+    pub liquidate_at: Option<f64>,
 }
 
 /// A position held in one contract.
@@ -409,6 +420,11 @@ pub struct Book {
     pub orders: Vec<Order>,
     /// What each live login's session can do, by login id.
     pub capabilities: HashMap<String, Capabilities>,
+    /// What the session holds now has been asked for and has come back
+    /// ([`Session::refresh`]), so this is all of it and not only what moved
+    /// since signing in. On the desk's book, true when it is so for every
+    /// live session.
+    pub refreshed: bool,
 }
 
 impl Book {

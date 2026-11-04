@@ -627,6 +627,10 @@ mod tests {
             cancel_all: true,
             modify: true,
             link: true,
+            history: true,
+            snapshot: true,
+            limits: true,
+            pnl: true,
         };
         assert_eq!(menu_orders(&all).len(), 6);
         assert_eq!(menu_orders(&all)[..2], [(Side::Buy, OrderKind::Market), (Side::Sell, OrderKind::Market)]);

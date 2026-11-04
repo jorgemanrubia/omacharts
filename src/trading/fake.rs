@@ -37,6 +37,13 @@ pub struct FakeBroker {
     pub every_login: Vec<Account>,
     /// The contract each future root trades as, by root, in every session.
     pub contracts: HashMap<String, String>,
+    /// What the broker holds for a login, by the login's name, from before
+    /// it signed in: a session's refresh finds it.
+    pub held: Mutex<HashMap<String, Book>>,
+    /// How long signing in takes, as a network would.
+    pub takes: std::time::Duration,
+    /// Every session it signed in, in order.
+    pub sessions: Mutex<Vec<Arc<FakeSession>>>,
     pub signed_in: AtomicUsize,
     pub signed_out: Arc<AtomicUsize>,
 }
@@ -70,8 +77,14 @@ pub struct FakeSession {
     signed_out: Arc<AtomicUsize>,
     gone: std::sync::atomic::AtomicBool,
     pub book: Mutex<Book>,
+    /// What the broker holds that the session has not been told of: what
+    /// [`Session::refresh`] brings into the book. Its orders are added to
+    /// the book's, its positions and money replace the book's.
+    pub held: Mutex<Book>,
+    /// How many times it was refreshed.
+    pub refreshes: AtomicUsize,
     pub last: Mutex<f64>,
-    pub changed: Box<dyn Fn() + Send + Sync>,
+    pub changed: Box<dyn Fn(Change) + Send + Sync>,
     baskets: AtomicUsize,
     /// The contract each future root trades as, by root.
     pub contracts: Mutex<HashMap<String, String>>,
@@ -95,11 +108,18 @@ pub struct FakeSession {
 
 impl FakeSession {
     pub fn new(accounts: Vec<Account>, changed: Box<dyn Fn() + Send + Sync>) -> FakeSession {
+        FakeSession::told(accounts, Box::new(move |_| changed()))
+    }
+
+    /// A session that tells `changed` what kind of change it was.
+    pub fn told(accounts: Vec<Account>, changed: Box<dyn Fn(Change) + Send + Sync>) -> FakeSession {
         FakeSession {
             accounts,
             signed_out: Arc::default(),
             gone: Default::default(),
             book: Mutex::default(),
+            held: Mutex::default(),
+            refreshes: AtomicUsize::new(0),
             last: Mutex::new(7_612.25),
             changed,
             baskets: AtomicUsize::new(1),
@@ -113,6 +133,27 @@ impl FakeSession {
             silent: Default::default(),
             holds: Default::default(),
         }
+    }
+
+    fn moved(&self) {
+        (self.changed)(Change::Moved);
+    }
+
+    /// Drop and come back, as a network would: what was working is no
+    /// longer in the book until a refresh says what became of it, and the
+    /// desk is told it is back. `meanwhile` is what the broker did while it
+    /// was down, to what it holds.
+    pub fn drop_and_return(&self, meanwhile: impl FnOnce(&mut Book)) {
+        {
+            let mut book = self.book.lock().unwrap();
+            let mut held = self.held.lock().unwrap();
+            *held = book.clone();
+            meanwhile(&mut held);
+            book.orders.retain(|order| !order.status.working());
+            book.positions.clear();
+            book.refreshed = false;
+        }
+        (self.changed)(Change::Back);
     }
 
     fn refused(&self) -> Result<(), Failure> {
@@ -132,7 +173,7 @@ impl FakeSession {
             order.status = Stage::Working.into();
         }
         drop(book);
-        (self.changed)();
+        self.moved();
     }
 
     /// `qty` of the working order `basket` fills at its price, the rest
@@ -154,7 +195,7 @@ impl FakeSession {
         let bought = if order.side == Side::Buy { qty as i32 } else { -(qty as i32) };
         FakeSession::hold(&mut book, &order.account, &order.contract, &order.exchange, bought, order.price.unwrap_or(0.0));
         drop(book);
-        (self.changed)();
+        self.moved();
     }
 
     /// End `basket` and cancel every order linked to it, as a broker
@@ -188,7 +229,7 @@ impl FakeSession {
         FakeSession::hold(&mut book, &order.account, &order.contract, &order.exchange, bought, order.fill_price.unwrap_or(last));
         self.end_linked(&mut book, basket);
         drop(book);
-        (self.changed)();
+        self.moved();
     }
 
     fn hold(book: &mut Book, account: &str, contract: &str, exchange: &str, bought: i32, at: f64) {
@@ -225,6 +266,10 @@ impl Session for FakeSession {
             cancel_all: true,
             modify: self.modifies,
             link: self.links_orders,
+            history: true,
+            snapshot: true,
+            limits: true,
+            pnl: true,
         }
     }
     fn is_simulated(&self) -> bool {
@@ -239,6 +284,48 @@ impl Session for FakeSession {
     }
     fn book(&self) -> Book {
         self.book.lock().unwrap().clone()
+    }
+    fn refresh(&self) -> Result<(), String> {
+        if self.gone.load(Ordering::Acquire) {
+            return Err("the session was signed out".into());
+        }
+        let held = self.held.lock().unwrap().clone();
+        let mut book = self.book.lock().unwrap();
+        for order in held.orders {
+            match book.orders.iter_mut().find(|known| known.basket_id == order.basket_id) {
+                Some(known) => *known = order,
+                None => book.orders.push(order),
+            }
+        }
+        book.orders.sort_by_key(|order| std::cmp::Reverse(order.at));
+        book.positions = held.positions;
+        // Money the broker never said is the balance the account was listed
+        // with.
+        book.accounts = match held.accounts.is_empty() {
+            true => self
+                .accounts
+                .iter()
+                .map(|account| Money { key: account.id.clone(), balance: account.balance, ..Money::default() })
+                .collect(),
+            false => held.accounts,
+        };
+        book.refreshed = true;
+        drop(book);
+        self.refreshes.fetch_add(1, Ordering::AcqRel);
+        self.moved();
+        Ok(())
+    }
+    fn history(&self, account: &str, from: i64, to: i64) -> Result<Vec<Order>, Failure> {
+        self.refused()?;
+        let book = self.book.lock().unwrap();
+        let mut orders: Vec<Order> = book
+            .orders
+            .iter()
+            .filter(|order| order.account == account && (from..=to).contains(&order.at))
+            .cloned()
+            .collect();
+        orders.sort_by_key(|order| order.at);
+        Ok(orders)
     }
     fn place(&self, order: &OrderRequest) -> Result<String, Failure> {
         if self.gone.load(Ordering::Acquire) {
@@ -282,7 +369,7 @@ impl Session for FakeSession {
             FakeSession::hold(&mut book, &order.account, &order.contract, &order.exchange, bought, last);
         }
         drop(book);
-        (self.changed)();
+        self.moved();
         Ok(basket)
     }
     fn cancel(&self, _: &str, basket: &str) -> Result<(), Failure> {
@@ -293,7 +380,7 @@ impl Session for FakeSession {
         order.status = Stage::Cancelled.into();
         self.end_linked(&mut book, basket);
         drop(book);
-        (self.changed)();
+        self.moved();
         Ok(())
     }
     fn modify(&self, _: &str, basket: &str, price: f64) -> Result<(), Failure> {
@@ -303,7 +390,7 @@ impl Session for FakeSession {
         let Some(order) = order else { return Err(Failure::Refused("not working".into())) };
         order.price = Some(price);
         drop(book);
-        (self.changed)();
+        self.moved();
         Ok(())
     }
     fn link(&self, _: &str, baskets: &[String]) -> Result<(), Failure> {
@@ -318,7 +405,7 @@ impl Session for FakeSession {
             order.status = Stage::Cancelled.into();
         }
         drop(book);
-        (self.changed)();
+        self.moved();
         Ok(())
     }
     fn flatten(&self, account: &str, contract: &str, exchange: &str) -> Result<(), Failure> {
@@ -328,7 +415,7 @@ impl Session for FakeSession {
         let net = book.position(account, contract).map_or(0, |held| held.net);
         FakeSession::hold(&mut book, account, contract, exchange, -net, last);
         drop(book);
-        (self.changed)();
+        self.moved();
         Ok(())
     }
     fn trouble(&self) -> Option<String> {
@@ -349,14 +436,20 @@ impl Broker for FakeBroker {
         "Fake Broker"
     }
 
-    fn sign_in(&self, login: &Login, changed: Box<dyn Fn() + Send + Sync>) -> Result<Arc<dyn Session>, String> {
+    fn sign_in(&self, login: &Login, changed: Box<dyn Fn(Change) + Send + Sync>) -> Result<Arc<dyn Session>, String> {
+        if !self.takes.is_zero() {
+            std::thread::sleep(self.takes);
+        }
         self.signed_in.fetch_add(1, Ordering::AcqRel);
         let named = self.accounts.lock().unwrap().get(&login.name).cloned();
         let accounts = named.unwrap_or_else(|| self.every_login.clone());
         let accounts = accounts.into_iter().map(|a| Account { login: login.id.clone(), ..a }).collect();
-        let session = FakeSession { signed_out: self.signed_out.clone(), ..FakeSession::new(accounts, changed) };
+        let session = FakeSession { signed_out: self.signed_out.clone(), ..FakeSession::told(accounts, changed) };
         *session.contracts.lock().unwrap() = self.contracts.clone();
-        Ok(Arc::new(session))
+        *session.held.lock().unwrap() = self.held.lock().unwrap().get(&login.name).cloned().unwrap_or_default();
+        let session = Arc::new(session);
+        self.sessions.lock().unwrap().push(session.clone());
+        Ok(session)
     }
 }
 

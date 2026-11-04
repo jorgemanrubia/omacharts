@@ -212,18 +212,33 @@ impl TradingPanel {
                     Some(value) => trading::money_text(value, currency),
                     None => "—".to_string(),
                 };
+                let limits = money.and_then(|m| m.limits.as_ref());
+                let amount = |value: Option<f64>| match value {
+                    Some(value) => trading::money_text(value, currency),
+                    None => "—".to_string(),
+                };
                 vec![
                     cell(&view.account_name(account), false).upcast(),
                     cell(currency.unwrap_or("—"), false).upcast(),
                     cell(&balance, true).upcast(),
-                    pnl_cell(money.and_then(|m| m.realized_day), currency).upcast(),
+                    pnl_cell(money.and_then(|m| m.day_pnl), currency).upcast(),
                     pnl_cell(money.and_then(|m| m.unrealized), currency).upcast(),
+                    cell(&amount(limits.and_then(|l| l.loss_limit)), true).upcast(),
+                    cell(&amount(limits.and_then(|l| l.liquidate_at)), true).upcast(),
                 ]
             })
             .collect();
         table(
             &self.accounts,
-            &[("Account", false), ("Currency", false), ("Balance", true), ("Day P&L", true), ("Open P&L", true)],
+            &[
+                ("Account", false),
+                ("Currency", false),
+                ("Balance", true),
+                ("Day P&L", true),
+                ("Open P&L", true),
+                ("Loss limit", true),
+                ("Liquidates at", true),
+            ],
             rows,
             "No accounts listed yet",
         );

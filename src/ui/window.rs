@@ -7547,8 +7547,9 @@ impl Window {
         let woken = self.desk.woken();
         let weak = Rc::downgrade(self);
         glib::spawn_future_local(async move {
-            while woken.recv().await.is_ok() {
+            while let Ok(wake) = woken.recv().await {
                 let Some(this) = weak.upgrade() else { return };
+                this.desk.take(wake);
                 this.desk.note(&this.store);
                 this.desk.tell();
             }

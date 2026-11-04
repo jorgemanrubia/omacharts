@@ -70,7 +70,7 @@ impl Broker for Rithmic {
         }
     }
 
-    fn sign_in(&self, login: &Login, changed: Box<dyn Fn() + Send + Sync>) -> Result<Arc<dyn Session>, String> {
+    fn sign_in(&self, login: &Login, changed: Box<dyn Fn(Change) + Send + Sync>) -> Result<Arc<dyn Session>, String> {
         let app = session::app().map_err(|error| error.to_string())?;
         // A developer's login file wins over the keyring, which it never
         // touches, as it does for the data session.
@@ -79,9 +79,15 @@ impl Broker for Rithmic {
         let source = move || rithmic::Login::from_env(&system, &gateway).unwrap_or_else(|| Ok(saved.clone()));
         // The login's one connection, which its data session shares when it
         // is the data login. Any pulse is the window's cue to read the book
-        // and how the session stands again, a reconnect included.
+        // and how the session stands again; coming back after a drop is the
+        // cue to refresh it too.
         let connection = rithmic::connection(app, &login.id, source).map_err(said)?;
-        let trading = connection.trading(move |_| changed()).map_err(said)?;
+        let trading = connection
+            .trading(move |pulse| match pulse {
+                rithmic::Pulse::Back => changed(Change::Back),
+                rithmic::Pulse::Moved | rithmic::Pulse::Lost(_) => changed(Change::Moved),
+            })
+            .map_err(said)?;
         Ok(Arc::new(RithmicSession {
             login: login.id.clone(),
             simulated: system_of(login) == rithmic::TEST_SYSTEM,
@@ -120,6 +126,45 @@ fn failed(error: rithmic::Error) -> Failure {
     }
 }
 
+/// An order as Rithmic told of it, in the neutral words.
+fn order_of(order: rithmic::WorkingOrder) -> Order {
+    Order {
+        tick: rithmic_tick(&order.contract),
+        account: order.account,
+        contract: order.contract,
+        exchange: order.exchange,
+        side: match order.side {
+            rithmic::Side::Buy => Side::Buy,
+            rithmic::Side::Sell => Side::Sell,
+        },
+        qty: order.qty,
+        filled: order.filled,
+        kind: match order.kind {
+            rithmic::Kind::Market => OrderKind::Market,
+            rithmic::Kind::Limit => OrderKind::Limit,
+            rithmic::Kind::Stop => OrderKind::Stop,
+        },
+        price: order.price,
+        status: match order.status {
+            rithmic::Status::Pending => Status { stage: Stage::Pending, said: order.said },
+            rithmic::Status::Working => Status { stage: Stage::Working, said: order.said },
+            rithmic::Status::PartiallyFilled => Status { stage: Stage::PartiallyFilled, said: order.said },
+            rithmic::Status::Filled => Status { stage: Stage::Filled, said: order.said },
+            rithmic::Status::Cancelled => Status { stage: Stage::Cancelled, said: order.said },
+            rithmic::Status::Rejected(why) => Status::said(Stage::Rejected, why),
+        },
+        fill_price: order.fill_price,
+        fills: order
+            .fills
+            .into_iter()
+            .map(|fill| Fill { basket: fill.basket_id, at: fill.at, qty: fill.qty, price: fill.price })
+            .collect(),
+        basket_id: order.basket_id,
+        at: order.at,
+        tag: order.tag,
+    }
+}
+
 struct RithmicSession {
     login: String,
     /// Signed in to Rithmic Test, which fills against a simulation.
@@ -153,6 +198,10 @@ impl Session for RithmicSession {
             cancel_all: true,
             modify: true,
             link: true,
+            history: true,
+            snapshot: true,
+            limits: true,
+            pnl: true,
         }
     }
 
@@ -173,25 +222,28 @@ impl Session for RithmicSession {
 
     fn book(&self) -> Book {
         let book = self.trading.book();
-        let side = |side| match side {
-            rithmic::Side::Buy => Side::Buy,
-            rithmic::Side::Sell => Side::Sell,
-        };
         Book {
             capabilities: HashMap::new(),
+            refreshed: book.refreshed,
             accounts: book
                 .accounts
                 .into_iter()
                 .map(|money| Money {
                     key: money.account,
                     balance: money.balance,
-                    day_pnl: match (money.realized_day, money.unrealized) {
+                    day_pnl: money.day_pnl.or(match (money.realized_day, money.unrealized) {
                         (Some(closed), Some(open)) => Some(closed + open),
                         (closed, open) => closed.or(open),
-                    },
+                    }),
                     realized_day: money.realized_day,
                     unrealized: money.unrealized,
-                    limits: None,
+                    limits: money.limits.map(|limits| Limits {
+                        loss_limit: limits.loss_limit,
+                        max_order_qty: limits.max_order_qty,
+                        buy_limit: limits.buy_limit,
+                        sell_limit: limits.sell_limit,
+                        liquidate_at: limits.liquidate_at,
+                    }),
                 })
                 .collect(),
             positions: book
@@ -207,39 +259,17 @@ impl Session for RithmicSession {
                     open_pnl: held.open_pnl,
                 })
                 .collect(),
-            orders: book
-                .orders
-                .into_iter()
-                .map(|order| Order {
-                    tick: rithmic_tick(&order.contract),
-                    account: order.account,
-                    basket_id: order.basket_id,
-                    contract: order.contract,
-                    exchange: order.exchange,
-                    side: side(order.side),
-                    qty: order.qty,
-                    filled: order.filled,
-                    kind: match order.kind {
-                        rithmic::Kind::Market => OrderKind::Market,
-                        rithmic::Kind::Limit => OrderKind::Limit,
-                        rithmic::Kind::Stop => OrderKind::Stop,
-                    },
-                    price: order.price,
-                    status: match order.status {
-                        rithmic::Status::Pending => Status { stage: Stage::Pending, said: order.said },
-                        rithmic::Status::Working => Status { stage: Stage::Working, said: order.said },
-                        rithmic::Status::PartiallyFilled => Status { stage: Stage::PartiallyFilled, said: order.said },
-                        rithmic::Status::Filled => Status { stage: Stage::Filled, said: order.said },
-                        rithmic::Status::Cancelled => Status { stage: Stage::Cancelled, said: order.said },
-                        rithmic::Status::Rejected(why) => Status::said(Stage::Rejected, why),
-                    },
-                    fill_price: order.fill_price,
-                    fills: Vec::new(),
-                    at: order.at,
-                    tag: order.tag,
-                })
-                .collect(),
+            orders: book.orders.into_iter().map(order_of).collect(),
         }
+    }
+
+    fn refresh(&self) -> Result<(), String> {
+        self.trading.refresh().map_err(said)
+    }
+
+    fn history(&self, account: &str, from: i64, to: i64) -> Result<Vec<Order>, Failure> {
+        let orders = self.trading.history(account, from, to).map_err(failed)?;
+        Ok(orders.into_iter().map(order_of).collect())
     }
 
     fn place(&self, order: &OrderRequest) -> Result<String, Failure> {

@@ -473,9 +473,10 @@ fn remove_login(panel: &Rc<Panel>, id: &str, feed_too: bool) {
     panel.changed();
 }
 
-/// Sign a login in off the main loop: its trading session, and for the data
-/// login its data session too. One at a time per login: the desk refuses a
-/// second while one is open or opening.
+/// Sign a login in off the main loop: its trading session, refreshed with
+/// what its accounts hold, and for the data login its data session too.
+/// One at a time per login: the desk refuses a second while one is open or
+/// opening.
 fn sign_in(panel: &Rc<Panel>, id: &str) {
     let logins = trading::logins(&panel.store);
     let Some(login) = logins.iter().find(|login| login.id == id).cloned() else { return };
@@ -490,12 +491,16 @@ fn sign_in(panel: &Rc<Panel>, id: &str) {
     panel.notes.borrow_mut().insert(id.to_string(), "signing in".into());
     rebuild(panel);
 
-    let waker = panel.desk.waker();
+    let waker = panel.desk.waker(id);
     let name = login.name.clone();
     let feed = trading::data_feed_of(&login).map(|feed| feed.id);
     let (sender, receiver) = async_channel::bounded(1);
     std::thread::spawn(move || {
         let session = broker.sign_in(&login, waker);
+        // The accounts as they stand, before the session is shown at all.
+        if let Ok(session) = &session {
+            let _ = session.refresh();
+        }
         let fed = match (data, &session, feed) {
             (true, Ok(_), Some(feed)) => Some(crate::feeds::sign_in_now(feed, |_| {})),
             _ => None,

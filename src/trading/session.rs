@@ -35,9 +35,33 @@ pub trait Broker: Send + Sync {
         secrets.forget(&login.id, &login.user, "")
     }
     /// Sign in, blocking until the broker has answered. `changed` is called,
-    /// on any thread, whenever a balance moves or the session ends by
-    /// itself.
-    fn sign_in(&self, login: &Login, changed: Box<dyn Fn() + Send + Sync>) -> Result<Arc<dyn Session>, String>;
+    /// on any thread, whenever an order, a position or a balance moves or
+    /// the session ends by itself, and when it is back after a drop.
+    fn sign_in(&self, login: &Login, changed: Box<dyn Fn(Change) + Send + Sync>) -> Result<Arc<dyn Session>, String>;
+}
+
+/// What a session tells its desk, from its own thread.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Change {
+    /// An order, a position or a balance moved, or the session ended: read
+    /// the book again.
+    Moved,
+    /// Signed in again after a drop. What was working may have finished
+    /// meanwhile: the cue to [`Session::refresh`] and then reconcile.
+    Back,
+}
+
+/// What wakes the main loop, from a session's thread or a desk's.
+pub enum Wake {
+    /// A session's book moved.
+    Moved,
+    /// The login's session is back after a drop, and wants refreshing.
+    Back(String),
+    /// The login's session was refreshed, after it came back.
+    Refreshed(String),
+    /// A sign-in the desk started for the login came back, refreshed when
+    /// it signed in.
+    Opened(String, Result<Arc<dyn Session>, String>),
 }
 
 /// The brokers a desk signs logins in through, each found by the id its
@@ -76,8 +100,9 @@ impl Registry {
 ///
 /// Placing, moving, linking, cancelling and flattening block until the broker has answered,
 /// so they are for a thread of their own; what becomes of an order arrives
-/// later on the book, with `changed`. [`Session::contract_for`] does not
-/// block: it is asked on the main thread, as a menu opens.
+/// later on the book, with `changed`. So do [`Session::refresh`] and
+/// [`Session::history`]. [`Session::contract_for`] does not block: it is
+/// asked on the main thread, as a menu opens.
 pub trait Session: Send + Sync {
     /// The accounts, as the broker listed them at sign-in.
     fn accounts(&self) -> Vec<Account>;
@@ -91,6 +116,17 @@ pub trait Session: Send + Sync {
     fn contract_for(&self, instrument: &omacharts_engine::Instrument) -> Result<Contract, Refusal>;
     /// Every order, position and balance it has heard of.
     fn book(&self) -> Book;
+    /// Ask the broker for what the accounts hold now — the money and the
+    /// limits, the positions, the working orders and today's orders with
+    /// their fills — and block until it has come back and gone quiet, with
+    /// [`Book::refreshed`] set. Signing in does it once, and so does coming
+    /// back after a drop. A broker that cannot ([`Capabilities::snapshot`]
+    /// false) has nothing to do and says it is done.
+    fn refresh(&self) -> Result<(), String>;
+    /// The orders on the account numbered `account` from `from` to `to`,
+    /// unix seconds, with their fills, oldest first. Only when
+    /// [`Capabilities::history`] says so.
+    fn history(&self, account: &str, from: i64, to: i64) -> Result<Vec<Order>, Failure>;
     /// Place `order` and return the broker's id for it. Never retried.
     fn place(&self, order: &OrderRequest) -> Result<String, Failure>;
     fn cancel(&self, account: &str, basket: &str) -> Result<(), Failure>;
@@ -119,10 +155,13 @@ pub struct Desk {
     sessions: RefCell<HashMap<String, Arc<dyn Session>>>,
     opening: RefCell<HashSet<String>>,
     refused: RefCell<HashMap<String, String>>,
-    /// Woken from a session's thread when a balance moves or a session ends;
-    /// whoever holds the receiver takes it from there on the main loop.
-    wake: async_channel::Sender<()>,
-    woken: async_channel::Receiver<()>,
+    /// How many times each login's session has been refreshed this run: a
+    /// count, so that a refresh is never missed between two reads.
+    refreshes: RefCell<HashMap<String, u32>>,
+    /// Woken from a session's thread when something moved; whoever holds
+    /// the receiver hands each to [`Desk::take`] on the main loop.
+    wake: async_channel::Sender<Wake>,
+    woken: async_channel::Receiver<Wake>,
     /// Told on the main loop when anything here changed: the window's
     /// headers, and the Trading page while it is open.
     listeners: RefCell<Vec<std::rc::Weak<dyn Fn()>>>,
@@ -136,23 +175,82 @@ impl Desk {
             sessions: RefCell::new(HashMap::new()),
             opening: RefCell::new(HashSet::new()),
             refused: RefCell::new(HashMap::new()),
+            refreshes: RefCell::new(HashMap::new()),
             wake,
             woken,
             listeners: RefCell::new(Vec::new()),
         }
     }
 
-    /// What a session calls from its own thread when something moved.
-    pub fn waker(&self) -> Box<dyn Fn() + Send + Sync> {
+    /// What `login`'s session calls from its own thread when something
+    /// moved.
+    pub fn waker(&self, login: &str) -> Box<dyn Fn(Change) + Send + Sync> {
         let wake = self.wake.clone();
-        Box::new(move || {
-            let _ = wake.try_send(());
+        let login = login.to_string();
+        Box::new(move |change| {
+            let _ = wake.try_send(match change {
+                Change::Moved => Wake::Moved,
+                Change::Back => Wake::Back(login.clone()),
+            });
         })
     }
 
-    /// What the main loop waits on for [`Desk::waker`]'s calls.
-    pub fn woken(&self) -> async_channel::Receiver<()> {
+    /// What the main loop waits on, each to be handed to [`Desk::take`].
+    pub fn woken(&self) -> async_channel::Receiver<Wake> {
         self.woken.clone()
+    }
+
+    /// Do what `wake` asks of the desk, on the main loop: refresh a session
+    /// that is back, count one that was refreshed, keep one that signed in.
+    /// Whoever called then reads the book again.
+    pub fn take(&self, wake: Wake) {
+        match wake {
+            Wake::Moved => {}
+            Wake::Back(login) => self.refresh(&login),
+            Wake::Refreshed(login) => *self.refreshes.borrow_mut().entry(login).or_default() += 1,
+            Wake::Opened(login, outcome) => self.opened(&login, outcome),
+        }
+    }
+
+    /// Refresh `login`'s session on a thread of its own, and say so on the
+    /// main loop when it is done.
+    pub fn refresh(&self, login: &str) {
+        let Some(session) = self.session(login) else { return };
+        let wake = self.wake.clone();
+        let login = login.to_string();
+        std::thread::spawn(move || {
+            // A refresh that did not work leaves the book as it was pushed,
+            // and the reconciling to the next.
+            let _ = session.refresh();
+            let _ = wake.try_send(Wake::Refreshed(login));
+        });
+    }
+
+    /// How many times `login`'s session has been refreshed this run: once
+    /// it signed in, and again each time it came back.
+    pub fn refreshes(&self, login: &str) -> u32 {
+        self.refreshes.borrow().get(login).copied().unwrap_or(0)
+    }
+
+    /// Sign in every login in `logins` that has a password kept and no
+    /// session, each on a thread of its own, then refresh it there. Nothing
+    /// here waits: what each comes back with arrives through
+    /// [`Desk::woken`]. What startup calls, after the first frame.
+    pub fn sign_in_saved(&self, logins: &[Login]) {
+        for login in logins.iter().filter(|login| !login.signed_out && !login.user.is_empty()) {
+            let Some(broker) = self.broker_for(login) else { continue };
+            if !self.begin(&login.id) {
+                continue;
+            }
+            let (login, changed, wake) = (login.clone(), self.waker(&login.id), self.wake.clone());
+            std::thread::spawn(move || {
+                let session = broker.sign_in(&login, changed);
+                if let Ok(session) = &session {
+                    let _ = session.refresh();
+                }
+                let _ = wake.try_send(Wake::Opened(login.id, session));
+            });
+        }
     }
 
     /// Call `listener` whenever [`Desk::tell`] is, while it is alive.
@@ -195,14 +293,15 @@ impl Desk {
         true
     }
 
-    /// Take what a sign-in for `login` came back with. A session for a
-    /// login that is no longer opening — removed meanwhile — is signed out
-    /// at once rather than kept.
+    /// Take what a sign-in for `login` came back with, refreshed on its
+    /// thread when it signed in. A session for a login that is no longer
+    /// opening — removed meanwhile — is signed out at once rather than kept.
     pub fn opened(&self, login: &str, outcome: Result<Arc<dyn Session>, String>) {
         let wanted = self.opening.borrow_mut().remove(login);
         match outcome {
             Ok(session) if wanted => {
                 self.sessions.borrow_mut().insert(login.to_string(), session);
+                *self.refreshes.borrow_mut().entry(login.to_string()).or_default() += 1;
             }
             Ok(session) => session.sign_out(),
             Err(why) if wanted => {
@@ -302,10 +401,11 @@ impl Desk {
     /// Every live session's book, one, its accounts named by key: the
     /// login's id before the number. Logins in the order given.
     pub fn book(&self, logins: &[Login]) -> Book {
-        let mut book = Book::default();
+        let mut book = Book { refreshed: true, ..Book::default() };
         for login in logins {
             let Some(session) = self.session(&login.id) else { continue };
             let theirs = session.book();
+            book.refreshed &= theirs.refreshed;
             book.capabilities.insert(login.id.clone(), session.capabilities());
             let key = |number: String| format!("{}/{number}", login.id);
             book.accounts.extend(theirs.accounts.into_iter().map(|money| Money { key: key(money.key), ..money }));
@@ -456,13 +556,13 @@ mod tests {
         };
         let open = |desk: &Desk| {
             if desk.begin(&login.id) {
-                let session = fake.sign_in(&login, Box::new(|| {}));
+                let session = fake.sign_in(&login, Box::new(|_| {}));
                 desk.opened(&login.id, session);
             }
         };
         assert!(desk.begin(&login.id));
         assert!(!desk.begin(&login.id), "a second while the first is opening");
-        let session = fake.sign_in(&login, Box::new(|| {}));
+        let session = fake.sign_in(&login, Box::new(|_| {}));
         desk.opened(&login.id, session);
         assert!(desk.live(&login.id));
         open(&desk);
@@ -481,7 +581,7 @@ mod tests {
         desk.end(&login.id);
         assert!(desk.begin(&login.id));
         desk.end(&login.id);
-        let late = fake.sign_in(&login, Box::new(|| {}));
+        let late = fake.sign_in(&login, Box::new(|_| {}));
         desk.opened(&login.id, late);
         assert!(!desk.live(&login.id));
         assert_eq!(fake.signed_out.load(Ordering::Acquire), 3);
@@ -495,7 +595,7 @@ mod tests {
         let logins = [test_login("1", "Lucid", TEST_SYSTEM), test_login("2", "Tradeify", TEST_SYSTEM)];
         for login in &logins {
             assert!(desk.begin(&login.id));
-            desk.opened(&login.id, fake.sign_in(login, Box::new(|| {})));
+            desk.opened(&login.id, fake.sign_in(login, Box::new(|_| {})));
         }
         assert!(desk.begin("3"), "one still signing in");
         desk.sign_out_all(SIGN_OUT_WAIT);
@@ -523,7 +623,7 @@ mod tests {
         let desk = Desk::new(Registry::of(vec![fake.clone()]));
         let login = logins(&store)[0].clone();
         assert!(desk.begin(&lucid));
-        let session = fake.sign_in(&login, Box::new(|| {}));
+        let session = fake.sign_in(&login, Box::new(|_| {}));
         desk.opened(&lucid, session);
         assert!(desk.note(&store));
         assert!(!desk.note(&store), "nothing new the second time");
@@ -598,5 +698,105 @@ mod tests {
 
         session.sign_out();
         assert!(session.place(&limit).is_err(), "a session that is gone refuses, and nothing retries");
+    }
+
+    /// What a broker holds for a login before it signs in: one ESZ6 long, a
+    /// limit working, and earlier today a market buy filled and a limit
+    /// cancelled; the account's money and its risk limits.
+    pub(crate) fn held_before() -> Book {
+        let at = |order: Order, at: i64| Order { account: "FAKE-1".into(), at, ..order };
+        let mut filled = order("B1", Side::Buy, OrderKind::Market, None, Stage::Filled);
+        (filled.filled, filled.fill_price) = (1, Some(7_600.0));
+        filled.fills = vec![Fill { basket: "B1".into(), at: 100, qty: 1, price: 7_600.0 }];
+        Book {
+            orders: vec![
+                at(order("B3", Side::Sell, OrderKind::Limit, Some(7_700.0), Stage::Working), 300),
+                at(order("B2", Side::Buy, OrderKind::Limit, Some(7_500.0), Stage::Cancelled), 200),
+                at(filled, 100),
+            ],
+            positions: vec![Position {
+                account: "FAKE-1".into(),
+                contract: "ESZ6".into(),
+                exchange: "CME".into(),
+                net: 1,
+                avg: Some(7_600.0),
+                open_pnl: Some(62.5),
+                tick: Some(0.25),
+            }],
+            accounts: vec![Money {
+                key: "FAKE-1".into(),
+                balance: Some(50_062.5),
+                realized_day: Some(0.0),
+                unrealized: Some(62.5),
+                day_pnl: Some(62.5),
+                limits: Some(Limits { loss_limit: Some(2_000.0), max_order_qty: Some(5), ..Limits::default() }),
+            }],
+            ..Book::default()
+        }
+    }
+
+    /// Wait for the desk to be woken with what `until` looks for, taking
+    /// every wake on the way as the window's loop would.
+    pub(crate) fn wait_for(desk: &Desk, until: impl Fn(&Wake) -> bool) {
+        let woken = desk.woken();
+        loop {
+            let wake = woken.recv_blocking().expect("the desk is alive");
+            let done = until(&wake);
+            desk.take(wake);
+            if done {
+                return;
+            }
+        }
+    }
+
+    /// A saved login signs in on a thread of its own without anything
+    /// waiting for it, and comes back with everything its account holds:
+    /// the position, the working order, today's orders whatever became of
+    /// them, with their fills, the money and the limits. One signed out is
+    /// not signed in. After a drop the session is refreshed again, and what
+    /// filled meanwhile is in the book.
+    #[test]
+    fn a_saved_login_signs_in_with_what_its_accounts_hold() {
+        let fake = Arc::new(FakeBroker { takes: std::time::Duration::from_millis(50), ..FakeBroker::listed() });
+        fake.held.lock().unwrap().insert("Lucid".into(), held_before());
+        let desk = Desk::new(Registry::of(vec![fake.clone()]));
+        let login = Login { broker: "fake".into(), ..test_login("l", "Lucid", TEST_SYSTEM) };
+        let gone = Login { id: "g".into(), signed_out: true, ..login.clone() };
+
+        let asked = std::time::Instant::now();
+        desk.sign_in_saved(&[login.clone(), gone.clone()]);
+        assert!(asked.elapsed() < std::time::Duration::from_millis(50), "nothing waits for the sign-in");
+        assert!(desk.opening("l") && !desk.opening("g"));
+        assert!(desk.book(std::slice::from_ref(&login)).orders.is_empty());
+        wait_for(&desk, |wake| matches!(wake, Wake::Opened(..)));
+        assert_eq!(fake.signed_in.load(Ordering::Acquire), 1, "the signed-out login is left alone");
+        assert_eq!(desk.refreshes("l"), 1);
+
+        let book = desk.book(std::slice::from_ref(&login));
+        assert!(book.refreshed);
+        assert_eq!(book.position("l/FAKE-1", "ESZ6").map(|held| held.net), Some(1));
+        assert_eq!(book.working("l/FAKE-1", "ESZ6").map(|o| o.basket_id.as_str()).collect::<Vec<_>>(), ["B3"]);
+        let stages: Vec<Stage> = book.orders.iter().map(|order| order.status.stage).collect();
+        assert_eq!(stages, [Stage::Working, Stage::Cancelled, Stage::Filled], "today's, newest first");
+        assert_eq!(book.order("B1").map(|order| order.fills.len()), Some(1));
+        let money = book.money("l/FAKE-1").expect("its money");
+        assert_eq!((money.balance, money.day_pnl), (Some(50_062.5), Some(62.5)));
+        assert_eq!(money.limits.as_ref().and_then(|limits| limits.loss_limit), Some(2_000.0));
+
+        // Dropped, and the limit filled meanwhile.
+        let fake_session = fake.sessions.lock().unwrap()[0].clone();
+        fake_session.drop_and_return(|held| {
+            let limit = held.orders.iter_mut().find(|order| order.basket_id == "B3").unwrap();
+            limit.status = Stage::Filled.into();
+            held.positions.clear();
+        });
+        assert!(desk.book(std::slice::from_ref(&login)).working("l/FAKE-1", "ESZ6").next().is_none());
+        assert!(!desk.book(std::slice::from_ref(&login)).refreshed, "not until it is asked again");
+        wait_for(&desk, |wake| matches!(wake, Wake::Refreshed(_)));
+        assert_eq!(desk.refreshes("l"), 2);
+        let book = desk.book(std::slice::from_ref(&login));
+        assert_eq!(book.order("B3").map(|order| order.status.stage), Some(Stage::Filled));
+        assert!(book.position("l/FAKE-1", "ESZ6").is_none());
+        desk.sign_out_all(SIGN_OUT_WAIT);
     }
 }
