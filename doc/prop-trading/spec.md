@@ -87,8 +87,8 @@ Tried on 2026-11-03 with a developer kit login, against Rithmic Test at
 - The same login is refused on the production gateway, every system there
   included. It is a Test login and nothing else.
 
-Not seen yet: a balance from the PnL plant (the snapshot came back without
-one), and orders of any kind.
+Since then, balances, positions and orders of every kind: see Orders and
+Signing in, below.
 
 ## Choices already made
 
@@ -459,7 +459,8 @@ A one-lot market buy of ESZ6 filled and a flatten closed it, with about
 $1.97 commission a side. An order reports each step (received, open
 pending, at the gateway, sent to the exchange, open, fill, complete);
 flatten is one request and Rithmic places the closing order; positions and
-P&L arrive as pushed updates, and the snapshot request returns nothing.
+P&L arrive as pushed updates. (The PnL snapshot came back empty that
+day; on 2026-11-04 it answered with the balance and the position.)
 
 The first version of order entry:
 
@@ -511,6 +512,50 @@ live account: an order from the menu, a key or a drag, a move, a cancel and
 a flatten go to the broker at once, and the pending look is the feedback.
 Whether a live account should ask, and how, is to be decided again before
 trading ships.
+
+#### Signing in, and what comes with it
+
+A saved trading login signs in by itself when the app starts, after the
+window's first frame is painted, from an idle at low priority behind
+whatever the charts asked for, on a thread of its own per login. Nothing
+on the main loop waits on the network or the keyring. Each sign-in is
+followed, on the same thread, by a **refresh**: the money and the risk
+limits, the positions, the working orders, and today's orders, filled,
+cancelled or rejected, with their fills. The refresh is over once the
+plants have been quiet for 300 ms after its last answer; then the book is
+marked refreshed and the panel, the headers and the chart lines show it,
+on the next frame. Signing in from the Trading page refreshes the same
+way, and so does a session coming back after a drop. After that
+everything follows Rithmic's pushes: no polling, no timers.
+
+After a refresh, an order sent from here before a drop that the refreshed
+book has never heard of, by its tag, did not reach the broker: it stops
+being drawn as pending, and a toast says "Buy Limit 1 ESZ6 never reached
+the broker". Moves, cancels and flattens are answered by the book as
+always, and nothing is held as on its way to that login's accounts.
+
+The Accounts tab shows the balance, the day's P&L, the open P&L, the loss
+limit and the balance the account is liquidated at, as Rithmic says them;
+shown, not enforced. The Orders tab shows the day's orders, not only this
+session's.
+
+What Rithmic Test returned for each request, tried on 2026-11-04 with a
+position of one ESZ6 and a sell limit far above the market, from a fresh
+start of the window, all within about 0.9 s:
+
+| Request | What Test returns |
+| --- | --- |
+| `show_orders` | The day's orders as **exchange notifications only**, flagged as a snapshot: a `fill` for each filled order (size, price, fill id), a `cancel` or a `reject` for each that ended so, and a `status` for each still working, with the user tag. No Rithmic order notification precedes them, so each is taken whole from the exchange's. Rithmic's day had not rolled at 01:00 UTC: the orders of the 3rd were still listed. |
+| `show_order_history_dates` | Dates back to 2013, the latest the 3rd: the day in progress is not listed. |
+| `show_order_history_summary` | For the 3rd, the same exchange notifications for every order that day. Asked only for dates that are today in UTC, so on Test, nothing. |
+| `show_fill_history` | One empty answer, by time and by trade date alike. Fills come from the exchange's notifications instead, and `history()` returns nothing on Test. |
+| `get_account_rms_info` | Loss limit $999,999, 40 an order, 20 a side, status active; no auto-liquidation threshold, and no RMS update pushed. |
+| `get_pnl_position_snapshot` | The balance ($997,462.57), the day's P&L and an ESZ6 position of +1 at 7,546.50, flagged as a snapshot. When it says nothing of positions, as it did on the 3rd, they are worked out from today's fills, and the balance stays "—" until the first push. |
+
+Then, with nothing done in the window, the position, the working order,
+the day's orders and the balance were there; cancelling the limit and a
+market buy both showed on the next frame, and Ctrl+F left the account
+flat with nothing working, which a separate sign-in confirmed.
 
 ### 5. Conformance
 
