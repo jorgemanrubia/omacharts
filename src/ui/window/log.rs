@@ -89,7 +89,7 @@ impl Window {
         for entry in &fresh {
             match surface(entry, &state) {
                 Surface::Quiet => {}
-                Surface::Toast => self.toast(&entry.text),
+                Surface::Toast => self.toast(&entry.line()),
                 Surface::Notice => self.notice(entry),
             }
         }
@@ -605,11 +605,11 @@ pub(crate) mod tests {
             assert_eq!(open.len(), 3);
             let kept = open.object(0).expect("a row");
 
-            window.say(Entry::info("Lucid", "Filled 1 ESZ6 at 7,612.25 · Lucid").confirming());
+            window.say(Entry::info("Lucid", "Filled 1 ESZ6 at 7,612.25").confirming());
             window.catch_up_log();
             assert_eq!(open.len(), 4);
             assert_eq!(open.object(0).as_ref(), Some(&kept), "the list was rebuilt");
-            window.say(Entry::info("Lucid", "Filled 1 ESZ6 at 7,612.25 · Lucid").confirming());
+            window.say(Entry::info("Lucid", "Filled 1 ESZ6 at 7,612.25").confirming());
             window.catch_up_log();
             assert_eq!(open.len(), 4, "a repeat added a row");
             assert!(open.text().contains("(×2)"), "{}", open.text());

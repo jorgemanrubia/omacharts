@@ -286,11 +286,14 @@ impl Stage {
 pub struct Status {
     pub stage: Stage,
     pub said: Option<String>,
+    /// For an order rejected for being too far from the market, the
+    /// furthest price the exchange's band would have taken.
+    pub band: Option<f64>,
 }
 
 impl Status {
     pub fn said(stage: Stage, said: impl Into<String>) -> Status {
-        Status { stage, said: Some(said.into()) }
+        Status { stage, said: Some(said.into()), band: None }
     }
 
     /// Still to fill or be cancelled, so it can be cancelled.
@@ -312,7 +315,7 @@ impl Status {
 
 impl From<Stage> for Status {
     fn from(stage: Stage) -> Status {
-        Status { stage, said: None }
+        Status { stage, said: None, band: None }
     }
 }
 

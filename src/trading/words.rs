@@ -67,10 +67,11 @@ pub fn order_text(side: Side, kind: OrderKind, qty: u32, contract: &str, price: 
     }
 }
 
-/// What a toast says when an order placed or cancelled here moves on:
+/// What the Log says when an order placed or cancelled here moves on:
 /// working, filled (or part of it), cancelled or rejected, each only once
-/// the broker has said so. Nothing for a step that is none of them.
-pub fn outcome_text(order: &Order, before: Stage, decimals: usize, account: &str) -> Option<String> {
+/// the broker has said so. Nothing for a step that is none of them. The
+/// account is the entry's source, so it is not said again here.
+pub fn outcome_text(order: &Order, before: Stage, decimals: usize) -> Option<String> {
     if before == order.status.stage {
         return None;
     }
@@ -78,19 +79,23 @@ pub fn outcome_text(order: &Order, before: Stage, decimals: usize, account: &str
     let whole = || order_text(order.side, order.kind, order.qty, &order.contract, price(order.price).as_deref());
     match order.status.stage {
         Stage::Filled => Some(match price(order.fill_price) {
-            Some(at) => format!("Filled {} {} at {at} · {account}", order.qty, order.contract),
-            None => format!("Filled {} {} · {account}", order.qty, order.contract),
+            Some(at) => format!("Filled {} {} at {at}", order.qty, order.contract),
+            None => format!("Filled {} {}", order.qty, order.contract),
         }),
         Stage::PartiallyFilled if order.filled > 0 => {
-            Some(format!("Filled {} of {} {} · {account}", order.filled, order.qty, order.contract))
+            Some(format!("Filled {} of {} {}", order.filled, order.qty, order.contract))
         }
-        Stage::Cancelled if order.kind != OrderKind::Market => Some(format!("Cancelled {} · {account}", whole())),
+        Stage::Cancelled if order.kind != OrderKind::Market => Some(format!("Cancelled {}", whole())),
         Stage::Working if order.kind != OrderKind::Market && before == Stage::Pending => {
-            Some(format!("Working · {} · {account}", whole()))
+            Some(format!("Working · {}", whole()))
         }
-        Stage::Rejected => Some(match &order.status.said {
-            Some(why) => format!("Rejected · {why} · {account}"),
-            None => format!("Rejected · {account}"),
+        Stage::Rejected => Some(match (order.status.band, order.price, &order.status.said) {
+            (Some(band), Some(at), _) => {
+                let side = if at < band { "below" } else { "above" };
+                format!("Rejected · {} · too far {side} the market (exchange band {})", whole(), price(Some(band)).unwrap_or_default())
+            }
+            (_, _, Some(why)) => format!("Rejected · {} · {why}", whole()),
+            _ => format!("Rejected · {}", whole()),
         }),
         _ => None,
     }
@@ -193,20 +198,27 @@ mod tests {
 
         let mut bought = order("a", Side::Buy, OrderKind::Market, None, Stage::Filled);
         bought.fill_price = Some(7_612.25);
-        assert_eq!(outcome_text(&bought, Stage::Pending, 2, "951").as_deref(), Some("Filled 1 ESZ6 at 7,612.25 · 951"));
-        assert_eq!(outcome_text(&bought, Stage::Filled, 2, "951"), None, "said once");
+        assert_eq!(outcome_text(&bought, Stage::Pending, 2).as_deref(), Some("Filled 1 ESZ6 at 7,612.25"));
+        assert_eq!(outcome_text(&bought, Stage::Filled, 2), None, "said once");
         let working = order("b", Side::Sell, OrderKind::Limit, Some(7_620.0), Stage::Working);
-        assert_eq!(outcome_text(&working, Stage::Pending, 2, "951").as_deref(), Some("Working · Sell Limit 1 ESZ6 at 7,620.00 · 951"));
+        assert_eq!(outcome_text(&working, Stage::Pending, 2).as_deref(), Some("Working · Sell Limit 1 ESZ6 at 7,620.00"));
         let refused = order("c", Side::Buy, OrderKind::Limit, Some(1.0), Status::said(Stage::Rejected, "price out of band"));
-        assert_eq!(outcome_text(&refused, Stage::Pending, 2, "951").as_deref(), Some("Rejected · price out of band · 951"));
+        assert_eq!(outcome_text(&refused, Stage::Pending, 2).as_deref(), Some("Rejected · Buy Limit 1 ESZ6 at 1.00 · price out of band"));
+        let mut banded =
+            order("f", Side::Sell, OrderKind::Limit, Some(7_480.0), Status::said(Stage::Rejected, "outside bands"));
+        banded.status.band = Some(7_521.25);
         assert_eq!(
-            outcome_text(&order("d", Side::Buy, OrderKind::Limit, Some(7_620.0), Stage::Cancelled), Stage::Working, 2, "951")
+            outcome_text(&banded, Stage::Pending, 2).as_deref(),
+            Some("Rejected · Sell Limit 1 ESZ6 at 7,480.00 · too far below the market (exchange band 7,521.25)")
+        );
+        assert_eq!(
+            outcome_text(&order("d", Side::Buy, OrderKind::Limit, Some(7_620.0), Stage::Cancelled), Stage::Working, 2)
                 .as_deref(),
-            Some("Cancelled Buy Limit 1 ESZ6 at 7,620.00 · 951")
+            Some("Cancelled Buy Limit 1 ESZ6 at 7,620.00")
         );
         let mut part = order("e", Side::Sell, OrderKind::Limit, Some(7_620.0), Stage::PartiallyFilled);
         (part.qty, part.filled) = (2, 1);
-        assert_eq!(outcome_text(&part, Stage::Working, 2, "951").as_deref(), Some("Filled 1 of 2 ESZ6 · 951"));
+        assert_eq!(outcome_text(&part, Stage::Working, 2).as_deref(), Some("Filled 1 of 2 ESZ6"));
 
         let mut held = Position {
             account: "t/951".into(),

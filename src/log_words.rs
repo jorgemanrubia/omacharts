@@ -139,10 +139,12 @@ pub fn confirmed(account: &str, text: impl Into<String>) -> Entry {
 /// What became of an order placed or cancelled here, once the broker says
 /// so: a fill or a cancel in a toast and here, a rejection as an error.
 pub fn order_moved_on(order: &Order, before: Stage, decimals: usize, account: &str) -> Option<Entry> {
-    let text = trading::outcome_text(order, before, decimals, account)?;
+    let text = trading::outcome_text(order, before, decimals)?;
     let source = if account.is_empty() { "Trading" } else { account };
-    Some(match order.status.stage {
-        Stage::Rejected => Entry::error(source, text),
+    Some(match (order.status.stage, order.status.band, &order.status.said) {
+        // The broker's own words, which the line has put plainly.
+        (Stage::Rejected, Some(_), Some(said)) => Entry::error(source, text).detail(said.clone()),
+        (Stage::Rejected, ..) => Entry::error(source, text),
         _ => Entry::info(source, text).confirming(),
     })
 }
@@ -244,6 +246,14 @@ mod tests {
         let refused = order("c", Side::Buy, OrderKind::Limit, Some(1.0), Status::said(Stage::Rejected, "price out of band"));
         let rejected = order_moved_on(&refused, Stage::Pending, 2, "951").expect("said");
         assert_eq!((rejected.level, rejected.confirms), (Level::Error, false));
+        assert_eq!(rejected.line(), "951 · Rejected · Buy Limit 1 ESZ6 at 1.00 · price out of band", "the account said once");
+
+        let raw = "Order price is outside bands 'Ask of 748000.00 violates Low Band 752125.00'";
+        let mut banded = order("f", Side::Sell, OrderKind::Limit, Some(7_480.0), Status::said(Stage::Rejected, raw));
+        banded.status.band = Some(7_521.25);
+        let rejected = order_moved_on(&banded, Stage::Pending, 2, "951").expect("said");
+        assert_eq!(rejected.text, "Rejected · Sell Limit 1 ESZ6 at 7,480.00 · too far below the market (exchange band 7,521.25)");
+        assert_eq!(rejected.detail.as_deref(), Some(raw), "the broker's words kept behind Details");
     }
 
     #[test]

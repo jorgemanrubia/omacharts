@@ -137,7 +137,7 @@ mod tests {
         let error = Entry::error("Lucid", "Not flattened · nothing held");
         let warning = Entry::warning("Yahoo Finance", "AAPL 1D · Rate limited");
         let info = Entry::info("Lucid", "Buy Market 2 ESZ6");
-        let filled = Entry::info("Lucid", "Filled 2 ESZ6 at 7,612.25 · Lucid").confirming();
+        let filled = Entry::info("Lucid", "Filled 2 ESZ6 at 7,612.25").confirming();
         let table = [
             (&error, closed, Surface::Notice),
             (&error, open, Surface::Quiet),

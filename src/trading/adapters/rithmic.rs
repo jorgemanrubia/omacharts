@@ -124,6 +124,25 @@ fn failed(error: rithmic::Error) -> Failure {
     }
 }
 
+/// The price an exchange's band stopped at, from a rejection such as
+/// "Order price is outside bands 'Ask of 748000.00 violates Low Band
+/// 752125.00 using Delta .00, CrvBnd equals 754125.00'". Those numbers
+/// come scaled up by a power of ten; the order's own `price` gives the
+/// scale.
+fn band_of(why: &str, price: f64) -> Option<f64> {
+    let number = |after: &str| -> Option<f64> {
+        let rest = &why[why.find(after)? + after.len()..];
+        rest.trim_start().split(|c: char| !(c.is_ascii_digit() || c == '.')).next()?.parse().ok()
+    };
+    let asked = number(" of ")?;
+    let band = number("Low Band").or_else(|| number("High Band"))?;
+    if price <= 0.0 || asked <= 0.0 {
+        return None;
+    }
+    let scale = 10f64.powi((asked / price).log10().round() as i32);
+    Some(band / scale)
+}
+
 /// An order as Rithmic told of it, in the neutral words.
 fn order_of(order: rithmic::WorkingOrder) -> Order {
     Order {
@@ -144,12 +163,14 @@ fn order_of(order: rithmic::WorkingOrder) -> Order {
         },
         price: order.price,
         status: match order.status {
-            rithmic::Status::Pending => Status { stage: Stage::Pending, said: order.said },
-            rithmic::Status::Working => Status { stage: Stage::Working, said: order.said },
-            rithmic::Status::PartiallyFilled => Status { stage: Stage::PartiallyFilled, said: order.said },
-            rithmic::Status::Filled => Status { stage: Stage::Filled, said: order.said },
-            rithmic::Status::Cancelled => Status { stage: Stage::Cancelled, said: order.said },
-            rithmic::Status::Rejected(why) => Status::said(Stage::Rejected, why),
+            rithmic::Status::Pending => Status { stage: Stage::Pending, said: order.said, band: None },
+            rithmic::Status::Working => Status { stage: Stage::Working, said: order.said, band: None },
+            rithmic::Status::PartiallyFilled => Status { stage: Stage::PartiallyFilled, said: order.said, band: None },
+            rithmic::Status::Filled => Status { stage: Stage::Filled, said: order.said, band: None },
+            rithmic::Status::Cancelled => Status { stage: Stage::Cancelled, said: order.said, band: None },
+            rithmic::Status::Rejected(why) => {
+                Status { stage: Stage::Rejected, band: order.price.and_then(|price| band_of(&why, price)), said: Some(why) }
+            }
         },
         fill_price: order.fill_price,
         fills: order
@@ -327,6 +348,16 @@ impl Session for RithmicSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_band_rejection_gives_the_band_at_the_order_s_scale() {
+        let why = "Order price is outside bands 'Ask of 748000.00 violates Low Band 752125.00 \
+                   using Delta .00, CrvBnd equals 754125.00'";
+        assert_eq!(band_of(why, 7_480.0), Some(7_521.25));
+        let high = "Order price is outside bands 'Bid of 760000.00 violates High Band 755000.00'";
+        assert_eq!(band_of(high, 7_600.0), Some(7_550.0));
+        assert_eq!(band_of("Insufficient margin", 7_480.0), None);
+    }
 
     /// A login as migration 9 leaves one signs in with the password the
     /// keyring has kept under its id since before it was migrated, which is
