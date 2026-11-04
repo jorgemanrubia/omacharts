@@ -1462,7 +1462,7 @@ dependencies = [
 
 [[package]]
 name = "omacharts"
-version = "0.2.10"
+version = "0.2.11"
 dependencies = [
  "async-channel",
  "chrono",
