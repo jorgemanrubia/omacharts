@@ -70,6 +70,9 @@ pub(super) struct Trade {
     /// says what became of it, or the broker refuses it. One that is never
     /// answered stays pending: nothing here assumes it was done.
     pub pending: RefCell<HashMap<Request, Pending>>,
+    /// How many of each login's refreshes the pending requests have been
+    /// reconciled against, so each refresh is once.
+    pub reconciled: RefCell<HashMap<String, u32>>,
     /// The size templates, read when trading comes in and again whenever
     /// they are edited.
     pub sizes: RefCell<Vec<trading::sizes::SizeTemplate>>,
@@ -138,10 +141,51 @@ impl Window {
         self.apply_marks();
     }
 
-    /// Forget what was asked of a broker once its book has answered.
+    /// Forget what was asked of a broker once its book has answered, and
+    /// after a login's session was refreshed, what it never will.
     fn settle_pending(&self) {
+        self.reconcile();
         let view = self.trading.borrow();
         self.trade.pending.borrow_mut().retain(|request, pending| !trading::answered(request, pending, &view.book));
+    }
+
+    /// Once a login's session has been refreshed — signed in, or back after
+    /// a drop — its book is everything the broker has. An order asked for
+    /// on one of its accounts that the book has never heard of did not get
+    /// there, and is no longer drawn as on its way; a move, a cancel or a
+    /// flatten is answered by the book as ever. Nothing is on its way to
+    /// those accounts any more.
+    fn reconcile(&self) {
+        let mut never = Vec::new();
+        {
+            let view = self.trading.borrow();
+            let mut reconciled = self.trade.reconciled.borrow_mut();
+            let mut pending = self.trade.pending.borrow_mut();
+            for login in &view.logins {
+                let refreshes = self.desk.refreshes(&login.id);
+                if reconciled.get(&login.id).copied().unwrap_or(0) == refreshes {
+                    continue;
+                }
+                reconciled.insert(login.id.clone(), refreshes);
+                let ours = |key: &str| key.split_once('/').is_some_and(|(of, _)| of == login.id);
+                pending.retain(|request, asked| match (request, asked) {
+                    (Request::Place(tag), Pending::Place { key, order }) if ours(key) => {
+                        let heard = view.book.orders.iter().any(|known| known.tag.as_deref() == Some(tag.as_str()));
+                        if !heard {
+                            never.push(trading::never_placed_text(order));
+                        }
+                        heard
+                    }
+                    _ => true,
+                });
+                for account in view.accounts.iter().filter(|account| account.login == login.id) {
+                    self.trade.placing.done(&account.key());
+                }
+            }
+        }
+        for text in never {
+            self.toast(&text);
+        }
     }
 
     /// Draw `request` as pending from now.
@@ -1496,6 +1540,57 @@ pub(super) mod tests {
             price,
             tag: trading::new_tag(),
         }
+    }
+
+    /// After a drop the refreshed book is the broker's word. An order sent
+    /// before it that the book has never heard of did not get there: it is
+    /// no longer drawn as on its way, and the account takes orders again.
+    /// One the book has is left to be answered as ever.
+    #[test]
+    fn an_order_the_refreshed_book_never_heard_of_never_reached_the_broker() {
+        crate::ui::on_gtk(|| {
+            use std::sync::atomic::Ordering;
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = window(&store);
+            let id = trading::add_login(&store, &Kept::default(), &typed()).expect("a login");
+            let account = trading::Account {
+                login: id.clone(),
+                id: "951".into(),
+                name: None,
+                currency: Some("USD".into()),
+                balance: None,
+            };
+            let session = Arc::new(trading::fake::FakeSession::told(vec![account], window.desk.waker(&id)));
+            assert!(window.desk.begin(&id));
+            window.desk.opened(&id, Ok(session.clone()));
+            window.desk.note(&store);
+            window.desk.tell();
+            let key = format!("{id}/951");
+
+            // One the broker has, still pending at the exchange; one it never got.
+            session.holds.store(true, Ordering::Release);
+            let reached = resting(Side::Sell, OrderKind::Limit, Some(7_700.0));
+            session.place(&reached).unwrap();
+            let lost = resting(Side::Buy, OrderKind::Limit, Some(7_500.0));
+            for order in [&reached, &lost] {
+                window
+                    .trade
+                    .pending
+                    .borrow_mut()
+                    .insert(Request::Place(order.tag.clone()), Pending::Place { key: key.clone(), order: order.clone() });
+            }
+            window.trade.placing.begin(&key).unwrap();
+            window.desk.tell();
+            assert_eq!(window.trade.pending.borrow().len(), 2, "both on their way before the drop");
+
+            session.drop_and_return(|_| {});
+            settle(&window, || window.trade.pending.borrow().len() == 1);
+            let pending = window.trade.pending.borrow();
+            assert!(!pending.contains_key(&Request::Place(lost.tag.clone())), "never reached, still drawn");
+            assert!(pending.contains_key(&Request::Place(reached.tag.clone())), "the broker has it");
+            assert!(!window.trade.placing.busy(&key), "the account still waiting on an answer");
+            assert_eq!(trading::never_placed_text(&lost), "Buy Limit 1 ESZ6 never reached the broker");
+        });
     }
 
     /// Run the main loop until `done`, or for a second at most.

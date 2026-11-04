@@ -80,6 +80,13 @@ pub fn outcome_text(order: &Order, before: Stage, decimals: usize, account: &str
     }
 }
 
+/// What a toast says of an order the broker's refreshed book has never
+/// heard of, sent before a drop: "Buy Limit 1 ESZ6 never reached the
+/// broker".
+pub fn never_placed_text(order: &OrderRequest) -> String {
+    format!("{} {} {} never reached the broker", order_words(order.side, order.kind), order.qty, order.contract)
+}
+
 /// Money as a P&L reads: "+$125.00", "-$3.94", "+12.50 EUR".
 pub fn pnl_text(value: f64, currency: Option<&str>) -> String {
     let sign = if value < 0.0 { "-" } else { "+" };
