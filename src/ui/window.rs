@@ -2660,28 +2660,32 @@ impl Window {
             expander.toggle_maximized();
         });
 
-        // The account opens the accounts, and the feed's dot the feeds that
-        // could serve this chart, each built afresh each time it opens:
-        // which there are, which can be used and what the chart is of all
-        // change underneath them.
-        let accounts = gtk::Popover::new();
-        accounts.set_has_arrow(false);
-        let filler = self.clone();
-        accounts.connect_show(move |popover| filler.fill_account_menu(popover, id));
-        pane.account_menu.set_popover(Some(&accounts));
-        let feeds = gtk::Popover::new();
-        feeds.set_has_arrow(false);
-        let filler = self.clone();
-        feeds.connect_show(move |popover| filler.fill_feed_menu(popover, id));
-        pane.set_feed_popover(feeds);
-
-        // The size opens the sizes of the chart's template, and on a right
-        // click offers to edit the templates, as the strip does its list.
-        let sizes = gtk::Popover::new();
-        sizes.set_has_arrow(false);
-        let filler = self.clone();
-        sizes.connect_show(move |popover| filler.fill_size_menu(popover, id));
-        pane.size_menu.set_popover(Some(&sizes));
+        // The account opens the accounts, the feed's dot the feeds that
+        // could serve this chart, and the quantity the template's
+        // quantities: native menus, each built afresh each time it opens,
+        // since which there are, which can be used and what the chart is
+        // of all change underneath them. A choice is a stateful action, so
+        // GTK draws its mark.
+        self.add_menu_actions(&pane);
+        let builder = Rc::downgrade(self);
+        pane.account_menu.set_create_popup_func(move |button| {
+            if let Some(this) = builder.upgrade() {
+                button.set_menu_model(Some(&this.account_menu(id)));
+            }
+        });
+        let builder = Rc::downgrade(self);
+        pane.set_feed_menu(Rc::new(move || match builder.upgrade() {
+            Some(this) => this.feed_menu(id),
+            None => gio::Menu::new(),
+        }));
+        // On a right click the quantity also offers to edit the templates,
+        // as the strip does its list.
+        let builder = Rc::downgrade(self);
+        pane.size_menu.set_create_popup_func(move |button| {
+            if let Some(this) = builder.upgrade() {
+                button.set_menu_model(Some(&this.size_menu(id)));
+            }
+        });
         let editor = self.clone();
         let size_menu = gtk::GestureClick::new();
         size_menu.set_button(gtk::gdk::BUTTON_SECONDARY);
@@ -3578,87 +3582,92 @@ impl Window {
         self.save_workspace();
     }
 
-    /// One row of the account's or the feed's list: `label`, with `state`
-    /// under it when there is something wrong, a mark when it is the one
-    /// in force, and `chosen` when it is clicked, after the popover closes
-    /// and the chart takes the focus. Without `chosen` it is a heading
-    /// that cannot be clicked.
-    fn choice_row(
-        self: &Rc<Self>,
-        popover: &gtk::Popover,
-        id: u32,
-        label: &str,
-        state: Option<&str>,
-        marked: bool,
-        chosen: Option<Rc<dyn Fn()>>,
-    ) -> gtk::Button {
-        let button = gtk::Button::new();
-        button.add_css_class("flat");
-        button.add_css_class("link-row");
-        let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        let words = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        words.set_hexpand(true);
-        let title = gtk::Label::new(Some(label));
-        title.set_xalign(0.0);
-        words.append(&title);
-        if let Some(state) = state {
-            let subtitle = gtk::Label::new(Some(state));
-            subtitle.set_xalign(0.0);
-            subtitle.add_css_class("dim-label");
-            subtitle.add_css_class("caption");
-            words.append(&subtitle);
-        }
-        line.append(&words);
-        // Kept in place when not drawn, as in the chain's menu, so the
-        // column does not move with the choice.
-        let mark = gtk::Image::from_icon_name("object-select-symbolic");
-        mark.set_valign(gtk::Align::Center);
-        mark.set_opacity(if marked { 1.0 } else { 0.0 });
-        line.append(&mark);
-        button.set_child(Some(&line));
-        match chosen {
-            None => button.set_sensitive(false),
-            Some(chosen) => {
-                let this = self.clone();
-                let closing = popover.downgrade();
-                button.connect_clicked(move |_| {
-                    if let Some(popover) = closing.upgrade() {
-                        popover.popdown();
-                    }
-                    this.focus(id);
-                    chosen();
-                });
+    /// The three header menus' choices on `pane`: an account by its key,
+    /// a feed by its id, a quantity by its place in the template. Each
+    /// is what the row it marks would do when picked.
+    fn add_menu_actions(self: &Rc<Self>, pane: &ChartPane) {
+        let id = pane.id;
+        let account = gio::SimpleAction::new_stateful("account", Some(glib::VariantTy::STRING), &"".to_variant());
+        let this = Rc::downgrade(self);
+        account.connect_activate(move |action, value| {
+            let (Some(this), Some(key)) = (this.upgrade(), value.and_then(|value| value.str()).map(str::to_string)) else {
+                return;
+            };
+            action.set_state(&key.to_variant());
+            this.focus(id);
+            this.pick_account(id, &key);
+        });
+        pane.menu_actions.add_action(&account);
+        let feed = gio::SimpleAction::new_stateful("feed", Some(glib::VariantTy::STRING), &"".to_variant());
+        let this = Rc::downgrade(self);
+        feed.connect_activate(move |action, value| {
+            let (Some(this), Some(own)) = (this.upgrade(), value.and_then(|value| value.str()).map(str::to_string)) else {
+                return;
+            };
+            action.set_state(&own.to_variant());
+            this.focus(id);
+            this.pick_feed(id, &own);
+        });
+        pane.menu_actions.add_action(&feed);
+        let quantity = gio::SimpleAction::new_stateful("quantity", Some(glib::VariantTy::INT32), &0i32.to_variant());
+        let this = Rc::downgrade(self);
+        quantity.connect_activate(move |action, value| {
+            let (Some(this), Some(n)) = (this.upgrade(), value.and_then(|value| value.get::<i32>())) else { return };
+            action.set_state(&n.to_variant());
+            this.focus(id);
+            if let Ok(n) = usize::try_from(n) {
+                this.pick_size(id, n);
             }
-        }
-        button
+        });
+        pane.menu_actions.add_action(&quantity);
     }
 
-    /// The Account part's list, for the chart `id` as it is now: the
-    /// accounts, one row each, a mark on the chart's own, and a line under
-    /// an account only for its trouble. Choosing the default stores
-    /// nothing, so the chart keeps following it; choosing another account
-    /// forgets the chart's feed.
-    fn fill_account_menu(self: &Rc<Self>, popover: &gtk::Popover, id: u32) {
-        let Some(pane) = self.pane(id) else { return };
+    /// Mark `value` as the chart's choice in its menu named `name`.
+    fn mark_choice(pane: &ChartPane, name: &str, value: glib::Variant) {
+        if let Some(action) = pane.menu_actions.lookup_action(name).and_downcast::<gio::SimpleAction>() {
+            action.set_state(&value);
+        }
+    }
+
+    /// The Account part's menu, for the chart `id` as it is now: the
+    /// accounts, a mark on the chart's own, and an account's trouble after
+    /// its name, only when it has some.
+    fn account_menu(self: &Rc<Self>, id: u32) -> gio::Menu {
+        let menu = gio::Menu::new();
+        let Some(pane) = self.pane(id) else { return menu };
         let view = self.trading.borrow().clone();
         let account = view.account_of(pane.account.borrow().as_deref()).cloned();
-        let default_account = view.default_account().map(crate::trading::Account::key);
-        let menu = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        Self::mark_choice(&pane, "account", account.map(|account| account.key()).unwrap_or_default().to_variant());
         for listed in &view.accounts {
-            let key = listed.key();
-            let current = account.as_ref().is_some_and(|account| account.key() == key);
-            let trouble = view.trouble(&self.desk, listed);
-            let chosen: Rc<dyn Fn()> = match current {
-                true => Rc::new(|| {}),
-                false => {
-                    let this = self.clone();
-                    let stored = (default_account.as_deref() != Some(key.as_str())).then_some(key);
-                    Rc::new(move || this.choose_account(id, stored.clone()))
-                }
+            let name = view.account_name(listed);
+            let label = match view.trouble(&self.desk, listed) {
+                Some(trouble) => format!("{name} · {trouble}"),
+                None => name,
             };
-            menu.append(&self.choice_row(popover, id, &view.account_name(listed), trouble.as_deref(), current, Some(chosen)));
+            let item = gio::MenuItem::new(Some(&label), None);
+            item.set_action_and_target_value(Some("pane.account"), Some(&listed.key().to_variant()));
+            menu.append_item(&item);
         }
-        popover.set_child(Some(&menu));
+        menu
+    }
+
+    /// The chart `id` on the account with the key `key`. Choosing the
+    /// default stores nothing, so the chart keeps following it; choosing
+    /// another account forgets the chart's feed.
+    fn pick_account(self: &Rc<Self>, id: u32, key: &str) {
+        let Some(pane) = self.pane(id) else { return };
+        let (current, default_account) = {
+            let view = self.trading.borrow();
+            (
+                view.account_of(pane.account.borrow().as_deref()).map(crate::trading::Account::key),
+                view.default_account().map(crate::trading::Account::key),
+            )
+        };
+        if current.as_deref() == Some(key) {
+            return;
+        }
+        let stored = (default_account.as_deref() != Some(key)).then(|| key.to_string());
+        self.choose_account(id, stored);
     }
 
     /// The feeds that could serve `pane`'s chart of `instrument`, the
@@ -3690,38 +3699,44 @@ impl Window {
         (serving, default, in_force)
     }
 
-    /// The Data feed part's list, for the chart `id` as it is now: how the
-    /// feed stands, in the dot's own words, only when the dot is red, and
-    /// the feeds that serve the chart's instrument, a mark on the one in force and "(default)" on
-    /// the account's own — or the order's pick, with no account. Choosing
-    /// the default stores nothing, so the chart keeps following it.
-    fn fill_feed_menu(self: &Rc<Self>, popover: &gtk::Popover, id: u32) {
-        let Some(pane) = self.pane(id) else { return };
-        let menu = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        if pane.feed_in_trouble() {
-            let status = gtk::Label::new(pane.feed_menu.tooltip_text().as_deref());
-            status.set_xalign(0.0);
-            status.add_css_class("feed-status");
-            menu.append(&status);
-        }
+    /// The Data feed part's menu, for the chart `id` as it is now: the
+    /// feeds that serve the chart's instrument, a mark on the one in force
+    /// and "(default)" on the account's own — or the order's pick, with no
+    /// account — under how the feed stands, in the dot's own words, only
+    /// when the dot is red.
+    fn feed_menu(self: &Rc<Self>, id: u32) -> gio::Menu {
+        let menu = gio::Menu::new();
+        let Some(pane) = self.pane(id) else { return menu };
+        let section = gio::Menu::new();
         let instrument = pane.instrument.borrow().clone();
         if let Some(instrument) = instrument {
             let (serving, default, in_force) = self.feeds_serving(&pane, &instrument);
+            Self::mark_choice(&pane, "feed", in_force.unwrap_or_default().to_variant());
             for feed in &serving {
                 let own = feed.provider.id();
                 let label = match Some(own) == default {
                     true => format!("{} (default)", feed.provider.label()),
                     false => feed.provider.label().to_string(),
                 };
-                // The default is no choice at all: the chart goes on
-                // following it.
-                let chosen = (Some(own) != default).then(|| own.to_string());
-                let this = self.clone();
-                let pick: Rc<dyn Fn()> = Rc::new(move || this.choose_feed(id, chosen.clone()));
-                menu.append(&self.choice_row(popover, id, &label, None, in_force == Some(own), Some(pick)));
+                let item = gio::MenuItem::new(Some(&label), None);
+                item.set_action_and_target_value(Some("pane.feed"), Some(&own.to_variant()));
+                section.append_item(&item);
             }
         }
-        popover.set_child(Some(&menu));
+        let status = pane.feed_in_trouble().then(|| pane.feed_status_words()).flatten();
+        menu.append_section(status.as_deref(), &section);
+        menu
+    }
+
+    /// The chart `id` on the feed `own`. The default is no choice at all:
+    /// the chart goes on following it.
+    fn pick_feed(self: &Rc<Self>, id: u32, own: &str) {
+        let Some(pane) = self.pane(id) else { return };
+        let instrument = pane.instrument.borrow().clone();
+        let Some(instrument) = instrument else { return };
+        let (_, default, _) = self.feeds_serving(&pane, &instrument);
+        let chosen = (Some(own) != default).then(|| own.to_string());
+        self.choose_feed(id, chosen);
     }
 
     /// Move the divider the focused chart sits against, by a nudge.

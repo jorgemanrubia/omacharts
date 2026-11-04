@@ -216,9 +216,13 @@ pub struct ChartPane {
     feed_warning: gtk::Image,
     feed_part: RefCell<Option<FeedPart>>,
     feed_phase: Cell<FeedPhase>,
-    /// The list the dot opens, handed in by the window and attached only
-    /// while there is something to choose.
-    feed_popover: RefCell<Option<gtk::Popover>>,
+    /// What builds the menu the dot opens, handed in by the window and
+    /// attached only while there is something to choose.
+    feed_menu_model: RefCell<Option<Rc<dyn Fn() -> gtk::gio::Menu>>>,
+    /// The header menus' choices, as `pane.account`, `pane.feed` and
+    /// `pane.quantity`: what the window adds, the menus name and GTK draws
+    /// the mark of.
+    pub menu_actions: gtk::gio::SimpleActionGroup,
     /// The feed somebody chose for this chart, by id; `None` follows the
     /// order, which is every chart until somebody chooses.
     pub feed: RefCell<Option<String>>,
@@ -433,6 +437,13 @@ impl ChartPane {
         size_menu.set_child(Some(&size_line));
         size_menu.set_always_show_arrow(false);
         size_menu.set_visible(false);
+        // A part's tooltip is not drawn over its own open menu.
+        for part in [&account_menu, &feed_menu, &size_menu] {
+            part.connect_active_notify(|part| {
+                let open = part.is_active();
+                part.set_has_tooltip(!open && part.tooltip_text().is_some());
+            });
+        }
         // The padding the two buttons beside them have, so the four sit
         // evenly apart whichever order they are in.
         for label in [&change_label, &template_label] {
@@ -560,6 +571,8 @@ impl ChartPane {
         // A box rather than the overlay itself, so the focus ring is drawn on
         // something that is not also the drawing surface.
         let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let menu_actions = gtk::gio::SimpleActionGroup::new();
+        root.insert_action_group("pane", Some(&menu_actions));
         root.add_css_class("chart-pane");
         root.set_hexpand(true);
         root.set_vexpand(true);
@@ -603,7 +616,8 @@ impl ChartPane {
             feed_warning,
             feed_part: RefCell::new(None),
             feed_phase: Cell::new(FeedPhase::Connecting),
-            feed_popover: RefCell::new(None),
+            feed_menu_model: RefCell::new(None),
+            menu_actions,
             feed: RefCell::new(None),
             account: RefCell::new(None),
             trade_part,
@@ -868,11 +882,18 @@ impl ChartPane {
         part.as_ref().is_some_and(|part| feed_status(part, self.feed_phase.get()).0 == "down")
     }
 
-    /// The list the dot opens. Attached only while there is more than one
-    /// feed to choose, so with one the dot is nothing but its colour and
-    /// its tooltip.
-    pub fn set_feed_popover(&self, popover: gtk::Popover) {
-        *self.feed_popover.borrow_mut() = Some(popover);
+    /// How the feed stands, in the dot's tooltip's words.
+    pub fn feed_status_words(&self) -> Option<String> {
+        let part = self.feed_part.borrow();
+        part.as_ref().map(|part| feed_tooltip(part, self.feed_phase.get()))
+    }
+
+    /// What builds the menu the dot opens, afresh each time it opens.
+    /// Attached only while there is more than one feed to choose, so with
+    /// one the dot is nothing but its colour and its tooltip.
+    pub fn set_feed_menu(&self, model: Rc<dyn Fn() -> gtk::gio::Menu>) {
+        *self.feed_menu_model.borrow_mut() = Some(model);
+        self.feed_menu.set_widget_name("");
         self.paint_feed_dot();
     }
 
@@ -892,10 +913,30 @@ impl ChartPane {
         self.feed_dot.add_css_class(colour);
         self.feed_warning.set_visible(warning);
         self.feed_menu.set_tooltip_text(Some(&feed_tooltip(part, phase)));
-        let popover = self.feed_popover.borrow();
-        let offered = part.clickable.then_some(()).and(popover.as_ref());
-        if self.feed_menu.popover().as_ref() != offered {
-            self.feed_menu.set_popover(offered);
+        // Not over its own open menu.
+        if self.feed_menu.is_active() {
+            self.feed_menu.set_has_tooltip(false);
+        }
+        let model = self.feed_menu_model.borrow();
+        let offered = part.clickable.then_some(()).and(model.as_ref());
+        // Named while it opens a menu, so it is only attached and taken off
+        // when that changes, not on every repaint.
+        let attached = self.feed_menu.widget_name() == "offers";
+        if attached != offered.is_some() {
+            match offered {
+                Some(model) => {
+                    let model = model.clone();
+                    self.feed_menu.set_create_popup_func(move |button| {
+                        button.set_menu_model(Some(&model()));
+                    });
+                    self.feed_menu.set_widget_name("offers");
+                }
+                None => {
+                    self.feed_menu.unset_create_popup_func();
+                    self.feed_menu.set_menu_model(None::<&gtk::gio::MenuModel>);
+                    self.feed_menu.set_widget_name("");
+                }
+            }
         }
         match offered.is_some() {
             true => self.feed_menu.remove_css_class("inert"),
@@ -913,7 +954,7 @@ impl ChartPane {
                 .into_iter()
                 .find(|class| self.feed_dot.has_css_class(class))
                 .unwrap_or("none");
-            (colour, self.feed_warning.get_visible(), self.feed_menu.popover().is_some())
+            (colour, self.feed_warning.get_visible(), self.feed_menu.widget_name() == "offers")
         })
     }
 
@@ -1725,8 +1766,7 @@ mod tests {
     fn the_feed_dot_is_the_colour_of_the_connection() {
         crate::ui::on_gtk(|| {
             let pane = test_pane();
-            let popover = gtk::Popover::new();
-            pane.set_feed_popover(popover);
+            pane.set_feed_menu(Rc::new(gtk::gio::Menu::new));
             let on = |label: &str, clickable: bool| FeedPart { label: Some(label.into()), clickable, ..FeedPart::default() };
             pane.write_feed(Some(on("Rithmic", true)));
             pane.set_feed_phase(FeedPhase::Connecting);
@@ -1868,7 +1908,7 @@ mod tests {
             gtk::style_context_add_provider_for_display(&display, &provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 1);
 
             let pane = test_pane();
-            pane.set_feed_popover(gtk::Popover::new());
+            pane.set_feed_menu(Rc::new(gtk::gio::Menu::new));
             pane.set_feed_phase(FeedPhase::Connected);
             let window = gtk::Window::new();
             window.set_default_size(400, 200);

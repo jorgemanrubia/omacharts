@@ -719,8 +719,6 @@ entry.range-date > image:hover { opacity: 0.9; }
 .feed-part.inert > button:hover { background: none; }
 .feed-part.inert > button:disabled,
 .feed-part.inert > button:disabled > * { opacity: 1; filter: none; }
-/* The dot's list opens with its words, where the tooltip's were. */
-.feed-status { margin: 6px 12px; }
 
 /* A hidden layer's glyph, on every chart and in every state: a bare chart
    with nothing saying why reads as one whose data never came. */

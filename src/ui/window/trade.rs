@@ -1303,52 +1303,37 @@ impl Window {
         );
     }
 
-    /// The size part's popover: the template's sizes, the chart's marked,
-    /// each with the key that picks it, picked with a click.
-    pub(super) fn fill_size_menu(self: &Rc<Self>, popover: &gtk::Popover, id: u32) {
-        let Some(pane) = self.pane(id) else { return };
-        let menu = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        let (sizes, kind) = {
+    /// The Quantity part's menu, for the chart `id` as it is now: the
+    /// quantities of its template, each a number, a mark on the chart's,
+    /// then the way to edit the templates, which a right click on the part
+    /// offers too.
+    pub(super) fn size_menu(self: &Rc<Self>, id: u32) -> gio::Menu {
+        let menu = gio::Menu::new();
+        let Some(pane) = self.pane(id) else { return menu };
+        let sizes = {
             let instrument = pane.instrument.borrow();
             let templates = self.trade.sizes.borrow();
-            let sizes = instrument
+            instrument
                 .as_ref()
                 .and_then(|instrument| trading::sizes::template_for(&templates, instrument))
                 .map(|template| template.sizes.clone())
-                .unwrap_or_default();
-            (sizes, instrument.as_ref().map(|instrument| instrument.kind))
+                .unwrap_or_default()
         };
         let current = self.size_of(&pane);
-        for (at, size) in sizes.iter().enumerate() {
-            let button = gtk::Button::new();
-            button.add_css_class("flat");
-            button.add_css_class("link-row");
-            let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-            let label = match kind {
-                Some(kind) => trading::sizes::size_text(*size, kind),
-                None => size.to_string(),
-            };
-            let title = gtk::Label::new(Some(&label));
-            title.set_xalign(0.0);
-            title.set_hexpand(true);
-            line.append(&title);
-            // Kept in place when not drawn, so the column does not move.
-            let mark = gtk::Image::from_icon_name("object-select-symbolic");
-            mark.set_opacity(if *size == current { 1.0 } else { 0.0 });
-            line.append(&mark);
-            button.set_child(Some(&line));
-            let this = self.clone();
-            let closing = popover.downgrade();
-            button.connect_clicked(move |_| {
-                if let Some(popover) = closing.upgrade() {
-                    popover.popdown();
-                }
-                this.focus(id);
-                this.pick_size(id, at + 1);
-            });
-            menu.append(&button);
+        let at = sizes.iter().position(|size| *size == current).map_or(0, |at| at as i32 + 1);
+        if let Some(action) = pane.menu_actions.lookup_action("quantity").and_downcast::<gio::SimpleAction>() {
+            action.set_state(&at.to_variant());
         }
-        popover.set_child(Some(&menu));
+        let choices = gio::Menu::new();
+        // The number alone, as the part says it: "Qty" says what it counts.
+        for (at, size) in sizes.iter().enumerate() {
+            let item = gio::MenuItem::new(Some(&size.to_string()), None);
+            item.set_action_and_target_value(Some("pane.quantity"), Some(&(at as i32 + 1).to_variant()));
+            choices.append_item(&item);
+        }
+        menu.append_section(None, &choices);
+        menu.append_section(None, &size_part_menu());
+        menu
     }
 
     /// Mark every chart with its account's position and working orders in
@@ -2502,16 +2487,14 @@ pub(super) mod tests {
     fn the_size_part_offers_the_templates_sizes() {
         crate::ui::on_gtk(|| {
             let (window, pane, _session, _) = long_es(true);
-            let popover = gtk::Popover::new();
-            window.fill_size_menu(&popover, pane.id);
-            let rows = popover.child().and_downcast::<gtk::Box>().expect("a list");
-            let mut count = 0;
-            let mut child = rows.first_child();
-            while let Some(row) = child {
-                count += 1;
-                child = row.next_sibling();
-            }
-            assert_eq!(count, 9, "one to nine contracts");
+            let shown = rows(&pane, &window.size_menu(pane.id));
+            assert_eq!(shown.len(), 10, "one to nine contracts, then the way to edit them: {shown:?}");
+            assert_eq!(shown[0], "1 ✓");
+            assert_eq!(shown[9], "Edit quantities…");
+            // Picked from the menu, through its action, as a click does.
+            pane.menu_actions.activate_action("quantity", Some(&3i32.to_variant()));
+            assert_eq!(pane.size_label_text(), "3");
+            assert_eq!(rows(&pane, &window.size_menu(pane.id))[2], "3 ✓");
             let menu = size_part_menu();
             assert_eq!(labels(menu.upcast_ref()), vec![("Edit quantities…".to_string(), true)]);
             assert!(window.window.lookup_action(EDIT_SIZES).is_some());
@@ -2661,65 +2644,52 @@ pub(super) mod tests {
         (id, session)
     }
 
-    /// What a part's popover shows, a line a row: "✓" on the one in
-    /// force, a line under it after "—", "(heading)" on one that cannot
-    /// be clicked, and a plain line for words that are not a row, such as
-    /// the feed list's status.
-    fn rows(popover: &gtk::Popover) -> Vec<String> {
-        let menu = popover.child().expect("a list");
+    /// What a part's menu shows, a line a row: "✓" on the one in force,
+    /// which is the one its action's state names, and a section's title
+    /// as a plain line, such as the feed list's status.
+    fn rows(pane: &ChartPane, menu: &gio::Menu) -> Vec<String> {
         let mut rows = Vec::new();
-        let mut next = menu.first_child();
-        while let Some(child) = next {
-            next = child.next_sibling();
-            if let Some(label) = child.downcast_ref::<gtk::Label>() {
-                rows.push(label.label().to_string());
-                continue;
-            }
-            let button = child.downcast::<gtk::Button>().expect("a row");
-            let line = button.child().expect("a line");
-            let mut text = String::new();
-            let mut part = line.first_child();
-            while let Some(widget) = part {
-                part = widget.next_sibling();
-                if let Some(mark) = widget.downcast_ref::<gtk::Image>() {
-                    if mark.opacity() == 1.0 {
-                        text.push_str(" ✓");
+        for at in 0..menu.n_items() {
+            let label = menu.item_attribute_value(at, "label", None).and_then(|label| label.get::<String>());
+            match menu.item_link(at, "section") {
+                Some(section) => {
+                    rows.extend(label);
+                    for row in 0..section.n_items() {
+                        rows.push(row_words(pane, &section, row));
                     }
-                    continue;
                 }
-                let mut word = widget.first_child();
-                let mut first = true;
-                while let Some(label) = word {
-                    word = label.next_sibling();
-                    let label = label.downcast::<gtk::Label>().expect("words");
-                    if !first {
-                        text.push_str(" — ");
-                    }
-                    text.push_str(&label.label());
-                    first = false;
-                }
+                None => rows.push(row_words(pane, menu.upcast_ref(), at)),
             }
-            if !button.is_sensitive() {
-                text.push_str(" (heading)");
-            }
-            rows.push(text);
         }
         rows
     }
 
-    /// What the Account part's popover shows for `pane`.
-    fn accounts(window: &Rc<Window>, pane: &ChartPane) -> Vec<String> {
-        let popover = gtk::Popover::new();
-        window.fill_account_menu(&popover, pane.id);
-        rows(&popover)
+    fn row_words(pane: &ChartPane, menu: &gio::MenuModel, at: i32) -> String {
+        let mut text = menu
+            .item_attribute_value(at, "label", None)
+            .and_then(|label| label.get::<String>())
+            .unwrap_or_default();
+        let action = menu.item_attribute_value(at, "action", None).and_then(|action| action.get::<String>());
+        let target = menu.item_attribute_value(at, "target", None);
+        let state = action
+            .as_deref()
+            .and_then(|action| action.strip_prefix("pane."))
+            .and_then(|name| pane.menu_actions.action_state(name));
+        if target.is_some() && target == state {
+            text.push_str(" ✓");
+        }
+        text
     }
 
-    /// What the Data feed part's popover shows for `pane`: the status when
+    /// What the Account part's menu shows for `pane`.
+    fn accounts(window: &Rc<Window>, pane: &ChartPane) -> Vec<String> {
+        rows(pane, &window.account_menu(pane.id))
+    }
+
+    /// What the Data feed part's menu shows for `pane`: the status when
     /// something is wrong, then the feeds.
     fn feeds(window: &Rc<Window>, pane: &ChartPane) -> Vec<String> {
-        let popover = gtk::Popover::new();
-        window.fill_feed_menu(&popover, pane.id);
-        rows(&popover)
+        rows(pane, &window.feed_menu(pane.id))
     }
 
     /// The Data feed part as drawn: its tooltip, the dot's colour, whether
@@ -2823,7 +2793,8 @@ pub(super) mod tests {
             assert_eq!(feeds(&window, &pane), vec!["Rithmic (default) ✓", "Yahoo Finance"]);
             assert_eq!(dot(&pane), Some(("Rithmic · Connecting…".into(), "connecting", false, true)));
 
-            window.choose_feed(pane.id, Some("yahoo".into()));
+            // Picked from the menu, through its action, as a click does.
+            pane.menu_actions.activate_action("feed", Some(&"yahoo".to_variant()));
             assert_eq!(feeds(&window, &pane), vec!["Rithmic (default)", "Yahoo Finance ✓"]);
             // The default chosen again is no choice: nothing is kept.
             window.choose_feed(pane.id, None);
@@ -2873,7 +2844,7 @@ pub(super) mod tests {
             assert_eq!(pane.account_text().as_deref(), Some("Rithmic Test 951"), "the feed is the dot's, not the account's");
             assert_eq!(dot(&pane).map(|dot| dot.0), Some("Yahoo Finance · Connecting…".into()));
             let other = format!("{id}/952");
-            window.choose_account(pane.id, Some(other.clone()));
+            pane.menu_actions.activate_action("account", Some(&other.to_variant()));
             assert_eq!(pane.account.borrow().as_deref(), Some(other.as_str()));
             assert!(pane.feed.borrow().is_none(), "the feed went with the account");
             assert_eq!(pane.account_text().as_deref(), Some("Rithmic Test 952"));
@@ -2891,7 +2862,7 @@ pub(super) mod tests {
             session.sign_out();
             window.desk.tell();
             assert_eq!(pane.account_text().as_deref(), Some("Rithmic Test 952 signed out"));
-            assert_eq!(accounts(&window, &pane), vec!["Rithmic Test 951 — signed out", "Rithmic Test 952 — signed out ✓"]);
+            assert_eq!(accounts(&window, &pane), vec!["Rithmic Test 951 · signed out", "Rithmic Test 952 · signed out ✓"]);
         });
     }
 
