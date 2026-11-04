@@ -46,6 +46,7 @@ use crate::ui::shortcuts;
 use crate::ui::watchlist::{Quote, Watchlist, DEFAULTS};
 use gtk::gio;
 
+mod log;
 mod trade;
 use trade::Trade;
 
@@ -164,6 +165,7 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+Shift+I", "Add an indicator"),
             ("Ctrl+Shift+S", "Chart settings"),
             ("Ctrl+,", "Preferences"),
+            ("Ctrl+Shift+J", "Log"),
             ("F10", "Main menu"),
             ("? · Ctrl+?", "This list"),
             ("Ctrl+Q", "Quit"),
@@ -2214,6 +2216,8 @@ pub struct Window {
     /// Everything trading puts in the window, none of it built until there
     /// is a login.
     trade: Trade,
+    /// The Log, the corner notice and the main menu's dot.
+    messages: log::Messages,
     /// Which feed a loader reply belongs to. Bumped by a switch, so a reply
     /// the old worker had already sent is recognised and dropped rather
     /// than painted onto a chart that has moved on.
@@ -2359,6 +2363,7 @@ impl Window {
             desk: Rc::new(crate::trading::Desk::new(crate::trading::registry())),
             trading: RefCell::new(crate::trading::View::load(&store)),
             trade: Trade::default(),
+            messages: log::Messages::new(omacharts_engine::log::global()),
             feed_generation: Cell::new(0),
             refresh_timer_on: Cell::new(false),
             drain_scheduled: Cell::new(false),
@@ -2371,6 +2376,7 @@ impl Window {
         });
 
         this.watch_trading();
+        this.watch_log();
         let watchlist = this.build_watchlist();
         // Which list the rail is showing is part of the chartbook, so every
         // way of changing it has to write the book down. One hook, because a
@@ -5144,6 +5150,7 @@ impl Window {
         shortcuts::append(&books, "New chartbook", "win.new-chartbook");
         menu.append_section(None, &books);
         shortcuts::append(&menu, "Preferences", "win.preferences");
+        shortcuts::append(&menu, "Log", "win.log");
         shortcuts::append(&menu, "Keyboard Shortcuts", "win.shortcuts");
         let menu_button = gtk::MenuButton::new();
         menu_button.set_icon_name("open-menu-symbolic");
@@ -5157,6 +5164,7 @@ impl Window {
         // thing saying this menu was the primary one.
         menu_button.set_primary(true);
         menu_button.add_css_class("flat");
+        *self.messages.menu_button.borrow_mut() = Some(menu_button.clone());
 
         let toggle = gtk::ToggleButton::new();
         toggle.set_icon_name("sidebar-show-right-symbolic");
@@ -5429,6 +5437,11 @@ impl Window {
         let this = self.clone();
         shortcuts.connect_activate(move |_, _| this.show_shortcuts());
         self.window.add_action(&shortcuts);
+
+        let log = gio::SimpleAction::new("log", None);
+        let this = self.clone();
+        log.connect_activate(move |_, _| this.open_log());
+        self.window.add_action(&log);
 
         let find = gio::SimpleAction::new("find", None);
         let this = self.clone();
@@ -5884,8 +5897,9 @@ impl Window {
                         // Any failure, not only a refusal: a batch that came
                         // back with nothing leaves every row in it due, and
                         // the next tick would send it again a minute later.
-                        if failure.is_some() {
+                        if let Some(failure) = failure {
                             this.pause_backfill(&feed);
+                            this.say(crate::log_words::closes_failed(feed.provider.label(), failure));
                         }
                     }
                     Response::Bars { key, timeframe, bars } => {
@@ -5896,6 +5910,10 @@ impl Window {
                         });
                     }
                     Response::Failed { key, timeframe, bars, failure, unasked } => {
+                        // The one place a failed fetch is taken in, so the
+                        // one place it is logged.
+                        let symbol = key.split_once(':').map_or(key.as_str(), |(_, symbol)| symbol);
+                        this.say(crate::log_words::fetch_failed(feed.provider.label(), symbol, timeframe, failure));
                         // A failure shows the same chart and says what went
                         // wrong. Never an empty pane, and never a pane that
                         // blames the symbol for a request that never arrived.
@@ -6536,6 +6554,7 @@ impl Window {
                     Watching::Refused(failure) => {
                         pane.view.set_loading(false);
                         pane.view.set_trouble(Some(failure));
+                        self.say(crate::log_words::fetch_failed(feed.provider.label(), &symbol, native, failure));
                     }
                 }
             }
@@ -7254,6 +7273,7 @@ impl Window {
                 let Some(this) = this.upgrade() else { return };
                 let before = this.routes_on_screen();
                 if providers::adopt_serving() {
+                    this.say(crate::log_words::serving_changed());
                     this.reroute(&before);
                 }
             }
@@ -7836,6 +7856,9 @@ impl Window {
             // The whole series: the ordinary paint, which folds, filters and
             // recomputes, as a loader reply would.
             Change::Snapshot(series) => {
+                if self.messages.lost.borrow_mut().remove(&series) {
+                    self.say_of_stream(&series, None);
+                }
                 let bars = live.with_bars(&series, |bars| bars.to_vec()).unwrap_or_default();
                 for id in live.watchers(&series) {
                     let Some(pane) = self.pane(id) else { continue };
@@ -7912,6 +7935,8 @@ impl Window {
             }
             // The bars stay; the corner says why nothing newer is coming.
             Change::Lost { series, why } => {
+                self.messages.lost.borrow_mut().insert(series.clone());
+                self.say_of_stream(&series, Some(why));
                 for id in live.watchers(&series) {
                     let Some(pane) = self.pane(id) else { continue };
                     pane.view.set_loading(false);

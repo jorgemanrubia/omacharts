@@ -7,6 +7,7 @@ pub mod controls;
 pub mod colors;
 pub mod dialogs;
 pub mod drop_line;
+pub mod notice;
 pub mod drawing_bar;
 pub mod drawing_settings;
 pub mod feed_settings;

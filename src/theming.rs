@@ -779,6 +779,18 @@ entry.range-date > image:hover { opacity: 0.9; }
   transition: opacity 120ms ease-out;
 }
 .window-corner:hover button { opacity: 1; }
+/* The main menu's dot: an error dismissed from the corner notice and not
+   yet read in the Log. Drawn on the button rather than a widget beside it,
+   so a window with nothing unread has nothing more in it. */
+.window-corner menubutton.unread > button {
+  opacity: 1;
+  background-image: radial-gradient(circle 3px at 80% 24%, @error_color 99%, transparent 100%);
+}
+
+/* The corner notice, over the bottom-left of the charts. */
+.log-notice { padding: 8px 8px 8px 14px; margin: 0 0 0 0; }
+/* The Log's rows: room between them, and none taken from the text. */
+.log-list > row { padding: 6px 12px; }
 
 /* The drawing tools, down the left edge: a column of two, quiet until one is
    in hand, which lights it in the accent the way a pressed tool should. */

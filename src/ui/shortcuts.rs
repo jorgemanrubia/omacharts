@@ -52,6 +52,9 @@ pub const BINDINGS: &[Binding] = &[
     // tools beside it took Ctrl+Shift+D.
     global("win.watchlist", &["<Ctrl><Shift>b"]),
     global("win.preferences", &["<Ctrl>comma"]),
+    // J, as a browser's console is: Ctrl+Shift+L was the previous link
+    // mode's already.
+    global("win.log", &["<Ctrl><Shift>j"]),
     global("chart.indicators", &["<Ctrl>i"]),
     // A letter, because Shift and punctuation together is a trap. GTK
     // matches the keyval the key produces *after* modifiers, and shifting
