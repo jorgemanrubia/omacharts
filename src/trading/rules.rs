@@ -237,26 +237,6 @@ pub fn answered(request: &Request, pending: &Pending, book: &Book) -> bool {
     }
 }
 
-/// Whether a chart's header has an account part: when there is more than
-/// one account or more than one feed to choose from.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Offer {
-    pub accounts: bool,
-    pub feeds: bool,
-}
-
-impl Offer {
-    pub fn of(accounts: usize, feeds: usize) -> Offer {
-        Offer { accounts: accounts > 1, feeds: feeds > 1 }
-    }
-
-    /// Is the part there at all? Otherwise it is blank, takes no room and
-    /// cannot be clicked.
-    pub fn any(self) -> bool {
-        self.accounts || self.feeds
-    }
-}
-
 /// How an account is named: its login's name, "Lucid", with the account
 /// number after it only when the name alone would not say which, because
 /// the login holds several accounts or another login has the same name.
@@ -324,34 +304,13 @@ pub fn feed_of<'a>(
     chosen.or_else(|| own_feed(view, account, feeds, instrument))
 }
 
-/// What the account part says.
-///
-/// The account whenever there is one, `account` being its name, with any
-/// trouble after it ("Lucid 1234 signed out"); the feed, in the words
-/// `feed` makes, when there is no account, or when there are several feeds
-/// and it is not the account's default. Nothing when there is nothing to
-/// choose.
-pub fn part_text(
-    offer: Offer,
-    account: Option<&str>,
-    trouble: Option<&str>,
-    feed_is_default: bool,
-    feed: impl FnOnce() -> String,
-) -> Option<String> {
-    if !offer.any() {
-        return None;
-    }
-    let Some(name) = account else {
-        return Some(feed());
-    };
-    let named = match trouble {
+/// What the Account part says: the account's name, with its trouble
+/// after it when its login is in trouble, "Lucid 1234 signed out".
+pub fn account_text(name: &str, trouble: Option<&str>) -> String {
+    match trouble {
         Some(trouble) => format!("{name} {trouble}"),
         None => name.to_string(),
-    };
-    Some(match offer.feeds && !feed_is_default {
-        true => format!("{named} · {}", feed()),
-        false => named,
-    })
+    }
 }
 
 #[cfg(test)]
@@ -379,52 +338,11 @@ mod tests {
         assert_eq!(account_of(&[], None, Some("a/1")), None);
     }
 
-    /// The header's rule, case by case: nothing unless there is more than
-    /// one account or more than one feed; the account whenever there is
-    /// one; the feed only when it is not the account's default, or when
-    /// there is no account; trouble after the thing in trouble.
+    /// The Account part names the account, and its trouble after it.
     #[test]
-    fn the_account_part_names_only_what_can_be_chosen() {
-        let text = |accounts: usize, feeds: usize, account: Option<&str>, trouble: Option<&str>, default: bool, feed: &str| {
-            let feed = feed.to_string();
-            part_text(Offer::of(accounts, feeds), account, trouble, default, || feed)
-        };
-
-        // At most one account and one feed: blank, and not there at all.
-        assert_eq!(text(0, 1, None, None, true, "Yahoo"), None);
-        assert_eq!(text(1, 1, Some("Rithmic"), None, true, "Rithmic"), None);
-        assert_eq!(text(1, 1, Some("Rithmic"), Some("signed out"), true, "Rithmic"), None);
-        // No account, several feeds: the feed, and what it passed over.
-        assert_eq!(text(0, 2, None, None, true, "Yahoo").as_deref(), Some("Yahoo"));
-        assert_eq!(
-            text(0, 2, None, None, true, "Yahoo · Rithmic not signed in").as_deref(),
-            Some("Yahoo · Rithmic not signed in")
-        );
-        // One account on its default feed: the account alone.
-        assert_eq!(text(1, 2, Some("Rithmic"), None, true, "Rithmic").as_deref(), Some("Rithmic"));
-        // Overridden, or fallen back: the feed after it.
-        assert_eq!(text(1, 2, Some("Rithmic"), None, false, "Yahoo").as_deref(), Some("Rithmic · Yahoo"));
-        // Several accounts and one feed: the account, whatever the feed.
-        assert_eq!(text(2, 1, Some("Lucid 1234"), None, false, "Yahoo").as_deref(), Some("Lucid 1234"));
-        // Several of both.
-        assert_eq!(text(2, 2, Some("Lucid 1234"), None, true, "Rithmic").as_deref(), Some("Lucid 1234"));
-        assert_eq!(text(2, 2, Some("Lucid 1234"), None, false, "Yahoo").as_deref(), Some("Lucid 1234 · Yahoo"));
-        // A login in trouble.
-        assert_eq!(text(1, 2, Some("Rithmic"), Some("signed out"), true, "Rithmic").as_deref(), Some("Rithmic signed out"));
-        assert_eq!(
-            text(2, 2, Some("Lucid 1234"), Some("signed out"), false, "Yahoo").as_deref(),
-            Some("Lucid 1234 signed out · Yahoo")
-        );
-        // A chosen feed that refused, and nothing serving at all.
-        assert_eq!(
-            text(1, 2, Some("Rithmic"), None, false, "Yahoo not signed in").as_deref(),
-            Some("Rithmic · Yahoo not signed in")
-        );
-        assert_eq!(text(1, 2, Some("Rithmic"), None, false, "no data feed").as_deref(), Some("Rithmic · no data feed"));
-
-        for (accounts, feeds, any) in [(0, 1, false), (1, 1, false), (2, 1, true), (0, 2, true), (1, 3, true)] {
-            assert_eq!(Offer::of(accounts, feeds).any(), any, "{accounts} accounts, {feeds} feeds");
-        }
+    fn the_account_part_names_the_account_and_its_trouble() {
+        assert_eq!(account_text("Lucid 1234", None), "Lucid 1234");
+        assert_eq!(account_text("Lucid 1234", Some("signed out")), "Lucid 1234 signed out");
     }
 
     /// An account goes by its login's name, with its number only when the

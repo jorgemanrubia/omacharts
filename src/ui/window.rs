@@ -106,14 +106,6 @@ fn worth_warming(delivery: Delivery, cached: bool) -> bool {
 
 /// What a chart's header says about where its bars come from: the feed
 /// serving it, then each it was passed over and why.
-fn feed_text<'a>(serving: &str, passed: impl Iterator<Item = (&'a str, &'a str)>) -> String {
-    let mut text = serving.to_string();
-    for (label, why) in passed {
-        text.push_str(&format!(" · {label} {why}"));
-    }
-    text
-}
-
 /// How often we look for a desktop theme change. Cheap enough to be invisible,
 /// often enough to feel immediate.
 const THEME_POLL_SECONDS: u32 = 2;
@@ -388,16 +380,6 @@ mod tests {
     /// that installs it is a function of its own and this holds that. A
     /// provider that streams gets no timer at all — nothing to poll, nothing
     /// to time — and the one that is polled gets it without anybody asking.
-    /// A chart passed over a feed says so, after the feed it is from.
-    #[test]
-    fn the_header_names_the_feed_and_what_it_passed_over() {
-        assert_eq!(feed_text("Yahoo", std::iter::empty()), "Yahoo");
-        assert_eq!(
-            feed_text("Yahoo", [("thinkorswim", "not signed in")].into_iter()),
-            "Yahoo · thinkorswim not signed in"
-        );
-    }
-
     /// The feed somebody chose comes back with the chart after a restart,
     /// and a chart that follows the order writes nothing for it, so every
     /// arrangement stored before there was a choice reads as following it.
@@ -2666,14 +2648,20 @@ impl Window {
             expander.toggle_maximized();
         });
 
-        // The account opens the feeds that could serve this chart, built
-        // afresh each time it opens: which feeds there are, which can be used
-        // and what the chart is of all change underneath it.
+        // The account opens the accounts, and the feed's dot the feeds that
+        // could serve this chart, each built afresh each time it opens:
+        // which there are, which can be used and what the chart is of all
+        // change underneath them.
+        let accounts = gtk::Popover::new();
+        accounts.set_has_arrow(false);
+        let filler = self.clone();
+        accounts.connect_show(move |popover| filler.fill_account_menu(popover, id));
+        pane.account_menu.set_popover(Some(&accounts));
         let feeds = gtk::Popover::new();
         feeds.set_has_arrow(false);
         let filler = self.clone();
         feeds.connect_show(move |popover| filler.fill_feed_menu(popover, id));
-        pane.feed_menu.set_popover(Some(&feeds));
+        pane.set_feed_popover(feeds);
 
         // The size opens the sizes of the chart's template, and on a right
         // click offers to edit the templates, as the strip does its list.
@@ -3618,94 +3606,133 @@ impl Window {
         popover
     }
 
-    /// The account's list, for the chart `id` as it is now.
-    ///
-    /// With no account, the feeds that serve the chart's instrument, the
-    /// order's pick marked "(default)". With accounts, one row each, and
-    /// under the chart's own, indented, those feeds once there is more than
-    /// one feed, the account's default marked "(default)"; the other
-    /// accounts stay collapsed. A single account is a heading that cannot
-    /// be clicked. A mark on what is in force, and a line under an account
-    /// only for its trouble; a feed's row is its name alone.
-    ///
-    /// Choosing a default stores nothing, so the chart keeps following it;
-    /// choosing another account forgets the chart's feed.
-    fn fill_feed_menu(self: &Rc<Self>, popover: &gtk::Popover, id: u32) {
+    /// One row of the account's or the feed's list: `label`, with `state`
+    /// under it when there is something wrong, a mark when it is the one
+    /// in force, and `chosen` when it is clicked, after the popover closes
+    /// and the chart takes the focus. Without `chosen` it is a heading
+    /// that cannot be clicked.
+    fn choice_row(
+        self: &Rc<Self>,
+        popover: &gtk::Popover,
+        id: u32,
+        label: &str,
+        state: Option<&str>,
+        marked: bool,
+        chosen: Option<Rc<dyn Fn()>>,
+    ) -> gtk::Button {
+        let button = gtk::Button::new();
+        button.add_css_class("flat");
+        button.add_css_class("link-row");
+        let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let words = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        words.set_hexpand(true);
+        let title = gtk::Label::new(Some(label));
+        title.set_xalign(0.0);
+        words.append(&title);
+        if let Some(state) = state {
+            let subtitle = gtk::Label::new(Some(state));
+            subtitle.set_xalign(0.0);
+            subtitle.add_css_class("dim-label");
+            subtitle.add_css_class("caption");
+            words.append(&subtitle);
+        }
+        line.append(&words);
+        // Kept in place when not drawn, as in the chain's menu, so the
+        // column does not move with the choice.
+        let mark = gtk::Image::from_icon_name("object-select-symbolic");
+        mark.set_valign(gtk::Align::Center);
+        mark.set_opacity(if marked { 1.0 } else { 0.0 });
+        line.append(&mark);
+        button.set_child(Some(&line));
+        match chosen {
+            None => button.set_sensitive(false),
+            Some(chosen) => {
+                let this = self.clone();
+                let closing = popover.downgrade();
+                button.connect_clicked(move |_| {
+                    if let Some(popover) = closing.upgrade() {
+                        popover.popdown();
+                    }
+                    this.focus(id);
+                    chosen();
+                });
+            }
+        }
+        button
+    }
+
+    /// The Account part's list, for the chart `id` as it is now: the
+    /// accounts, one row each, a mark on the chart's own, and a line under
+    /// an account only for its trouble. Choosing the default stores
+    /// nothing, so the chart keeps following it; choosing another account
+    /// forgets the chart's feed.
+    fn fill_account_menu(self: &Rc<Self>, popover: &gtk::Popover, id: u32) {
         let Some(pane) = self.pane(id) else { return };
-        let instrument = pane.instrument.borrow().clone();
-        let feeds = self.feeds();
         let view = self.trading.borrow().clone();
         let account = view.account_of(pane.account.borrow().as_deref()).cloned();
-        let mut serving: Vec<Rc<Feed>> = match &instrument {
-            Some(instrument) => providers::serving(feeds.iter().map(|feed| feed.provider.as_ref()), instrument)
+        let default_account = view.default_account().map(crate::trading::Account::key);
+        let menu = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        for listed in &view.accounts {
+            let key = listed.key();
+            let current = account.as_ref().is_some_and(|account| account.key() == key);
+            let trouble = view.trouble(&self.desk, listed);
+            let chosen: Rc<dyn Fn()> = match current {
+                true => Rc::new(|| {}),
+                false => {
+                    let this = self.clone();
+                    let stored = (default_account.as_deref() != Some(key.as_str())).then_some(key);
+                    Rc::new(move || this.choose_account(id, stored.clone()))
+                }
+            };
+            menu.append(&self.choice_row(popover, id, &view.account_name(listed), trouble.as_deref(), current, Some(chosen)));
+        }
+        popover.set_child(Some(&menu));
+    }
+
+    /// The feeds that could serve `pane`'s chart of `instrument`, the
+    /// default first and the rest in the order; the default's id; and the
+    /// id of the one in force, chosen or fallen back to.
+    fn feeds_serving(&self, pane: &ChartPane, instrument: &Instrument) -> (Vec<Rc<Feed>>, Option<&'static str>, Option<&'static str>) {
+        let feeds = self.feeds();
+        let view = self.trading.borrow();
+        let account = view.account_of(pane.account.borrow().as_deref());
+        let mut serving: Vec<Rc<Feed>> =
+            providers::serving(feeds.iter().map(|feed| feed.provider.as_ref()), instrument)
                 .into_iter()
                 .filter_map(|at| feeds.get(at).cloned())
-                .collect(),
-            None => Vec::new(),
-        };
-        let default = instrument.as_ref().and_then(|instrument| {
-            crate::trading::default_feed(
-                &view,
-                account.as_ref(),
-                feeds.iter().map(|feed| feed.provider.as_ref() as &dyn Provider),
-                instrument,
-            )
-        });
+                .collect();
+        let default = crate::trading::default_feed(
+            &view,
+            account,
+            feeds.iter().map(|feed| feed.provider.as_ref() as &dyn Provider),
+            instrument,
+        );
+        drop(view);
         // The default first, as the one nobody has to choose; the rest in
         // the order.
         serving.sort_by_key(|feed| Some(feed.provider.id()) != default);
-        let in_force = instrument.as_ref().and_then(|instrument| match self.route_chosen(&pane, instrument)? {
-            Ok(routed) | Err(routed) => Some(routed.feed.provider.id()),
-        });
-        let menu = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        let row = |label: &str, state: Option<String>, marked: Option<bool>, indent: bool, chosen: Option<Rc<dyn Fn()>>| {
-            let button = gtk::Button::new();
-            button.add_css_class("flat");
-            button.add_css_class("link-row");
-            let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-            if indent {
-                line.set_margin_start(24);
-            }
-            let words = gtk::Box::new(gtk::Orientation::Vertical, 0);
-            words.set_hexpand(true);
-            let title = gtk::Label::new(Some(label));
-            title.set_xalign(0.0);
-            words.append(&title);
-            if let Some(state) = state {
-                let subtitle = gtk::Label::new(Some(&state));
-                subtitle.set_xalign(0.0);
-                subtitle.add_css_class("dim-label");
-                subtitle.add_css_class("caption");
-                words.append(&subtitle);
-            }
-            line.append(&words);
-            // Kept in place when not drawn, as in the chain's menu, so the
-            // column does not move with the choice.
-            if let Some(marked) = marked {
-                let mark = gtk::Image::from_icon_name("object-select-symbolic");
-                mark.set_valign(gtk::Align::Center);
-                mark.set_opacity(if marked { 1.0 } else { 0.0 });
-                line.append(&mark);
-            }
-            button.set_child(Some(&line));
-            match chosen {
-                // A heading: there is nothing else to choose.
-                None => button.set_sensitive(false),
-                Some(chosen) => {
-                    let this = self.clone();
-                    let closing = popover.downgrade();
-                    button.connect_clicked(move |_| {
-                        if let Some(popover) = closing.upgrade() {
-                            popover.popdown();
-                        }
-                        this.focus(id);
-                        chosen();
-                    });
-                }
-            }
-            menu.append(&button);
+        let in_force = match self.route_chosen(pane, instrument) {
+            Some(Ok(routed) | Err(routed)) => Some(routed.feed.provider.id()),
+            None => None,
         };
-        let feed_rows = |indent: bool| {
+        (serving, default, in_force)
+    }
+
+    /// The Data feed part's list, for the chart `id` as it is now: how the
+    /// feed stands, in the dot's own words, and the feeds that serve the
+    /// chart's instrument, a mark on the one in force and "(default)" on
+    /// the account's own — or the order's pick, with no account. Choosing
+    /// the default stores nothing, so the chart keeps following it.
+    fn fill_feed_menu(self: &Rc<Self>, popover: &gtk::Popover, id: u32) {
+        let Some(pane) = self.pane(id) else { return };
+        let menu = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let status = gtk::Label::new(pane.feed_menu.tooltip_text().as_deref());
+        status.set_xalign(0.0);
+        status.add_css_class("feed-status");
+        menu.append(&status);
+        let instrument = pane.instrument.borrow().clone();
+        if let Some(instrument) = instrument {
+            let (serving, default, in_force) = self.feeds_serving(&pane, &instrument);
             for feed in &serving {
                 let own = feed.provider.id();
                 let label = match Some(own) == default {
@@ -3716,37 +3743,8 @@ impl Window {
                 // following it.
                 let chosen = (Some(own) != default).then(|| own.to_string());
                 let this = self.clone();
-                row(
-                    &label,
-                    None,
-                    Some(in_force == Some(own)),
-                    indent,
-                    Some(Rc::new(move || this.choose_feed(id, chosen.clone()))),
-                );
-            }
-        };
-        if view.accounts.is_empty() {
-            feed_rows(false);
-        } else {
-            let several = view.accounts.len() > 1;
-            let default_account = view.default_account().map(crate::trading::Account::key);
-            for listed in &view.accounts {
-                let key = listed.key();
-                let current = account.as_ref().is_some_and(|account| account.key() == key);
-                let trouble = view.trouble(&self.desk, listed);
-                let chosen: Option<Rc<dyn Fn()>> = match (several, current) {
-                    (false, _) => None,
-                    (true, true) => Some(Rc::new(|| {})),
-                    (true, false) => {
-                        let this = self.clone();
-                        let stored = (default_account.as_deref() != Some(key.as_str())).then_some(key);
-                        Some(Rc::new(move || this.choose_account(id, stored.clone())))
-                    }
-                };
-                row(&view.account_name(listed), trouble, Some(current), false, chosen);
-                if current && feeds.len() > 1 {
-                    feed_rows(true);
-                }
+                let pick: Rc<dyn Fn()> = Rc::new(move || this.choose_feed(id, chosen.clone()));
+                menu.append(&self.choice_row(popover, id, &label, None, in_force == Some(own), Some(pick)));
             }
         }
         popover.set_child(Some(&menu));
@@ -6513,9 +6511,10 @@ impl Window {
         }
 
         *pane.instrument.borrow_mut() = Some(instrument.clone());
-        // After the instrument, which is what says whether the feed is the
-        // chart's default and so goes unnamed.
+        // After the instrument, which is what says whether another feed
+        // could be chosen. Connecting from here until bars come, or do not.
         self.write_feed_of(pane, Some(&feed), &passed);
+        pane.set_feed_phase(pane::FeedPhase::Connecting);
         self.apply_marks_to(pane);
         // Whatever this chart was waiting for, it is not waiting any more. A
         // chart somebody has since pointed somewhere else must not be moved
@@ -6596,10 +6595,12 @@ impl Window {
             Some(live) => {
                 let since = self.store.coverage(&key, native).map(|coverage| coverage.last_ts);
                 match live.watch(pane.id, series, &symbol, since) {
-                    Watching::Showing | Watching::Opening => {}
+                    Watching::Showing => pane.set_feed_phase(pane::FeedPhase::Connected),
+                    Watching::Opening => {}
                     Watching::Refused(failure) => {
                         pane.view.set_loading(false);
                         pane.view.set_trouble(Some(failure));
+                        pane.set_feed_phase(pane::FeedPhase::Lost(failure));
                         self.say(crate::log_words::fetch_failed(feed.provider.label(), &symbol, native, failure));
                     }
                 }
@@ -6654,6 +6655,7 @@ impl Window {
         pane.view.set_series(instrument, timeframe, Vec::new());
         pane.view.set_loading(false);
         pane.view.set_trouble(Some(FetchFailure::Unserved));
+        pane.set_feed_phase(pane::FeedPhase::Lost(FetchFailure::Unserved));
     }
 
     /// Chart an instrument on the feed somebody chose for it, which cannot
@@ -6685,6 +6687,7 @@ impl Window {
         self.paint(pane, &key, &instrument, timeframe, cached);
         pane.view.set_loading(false);
         pane.view.set_trouble(Some(FetchFailure::NeedsSignIn));
+        pane.set_feed_phase(pane::FeedPhase::Lost(FetchFailure::NeedsSignIn));
         pane.view.set_configurations(self.store.drawing_configurations());
         let shared = self.store.drawings(&instrument.symbol, instrument.suffix.as_deref());
         pane.view.set_drawings(self.drawings_for(pane, &shared));
@@ -7108,6 +7111,10 @@ impl Window {
             self.paint(&pane, key, &instrument, pane.timeframe.get(), bars.clone());
             pane.view.set_trouble(trouble);
             pane.view.set_loading(false);
+            pane.set_feed_phase(match trouble {
+                Some(why) => pane::FeedPhase::Lost(why),
+                None => pane::FeedPhase::Connected,
+            });
         }
         if let Some(watchlist) = self.watchlist.borrow().as_ref() {
             watchlist.refresh_quotes();
@@ -7980,6 +7987,7 @@ impl Window {
                     self.paint(&pane, &series.key, &instrument, pane.timeframe.get(), bars.clone());
                     pane.view.set_trouble(None);
                     pane.view.set_loading(false);
+                    pane.set_feed_phase(pane::FeedPhase::Connected);
                 }
                 if let Some(watchlist) = self.watchlist.borrow().as_ref() {
                     watchlist.refresh_quotes();
@@ -8054,6 +8062,7 @@ impl Window {
                     let Some(pane) = self.pane(id) else { continue };
                     pane.view.set_loading(false);
                     pane.view.set_trouble(Some(why));
+                    pane.set_feed_phase(pane::FeedPhase::Lost(why));
                 }
             }
         }
@@ -8410,63 +8419,66 @@ impl Window {
         }
     }
 
-    /// Say which account and feed a chart is on: the account whenever there
-    /// is one, "Lucid 1234", and the feed only when it is not the account's
-    /// own, "Lucid 1234 · Yahoo", each with its trouble after it. With no
-    /// account, the feed and what it was passed over, "Yahoo · Rithmic not
-    /// signed in". With one feed and at most one account nothing is written
-    /// and nothing is drawn. See [`crate::trading::part_text`].
+    /// Say which account and feed a chart is on. The Account part names
+    /// the account, "Lucid 1234", with its trouble after it, while there
+    /// is more than one account to be on. The Data feed part's dot is
+    /// `serving`'s, told what the order passed over to reach it, while
+    /// there is more than Yahoo to be on or connected to. With one account
+    /// and Yahoo alone each says nothing and draws nothing.
     fn write_feed_of(&self, pane: &ChartPane, serving: Option<&Rc<Feed>>, passed: &[Rc<Feed>]) {
-        let text = self.account_part(pane, serving.map(|feed| feed.provider.id()), |account| match serving {
-            Some(serving) => feed_text(
-                serving.provider.label(),
-                // With an account, falling back is said by naming the feed
-                // fallen back to; the account's own trouble is on the account.
-                passed
-                    .iter()
-                    .filter(|_| !account)
-                    .map(|feed| (feed.provider.label(), feed.unusable_because.get())),
-            ),
-            None if account => "no data feed".into(),
-            None => "No data feed".into(),
+        self.write_account_of(pane);
+        let part = self.feed_part_of(pane, |part| {
+            part.label = serving.map(|feed| feed.provider.label().to_string());
+            part.passed = passed
+                .iter()
+                .map(|feed| format!("{} {}", feed.provider.label(), feed.unusable_because.get()))
+                .collect();
         });
-        pane.write_feed(text.as_deref());
+        pane.write_feed(part);
     }
 
-    /// Say that a chart's chosen feed cannot serve it, and why: "Rithmic ·
-    /// Yahoo not signed in".
+    /// Say that a chart's chosen feed cannot serve it, and why: the dot
+    /// red, "Rithmic · Not signed in" on it.
     fn write_refused_feed(&self, pane: &ChartPane, feed: &Rc<Feed>) {
-        let text = self.account_part(pane, None, |_| format!("{} {}", feed.provider.label(), feed.unusable_because.get()));
-        pane.write_feed(text.as_deref());
+        self.write_account_of(pane);
+        let part = self.feed_part_of(pane, |part| {
+            part.label = Some(feed.provider.label().to_string());
+            part.refused = Some(feed.unusable_because.get().to_string());
+        });
+        pane.write_feed(part);
     }
 
-    /// The account part's words for `pane`, on the feed `serving`, `feed`
-    /// making the feed's when they are said — told whether the chart has an
-    /// account — and its tooltip set.
-    fn account_part(&self, pane: &ChartPane, serving: Option<&str>, feed: impl FnOnce(bool) -> String) -> Option<String> {
+    /// The Account part's words for `pane`: the account's name with its
+    /// trouble after it, "Lucid 1234 signed out", while there is more than
+    /// one account; nothing otherwise.
+    fn write_account_of(&self, pane: &ChartPane) {
         let view = self.trading.borrow();
+        let text = match view.accounts.len() > 1 {
+            true => view.account_of(pane.account.borrow().as_deref()).map(|account| {
+                let trouble = view.trouble(&self.desk, account);
+                crate::trading::account_text(&view.account_name(account), trouble.as_deref())
+            }),
+            false => None,
+        };
+        pane.write_account(text.as_deref());
+    }
+
+    /// The Data feed part for `pane`, when the dot is drawn at all: with
+    /// more than Yahoo on the order, or a feed that connects to something.
+    /// `fill` says which feed; this says whether another can be chosen.
+    fn feed_part_of(&self, pane: &ChartPane, fill: impl FnOnce(&mut pane::FeedPart)) -> Option<pane::FeedPart> {
         let feeds = self.feeds.borrow();
-        let offer = crate::trading::Offer::of(view.accounts.len(), feeds.len());
-        if !offer.any() {
+        if !crate::feeds::worth_a_dot(feeds.iter().map(|feed| feed.provider.id())) {
             return None;
         }
-        let account = view.account_of(pane.account.borrow().as_deref());
-        let trouble = account.and_then(|account| view.trouble(&self.desk, account));
-        let name = account.map(|account| view.account_name(account));
-        let feed_is_default = serving.is_some()
-            && pane.feed.borrow().is_none()
-            && pane.instrument.borrow().as_ref().is_some_and(|instrument| {
-                crate::trading::default_feed(
-                    &view,
-                    account,
-                    feeds.iter().map(|feed| feed.provider.as_ref() as &dyn Provider),
-                    instrument,
-                ) == serving
-            });
-        drop(feeds);
-        crate::trading::part_text(offer, name.as_deref(), trouble.as_deref(), feed_is_default, || feed(account.is_some()))
+        let instrument = pane.instrument.borrow();
+        let serving = instrument.as_ref().map_or(0, |instrument| {
+            providers::serving(feeds.iter().map(|feed| feed.provider.as_ref()), instrument).len()
+        });
+        let mut part = pane::FeedPart { clickable: serving > 1, ..pane::FeedPart::default() };
+        fill(&mut part);
+        Some(part)
     }
-
 
     /// Every chart's day's move, after quotes have moved.
     ///
@@ -10237,6 +10249,12 @@ impl Window {
         menu.append_section(None, &layout);
 
         let rest = gio::Menu::new();
+        // The gear is a header part now, and a header without it still
+        // needs a way in: this row, only then, so a header with the gear is
+        // not offered the same thing twice.
+        if !self.focused_pane().shows(crate::header::Part::Settings) {
+            shortcuts::append(&rest, "Chart settings", "chart.settings");
+        }
         let modes = gio::Menu::new();
         for mode in link::MODES {
             let item = gio::MenuItem::new(Some(mode.label()), None);

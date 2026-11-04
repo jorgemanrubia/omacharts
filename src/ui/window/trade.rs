@@ -1477,6 +1477,7 @@ pub(super) mod tests {
     use std::sync::Arc;
 
     use super::*;
+    use omacharts_engine::FetchFailure;
     use crate::store::Store;
     use crate::trading::fake::Kept;
     use crate::trading::Session as _;
@@ -1598,6 +1599,26 @@ pub(super) mod tests {
                     .any(|word| label.contains(word))
             })
             .collect()
+    }
+
+    /// The gear is a header part, and a header without it still has a way
+    /// into the chart's settings: the chart's menu, only then.
+    #[test]
+    fn the_chart_menu_opens_the_settings_only_when_the_gear_is_gone() {
+        use crate::header::{Part, Section};
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = window(&store);
+            let settings = |window: &Rc<Window>| {
+                labels(window.chart_menu_model(100.0).upcast_ref()).iter().any(|(label, _)| label == "Chart settings")
+            };
+            assert!(!settings(&window), "offered twice: the gear is in the header");
+            let mut header = crate::header::load(&store);
+            header.set(Section::Right, vec![Part::Maximize, Part::Link]);
+            crate::header::save(&store, &header);
+            window.apply_header();
+            assert!(settings(&window));
+        });
     }
 
     /// The chart menu has no orders without a login, says why it cannot
@@ -2418,24 +2439,23 @@ pub(super) mod tests {
         (id, session)
     }
 
-    /// What the account's popover shows for `pane`, a line a row: indented
-    /// under its account, "✓" on the one in force, a line under it after
-    /// "—", "(heading)" on one that cannot be clicked, and "──" for the rule.
-    fn picker(window: &Rc<Window>, pane: &ChartPane) -> Vec<String> {
-        let popover = gtk::Popover::new();
-        window.fill_feed_menu(&popover, pane.id);
+    /// What a part's popover shows, a line a row: "✓" on the one in
+    /// force, a line under it after "—", "(heading)" on one that cannot
+    /// be clicked, and a plain line for words that are not a row, such as
+    /// the feed list's status.
+    fn rows(popover: &gtk::Popover) -> Vec<String> {
         let menu = popover.child().expect("a list");
         let mut rows = Vec::new();
         let mut next = menu.first_child();
         while let Some(child) = next {
             next = child.next_sibling();
-            if child.is::<gtk::Separator>() {
-                rows.push("──".to_string());
+            if let Some(label) = child.downcast_ref::<gtk::Label>() {
+                rows.push(label.label().to_string());
                 continue;
             }
             let button = child.downcast::<gtk::Button>().expect("a row");
             let line = button.child().expect("a line");
-            let mut text = if line.margin_start() == 24 { "    ".to_string() } else { String::new() };
+            let mut text = String::new();
             let mut part = line.first_child();
             while let Some(widget) = part {
                 part = widget.next_sibling();
@@ -2465,55 +2485,101 @@ pub(super) mod tests {
         rows
     }
 
-    fn part(pane: &ChartPane) -> Option<String> {
-        pane.feed_menu.get_visible().then(|| {
-            let label = pane.feed_menu.child().and_downcast::<gtk::Label>().expect("the part's words");
-            label.label().to_string()
-        })
+    /// What the Account part's popover shows for `pane`.
+    fn accounts(window: &Rc<Window>, pane: &ChartPane) -> Vec<String> {
+        let popover = gtk::Popover::new();
+        window.fill_account_menu(&popover, pane.id);
+        rows(&popover)
     }
 
-    /// No account and two feeds: a flat list of the feeds that serve the
-    /// chart, the order's pick the default, and the header naming the feed
-    /// with what it passed over.
+    /// What the Data feed part's popover shows for `pane`: the status,
+    /// then the feeds.
+    fn feeds(window: &Rc<Window>, pane: &ChartPane) -> Vec<String> {
+        let popover = gtk::Popover::new();
+        window.fill_feed_menu(&popover, pane.id);
+        rows(&popover)
+    }
+
+    /// The Data feed part as drawn: its tooltip, the dot's colour, whether
+    /// the warning is beside it, and whether it opens the list.
+    fn dot(pane: &ChartPane) -> Option<(String, &'static str, bool, bool)> {
+        let (colour, warning, clickable) = pane.feed_dot_shown()?;
+        let tooltip = pane.feed_menu.tooltip_text().map(|text| text.to_string()).unwrap_or_default();
+        Some((tooltip, colour, warning, clickable))
+    }
+
+    /// No account and two feeds: no Account part, and the dot opens a flat
+    /// list of the feeds that serve the chart, the order's pick the
+    /// default, naming the feed and what it passed over on hover. Orange
+    /// until bars come, green when they do, red with a warning when they
+    /// do not.
     #[test]
-    fn the_picker_with_no_account_lists_the_feeds() {
+    fn the_feed_dot_with_no_account_offers_the_feeds() {
         crate::ui::on_gtk(|| {
             let store = Rc::new(Store::memory().expect("a store"));
             let window = window_on(&store, true);
             let pane = window.focused_pane();
             let es = window.index.find("ES", None).expect("ES in the curated half");
             window.show_in(&pane, es.clone());
-            assert_eq!(picker(&window, &pane), vec!["Yahoo Finance (default) ✓", "Rithmic"]);
-            assert_eq!(part(&pane).as_deref(), Some("Yahoo Finance"));
+            assert_eq!(pane.account_text(), None);
+            assert_eq!(dot(&pane), Some(("Yahoo Finance · Connecting…".into(), "connecting", false, true)));
+            assert_eq!(
+                feeds(&window, &pane),
+                vec!["Yahoo Finance · Connecting…", "Yahoo Finance (default) ✓", "Rithmic"]
+            );
 
+            // Bars came, then did not.
+            let key = window.route_pane(&pane, &es).expect("routed").key();
+            let native = pane.timeframe.get().native();
+            window.present(&key, native, Vec::new(), None);
+            assert_eq!(dot(&pane), Some(("Yahoo Finance · Connected".into(), "connected", false, true)));
+            window.present(&key, native, Vec::new(), Some(FetchFailure::Unreachable));
+            assert_eq!(
+                dot(&pane),
+                Some((
+                    "Yahoo Finance · Can't connect: the data feed is not answering. Prices fill in when it does.".into(),
+                    "down",
+                    true,
+                    true
+                ))
+            );
+
+            // A switch shows its choice at once, and goes orange until
+            // the new feed's bars come.
             window.choose_feed(pane.id, Some("rithmic".into()));
-            assert_eq!(picker(&window, &pane), vec!["Yahoo Finance (default)", "Rithmic ✓"]);
-            assert_eq!(part(&pane).as_deref(), Some("Rithmic"));
+            assert_eq!(dot(&pane), Some(("Rithmic · Connecting…".into(), "connecting", false, true)));
+            assert_eq!(feeds(&window, &pane), vec!["Rithmic · Connecting…", "Yahoo Finance (default)", "Rithmic ✓"]);
             // Choosing the default stores nothing.
             window.choose_feed(pane.id, None);
             assert!(pane.feed.borrow().is_none());
 
-            // Passed over, it says so after the feed it fell back to.
+            // Passed over, it says so under the feed it fell back to.
             let before = window.routes_on_screen();
             window.feeds()[0].usable.set(false);
             window.reroute(&before);
-            assert_eq!(part(&pane).as_deref(), Some("Rithmic · Yahoo Finance not signed in"));
-            assert_eq!(picker(&window, &pane), vec!["Yahoo Finance (default)", "Rithmic ✓"]);
+            assert_eq!(
+                dot(&pane).map(|dot| dot.0),
+                Some("Rithmic · Connecting…\nYahoo Finance not signed in".into())
+            );
+            assert_eq!(feeds(&window, &pane)[1..], ["Yahoo Finance (default)", "Rithmic ✓"]);
             window.feeds()[0].usable.set(true);
 
-            // A stock: Rithmic does not serve it, so it is not offered.
+            // A stock: Rithmic does not serve it, so there is nothing to
+            // choose, and the dot opens nothing while still saying how
+            // the feed stands.
             let spy = window.index.find("SPY", None).expect("SPY");
             window.show_in(&pane, spy);
-            assert_eq!(picker(&window, &pane), vec!["Yahoo Finance (default) ✓"]);
+            assert_eq!(dot(&pane), Some(("Yahoo Finance · Connecting…".into(), "connecting", false, false)));
+            assert_eq!(feeds(&window, &pane), vec!["Yahoo Finance · Connecting…", "Yahoo Finance (default) ✓"]);
         });
     }
 
-    /// One account and two feeds: the account a heading, and under it its
-    /// feeds with its own login's the default, ahead of the order. The
-    /// header names the account, and the feed only once it is not the
-    /// account's own; trouble goes after the account.
+    /// One account and two feeds: no Account part, since there is nothing
+    /// to choose, and the dot's list has the account's own login's feed as
+    /// the default, ahead of the order. A chosen feed that cannot be used
+    /// is a red dot saying why.
     #[test]
-    fn the_picker_with_one_account_lists_its_feeds_under_it() {
+    fn the_feed_dot_with_one_account_has_its_feed_as_the_default() {
         crate::ui::on_gtk(|| {
             let store = Rc::new(Store::memory().expect("a store"));
             let window = window_on(&store, true);
@@ -2522,54 +2588,43 @@ pub(super) mod tests {
             window.show_in(&pane, es.clone());
             let (_, session) = sign_in(&window, &store, &["951"]);
 
-            let rows = |marks: [&str; 2]| {
-                vec![
-                    "Rithmic Test ✓ (heading)".to_string(),
-                    format!("    Rithmic (default){}", marks[0]),
-                    format!("    Yahoo Finance{}", marks[1]),
-                ]
-            };
-            assert_eq!(picker(&window, &pane), rows([" ✓", ""]));
-            assert_eq!(part(&pane).as_deref(), Some("Rithmic Test"), "on its own feed, the account alone");
-            assert_eq!(pane.feed_menu.tooltip_text(), None);
+            assert_eq!(pane.account_text(), None, "one account: nothing to choose");
+            assert_eq!(feeds(&window, &pane), vec!["Rithmic · Connecting…", "Rithmic (default) ✓", "Yahoo Finance"]);
+            assert_eq!(dot(&pane), Some(("Rithmic · Connecting…".into(), "connecting", false, true)));
 
             window.choose_feed(pane.id, Some("yahoo".into()));
-            assert_eq!(picker(&window, &pane), rows(["", " ✓"]));
-            assert_eq!(part(&pane).as_deref(), Some("Rithmic Test · Yahoo Finance"));
+            assert_eq!(feeds(&window, &pane), vec!["Yahoo Finance · Connecting…", "Rithmic (default)", "Yahoo Finance ✓"]);
             // The default chosen again is no choice: nothing is kept.
             window.choose_feed(pane.id, None);
-            assert_eq!(part(&pane).as_deref(), Some("Rithmic Test"));
+            assert_eq!(dot(&pane).map(|dot| dot.0), Some("Rithmic · Connecting…".into()));
 
-            // A chosen feed that cannot be used is said, after the account.
+            // A chosen feed that cannot be used: red, no warning, and why.
             window.choose_feed(pane.id, Some("yahoo".into()));
             let before = window.routes_on_screen();
             window.feeds()[0].usable.set(false);
             window.reroute(&before);
-            assert_eq!(part(&pane).as_deref(), Some("Rithmic Test · Yahoo Finance not signed in"));
+            assert_eq!(dot(&pane), Some(("Yahoo Finance · Not signed in".into(), "down", false, true)));
             window.feeds()[0].usable.set(true);
             window.choose_feed(pane.id, None);
 
-            // The login in trouble.
+            // The login in trouble: still nothing to choose in the header.
             session.sign_out();
             window.desk.tell();
-            assert_eq!(part(&pane).as_deref(), Some("Rithmic Test signed out"));
-            assert_eq!(picker(&window, &pane)[0], "Rithmic Test — signed out ✓ (heading)");
+            assert_eq!(pane.account_text(), None);
 
-            // A stock: the account's feed does not serve it, and the default
-            // moves to the order's pick.
+            // A stock: the account's feed does not serve it, and the
+            // default moves to the order's pick.
             let spy = window.index.find("SPY", None).expect("SPY");
             window.show_in(&pane, spy);
-            assert_eq!(
-                picker(&window, &pane),
-                vec!["Rithmic Test — signed out ✓ (heading)", "    Yahoo Finance (default) ✓"]
-            );
-            assert_eq!(part(&pane).as_deref(), Some("Rithmic Test signed out"));
+            assert_eq!(feeds(&window, &pane), vec!["Yahoo Finance · Connecting…", "Yahoo Finance (default) ✓"]);
+            assert!(!dot(&pane).expect("a dot").3);
         });
     }
 
-    /// Two accounts and two feeds: the accounts, the feeds under the
-    /// chart's own only. Choosing another account forgets the chart's
-    /// feed, and a chart on the default follows the default.
+    /// Two accounts and two feeds: the Account part names the chart's,
+    /// and opens the accounts with a mark on it and a line under one only
+    /// for its trouble. Choosing another account forgets the chart's feed,
+    /// and a chart on the default follows the default.
     #[test]
     fn choosing_an_account_forgets_the_feed() {
         crate::ui::on_gtk(|| {
@@ -2578,41 +2633,34 @@ pub(super) mod tests {
             let pane = window.focused_pane();
             let es = window.index.find("ES", None).expect("ES in the curated half");
             window.show_in(&pane, es);
-            let (id, _session) = sign_in(&window, &store, &["951", "952"]);
-            assert_eq!(
-                picker(&window, &pane),
-                vec![
-                    "Rithmic Test 951 ✓",
-                    "    Rithmic (default) ✓",
-                    "    Yahoo Finance",
-                    "Rithmic Test 952"
-                ]
-            );
-            assert_eq!(part(&pane).as_deref(), Some("Rithmic Test 951"));
+            let (id, session) = sign_in(&window, &store, &["951", "952"]);
+            assert_eq!(pane.account_text().as_deref(), Some("Rithmic Test 951"));
+            assert_eq!(accounts(&window, &pane), vec!["Rithmic Test 951 ✓", "Rithmic Test 952"]);
+            assert_eq!(feeds(&window, &pane), vec!["Rithmic · Connecting…", "Rithmic (default) ✓", "Yahoo Finance"]);
 
             window.choose_feed(pane.id, Some("yahoo".into()));
-            assert_eq!(part(&pane).as_deref(), Some("Rithmic Test 951 · Yahoo Finance"));
+            assert_eq!(pane.account_text().as_deref(), Some("Rithmic Test 951"), "the feed is the dot's, not the account's");
+            assert_eq!(dot(&pane).map(|dot| dot.0), Some("Yahoo Finance · Connecting…".into()));
             let other = format!("{id}/952");
             window.choose_account(pane.id, Some(other.clone()));
             assert_eq!(pane.account.borrow().as_deref(), Some(other.as_str()));
             assert!(pane.feed.borrow().is_none(), "the feed went with the account");
-            assert_eq!(part(&pane).as_deref(), Some("Rithmic Test 952"));
-            assert_eq!(
-                picker(&window, &pane),
-                vec![
-                    "Rithmic Test 951",
-                    "Rithmic Test 952 ✓",
-                    "    Rithmic (default) ✓",
-                    "    Yahoo Finance"
-                ]
-            );
+            assert_eq!(pane.account_text().as_deref(), Some("Rithmic Test 952"));
+            assert_eq!(accounts(&window, &pane), vec!["Rithmic Test 951", "Rithmic Test 952 ✓"]);
+            assert_eq!(dot(&pane).map(|dot| dot.0), Some("Rithmic · Connecting…".into()));
 
             // Back on the default, and the default moves: the chart follows.
             window.choose_account(pane.id, None);
-            assert_eq!(part(&pane).as_deref(), Some("Rithmic Test 951"));
+            assert_eq!(pane.account_text().as_deref(), Some("Rithmic Test 951"));
             trading::set_default_account(&store, &other);
             window.desk.tell();
-            assert_eq!(part(&pane).as_deref(), Some("Rithmic Test 952"));
+            assert_eq!(pane.account_text().as_deref(), Some("Rithmic Test 952"));
+
+            // The login in trouble: after the account, and under its row.
+            session.sign_out();
+            window.desk.tell();
+            assert_eq!(pane.account_text().as_deref(), Some("Rithmic Test 952 signed out"));
+            assert_eq!(accounts(&window, &pane), vec!["Rithmic Test 951 — signed out", "Rithmic Test 952 — signed out ✓"]);
         });
     }
 
@@ -2633,20 +2681,23 @@ pub(super) mod tests {
         });
     }
 
-    /// Two accounts and one feed: the accounts alone, and nothing about
-    /// the feed anywhere.
+    /// Two accounts and Yahoo alone: the accounts to choose from, and no
+    /// dot at all, since there is nothing to choose and nothing to connect
+    /// to. With one account and Yahoo alone, nothing at all.
     #[test]
-    fn the_picker_with_one_feed_lists_the_accounts_alone() {
+    fn with_yahoo_alone_there_is_no_dot() {
         crate::ui::on_gtk(|| {
             let store = Rc::new(Store::memory().expect("a store"));
             let window = window_on(&store, false);
             let pane = window.focused_pane();
             let es = window.index.find("ES", None).expect("ES in the curated half");
             window.show_in(&pane, es);
-            assert_eq!(part(&pane), None, "one feed and no account: nothing");
+            assert_eq!(pane.account_text(), None, "one feed and no account: nothing");
+            assert_eq!(dot(&pane), None);
             sign_in(&window, &store, &["951", "952"]);
-            assert_eq!(picker(&window, &pane), vec!["Rithmic Test 951 ✓", "Rithmic Test 952"]);
-            assert_eq!(part(&pane).as_deref(), Some("Rithmic Test 951"));
+            assert_eq!(accounts(&window, &pane), vec!["Rithmic Test 951 ✓", "Rithmic Test 952"]);
+            assert_eq!(pane.account_text().as_deref(), Some("Rithmic Test 951"));
+            assert_eq!(dot(&pane), None);
         });
     }
 

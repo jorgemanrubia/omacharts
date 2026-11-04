@@ -86,6 +86,8 @@ pub const FOLDER: &str = "Omacharts";
 ///   bare.
 /// - `legend-button` — a row's hide, settings and remove buttons.
 /// - `pane-expand` — the maximize corner.
+/// - `feed-part` — the data feed's dot: how a connection stood at the
+///   moment is not what the picture is of.
 /// - [`POINTER_LAYER`] — the crosshair, its axis labels, and the boxes
 ///   a strip wears under the pointer. Not a control, and the only thing here
 ///   that is not: it is where the mouse is, and a picture has no mouse.
@@ -96,6 +98,7 @@ const LEFT_OUT: &[&str] = &[
     "legend-hidden",
     "legend-button",
     "pane-expand",
+    "feed-part",
     POINTER_LAYER,
 ];
 

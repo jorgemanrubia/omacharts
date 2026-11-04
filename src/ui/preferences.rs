@@ -1904,8 +1904,8 @@ mod tests {
             let seen = saved.clone();
             let sections =
                 header_sections(Header::standard(), &[Part::Size], move |header| seen.borrow_mut().push(header.clone()));
-            let [left, center] = sections.as_slice() else { panic!("two sections") };
-            assert_eq!(left.parts(), vec![Part::Symbol, Part::Resolution, Part::Account]);
+            let [left, center, _] = sections.as_slice() else { panic!("three sections") };
+            assert_eq!(left.parts(), vec![Part::Symbol, Part::Resolution, Part::Account, Part::Feed]);
             assert!(!left.offered().contains(&Part::Size) && !center.offered().contains(&Part::Size));
             left.set(vec![Part::Resolution, Part::Symbol]);
             assert_eq!(
@@ -1915,35 +1915,57 @@ mod tests {
         });
     }
 
-    /// A part in one section is not offered by the other, and is offered
+    /// A part in one section is not offered by the others, and is offered
     /// again once it is taken out; every change is the whole header.
     #[test]
-    fn a_part_in_one_section_is_not_offered_in_the_other() {
+    fn a_part_in_one_section_is_not_offered_in_the_others() {
         use crate::header::{Header, Part};
         crate::ui::on_gtk(|| {
             let saved: Rc<RefCell<Vec<Header>>> = Rc::default();
             let seen = saved.clone();
             let sections = header_sections(Header::standard(), &[], move |header| seen.borrow_mut().push(header.clone()));
-            let [left, center] = sections.as_slice() else { panic!("two sections") };
+            let [left, center, right] = sections.as_slice() else { panic!("three sections") };
             assert_eq!(left.group.title(), "Left");
             assert_eq!(center.group.title(), "Center");
-            assert_eq!(left.parts(), vec![Part::Symbol, Part::Resolution, Part::Account, Part::Size]);
+            assert_eq!(right.group.title(), "Right");
+            assert_eq!(left.parts(), vec![Part::Symbol, Part::Resolution, Part::Account, Part::Feed, Part::Size]);
             assert_eq!(center.parts(), vec![Part::Stripe]);
+            assert_eq!(right.parts(), vec![Part::Settings, Part::Maximize, Part::Link]);
             assert_eq!(left.offered(), vec![Part::Change, Part::Template]);
             assert_eq!(center.offered(), vec![Part::Change, Part::Template]);
+            assert_eq!(right.offered(), vec![Part::Change, Part::Template]);
 
-            // Out of the center, the stripe is offered by both.
+            // Out of the center, the stripe is offered by all three.
             center.set(Vec::new());
             assert_eq!(left.offered(), vec![Part::Change, Part::Template, Part::Stripe]);
             assert_eq!(center.offered(), vec![Part::Change, Part::Template, Part::Stripe]);
-            // Into the left, by neither.
+            assert_eq!(right.offered(), vec![Part::Change, Part::Template, Part::Stripe]);
+            // Into the left, by none.
             left.set(vec![Part::Symbol, Part::Stripe]);
-            assert_eq!(center.offered(), vec![Part::Resolution, Part::Change, Part::Template, Part::Account, Part::Size]);
+            assert_eq!(
+                center.offered(),
+                vec![Part::Resolution, Part::Change, Part::Template, Part::Account, Part::Feed, Part::Size]
+            );
             assert!(!left.offered().contains(&Part::Stripe));
+            assert!(!right.offered().contains(&Part::Stripe));
             assert_eq!(
                 saved.borrow().last(),
-                Some(&Header { left: vec![Part::Symbol, Part::Stripe], center: Vec::new() })
+                Some(&Header {
+                    left: vec![Part::Symbol, Part::Stripe],
+                    center: Vec::new(),
+                    right: vec![Part::Settings, Part::Maximize, Part::Link]
+                })
             );
+            // The corner's controls move like any other part: the gear out
+            // of the right is offered by the left, and put there is offered
+            // by neither until it is taken out again.
+            right.set(vec![Part::Maximize, Part::Link]);
+            assert!(left.offered().contains(&Part::Settings));
+            left.set(vec![Part::Symbol, Part::Settings]);
+            assert!(!right.offered().contains(&Part::Settings));
+            assert_eq!(saved.borrow().last().map(|header| header.right.clone()), Some(vec![Part::Maximize, Part::Link]));
+            left.set(vec![Part::Symbol]);
+            assert!(right.offered().contains(&Part::Settings));
         });
     }
 

@@ -142,6 +142,21 @@ pub fn ordered(store: &Store) -> Vec<Box<dyn Provider>> {
     providers::ordered(&order)
 }
 
+/// Is a feed's standing worth a dot in the header? With Yahoo alone there
+/// is nothing to choose and nothing to connect to, and a chart is as it
+/// was before there were feeds. With more than one feed on `order`, or
+/// one that signs in to something, there is.
+pub fn worth_a_dot<'a>(order: impl Iterator<Item = &'a str>) -> bool {
+    let mut feeds = 0;
+    for id in order {
+        feeds += 1;
+        if feeds > 1 || providers::listed(id).is_some_and(|feed| feed.setup.is_some()) {
+            return true;
+        }
+    }
+    false
+}
+
 /// Is `feed`'s login a broker connection, kept in Preferences → Trading?
 fn trades(feed: &Listed) -> bool {
     feed.setup.is_some_and(|setup| setup.trades())
@@ -337,6 +352,18 @@ pub(crate) mod tests {
 
     fn store() -> Store {
         Store::memory().expect("an empty database")
+    }
+
+    /// Yahoo alone is a chart as it was before there were feeds: no dot.
+    /// Any second feed, or any feed that signs in, is a dot.
+    #[test]
+    fn a_dot_is_worth_drawing_only_past_yahoo_alone() {
+        assert!(!worth_a_dot(std::iter::empty()));
+        assert!(!worth_a_dot(["yahoo"].into_iter()));
+        assert!(worth_a_dot(["yahoo", "yahoo"].into_iter()));
+        assert!(worth_a_dot(["rithmic"].into_iter()));
+        assert!(worth_a_dot(["tos", "yahoo"].into_iter()));
+        assert!(!worth_a_dot(["unknown"].into_iter()), "a feed this build does not know connects to nothing");
     }
 
     /// Rithmic is told the release in the root Cargo.toml, not the version

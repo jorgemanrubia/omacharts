@@ -324,6 +324,15 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
     // with the candles beside it.
     define("omacharts_up", &scheme.up);
     define("omacharts_down", &scheme.down);
+    // The palette's own red, orange and green, for anything that stands
+    // for bad, pending and good rather than for down and up: the data
+    // feed's dot wears them. The chart's trouble dot is the same Rose.
+    let swatch = |name: &str, otherwise: &str| {
+        theme.swatch(name).map(|swatch| swatch.hex.clone()).unwrap_or_else(|| otherwise.to_string())
+    };
+    define("omacharts_rose", &swatch("Rose", &scheme.down));
+    define("omacharts_orange", &swatch("Orange", &ui.accent));
+    define("omacharts_green", &swatch("Green", &scheme.up));
 
     // The frame around tiled charts. Derived, not taken: the engine explains
     // why in `frame.rs`, and `doc/themes/frames.html` shows the result on
@@ -672,6 +681,25 @@ entry.range-date > image:hover { opacity: 0.9; }
 .legend-link.quiet.open { opacity: 0.45; }
 .chart-pane:hover .legend-gear:hover,
 .chart-pane:hover .legend-link.quiet:hover { opacity: 1; }
+/* The data feed's dot, beside the chart's name: eight pixels across, so it
+   is a light and not a stray wick, in the palette's red, orange or green
+   for not connected, connecting and connected. The button around it is
+   the same flat button the resolution is, and with one feed to be on it
+   has nothing to open and no hover to promise one. */
+.feed-dot {
+  min-width: 8px;
+  min-height: 8px;
+  border-radius: 4px;
+  background: @omacharts_rose;
+}
+.feed-dot.connecting { background: @omacharts_orange; }
+.feed-dot.connected { background: @omacharts_green; }
+.feed-warning { color: @omacharts_rose; }
+.feed-part > button { padding: 2px 6px; min-width: 0; }
+.feed-part.inert > button:hover { background: none; }
+/* The dot's list opens with its words, where the tooltip's were. */
+.feed-status { margin: 6px 12px; }
+
 /* A hidden layer's glyph, on every chart and in every state: a bare chart
    with nothing saying why reads as one whose data never came. */
 .legend-hidden { opacity: 0.75; }

@@ -38,7 +38,7 @@ use rusqlite::{params, Connection};
 
 /// How far the migrations go. A database claiming more than this was written
 /// by a newer Omacharts than the one opening it.
-pub const LATEST: i32 = 9;
+pub const LATEST: i32 = 10;
 
 /// How far the market data file's own migrations go.
 pub const MARKET_LATEST: i32 = 2;
@@ -300,6 +300,23 @@ Migration {
     // the old rows.
     risky: true,
     step: Step::Rust(logins_name_their_broker),
+},
+Migration {
+    version: 10,
+    name: "the account part splits into the account and the data feed",
+    // The header's account part named the account and the feed both. Now
+    // they are two parts, and a header that showed the one shows both,
+    // the feed right after the account, so nothing a chart said goes
+    // unsaid. A header with no account part gets neither: it chose to
+    // say nothing, and the standard header already shows both.
+    risky: false,
+    step: Step::Sql(
+        "UPDATE settings
+             SET value = replace(value, 'account', 'account,feed')
+         WHERE key IN ('chart_header', 'chart_header_center')
+           AND ',' || replace(value, ' ', '') || ',' LIKE '%,account,%'
+           AND ',' || replace(value, ' ', '') || ',' NOT LIKE '%,feed,%';",
+    ),
 }];
 
 /// Everything that has ever been true of the market data file.
@@ -726,7 +743,8 @@ mod tests {
     }
 
     /// A header somebody chose gets the account where the note on it sat,
-    /// after everything else; one nobody chose is left unstored.
+    /// after everything else, and the data feed after that once the two
+    /// are apart; one nobody chose is left unstored.
     #[test]
     fn a_chosen_header_gains_the_account_at_its_end() {
         let migrated = |stored: Option<&str>| {
@@ -743,8 +761,8 @@ mod tests {
                 .ok()
         };
         assert_eq!(migrated(None), None);
-        assert_eq!(migrated(Some("change,symbol")).as_deref(), Some("change,symbol,account"));
-        assert_eq!(migrated(Some("none")).as_deref(), Some("account"));
+        assert_eq!(migrated(Some("change,symbol")).as_deref(), Some("change,symbol,account,feed"));
+        assert_eq!(migrated(Some("none")).as_deref(), Some("account,feed"));
         assert_eq!(migrated(Some("symbol, Account")).as_deref(), Some("symbol, Account"));
     }
 
@@ -867,6 +885,36 @@ mod tests {
 
         let unreadable = migrated(8, &[("rithmic_logins", "not a list")]);
         assert_eq!(unreadable.0.as_deref(), Some("not a list"), "carried, not lost");
+    }
+
+    /// A header that showed the account shows the account and the data
+    /// feed, the feed right after it; one that did not is as it was.
+    #[test]
+    fn the_account_part_splits_into_the_account_and_the_feed() {
+        let migrated = |rows: &[(&str, &str)]| {
+            let conn = Connection::open_in_memory().unwrap();
+            conn.execute("ATTACH ':memory:' AS market", []).unwrap();
+            apply(&conn, MARKET, MARKET_MIGRATIONS, MARKET_LATEST, None).unwrap();
+            apply(&conn, "main", &MIGRATIONS[..9], 9, None).unwrap();
+            for (key, value) in rows {
+                conn.execute("INSERT INTO settings (key, value) VALUES (?1, ?2)", [key, value]).unwrap();
+            }
+            run(&conn, None).unwrap();
+            let read = |key: &str| -> Option<String> {
+                conn.query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| r.get(0)).ok()
+            };
+            (read("chart_header"), read("chart_header_center"))
+        };
+        assert_eq!(migrated(&[]), (None, None));
+        assert_eq!(
+            migrated(&[("chart_header", "symbol,account,size"), ("chart_header_center", "stripe")]),
+            (Some("symbol,account,feed,size".into()), Some("stripe".into()))
+        );
+        assert_eq!(migrated(&[("chart_header", "symbol, account")]).0.as_deref(), Some("symbol, account,feed"));
+        assert_eq!(migrated(&[("chart_header_center", "account")]).1.as_deref(), Some("account,feed"));
+        // Without the account, or with the feed already, nothing moves.
+        assert_eq!(migrated(&[("chart_header", "symbol,resolution")]).0.as_deref(), Some("symbol,resolution"));
+        assert_eq!(migrated(&[("chart_header", "feed,account")]).0.as_deref(), Some("feed,account"));
     }
 
     #[test]

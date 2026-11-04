@@ -192,7 +192,7 @@ pub fn dispatch(
                     // A login changed: which charts it can serve may have
                     // too.
                     Ok(key) if crate::feeds::signs_in_from(key) => live.adopt_feed(),
-                    Ok(key) if key == crate::header::SETTING || key == crate::header::CENTER_SETTING => {
+                    Ok(key) if crate::header::Section::ALL.iter().any(|section| section.setting() == key) => {
                         live.adopt_header()
                     }
                     Ok(key) if key == crate::clock::SETTING_ZONE || key == crate::clock::SETTING_FORMAT => {
@@ -4792,6 +4792,7 @@ fn config_set(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<Stri
         let text = match section {
             crate::header::Section::Left => format!("every chart's header shows {value}"),
             crate::header::Section::Center => format!("every chart's header shows {value} in the center"),
+            crate::header::Section::Right => format!("every chart's header shows {value} on the right"),
         };
         return said(as_json, json!({"key": key, "value": value}), text);
     }
@@ -5513,6 +5514,7 @@ mod tests {
     fn the_header_is_one_setting_and_a_typo_is_refused() {
         let store = bare();
         use crate::header::{Header, Part};
+        let corner = vec![Part::Settings, Part::Maximize, Part::Link];
         assert_eq!(crate::header::load(&store), Header::standard());
         let out = run("config set chart_header change,symbol,template", &store);
         assert_eq!(out.code, 0, "{}", out.err);
@@ -5520,19 +5522,29 @@ mod tests {
         assert_eq!(run("config set chart_header symbol,price", &store).code, EXIT_USAGE);
         assert_eq!(
             crate::header::load(&store),
-            Header { left: vec![Part::Change, Part::Symbol, Part::Template], center: vec![Part::Stripe] }
+            Header { left: vec![Part::Change, Part::Symbol, Part::Template], center: vec![Part::Stripe], right: corner.clone() }
         );
         // The stripe put on the left leaves the center; put back, it leaves
         // the left.
         assert_eq!(run("config set chart_header symbol,stripe", &store).code, 0);
         assert_eq!(
             crate::header::load(&store),
-            Header { left: vec![Part::Symbol, Part::Stripe], center: Vec::new() }
+            Header { left: vec![Part::Symbol, Part::Stripe], center: Vec::new(), right: corner.clone() }
         );
         let out = run("config set chart_header_center stripe", &store);
         assert_eq!(out.out, "every chart's header shows stripe in the center\n");
-        assert_eq!(crate::header::load(&store), Header { left: vec![Part::Symbol], center: vec![Part::Stripe] });
+        assert_eq!(
+            crate::header::load(&store),
+            Header { left: vec![Part::Symbol], center: vec![Part::Stripe], right: corner.clone() }
+        );
         assert_eq!(run("config set chart_header_center stripe,banana", &store).code, EXIT_USAGE);
+        // The right is a section like the others, and the corner's controls
+        // parts like the others.
+        let out = run("config set chart_header_right link,settings", &store);
+        assert_eq!(out.out, "every chart's header shows link,settings on the right\n");
+        assert_eq!(crate::header::load(&store).right, vec![Part::Link, Part::Settings]);
+        assert_eq!(run("config set chart_header settings,symbol", &store).code, 0);
+        assert_eq!(crate::header::load(&store).right, vec![Part::Link]);
         // Not a chart's to have: there is no flag for it any more.
         assert_eq!(run("chart set --header symbol", &store).code, EXIT_USAGE);
     }

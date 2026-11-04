@@ -15,7 +15,7 @@ use std::rc::Rc;
 
 use gtk::prelude::*;
 use omacharts_engine::{
-    BarStyle, Indicator, Instrument, LinkMode, Session, Theme, Timeframe,
+    BarStyle, FetchFailure, Indicator, Instrument, LinkMode, Session, Theme, Timeframe,
 };
 
 use crate::ui::chart::{ChartView, Hidden};
@@ -33,6 +33,86 @@ pub struct LadderSource {
 /// One chart filling the window, and the way back.
 pub const MAXIMIZE: &str = "Maximize";
 pub const RESTORE: &str = "Restore";
+
+/// Where a chart's data feed stands, as the Data feed part's dot says it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FeedPhase {
+    /// Signing in, or waiting for the first bars: orange.
+    Connecting,
+    /// Bars came, and nothing has gone wrong since: green.
+    Connected,
+    /// Nothing newer is coming, and this is why: red, with a warning
+    /// beside it for a failure, and without one for a feed nobody has
+    /// signed in to, which has not failed at anything.
+    Lost(FetchFailure),
+}
+
+/// What the window tells the Data feed part about the feed a chart is on,
+/// known before anything is asked of it. The rest, [`FeedPhase`], is what
+/// came of asking.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct FeedPart {
+    /// The feed's name, "Rithmic"; `None` when no feed charts the symbol.
+    pub label: Option<String>,
+    /// Can another feed be chosen for the chart? Then the dot opens the
+    /// list; otherwise it only says how the feed stands.
+    pub clickable: bool,
+    /// Why the chosen feed cannot be used, "not signed in", when it was
+    /// chosen and cannot: nothing was asked of it.
+    pub refused: Option<String>,
+    /// The feeds the order passed over on the way to this one, each with
+    /// why: "thinkorswim not signed in".
+    pub passed: Vec<String>,
+}
+
+/// The dot's colour as a CSS class, whether the warning stands beside it,
+/// and the words of the tooltip after the feed's name.
+pub fn feed_status(part: &FeedPart, phase: FeedPhase) -> (&'static str, bool, String) {
+    if part.label.is_none() {
+        return ("down", true, "No data feed charts this symbol".into());
+    }
+    if let Some(why) = &part.refused {
+        return ("down", false, capitalised(why));
+    }
+    match phase {
+        FeedPhase::Connecting => ("connecting", false, "Connecting…".into()),
+        FeedPhase::Connected => ("connected", false, "Connected".into()),
+        FeedPhase::Lost(FetchFailure::NeedsSignIn) => ("down", false, "Not signed in".into()),
+        FeedPhase::Lost(FetchFailure::Unserved) => ("down", true, "Does not chart this symbol".into()),
+        FeedPhase::Lost(why) => ("down", true, format!("Can't connect: {}", decapitalised(why.message()))),
+    }
+}
+
+/// What the dot's tooltip says: the feed, how it stands, and on lines of
+/// their own what the order passed over to get here.
+pub fn feed_tooltip(part: &FeedPart, phase: FeedPhase) -> String {
+    let (_, _, words) = feed_status(part, phase);
+    let mut tooltip = match &part.label {
+        Some(label) => format!("{label} · {words}"),
+        None => words,
+    };
+    for line in &part.passed {
+        tooltip.push('\n');
+        tooltip.push_str(line);
+    }
+    tooltip
+}
+
+fn capitalised(words: &str) -> String {
+    let mut chars = words.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
+fn decapitalised(words: &str) -> String {
+    let mut chars = words.chars();
+    match chars.next() {
+        Some(first) => first.to_lowercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
 
 pub struct ChartPane {
     pub id: u32,
@@ -117,13 +197,28 @@ pub struct ChartPane {
     /// where it is writes nothing.
     pub change_shown: Cell<Option<i64>>,
     pub template_label: gtk::Label,
-    /// The account part: which feed the chart is from, and any it was
-    /// passed over, "Yahoo · thinkorswim not signed in". Clicked, it offers
-    /// the feeds that could serve it instead. Hidden while only one feed is
-    /// configured, which leaves nothing to say and nothing to choose, and a
-    /// hidden child of the row takes no room at all.
+    /// The header's right: the corner the controls stand in until somebody
+    /// moves them.
+    corner: gtk::Box,
+    /// The Account part: which trading account the chart is on, "Lucid
+    /// 1234", with its trouble after it. Clicked, it offers the accounts.
+    /// Hidden with at most one account, which leaves nothing to choose,
+    /// and a hidden child of the row takes no room at all.
+    pub account_menu: gtk::MenuButton,
+    account_label: gtk::Label,
+    /// The Data feed part: a dot in the colour of the feed's connection,
+    /// naming the feed and how it stands when hovered. Clicked, it offers
+    /// the feeds that could serve the chart instead, while there is more
+    /// than one. Hidden with Yahoo alone: nothing to choose, nothing to
+    /// connect to, and no room taken.
     pub feed_menu: gtk::MenuButton,
-    feed_label: gtk::Label,
+    feed_dot: gtk::Box,
+    feed_warning: gtk::Image,
+    feed_part: RefCell<Option<FeedPart>>,
+    feed_phase: Cell<FeedPhase>,
+    /// The list the dot opens, handed in by the window and attached only
+    /// while there is something to choose.
+    feed_popover: RefCell<Option<gtk::Popover>>,
     /// The feed somebody chose for this chart, by id; `None` follows the
     /// order, which is every chart until somebody chooses.
     pub feed: RefCell<Option<String>>,
@@ -272,13 +367,36 @@ impl ChartPane {
         // A button like the resolution beside it, with no chevron for the
         // same reason, and dim like the template: it is a note on the chart
         // more than its title.
-        let feed_label = gtk::Label::new(None);
+        let account_label = gtk::Label::new(None);
+        let account_menu = gtk::MenuButton::new();
+        account_menu.add_css_class("flat");
+        account_menu.add_css_class("readout-symbol");
+        account_menu.add_css_class("dim-label");
+        account_menu.set_valign(gtk::Align::Center);
+        account_menu.set_child(Some(&account_label));
+        account_menu.set_always_show_arrow(false);
+        account_menu.set_visible(false);
+        // The feed is a dot, not a word: which feed and how it stands are
+        // the tooltip's, and the colour is what a glance at four charts
+        // reads. The warning beside it is there only when something went
+        // wrong, so a dot that is merely red says "not connected" and a
+        // dot with a warning says "tried, and could not".
+        let feed_dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        feed_dot.add_css_class("feed-dot");
+        feed_dot.set_valign(gtk::Align::Center);
+        let feed_warning = gtk::Image::from_icon_name("dialog-warning-symbolic");
+        feed_warning.add_css_class("feed-warning");
+        feed_warning.set_pixel_size(12);
+        feed_warning.set_valign(gtk::Align::Center);
+        feed_warning.set_visible(false);
+        let feed_light = gtk::Box::new(gtk::Orientation::Horizontal, 3);
+        feed_light.append(&feed_dot);
+        feed_light.append(&feed_warning);
         let feed_menu = gtk::MenuButton::new();
         feed_menu.add_css_class("flat");
-        feed_menu.add_css_class("readout-symbol");
-        feed_menu.add_css_class("dim-label");
+        feed_menu.add_css_class("feed-part");
         feed_menu.set_valign(gtk::Align::Center);
-        feed_menu.set_child(Some(&feed_label));
+        feed_menu.set_child(Some(&feed_light));
         feed_menu.set_always_show_arrow(false);
         feed_menu.set_visible(false);
         // The same kind of button, not dim: it is what the next order spends.
@@ -452,8 +570,15 @@ impl ChartPane {
             change_basis: Cell::new(None),
             change_shown: Cell::new(None),
             template_label,
+            corner,
+            account_menu,
+            account_label,
             feed_menu,
-            feed_label,
+            feed_dot,
+            feed_warning,
+            feed_part: RefCell::new(None),
+            feed_phase: Cell::new(FeedPhase::Connecting),
+            feed_popover: RefCell::new(None),
             feed: RefCell::new(None),
             account: RefCell::new(None),
             size_menu,
@@ -557,9 +682,7 @@ impl ChartPane {
     /// Push the maximize corner in from the right, to leave room for
     /// something else that wants the same corner.
     pub fn set_corner_clearance(&self, clearance: i32) {
-        if let Some(corner) = self.expand.parent() {
-            corner.set_margin_end(corner_margin(clearance));
-        }
+        self.corner.set_margin_end(corner_margin(clearance));
     }
 
     /// The same for the legend and the window's top-left corner, which
@@ -612,18 +735,22 @@ impl ChartPane {
         }
     }
 
-    /// Put the header's parts in its two sections in the chart's order, and
-    /// take off the ones it does not show.
+    /// Put the header's parts in its three sections in the chart's order,
+    /// and take off the ones it does not show.
     pub fn arrange_header(&self) {
         use crate::header::Part;
-        let parts: [(Part, gtk::Widget); 7] = [
+        let parts: [(Part, gtk::Widget); 11] = [
             (Part::Symbol, self.symbol_button.clone().upcast()),
             (Part::Resolution, self.timeframe_menu.clone().upcast()),
             (Part::Change, self.change_label.clone().upcast()),
             (Part::Template, self.template_label.clone().upcast()),
-            (Part::Account, self.feed_menu.clone().upcast()),
+            (Part::Account, self.account_menu.clone().upcast()),
+            (Part::Feed, self.feed_menu.clone().upcast()),
             (Part::Size, self.size_menu.clone().upcast()),
             (Part::Stripe, self.strip.clone().upcast()),
+            (Part::Settings, self.gear.clone().upcast()),
+            (Part::Maximize, self.expand.clone().upcast()),
+            (Part::Link, self.link.clone().upcast()),
         ];
         for (_, widget) in &parts {
             if let Some(parent) = widget.parent().and_downcast::<gtk::Box>() {
@@ -633,7 +760,11 @@ impl ChartPane {
         // Whichever section it lands in decides afresh whether it fits.
         self.strip.set_child_visible(true);
         let header = self.header.borrow();
-        for (row, section) in [(&self.header_row, &header.left), (&self.header_center, &header.center)] {
+        for (row, section) in [
+            (&self.header_row, &header.left),
+            (&self.header_center, &header.center),
+            (&self.corner, &header.right),
+        ] {
             for part in section {
                 if let Some((_, widget)) = parts.iter().find(|(p, _)| p == part) {
                     row.append(widget);
@@ -662,13 +793,91 @@ impl ChartPane {
         self.template_label.set_visible(name.is_some());
     }
 
-    /// Where the bars come from, or nothing at all: hidden, the part takes
-    /// no width and no spacing, as though it were not in the header.
-    pub fn write_feed(&self, feed: Option<&str>) {
-        if self.feed_label.text() != feed.unwrap_or("") {
-            self.feed_label.set_text(feed.unwrap_or(""));
+    /// Which account the chart is on, or nothing at all: hidden, the part
+    /// takes no width and no spacing, as though it were not in the header.
+    pub fn write_account(&self, account: Option<&str>) {
+        if self.account_label.text() != account.unwrap_or("") {
+            self.account_label.set_text(account.unwrap_or(""));
         }
-        self.feed_menu.set_visible(feed.is_some());
+        if self.account_menu.is_visible() != account.is_some() {
+            self.account_menu.set_visible(account.is_some());
+        }
+    }
+
+    /// Which feed the chart is on, or nothing at all: hidden, the dot
+    /// takes no width and no spacing.
+    pub fn write_feed(&self, part: Option<FeedPart>) {
+        if *self.feed_part.borrow() == part {
+            return;
+        }
+        *self.feed_part.borrow_mut() = part;
+        self.paint_feed_dot();
+    }
+
+    /// How the chart's feed stands now, from what came of asking it.
+    pub fn set_feed_phase(&self, phase: FeedPhase) {
+        if self.feed_phase.replace(phase) != phase {
+            self.paint_feed_dot();
+        }
+    }
+
+    pub fn feed_phase(&self) -> FeedPhase {
+        self.feed_phase.get()
+    }
+
+    /// The list the dot opens. Attached only while there is more than one
+    /// feed to choose, so with one the dot is nothing but its colour and
+    /// its tooltip.
+    pub fn set_feed_popover(&self, popover: gtk::Popover) {
+        *self.feed_popover.borrow_mut() = Some(popover);
+        self.paint_feed_dot();
+    }
+
+    fn paint_feed_dot(&self) {
+        let part = self.feed_part.borrow();
+        let Some(part) = part.as_ref() else {
+            self.feed_menu.set_visible(false);
+            return;
+        };
+        let phase = self.feed_phase.get();
+        let (colour, warning, _) = feed_status(part, phase);
+        for known in ["connecting", "connected", "down"] {
+            if known != colour {
+                self.feed_dot.remove_css_class(known);
+            }
+        }
+        self.feed_dot.add_css_class(colour);
+        self.feed_warning.set_visible(warning);
+        self.feed_menu.set_tooltip_text(Some(&feed_tooltip(part, phase)));
+        let popover = self.feed_popover.borrow();
+        let offered = part.clickable.then_some(()).and(popover.as_ref());
+        if self.feed_menu.popover().as_ref() != offered {
+            self.feed_menu.set_popover(offered);
+        }
+        match offered.is_some() {
+            true => self.feed_menu.remove_css_class("inert"),
+            false => self.feed_menu.add_css_class("inert"),
+        }
+        self.feed_menu.set_visible(true);
+    }
+
+    /// The dot as it is drawn, for the tests: its colour's class, whether
+    /// the warning is beside it, and whether it opens anything.
+    #[cfg(test)]
+    pub fn feed_dot_shown(&self) -> Option<(&'static str, bool, bool)> {
+        self.feed_menu.get_visible().then(|| {
+            let colour = ["connecting", "connected", "down"]
+                .into_iter()
+                .find(|class| self.feed_dot.has_css_class(class))
+                .unwrap_or("none");
+            (colour, self.feed_warning.get_visible(), self.feed_menu.popover().is_some())
+        })
+    }
+
+    /// What the Account part says, for the tests.
+    #[cfg(test)]
+    pub fn account_text(&self) -> Option<String> {
+        self.account_menu.get_visible().then(|| self.account_label.text().to_string())
     }
 
     /// How many the next order is for, or nothing at all: hidden, the part
@@ -1404,18 +1613,19 @@ impl Node {
 mod tests {
     use super::*;
 
-    /// With one feed the account says nothing, and a header with it laid
-    /// out is a header without it: the same width, and the part after it
-    /// starting at the same place. No gap where it would be, no room taken.
+    /// With one account the Account part says nothing, and with Yahoo alone
+    /// the Data feed part draws nothing: a header with either laid out is a
+    /// header without it, the same width, and the part after it starting
+    /// at the same place. No gap where it would be, no room taken.
     #[test]
-    fn a_blank_account_takes_no_room_in_the_header() {
+    fn a_blank_account_or_feed_takes_no_room_in_the_header() {
         use crate::header::{Header, Part};
         crate::ui::on_gtk(|| {
             let pane = test_pane();
             pane.symbol_button.set_label("ES");
             pane.write_template(Some("Footprint"));
             let laid_out = |parts: Vec<Part>| {
-                *pane.header.borrow_mut() = Header { left: parts, center: Vec::new() };
+                *pane.header.borrow_mut() = Header { left: parts, center: Vec::new(), right: Vec::new() };
                 pane.arrange_header();
                 let width = pane.header_row.preferred_size().1.width();
                 pane.header_row.allocate(width, SYMBOL_ROW_HEIGHT, -1, None);
@@ -1423,15 +1633,120 @@ mod tests {
                 (width, template)
             };
             let without = laid_out(vec![Part::Symbol, Part::Resolution, Part::Template]);
+            pane.write_account(None);
             pane.write_feed(None);
-            let blank = laid_out(vec![Part::Symbol, Part::Account, Part::Resolution, Part::Template]);
+            let blank = laid_out(vec![Part::Symbol, Part::Account, Part::Feed, Part::Resolution, Part::Template]);
             assert_eq!(blank, without);
+            assert!(!pane.account_menu.is_visible());
             assert!(!pane.feed_menu.is_visible());
 
-            // And written, it does take its room: the same measure sees it.
-            pane.write_feed(Some("Rithmic"));
+            // And written, each does take its room: the same measure sees it.
+            pane.write_account(Some("Rithmic Test"));
             let shown = laid_out(vec![Part::Symbol, Part::Account, Part::Resolution, Part::Template]);
             assert!(shown.0 > without.0 && shown.1 > without.1, "{shown:?} against {without:?}");
+            pane.write_account(None);
+            pane.write_feed(Some(FeedPart { label: Some("Rithmic".into()), ..FeedPart::default() }));
+            let dotted = laid_out(vec![Part::Symbol, Part::Feed, Part::Resolution, Part::Template]);
+            assert!(dotted.0 > without.0 && dotted.1 > without.1, "{dotted:?} against {without:?}");
+            // A dot, not a word: far narrower than a name.
+            assert!(dotted.0 - without.0 < shown.0 - without.0, "{dotted:?} against {shown:?}");
+        });
+    }
+
+    /// The dot is the feed's connection: orange while connecting, green
+    /// once connected, red when not, and red with a warning when it tried
+    /// and could not. Its tooltip names the feed and says the same in
+    /// words; and it opens the list only while there is a feed to choose.
+    #[test]
+    fn the_feed_dot_is_the_colour_of_the_connection() {
+        crate::ui::on_gtk(|| {
+            let pane = test_pane();
+            let popover = gtk::Popover::new();
+            pane.set_feed_popover(popover);
+            let on = |label: &str, clickable: bool| FeedPart { label: Some(label.into()), clickable, ..FeedPart::default() };
+            pane.write_feed(Some(on("Rithmic", true)));
+            pane.set_feed_phase(FeedPhase::Connecting);
+            assert_eq!(pane.feed_dot_shown(), Some(("connecting", false, true)));
+            assert_eq!(pane.feed_menu.tooltip_text().as_deref(), Some("Rithmic · Connecting…"));
+
+            pane.set_feed_phase(FeedPhase::Connected);
+            assert_eq!(pane.feed_dot_shown(), Some(("connected", false, true)));
+            assert_eq!(pane.feed_menu.tooltip_text().as_deref(), Some("Rithmic · Connected"));
+
+            pane.set_feed_phase(FeedPhase::Lost(FetchFailure::Unreachable));
+            assert_eq!(pane.feed_dot_shown(), Some(("down", true, true)));
+            assert_eq!(
+                pane.feed_menu.tooltip_text().as_deref(),
+                Some("Rithmic · Can't connect: the data feed is not answering. Prices fill in when it does.")
+            );
+
+            // Not signed in: red, and no warning, since nothing was tried.
+            pane.set_feed_phase(FeedPhase::Lost(FetchFailure::NeedsSignIn));
+            assert_eq!(pane.feed_dot_shown(), Some(("down", false, true)));
+            assert_eq!(pane.feed_menu.tooltip_text().as_deref(), Some("Rithmic · Not signed in"));
+
+            // The one feed: the same dot and tooltip, opening nothing.
+            pane.set_feed_phase(FeedPhase::Connected);
+            let mut passed = on("Yahoo Finance", false);
+            passed.passed = vec!["Rithmic not signed in".into()];
+            pane.write_feed(Some(passed));
+            assert_eq!(pane.feed_dot_shown(), Some(("connected", false, false)));
+            assert!(pane.feed_menu.has_css_class("inert"));
+            assert_eq!(
+                pane.feed_menu.tooltip_text().as_deref(),
+                Some("Yahoo Finance · Connected\nRithmic not signed in")
+            );
+
+            // A chosen feed that cannot be used says why, whatever came
+            // before; and no feed at all is a warning.
+            let mut refused = on("Rithmic", true);
+            refused.refused = Some("session expired".into());
+            pane.write_feed(Some(refused));
+            assert_eq!(pane.feed_dot_shown(), Some(("down", false, true)));
+            assert_eq!(pane.feed_menu.tooltip_text().as_deref(), Some("Rithmic · Session expired"));
+            pane.write_feed(Some(FeedPart::default()));
+            assert_eq!(pane.feed_dot_shown(), Some(("down", true, false)));
+            assert_eq!(pane.feed_menu.tooltip_text().as_deref(), Some("No data feed charts this symbol"));
+
+            pane.write_feed(None);
+            assert_eq!(pane.feed_dot_shown(), None);
+        });
+    }
+
+    /// The corner's controls are header parts: in the corner in their
+    /// order out of the box, in the line when put there, and gone when
+    /// taken out.
+    #[test]
+    fn the_corner_s_controls_go_where_the_header_puts_them() {
+        use crate::header::{Header, Part};
+        crate::ui::on_gtk(|| {
+            let pane = test_pane();
+            let children = |row: &gtk::Box| {
+                let mut found = Vec::new();
+                let mut next = row.first_child();
+                while let Some(child) = next {
+                    next = child.next_sibling();
+                    found.push(child);
+                }
+                found
+            };
+            let corner = |pane: &ChartPane| children(&pane.corner);
+            assert_eq!(
+                corner(&pane),
+                vec![pane.gear.clone().upcast::<gtk::Widget>(), pane.expand.clone().upcast(), pane.link.clone().upcast()]
+            );
+            let header = |left: Vec<Part>, right: Vec<Part>| {
+                *pane.header.borrow_mut() = Header { left, center: Vec::new(), right };
+                pane.arrange_header();
+            };
+            header(vec![Part::Settings, Part::Symbol], vec![Part::Link, Part::Maximize]);
+            assert_eq!(corner(&pane), vec![pane.link.clone().upcast::<gtk::Widget>(), pane.expand.clone().upcast()]);
+            assert_eq!(children(&pane.header_row)[0], pane.gear.clone().upcast::<gtk::Widget>());
+            header(vec![Part::Symbol], Vec::new());
+            assert!(corner(&pane).is_empty());
+            assert!(pane.gear.parent().is_none());
+            header(Header::standard().left, Header::standard().right);
+            assert_eq!(corner(&pane).len(), 3);
         });
     }
 
@@ -1445,7 +1760,7 @@ mod tests {
             pane.symbol_button.set_label("ES");
             pane.write_template(Some("Footprint"));
             let laid_out = |parts: Vec<Part>| {
-                *pane.header.borrow_mut() = Header { left: parts, center: Vec::new() };
+                *pane.header.borrow_mut() = Header { left: parts, center: Vec::new(), right: Vec::new() };
                 pane.arrange_header();
                 let width = pane.header_row.preferred_size().1.width();
                 pane.header_row.allocate(width, SYMBOL_ROW_HEIGHT, -1, None);
@@ -1499,7 +1814,7 @@ mod tests {
             assert!(width(&pane.header_center) > 0);
 
             let header = |left: Vec<Part>, center: Vec<Part>| {
-                *pane.header.borrow_mut() = Header { left, center };
+                *pane.header.borrow_mut() = Header { left, center, right: Header::standard().right };
                 pane.arrange_header();
             };
             header(vec![Part::Symbol, Part::Resolution, Part::Account, Part::Stripe], Vec::new());
