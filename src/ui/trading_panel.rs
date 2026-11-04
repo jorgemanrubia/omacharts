@@ -81,6 +81,8 @@ pub struct Hands {
 
 pub struct TradingPanel {
     pub root: gtk::Box,
+    /// The three tabs, by name: "accounts", "positions", "orders".
+    stack: gtk::Stack,
     accounts: gtk::Box,
     positions: gtk::Box,
     orders: gtk::Box,
@@ -270,6 +272,7 @@ impl TradingPanel {
         });
         let panel = Rc::new(TradingPanel {
             root,
+            stack,
             accounts,
             positions,
             orders,
@@ -294,6 +297,16 @@ impl TradingPanel {
             });
         }
         panel
+    }
+
+    /// The tab in front: "accounts", "positions" or "orders".
+    pub fn tab(&self) -> Option<String> {
+        self.stack.visible_child_name().map(|name| name.to_string())
+    }
+
+    /// Bring the tab called `name` to the front.
+    pub fn show_tab(&self, name: &str) {
+        self.stack.set_visible_child_name(name);
     }
 
     /// The filter the Orders tab shows by.
@@ -571,7 +584,7 @@ mod tests {
     }
 
     fn stack(panel: &TradingPanel) -> gtk::Stack {
-        panel.root.last_child().and_downcast().expect("the stack")
+        panel.stack.clone()
     }
 
     fn toggles(panel: &TradingPanel) -> (bool, bool, bool) {

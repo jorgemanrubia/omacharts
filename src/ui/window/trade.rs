@@ -25,6 +25,9 @@ use crate::ui::trading_panel::{Hands, TradingPanel};
 /// Whether the panel is open, remembered for the next launch.
 pub const SHOW_TRADING_PANEL: &str = "show_trading_panel";
 
+/// The panel's tabs that have a key each, as `win.trading-<tab>`.
+const PANEL_TABS: [&str; 3] = ["accounts", "positions", "orders"];
+
 /// The disabled action a row the menu cannot offer points at, so it is
 /// drawn greyed.
 const UNAVAILABLE: &str = "chart.order-unavailable";
@@ -333,7 +336,7 @@ impl Window {
         // chartbook strip has nothing to clear.
         let toggle = gtk::ToggleButton::new();
         toggle.set_child(Some(&panel_icon()));
-        toggle.set_tooltip_text(Some(&crate::ui::shortcuts::tooltip("Trading", "win.trading-panel")));
+        toggle.set_tooltip_text(Some(&crate::ui::shortcuts::tooltip("Trading", "win.trading-accounts")));
         toggle.add_css_class("flat");
         let this = self.clone();
         toggle.connect_toggled(move |toggle| this.show_trading_panel(toggle.is_active()));
@@ -368,6 +371,15 @@ impl Window {
             }
         });
         self.window.add_action(&action);
+
+        // Ctrl+Shift+A, P and O: the panel on that tab, or shut if it is
+        // already showing it.
+        for tab in PANEL_TABS {
+            let action = gio::SimpleAction::new(&format!("trading-{tab}"), None);
+            let this = self.clone();
+            action.connect_activate(move |_, _| this.toggle_panel_tab(tab));
+            self.window.add_action(&action);
+        }
 
         let edit = gio::SimpleAction::new(EDIT_SIZES, None);
         let this = self.clone();
@@ -456,6 +468,9 @@ impl Window {
             rail.set_foot(false);
         }
         self.window.remove_action("trading-panel");
+        for tab in PANEL_TABS {
+            self.window.remove_action(&format!("trading-{tab}"));
+        }
         self.window.remove_action(EDIT_SIZES);
         if let Some(actions) = self.trade.chart_actions.borrow().as_ref() {
             actions.remove_action("order");
@@ -510,6 +525,21 @@ impl Window {
             && toggle.is_active() != shown
         {
             toggle.set_active(shown);
+        }
+    }
+
+    /// The panel on `tab`, or the panel shut when it is open on `tab`
+    /// already: what each tab's key does.
+    pub(super) fn toggle_panel_tab(self: &Rc<Self>, tab: &str) {
+        let open = self.trade.toggle.borrow().as_ref().is_some_and(|toggle| toggle.is_active());
+        let front = self.trade.panel.borrow().as_ref().and_then(|panel| panel.tab());
+        if open && front.as_deref() == Some(tab) {
+            self.show_trading_panel(false);
+            return;
+        }
+        self.show_trading_panel(true);
+        if let Some(panel) = self.trade.panel.borrow().as_ref() {
+            panel.show_tab(tab);
         }
     }
 
@@ -1564,6 +1594,48 @@ pub(super) mod tests {
             assert!(nothing(&window), "trading left behind by the last login");
             assert_eq!(corner_buttons(&window), bare);
             assert!(!window.trading_panel_shown());
+        });
+    }
+
+    /// Ctrl+Shift+A, P and O: each opens the panel on its tab, moves an
+    /// open panel to it, and shuts the panel when its tab is the one in
+    /// front. With no login they are not there to press.
+    #[test]
+    fn each_tabs_key_shows_its_tab_or_shuts_the_panel() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = window(&store);
+            for tab in PANEL_TABS {
+                assert!(window.window.lookup_action(&format!("trading-{tab}")).is_none(), "{tab} with no login");
+            }
+            let kept = Kept::default();
+            let id = trading::add_login(&store, &kept, &typed()).expect("a login");
+            window.desk.tell();
+            let press = |tab: &str| {
+                gio::prelude::ActionGroupExt::activate_action(&window.window, &format!("trading-{tab}"), None)
+            };
+            let front = || window.trade.panel.borrow().as_ref().and_then(|panel| panel.tab());
+            let toggle = window.trade.toggle.borrow().clone().expect("a toggle");
+
+            press("orders");
+            assert!(window.trading_panel_shown() && toggle.is_active());
+            assert_eq!(front().as_deref(), Some("orders"));
+            press("positions");
+            assert!(window.trading_panel_shown(), "another tab's key shut the panel");
+            assert_eq!(front().as_deref(), Some("positions"));
+            press("positions");
+            assert!(!window.trading_panel_shown() && !toggle.is_active(), "its own tab's key left it open");
+            press("accounts");
+            assert!(window.trading_panel_shown());
+            assert_eq!(front().as_deref(), Some("accounts"));
+            press("accounts");
+            assert!(!window.trading_panel_shown());
+
+            trading::remove_login(&store, &kept, &id, true).expect("removed");
+            window.desk.tell();
+            for tab in PANEL_TABS {
+                assert!(window.window.lookup_action(&format!("trading-{tab}")).is_none(), "{tab} left behind");
+            }
         });
     }
 

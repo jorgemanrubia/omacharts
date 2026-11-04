@@ -162,7 +162,7 @@ pub fn take_chart(
     deliver(window, store, chart(pane, theme), "Chart");
 }
 
-/// Ctrl+Shift+O: a picture of every chart in the arrangement, as laid out.
+/// Ctrl+Alt+O: a picture of every chart in the arrangement, as laid out.
 pub fn take_chartbook(
     window: &adw::ApplicationWindow,
     store: &Store,

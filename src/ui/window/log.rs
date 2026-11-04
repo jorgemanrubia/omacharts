@@ -157,6 +157,16 @@ impl Window {
 
     /// The Log, opened from the main menu or the notice: the notice and the
     /// dot go, and the oldest error not yet seen is selected.
+    /// Ctrl+Shift+M and the main menu's Log: open it, or close it if it is
+    /// open.
+    pub(super) fn toggle_log(self: &Rc<Self>) {
+        let open = self.messages.window.borrow().clone();
+        match open {
+            Some(log) => log.window.close(),
+            None => self.open_log(),
+        }
+    }
+
     pub(super) fn open_log(self: &Rc<Self>) {
         self.remove_notice();
         if let Some(button) = self.messages.menu_button.borrow().as_ref() {
@@ -320,6 +330,15 @@ impl LogWindow {
             gtk::ShortcutTrigger::parse_string("Escape"),
             Some(gtk::NamedAction::new("window.close")),
         ));
+        // The key that opened it closes it, from the Log itself too: the
+        // main window's action is not reachable while the Log has the
+        // keyboard.
+        if let Some(accel) = crate::ui::shortcuts::accel("win.log") {
+            escape.add_shortcut(gtk::Shortcut::new(
+                gtk::ShortcutTrigger::parse_string(accel),
+                Some(gtk::NamedAction::new("window.close")),
+            ));
+        }
         window.add_controller(escape);
         window.connect_close_request(move |_| {
             closed();
@@ -586,6 +605,23 @@ pub(crate) mod tests {
 
             open.window.close();
             assert!(window.log_window().is_none(), "the Log kept once closed");
+        });
+    }
+
+    /// The Log's key opens it, and closes it again.
+    #[test]
+    fn the_logs_key_shows_and_hides_it() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = window(&store);
+            assert!(window.log_window().is_none());
+            gio::prelude::ActionGroupExt::activate_action(&window.window, "log", None);
+            assert!(window.log_window().is_some(), "not opened");
+            gio::prelude::ActionGroupExt::activate_action(&window.window, "log", None);
+            assert!(window.log_window().is_none(), "not closed");
+            gio::prelude::ActionGroupExt::activate_action(&window.window, "log", None);
+            let open = window.log_window().expect("opened again");
+            open.window.close();
         });
     }
 

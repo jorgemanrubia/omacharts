@@ -157,7 +157,7 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+Shift+I", "Add an indicator"),
             ("Ctrl+Shift+S", "Chart settings"),
             ("Ctrl+,", "Preferences"),
-            ("Ctrl+Shift+J", "Log"),
+            ("Ctrl+Shift+M", "Show or hide the Log"),
             ("F10", "Main menu"),
             ("? · Ctrl+?", "This list"),
             ("Ctrl+Q", "Quit"),
@@ -169,7 +169,7 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+N", "New chartbook"),
             ("Ctrl+Shift+R", "Rename this chartbook"),
             ("Ctrl+Shift+Alt+X", "Remove this chartbook"),
-            ("Ctrl+Shift+O", "Screenshot this chartbook"),
+            ("Ctrl+Alt+O", "Screenshot this chartbook"),
             ("Ctrl+Alt+← →", "Previous or next chartbook"),
             ("Double-click a tab", "Rename it"),
             ("Right-click a tab", "Rename, duplicate or remove it, or its chartbook template"),
@@ -276,6 +276,9 @@ const TRADING_SHORTCUTS: (&str, &[(&str, &str)]) = (
         ("Ctrl+S", "Sell the chart's size at market"),
         ("Ctrl+F", "Flatten the chart's contract and cancel its orders"),
         ("Ctrl+1 … 9", "Trading size N"),
+        ("Ctrl+Shift+A", "Show or hide the accounts"),
+        ("Ctrl+Shift+P", "Show or hide the positions"),
+        ("Ctrl+Shift+O", "Show or hide the orders"),
     ],
 );
 
@@ -1262,9 +1265,8 @@ mod tests {
     /// reaching for this box is already unsure of it.
     #[test]
     fn a_chord_is_found_however_it_is_written() {
-        let one = vec!["Ctrl+Shift+O — Screenshot this chartbook"];
-        let ways =
-            ["Ctrl+Shift+O", "ctrl shift o", "shift ctrl o", "ctrl-shift-o", "CTRL+SHIFT+O"];
+        let one = vec!["Ctrl+Alt+O — Screenshot this chartbook"];
+        let ways = ["Ctrl+Alt+O", "ctrl alt o", "alt ctrl o", "ctrl-alt-o", "CTRL+ALT+O"];
         for query in ways {
             assert_eq!(found(query), one, "{query}");
         }
@@ -1277,7 +1279,7 @@ mod tests {
     fn a_single_letter_is_only_ever_a_key() {
         assert_eq!(
             found("o"),
-            vec!["Ctrl+Shift+O — Screenshot this chartbook", "Ctrl+O — Screenshot this chart"]
+            vec!["Ctrl+Alt+O — Screenshot this chartbook", "Ctrl+O — Screenshot this chart"]
         );
         // Two is enough to mean a word again, and three to mean one somebody
         // only half typed — and then it finds every row that says it.
@@ -5478,7 +5480,7 @@ impl Window {
 
         let log = gio::SimpleAction::new("log", None);
         let this = self.clone();
-        log.connect_activate(move |_, _| this.open_log());
+        log.connect_activate(move |_, _| this.toggle_log());
         self.window.add_action(&log);
 
         let find = gio::SimpleAction::new("find", None);

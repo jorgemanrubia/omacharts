@@ -52,9 +52,9 @@ pub const BINDINGS: &[Binding] = &[
     // tools beside it took Ctrl+Shift+D.
     global("win.watchlist", &["<Ctrl><Shift>b"]),
     global("win.preferences", &["<Ctrl>comma"]),
-    // J, as a browser's console is: Ctrl+Shift+L was the previous link
-    // mode's already.
-    global("win.log", &["<Ctrl><Shift>j"]),
+    // M for messages, shown and hidden: Ctrl+M on its own maximizes a
+    // chart, and Ctrl+Shift+L was the previous link mode's already.
+    global("win.log", &["<Ctrl><Shift>m"]),
     global("chart.indicators", &["<Ctrl>i"]),
     // A letter, because Shift and punctuation together is a trap. GTK
     // matches the keyval the key produces *after* modifiers, and shifting
@@ -77,9 +77,15 @@ pub const BINDINGS: &[Binding] = &[
     // them should not be a key anybody presses by accident.
     global("chart.bars", &["<Ctrl><Alt><Shift>h"]),
     // O, not P: Ctrl+P is kept for a command palette. A screenshot of the
-    // chartbook is the same key with Shift, the way closing one already is.
+    // chartbook is the same key with Alt, since trading took Ctrl+Shift+O
+    // for its orders.
     global("chart.screenshot", &["<Ctrl>o"]),
-    global("win.screenshot", &["<Ctrl><Shift>o"]),
+    global("win.screenshot", &["<Ctrl><Alt>o"]),
+    // The trading panel, each key on its own tab: Accounts, Positions and
+    // Orders. With no login there is no action, and the key does nothing.
+    global("win.trading-accounts", &["<Ctrl><Shift>a"]),
+    global("win.trading-positions", &["<Ctrl><Shift>p"]),
+    global("win.trading-orders", &["<Ctrl><Shift>o"]),
     // Alt with a letter is the drawing tools' register: a line and a
     // rectangle. Resetting the view used to be Alt+R and gave the key up:
     // a tool is reached for many times an hour and a reset once. Escape
@@ -369,7 +375,10 @@ mod tests {
             for (accel, action, delivered) in [
                 ("<Ctrl><Shift>b", "win.watchlist", Key::B),
                 ("<Ctrl><Shift>d", "win.drawing-tools", Key::D),
-                ("<Ctrl><Shift>j", "win.log", Key::J),
+                ("<Ctrl><Shift>m", "win.log", Key::M),
+                ("<Ctrl><Shift>a", "win.trading-accounts", Key::A),
+                ("<Ctrl><Shift>p", "win.trading-positions", Key::P),
+                ("<Ctrl><Shift>o", "win.trading-orders", Key::O),
             ] {
                 let actions = app.actions_for_accel(accel);
                 assert!(actions.iter().any(|a| a == action), "{accel} reaches {actions:?}, not {action}");
@@ -377,6 +386,20 @@ mod tests {
                 assert_eq!(mods, ModifierType::CONTROL_MASK | ModifierType::SHIFT_MASK, "{accel}");
                 assert_eq!(key.to_upper(), delivered, "{accel}");
             }
+        });
+    }
+
+    /// Trading's orders took Ctrl+Shift+O, and the chartbook's screenshot
+    /// moved beside the chart's, on Alt.
+    #[test]
+    fn the_chartbook_screenshot_moved_to_alt() {
+        crate::ui::on_gtk(|| {
+            let _ = adw::init();
+            let app = adw::Application::new(None::<&str>, gio::ApplicationFlags::NON_UNIQUE);
+            install(&app);
+            assert_eq!(app.actions_for_accel("<Ctrl><Alt>o"), ["win.screenshot"]);
+            assert_eq!(app.actions_for_accel("<Ctrl><Shift>o"), ["win.trading-orders"]);
+            assert!(app.actions_for_accel("<Ctrl><Shift>j").is_empty(), "the Log's old key");
         });
     }
 

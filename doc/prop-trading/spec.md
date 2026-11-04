@@ -547,7 +547,7 @@ Whether a live account should ask, and how, is an open decision, below.
 The Log is what the data feeds, the brokers and the app have said since
 the window started, and the one place a refusal or a failure is said. It
 keeps the last 1000 lines in memory and nothing after the app quits, and
-opens beside the charts with Ctrl+Shift+J or the main menu's Log.
+opens beside the charts with Ctrl+Shift+M (again to hide it) or the main menu's Log.
 
 - Each line is its time, who said it (a feed or a login, by name, never a
   user ID) and what happened; a line with more to it has Details, the
