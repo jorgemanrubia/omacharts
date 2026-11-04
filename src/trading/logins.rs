@@ -209,7 +209,7 @@ fn hand_over(login: &Login) {
 }
 
 /// Add a login, its password into `secrets`. The first with a data feed is
-/// the data login, and puts its feed on top of the data sources. Returns
+/// the data login, and puts its feed on top of the data feeds. Returns
 /// its id.
 pub fn add_login(store: &Store, secrets: &dyn Secrets, typed: &Typed) -> Result<String, String> {
     let mut logins = logins(store);
@@ -357,7 +357,7 @@ pub fn remove_login(store: &Store, secrets: &dyn Secrets, id: &str, feed_too: bo
             store.remove_setting(DATA_LOGIN);
             match (decided == Removal::Ask && feed_too, data_feed_of(&login)) {
                 (true, Some(feed)) => {
-                    crate::feeds::remove_source(store, feed.id);
+                    crate::feeds::remove_feed(store, feed.id);
                 }
                 _ => hand_over(&login),
             }
@@ -376,14 +376,14 @@ mod tests {
 
     /// Adding a login keeps its password under its own id and nowhere in a
     /// setting. The first is the data login and puts Rithmic on top of the
-    /// data sources, above one already there.
+    /// data feeds, above one already there.
     #[test]
     fn the_first_login_is_the_data_login_and_puts_rithmic_on_top() {
         if skip() {
             return;
         }
         let store = store();
-        crate::feeds::add_source(&store, "tos");
+        crate::feeds::add_feed(&store, "tos");
         let kept = Kept::default();
         let lucid = add_login(&store, &kept, &typed("Lucid", "trader")).unwrap();
         assert_eq!(crate::feeds::stored_order(&store), vec!["rithmic", "tos", "yahoo"]);
@@ -489,7 +489,7 @@ mod tests {
         let store = store();
         let kept = Kept::default();
         let lucid = add_login(&store, &kept, &typed("Lucid", "a")).unwrap();
-        assert!(crate::feeds::remove_source(&store, "yahoo"));
+        assert!(crate::feeds::remove_feed(&store, "yahoo"));
         assert_eq!(removal(&store, &lucid), Removal::KeepFeed);
         remove_login(&store, &kept, &lucid, true).unwrap();
         assert!(logins(&store).is_empty());

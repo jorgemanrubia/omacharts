@@ -492,9 +492,9 @@ impl Window {
         job: impl FnOnce(&dyn trading::Session, &str) -> Result<(), Failure> + Send + 'static,
     ) {
         let Some((login, number)) = account.split_once('/') else { return };
-        let source = self.account_label(account);
+        let name = self.account_label(account);
         let Some(session) = self.desk.session(login).filter(|_| self.desk.live(login)) else {
-            self.refuse_as(&source, &format!("{source} not signed in"));
+            self.refuse_as(&name, &format!("{name} not signed in"));
             return;
         };
         let number = number.to_string();
@@ -506,7 +506,7 @@ impl Window {
         glib::spawn_future_local(async move {
             let Ok(outcome) = receiver.recv().await else { return };
             if let (Some(this), Err(why)) = (this.upgrade(), outcome) {
-                this.refuse_as(&source, why.words());
+                this.refuse_as(&name, why.words());
             }
         });
     }
@@ -647,15 +647,15 @@ impl Window {
         if let Err(why) = self.trade.placing.begin(&key) {
             return self.refuse_on(&target, &why);
         }
-        let source = self.account_label(&key);
+        let name = self.account_label(&key);
         let decimals = crate::ui::trading_panel::decimals_of(target.tick);
-        self.say(log_words::order_sent(&source, &order, decimals));
+        self.say(log_words::order_sent(&name, &order, decimals));
         // Drawn at once, faint, until the exchange has it working.
         let request = Request::Place(order.tag.clone());
         self.ask(request.clone(), Pending::Place { key: key.clone(), order: order.clone() });
         self.send(&target, move |session, _| session.place(&order), move |this, outcome| {
             this.trade.placing.done(&key);
-            if let Some(basket) = this.heard(&request, outcome, "Not placed", &source) {
+            if let Some(basket) = this.heard(&request, outcome, "Not placed", &name) {
                 this.trade.placed.borrow_mut().insert(basket.clone(), Stage::Pending);
                 this.desk.tell();
                 then(this, basket);
@@ -720,8 +720,8 @@ impl Window {
         if let Err(why) = self.trade.placing.begin(&key) {
             return self.refuse_on(&target, &why);
         }
-        let source = self.account_label(&key);
-        self.say(log_words::note(&source, cancel_words(&order)));
+        let name = self.account_label(&key);
+        self.say(log_words::note(&name, cancel_words(&order)));
         let basket = basket.to_string();
         let request = Request::Cancel(basket.clone());
         self.ask(request.clone(), Pending::Cancel);
@@ -729,7 +729,7 @@ impl Window {
         self.trade.placed.borrow_mut().insert(basket.clone(), order.status.stage);
         self.send(&target, move |session, number| session.cancel(number, &basket), move |this, outcome| {
             this.trade.placing.done(&key);
-            this.heard(&request, outcome, "Not cancelled", &source);
+            this.heard(&request, outcome, "Not cancelled", &name);
         });
     }
 
@@ -779,10 +779,10 @@ impl Window {
             return self.refuse_on(target, "Stop and target not linked on this broker");
         }
         let baskets = vec![basket, sibling];
-        let source = self.account_label(&key);
+        let name = self.account_label(&key);
         self.send(target, move |session, number| session.link(number, &baskets), move |this, outcome| match outcome {
-            Ok(()) => this.confirm(&source, "Linked: stop cancels target"),
-            Err(why) => this.refuse_as(&source, &format!("Not linked: {why}")),
+            Ok(()) => this.confirm(&name, "Linked: stop cancels target"),
+            Err(why) => this.refuse_as(&name, &format!("Not linked: {why}")),
         });
     }
 
@@ -811,10 +811,10 @@ impl Window {
         if let Err(why) = self.trade.placing.begin(&key) {
             return self.refuse_on(&target, &why);
         }
-        let source = self.account_label(&key);
+        let name = self.account_label(&key);
         let decimals = crate::ui::trading_panel::decimals_of(order.tick);
         self.say(log_words::note(
-            &source,
+            &name,
             format!(
                 "Move {} to {}",
                 trading::order_words(order.side, order.kind),
@@ -826,7 +826,7 @@ impl Window {
         self.ask(request.clone(), Pending::Move(price));
         self.send(&target, move |session, number| session.modify(number, &basket, price), move |this, outcome| {
             this.trade.placing.done(&key);
-            this.heard(&request, outcome, "Not moved", &source);
+            this.heard(&request, outcome, "Not moved", &name);
         });
     }
 
@@ -851,8 +851,8 @@ impl Window {
                 .map(|order| order.basket_id.clone())
                 .collect()
         };
-        let source = self.account_label(&key);
-        self.say(log_words::note(&source, format!("Flatten {}", target.contract)));
+        let name = self.account_label(&key);
+        self.say(log_words::note(&name, format!("Flatten {}", target.contract)));
         let request = Request::Flatten(key.clone(), target.contract.clone());
         self.ask(request.clone(), Pending::Flatten);
         let (contract, exchange) = (target.contract.clone(), target.exchange.clone());
@@ -861,7 +861,7 @@ impl Window {
             &target,
             move |session, number| session.flatten(number, &contract, &exchange),
             move |this, outcome| {
-                if this.heard(&request, outcome, "Not flattened", &source).is_none() {
+                if this.heard(&request, outcome, "Not flattened", &name).is_none() {
                     return;
                 }
                 // One the broker cancelled itself, or a link took with
@@ -915,8 +915,8 @@ impl Window {
         if flat.is_empty() {
             return self.refuse_on(&target, &format!("Already flat in {}", target.contract));
         }
-        let source = self.account_label(&key);
-        self.say(log_words::note(&source, format!("Flatten {} and cancel its orders", target.contract)));
+        let name = self.account_label(&key);
+        self.say(log_words::note(&name, format!("Flatten {} and cancel its orders", target.contract)));
         let flatten = Request::Flatten(key.clone(), target.contract.clone());
         {
             let mut pending = self.trade.pending.borrow_mut();
@@ -957,7 +957,7 @@ impl Window {
                         pending.remove(&Request::Cancel(basket.clone()));
                     }
                 }
-                this.heard(&flatten, outcome, "Not flattened", &source);
+                this.heard(&flatten, outcome, "Not flattened", &name);
             },
         );
     }
@@ -2096,7 +2096,7 @@ pub(super) mod tests {
     /// "—", "(heading)" on one that cannot be clicked, and "──" for the rule.
     fn picker(window: &Rc<Window>, pane: &ChartPane) -> Vec<String> {
         let popover = gtk::Popover::new();
-        window.fill_source_menu(&popover, pane.id);
+        window.fill_feed_menu(&popover, pane.id);
         let menu = popover.child().expect("a list");
         let mut rows = Vec::new();
         let mut next = menu.first_child();
@@ -2139,8 +2139,8 @@ pub(super) mod tests {
     }
 
     fn part(pane: &ChartPane) -> Option<String> {
-        pane.source_menu.get_visible().then(|| {
-            let label = pane.source_menu.child().and_downcast::<gtk::Label>().expect("the part's words");
+        pane.feed_menu.get_visible().then(|| {
+            let label = pane.feed_menu.child().and_downcast::<gtk::Label>().expect("the part's words");
             label.label().to_string()
         })
     }
@@ -2159,12 +2159,12 @@ pub(super) mod tests {
             assert_eq!(picker(&window, &pane), vec!["Yahoo Finance (default) ✓", "Rithmic"]);
             assert_eq!(part(&pane).as_deref(), Some("Yahoo Finance"));
 
-            window.choose_source(pane.id, Some("rithmic".into()));
+            window.choose_feed(pane.id, Some("rithmic".into()));
             assert_eq!(picker(&window, &pane), vec!["Yahoo Finance (default)", "Rithmic ✓"]);
             assert_eq!(part(&pane).as_deref(), Some("Rithmic"));
             // Choosing the default stores nothing.
-            window.choose_source(pane.id, None);
-            assert!(pane.source.borrow().is_none());
+            window.choose_feed(pane.id, None);
+            assert!(pane.feed.borrow().is_none());
 
             // Passed over, it says so after the feed it fell back to.
             let before = window.routes_on_screen();
@@ -2204,23 +2204,23 @@ pub(super) mod tests {
             };
             assert_eq!(picker(&window, &pane), rows([" ✓", ""]));
             assert_eq!(part(&pane).as_deref(), Some("Rithmic Test"), "on its own feed, the account alone");
-            assert_eq!(pane.source_menu.tooltip_text().as_deref(), Some(trading::PART_TOOLTIP));
+            assert_eq!(pane.feed_menu.tooltip_text().as_deref(), Some(trading::PART_TOOLTIP));
 
-            window.choose_source(pane.id, Some("yahoo".into()));
+            window.choose_feed(pane.id, Some("yahoo".into()));
             assert_eq!(picker(&window, &pane), rows(["", " ✓"]));
             assert_eq!(part(&pane).as_deref(), Some("Rithmic Test · Yahoo Finance"));
             // The default chosen again is no choice: nothing is kept.
-            window.choose_source(pane.id, None);
+            window.choose_feed(pane.id, None);
             assert_eq!(part(&pane).as_deref(), Some("Rithmic Test"));
 
             // A chosen feed that cannot be used is said, after the account.
-            window.choose_source(pane.id, Some("yahoo".into()));
+            window.choose_feed(pane.id, Some("yahoo".into()));
             let before = window.routes_on_screen();
             window.feeds()[0].usable.set(false);
             window.reroute(&before);
             assert_eq!(part(&pane).as_deref(), Some("Rithmic Test · Yahoo Finance not signed in"));
             window.feeds()[0].usable.set(true);
-            window.choose_source(pane.id, None);
+            window.choose_feed(pane.id, None);
 
             // The login in trouble.
             session.sign_out();
@@ -2263,12 +2263,12 @@ pub(super) mod tests {
             );
             assert_eq!(part(&pane).as_deref(), Some("Rithmic Test 951"));
 
-            window.choose_source(pane.id, Some("yahoo".into()));
+            window.choose_feed(pane.id, Some("yahoo".into()));
             assert_eq!(part(&pane).as_deref(), Some("Rithmic Test 951 · Yahoo Finance"));
             let other = format!("{id}/952");
             window.choose_account(pane.id, Some(other.clone()));
             assert_eq!(pane.account.borrow().as_deref(), Some(other.as_str()));
-            assert!(pane.source.borrow().is_none(), "the feed went with the account");
+            assert!(pane.feed.borrow().is_none(), "the feed went with the account");
             assert_eq!(part(&pane).as_deref(), Some("Rithmic Test 952"));
             assert_eq!(
                 picker(&window, &pane),

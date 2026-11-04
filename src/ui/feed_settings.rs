@@ -1,12 +1,12 @@
-//! The sources charts come from, in the order they are tried.
+//! The feeds charts come from, in the order they are tried.
 //!
-//! A list rather than a choice: each chart comes from the first source that
+//! A list rather than a choice: each chart comes from the first feed that
 //! has its symbol and is signed in, so the order is the setting. Yahoo is a
-//! source like the others, moved and removed the same way; only the last
-//! source left cannot be removed, since with none no chart could draw. A
-//! chart of something no remaining source has says so.
+//! feed like the others, moved and removed the same way; only the last
+//! feed left cannot be removed, since with none no chart could draw. A
+//! chart of something no remaining feed has says so.
 //!
-//! What each row says comes from the feeds themselves: what a source
+//! What each row says comes from the feeds themselves: what a feed
 //! covers, how fresh it is (asked of the provider), whether it needs
 //! signing in, how, and how that stands. A feed whose login is a broker
 //! connection signs in through a login in Preferences → Trading, the data
@@ -38,7 +38,7 @@ use crate::ui::sign_in_dialogs;
 enum Progress {
     /// One line of how it is going, as it happens.
     Line(String),
-    /// Finished. `Err` carries what went wrong, in the source's words.
+    /// Finished. `Err` carries what went wrong, in the feed's words.
     Done(Result<(), String>),
 }
 
@@ -52,24 +52,24 @@ struct Panel {
     /// in Trading.
     add_broker: Option<AddBroker>,
     /// Has the window chart from the order now stored, and read again
-    /// which sources are signed in. Called after every change here.
+    /// which feeds are signed in. Called after every change here.
     on_change: Rc<dyn Fn()>,
     page: adw::PreferencesPage,
-    /// The sources, rebuilt whenever one changes.
+    /// The feeds, rebuilt whenever one changes.
     group: RefCell<Option<adw::PreferencesGroup>>,
-    /// What the page shows below the sources, kept last.
+    /// What the page shows below the feeds, kept last.
     after: Vec<adw::PreferencesGroup>,
-    /// The source a sign-in is running for, so a second press cannot start
+    /// The feed a sign-in is running for, so a second press cannot start
     /// a second one.
     signing_in: Cell<Option<&'static str>>,
-    /// The latest word from a sign-in, by source, until the next one:
+    /// The latest word from a sign-in, by feed, until the next one:
     /// progress while it runs, and why it failed when that is not a state
-    /// the source keeps itself.
+    /// the feed keeps itself.
     notes: RefCell<HashMap<&'static str, String>>,
 }
 
-/// Fills the settings' data section: the sources, and the groups in
-/// `after` below them. Returns what draws the sources again, for Trading to
+/// Fills the settings' data section: the feeds, and the groups in
+/// `after` below them. Returns what draws the feeds again, for Trading to
 /// call when a login changes.
 pub fn build(
     page: &adw::PreferencesPage,
@@ -104,7 +104,7 @@ impl Panel {
         })
     }
 
-    /// The sources added, top first, as the catalogue has them.
+    /// The feeds added, top first, as the catalogue has them.
     fn added(&self) -> Vec<&'static Listed> {
         feeds::stored_order(&self.store)
             .iter()
@@ -130,12 +130,12 @@ impl Panel {
     }
 }
 
-/// Replace the sources group with one drawn from what is stored now.
+/// Replace the feeds group with one drawn from what is stored now.
 fn rebuild(panel: &Rc<Panel>) {
     if let Some(old) = panel.group.borrow_mut().take() {
         panel.page.remove(&old);
     }
-    let group = sources_group(panel);
+    let group = feeds_group(panel);
     panel.page.add(&group);
     *panel.group.borrow_mut() = Some(group);
     for after in &panel.after {
@@ -146,7 +146,7 @@ fn rebuild(panel: &Rc<Panel>) {
     }
 }
 
-fn sources_group(panel: &Rc<Panel>) -> adw::PreferencesGroup {
+fn feeds_group(panel: &Rc<Panel>) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     group.set_title("Data feeds");
     group.set_description(Some(
@@ -155,7 +155,7 @@ fn sources_group(panel: &Rc<Panel>) -> adw::PreferencesGroup {
 
     let added = panel.added();
     for (at, feed) in added.iter().enumerate() {
-        group.add(&source_row(panel, feed, at, added.len() > 1));
+        group.add(&feed_row(panel, feed, at, added.len() > 1));
     }
 
     let missing: Vec<&'static Listed> =
@@ -166,7 +166,7 @@ fn sources_group(panel: &Rc<Panel>) -> adw::PreferencesGroup {
     group
 }
 
-/// How a source stands, in a word or two: how fresh it is while it can be
+/// How a feed stands, in a word or two: how fresh it is while it can be
 /// used, otherwise why it cannot.
 fn standing(panel: &Panel, feed: &'static Listed) -> String {
     if let Some(note) = panel.notes.borrow().get(feed.id) {
@@ -200,7 +200,7 @@ fn subtitle(panel: &Panel, feed: &'static Listed) -> String {
     }
 }
 
-/// The login a source signs in through, when that is Trading's business: a
+/// The login a feed signs in through, when that is Trading's business: a
 /// broker connection's feed, while there is a login in Trading.
 fn through_trading(panel: &Panel, feed: &'static Listed) -> Option<crate::trading::Login> {
     crate::trading::data_login(&panel.store).filter(|login| trades(feed) && login.broker.eq_ignore_ascii_case(feed.id))
@@ -211,9 +211,9 @@ fn trades(feed: &'static Listed) -> bool {
     feed.setup.is_some_and(|setup| setup.trades())
 }
 
-/// A source's row. `others` is whether any other source is on the list:
+/// A feed's row. `others` is whether any other feed is on the list:
 /// the last one left offers no Remove, and has nothing to be dragged past.
-fn source_row(panel: &Rc<Panel>, feed: &'static Listed, at: usize, others: bool) -> adw::ActionRow {
+fn feed_row(panel: &Rc<Panel>, feed: &'static Listed, at: usize, others: bool) -> adw::ActionRow {
     let row = adw::ActionRow::new();
     row.set_title(feed.label);
     row.set_use_markup(false);
@@ -259,7 +259,7 @@ fn source_row(panel: &Rc<Panel>, feed: &'static Listed, at: usize, others: bool)
         remove.add_css_class("flat");
         remove.set_valign(gtk::Align::Center);
         let panel_for_remove = panel.clone();
-        remove.connect_clicked(move |_| remove_source(&panel_for_remove, feed));
+        remove.connect_clicked(move |_| remove_feed(&panel_for_remove, feed));
         row.add_suffix(&remove);
     }
 
@@ -267,7 +267,7 @@ fn source_row(panel: &Rc<Panel>, feed: &'static Listed, at: usize, others: bool)
     row
 }
 
-/// The one thing to do about a source's sign-in, which says where it
+/// The one thing to do about a feed's sign-in, which says where it
 /// stands: Sign in… with nothing usable saved, Sign in again after a
 /// refusal or an expiry, Sign out while it works.
 fn action_button(panel: &Rc<Panel>, feed: &'static Listed, row: &adw::ActionRow) -> gtk::Button {
@@ -345,7 +345,7 @@ fn wire_reorder(panel: &Rc<Panel>, row: &adw::ActionRow, feed: &'static Listed, 
 }
 
 /// `order` with the entry at `from` taken out and put back at `onto`, or
-/// `None` for a move that changes nothing or names no source.
+/// `None` for a move that changes nothing or names no feed.
 fn moved<T: Copy>(order: &[T], from: usize, onto: usize) -> Option<Vec<T>> {
     if from == onto || from >= order.len() || onto >= order.len() {
         return None;
@@ -356,7 +356,7 @@ fn moved<T: Copy>(order: &[T], from: usize, onto: usize) -> Option<Vec<T>> {
     Some(order)
 }
 
-/// The sources not added yet, one press each.
+/// The feeds not added yet, one press each.
 fn add_button(panel: &Rc<Panel>, missing: Vec<&'static Listed>) -> gtk::MenuButton {
     let add = gtk::MenuButton::new();
     add.set_label("Add a data feed…");
@@ -375,7 +375,7 @@ fn add_button(panel: &Rc<Panel>, missing: Vec<&'static Listed>) -> gtk::MenuButt
         let anchor = add.clone();
         button.connect_clicked(move |_| {
             shut.popdown();
-            add_source(&panel, feed, &anchor);
+            add_feed(&panel, feed, &anchor);
         });
         choices.append(&button);
     }
@@ -387,19 +387,19 @@ fn add_button(panel: &Rc<Panel>, missing: Vec<&'static Listed>) -> gtk::MenuButt
 /// A broker connection's feed is added by adding a broker login, in
 /// Trading, unless there is one already to sign in through. Any other is
 /// added at once, and signed in to from its row.
-fn add_source(panel: &Rc<Panel>, feed: &'static Listed, anchor: &impl IsA<gtk::Widget>) {
+fn add_feed(panel: &Rc<Panel>, feed: &'static Listed, anchor: &impl IsA<gtk::Widget>) {
     match trades(feed) && through_trading(panel, feed).is_none() {
         true => ask_broker(panel, feed, anchor),
         false => {
-            feeds::add_source(&panel.store, feed.id);
+            feeds::add_feed(&panel.store, feed.id);
             panel.changed();
         }
     }
 }
 
-fn remove_source(panel: &Rc<Panel>, feed: &'static Listed) {
+fn remove_feed(panel: &Rc<Panel>, feed: &'static Listed) {
     panel.notes.borrow_mut().remove(feed.id);
-    feeds::remove_source(&panel.store, feed.id);
+    feeds::remove_feed(&panel.store, feed.id);
     panel.changed();
 }
 
@@ -413,7 +413,7 @@ fn sign_out(panel: &Rc<Panel>, feed: &'static Listed) {
 }
 
 /// A broker connection's feed with no login: a broker is added in Trading,
-/// which puts the feed on top of the sources and signs it in.
+/// which puts the feed on top of the feeds and signs it in.
 fn ask_broker(panel: &Rc<Panel>, feed: &'static Listed, anchor: &impl IsA<gtk::Widget>) {
     if let Some(add_broker) = &panel.add_broker {
         add_broker(feed.id, anchor.upcast_ref());
@@ -429,7 +429,7 @@ fn ask_dialog(panel: &Rc<Panel>, feed: &'static Listed, anchor: &impl IsA<gtk::W
 }
 
 /// Run a sign-in off the main loop, showing on the row how it goes, then
-/// have the window read the sources again.
+/// have the window read the feeds again.
 fn start_sign_in(panel: &Rc<Panel>, feed: &'static Listed) {
     if panel.signing_in.get().is_some() {
         return;
@@ -463,7 +463,7 @@ fn start_sign_in(panel: &Rc<Panel>, feed: &'static Listed) {
                     panel.signing_in.set(None);
                     let mut notes = panel.notes.borrow_mut();
                     notes.remove(feed.id);
-                    // A refusal is a state the source keeps, and the row
+                    // A refusal is a state the feed keeps, and the row
                     // reads it back in the provider's words; anything else
                     // is said once, here.
                     if let Err(error) = outcome
@@ -532,7 +532,7 @@ mod tests {
     }
 
     fn titles(panel: &Panel) -> Vec<String> {
-        let group = panel.group.borrow().clone().expect("the sources are drawn");
+        let group = panel.group.borrow().clone().expect("the feeds are drawn");
         action_rows(group.upcast_ref()).iter().map(|row| row.title().to_string()).collect()
     }
 
@@ -548,7 +548,7 @@ mod tests {
             let group = panel.group.borrow().clone().unwrap();
             let words = words_under(group.upcast_ref());
             assert!(words.iter().any(|word| word == "Add a data feed…"), "{words:?}");
-            // The sources still to add are in the button's menu, not on the page.
+            // The feeds still to add are in the button's menu, not on the page.
             let yahoo = &action_rows(group.upcast_ref())[0];
             let words = words_under(yahoo.upcast_ref());
             for absent in ["Experimental", "Sign in…", "Sign out", "Remove"] {
@@ -558,7 +558,7 @@ mod tests {
         });
     }
 
-    /// An added source gets a row above Yahoo, with Remove, and
+    /// An added feed gets a row above Yahoo, with Remove, and
     /// thinkorswim's says Experimental. The order written is the order
     /// drawn, and moving one writes the new order.
     #[test]
@@ -568,8 +568,8 @@ mod tests {
             let panel = panel(&store);
             let tos = providers::listed("tos").unwrap();
             let rithmic = providers::listed(RITHMIC).unwrap();
-            feeds::add_source(&store, RITHMIC);
-            feeds::add_source(&store, "tos");
+            feeds::add_feed(&store, RITHMIC);
+            feeds::add_feed(&store, "tos");
             rebuild(&panel);
             assert_eq!(titles(&panel), vec!["Rithmic", "thinkorswim", "Yahoo Finance"]);
 
@@ -589,27 +589,27 @@ mod tests {
         });
     }
 
-    /// Yahoo moves like any other source, and can be removed and added back
-    /// through the button; the last source left offers no Remove.
+    /// Yahoo moves like any other feed, and can be removed and added back
+    /// through the button; the last feed left offers no Remove.
     #[test]
     fn yahoo_moves_and_goes_like_any_other_but_the_last_stays() {
         let order = ["rithmic", "tos", "yahoo"];
         assert_eq!(moved(&order, 1, 1), None, "dropped on itself");
-        assert_eq!(moved(&order, 3, 0), None, "no such source");
+        assert_eq!(moved(&order, 3, 0), None, "no such feed");
         assert_eq!(moved(&order, 2, 0), Some(vec!["yahoo", "rithmic", "tos"]));
         crate::ui::on_gtk(|| {
             let store = Rc::new(Store::memory().expect("an empty database"));
             let panel = panel(&store);
-            feeds::add_source(&store, "tos");
+            feeds::add_feed(&store, "tos");
             rebuild(&panel);
             assert_eq!(titles(&panel), vec!["thinkorswim", "Yahoo Finance"]);
             let yahoo = providers::listed("yahoo").unwrap();
-            remove_source(&panel, yahoo);
+            remove_feed(&panel, yahoo);
             assert_eq!(titles(&panel), vec!["thinkorswim"]);
             let group = panel.group.borrow().clone().unwrap();
             let words = words_under(action_rows(group.upcast_ref())[0].upcast_ref());
-            assert!(!words.iter().any(|w| w == "Remove"), "the last source: {words:?}");
-            add_source(&panel, yahoo, &gtk::Button::new());
+            assert!(!words.iter().any(|w| w == "Remove"), "the last feed: {words:?}");
+            add_feed(&panel, yahoo, &gtk::Button::new());
             assert_eq!(titles(&panel), vec!["thinkorswim", "Yahoo Finance"]);
             let order = moved(&panel.added(), 1, 0).expect("a move");
             panel.reorder(order);
@@ -618,7 +618,7 @@ mod tests {
         });
     }
 
-    /// Remove takes the source off the order; the last one removed leaves
+    /// Remove takes the feed off the order; the last one removed leaves
     /// no setting. While Rithmic signs in through a login in Trading its row
     /// says so and offers neither Remove nor a sign-in of its own.
     #[test]
@@ -629,12 +629,12 @@ mod tests {
         crate::ui::on_gtk(|| {
             let store = Rc::new(Store::memory().expect("an empty database"));
             let panel = panel(&store);
-            feeds::add_source(&store, RITHMIC);
+            feeds::add_feed(&store, RITHMIC);
             rebuild(&panel);
             let group = panel.group.borrow().clone().unwrap();
             let words = words_under(action_rows(group.upcast_ref())[0].upcast_ref());
             assert!(words.iter().any(|w| w == "Remove"), "{words:?}");
-            remove_source(&panel, providers::listed(RITHMIC).unwrap());
+            remove_feed(&panel, providers::listed(RITHMIC).unwrap());
             assert_eq!(store.setting(feeds::SETTING), None);
             assert_eq!(titles(&panel), vec!["Yahoo Finance"]);
 
@@ -659,10 +659,10 @@ mod tests {
         });
     }
 
-    /// A source's row offers one action, and which one follows how it
+    /// A feed's row offers one action, and which one follows how it
     /// stands. Rithmic with nobody saved is not signed in.
     #[test]
-    fn a_source_offers_the_action_its_state_calls_for() {
+    fn a_feed_offers_the_action_its_state_calls_for() {
         if session::development() {
             return;
         }
@@ -670,7 +670,7 @@ mod tests {
             let store = Rc::new(Store::memory().expect("an empty database"));
             feeds::remember_logins(&store);
             let panel = panel(&store);
-            feeds::add_source(&store, RITHMIC);
+            feeds::add_feed(&store, RITHMIC);
             rebuild(&panel);
             let group = panel.group.borrow().clone().unwrap();
             let row = &action_rows(group.upcast_ref())[0];
@@ -690,7 +690,7 @@ mod tests {
             let fake = providers::listed(omacharts_engine::providers::fake::LISTED.id).expect("in a test build");
             let store = Rc::new(Store::memory().expect("an empty database"));
             let panel = panel(&store);
-            add_source(&panel, fake, &gtk::Button::new());
+            add_feed(&panel, fake, &gtk::Button::new());
             assert_eq!(titles(&panel), vec![fake.label, "Yahoo Finance"]);
             let group = panel.group.borrow().clone().unwrap();
             let row = action_rows(group.upcast_ref())[0].clone();
@@ -767,9 +767,9 @@ mod tests {
         }
     }
 
-    /// Every source has a few words for its row.
+    /// Every feed has a few words for its row.
     #[test]
-    fn every_source_says_what_it_covers() {
+    fn every_feed_says_what_it_covers() {
         for feed in providers::LISTED {
             assert!(!feed.covers.is_empty(), "{} has nothing to say", feed.id);
         }

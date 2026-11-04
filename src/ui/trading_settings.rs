@@ -279,7 +279,7 @@ fn action_button(panel: &Rc<Panel>, login: &Login, data: bool) -> gtk::Button {
     let standing = panel.desk.standing(login, data);
     let label = match standing {
         Standing::Live => "Sign out",
-        Standing::Saved => "Sign in",
+        Standing::Ready => "Sign in",
         Standing::SignedOut | Standing::Refused(_) => "Sign in…",
     };
     let button = gtk::Button::with_label(label);
@@ -289,7 +289,7 @@ fn action_button(panel: &Rc<Panel>, login: &Login, data: bool) -> gtk::Button {
         Standing::Live => {
             button.connect_clicked(move |_| sign_out(&panel, &id));
         }
-        Standing::Saved => {
+        Standing::Ready => {
             button.add_css_class("suggested-action");
             button.connect_clicked(move |_| sign_in(&panel, &id));
         }

@@ -106,7 +106,7 @@ fn worth_warming(delivery: Delivery, cached: bool) -> bool {
 
 /// What a chart's header says about where its bars come from: the feed
 /// serving it, then each it was passed over and why.
-fn source_text<'a>(serving: &str, passed: impl Iterator<Item = (&'a str, &'a str)>) -> String {
+fn feed_text<'a>(serving: &str, passed: impl Iterator<Item = (&'a str, &'a str)>) -> String {
     let mut text = serving.to_string();
     for (label, why) in passed {
         text.push_str(&format!(" · {label} {why}"));
@@ -390,19 +390,19 @@ mod tests {
     /// to time — and the one that is polled gets it without anybody asking.
     /// A chart passed over a feed says so, after the feed it is from.
     #[test]
-    fn the_header_names_the_source_and_what_it_passed_over() {
-        assert_eq!(source_text("Yahoo", std::iter::empty()), "Yahoo");
+    fn the_header_names_the_feed_and_what_it_passed_over() {
+        assert_eq!(feed_text("Yahoo", std::iter::empty()), "Yahoo");
         assert_eq!(
-            source_text("Yahoo", [("thinkorswim", "not signed in")].into_iter()),
+            feed_text("Yahoo", [("thinkorswim", "not signed in")].into_iter()),
             "Yahoo · thinkorswim not signed in"
         );
     }
 
-    /// The source somebody chose comes back with the chart after a restart,
+    /// The feed somebody chose comes back with the chart after a restart,
     /// and a chart that follows the order writes nothing for it, so every
     /// arrangement stored before there was a choice reads as following it.
     #[test]
-    fn a_chosen_source_survives_a_restart_and_none_is_written_for_automatic() {
+    fn a_chosen_feed_survives_a_restart_and_none_is_written_for_automatic() {
         let store = Store::memory().expect("an in-memory store");
         let mut pinned = stored_pane(1, "ES", LinkMode::Focus);
         pinned.source = Some("rithmic".into());
@@ -418,7 +418,7 @@ mod tests {
         let sources: Vec<Option<&str>> = back.books[0].panes.iter().map(|p| p.source.as_deref()).collect();
         assert_eq!(sources, vec![Some("rithmic"), None]);
         let old = parse_workspace(ONE_ARRANGEMENT).unwrap();
-        assert!(old.books[0].panes.iter().all(|pane| pane.source.is_none()));
+        assert!(old.books[0].panes.iter().all(|stored| stored.source.is_none()));
         // The account the same way: only a chosen one is written.
         assert_eq!(json.matches("\"account\"").count(), 1, "{json}");
         let accounts: Vec<Option<&str>> = back.books[0].panes.iter().map(|p| p.account.as_deref()).collect();
@@ -1783,8 +1783,8 @@ struct StoredPane {
     /// Volume profile periods merged into composites on this chart.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     profile_merges: Vec<omacharts_engine::indicators::profile::Merge>,
-    /// The data source somebody chose for this chart, by id. Missing for a
-    /// chart that follows the order of sources, which is every chart until
+    /// The data feed somebody chose for this chart, by id. Missing for a
+    /// chart that follows the order of feeds, which is every chart until
     /// somebody chooses and every chart written before anybody could.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     source: Option<String>,
@@ -2670,11 +2670,11 @@ impl Window {
         // The account opens the feeds that could serve this chart, built
         // afresh each time it opens: which feeds there are, which can be used
         // and what the chart is of all change underneath it.
-        let sources = gtk::Popover::new();
-        sources.set_has_arrow(false);
+        let feeds = gtk::Popover::new();
+        feeds.set_has_arrow(false);
         let filler = self.clone();
-        sources.connect_show(move |popover| filler.fill_source_menu(popover, id));
-        pane.source_menu.set_popover(Some(&sources));
+        feeds.connect_show(move |popover| filler.fill_feed_menu(popover, id));
+        pane.feed_menu.set_popover(Some(&feeds));
 
         // The size opens the sizes of the chart's template, and on a right
         // click offers to edit the templates, as the strip does its list.
@@ -3623,7 +3623,7 @@ impl Window {
     ///
     /// Choosing a default stores nothing, so the chart keeps following it;
     /// choosing another account forgets the chart's feed.
-    fn fill_source_menu(self: &Rc<Self>, popover: &gtk::Popover, id: u32) {
+    fn fill_feed_menu(self: &Rc<Self>, popover: &gtk::Popover, id: u32) {
         let Some(pane) = self.pane(id) else { return };
         let instrument = pane.instrument.borrow().clone();
         let feeds = self.feeds();
@@ -3707,14 +3707,14 @@ impl Window {
                 };
                 // The default is no choice at all: the chart goes on
                 // following it.
-                let source = (Some(own) != default).then(|| own.to_string());
+                let chosen = (Some(own) != default).then(|| own.to_string());
                 let this = self.clone();
                 row(
                     &label,
                     None,
                     Some(in_force == Some(own)),
                     indent,
-                    Some(Rc::new(move || this.choose_source(id, source.clone()))),
+                    Some(Rc::new(move || this.choose_feed(id, chosen.clone()))),
                 );
             }
         };
@@ -3847,7 +3847,7 @@ impl Window {
                     drawing_uid: pane.uid.borrow().clone(),
                     drawings: pane.local_drawings.borrow().clone(),
                     profile_merges: pane.profile_merges.borrow().clone(),
-                    source: pane.source.borrow().clone(),
+                    source: pane.feed.borrow().clone(),
                     account: pane.account.borrow().clone(),
                     trading_size: pane.trading_size.borrow().clone(),
                     auto_scale: pane.view.price_auto(),
@@ -4051,7 +4051,7 @@ impl Window {
             }
             *pane.local_drawings.borrow_mut() = stored.drawings.clone();
             *pane.profile_merges.borrow_mut() = stored.profile_merges.clone();
-            *pane.source.borrow_mut() = stored.source.clone();
+            *pane.feed.borrow_mut() = stored.source.clone();
             *pane.account.borrow_mut() = stored.account.clone();
             *pane.trading_size.borrow_mut() = stored.trading_size.clone();
             pane.view.set_price_auto(stored.auto_scale);
@@ -6466,7 +6466,7 @@ impl Window {
         let timeframe = pane.timeframe.get();
         // A chart moved to something its chosen feed has no name for, or
         // whose feed has gone from the order, follows the order again.
-        if self.settle_source(pane, &instrument) {
+        if self.settle_feed(pane, &instrument) {
             self.save_soon();
         }
         let routed = match self.route_chosen(pane, &instrument) {
@@ -6503,7 +6503,7 @@ impl Window {
         *pane.instrument.borrow_mut() = Some(instrument.clone());
         // After the instrument, which is what says whether the feed is the
         // chart's default and so goes unnamed.
-        self.write_source_of(pane, Some(&feed), &passed);
+        self.write_feed_of(pane, Some(&feed), &passed);
         self.apply_marks_to(pane);
         // Whatever this chart was waiting for, it is not waiting any more. A
         // chart somebody has since pointed somewhere else must not be moved
@@ -6624,7 +6624,7 @@ impl Window {
         self.apply_marks_to(pane);
         *pane.pending.borrow_mut() = None;
         pane.write_readout();
-        self.write_source_of(pane, None, &[]);
+        self.write_feed_of(pane, None, &[]);
         // Whatever this chart was streaming, it is not showing it now.
         self.release_pane(pane.id);
         if pane.id == self.focused.get() {
@@ -6659,7 +6659,7 @@ impl Window {
         *pane.pending.borrow_mut() = None;
         pane.write_readout();
         self.write_header_of(pane);
-        self.write_refused_source(pane, &refused.feed);
+        self.write_refused_feed(pane, &refused.feed);
         self.release_pane(pane.id);
         if pane.id == self.focused.get() {
             self.store.set_setting(LAST_SYMBOL, &instrument.symbol);
@@ -7292,9 +7292,9 @@ impl Window {
 
     /// Re-route the charts when a feed's session says what its login may
     /// chart, or that changes: a root on an exchange the login is not
-    /// entitled to goes to the next source. Where every chart is served
+    /// entitled to goes to the next feed. Where every chart is served
     /// from is noted before the new set is taken on, so only the charts
-    /// whose source changes are shown again. Nothing listens until a
+    /// whose feed changes are shown again. Nothing listens until a
     /// session exists to say anything.
     fn wire_entitlements(self: &Rc<Self>) {
         let (said, heard) = async_channel::unbounded::<()>();
@@ -7430,7 +7430,7 @@ impl Window {
     /// whether it serves the instrument. A feed that fails while running
     /// keeps its charts: they show the trouble dot they always showed, and
     /// the provider owns getting back. Somebody watching a chart must never
-    /// find it moved to another source because of a dropped connection.
+    /// find it moved to another feed because of a dropped connection.
     fn route(&self, instrument: &Instrument) -> Option<Routed> {
         let feeds = self.feeds.borrow();
         let route = providers::route(
@@ -7459,12 +7459,12 @@ impl Window {
     /// The feed is the one [`crate::trading::feed_of`] points the chart at
     /// — chosen for it, or its account's own — else the order's.
     fn route_chosen(&self, pane: &ChartPane, instrument: &Instrument) -> Option<Result<Routed, Routed>> {
-        let source = pane.source.borrow();
+        let chosen_feed = pane.feed.borrow();
         let feeds = self.feeds.borrow();
         let usable = || feeds.iter().map(|feed| (feed.provider.as_ref() as &dyn Provider, feed.usable.get()));
         let view = self.trading.borrow();
         let account = view.account_of(pane.account.borrow().as_deref());
-        let chosen = crate::trading::feed_of(&view, account, source.as_deref(), usable(), instrument);
+        let chosen = crate::trading::feed_of(&view, account, chosen_feed.as_deref(), usable(), instrument);
         if chosen.is_none() {
             return self.route(instrument).map(Ok);
         }
@@ -7484,8 +7484,8 @@ impl Window {
     /// Drop a chart's chosen feed if it can no longer be chosen for
     /// `instrument`: taken off the order, or with no name for it. The chart
     /// goes back to following the order. True when it did.
-    fn settle_source(&self, pane: &ChartPane, instrument: &Instrument) -> bool {
-        let stale = match pane.source.borrow().as_deref() {
+    fn settle_feed(&self, pane: &ChartPane, instrument: &Instrument) -> bool {
+        let stale = match pane.feed.borrow().as_deref() {
             None => false,
             Some(id) => {
                 let feeds = self.feeds.borrow();
@@ -7493,7 +7493,7 @@ impl Window {
             }
         };
         if stale {
-            pane.source.replace(None);
+            pane.feed.replace(None);
         }
         stale
     }
@@ -7501,12 +7501,12 @@ impl Window {
     /// Point one chart at a feed, or back at the order with `None`, and
     /// show it again from there. Only this chart: the others keep what they
     /// are showing.
-    fn choose_source(self: &Rc<Self>, id: u32, source: Option<String>) {
+    fn choose_feed(self: &Rc<Self>, id: u32, feed: Option<String>) {
         let Some(pane) = self.pane(id) else { return };
-        if *pane.source.borrow() == source {
+        if *pane.feed.borrow() == feed {
             return;
         }
-        pane.source.replace(source);
+        pane.feed.replace(feed);
         let instrument = pane.instrument.borrow().clone();
         if let Some(instrument) = instrument {
             self.show_in(&pane, instrument);
@@ -7524,7 +7524,7 @@ impl Window {
         }
         let before = self.routes_on_screen();
         pane.account.replace(account);
-        pane.source.replace(None);
+        pane.feed.replace(None);
         self.apply_marks_to(&pane);
         self.reroute(&before);
         self.save_workspace();
@@ -7537,7 +7537,7 @@ impl Window {
         let stale = crate::trading::stale(&self.trading.borrow().accounts, pane.account.borrow().as_deref());
         if stale {
             pane.account.replace(None);
-            pane.source.replace(None);
+            pane.feed.replace(None);
         }
         stale
     }
@@ -7656,7 +7656,7 @@ impl Window {
                 && feeds.iter().zip(&wanted).all(|(feed, want)| feed.provider.id() == want.id())
         };
         // Where every chart is served from now, before anything changes, so
-        // that only the charts whose source changes are shown again.
+        // that only the charts whose feed changes are shown again.
         let before = self.routes_on_screen();
         if !same {
             self.regroup_feeds(wanted.into_iter().map(Arc::from).collect());
@@ -7690,7 +7690,7 @@ impl Window {
     /// the order as they are: their loaders, their streams and their
     /// sessions. Only the feeds taken off are retired, and only the new
     /// ones are built. What [`Window::adopt_feed`] does when the Data page
-    /// adds, removes or reorders a source; [`Window::switch_feeds`] is the
+    /// adds, removes or reorders a feed; [`Window::switch_feeds`] is the
     /// whole replacement.
     fn regroup_feeds(self: &Rc<Self>, providers: Vec<Arc<dyn Provider>>) {
         let old = self.feeds();
@@ -7743,11 +7743,11 @@ impl Window {
             let was = before.iter().find(|(id, _)| *id == pane.id).and_then(|(_, key)| key.clone());
             // A chart whose chosen feed has left the order follows it again,
             // and one whose account has gone is on the default.
-            settled |= self.settle_source(&pane, &instrument);
+            settled |= self.settle_feed(&pane, &instrument);
             settled |= self.settle_account(&pane);
             match self.route_pane(&pane, &instrument) {
                 Some(routed) if was.as_deref() == Some(routed.key().as_str()) => {
-                    self.write_source_of(&pane, Some(&routed.feed), &routed.passed);
+                    self.write_feed_of(&pane, Some(&routed.feed), &routed.passed);
                 }
                 _ => self.show_in(&pane, instrument),
             }
@@ -8380,9 +8380,9 @@ impl Window {
     /// account, the feed and what it was passed over, "Yahoo · Rithmic not
     /// signed in". With one feed and at most one account nothing is written
     /// and nothing is drawn. See [`crate::trading::part_text`].
-    fn write_source_of(&self, pane: &ChartPane, serving: Option<&Rc<Feed>>, passed: &[Rc<Feed>]) {
+    fn write_feed_of(&self, pane: &ChartPane, serving: Option<&Rc<Feed>>, passed: &[Rc<Feed>]) {
         let text = self.account_part(pane, serving.map(|feed| feed.provider.id()), |account| match serving {
-            Some(serving) => source_text(
+            Some(serving) => feed_text(
                 serving.provider.label(),
                 // With an account, falling back is said by naming the feed
                 // fallen back to; the account's own trouble is on the account.
@@ -8394,14 +8394,14 @@ impl Window {
             None if account => "no data feed".into(),
             None => "No data feed".into(),
         });
-        pane.write_source(text.as_deref());
+        pane.write_feed(text.as_deref());
     }
 
     /// Say that a chart's chosen feed cannot serve it, and why: "Rithmic ·
     /// Yahoo not signed in".
-    fn write_refused_source(&self, pane: &ChartPane, feed: &Rc<Feed>) {
+    fn write_refused_feed(&self, pane: &ChartPane, feed: &Rc<Feed>) {
         let text = self.account_part(pane, None, |_| format!("{} {}", feed.provider.label(), feed.unusable_because.get()));
-        pane.write_source(text.as_deref());
+        pane.write_feed(text.as_deref());
     }
 
     /// The account part's words for `pane`, on the feed `serving`, `feed`
@@ -8414,12 +8414,12 @@ impl Window {
         if !offer.any() {
             return None;
         }
-        pane.source_menu.set_tooltip_text(Some(crate::trading::PART_TOOLTIP));
+        pane.feed_menu.set_tooltip_text(Some(crate::trading::PART_TOOLTIP));
         let account = view.account_of(pane.account.borrow().as_deref());
         let trouble = account.and_then(|account| view.trouble(&self.desk, account));
         let name = account.map(|account| view.account_name(account));
         let feed_is_default = serving.is_some()
-            && pane.source.borrow().is_none()
+            && pane.feed.borrow().is_none()
             && pane.instrument.borrow().as_ref().is_some_and(|instrument| {
                 crate::trading::default_feed(
                     &view,

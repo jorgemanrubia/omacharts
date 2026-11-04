@@ -416,7 +416,7 @@ impl Desk {
         if data && let Some(why) = data_feed_of(login).and_then(|feed| feed.setup).and_then(|setup| setup.refusal()) {
             return Standing::Refused(why);
         }
-        Standing::Saved
+        Standing::Ready
     }
 
     /// Write what every live session knows now — its accounts and their
@@ -621,7 +621,7 @@ mod tests {
 
         desk.end(&login.id);
         assert_eq!(fake.signed_out.load(Ordering::Acquire), 1);
-        assert_eq!(desk.standing(&login, false), Standing::Saved);
+        assert_eq!(desk.standing(&login, false), Standing::Ready);
         open(&desk);
         assert_eq!(fake.signed_in.load(Ordering::Acquire), 2);
 

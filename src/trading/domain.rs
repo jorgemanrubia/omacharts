@@ -164,8 +164,8 @@ impl std::fmt::Display for Failure {
 pub enum Standing {
     /// Its trading session is signed in, in this run.
     Live,
-    /// Its password is kept, and nothing has signed in with it this run.
-    Saved,
+    /// Not signed in, with its password kept: Sign in needs nothing typed.
+    Ready,
     /// Signed out, or never signed in: there is no password to sign in with.
     SignedOut,
     /// The broker turned it down, or ended its session, in these words.
@@ -177,7 +177,7 @@ impl Standing {
     pub fn words(&self) -> String {
         match self {
             Standing::Live => "live".into(),
-            Standing::Saved => "signed in".into(),
+            Standing::Ready => "signed in".into(),
             Standing::SignedOut => "not signed in".into(),
             Standing::Refused(why) => why.clone(),
         }
@@ -187,7 +187,7 @@ impl Standing {
     /// when it is in trouble.
     pub fn trouble(&self) -> Option<String> {
         match self {
-            Standing::Live | Standing::Saved => None,
+            Standing::Live | Standing::Ready => None,
             Standing::SignedOut => Some("signed out".into()),
             Standing::Refused(why) => Some(why.clone()),
         }

@@ -122,11 +122,11 @@ pub struct ChartPane {
     /// the feeds that could serve it instead. Hidden while only one feed is
     /// configured, which leaves nothing to say and nothing to choose, and a
     /// hidden child of the row takes no room at all.
-    pub source_menu: gtk::MenuButton,
-    source_label: gtk::Label,
+    pub feed_menu: gtk::MenuButton,
+    feed_label: gtk::Label,
     /// The feed somebody chose for this chart, by id; `None` follows the
     /// order, which is every chart until somebody chooses.
-    pub source: RefCell<Option<String>>,
+    pub feed: RefCell<Option<String>>,
     /// The trading account somebody chose for this chart, as `<login
     /// id>/<account number>`; `None` is the default account.
     pub account: RefCell<Option<String>>,
@@ -272,16 +272,16 @@ impl ChartPane {
         // A button like the resolution beside it, with no chevron for the
         // same reason, and dim like the template: it is a note on the chart
         // more than its title.
-        let source_label = gtk::Label::new(None);
-        let source_menu = gtk::MenuButton::new();
-        source_menu.add_css_class("flat");
-        source_menu.add_css_class("readout-symbol");
-        source_menu.add_css_class("dim-label");
-        source_menu.set_valign(gtk::Align::Center);
-        source_menu.set_tooltip_text(Some(crate::trading::PART_TOOLTIP));
-        source_menu.set_child(Some(&source_label));
-        source_menu.set_always_show_arrow(false);
-        source_menu.set_visible(false);
+        let feed_label = gtk::Label::new(None);
+        let feed_menu = gtk::MenuButton::new();
+        feed_menu.add_css_class("flat");
+        feed_menu.add_css_class("readout-symbol");
+        feed_menu.add_css_class("dim-label");
+        feed_menu.set_valign(gtk::Align::Center);
+        feed_menu.set_tooltip_text(Some(crate::trading::PART_TOOLTIP));
+        feed_menu.set_child(Some(&feed_label));
+        feed_menu.set_always_show_arrow(false);
+        feed_menu.set_visible(false);
         // The same kind of button, not dim: it is what the next order spends.
         let size_label = gtk::Label::new(None);
         let size_menu = gtk::MenuButton::new();
@@ -453,9 +453,9 @@ impl ChartPane {
             change_basis: Cell::new(None),
             change_shown: Cell::new(None),
             template_label,
-            source_menu,
-            source_label,
-            source: RefCell::new(None),
+            feed_menu,
+            feed_label,
+            feed: RefCell::new(None),
             account: RefCell::new(None),
             size_menu,
             size_label,
@@ -622,7 +622,7 @@ impl ChartPane {
             (Part::Resolution, self.timeframe_menu.clone().upcast()),
             (Part::Change, self.change_label.clone().upcast()),
             (Part::Template, self.template_label.clone().upcast()),
-            (Part::Account, self.source_menu.clone().upcast()),
+            (Part::Account, self.feed_menu.clone().upcast()),
             (Part::Size, self.size_menu.clone().upcast()),
             (Part::Stripe, self.strip.clone().upcast()),
         ];
@@ -665,11 +665,11 @@ impl ChartPane {
 
     /// Where the bars come from, or nothing at all: hidden, the part takes
     /// no width and no spacing, as though it were not in the header.
-    pub fn write_source(&self, source: Option<&str>) {
-        if self.source_label.text() != source.unwrap_or("") {
-            self.source_label.set_text(source.unwrap_or(""));
+    pub fn write_feed(&self, feed: Option<&str>) {
+        if self.feed_label.text() != feed.unwrap_or("") {
+            self.feed_label.set_text(feed.unwrap_or(""));
         }
-        self.source_menu.set_visible(source.is_some());
+        self.feed_menu.set_visible(feed.is_some());
     }
 
     /// How many the next order is for, or nothing at all: hidden, the part
@@ -1405,7 +1405,7 @@ impl Node {
 mod tests {
     use super::*;
 
-    /// With one source the account says nothing, and a header with it laid
+    /// With one feed the account says nothing, and a header with it laid
     /// out is a header without it: the same width, and the part after it
     /// starting at the same place. No gap where it would be, no room taken.
     #[test]
@@ -1424,13 +1424,13 @@ mod tests {
                 (width, template)
             };
             let without = laid_out(vec![Part::Symbol, Part::Resolution, Part::Template]);
-            pane.write_source(None);
+            pane.write_feed(None);
             let blank = laid_out(vec![Part::Symbol, Part::Account, Part::Resolution, Part::Template]);
             assert_eq!(blank, without);
-            assert!(!pane.source_menu.is_visible());
+            assert!(!pane.feed_menu.is_visible());
 
             // And written, it does take its room: the same measure sees it.
-            pane.write_source(Some("Rithmic"));
+            pane.write_feed(Some("Rithmic"));
             let shown = laid_out(vec![Part::Symbol, Part::Account, Part::Resolution, Part::Template]);
             assert!(shown.0 > without.0 && shown.1 > without.1, "{shown:?} against {without:?}");
         });

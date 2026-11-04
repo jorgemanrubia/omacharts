@@ -6,7 +6,7 @@
 //! was removed; nothing stored is Yahoo alone —
 //! changed by the settings panel or by `config set provider`, which puts a
 //! feed on top. `--provider` on the launch is this run only, for trying a
-//! feed out, for a script that wants one particular source, and for saying
+//! feed out, for a script that wants one particular feed, and for saying
 //! which feed a bug report is about: it puts that feed alone above Yahoo.
 //!
 //! Each chart is served by the first feed in the order that can be used
@@ -219,7 +219,7 @@ pub fn forget_login(store: &Store, id: &str) {
 /// after the ones they already put in order, and under Yahoo, which serves
 /// nearly everything, it would hardly ever be reached. Yahoo itself goes at
 /// the bottom. Adding one already there changes nothing.
-pub fn add_source(store: &Store, id: &str) {
+pub fn add_feed(store: &Store, id: &str) {
     let mut order = stored_order(store);
     if order.iter().any(|known| known.eq_ignore_ascii_case(id)) {
         return;
@@ -244,7 +244,7 @@ pub fn removable(store: &Store, id: &str) -> bool {
 /// session ends; the logins it signed in through are Trading's, and stay. A
 /// feed's own session is signed out of from its row rather than by removing
 /// it.
-pub fn remove_source(store: &Store, id: &str) -> bool {
+pub fn remove_feed(store: &Store, id: &str) -> bool {
     if !removable(store, id) {
         return false;
     }
@@ -423,20 +423,20 @@ pub(crate) mod tests {
         forget_login(&store, "rithmic");
         assert_eq!(saved_of(&store).user, None, "signed out is no user");
         assert_eq!(trading::logins(&store).len(), 1, "the login stays in Trading");
-        assert!(remove_source(&store, "rithmic"));
+        assert!(remove_feed(&store, "rithmic"));
         assert_eq!(store.setting(SETTING), None);
         assert_eq!(trading::logins(&store).len(), 1);
     }
 
     /// A feed added goes after the others, above Yahoo, and only once.
     #[test]
-    fn an_added_source_goes_last_above_yahoo() {
+    fn an_added_feed_goes_last_above_yahoo() {
         let store = store();
-        add_source(&store, "rithmic");
-        add_source(&store, "tos");
-        add_source(&store, "TOS");
+        add_feed(&store, "rithmic");
+        add_feed(&store, "tos");
+        add_feed(&store, "TOS");
         assert_eq!(stored_order(&store), vec!["rithmic", "tos", "yahoo"]);
-        assert!(remove_source(&store, "tos"));
+        assert!(remove_feed(&store, "tos"));
         assert_eq!(stored_order(&store), vec!["rithmic", "yahoo"]);
     }
 
@@ -446,13 +446,13 @@ pub(crate) mod tests {
     fn yahoo_can_be_removed_added_back_and_moved_but_the_last_feed_stays() {
         let store = store();
         assert!(!removable(&store, "yahoo"), "Yahoo alone is the last feed");
-        assert!(!remove_source(&store, "yahoo"));
-        add_source(&store, "rithmic");
-        assert!(remove_source(&store, "yahoo"));
+        assert!(!remove_feed(&store, "yahoo"));
+        add_feed(&store, "rithmic");
+        assert!(remove_feed(&store, "yahoo"));
         assert_eq!(store.setting(SETTING).as_deref(), Some(r#"["rithmic"]"#));
-        assert!(!remove_source(&store, "rithmic"), "the last feed");
+        assert!(!remove_feed(&store, "rithmic"), "the last feed");
         assert_eq!(stored_order(&store), vec!["rithmic"]);
-        add_source(&store, "yahoo");
+        add_feed(&store, "yahoo");
         assert_eq!(stored_order(&store), vec!["rithmic", "yahoo"]);
         save_order(&store, &["yahoo".into(), "rithmic".into()]);
         assert_eq!(store.setting(SETTING).as_deref(), Some(r#"["yahoo","rithmic"]"#));
