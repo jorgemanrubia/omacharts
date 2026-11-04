@@ -17,8 +17,9 @@
 //! contracts of a root for a feed that lists none, so that search can show
 //! them without asking anybody.
 //!
-//! Business days here are weekdays: the exchanges' holidays move a date a
-//! day or so once in a while, and a feed that knows the real date says so.
+//! Business days here are weekdays that are not one of the US exchanges'
+//! holidays, the ten every year keeps. A one-off closure moves a date a
+//! day once in a long while, and a feed that knows the real date says so.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -144,6 +145,9 @@ pub struct When {
     /// Business days back, then calendar days back; forward when negative.
     business: i32,
     calendar: i32,
+    /// The anchor itself, when it is no business day, is the business day
+    /// before it: what `0b` says.
+    adjust: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -161,35 +165,41 @@ enum Anchor {
     Prior25th,
     /// The 15th of the contract month.
     Fifteenth,
-    /// The first business day of the contract month.
+    /// The first day of the contract month, business day or not: what the
+    /// energy and Treasury rules count back from.
     MonthStart,
-    /// The tenth business day of the contract month.
-    TenthBusinessDay,
+    /// The first Friday of the contract month.
+    FirstFriday,
+    /// The `n`th business day of the contract month.
+    BusinessDay(u32),
     /// The contract's expiry, by the root's own rule.
     Expiry,
 }
 
 impl When {
     /// `3rd-fri`, `3rd-fri-8d`, `prior-eom-1b`, `expiry-3b`: an anchor
-    /// and any number of steps back, `Nb` business days or `Nd` calendar
-    /// days. `+Nb` is a step forward.
+    /// and any number of steps back, `Nb` business days strictly before
+    /// it or `Nd` calendar days. `+Nb` is a step forward, and `0b` the
+    /// anchor itself or the business day before it.
     pub fn parse(text: &str) -> Option<When> {
         let text = text.trim().to_ascii_lowercase();
         let (anchor, rest) = [
             ("3rd-fri", Anchor::ThirdFriday),
             ("3rd-wed", Anchor::ThirdWednesday),
+            ("1st-fri", Anchor::FirstFriday),
             ("prior2-eom", Anchor::PriorMonthEnd(2)),
             ("prior-eom", Anchor::PriorMonthEnd(1)),
             ("prior-25th", Anchor::Prior25th),
             ("eom", Anchor::MonthEnd),
             ("15th", Anchor::Fifteenth),
             ("bom", Anchor::MonthStart),
-            ("10th-bday", Anchor::TenthBusinessDay),
+            ("6th-bday", Anchor::BusinessDay(6)),
+            ("10th-bday", Anchor::BusinessDay(10)),
             ("expiry", Anchor::Expiry),
         ]
         .into_iter()
         .find_map(|(word, anchor)| text.strip_prefix(word).map(|rest| (anchor, rest)))?;
-        let mut when = When { anchor, business: 0, calendar: 0 };
+        let mut when = When { anchor, business: 0, calendar: 0, adjust: false };
         for step in rest.split('-').filter(|step| !step.is_empty()) {
             let (sign, step) = match step.strip_prefix('+') {
                 Some(forward) => (-1, forward),
@@ -198,6 +208,7 @@ impl When {
             let (count, unit) = step.split_at_checked(step.len().checked_sub(1)?)?;
             let count: i32 = count.parse().ok()?;
             match unit {
+                "b" if count == 0 => when.adjust = true,
                 "b" => when.business += sign * count,
                 "d" => when.calendar += sign * count,
                 _ => return None,
@@ -212,17 +223,21 @@ impl When {
         let anchored = match self.anchor {
             Anchor::ThirdFriday => nth_weekday(month, Weekday::Fri, 3),
             Anchor::ThirdWednesday => nth_weekday(month, Weekday::Wed, 3),
+            Anchor::FirstFriday => nth_weekday(month, Weekday::Fri, 1),
             Anchor::MonthEnd => last_business_day(month),
             Anchor::PriorMonthEnd(back) => last_business_day(month.plus(-(back as i32))),
             Anchor::Prior25th => {
                 let prior = month.plus(-1);
-                let day = NaiveDate::from_ymd_opt(prior.year, prior.month, 25)?;
-                business_days_back(day, 0)
+                business_days_back(NaiveDate::from_ymd_opt(prior.year, prior.month, 25)?, 0)
             }
             Anchor::Fifteenth => NaiveDate::from_ymd_opt(month.year, month.month, 15)?,
-            Anchor::MonthStart => business_days_back(month.first_day() + Days::new(6), 0),
-            Anchor::TenthBusinessDay => business_days_forward(month.first_day(), 9),
+            Anchor::MonthStart => month.first_day(),
+            Anchor::BusinessDay(n) => business_days_forward(month.first_day().pred_opt()?, n),
             Anchor::Expiry => expiry?,
+        };
+        let anchored = match self.adjust {
+            true => business_days_back(anchored, 0),
+            false => anchored,
         };
         let stepped = match self.business.signum() {
             1 => business_days_back(anchored, self.business as u32),
@@ -244,21 +259,83 @@ fn nth_weekday(month: Month, weekday: Weekday, n: u32) -> NaiveDate {
     first + Days::new(u64::from(offset + 7 * (n - 1)))
 }
 
-fn is_business_day(date: NaiveDate) -> bool {
-    !matches!(date.weekday(), Weekday::Sat | Weekday::Sun)
+/// A weekday the US exchanges are open: not one of the ten holidays CME
+/// and ICE Futures U.S. close on every year.
+pub fn is_business_day(date: NaiveDate) -> bool {
+    !matches!(date.weekday(), Weekday::Sat | Weekday::Sun) && !holidays(date.year()).contains(&date)
 }
 
-/// The last weekday of `month`.
+/// The exchange holidays of `year`, as they are observed: a fixed date on a
+/// Saturday is kept the Friday before, on a Sunday the Monday after, except
+/// New Year's, which is not moved into the year before.
+fn holidays(year: i32) -> Vec<NaiveDate> {
+    let fixed = |month: u32, day: u32, observed: bool| {
+        let date = NaiveDate::from_ymd_opt(year, month, day).expect("a real date");
+        match (date.weekday(), observed) {
+            (Weekday::Sat, true) => date.pred_opt(),
+            (Weekday::Sun, _) => date.succ_opt(),
+            _ => Some(date),
+        }
+    };
+    let nth_monday = |month: u32, n: u32| nth_weekday(Month { year, month }, Weekday::Mon, n);
+    let last_monday = |month: u32| {
+        let last = last_day_of(Month { year, month });
+        last - Days::new(u64::from(last.weekday().num_days_from_monday()))
+    };
+    [
+        fixed(1, 1, false),
+        Some(nth_monday(1, 3)),
+        Some(nth_monday(2, 3)),
+        easter(year).checked_sub_days(Days::new(2)),
+        Some(last_monday(5)),
+        fixed(6, 19, true),
+        fixed(7, 4, true),
+        Some(nth_monday(9, 1)),
+        Some(nth_weekday(Month { year, month: 11 }, Weekday::Thu, 4)),
+        fixed(12, 25, true),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
+/// Easter Sunday of `year`, by the Gregorian computus.
+fn easter(year: i32) -> NaiveDate {
+    let a = year % 19;
+    let b = year / 100;
+    let c = year % 100;
+    let d = b / 4;
+    let e = b % 4;
+    let f = (b + 8) / 25;
+    let g = (b - f + 1) / 3;
+    let h = (19 * a + b - d - g + 15) % 30;
+    let i = c / 4;
+    let k = c % 4;
+    let l = (32 + 2 * e + 2 * i - h - k) % 7;
+    let m = (a + 11 * h + 22 * l) / 451;
+    let month = (h + l - 7 * m + 114) / 31;
+    let day = (h + l - 7 * m + 114) % 31 + 1;
+    NaiveDate::from_ymd_opt(year, month as u32, day as u32).expect("Easter falls in March or April")
+}
+
+fn last_day_of(month: Month) -> NaiveDate {
+    month.plus(1).first_day().pred_opt().expect("a day before the first of a month")
+}
+
+/// The last business day of `month`.
 fn last_business_day(month: Month) -> NaiveDate {
-    business_days_back(month.plus(1).first_day().pred_opt().expect("a day before the first of a month"), 0)
+    business_days_back(last_day_of(month), 0)
 }
 
-/// `date` if it is a business day, or the business day before it, and
-/// then `count` more back.
+/// The `count`th business day strictly before `date`; `date` itself, or
+/// the business day before it, for a count of 0.
 fn business_days_back(date: NaiveDate, count: u32) -> NaiveDate {
     let mut date = date;
-    while !is_business_day(date) {
-        date = date.pred_opt().expect("a day before");
+    if count == 0 {
+        while !is_business_day(date) {
+            date = date.pred_opt().expect("a day before");
+        }
+        return date;
     }
     for _ in 0..count {
         date = date.pred_opt().expect("a day before");
@@ -269,12 +346,15 @@ fn business_days_back(date: NaiveDate, count: u32) -> NaiveDate {
     date
 }
 
-/// `date` if it is a business day, or the business day after it, and then
-/// `count` more on.
+/// The `count`th business day strictly after `date`; `date` itself, or the
+/// business day after it, for a count of 0.
 fn business_days_forward(date: NaiveDate, count: u32) -> NaiveDate {
     let mut date = date;
-    while !is_business_day(date) {
-        date = date.succ_opt().expect("a day after");
+    if count == 0 {
+        while !is_business_day(date) {
+            date = date.succ_opt().expect("a day after");
+        }
+        return date;
     }
     for _ in 0..count {
         date = date.succ_opt().expect("a day after");
@@ -321,8 +401,8 @@ impl Rule {
     pub fn fallback() -> Rule {
         Rule {
             months: CODES.to_vec(),
-            expiry: When { anchor: Anchor::PriorMonthEnd(1), business: 0, calendar: 0 },
-            roll: When { anchor: Anchor::Expiry, business: 0, calendar: ROLL_DAYS as i32 },
+            expiry: When { anchor: Anchor::PriorMonthEnd(1), business: 0, calendar: 0, adjust: false },
+            roll: When { anchor: Anchor::Expiry, business: 0, calendar: ROLL_DAYS as i32, adjust: false },
         }
     }
 
@@ -548,11 +628,13 @@ mod tests {
     }
 
     #[test]
-    fn business_days_skip_the_weekend() {
+    fn business_days_skip_the_weekend_and_the_holidays() {
         // 2026-11-06 is a Friday.
         assert_eq!(business_days_back(day("2026-11-08"), 0), day("2026-11-06"), "a Sunday is the Friday before");
         assert_eq!(business_days_back(day("2026-11-09"), 1), day("2026-11-06"), "Monday less one is Friday");
         assert_eq!(business_days_back(day("2026-11-06"), 3), day("2026-11-03"));
+        assert_eq!(business_days_back(day("2026-11-27"), 1), day("2026-11-25"), "Thanksgiving is no business day");
+        assert_eq!(business_days_back(day("2027-01-01"), 3), day("2026-12-29"), "counted from New Year's Day itself");
         assert_eq!(business_days_forward(day("2026-11-07"), 0), day("2026-11-09"));
         assert_eq!(business_days_forward(day("2026-11-06"), 1), day("2026-11-09"));
         assert_eq!(last_business_day(Month::new(2026, 11).unwrap()), day("2026-11-30"));
@@ -560,6 +642,170 @@ mod tests {
         assert_eq!(nth_weekday(Month::new(2026, 12).unwrap(), Weekday::Fri, 3), day("2026-12-18"));
         assert_eq!(nth_weekday(Month::new(2027, 3).unwrap(), Weekday::Fri, 3), day("2027-03-19"));
         assert_eq!(nth_weekday(Month::new(2027, 3).unwrap(), Weekday::Wed, 3), day("2027-03-17"));
+        for closed in [
+            "2026-01-01", "2026-01-19", "2026-02-16", "2026-04-03", "2026-05-25", "2026-06-19", "2026-07-03",
+            "2026-09-07", "2026-11-26", "2026-12-25", "2027-01-01", "2027-03-26", "2027-06-18", "2027-07-05",
+        ] {
+            assert!(!is_business_day(day(closed)), "{closed} is a holiday");
+        }
+        assert!(is_business_day(day("2027-07-02")));
+        assert_eq!(easter(2026), day("2026-04-05"));
+        assert_eq!(easter(2027), day("2027-03-28"));
+    }
+
+    /// Each family's rule against the exchanges' own calendars for the
+    /// coming contracts (CME Group's calendar pages and ICE Futures U.S.'s
+    /// expiry tabs, read 2026-11-04): the last trade, and the first notice
+    /// day for what is delivered, which the roll is the business day before.
+    #[test]
+    fn the_rules_give_the_exchanges_own_dates() {
+        let today = day(TODAY);
+        let expires = |contract: &str, date: &str| {
+            let (root, month) = parse(contract, today).unwrap();
+            assert_eq!(rule_of(&root).expiry(month), Some(day(date)), "{contract} expires");
+        };
+        let rolls = |contract: &str, date: &str| {
+            let (root, month) = parse(contract, today).unwrap();
+            assert_eq!(rule_of(&root).roll(month), Some(day(date)), "{contract} rolls");
+        };
+        // Equity index: the third Friday, or the business day before when
+        // that is a holiday (Juneteenth 2027); rolled on the Thursday eight
+        // days before, where the volume goes over.
+        for root in ["ES", "MES", "NQ", "MNQ", "RTY", "M2K", "YM", "MYM"] {
+            expires(&format!("{root}Z6"), "2026-12-18");
+            expires(&format!("{root}H7"), "2027-03-19");
+            expires(&format!("{root}M7"), "2027-06-17");
+            rolls(&format!("{root}Z6"), "2026-12-10");
+            rolls(&format!("{root}H7"), "2027-03-11");
+            rolls(&format!("{root}M7"), "2027-06-10");
+        }
+        // Treasuries: ZN and ZB stop seven business days before the month's
+        // last, ZF and ZT on it (Good Friday moves ZNH7); rolled the
+        // business day before first position day, two business days before
+        // the delivery month.
+        expires("ZNZ6", "2026-12-21");
+        expires("ZNH7", "2027-03-19");
+        expires("ZNM7", "2027-06-21");
+        expires("ZBH7", "2027-03-19");
+        expires("ZTH7", "2027-03-31");
+        rolls("ZNZ6", "2026-11-25");
+        rolls("ZNH7", "2027-02-24");
+        rolls("ZNM7", "2027-05-26");
+        // Energy: CL three business days before the 25th of the month
+        // before, or before the business day before it (Christmas 2026);
+        // MCL a business day earlier; NG three business days before the
+        // first; RB and HO the last business day of the month before; BZ
+        // the last of the second month before.
+        expires("CLZ6", "2026-11-20");
+        expires("CLF7", "2026-12-21");
+        expires("CLG7", "2027-01-20");
+        expires("CLH7", "2027-02-22");
+        expires("MCLZ6", "2026-11-19");
+        expires("MCLF7", "2026-12-18");
+        expires("MCLG7", "2027-01-19");
+        expires("NGZ6", "2026-11-25");
+        expires("NGF7", "2026-12-29");
+        expires("NGG7", "2027-01-27");
+        expires("RBF7", "2026-12-31");
+        expires("HOF7", "2026-12-31");
+        expires("BZF7", "2026-11-30");
+        rolls("CLF7", "2026-12-16");
+        // Grains: the business day before the 15th; first notice the last
+        // business day of the month before, and the roll the day before that.
+        expires("ZCZ6", "2026-12-14");
+        expires("ZCH7", "2027-03-12");
+        expires("ZCK7", "2027-05-14");
+        expires("ZSF7", "2027-01-14");
+        expires("ZLF7", "2027-01-14");
+        expires("ZSH7", "2027-03-12");
+        expires("ZWH7", "2027-03-12");
+        rolls("ZCZ6", "2026-11-27");
+        rolls("ZCH7", "2027-02-25");
+        rolls("ZSF7", "2026-12-30");
+        // Livestock: cattle to the month's last business day, with first
+        // notice the business day after the first Friday; hogs to the tenth
+        // business day.
+        expires("LEZ6", "2026-12-31");
+        expires("LEG7", "2027-02-26");
+        expires("LEJ7", "2027-04-30");
+        rolls("LEZ6", "2026-12-04");
+        rolls("LEG7", "2027-02-05");
+        rolls("LEJ7", "2027-04-02");
+        expires("HEZ6", "2026-12-14");
+        expires("HEG7", "2027-02-12");
+        expires("HEJ7", "2027-04-14");
+        rolls("HEZ6", "2026-12-09");
+        // Metals: the third last business day; first notice the last
+        // business day of the month before.
+        expires("GCZ6", "2026-12-29");
+        expires("GCG7", "2027-02-24");
+        expires("GCJ7", "2027-04-28");
+        expires("MGCG7", "2027-02-24");
+        expires("SIH7", "2027-03-29");
+        expires("HGH7", "2027-03-29");
+        expires("PAH7", "2027-03-29");
+        expires("PLF7", "2027-01-27");
+        rolls("GCZ6", "2026-11-27");
+        rolls("GCG7", "2027-01-28");
+        rolls("GCJ7", "2027-03-30");
+        rolls("SIH7", "2027-02-25");
+        // Softs, on ICE Futures U.S.: coffee and cocoa stop the business day
+        // before last notice day; cotton seventeen business days from the
+        // month's end counting the last; sugar on the last business day of
+        // the month before. First notice is counted back from the delivery
+        // month: seven business days for coffee, ten from its sixth business
+        // day for cocoa, five for cotton.
+        expires("KCZ6", "2026-12-18");
+        expires("KCH7", "2027-03-18");
+        expires("KCK7", "2027-05-18");
+        rolls("KCZ6", "2026-11-18");
+        rolls("KCH7", "2027-02-17");
+        rolls("KCK7", "2027-04-21");
+        expires("SBH7", "2027-02-26");
+        expires("SBK7", "2027-04-30");
+        rolls("SBH7", "2027-02-25");
+        expires("CCH7", "2027-03-15");
+        expires("CCK7", "2027-05-13");
+        rolls("CCH7", "2027-02-19");
+        rolls("CCK7", "2027-04-23");
+        expires("CTH7", "2027-03-08");
+        expires("CTK7", "2027-05-06");
+        rolls("CTH7", "2027-02-19");
+        rolls("CTK7", "2027-04-23");
+        // FX: two business days before the third Wednesday, one for the
+        // Canadian dollar; rolled two business days before that.
+        expires("6EZ6", "2026-12-14");
+        expires("6EH7", "2027-03-15");
+        expires("6EM7", "2027-06-14");
+        expires("6JZ6", "2026-12-14");
+        expires("6CZ6", "2026-12-15");
+        expires("6CH7", "2027-03-16");
+        rolls("6EZ6", "2026-12-10");
+        rolls("6EH7", "2027-03-11");
+    }
+
+    /// The front month on a given day, family by family: the one just
+    /// before and just after a roll.
+    #[test]
+    fn the_front_month_moves_on_the_roll_date() {
+        for root in ["ES", "ZN", "CL", "GC"] {
+            forget(root);
+        }
+        let front_on = |root: &str, date: &str| front(root, day(date)).map(|l| l.symbol).unwrap();
+        assert_eq!(front_on("ES", "2026-12-09"), "ESZ6");
+        assert_eq!(front_on("ES", "2026-12-10"), "ESH7");
+        assert_eq!(front_on("ES", "2027-03-10"), "ESH7");
+        assert_eq!(front_on("ES", "2027-03-11"), "ESM7");
+        assert_eq!(front_on("ZN", "2026-11-24"), "ZNZ6");
+        assert_eq!(front_on("ZN", "2026-11-25"), "ZNH7");
+        assert_eq!(front_on("CL", "2026-12-15"), "CLF7");
+        assert_eq!(front_on("CL", "2026-12-16"), "CLG7");
+        assert_eq!(front_on("GC", "2026-11-26"), "GCZ6");
+        assert_eq!(front_on("GC", "2026-11-27"), "GCG7");
+        assert_eq!(front_on("GC", "2027-01-28"), "GCJ7");
+        let listed = listing("ES", day("2026-11-04"));
+        assert_eq!(listed.iter().map(|l| l.symbol.as_str()).take(4).collect::<Vec<_>>(), ["ESZ6", "ESH7", "ESM7", "ESU7"]);
+        assert_eq!(listed.iter().filter(|l| l.front).count(), 1);
     }
 
     /// Every root in the table has a rule the table can read.
@@ -616,21 +862,21 @@ mod tests {
     #[test]
     fn a_feed_listing_is_kept_over_the_rule_and_its_front_month_over_the_rules() {
         let today = day(TODAY);
-        forget("ES");
-        let by_rule = listing("ES", today);
+        forget("NQ");
+        let by_rule = listing("NQ", today);
         assert_eq!(by_rule.len(), LISTED);
-        assert_eq!(by_rule[0].symbol, "ESZ6");
+        assert_eq!(by_rule[0].symbol, "NQZ6");
         assert!(by_rule[0].front);
-        supply("ES", vec![("ESH7".into(), day("2027-03-19")), ("ESZ6".into(), day("2026-12-18"))]);
-        let said = listing("ES", today);
-        assert_eq!(said.iter().map(|l| l.symbol.as_str()).collect::<Vec<_>>(), vec!["ESZ6", "ESH7"]);
+        supply("NQ", vec![("NQH7".into(), day("2027-03-19")), ("NQZ6".into(), day("2026-12-18"))]);
+        let said = listing("NQ", today);
+        assert_eq!(said.iter().map(|l| l.symbol.as_str()).collect::<Vec<_>>(), vec!["NQZ6", "NQH7"]);
         assert_eq!(said[0].rolls, day("2026-12-10"));
         assert!(said[0].front && !said[1].front);
-        supply_front("ES", "ESH7");
-        let named = listing("ES", today);
+        supply_front("NQ", "NQH7");
+        let named = listing("NQ", today);
         assert!(!named[0].front && named[1].front, "{named:?}");
-        assert_eq!(front("ES", today).unwrap().symbol, "ESH7");
-        forget("ES");
-        assert!(front("ES", today).unwrap().symbol == "ESZ6");
+        assert_eq!(front("NQ", today).unwrap().symbol, "NQH7");
+        forget("NQ");
+        assert!(front("NQ", today).unwrap().symbol == "NQZ6");
     }
 }
