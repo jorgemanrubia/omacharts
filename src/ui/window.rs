@@ -280,10 +280,10 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
 const TRADING_SHORTCUTS: (&str, &[(&str, &str)]) = (
     "Trading",
     &[
-        ("Ctrl+B", "Buy this chart's trading size at market"),
-        ("Ctrl+S", "Sell this chart's trading size at market"),
-        ("Ctrl+F", "Flatten this chart's contract and cancel its orders"),
-        ("Ctrl+1 … 9", "Set this chart's trading size to size N"),
+        ("Ctrl+B", "Buy the chart's size at market"),
+        ("Ctrl+S", "Sell the chart's size at market"),
+        ("Ctrl+F", "Flatten the chart's contract and cancel its orders"),
+        ("Ctrl+1 … 9", "Trading size N"),
     ],
 );
 
