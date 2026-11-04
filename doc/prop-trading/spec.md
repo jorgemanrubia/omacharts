@@ -239,10 +239,34 @@ is of.
 
 #### Front month, and rolls
 
-- **For now, front month only, not stitched.** Rithmic's `ES` is the
-  contract trading now, with the history that contract has (about 90 days
+- **A root is the contract trading now, not stitched.** Rithmic's `ES` is
+  the front month, with the history that contract has (about 90 days
   intraday). That is what a prop trader watches at 1m or 5m, and it never
   crosses a roll.
+- **The feed says which contract is the front month, and says when it
+  changes.** Rithmic is asked once per root with `RequestFrontMonthContract`
+  and `need_updates`, so a roll arrives as a `FrontMonthContractUpdate` the
+  moment Rithmic makes it: every chart of the root moves to the new
+  contract, as does every order placed from one. The hourly refresh of the
+  answer stays as the fallback for a push that never came.
+- **When the feed cannot say, the engine's rule does.** Rithmic Test
+  answers "no data" for every root; it lists the contracts, with each one's
+  expiry. A feed that cannot name the front month hands the listing to
+  `omacharts_engine::contracts::choose`, which applies the root's own roll
+  rule. The rule lives in the engine, not in any feed's crate, so the next
+  feed gets it for nothing.
+- **The rules are data.** `contracts.tsv` carries, for each root, its month
+  cycle and two dates in a small vocabulary: when a contract of a month
+  stops trading, as the exchange's rulebook states it, and when the next
+  contract becomes the front month. Equity index contracts roll on the
+  Thursday eight days before the third-Friday expiry, where the volume goes
+  over; contracts that are delivered (Treasuries, grains, metals, cattle,
+  the softs) roll the business day before first notice day; energy, hogs,
+  sugar and FX a few business days before the last trade. Business days
+  are weekdays less the US exchange holidays. A root the table does not
+  know is monthly, rolled eight days before its expiry. The rules are held
+  to CME Group's and ICE Futures U.S.'s published calendars by
+  `the_rules_give_the_exchanges_own_dates`.
 - **At a roll the chart corrects itself.** The new contract's bars disagree
   with the cached tail of the old one, and the loader's `OVERLAP` check
   already treats that as history rewritten and fetches again.
@@ -255,16 +279,41 @@ is of.
   Rithmic is not stitched would make the feed depend on the resolution and
   break "the first that serves it". Routing stays by instrument alone.
 
-#### Dated contracts, later
+#### Dated contracts
 
-A chart of `ESZ6` itself is a separate change after routing. It is not a
-new kind: a futures root gets an optional contract month
-(`contract: Option<Contract>`, stored as `"Z6"` and left out when unset, so
-every stored chartbook stays valid). `ESZ6` is CME's own spelling, so it is
-neutral; each provider renders it, Rithmic as `ESZ6`, Yahoo as `ESZ26.CME`,
-thinkorswim as `/ESZ6`. Search works out the next four quarterly contracts
-of a root when what is typed reads as a root, a month code and a digit,
-rather than listing them, so the index and startup stay the size they are.
+A chart of `ESH7` itself: March 2027 of ES, and nothing else, until it
+expires. Not a new kind: a dated contract is its root's instrument under
+the contract's name, with the root's specification, hours and name, which
+`SearchIndex::resolve` builds from the root whether or not anybody wrote
+the contract down. `ESH7` is CME's own spelling, so it is neutral and what
+every feed and broker starts from; each renders it its own way, Rithmic as
+`ESH7`, Yahoo as `ESH27.CME` (with the exchange's Yahoo suffix: `CBT`,
+`NYM`, `CMX`, `NYB`), thinkorswim as `/ESH7`. Typed as `ESH7`, `ESH27`,
+`ESH2027` or `ES H7`, search and the commands read all four and store the
+first. A one-digit year is read from last year to eight years on, so a
+contract that expired lately is still what it was.
+
+- **Search nests the contracts under their root, as TradingView does.** A
+  futures root's row expands to the root's contracts, each with its month
+  and expiry and the front month marked; picking one charts it. The listing
+  is the feed's when the feed lists contracts (Rithmic's symbol search
+  does, with expiries), and the rule's otherwise, which is what Yahoo alone
+  shows; Yahoo serves the contracts themselves, so the expansion is there
+  with no feed configured. Watchlists hold specific contracts as they hold
+  anything.
+- **The header of a dated contract says its month, and offers the others.**
+  Beside `ESH7` the chart shows the month, and that is a menu of the root's
+  contracts, the front one marked, and the continuous root; a chart of the
+  root shows nothing new, so a chart of `ES` is as it always was.
+- **An order from a chart of a dated contract goes to that contract**,
+  whatever the root trades as now; `Session::contract_for` answers a
+  dated contract with itself and a root with the front month.
+- **A position outlives the roll.** Somebody holding `ESZ6` after the root
+  rolls to `ESH7` sees the ESZ6 position on the ES chart still, named with
+  its contract, priced from ESZ6's own trades, with a × that flattens
+  ESZ6; the chart's own position line is for the contract trading now.
+  Every month of the root a position is held in is shown that way, so a
+  chart of `ESH7` shows a December position as held elsewhere too.
 
 #### The Rithmic session
 
