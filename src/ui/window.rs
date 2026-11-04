@@ -2470,7 +2470,6 @@ impl Window {
         let with_tools = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         with_tools.append(&bar.root);
         with_tools.append(&chart_host);
-        *this.trade.with_tools.borrow_mut() = Some(with_tools.clone());
         bar.set_shown(store.setting_bool(SHOW_DRAWING_TOOLS, false));
         *this.drawing_bar.borrow_mut() = Some(bar);
         split.set_start_child(Some(&with_tools));
@@ -3340,6 +3339,14 @@ impl Window {
             match railed {
                 true => cluster.remove_css_class("over-chart"),
                 false => cluster.add_css_class("over-chart"),
+            }
+        }
+        // And the trading panel's toggle at the foot of the same edge, which
+        // drops onto the bottom-right chart with it.
+        if let Some(foot) = self.trade.foot.borrow().as_ref() {
+            match railed {
+                true => foot.remove_css_class("over-chart"),
+                false => foot.add_css_class("over-chart"),
             }
         }
 

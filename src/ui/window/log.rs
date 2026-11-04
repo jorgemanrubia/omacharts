@@ -127,9 +127,10 @@ impl Window {
                     },
                 );
                 notice.revealer.set_margin_start(12);
-                // Clear of the chartbook strip when it is showing.
+                // Clear of the chartbook strip when it is showing, and of
+                // the trading panel, which runs under the charts too.
                 let strip = if self.book_strip.is_visible() { self.book_strip.height() } else { 0 };
-                notice.revealer.set_margin_bottom(12 + strip);
+                notice.revealer.set_margin_bottom(12 + strip + self.trading_panel_height());
                 overlay.add_overlay(&notice.revealer);
                 *self.messages.notice.borrow_mut() = Some(notice.clone());
                 notice

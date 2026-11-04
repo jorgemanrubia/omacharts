@@ -772,18 +772,26 @@ entry.range-date > image:hover { opacity: 0.9; }
    pointer comes to it. */
 .window-corner.start.over-chart button { opacity: 0.25; }
 .window-corner.start.over-chart:hover button { opacity: 1; }
-/* The trading panel's toggle, at the foot of the price axis of the
-   bottom-right chart: the square where the price axis and the time axis
-   cross, which is the one place on a chart nothing is ever drawn — the
-   time axis's rule and its chips stop at the price axis, and the prices
-   stop above the time axis. So it needs no ground, and sits in the square
-   exactly: the axis's width across, the time axis's height down, the ring's
-   width in from the chart's edges, with the button centred in it. It is the
-   same edge the watchlist's toggle stands at the top of, and the same
-   button. */
+/* The trading panel's toggle, in the window's bottom-right corner: the
+   foot of the rail, the way the watchlist toggle and the menu stand at its
+   head. It stands the same distance up from the bottom edge as they stand
+   down from the top (`CORNER_BUTTON_TOP`), under the menu button, so the
+   right edge reads as one column: menu at the top, panel at the bottom.
+   Over the rail it has the rail's foot band to itself (`.rail-foot`), so
+   nothing scrolls under it and it needs no ground.
+
+   With the rail closed it drops onto the bottom-right chart, as the window's
+   corner drops onto the top-right one — and there it tucks into the square
+   where the price axis and the time axis cross, the one place on a chart
+   nothing is ever drawn: the time axis's rule and its chips stop at the
+   price axis, and the prices stop above the time axis. The same column,
+   lower, and still no ground. */
 .window-corner.foot {
   margin: 0 2px 2px 0;
-  padding: 1px 21px;
+  padding: 7px 12px 8px 0;
+}
+.window-corner.foot.over-chart {
+  padding: 1px 12px 1px 0;
 }
 /* Quiet until the pointer is near: on the buttons rather than the box, which
    is what leaves the ground at its own strength. */
@@ -882,6 +890,12 @@ entry.range-date > image:hover { opacity: 0.9; }
    touching them. The column headings used to fill this band; they are gone, and the
    band is as short as it can be without the line crowding what is above. */
 .rail-header { margin-top: 37px; min-height: 6px; }
+/* The band across the bottom of the rail, the header's mirror, there only
+   with a trading login: a hairline and the height the trading panel's
+   toggle stands in, so the rows end above it rather than scrolling under
+   it. The toggle itself is the window's, laid over the band from the
+   bottom-right corner (`.window-corner.foot`). */
+.rail-foot { min-height: 42px; }
 
 /* The two states of one mark on the heading row: where a column being
    dragged would land, and which boundary the pointer could drag to resize.

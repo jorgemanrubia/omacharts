@@ -439,6 +439,10 @@ fn section_for_new_symbol(sections: &[i64], selected: Option<usize>, root: i64) 
 
 pub struct Watchlist {
     pub widget: gtk::Box,
+    /// The band across the bottom of the rail, there only while there is a
+    /// trading login: the mirror of the header, for the trading panel's
+    /// toggle to stand in the way the window's corner stands in the header.
+    foot: RefCell<Option<(gtk::Separator, gtk::Box)>>,
     list: gtk::ListBox,
     /// Why the prices are dashes, shown only while they are.
     trouble: gtk::Label,
@@ -518,6 +522,34 @@ const ADD_TIP: &str = "Add a symbol or a section";
 const NEW_LIST_TIP: &str = "New watchlist";
 
 impl Watchlist {
+    /// Put the foot band in, or take it out: a hairline and the height the
+    /// panel's toggle needs, under the rows, so none of them scrolls under
+    /// the toggle. Built only when asked for, so a rail with no login is
+    /// the rail it always was.
+    pub fn has_foot(&self) -> bool {
+        self.foot.borrow().is_some()
+    }
+
+    pub fn set_foot(&self, shown: bool) {
+        let mut foot = self.foot.borrow_mut();
+        match (shown, foot.as_ref()) {
+            (true, None) => {
+                let rule = gtk::Separator::new(gtk::Orientation::Horizontal);
+                let band = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+                band.add_css_class("rail-foot");
+                self.widget.append(&rule);
+                self.widget.append(&band);
+                *foot = Some((rule, band));
+            }
+            (false, Some(_)) => {
+                let (rule, band) = foot.take().expect("the foot");
+                self.widget.remove(&rule);
+                self.widget.remove(&band);
+            }
+            _ => {}
+        }
+    }
+
     pub fn new(
         store: Rc<Store>,
         index: crate::inventory::Inventory,
@@ -706,6 +738,7 @@ impl Watchlist {
 
         let watchlist = Rc::new(Watchlist {
             widget,
+            foot: RefCell::new(None),
             list,
             trouble,
             store,
