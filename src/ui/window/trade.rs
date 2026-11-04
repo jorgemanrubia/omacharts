@@ -1194,7 +1194,7 @@ pub(super) mod tests {
 
     use super::*;
     use crate::store::Store;
-    use crate::trading::tests::Kept;
+    use crate::trading::fake::Kept;
     use crate::trading::Session as _;
 
     /// A real window on a store in memory, charting from the synthetic
@@ -1326,7 +1326,7 @@ pub(super) mod tests {
                 ib: String::new(),
                 balance: None,
             };
-            let session = Arc::new(trading::tests::FakeSession::new(vec![account.clone()], Box::new(|| {})));
+            let session = Arc::new(trading::fake::FakeSession::new(vec![account.clone()], Box::new(|| {})));
             assert!(window.desk.begin(&id));
             window.desk.opened(&id, Ok(session.clone()));
             window.desk.note(&store);
@@ -1397,7 +1397,7 @@ pub(super) mod tests {
     /// A window on the synthetic feed with ES on its chart, signed in to
     /// the tests' session on account 951, which trades ES as ESZ6 and is
     /// simulated or not and links orders or not; long one at 7,612.25.
-    fn long_es(simulated: bool, links: bool) -> (Rc<Window>, Rc<ChartPane>, Arc<trading::tests::FakeSession>, String) {
+    fn long_es(simulated: bool, links: bool) -> (Rc<Window>, Rc<ChartPane>, Arc<trading::fake::FakeSession>, String) {
         let store = Rc::new(Store::memory().expect("a store"));
         let window = window(&store);
         let es = window.index.find("ES", None).expect("ES in the curated half");
@@ -1413,7 +1413,7 @@ pub(super) mod tests {
             ib: String::new(),
             balance: None,
         };
-        let mut session = trading::tests::FakeSession::new(vec![account.clone()], Box::new(|| {}));
+        let mut session = trading::fake::FakeSession::new(vec![account.clone()], Box::new(|| {}));
         session.simulated = simulated;
         session.links_orders = links;
         session.contracts.lock().unwrap().insert("ES".into(), "ESZ6".into());
@@ -1949,7 +1949,7 @@ pub(super) mod tests {
 
     /// Sign in a login with `numbers` as its accounts, through a fake
     /// session, and tell the window. Its id and the session.
-    fn sign_in(window: &Rc<Window>, store: &Rc<Store>, numbers: &[&str]) -> (String, Arc<trading::tests::FakeSession>) {
+    fn sign_in(window: &Rc<Window>, store: &Rc<Store>, numbers: &[&str]) -> (String, Arc<trading::fake::FakeSession>) {
         let id = trading::add_login(store, &Kept::default(), &typed()).expect("a login");
         let accounts = numbers
             .iter()
@@ -1963,7 +1963,7 @@ pub(super) mod tests {
                 balance: None,
             })
             .collect();
-        let session = Arc::new(trading::tests::FakeSession::new(accounts, Box::new(|| {})));
+        let session = Arc::new(trading::fake::FakeSession::new(accounts, Box::new(|| {})));
         assert!(window.desk.begin(&id));
         window.desk.opened(&id, Ok(session.clone()));
         window.desk.note(store);

@@ -503,7 +503,7 @@ fn sign_in(panel: &Rc<Panel>, id: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::trading::tests::{Fake, Kept};
+    use crate::trading::fake::{FakeBroker, Kept};
     use crate::trading::Typed;
 
     fn panel(store: &Rc<Store>, desk: Rc<Desk>) -> Rc<Panel> {
@@ -559,7 +559,7 @@ mod tests {
     fn nothing_configured_is_a_line_and_a_button() {
         crate::ui::on_gtk(|| {
             let store = Rc::new(Store::memory().unwrap());
-            let panel = panel(&store, Rc::new(Desk::new(Arc::new(Fake::default()))));
+            let panel = panel(&store, Rc::new(Desk::new(Arc::new(FakeBroker::default()))));
             rebuild(&panel);
             let words = page_words(&panel);
             assert!(words.iter().any(|w| w == "Add a broker…"), "{words:?}");
@@ -597,7 +597,7 @@ mod tests {
             trading::cache_accounts(&store, &test, vec![funded]);
             trading::sign_out_login(&store, &kept, &test).unwrap();
 
-            let panel = panel(&store, Rc::new(Desk::new(Arc::new(Fake::default()))));
+            let panel = panel(&store, Rc::new(Desk::new(Arc::new(FakeBroker::default()))));
             rebuild(&panel);
             let groups = panel.groups.borrow().clone();
             assert_eq!(groups.len(), 4, "two logins, the button and the sizes");

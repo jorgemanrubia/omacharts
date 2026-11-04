@@ -381,7 +381,7 @@ pub(crate) mod tests {
     /// signed out; the password is in no setting.
     #[test]
     fn the_engine_is_handed_the_data_login() {
-        use crate::trading::{self, tests::Kept, Typed};
+        use crate::trading::{self, fake::Kept, Typed};
         if omacharts_engine::providers::rithmic::session::development() {
             return;
         }
@@ -483,11 +483,15 @@ pub(crate) mod tests {
         // Below the boundary: the feeds themselves. Their clients,
         // `crates/rithmic` and `crates/tos-market`, are not read at all.
         let below = ["crates/omacharts-engine/src/providers/"];
+        // The brokers, which are named in their adapters and nowhere else.
+        let adapters = ["src/trading/adapters/"];
         // Above it still, and why. Part B of the foundations work takes the
-        // broker adapter out of trading.rs and the last feed names out of
-        // the window and the pane, and these three go from the list with it.
+        // last feed names out of the logins, the window and the pane, and
+        // these three go from the list with it.
         let allowed = [
-            ("src/trading.rs", "part B: the Rithmic broker adapter and its logins"),
+            // The Rithmic data session's keyring calls, the feed a first
+            // login puts on top, and keys stored under Rithmic's name.
+            ("src/trading/logins.rs", "part B: the logins' keyring, data feed and stored keys"),
             ("src/ui/window.rs", "part B: entitlements and the data login"),
             ("src/ui/pane.rs", "part B: the header's feed picker"),
             // For good: a provider's own sign-in dialog is the provider's,
@@ -502,7 +506,7 @@ pub(crate) mod tests {
         for dir in ["src", "crates/omacharts-engine/src"] {
             for path in sources(&root.join(dir)) {
                 let name = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().replace('\\', "/");
-                if below.iter().any(|prefix| name.starts_with(prefix))
+                if below.iter().chain(&adapters).any(|prefix| name.starts_with(prefix))
                     || allowed.iter().any(|(file, _)| name == *file)
                 {
                     continue;

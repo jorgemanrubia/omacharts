@@ -637,7 +637,7 @@ mod tests {
             assert_eq!(store.setting(feeds::SETTING), None);
             assert_eq!(titles(&panel), vec!["Yahoo Finance"]);
 
-            let kept = crate::trading::tests::Kept::default();
+            let kept = crate::trading::fake::Kept::default();
             let typed = crate::trading::Typed {
                 name: "Lucid".into(),
                 user: "trader".into(),
