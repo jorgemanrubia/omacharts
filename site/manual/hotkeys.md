@@ -44,6 +44,7 @@ Omarchy plugin's panel has keys of its own, in
 | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>I</kbd> | The list of indicators to add | [Indicators](/manual/indicators/) |
 | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>S</kbd> | The focused chart's settings | [Chart settings](/manual/chart-settings/) |
 | <kbd>Ctrl</kbd> + <kbd>,</kbd> | Preferences | [Preferences](/manual/preferences/) |
+| <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>J</kbd> | The Log | [The window](/manual/window/#the-log) |
 | <kbd>F10</kbd> | The main menu | [The window](/manual/window/) |
 | <kbd>?</kbd> / <kbd>Ctrl</kbd> + <kbd>?</kbd> | The Keyboard shortcuts sheet | [The window](/manual/window/) |
 
