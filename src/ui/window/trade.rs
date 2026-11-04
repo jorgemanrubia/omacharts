@@ -172,7 +172,7 @@ impl Window {
                     (Request::Place(tag), Pending::Place { key, order }) if ours(key) => {
                         let heard = view.book.orders.iter().any(|known| known.tag.as_deref() == Some(tag.as_str()));
                         if !heard {
-                            never.push(trading::never_placed_text(order));
+                            never.push((key.clone(), trading::never_placed_text(order)));
                         }
                         heard
                     }
@@ -183,8 +183,8 @@ impl Window {
                 }
             }
         }
-        for text in never {
-            self.toast(&text);
+        for (key, text) in never {
+            self.refuse_as(&self.account_label(&key), &text);
         }
     }
 
