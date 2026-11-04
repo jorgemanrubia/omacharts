@@ -470,6 +470,17 @@ impl View {
         account_name(account, &self.logins, &self.accounts)
     }
 
+    /// What the account with the key `key` is called here: "Lucid", or
+    /// "Lucid 1234" when the login holds several; its number alone when it
+    /// is no longer listed.
+    pub fn name_of(&self, key: &str) -> String {
+        self.accounts
+            .iter()
+            .find(|account| account.key() == key)
+            .map(|account| self.account_name(account))
+            .unwrap_or_else(|| key.rsplit('/').next().unwrap_or(key).to_string())
+    }
+
     /// The default account, or the first when none is.
     pub fn default_account(&self) -> Option<&Account> {
         default_account(&self.accounts, self.default.as_deref())

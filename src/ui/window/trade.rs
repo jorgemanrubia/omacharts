@@ -292,7 +292,7 @@ impl Window {
             let this = self.clone();
             cancel.connect_activate(move |_, value| {
                 if let Some(basket) = value.and_then(|value| value.str().map(str::to_string)) {
-                    this.cancel_from_chart(&basket);
+                    this.cancel_mark(&this.focused_pane(), &basket);
                 }
             });
             actions.add_action(&cancel);
@@ -478,15 +478,9 @@ impl Window {
         }
     }
 
-    /// The name an account goes by here: "Lucid", or "Lucid 1234" when
-    /// the login holds several.
+    /// The name an account goes by here: see [`trading::View::name_of`].
     pub(super) fn account_label(&self, key: &str) -> String {
-        let view = self.trading.borrow();
-        view.accounts
-            .iter()
-            .find(|account| account.key() == key)
-            .map(|account| view.account_name(account))
-            .unwrap_or_else(|| key.rsplit('/').next().unwrap_or(key).to_string())
+        self.trading.borrow().name_of(key)
     }
 
     /// Do `job` on the session of the account with the key `account`, off
@@ -601,10 +595,7 @@ impl Window {
             pane.view.y_of(price).unwrap_or(f64::INFINITY)
         });
         if let Some(order) = near {
-            let places = tick.map_or(2, |tick| omacharts_engine::on_tick(0.0, tick).1);
-            let price = order.price.map(|price| omacharts_engine::grouped_decimals(price, places)).unwrap_or_default();
-            let text = format!("Cancel {} {price}", trading::order_words(order.side, order.kind));
-            let item = gio::MenuItem::new(Some(&text), None);
+            let item = gio::MenuItem::new(Some(&cancel_words(order)), None);
             item.set_action_and_target_value(Some("chart.cancel-order"), Some(&order.basket_id.to_variant()));
             section.append_item(&item);
         }
@@ -670,17 +661,6 @@ impl Window {
                 then(this, basket);
             }
         });
-    }
-
-    /// `chart.cancel-order`: cancel the working order `basket`, no
-    /// question asked.
-    fn cancel_from_chart(self: &Rc<Self>, basket: &str) {
-        let order = self.trading.borrow().book.order(basket).cloned();
-        let Some(order) = order else { return };
-        let account = order.account.clone();
-        self.say(log_words::note(&self.account_label(&account), cancel_words(&order)));
-        let basket = basket.to_string();
-        self.on_session(&account, move |session, number| session.cancel(number, &basket));
     }
 
     /// What the hand did to the marks on the chart `id`: the chart only
@@ -1275,13 +1255,7 @@ impl Window {
             for (basket, before) in placed.iter_mut() {
                 let Some(order) = view.book.order(basket) else { continue };
                 let decimals = crate::ui::trading_panel::decimals_of(order.tick);
-                let name = view
-                    .accounts
-                    .iter()
-                    .find(|account| account.key() == order.account)
-                    .map(|account| view.account_name(account))
-                    .unwrap_or_default();
-                if let Some(entry) = log_words::order_moved_on(order, *before, decimals, &name) {
+                if let Some(entry) = log_words::order_moved_on(order, *before, decimals, &view.name_of(&order.account)) {
                     said.push(entry);
                 }
                 *before = order.status.stage;

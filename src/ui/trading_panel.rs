@@ -179,14 +179,6 @@ impl TradingPanel {
         *self.default.borrow_mut() = default;
     }
 
-    fn name_of(view: &View, key: &str) -> String {
-        view.accounts
-            .iter()
-            .find(|account| account.key() == key)
-            .map(|account| view.account_name(account))
-            .unwrap_or_else(|| key.rsplit('/').next().unwrap_or(key).to_string())
-    }
-
     fn currency_of<'a>(view: &'a View, key: &str) -> Option<&'a str> {
         view.accounts.iter().find(|account| account.key() == key).and_then(|account| account.currency.as_deref())
     }
@@ -248,7 +240,7 @@ impl TradingPanel {
                 flatten.connect_clicked(move |_| (hands.flatten)(&account, &contract, &exchange));
                 flatten.set_visible(view.book.capabilities_of(&held.account).is_some_and(|can| can.flatten));
                 vec![
-                    cell(&Self::name_of(view, &held.account), false).upcast(),
+                    cell(&view.name_of(&held.account), false).upcast(),
                     cell(&held.contract, false).upcast(),
                     cell(&trading::net_text(held.net), true).upcast(),
                     cell(&price_text(held.avg, held.tick), true).upcast(),
@@ -285,7 +277,7 @@ impl TradingPanel {
                 status_cell.set_tooltip_text(Some(&status));
                 let mut cells: Vec<gtk::Widget> = vec![
                     cell(&time_text(order.at), true).upcast(),
-                    cell(&Self::name_of(view, &order.account), false).upcast(),
+                    cell(&view.name_of(&order.account), false).upcast(),
                     cell(&order.contract, false).upcast(),
                     cell(&format!("{} {}", order.side.glyph(), order.side.word()), false).upcast(),
                     cell(&order.qty.to_string(), true).upcast(),
