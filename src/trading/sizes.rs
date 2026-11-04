@@ -234,13 +234,13 @@ pub fn parse_sizes(text: &str) -> Result<Vec<Quantity>, String> {
             .parse::<u32>()
             .ok()
             .and_then(Quantity::new)
-            .ok_or_else(|| format!("{word} is not a size"))?;
+            .ok_or_else(|| format!("{word} is not a quantity"))?;
         if !sizes.contains(&size) {
             sizes.push(size);
         }
     }
     match sizes.is_empty() {
-        true => Err("No sizes".to_string()),
+        true => Err("No quantities".to_string()),
         false => Ok(sizes),
     }
 }

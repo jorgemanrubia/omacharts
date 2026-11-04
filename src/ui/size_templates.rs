@@ -39,7 +39,7 @@ pub fn present(parent: &impl IsA<gtk::Widget>, store: Rc<Store>, changed: Rc<dyn
     toolbar.add_top_bar(&adw::HeaderBar::new());
     toolbar.set_content(Some(&page));
     let dialog = adw::Dialog::new();
-    dialog.set_title("Trading sizes");
+    dialog.set_title("Quantities");
     dialog.set_content_width(460);
     dialog.set_content_height(620);
     dialog.set_child(Some(&toolbar));
@@ -127,7 +127,7 @@ fn template_group(editor: &Rc<Editor>, at: usize, template: &SizeTemplate) -> ad
     group.add(&name);
 
     let sizes_row = adw::EntryRow::new();
-    sizes_row.set_title("Sizes");
+    sizes_row.set_title("Quantities");
     sizes_row.set_text(&sizes::spell_sizes(&template.sizes));
     let sizing = editor.clone();
     sizes_row.connect_changed(move |row| match sizes::parse_sizes(&row.text()) {

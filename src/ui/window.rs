@@ -272,10 +272,10 @@ const SHORTCUT_SECTIONS: &[(&str, &[(&str, &str)])] = &[
 const TRADING_SHORTCUTS: (&str, &[(&str, &str)]) = (
     "Trading",
     &[
-        ("Ctrl+B", "Buy the chart's size at market"),
-        ("Ctrl+S", "Sell the chart's size at market"),
+        ("Ctrl+B", "Buy the chart's quantity at market"),
+        ("Ctrl+S", "Sell the chart's quantity at market"),
         ("Ctrl+F", "Flatten the chart's contract and cancel its orders"),
-        ("Ctrl+1 … 9", "Trading size N"),
+        ("Ctrl+1 … 9", "Pick the quantity, 1st to 9th"),
         ("Ctrl+Shift+A", "Show or hide the accounts"),
         ("Ctrl+Shift+P", "Show or hide the positions"),
         ("Ctrl+Shift+O", "Show or hide the orders"),
@@ -2696,6 +2696,17 @@ impl Window {
             popup_menu(&trade::size_part_menu(), &anchor, x, y);
         });
         pane.size_menu.add_controller(size_menu);
+        // Buy and Sell are the keys' orders, for this chart.
+        for (button, side) in [(&pane.buy_button, crate::trading::Side::Buy), (&pane.sell_button, crate::trading::Side::Sell)] {
+            let this = Rc::downgrade(self);
+            button.connect_clicked(move |_| {
+                let Some(this) = this.upgrade() else { return };
+                this.focus(id);
+                if let Some(pane) = this.pane(id) {
+                    this.market_on(&pane, side);
+                }
+            });
+        }
 
         // The chain opens the three modes rather than toggling one: "off" is
         // two answers, taking the click when focused and never taking it.

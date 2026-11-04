@@ -1402,7 +1402,7 @@ const STORED_FIELDS: &[(&str, &str, &str)] = &[
     (
         "trading_size",
         "",
-        "exploratory: a chart's trading size is picked from its header or with Ctrl and a digit for now, \
+        "exploratory: a chart's quantity is picked from its header or with Ctrl and a digit for now, \
          and the command comes with trading shipping",
     ),
     ("name", "chartbook rename", ""),

@@ -154,7 +154,7 @@ fn panel_icon() -> gtk::DrawingArea {
 /// What a right click on a chart's Trading size offers.
 pub(super) fn size_part_menu() -> gio::Menu {
     let model = gio::Menu::new();
-    model.append(Some("Edit trading sizes…"), Some(&format!("win.{EDIT_SIZES}")));
+    model.append(Some("Edit quantities…"), Some(&format!("win.{EDIT_SIZES}")));
     model
 }
 
@@ -1131,14 +1131,20 @@ impl Window {
     /// market, at once. "Buying 2…" beside the last price until it fills.
     pub(super) fn market_from_keys(self: &Rc<Self>, side: Side) {
         let pane = self.focused_pane();
-        let target = match self.order_target(&pane) {
+        self.market_on(&pane, side);
+    }
+
+    /// Buy or sell `pane`'s quantity at the market: the keys on the
+    /// focused chart, and a chart's own Buy and Sell.
+    pub(super) fn market_on(self: &Rc<Self>, pane: &ChartPane, side: Side) {
+        let target = match self.order_target(pane) {
             Ok(target) => target,
             Err(why) => return self.refuse(&format!("Not placed · {why}")),
         };
         if !target.capabilities.kinds.contains(&OrderKind::Market) {
             return self.refuse_on(&target, &format!("Not placed · {} takes no market orders", target.login.name));
         }
-        let size = self.size_of(&pane);
+        let size = self.size_of(pane);
         match trading::OrderRequest::request(&target.account.id, &target.contract(), side, OrderKind::Market, size, None) {
             Ok(order) => self.place(target, order),
             Err(why) => self.refuse_on(&target, &format!("Not placed · {why}")),
@@ -1250,24 +1256,26 @@ impl Window {
         self.save_workspace();
     }
 
-    /// The Trading size part, "#2", while the chart has an
-    /// account and a template applies; nothing at all, and no room taken,
-    /// otherwise.
+    /// The Quantity part, "Qty 2", and Buy and Sell beside it, while the
+    /// chart has an account to trade on (and, for the quantity, a template
+    /// applies); nothing at all, and no room taken, otherwise. Buy and Sell
+    /// that could not place an order say why instead.
     pub(super) fn write_size_of(&self, pane: &ChartPane) {
-        let text = match self.trade.shown.get() {
+        let has_account = self.trade.shown.get()
+            && self.trading.borrow().account_of(pane.account.borrow().as_deref()).is_some();
+        let text = match has_account {
             false => None,
             true => {
-                let view = self.trading.borrow();
-                let account = view.account_of(pane.account.borrow().as_deref());
                 let instrument = pane.instrument.borrow();
                 let templates = self.trade.sizes.borrow();
-                account.and(instrument.as_ref()).and_then(|instrument| {
+                instrument.as_ref().and_then(|instrument| {
                     let size = trading::sizes::size_for(&templates, instrument, pane.trading_size.borrow().as_ref())?;
-                    Some(format!("#{size}"))
+                    Some(size.to_string())
                 })
             }
         };
         pane.write_size(text.as_deref());
+        pane.write_trade(has_account.then(|| self.order_target(pane).map(|_| ())));
     }
 
     /// Read the size templates again, after the dialog changed them, and
@@ -1324,12 +1332,6 @@ impl Window {
             title.set_xalign(0.0);
             title.set_hexpand(true);
             line.append(&title);
-            if at < 9 {
-                let key = crate::ui::shortcuts::accel_label(&format!("<Ctrl>{}", at + 1)).unwrap_or_default();
-                let key = gtk::Label::new(Some(&key));
-                key.add_css_class("dim-label");
-                line.append(&key);
-            }
             // Kept in place when not drawn, so the column does not move.
             let mark = gtk::Image::from_icon_name("object-select-symbolic");
             mark.set_opacity(if *size == current { 1.0 } else { 0.0 });
@@ -2395,6 +2397,47 @@ pub(super) mod tests {
             assert_eq!(window.shows_sidebar(), shown, "Ctrl+B toggled the watchlist");
             assert!(!window.on_trading_key(gtk::gdk::Key::_2, 11), "Ctrl+2 taken with no account");
             assert!(!window.focused_pane().size_menu.property::<bool>("visible"), "a size part with no account");
+            assert!(!window.focused_pane().trade_part.property::<bool>("visible"), "Buy and Sell with no account");
+        });
+    }
+
+    /// The header's Buy places the chart's quantity at the market, drawn
+    /// pending until the broker fills it, as Ctrl+B does; Sell sells it.
+    /// Without an account they are not there at all, which the test before
+    /// this one shows.
+    #[test]
+    fn the_headers_buy_and_sell_trade_the_charts_quantity() {
+        crate::ui::on_gtk(|| {
+            let (window, pane, session, key) = long_es(true);
+            let held = || session.book().position("951", "ESZ6").map(|held| held.net);
+            let free = |window: &Rc<Window>| !window.trade.placing.busy(&key);
+            settle(&window, || pane.view.last_price().is_some());
+            assert!(pane.trade_part.property::<bool>("visible"), "no Buy and Sell with an account");
+            assert!(pane.buy_button.is_sensitive() && pane.sell_button.is_sensitive());
+            assert!(pane.trade_tooltip().is_some_and(|tip| tip.starts_with("Buy at market")), "{:?}", pane.trade_tooltip());
+            assert_eq!(held(), Some(1));
+
+            session.holds.store(true, std::sync::atomic::Ordering::Release);
+            pane.buy_button.emit_clicked();
+            settle(&window, || session.book().orders.iter().any(|order| order.side == Side::Buy && order.kind == OrderKind::Market));
+            let buying = pane.view.mark_states().1;
+            assert!(buying.iter().any(|(words, ..)| words == "Buying 1…"), "{buying:?}");
+            let basket = session
+                .book()
+                .orders
+                .iter()
+                .find(|order| order.side == Side::Buy && order.kind == OrderKind::Market)
+                .unwrap()
+                .basket_id
+                .clone();
+            session.fill(&basket);
+            settle(&window, || held() == Some(2) && free(&window));
+            assert_eq!(held(), Some(2), "Buy bought the chart's quantity");
+            session.holds.store(false, std::sync::atomic::Ordering::Release);
+
+            pane.sell_button.emit_clicked();
+            settle(&window, || held() == Some(1) && free(&window));
+            assert_eq!(held(), Some(1), "Sell sold it");
         });
     }
 
@@ -2412,7 +2455,7 @@ pub(super) mod tests {
             settle(&window, || pane.view.last_price().is_some());
             assert_eq!(held(), Some(1));
             assert!(pane.size_menu.property::<bool>("visible"), "no size part with an account");
-            assert_eq!(pane.size_label_text(), "#1");
+            assert_eq!(pane.size_label_text(), "1");
 
             assert!(window.on_trading_key(gtk::gdk::Key::b, 0));
             settle(&window, || held() == Some(2) && free(&window));
@@ -2420,7 +2463,7 @@ pub(super) mod tests {
 
             // Ctrl+2, by the key's place on the number row.
             assert!(window.on_trading_key(gtk::gdk::Key::_2, 11));
-            assert_eq!(pane.size_label_text(), "#2");
+            assert_eq!(pane.size_label_text(), "2");
             assert_eq!(window.size_of(&pane).get(), 2);
             // Pending until the broker fills it: "Buying 2…" by the last price.
             session.holds.store(true, std::sync::atomic::Ordering::Release);
@@ -2470,14 +2513,14 @@ pub(super) mod tests {
             }
             assert_eq!(count, 9, "one to nine contracts");
             let menu = size_part_menu();
-            assert_eq!(labels(menu.upcast_ref()), vec![("Edit trading sizes…".to_string(), true)]);
+            assert_eq!(labels(menu.upcast_ref()), vec![("Edit quantities…".to_string(), true)]);
             assert!(window.window.lookup_action(EDIT_SIZES).is_some());
 
             let mut templates = trading::sizes::load(&window.store);
             templates[1].sizes = trading::sizes::parse_sizes("3, 6").unwrap();
             trading::sizes::save(&window.store, &templates);
             window.adopt_sizes();
-            assert_eq!(pane.size_label_text(), "#3", "the header kept the old template");
+            assert_eq!(pane.size_label_text(), "3", "the header kept the old template");
         });
     }
 

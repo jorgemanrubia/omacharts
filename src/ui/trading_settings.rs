@@ -124,7 +124,7 @@ impl Panel {
         panel
     }
 
-    /// What "Edit trading sizes…" opens.
+    /// What "Edit quantities…" opens.
     pub fn set_edit_sizes(self: &Rc<Self>, edit: EditSizes) {
         *self.edit_sizes.borrow_mut() = Some(edit);
         rebuild(self);
@@ -331,7 +331,7 @@ fn account_row(panel: &Rc<Panel>, account: &Account, default: bool) -> adw::Acti
 /// button.
 fn sizes_group(edit: EditSizes) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
-    let button = gtk::Button::with_label("Edit trading sizes…");
+    let button = gtk::Button::with_label("Edit quantities…");
     button.set_halign(gtk::Align::Start);
     button.connect_clicked(move |button| edit(button.upcast_ref()));
     group.add(&button);
@@ -561,7 +561,7 @@ mod tests {
             let words = page_words(&panel);
             assert!(words.iter().any(|w| w == "Add a broker…"), "{words:?}");
             assert!(!words.iter().any(|w| w == "Remove" || w == "Sign in…"), "{words:?}");
-            assert!(!words.iter().any(|w| w == "Edit trading sizes…"), "sizes with nothing to trade: {words:?}");
+            assert!(!words.iter().any(|w| w == "Edit quantities…"), "sizes with nothing to trade: {words:?}");
         });
     }
 
@@ -607,7 +607,7 @@ mod tests {
             let test_words = words_under(groups[1].upcast_ref());
             assert!(test_words.iter().any(|w| w == "Use for data"), "{test_words:?}");
             assert!(test_words.iter().any(|w| w == "Sign in…"), "{test_words:?}");
-            assert!(page_words(&panel).iter().any(|w| w == "Edit trading sizes…"), "no way to the sizes with a login");
+            assert!(page_words(&panel).iter().any(|w| w == "Edit quantities…"), "no way to the sizes with a login");
 
             // Removing the data login hands data to the other, and says so.
             let (_, body) = removal_words("Lucid", "Rithmic", &trading::removal(&store, &lucid));

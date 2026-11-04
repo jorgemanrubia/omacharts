@@ -64,8 +64,12 @@ pub enum Part {
     /// other feeds when there are any. Nothing at all with Yahoo alone:
     /// nothing to choose, and nothing to connect to.
     Feed,
-    /// How many an order from the chart is for. Nothing at all without a
-    /// trading account.
+    /// Buy and Sell, at the market, for the chart's quantity: what Ctrl+B
+    /// and Ctrl+S do. Nothing at all unless the chart has an account to
+    /// trade on.
+    Trade,
+    /// How many an order from the chart is for, "Qty 2". Nothing at all
+    /// unless the chart has an account to trade on.
     Size,
     /// The preset resolutions as a row of buttons, on the focused chart only.
     Stripe,
@@ -79,13 +83,14 @@ pub enum Part {
 }
 
 impl Part {
-    pub const ALL: [Part; 11] = [
+    pub const ALL: [Part; 12] = [
         Part::Symbol,
         Part::Resolution,
         Part::Change,
         Part::Template,
         Part::Account,
         Part::Feed,
+        Part::Trade,
         Part::Size,
         Part::Stripe,
         Part::Settings,
@@ -94,11 +99,12 @@ impl Part {
     ];
 
     /// The section it is in until somebody places it, or `None` for a part
-    /// that is only there once somebody adds it. The account, the feed and
-    /// the size are at home on the left because they cost nothing: with one
-    /// account, one feed, or no trading account, each draws nothing and
-    /// takes no room. The three controls are at home in the corner they
-    /// always stood in, in the order they stood.
+    /// that is only there once somebody adds it. The account and the feed
+    /// are at home on the left because they cost nothing: with one account
+    /// or one feed each draws nothing and takes no room. Buy, Sell and the
+    /// quantity lead the corner, ahead of the three controls that always
+    /// stood in it, in the order they stood; without an account to trade
+    /// on, they draw nothing either.
     pub fn home(self) -> Option<Section> {
         match self {
             Part::Symbol => Some(Section::Left),
@@ -107,7 +113,8 @@ impl Part {
             Part::Template => None,
             Part::Account => Some(Section::Left),
             Part::Feed => Some(Section::Left),
-            Part::Size => Some(Section::Left),
+            Part::Trade => Some(Section::Right),
+            Part::Size => Some(Section::Right),
             Part::Stripe => Some(Section::Center),
             Part::Settings => Some(Section::Right),
             Part::Maximize => Some(Section::Right),
@@ -124,6 +131,7 @@ impl Part {
             Part::Template => "template",
             Part::Account => "account",
             Part::Feed => "feed",
+            Part::Trade => "trade",
             Part::Size => "size",
             Part::Stripe => "stripe",
             Part::Settings => "settings",
@@ -145,7 +153,8 @@ impl Part {
             Part::Template => "Chart template",
             Part::Account => "Account",
             Part::Feed => "Data feed",
-            Part::Size => "Trading size",
+            Part::Trade => "Buy Sell",
+            Part::Size => "Quantity",
             Part::Stripe => "Resolutions stripe",
             Part::Settings => "Chart settings",
             Part::Maximize => "Maximize",
@@ -336,14 +345,14 @@ mod tests {
 
     /// Out of the box the left is the data feed's dot and then the line
     /// every chart always had, the center the stripe it always had across its
-    /// top, and the right the three controls that always stood in its
-    /// corner, in their order.
+    /// top, and the right Buy, Sell and the quantity ahead of the three
+    /// controls that always stood in its corner, in their order.
     #[test]
     fn the_standard_header_is_the_line_the_stripe_and_the_corner() {
         let header = Header::standard();
-        assert_eq!(header.left, vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Account, Part::Size]);
+        assert_eq!(header.left, vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Account]);
         assert_eq!(header.center, vec![Part::Stripe]);
-        assert_eq!(header.right, vec![Part::Settings, Part::Maximize, Part::Link]);
+        assert_eq!(header.right, vec![Part::Trade, Part::Size, Part::Settings, Part::Maximize, Part::Link]);
     }
 
     /// A header stored before there were sections keeps its line on the
@@ -358,7 +367,7 @@ mod tests {
             Header {
                 left: vec![Part::Change, Part::Symbol, Part::Account],
                 center: vec![Part::Stripe],
-                right: vec![Part::Settings, Part::Maximize, Part::Link],
+                right: vec![Part::Trade, Part::Size, Part::Settings, Part::Maximize, Part::Link],
             }
         );
         store.set_setting(SETTING, "none");
@@ -371,7 +380,7 @@ mod tests {
     /// shown once, in the first of them.
     #[test]
     fn a_part_is_in_the_header_once() {
-        let corner = vec![Part::Settings, Part::Maximize, Part::Link];
+        let corner = vec![Part::Trade, Part::Size, Part::Settings, Part::Maximize, Part::Link];
         let mut header = Header::standard();
         header.set(Section::Left, vec![Part::Symbol, Part::Stripe]);
         assert_eq!(header, Header { left: vec![Part::Symbol, Part::Stripe], center: Vec::new(), right: corner.clone() });

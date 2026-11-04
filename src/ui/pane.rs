@@ -225,9 +225,14 @@ pub struct ChartPane {
     /// The trading account somebody chose for this chart, as `<login
     /// id>/<account number>`; `None` is the default account.
     pub account: RefCell<Option<String>>,
-    /// The Trading size part: how many an order from this chart is for,
-    /// "2 contracts". Clicked, it offers the template's sizes. Hidden, and
-    /// taking no room, without a trading account.
+    /// Buy and Sell at the market, for the chart's quantity. Hidden, and
+    /// taking no room, unless the chart has an account to trade on.
+    pub trade_part: gtk::Box,
+    pub buy_button: gtk::Button,
+    pub sell_button: gtk::Button,
+    /// The Quantity part: how many an order from this chart is for,
+    /// "Qty 2". Clicked, it offers the template's quantities. Hidden, and
+    /// taking no room, unless the chart has an account to trade on.
     pub size_menu: gtk::MenuButton,
     size_label: gtk::Label,
     /// The size somebody picked for this chart, and from which template;
@@ -399,13 +404,33 @@ impl ChartPane {
         feed_menu.set_child(Some(&feed_light));
         feed_menu.set_always_show_arrow(false);
         feed_menu.set_visible(false);
-        // The same kind of button, not dim: it is what the next order spends.
+        // Two words in the trading colours, as calm as the rest of the
+        // line until the pointer is on one.
+        let buy_button = gtk::Button::with_label("Buy");
+        let sell_button = gtk::Button::with_label("Sell");
+        for (button, class) in [(&buy_button, "trade-buy"), (&sell_button, "trade-sell")] {
+            button.add_css_class("flat");
+            button.add_css_class("trade-button");
+            button.add_css_class(class);
+            button.set_valign(gtk::Align::Center);
+        }
+        let trade_part = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        trade_part.append(&buy_button);
+        trade_part.append(&sell_button);
+        trade_part.set_visible(false);
+        // The same kind of button, not dim: it is what the next order
+        // spends. "Qty" in the line's quiet grey, the number in full.
         let size_label = gtk::Label::new(None);
+        let size_word = gtk::Label::new(Some("Qty"));
+        size_word.add_css_class("dim-label");
+        let size_line = gtk::Box::new(gtk::Orientation::Horizontal, 5);
+        size_line.append(&size_word);
+        size_line.append(&size_label);
         let size_menu = gtk::MenuButton::new();
         size_menu.add_css_class("flat");
         size_menu.add_css_class("readout-symbol");
         size_menu.set_valign(gtk::Align::Center);
-        size_menu.set_child(Some(&size_label));
+        size_menu.set_child(Some(&size_line));
         size_menu.set_always_show_arrow(false);
         size_menu.set_visible(false);
         // The padding the two buttons beside them have, so the four sit
@@ -581,6 +606,9 @@ impl ChartPane {
             feed_popover: RefCell::new(None),
             feed: RefCell::new(None),
             account: RefCell::new(None),
+            trade_part,
+            buy_button,
+            sell_button,
             size_menu,
             size_label,
             trading_size: RefCell::new(None),
@@ -739,13 +767,14 @@ impl ChartPane {
     /// and take off the ones it does not show.
     pub fn arrange_header(&self) {
         use crate::header::Part;
-        let parts: [(Part, gtk::Widget); 11] = [
+        let parts: [(Part, gtk::Widget); 12] = [
             (Part::Symbol, self.symbol_button.clone().upcast()),
             (Part::Resolution, self.timeframe_menu.clone().upcast()),
             (Part::Change, self.change_label.clone().upcast()),
             (Part::Template, self.template_label.clone().upcast()),
             (Part::Account, self.account_menu.clone().upcast()),
             (Part::Feed, self.feed_menu.clone().upcast()),
+            (Part::Trade, self.trade_part.clone().upcast()),
             (Part::Size, self.size_menu.clone().upcast()),
             (Part::Stripe, self.strip.clone().upcast()),
             (Part::Settings, self.gear.clone().upcast()),
@@ -905,7 +934,46 @@ impl ChartPane {
         }
     }
 
-    /// What the Trading size part says.
+    /// Buy and Sell, or nothing at all: `None` without an account to
+    /// trade on, `Err` with why an order from this chart would not go, which
+    /// the buttons say, insensitive, when hovered.
+    pub fn write_trade(&self, state: Option<Result<(), String>>) {
+        if self.trade_part.is_visible() != state.is_some() {
+            self.trade_part.set_visible(state.is_some());
+        }
+        let Some(state) = state else { return };
+        let able = state.is_ok();
+        for (button, words, action) in [
+            (&self.buy_button, "Buy at market", "chart.buy-market"),
+            (&self.sell_button, "Sell at market", "chart.sell-market"),
+        ] {
+            if button.is_sensitive() != able {
+                button.set_sensitive(able);
+            }
+            let tip = able.then(|| crate::ui::shortcuts::tooltip(words, action));
+            if button.tooltip_text().map(|tip| tip.to_string()) != tip {
+                button.set_tooltip_text(tip.as_deref());
+            }
+        }
+        // Why not, on the pair: a button that cannot be pressed is passed
+        // over for its tooltip.
+        let why = state.err();
+        if self.trade_part.tooltip_text().map(|tip| tip.to_string()) != why {
+            self.trade_part.set_tooltip_text(why.as_deref());
+        }
+    }
+
+    /// What Buy and Sell say when hovered, for the tests: the pair's reason,
+    /// or the buttons' own words.
+    #[cfg(test)]
+    pub fn trade_tooltip(&self) -> Option<String> {
+        self.trade_part
+            .tooltip_text()
+            .or_else(|| self.buy_button.tooltip_text())
+            .map(|tip| tip.to_string())
+    }
+
+    /// What the Quantity part says.
     #[cfg(test)]
     pub fn size_label_text(&self) -> String {
         self.size_label.text().to_string()
@@ -1747,7 +1815,13 @@ mod tests {
             let corner = |pane: &ChartPane| children(&pane.corner);
             assert_eq!(
                 corner(&pane),
-                vec![pane.gear.clone().upcast::<gtk::Widget>(), pane.expand.clone().upcast(), pane.link.clone().upcast()]
+                vec![
+                    pane.trade_part.clone().upcast::<gtk::Widget>(),
+                    pane.size_menu.clone().upcast(),
+                    pane.gear.clone().upcast(),
+                    pane.expand.clone().upcast(),
+                    pane.link.clone().upcast()
+                ]
             );
             let header = |left: Vec<Part>, right: Vec<Part>| {
                 *pane.header.borrow_mut() = Header { left, center: Vec::new(), right };
@@ -1760,7 +1834,8 @@ mod tests {
             assert!(corner(&pane).is_empty());
             assert!(pane.gear.parent().is_none());
             header(Header::standard().left, Header::standard().right);
-            assert_eq!(corner(&pane).len(), 3);
+            // Buy and Sell and the quantity, then the three controls.
+            assert_eq!(corner(&pane).len(), 5);
         });
     }
 
@@ -1785,7 +1860,7 @@ mod tests {
             pane.write_size(None);
             assert_eq!(laid_out(vec![Part::Symbol, Part::Size, Part::Template]), without);
             assert!(!pane.size_menu.is_visible());
-            pane.write_size(Some("#2"));
+            pane.write_size(Some("2"));
             let shown = laid_out(vec![Part::Symbol, Part::Size, Part::Template]);
             assert!(shown.0 > without.0 && shown.1 > without.1, "{shown:?} against {without:?}");
         });

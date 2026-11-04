@@ -270,8 +270,10 @@ pub fn trading_css(theme: &Theme, colouring: omacharts_engine::BarColouring) -> 
     let look = omacharts_engine::theme_trading(theme, colouring);
     format!(
         "@define-color omacharts_profit {};\n@define-color omacharts_loss {};\n\
-         .pnl-gain {{ color: @omacharts_profit; }}\n.pnl-loss {{ color: @omacharts_loss; }}\n",
-        look.profit, look.loss
+         @define-color omacharts_buy {};\n@define-color omacharts_sell {};\n\
+         .pnl-gain {{ color: @omacharts_profit; }}\n.pnl-loss {{ color: @omacharts_loss; }}\n\
+         .trade-buy {{ color: @omacharts_buy; }}\n.trade-sell {{ color: @omacharts_sell; }}\n",
+        look.profit, look.loss, look.buy, look.sell
     )
 }
 
@@ -709,6 +711,9 @@ entry.range-date > image:hover { opacity: 0.9; }
 .feed-dot.connecting { background: @omacharts_orange; }
 .feed-dot.connected { background: @omacharts_green; }
 .feed-warning { color: @omacharts_rose; }
+/* Buy and Sell in the header: the line's own flat buttons, in the trading
+   colours, a word each, with the hover wash the others have. */
+.trade-button { padding: 2px 6px; min-width: 0; min-height: 0; font-weight: bold; }
 .feed-part > button { padding: 2px 6px; min-width: 0; }
 /* First on the line, the button reaches into the legend's margin so the
    dot's left edge is the legend dots' left edge. */
