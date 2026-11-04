@@ -26,8 +26,8 @@ use crate::ui::trading_panel::{Hands, TradingPanel};
 pub const SHOW_TRADING_PANEL: &str = "show_trading_panel";
 
 /// How tall the toggle's corner is before it has been laid out: the button
-/// and `.window-corner.foot`'s padding and margin under it.
-const FOOT_HEIGHT: i32 = 22 + 1 + 2;
+/// and `.window-corner.foot`'s margin under it.
+const FOOT_HEIGHT: i32 = 22 + 2;
 
 /// The panel's tabs that have a key each, as `win.trading-<tab>`.
 const PANEL_TABS: [&str; 3] = ["accounts", "positions", "orders"];
@@ -120,8 +120,12 @@ fn panel_icon() -> gtk::DrawingArea {
             cr.set_source_rgba(r as f64, g as f64, b as f64, a as f64 * alpha);
         };
         ink(1.0);
-        // The 16-pixel glyph, centred.
-        let (x, y) = (((width - 16) / 2) as f64, ((height - 16) / 2) as f64);
+        // The 16-pixel glyph, centred, and half a pixel lower where the
+        // screen has half pixels: in the bottom-left corner the band it
+        // centres in is an odd 25 tall, and at 1x the half would blur it.
+        let scale = area.scale_factor() as f64;
+        let half = (0.5 * scale).floor() / scale;
+        let (x, y) = (((width - 16) / 2) as f64, ((height - 16) / 2) as f64 + half);
         let rounded = |x: f64, y: f64, w: f64, h: f64, r: f64| {
             use std::f64::consts::PI;
             cr.new_sub_path();

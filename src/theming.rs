@@ -827,15 +827,16 @@ entry.range-date > image:hover { opacity: 0.9; }
    so the left edge reads as one column of two — tools at the top, trading
    at the bottom. It stands on the row the bottom-left chart writes its
    dates on: the time axis is the bottom 24px of a chart and the chart
-   stands the focus ring's 2px off the window's edge, so the box ends 2px
-   up and is 23px tall (the button's padding is taken off, at the end of
-   the sheet), its top a pixel under the axis's rule rather than on it, and
-   the button centred on the dates. While the drawing tools are out it
-   stands at the foot of their bar instead, and the bar is what it is
-   over. */
+   stands the focus ring's 2px off the window's edge, so the band under the
+   axis's rule is 25px to the window's edge. The box ends 2px up and is the
+   button's 22px tall (its padding is taken off, at the end of the sheet),
+   a pixel and a half short of centring the glyph in that band: the glyph
+   makes up the half itself, where a pixel has halves. While the drawing
+   tools are out it stands at the foot of their bar instead, and the bar is
+   what it is over. */
 .window-corner.foot {
   margin: 0 0 2px 2px;
-  padding: 0 9px 1px 7px;
+  padding: 0 9px 0 7px;
 }
 /* Over the chart it has the ground the other corners have, rounded away
    from the axis the way the tools' corner is rounded away from the name:
