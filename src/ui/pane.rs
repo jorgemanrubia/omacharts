@@ -1456,7 +1456,7 @@ mod tests {
             pane.write_size(None);
             assert_eq!(laid_out(vec![Part::Symbol, Part::Size, Part::Template]), without);
             assert!(!pane.size_menu.is_visible());
-            pane.write_size(Some("2 contracts"));
+            pane.write_size(Some("Size: 2"));
             let shown = laid_out(vec![Part::Symbol, Part::Size, Part::Template]);
             assert!(shown.0 > without.0 && shown.1 > without.1, "{shown:?} against {without:?}");
         });
