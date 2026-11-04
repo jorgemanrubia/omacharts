@@ -17,7 +17,6 @@ use std::time::Instant;
 
 use adw::prelude::*;
 use gtk::glib;
-use omacharts_engine::contracts;
 use omacharts_engine::providers;
 use omacharts_engine::refresh;
 use omacharts_engine::{
@@ -2676,14 +2675,6 @@ impl Window {
         feeds.connect_show(move |popover| filler.fill_feed_menu(popover, id));
         pane.set_feed_popover(feeds);
 
-        // The month opens the root's other contracts, built afresh each
-        // time for the same reason: which is the front month moves on.
-        let months = gtk::Popover::new();
-        months.set_has_arrow(false);
-        let filler = self.clone();
-        months.connect_show(move |popover| filler.fill_month_menu(popover, id));
-        pane.month_menu.set_popover(Some(&months));
-
         // The size opens the sizes of the chart's template, and on a right
         // click offers to edit the templates, as the strip does its list.
         let sizes = gtk::Popover::new();
@@ -3785,62 +3776,6 @@ impl Window {
                 let this = self.clone();
                 let pick: Rc<dyn Fn()> = Rc::new(move || this.choose_feed(id, chosen.clone()));
                 menu.append(&self.choice_row(popover, id, &label, None, in_force == Some(own), Some(pick)));
-            }
-        }
-        popover.set_child(Some(&menu));
-    }
-
-    /// The month's menu on a chart of a dated contract: the continuous
-    /// root first, then every contract the root lists, soonest first, the
-    /// front month said so and the one on the chart marked. Choosing one
-    /// charts it the way a pick in the search does.
-    fn fill_month_menu(self: &Rc<Self>, popover: &gtk::Popover, id: u32) {
-        let Some(pane) = self.pane(id) else { return };
-        let Some(instrument) = pane.instrument.borrow().clone() else { return };
-        let root = instrument.as_root();
-        let menu = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        let row = |charts: Instrument, name: &str, front: bool| {
-            let button = gtk::Button::new();
-            button.add_css_class("flat");
-            button.add_css_class("link-row");
-            let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-            let symbol = gtk::Label::new(Some(&charts.display_symbol()));
-            symbol.set_xalign(0.0);
-            symbol.set_width_chars(6);
-            line.append(&symbol);
-            let title = gtk::Label::new(Some(name));
-            title.set_xalign(0.0);
-            title.set_hexpand(true);
-            title.add_css_class("dim-label");
-            line.append(&title);
-            if front {
-                let front = gtk::Label::new(Some("Front"));
-                front.add_css_class("pick-front");
-                front.set_valign(gtk::Align::Center);
-                line.append(&front);
-            }
-            // Kept in place when not drawn, as in the feed's menu, so the
-            // column does not move with the choice.
-            let mark = gtk::Image::from_icon_name("object-select-symbolic");
-            mark.set_valign(gtk::Align::Center);
-            mark.set_opacity(if charts.symbol == instrument.symbol { 1.0 } else { 0.0 });
-            line.append(&mark);
-            button.set_child(Some(&line));
-            let this = self.clone();
-            let closing = popover.downgrade();
-            button.connect_clicked(move |_| {
-                if let Some(popover) = closing.upgrade() {
-                    popover.popdown();
-                }
-                this.focus(id);
-                this.show(charts.clone());
-            });
-            menu.append(&button);
-        };
-        row(root.clone(), "Continuous", false);
-        for listing in contracts::listing(root.root(), contracts::today()) {
-            if let Some(contract) = root.in_month(listing.month) {
-                row(contract, &listing.month.label(), listing.front);
             }
         }
         popover.set_child(Some(&menu));

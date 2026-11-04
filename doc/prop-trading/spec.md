@@ -301,10 +301,9 @@ contract that expired lately is still what it was.
   shows; Yahoo serves the contracts themselves, so the expansion is there
   with no feed configured. Watchlists hold specific contracts as they hold
   anything.
-- **The header of a dated contract says its month, and offers the others.**
-  Beside `ESH7` the chart shows the month, and that is a menu of the root's
-  contracts, the front one marked, and the continuous root; a chart of the
-  root shows nothing new, so a chart of `ES` is as it always was.
+- **The header of a dated contract shows its symbol and nothing more.**
+  A chart of `ESH7` says `ESH7`, as any symbol says itself; search's fold
+  is the way to another month.
 - **An order from a chart of a dated contract goes to that contract**,
   whatever the root trades as now; `Session::contract_for` answers a
   dated contract with itself and a root with the front month.

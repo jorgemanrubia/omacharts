@@ -123,14 +123,6 @@ pub struct ChartPane {
     /// name of the thing you are looking at to change it is the shortest
     /// route there is.
     pub symbol_button: gtk::Button,
-    /// The month beside the symbol of a dated contract, "Mar 2027" after
-    /// "ESH7". Clicked, it offers the root's other contracts and the root
-    /// itself. Hidden, and taking no room, on a chart of the continuous
-    /// root, whose symbol says all there is.
-    pub month_menu: gtk::MenuButton,
-    month_label: gtk::Label,
-    /// The symbol part: the button and the month, as one.
-    symbol_part: gtk::Box,
     /// This chart's resolutions, since the resolution is this chart's. One
     /// strip in the header could only ever describe one of them.
     ///
@@ -301,23 +293,6 @@ impl ChartPane {
         symbol_button.add_css_class("readout-symbol");
         symbol_button.set_valign(gtk::Align::Center);
         symbol_button.set_tooltip_text(Some(&shortcuts::tooltip("Find a symbol", "win.find")));
-        // Dim like the feed beside it, and with no chevron for the same
-        // reason as the resolution's: it is a note on the symbol, in every
-        // screenshot of a contract's chart.
-        let month_label = gtk::Label::new(None);
-        let month_menu = gtk::MenuButton::new();
-        month_menu.add_css_class("flat");
-        month_menu.add_css_class("readout-symbol");
-        month_menu.add_css_class("dim-label");
-        month_menu.set_valign(gtk::Align::Center);
-        month_menu.set_child(Some(&month_label));
-        month_menu.set_always_show_arrow(false);
-        month_menu.set_visible(false);
-        // No spacing: hidden, the month leaves the symbol exactly where it
-        // was, and shown it reads as the rest of the title.
-        let symbol_part = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        symbol_part.append(&symbol_button);
-        symbol_part.append(&month_menu);
 
         let strip = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         strip.add_css_class("linked");
@@ -570,9 +545,6 @@ impl ChartPane {
             view,
             root,
             symbol_button,
-            month_menu,
-            month_label,
-            symbol_part,
             strip,
             buttons: RefCell::new(Vec::new()),
             timeframe_menu,
@@ -768,7 +740,7 @@ impl ChartPane {
     pub fn arrange_header(&self) {
         use crate::header::Part;
         let parts: [(Part, gtk::Widget); 11] = [
-            (Part::Symbol, self.symbol_part.clone().upcast()),
+            (Part::Symbol, self.symbol_button.clone().upcast()),
             (Part::Resolution, self.timeframe_menu.clone().upcast()),
             (Part::Change, self.change_label.clone().upcast()),
             (Part::Template, self.template_label.clone().upcast()),
@@ -949,13 +921,13 @@ impl ChartPane {
     }
 
     pub fn write_readout(&self) {
-        let instrument = self.instrument.borrow();
-        let symbol = instrument.as_ref().map(|i| i.display_symbol()).unwrap_or_default();
+        let symbol = self
+            .instrument
+            .borrow()
+            .as_ref()
+            .map(|i| i.display_symbol())
+            .unwrap_or_default();
         self.symbol_button.set_label(&symbol);
-        // The month of a dated contract, and nothing at all on the root.
-        let month = instrument.as_ref().filter(|i| i.is_contract()).and_then(|i| i.contract());
-        self.month_label.set_text(&month.map(|month| month.label()).unwrap_or_default());
-        self.month_menu.set_visible(month.is_some());
         self.write_timeframe();
     }
 
@@ -1809,37 +1781,6 @@ mod tests {
             pane.write_size(Some("#2"));
             let shown = laid_out(vec![Part::Symbol, Part::Size, Part::Template]);
             assert!(shown.0 > without.0 && shown.1 > without.1, "{shown:?} against {without:?}");
-        });
-    }
-
-    /// A chart of a dated contract says its month after the symbol; a chart
-    /// of the root says nothing there, and takes no room for it.
-    #[test]
-    fn a_contracts_month_follows_its_symbol_and_a_roots_does_not() {
-        use omacharts_engine::contracts;
-        crate::ui::on_gtk(|| {
-            let index = crate::inventory::Inventory::curated();
-            let pane = test_pane();
-            let showing = |symbol: &str| {
-                *pane.instrument.borrow_mut() = Some(index.find(symbol, None).expect(symbol));
-                pane.write_readout();
-                let width = pane.header_row.preferred_size().1.width();
-                pane.header_row.allocate(width, SYMBOL_ROW_HEIGHT, -1, None);
-                width
-            };
-            let root = showing("ES");
-            assert!(!pane.month_menu.is_visible());
-            assert_eq!(pane.symbol_button.label().as_deref(), Some("ES"));
-
-            let (_, march) = contracts::parse("ESH7", contracts::today()).unwrap();
-            let contract = showing("ESH7");
-            assert!(pane.month_menu.is_visible());
-            assert_eq!(pane.month_label.text(), march.label());
-            assert_eq!(pane.symbol_button.label().as_deref(), Some("ESH7"));
-            assert!(contract > root, "{contract} against {root}");
-
-            assert_eq!(showing("ES"), root);
-            assert!(!pane.month_menu.is_visible());
         });
     }
 
