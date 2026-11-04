@@ -115,6 +115,13 @@ pub trait Session: Send + Sync {
     /// it. Never waits on the broker: what it does not know yet it asks for,
     /// and tells with a change once it does.
     fn contract_for(&self, instrument: &omacharts_engine::Instrument) -> Result<Contract, Refusal>;
+    /// The last price the broker's own market data has traded `instrument`
+    /// at, for one [`Session::contract_for`] has been asked about: what an
+    /// order there is judged against, whatever feed charts it. Never waits:
+    /// `None` until a trade has been heard, and for a broker with no data.
+    fn last_price(&self, _instrument: &omacharts_engine::Instrument) -> Option<f64> {
+        None
+    }
     /// Every order, position and balance it has heard of.
     fn book(&self) -> Book;
     /// Ask the broker for what the accounts hold now — the money and the

@@ -537,6 +537,24 @@ impl Window {
         )
     }
 
+    /// The price an order from `pane` on `target` is judged against: the
+    /// chart's own when the account's feed charts it, else the last trade
+    /// the account's session has heard, which on a chart fed from elsewhere
+    /// can be a long way off; the chart's while the session has none.
+    pub(super) fn market_price(&self, pane: &ChartPane, target: &trading::Target) -> Option<f64> {
+        let chart = pane.view.last_price();
+        let Some(instrument) = pane.instrument.borrow().clone() else { return chart };
+        let own = trading::data_feed_of(&target.login).map(|feed| feed.id);
+        let charted = match self.route_chosen(pane, &instrument) {
+            Some(Ok(routed)) => Some(routed.feed.provider.id()),
+            _ => None,
+        };
+        if own.is_some() && own == charted.as_deref() {
+            return chart;
+        }
+        self.desk.session(&target.login.id).and_then(|session| session.last_price(&instrument)).or(chart)
+    }
+
     /// The step `pane`'s prices move in: what its bars show, else what the
     /// broker says of the contract.
     fn tick_of(pane: &ChartPane, target: &trading::Target) -> Option<f64> {
@@ -571,7 +589,7 @@ impl Window {
             Some(tick) => omacharts_engine::on_tick(price, tick),
             None => (price, 2),
         });
-        let last = pane.view.last_price();
+        let last = self.market_price(&pane, &target);
         let size = self.size_of(&pane);
         for (side, kind) in trading::menu_orders(&target.capabilities) {
             let price = (kind != OrderKind::Market).then_some(at).flatten();
@@ -632,7 +650,7 @@ impl Window {
         }
         let places = Self::tick_of(&pane, &target).map_or(2, |tick| omacharts_engine::on_tick(0.0, tick).1);
         let price_text = price.map(|price| omacharts_engine::grouped_decimals(price, places)).unwrap_or_default();
-        if let (Some(at), Some(last)) = (price, pane.view.last_price())
+        if let (Some(at), Some(last)) = (price, self.market_price(&pane, &target))
             && !trading::side_allowed(kind, side, at, last)
         {
             return self.refuse_on(&target, &trading::crossed_text(&price_text, kind, side));
@@ -762,7 +780,7 @@ impl Window {
         if !target.capabilities.kinds.contains(&kind) {
             return self.refuse_on(&target, &format!("Not placed · {} takes no {} orders", target.login.name, kind.key()));
         }
-        if let Some(last) = pane.view.last_price()
+        if let Some(last) = self.market_price(pane, &target)
             && !trading::exit_allowed(kind, held.net, price, last)
         {
             return self.refuse_on(&target, &format!("Not placed · {}", trading::wrong_side_text(kind, price, last)));
@@ -818,7 +836,7 @@ impl Window {
             return self.refuse_on(&target, "Not moved · filled meanwhile");
         };
         // The market may have crossed it while the hand was letting go.
-        if let Some(last) = pane.view.last_price()
+        if let Some(last) = self.market_price(pane, &target)
             && !trading::side_allowed(order.kind, order.side, price, last)
         {
             return self.refuse_on(&target, &format!("Not moved · {}", trading::wrong_side_text(order.kind, price, last)));
@@ -1677,6 +1695,31 @@ pub(super) mod tests {
             settle(&window, || pane.view.mark_states().0.is_none());
             assert!(session.book().position("951", "ESZ6").is_none(), "not flattened");
             assert!(pane.view.mark_states().0.is_none());
+        });
+    }
+
+    /// On a chart fed from elsewhere, which side of the market a limit or a
+    /// stop is on is the account's own market's word, not the chart's; the
+    /// chart's until the session has heard a trade.
+    #[test]
+    fn the_menu_judges_sides_by_the_account_s_own_market() {
+        crate::ui::on_gtk(|| {
+            let (window, pane, session, _) = long_es(true);
+            settle(&window, || pane.view.last_price().is_some());
+            let last = pane.view.last_price().expect("a last price");
+            let above = (last / 0.25).round() * 0.25 + 10.0;
+            let y = pane.view.y_of(above).expect("the price on screen");
+            let offered = |words: &str| {
+                let rows = labels(window.chart_menu_model(y).upcast_ref());
+                rows.into_iter().find(|(label, _)| label.starts_with(words)).map(|(_, on)| on)
+            };
+            assert_eq!(offered("Sell Limit"), Some(true), "above the chart's market");
+            assert_eq!(offered("Buy Limit"), Some(false));
+
+            *session.market.lock().unwrap() = Some(above + 50.0);
+            assert_eq!(offered("Sell Limit"), Some(false), "below the account's market, though above the chart's");
+            assert_eq!(offered("Buy Limit"), Some(true));
+            assert_eq!(offered("Sell Stop"), Some(true));
         });
     }
 

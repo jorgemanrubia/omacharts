@@ -1,7 +1,8 @@
 //! Rithmic's order and PnL plants, as a [`Broker`] and its [`Session`].
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use omacharts_engine::providers::rithmic::session::{self, GATEWAY, SYSTEM};
 
@@ -90,6 +91,8 @@ impl Broker for Rithmic {
             simulated: system_of(login) == rithmic::TEST_SYSTEM,
             trading,
             changed,
+            connection,
+            prices: Mutex::default(),
         }))
     }
 }
@@ -192,6 +195,41 @@ struct RithmicSession {
     /// What the window is told when the book moves, or when a contract
     /// asked for is known.
     changed: Arc<dyn Fn(Change) + Send + Sync>,
+    connection: rithmic::Connection,
+    /// The last trade on each root an order was asked about, by root,
+    /// heard on the login's own data half.
+    prices: Mutex<HashMap<String, Priced>>,
+}
+
+/// A root's trades being watched for their price.
+struct Priced {
+    _watch: rithmic::Watch,
+    last: Arc<Mutex<Option<f64>>>,
+    /// The watch ended for good: closed, or refused. Watched afresh when
+    /// asked again.
+    ended: Arc<AtomicBool>,
+}
+
+impl RithmicSession {
+    /// Start hearing `root`'s trades, unless they are heard already.
+    fn watch_price(&self, root: &str, exchange: &str) {
+        let mut prices = self.prices.lock().unwrap_or_else(|e| e.into_inner());
+        if prices.get(root).is_some_and(|priced| !priced.ended.load(Ordering::Acquire)) {
+            return;
+        }
+        let last = Arc::new(Mutex::new(None));
+        let ended = Arc::new(AtomicBool::new(false));
+        let watch = self.connection.data().watch(root, exchange, {
+            let (last, ended) = (last.clone(), ended.clone());
+            move |live| match live {
+                rithmic::Live::Trade(trade) => *last.lock().unwrap_or_else(|e| e.into_inner()) = Some(trade.price),
+                rithmic::Live::Lost(rithmic::Error::Connection(_) | rithmic::Error::Timeout) => {}
+                rithmic::Live::Lost(_) => ended.store(true, Ordering::Release),
+                rithmic::Live::Watching { .. } => {}
+            }
+        });
+        prices.insert(root.to_string(), Priced { _watch: watch, last, ended });
+    }
 }
 
 impl Session for RithmicSession {
@@ -238,7 +276,16 @@ impl Session for RithmicSession {
             .trading
             .front_month(&instrument.symbol, exchange, move || changed(Change::Moved))
             .ok_or(Refusal::NotKnownYet)?;
+        // Its price from here on, for judging an order on a chart fed from
+        // elsewhere: only roots somebody charts, as only they are asked.
+        self.watch_price(&instrument.symbol, exchange);
         Ok(Contract { tick: rithmic_tick(&symbol), symbol, exchange: exchange.to_string() })
+    }
+
+    fn last_price(&self, instrument: &omacharts_engine::Instrument) -> Option<f64> {
+        let prices = self.prices.lock().unwrap_or_else(|e| e.into_inner());
+        let priced = prices.get(&instrument.symbol)?;
+        *priced.last.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     fn book(&self) -> Book {
