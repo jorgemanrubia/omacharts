@@ -150,7 +150,7 @@ fn feeds_group(panel: &Rc<Panel>) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     group.set_title("Data feeds");
     group.set_description(Some(
-        "Each chart comes from the first data feed in this list that has its symbol.",
+        "Symbols use the first data feed that offers them.",
     ));
 
     let added = panel.added();

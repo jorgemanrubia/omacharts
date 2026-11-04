@@ -163,7 +163,7 @@ sign-in rows.
 
 ```
 Data feeds
-Each chart comes from the first data feed in this list that has its symbol.
+Symbols use the first data feed that offers them.
   ⋮ Rithmic   CME futures, front month · live · through Lucid
   ⋮ Yahoo     Stocks, ETFs, indexes, futures, FX, crypto · delayed   [Remove]
   [ Add a data feed… ]
