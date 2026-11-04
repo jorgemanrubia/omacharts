@@ -800,19 +800,28 @@ entry.range-date > image:hover { opacity: 0.9; }
    pointer comes to it. */
 .window-corner.start.over-chart button { opacity: 0.25; }
 .window-corner.start.over-chart:hover button { opacity: 1; }
-/* Where the trading panel's toggle stands while the rail is closed: the
-   window's bottom-right corner, over the bottom-right chart, as the
-   window's corner drops onto the top-right one. It tucks into the square
-   where the price axis and the time axis cross, the one place on a chart
-   nothing is ever drawn — the time axis's rule and its chips stop at the
-   price axis, and the prices stop above the time axis — so it needs no
-   ground. Under the menu button, so the right edge reads as one column,
-   and centred on the row the dates are written on, where it sits in the
-   rail's foot band while the rail is open. (While it is, the toggle is in
-   the band, `.rail-foot`, and this box is empty and hidden.) */
+/* The trading panel's toggle, in the window's bottom-left corner: the
+   drawing tools' corner's mirror down the same edge, in the same column,
+   so the left edge reads as one column of two — tools at the top, trading
+   at the bottom. It stands on the row the bottom-left chart writes its
+   dates on: the time axis is the bottom 24px of a chart and the chart
+   stands the focus ring's 2px off the window's edge, so the box ends 2px
+   up and is 23px tall (the button's padding is taken off, at the end of
+   the sheet), its top a pixel under the axis's rule rather than on it, and
+   the button centred on the dates. While the drawing tools are out it
+   stands at the foot of their bar instead, and the bar is what it is
+   over. */
 .window-corner.foot {
-  margin: 0 2px 2px 0;
-  padding: 1px 12px 1px 0;
+  margin: 0 0 2px 2px;
+  padding: 0 9px 1px 7px;
+}
+/* Over the chart it has the ground the other corners have, rounded away
+   from the axis the way the tools' corner is rounded away from the name:
+   the chart keeps its first date out from under it, and the ground is for
+   the crosshair's date chip, which can still reach in. */
+.window-corner.foot.over-chart {
+  border-top-right-radius: 12px;
+  box-shadow: none;
 }
 /* Quiet until the pointer is near: on the buttons rather than the box, which
    is what leaves the ground at its own strength. */
@@ -911,17 +920,6 @@ entry.range-date > image:hover { opacity: 0.9; }
    touching them. The column headings used to fill this band; they are gone, and the
    band is as short as it can be without the line crowding what is above. */
 .rail-header { margin-top: 37px; min-height: 6px; }
-/* The band across the bottom of the rail, there only with a trading login,
-   holding the trading panel's toggle at its left — the column the header's
-   list button stands in, 6px from the edge like it. Its hairline is on the
-   line of the charts' time axis: the axis's rule is drawn 24px up from the
-   bottom of a chart, and a chart stands the focus ring's 2px off the
-   window's bottom edge, so 25px under the hairline put the hairline on the
-   26th row from the bottom, where the rule is. Band and axis then read as
-   one strip across the window, and the toggle is centred on the row the
-   dates are written on. The rail's buttons' size and washes, by the shared
-   rule at the end of the sheet. */
-.rail-foot { min-height: 25px; padding-left: 6px; }
 
 /* The two states of one mark on the heading row: where a column being
    dragged would land, and which boundary the pointer could drag to resize.
@@ -1160,7 +1158,6 @@ button.list-row-action { min-height: 0; min-width: 0; padding: 3px; }
    firmer one for the one that is on. Last in the sheet, so it settles each
    one's size whatever its own rule says. */
 .window-corner button,
-.rail-foot button,
 .legend-link,
 .legend-gear,
 .pane-expand,
@@ -1172,27 +1169,25 @@ button.rail-add {
   border-radius: 6px;
 }
 .window-corner button:hover,
-.rail-foot button:hover,
 .legend-link:hover,
 .legend-gear:hover,
 .chart-pane:hover .pane-expand:hover,
 button.rail-switcher:hover,
 button.rail-add:hover { background: alpha(currentColor, 0.12); }
 .window-corner button:checked,
-.rail-foot button:checked,
 button.rail-switcher.open { background: alpha(currentColor, 0.15); }
 .window-corner button:checked:hover,
-.rail-foot button:checked:hover,
 button.rail-switcher.open:hover { background: alpha(currentColor, 0.2); }
 /* The link is a menu button, and only the button inside it opens the menu:
    padding on the outer one drew a box whose rim did nothing when clicked.
    The outer keeps the size and the wash; the inner fills all of it. */
 .legend-link { padding: 0; }
 .legend-link > button { min-width: 22px; min-height: 22px; padding: 2px; }
-/* In the rail's foot the toggle has the time axis's 25px to stand in, one
-   short of the 26 the rule above gives a glyph button: a pixel off its top
-   padding, which keeps its glyph on the row the dates are written on. */
-.rail-foot button { padding-top: 1px; }
+/* In the bottom-left corner the toggle has the time axis's rows to stand
+   in, under the axis's rule: no padding above or below it, so its box ends
+   a pixel under the rule rather than over it, and its glyph is centred on
+   the row the dates are written on. */
+.window-corner.foot button { padding-top: 0; padding-bottom: 0; }
 ",
     );
 

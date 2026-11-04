@@ -439,10 +439,6 @@ fn section_for_new_symbol(sections: &[i64], selected: Option<usize>, root: i64) 
 
 pub struct Watchlist {
     pub widget: gtk::Box,
-    /// The band across the bottom of the rail, there only while there is a
-    /// trading login: the mirror of the header, for the trading panel's
-    /// toggle to stand in the way the window's corner stands in the header.
-    foot: RefCell<Option<(gtk::Separator, gtk::Box)>>,
     list: gtk::ListBox,
     /// Why the prices are dashes, shown only while they are.
     trouble: gtk::Label,
@@ -522,41 +518,6 @@ const ADD_TIP: &str = "Add a symbol or a section";
 const NEW_LIST_TIP: &str = "New watchlist";
 
 impl Watchlist {
-    pub fn has_foot(&self) -> bool {
-        self.foot.borrow().is_some()
-    }
-
-    /// The foot band, for the window to stand the trading panel's toggle
-    /// in while the rail is open.
-    pub fn foot_band(&self) -> Option<gtk::Box> {
-        self.foot.borrow().as_ref().map(|(_, band)| band.clone())
-    }
-
-    /// Put the foot band in, or take it out: a hairline on the line of the
-    /// charts' time axis and the time axis's height under it, so the band
-    /// and the axis read as one strip across the window, and the rows end
-    /// above it rather than scrolling under the toggle. Built only when
-    /// asked for, so a rail with no login is the rail it always was.
-    pub fn set_foot(&self, shown: bool) {
-        let mut foot = self.foot.borrow_mut();
-        match (shown, foot.as_ref()) {
-            (true, None) => {
-                let rule = gtk::Separator::new(gtk::Orientation::Horizontal);
-                let band = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-                band.add_css_class("rail-foot");
-                self.widget.append(&rule);
-                self.widget.append(&band);
-                *foot = Some((rule, band));
-            }
-            (false, Some(_)) => {
-                let (rule, band) = foot.take().expect("the foot");
-                self.widget.remove(&rule);
-                self.widget.remove(&band);
-            }
-            _ => {}
-        }
-    }
-
     pub fn new(
         store: Rc<Store>,
         index: crate::inventory::Inventory,
@@ -745,7 +706,6 @@ impl Watchlist {
 
         let watchlist = Rc::new(Watchlist {
             widget,
-            foot: RefCell::new(None),
             list,
             trouble,
             store,

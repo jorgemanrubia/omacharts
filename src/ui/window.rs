@@ -2092,6 +2092,10 @@ const CORNER_HEIGHT: i32 = crate::theming::CORNER_BUTTON_TOP + 26 + 7;
 /// toggle, the way the toggle stands against the menu.
 pub(crate) const RAIL_ADD_END: i32 = CORNER_WIDTH - crate::theming::CORNER_PAD_START;
 
+/// How wide the trading panel's toggle's corner is before it has been laid
+/// out: the button and the padding either side of it in `.window-corner.foot`.
+const FOOT_WIDTH: i32 = 7 + 22 + 9;
+
 /// How far a chart down the window's left edge steps its name in, past the
 /// drawing tools' corner: one button, as wide as the bar it stands over, 44
 /// pixels with its margin, less the 8 the name tucks back under the
@@ -3331,10 +3335,6 @@ impl Window {
                 false => cluster.add_css_class("over-chart"),
             }
         }
-        // And the trading panel's toggle, which stands in the rail's foot
-        // while the rail is open and drops onto the bottom-right chart
-        // with the corner when it closes.
-        self.dock_trading_toggle(railed);
 
         // The rects tile the area exactly, so the chart under the window's
         // corner is the one — the only one — holding its top right pixel.
@@ -3394,6 +3394,31 @@ impl Window {
         let edge = self.mounted().start_edge();
         for pane in self.panes.borrow().iter() {
             pane.set_start_clearance(if edge.contains(&pane.id) { clearance } else { 0 });
+        }
+
+        // And the trading panel's toggle in the bottom-left corner, there
+        // only with a login: over the foot of the drawing tools' bar while
+        // the bar is out, and onto the bottom-left chart while it is put
+        // away, where the chart keeps its first date out from under it.
+        let foot = self.trade.foot.borrow().clone();
+        if let Some(foot) = &foot {
+            match tooled {
+                true => foot.remove_css_class("over-chart"),
+                false => foot.add_css_class("over-chart"),
+            }
+        }
+        let covered = match (&foot, tooled) {
+            (Some(foot), false) => foot.width().max(FOOT_WIDTH) as f64,
+            _ => 0.0,
+        };
+        let bottom = self.chart_host.height().max(1) as f64;
+        let lowest = self.filled().or_else(|| {
+            self.layout.borrow().leaves().into_iter().find(|id| {
+                rects.get(id).is_some_and(|(x, y, _, h)| at(*x, 0.0) && at(y + h, bottom))
+            })
+        });
+        for pane in self.panes.borrow().iter() {
+            pane.view.set_covered_axis_start(if Some(pane.id) == lowest { covered } else { 0.0 });
         }
     }
 
