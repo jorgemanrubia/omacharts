@@ -8414,7 +8414,6 @@ impl Window {
         if !offer.any() {
             return None;
         }
-        pane.feed_menu.set_tooltip_text(Some(crate::trading::PART_TOOLTIP));
         let account = view.account_of(pane.account.borrow().as_deref());
         let trouble = account.and_then(|account| view.trouble(&self.desk, account));
         let name = account.map(|account| view.account_name(account));
@@ -10091,8 +10090,8 @@ impl Window {
 
         // Orders at the price under the pointer, with a login to send them
         // through; with none, not a trace.
-        if let Some(orders) = self.order_section(y) {
-            menu.append_section(None, &orders);
+        if let Some((account, orders)) = self.order_section(y) {
+            menu.append_section(account.as_deref(), &orders);
         }
 
         // Not the tools. They were here when the only way to reach them was

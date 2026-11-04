@@ -278,7 +278,6 @@ impl ChartPane {
         feed_menu.add_css_class("readout-symbol");
         feed_menu.add_css_class("dim-label");
         feed_menu.set_valign(gtk::Align::Center);
-        feed_menu.set_tooltip_text(Some(crate::trading::PART_TOOLTIP));
         feed_menu.set_child(Some(&feed_label));
         feed_menu.set_always_show_arrow(false);
         feed_menu.set_visible(false);

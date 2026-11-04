@@ -39,12 +39,22 @@ pub fn order_words(side: Side, kind: OrderKind) -> String {
     format!("{} {}", side.word(), kind.word())
 }
 
-/// A row of the chart menu, for `size` of the contract: "Buy Market · 2
-/// ESZ6 · 951", "Sell Limit 2 @ 7,620.00".
-pub fn menu_text(side: Side, kind: OrderKind, size: Quantity, price: &str, contract: &str, account: &str) -> String {
+/// A row of the chart menu, for `size` of the contract: "Buy 2 ESZ6 at
+/// market", "Sell Limit 2 ESZ6 at 7,620.00".
+pub fn menu_text(side: Side, kind: OrderKind, size: Quantity, price: &str, contract: &str) -> String {
     match kind {
-        OrderKind::Market => format!("{} · {size} {contract} · {account}", order_words(side, kind)),
-        _ => format!("{} {size} @ {price}", order_words(side, kind)),
+        OrderKind::Market => format!("{} {size} {contract} at market", side.word()),
+        _ => format!("{} {size} {contract} at {price}", order_words(side, kind)),
+    }
+}
+
+/// An order in words, with its price: "Buy Limit 1 ESZ6 at 7,620.00", and
+/// "Buy 1 ESZ6 at market" for a market order.
+pub fn order_text(side: Side, kind: OrderKind, qty: u32, contract: &str, price: Option<&str>) -> String {
+    match (kind, price) {
+        (OrderKind::Market, _) => format!("{} {qty} {contract} at market", side.word()),
+        (_, Some(price)) => format!("{} {qty} {contract} at {price}", order_words(side, kind)),
+        (_, None) => format!("{} {qty} {contract}", order_words(side, kind)),
     }
 }
 
@@ -141,9 +151,6 @@ pub fn order_pill_text(order: &Order) -> String {
     format!("{} {} {size}", order.side.glyph(), order_words(order.side, order.kind))
 }
 
-/// What the account part says it opens.
-pub const PART_TOOLTIP: &str = "Account: click to choose this chart's account and data feed";
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -170,10 +177,12 @@ mod tests {
     fn what_the_menu_and_toasts_say() {
         let one = Quantity::ONE;
         let two = Quantity::new(2).unwrap();
-        assert_eq!(menu_text(Side::Buy, OrderKind::Market, one, "", "ESZ6", "951"), "Buy Market · 1 ESZ6 · 951");
-        assert_eq!(menu_text(Side::Buy, OrderKind::Market, two, "", "ESZ6", "951"), "Buy Market · 2 ESZ6 · 951");
-        assert_eq!(menu_text(Side::Sell, OrderKind::Limit, two, "7,620.00", "ESZ6", "951"), "Sell Limit 2 @ 7,620.00");
-        assert_eq!(menu_text(Side::Buy, OrderKind::Stop, one, "7,630.25", "ESZ6", "951"), "Buy Stop 1 @ 7,630.25");
+        assert_eq!(menu_text(Side::Buy, OrderKind::Market, one, "", "ESZ6"), "Buy 1 ESZ6 at market");
+        assert_eq!(menu_text(Side::Sell, OrderKind::Market, two, "", "ESZ6"), "Sell 2 ESZ6 at market");
+        assert_eq!(menu_text(Side::Sell, OrderKind::Limit, two, "7,620.00", "ESZ6"), "Sell Limit 2 ESZ6 at 7,620.00");
+        assert_eq!(menu_text(Side::Buy, OrderKind::Stop, one, "7,630.25", "ESZ6"), "Buy Stop 1 ESZ6 at 7,630.25");
+        assert_eq!(order_text(Side::Buy, OrderKind::Limit, 1, "ESZ6", Some("7,620.00")), "Buy Limit 1 ESZ6 at 7,620.00");
+        assert_eq!(order_text(Side::Buy, OrderKind::Market, 2, "ESZ6", None), "Buy 2 ESZ6 at market");
 
         let mut bought = order("a", Side::Buy, OrderKind::Market, None, Stage::Filled);
         bought.fill_price = Some(7_612.25);

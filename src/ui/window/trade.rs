@@ -85,11 +85,17 @@ pub(super) fn size_part_menu() -> gio::Menu {
     model
 }
 
-/// What cancelling `order` asks for: "Cancel Buy Limit 7,620.00".
-fn cancel_words(order: &trading::Order) -> String {
+/// `order` in words: "Buy Limit 1 ESZ6 at 7,620.00".
+fn order_in_words(order: &trading::Order) -> String {
     let decimals = crate::ui::trading_panel::decimals_of(order.tick);
-    let price = order.price.map(|price| omacharts_engine::grouped_decimals(price, decimals)).unwrap_or_default();
-    format!("Cancel {} {price}", trading::order_words(order.side, order.kind)).trim_end().to_string()
+    let price = order.price.map(|price| omacharts_engine::grouped_decimals(price, decimals));
+    trading::order_text(order.side, order.kind, order.qty, &order.contract, price.as_deref())
+}
+
+/// What cancelling `order` asks for: "Cancel Buy Limit 1 ESZ6 at
+/// 7,620.00".
+fn cancel_words(order: &trading::Order) -> String {
+    format!("Cancel {}", order_in_words(order))
 }
 
 /// The window's action that opens the Trading sizes dialog.
@@ -531,12 +537,12 @@ impl Window {
         pane.view.tick().or(target.tick)
     }
 
-    /// The chart menu's orders, at height `y` of the focused chart: buy and
-    /// sell at the market, then a limit and a stop each way at the price
-    /// there. One that would be on the wrong side of the market is greyed;
-    /// a chart that cannot trade says why in one greyed row. With no login,
-    /// nothing at all.
-    pub(super) fn order_section(self: &Rc<Self>, y: f64) -> Option<gio::Menu> {
+    /// The chart menu's orders, at height `y` of the focused chart, under
+    /// the account's name: buy and sell at the market, then a limit and a
+    /// stop each way at the price there. One that would be on the wrong
+    /// side of the market is greyed; a chart that cannot trade says why in
+    /// one greyed row, with no name over it. With no login, nothing at all.
+    pub(super) fn order_section(self: &Rc<Self>, y: f64) -> Option<(Option<String>, gio::Menu)> {
         if !self.trading.borrow().trades() {
             return None;
         }
@@ -546,11 +552,10 @@ impl Window {
             Ok(target) => target,
             Err(why) => {
                 section.append(Some(&why), Some(UNAVAILABLE));
-                return Some(section);
+                return Some((None, section));
             }
         };
         let key = target.account.key();
-        let name = self.account_label(&key);
         // The contract may have become known since the book last moved.
         self.apply_marks_to(&pane);
         let tick = Self::tick_of(&pane, &target);
@@ -563,14 +568,13 @@ impl Window {
         for (side, kind) in trading::menu_orders(&target.capabilities) {
             let price = (kind != OrderKind::Market).then_some(at).flatten();
             let text = match (kind, price) {
-                (OrderKind::Market, _) => trading::menu_text(side, kind, size, "", &target.contract, &name),
+                (OrderKind::Market, _) => trading::menu_text(side, kind, size, "", &target.contract),
                 (_, Some((price, places))) => trading::menu_text(
                     side,
                     kind,
                     size,
                     &omacharts_engine::grouped_decimals(price, places),
                     &target.contract,
-                    &name,
                 ),
                 (_, None) => trading::order_words(side, kind),
             };
@@ -599,7 +603,7 @@ impl Window {
             item.set_action_and_target_value(Some("chart.cancel-order"), Some(&order.basket_id.to_variant()));
             section.append_item(&item);
         }
-        Some(section)
+        Some((Some(self.account_label(&key)), section))
     }
 
     /// `chart.order`: check again what the menu offered, and place it.
@@ -816,8 +820,10 @@ impl Window {
         self.say(log_words::note(
             &name,
             format!(
-                "Move {} to {}",
+                "Move {} {} {} to {}",
                 trading::order_words(order.side, order.kind),
+                order.qty,
+                order.contract,
                 omacharts_engine::grouped_decimals(price, decimals)
             ),
         ));
@@ -1418,9 +1424,11 @@ pub(super) mod tests {
             assert_eq!(trading_rows(&window), vec![("ES's contract not known yet".to_string(), false)]);
             session.contracts.lock().unwrap().insert("ES".into(), "ESZ6".into());
             let rows = trading_rows(&window);
-            assert_eq!(rows.first(), Some(&("Buy Market · 1 ESZ6 · Rithmic Test".to_string(), true)));
-            assert_eq!(rows.get(1), Some(&("Sell Market · 1 ESZ6 · Rithmic Test".to_string(), true)));
+            assert_eq!(rows.first(), Some(&("Buy 1 ESZ6 at market".to_string(), true)));
+            assert_eq!(rows.get(1), Some(&("Sell 1 ESZ6 at market".to_string(), true)));
             assert_eq!(rows.len(), 6);
+            let (over, _) = window.order_section(100.0).expect("the orders");
+            assert_eq!(over.as_deref(), Some("Rithmic Test"), "the account over the orders");
 
             let value = order_target_value(Side::Buy, OrderKind::Market, &account.key(), None);
             let actions = window.trade.chart_actions.borrow().clone().unwrap();
@@ -2204,7 +2212,7 @@ pub(super) mod tests {
             };
             assert_eq!(picker(&window, &pane), rows([" ✓", ""]));
             assert_eq!(part(&pane).as_deref(), Some("Rithmic Test"), "on its own feed, the account alone");
-            assert_eq!(pane.feed_menu.tooltip_text().as_deref(), Some(trading::PART_TOOLTIP));
+            assert_eq!(pane.feed_menu.tooltip_text(), None);
 
             window.choose_feed(pane.id, Some("yahoo".into()));
             assert_eq!(picker(&window, &pane), rows(["", " ✓"]));
