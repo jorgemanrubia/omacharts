@@ -5245,7 +5245,6 @@ impl Window {
         cluster.set_size_request(crate::ui::chart::PRICE_AXIS_W as i32, -1);
         cluster.append(&toggle);
         cluster.append(&menu_button);
-        *self.trade.cluster.borrow_mut() = Some(cluster.clone());
 
         let handle = gtk::WindowHandle::new();
         handle.set_child(Some(&cluster));

@@ -772,6 +772,19 @@ entry.range-date > image:hover { opacity: 0.9; }
    pointer comes to it. */
 .window-corner.start.over-chart button { opacity: 0.25; }
 .window-corner.start.over-chart:hover button { opacity: 1; }
+/* The trading panel's toggle, at the foot of the price axis of the
+   bottom-right chart: the square where the price axis and the time axis
+   cross, which is the one place on a chart nothing is ever drawn — the
+   time axis's rule and its chips stop at the price axis, and the prices
+   stop above the time axis. So it needs no ground, and sits in the square
+   exactly: the axis's width across, the time axis's height down, the ring's
+   width in from the chart's edges, with the button centred in it. It is the
+   same edge the watchlist's toggle stands at the top of, and the same
+   button. */
+.window-corner.foot {
+  margin: 0 2px 2px 0;
+  padding: 1px 21px;
+}
 /* Quiet until the pointer is near: on the buttons rather than the box, which
    is what leaves the ground at its own strength. */
 .window-corner button {
