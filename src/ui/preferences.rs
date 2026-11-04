@@ -1464,7 +1464,7 @@ fn build_data_page(context: &Rc<Context>) {
         context.store.clone(),
         context.on_change.clone(),
         vec![group, backups_group(context)],
-        Rc::new(move |anchor: &gtk::Widget| crate::ui::trading_settings::add_broker(&adding, anchor)),
+        Rc::new(move |broker: &str, anchor: &gtk::Widget| crate::ui::trading_settings::add_broker(&adding, broker, anchor)),
     );
     trading.redraw_data_page(redraw);
 }

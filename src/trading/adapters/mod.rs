@@ -1,12 +1,28 @@
-//! The brokers, and the one place above the feeds that names them: the
-//! window signs in through what is listed here, and nothing else in the app
-//! knows which broker it is talking to.
+//! The brokers, and the one place above the feeds that lists them: the
+//! window signs in through [`registry`], everything else finds a login's
+//! broker with [`broker_for`], and nothing else in the app knows which
+//! broker it is talking to.
+
+use std::sync::Arc;
+
+use super::{Broker, Registry};
 
 mod rithmic;
 
-pub use rithmic::{Rithmic, SIGN_OUT_WAIT, TEST_GATEWAY, TEST_SYSTEM, data_refusal};
+pub use rithmic::SIGN_OUT_WAIT;
 
-/// The feed a login's market data comes through: the data login's, the one
-/// a chart on one of its accounts is drawn from unless somebody chose
-/// another.
-pub const LOGIN_FEED: &str = "rithmic";
+/// Every broker this build has, in the order "Add a broker…" offers them.
+/// A build with the `fakes` feature has the fake one too, which is offered
+/// like any other.
+pub fn registry() -> Registry {
+    #[allow(unused_mut)]
+    let mut brokers: Vec<Arc<dyn Broker>> = vec![Arc::new(rithmic::Rithmic)];
+    #[cfg(any(test, feature = "fakes"))]
+    brokers.push(Arc::new(super::fake::FakeBroker::listed()));
+    Registry::of(brokers)
+}
+
+/// The broker logins call `id`.
+pub fn broker_for(id: &str) -> Option<Arc<dyn Broker>> {
+    registry().get(id)
+}

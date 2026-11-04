@@ -8,12 +8,57 @@ use std::sync::Arc;
 use super::*;
 use crate::store::Store;
 
-/// What signs a login in for trading: Rithmic, or a fake under test.
+/// A broker: what signs a login in for trading, and what keeps its
+/// password. Listed once, in [`super::adapters::registry`].
 pub trait Broker: Send + Sync {
+    /// The id its logins name it by, which is its data feed's too when it
+    /// has one. Stored, so never changed.
+    fn id(&self) -> &'static str;
+    /// What it is called in "Add a broker…".
+    fn label(&self) -> &'static str;
+    /// Where `login` signs in to, in a few words for its row, when there is
+    /// more than one place it could.
+    fn signs_in_to(&self, _login: &Login) -> Option<String> {
+        None
+    }
+    /// Where its passwords are kept: the desktop keyring, in the end.
+    fn keyring(&self) -> Option<&'static dyn Secrets> {
+        None
+    }
+    /// Keep `password` for `login` in `secrets`.
+    fn keep_password(&self, secrets: &dyn Secrets, login: &Login, password: &str) -> Result<(), String> {
+        secrets.save(&login.id, &login.user, "", password)
+    }
+    /// Forget `login`'s password in `secrets`. For the `data` login, its
+    /// data session ends with it.
+    fn forget_password(&self, secrets: &dyn Secrets, login: &Login, _data: bool) -> Result<(), String> {
+        secrets.forget(&login.id, &login.user, "")
+    }
     /// Sign in, blocking until the broker has answered. `changed` is called,
     /// on any thread, whenever a balance moves or the session ends by
     /// itself.
     fn sign_in(&self, login: &Login, changed: Box<dyn Fn() + Send + Sync>) -> Result<Arc<dyn Session>, String>;
+}
+
+/// The brokers a desk signs logins in through, each found by the id its
+/// logins name.
+#[derive(Clone)]
+pub struct Registry(Vec<Arc<dyn Broker>>);
+
+impl Registry {
+    pub fn of(brokers: Vec<Arc<dyn Broker>>) -> Registry {
+        Registry(brokers)
+    }
+
+    /// The broker logins call `id`.
+    pub fn get(&self, id: &str) -> Option<Arc<dyn Broker>> {
+        self.0.iter().find(|broker| broker.id() == id).cloned()
+    }
+
+    /// Every broker, in the order they are offered.
+    pub fn iter(&self) -> impl Iterator<Item = &Arc<dyn Broker>> {
+        self.0.iter()
+    }
 }
 
 /// A login's signed-in trading session.
@@ -70,7 +115,7 @@ pub trait Session: Send + Sync {
 /// thread came back with. Neither half lets a second session start for a
 /// login that has one or is getting one.
 pub struct Desk {
-    broker: Arc<dyn Broker>,
+    brokers: Registry,
     sessions: RefCell<HashMap<String, Arc<dyn Session>>>,
     opening: RefCell<HashSet<String>>,
     refused: RefCell<HashMap<String, String>>,
@@ -84,10 +129,10 @@ pub struct Desk {
 }
 
 impl Desk {
-    pub fn new(broker: Arc<dyn Broker>) -> Desk {
+    pub fn new(brokers: Registry) -> Desk {
         let (wake, woken) = async_channel::unbounded();
         Desk {
-            broker,
+            brokers,
             sessions: RefCell::new(HashMap::new()),
             opening: RefCell::new(HashSet::new()),
             refused: RefCell::new(HashMap::new()),
@@ -127,8 +172,14 @@ impl Desk {
         }
     }
 
-    pub fn broker(&self) -> Arc<dyn Broker> {
-        self.broker.clone()
+    /// The broker `login` signs in through, if this build has it.
+    pub fn broker_for(&self, login: &Login) -> Option<Arc<dyn Broker>> {
+        self.brokers.get(&login.broker)
+    }
+
+    /// Every broker a login can be added for.
+    pub fn brokers(&self) -> &Registry {
+        &self.brokers
     }
 
     /// May a session be opened for `login` now? Not while it has one, or
@@ -225,7 +276,7 @@ impl Desk {
         if login.signed_out || login.user.is_empty() {
             return Standing::SignedOut;
         }
-        if data && let Some(why) = data_refusal() {
+        if data && let Some(why) = data_feed_of(login).and_then(|feed| feed.setup).and_then(|setup| setup.refusal()) {
             return Standing::Refused(why);
         }
         Standing::Saved
@@ -394,24 +445,24 @@ mod tests {
     #[test]
     fn a_login_never_has_two_sessions() {
         let fake = Arc::new(FakeBroker::default());
-        let desk = Desk::new(fake.clone());
+        let desk = Desk::new(Registry::of(vec![fake.clone()]));
         let login = Login {
             id: "1".into(),
             name: "Lucid".into(),
             user: "a".into(),
-            system: TEST_SYSTEM.into(),
-            gateway: TEST_GATEWAY.into(),
+            broker: "fake".into(),
+            values: Vec::new(),
             signed_out: false,
         };
         let open = |desk: &Desk| {
             if desk.begin(&login.id) {
-                let session = desk.broker().sign_in(&login, Box::new(|| {}));
+                let session = fake.sign_in(&login, Box::new(|| {}));
                 desk.opened(&login.id, session);
             }
         };
         assert!(desk.begin(&login.id));
         assert!(!desk.begin(&login.id), "a second while the first is opening");
-        let session = desk.broker().sign_in(&login, Box::new(|| {}));
+        let session = fake.sign_in(&login, Box::new(|| {}));
         desk.opened(&login.id, session);
         assert!(desk.live(&login.id));
         open(&desk);
@@ -430,7 +481,7 @@ mod tests {
         desk.end(&login.id);
         assert!(desk.begin(&login.id));
         desk.end(&login.id);
-        let late = desk.broker().sign_in(&login, Box::new(|| {}));
+        let late = fake.sign_in(&login, Box::new(|| {}));
         desk.opened(&login.id, late);
         assert!(!desk.live(&login.id));
         assert_eq!(fake.signed_out.load(Ordering::Acquire), 3);
@@ -440,11 +491,11 @@ mod tests {
     #[test]
     fn closing_signs_every_session_out() {
         let fake = Arc::new(FakeBroker::default());
-        let desk = Desk::new(fake.clone());
+        let desk = Desk::new(Registry::of(vec![fake.clone()]));
         let logins = [test_login("1", "Lucid", TEST_SYSTEM), test_login("2", "Tradeify", TEST_SYSTEM)];
         for login in &logins {
             assert!(desk.begin(&login.id));
-            desk.opened(&login.id, desk.broker().sign_in(login, Box::new(|| {})));
+            desk.opened(&login.id, fake.sign_in(login, Box::new(|| {})));
         }
         assert!(desk.begin("3"), "one still signing in");
         desk.sign_out_all(SIGN_OUT_WAIT);
@@ -469,10 +520,10 @@ mod tests {
         let mut funded = account("", "1234");
         funded.balance = Some(50_210.4);
         fake.accounts.lock().unwrap().insert("Lucid".into(), vec![funded, account("", "1235")]);
-        let desk = Desk::new(fake);
+        let desk = Desk::new(Registry::of(vec![fake.clone()]));
         let login = logins(&store)[0].clone();
         assert!(desk.begin(&lucid));
-        let session = desk.broker().sign_in(&login, Box::new(|| {}));
+        let session = fake.sign_in(&login, Box::new(|| {}));
         desk.opened(&lucid, session);
         assert!(desk.note(&store));
         assert!(!desk.note(&store), "nothing new the second time");
@@ -501,7 +552,7 @@ mod tests {
     /// flattening leaves nothing held. Each move calls `changed`.
     #[test]
     fn the_desks_book_follows_what_the_sessions_push() {
-        let desk = Desk::new(Arc::new(FakeBroker::default()));
+        let desk = Desk::new(Registry::of(vec![Arc::new(FakeBroker::default())]));
         let login = test_login("t", "Rithmic Test", TEST_SYSTEM);
         let moved = Arc::new(AtomicUsize::new(0));
         let counted = moved.clone();

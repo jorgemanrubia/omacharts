@@ -11,26 +11,27 @@ use crate::trading::*;
 /// data session waits.
 pub const SIGN_OUT_WAIT: std::time::Duration = rithmic::SIGN_OUT_WAIT;
 
-/// Why the data login's own sign-in was refused, which the data session
-/// keeps.
-pub fn data_refusal() -> Option<String> {
-    session::refusal()
+/// What a login's system and gateway are kept under in its values, as its
+/// dialog types them and the data session reads them.
+const SYSTEM: &str = "system";
+const GATEWAY: &str = "gateway";
+
+fn system_of(login: &Login) -> &str {
+    login.value(SYSTEM).filter(|system| !system.is_empty()).unwrap_or(rithmic::TEST_SYSTEM)
 }
 
-/// The system and gateway of a login with none named.
-pub const TEST_SYSTEM: &str = "Rithmic Test";
-pub const TEST_GATEWAY: &str = "wss://rituz00100.rithmic.com:443";
+fn gateway_of(login: &Login) -> &str {
+    login.value(GATEWAY).filter(|gateway| !gateway.is_empty()).unwrap_or(rithmic::TEST_URL)
+}
 
-impl Login {
-    /// The login as the Rithmic crate signs in with it: the password from
-    /// the keyring, under this login's id.
-    pub fn rithmic(&self) -> rithmic::Login {
-        rithmic::Login::Keyring {
-            login: self.id.clone(),
-            user: self.user.clone(),
-            system: self.system.clone(),
-            url: self.gateway.clone(),
-        }
+/// The login as the Rithmic crate signs in with it: the password from the
+/// keyring, under the login's id.
+fn signing_of(login: &Login) -> rithmic::Login {
+    rithmic::Login::Keyring {
+        login: login.id.clone(),
+        user: login.user.clone(),
+        system: system_of(login).to_string(),
+        url: gateway_of(login).to_string(),
     }
 }
 
@@ -38,18 +39,48 @@ impl Login {
 pub struct Rithmic;
 
 impl Broker for Rithmic {
+    fn id(&self) -> &'static str {
+        omacharts_engine::providers::rithmic::LISTED.id
+    }
+
+    fn label(&self) -> &'static str {
+        omacharts_engine::providers::rithmic::LISTED.label
+    }
+
+    /// Its system: "Rithmic Test", "LucidTrading".
+    fn signs_in_to(&self, login: &Login) -> Option<String> {
+        Some(system_of(login).to_string())
+    }
+
+    fn keyring(&self) -> Option<&'static dyn Secrets> {
+        Some(&session::Keyring)
+    }
+
+    /// Under the login's id, with its user and system beside it for
+    /// `secret-tool`; with a development login, nowhere.
+    fn keep_password(&self, secrets: &dyn Secrets, login: &Login, password: &str) -> Result<(), String> {
+        session::save_password(secrets, &login.id, &login.user, system_of(login), password)
+    }
+
+    fn forget_password(&self, secrets: &dyn Secrets, login: &Login, data: bool) -> Result<(), String> {
+        match data {
+            true => session::sign_out_login(secrets, &login.id, &login.user, system_of(login)),
+            false => session::forget_password(secrets, &login.id, &login.user, system_of(login)),
+        }
+    }
+
     fn sign_in(&self, login: &Login, changed: Box<dyn Fn() + Send + Sync>) -> Result<Arc<dyn Session>, String> {
         let app = session::app().map_err(|error| error.to_string())?;
         // A developer's login file wins over the keyring, which it never
         // touches, as it does for the data session.
-        let signing = match rithmic::Login::from_env(&login.system, &login.gateway) {
+        let signing = match rithmic::Login::from_env(system_of(login), gateway_of(login)) {
             Some(development) => development.map_err(|error| error.to_string())?,
-            None => login.rithmic(),
+            None => signing_of(login),
         };
         let trading = rithmic::Trading::sign_in(app, &signing, changed).map_err(said)?;
         Ok(Arc::new(RithmicSession {
             login: login.id.clone(),
-            simulated: login.system == TEST_SYSTEM,
+            simulated: system_of(login) == rithmic::TEST_SYSTEM,
             trading,
         }))
     }
@@ -257,5 +288,33 @@ impl Session for RithmicSession {
 
     fn sign_out(&self) {
         self.trading.sign_out();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A login as migration 9 leaves one signs in with the password the
+    /// keyring has kept under its id since before it was migrated, which is
+    /// also where a new password for it goes.
+    #[test]
+    fn a_migrated_login_finds_its_password_where_it_was_kept() {
+        let migrated = r#"{"id":"1","name":"Lucid","broker":"rithmic","user":"trader",
+                           "values":[["system","LucidTrading"],["gateway","wss://x"]]}"#;
+        let login: Login = serde_json::from_str(migrated).unwrap();
+        assert_eq!(crate::trading::broker_for(&login.broker).map(|broker| broker.id()), Some("rithmic"));
+        assert_eq!(
+            signing_of(&login),
+            rithmic::Login::Keyring {
+                login: "1".into(),
+                user: "trader".into(),
+                system: "LucidTrading".into(),
+                url: "wss://x".into(),
+            }
+        );
+        assert_eq!(Rithmic.signs_in_to(&login).as_deref(), Some("LucidTrading"));
+        let bare = Login { values: Vec::new(), ..login };
+        assert_eq!(system_of(&bare), rithmic::TEST_SYSTEM, "a login with no system is on Rithmic Test");
     }
 }

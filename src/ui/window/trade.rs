@@ -1208,11 +1208,11 @@ pub(super) mod tests {
 
     pub(crate) fn typed() -> trading::Typed {
         trading::Typed {
+            broker: "rithmic".into(),
             name: "Rithmic Test".into(),
             user: "someone".into(),
             password: String::new(),
-            system: String::new(),
-            gateway: "wss://example.invalid:443".into(),
+            values: vec![("system".into(), "Rithmic Test".into()), ("gateway".into(), "wss://example.invalid:443".into())],
         }
     }
 

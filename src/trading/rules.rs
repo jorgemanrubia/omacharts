@@ -297,9 +297,10 @@ fn own_feed<'a>(
     if view.data_login.as_deref() != Some(account.login.as_str()) {
         return None;
     }
+    let broker = &view.login(&account.login)?.broker;
     feeds
         .into_iter()
-        .find(|(provider, _)| provider.id().eq_ignore_ascii_case(LOGIN_FEED))
+        .find(|(provider, _)| provider.id().eq_ignore_ascii_case(broker))
         .filter(|(provider, usable)| *usable && provider.symbol_for(instrument).is_some())
         .map(|(provider, _)| provider.id())
 }

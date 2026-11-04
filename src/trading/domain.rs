@@ -15,13 +15,24 @@ pub struct Login {
     pub id: String,
     /// What the trader calls it: "Lucid", "Tradeify", "Rithmic Test".
     pub name: String,
+    /// The broker it signs in to, by the id the broker is listed under.
+    pub broker: String,
     pub user: String,
-    pub system: String,
-    pub gateway: String,
+    /// The rest of what its broker's dialog asks that is not secret, by
+    /// name: which of the broker's systems, through which gateway.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub values: Vec<(String, String)>,
     /// Signed out: the password was forgotten, and nothing signs in with it
     /// until somebody types it again.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub signed_out: bool,
+}
+
+impl Login {
+    /// What was typed for `key`, if anything.
+    pub fn value(&self, key: &str) -> Option<&str> {
+        self.values.iter().find(|(known, _)| known == key).map(|(_, value)| value.as_str())
+    }
 }
 
 impl std::fmt::Debug for Login {
@@ -30,7 +41,8 @@ impl std::fmt::Debug for Login {
         f.debug_struct("Login")
             .field("id", &self.id)
             .field("name", &self.name)
-            .field("system", &self.system)
+            .field("broker", &self.broker)
+            .field("values", &self.values)
             .field("signed_out", &self.signed_out)
             .finish_non_exhaustive()
     }

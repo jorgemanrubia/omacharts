@@ -2,9 +2,9 @@
 //! it, edited the way the Data page edits its data feeds.
 //!
 //! With nothing configured it is a line and a button. "Add a broker…"
-//! offers the data feeds whose login is a broker connection too, and opens
-//! that feed's own login dialog, with a Name field; the first
-//! login added also adds that feed as the first data feed, through it.
+//! offers every broker in the registry, and opens that broker's own login
+//! dialog, with a Name field; the first login added whose broker has a data
+//! feed also adds that feed as the first data feed, through it.
 //! Each login says how it stands — live, not signed in, or the broker's own
 //! words for a refusal — and which one is the data login; its accounts are
 //! the ones its last sign-in listed, cached, so the page draws without
@@ -20,24 +20,18 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::glib;
-use omacharts_engine::providers::{self, Listed, Secrets};
+use omacharts_engine::providers::{self, Secrets};
 
 use crate::store::Store;
 use crate::trading::{self, Account, Desk, Login, Standing};
 use crate::ui::sign_in_dialogs;
 
-/// The data feed whose logins this page keeps: the broker connection the
-/// logins sign in to, for orders and for charts' data.
-fn connection() -> Option<&'static Listed> {
-    providers::connections().next()
+/// What a login's data feed is called, in a sentence about it.
+fn feed_label(login: &Login) -> &'static str {
+    trading::data_feed_of(login).map_or("broker", |feed| feed.label)
 }
 
-/// What the data feed is called, in a sentence about it.
-fn feed_label() -> &'static str {
-    connection().map_or("broker", |feed| feed.label)
-}
-
-/// The keyring the connection keeps its passwords in.
+/// The keyring a broker keeps its passwords in.
 struct Keyring(Option<&'static dyn Secrets>);
 
 impl Secrets for Keyring {
@@ -53,10 +47,10 @@ impl Secrets for Keyring {
     }
 }
 
-/// Ask for a login of the connection over `anchor` — a new one, or `known`
-/// again — in the connection's own dialog.
-fn ask(anchor: &gtk::Widget, known: Option<&Login>, signed: impl Fn(trading::Typed) + 'static) {
-    if let Some(dialog) = connection().and_then(sign_in_dialogs::login_dialog) {
+/// Ask for a login of the broker `broker` over `anchor` — a new one, or
+/// `known` again — in the broker's own dialog.
+fn ask(anchor: &gtk::Widget, broker: &str, known: Option<&Login>, signed: impl Fn(trading::Typed) + 'static) {
+    if let Some(dialog) = sign_in_dialogs::login_dialog(broker) {
         dialog(anchor, known, Box::new(signed));
     }
 }
@@ -67,9 +61,9 @@ type EditSizes = Rc<dyn Fn(&gtk::Widget)>;
 pub struct Panel {
     store: Rc<Store>,
     desk: Rc<Desk>,
-    /// Where passwords go: the desktop keyring, or a list in memory under
-    /// test.
-    secrets: Rc<dyn Secrets>,
+    /// Where passwords go instead of each broker's own keyring: a list in
+    /// memory, under test.
+    secrets: Option<Rc<dyn Secrets>>,
     /// Has the window chart from the data feeds now stored and redraw its
     /// headers. Called after every change here.
     on_change: Rc<dyn Fn()>,
@@ -87,8 +81,7 @@ pub struct Panel {
 
 /// Fills the Trading section.
 pub fn build(page: &adw::PreferencesPage, store: Rc<Store>, desk: Rc<Desk>, on_change: Rc<dyn Fn()>) -> Rc<Panel> {
-    let keyring = connection().and_then(|feed| feed.setup).and_then(|setup| setup.keyring());
-    let panel = Panel::new(page.clone(), store, desk, Rc::new(Keyring(keyring)), on_change);
+    let panel = Panel::new(page.clone(), store, desk, None, on_change);
     rebuild(&panel);
     panel
 }
@@ -98,7 +91,7 @@ impl Panel {
         page: adw::PreferencesPage,
         store: Rc<Store>,
         desk: Rc<Desk>,
-        secrets: Rc<dyn Secrets>,
+        secrets: Option<Rc<dyn Secrets>>,
         on_change: Rc<dyn Fn()>,
     ) -> Rc<Panel> {
         let panel = Rc::new(Panel {
@@ -137,6 +130,14 @@ impl Panel {
         *self.data_page.borrow_mut() = Some(redraw);
     }
 
+    /// Where the passwords of `broker`'s logins go.
+    fn secrets(&self, broker: &str) -> Rc<dyn Secrets> {
+        match &self.secrets {
+            Some(secrets) => secrets.clone(),
+            None => Rc::new(Keyring(trading::broker_for(broker).and_then(|broker| broker.keyring()))),
+        }
+    }
+
     fn changed(self: &Rc<Self>) {
         (self.on_change)();
         self.desk.tell();
@@ -147,12 +148,13 @@ impl Panel {
     }
 }
 
-/// Open the login dialog for a new broker over `anchor`; what the Data
-/// page's "Add a data feed…" does for the connection's feed too.
-pub fn add_broker(panel: &Rc<Panel>, anchor: &gtk::Widget) {
+/// Open the login dialog for a new login of `broker` over `anchor`; what
+/// the Data page's "Add a data feed…" does for a broker connection's feed
+/// too.
+pub fn add_broker(panel: &Rc<Panel>, broker: &str, anchor: &gtk::Widget) {
     let panel = panel.clone();
-    ask(anchor, None, move |typed| {
-        match trading::add_login(&panel.store, panel.secrets.as_ref(), &typed) {
+    ask(anchor, broker, None, move |typed| {
+        match trading::add_login(&panel.store, panel.secrets(&typed.broker).as_ref(), &typed) {
             Ok(id) => {
                 panel.changed();
                 sign_in(&panel, &id);
@@ -198,7 +200,9 @@ fn subtitle(panel: &Panel, login: &Login, data: bool) -> String {
         Some(note) => note.clone(),
         None => panel.desk.standing(login, data).words(),
     };
-    let mut words = vec![login.system.clone(), standing];
+    let mut words: Vec<String> =
+        panel.desk.broker_for(login).and_then(|broker| broker.signs_in_to(login)).into_iter().collect();
+    words.push(standing);
     if data {
         words.push("data".into());
     }
@@ -221,10 +225,10 @@ fn login_group(
     actions.set_valign(gtk::Align::Center);
     // Only the data login feeds charts. Another can take over, which ends
     // the data session and signs charts in through it from then on.
-    if several && !data {
+    if several && !data && trading::data_feed_of(login).is_some() {
         let feed = gtk::Button::with_label("Use for data");
         feed.add_css_class("flat");
-        feed.set_tooltip_text(Some(&format!("Have charts' {} data come through this login", feed_label())));
+        feed.set_tooltip_text(Some(&format!("Have charts' {} data come through this login", feed_label(login))));
         let panel_for_feed = panel.clone();
         let id = login.id.clone();
         feed.connect_clicked(move |_| {
@@ -340,7 +344,7 @@ fn add_group(panel: &Rc<Panel>, empty: bool) -> adw::PreferencesGroup {
         group.set_description(Some(&format!(
             "Add the broker login a prop firm gave you to see its accounts here. The first one \
              also becomes your {} data feed.",
-            feed_label(),
+            providers::connections().next().map_or("broker", |feed| feed.label),
         )));
     }
     let add = gtk::MenuButton::new();
@@ -348,8 +352,8 @@ fn add_group(panel: &Rc<Panel>, empty: bool) -> adw::PreferencesGroup {
     add.set_halign(gtk::Align::Start);
     let choices = gtk::Box::new(gtk::Orientation::Vertical, 0);
     let popover = gtk::Popover::new();
-    for broker in providers::connections() {
-        let choice = gtk::Button::with_label(broker.label);
+    for broker in panel.desk.brokers().iter() {
+        let choice = gtk::Button::with_label(broker.label());
         choice.add_css_class("flat");
         if let Some(label) = choice.child().and_downcast::<gtk::Label>() {
             label.set_xalign(0.0);
@@ -357,9 +361,10 @@ fn add_group(panel: &Rc<Panel>, empty: bool) -> adw::PreferencesGroup {
         let shut = popover.clone();
         let anchor = add.clone();
         let panel = panel.clone();
+        let id = broker.id();
         choice.connect_clicked(move |_| {
             shut.popdown();
-            add_broker(&panel, anchor.upcast_ref());
+            add_broker(&panel, id, anchor.upcast_ref());
         });
         choices.append(&choice);
     }
@@ -375,8 +380,9 @@ fn ask_again(panel: &Rc<Panel>, id: &str, anchor: &gtk::Widget) {
     let Some(login) = trading::logins(&panel.store).into_iter().find(|login| login.id == id) else { return };
     let panel = panel.clone();
     let id = id.to_string();
-    ask(anchor, Some(&login), move |typed| {
-        if let Err(error) = trading::retype_login(&panel.store, panel.secrets.as_ref(), &id, &typed) {
+    let secrets = panel.secrets(&login.broker);
+    ask(anchor, &login.broker, Some(&login), move |typed| {
+        if let Err(error) = trading::retype_login(&panel.store, secrets.as_ref(), &id, &typed) {
             panel.notes.borrow_mut().insert(id.clone(), format!("not saved · {error}"));
         }
         panel.changed();
@@ -387,7 +393,8 @@ fn ask_again(panel: &Rc<Panel>, id: &str, anchor: &gtk::Widget) {
 fn sign_out(panel: &Rc<Panel>, id: &str) {
     panel.desk.end(id);
     panel.notes.borrow_mut().remove(id);
-    if let Err(error) = trading::sign_out_login(&panel.store, panel.secrets.as_ref(), id) {
+    let Some(login) = trading::logins(&panel.store).into_iter().find(|login| login.id == id) else { return };
+    if let Err(error) = trading::sign_out_login(&panel.store, panel.secrets(&login.broker).as_ref(), id) {
         eprintln!("omacharts: {error}");
     }
     panel.changed();
@@ -400,7 +407,7 @@ fn sign_out(panel: &Rc<Panel>, id: &str) {
 fn confirm_remove(panel: &Rc<Panel>, id: &str, anchor: &gtk::Widget) {
     let Some(login) = trading::logins(&panel.store).into_iter().find(|login| login.id == id) else { return };
     let removal = trading::removal(&panel.store, id);
-    let (heading, body) = removal_words(&login.name, &removal);
+    let (heading, body) = removal_words(&login.name, feed_label(&login), &removal);
     let dialog = adw::AlertDialog::new(Some(&heading), Some(&body));
     dialog.add_response("cancel", "Cancel");
     match removal {
@@ -427,8 +434,7 @@ fn confirm_remove(panel: &Rc<Panel>, id: &str, anchor: &gtk::Widget) {
 }
 
 /// The dialog's heading and body for removing the login `name`.
-fn removal_words(name: &str, removal: &trading::Removal) -> (String, String) {
-    let feed = feed_label();
+fn removal_words(name: &str, feed: &str, removal: &trading::Removal) -> (String, String) {
     let body = match removal {
         trading::Removal::Login => "Its password leaves the keyring and its accounts leave this page.".to_string(),
         trading::Removal::HandOver { to } => format!(
@@ -454,7 +460,8 @@ fn removal_words(name: &str, removal: &trading::Removal) -> (String, String) {
 fn remove_login(panel: &Rc<Panel>, id: &str, feed_too: bool) {
     panel.desk.end(id);
     panel.notes.borrow_mut().remove(id);
-    if let Err(error) = trading::remove_login(&panel.store, panel.secrets.as_ref(), id, feed_too) {
+    let Some(login) = trading::logins(&panel.store).into_iter().find(|login| login.id == id) else { return };
+    if let Err(error) = trading::remove_login(&panel.store, panel.secrets(&login.broker).as_ref(), id, feed_too) {
         eprintln!("omacharts: {error}");
     }
     panel.changed();
@@ -466,6 +473,10 @@ fn remove_login(panel: &Rc<Panel>, id: &str, feed_too: bool) {
 fn sign_in(panel: &Rc<Panel>, id: &str) {
     let logins = trading::logins(&panel.store);
     let Some(login) = logins.iter().find(|login| login.id == id).cloned() else { return };
+    let Some(broker) = panel.desk.broker_for(&login) else {
+        panel.notes.borrow_mut().insert(id.to_string(), format!("no broker called {} in this build", login.broker));
+        return rebuild(panel);
+    };
     if !panel.desk.begin(id) {
         return;
     }
@@ -473,9 +484,8 @@ fn sign_in(panel: &Rc<Panel>, id: &str) {
     panel.notes.borrow_mut().insert(id.to_string(), "signing in".into());
     rebuild(panel);
 
-    let broker = panel.desk.broker();
     let waker = panel.desk.waker();
-    let feed = connection().map(|feed| feed.id);
+    let feed = trading::data_feed_of(&login).map(|feed| feed.id);
     let (sender, receiver) = async_channel::bounded(1);
     std::thread::spawn(move || {
         let session = broker.sign_in(&login, waker);
@@ -504,11 +514,12 @@ fn sign_in(panel: &Rc<Panel>, id: &str) {
 mod tests {
     use super::*;
     use crate::trading::fake::{FakeBroker, Kept};
+    use crate::trading::Registry;
     use crate::trading::Typed;
 
     fn panel(store: &Rc<Store>, desk: Rc<Desk>) -> Rc<Panel> {
         let panel =
-            Panel::new(adw::PreferencesPage::new(), store.clone(), desk, Rc::new(Kept::default()), Rc::new(|| {}));
+            Panel::new(adw::PreferencesPage::new(), store.clone(), desk, Some(Rc::new(Kept::default())), Rc::new(|| {}));
         panel.set_edit_sizes(Rc::new(|_: &gtk::Widget| {}));
         panel
     }
@@ -546,11 +557,11 @@ mod tests {
 
     fn typed(name: &str) -> Typed {
         Typed {
+            broker: "rithmic".into(),
             name: name.into(),
             user: format!("{name}-user"),
             password: "PLANTED-PASSWORD".into(),
-            system: String::new(),
-            gateway: "wss://example.invalid:443".into(),
+            values: vec![("system".into(), "Rithmic Test".into()), ("gateway".into(), "wss://example.invalid:443".into())],
         }
     }
 
@@ -559,7 +570,7 @@ mod tests {
     fn nothing_configured_is_a_line_and_a_button() {
         crate::ui::on_gtk(|| {
             let store = Rc::new(Store::memory().unwrap());
-            let panel = panel(&store, Rc::new(Desk::new(Arc::new(FakeBroker::default()))));
+            let panel = panel(&store, Rc::new(Desk::new(Registry::of(vec![Arc::new(FakeBroker::default())]))));
             rebuild(&panel);
             let words = page_words(&panel);
             assert!(words.iter().any(|w| w == "Add a broker…"), "{words:?}");
@@ -595,7 +606,7 @@ mod tests {
             trading::cache_accounts(&store, &test, vec![funded]);
             trading::sign_out_login(&store, &kept, &test).unwrap();
 
-            let panel = panel(&store, Rc::new(Desk::new(Arc::new(FakeBroker::default()))));
+            let panel = panel(&store, Rc::new(Desk::new(Registry::of(vec![Arc::new(FakeBroker::default())]))));
             rebuild(&panel);
             let groups = panel.groups.borrow().clone();
             assert_eq!(groups.len(), 4, "two logins, the button and the sizes");
@@ -613,7 +624,7 @@ mod tests {
             assert!(page_words(&panel).iter().any(|w| w == "Edit trading sizes…"), "no way to the sizes with a login");
 
             // Removing the data login hands data to the other, and says so.
-            let (_, body) = removal_words("Lucid", &trading::removal(&store, &lucid));
+            let (_, body) = removal_words("Lucid", "Rithmic", &trading::removal(&store, &lucid));
             assert!(body.ends_with("now come through Rithmic Test."), "{body}");
             remove_login(&panel, &lucid, true);
             let groups = panel.groups.borrow().clone();
@@ -626,7 +637,7 @@ mod tests {
     /// the last data feed staying.
     #[test]
     fn the_dialog_says_what_becomes_of_the_data_feed() {
-        let words = |removal| removal_words("Lucid", &removal);
+        let words = |removal| removal_words("Lucid", "Rithmic", &removal);
         assert_eq!(words(trading::Removal::Login).0, "Remove Lucid?");
         assert!(!words(trading::Removal::Login).1.contains("data"));
         assert!(words(trading::Removal::HandOver { to: "Tradeify".into() }).1.contains("through Tradeify"));

@@ -2250,10 +2250,10 @@ impl Window {
         // One feed for the life of the window: the loader's queue is paced to
         // its rules and the price cache is keyed by its id, so this is read
         // once here and nowhere else asks again.
-        // The process holding the window is the one that may sign in to
-        // Rithmic; any other passes it over rather than open a second
-        // session. A flag: nothing of Rithmic's is built by setting it.
-        omacharts_engine::providers::rithmic::session::serve_from_here();
+        // The process holding the window is the one that may open a session
+        // a login may have only one of; any other passes such a feed over
+        // rather than open a second. A flag: no feed is built by setting it.
+        omacharts_engine::providers::serve_from_here();
         let feeds = crate::feeds::ordered(&store).into_iter().map(Arc::from).collect();
         Window::build_with(app, store, feeds)
     }
@@ -2356,7 +2356,7 @@ impl Window {
             search: SymbolSearch::new(index.clone()),
             watchlist: RefCell::new(None),
             feeds: RefCell::new(feeds),
-            desk: Rc::new(crate::trading::Desk::new(Arc::new(crate::trading::Rithmic))),
+            desk: Rc::new(crate::trading::Desk::new(crate::trading::registry())),
             trading: RefCell::new(crate::trading::View::load(&store)),
             trade: Trade::default(),
             feed_generation: Cell::new(0),
@@ -7551,9 +7551,7 @@ impl Window {
     /// sign-in or a sign-out has just changed. What the panel and
     /// `config set provider` call.
     pub fn adopt_feed(self: &Rc<Self>) {
-        if crate::feeds::stored_order(&self.store).iter().any(|id| id.eq_ignore_ascii_case("rithmic")) {
-            crate::feeds::remember_logins(&self.store);
-        }
+        crate::feeds::remember_logins(&self.store);
         let wanted = providers::ordered(&crate::feeds::stored_order(&self.store));
         let same = {
             let feeds = self.feeds.borrow();

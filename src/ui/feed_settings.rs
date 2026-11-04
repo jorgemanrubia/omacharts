@@ -42,8 +42,9 @@ enum Progress {
     Done(Result<(), String>),
 }
 
-/// Opens the broker login dialog, from Trading, over the widget given.
-pub type AddBroker = Rc<dyn Fn(&gtk::Widget)>;
+/// Opens the login dialog of the broker with this id, from Trading, over
+/// the widget given.
+pub type AddBroker = Rc<dyn Fn(&str, &gtk::Widget)>;
 
 struct Panel {
     store: Rc<Store>,
@@ -202,7 +203,7 @@ fn subtitle(panel: &Panel, feed: &'static Listed) -> String {
 /// The login a source signs in through, when that is Trading's business: a
 /// broker connection's feed, while there is a login in Trading.
 fn through_trading(panel: &Panel, feed: &'static Listed) -> Option<crate::trading::Login> {
-    trades(feed).then(|| crate::trading::data_login(&panel.store)).flatten()
+    crate::trading::data_login(&panel.store).filter(|login| trades(feed) && login.broker.eq_ignore_ascii_case(feed.id))
 }
 
 /// Is `feed`'s login a broker connection, kept in Trading?
@@ -295,7 +296,7 @@ fn action_button(panel: &Rc<Panel>, feed: &'static Listed, row: &adw::ActionRow)
     }
     let anchor = row.clone();
     button.connect_clicked(move |_| match (feed.asks_in_a_dialog(), trades(feed)) {
-        (true, true) => ask_broker(&panel, &anchor),
+        (true, true) => ask_broker(&panel, feed, &anchor),
         (true, false) => ask_dialog(&panel, feed, &anchor),
         (false, _) => start_sign_in(&panel, feed),
     });
@@ -388,7 +389,7 @@ fn add_button(panel: &Rc<Panel>, missing: Vec<&'static Listed>) -> gtk::MenuButt
 /// added at once, and signed in to from its row.
 fn add_source(panel: &Rc<Panel>, feed: &'static Listed, anchor: &impl IsA<gtk::Widget>) {
     match trades(feed) && through_trading(panel, feed).is_none() {
-        true => ask_broker(panel, anchor),
+        true => ask_broker(panel, feed, anchor),
         false => {
             feeds::add_source(&panel.store, feed.id);
             panel.changed();
@@ -413,9 +414,9 @@ fn sign_out(panel: &Rc<Panel>, feed: &'static Listed) {
 
 /// A broker connection's feed with no login: a broker is added in Trading,
 /// which puts the feed on top of the sources and signs it in.
-fn ask_broker(panel: &Rc<Panel>, anchor: &impl IsA<gtk::Widget>) {
+fn ask_broker(panel: &Rc<Panel>, feed: &'static Listed, anchor: &impl IsA<gtk::Widget>) {
     if let Some(add_broker) = &panel.add_broker {
-        add_broker(anchor.upcast_ref());
+        add_broker(feed.id, anchor.upcast_ref());
     }
 }
 
@@ -639,11 +640,11 @@ mod tests {
 
             let kept = crate::trading::fake::Kept::default();
             let typed = crate::trading::Typed {
+                broker: "rithmic".into(),
                 name: "Lucid".into(),
                 user: "trader".into(),
                 password: "PLANTED-PASSWORD".into(),
-                system: String::new(),
-                gateway: String::new(),
+                values: vec![("system".into(), "Rithmic Test".into())],
             };
             crate::trading::add_login(&store, &kept, &typed).unwrap();
             rebuild(&panel);

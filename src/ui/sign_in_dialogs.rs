@@ -26,12 +26,12 @@ pub type LoginDialog = fn(&gtk::Widget, Option<&Login>, Box<dyn Fn(Typed)>);
 /// sign the feed in.
 pub type FeedDialog = fn(Box<dyn Fn()>) -> adw::AlertDialog;
 
-/// The login dialog of a feed whose login is a broker connection.
-pub fn login_dialog(feed: &Listed) -> Option<LoginDialog> {
-    match feed.id {
-        id if id == omacharts_engine::providers::rithmic::LISTED.id => {
-            Some(rithmic_login::ask)
-        }
+/// The login dialog of the broker logins call `broker`.
+pub fn login_dialog(broker: &str) -> Option<LoginDialog> {
+    match broker {
+        id if id == omacharts_engine::providers::rithmic::LISTED.id => Some(rithmic_login::ask),
+        #[cfg(any(test, feature = "fakes"))]
+        "fake" => Some(fake::login),
         _ => None,
     }
 }
@@ -46,14 +46,52 @@ pub fn feed_dialog(feed: &Listed) -> Option<FeedDialog> {
 }
 
 /// The fake rich feed's dialog, as a provider's own dialog would be: a
-/// member number and a token, the token into the feed's keyring.
-#[cfg(test)]
+/// member number and a token, the token into the feed's keyring; and the
+/// fake broker's, a name, a user and a password.
+#[cfg(any(test, feature = "fakes"))]
 pub(crate) mod fake {
     use adw::prelude::*;
+    #[cfg(test)]
     use omacharts_engine::providers::{fake, Saved};
+
+    use crate::trading::{Login, Typed};
 
     pub const SIGN_IN: &str = "sign-in";
 
+    /// The fake broker's login dialog.
+    pub fn login(parent: &gtk::Widget, known: Option<&Login>, signed: Box<dyn Fn(Typed)>) {
+        let dialog = adw::AlertDialog::new(Some("Sign in to the fake broker"), None);
+        let list = gtk::ListBox::new();
+        let name = adw::EntryRow::new();
+        name.set_title("Name");
+        name.set_text(known.map_or("", |login| login.name.as_str()));
+        list.append(&name);
+        let user = adw::EntryRow::new();
+        user.set_title("User");
+        user.set_text(known.map_or("", |login| login.user.as_str()));
+        list.append(&user);
+        let password = adw::PasswordEntryRow::new();
+        password.set_title("Password");
+        list.append(&password);
+        dialog.set_extra_child(Some(&list));
+        dialog.add_responses(&[("cancel", "Cancel"), (SIGN_IN, "Sign In")]);
+        dialog.connect_response(None, move |_, response| {
+            if response != SIGN_IN {
+                return;
+            }
+            signed(Typed {
+                broker: "fake".into(),
+                name: name.text().to_string(),
+                user: user.text().to_string(),
+                password: password.text().to_string(),
+                values: Vec::new(),
+            });
+            password.set_text("");
+        });
+        dialog.present(Some(parent));
+    }
+
+    #[cfg(test)]
     pub fn dialog(done: Box<dyn Fn()>) -> adw::AlertDialog {
         let dialog = adw::AlertDialog::new(Some(&format!("Sign in to {}", fake::LISTED.label)), None);
         let list = gtk::ListBox::new();

@@ -27,12 +27,36 @@ impl Secrets for Kept {
 }
 
 /// A broker that signs anybody in with the accounts it was given, and
-/// counts how often it was asked.
+/// counts how often it was asked. Its logins name it `fake`, and it has
+/// no data feed.
 #[derive(Default)]
 pub struct FakeBroker {
+    /// The accounts a login has, by the login's name.
     pub accounts: Mutex<HashMap<String, Vec<Account>>>,
+    /// The accounts a login named in neither has.
+    pub every_login: Vec<Account>,
+    /// The contract each future root trades as, by root, in every session.
+    pub contracts: HashMap<String, String>,
     pub signed_in: AtomicUsize,
     pub signed_out: Arc<AtomicUsize>,
+}
+
+impl FakeBroker {
+    /// The broker as the registry lists it: every login has one account,
+    /// and ES trades as ESZ6.
+    pub fn listed() -> FakeBroker {
+        FakeBroker {
+            every_login: vec![Account {
+                login: String::new(),
+                id: "FAKE-1".into(),
+                name: None,
+                currency: Some("USD".into()),
+                balance: Some(50_000.0),
+            }],
+            contracts: HashMap::from([("ES".to_string(), "ESZ6".to_string())]),
+            ..FakeBroker::default()
+        }
+    }
 }
 
 /// A second broker, in memory: a session that fills a market order at
@@ -317,11 +341,22 @@ impl Session for FakeSession {
 }
 
 impl Broker for FakeBroker {
+    fn id(&self) -> &'static str {
+        "fake"
+    }
+
+    fn label(&self) -> &'static str {
+        "Fake Broker"
+    }
+
     fn sign_in(&self, login: &Login, changed: Box<dyn Fn() + Send + Sync>) -> Result<Arc<dyn Session>, String> {
         self.signed_in.fetch_add(1, Ordering::AcqRel);
-        let accounts = self.accounts.lock().unwrap().get(&login.name).cloned().unwrap_or_default();
+        let named = self.accounts.lock().unwrap().get(&login.name).cloned();
+        let accounts = named.unwrap_or_else(|| self.every_login.clone());
         let accounts = accounts.into_iter().map(|a| Account { login: login.id.clone(), ..a }).collect();
-        Ok(Arc::new(FakeSession { signed_out: self.signed_out.clone(), ..FakeSession::new(accounts, changed) }))
+        let session = FakeSession { signed_out: self.signed_out.clone(), ..FakeSession::new(accounts, changed) };
+        *session.contracts.lock().unwrap() = self.contracts.clone();
+        Ok(Arc::new(session))
     }
 }
 
@@ -331,17 +366,21 @@ pub(crate) mod tests {
     use crate::store::Store;
     use omacharts_engine::providers::rithmic::session;
 
+    /// Rithmic Test, where a login typed with no system signs in to.
+    pub(crate) const TEST_SYSTEM: &str = rithmic::TEST_SYSTEM;
+    pub(crate) const TEST_GATEWAY: &str = rithmic::TEST_URL;
+
     pub(crate) fn store() -> Store {
         Store::memory().expect("an empty database")
     }
 
     pub(crate) fn typed(name: &str, user: &str) -> Typed {
         Typed {
+            broker: "rithmic".into(),
             name: name.into(),
             user: user.into(),
             password: "PLANTED-PASSWORD".into(),
-            system: String::new(),
-            gateway: "wss://example.invalid:443".into(),
+            values: vec![("system".into(), TEST_SYSTEM.into()), ("gateway".into(), "wss://example.invalid:443".into())],
         }
     }
 
@@ -382,8 +421,8 @@ pub(crate) mod tests {
             id: id.into(),
             name: name.into(),
             user: "u".into(),
-            system: system.into(),
-            gateway: TEST_GATEWAY.into(),
+            broker: "rithmic".into(),
+            values: vec![("system".into(), system.into()), ("gateway".into(), TEST_GATEWAY.into())],
             signed_out: false,
         }
     }

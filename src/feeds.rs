@@ -165,9 +165,10 @@ pub fn identify() {
 /// command about feeds: with nothing configured nothing is read, built or
 /// started.
 pub fn remember_logins(store: &Store) {
+    let data = crate::trading::data_login(store);
     for feed in providers::every().filter(|feed| trades(feed)) {
         if let Some(setup) = feed.setup {
-            setup.remember(saved_of(store));
+            setup.remember(saved_for(data.as_ref(), feed));
         }
     }
 }
@@ -176,13 +177,20 @@ pub fn remember_logins(store: &Store) {
 /// out, which is what makes the data feed not signed in.
 pub fn saved_of(store: &Store) -> providers::Saved {
     let login = crate::trading::data_login(store);
+    let feed = login.as_ref().and_then(crate::trading::data_feed_of);
+    feed.map(|feed| saved_for(login.as_ref(), feed)).unwrap_or_default()
+}
+
+/// What `feed` is told of the data login: the login, when it is one of
+/// the feed's own broker's, and nothing when it is another's.
+fn saved_for(login: Option<&crate::trading::Login>, feed: &Listed) -> providers::Saved {
+    let Some(login) = login.filter(|login| login.broker.eq_ignore_ascii_case(feed.id)) else {
+        return providers::Saved::default();
+    };
     providers::Saved {
-        user: login.as_ref().filter(|login| !login.signed_out).map(|login| login.user.clone()),
-        values: login
-            .as_ref()
-            .map(|login| vec![("system".into(), login.system.clone()), ("gateway".into(), login.gateway.clone())])
-            .unwrap_or_default(),
-        login: login.map(|login| login.id),
+        user: (!login.signed_out).then(|| login.user.clone()),
+        values: login.values.clone(),
+        login: Some(login.id.clone()),
     }
 }
 
@@ -389,11 +397,11 @@ pub(crate) mod tests {
         assert_eq!(saved_of(&store), Default::default());
         let kept = Kept::default();
         let typed = Typed {
+            broker: "rithmic".into(),
             name: "Lucid".into(),
             user: " trader ".into(),
             password: "PLANTED-PASSWORD".into(),
-            system: String::new(),
-            gateway: "wss://example.invalid:443".into(),
+            values: vec![("system".into(), "Rithmic Test".into()), ("gateway".into(), "wss://example.invalid:443".into())],
         };
         let id = trading::add_login(&store, &kept, &typed).unwrap();
         let saved = saved_of(&store);
