@@ -10,9 +10,9 @@
 //! the ones its last sign-in listed, cached, so the page draws without
 //! connecting.
 //!
-//! Signing in runs on a thread of its own and reports back over a channel
-//! the main loop awaits, because it waits on the broker's gateway. The data
-//! login signs in its data session as well as its trading one.
+//! Signing in is the desk's, on a thread of its own, as at startup; the
+//! page redraws when the desk tells it. The data login signs in its data
+//! session as well as its trading one.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -107,12 +107,16 @@ impl Panel {
             notes: RefCell::new(HashMap::new()),
             redraw: RefCell::new(None),
         });
-        // A balance arriving, or a session ending by itself, redraws the
-        // page while it is open; held weakly both ways.
+        // A sign-in coming back, a balance arriving, or a session ending by
+        // itself redraws the page, and the Data page whose row follows the
+        // data login, while it is open; held weakly both ways.
         let weak = Rc::downgrade(&panel);
         let redraw: Rc<dyn Fn()> = Rc::new(move || {
             if let Some(panel) = weak.upgrade() {
                 rebuild(&panel);
+                if let Some(redraw) = panel.data_page.borrow().clone() {
+                    redraw();
+                }
             }
         });
         panel.desk.listen(&redraw);
@@ -199,9 +203,11 @@ fn rebuild(panel: &Rc<Panel>) {
 fn subtitle(panel: &Panel, login: &Login, data: bool) -> String {
     let standing = match panel.notes.borrow().get(&login.id) {
         Some(note) => note.clone(),
-        // Signing in by itself, as a saved login does at startup.
         None if panel.desk.opening(&login.id) => "signing in".into(),
-        None => panel.desk.standing(login, data).words(),
+        None => match panel.desk.data_refused(&login.id).filter(|_| data) {
+            Some(why) => format!("data not signed in · {why}"),
+            None => panel.desk.standing(login, data).words(),
+        },
     };
     let mut words: Vec<String> =
         panel.desk.broker_for(login).and_then(|broker| broker.signs_in_to(login)).into_iter().collect();
@@ -475,58 +481,21 @@ fn remove_login(panel: &Rc<Panel>, id: &str, feed_too: bool) {
     panel.changed();
 }
 
-/// Sign a login in off the main loop: its trading session, refreshed with
-/// what its accounts hold, and for the data login its data session too.
-/// One at a time per login: the desk refuses a second while one is open or
-/// opening.
+/// Sign a login in through the desk, and for the data login its data
+/// session too. One at a time per login: the desk refuses a second while
+/// one is open or opening.
 fn sign_in(panel: &Rc<Panel>, id: &str) {
     let logins = trading::logins(&panel.store);
-    let Some(login) = logins.iter().find(|login| login.id == id).cloned() else { return };
-    let Some(broker) = panel.desk.broker_for(&login) else {
+    let Some(login) = logins.iter().find(|login| login.id == id) else { return };
+    if panel.desk.broker_for(login).is_none() {
         panel.notes.borrow_mut().insert(id.to_string(), format!("no broker called {} in this build", login.broker));
         return rebuild(panel);
-    };
-    if !panel.desk.begin(id) {
-        return;
     }
+    panel.notes.borrow_mut().remove(id);
     let data = trading::data_login_id(&panel.store, &logins).as_deref() == Some(id);
-    panel.notes.borrow_mut().insert(id.to_string(), "signing in".into());
-    rebuild(panel);
-
-    let waker = panel.desk.waker(id);
-    let name = login.name.clone();
-    let feed = trading::data_feed_of(&login).map(|feed| feed.id);
-    let (sender, receiver) = async_channel::bounded(1);
-    std::thread::spawn(move || {
-        let session = broker.sign_in(&login, waker);
-        // The accounts as they stand, before the session is shown at all.
-        if let Ok(session) = &session {
-            let _ = session.refresh();
-        }
-        let fed = match (data, &session, feed) {
-            (true, Ok(_), Some(feed)) => Some(crate::feeds::sign_in_now(feed, |_| {})),
-            _ => None,
-        };
-        let _ = sender.send_blocking((session, fed));
-    });
-
-    let panel = panel.clone();
-    let id = id.to_string();
-    glib::spawn_future_local(async move {
-        let Ok((session, fed)) = receiver.recv().await else { return };
-        panel.notes.borrow_mut().remove(&id);
-        log_words::say(log_words::signed_in(
-            &name,
-            session.as_ref().map(|session| session.accounts().len()).map_err(String::as_str),
-        ));
-        if let Some(Err(error)) = fed {
-            log_words::say(log_words::data_not_signed_in(&name, &error));
-            panel.notes.borrow_mut().insert(id.clone(), format!("data not signed in · {error}"));
-        }
-        panel.desk.opened(&id, session);
-        panel.desk.note(&panel.store);
-        panel.changed();
-    });
+    if panel.desk.sign_in(login, data) {
+        rebuild(panel);
+    }
 }
 
 #[cfg(test)]
@@ -572,6 +541,23 @@ mod tests {
             words.extend(words_under(group.upcast_ref()));
             words
         }).collect()
+    }
+
+    /// Take what the desk is woken with until `id` is live, as the
+    /// window's loop does, for a second at most.
+    fn signed_in(store: &Store, desk: &Desk, id: &str) {
+        let woken = desk.woken();
+        for _ in 0..500 {
+            while let Ok(wake) = woken.try_recv() {
+                desk.take(wake);
+                desk.note(store);
+                desk.tell();
+            }
+            if desk.live(id) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
     }
 
     fn typed(name: &str) -> Typed {
@@ -678,14 +664,7 @@ mod tests {
             assert_eq!(crate::feeds::stored_order(&store), vec!["yahoo"]);
 
             sign_in(&panel, &id);
-            let context = glib::MainContext::default();
-            for _ in 0..500 {
-                if desk.live(&id) && !panel.notes.borrow().contains_key(&id) {
-                    break;
-                }
-                context.iteration(false);
-                std::thread::sleep(std::time::Duration::from_millis(2));
-            }
+            signed_in(&store, &desk, &id);
             assert!(desk.live(&id), "signed in through the registry");
             let groups = panel.groups.borrow().clone();
             assert_eq!(groups[0].title(), "Practice");
@@ -738,14 +717,7 @@ mod tests {
             let before = log.revision();
             let id = trading::add_login(&store, &Kept::default(), &typed).unwrap();
             sign_in(&panel, &id);
-            let context = glib::MainContext::default();
-            for _ in 0..500 {
-                if desk.live(&id) && !panel.notes.borrow().contains_key(&id) {
-                    break;
-                }
-                context.iteration(false);
-                std::thread::sleep(std::time::Duration::from_millis(2));
-            }
+            signed_in(&store, &desk, &id);
             assert!(desk.live(&id));
             // A broker that says the user ID back in its refusal.
             log_words::say(log_words::signed_in("Practice", Err(&format!("user {USER} is locked"))));

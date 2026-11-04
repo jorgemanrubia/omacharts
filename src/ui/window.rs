@@ -7583,15 +7583,14 @@ impl Window {
         glib::spawn_future_local(async move {
             while let Ok(wake) = woken.recv().await {
                 let Some(this) = weak.upgrade() else { return };
-                // A saved login that signed in by itself says so, as one
-                // signed in from the Trading page does.
-                if let crate::trading::Wake::Opened(id, outcome) = &wake {
-                    let name = this.trading.borrow().login(id).map(|login| login.name.clone()).unwrap_or_default();
-                    let accounts = outcome.as_ref().map(|session| session.accounts().len()).map_err(String::as_str);
-                    crate::log_words::say(crate::log_words::signed_in(&name, accounts));
-                }
+                // A data feed signed in with its login changes which feeds
+                // can be used.
+                let fed = matches!(&wake, crate::trading::Wake::Opened(_, _, Some(_)));
                 this.desk.take(wake);
                 this.desk.note(&this.store);
+                if fed {
+                    this.adopt_feed();
+                }
                 this.desk.tell();
             }
         });

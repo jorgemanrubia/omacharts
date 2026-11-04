@@ -60,8 +60,9 @@ pub enum Wake {
     /// The login's session was refreshed, after it came back.
     Refreshed(String),
     /// A sign-in the desk started for the login came back, refreshed when
-    /// it signed in.
-    Opened(String, Result<Arc<dyn Session>, String>),
+    /// it signed in; with how its data half went, when it was asked to sign
+    /// that in too.
+    Opened(Login, Result<Arc<dyn Session>, String>, Option<Result<(), String>>),
 }
 
 /// The brokers a desk signs logins in through, each found by the id its
@@ -156,6 +157,9 @@ pub struct Desk {
     sessions: RefCell<HashMap<String, Arc<dyn Session>>>,
     opening: RefCell<HashSet<String>>,
     refused: RefCell<HashMap<String, String>>,
+    /// Why a login's data half did not sign in when its trading half did,
+    /// until it is signed in again or out.
+    data_refused: RefCell<HashMap<String, String>>,
     /// How many times each login's session has been refreshed this run: a
     /// count, so that a refresh is never missed between two reads.
     refreshes: RefCell<HashMap<String, u32>>,
@@ -176,6 +180,7 @@ impl Desk {
             sessions: RefCell::new(HashMap::new()),
             opening: RefCell::new(HashSet::new()),
             refused: RefCell::new(HashMap::new()),
+            data_refused: RefCell::new(HashMap::new()),
             refreshes: RefCell::new(HashMap::new()),
             wake,
             woken,
@@ -202,14 +207,23 @@ impl Desk {
     }
 
     /// Do what `wake` asks of the desk, on the main loop: refresh a session
-    /// that is back, count one that was refreshed, keep one that signed in.
-    /// Whoever called then reads the book again.
+    /// that is back, count one that was refreshed, keep one that signed in
+    /// and say how it went in the Log, once. Whoever called then reads the
+    /// book again.
     pub fn take(&self, wake: Wake) {
         match wake {
             Wake::Moved => {}
             Wake::Back(login) => self.refresh(&login),
             Wake::Refreshed(login) => *self.refreshes.borrow_mut().entry(login).or_default() += 1,
-            Wake::Opened(login, outcome) => self.opened(&login, outcome),
+            Wake::Opened(login, outcome, data) => {
+                let accounts = outcome.as_ref().map(|session| session.accounts().len()).map_err(String::as_str);
+                crate::log_words::say(crate::log_words::signed_in(&login.name, accounts));
+                if let Some(Err(why)) = data {
+                    crate::log_words::say(crate::log_words::data_not_signed_in(&login.name, &why));
+                    self.data_refused.borrow_mut().insert(login.id.clone(), why);
+                }
+                self.opened(&login.id, outcome);
+            }
         }
     }
 
@@ -233,25 +247,46 @@ impl Desk {
         self.refreshes.borrow().get(login).copied().unwrap_or(0)
     }
 
+    /// Sign `login` in on a thread of its own and refresh it there, then,
+    /// with `data`, sign its data feed in too. Nothing here waits: what it
+    /// comes back with arrives through [`Desk::woken`] as [`Wake::Opened`].
+    /// False when it cannot start: no broker for it in this build, or a
+    /// session open or opening already. The Trading page's Sign in and
+    /// startup both come here.
+    pub fn sign_in(&self, login: &Login, data: bool) -> bool {
+        let Some(broker) = self.broker_for(login) else { return false };
+        if !self.begin(&login.id) {
+            return false;
+        }
+        let (login, changed, wake) = (login.clone(), self.waker(&login.id), self.wake.clone());
+        let feed = data.then(|| data_feed_of(&login).map(|feed| feed.id)).flatten();
+        std::thread::spawn(move || {
+            let session = broker.sign_in(&login, changed);
+            if let Ok(session) = &session {
+                let _ = session.refresh();
+            }
+            let fed = match (&session, feed) {
+                (Ok(_), Some(feed)) => Some(crate::feeds::sign_in_now(feed, |_| {})),
+                _ => None,
+            };
+            let _ = wake.try_send(Wake::Opened(login, session, fed));
+        });
+        true
+    }
+
     /// Sign in every login in `logins` that has a password kept and no
-    /// session, each on a thread of its own, then refresh it there. Nothing
-    /// here waits: what each comes back with arrives through
-    /// [`Desk::woken`]. What startup calls, after the first frame.
+    /// session, its trading half alone: the data half signs in by itself as
+    /// the charts ask for it. What startup calls, after the first frame.
     pub fn sign_in_saved(&self, logins: &[Login]) {
         for login in logins.iter().filter(|login| !login.signed_out && !login.user.is_empty()) {
-            let Some(broker) = self.broker_for(login) else { continue };
-            if !self.begin(&login.id) {
-                continue;
-            }
-            let (login, changed, wake) = (login.clone(), self.waker(&login.id), self.wake.clone());
-            std::thread::spawn(move || {
-                let session = broker.sign_in(&login, changed);
-                if let Ok(session) = &session {
-                    let _ = session.refresh();
-                }
-                let _ = wake.try_send(Wake::Opened(login.id, session));
-            });
+            self.sign_in(login, false);
         }
+    }
+
+    /// Why `login`'s data half did not sign in when its trading half did,
+    /// if it did not.
+    pub fn data_refused(&self, login: &str) -> Option<String> {
+        self.data_refused.borrow().get(login).cloned()
     }
 
     /// Call `listener` whenever [`Desk::tell`] is, while it is alive.
@@ -291,6 +326,7 @@ impl Desk {
         self.sessions.borrow_mut().remove(login);
         self.opening.borrow_mut().insert(login.to_string());
         self.refused.borrow_mut().remove(login);
+        self.data_refused.borrow_mut().remove(login);
         true
     }
 
@@ -316,6 +352,7 @@ impl Desk {
     pub fn end(&self, login: &str) {
         self.opening.borrow_mut().remove(login);
         self.refused.borrow_mut().remove(login);
+        self.data_refused.borrow_mut().remove(login);
         if let Some(session) = self.sessions.borrow_mut().remove(login) {
             session.sign_out();
         }
