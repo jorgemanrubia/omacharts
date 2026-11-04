@@ -25,7 +25,7 @@ fn a_session_signs_in_serves_bars_and_survives_a_drop() {
         eprintln!("skipped: {} is not set", rithmic::DEV_LOGIN);
         return;
     };
-    let client = rithmic::session(APP, login).expect("a session");
+    let client = rithmic::connection(APP, "live", login).expect("a connection").data();
     client.sign_in().expect("signed in");
     assert!(rithmic::running());
 

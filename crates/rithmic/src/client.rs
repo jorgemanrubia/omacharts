@@ -1,13 +1,16 @@
-//! The one session a process has, and the thread that keeps it.
+//! The data half of a login's connection: the ticker plant for live prices
+//! and reference data, and the history plant for bars.
 //!
-//! A [`Client`] is a handle on it. Its calls block the caller, never the
-//! session: each is a request handed to the runtime and waited for, with a
-//! deadline. The connection itself belongs to a supervisor task that signs
-//! in, hands out the plants, notices a drop, reconnects with a doubling wait
+//! A [`Client`] is a handle on it, lent by [`Connection::data`]. Its calls
+//! block the caller, never the connection: each is a request handed to the
+//! runtime and waited for, with a deadline. The plants themselves belong to
+//! the connection's supervisor, which signs in, notices a drop, reconnects
 //! and subscribes again to whatever is still watched.
+//!
+//! [`Connection::data`]: crate::Connection::data
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -19,19 +22,14 @@ use rithmic_rs::{
     RithmicHistoryPlantHandle, RithmicResponse, RithmicTickerPlant, RithmicTickerPlantHandle,
     TimeBarType, VolumeProfileMinuteBarsRequest,
 };
-use tokio::sync::broadcast::error::RecvError;
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{broadcast, mpsc, watch};
 
-use crate::{Bar, Error, LadderMinute, Live, Login, Period, Side, Trade, App, Credentials};
+use crate::connection::{Command, Inner, Phase};
+use crate::{Bar, Error, LadderMinute, Live, Period, Side, Trade, App, Credentials};
 
-/// How long a call waits for the session to be signed in before it gives up
-/// and says why it is not.
+/// How long a call waits for the data half to be signed in before it gives
+/// up and says why it is not.
 const PATIENCE: Duration = Duration::from_secs(20);
-
-/// How long closing waits for a session to sign out before it lets go:
-/// long enough for Rithmic to hear the logout, short enough that quitting
-/// is not held up by a gateway that has gone quiet.
-pub const SIGN_OUT_WAIT: Duration = Duration::from_secs(4);
 
 /// How long one ordinary request may take.
 const REQUEST: Duration = Duration::from_secs(15);
@@ -40,12 +38,6 @@ const REQUEST: Duration = Duration::from_secs(15);
 /// window in pieces, and the whole of it can take a while; past this it is
 /// not coming.
 const REPLAY: Duration = Duration::from_secs(120);
-
-/// The wait before reconnecting after a drop, doubling to the ceiling, and
-/// put back to the floor by a session that stayed up for [`STABLE`].
-const BACKOFF_FLOOR: Duration = Duration::from_secs(1);
-const BACKOFF_CEILING: Duration = Duration::from_secs(60);
-const STABLE: Duration = Duration::from_secs(60);
 
 /// How long a front month is believed before it is asked for again. A roll
 /// happens once a quarter; asking once an hour costs nothing.
@@ -56,25 +48,24 @@ const FRONT_FRESH: Duration = Duration::from_secs(3_600);
 /// quarterly index contracts about eight days early.
 const ROLL_DAYS: i64 = 8;
 
-/// What a forced logout is reported as.
-const EVICTED: &str = "Rithmic signed this session out, as it does when the same login signs in \
-                       somewhere else";
-
-type Sink = Arc<dyn Fn(Live) + Send + Sync>;
-type Source = Arc<dyn Fn() -> Result<Login, Error> + Send + Sync>;
+pub(crate) type Sink = Arc<dyn Fn(Live) + Send + Sync>;
 
 /// The plants' handles, for requests from any thread. A handle's methods
 /// take `&self`, so one is shared rather than one made per call.
-struct Handles {
+pub(crate) struct Handles {
     ticker: RithmicTickerPlantHandle,
     history: RithmicHistoryPlantHandle,
 }
 
+/// Where the data half stands, under the generation it is open as.
+pub(crate) type Told = (u64, State);
+
 #[derive(Clone)]
-enum State {
+pub(crate) enum State {
     /// Signing in for the first time.
     Connecting,
-    Up(Arc<Handles>),
+    /// Signed in. No handles only in a test, whose plants are fakes.
+    Up(Option<Arc<Handles>>),
     /// Lost, and reconnecting by itself.
     Down(Error),
     /// Will not try again by itself: refused, nothing to sign in with, or
@@ -82,20 +73,12 @@ enum State {
     Stopped(Error),
 }
 
-enum Command {
-    Watch { id: u64, root: String, exchange: String, sink: Sink },
-    Unwatch { id: u64 },
-    /// Cut the connection as a network failure would, to prove recovery.
-    Sever,
-    Stop { done: oneshot::Sender<()> },
-}
-
 /// Front months already asked for, by root and exchange.
 #[derive(Default)]
-struct Fronts(Mutex<HashMap<(String, String), (String, Instant)>>);
+pub(crate) struct Fronts(Mutex<HashMap<(String, String), (String, Instant)>>);
 
 impl Fronts {
-    fn get(&self, root: &str, exchange: &str) -> Option<String> {
+    pub(crate) fn get(&self, root: &str, exchange: &str) -> Option<String> {
         let fronts = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let (contract, at) = fronts.get(&(root.to_string(), exchange.to_string()))?;
         (at.elapsed() < FRONT_FRESH).then(|| contract.clone())
@@ -116,87 +99,16 @@ impl Fronts {
     }
 }
 
-struct Inner {
-    handle: tokio::runtime::Handle,
-    /// Held to keep the threads alive, and shut down without waiting when
-    /// the last client goes. Never dropped on one of its own threads: no
-    /// task holds an `Inner`.
-    runtime: Mutex<Option<tokio::runtime::Runtime>>,
-    commands: mpsc::UnboundedSender<Command>,
-    state: watch::Receiver<State>,
-    fronts: Arc<Fronts>,
-    next_watch: AtomicU64,
-    closed: AtomicBool,
-}
-
-impl Drop for Inner {
-    fn drop(&mut self) {
-        if let Some(runtime) = self.runtime.get_mut().unwrap_or_else(|e| e.into_inner()).take() {
-            runtime.shutdown_background();
-        }
-    }
-}
-
-/// The process's Rithmic session. Cheap to clone; every clone is the same
-/// session.
-#[derive(Clone)]
-pub struct Client {
-    inner: Arc<Inner>,
-}
-
-static SESSION: Mutex<Option<Client>> = Mutex::new(None);
-
-/// The session, started if there is none yet.
-///
-/// `app` is who Rithmic is told is signing in. `login` is asked for the login each time the session signs in, which is
-/// when it starts and after every drop, so a password changed in the keyring
-/// is the one the next sign-in uses. It runs on the session's thread and may
-/// be slow; it must not block on the session.
-///
-/// Starting is the only thing here that costs anything — a runtime on two
-/// threads, then a connection — and nothing calls this until a chart asks
-/// Rithmic for something.
-pub fn session(app: App, login: impl Fn() -> Result<Login, Error> + Send + Sync + 'static) -> Result<Client, Error> {
-    let mut session = SESSION.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(client) = session.as_ref()
-        && !client.inner.closed.load(Ordering::Acquire)
-    {
-        return Ok(client.clone());
-    }
-    let client = Client::start(app, Arc::new(login))?;
-    *session = Some(client.clone());
-    Ok(client)
-}
-
-/// Is there a session in this process?
-pub fn running() -> bool {
-    SESSION
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .as_ref()
-        .is_some_and(|client| !client.inner.closed.load(Ordering::Acquire))
-}
-
-/// The contract the session last found trading for `root` on `exchange`,
-/// if it has asked lately. Never asks: for a caller that must not wait,
-/// such as a menu deciding what it can offer.
-pub fn known_front_month(root: &str, exchange: &str) -> Option<String> {
-    let session = SESSION.lock().unwrap_or_else(|e| e.into_inner());
-    session.as_ref()?.inner.fronts.get(root, exchange)
-}
-
-/// Sign out of every plant and end the session, waiting a few seconds at
-/// most for Rithmic to acknowledge. Whatever is watching hears
-/// [`Error::Closed`], and the next call to [`session`] starts afresh.
 /// The exchanges the signed-in login has level 1 market data for, once the
-/// session has asked: `None` before the first sign-in, and after a
+/// data half has asked: `None` before the first sign-in, and after a
 /// shutdown.
 pub fn entitled_exchanges() -> Option<Vec<String>> {
     ENTITLED.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 /// Call `listener` whenever [`entitled_exchanges`] changes, on the
-/// session's thread. One listener per process; a second replaces the first.
+/// connection's thread. One listener per process; a second replaces the
+/// first.
 pub fn on_entitlements(listener: impl Fn() + Send + Sync + 'static) {
     *LISTENER.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(listener));
 }
@@ -204,6 +116,10 @@ pub fn on_entitlements(listener: impl Fn() + Send + Sync + 'static) {
 static ENTITLED: Mutex<Option<Vec<String>>> = Mutex::new(None);
 type Listener = Arc<dyn Fn() + Send + Sync>;
 static LISTENER: Mutex<Option<Listener>> = Mutex::new(None);
+
+pub(crate) fn forget_entitlements() {
+    *ENTITLED.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
 
 fn entitle(exchanges: Vec<String>) {
     let changed = {
@@ -241,84 +157,61 @@ fn granted(status: &str) -> bool {
     matches!(status.as_str(), "enabled" | "enable" | "true" | "yes" | "1" | "granted" | "allowed")
 }
 
-pub fn shutdown() {
-    *ENTITLED.lock().unwrap_or_else(|e| e.into_inner()) = None;
-    let client = SESSION.lock().unwrap_or_else(|e| e.into_inner()).take();
-    if let Some(client) = client {
-        client.close();
-    }
+/// A login's market data. Cheap to clone; every clone is the same data
+/// half, until it is closed: a client from before a close stays closed.
+#[derive(Clone)]
+pub struct Client {
+    pub(crate) inner: Arc<Inner>,
+    pub(crate) generation: u64,
 }
 
 impl Client {
-    fn start(app: App, source: Source) -> Result<Client, Error> {
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .thread_name("rithmic")
-            .enable_all()
-            .build()
-            .map_err(|error| Error::Connection(error.to_string()))?;
-        let (commands, inbox) = mpsc::unbounded_channel();
-        let (state, states) = watch::channel(State::Connecting);
-        let fronts = Arc::new(Fronts::default());
-        let supervisor = Supervisor {
-            app,
-            source,
-            inbox,
-            state,
-            fronts: fronts.clone(),
-            watched: HashMap::new(),
-        };
-        runtime.spawn(supervisor.run());
-        Ok(Client {
-            inner: Arc::new(Inner {
-                handle: runtime.handle().clone(),
-                runtime: Mutex::new(Some(runtime)),
-                commands,
-                state: states,
-                fronts,
-                next_watch: AtomicU64::new(1),
-                closed: AtomicBool::new(false),
-            }),
-        })
+    pub(crate) fn of(inner: Arc<Inner>, generation: u64) -> Client {
+        Client { inner, generation }
     }
 
-    fn close(&self) {
-        if self.inner.closed.swap(true, Ordering::AcqRel) {
-            return;
-        }
-        let (done, finished) = oneshot::channel();
-        if self.inner.commands.send(Command::Stop { done }).is_ok() {
-            let _ = self.inner.handle.block_on(async { tokio::time::timeout(SIGN_OUT_WAIT, finished).await });
-        }
+    fn open(&self) -> bool {
+        self.inner.data_open(self.generation)
     }
 
-    /// Wait for the session to be signed in, or say why it is not.
+    /// Wait for the data half to be signed in, or say why it is not.
     fn up(&self) -> Result<Arc<Handles>, Error> {
-        if self.inner.closed.load(Ordering::Acquire) {
+        if !self.open() {
             return Err(Error::Closed);
         }
-        let mut states = self.inner.state.clone();
-        self.inner.handle.block_on(async move {
+        let generation = self.generation;
+        let mut states = self.inner.data.clone();
+        let state = self.inner.handle.block_on(async move {
             let settled = tokio::time::timeout(
                 PATIENCE,
-                states.wait_for(|state| matches!(state, State::Up(_) | State::Stopped(_))),
+                states.wait_for(|(told, state)| {
+                    *told == generation && matches!(state, State::Up(_) | State::Stopped(_))
+                }),
             )
             .await
-            .map(|waited| waited.map(|state| state.clone()));
-            let state = match settled {
-                Ok(Ok(state)) => state,
-                Ok(Err(_)) => return Err(Error::Closed),
-                Err(_) => states.borrow().clone(),
-            };
-            match state {
-                State::Up(handles) => Ok(handles),
-                State::Stopped(error) | State::Down(error) => Err(error),
-                State::Connecting => Err(Error::Timeout),
+            .map(|waited| waited.map(|told| told.1.clone()));
+            match settled {
+                Ok(Ok(state)) => Ok(state),
+                Ok(Err(_)) => Err(Error::Closed),
+                Err(_) => Ok(match &*states.borrow() {
+                    (told, state) if *told == generation => state.clone(),
+                    _ => State::Connecting,
+                }),
             }
-        })
+        })?;
+        // Closed while this waited.
+        if !self.open() {
+            return Err(Error::Closed);
+        }
+        match state {
+            State::Up(Some(handles)) => Ok(handles),
+            State::Up(None) => Err(Error::Closed),
+            State::Stopped(error) | State::Down(error) => Err(error),
+            State::Connecting => Err(Error::Timeout),
+        }
     }
 
-    /// Sign in now, if the session is not already, and wait for it.
+    /// Sign in now, if the data half is not already, and wait for it.
     pub fn sign_in(&self) -> Result<(), Error> {
         self.up().map(|_| ())
     }
@@ -402,28 +295,29 @@ impl Client {
     }
 
     /// Cut the connection the way a dropped network does, from underneath:
-    /// the plants are aborted, and the supervisor finds out as it would
-    /// about a real drop, reports it and reconnects. For proving that a
-    /// chart survives one; nothing in the app calls it.
+    /// every plant of the login is aborted, and the supervisor finds out as
+    /// it would about a real drop, reports it and reconnects. For proving
+    /// that a chart survives one; nothing in the app calls it.
     #[doc(hidden)]
     pub fn sever(&self) {
         let _ = self.inner.commands.send(Command::Sever);
     }
 
     /// Watch `root`'s front month on `exchange`: every trade on it is handed
-    /// to `sink`, on the session's thread, until the [`Watch`] is dropped.
+    /// to `sink`, on the connection's thread, until the [`Watch`] is dropped.
     ///
     /// Returns at once. The first thing `sink` hears is [`Live::Watching`]
     /// once the contract is subscribed, or [`Live::Lost`] saying why it could
     /// not be. A watch outlives a dropped connection: it hears `Lost`, and
-    /// `Watching` again once the session is back.
+    /// `Watching` again once the data half is back.
     pub fn watch(&self, root: &str, exchange: &str, sink: impl Fn(Live) + Send + Sync + 'static) -> Watch {
         let id = self.inner.next_watch.fetch_add(1, Ordering::Relaxed);
         let sink: Sink = Arc::new(sink);
-        if self.inner.closed.load(Ordering::Acquire) {
+        if !self.open() {
             sink(Live::Lost(Error::Closed));
         } else {
             let _ = self.inner.commands.send(Command::Watch {
+                generation: self.generation,
                 id,
                 root: root.to_string(),
                 exchange: exchange.to_string(),
@@ -447,26 +341,113 @@ impl Drop for Watch {
     }
 }
 
-struct Watched {
-    root: String,
-    exchange: String,
-    sink: Sink,
+pub(crate) struct Watched {
+    pub(crate) root: String,
+    pub(crate) exchange: String,
+    pub(crate) sink: Sink,
     /// The contract it is subscribed to, once it is.
-    contract: Option<String>,
+    pub(crate) contract: Option<String>,
     /// Told of a loss it has not yet been told is over.
-    told_lost: bool,
+    pub(crate) told_lost: bool,
 }
 
-/// What the supervisor holds of a signed-in session.
-struct Connection {
-    ticker: RithmicTickerPlant,
-    history: RithmicHistoryPlant,
-    /// Its own handles, for the updates they receive.
-    ticker_updates: RithmicTickerPlantHandle,
-    history_updates: RithmicHistoryPlantHandle,
-    handles: Arc<Handles>,
-    /// Who signed in, for asking what they may see.
-    user: String,
+/// The data plants of a signed-in data half: what the supervisor hears
+/// from them, what a watch asks of them, and what is closed with them.
+pub(crate) struct DataPlants {
+    pub(crate) ticker_updates: broadcast::Receiver<RithmicResponse>,
+    pub(crate) history_updates: broadcast::Receiver<RithmicResponse>,
+    watcher: Watcher,
+    link: DataLink,
+}
+
+enum DataLink {
+    Rithmic {
+        ticker: RithmicTickerPlant,
+        history: RithmicHistoryPlant,
+        ticker_handle: RithmicTickerPlantHandle,
+        history_handle: RithmicHistoryPlantHandle,
+        handles: Arc<Handles>,
+        /// Who signed in, for asking what they may see.
+        user: String,
+    },
+    /// A test's, holding its channels open. Never made outside one.
+    #[cfg_attr(not(test), allow(dead_code))]
+    Fake(#[allow(dead_code)] Vec<broadcast::Sender<RithmicResponse>>),
+}
+
+impl DataPlants {
+    #[cfg(test)]
+    pub(crate) fn fake(
+        ticker_updates: broadcast::Receiver<RithmicResponse>,
+        plant: tests::Fake,
+    ) -> DataPlants {
+        let (history, history_updates) = broadcast::channel(16);
+        DataPlants { ticker_updates, history_updates, watcher: Watcher::Fake(plant), link: DataLink::Fake(vec![history]) }
+    }
+
+    fn handles(&self) -> Option<Arc<Handles>> {
+        match &self.link {
+            DataLink::Rithmic { handles, .. } => Some(handles.clone()),
+            DataLink::Fake(_) => None,
+        }
+    }
+
+    /// Cut the plants from underneath, as a network failure would.
+    pub(crate) fn abort(&self) {
+        if let DataLink::Rithmic { ticker_handle, history_handle, .. } = &self.link {
+            ticker_handle.abort();
+            history_handle.abort();
+        }
+    }
+
+    /// Sign out, or with `graceful` false only cut the plants, and wait for
+    /// them to stop: dropping a plant does not stop it, and the old session
+    /// would stay open next to the new one.
+    pub(crate) async fn close(self, graceful: bool) {
+        let DataLink::Rithmic { ticker, history, ticker_handle, history_handle, .. } = self.link else { return };
+        if graceful {
+            let _ = within(Duration::from_secs(2), ticker_handle.disconnect()).await;
+            let _ = within(Duration::from_secs(2), history_handle.disconnect()).await;
+        }
+        ticker_handle.abort();
+        history_handle.abort();
+        let _ = tokio::time::timeout(Duration::from_secs(3), ticker.await_shutdown()).await;
+        let _ = tokio::time::timeout(Duration::from_secs(3), history.await_shutdown()).await;
+    }
+}
+
+/// The plant a watch asks: Rithmic's ticker plant, or a test's.
+#[derive(Clone)]
+pub(crate) enum Watcher {
+    Rithmic(Arc<Handles>),
+    #[cfg(test)]
+    Fake(tests::Fake),
+}
+
+impl Plant for Watcher {
+    async fn front_month(&self, root: String, exchange: String) -> Result<String, Error> {
+        match self {
+            Watcher::Rithmic(handles) => handles.front_month(root, exchange).await,
+            #[cfg(test)]
+            Watcher::Fake(fake) => fake.front_month(root, exchange).await,
+        }
+    }
+
+    async fn subscribe(&self, contract: String, exchange: String) -> Result<(), Error> {
+        match self {
+            Watcher::Rithmic(handles) => handles.subscribe(contract, exchange).await,
+            #[cfg(test)]
+            Watcher::Fake(fake) => fake.subscribe(contract, exchange).await,
+        }
+    }
+
+    async fn unsubscribe(&self, contract: String, exchange: String) {
+        match self {
+            Watcher::Rithmic(handles) => handles.unsubscribe(contract, exchange).await,
+            #[cfg(test)]
+            Watcher::Fake(fake) => fake.unsubscribe(contract, exchange).await,
+        }
+    }
 }
 
 /// What the plants are connected with: the login, and the app it is for.
@@ -485,13 +466,42 @@ pub(crate) fn config(app: App, credentials: &Credentials) -> Result<RithmicConfi
         .map_err(|_| Error::NoLogin("the Rithmic login is incomplete".into()))
 }
 
-struct Supervisor {
-    app: App,
-    source: Source,
-    inbox: mpsc::UnboundedReceiver<Command>,
-    state: watch::Sender<State>,
-    fronts: Arc<Fronts>,
-    watched: HashMap<u64, Watched>,
+/// Sign in to the ticker and history plants.
+pub(crate) async fn connect(app: App, credentials: &Credentials) -> Result<DataPlants, Error> {
+    let config = config(app, credentials)?;
+    // Kept to ask which exchanges it is entitled to; never logged.
+    let user = credentials.user.clone();
+
+    let ticker = within(REQUEST, RithmicTickerPlant::connect(&config, ConnectStrategy::Simple)).await?;
+    let ticker_updates = ticker.get_handle();
+    if let Err(error) = signed_in(within(REQUEST, ticker_updates.login()).await) {
+        ticker_updates.abort();
+        return Err(error);
+    }
+    let history = match within(REQUEST, RithmicHistoryPlant::connect(&config, ConnectStrategy::Simple)).await {
+        Ok(history) => history,
+        Err(error) => {
+            let _ = within(REQUEST, ticker_updates.disconnect()).await;
+            return Err(error);
+        }
+    };
+    let history_updates = history.get_handle();
+    if let Err(error) = signed_in(within(REQUEST, history_updates.login()).await) {
+        history_updates.abort();
+        let _ = within(REQUEST, ticker_updates.disconnect()).await;
+        return Err(error);
+    }
+    let handles = Arc::new(Handles { ticker: ticker.get_handle(), history: history.get_handle() });
+    // Heard by the supervisor, and the handles kept to sign out with.
+    let (mut ticker_handle, mut history_handle) = (ticker_updates, history_updates);
+    let ticker_updates = std::mem::replace(&mut ticker_handle.subscription_receiver, broadcast::channel(1).1);
+    let history_updates = std::mem::replace(&mut history_handle.subscription_receiver, broadcast::channel(1).1);
+    Ok(DataPlants {
+        ticker_updates,
+        history_updates,
+        watcher: Watcher::Rithmic(handles.clone()),
+        link: DataLink::Rithmic { ticker, history, ticker_handle, history_handle, handles, user },
+    })
 }
 
 /// What a watch asks of the ticker plant, apart from the trades it then
@@ -522,7 +532,7 @@ impl Plant for Arc<Handles> {
 }
 
 /// A request to the plant that watches were waiting on, answered.
-enum Settled {
+pub(crate) enum Settled {
     /// A root's front month, or why there is none.
     Resolved { root: String, exchange: String, outcome: Result<String, Error> },
     /// A contract subscribed to, or why it could not be.
@@ -531,15 +541,15 @@ enum Settled {
     Unsubscribed { contract: String, exchange: String },
 }
 
-/// The subscriptions of one signed-in connection, and the requests for them
+/// The subscriptions of one signed-in data half, and the requests for them
 /// still out.
 ///
 /// A request is a round trip to Chicago, and the loop that asks is the one
 /// that hands every trade on. So none is waited for there: each runs as a
 /// task of its own and its answer comes back as a [`Settled`], while the
 /// trades of every contract already watched go on arriving. Dropped with
-/// its connection, so an answer meant for one that is gone is never heard.
-struct Subscriptions<P> {
+/// its plants, so an answer meant for ones that are gone is never heard.
+pub(crate) struct Subscriptions<P> {
     plant: P,
     /// How many watches each subscribed contract has, by contract and
     /// exchange.
@@ -554,11 +564,11 @@ struct Subscriptions<P> {
     /// the two could reach the plant the wrong way round.
     unsubscribing: HashSet<(String, String)>,
     answers: mpsc::UnboundedSender<Settled>,
-    settled: mpsc::UnboundedReceiver<Settled>,
+    pub(crate) settled: mpsc::UnboundedReceiver<Settled>,
 }
 
 impl<P: Plant> Subscriptions<P> {
-    fn new(plant: P) -> Subscriptions<P> {
+    pub(crate) fn new(plant: P) -> Subscriptions<P> {
         let (answers, settled) = mpsc::unbounded_channel();
         Subscriptions {
             plant,
@@ -602,183 +612,81 @@ impl<P: Plant> Subscriptions<P> {
     }
 }
 
-/// Why the supervisor stopped looking after a connection.
-enum Ended {
-    Dropped(Error),
-    /// Rithmic logged the session out, which it does when the same login
-    /// signs in somewhere else. Signing straight back in would log that one
-    /// out in turn, and the two would take turns for ever.
-    Evicted,
-    Stopped(oneshot::Sender<()>),
-    /// Every client went away.
-    Abandoned,
+/// The data half, as the connection's supervisor keeps it.
+pub(crate) struct DataHalf {
+    pub(crate) phase: Phase,
+    pub(crate) watches: Watches,
+    pub(crate) live: Option<(DataPlants, Subscriptions<Watcher>)>,
 }
 
-impl Supervisor {
-    async fn run(mut self) {
-        let mut backoff = BACKOFF_FLOOR;
-        loop {
-            let connection = match self.connect().await {
-                Ok(connection) => connection,
-                Err(error @ (Error::Refused(_) | Error::NoLogin(_))) => {
-                    self.refuse(error).await;
-                    return;
-                }
-                Err(error) => {
-                    self.lose(error.clone());
-                    if !self.idle(backoff).await {
-                        return;
-                    }
-                    backoff = (backoff * 2).min(BACKOFF_CEILING);
-                    continue;
-                }
-            };
-            let up_since = Instant::now();
-            let _ = self.state.send(State::Up(connection.handles.clone()));
-            // Which exchanges this login has market data for. Asked once a
-            // sign-in, before anything is watched; a failure to answer
-            // leaves what was known, and charts as if all were entitled.
-            if let Ok(responses) =
-                within(REQUEST, connection.handles.ticker.list_exchange_permissions(&connection.user)).await
-            {
-                entitle(exchanges_of(&responses));
-            }
-            match self.serve(connection).await {
-                Ended::Dropped(error) => {
-                    self.lose(error);
-                    if up_since.elapsed() >= STABLE {
-                        backoff = BACKOFF_FLOOR;
-                    }
-                    if !self.idle(backoff).await {
-                        return;
-                    }
-                    backoff = (backoff * 2).min(BACKOFF_CEILING);
-                }
-                Ended::Evicted => {
-                    self.refuse(Error::Refused(EVICTED.into())).await;
-                    return;
-                }
-                Ended::Stopped(done) => {
-                    let _ = done.send(());
-                    return;
-                }
-                Ended::Abandoned => return,
-            }
-        }
+impl DataHalf {
+    pub(crate) fn new(state: watch::Sender<Told>, fronts: Arc<Fronts>) -> DataHalf {
+        DataHalf { phase: Phase::Off, watches: Watches::new(state, fronts), live: None }
     }
 
-    /// Sign in to the ticker and history plants.
-    async fn connect(&mut self) -> Result<Connection, Error> {
-        let login = (self.source)()?;
-        let credentials = login.credentials().await?;
-        let config = config(self.app, &credentials)?;
-        // Kept to ask which exchanges it is entitled to; never logged.
-        let user = credentials.user.clone();
-        drop(credentials);
-
-        let ticker = within(REQUEST, RithmicTickerPlant::connect(&config, ConnectStrategy::Simple)).await?;
-        let ticker_updates = ticker.get_handle();
-        if let Err(error) = signed_in(within(REQUEST, ticker_updates.login()).await) {
-            ticker_updates.abort();
-            return Err(error);
+    /// Signed in: say so, ask which exchanges the login may see, and
+    /// subscribe again everything still watched, each hearing
+    /// [`Live::Watching`] once it is, which is its cue to load a snapshot.
+    pub(crate) fn up(&mut self, plants: DataPlants) {
+        let mut subscriptions = Subscriptions::new(plants.watcher.clone());
+        self.watches.set(State::Up(plants.handles()));
+        // A failure to answer leaves what was known, and charts as if all
+        // were entitled.
+        if let DataLink::Rithmic { handles, user, .. } = &plants.link {
+            let (handles, user) = (handles.clone(), user.clone());
+            tokio::spawn(async move {
+                if let Ok(responses) = within(REQUEST, handles.ticker.list_exchange_permissions(&user)).await {
+                    entitle(exchanges_of(&responses));
+                }
+            });
         }
-        let history = match within(REQUEST, RithmicHistoryPlant::connect(&config, ConnectStrategy::Simple)).await {
-            Ok(history) => history,
-            Err(error) => {
-                let _ = within(REQUEST, ticker_updates.disconnect()).await;
-                return Err(error);
-            }
-        };
-        let history_updates = history.get_handle();
-        if let Err(error) = signed_in(within(REQUEST, history_updates.login()).await) {
-            history_updates.abort();
-            let _ = within(REQUEST, ticker_updates.disconnect()).await;
-            return Err(error);
-        }
-        let handles = Arc::new(Handles { ticker: ticker.get_handle(), history: history.get_handle() });
-        Ok(Connection { ticker, history, ticker_updates, history_updates, handles, user })
-    }
-
-    /// Run a signed-in session until it drops or is stopped.
-    async fn serve(&mut self, mut connection: Connection) -> Ended {
-        let mut subscriptions = Subscriptions::new(connection.handles.clone());
-        let ids: Vec<u64> = self.watched.keys().copied().collect();
+        let ids: Vec<u64> = self.watches.watched.keys().copied().collect();
         for id in ids {
-            self.begin(id, &mut subscriptions);
+            self.watches.begin(id, &mut subscriptions);
         }
-        let ended = loop {
-            tokio::select! {
-                command = self.inbox.recv() => match command {
-                    None => break Ended::Abandoned,
-                    Some(Command::Stop { done }) => break Ended::Stopped(done),
-                    Some(Command::Watch { id, root, exchange, sink }) => {
-                        self.watched.insert(id, Watched { root, exchange, sink, contract: None, told_lost: false });
-                        self.begin(id, &mut subscriptions);
-                    }
-                    Some(Command::Unwatch { id }) => self.end(id, &mut subscriptions),
-                    Some(Command::Sever) => {
-                        connection.ticker_updates.abort();
-                        connection.history_updates.abort();
-                    }
-                },
-                Some(settled) = subscriptions.settled.recv() => self.settle(settled, &mut subscriptions),
-                update = connection.ticker_updates.subscription_receiver.recv() => match update {
-                    Ok(update) => {
-                        if matches!(update.message, RithmicMessage::ForcedLogout(_)) {
-                            break Ended::Evicted;
-                        }
-                        if let Some(error) = dropped(&update) {
-                            break Ended::Dropped(error);
-                        }
-                        if let RithmicMessage::LastTrade(trade) = &update.message {
-                            self.trade(trade);
-                        }
-                    }
-                    // Trades were missed. Everything watching starts over,
-                    // which to a chart means a fresh snapshot.
-                    Err(RecvError::Lagged(_)) => self.start_over(),
-                    Err(RecvError::Closed) => break Ended::Dropped(Error::Connection("the ticker plant closed".into())),
-                },
-                update = connection.history_updates.subscription_receiver.recv() => match update {
-                    Ok(update) => {
-                        if matches!(update.message, RithmicMessage::ForcedLogout(_)) {
-                            break Ended::Evicted;
-                        }
-                        if let Some(error) = dropped(&update) {
-                            break Ended::Dropped(error);
-                        }
-                    }
-                    Err(RecvError::Lagged(_)) => {}
-                    Err(RecvError::Closed) => break Ended::Dropped(Error::Connection("the history plant closed".into())),
-                },
-            }
-        };
-        let graceful = matches!(ended, Ended::Stopped(_) | Ended::Abandoned);
-        if graceful {
-            let _ = within(Duration::from_secs(2), connection.ticker_updates.disconnect()).await;
-            let _ = within(Duration::from_secs(2), connection.history_updates.disconnect()).await;
-            let _ = self.state.send(State::Stopped(Error::Closed));
-            for watched in self.watched.values() {
-                (watched.sink)(Live::Lost(Error::Closed));
-            }
+        self.live = Some((plants, subscriptions));
+    }
+
+    /// Sign out, and tell everything watching it is over.
+    pub(crate) async fn close(&mut self) {
+        if let Some((plants, _)) = self.live.take() {
+            plants.close(true).await;
         }
-        // Dropping a plant does not stop it: aborted and waited for, or the
-        // old session would stay open next to the new one.
-        connection.ticker_updates.abort();
-        connection.history_updates.abort();
-        let _ = tokio::time::timeout(Duration::from_secs(3), connection.ticker.await_shutdown()).await;
-        let _ = tokio::time::timeout(Duration::from_secs(3), connection.history.await_shutdown()).await;
-        for watched in self.watched.values_mut() {
-            watched.contract = None;
-        }
-        self.fronts.clear();
-        ended
+        self.phase = Phase::Off;
+        self.watches.closed();
+    }
+}
+
+/// Everything watched on the data half, and what it has been told.
+pub(crate) struct Watches {
+    state: watch::Sender<Told>,
+    /// The generation the half is open as. A watch asked for by a client
+    /// of another is closed, and what a client waits for is told it under
+    /// its own, so a client opening the half again never takes the close
+    /// before it for an answer.
+    pub(crate) generation: u64,
+    fronts: Arc<Fronts>,
+    pub(crate) watched: HashMap<u64, Watched>,
+}
+
+impl Watches {
+    pub(crate) fn new(state: watch::Sender<Told>, fronts: Arc<Fronts>) -> Watches {
+        Watches { state, generation: 0, fronts, watched: HashMap::new() }
+    }
+
+    /// Where the half stands now, as its clients are told.
+    pub(crate) fn set(&self, state: State) {
+        let _ = self.state.send((self.generation, state));
+    }
+
+    pub(crate) fn now(&self) -> State {
+        self.state.borrow().1.clone()
     }
 
     /// Subscribe watch `id` to its root's front month, and tell it so once
     /// it is. Returns at once: what the plant has to be asked is asked by a
-    /// task, and its answer [`Supervisor::settle`]d when it comes.
-    fn begin<P: Plant>(&mut self, id: u64, subscriptions: &mut Subscriptions<P>) {
+    /// task, and its answer [`Watches::settle`]d when it comes.
+    pub(crate) fn begin<P: Plant>(&mut self, id: u64, subscriptions: &mut Subscriptions<P>) {
         let Some((root, exchange)) = self.watched.get(&id).map(|w| (w.root.clone(), w.exchange.clone())) else {
             return;
         };
@@ -824,7 +732,7 @@ impl Supervisor {
     }
 
     /// The plant answered a request that watches were waiting on.
-    fn settle<P: Plant>(&mut self, settled: Settled, subscriptions: &mut Subscriptions<P>) {
+    pub(crate) fn settle<P: Plant>(&mut self, settled: Settled, subscriptions: &mut Subscriptions<P>) {
         match settled {
             Settled::Resolved { root, exchange, outcome } => {
                 let waiting = subscriptions.resolving.remove(&(root.clone(), exchange.clone())).unwrap_or_default();
@@ -879,7 +787,7 @@ impl Supervisor {
 
     /// Forget watch `id`, and unsubscribe its contract if nothing else
     /// watches it. Returns at once.
-    fn end<P: Plant>(&mut self, id: u64, subscriptions: &mut Subscriptions<P>) {
+    pub(crate) fn end<P: Plant>(&mut self, id: u64, subscriptions: &mut Subscriptions<P>) {
         let Some(watched) = self.watched.remove(&id) else { return };
         // Still waiting for its contract: the answer finds it gone.
         let Some(contract) = watched.contract else { return };
@@ -898,7 +806,7 @@ impl Supervisor {
         }
     }
 
-    fn trade(&self, trade: &LastTrade) {
+    pub(crate) fn trade(&self, trade: &LastTrade) {
         let Some(found) = trade_of(trade) else { return };
         let (Some(symbol), Some(exchange)) = (trade.symbol.as_deref(), trade.exchange.as_deref()) else {
             return;
@@ -915,7 +823,7 @@ impl Supervisor {
         }
     }
 
-    fn start_over(&self) {
+    pub(crate) fn start_over(&self) {
         for watched in self.watched.values() {
             if let Some(contract) = &watched.contract {
                 (watched.sink)(Live::Watching { contract: contract.clone() });
@@ -923,10 +831,20 @@ impl Supervisor {
         }
     }
 
-    /// The session is down and will be tried again: say so, once, to
+    /// The plants are gone: nothing is subscribed, and a front month is
+    /// asked for again.
+    fn unsubscribed(&mut self) {
+        for watched in self.watched.values_mut() {
+            watched.contract = None;
+        }
+        self.fronts.clear();
+    }
+
+    /// The data half is down and will be tried again: say so, once, to
     /// everything watching.
-    fn lose(&mut self, error: Error) {
-        let _ = self.state.send(State::Down(error.clone()));
+    pub(crate) fn lose(&mut self, error: Error) {
+        self.unsubscribed();
+        self.set(State::Down(error.clone()));
         for watched in self.watched.values_mut() {
             if !watched.told_lost {
                 watched.told_lost = true;
@@ -935,60 +853,25 @@ impl Supervisor {
         }
     }
 
-    /// Wait out `backoff` before reconnecting, still taking commands. False
-    /// when the session was stopped meanwhile.
-    async fn idle(&mut self, backoff: Duration) -> bool {
-        let sleep = tokio::time::sleep(backoff);
-        tokio::pin!(sleep);
-        loop {
-            tokio::select! {
-                _ = &mut sleep => return true,
-                command = self.inbox.recv() => match command {
-                    None => return false,
-                    Some(Command::Stop { done }) => {
-                        let _ = self.state.send(State::Stopped(Error::Closed));
-                        for watched in self.watched.values() {
-                            (watched.sink)(Live::Lost(Error::Closed));
-                        }
-                        let _ = done.send(());
-                        return false;
-                    }
-                    Some(Command::Watch { id, root, exchange, sink }) => {
-                        if let State::Down(error) = &*self.state.borrow() {
-                            sink(Live::Lost(error.clone()));
-                        }
-                        self.watched.insert(id, Watched { root, exchange, sink, contract: None, told_lost: true });
-                    }
-                    Some(Command::Unwatch { id }) => {
-                        self.watched.remove(&id);
-                    }
-                    Some(Command::Sever) => {}
-                },
-            }
-        }
-    }
-
-    /// Rithmic refused the login, or there is none: say so to everything
-    /// watching now or later, and try nothing more until somebody signs in
-    /// again, which starts a new session.
-    async fn refuse(&mut self, error: Error) {
-        let _ = self.state.send(State::Stopped(error.clone()));
+    /// Rithmic refused the login, or there is none, or it signed this one
+    /// out: say so to everything watching now, and try nothing more until
+    /// the half is closed and opened again.
+    pub(crate) fn refuse(&mut self, error: Error) {
+        self.unsubscribed();
+        self.set(State::Stopped(error.clone()));
         for watched in self.watched.values() {
             (watched.sink)(Live::Lost(error.clone()));
         }
-        while let Some(command) = self.inbox.recv().await {
-            match command {
-                Command::Watch { sink, .. } => sink(Live::Lost(error.clone())),
-                Command::Unwatch { id } => {
-                    self.watched.remove(&id);
-                }
-                Command::Sever => {}
-                Command::Stop { done } => {
-                    let _ = done.send(());
-                    return;
-                }
-            }
+    }
+
+    /// Signed out: everything watching hears so, and is forgotten.
+    fn closed(&mut self) {
+        self.unsubscribed();
+        self.set(State::Stopped(Error::Closed));
+        for watched in self.watched.values() {
+            (watched.sink)(Live::Lost(Error::Closed));
         }
+        self.watched.clear();
     }
 }
 
@@ -1029,7 +912,7 @@ fn rejected(error: &RithmicError) -> Error {
 }
 
 /// The connection is gone, if this update says so.
-fn dropped(update: &RithmicResponse) -> Option<Error> {
+pub(crate) fn dropped(update: &RithmicResponse) -> Option<Error> {
     match &update.message {
         // A heartbeat the server turned down is about the heartbeat; the
         // connection is fine.
@@ -1248,7 +1131,7 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// Rithmic is told the caller's name and version, not this crate's.
@@ -1325,10 +1208,10 @@ mod tests {
     /// A ticker plant that answers a front month at once, and subscribes to
     /// a contract named in `slow` only when the test lets it.
     #[derive(Clone)]
-    struct Fake {
+    pub(crate) struct Fake {
         slow: Arc<Mutex<HashSet<String>>>,
         gate: Arc<tokio::sync::Semaphore>,
-        subscribes: Arc<Mutex<Vec<String>>>,
+        pub(crate) subscribes: Arc<Mutex<Vec<String>>>,
         unsubscribes: Arc<Mutex<Vec<String>>>,
     }
 
@@ -1364,18 +1247,11 @@ mod tests {
 
     type Heard = Arc<Mutex<Vec<(u64, Live)>>>;
 
-    fn supervisor() -> Supervisor {
-        Supervisor {
-            app: App { name: "test", version: "0" },
-            source: Arc::new(|| Err(Error::NoLogin("a test signs in to nothing".into()))),
-            inbox: mpsc::unbounded_channel().1,
-            state: watch::channel(State::Connecting).0,
-            fronts: Arc::new(Fronts::default()),
-            watched: HashMap::new(),
-        }
+    fn supervisor() -> Watches {
+        Watches::new(watch::channel((0, State::Connecting)).0, Arc::new(Fronts::default()))
     }
 
-    fn watch_root(supervisor: &mut Supervisor, subscriptions: &mut Subscriptions<Fake>, id: u64, root: &str, heard: &Heard) {
+    fn watch_root(supervisor: &mut Watches, subscriptions: &mut Subscriptions<Fake>, id: u64, root: &str, heard: &Heard) {
         let heard = heard.clone();
         let sink: Sink = Arc::new(move |live| heard.lock().unwrap().push((id, live)));
         let watched = Watched { root: root.into(), exchange: "CME".into(), sink, contract: None, told_lost: false };
@@ -1384,7 +1260,7 @@ mod tests {
     }
 
     /// Take the plant's next answer, as the session's loop would.
-    async fn settle_next(supervisor: &mut Supervisor, subscriptions: &mut Subscriptions<Fake>) {
+    async fn settle_next(supervisor: &mut Watches, subscriptions: &mut Subscriptions<Fake>) {
         let settled = tokio::time::timeout(Duration::from_secs(5), subscriptions.settled.recv())
             .await
             .expect("an answer")

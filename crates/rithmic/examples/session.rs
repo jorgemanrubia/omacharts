@@ -18,8 +18,8 @@ fn main() {
         rithmic::Login::from_env(rithmic::TEST_SYSTEM, rithmic::TEST_URL)
             .unwrap_or_else(|| Err(rithmic::Error::NoLogin(format!("set {}", rithmic::DEV_LOGIN))))
     };
-    let client = match rithmic::session(APP, login) {
-        Ok(client) => client,
+    let client = match rithmic::connection(APP, "example", login) {
+        Ok(connection) => connection.data(),
         Err(error) => return eprintln!("{error}"),
     };
     if let Err(error) = client.sign_in() {

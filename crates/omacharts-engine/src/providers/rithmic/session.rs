@@ -285,9 +285,10 @@ pub fn login() -> Result<rithmic::Login, rithmic::Error> {
     }
 }
 
-/// The session, started on first use.
+/// The data login's market data, started on first use: the data half of
+/// its one connection, which its trading shares.
 pub fn client() -> Result<rithmic::Client, rithmic::Error> {
-    rithmic::session(app()?, login)
+    Ok(rithmic::connection(app()?, &login_id(), login)?.data())
 }
 
 /// Rithmic turned the login down: remembered, so that the settings and
@@ -406,6 +407,10 @@ pub fn sign_out_login(secrets: &dyn Secrets, login: &str, user: &str, system: &s
 }
 
 fn end_and_forget(secrets: &dyn Secrets, login: Option<(String, String, String)>) -> Result<(), String> {
+    // Signed out, the login's connection ends, its trading with its data.
+    if let Some((login, _, _)) = &login {
+        rithmic::close(login);
+    }
     rithmic::shutdown();
     *REFUSED.lock().unwrap_or_else(|e| e.into_inner()) = None;
     let forgotten = match (development(), login) {

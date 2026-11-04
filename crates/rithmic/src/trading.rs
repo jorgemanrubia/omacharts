@@ -1,27 +1,24 @@
-//! A login's trading session: the order plant, which lists the login's
-//! accounts, and the PnL plant, which pushes their balances.
+//! The trading half of a login's connection: the order plant, which lists
+//! the login's accounts, and the PnL plant, which pushes their balances.
 //!
-//! Apart from [`Client`](crate::Client), which is market data: only one
-//! login a process has supplies that, and every login can trade. They are
-//! different plants, so the data session and a trading session on the same
-//! login sit side by side. What must not happen is two of either for one
-//! login, because Rithmic signs the first out when the same login signs in
-//! to a plant again; keeping to one is the caller's, which holds them by
-//! login.
+//! Lent by [`Connection::trading`], beside the data half
+//! ([`Client`](crate::Client)) of the same login: they are different
+//! plants, so they sit side by side on one connection, and what must not
+//! happen — two of either for one login, because Rithmic signs the first
+//! out when the same login signs in to a plant again — cannot, because a
+//! login has one connection.
 //!
 //! The order plant also places, moves, links, cancels and flattens, and
-//! pushes what
-//! becomes of every order; the PnL plant pushes positions and balances.
-//! Both land in one [`Book`] the session keeps, which a caller reads
-//! whenever `changed` says something moved. Nothing here polls.
+//! pushes what becomes of every order; the PnL plant pushes positions and
+//! balances. Both land in one [`Book`] the half keeps, which a caller reads
+//! whenever a [`Pulse`] says something moved. Nothing here polls.
 //!
-//! Signed in once and kept until [`Trading::sign_out`]. It does not sign in
-//! again by itself after a drop, unlike the data session: an order is never
-//! sent again behind a trader's back, and a trader signing in again is one
-//! press.
+//! Signed in once and kept until [`Trading::sign_out`]. A drop is
+//! reconnected by the connection, as the data half's is, and orders are
+//! refused meanwhile: an order is never sent again behind a trader's back.
+//! Once back it says so ([`Pulse::Back`]), with the book asked for again.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -32,13 +29,14 @@ use rithmic_rs::rti::{
 };
 use rithmic_rs::{
     ConnectStrategy, ManualOrAutoEntry, OrderSide, OrderStatus, OrderType, RithmicAccount, RithmicCancelAllOrders,
-    RithmicCancelOrder, RithmicExitPosition, RithmicLinkOrders, RithmicModifyOrder, RithmicOrder, RithmicOrderPlant, RithmicOrderPlantHandle,
-    RithmicPnlPlant, RithmicPnlPlantHandle, RithmicResponse, TimeInForce,
+    RithmicCancelOrder, RithmicExitPosition, RithmicLinkOrders, RithmicModifyOrder, RithmicOrder, RithmicOrderPlant,
+    RithmicOrderPlantHandle, RithmicPnlPlant, RithmicPnlPlantHandle, RithmicResponse, TimeInForce,
 };
-use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::{broadcast, oneshot, watch};
 
 use crate::client::{config, error_of, signed_in, within};
-use crate::{App, Error, Login, Side};
+use crate::connection::{Connection, Inner, Opened, Phase};
+use crate::{App, Credentials, Error, Side};
 
 /// How long one request may take.
 const REQUEST: Duration = Duration::from_secs(15);
@@ -222,6 +220,15 @@ impl State {
             positions: self.positions.iter().filter(|position| position.net != 0).cloned().collect(),
             orders: self.orders.iter().rev().cloned().collect(),
         }
+    }
+
+    /// Signed in again after a drop: what is still working, and what is
+    /// held, is listed afresh by the requests that follow. An order that
+    /// finished meanwhile is not listed, and goes, rather than be shown
+    /// working when it is not.
+    fn signed_in_again(&mut self) {
+        self.orders.retain(|order| !order.status.working());
+        self.positions.clear();
     }
 
     fn order_mut(&mut self, basket: &str) -> Option<&mut WorkingOrder> {
@@ -455,144 +462,118 @@ impl State {
     }
 }
 
-type Changed = Arc<dyn Fn() + Send + Sync>;
+/// What the trading half tells whoever opened it, on the connection's
+/// thread.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Pulse {
+    /// An order, position or balance moved: read the book again.
+    Moved,
+    /// The half dropped, and is reconnecting by itself unless the error says
+    /// it cannot ([`Error::Refused`], [`Error::NoLogin`]). Orders are
+    /// refused until it is back.
+    Lost(Error),
+    /// Signed in again after a drop. The accounts were listed again, and
+    /// their working orders, positions and balances asked for afresh, so an
+    /// order that finished while it was down is gone from the book rather
+    /// than shown working: the cue to reconcile what was being waited for.
+    Back,
+}
 
-struct Inner {
-    handle: tokio::runtime::Handle,
-    runtime: Mutex<Option<tokio::runtime::Runtime>>,
-    order: RithmicOrderPlantHandle,
-    pnl: RithmicPnlPlantHandle,
-    plants: Mutex<Option<(RithmicOrderPlant, RithmicPnlPlant)>>,
-    accounts: Vec<Account>,
+pub(crate) type PulseSink = Arc<dyn Fn(Pulse) + Send + Sync>;
+
+/// The order and PnL plants' handles, for requests from any thread.
+pub(crate) struct Desks {
+    pub(crate) order: RithmicOrderPlantHandle,
+    pub(crate) pnl: RithmicPnlPlantHandle,
     /// One order handle per account, by number: an order names its account
     /// through the handle it is sent on.
-    desks: HashMap<String, RithmicOrderPlantHandle>,
-    state: Arc<Mutex<State>>,
-    /// Why the session ended by itself: a drop, or Rithmic signing it out.
-    trouble: Arc<Mutex<Option<Error>>>,
-    closed: AtomicBool,
+    by_account: HashMap<String, RithmicOrderPlantHandle>,
 }
 
-impl Drop for Inner {
-    fn drop(&mut self) {
-        if let Some(runtime) = self.runtime.get_mut().unwrap_or_else(|e| e.into_inner()).take() {
-            runtime.shutdown_background();
-        }
-    }
+#[derive(Clone)]
+pub(crate) enum Standing {
+    Connecting,
+    /// Signed in. No desks only in a test, whose plants are fakes.
+    Up(Option<Arc<Desks>>),
+    /// Lost, and reconnecting by itself.
+    Down(Error),
+    /// Will not try again by itself.
+    Stopped(Error),
 }
 
-/// A login's trading session. Cheap to clone; every clone is the same
-/// session.
+/// A login's trading: the order and PnL plants, lent by
+/// [`Connection::trading`](crate::Connection::trading). Cheap to clone;
+/// every clone is the same half, until it is signed out: a handle from
+/// before stays signed out.
 #[derive(Clone)]
 pub struct Trading {
     inner: Arc<Inner>,
+    generation: u64,
 }
 
 impl Trading {
-    /// Sign `login` in to the order and PnL plants, as `app`, list its
-    /// accounts, and ask for their working orders, positions and balances.
-    /// Blocks until Rithmic has answered, so it is for a thread of its own.
-    ///
-    /// `changed` is called on the session's thread whenever an order,
-    /// position or balance moves, or the session ends by itself.
-    pub fn sign_in(app: App, login: &Login, changed: impl Fn() + Send + Sync + 'static) -> Result<Trading, Error> {
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(1)
-            .thread_name("rithmic-trading")
-            .enable_all()
-            .build()
-            .map_err(|error| Error::Connection(error.to_string()))?;
-        let changed: Changed = Arc::new(changed);
-        let signed = runtime.block_on(connect(app, login));
-        let (order_plant, pnl_plant, order, pnl, accounts) = match signed {
-            Ok(signed) => signed,
-            Err(error) => {
-                runtime.shutdown_background();
-                return Err(error);
-            }
-        };
-        let state = Arc::new(Mutex::new(State::default()));
-        let trouble = Arc::new(Mutex::new(None));
-        runtime.spawn(listen(
-            pnl_plant.subscribe_all(),
-            order_plant.subscribe_all(),
-            state.clone(),
-            trouble.clone(),
-            changed,
-        ));
-        // What is working, held and banked comes on the updates the listener
-        // now hears; the requests only acknowledge.
-        let desks: HashMap<String, RithmicOrderPlantHandle> = accounts
-            .iter()
-            .map(|account| (account.id.clone(), order_plant.get_handle(&rithmic_account(account))))
-            .collect();
-        runtime.block_on(async {
-            for account in &accounts {
-                if let Some(desk) = desks.get(&account.id) {
-                    let _ = within(REQUEST, desk.subscribe_order_updates()).await;
-                    let _ = within(REQUEST, desk.show_orders()).await;
-                }
-                let handle = pnl_plant.get_handle(&rithmic_account(account));
-                let _ = within(REQUEST, handle.subscribe_pnl_updates()).await;
-                let _ = within(REQUEST, handle.get_pnl_position_snapshot()).await;
-            }
-        });
-        Ok(Trading {
-            inner: Arc::new(Inner {
-                handle: runtime.handle().clone(),
-                runtime: Mutex::new(Some(runtime)),
-                order,
-                pnl,
-                plants: Mutex::new(Some((order_plant, pnl_plant))),
-                accounts,
-                desks,
-                state,
-                trouble,
-                closed: AtomicBool::new(false),
-            }),
-        })
+    pub(crate) fn of(inner: Arc<Inner>, generation: u64) -> Trading {
+        Trading { inner, generation }
     }
 
-    /// The login's accounts, as the order plant listed them at sign-in.
+    /// The login's accounts, as the order plant listed them at the last
+    /// sign-in.
     pub fn accounts(&self) -> Vec<Account> {
-        self.inner.accounts.clone()
+        self.inner.accounts.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// The balance of the account `id`, once the PnL plant has said.
     pub fn balance(&self, id: &str) -> Option<f64> {
-        let state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
+        let state = self.inner.book.lock().unwrap_or_else(|e| e.into_inner());
         state.accounts.iter().find(|known| known.account == id).and_then(|known| known.balance)
     }
 
-    /// Every order, position and balance the session has heard of.
+    /// Every order, position and balance the half has heard of.
     pub fn book(&self) -> Book {
-        self.inner.state.lock().unwrap_or_else(|e| e.into_inner()).book()
+        self.inner.book.lock().unwrap_or_else(|e| e.into_inner()).book()
     }
 
-    /// Why the session is no longer signed in, if it ended by itself.
+    /// Why the half is not signed in now: dropped and coming back, signed
+    /// out from elsewhere, or signed out here.
     pub fn trouble(&self) -> Option<Error> {
-        if self.inner.closed.load(Ordering::Acquire) {
+        if !self.inner.trading_open(self.generation) {
             return Some(Error::Closed);
         }
-        self.inner.trouble.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        match &*self.inner.trading.borrow() {
+            Standing::Down(error) | Standing::Stopped(error) => Some(error.clone()),
+            Standing::Up(_) | Standing::Connecting => None,
+        }
     }
 
-    /// The order handle for `account`, while the session is signed in.
+    /// The plants' handles, while the half is signed in.
     ///
-    /// Signed out already, nothing is sent, which is a refusal and not a
-    /// request left unanswered: said as one.
-    fn desk(&self, account: &str) -> Result<&RithmicOrderPlantHandle, Error> {
+    /// Not signed in, nothing is sent, which is a refusal and not a request
+    /// left unanswered: said as one.
+    fn desks(&self) -> Result<Arc<Desks>, Error> {
         if let Some(trouble) = self.trouble() {
             return Err(Error::Rejected(trouble.to_string()));
         }
-        self.inner.desks.get(account).ok_or_else(|| Error::NotFound("such account on this login".into()))
+        match &*self.inner.trading.borrow() {
+            Standing::Up(Some(desks)) => Ok(desks.clone()),
+            _ => Err(Error::Rejected("the trading session is still signing in".into())),
+        }
+    }
+
+    /// Run `request` on the order handle of `account`.
+    fn on_desk<T>(
+        &self,
+        account: &str,
+        request: impl AsyncFnOnce(&RithmicOrderPlantHandle) -> Result<T, Error>,
+    ) -> Result<T, Error> {
+        let desks = self.desks()?;
+        let desk = desks.by_account.get(account).ok_or_else(|| Error::NotFound("such account on this login".into()))?;
+        self.inner.handle.block_on(request(desk))
     }
 
     /// Place `order`, blocking until Rithmic has taken it, and return its
     /// basket id. Taken is not filled: what becomes of it arrives on the
     /// book. Never sent twice: a drop on the way is an error, not a retry.
     pub fn place(&self, order: &Order) -> Result<String, Error> {
-        let desk = self.desk(&order.account)?;
         let side = match order.side {
             Side::Buy => OrderSide::Buy,
             Side::Sell => OrderSide::Sell,
@@ -612,7 +593,7 @@ impl Trading {
             (_, None) => return Err(Error::Rejected("a limit or stop order needs a price".into())),
         };
         let built = built.build().map_err(error_of)?;
-        let replies = self.inner.handle.block_on(within(REQUEST, desk.place_order(built)))?;
+        let replies = self.on_desk(&order.account, async |desk| within(REQUEST, desk.place_order(built)).await)?;
         if let Some(error) = replies.iter().find_map(|reply| reply.error.clone()) {
             return Err(error_of(error));
         }
@@ -623,17 +604,16 @@ impl Trading {
                 _ => None,
             })
             .ok_or_else(|| Error::Rejected("Rithmic took the order without naming it".into()))?;
-        self.inner.state.lock().unwrap_or_else(|e| e.into_inner()).placed(order, &basket, now());
+        self.inner.book.lock().unwrap_or_else(|e| e.into_inner()).placed(order, &basket, now());
         Ok(basket)
     }
 
     /// Cancel the order `basket` on `account`. What becomes of it arrives
     /// on the book.
     pub fn cancel(&self, account: &str, basket: &str) -> Result<(), Error> {
-        let desk = self.desk(account)?;
         let cancel =
             RithmicCancelOrder::new().id(basket).manual_or_auto(ManualOrAutoEntry::Manual).build().map_err(error_of)?;
-        let replies = self.inner.handle.block_on(within(REQUEST, desk.cancel_order(cancel)))?;
+        let replies = self.on_desk(account, async |desk| within(REQUEST, desk.cancel_order(cancel)).await)?;
         match replies.iter().find_map(|reply| reply.error.clone()) {
             Some(error) => Err(error_of(error)),
             None => Ok(()),
@@ -645,8 +625,8 @@ impl Trading {
     /// everything else is carried over from what the book has of it. What
     /// becomes of it arrives on the book.
     pub fn modify(&self, account: &str, basket: &str, price: f64) -> Result<(), Error> {
-        let desk = self.desk(account)?;
-        let known = self.inner.state.lock().unwrap_or_else(|e| e.into_inner()).order_mut(basket).cloned();
+        self.desks()?;
+        let known = self.inner.book.lock().unwrap_or_else(|e| e.into_inner()).order_mut(basket).cloned();
         let order = known
             .filter(|order| order.status.working())
             .ok_or_else(|| Error::NotFound("such working order".into()))?;
@@ -662,7 +642,7 @@ impl Trading {
             Kind::Market => return Err(Error::Rejected("a market order has no price to move".into())),
         };
         let modify = modify.build().map_err(error_of)?;
-        let replies = self.inner.handle.block_on(within(REQUEST, desk.modify_order(modify)))?;
+        let replies = self.on_desk(account, async |desk| within(REQUEST, desk.modify_order(modify)).await)?;
         match replies.iter().find_map(|reply| reply.error.clone()) {
             Some(error) => Err(error_of(error)),
             None => Ok(()),
@@ -674,9 +654,8 @@ impl Trading {
     /// rest. A stop and a target on one position, so that whichever goes
     /// first takes the other with it.
     pub fn link(&self, account: &str, baskets: &[String]) -> Result<(), Error> {
-        let desk = self.desk(account)?;
         let link = RithmicLinkOrders::new().basket_ids(baskets.iter().cloned()).build().map_err(error_of)?;
-        let reply = self.inner.handle.block_on(within(REQUEST, desk.link_orders(link)))?;
+        let reply = self.on_desk(account, async |desk| within(REQUEST, desk.link_orders(link)).await)?;
         match reply.error {
             Some(error) => Err(error_of(error)),
             None => Ok(()),
@@ -685,46 +664,37 @@ impl Trading {
 
     /// Cancel every working order on `account`.
     pub fn cancel_all(&self, account: &str) -> Result<(), Error> {
-        let desk = self.desk(account)?;
         let cancel = RithmicCancelAllOrders::new().manual_or_auto(ManualOrAutoEntry::Manual).build().map_err(error_of)?;
-        self.inner.handle.block_on(within(REQUEST, desk.cancel_all_orders(cancel))).map(|_| ())
+        self.on_desk(account, async |desk| within(REQUEST, desk.cancel_all_orders(cancel)).await).map(|_| ())
     }
 
     /// Close `account`'s position in `contract`: one request, and Rithmic
     /// places the closing order itself.
     pub fn flatten(&self, account: &str, contract: &str, exchange: &str) -> Result<(), Error> {
-        let desk = self.desk(account)?;
         let exit = RithmicExitPosition::new()
             .symbol(contract)
             .exchange(exchange)
             .manual_or_auto(ManualOrAutoEntry::Manual)
             .build()
             .map_err(error_of)?;
-        let replies = self.inner.handle.block_on(within(REQUEST, desk.exit_position(exit)))?;
+        let replies = self.on_desk(account, async |desk| within(REQUEST, desk.exit_position(exit)).await)?;
         match replies.iter().find_map(|reply| reply.error.clone()) {
             Some(error) => Err(error_of(error)),
             None => Ok(()),
         }
     }
 
-    /// Sign out of both plants, waiting a few seconds at most.
+    /// Sign out of both plants, waiting a few seconds at most. The data
+    /// half of the same login, if it is open, stays.
     pub fn sign_out(&self) {
-        if self.inner.closed.swap(true, Ordering::AcqRel) {
-            return;
-        }
-        let plants = self.inner.plants.lock().unwrap_or_else(|e| e.into_inner()).take();
-        let order = &self.inner.order;
-        let pnl = &self.inner.pnl;
-        self.inner.handle.block_on(async {
-            let _ = within(Duration::from_secs(2), order.disconnect()).await;
-            let _ = within(Duration::from_secs(2), pnl.disconnect()).await;
-            order.abort();
-            pnl.abort();
-            if let Some((order_plant, pnl_plant)) = plants {
-                let _ = tokio::time::timeout(Duration::from_secs(3), order_plant.await_shutdown()).await;
-                let _ = tokio::time::timeout(Duration::from_secs(3), pnl_plant.await_shutdown()).await;
-            }
-        });
+        Connection::of(self.inner.clone()).close_trading_as(self.generation);
+    }
+
+    /// Cut the login's plants the way a dropped network does, for proving
+    /// that trading comes back. Nothing in the app calls it.
+    #[doc(hidden)]
+    pub fn sever(&self) {
+        Connection::of(self.inner.clone()).sever();
     }
 }
 
@@ -732,12 +702,64 @@ fn rithmic_account(account: &Account) -> RithmicAccount {
     RithmicAccount::new(&account.fcm, &account.ib, &account.id)
 }
 
-type Signed = (RithmicOrderPlant, RithmicPnlPlant, RithmicOrderPlantHandle, RithmicPnlPlantHandle, Vec<Account>);
+/// The trading plants of a signed-in trading half: what the supervisor
+/// hears from them, and what is closed with them.
+pub(crate) struct TradingPlants {
+    /// Every account's pushes, and the plants' health.
+    pub(crate) order_updates: broadcast::Receiver<RithmicResponse>,
+    pub(crate) pnl_updates: broadcast::Receiver<RithmicResponse>,
+    accounts: Vec<Account>,
+    link: TradingLink,
+}
 
-async fn connect(app: App, login: &Login) -> Result<Signed, Error> {
-    let credentials = login.credentials().await?;
-    let config = config(app, &credentials)?;
-    drop(credentials);
+enum TradingLink {
+    Rithmic { order_plant: RithmicOrderPlant, pnl_plant: RithmicPnlPlant, desks: Arc<Desks> },
+    /// A test's, holding its channels open. Never made outside one.
+    #[cfg_attr(not(test), allow(dead_code))]
+    Fake(#[allow(dead_code)] Vec<broadcast::Sender<RithmicResponse>>),
+}
+
+impl TradingPlants {
+    #[cfg(test)]
+    pub(crate) fn fake(order_updates: broadcast::Receiver<RithmicResponse>, accounts: Vec<Account>) -> TradingPlants {
+        let (pnl, pnl_updates) = broadcast::channel(16);
+        TradingPlants { order_updates, pnl_updates, accounts, link: TradingLink::Fake(vec![pnl]) }
+    }
+
+    fn desks(&self) -> Option<Arc<Desks>> {
+        match &self.link {
+            TradingLink::Rithmic { desks, .. } => Some(desks.clone()),
+            TradingLink::Fake(_) => None,
+        }
+    }
+
+    /// Cut the plants from underneath, as a network failure would.
+    pub(crate) fn abort(&self) {
+        if let TradingLink::Rithmic { desks, .. } = &self.link {
+            desks.order.abort();
+            desks.pnl.abort();
+        }
+    }
+
+    /// Sign out, or with `graceful` false only cut the plants, and wait for
+    /// them to stop.
+    pub(crate) async fn close(self, graceful: bool) {
+        let TradingLink::Rithmic { order_plant, pnl_plant, desks } = self.link else { return };
+        if graceful {
+            let _ = within(Duration::from_secs(2), desks.order.disconnect()).await;
+            let _ = within(Duration::from_secs(2), desks.pnl.disconnect()).await;
+        }
+        desks.order.abort();
+        desks.pnl.abort();
+        let _ = tokio::time::timeout(Duration::from_secs(3), order_plant.await_shutdown()).await;
+        let _ = tokio::time::timeout(Duration::from_secs(3), pnl_plant.await_shutdown()).await;
+    }
+}
+
+/// Sign in to the order and PnL plants, list the login's accounts, and ask
+/// for their working orders, positions and balances.
+pub(crate) async fn connect(app: App, credentials: &Credentials) -> Result<TradingPlants, Error> {
+    let config = config(app, credentials)?;
 
     // No account is known before the list, and the login and the list are
     // the plant's, not an account's.
@@ -755,7 +777,13 @@ async fn connect(app: App, login: &Login) -> Result<Signed, Error> {
             return Err(error);
         }
     };
-    let accounts = accounts_of(&listed)?;
+    let accounts = match accounts_of(&listed) {
+        Ok(accounts) => accounts,
+        Err(error) => {
+            let _ = within(REQUEST, order.disconnect()).await;
+            return Err(error);
+        }
+    };
     let pnl_plant = match within(REQUEST, RithmicPnlPlant::connect(&config, ConnectStrategy::Simple)).await {
         Ok(plant) => plant,
         Err(error) => {
@@ -769,7 +797,134 @@ async fn connect(app: App, login: &Login) -> Result<Signed, Error> {
         let _ = within(REQUEST, order.disconnect()).await;
         return Err(error);
     }
-    Ok((order_plant, pnl_plant, order, pnl, accounts))
+    // Heard from before the requests, so that what they push waits for the
+    // supervisor; the requests themselves only acknowledge.
+    let order_updates = order_plant.subscribe_all();
+    let pnl_updates = pnl_plant.subscribe_all();
+    let by_account: HashMap<String, RithmicOrderPlantHandle> = accounts
+        .iter()
+        .map(|account| (account.id.clone(), order_plant.get_handle(&rithmic_account(account))))
+        .collect();
+    for account in &accounts {
+        if let Some(desk) = by_account.get(&account.id) {
+            let _ = within(REQUEST, desk.subscribe_order_updates()).await;
+            let _ = within(REQUEST, desk.show_orders()).await;
+        }
+        let handle = pnl_plant.get_handle(&rithmic_account(account));
+        let _ = within(REQUEST, handle.subscribe_pnl_updates()).await;
+        let _ = within(REQUEST, handle.get_pnl_position_snapshot()).await;
+    }
+    Ok(TradingPlants {
+        order_updates,
+        pnl_updates,
+        accounts,
+        link: TradingLink::Rithmic { order_plant, pnl_plant, desks: Arc::new(Desks { order, pnl, by_account }) },
+    })
+}
+
+/// The trading half, as the connection's supervisor keeps it.
+pub(crate) struct TradingHalf {
+    pub(crate) phase: Phase,
+    state: watch::Sender<Standing>,
+    pub(crate) pulse: Option<PulseSink>,
+    /// Who is waiting for it to sign in.
+    pub(crate) waiting: Vec<oneshot::Sender<Opened>>,
+    book: Arc<Mutex<State>>,
+    accounts: Arc<Mutex<Vec<Account>>>,
+    pub(crate) live: Option<TradingPlants>,
+    /// Signed in since it was opened, so that a failure is a drop to come
+    /// back from rather than a sign-in that did not work.
+    pub(crate) been_up: bool,
+}
+
+impl TradingHalf {
+    pub(crate) fn new(
+        state: watch::Sender<Standing>,
+        book: Arc<Mutex<State>>,
+        accounts: Arc<Mutex<Vec<Account>>>,
+    ) -> TradingHalf {
+        TradingHalf { phase: Phase::Off, state, pulse: None, waiting: Vec::new(), book, accounts, live: None, been_up: false }
+    }
+
+    fn tell(&self, pulse: Pulse) {
+        if let Some(sink) = &self.pulse {
+            sink(pulse);
+        }
+    }
+
+    /// Opened afresh: nothing is known yet.
+    pub(crate) fn reset(&mut self) {
+        self.been_up = false;
+        *self.book.lock().unwrap_or_else(|e| e.into_inner()) = State::default();
+        self.accounts.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        let _ = self.state.send(Standing::Connecting);
+    }
+
+    /// Signed in, for the first time since it was opened or again after a
+    /// drop.
+    pub(crate) fn up(&mut self, plants: TradingPlants) {
+        let back = self.been_up;
+        if back {
+            self.book.lock().unwrap_or_else(|e| e.into_inner()).signed_in_again();
+        }
+        *self.accounts.lock().unwrap_or_else(|e| e.into_inner()) = plants.accounts.clone();
+        let _ = self.state.send(Standing::Up(plants.desks()));
+        self.been_up = true;
+        self.live = Some(plants);
+        for waiting in self.waiting.drain(..) {
+            let _ = waiting.send(Ok(()));
+        }
+        if back {
+            self.tell(Pulse::Back);
+        }
+    }
+
+    /// Dropped: say so, and come back.
+    pub(crate) fn lose(&mut self, error: Error) {
+        let _ = self.state.send(Standing::Down(error.clone()));
+        self.tell(Pulse::Lost(error));
+    }
+
+    /// Signing in did not work, and the phase says what comes of it: down
+    /// and tried again, stopped, or closed (`closed`) because it never was
+    /// up. Whoever waits hears why.
+    pub(crate) fn fail(&mut self, error: Error, closed: bool) {
+        let down = matches!(self.phase, Phase::Down);
+        let was_down = matches!(&*self.state.borrow(), Standing::Down(_));
+        let _ = self.state.send(match down {
+            true => Standing::Down(error.clone()),
+            false => Standing::Stopped(error.clone()),
+        });
+        for waiting in self.waiting.drain(..) {
+            let _ = waiting.send(Err((error.clone(), closed)));
+        }
+        // A retry that failed again is no news.
+        if self.been_up && !(down && was_down) {
+            self.tell(Pulse::Lost(error));
+        }
+    }
+
+    /// One push from either plant, into the book.
+    pub(crate) fn apply(&mut self, message: &RithmicMessage) {
+        let moved = self.book.lock().unwrap_or_else(|e| e.into_inner()).apply(message);
+        if moved {
+            self.tell(Pulse::Moved);
+        }
+    }
+
+    /// Sign out. Whoever was waiting hears it closed.
+    pub(crate) async fn close(&mut self) {
+        if let Some(plants) = self.live.take() {
+            plants.close(true).await;
+        }
+        self.phase = Phase::Off;
+        self.pulse = None;
+        for waiting in self.waiting.drain(..) {
+            let _ = waiting.send(Err((Error::Closed, true)));
+        }
+        self.reset();
+        let _ = self.state.send(Standing::Stopped(Error::Closed));
+    }
 }
 
 /// The accounts in an account list reply, in the order listed.
@@ -802,52 +957,6 @@ fn listed<'a>(found: impl Iterator<Item = &'a ResponseAccountList>) -> Vec<Accou
         });
     }
     accounts
-}
-
-/// Hear orders, positions and balances, and the session ending, until it
-/// does.
-async fn listen(
-    mut pnl: tokio::sync::broadcast::Receiver<RithmicResponse>,
-    mut order: tokio::sync::broadcast::Receiver<RithmicResponse>,
-    state: Arc<Mutex<State>>,
-    trouble: Arc<Mutex<Option<Error>>>,
-    changed: Changed,
-) {
-    let ended = |error: Error| {
-        *trouble.lock().unwrap_or_else(|e| e.into_inner()) = Some(error);
-        changed();
-    };
-    loop {
-        let update = tokio::select! {
-            update = pnl.recv() => update,
-            update = order.recv() => update,
-        };
-        let update = match update {
-            Ok(update) => update,
-            Err(RecvError::Lagged(_)) => continue,
-            Err(RecvError::Closed) => return ended(Error::Connection("the session closed".into())),
-        };
-        match &update.message {
-            RithmicMessage::ForcedLogout(_) => {
-                return ended(Error::Refused(
-                    "Rithmic signed this session out, as it does when the same login signs in somewhere else"
-                        .into(),
-                ));
-            }
-            RithmicMessage::ConnectionError => {
-                return ended(Error::Connection(match &update.error {
-                    Some(error) => error.to_string(),
-                    None => "the connection dropped".into(),
-                }));
-            }
-            message => {
-                let moved = state.lock().unwrap_or_else(|e| e.into_inner()).apply(message);
-                if moved {
-                    changed();
-                }
-            }
-        }
-    }
 }
 
 #[cfg(test)]

@@ -14,7 +14,7 @@
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use rithmic::{Book, Kind, Order, Side, Status, Trading};
+use rithmic::{Book, Kind, Order, Side, Status};
 
 /// Who Rithmic Test is told is signing in, which takes any name.
 const APP: rithmic::App = rithmic::App { name: "omacharts", version: "example" };
@@ -27,7 +27,11 @@ fn main() {
         None => return eprintln!("skipped: {} is not set", rithmic::DEV_LOGIN),
     };
     let (moved, heard) = mpsc::channel();
-    let trading = match Trading::sign_in(APP, &login, move || {
+    let connection = match rithmic::connection(APP, "example", move || Ok(login.clone())) {
+        Ok(connection) => connection,
+        Err(error) => return eprintln!("{error}"),
+    };
+    let trading = match connection.trading(move |_| {
         let _ = moved.send(());
     }) {
         Ok(trading) => trading,

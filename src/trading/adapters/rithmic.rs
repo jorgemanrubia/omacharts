@@ -35,7 +35,8 @@ fn signing_of(login: &Login) -> rithmic::Login {
     }
 }
 
-/// Rithmic's order and PnL plants, through `rithmic::Trading`.
+/// Rithmic's order and PnL plants: the trading half of the login's one
+/// `rithmic::Connection`.
 pub struct Rithmic;
 
 impl Broker for Rithmic {
@@ -73,11 +74,14 @@ impl Broker for Rithmic {
         let app = session::app().map_err(|error| error.to_string())?;
         // A developer's login file wins over the keyring, which it never
         // touches, as it does for the data session.
-        let signing = match rithmic::Login::from_env(system_of(login), gateway_of(login)) {
-            Some(development) => development.map_err(|error| error.to_string())?,
-            None => signing_of(login),
-        };
-        let trading = rithmic::Trading::sign_in(app, &signing, changed).map_err(said)?;
+        let (system, gateway, saved) =
+            (system_of(login).to_string(), gateway_of(login).to_string(), signing_of(login));
+        let source = move || rithmic::Login::from_env(&system, &gateway).unwrap_or_else(|| Ok(saved.clone()));
+        // The login's one connection, which its data session shares when it
+        // is the data login. Any pulse is the window's cue to read the book
+        // and how the session stands again, a reconnect included.
+        let connection = rithmic::connection(app, &login.id, source).map_err(said)?;
+        let trading = connection.trading(move |_| changed()).map_err(said)?;
         Ok(Arc::new(RithmicSession {
             login: login.id.clone(),
             simulated: system_of(login) == rithmic::TEST_SYSTEM,

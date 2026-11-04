@@ -8,43 +8,46 @@
 //! neither tokio nor anything from `rithmic-rs`: it calls plain blocking
 //! functions and is handed plain values.
 //!
-//! **One session per process.** CME bills a non-professional subscriber as a
-//! professional after two concurrent data sessions, so every chart shares the
-//! one [`Client`] that [`session`] hands out. It owns a tokio runtime on two
-//! threads of its own, built the first time anything asks and not before: a
-//! process that never charts from Rithmic never has one. [`shutdown`] logs
-//! out of every plant and stops the threads.
+//! **One connection per login.** Rithmic signs a session out when the same
+//! login signs in again, so whatever a login is wanted for goes through the
+//! one [`Connection`] that [`connection`] keeps for it, by the login's id.
+//! It owns a tokio runtime on two threads of its own, built the first time
+//! anything asks and not before, and lends two halves of itself: the data
+//! half ([`Client`]: ticker and history plants) and the trading half
+//! ([`Trading`]: order and PnL plants). Opening one does not open the
+//! other's plants. Only one login supplies market data — CME bills a
+//! non-professional subscriber as a professional after two concurrent data
+//! sessions — so every chart shares its one data half; any number of logins
+//! can trade. [`shutdown`] closes the data half, [`Trading::sign_out`] the
+//! trading half, [`close`] both, and with both closed the connection's
+//! threads stop.
 //!
 //! **It looks after its own connection.** A drop is reported to everything
-//! watching ([`Live::Lost`]), the client reconnects with a doubling wait,
-//! subscribes again to what is still watched, and says so
-//! ([`Live::Watching`] again), which is a caller's cue to load a fresh
-//! snapshot. A login Rithmic refuses is not retried: the same password
-//! would only be refused again, and a storm of refused logins is exactly
-//! what Rithmic's conformance review looks for. Nor is a forced logout,
-//! which is what Rithmic does to a session when the same login signs in
-//! somewhere else: signing back in would log the other one out, and the two
-//! would take turns for ever.
-//!
-//! **Trading is a session of its own per login** ([`Trading`]): the order
-//! plant, which lists a login's accounts and places, cancels and flattens,
-//! and the PnL plant, which pushes positions and balances. Any number of
-//! logins can trade; only one supplies market data.
+//! watching ([`Live::Lost`], [`Pulse::Lost`]), the half reconnects with a
+//! doubling wait both halves share, subscribes again to what is still
+//! watched, and says so ([`Live::Watching`] again, [`Pulse::Back`]), which
+//! is a caller's cue to load a fresh snapshot or reconcile its orders. A
+//! login Rithmic refuses is not retried: the same password would only be
+//! refused again, and a storm of refused logins is exactly what Rithmic's
+//! conformance review looks for. Nor is a forced logout, which is what
+//! Rithmic does to a session when the same login signs in somewhere else:
+//! it stops both halves, because signing back in would log the other one
+//! out, and the two would take turns for ever.
 //!
 //! **Nobody's password leaves here except to the gateway.** [`Credentials`]'
 //! `Debug` leaves it out, no [`Error`] is built from one, and nothing in this
 //! crate logs.
 
 mod client;
+mod connection;
 pub mod keyring;
 mod login;
 mod trading;
 
-pub use client::{
-    entitled_exchanges, known_front_month, on_entitlements, running, session, shutdown, Client, Watch, SIGN_OUT_WAIT,
-};
+pub use client::{entitled_exchanges, on_entitlements, Client, Watch};
+pub use connection::{close, connection, known_front_month, running, shutdown, Connection, SIGN_OUT_WAIT};
 pub use login::{Login, DEV_LOGIN};
-pub use trading::{Account, AccountPnl, Book, Kind, Order, Position, Status, Trading, WorkingOrder};
+pub use trading::{Account, AccountPnl, Book, Kind, Order, Position, Pulse, Status, Trading, WorkingOrder};
 
 /// The app signing in, as Rithmic is told it: its name and its version.
 ///
