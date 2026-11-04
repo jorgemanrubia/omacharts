@@ -66,6 +66,67 @@ impl FakeBroker {
     }
 }
 
+/// A day's orders on the one account every login has, one at every
+/// stage, as the broker of a build with the `fakes` feature holds them
+/// for any login: something to look at in the panel without placing any.
+pub fn day_of_orders() -> Book {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.as_secs() as i64)
+        .unwrap_or(0);
+    let order = |basket: &str, ago: i64, side: Side, kind: OrderKind, price: Option<f64>, status: Status| Order {
+        account: "FAKE-1".into(),
+        basket_id: basket.into(),
+        contract: "ESZ6".into(),
+        exchange: "CME".into(),
+        side,
+        qty: 2,
+        filled: 0,
+        kind,
+        price,
+        status,
+        fill_price: None,
+        fills: Vec::new(),
+        at: now - ago * 60,
+        tag: None,
+        tick: Some(0.25),
+    };
+    let filled = |basket: &str, ago: i64, side: Side, at: f64| Order {
+        filled: 2,
+        fill_price: Some(at),
+        fills: vec![Fill { basket: basket.into(), at: now - ago * 60, qty: 2, price: at }],
+        ..order(basket, ago, side, OrderKind::Market, None, Stage::Filled.into())
+    };
+    Book {
+        orders: vec![
+            order("B6", 2, Side::Buy, OrderKind::Limit, Some(7_598.25), Stage::Pending.into()),
+            order("B5", 9, Side::Sell, OrderKind::Stop, Some(7_571.00), Stage::Working.into()),
+            Order { filled: 1, ..order("B4", 17, Side::Sell, OrderKind::Limit, Some(7_636.50), Stage::PartiallyFilled.into()) },
+            order("B3", 31, Side::Buy, OrderKind::Limit, Some(7_540.00), Status::said(Stage::Cancelled, "by the trader")),
+            order("B2", 48, Side::Buy, OrderKind::Limit, Some(7_000.00), Status::said(Stage::Rejected, "too far from the market")),
+            filled("B1", 63, Side::Buy, 7_612.25),
+        ],
+        positions: vec![Position {
+            account: "FAKE-1".into(),
+            contract: "ESZ6".into(),
+            exchange: "CME".into(),
+            net: 1,
+            avg: Some(7_612.25),
+            open_pnl: Some(112.5),
+            tick: Some(0.25),
+            point: Some(50.0),
+        }],
+        accounts: vec![Money {
+            key: "FAKE-1".into(),
+            balance: Some(50_112.5),
+            unrealized: Some(112.5),
+            day_pnl: Some(112.5),
+            limits: Some(Limits { loss_limit: Some(2_000.0), ..Limits::default() }),
+        }],
+        ..Book::default()
+    }
+}
+
 /// A second broker, in memory: a session that fills a market order at
 /// once, at `last`, and holds a limit or a stop until it is cancelled.
 /// Its book is the one a real session would push, with `changed` called
@@ -458,7 +519,10 @@ impl Broker for FakeBroker {
         let accounts = accounts.into_iter().map(|a| Account { login: login.id.clone(), ..a }).collect();
         let session = FakeSession { signed_out: self.signed_out.clone(), ..FakeSession::told(accounts, changed) };
         *session.contracts.lock().unwrap() = self.contracts.clone();
-        *session.held.lock().unwrap() = self.held.lock().unwrap().get(&login.name).cloned().unwrap_or_default();
+        let held = self.held.lock().unwrap();
+        // What a login named in neither holds is under no name at all.
+        *session.held.lock().unwrap() = held.get(&login.name).or_else(|| held.get("")).cloned().unwrap_or_default();
+        drop(held);
         let session = Arc::new(session);
         self.sessions.lock().unwrap().push(session.clone());
         Ok(session)

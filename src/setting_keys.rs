@@ -48,6 +48,8 @@ const KEYS: &[(&str, Kind)] = &[
     ("active_watchlist", Kind::Bookkeeping),
     ("show_watchlist", Kind::Bookkeeping),
     ("show_trading_panel", Kind::Bookkeeping),
+    // Whether the panel's Orders tab was left on the open orders or all.
+    ("orders_filter", Kind::Bookkeeping),
     ("show_drawing_tools", Kind::Bookkeeping),
 ];
 

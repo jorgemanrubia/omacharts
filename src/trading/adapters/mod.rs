@@ -18,7 +18,14 @@ pub fn registry() -> Registry {
     #[allow(unused_mut)]
     let mut brokers: Vec<Arc<dyn Broker>> = vec![Arc::new(rithmic::Rithmic)];
     #[cfg(any(test, feature = "fakes"))]
-    brokers.push(Arc::new(super::fake::FakeBroker::listed()));
+    {
+        let fake = super::fake::FakeBroker::listed();
+        // A build with the feature has a day of orders to look at; the
+        // tests start from nothing.
+        #[cfg(not(test))]
+        fake.held.lock().unwrap().insert(String::new(), super::fake::day_of_orders());
+        brokers.push(Arc::new(fake));
+    }
     Registry::of(brokers)
 }
 

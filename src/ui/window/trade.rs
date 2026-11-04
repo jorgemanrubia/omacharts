@@ -542,7 +542,7 @@ impl Window {
                 }
             }),
         };
-        let panel = TradingPanel::new(hands);
+        let panel = TradingPanel::new(hands, self.store.clone());
         panel.root.set_size_request(-1, 150);
         let paned = gtk::Paned::new(gtk::Orientation::Vertical);
         paned.set_resize_start_child(true);
