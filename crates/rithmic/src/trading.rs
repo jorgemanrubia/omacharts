@@ -622,8 +622,17 @@ impl State {
         changed
     }
 
+    /// What the exchange said of an order. One not heard of before is taken
+    /// from it whole: today's orders, asked for by a refresh, come back on
+    /// Rithmic Test as the exchange's notifications alone, each saying how
+    /// the order ended.
     fn exchange_order(&mut self, update: &ExchangeOrderNotification) -> bool {
         let Some(basket) = update.basket_id.as_deref().filter(|id| !id.is_empty()) else { return false };
+        if self.order_mut(basket).is_none() {
+            let Some(order) = told_of(basket, update) else { return false };
+            let at = self.orders.partition_point(|known| known.at <= order.at);
+            self.orders.insert(at, order);
+        }
         let Some(order) = self.order_mut(basket) else { return false };
         let before = order.clone();
         let mut fill = None;
@@ -647,10 +656,13 @@ impl State {
                 }
                 if let Some(left) = update.total_unfilled_size.and_then(|left| u32::try_from(left).ok()) {
                     order.filled = order.qty.saturating_sub(left);
+                } else if let Some(done) = update.total_fill_size.and_then(|done| u32::try_from(done).ok()) {
+                    order.filled = done.max(order.filled);
                 }
                 match update.total_unfilled_size {
                     Some(0) => order.status = Status::Filled,
                     Some(_) if order.status.working() => order.status = Status::PartiallyFilled,
+                    None if order.filled >= order.qty => order.status = Status::Filled,
                     _ => {}
                 }
             }
@@ -1245,6 +1257,41 @@ fn moment_of(date: &str, time: &str) -> Option<i64> {
     Some(days * 86_400 + hours * 3_600 + minutes * 60 + seconds)
 }
 
+/// An order first heard of from the exchange, as far as `update` says: its
+/// account, contract, side, size, kind and price, working until the report
+/// says otherwise.
+fn told_of(basket: &str, update: &ExchangeOrderNotification) -> Option<WorkingOrder> {
+    let given = |text: &Option<String>| text.as_ref().filter(|text| !text.is_empty()).cloned();
+    let kind = kind_of(update.price_type)?;
+    Some(WorkingOrder {
+        account: given(&update.account_id)?,
+        basket_id: basket.to_string(),
+        contract: given(&update.symbol)?,
+        exchange: given(&update.exchange).unwrap_or_default(),
+        side: side_of(update.transaction_type)?,
+        qty: update
+            .quantity
+            .or_else(|| Some(update.total_fill_size? + update.total_unfilled_size?))
+            .and_then(|qty| u32::try_from(qty).ok())
+            .filter(|qty| *qty > 0)
+            .unwrap_or(1),
+        filled: 0,
+        kind,
+        price: match kind {
+            Kind::Stop => update.trigger_price.or(update.price),
+            Kind::Limit => update.price,
+            Kind::Market => None,
+        }
+        .filter(|price| *price != 0.0),
+        status: Status::Working,
+        fill_price: None,
+        at: update.ssboe.map(i64::from).unwrap_or_else(now),
+        tag: given(&update.user_tag),
+        said: None,
+        fills: Vec::new(),
+    })
+}
+
 /// What an RMS info answer says the account is held to.
 fn limits_of(info: &ResponseAccountRmsInfo) -> Limits {
     let count = |limit: Option<i32>| limit.and_then(|limit| u32::try_from(limit).ok()).filter(|limit| *limit > 0);
@@ -1593,6 +1640,51 @@ mod tests {
         state.apply(&RithmicMessage::InstrumentPnLPositionUpdate(held));
         state.refreshed();
         assert_eq!(state.book().positions[0].net, 2);
+    }
+
+    /// Today's orders as Rithmic Test answers a refresh with them: the
+    /// exchange's notifications alone, flagged as a snapshot, for orders
+    /// never heard of here. Each becomes an order as it ended, a fill with
+    /// its fill.
+    #[test]
+    fn todays_orders_are_read_from_the_exchanges_snapshot() {
+        let mut state = State::default();
+        let told = |basket: &str, report: &str, fields: &dyn Fn(&mut ExchangeOrderNotification)| {
+            let mut update = ExchangeOrderNotification::default();
+            update.basket_id = Some(basket.into());
+            update.report_type = Some(report.into());
+            update.is_snapshot = Some(true);
+            update.account_id = Some("951".into());
+            update.symbol = Some("ESZ6".into());
+            update.exchange = Some("CME".into());
+            update.quantity = Some(2);
+            update.transaction_type = Some(1);
+            update.price_type = Some(2);
+            fields(&mut update);
+            RithmicMessage::ExchangeOrderNotification(update)
+        };
+        assert!(state.apply(&told("M1", "fill", &|n| {
+            n.fill_size = Some(2);
+            n.fill_price = Some(7_610.75);
+            n.fill_id = Some("F1".into());
+            n.total_unfilled_size = Some(0);
+            n.ssboe = Some(100);
+        })));
+        assert!(state.apply(&told("L1", "cancel", &|n| {
+            n.transaction_type = Some(2);
+            n.price_type = Some(1);
+            n.price = Some(7_700.0);
+            n.ssboe = Some(200);
+        })));
+        assert!(state.apply(&told("R1", "reject", &|n| n.text = Some("price out of band".into()))));
+        let book = state.book();
+        let filled = book.orders.iter().find(|order| order.basket_id == "M1").unwrap();
+        assert_eq!((filled.status.clone(), filled.filled, filled.fills.len()), (Status::Filled, 2, 1));
+        let cancelled = book.orders.iter().find(|order| order.basket_id == "L1").unwrap();
+        assert_eq!((cancelled.side, cancelled.kind, cancelled.price), (Side::Sell, Kind::Limit, Some(7_700.0)));
+        assert_eq!(cancelled.status, Status::Cancelled);
+        let rejected = book.orders.iter().find(|order| order.basket_id == "R1").unwrap();
+        assert_eq!(rejected.status, Status::Rejected("price out of band".into()));
     }
 
     /// The risk system's limits and its liquidation level, which come in
