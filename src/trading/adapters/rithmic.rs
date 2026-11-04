@@ -88,6 +88,18 @@ impl Broker for Rithmic {
                 rithmic::Pulse::Moved | rithmic::Pulse::Lost(_) => told(Change::Moved),
             })
             .map_err(said)?;
+        // A root's front month moving, whether asked for or pushed by
+        // Rithmic at the roll, is the window's cue to ask again where an
+        // order goes; only while this session lives.
+        let alive = Arc::new(AtomicBool::new(true));
+        {
+            let (alive, changed) = (alive.clone(), changed.clone());
+            rithmic::on_front_month(move |_, _, _| {
+                if alive.load(Ordering::Acquire) {
+                    changed(Change::Moved);
+                }
+            });
+        }
         Ok(Arc::new(RithmicSession {
             login: login.id.clone(),
             simulated: system_of(login) == rithmic::TEST_SYSTEM,
@@ -97,6 +109,7 @@ impl Broker for Rithmic {
             prices: Mutex::default(),
             held: Arc::default(),
             told: Arc::default(),
+            alive,
         }))
     }
 }
@@ -207,60 +220,77 @@ struct RithmicSession {
     /// asked for is known.
     changed: Arc<dyn Fn(Change) + Send + Sync>,
     connection: rithmic::Connection,
-    /// The last trade on each root an order was asked about or a position
-    /// is held in, by root, heard on the login's own data half.
+    /// The last trade on each contract an order was asked about or a
+    /// position is held in, by contract, heard on the login's own data
+    /// half.
     prices: Mutex<HashMap<String, Priced>>,
-    /// The roots a position is held in, as the book last said: a new price
-    /// on one of them is told, so the position is marked to it.
+    /// The contracts a position is held in, as the book last said: a new
+    /// price on one of them is told, so the position is marked to it.
     held: Arc<Mutex<HashSet<String>>>,
     /// A new price was told and the book not read since: told once until
     /// it is, however busy the market.
     told: Arc<AtomicBool>,
+    /// Cleared when the session signs out, so that a front month heard
+    /// after is nobody's news.
+    alive: Arc<AtomicBool>,
 }
 
-/// A root's trades being watched for their price.
+/// A contract's trades being watched for their price.
 struct Priced {
     _watch: rithmic::Watch,
     last: Arc<Mutex<Option<f64>>>,
-    /// The contract the trades are in: the root's front month.
-    contract: Arc<Mutex<Option<String>>>,
     /// The watch ended for good: closed, or refused. Watched afresh when
     /// asked again.
     ended: Arc<AtomicBool>,
 }
 
 impl RithmicSession {
-    /// Start hearing `root`'s trades, unless they are heard already.
-    fn watch_price(&self, root: &str, exchange: &str) {
+    /// Start hearing `contract`'s trades, unless they are heard already.
+    /// The contract itself, never a root's front month: a position in a
+    /// month that has rolled off is marked to that month's price.
+    fn watch_price(&self, contract: &str, exchange: &str) {
         let mut prices = self.prices.lock().unwrap_or_else(|e| e.into_inner());
-        if prices.get(root).is_some_and(|priced| !priced.ended.load(Ordering::Acquire)) {
+        if prices.get(contract).is_some_and(|priced| !priced.ended.load(Ordering::Acquire)) {
             return;
         }
         let last = Arc::new(Mutex::new(None));
-        let contract = Arc::new(Mutex::new(None));
         let ended = Arc::new(AtomicBool::new(false));
-        let watch = self.connection.data().watch(root, exchange, {
-            let (last, contract, ended) = (last.clone(), contract.clone(), ended.clone());
-            let (held, told, changed, root) = (self.held.clone(), self.told.clone(), self.changed.clone(), root.to_string());
+        let watch = self.connection.data().watch_contract(contract, exchange, {
+            let (last, ended) = (last.clone(), ended.clone());
+            let (held, told, changed, contract) =
+                (self.held.clone(), self.told.clone(), self.changed.clone(), contract.to_string());
             move |live| match live {
                 // The last trade before the watch began is the market's
                 // price until it trades again.
                 rithmic::Live::Trade(trade) | rithmic::Live::Last(trade) => {
                     let before = last.lock().unwrap_or_else(|e| e.into_inner()).replace(trade.price);
-                    let holding = held.lock().unwrap_or_else(|e| e.into_inner()).contains(&root);
+                    let holding = held.lock().unwrap_or_else(|e| e.into_inner()).contains(&contract);
                     if before != Some(trade.price) && holding && !told.swap(true, Ordering::AcqRel) {
                         changed(Change::Priced);
                     }
                 }
                 rithmic::Live::Lost(rithmic::Error::Connection(_) | rithmic::Error::Timeout) => {}
                 rithmic::Live::Lost(_) => ended.store(true, Ordering::Release),
-                rithmic::Live::Watching { contract: watched } => {
-                    *contract.lock().unwrap_or_else(|e| e.into_inner()) = Some(watched);
-                }
+                rithmic::Live::Watching { .. } => {}
             }
         });
-        prices.insert(root.to_string(), Priced { _watch: watch, last, contract, ended });
+        prices.insert(contract.to_string(), Priced { _watch: watch, last, ended });
     }
+
+    /// The contract `instrument` trades as: a dated contract itself, a root
+    /// its front month, when a data session has found it; `None` until one
+    /// has, with `found` called once it is known.
+    fn contract_of(&self, instrument: &omacharts_engine::Instrument, found: impl FnOnce() + Send + 'static) -> Option<String> {
+        match instrument.is_contract() {
+            true => Some(instrument.symbol.clone()),
+            false => self.trading.front_month(&instrument.symbol, exchange_of(instrument), found),
+        }
+    }
+}
+
+/// The exchange an instrument's orders go to.
+fn exchange_of(instrument: &omacharts_engine::Instrument) -> &'static str {
+    omacharts_engine::providers::rithmic::exchange_of(instrument.root())
 }
 
 impl Session for RithmicSession {
@@ -296,49 +326,40 @@ impl Session for RithmicSession {
 
     /// A futures root on a CME group exchange, as its front month: the one
     /// a data session last found, whatever feeds the chart, or asked for now
-    /// and told with a change once it is known.
+    /// and told with a change once it is known. A dated contract as itself.
     fn contract_for(&self, instrument: &omacharts_engine::Instrument) -> Result<Contract, Refusal> {
         if instrument.kind != omacharts_engine::InstrumentKind::FutureRoot {
             return Err(Refusal::NotTradable);
         }
-        let exchange = omacharts_engine::providers::rithmic::exchange_of(&instrument.symbol);
+        let exchange = exchange_of(instrument);
         let changed = self.changed.clone();
-        let symbol = self
-            .trading
-            .front_month(&instrument.symbol, exchange, move || changed(Change::Moved))
-            .ok_or(Refusal::NotKnownYet)?;
+        let symbol = self.contract_of(instrument, move || changed(Change::Moved)).ok_or(Refusal::NotKnownYet)?;
         // Its price from here on, for judging an order on a chart fed from
-        // elsewhere: only roots somebody charts, as only they are asked.
-        self.watch_price(&instrument.symbol, exchange);
+        // elsewhere: only contracts somebody charts, as only they are asked.
+        self.watch_price(&symbol, exchange);
         Ok(Contract { tick: rithmic_tick(&symbol), symbol, exchange: exchange.to_string() })
     }
 
     fn last_price(&self, instrument: &omacharts_engine::Instrument) -> Option<f64> {
+        let contract = self.contract_of(instrument, || {})?;
         let prices = self.prices.lock().unwrap_or_else(|e| e.into_inner());
-        let priced = prices.get(&instrument.symbol)?;
+        let priced = prices.get(&contract)?;
         *priced.last.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     fn price_limits(&self, instrument: &omacharts_engine::Instrument) -> (Option<f64>, Option<f64>) {
-        let exchange = omacharts_engine::providers::rithmic::exchange_of(&instrument.symbol);
-        match self.trading.front_month(&instrument.symbol, exchange, || {}) {
-            Some(contract) => rithmic::price_limits(&contract, exchange),
+        match self.contract_of(instrument, || {}) {
+            Some(contract) => rithmic::price_limits(&contract, exchange_of(instrument)),
             None => (None, None),
         }
     }
 
-    /// Its front month's last trade, heard on the login's own data half;
-    /// a position in any other month is not marked here.
+    /// The contract's own last trade, heard on the login's own data half:
+    /// a position in a month that has rolled off is marked to that month.
     fn price_of(&self, contract: &str) -> Option<f64> {
-        let root = root_of(contract);
-        self.watch_price(root, omacharts_engine::providers::rithmic::exchange_of(root));
+        self.watch_price(contract, omacharts_engine::providers::rithmic::exchange_of(contract));
         let prices = self.prices.lock().unwrap_or_else(|e| e.into_inner());
-        let priced = prices.get(root)?;
-        let watched = priced.contract.lock().unwrap_or_else(|e| e.into_inner());
-        if watched.as_deref() != Some(contract) {
-            return None;
-        }
-        *priced.last.lock().unwrap_or_else(|e| e.into_inner())
+        *prices.get(contract)?.last.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     fn book(&self) -> Book {
@@ -346,7 +367,7 @@ impl Session for RithmicSession {
         // Read from here on: the next new price is told again.
         self.told.store(false, Ordering::Release);
         *self.held.lock().unwrap_or_else(|e| e.into_inner()) =
-            book.positions.iter().filter(|held| held.net != 0).map(|held| root_of(&held.contract).to_string()).collect();
+            book.positions.iter().filter(|held| held.net != 0).map(|held| held.contract.clone()).collect();
         Book {
             capabilities: HashMap::new(),
             refreshed: book.refreshed,
@@ -446,6 +467,7 @@ impl Session for RithmicSession {
     }
 
     fn sign_out(&self) {
+        self.alive.store(false, Ordering::Release);
         self.trading.sign_out();
     }
 }

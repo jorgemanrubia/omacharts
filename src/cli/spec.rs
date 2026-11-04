@@ -379,6 +379,16 @@ pub const SURFACE: &[Noun] = &[
                 writes: false,
                 workspace: false,
             },
+            Verb {
+                name: "contracts",
+                about: "The dated contracts of a futures root, soonest first, with the front month marked",
+                args: &[Arg::req("ROOT", "a futures root, such as ES")],
+                flags: &[],
+                example: "omacharts symbol contracts ES",
+                json: true,
+                writes: false,
+                workspace: false,
+            },
         ],
     },
     Noun {

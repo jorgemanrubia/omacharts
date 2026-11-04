@@ -107,6 +107,7 @@ pub fn dispatch(
     let result = match (noun, verb) {
         ("symbol", "search") => symbol_search(m, json),
         ("symbol", "show") => symbol_show(m, json),
+        ("symbol", "contracts") => symbol_contracts(m, json),
 
         ("watchlist", "list") => watchlist_list(store, json),
         ("watchlist", "show") => watchlist_show(store, m, json),
@@ -327,16 +328,61 @@ fn symbol_search(m: &clap::ArgMatches, as_json: bool) -> Result<String, Fault> {
         + "\n")
 }
 
+/// A root's dated contracts as the rule lists them, or as a feed listed
+/// them to this process: a command-line process holds no feed session, so
+/// it is the rule's listing that answers here.
+fn symbol_contracts(m: &clap::ArgMatches, as_json: bool) -> Result<String, Fault> {
+    use omacharts_engine::contracts;
+    let index = crate::inventory::everything();
+    let typed = required(m, "ROOT")?.to_uppercase();
+    let root = index
+        .find(&typed, None)
+        .filter(|i| i.kind == omacharts_engine::InstrumentKind::FutureRoot)
+        .ok_or_else(|| Fault::not_found(format!("no futures root called {typed}; try `omacharts symbol search {typed}`")))?;
+    let listed = contracts::listing(root.root(), contracts::today());
+    if as_json {
+        let rows: Vec<serde_json::Value> = listed
+            .iter()
+            .map(|listing| {
+                serde_json::json!({
+                    "symbol": listing.symbol,
+                    "month": listing.month.label(),
+                    "expires": listing.expires.to_string(),
+                    "rolls": listing.rolls.to_string(),
+                    "front": listing.front,
+                })
+            })
+            .collect();
+        return Ok(format!("{}\n", serde_json::Value::Array(rows)));
+    }
+    Ok(listed
+        .iter()
+        .map(|listing| {
+            format!(
+                "{:<8}{:<10}expires {}  rolls {}{}",
+                listing.symbol,
+                listing.month.label(),
+                listing.expires,
+                listing.rolls,
+                if listing.front { "  front" } else { "" }
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n")
+}
+
 fn symbol_show(m: &clap::ArgMatches, as_json: bool) -> Result<String, Fault> {
     let index = crate::inventory::everything();
     let (symbol, suffix) =
         listing(&index, required(m, "SYMBOL")?, arg(m, "SUFFIX").map(|s| s.to_uppercase()));
-    let found = index.find(&symbol, suffix.as_deref()).ok_or_else(|| {
+    let found = index.resolve(&symbol, suffix.as_deref()).ok_or_else(|| {
         Fault::not_found(format!(
             "no instrument called {}; try `omacharts symbol search {symbol}`",
             spell(&symbol, suffix.as_deref())
         ))
     })?;
+    let found = &found;
     if as_json {
         return Ok(format!("{}\n", instrument_json(found)));
     }
@@ -607,7 +653,7 @@ fn watchlist_add(
     for typed in &symbols {
         // Each one on its own, so `2330.TW 6488.TWO` can share a command.
         let (symbol, suffix) = listing(&index, typed, suffix.clone());
-        if index.find(&symbol, suffix.as_deref()).is_none() {
+        if index.resolve(&symbol, suffix.as_deref()).is_none() {
             unknown.push(spell(&symbol, suffix.as_deref()));
             continue;
         }
@@ -1456,7 +1502,7 @@ fn chart_set(
         Some(text) => {
             let index = crate::inventory::everything();
             let (symbol, suffix) = listing(&index, text, given);
-            if index.find(&symbol, suffix.as_deref()).is_none() {
+            if index.resolve(&symbol, suffix.as_deref()).is_none() {
                 return Err(Fault::not_found(format!(
                     "no instrument called {}; try `omacharts symbol search {symbol}`",
                     spell(&symbol, suffix.as_deref())
@@ -5238,6 +5284,13 @@ fn listing(
     let symbol = symbol.to_uppercase();
     if suffix.is_some() || index.find(&symbol, None).is_some() {
         return (symbol, suffix);
+    }
+    // A dated contract however it was typed, ESH27 or ES H7, as the exchange
+    // spells it: ESH7.
+    if let Some((root, month)) = omacharts_engine::contracts::parse(&symbol, omacharts_engine::contracts::today())
+        && index.find(&root, None).is_some_and(|i| i.kind == omacharts_engine::InstrumentKind::FutureRoot)
+    {
+        return (omacharts_engine::contracts::symbol(&root, month), None);
     }
     match omacharts_engine::symbols::split_suffix(&symbol) {
         (ticker, Some(venue)) => (ticker.to_string(), Some(venue.to_string())),

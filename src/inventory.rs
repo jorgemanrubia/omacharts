@@ -87,9 +87,10 @@ impl Inventory {
         self.len() == 0
     }
 
-    /// One instrument by its neutral symbol and optional exchange suffix.
+    /// One instrument by its neutral symbol and optional exchange suffix: a
+    /// dated contract, `ESH7`, by the root it is a contract of.
     pub fn find(&self, symbol: &str, suffix: Option<&str>) -> Option<Instrument> {
-        self.get().find(symbol, suffix).cloned()
+        self.get().resolve(symbol, suffix)
     }
 
     fn replace(&self, index: SearchIndex) {

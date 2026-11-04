@@ -139,7 +139,7 @@ impl Ladders for Rithmic {
     /// Every contract on a CME group exchange: the history plant has
     /// volume-profile minute bars for any of them.
     fn serves(&self, symbol: &str) -> bool {
-        registry().contract_exchange(symbol).is_some_and(|exchange| CME_GROUP.contains(&exchange))
+        registry().contract_exchange(crate::specs::root_of(symbol)).is_some_and(|exchange| CME_GROUP.contains(&exchange))
     }
 
     fn history_days(&self) -> u32 {
@@ -154,7 +154,11 @@ impl Ladders for Rithmic {
         }
         let client = session::client().map_err(map_err)?;
         let exchange = exchange_of(symbol);
-        let contract = client.front_month(symbol, exchange).map_err(map_err)?;
+        // A dated contract is its own; a root is its front month.
+        let contract = match crate::specs::root_of(symbol) == symbol {
+            true => client.front_month(symbol, exchange).map_err(map_err)?,
+            false => symbol.to_string(),
+        };
         let found = client.ladders(&contract, exchange, from, to).map_err(map_err)?;
         Ok(found.iter().map(|m| minute_of(m, tick_size)).collect())
     }
@@ -174,9 +178,13 @@ impl Ladders for Rithmic {
                     }
                 };
                 let Ok(client) = session::client() else { return };
-                let _watch = client.watch(&root, exchange_of(&root), move |live| {
+                let hear = move |live| {
                     let _ = sender.send(Event::Live(live));
-                });
+                };
+                let _watch = match crate::specs::root_of(&root) == root {
+                    true => client.watch(&root, exchange_of(&root), hear),
+                    false => client.watch_contract(&root, exchange_of(&root), hear),
+                };
                 fold(&inbox, Tape::new(tick_size, DEFAULT_CAPACITY), &say, &stopping);
             })
             .map_err(|error| ProviderError::Network(error.to_string()))?;

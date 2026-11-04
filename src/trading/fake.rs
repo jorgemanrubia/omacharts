@@ -207,7 +207,7 @@ impl FakeSession {
         }
     }
 
-    fn moved(&self) {
+    pub fn moved(&self) {
         (self.changed)(Change::Moved);
     }
 
@@ -347,7 +347,12 @@ impl Session for FakeSession {
         if instrument.kind != omacharts_engine::InstrumentKind::FutureRoot {
             return Err(Refusal::NotTradable);
         }
-        let symbol = self.contracts.lock().unwrap().get(&instrument.symbol).cloned().ok_or(Refusal::NotKnownYet)?;
+        // A dated contract trades as itself; a root as the contract the
+        // broker says is trading now.
+        let symbol = match instrument.is_contract() {
+            true => instrument.symbol.clone(),
+            false => self.contracts.lock().unwrap().get(&instrument.symbol).cloned().ok_or(Refusal::NotKnownYet)?,
+        };
         Ok(Contract { symbol, exchange: "CME".into(), tick: Some(0.25) })
     }
     fn last_price(&self, _instrument: &omacharts_engine::Instrument) -> Option<f64> {

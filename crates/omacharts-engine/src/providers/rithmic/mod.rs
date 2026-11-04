@@ -19,6 +19,7 @@ use std::sync::{mpsc, Arc};
 
 use crate::bars::{Bar, Timeframe, Unit};
 use crate::exchanges::registry;
+use crate::specs::root_of;
 use crate::provider::{
     Capability, FetchFailure, Ladders, Provider, ProviderError, Sink, Stream, Subscription, Update,
 };
@@ -97,15 +98,23 @@ fn symbol_under(instrument: &Instrument, entitled: impl Fn(&str) -> bool) -> Opt
     if instrument.kind != InstrumentKind::FutureRoot {
         return None;
     }
-    let exchange = registry().contract_exchange(&instrument.symbol)?;
+    let exchange = registry().contract_exchange(instrument.root())?;
     (CME_GROUP.contains(&exchange) && entitled(exchange)).then(|| instrument.symbol.clone())
 }
 
-/// The exchange Rithmic is asked on for a root, and an order on it goes
-/// to. A root only an override names is taken to be on CME.
-pub fn exchange_of(root: &str) -> &'static str {
-    let listed = registry().contract_exchange(root);
+/// The exchange Rithmic is asked on for a root, or a dated contract of
+/// one, and an order on it goes to. A root only an override names is taken
+/// to be on CME.
+pub fn exchange_of(symbol: &str) -> &'static str {
+    let listed = registry().contract_exchange(root_of(symbol));
     CME_GROUP.into_iter().find(|exchange| Some(*exchange) == listed).unwrap_or("CME")
+}
+
+/// Is this a dated contract, `ESH7`, rather than a root, `ES`? Rithmic
+/// spells both the same way, and a dated contract is asked for as itself
+/// where a root is asked for as its front month.
+fn is_dated(symbol: &str) -> bool {
+    root_of(symbol) != symbol
 }
 
 fn period_of(timeframe: Timeframe) -> Result<rithmic::Period, ProviderError> {
@@ -159,11 +168,12 @@ fn now() -> i64 {
     chrono::Utc::now().timestamp()
 }
 
-/// Bars of `root`'s front month, from `from` on.
+/// Bars of `root`'s front month, or of the dated contract `root` names,
+/// from `from` on.
 ///
-/// Asks once with the contract it remembers, and again with a fresh answer
-/// if that one has nothing: a contract that has rolled off is the likely
-/// reason, and the next front month is the cure.
+/// For a root, asks once with the contract it remembers, and again with a
+/// fresh answer if that one has nothing: a contract that has rolled off is
+/// the likely reason, and the next front month is the cure.
 fn front_month_bars(
     client: &rithmic::Client,
     root: &str,
@@ -173,6 +183,10 @@ fn front_month_bars(
     let period = period_of(timeframe)?;
     let exchange = exchange_of(root);
     let to = now() + timeframe.seconds();
+    if is_dated(root) {
+        let bars = client.bars(root, exchange, period, from, to).map_err(map_err)?;
+        return Ok(bars.iter().map(bar_of).filter(|bar| bar.ts >= from).collect());
+    }
     let contract = client.front_month(root, exchange).map_err(map_err)?;
     let first = client.bars(&contract, exchange, period, from, to);
     let bars = match first {
@@ -195,7 +209,7 @@ fn front_month_bars(
 /// the history plant are stamped.
 fn bucket(ts: i64, timeframe: Timeframe, root: &str) -> i64 {
     if timeframe.unit == Unit::Day {
-        let instrument = Instrument { symbol: root.to_string(), kind: InstrumentKind::FutureRoot, ..placeholder() };
+        let instrument = Instrument { symbol: root_of(root).to_string(), kind: InstrumentKind::FutureRoot, ..placeholder() };
         let date = registry()
             .for_instrument(&instrument)
             .and_then(|schedule| schedule.trading_date(ts))
@@ -450,15 +464,19 @@ fn stream(
         Err(error) => return say(Update::Lost(failure(error))),
     };
     let heard = sender.clone();
-    let _watch = client.watch(&root, exchange_of(&root), move |live| {
+    let hear = move |live| {
         let _ = heard.send(Event::Live(live));
-    });
+    };
+    let _watch = match is_dated(&root) {
+        true => client.watch_contract(&root, exchange_of(&root), hear),
+        false => client.watch(&root, exchange_of(&root), hear),
+    };
     let load: Load = {
         let root = root.clone();
         Box::new(move |from: i64| front_month_bars(&client, &root, timeframe, from))
     };
     let clock: Clock = Arc::new(|| chrono::Utc::now().timestamp_nanos_opt().unwrap_or(i64::MAX));
-    serve(&events, sender, Fold::new(timeframe, &root), since, load, clock, &say, &stop);
+    serve(&events, sender, Fold::new(timeframe, root_of(&root)), since, load, clock, &say, &stop);
 }
 
 /// Fetch what [`serve`] asks for, in the order it asks, and hand it back as
@@ -644,6 +662,21 @@ impl Provider for Rithmic {
     /// Minute ladders, history and live: see [`ladders`].
     fn ladders(&self) -> Option<&dyn Ladders> {
         Some(self)
+    }
+
+    /// The contracts of `root` Rithmic's symbol search lists, each with
+    /// the day it expires: the exchange's own listing, where the rule's is
+    /// a computation.
+    fn contracts(&self, root: &str) -> Result<Vec<(String, chrono::NaiveDate)>, ProviderError> {
+        if !session::here() {
+            return Err(ProviderError::NeedsSetup("Rithmic lists contracts for the open window, which holds the one session".into()));
+        }
+        let client = session::client().map_err(map_err)?;
+        let listed = client.listed(root, exchange_of(root)).map_err(map_err)?;
+        Ok(listed
+            .into_iter()
+            .filter_map(|(symbol, (year, month, day))| Some((symbol, chrono::NaiveDate::from_ymd_opt(year, month, day)?)))
+            .collect())
     }
 
     /// The window is done with Rithmic: the session logs out of every
