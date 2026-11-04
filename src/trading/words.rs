@@ -3,11 +3,12 @@
 use super::domain::grouped;
 use super::*;
 
-/// Which side of the market a refused price was on, for the toast.
+/// Which side of the market a refused price was on, for the Log: "Not
+/// placed · 7,612.50 is above the market now".
 pub fn crossed_text(price: &str, kind: OrderKind, side: Side) -> String {
     let above = matches!((kind, side), (OrderKind::Limit, Side::Buy) | (OrderKind::Stop, Side::Sell));
     let which = if above { "above" } else { "below" };
-    format!("{price} is now {which} the market · not placed")
+    format!("Not placed · {price} is {which} the market now")
 }
 
 /// What an order dragged to a price says beside the hand: "Sell Limit 1 ·
@@ -26,12 +27,20 @@ pub fn preview_text(side: Side, kind: OrderKind, qty: u32, price: &str, ticks: O
 /// Why a dragged order cannot go where the hand is: "Stop above market ·
 /// not allowed".
 pub fn refused_text(kind: OrderKind, price: f64, last: f64) -> String {
-    let at = match price.total_cmp(&last) {
+    format!("{} {} · not allowed", kind.word(), market_side(price, last))
+}
+
+/// The same, as the reason a refusal gives: "stop above market".
+pub fn wrong_side_text(kind: OrderKind, price: f64, last: f64) -> String {
+    format!("{} {}", kind.key(), market_side(price, last))
+}
+
+fn market_side(price: f64, last: f64) -> &'static str {
+    match price.total_cmp(&last) {
         std::cmp::Ordering::Greater => "above market",
         std::cmp::Ordering::Less => "below market",
         std::cmp::Ordering::Equal => "at market",
-    };
-    format!("{} {at} · not allowed", kind.word())
+    }
 }
 
 /// "Buy Limit", "Sell Stop".
@@ -66,6 +75,7 @@ pub fn outcome_text(order: &Order, before: Stage, decimals: usize, account: &str
         return None;
     }
     let price = |price: Option<f64>| price.map(|price| omacharts_engine::grouped_decimals(price, decimals));
+    let whole = || order_text(order.side, order.kind, order.qty, &order.contract, price(order.price).as_deref());
     match order.status.stage {
         Stage::Filled => Some(match price(order.fill_price) {
             Some(at) => format!("Filled {} {} at {at} · {account}", order.qty, order.contract),
@@ -74,27 +84,23 @@ pub fn outcome_text(order: &Order, before: Stage, decimals: usize, account: &str
         Stage::PartiallyFilled if order.filled > 0 => {
             Some(format!("Filled {} of {} {} · {account}", order.filled, order.qty, order.contract))
         }
-        Stage::Cancelled if order.kind != OrderKind::Market => Some(format!(
-            "Cancelled {} {}",
-            order_words(order.side, order.kind),
-            price(order.price).unwrap_or_default()
-        )),
+        Stage::Cancelled if order.kind != OrderKind::Market => Some(format!("Cancelled {} · {account}", whole())),
         Stage::Working if order.kind != OrderKind::Market && before == Stage::Pending => {
-            Some(format!("Working: {} {}", order_words(order.side, order.kind), price(order.price).unwrap_or_default()))
+            Some(format!("Working · {} · {account}", whole()))
         }
         Stage::Rejected => Some(match &order.status.said {
-            Some(why) => format!("Rejected: {why}"),
-            None => "Rejected".to_string(),
+            Some(why) => format!("Rejected · {why} · {account}"),
+            None => format!("Rejected · {account}"),
         }),
         _ => None,
     }
 }
 
-/// What a toast says of an order the broker's refreshed book has never
-/// heard of, sent before a drop: "Buy Limit 1 ESZ6 never reached the
-/// broker".
+/// What the Log says of an order the broker's refreshed book has never
+/// heard of, sent before a drop: "Not placed · Buy Limit 1 ESZ6 never
+/// reached the broker".
 pub fn never_placed_text(order: &OrderRequest) -> String {
-    format!("{} {} {} never reached the broker", order_words(order.side, order.kind), order.qty, order.contract)
+    format!("Not placed · {} {} {} never reached the broker", order_words(order.side, order.kind), order.qty, order.contract)
 }
 
 /// Money as a P&L reads: "+$125.00", "-$3.94", "+12.50 EUR".
@@ -171,6 +177,7 @@ mod tests {
         assert_eq!(refused_text(OrderKind::Stop, 7_640.0, 7_612.25), "Stop above market · not allowed");
         assert_eq!(refused_text(OrderKind::Limit, 7_600.0, 7_612.25), "Limit below market · not allowed");
         assert_eq!(refused_text(OrderKind::Limit, 7_612.25, 7_612.25), "Limit at market · not allowed");
+        assert_eq!(wrong_side_text(OrderKind::Stop, 7_640.0, 7_612.25), "stop above market");
     }
 
     #[test]
@@ -189,13 +196,13 @@ mod tests {
         assert_eq!(outcome_text(&bought, Stage::Pending, 2, "951").as_deref(), Some("Filled 1 ESZ6 at 7,612.25 · 951"));
         assert_eq!(outcome_text(&bought, Stage::Filled, 2, "951"), None, "said once");
         let working = order("b", Side::Sell, OrderKind::Limit, Some(7_620.0), Stage::Working);
-        assert_eq!(outcome_text(&working, Stage::Pending, 2, "951").as_deref(), Some("Working: Sell Limit 7,620.00"));
+        assert_eq!(outcome_text(&working, Stage::Pending, 2, "951").as_deref(), Some("Working · Sell Limit 1 ESZ6 at 7,620.00 · 951"));
         let refused = order("c", Side::Buy, OrderKind::Limit, Some(1.0), Status::said(Stage::Rejected, "price out of band"));
-        assert_eq!(outcome_text(&refused, Stage::Pending, 2, "951").as_deref(), Some("Rejected: price out of band"));
+        assert_eq!(outcome_text(&refused, Stage::Pending, 2, "951").as_deref(), Some("Rejected · price out of band · 951"));
         assert_eq!(
             outcome_text(&order("d", Side::Buy, OrderKind::Limit, Some(7_620.0), Stage::Cancelled), Stage::Working, 2, "951")
                 .as_deref(),
-            Some("Cancelled Buy Limit 7,620.00")
+            Some("Cancelled Buy Limit 1 ESZ6 at 7,620.00 · 951")
         );
         let mut part = order("e", Side::Sell, OrderKind::Limit, Some(7_620.0), Stage::PartiallyFilled);
         (part.qty, part.filled) = (2, 1);

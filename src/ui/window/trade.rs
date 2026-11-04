@@ -219,11 +219,11 @@ impl Window {
             Err(Failure::Refused(why)) => {
                 self.trade.pending.borrow_mut().remove(request);
                 self.apply_marks();
-                self.refuse_as(account, &format!("{not}: {why}"));
+                self.refuse_as(account, &format!("{not} · {why}"));
                 None
             }
             Err(Failure::Unanswered(why)) => {
-                self.refuse_as(account, &format!("No answer yet: {why}"));
+                self.refuse_as(account, &format!("No answer · {why}"));
                 None
             }
         }
@@ -468,6 +468,12 @@ impl Window {
         self.say(log_words::refused(account, text));
     }
 
+    /// Say that what was asked of `target`'s account needed nothing doing,
+    /// "Already flat in ESZ6": in the Log, and nowhere else.
+    pub(super) fn note_on(&self, target: &trading::Target, text: &str) {
+        self.say(log_words::note(&self.account_label(&target.account.key()), text));
+    }
+
     /// Say that what was asked of the account called `account` was done: in
     /// the Log, and in a toast.
     pub(super) fn confirm(&self, account: &str, text: &str) {
@@ -614,10 +620,10 @@ impl Window {
         // changed since the menu opened.
         let target = match self.order_target(&pane) {
             Ok(target) => target,
-            Err(why) => return self.refuse(&format!("{why} · not placed")),
+            Err(why) => return self.refuse(&format!("Not placed · {why}")),
         };
         if target.account.key() != account {
-            return self.refuse_on(&target, "The chart's account changed · not placed");
+            return self.refuse_on(&target, "Not placed · the chart's account changed");
         }
         let places = Self::tick_of(&pane, &target).map_or(2, |tick| omacharts_engine::on_tick(0.0, tick).1);
         let price_text = price.map(|price| omacharts_engine::grouped_decimals(price, places)).unwrap_or_default();
@@ -629,7 +635,7 @@ impl Window {
         let size = self.size_of(&pane);
         match trading::OrderRequest::request(&target.account.id, &target.contract(), side, kind, size, price) {
             Ok(order) => self.place(target, order),
-            Err(why) => self.refuse_on(&target, &format!("{why} · not placed")),
+            Err(why) => self.refuse_on(&target, &format!("Not placed · {why}")),
         }
     }
 
@@ -714,12 +720,12 @@ impl Window {
     fn cancel_mark(self: &Rc<Self>, pane: &ChartPane, basket: &str) {
         let target = match self.order_target(pane) {
             Ok(target) => target,
-            Err(why) => return self.refuse(&format!("{why} · not cancelled")),
+            Err(why) => return self.refuse(&format!("Not cancelled · {why}")),
         };
         let key = target.account.key();
         let order = self.trading.borrow().book.order(basket).filter(|order| order.account == key).cloned();
         let Some(order) = order.filter(|order| order.status.working()) else {
-            return self.refuse_on(&target, "Already done · not cancelled");
+            return self.note_on(&target, "Not cancelled · already done");
         };
         if let Err(why) = self.trade.placing.begin(&key) {
             return self.refuse_on(&target, &why);
@@ -743,18 +749,18 @@ impl Window {
     fn exit_mark(self: &Rc<Self>, pane: &ChartPane, kind: OrderKind, price: f64) {
         let target = match self.order_target(pane) {
             Ok(target) => target,
-            Err(why) => return self.refuse(&format!("{why} · not placed")),
+            Err(why) => return self.refuse(&format!("Not placed · {why}")),
         };
         let key = target.account.key();
         let held = self.trading.borrow().book.position(&key, &target.contract).cloned();
-        let Some(held) = held else { return self.refuse_on(&target, "Nothing held · not placed") };
+        let Some(held) = held else { return self.refuse_on(&target, "Not placed · nothing held") };
         if !target.capabilities.kinds.contains(&kind) {
-            return self.refuse_on(&target, &format!("{} takes no {} orders · not placed", target.login.name, kind.word()));
+            return self.refuse_on(&target, &format!("Not placed · {} takes no {} orders", target.login.name, kind.key()));
         }
         if let Some(last) = pane.view.last_price()
             && !trading::exit_allowed(kind, held.net, price, last)
         {
-            return self.refuse_on(&target, &format!("{} · not placed", trading::refused_text(kind, price, last)));
+            return self.refuse_on(&target, &format!("Not placed · {}", trading::wrong_side_text(kind, price, last)));
         }
         let side = trading::exit_side(held.net);
         // The whole of what is held, whatever the chart's size: an exit
@@ -762,7 +768,7 @@ impl Window {
         let Some(size) = trading::Quantity::new(held.net.unsigned_abs()) else { return };
         let order = match trading::OrderRequest::request(&target.account.id, &target.contract(), side, kind, size, Some(price)) {
             Ok(order) => order,
-            Err(why) => return self.refuse_on(&target, &format!("{why} · not placed")),
+            Err(why) => return self.refuse_on(&target, &format!("Not placed · {why}")),
         };
         let linking = target.clone();
         self.place_then(target, order, move |this, basket| this.link_exit(&linking, side, kind, basket));
@@ -780,13 +786,13 @@ impl Window {
         };
         let Some(sibling) = sibling else { return };
         if !target.capabilities.link {
-            return self.refuse_on(target, "Stop and target not linked on this broker");
+            return self.refuse_on(target, &format!("Not linked · {} cannot link orders", target.login.name));
         }
         let baskets = vec![basket, sibling];
         let name = self.account_label(&key);
         self.send(target, move |session, number| session.link(number, &baskets), move |this, outcome| match outcome {
-            Ok(()) => this.confirm(&name, "Linked: stop cancels target"),
-            Err(why) => this.refuse_as(&name, &format!("Not linked: {why}")),
+            Ok(()) => this.confirm(&name, "Linked · whichever fills first cancels the other"),
+            Err(why) => this.refuse_as(&name, &format!("Not linked · {why}")),
         });
     }
 
@@ -796,21 +802,21 @@ impl Window {
     fn move_mark(self: &Rc<Self>, pane: &ChartPane, basket: &str, price: f64) {
         let target = match self.order_target(pane) {
             Ok(target) => target,
-            Err(why) => return self.refuse(&format!("{why} · not moved")),
+            Err(why) => return self.refuse(&format!("Not moved · {why}")),
         };
         if !target.capabilities.modify {
-            return self.refuse_on(&target, &format!("{} cannot move an order · not moved", target.login.name));
+            return self.refuse_on(&target, &format!("Not moved · {} cannot move orders", target.login.name));
         }
         let key = target.account.key();
         let order = self.trading.borrow().book.order(basket).filter(|order| order.account == key).cloned();
         let Some(order) = order.filter(|order| order.status.working()) else {
-            return self.refuse_on(&target, "Filled while moving");
+            return self.refuse_on(&target, "Not moved · filled meanwhile");
         };
         // The market may have crossed it while the hand was letting go.
         if let Some(last) = pane.view.last_price()
             && !trading::side_allowed(order.kind, order.side, price, last)
         {
-            return self.refuse_on(&target, &format!("{} · not moved", trading::refused_text(order.kind, price, last)));
+            return self.refuse_on(&target, &format!("Not moved · {}", trading::wrong_side_text(order.kind, price, last)));
         }
         if let Err(why) = self.trade.placing.begin(&key) {
             return self.refuse_on(&target, &why);
@@ -841,11 +847,11 @@ impl Window {
     fn flatten_mark(self: &Rc<Self>, pane: &ChartPane) {
         let target = match self.order_target(pane) {
             Ok(target) => target,
-            Err(why) => return self.refuse(&format!("{why} · not flattened")),
+            Err(why) => return self.refuse(&format!("Not flattened · {why}")),
         };
         let key = target.account.key();
         let held = self.trading.borrow().book.position(&key, &target.contract).cloned();
-        let Some(held) = held else { return self.refuse_on(&target, "Nothing held · not flattened") };
+        let Some(held) = held else { return self.refuse_on(&target, "Not flattened · nothing held") };
         // The exits working on it, to cancel once it is flat: a stop left
         // behind would open a position of its own.
         let exits: Vec<String> = {
@@ -895,15 +901,15 @@ impl Window {
         let pane = self.focused_pane();
         let target = match self.order_target(&pane) {
             Ok(target) => target,
-            Err(why) => return self.refuse(&format!("{why} · not placed")),
+            Err(why) => return self.refuse(&format!("Not placed · {why}")),
         };
         if !target.capabilities.kinds.contains(&OrderKind::Market) {
-            return self.refuse_on(&target, &format!("{} takes no market orders · not placed", target.login.name));
+            return self.refuse_on(&target, &format!("Not placed · {} takes no market orders", target.login.name));
         }
         let size = self.size_of(&pane);
         match trading::OrderRequest::request(&target.account.id, &target.contract(), side, OrderKind::Market, size, None) {
             Ok(order) => self.place(target, order),
-            Err(why) => self.refuse_on(&target, &format!("{why} · not placed")),
+            Err(why) => self.refuse_on(&target, &format!("Not placed · {why}")),
         }
     }
 
@@ -914,12 +920,12 @@ impl Window {
         let pane = self.focused_pane();
         let target = match self.order_target(&pane) {
             Ok(target) => target,
-            Err(why) => return self.refuse(&format!("{why} · not flattened")),
+            Err(why) => return self.refuse(&format!("Not flattened · {why}")),
         };
         let key = target.account.key();
         let flat = trading::flat_plan(&self.trading.borrow().book, &key, &target.contract);
         if flat.is_empty() {
-            return self.refuse_on(&target, &format!("Already flat in {}", target.contract));
+            return self.note_on(&target, &format!("Already flat in {}", target.contract));
         }
         let name = self.account_label(&key);
         self.say(log_words::note(&name, format!("Flatten {} and cancel its orders", target.contract)));
@@ -1570,7 +1576,7 @@ pub(super) mod tests {
             assert!(!pending.contains_key(&Request::Place(lost.tag.clone())), "never reached, still drawn");
             assert!(pending.contains_key(&Request::Place(reached.tag.clone())), "the broker has it");
             assert!(!window.trade.placing.busy(&key), "the account still waiting on an answer");
-            assert_eq!(trading::never_placed_text(&lost), "Buy Limit 1 ESZ6 never reached the broker");
+            assert_eq!(trading::never_placed_text(&lost), "Not placed · Buy Limit 1 ESZ6 never reached the broker");
         });
     }
 
@@ -2357,11 +2363,11 @@ pub(super) mod tests {
                 let count = said.iter().filter(|said| **said == (level, line.clone(), confirms)).count();
                 assert_eq!(count, 1, "{line:?} said {count} times in {said:#?}");
             };
-            one(omacharts_engine::log::Level::Info, format!("{account} · Buy Market 1 ESZ6"), false);
+            one(omacharts_engine::log::Level::Info, format!("{account} · Buy 1 ESZ6 at market"), false);
             one(omacharts_engine::log::Level::Info, format!("{account} · Filled 1 ESZ6 at 7,612.25 · {account}"), true);
             one(omacharts_engine::log::Level::Info, format!("{account} · Flatten ESZ6 and cancel its orders"), false);
-            one(omacharts_engine::log::Level::Error, format!("{account} · Already flat in ESZ6"), false);
-            assert!(window.notice_shown().is_some(), "the refusal is not in the notice");
+            one(omacharts_engine::log::Level::Info, format!("{account} · Already flat in ESZ6"), false);
+            assert!(window.notice_shown().is_none(), "nothing to do is not trouble");
 
             // A session that ends by itself is said once, by the login's name.
             session.sign_out();

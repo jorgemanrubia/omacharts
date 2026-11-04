@@ -632,8 +632,8 @@ mod tests {
         let no_stops = Capabilities { kinds: vec![OrderKind::Market, OrderKind::Limit], ..all };
         assert!(menu_orders(&no_stops).iter().all(|(_, kind)| *kind != OrderKind::Stop));
         assert_eq!(menu_orders(&no_stops).len(), 4);
-        assert_eq!(crossed_text("7,612.50", OrderKind::Limit, Side::Buy), "7,612.50 is now above the market · not placed");
-        assert_eq!(crossed_text("7,600.00", OrderKind::Limit, Side::Sell), "7,600.00 is now below the market · not placed");
+        assert_eq!(crossed_text("7,612.50", OrderKind::Limit, Side::Buy), "Not placed · 7,612.50 is above the market now");
+        assert_eq!(crossed_text("7,600.00", OrderKind::Limit, Side::Sell), "Not placed · 7,600.00 is below the market now");
     }
 
     /// The menu offers to cancel the working order whose line the pointer

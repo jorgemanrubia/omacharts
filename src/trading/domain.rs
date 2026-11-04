@@ -480,7 +480,7 @@ impl OrderRequest {
         let price = match (kind, price) {
             (OrderKind::Market, _) => None,
             (_, Some(price)) if price.is_finite() => Some(price),
-            (_, _) => return Err(format!("A {} order needs a price", kind.word().to_lowercase())),
+            (_, _) => return Err(format!("a {} order needs a price", kind.key())),
         };
         Ok(OrderRequest {
             account: account.to_string(),
@@ -539,7 +539,7 @@ mod tests {
         assert_eq!((limit.kind, limit.price), (OrderKind::Limit, Some(7_620.0)));
         assert_eq!(
             OrderRequest::request("951", &contract, Side::Sell, OrderKind::Stop, two, None),
-            Err("A stop order needs a price".to_string())
+            Err("a stop order needs a price".to_string())
         );
         assert!(OrderRequest::request("951", &contract, Side::Sell, OrderKind::Limit, two, Some(f64::NAN)).is_err());
     }

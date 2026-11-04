@@ -543,20 +543,20 @@ pub(crate) mod tests {
             let log = private(&window);
             let bare = overlays(&window);
 
-            window.say(Entry::info("Yahoo Finance", "Back: AAPL 1m"));
+            window.say(Entry::info("Yahoo Finance", "AAPL 1m back"));
             window.say(Entry::warning("Yahoo Finance", "AAPL 1D · Rate limited by the data feed."));
             window.catch_up_log();
             assert!(window.notice_shown().is_none(), "a notice for a warning");
             assert_eq!(overlays(&window), bare, "built with nothing to say");
 
-            window.say(Entry::error("Lucid", "Nothing held · not flattened"));
+            window.say(Entry::error("Lucid", "Not flattened · nothing held"));
             window.catch_up_log();
             let notice = window.notice_shown().expect("a notice");
-            assert_eq!(notice.text(), "Lucid · Nothing held · not flattened");
+            assert_eq!(notice.text(), "Lucid · Not flattened · nothing held");
             assert_eq!(notice.more(), None);
             let first = log.entries().last().unwrap().id;
 
-            window.say(Entry::error("Lucid", "Already flat in ESZ6"));
+            window.say(Entry::error("Lucid", "Not moved · filled meanwhile"));
             window.say(Entry::error("Rithmic Test", "Signed out · forced logout"));
             window.say(Entry::error("Rithmic Test", "Signed out · forced logout"));
             window.catch_up_log();

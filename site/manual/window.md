@@ -98,7 +98,7 @@ crop: 1052,0,1508,290   (from the focused chart's border; the menu sits against 
 
 The Log is a window of its own, beside the charts, listing what the data feeds, the brokers and the app have said since it started: a feed signing in or losing a live chart's stream, an order sent and what became of it, a backup that could not be taken. Each line has the time, who said it (a data feed or a login, by its name) and what happened. A line the feed or the system said more about has **Details** under it, with their words as they came.
 
-The same thing said again by the same source is one line, counted, as in **Rejected: price out of band (×3)**, at the time of the last. The Log keeps the last thousand lines and nothing after Omacharts quits. User IDs and passwords are never in it.
+The same thing said again by the same source is one line, counted, as in **Rejected · price out of band · Lucid (×3)**, at the time of the last. The Log keeps the last thousand lines and nothing after Omacharts quits. User IDs and passwords are never in it.
 
 | Control | Does |
 |---|---|

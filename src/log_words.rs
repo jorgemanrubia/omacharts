@@ -15,7 +15,7 @@
 use omacharts_engine::log::{self, Entry};
 use omacharts_engine::{FetchFailure, Timeframe};
 
-use crate::trading::{self, Login, Order, OrderKind, OrderRequest, Stage};
+use crate::trading::{self, Login, Order, OrderRequest, Stage};
 
 /// Put `entry` in the log.
 pub fn say(entry: Entry) {
@@ -73,7 +73,7 @@ pub fn stream_lost(feed: &str, symbol: &str, timeframe: Timeframe, why: FetchFai
 
 /// The same stream, flowing again.
 pub fn stream_back(feed: &str, symbol: &str, timeframe: Timeframe) -> Entry {
-    Entry::info(feed, format!("Back: {symbol} {}", timeframe.label()))
+    Entry::info(feed, format!("{symbol} {} back", timeframe.label()))
 }
 
 /// One step of signing in to a feed, as the feed says it.
@@ -91,7 +91,7 @@ pub fn feed_signed_in(feed: &str, outcome: &Result<(), String>) -> Entry {
 
 /// The feeds took on what their logins may chart, and the charts moved.
 pub fn serving_changed() -> Entry {
-    Entry::info("Data feeds", "Entitlements changed · charts rerouted")
+    Entry::info("Data feeds", "Data feeds changed what they serve · charts moved")
 }
 
 /// How a broker sign-in ended: "Signed in · 2 accounts", or the broker's
@@ -119,23 +119,14 @@ pub fn signed_out(login: &str) -> Entry {
     Entry::info(login, "Signed out")
 }
 
-/// An order sent: "Buy Limit 2 ESZ6 @ 7,620.00".
+/// An order sent: "Buy Limit 2 ESZ6 at 7,620.00", "Buy 2 ESZ6 at market".
 pub fn order_sent(account: &str, order: &OrderRequest, decimals: usize) -> Entry {
-    let words = trading::order_words(order.side, order.kind);
-    let text = match (order.kind, order.price) {
-        (OrderKind::Market, _) | (_, None) => format!("{words} {} {}", order.qty, order.contract),
-        (_, Some(price)) => format!(
-            "{words} {} {} @ {}",
-            order.qty,
-            order.contract,
-            omacharts_engine::grouped_decimals(price, decimals)
-        ),
-    };
-    Entry::info(account, text)
+    let price = order.price.map(|price| omacharts_engine::grouped_decimals(price, decimals));
+    Entry::info(account, trading::order_text(order.side, order.kind, order.qty, &order.contract, price.as_deref()))
 }
 
-/// Something asked for that was not done, in the words the window used to
-/// toast: "Nothing held · not flattened".
+/// Something asked for that was not done: "Not flattened · nothing
+/// held".
 pub fn refused(account: &str, text: impl Into<String>) -> Entry {
     Entry::error(account, text)
 }
@@ -201,6 +192,7 @@ fn capitalised(line: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::trading::OrderKind;
     use omacharts_engine::log::Level;
 
     #[test]
@@ -235,9 +227,9 @@ mod tests {
             price: None,
             tag: "omacharts:1".into(),
         };
-        assert_eq!(order_sent("Lucid", &order, 2).text, "Buy Market 2 ESZ6");
+        assert_eq!(order_sent("Lucid", &order, 2).text, "Buy 2 ESZ6 at market");
         (order.kind, order.price, order.side) = (OrderKind::Limit, Some(7_620.0), trading::Side::Sell);
-        assert_eq!(order_sent("Lucid", &order, 2).text, "Sell Limit 2 ESZ6 @ 7,620.00");
+        assert_eq!(order_sent("Lucid", &order, 2).text, "Sell Limit 2 ESZ6 at 7,620.00");
     }
 
     #[test]
