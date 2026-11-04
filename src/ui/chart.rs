@@ -506,12 +506,16 @@ impl Layout {
     /// The arrow at the end of the travel is left out rather than drawn dead.
     /// This app withholds an affordance it cannot honour — there is no Maximize
     /// with one chart — and a greyed arrow invites the click it would refuse.
+    ///
+    /// A strip does not cross the price, so the price's edge is an end of the
+    /// travel too.
     fn controls(&self, at: usize) -> Vec<Control> {
+        let strip = |row: Option<&Row>| row.is_some_and(|row| row.pane.is_some());
         let mut offered = Vec::new();
-        if at > 0 {
+        if at > 0 && strip(self.rows.get(at - 1)) {
             offered.push(Control::Up);
         }
-        if at + 1 < self.rows.len() {
+        if strip(self.rows.get(at + 1)) {
             offered.push(Control::Down);
         }
         offered.push(Control::Close);
@@ -9128,21 +9132,17 @@ mod tests {
 
     #[test]
     fn the_strip_at_either_end_of_the_stack_is_offered_no_way_out_of_it() {
-        let plan = with_rows(&[Some(1), None, Some(2)]);
-        let first = plan.controls(0);
-        assert_eq!(first, vec![Control::Down, Control::Close], "nothing above the first row");
+        let plan = with_rows(&[None, Some(1), Some(2)]);
+        assert_eq!(plan.controls(1), vec![Control::Down, Control::Close], "the price is above it");
         assert_eq!(plan.controls(2), vec![Control::Up, Control::Close], "nothing below the last");
     }
 
-    /// One strip and the price is still two rows, so there is always somewhere
-    /// to go: the strip can cross the price even with nothing else on the
-    /// chart.
+    /// A strip stays on its side of the price, so the only strip on a chart
+    /// has nowhere to go and is offered only its ×.
     #[test]
-    fn the_only_strip_on_a_chart_is_still_offered_the_way_across_the_price() {
+    fn the_only_strip_on_a_chart_is_not_offered_the_way_across_the_price() {
         let under = with_rows(&[None, Some(1)]);
-        assert_eq!(under.controls(1), vec![Control::Up, Control::Close]);
-        let over = with_rows(&[Some(1), None]);
-        assert_eq!(over.controls(0), vec![Control::Down, Control::Close]);
+        assert_eq!(under.controls(1), vec![Control::Close]);
     }
 
     /// Whichever arrows a strip offers, they sit in the same places: the boxes

@@ -544,12 +544,25 @@ pub struct Indicator {
     /// an index into the list saying "the price sits here" would not manage,
     /// because removing an indicator above the price would silently promote the
     /// one below it.
-    #[serde(default)]
+    ///
+    /// Nobody chooses this today: every strip sits below the price, and a
+    /// stored `true` is read back as `false` (see [`below_the_price`]). The
+    /// drawing and [`move_pane`] still honour it, so a setting for it plugs
+    /// in by dropping that override and offering [`cross_price`] again.
+    #[serde(default, deserialize_with = "below_the_price")]
     pub above_price: bool,
     /// Whether the chart's legend names it. Drawn or not is `visible`; this
     /// is only whether it takes a line at the top of the chart.
     #[serde(default = "listed")]
     pub in_legend: bool,
+}
+
+/// Every strip is read back below the price, whatever was stored: a chart
+/// left with a strip above it once had a way to move it back, and now has
+/// none. The stored value is still read, so an older file stays readable.
+fn below_the_price<'de, D: serde::Deserializer<'de>>(stored: D) -> Result<bool, D::Error> {
+    let _ = <bool as Deserialize>::deserialize(stored)?;
+    Ok(false)
 }
 
 /// An indicator stored before the legend could leave one out was in it.
@@ -839,6 +852,25 @@ pub fn move_pane(indicators: &mut [Indicator], id: u32, direction: Move) -> bool
             reslot(indicators, &above, &below);
             true
         }
+    }
+}
+
+/// Move one strip one row along the stack on its own side of the price.
+///
+/// What the app offers: a strip never crosses the price, so at the price's
+/// edge, as at either end of the stack, this is `false` and nothing moves.
+/// [`move_pane`] is the same move without that limit, for when where a strip
+/// sits becomes a setting.
+pub fn move_strip(indicators: &mut [Indicator], id: u32, direction: Move) -> bool {
+    let rows = stack(indicators);
+    let Some(at) = rows.iter().position(|row| *row == Row::Strip(id)) else { return false };
+    let neighbour = match direction {
+        Move::Up => at.checked_sub(1),
+        Move::Down => (at + 1 < rows.len()).then_some(at + 1),
+    };
+    match neighbour.map(|n| rows[n]) {
+        Some(Row::Strip(_)) => move_pane(indicators, id, direction),
+        _ => false,
     }
 }
 
@@ -1627,13 +1659,28 @@ mod tests {
         assert!(!back.above_price, "and it round trips as it is");
     }
 
+    /// A strip stored above the price, from when it could be put there, comes
+    /// back below it: nothing in the app could move it back down.
     #[test]
-    fn a_strip_above_the_price_survives_being_written_down() {
+    fn a_strip_stored_above_the_price_comes_back_below_it() {
         let mut set = stacked();
         move_pane(&mut set, 1, Move::Up);
+        assert_eq!(stack(&set)[0], Row::Strip(1), "above the price before it is stored");
         let json = serde_json::to_string(&set).unwrap();
         let back: Vec<Indicator> = serde_json::from_str(&json).unwrap();
-        assert_eq!(stack(&back), stack(&set));
+        assert!(!back.iter().any(|i| i.above_price));
+        assert_eq!(stack(&back), vec![Row::Price, Row::Strip(1), Row::Strip(3), Row::Strip(4)]);
+    }
+
+    #[test]
+    fn a_strip_moved_from_the_app_stays_on_its_side_of_the_price() {
+        let mut set = stacked();
+        assert!(!move_strip(&mut set, 1, Move::Up), "the price is above it");
+        assert_eq!(stack(&set), stack(&stacked()));
+        assert!(move_strip(&mut set, 3, Move::Up), "past the strip above it");
+        assert_eq!(stack(&set), vec![Row::Price, Row::Strip(3), Row::Strip(1), Row::Strip(4)]);
+        assert!(!move_strip(&mut set, 4, Move::Down), "already the bottom row");
+        assert!(!move_strip(&mut set, 2, Move::Up), "an overlay has no strip");
     }
 
     #[test]

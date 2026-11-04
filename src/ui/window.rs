@@ -2866,15 +2866,15 @@ impl Window {
             }
         });
 
-        // The arrows in a strip's corner move it through the stack, the price
-        // plot included. The order lives with the indicators, which is the same
-        // order the settings list drags around — one order, two ways to change
-        // it.
+        // The arrows in a strip's corner move it through the strips on its
+        // side of the price. The order lives with the indicators, which is the
+        // same order the settings list drags around — one order, two ways to
+        // change it.
         let mover = self.clone();
         pane.view.set_pane_move_handler(move |indicator_id, direction| {
             let Some(pane) = mover.pane(id) else { return };
             let mut indicators = pane.indicators.borrow().clone();
-            if omacharts_engine::indicators::move_pane(&mut indicators, indicator_id, direction) {
+            if omacharts_engine::indicators::move_strip(&mut indicators, indicator_id, direction) {
                 mover.change_indicators_of(&pane, indicators);
             }
         });

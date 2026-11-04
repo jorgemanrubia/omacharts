@@ -97,7 +97,7 @@ A strip takes a share of the chart's height, set with **Pane height %** in its s
 |---|---|
 | Drag the line between two rows | Resizes the strip the line belongs to. The new height is saved |
 | Pointer in a strip | Shows its corner controls, top right |
-| The up or down chevron in the corner | Moves the strip one row up or down, past the price plot when that is next. A chevron with nowhere to go is not shown |
+| The up or down chevron in the corner | Moves the strip one row up or down among the strips. Strips always sit under the price. A chevron with nowhere to go is not shown |
 | The × in the corner | Removes the indicator |
 
 <!-- regenerate:
@@ -130,7 +130,7 @@ The Indicators page lists the focused chart's indicators under **On the chart**.
 | Bin | Removes it |
 | Click the row | Opens its settings over the list. Changes apply as they are made. The back arrow returns to the list |
 
-The list is in the order of the chart, top to bottom. Overlays are listed in the order they are drawn, strips in the order they stack. When the chart has a strip, **Price** (**Candles, and everything drawn over them**) is a row too, in the price plot's place. Dragging a strip onto **Price** moves it to the other side of the price.
+The list is in the order of the chart, top to bottom. Overlays are listed in the order they are drawn, strips in the order they stack.
 
 Above the list, **Chart template** names the template the chart is on, or **None**. On a chart on a template, the list is the template's own: it is titled after it, such as **On the Momentum template**, with **A change here reaches every chart that uses it.** under the title. Its rows open, reorder, show, hide and remove the template's indicators, and **+** adds to the template. Every chart on the template changes with it ([Chart templates](/manual/chart-templates/)).
 
