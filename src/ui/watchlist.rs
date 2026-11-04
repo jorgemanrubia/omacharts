@@ -522,14 +522,21 @@ const ADD_TIP: &str = "Add a symbol or a section";
 const NEW_LIST_TIP: &str = "New watchlist";
 
 impl Watchlist {
-    /// Put the foot band in, or take it out: a hairline and the height the
-    /// panel's toggle needs, under the rows, so none of them scrolls under
-    /// the toggle. Built only when asked for, so a rail with no login is
-    /// the rail it always was.
     pub fn has_foot(&self) -> bool {
         self.foot.borrow().is_some()
     }
 
+    /// The foot band, for the window to stand the trading panel's toggle
+    /// in while the rail is open.
+    pub fn foot_band(&self) -> Option<gtk::Box> {
+        self.foot.borrow().as_ref().map(|(_, band)| band.clone())
+    }
+
+    /// Put the foot band in, or take it out: a hairline on the line of the
+    /// charts' time axis and the time axis's height under it, so the band
+    /// and the axis read as one strip across the window, and the rows end
+    /// above it rather than scrolling under the toggle. Built only when
+    /// asked for, so a rail with no login is the rail it always was.
     pub fn set_foot(&self, shown: bool) {
         let mut foot = self.foot.borrow_mut();
         match (shown, foot.as_ref()) {

@@ -3331,14 +3331,10 @@ impl Window {
                 false => cluster.add_css_class("over-chart"),
             }
         }
-        // And the trading panel's toggle at the foot of the same edge, which
-        // drops onto the bottom-right chart with it.
-        if let Some(foot) = self.trade.foot.borrow().as_ref() {
-            match railed {
-                true => foot.remove_css_class("over-chart"),
-                false => foot.add_css_class("over-chart"),
-            }
-        }
+        // And the trading panel's toggle, which stands in the rail's foot
+        // while the rail is open and drops onto the bottom-right chart
+        // with the corner when it closes.
+        self.dock_trading_toggle(railed);
 
         // The rects tile the area exactly, so the chart under the window's
         // corner is the one — the only one — holding its top right pixel.
