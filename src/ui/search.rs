@@ -121,11 +121,16 @@ impl SymbolSearch {
             }
         });
 
-        // Right opens the root the highlight is on and Left folds it, after
-        // the frame has had Up and Down. Only with the caret at the end of
-        // the text, where Right has nothing else to do: in the middle of a
-        // word the arrows are still the caret's.
+        // Right opens the root the highlight is on and Left folds it. The
+        // keyboard stays in the box, so typing carries on, and the box's own
+        // text widget takes Right and Left for the caret before anything
+        // above it hears them: so this listens on the way down, and lets
+        // the caret have Right unless it is already at the end of the text,
+        // where Right has nothing else to do. Left folds whenever a fold is
+        // under the highlight, which is the one thing it can visibly do
+        // there.
         let keys = gtk::EventControllerKey::new();
+        keys.set_propagation_phase(gtk::PropagationPhase::Capture);
         let weak = Rc::downgrade(self);
         keys.connect_key_pressed(move |_, key, _, _| match weak.upgrade() {
             Some(search) => search.arrow(key),
@@ -186,7 +191,7 @@ impl SymbolSearch {
     /// has been asked, the first time this opening.
     fn expand(self: &Rc<Self>, root: &Instrument) {
         self.expanded.borrow_mut().insert(root.symbol.clone());
-        self.rebuild(&self.frame.entry.text(), Some(root.clone()));
+        self.set_open(root, true);
         if !self.asked.borrow_mut().insert(root.symbol.clone()) {
             return;
         }
@@ -200,8 +205,7 @@ impl SymbolSearch {
                 // month, than the rule drew; a fold closed since has nothing
                 // to redraw.
                 if search.is_expanded(&opened) {
-                    let keep = search.selected();
-                    search.rebuild(&search.frame.entry.text(), keep);
+                    search.set_open(&opened, true);
                 }
             }),
         );
@@ -209,7 +213,56 @@ impl SymbolSearch {
 
     fn collapse(self: &Rc<Self>, root: &Instrument) {
         self.expanded.borrow_mut().remove(&root.symbol);
-        self.rebuild(&self.frame.entry.text(), Some(root.as_root()));
+        self.set_open(root, false);
+    }
+
+    /// Open or fold `root` where it stands: its contracts go in or out
+    /// under its row, its chevron turns, and every other row stays the
+    /// widget it was. Not a rebuild of the list, because the chevron is
+    /// under the pointer when it is clicked, and a widget taken away under
+    /// the pointer leaves the pointer on nothing until it moves: the next
+    /// click on the new chevron in its place went nowhere, so every other
+    /// click was lost. A root not on the list, which a typed contract's
+    /// list can be, is rebuilt in.
+    fn set_open(self: &Rc<Self>, root: &Instrument, open: bool) {
+        let list = &self.frame.list;
+        let at = self.shown.borrow().iter().position(|row| is_root(row) && same(row, root));
+        let Some(at) = at else {
+            return self.rebuild(&self.frame.entry.text(), Some(root.clone()));
+        };
+        let was = self.selected();
+        let under = |search: &SymbolSearch| {
+            search.shown.borrow().get(at + 1).is_some_and(|row| row.is_contract() && row.root() == root.symbol)
+        };
+        while under(self) {
+            if let Some(row) = list.row_at_index(at as i32 + 1) {
+                list.remove(&row);
+            }
+            self.shown.borrow_mut().remove(at + 1);
+        }
+        if open {
+            let mut index = at + 1;
+            for listing in &contracts::listing(root.root(), contracts::today()) {
+                let Some(instrument) = root.in_month(listing.month) else { continue };
+                list.insert(&contract_row(&instrument, listing, true), index as i32);
+                self.shown.borrow_mut().insert(index, instrument);
+                index += 1;
+            }
+        }
+        let Some(row) = list.row_at_index(at as i32) else { return };
+        if let Some(fold) = chevron_of(&row) {
+            fold.set_icon_name(match open {
+                true => "pan-down-symbolic",
+                false => "pan-end-symbolic",
+            });
+        }
+        // The highlight stays on a contract under the root when it was on
+        // one and the fold is still open; on the root otherwise.
+        let kept = was
+            .filter(|_| open)
+            .and_then(|was| self.shown.borrow().iter().position(|row| same(row, &was)))
+            .and_then(|index| list.row_at_index(index as i32));
+        list.select_row(Some(&kept.unwrap_or(row)));
     }
 
     /// Right and Left on the highlight, when it is a root or one of its
@@ -279,6 +332,20 @@ impl SymbolSearch {
 /// The same instrument on two rows.
 fn same(a: &Instrument, b: &Instrument) -> bool {
     a.symbol == b.symbol && a.suffix == b.suffix
+}
+
+/// A root row's chevron, when it has one.
+fn chevron_of(row: &gtk::ListBoxRow) -> Option<gtk::Button> {
+    let mut child = row.child()?.first_child();
+    while let Some(widget) = child {
+        if let Some(button) = widget.downcast_ref::<gtk::Button>()
+            && button.has_css_class("pick-expander")
+        {
+            return Some(button.clone());
+        }
+        child = widget.next_sibling();
+    }
+    None
 }
 
 /// A continuous futures root: the one kind of row that opens.
@@ -597,17 +664,7 @@ mod tests {
     }
 
     fn chevron(row: &gtk::ListBoxRow) -> Option<gtk::Button> {
-        let line = row.child()?;
-        let mut child = line.first_child();
-        while let Some(widget) = child {
-            if let Some(button) = widget.downcast_ref::<gtk::Button>()
-                && button.has_css_class("pick-expander")
-            {
-                return Some(button.clone());
-            }
-            child = widget.next_sibling();
-        }
-        None
+        chevron_of(row)
     }
 
     /// A root opens to its contracts and folds them away again, from the
@@ -714,6 +771,129 @@ mod tests {
             settle();
             assert!(folded(&search));
             search.frame.close();
+        });
+    }
+
+    /// Let the real events of the last little while arrive and be acted on.
+    fn arrive() {
+        let context = glib::MainContext::default();
+        let until = std::time::Instant::now() + std::time::Duration::from_millis(600);
+        while std::time::Instant::now() < until {
+            while context.iteration(false) {}
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    /// A gesture or a key sent by the compositor the tests run under, as a
+    /// hand would send it: `bin/headless-window click X Y`, `key Right`.
+    fn send(args: &[&str]) {
+        let tool = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("bin/headless-window");
+        let done = std::process::Command::new(tool).args(args).output().expect("bin/headless-window runs");
+        assert!(done.status.success(), "headless-window {args:?}: {}", String::from_utf8_lossy(&done.stderr));
+        arrive();
+    }
+
+    /// The fold, clicked and keyed for real: the pointer and keyboard of the
+    /// headless compositor the suite runs under, through the window, the
+    /// popover and the row, not the handlers called by name. This is what
+    /// found a list rebuilt under the pointer losing every other click, and
+    /// Right taken by the box's caret before the fold heard it. Only under
+    /// `bin/headless-window`, where there is a screen to click on.
+    #[test]
+    fn the_fold_answers_a_real_click_and_real_arrow_keys() {
+        if std::env::var_os("OMACHARTS_WINDOW").is_none() {
+            eprintln!("not under bin/headless-window: nothing to click");
+            return;
+        }
+        crate::ui::on_gtk(|| {
+            let today = contracts::today();
+            contracts::forget("ES");
+            let index = crate::inventory::Inventory::curated();
+            let search = SymbolSearch::new(index.clone());
+            search.list_contracts_through(|_, done| done());
+            let window = gtk::Window::new();
+            window.set_title(Some("omacharts search test"));
+            let inside = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            window.set_child(Some(&inside));
+            // The whole screen, so that the screen's coordinates are the
+            // window's.
+            window.fullscreen();
+            window.present();
+            for _ in 0..300 {
+                if window.is_mapped() && window.is_active() {
+                    break;
+                }
+                arrive();
+            }
+            assert!(window.is_active(), "the test window never took the screen");
+            let picked: Rc<RefCell<Option<Instrument>>> = Rc::new(RefCell::new(None));
+            let handed = picked.clone();
+            search.present_with(Over::window(&inside, "a test"), "es", move |instrument| {
+                *handed.borrow_mut() = Some(instrument);
+            });
+            arrive();
+            let list = &search.frame.list;
+            let expected: Vec<String> = contracts::listing("ES", today).into_iter().map(|l| l.symbol).collect();
+            let open = |search: &SymbolSearch| symbols(search).get(1) == expected.first();
+            let icon = |list: &gtk::ListBox| chevron(&list.row_at_index(0).unwrap()).unwrap().icon_name();
+            assert_eq!(symbols(&search)[0], "ES");
+            assert!(!open(&search));
+
+            // Where the chevron is on the screen: the popover's place on the
+            // window, its own frame within that, and the button within it.
+            let popover = &search.frame.popover;
+            let surface = popover.native().and_then(|native| native.surface()).expect("the popover is on screen");
+            let popup = surface.downcast::<gtk::gdk::Popup>().expect("a popover is a popup");
+            let (frame_x, frame_y) = popover.native().map(|native| native.surface_transform()).unwrap_or((0.0, 0.0));
+            let at = |row: i32, widget: &gtk::Widget| {
+                let bounds = widget.compute_bounds(popover).expect("in the popover");
+                let _ = row;
+                (
+                    popup.position_x() as f64 + frame_x + f64::from(bounds.x() + bounds.width() / 2.0),
+                    popup.position_y() as f64 + frame_y + f64::from(bounds.y() + bounds.height() / 2.0),
+                )
+            };
+            let fold = chevron(&list.row_at_index(0).unwrap()).expect("a chevron");
+            let (x, y) = at(0, fold.upcast_ref());
+            let (x, y) = (x.round().to_string(), y.round().to_string());
+
+            // Click: open, then shut, then open again: a click is never lost.
+            send(&["click", &x, &y]);
+            assert!(open(&search), "the first click did not open it: {:?}", symbols(&search));
+            assert_eq!(icon(list).as_deref(), Some("pan-down-symbolic"));
+            send(&["click", &x, &y]);
+            assert!(!open(&search), "the second click did not fold it: {:?}", symbols(&search));
+            assert_eq!(icon(list).as_deref(), Some("pan-end-symbolic"));
+            send(&["click", &x, &y]);
+            assert!(open(&search), "the third click did not open it");
+            send(&["click", &x, &y]);
+            assert!(!open(&search), "the fourth click did not fold it");
+
+            // Keys, with the keyboard in the box and the caret at the end:
+            // Right opens, Down lands on a contract, Left folds and lands on
+            // the root, and another Left is the caret's.
+            send(&["key", "End"]);
+            assert_eq!(search.frame.entry.position(), 2);
+            send(&["key", "Right"]);
+            assert!(open(&search), "Right did not open it: {:?}", symbols(&search));
+            assert_eq!(search.frame.entry.position(), 2, "Right was the fold's, not the caret's");
+            send(&["key", "Down"]);
+            assert_eq!(search.selected().map(|i| i.symbol), expected.first().cloned());
+            send(&["key", "Left"]);
+            assert!(!open(&search), "Left on a contract did not fold its root");
+            assert_eq!(search.selected().map(|i| i.symbol), Some("ES".into()), "and land on it");
+            assert_eq!(search.frame.entry.position(), 2);
+            send(&["key", "Left"]);
+            assert!(!open(&search));
+            assert_eq!(search.frame.entry.position(), 1, "with nothing to fold, Left is the caret's");
+
+            // The row itself, clicked, is still a pick of the root.
+            let name = list.row_at_index(0).unwrap().child().and_then(|line| line.first_child()).expect("the ticker");
+            let (x, y) = at(0, &name);
+            send(&["click", &x.round().to_string(), &y.round().to_string()]);
+            assert_eq!(picked.borrow().as_ref().map(|i| i.symbol.clone()), Some("ES".into()));
+            window.close();
+            arrive();
         });
     }
 }
