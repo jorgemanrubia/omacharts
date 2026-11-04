@@ -2,7 +2,7 @@
 name = "rithmic"
 version = "0.1.0"
 edition = "2024"
-description = "A Rithmic login for charts: one session per process, bars, front months and live trades."
+description = "Rithmic logins for charts and trading: one connection per login, bars, front months, live trades and orders."
 license = "MIT"
 
 [dependencies]
