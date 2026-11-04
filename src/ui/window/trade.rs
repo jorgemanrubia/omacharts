@@ -1360,6 +1360,29 @@ impl Window {
         let price = |price: f64| omacharts_engine::grouped_decimals(price, places);
         let view = self.trading.borrow();
         let pending = self.trade.pending.borrow();
+        let currency = target.account.currency.clone();
+        // An exit says what it would realise where it rests: closing the
+        // position held here, at what a point of it is worth.
+        let spec_point = pane.instrument.borrow().as_ref().and_then(|i| i.spec()).and_then(|spec| spec.point);
+        let holding = view.book.position(&key, &target.contract).filter(|held| held.net != 0);
+        let exit_words = |side: Side, kind: OrderKind, qty: u32, at: f64, words: String| {
+            let money = holding.and_then(|held| {
+                let avg = held.avg?;
+                let point = held.point.or(spec_point)?;
+                trading::is_exit(side, kind, held.net).then(|| trading::exit_pnl(avg, held.net, qty, point, at))
+            });
+            match money {
+                Some(pnl) => {
+                    let mut words = words;
+                    words.push_str(" · ");
+                    let from = words.len();
+                    words.push_str(&trading::pnl_text(pnl, currency.as_deref()));
+                    let colour = if pnl < 0.0 { look.loss.clone() } else { look.profit.clone() };
+                    (words, Some(crate::ui::chart::MarkPnl { from, colour }))
+                }
+                None => (words, None),
+            }
+        };
         let mut orders: Vec<crate::ui::chart::OrderMark> = view
             .book
             .working(&key, &target.contract)
@@ -1380,6 +1403,9 @@ impl Window {
                     Side::Buy => look.buy.clone(),
                     Side::Sell => look.sell.clone(),
                 };
+                // What is left of it to fill is what it would still close.
+                let left = order.qty.saturating_sub(order.filled);
+                let (words, pnl) = exit_words(order.side, order.kind, left, at, trading::order_pill_text(order));
                 Some(crate::ui::chart::OrderMark {
                     basket: order.basket_id.clone(),
                     side: order.side,
@@ -1388,10 +1414,11 @@ impl Window {
                     // Not yet working at the exchange, or asked to move or go.
                     dim: order.status == Stage::Pending || moving.is_some() || cancelling,
                     price: at,
-                    words: trading::order_pill_text(order),
+                    words,
                     price_text: price(at),
                     colour,
                     style,
+                    pnl,
                 })
             })
             .collect();
@@ -1417,6 +1444,7 @@ impl Window {
                 ),
                 (_, None) => continue,
             };
+            let (words, pnl) = exit_words(order.side, order.kind, order.qty, at, words);
             orders.push(crate::ui::chart::OrderMark {
                 basket: String::new(),
                 side: order.side,
@@ -1431,9 +1459,9 @@ impl Window {
                     Side::Sell => look.sell.clone(),
                 },
                 style,
+                pnl,
             });
         }
-        let currency = target.account.currency.clone();
         // Positions in other months of the root, held past a roll or in
         // a month this chart is not of: drawn with their contract's name,
         // so that what is held is never out of sight.
@@ -1469,6 +1497,10 @@ impl Window {
                     net: held.net,
                     exits: Vec::new(),
                     dim: pending.contains_key(&Request::Flatten(key.clone(), held.contract.clone())),
+                    point: held.point.or(spec_point),
+                    currency: currency.clone(),
+                    profit: look.profit.clone(),
+                    loss: look.loss.clone(),
                 })
             })
             .collect();
@@ -1504,6 +1536,10 @@ impl Window {
                 net: held.net,
                 exits,
                 dim: pending.contains_key(&Request::Flatten(key.clone(), target.contract.clone())),
+                point: held.point.or(spec_point),
+                currency: currency.clone(),
+                profit: look.profit.clone(),
+                loss: look.loss.clone(),
             })
         });
         drop(pending);
@@ -1801,8 +1837,40 @@ pub(super) mod tests {
             };
             let basket = session.place(&limit).unwrap();
             window.desk.tell();
-            assert_eq!(pane.view.marks().1, vec!["▼ Sell Limit 1".to_string()]);
-            session.cancel("951", &basket).unwrap();
+            // An exit says what it would realise where it rests: 7.75
+            // points on one ES.
+            assert_eq!(pane.view.marks().1, vec!["▼ Sell Limit 1 · +$387.50".to_string()]);
+            // A stop under the average loses; one for 3 closes only the 1
+            // held; a buy adds to the long and says nothing of money.
+            let stop = trading::OrderRequest {
+                kind: OrderKind::Stop,
+                qty: 3,
+                price: Some(7_600.0),
+                tag: trading::new_tag(),
+                ..limit.clone()
+            };
+            let more = trading::OrderRequest {
+                side: Side::Buy,
+                price: Some(7_590.0),
+                tag: trading::new_tag(),
+                ..limit.clone()
+            };
+            let stop = session.place(&stop).unwrap();
+            let more = session.place(&more).unwrap();
+            window.desk.tell();
+            let mut words = pane.view.marks().1;
+            words.sort();
+            assert_eq!(
+                words,
+                vec![
+                    "▲ Buy Limit 1".to_string(),
+                    "▼ Sell Limit 1 · +$387.50".to_string(),
+                    "▼ Sell Stop 3 · -$612.50".to_string(),
+                ]
+            );
+            for basket in [&basket, &stop, &more] {
+                session.cancel("951", basket).unwrap();
+            }
             window.desk.tell();
             assert!(pane.view.marks().1.is_empty(), "a cancelled order left on the chart");
             // Answered, so the account is free for the next.
@@ -2022,7 +2090,15 @@ pub(super) mod tests {
             let (window, pane, session, key) = long_es(true);
             let basket = session.place(&resting(Side::Sell, OrderKind::Limit, Some(7_640.0))).unwrap();
             window.desk.tell();
-            let orders = || pane.view.mark_states().1;
+            // What each order is, where and how faint, without the money an
+            // exit also says.
+            let orders = || {
+                let mut orders = pane.view.mark_states().1;
+                for (words, ..) in &mut orders {
+                    words.truncate(words.find(" · ").unwrap_or(words.len()));
+                }
+                orders
+            };
             assert_eq!(orders(), vec![("▼ Sell Limit 1".to_string(), 7_640.0, false)]);
 
             // Refused: back as it was, and said.
@@ -2314,7 +2390,15 @@ pub(super) mod tests {
             settle(&window, || pane.view.last_price().is_some());
             let last = pane.view.last_price().expect("a last price");
             let off = |ticks: f64| (last / 0.25).round() * 0.25 + ticks * 0.25;
-            let orders = || pane.view.mark_states().1;
+            // What each order is, where and how faint, without the money an
+            // exit also says.
+            let orders = || {
+                let mut orders = pane.view.mark_states().1;
+                for (words, ..) in &mut orders {
+                    words.truncate(words.find(" · ").unwrap_or(words.len()));
+                }
+                orders
+            };
             session.holds.store(true, Ordering::Release);
 
             // Pending, then working.

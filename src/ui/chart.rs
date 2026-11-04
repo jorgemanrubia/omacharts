@@ -6603,6 +6603,17 @@ pub struct OrderMark {
     /// until it is. A market order is always this, beside the last price,
     /// until it fills.
     pub dim: bool,
+    /// An exit's P&L if it fills, at the end of its words: where in them
+    /// it starts and the profit or loss colour it is written in.
+    pub pnl: Option<MarkPnl>,
+}
+
+/// The tail of a mark's words that is money: "+$250.00" in "▼ Sell Limit
+/// 1 · +$250.00", from byte `from`, in `colour`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MarkPnl {
+    pub from: usize,
+    pub colour: String,
 }
 
 /// The position held, at its average price: a heavier line in the long or
@@ -6626,6 +6637,13 @@ pub struct PositionMark {
     pub exits: Vec<ExitTab>,
     /// Being flattened: drawn faint until the book says it is gone.
     pub dim: bool,
+    /// What one point of its price is worth on one contract, and in what,
+    /// so a dragged exit can say what it would realise.
+    pub point: Option<f64>,
+    pub currency: Option<String>,
+    /// The colours money gained and lost are written in.
+    pub profit: String,
+    pub loss: String,
 }
 
 /// A tab beside the position's pill, dragged out to place an exit: the
@@ -6821,6 +6839,62 @@ impl State {
         }
     }
 
+    /// What the exit a drag is about would realise if it filled at `at`,
+    /// and the position it closes: `None` for an order that is not an
+    /// exit, or with no position or no worth of a point to count it in.
+    fn drag_pnl(&self, what: &MarkDrag, at: f64) -> Option<(f64, &PositionMark)> {
+        let held = self.marks.position.as_ref()?;
+        let point = held.point?;
+        let qty = match what {
+            MarkDrag::Exit(_) => held.net.unsigned_abs(),
+            MarkDrag::Move(basket) => {
+                let order = self.marks.orders.iter().find(|order| order.basket == *basket)?;
+                if !crate::trading::is_exit(order.side, order.kind, held.net) {
+                    return None;
+                }
+                order.qty
+            }
+        };
+        Some((crate::trading::exit_pnl(held.price, held.net, qty, point, at), held))
+    }
+
+    /// What the pill of `dragged`, in hand at `at`, says, and the colour of
+    /// the money when that is what it says: an exit only what it would
+    /// realise there, any other order what it would be and how far it has
+    /// come, and where it may not go, why.
+    fn preview_label(
+        &self,
+        what: &MarkDrag,
+        dragged: &Dragged<'_>,
+        at: f64,
+        allowed: bool,
+        places: usize,
+    ) -> (String, Option<&str>) {
+        if !allowed {
+            let text = match crate::trading::past_limit(at, self.marks.limits) {
+                Some(limit) => crate::trading::past_limit_preview(&grouped_decimals(limit, places)),
+                None => {
+                    let last = self.bars.last().map_or(at, |bar| bar.close);
+                    crate::trading::refused_text(dragged.kind, at, last)
+                }
+            };
+            return (text, None);
+        }
+        if let Some((pnl, held)) = self.drag_pnl(what, at) {
+            let colour = if pnl < 0.0 { held.loss.as_str() } else { held.profit.as_str() };
+            return (crate::trading::pnl_text(pnl, held.currency.as_deref()), Some(colour));
+        }
+        let ticks = self.tick().map(|tick| crate::trading::ticks_between(dragged.from, at, tick));
+        let text = crate::trading::preview_text(
+            dragged.side,
+            dragged.kind,
+            dragged.qty,
+            &grouped_decimals(at, places),
+            ticks,
+        );
+        (text, None)
+    }
+
     /// The price at height `y` of the price plot, on the series' tick, and
     /// the places it is written to.
     fn tick_price_at(&self, width: f64, height: f64, y: f64) -> Option<(f64, usize)> {
@@ -6924,7 +6998,17 @@ fn draw_marks(
     let ink = state.theme.ui.text.as_str();
     // A box at `x`, `w` wide and `h` tall, centred on `y`, its text `text`
     // in the font already chosen.
-    let boxed = |cr: &cairo::Context, x: f64, y: f64, w: f64, h: f64, text: &str, look: &Boxed, round: bool| {
+    // `money` is the tail of `text` that is a P&L, written in its colour.
+    #[allow(clippy::too_many_arguments)]
+    let boxed = |cr: &cairo::Context,
+                 x: f64,
+                 y: f64,
+                 w: f64,
+                 h: f64,
+                 text: &str,
+                 look: &Boxed,
+                 round: bool,
+                 money: Option<&MarkPnl>| {
         match round {
             true => pill_path(cr, x, y - h / 2.0, w, h),
             false => cr.rectangle(x + 0.5, y - h / 2.0 + 0.5, w - 1.0, h - 1.0),
@@ -6949,10 +7033,19 @@ fn draw_marks(
             true => cr.move_to(x + MARK_PAD, baseline(cr, y)),
             false => cr.move_to(x + 5.0, y + 3.5),
         }
-        let _ = cr.show_text(text);
+        match money.filter(|money| text.is_char_boundary(money.from)) {
+            Some(money) => {
+                let _ = cr.show_text(&text[..money.from]);
+                colors::set_source(cr, &money.colour);
+                let _ = cr.show_text(&text[money.from..]);
+            }
+            None => {
+                let _ = cr.show_text(text);
+            }
+        }
     };
-    let pill = |cr: &cairo::Context, row: &MarkRow, y: f64, text: &str, look: &Boxed| {
-        boxed(cr, row.pill_x, y, row.pill_w, MARK_H, text, look, true)
+    let pill = |cr: &cairo::Context, row: &MarkRow, y: f64, text: &str, look: &Boxed, money: Option<&MarkPnl>| {
+        boxed(cr, row.pill_x, y, row.pill_w, MARK_H, text, look, true, money)
     };
     let line = |cr: &cairo::Context, y: f64, colour: &str, style: LineStyle, weight: f64| {
         cr.set_line_width(weight);
@@ -7040,7 +7133,7 @@ fn draw_marks(
         let look = Boxed::Outlined(&order.colour);
         if order.kind == OrderKind::Market {
             ground(cr, true, &|cr| pill_path(cr, row.pill_x, y - MARK_H / 2.0, row.pill_w, MARK_H));
-            faint(cr, true, &|cr| pill(cr, &row, *y, &order.words, &look));
+            faint(cr, true, &|cr| pill(cr, &row, *y, &order.words, &look, order.pnl.as_ref()));
             continue;
         }
         ground(cr, order.dim, &|cr| {
@@ -7048,7 +7141,7 @@ fn draw_marks(
             cr.rectangle(row.close_x, y - MARK_CLOSE / 2.0, MARK_CLOSE, MARK_CLOSE);
         });
         faint(cr, order.dim, &|cr| {
-            pill(cr, &row, *y, &order.words, &look);
+            pill(cr, &row, *y, &order.words, &look, order.pnl.as_ref());
             let over = lit.is_some_and(|hit| *hit == MarkHit::Close(order.basket.clone()));
             close(cr, row.close_x, *y, over);
         });
@@ -7061,7 +7154,7 @@ fn draw_marks(
             cr.rectangle(row.close_x, y - MARK_CLOSE / 2.0, MARK_CLOSE, MARK_CLOSE);
         });
         faint(cr, held.dim, &|cr| {
-            pill(cr, &row, *y, &held.words, &held_look(held));
+            pill(cr, &row, *y, &held.words, &held_look(held), None);
             close(cr, row.close_x, *y, lit == Some(&MarkHit::FlattenHeld(held.contract.clone())));
         });
         chips.push((y + 0.5, &held.price_text, Some(held_look(held)), held.dim));
@@ -7077,7 +7170,7 @@ fn draw_marks(
             }
         });
         faint(cr, held.dim, &|cr| {
-            pill(cr, &row, y, &held.words, &held_look(held));
+            pill(cr, &row, y, &held.words, &held_look(held), None);
             close(cr, row.close_x, y, lit == Some(&MarkHit::Flatten));
             for (kind, x, w) in &row.tabs {
                 let Some(tab) = held.exits.iter().find(|tab| tab.kind == *kind) else { continue };
@@ -7121,7 +7214,7 @@ fn draw_marks(
         let Ok(extents) = cr.text_extents(text) else { continue };
         let w = (extents.width() + 10.0).min(width - axis_x - 2.0);
         ground(cr, *dim, &|cr| cr.rectangle(axis_x + 1.0, y - AXIS_CHIP_H / 2.0, w, AXIS_CHIP_H));
-        faint(cr, *dim, &|cr| boxed(cr, axis_x + 1.0, y, w, AXIS_CHIP_H, text, look, false));
+        faint(cr, *dim, &|cr| boxed(cr, axis_x + 1.0, y, w, AXIS_CHIP_H, text, look, false, None));
     }
     cr.restore().ok();
     moved
@@ -7149,22 +7242,7 @@ fn draw_mark_preview(
     let tick = state.tick();
     let places = tick.map_or(2, |tick| omacharts_engine::on_tick(at, tick).1);
     let price = grouped_decimals(at, places);
-    let text = match allowed {
-        true => crate::trading::preview_text(
-            dragged.side,
-            dragged.kind,
-            dragged.qty,
-            &price,
-            tick.map(|tick| crate::trading::ticks_between(dragged.from, at, tick)),
-        ),
-        false => match crate::trading::past_limit(at, state.marks.limits) {
-            Some(limit) => crate::trading::past_limit_preview(&grouped_decimals(limit, places)),
-            None => {
-                let last = state.bars.last().map_or(at, |bar| bar.close);
-                crate::trading::refused_text(dragged.kind, at, last)
-            }
-        },
-    };
+    let (text, money) = state.preview_label(what, &dragged, at, allowed, places);
     let colour = match allowed {
         true => dragged.colour,
         false => state.theme.ui.text_muted.as_str(),
@@ -7195,7 +7273,12 @@ fn draw_mark_preview(
     // The pill where the order's own would be, its × place left empty.
     let pill_x = row.pill_x + MARK_GAP + MARK_CLOSE;
     box_at(cr, pill_x, row.pill_w, true);
-    colors::set_source(cr, if allowed { &state.theme.ui.text } else { colour });
+    let ink = match (money, allowed) {
+        (Some(money), _) => money,
+        (None, true) => state.theme.ui.text.as_str(),
+        (None, false) => colour,
+    };
+    colors::set_source(cr, ink);
     cr.move_to(pill_x + MARK_PAD, baseline(cr, line_y));
     let _ = cr.show_text(&text);
     let axis_x = plan.plot_x + plan.plot_w;
@@ -9800,6 +9883,10 @@ mod tests {
                 net: 1,
                 exits: vec![tab(OrderKind::Limit), tab(OrderKind::Stop)],
                 dim: false,
+                point: Some(50.0),
+                currency: Some("USD".into()),
+                profit: "#00aa00".into(),
+                loss: "#aa0000".into(),
             }),
             orders: vec![OrderMark {
                 basket: "B1".into(),
@@ -9812,6 +9899,7 @@ mod tests {
                 colour: "#ff0000".into(),
                 style: LineStyle::Dotted,
                 dim: false,
+                pnl: None,
             }],
             limits: (None, None),
         };
@@ -9914,6 +10002,148 @@ mod tests {
                 draw(&cr, w, h, &state);
             }
             save_png(surface, &format!("{folder}/position-marks-{name}-pending-2x.png"));
+        }
+    }
+
+    /// What a mark in hand says: an exit only what it would realise where
+    /// the hand is, long and short, a target and a stop, an exit bigger
+    /// than the position counting only the position; an order that adds
+    /// to the position what it is and how far it has come; and where it
+    /// may not go, why.
+    #[test]
+    fn a_dragged_exit_says_what_it_would_realise() {
+        let mut state = marked();
+        let avg = state.marks.position.as_ref().unwrap().price;
+        let label = |state: &State, what: MarkDrag, at: f64, allowed: bool| {
+            let dragged = state.mark_dragged(&what).expect("in hand");
+            let (text, colour) = state.preview_label(&what, &dragged, at, allowed, 2);
+            (text, colour.map(str::to_string))
+        };
+        let profit = Some("#00aa00".to_string());
+        let loss = Some("#aa0000".to_string());
+
+        // Long 1 ES: the target 5 points up, the stop 2 down.
+        assert_eq!(label(&state, MarkDrag::Exit(OrderKind::Limit), avg + 5.0, true), ("+$250.00".into(), profit.clone()));
+        assert_eq!(label(&state, MarkDrag::Exit(OrderKind::Stop), avg - 2.0, true), ("-$100.00".into(), loss.clone()));
+        // The working sell limit is an exit too; one for 2 closes only the 1.
+        state.marks.orders[0].qty = 2;
+        assert_eq!(label(&state, MarkDrag::Move("B1".into()), avg + 1.0, true), ("+$50.00".into(), profit.clone()));
+        // Refused: why, not money.
+        let (text, colour) = label(&state, MarkDrag::Exit(OrderKind::Stop), avg + 50_000.0, false);
+        assert!(text.contains("not allowed"), "{text}");
+        assert_eq!(colour, None);
+
+        // Short 2 NQ at $20 a point: the target 10 down, the stop 3 up, and
+        // a buy stop for 1 of the 2.
+        let held = state.marks.position.as_mut().unwrap();
+        held.net = -2;
+        held.point = Some(20.0);
+        state.marks.orders[0].side = Side::Buy;
+        state.marks.orders[0].kind = OrderKind::Stop;
+        state.marks.orders[0].qty = 1;
+        assert_eq!(label(&state, MarkDrag::Exit(OrderKind::Limit), avg - 10.0, true), ("+$400.00".into(), profit));
+        assert_eq!(label(&state, MarkDrag::Exit(OrderKind::Stop), avg + 3.0, true), ("-$120.00".into(), loss.clone()));
+        assert_eq!(label(&state, MarkDrag::Move("B1".into()), avg + 3.0, true), ("-$60.00".into(), loss));
+
+        // A sell adds to a short: no money, what it is.
+        state.marks.orders[0].side = Side::Sell;
+        let (text, colour) = label(&state, MarkDrag::Move("B1".into()), avg + 3.0, true);
+        assert!(text.starts_with("Sell Stop 1 · "), "{text}");
+        assert_eq!(colour, None);
+        // With nothing held there is no exit to count.
+        state.marks.position = None;
+        let (text, colour) = label(&state, MarkDrag::Move("B1".into()), avg + 3.0, true);
+        assert!(text.starts_with("Sell Stop 1 · "), "{text}");
+        assert_eq!(colour, None);
+    }
+
+    /// While an exit is in hand its pill is drawn over the chart, its money
+    /// in the profit colour, where the hand has it.
+    #[test]
+    fn a_dragged_exit_is_drawn_with_its_money() {
+        let (w, h) = (600.0, 400.0);
+        let mut state = marked();
+        let (first, visible, _) = state.view();
+        let plan = layout(&state, w, h);
+        let scale = price_range(&state, &state.bars[first..first + visible], &plan).unwrap();
+        let avg = state.marks.position.as_ref().unwrap().price;
+        let last = state.bars.last().unwrap().close;
+        // A target is a limit above the market for a long.
+        let at = last.max(avg) + (scale.prices().1 - last.max(avg)) / 2.0;
+        assert!(state.mark_allowed(&MarkDrag::Exit(OrderKind::Limit), at));
+        // Rows of the plot with the profit colour in them.
+        let green = |pixels: &[u8]| -> Vec<usize> {
+            (plan.price_y as usize..(plan.price_y + plan.price_h) as usize)
+                .filter(|row| {
+                    (plan.plot_x as usize..(plan.plot_x + plan.plot_w) as usize).any(|x| {
+                        let i = (row * w as usize + x) * 4;
+                        let (r, g, b) = (pixels[i + 2], pixels[i + 1], pixels[i]);
+                        r < 40 && (150..190).contains(&g) && b < 40
+                    })
+                })
+                .collect()
+        };
+        assert_eq!(green(&frame(w, h, |cr| draw_pointer(cr, w, h, &state))), Vec::<usize>::new(), "no money before the drag");
+        state.drag = Some(Drag::Mark { what: MarkDrag::Exit(OrderKind::Limit), at, allowed: true });
+        // The drag widens the price range to keep the hand's price in it.
+        let scale = price_range(&state, &state.bars[first..first + visible], &plan).unwrap();
+        let y = scale.to_y(at, plan.price_y, plan.price_h).round() as usize;
+        // The hand's layer, over the chart: what moves with the pointer.
+        let rows = green(&frame(w, h, |cr| draw_pointer(cr, w, h, &state)));
+        assert!(!rows.is_empty() && rows.iter().all(|row| row.abs_diff(y) <= 8), "the money where the hand is: {rows:?} at {y}");
+    }
+
+    /// An exit's money as pictures, for a person to look at: resting, and
+    /// in hand as a target and as a stop, dark and light, at two pixels to
+    /// the point. Written only when asked for, to `OMACHARTS_MARK_SHOTS`.
+    #[test]
+    fn the_exits_money_as_pictures() {
+        let Ok(folder) = std::env::var("OMACHARTS_MARK_SHOTS") else { return };
+        let (w, h) = (600.0, 400.0);
+        for (theme, name) in [(0, "dark"), (3, "light")] {
+            let mut state = at_the_last_price(theme);
+            state.hover_mark = None;
+            let look = omacharts_engine::theme_trading(&state.theme, Default::default());
+            let (first, visible, _) = state.view();
+            let plan = layout(&state, w, h);
+            let scale = price_range(&state, &state.bars[first..first + visible], &plan).unwrap();
+            let (low, high) = scale.prices();
+            let held = state.marks.position.as_mut().unwrap();
+            held.price -= (high - low) * 0.15;
+            held.profit = look.profit.clone();
+            held.loss = look.loss.clone();
+            let avg = held.price;
+            // A resting target, saying what it would realise.
+            let order = &mut state.marks.orders[0];
+            order.side = Side::Sell;
+            order.kind = OrderKind::Limit;
+            order.colour = look.sell.clone();
+            order.style = look.limit;
+            order.price = avg + (high - low) * 0.25;
+            let words = "▼ Sell Limit 1 · ";
+            let money = crate::trading::pnl_text((order.price - avg) * 50.0, Some("USD"));
+            order.words = format!("{words}{money}");
+            order.pnl = Some(MarkPnl { from: words.len(), colour: look.profit.clone() });
+            let shot = |state: &State, file: &str| {
+                let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, (w * 2.0) as i32, (h * 2.0) as i32).unwrap();
+                {
+                    let cr = cairo::Context::new(&surface).unwrap();
+                    cr.scale(2.0, 2.0);
+                    draw(&cr, w, h, state);
+                    draw_pointer(&cr, w, h, state);
+                }
+                save_png(surface, &format!("{folder}/{file}"));
+            };
+            shot(&state, &format!("drag-pnl-resting-{name}.png"));
+            let last = state.bars.last().unwrap().close;
+            let target = state.marks.orders[0].price;
+            for (kind, at, file) in [
+                (OrderKind::Limit, last + (target - last) * 0.5, "tp"),
+                (OrderKind::Stop, avg - (avg - low) * 0.5, "sl"),
+            ] {
+                state.drag = Some(Drag::Mark { what: MarkDrag::Exit(kind), at, allowed: state.mark_allowed(&MarkDrag::Exit(kind), at) });
+                shot(&state, &format!("drag-pnl-{file}-{name}.png"));
+            }
         }
     }
 

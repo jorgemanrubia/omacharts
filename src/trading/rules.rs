@@ -166,6 +166,22 @@ pub fn exit_offered<'a>(orders: impl IntoIterator<Item = &'a Order>, net: i32, k
     net != 0 && covered < net.unsigned_abs()
 }
 
+/// What an exit of `qty` filled at `price` would realise, closing a
+/// position of `net` held at `avg`, a point worth `point`: long gains as
+/// the price is above its average, short as it is below. An exit larger
+/// than the position closes only the position.
+pub fn exit_pnl(avg: f64, net: i32, qty: u32, point: f64, price: f64) -> f64 {
+    let closed = f64::from(qty.min(net.unsigned_abs()));
+    (price - avg) * f64::from(net.signum()) * closed * point
+}
+
+/// Does an order of `side` and `kind` close some of a position of `net`?
+/// A limit or stop on the side that closes it does; a market order on its
+/// way, or one that adds to it, does not.
+pub fn is_exit(side: Side, kind: OrderKind, net: i32) -> bool {
+    net != 0 && kind != OrderKind::Market && side == exit_side(net)
+}
+
 /// How many ticks `to` is from `from`: positive above, negative below.
 pub fn ticks_between(from: f64, to: f64, tick: f64) -> i64 {
     match tick > 0.0 {
@@ -318,6 +334,37 @@ mod tests {
     use super::*;
     use crate::trading::fake::tests::*;
     use crate::trading::fake::*;
+
+    /// An exit's P&L: ES at $50 a point, NQ at $20, long and short, its
+    /// target and its stop, and an exit closing part of the position.
+    #[test]
+    fn an_exit_realises_its_distance_from_the_average() {
+        // Long 2 ES at 7,600: a target 5 points up is +$500, a stop 2.5
+        // points down -$250.
+        assert_eq!(exit_pnl(7_600.0, 2, 2, 50.0, 7_605.0), 500.0);
+        assert_eq!(exit_pnl(7_600.0, 2, 2, 50.0, 7_597.5), -250.0);
+        // Short 3 NQ at 25,000: a target 10 points down is +$600, a stop
+        // 4 points up -$240.
+        assert_eq!(exit_pnl(25_000.0, -3, 3, 20.0, 24_990.0), 600.0);
+        assert_eq!(exit_pnl(25_000.0, -3, 3, 20.0, 25_004.0), -240.0);
+        // A partial exit: 1 of a long 3 ES, 4 points up.
+        assert_eq!(exit_pnl(7_600.0, 3, 1, 50.0, 7_604.0), 200.0);
+        // An exit bigger than the position closes only the position.
+        assert_eq!(exit_pnl(7_600.0, 1, 5, 50.0, 7_604.0), 200.0);
+        // At the average, nothing.
+        assert_eq!(exit_pnl(7_600.0, 1, 1, 50.0, 7_600.0), 0.0);
+    }
+
+    /// Only a limit or a stop on the closing side is an exit.
+    #[test]
+    fn an_exit_closes_the_position() {
+        assert!(is_exit(Side::Sell, OrderKind::Limit, 2));
+        assert!(is_exit(Side::Sell, OrderKind::Stop, 2));
+        assert!(is_exit(Side::Buy, OrderKind::Limit, -1));
+        assert!(!is_exit(Side::Buy, OrderKind::Limit, 2), "adds to a long");
+        assert!(!is_exit(Side::Sell, OrderKind::Market, 2), "a market order on its way");
+        assert!(!is_exit(Side::Sell, OrderKind::Limit, 0), "nothing held");
+    }
 
     /// The default is the one made default while it is listed, else the
     /// first; a chart's own account wins while it is listed, and one that is
