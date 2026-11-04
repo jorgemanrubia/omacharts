@@ -11,7 +11,8 @@ mod rithmic;
 
 pub use rithmic::SIGN_OUT_WAIT;
 
-/// Every broker this build has, in the order "Add a broker…" offers them.
+/// Every broker this build has, in the order "Add a trading account…" offers
+/// them.
 /// A build with the `fakes` feature has the fake one too, which is offered
 /// like any other.
 pub fn registry() -> Registry {

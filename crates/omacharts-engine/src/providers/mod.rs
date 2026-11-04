@@ -308,7 +308,7 @@ pub fn places(id: &str) -> Vec<(&'static str, String)> {
 }
 
 /// The feeds whose login is a broker connection too, kept in Preferences →
-/// Trading: what "Add a broker…" offers, in the order of [`LISTED`].
+/// Trading: what "Add a trading account…" offers, in the order of [`LISTED`].
 pub fn connections() -> impl Iterator<Item = &'static Listed> {
     LISTED.iter().filter(|feed| feed.setup.is_some_and(|setup| setup.trades()))
 }

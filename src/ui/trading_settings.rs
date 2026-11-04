@@ -1,8 +1,10 @@
-//! Preferences → Trading: the broker logins, each with its accounts under
-//! it, edited the way the Data page edits its data feeds.
+//! Preferences → Trading: two sections. "Trading accounts" lists the broker
+//! logins, each a row with its accounts under it, edited the way the Data
+//! page edits its data feeds; "Order entry" holds what every chart's orders
+//! follow, once there is a login to place them through.
 //!
-//! With nothing configured it is a heading and a button. "Add a broker…"
-//! offers every broker in the registry, and opens that broker's own login
+//! With nothing configured it is the heading and a button. "Add a trading
+//! account…" offers every broker in the registry, and opens that broker's own login
 //! dialog, with a Name field; the first login added whose broker has a data
 //! feed also adds that feed as the first data feed, through it.
 //! Each login says how it stands — live, not signed in, or the broker's own
@@ -181,16 +183,18 @@ fn rebuild(panel: &Rc<Panel>) {
     let data = trading::data_login_id(&panel.store, &logins);
     let default = trading::default_account(&accounts, panel.store.setting(trading::DEFAULT_ACCOUNT).as_deref())
         .map(Account::key);
-    let mut groups = Vec::new();
+    let accounts_group = adw::PreferencesGroup::new();
+    accounts_group.set_title("Trading accounts");
     for login in &logins {
         let theirs: Vec<&Account> = accounts.iter().filter(|account| account.login == login.id).collect();
         let is_data = data.as_deref() == Some(login.id.as_str());
-        groups.push(login_group(panel, login, is_data, logins.len() > 1, &theirs, default.as_deref()));
+        accounts_group.add(&login_row(panel, login, is_data, logins.len() > 1, &theirs, default.as_deref()));
     }
-    groups.push(add_group(panel, logins.is_empty()));
-    // Sizes are for somebody who trades: only once there is a login.
+    accounts_group.add(&add_button(panel));
+    let mut groups = vec![accounts_group];
+    // Quantities are for somebody who trades: only once there is a login.
     if let Some(edit) = panel.edit_sizes.borrow().clone().filter(|_| !logins.is_empty()) {
-        groups.push(sizes_group(edit));
+        groups.push(order_entry_group(edit));
     }
     for group in &groups {
         panel.page.add(group);
@@ -218,17 +222,19 @@ fn subtitle(panel: &Panel, login: &Login, data: bool) -> String {
     words.join(" · ")
 }
 
-fn login_group(
+/// A login's row, its name and how it stands, with its accounts under it.
+fn login_row(
     panel: &Rc<Panel>,
     login: &Login,
     data: bool,
     several: bool,
     accounts: &[&Account],
     default: Option<&str>,
-) -> adw::PreferencesGroup {
-    let group = adw::PreferencesGroup::new();
-    group.set_title(&glib::markup_escape_text(&login.name));
-    group.set_description(Some(&subtitle(panel, login, data)));
+) -> adw::ExpanderRow {
+    let row = adw::ExpanderRow::new();
+    row.set_title(&glib::markup_escape_text(&login.name));
+    row.set_subtitle(&glib::markup_escape_text(&subtitle(panel, login, data)));
+    row.set_expanded(true);
 
     let actions = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     actions.set_valign(gtk::Align::Center);
@@ -258,12 +264,12 @@ fn login_group(
     let id = login.id.clone();
     remove.connect_clicked(move |button| confirm_remove(&panel_for_remove, &id, button.upcast_ref()));
     actions.append(&remove);
-    group.set_header_suffix(Some(&actions));
+    row.add_suffix(&actions);
 
     for account in accounts {
-        group.add(&account_row(panel, account, default == Some(account.key().as_str())));
+        row.add_row(&account_row(panel, account, default == Some(account.key().as_str())));
     }
-    group
+    row
 }
 
 /// The one thing to do about a login's sign-in: Sign out while it is live,
@@ -327,10 +333,11 @@ fn account_row(panel: &Rc<Panel>, account: &Account, default: bool) -> adw::Acti
     row
 }
 
-/// The size templates every chart picks its trading size from, behind a
+/// The quantity templates every chart picks its quantity from, behind a
 /// button.
-fn sizes_group(edit: EditSizes) -> adw::PreferencesGroup {
+fn order_entry_group(edit: EditSizes) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
+    group.set_title("Order entry");
     let button = gtk::Button::with_label("Edit quantities…");
     button.set_halign(gtk::Align::Start);
     button.connect_clicked(move |button| edit(button.upcast_ref()));
@@ -338,14 +345,13 @@ fn sizes_group(edit: EditSizes) -> adw::PreferencesGroup {
     group
 }
 
-fn add_group(panel: &Rc<Panel>, empty: bool) -> adw::PreferencesGroup {
-    let group = adw::PreferencesGroup::new();
-    if empty {
-        group.set_title("Accounts");
-    }
+/// "Add a trading account…", last in the accounts' section.
+fn add_button(panel: &Rc<Panel>) -> gtk::MenuButton {
     let add = gtk::MenuButton::new();
-    add.set_label("Add a broker…");
+    add.set_label("Add a trading account…");
     add.set_halign(gtk::Align::Start);
+    // Under the logins' list, apart from it, as under the Data page's.
+    add.set_margin_top(12);
     let items = panel
         .desk
         .brokers()
@@ -362,8 +368,7 @@ fn add_group(panel: &Rc<Panel>, empty: bool) -> adw::PreferencesGroup {
         })
         .collect();
     crate::ui::menus::actions(&add, "broker", items);
-    group.add(&add);
-    group
+    add
 }
 
 /// The dialog again, prefilled, for a login with no password to sign in
@@ -512,6 +517,25 @@ mod tests {
         found
     }
 
+    /// Each login's row, in the order the page lists them.
+    fn login_rows(panel: &Panel) -> Vec<adw::ExpanderRow> {
+        fn under(widget: &gtk::Widget, found: &mut Vec<adw::ExpanderRow>) {
+            let mut next = widget.first_child();
+            while let Some(child) = next {
+                match child.clone().downcast::<adw::ExpanderRow>() {
+                    Ok(row) => found.push(row),
+                    Err(_) => under(&child, found),
+                }
+                next = child.next_sibling();
+            }
+        }
+        let mut found = Vec::new();
+        for group in panel.groups.borrow().iter() {
+            under(group.upcast_ref(), &mut found);
+        }
+        found
+    }
+
     fn page_words(panel: &Panel) -> Vec<String> {
         panel.groups.borrow().iter().flat_map(|group| {
             let mut words = vec![group.title().to_string(), group.description().unwrap_or_default().to_string()];
@@ -547,7 +571,8 @@ mod tests {
         }
     }
 
-    /// Nothing configured: a heading and the button, nothing else.
+    /// Nothing configured: the accounts' heading and the button, nothing
+    /// else.
     #[test]
     fn nothing_configured_is_a_heading_and_a_button() {
         crate::ui::on_gtk(|| {
@@ -555,8 +580,10 @@ mod tests {
             let panel = panel(&store, Rc::new(Desk::new(Registry::of(vec![Arc::new(FakeBroker::default())]))));
             rebuild(&panel);
             let words = page_words(&panel);
-            assert!(words.iter().any(|w| w == "Add a broker…"), "{words:?}");
+            assert!(words.iter().any(|w| w == "Trading accounts"), "{words:?}");
+            assert!(words.iter().any(|w| w == "Add a trading account…"), "{words:?}");
             assert!(!words.iter().any(|w| w == "Remove" || w == "Sign in…"), "{words:?}");
+            assert!(!words.iter().any(|w| w == "Order entry"), "{words:?}");
             assert!(!words.iter().any(|w| w == "Edit quantities…"), "sizes with nothing to trade: {words:?}");
         });
     }
@@ -591,16 +618,21 @@ mod tests {
             let panel = panel(&store, Rc::new(Desk::new(trading::registry())));
             rebuild(&panel);
             let groups = panel.groups.borrow().clone();
-            assert_eq!(groups.len(), 4, "two logins, the button and the sizes");
-            assert_eq!(groups[0].title(), "Lucid");
-            assert_eq!(groups[0].description().as_deref(), Some("Rithmic Test · not signed in · data"));
-            assert_eq!(groups[1].description().as_deref(), Some("Rithmic Test · not signed in"));
-            let lucid_words = words_under(groups[0].upcast_ref());
+            let titles: Vec<String> = groups.iter().map(|group| group.title().to_string()).collect();
+            assert_eq!(titles, ["Trading accounts", "Order entry"]);
+            assert!(words_under(groups[0].upcast_ref()).iter().any(|w| w == "Add a trading account…"));
+            assert!(words_under(groups[1].upcast_ref()).iter().any(|w| w == "Edit quantities…"));
+            let rows = login_rows(&panel);
+            assert_eq!(rows.len(), 2, "two logins");
+            assert_eq!(rows[0].title(), "Lucid");
+            assert_eq!(rows[0].subtitle(), "Rithmic Test · not signed in · data");
+            assert_eq!(rows[1].subtitle(), "Rithmic Test · not signed in");
+            let lucid_words = words_under(rows[0].upcast_ref());
             for word in ["1234", "USD · $50,210", "Default", "1235", "Make default", "Sign in", "Remove"] {
                 assert!(lucid_words.iter().any(|w| w == word), "{word} missing: {lucid_words:?}");
             }
             assert!(!lucid_words.iter().any(|w| w == "Use for data"), "{lucid_words:?}");
-            let test_words = words_under(groups[1].upcast_ref());
+            let test_words = words_under(rows[1].upcast_ref());
             assert!(test_words.iter().any(|w| w == "Use for data"), "{test_words:?}");
             assert!(test_words.iter().any(|w| w == "Sign in…"), "{test_words:?}");
             assert!(page_words(&panel).iter().any(|w| w == "Edit quantities…"), "no way to the sizes with a login");
@@ -609,14 +641,13 @@ mod tests {
             let (_, body) = removal_words("Lucid", "Rithmic", &trading::removal(&store, &lucid));
             assert_eq!(body.as_deref(), Some("Charts' Rithmic data will come through Rithmic Test."));
             remove_login(&panel, &lucid, true);
-            let groups = panel.groups.borrow().clone();
-            assert_eq!(groups[0].description().as_deref(), Some("Rithmic Test · not signed in · data"));
+            assert_eq!(login_rows(&panel)[0].subtitle(), "Rithmic Test · not signed in · data");
         });
     }
 
     /// A broker with no data feed, which nothing above the seam names, is
-    /// offered by "Add a broker…" because the registry lists it, signs in
-    /// from this page, lists its accounts here, and trades: a market order
+    /// offered by "Add a trading account…" because the registry lists it,
+    /// signs in from this page, lists its accounts here, and trades: a market order
     /// fills, with its fill, and is held on the desk's book. Its login is
     /// never the data login, and the data feeds are left as they were.
     #[test]
@@ -643,10 +674,10 @@ mod tests {
             sign_in(&panel, &id);
             signed_in(&store, &desk, &id);
             assert!(desk.live(&id), "signed in through the registry");
-            let groups = panel.groups.borrow().clone();
-            assert_eq!(groups[0].title(), "Practice");
-            assert_eq!(groups[0].description().as_deref(), Some("live"));
-            let words = words_under(groups[0].upcast_ref());
+            let rows = login_rows(&panel);
+            assert_eq!(rows[0].title(), "Practice");
+            assert_eq!(rows[0].subtitle(), "live");
+            let words = words_under(rows[0].upcast_ref());
             for word in ["FAKE-1", "USD · $50,000", "Sign out"] {
                 assert!(words.iter().any(|w| w == word), "{word} missing: {words:?}");
             }

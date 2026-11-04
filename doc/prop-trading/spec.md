@@ -461,33 +461,37 @@ is drawn from can be combined freely:
   two-session rule, and whether sessions with different firms count apart is
   not known.
 
-**Preferences → Trading** lists the logins, each with its accounts under it,
-edited the way the Data page edits feeds: "Add a broker…" (Rithmic for
-now) opens the same login dialog. Adding the first login also adds Rithmic
-as the first data feed, through that login. Removing a login removes its
-accounts; if it was the data login, Rithmic data moves to another login, or
-the Rithmic feed goes if none is left. Nothing else on the Data page is
-touched.
+**Preferences → Trading** has two sections. **Trading accounts** lists the
+logins, each a row with its accounts under it, edited the way the Data page
+edits feeds: "Add a trading account…" (Rithmic for now) opens the same login
+dialog. Adding the first login also adds Rithmic as the first data feed,
+through that login. Removing a login removes its accounts; if it was the
+data login, Rithmic data moves to another login, or the Rithmic feed goes if
+none is left. Nothing else on the Data page is touched.
 
 ```
-Lucid                                              [Sign out] [Remove]
-LucidTrading · live · data
+Trading accounts
+  Lucid                                            [Sign out] [Remove]
+  LucidTrading · live · data
       1234   USD · $50,210                                  Default
       1235   USD · $48,900                             [Make default]
-Rithmic Test                        [Use for data] [Sign out] [Remove]
-Rithmic Test · live
+  Rithmic Test                      [Use for data] [Sign out] [Remove]
+  Rithmic Test · live
       951    USD · $1,000,000                          [Make default]
-  [ Add a broker… ]
+  [ Add a trading account… ]
+
+Order entry
   [ Edit quantities… ]
 ```
 
-Each login is a group titled with its name, its standing under it ("live",
-"not signed in", "signing in", or the broker's words), with "data" on the
-data login; another login can be made it with "Use for data". With no
-login the page is the heading Accounts and "Add a broker…". Removing the
-data login asks about the data feed: another login takes it over, or the
-trader chooses whether the Rithmic data feed goes too, or it stays, not
-signed in, when it is the last one.
+Each login is a row under Trading accounts, titled with its name, its
+standing under it ("live", "not signed in", "signing in", or the broker's
+words), with "data" on the data login; another login can be made it with
+"Use for data". With no login the page is the heading Trading accounts and
+"Add a trading account…"; Order entry appears once there is a login.
+Removing the data login asks about the data feed: another login takes it
+over, or the trader chooses whether the Rithmic data feed goes too, or it
+stays, not signed in, when it is the last one.
 
 **The chart's account and feed.** Every chart has an account, whose money
 its orders spend: the default, or one chosen for it. A chart's default

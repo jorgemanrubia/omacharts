@@ -14,7 +14,7 @@ pub trait Broker: Send + Sync {
     /// The id its logins name it by, which is its data feed's too when it
     /// has one. Stored, so never changed.
     fn id(&self) -> &'static str;
-    /// What it is called in "Add a broker…".
+    /// What it is called in "Add a trading account…".
     fn label(&self) -> &'static str;
     /// Where `login` signs in to, in a few words for its row, when there is
     /// more than one place it could.
