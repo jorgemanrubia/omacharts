@@ -64,6 +64,10 @@ pub enum Part {
     /// other feeds when there are any. Nothing at all with Yahoo alone:
     /// nothing to choose, and nothing to connect to.
     Feed,
+    /// The account's P&L for the day, closed and open: "Day +$1,250.00".
+    /// Nothing at all unless the chart has an account to trade on, or
+    /// while its broker has not said.
+    DayPnl,
     /// Buy and Sell, at the market, for the chart's quantity: what Ctrl+B
     /// and Ctrl+S do. Nothing at all unless the chart has an account to
     /// trade on.
@@ -82,14 +86,19 @@ pub enum Part {
     Link,
 }
 
+/// The parts only somebody who trades has: without a login they are
+/// neither drawn nor offered.
+pub const TRADING_PARTS: [Part; 3] = [Part::DayPnl, Part::Trade, Part::Size];
+
 impl Part {
-    pub const ALL: [Part; 12] = [
+    pub const ALL: [Part; 13] = [
         Part::Symbol,
         Part::Resolution,
         Part::Change,
         Part::Template,
         Part::Account,
         Part::Feed,
+        Part::DayPnl,
         Part::Trade,
         Part::Size,
         Part::Stripe,
@@ -101,7 +110,8 @@ impl Part {
     /// The section it is in until somebody places it, or `None` for a part
     /// that is only there once somebody adds it. The account and the feed
     /// are at home on the left because they cost nothing: with one account
-    /// or one feed each draws nothing and takes no room. Buy, Sell and the
+    /// or one feed each draws nothing and takes no room, and the day's P&L
+    /// after them draws nothing without an account. Buy, Sell and the
     /// quantity lead the corner, ahead of the three controls that always
     /// stood in it, in the order they stood; without an account to trade
     /// on, they draw nothing either.
@@ -113,6 +123,7 @@ impl Part {
             Part::Template => None,
             Part::Account => Some(Section::Left),
             Part::Feed => Some(Section::Left),
+            Part::DayPnl => Some(Section::Left),
             Part::Trade => Some(Section::Right),
             Part::Size => Some(Section::Right),
             Part::Stripe => Some(Section::Center),
@@ -131,6 +142,7 @@ impl Part {
             Part::Template => "template",
             Part::Account => "account",
             Part::Feed => "feed",
+            Part::DayPnl => "day_pnl",
             Part::Trade => "trade",
             Part::Size => "size",
             Part::Stripe => "stripe",
@@ -153,6 +165,7 @@ impl Part {
             Part::Template => "Chart template",
             Part::Account => "Account",
             Part::Feed => "Data feed",
+            Part::DayPnl => "Day P&L",
             Part::Trade => "Buy Sell",
             Part::Size => "Quantity",
             Part::Stripe => "Resolutions stripe",
@@ -343,14 +356,14 @@ mod tests {
         assert_eq!(load(&store), empty);
     }
 
-    /// Out of the box the left is the data feed's dot and then the line
-    /// every chart always had, the center the stripe it always had across its
+    /// Out of the box the left is the data feed's dot, then the line every
+    /// chart always had, then the day's P&L; the center the stripe it always had across its
     /// top, and the right Buy, Sell and the quantity ahead of the three
     /// controls that always stood in its corner, in their order.
     #[test]
     fn the_standard_header_is_the_line_the_stripe_and_the_corner() {
         let header = Header::standard();
-        assert_eq!(header.left, vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Account]);
+        assert_eq!(header.left, vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Account, Part::DayPnl]);
         assert_eq!(header.center, vec![Part::Stripe]);
         assert_eq!(header.right, vec![Part::Trade, Part::Size, Part::Settings, Part::Maximize, Part::Link]);
     }

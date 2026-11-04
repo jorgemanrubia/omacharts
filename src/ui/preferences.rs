@@ -143,12 +143,12 @@ impl Preferences {
         let charts_header_page = adw::PreferencesPage::new();
         let store_for_header = store.clone();
         let window_for_header = window.clone();
-        // Buy and Sell and the quantity are parts only for somebody who
-        // trades: without a login they are neither listed nor offered, and
-        // stay where they are.
+        // Buy and Sell, the quantity and the day's P&L are parts only for
+        // somebody who trades: without a login they are neither listed nor
+        // offered, and stay where they are.
         let hidden = match crate::trading::View::load(&store).trades() {
             true => Vec::new(),
-            false => vec![crate::header::Part::Trade, crate::header::Part::Size],
+            false => crate::header::TRADING_PARTS.to_vec(),
         };
         let (sections, restore_header) = header_sections(crate::header::load(&store), &hidden, move |header| {
             crate::header::save(&store_for_header, header);
@@ -1957,7 +1957,7 @@ mod tests {
             assert_eq!(left.group.title(), "Left");
             assert_eq!(center.group.title(), "Center");
             assert_eq!(right.group.title(), "Right");
-            assert_eq!(left.parts(), vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Account]);
+            assert_eq!(left.parts(), vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Account, Part::DayPnl]);
             assert_eq!(center.parts(), vec![Part::Stripe]);
             assert_eq!(right.parts(), vec![Part::Trade, Part::Size, Part::Settings, Part::Maximize, Part::Link]);
             assert_eq!(left.offered(), vec![Part::Change, Part::Template]);
@@ -1973,7 +1973,7 @@ mod tests {
             left.set(vec![Part::Symbol, Part::Stripe]);
             assert_eq!(
                 center.offered(),
-                vec![Part::Resolution, Part::Change, Part::Template, Part::Account, Part::Feed]
+                vec![Part::Resolution, Part::Change, Part::Template, Part::Account, Part::Feed, Part::DayPnl]
             );
             assert!(!left.offered().contains(&Part::Stripe));
             assert!(!right.offered().contains(&Part::Stripe));
@@ -2016,7 +2016,7 @@ mod tests {
                 header_sections(moved, &[Part::Trade, Part::Size], move |header| seen.borrow_mut().push(header.clone()));
             let [left, center, right] = sections.as_slice() else { panic!("three sections") };
             restore();
-            assert_eq!(left.parts(), vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Account]);
+            assert_eq!(left.parts(), vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Account, Part::DayPnl]);
             assert_eq!(center.parts(), vec![Part::Stripe]);
             assert_eq!(right.parts(), vec![Part::Settings, Part::Maximize, Part::Link]);
             assert_eq!(left.offered(), vec![Part::Change, Part::Template]);

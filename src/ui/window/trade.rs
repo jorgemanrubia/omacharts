@@ -1255,7 +1255,9 @@ impl Window {
     /// The Quantity part, "Qty 2", and Buy and Sell beside it, while the
     /// chart has an account to trade on (and, for the quantity, a template
     /// applies); nothing at all, and no room taken, otherwise. Buy and Sell
-    /// that could not place an order say why instead.
+    /// that could not place an order say why instead. The day's P&L too,
+    /// once the account's broker has said it: read from the book each time
+    /// the book is, which marks it to every trade.
     pub(super) fn write_size_of(&self, pane: &ChartPane) {
         let has_account = self.trade.shown.get()
             && self.trading.borrow().account_of(pane.account.borrow().as_deref()).is_some();
@@ -1272,6 +1274,18 @@ impl Window {
         };
         pane.write_size(text.as_deref());
         pane.write_trade(has_account.then(|| self.order_target(pane).map(|_| ())));
+        let day = {
+            let view = self.trading.borrow();
+            match self.trade.shown.get() {
+                false => None,
+                true => view.account_of(pane.account.borrow().as_deref()).and_then(|account| {
+                    let day = view.book.money(&account.key())?.day_pnl?;
+                    let sign = day.partial_cmp(&0.0)?;
+                    Some((trading::pnl_text(day, account.currency.as_deref()), sign))
+                }),
+            }
+        };
+        pane.write_day_pnl(day.as_ref().map(|(text, sign)| (text.as_str(), *sign)));
     }
 
     /// Read the size templates again, after the dialog changed them, and
@@ -2515,6 +2529,41 @@ pub(super) mod tests {
             pane.sell_button.emit_clicked();
             settle(&window, || held() == Some(1) && free(&window));
             assert_eq!(held(), Some(1), "Sell sold it");
+        });
+    }
+
+    /// The header's Day P&L is the account's P&L for the day, the same
+    /// figure the Accounts tab shows, in the profit colour up and the loss
+    /// colour down, plain at nothing; nothing at all until the broker has
+    /// said, and nothing without an account.
+    #[test]
+    fn the_headers_day_pnl_is_the_accounts_day() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            assert_eq!(window(&store).focused_pane().day_pnl_text(), None, "a Day P&L with no account");
+
+            let (window, pane, session, key) = long_es(true);
+            let day = |window: &Rc<Window>| window.trading.borrow().book.money(&key).and_then(|money| money.day_pnl);
+            settle(&window, || pane.view.last_price().is_some());
+            assert_eq!(day(&window), None);
+            assert_eq!(pane.day_pnl_text(), None, "a Day P&L before the broker said one");
+
+            for (said, class) in [(250.0, Some("pnl-gain")), (-340.5, Some("pnl-loss")), (0.0, None)] {
+                session.book.lock().unwrap().accounts = vec![trading::Money {
+                    key: "951".into(),
+                    day_pnl: Some(said),
+                    ..trading::Money::default()
+                }];
+                session.moved();
+                window.desk.tell();
+                settle(&window, || day(&window).is_some_and(|day| (day - said).abs() < 0.5));
+                let shown = day(&window).expect("the day's P&L in the book");
+                assert_eq!(
+                    pane.day_pnl_text(),
+                    Some((trading::pnl_text(shown, Some("USD")), class)),
+                    "the header says the book's {said}"
+                );
+            }
         });
     }
 

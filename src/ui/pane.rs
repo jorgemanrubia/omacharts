@@ -239,6 +239,9 @@ pub struct ChartPane {
     /// taking no room, unless the chart has an account to trade on.
     pub size_menu: gtk::MenuButton,
     size_label: gtk::Label,
+    /// "Day" and the account's P&L for the day after it.
+    pub day_part: gtk::Box,
+    day_amount: gtk::Label,
     /// The size somebody picked for this chart, and from which template;
     /// `None` is the first size of whichever template applies.
     pub trading_size: RefCell<Option<crate::trading::sizes::Picked>>,
@@ -437,6 +440,17 @@ impl ChartPane {
         size_menu.set_child(Some(&size_line));
         size_menu.set_always_show_arrow(false);
         size_menu.set_visible(false);
+        // Read like the quantity: the word quiet, the money in the profit
+        // or loss colour, or plain at nothing either way.
+        let day_word = gtk::Label::new(Some("Day"));
+        day_word.add_css_class("dim-label");
+        let day_amount = gtk::Label::new(None);
+        let day_part = gtk::Box::new(gtk::Orientation::Horizontal, 5);
+        day_part.add_css_class("readout-symbol");
+        day_part.set_valign(gtk::Align::Center);
+        day_part.append(&day_word);
+        day_part.append(&day_amount);
+        day_part.set_visible(false);
         // A part's tooltip is not drawn over its own open menu.
         for part in [&account_menu, &feed_menu, &size_menu] {
             part.connect_active_notify(|part| {
@@ -625,6 +639,8 @@ impl ChartPane {
             sell_button,
             size_menu,
             size_label,
+            day_part,
+            day_amount,
             trading_size: RefCell::new(None),
             bar_style: Cell::new(bar_style),
             bars_hidden: Cell::new(false),
@@ -781,13 +797,14 @@ impl ChartPane {
     /// and take off the ones it does not show.
     pub fn arrange_header(&self) {
         use crate::header::Part;
-        let parts: [(Part, gtk::Widget); 12] = [
+        let parts: [(Part, gtk::Widget); 13] = [
             (Part::Symbol, self.symbol_button.clone().upcast()),
             (Part::Resolution, self.timeframe_menu.clone().upcast()),
             (Part::Change, self.change_label.clone().upcast()),
             (Part::Template, self.template_label.clone().upcast()),
             (Part::Account, self.account_menu.clone().upcast()),
             (Part::Feed, self.feed_menu.clone().upcast()),
+            (Part::DayPnl, self.day_part.clone().upcast()),
             (Part::Trade, self.trade_part.clone().upcast()),
             (Part::Size, self.size_menu.clone().upcast()),
             (Part::Stripe, self.strip.clone().upcast()),
@@ -973,6 +990,42 @@ impl ChartPane {
         if self.size_menu.is_visible() != size.is_some() {
             self.size_menu.set_visible(size.is_some());
         }
+    }
+
+    /// The account's P&L for the day, already written as money, and whether
+    /// it is up or down; nothing at all, and no room taken, without an
+    /// account or while its broker has not said.
+    pub fn write_day_pnl(&self, day: Option<(&str, std::cmp::Ordering)>) {
+        if self.day_part.get_visible() != day.is_some() {
+            self.day_part.set_visible(day.is_some());
+        }
+        let Some((text, sign)) = day else { return };
+        if self.day_amount.text() != text {
+            self.day_amount.set_text(text);
+        }
+        let on = match sign {
+            std::cmp::Ordering::Greater => Some("pnl-gain"),
+            std::cmp::Ordering::Less => Some("pnl-loss"),
+            std::cmp::Ordering::Equal => None,
+        };
+        for class in ["pnl-gain", "pnl-loss"] {
+            let wanted = on == Some(class);
+            if self.day_amount.has_css_class(class) != wanted {
+                match wanted {
+                    true => self.day_amount.add_css_class(class),
+                    false => self.day_amount.remove_css_class(class),
+                }
+            }
+        }
+    }
+
+    /// What the Day P&L part says and in which colour, for the tests.
+    #[cfg(test)]
+    pub fn day_pnl_text(&self) -> Option<(String, Option<&'static str>)> {
+        self.day_part.get_visible().then(|| {
+            let class = ["pnl-gain", "pnl-loss"].into_iter().find(|class| self.day_amount.has_css_class(class));
+            (self.day_amount.text().to_string(), class)
+        })
     }
 
     /// Buy and Sell, or nothing at all: `None` without an account to
