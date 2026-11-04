@@ -709,7 +709,13 @@ mod tests {
             list.first_child().and_downcast::<adw::EntryRow>().expect("a member number").set_text("member");
             dialog.emit_by_name::<()>("response", &[&sign_in_dialogs::fake::SIGN_IN]);
             assert!(done.get(), "the page is told to sign it in");
+            let log = omacharts_engine::log::global();
+            let before = log.revision();
             assert!(feeds::sign_in_now(fake.id, |_| {}).is_ok());
+            let said = |before| {
+                log.since(before).0.into_iter().filter(|e| e.source == fake.label).map(|e| e.text).collect::<Vec<_>>()
+            };
+            assert_eq!(said(before).last().map(String::as_str), Some("Signed in"), "the Log has the sign-in");
             rebuild(&panel);
             let group = panel.group.borrow().clone().unwrap();
             let row = action_rows(group.upcast_ref())[0].clone();
@@ -738,7 +744,10 @@ mod tests {
 
             // Signed out from its row, it cannot sign in until the dialog again.
             sign_out(&panel, fake);
+            let before = log.revision();
             assert!(feeds::sign_in_now(fake.id, |_| {}).is_err());
+            let refused = said(before);
+            assert!(refused.last().is_some_and(|text| text.starts_with("Not signed in · ")), "{refused:?}");
         });
     }
 

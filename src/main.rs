@@ -9,6 +9,7 @@ use gtk::gio;
 use gtk::gio::prelude::ApplicationCommandLineExt;
 use gtk::glib;
 use omacharts::cli;
+use omacharts::log_words;
 use omacharts::store::Store;
 use omacharts::ui::window::NotShown;
 use omacharts::ui::Window;
@@ -138,6 +139,11 @@ fn main() -> glib::ExitCode {
                 // rather than nothing at all.
                 Err(error) => {
                     eprintln!("omacharts: {error}; carrying on without saving anything");
+                    log_words::say(log_words::trouble(
+                        "Settings",
+                        "Settings could not be opened · nothing is saved this time",
+                        &error,
+                    ));
                     Store::memory().expect("open database")
                 }
             };
@@ -169,6 +175,10 @@ fn main() -> glib::ExitCode {
                                 "omacharts: cache over its limit, dropped {} series",
                                 swept.dropped
                             );
+                            log_words::say(log_words::note(
+                                "Price cache",
+                                format!("Over its limit · dropped {} series", swept.dropped),
+                            ));
                         }
                     });
                 });
@@ -296,6 +306,7 @@ fn main() -> glib::ExitCode {
                 && let Err(error) = omacharts::bar_plugin::refresh(&home)
             {
                 eprintln!("omacharts: bar widget not updated: {error}");
+                log_words::say(log_words::trouble("Bar widget", "Bar widget not updated", &error));
             }
         });
 

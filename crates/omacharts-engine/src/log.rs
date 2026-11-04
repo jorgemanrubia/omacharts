@@ -161,6 +161,9 @@ impl Log {
         let mut ring = self.ring();
         if !ring.concealed.iter().any(|known| known == word) {
             ring.concealed.push(word.to_string());
+            // The longest first, so that "trader-2" is not left as "…-2"
+            // by "trader" going before it.
+            ring.concealed.sort_by_key(|known| std::cmp::Reverse(known.len()));
         }
     }
 
@@ -317,6 +320,10 @@ mod tests {
         assert_eq!(entry.text, "Refused …");
         log.add(Entry::info("Yahoo", "about"));
         assert_eq!(log.entries()[1].text, "about", "too short to conceal");
+        log.conceal("trader");
+        log.conceal("trader-2");
+        log.add(Entry::info("trader-2", "x"));
+        assert_eq!(log.entries()[2].source, "…", "a longer word left half shown");
     }
 
     #[test]

@@ -57,6 +57,15 @@ pub fn fetch_failed(feed: &str, symbol: &str, timeframe: Timeframe, failure: Fet
     }
 }
 
+/// The watchlist's prices did not come.
+pub fn closes_failed(feed: &str, failure: FetchFailure) -> Entry {
+    let text = format!("Watchlist prices · {}", failure.message());
+    match serious(failure) {
+        true => Entry::error(feed, text),
+        false => Entry::warning(feed, text),
+    }
+}
+
 /// A live chart's stream stopped.
 pub fn stream_lost(feed: &str, symbol: &str, timeframe: Timeframe, why: FetchFailure) -> Entry {
     Entry::warning(feed, format!("Lost {symbol} {} · {}", timeframe.label(), why.message()))
@@ -151,6 +160,28 @@ pub fn order_moved_on(order: &Order, before: Stage, decimals: usize, account: &s
         Stage::Rejected => Entry::error(source, text),
         _ => Entry::info(source, text).confirming(),
     })
+}
+
+/// Volume at price for a series flowing again after a drop, the gap
+/// asked for in `spans` stretches. Asking the first time is routine and not
+/// said.
+pub fn ladders_back(key: &str, spans: usize) -> Entry {
+    let (feed, symbol) = feed_and_symbol(key);
+    let stretches = if spans == 1 { "1 stretch".to_string() } else { format!("{spans} stretches") };
+    Entry::info(feed, format!("{symbol} · Volume at price back after a drop · asked for {stretches}"))
+}
+
+/// Volume at price for a series did not come; it is asked again next time.
+pub fn ladders_failed(key: &str, error: impl std::fmt::Display) -> Entry {
+    let (feed, symbol) = feed_and_symbol(key);
+    Entry::warning(feed, format!("{symbol} · Volume at price not loaded")).detail(error.to_string())
+}
+
+/// A cache key's feed, by name when it is one this build knows, and symbol.
+fn feed_and_symbol(key: &str) -> (String, &str) {
+    let (id, symbol) = key.split_once(':').unwrap_or(("", key));
+    let feed = omacharts_engine::providers::listed(id).map_or(id.to_string(), |feed| feed.label.to_string());
+    (feed, symbol)
 }
 
 /// Something of the app's own went wrong — a file, the database, the bar

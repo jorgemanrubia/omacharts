@@ -261,9 +261,18 @@ pub fn remove_source(store: &Store, id: &str) -> bool {
 /// Sign in to `id`, blocking until it is done: a browser the person drives,
 /// or a check of what is saved followed by the window's own session signing
 /// in, so that the answer is the provider's. For a thread of its own.
+///
+/// Each step and how it ended go in the Log too, under the feed's name.
 pub fn sign_in_now(id: &str, log: impl Fn(&str) + Send + Sync + 'static) -> Result<(), String> {
-    providers::sign_in(id, log)?;
-    providers::listed(id).and_then(|feed| feed.setup).map_or(Ok(()), |setup| setup.connect())
+    let name = providers::listed(id).map_or(id.to_string(), |feed| feed.label.to_string());
+    let said = name.clone();
+    let outcome = providers::sign_in(id, move |line| {
+        crate::log_words::say(crate::log_words::feed_step(&said, line));
+        log(line);
+    })
+    .and_then(|()| providers::listed(id).and_then(|feed| feed.setup).map_or(Ok(()), |setup| setup.connect()));
+    crate::log_words::say(crate::log_words::feed_signed_in(&name, &outcome));
+    outcome
 }
 
 /// A process's feeds with whether each can be used, for routing a chart to

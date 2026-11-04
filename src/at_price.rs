@@ -374,6 +374,7 @@ impl AtPrice {
                 }
                 let spans: Vec<String> = asked.iter().map(|(a, b)| format!("{a}..{b}")).collect();
                 eprintln!("omacharts: ladders of {key}: back after a drop, asked the provider for {}", spans.join(", "));
+                crate::log_words::say(crate::log_words::ladders_back(&key, spans.len()));
                 let numbers: Vec<i64> = days.iter().map(|day| day.day).collect();
                 for day in days {
                     entry.held.load(day);
@@ -497,7 +498,10 @@ fn fill(
                 }
             }
             // Not recorded as known: asked again the next time.
-            Err(error) => eprintln!("omacharts: ladders of {key} for {a}..{b}: {error}"),
+            Err(error) => {
+                eprintln!("omacharts: ladders of {key} for {a}..{b}: {error}");
+                crate::log_words::say(crate::log_words::ladders_failed(key, &error));
+            }
         }
     }
     asked

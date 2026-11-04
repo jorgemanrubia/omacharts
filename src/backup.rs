@@ -531,6 +531,7 @@ pub fn keep_taking(settings: PathBuf) {
         std::thread::spawn(move || {
             if let Err(error) = take_if_changed(&settings) {
                 eprintln!("omacharts: settings not backed up: {error}");
+                crate::log_words::say(crate::log_words::trouble("Backups", "Settings not backed up", &error));
             }
         });
     };
