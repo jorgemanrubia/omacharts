@@ -431,7 +431,7 @@ impl Window {
         self.trade.placed.borrow_mut().clear();
         self.trade.pending.borrow_mut().clear();
         for pane in self.panes.borrow().iter() {
-            pane.view.set_marks(None, Vec::new());
+            pane.view.set_marks(None, Vec::new(), (None, None));
             self.write_size_of(pane);
         }
     }
@@ -640,6 +640,21 @@ impl Window {
         self.desk.session(&target.login.id).and_then(|session| session.last_price(&instrument)).or(chart)
     }
 
+    /// The day's lowest and highest prices the exchange takes an order on
+    /// `pane`'s instrument at, as far as the account's broker has said.
+    fn limits_of(&self, pane: &ChartPane, target: &trading::Target) -> (Option<f64>, Option<f64>) {
+        let Some(instrument) = pane.instrument.borrow().clone() else { return (None, None) };
+        self.desk.session(&target.login.id).map_or((None, None), |session| session.price_limits(&instrument))
+    }
+
+    /// Why an order at `price` on `pane` would be refused for going past
+    /// the day's limit, put plainly, if it would.
+    fn past_limit(&self, pane: &ChartPane, target: &trading::Target, price: f64) -> Option<String> {
+        let limit = trading::past_limit(price, self.limits_of(pane, target))?;
+        let places = Self::tick_of(pane, target).map_or(2, |tick| omacharts_engine::on_tick(limit, tick).1);
+        Some(trading::past_limit_text(&omacharts_engine::grouped_decimals(limit, places)))
+    }
+
     /// The step `pane`'s prices move in: what its bars show, else what the
     /// broker says of the contract.
     fn tick_of(pane: &ChartPane, target: &trading::Target) -> Option<f64> {
@@ -675,6 +690,7 @@ impl Window {
             None => (price, 2),
         });
         let last = self.market_price(&pane, &target);
+        let limits = self.limits_of(&pane, &target);
         let size = self.size_of(&pane);
         for (side, kind) in trading::menu_orders(&target.capabilities) {
             let price = (kind != OrderKind::Market).then_some(at).flatten();
@@ -692,7 +708,9 @@ impl Window {
             let item = gio::MenuItem::new(Some(&text), None);
             let allowed = match (kind, price, last) {
                 (OrderKind::Market, _, _) => true,
-                (_, Some((price, _)), Some(last)) => trading::side_allowed(kind, side, price, last),
+                (_, Some((price, _)), Some(last)) => {
+                    trading::side_allowed(kind, side, price, last) && trading::past_limit(price, limits).is_none()
+                }
                 _ => false,
             };
             if allowed {
@@ -739,6 +757,9 @@ impl Window {
             && !trading::side_allowed(kind, side, at, last)
         {
             return self.refuse_on(&target, &trading::crossed_text(&price_text, kind, side));
+        }
+        if let Some(why) = price.and_then(|price| self.past_limit(&pane, &target, price)) {
+            return self.refuse_on(&target, &format!("Not placed · {why}"));
         }
         let size = self.size_of(&pane);
         match trading::OrderRequest::request(&target.account.id, &target.contract(), side, kind, size, price) {
@@ -870,6 +891,9 @@ impl Window {
         {
             return self.refuse_on(&target, &format!("Not placed · {}", trading::wrong_side_text(kind, price, last)));
         }
+        if let Some(why) = self.past_limit(pane, &target, price) {
+            return self.refuse_on(&target, &format!("Not placed · {why}"));
+        }
         let side = trading::exit_side(held.net);
         // The whole of what is held, whatever the chart's size: an exit
         // closes the position.
@@ -925,6 +949,9 @@ impl Window {
             && !trading::side_allowed(order.kind, order.side, price, last)
         {
             return self.refuse_on(&target, &format!("Not moved · {}", trading::wrong_side_text(order.kind, price, last)));
+        }
+        if let Some(why) = self.past_limit(pane, &target, price) {
+            return self.refuse_on(&target, &format!("Not moved · {why}"));
         }
         if let Err(why) = self.trade.placing.begin(&key) {
             return self.refuse_on(&target, &why);
@@ -1242,7 +1269,7 @@ impl Window {
         }
         self.write_size_of(pane);
         let Ok(target) = self.order_target(pane) else {
-            return pane.view.set_marks(None, Vec::new());
+            return pane.view.set_marks(None, Vec::new(), (None, None));
         };
         let key = target.account.key();
         let theme = self.theming.borrow().theme();
@@ -1361,7 +1388,7 @@ impl Window {
             })
         });
         drop(pending);
-        pane.view.set_marks(position, orders);
+        pane.view.set_marks(position, orders, self.limits_of(pane, &target));
     }
 
     /// Say each step of an order placed or cancelled here, once, when the
@@ -1654,6 +1681,46 @@ pub(super) mod tests {
             price,
             tag: trading::new_tag(),
         }
+    }
+
+    /// Past the day's price limit the exchange refuses an order, however
+    /// near the market it looks on the chart: a target pulled out there,
+    /// or a line moved there, is not sent, and says the limit; inside the
+    /// limits it goes as ever. The menu greys an order past them.
+    #[test]
+    fn nothing_is_sent_past_the_day_s_price_limit() {
+        crate::ui::on_gtk(|| {
+            use crate::ui::chart::TradeEvent;
+            let (window, pane, session, _) = long_es(true);
+            let log = super::super::log::tests::private(&window);
+            settle(&window, || pane.view.last_price().is_some());
+            let last = pane.view.last_price().expect("a last price");
+            let off = |ticks: f64| (last / 0.25).round() * 0.25 + ticks * 0.25;
+            let sent = || session.book().orders.len();
+            *session.limits.lock().unwrap() = (Some(off(-30.0)), Some(off(30.0)));
+            window.desk.tell();
+            let before = sent();
+
+            pane.view.drop_mark(TradeEvent::ExitAt { kind: OrderKind::Limit, price: off(40.0) });
+            settle(&window, || false);
+            assert_eq!(sent(), before, "a target past the high limit was sent");
+            window.catch_up_log();
+            let limit = omacharts_engine::grouped_decimals(off(30.0), 2);
+            let said: Vec<String> = log.entries().into_iter().map(|e| e.line()).collect();
+            assert!(
+                said.iter().any(|line| line.ends_with(&format!("Not placed · past daily limit {limit}"))),
+                "not said: {said:#?}"
+            );
+
+            pane.view.drop_mark(TradeEvent::ExitAt { kind: OrderKind::Limit, price: off(20.0) });
+            settle(&window, || sent() == before + 1);
+            assert_eq!(sent(), before + 1, "a target inside the limits not sent");
+
+            let y = pane.view.y_of(off(-40.0)).expect("the price on screen");
+            let rows = labels(window.chart_menu_model(y).upcast_ref());
+            let buy_limit = rows.iter().find(|(label, _)| label.starts_with("Buy Limit")).map(|(_, on)| *on);
+            assert_eq!(buy_limit, Some(false), "a buy limit past the low limit offered: {rows:?}");
+        });
     }
 
     /// After a drop the refreshed book is the broker's word. An order sent

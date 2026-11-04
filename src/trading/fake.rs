@@ -87,6 +87,8 @@ pub struct FakeSession {
     /// What [`Session::last_price`] says: the broker's own market, which
     /// need not be the chart's.
     pub market: Mutex<Option<f64>>,
+    /// What [`Session::price_limits`] says.
+    pub limits: Mutex<(Option<f64>, Option<f64>)>,
     pub changed: Box<dyn Fn(Change) + Send + Sync>,
     baskets: AtomicUsize,
     /// The contract each future root trades as, by root.
@@ -125,6 +127,7 @@ impl FakeSession {
             refreshes: AtomicUsize::new(0),
             last: Mutex::new(7_612.25),
             market: Mutex::default(),
+            limits: Mutex::default(),
             changed,
             baskets: AtomicUsize::new(1),
             contracts: Mutex::default(),
@@ -283,6 +286,9 @@ impl Session for FakeSession {
     }
     fn last_price(&self, _instrument: &omacharts_engine::Instrument) -> Option<f64> {
         *self.market.lock().unwrap()
+    }
+    fn price_limits(&self, _instrument: &omacharts_engine::Instrument) -> (Option<f64>, Option<f64>) {
+        *self.limits.lock().unwrap()
     }
     fn book(&self) -> Book {
         self.book.lock().unwrap().clone()

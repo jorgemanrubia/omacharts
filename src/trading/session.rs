@@ -122,6 +122,12 @@ pub trait Session: Send + Sync {
     fn last_price(&self, _instrument: &omacharts_engine::Instrument) -> Option<f64> {
         None
     }
+    /// The lowest and highest prices the exchange takes an order on
+    /// `instrument` at today, as far as the broker has said: an order past
+    /// either is refused. Never waits: `None` for a side not known.
+    fn price_limits(&self, _instrument: &omacharts_engine::Instrument) -> (Option<f64>, Option<f64>) {
+        (None, None)
+    }
     /// Every order, position and balance it has heard of.
     fn book(&self) -> Book;
     /// Ask the broker for what the accounts hold now — the money and the

@@ -30,6 +30,17 @@ pub fn refused_text(kind: OrderKind, price: f64, last: f64) -> String {
     format!("{} {} · not allowed", kind.word(), market_side(price, last))
 }
 
+/// Why a dragged order cannot go past the day's limit: "Past daily limit
+/// 7,117.25 · not allowed".
+pub fn past_limit_preview(limit: &str) -> String {
+    format!("Past daily limit {limit} · not allowed")
+}
+
+/// The same, as the reason a refusal gives: "past daily limit 7,117.25".
+pub fn past_limit_text(limit: &str) -> String {
+    format!("past daily limit {limit}")
+}
+
 /// The same, as the reason a refusal gives: "stop above market".
 pub fn wrong_side_text(kind: OrderKind, price: f64, last: f64) -> String {
     format!("{} {}", kind.key(), market_side(price, last))
@@ -89,10 +100,11 @@ pub fn outcome_text(order: &Order, before: Stage, decimals: usize) -> Option<Str
         Stage::Working if order.kind != OrderKind::Market && before == Stage::Pending => {
             Some(format!("Working · {}", whole()))
         }
-        Stage::Rejected => Some(match (order.status.band, order.price, &order.status.said) {
-            (Some(band), Some(at), _) => {
-                let side = if at < band { "below" } else { "above" };
-                format!("Rejected · {} · too far {side} the market (exchange band {})", whole(), price(Some(band)).unwrap_or_default())
+        Stage::Rejected => Some(match (order.status.bound, order.price, &order.status.said) {
+            (Some(bound), Some(at), _) => {
+                let side = if at < bound.price { "below" } else { "above" };
+                let limit = price(Some(bound.price)).unwrap_or_default();
+                format!("Rejected · {} · too far {side} the market ({} {limit})", whole(), bound.kind.words())
             }
             (_, _, Some(why)) => format!("Rejected · {} · {why}", whole()),
             _ => format!("Rejected · {}", whole()),
@@ -206,7 +218,7 @@ mod tests {
         assert_eq!(outcome_text(&refused, Stage::Pending, 2).as_deref(), Some("Rejected · Buy Limit 1 ESZ6 at 1.00 · price out of band"));
         let mut banded =
             order("f", Side::Sell, OrderKind::Limit, Some(7_480.0), Status::said(Stage::Rejected, "outside bands"));
-        banded.status.band = Some(7_521.25);
+        banded.status.bound = Some(Bound { price: 7_521.25, kind: BoundKind::Band });
         assert_eq!(
             outcome_text(&banded, Stage::Pending, 2).as_deref(),
             Some("Rejected · Sell Limit 1 ESZ6 at 7,480.00 · too far below the market (exchange band 7,521.25)")

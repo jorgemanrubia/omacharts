@@ -287,13 +287,38 @@ pub struct Status {
     pub stage: Stage,
     pub said: Option<String>,
     /// For an order rejected for being too far from the market, the
-    /// furthest price the exchange's band would have taken.
-    pub band: Option<f64>,
+    /// furthest price the exchange would have taken.
+    pub bound: Option<Bound>,
+}
+
+/// The furthest price an exchange takes an order at, which a rejected one
+/// went past.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Bound {
+    pub price: f64,
+    pub kind: BoundKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BoundKind {
+    /// A band around the market as it trades, which moves with it.
+    Band,
+    /// The day's price limit, fixed from the settlement before.
+    DailyLimit,
+}
+
+impl BoundKind {
+    pub fn words(self) -> &'static str {
+        match self {
+            BoundKind::Band => "exchange band",
+            BoundKind::DailyLimit => "daily limit",
+        }
+    }
 }
 
 impl Status {
     pub fn said(stage: Stage, said: impl Into<String>) -> Status {
-        Status { stage, said: Some(said.into()), band: None }
+        Status { stage, said: Some(said.into()), bound: None }
     }
 
     /// Still to fill or be cancelled, so it can be cancelled.
@@ -315,7 +340,7 @@ impl Status {
 
 impl From<Stage> for Status {
     fn from(stage: Stage) -> Status {
-        Status { stage, said: None, band: None }
+        Status { stage, said: None, bound: None }
     }
 }
 

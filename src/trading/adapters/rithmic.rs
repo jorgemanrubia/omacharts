@@ -127,23 +127,31 @@ fn failed(error: rithmic::Error) -> Failure {
     }
 }
 
-/// The price an exchange's band stopped at, from a rejection such as
-/// "Order price is outside bands 'Ask of 748000.00 violates Low Band
-/// 752125.00 using Delta .00, CrvBnd equals 754125.00'". Those numbers
-/// come scaled up by a power of ten; the order's own `price` gives the
-/// scale.
-fn band_of(why: &str, price: f64) -> Option<f64> {
-    let number = |after: &str| -> Option<f64> {
-        let rest = &why[why.find(after)? + after.len()..];
-        rest.trim_start().split(|c: char| !(c.is_ascii_digit() || c == '.')).next()?.parse().ok()
+/// The price an exchange stopped a rejected order at, from Rithmic's words:
+/// a band around the market, "Order price is outside bands 'Ask of
+/// 748000.00 violates Low Band 752125.00 using Delta .00, CrvBnd equals
+/// 754125.00'", or the day's price limit, "Order price is outside the
+/// limits 'Bid of 694075.00 violates …'". Those numbers come scaled up by
+/// a power of ten; the order's own `price` gives the scale.
+fn bound_of(why: &str, price: f64) -> Option<Bound> {
+    let first_number = |rest: &str| -> Option<(usize, f64)> {
+        let start = rest.find(|c: char| c.is_ascii_digit())?;
+        let digits = rest[start..].split(|c: char| !(c.is_ascii_digit() || c == '.')).next()?;
+        Some((start, digits.parse().ok()?))
     };
-    let asked = number(" of ")?;
-    let band = number("Low Band").or_else(|| number("High Band"))?;
+    let (_, asked) = first_number(&why[why.find(" of ")? + 4..])?;
+    let violates = &why[why.find("violates")? + "violates".len()..];
+    let (named, stopped) = first_number(violates)?;
+    let kind = match &violates[..named] {
+        words if words.contains("Band") => BoundKind::Band,
+        _ if why.to_ascii_lowercase().contains("limit") => BoundKind::DailyLimit,
+        _ => return None,
+    };
     if price <= 0.0 || asked <= 0.0 {
         return None;
     }
     let scale = 10f64.powi((asked / price).log10().round() as i32);
-    Some(band / scale)
+    Some(Bound { price: stopped / scale, kind })
 }
 
 /// An order as Rithmic told of it, in the neutral words.
@@ -166,13 +174,13 @@ fn order_of(order: rithmic::WorkingOrder) -> Order {
         },
         price: order.price,
         status: match order.status {
-            rithmic::Status::Pending => Status { stage: Stage::Pending, said: order.said, band: None },
-            rithmic::Status::Working => Status { stage: Stage::Working, said: order.said, band: None },
-            rithmic::Status::PartiallyFilled => Status { stage: Stage::PartiallyFilled, said: order.said, band: None },
-            rithmic::Status::Filled => Status { stage: Stage::Filled, said: order.said, band: None },
-            rithmic::Status::Cancelled => Status { stage: Stage::Cancelled, said: order.said, band: None },
+            rithmic::Status::Pending => Status { stage: Stage::Pending, said: order.said, bound: None },
+            rithmic::Status::Working => Status { stage: Stage::Working, said: order.said, bound: None },
+            rithmic::Status::PartiallyFilled => Status { stage: Stage::PartiallyFilled, said: order.said, bound: None },
+            rithmic::Status::Filled => Status { stage: Stage::Filled, said: order.said, bound: None },
+            rithmic::Status::Cancelled => Status { stage: Stage::Cancelled, said: order.said, bound: None },
             rithmic::Status::Rejected(why) => {
-                Status { stage: Stage::Rejected, band: order.price.and_then(|price| band_of(&why, price)), said: Some(why) }
+                Status { stage: Stage::Rejected, bound: order.price.and_then(|price| bound_of(&why, price)), said: Some(why) }
             }
         },
         fill_price: order.fill_price,
@@ -288,6 +296,14 @@ impl Session for RithmicSession {
         *priced.last.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    fn price_limits(&self, instrument: &omacharts_engine::Instrument) -> (Option<f64>, Option<f64>) {
+        let exchange = omacharts_engine::providers::rithmic::exchange_of(&instrument.symbol);
+        match self.trading.front_month(&instrument.symbol, exchange, || {}) {
+            Some(contract) => rithmic::price_limits(&contract, exchange),
+            None => (None, None),
+        }
+    }
+
     fn book(&self) -> Book {
         let book = self.trading.book();
         Book {
@@ -398,12 +414,22 @@ mod tests {
 
     #[test]
     fn a_band_rejection_gives_the_band_at_the_order_s_scale() {
+        let band = |price| Some(Bound { price, kind: BoundKind::Band });
         let why = "Order price is outside bands 'Ask of 748000.00 violates Low Band 752125.00 \
                    using Delta .00, CrvBnd equals 754125.00'";
-        assert_eq!(band_of(why, 7_480.0), Some(7_521.25));
+        assert_eq!(bound_of(why, 7_480.0), band(7_521.25));
         let high = "Order price is outside bands 'Bid of 760000.00 violates High Band 755000.00'";
-        assert_eq!(band_of(high, 7_600.0), Some(7_550.0));
-        assert_eq!(band_of("Insufficient margin", 7_480.0), None);
+        assert_eq!(bound_of(high, 7_600.0), band(7_550.0));
+        assert_eq!(bound_of("Insufficient margin", 7_480.0), None);
+    }
+
+    /// A buy limit dragged far below a short's entry, past the day's limit.
+    #[test]
+    fn a_limit_rejection_gives_the_day_s_limit() {
+        let why = "Order price is outside the limits 'Bid of 694075.00 violates Low Limit 711725.00'";
+        assert_eq!(bound_of(why, 6_940.75), Some(Bound { price: 7_117.25, kind: BoundKind::DailyLimit }));
+        let worded = "Order price is outside the limits 'Bid of 694075.00 violates Low Price Limit of 711725.00'";
+        assert_eq!(bound_of(worded, 6_940.75).map(|bound| bound.price), Some(7_117.25), "whatever names it");
     }
 
     /// A login as migration 9 leaves one signs in with the password the

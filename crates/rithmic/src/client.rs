@@ -16,7 +16,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rithmic_rs::rti::messages::RithmicMessage;
 use rithmic_rs::rti::request_search_symbols::{InstrumentType, Pattern};
-use rithmic_rs::rti::LastTrade;
+use rithmic_rs::rti::{LastTrade, OrderPriceLimits};
 use rithmic_rs::{
     ConnectStrategy, RithmicConfig, RithmicEnv, RithmicError, RithmicHistoryPlant,
     RithmicHistoryPlantHandle, RithmicResponse, RithmicTickerPlant, RithmicTickerPlantHandle,
@@ -118,6 +118,38 @@ pub(crate) fn found_front_month(root: &str, exchange: &str) -> Option<(String, b
     let found = FOUND.lock().unwrap_or_else(|e| e.into_inner());
     let (contract, at) = found.as_ref()?.get(&(root.to_string(), exchange.to_string()))?;
     Some((contract.clone(), at.elapsed() < FRONT_FRESH))
+}
+
+/// The exchange's price limits for the day on a contract: the lowest and
+/// highest price it takes an order at, as the data half last heard them
+/// for a contract it watches. Kept when the data half closes, as the day's
+/// limits do not change with it.
+pub fn price_limits(contract: &str, exchange: &str) -> (Option<f64>, Option<f64>) {
+    let limits = LIMITS.lock().unwrap_or_else(|e| e.into_inner());
+    limits.as_ref().and_then(|limits| limits.get(&(contract.to_string(), exchange.to_string())).copied()).unwrap_or_default()
+}
+
+static LIMITS: Mutex<Option<HashMap<(String, String), (Option<f64>, Option<f64>)>>> = Mutex::new(None);
+
+/// Price limits pushed for a contract: what is present replaces what was,
+/// what is cleared is no longer known.
+pub(crate) fn heard_limits(heard: &OrderPriceLimits) {
+    let (Some(symbol), Some(exchange)) = (heard.symbol.clone(), heard.exchange.clone()) else { return };
+    const HIGH: u32 = 1;
+    const LOW: u32 = 2;
+    let present = heard.presence_bits.unwrap_or(0);
+    let cleared = heard.clear_bits.unwrap_or(0);
+    let mut limits = LIMITS.lock().unwrap_or_else(|e| e.into_inner());
+    let (low, high) = limits.get_or_insert_with(HashMap::new).entry((symbol, exchange)).or_default();
+    let pick = |bit: u32, now: Option<f64>, was: &mut Option<f64>| {
+        if cleared & bit != 0 {
+            *was = None;
+        } else if (present & bit != 0 || present == 0) && now.is_some_and(|price| price > 0.0) {
+            *was = now;
+        }
+    };
+    pick(HIGH, heard.high_price_limit, high);
+    pick(LOW, heard.low_price_limit, low);
 }
 
 /// The exchanges the signed-in login has level 1 market data for, once the
@@ -541,13 +573,17 @@ impl Plant for Arc<Handles> {
 
     async fn subscribe(&self, contract: String, exchange: String) -> Result<(), Error> {
         let response = within(REQUEST, self.ticker.subscribe(&contract, &exchange)).await?;
-        match &response.error {
-            Some(error) => Err(rejected(error)),
-            None => Ok(()),
+        if let Some(error) = &response.error {
+            return Err(rejected(error));
         }
+        // The day's price limits too, which say where an order would be
+        // refused: nothing is lost without them.
+        let _ = within(REQUEST, self.ticker.subscribe_order_price_limits(&contract, &exchange)).await;
+        Ok(())
     }
 
     async fn unsubscribe(&self, contract: String, exchange: String) {
+        let _ = within(REQUEST, self.ticker.unsubscribe_order_price_limits(&contract, &exchange)).await;
         let _ = within(REQUEST, self.ticker.unsubscribe(&contract, &exchange)).await;
     }
 }
@@ -1200,6 +1236,30 @@ pub(crate) mod tests {
         assert!(!is_contract("ES", "ESA6"));
         assert!(!is_contract("ES", "ESZ6 C5000"));
         assert!(!is_contract("M", "MESZ6"));
+    }
+
+    /// A contract's price limits as pushed: a snapshot sets both, an update
+    /// replaces what it carries, and a cleared limit is no longer known.
+    #[test]
+    fn price_limits_follow_what_is_pushed() {
+        let pushed = |high: Option<f64>, low: Option<f64>, present: u32, cleared: u32| {
+            let mut heard = OrderPriceLimits::default();
+            heard.symbol = Some("LIMZ6".into());
+            heard.exchange = Some("CME".into());
+            heard.high_price_limit = high;
+            heard.low_price_limit = low;
+            heard.presence_bits = Some(present);
+            heard.clear_bits = Some(cleared);
+            heard_limits(&heard);
+        };
+        assert_eq!(price_limits("LIMZ6", "CME"), (None, None), "nothing heard");
+        pushed(Some(8_189.0), Some(7_117.0), 3, 0);
+        assert_eq!(price_limits("LIMZ6", "CME"), (Some(7_117.0), Some(8_189.0)));
+        pushed(Some(8_200.0), None, 1, 0);
+        assert_eq!(price_limits("LIMZ6", "CME"), (Some(7_117.0), Some(8_200.0)), "the low kept");
+        pushed(None, None, 0, 2);
+        assert_eq!(price_limits("LIMZ6", "CME"), (None, Some(8_200.0)), "the low cleared");
+        assert_eq!(price_limits("LIMZ6", "CBOT"), (None, None), "another exchange's is its own");
     }
 
     /// The nearest to expiring trades now, until the roll a week before it

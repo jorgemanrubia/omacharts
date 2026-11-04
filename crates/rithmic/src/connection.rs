@@ -591,6 +591,8 @@ impl Supervisor {
                             self.data_lost(error);
                         } else if let RithmicMessage::LastTrade(trade) = &update.message {
                             self.data.watches.trade(trade);
+                        } else if let RithmicMessage::OrderPriceLimits(limits) = &update.message {
+                            client::heard_limits(limits);
                         }
                     }
                     // Trades were missed. Everything watching starts over,

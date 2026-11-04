@@ -122,6 +122,13 @@ pub fn side_allowed(kind: OrderKind, side: Side, price: f64, last: f64) -> bool 
     }
 }
 
+/// The day's limit `price` goes past, of the `(low, high)` the exchange
+/// takes orders between, if it goes past one: an order there is refused.
+/// A limit not known stops nothing.
+pub fn past_limit(price: f64, (low, high): (Option<f64>, Option<f64>)) -> Option<f64> {
+    low.filter(|low| price < *low).or(high.filter(|high| price > *high))
+}
+
 /// The side that closes a position of `net`: selling a long, buying back
 /// a short.
 pub fn exit_side(net: i32) -> Side {

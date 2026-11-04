@@ -4033,8 +4033,8 @@ impl ChartView {
 
     /// Show this chart's account's position and working orders on it, or
     /// nothing. Redrawn only when they change.
-    pub fn set_marks(&self, position: Option<PositionMark>, orders: Vec<OrderMark>) {
-        let marks = Marks { position, orders };
+    pub fn set_marks(&self, position: Option<PositionMark>, orders: Vec<OrderMark>, limits: (Option<f64>, Option<f64>)) {
+        let marks = Marks { position, orders, limits };
         {
             let mut state = self.state.borrow_mut();
             if state.marks == marks {
@@ -6686,6 +6686,9 @@ fn mark_at(plan: &Layout, marks: &Marks, x: f64, y: f64, to_y: &impl Fn(f64) -> 
 struct Marks {
     position: Option<PositionMark>,
     orders: Vec<OrderMark>,
+    /// The day's lowest and highest prices the exchange takes an order at,
+    /// as far as they are known: nothing is let go past them.
+    limits: (Option<f64>, Option<f64>),
 }
 
 impl Marks {
@@ -6755,6 +6758,9 @@ impl State {
     /// bar's close?
     fn mark_allowed(&self, what: &MarkDrag, at: f64) -> bool {
         let Some(last) = self.bars.last().map(|bar| bar.close) else { return false };
+        if crate::trading::past_limit(at, self.marks.limits).is_some() {
+            return false;
+        }
         match (what, self.mark_dragged(what)) {
             (MarkDrag::Exit(kind), Some(_)) => {
                 let net = self.marks.position.as_ref().map_or(0, |held| held.net);
@@ -7014,10 +7020,13 @@ fn draw_mark_preview(
             &price,
             tick.map(|tick| crate::trading::ticks_between(dragged.from, at, tick)),
         ),
-        false => {
-            let last = state.bars.last().map_or(at, |bar| bar.close);
-            crate::trading::refused_text(dragged.kind, at, last)
-        }
+        false => match crate::trading::past_limit(at, state.marks.limits) {
+            Some(limit) => crate::trading::past_limit_preview(&grouped_decimals(limit, places)),
+            None => {
+                let last = state.bars.last().map_or(at, |bar| bar.close);
+                crate::trading::refused_text(dragged.kind, at, last)
+            }
+        },
     };
     let colour = match allowed {
         true => dragged.colour,
@@ -9570,6 +9579,7 @@ mod tests {
                 style: LineStyle::Dotted,
                 dim: false,
             }],
+            limits: (None, None),
         };
         state
     }
@@ -9653,6 +9663,18 @@ mod tests {
         let refused = frame(w, h, |cr| draw_pointer(cr, w, h, &state));
         assert!(painted(&refused) > painted(&quiet) + 200, "no refused preview");
         assert!(refused != shown);
+
+        // Not past the day's limits, on either side, whatever the side.
+        state.drag = None;
+        state.marks.limits = (Some(last - 10.0), Some(last + 10.0));
+        assert!(state.mark_allowed(&target, last + 5.0), "a target inside the limits");
+        assert!(!state.mark_allowed(&target, last + 15.0), "past the high limit");
+        assert!(state.mark_allowed(&stop, last - 5.0));
+        assert!(!state.mark_allowed(&stop, last - 15.0), "past the low limit");
+        state.drag = Some(Drag::Mark { what: target.clone(), at: last + 15.0, allowed: false });
+        let past = frame(w, h, |cr| draw_pointer(cr, w, h, &state));
+        assert!(painted(&past) > painted(&quiet) + 200, "no preview past the limit");
+        state.marks.limits = (None, None);
 
         // Filled under the hand: the position and its tabs are gone.
         state.marks.position = None;
