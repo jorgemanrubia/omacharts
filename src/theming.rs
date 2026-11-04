@@ -784,7 +784,7 @@ entry.range-date > image:hover { opacity: 0.9; }
    so a window with nothing unread has nothing more in it. */
 .window-corner menubutton.unread > button {
   opacity: 1;
-  background-image: radial-gradient(circle 3px at 80% 24%, @error_color 99%, transparent 100%);
+  background-image: radial-gradient(circle 3px at 74% 28%, @error_color 99%, transparent 100%);
 }
 
 /* The corner notice, over the bottom-left of the charts. */
