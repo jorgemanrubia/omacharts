@@ -16,6 +16,7 @@ use adw::prelude::*;
 use gtk::{gio, glib};
 
 use super::Window;
+use crate::log_words;
 use crate::trading::{self, Failure, OrderKind, Pending, Request, Side, Stage};
 use crate::ui::pane::ChartPane;
 use crate::ui::trading_panel::{Hands, TradingPanel};
@@ -81,6 +82,13 @@ pub(super) fn size_part_menu() -> gio::Menu {
     model
 }
 
+/// What cancelling `order` asks for: "Cancel Buy Limit 7,620.00".
+fn cancel_words(order: &trading::Order) -> String {
+    let decimals = crate::ui::trading_panel::decimals_of(order.tick);
+    let price = order.price.map(|price| omacharts_engine::grouped_decimals(price, decimals)).unwrap_or_default();
+    format!("Cancel {} {price}", trading::order_words(order.side, order.kind)).trim_end().to_string()
+}
+
 /// The window's action that opens the Trading sizes dialog.
 const EDIT_SIZES: &str = "edit-trading-sizes";
 
@@ -124,6 +132,7 @@ impl Window {
         if let Some(panel) = panel {
             panel.redraw(&self.trading.borrow());
         }
+        self.say_session_trouble();
         self.report_orders();
         self.settle_pending();
         self.apply_marks();
@@ -144,7 +153,13 @@ impl Window {
     /// What the broker said to `request` when it was sent: a refusal takes
     /// what was drawn for it away and says why; no answer leaves it
     /// pending, since it may well have arrived, and says so.
-    fn heard<T>(self: &Rc<Self>, request: &Request, outcome: Result<T, Failure>, not: &str) -> Option<T> {
+    fn heard<T>(
+        self: &Rc<Self>,
+        request: &Request,
+        outcome: Result<T, Failure>,
+        not: &str,
+        account: &str,
+    ) -> Option<T> {
         match outcome {
             Ok(value) => {
                 // The book may already say what became of it.
@@ -154,11 +169,11 @@ impl Window {
             Err(Failure::Refused(why)) => {
                 self.trade.pending.borrow_mut().remove(request);
                 self.apply_marks();
-                self.toast(&format!("{not}: {why}"));
+                self.refuse_as(account, &format!("{not}: {why}"));
                 None
             }
             Err(Failure::Unanswered(why)) => {
-                self.toast(&format!("No answer yet: {why}"));
+                self.refuse_as(account, &format!("No answer yet: {why}"));
                 None
             }
         }
@@ -387,7 +402,30 @@ impl Window {
         }
     }
 
-    /// Say `text` in a toast over the window.
+    /// Say that what was asked was not done, before anything reached an
+    /// account: in the Log, and so in the corner notice.
+    pub(super) fn refuse(&self, text: &str) {
+        self.say(log_words::refused("Trading", text));
+    }
+
+    /// The same, for what was asked of `target`'s account.
+    pub(super) fn refuse_on(&self, target: &trading::Target, text: &str) {
+        self.refuse_as(&self.account_label(&target.account.key()), text);
+    }
+
+    /// The same, of the account called `account`.
+    pub(super) fn refuse_as(&self, account: &str, text: &str) {
+        self.say(log_words::refused(account, text));
+    }
+
+    /// Say that what was asked of the account called `account` was done: in
+    /// the Log, and in a toast.
+    pub(super) fn confirm(&self, account: &str, text: &str) {
+        self.say(log_words::confirmed(account, text));
+    }
+
+    /// Say `text` in a toast over the window. Only for something asked for
+    /// and done, which [`crate::ui::notice::surface`] decides.
     pub(super) fn toast(&self, text: &str) {
         if let Some(toasts) = self.trade.toasts.borrow().as_ref() {
             let toast = adw::Toast::new(text);
@@ -416,8 +454,9 @@ impl Window {
         job: impl FnOnce(&dyn trading::Session, &str) -> Result<(), Failure> + Send + 'static,
     ) {
         let Some((login, number)) = account.split_once('/') else { return };
+        let source = self.account_label(account);
         let Some(session) = self.desk.session(login).filter(|_| self.desk.live(login)) else {
-            self.toast(&format!("{} not signed in", self.account_label(account)));
+            self.refuse_as(&source, &format!("{source} not signed in"));
             return;
         };
         let number = number.to_string();
@@ -429,7 +468,7 @@ impl Window {
         glib::spawn_future_local(async move {
             let Ok(outcome) = receiver.recv().await else { return };
             if let (Some(this), Err(why)) = (this.upgrade(), outcome) {
-                this.toast(why.words());
+                this.refuse_as(&source, why.words());
             }
         });
     }
@@ -536,22 +575,22 @@ impl Window {
         // changed since the menu opened.
         let target = match self.order_target(&pane) {
             Ok(target) => target,
-            Err(why) => return self.toast(&format!("{why} · not placed")),
+            Err(why) => return self.refuse(&format!("{why} · not placed")),
         };
         if target.account.key() != account {
-            return self.toast("The chart's account changed · not placed");
+            return self.refuse_on(&target, "The chart's account changed · not placed");
         }
         let places = Self::tick_of(&pane, &target).map_or(2, |tick| omacharts_engine::on_tick(0.0, tick).1);
         let price_text = price.map(|price| omacharts_engine::grouped_decimals(price, places)).unwrap_or_default();
         if let (Some(at), Some(last)) = (price, pane.view.last_price())
             && !trading::side_allowed(kind, side, at, last)
         {
-            return self.toast(&trading::crossed_text(&price_text, kind, side));
+            return self.refuse_on(&target, &trading::crossed_text(&price_text, kind, side));
         }
         let size = self.size_of(&pane);
         match trading::OrderRequest::request(&target.account.id, &target.contract(), side, kind, size, price) {
             Ok(order) => self.place(target, order),
-            Err(why) => self.toast(&format!("{why} · not placed")),
+            Err(why) => self.refuse_on(&target, &format!("{why} · not placed")),
         }
     }
 
@@ -571,14 +610,17 @@ impl Window {
     ) {
         let key = target.account.key();
         if let Err(why) = self.trade.placing.begin(&key) {
-            return self.toast(&why);
+            return self.refuse_on(&target, &why);
         }
+        let source = self.account_label(&key);
+        let decimals = crate::ui::trading_panel::decimals_of(target.tick);
+        self.say(log_words::order_sent(&source, &order, decimals));
         // Drawn at once, faint, until the exchange has it working.
         let request = Request::Place(order.tag.clone());
         self.ask(request.clone(), Pending::Place { key: key.clone(), order: order.clone() });
         self.send(&target, move |session, _| session.place(&order), move |this, outcome| {
             this.trade.placing.done(&key);
-            if let Some(basket) = this.heard(&request, outcome, "Not placed") {
+            if let Some(basket) = this.heard(&request, outcome, "Not placed", &source) {
                 this.trade.placed.borrow_mut().insert(basket.clone(), Stage::Pending);
                 this.desk.tell();
                 then(this, basket);
@@ -589,8 +631,10 @@ impl Window {
     /// `chart.cancel-order`: cancel the working order `basket`, no
     /// question asked.
     fn cancel_from_chart(self: &Rc<Self>, basket: &str) {
-        let account = self.trading.borrow().book.order(basket).map(|order| order.account.clone());
-        let Some(account) = account else { return };
+        let order = self.trading.borrow().book.order(basket).cloned();
+        let Some(order) = order else { return };
+        let account = order.account.clone();
+        self.say(log_words::asked(&self.account_label(&account), cancel_words(&order)));
         let basket = basket.to_string();
         self.on_session(&account, move |session, number| session.cancel(number, &basket));
     }
@@ -642,16 +686,18 @@ impl Window {
     fn cancel_mark(self: &Rc<Self>, pane: &ChartPane, basket: &str) {
         let target = match self.order_target(pane) {
             Ok(target) => target,
-            Err(why) => return self.toast(&format!("{why} · not cancelled")),
+            Err(why) => return self.refuse(&format!("{why} · not cancelled")),
         };
         let key = target.account.key();
         let order = self.trading.borrow().book.order(basket).filter(|order| order.account == key).cloned();
         let Some(order) = order.filter(|order| order.status.working()) else {
-            return self.toast("Already done · not cancelled");
+            return self.refuse_on(&target, "Already done · not cancelled");
         };
         if let Err(why) = self.trade.placing.begin(&key) {
-            return self.toast(&why);
+            return self.refuse_on(&target, &why);
         }
+        let source = self.account_label(&key);
+        self.say(log_words::asked(&source, cancel_words(&order)));
         let basket = basket.to_string();
         let request = Request::Cancel(basket.clone());
         self.ask(request.clone(), Pending::Cancel);
@@ -659,7 +705,7 @@ impl Window {
         self.trade.placed.borrow_mut().insert(basket.clone(), order.status.stage);
         self.send(&target, move |session, number| session.cancel(number, &basket), move |this, outcome| {
             this.trade.placing.done(&key);
-            this.heard(&request, outcome, "Not cancelled");
+            this.heard(&request, outcome, "Not cancelled", &source);
         });
     }
 
@@ -669,18 +715,18 @@ impl Window {
     fn exit_mark(self: &Rc<Self>, pane: &ChartPane, kind: OrderKind, price: f64) {
         let target = match self.order_target(pane) {
             Ok(target) => target,
-            Err(why) => return self.toast(&format!("{why} · not placed")),
+            Err(why) => return self.refuse(&format!("{why} · not placed")),
         };
         let key = target.account.key();
         let held = self.trading.borrow().book.position(&key, &target.contract).cloned();
-        let Some(held) = held else { return self.toast("Nothing held · not placed") };
+        let Some(held) = held else { return self.refuse_on(&target, "Nothing held · not placed") };
         if !target.capabilities.kinds.contains(&kind) {
-            return self.toast(&format!("{} takes no {} orders · not placed", target.login.name, kind.word()));
+            return self.refuse_on(&target, &format!("{} takes no {} orders · not placed", target.login.name, kind.word()));
         }
         if let Some(last) = pane.view.last_price()
             && !trading::exit_allowed(kind, held.net, price, last)
         {
-            return self.toast(&format!("{} · not placed", trading::refused_text(kind, price, last)));
+            return self.refuse_on(&target, &format!("{} · not placed", trading::refused_text(kind, price, last)));
         }
         let side = trading::exit_side(held.net);
         // The whole of what is held, whatever the chart's size: an exit
@@ -688,7 +734,7 @@ impl Window {
         let Some(size) = trading::Quantity::new(held.net.unsigned_abs()) else { return };
         let order = match trading::OrderRequest::request(&target.account.id, &target.contract(), side, kind, size, Some(price)) {
             Ok(order) => order,
-            Err(why) => return self.toast(&format!("{why} · not placed")),
+            Err(why) => return self.refuse_on(&target, &format!("{why} · not placed")),
         };
         let linking = target.clone();
         self.place_then(target, order, move |this, basket| this.link_exit(&linking, side, kind, basket));
@@ -706,12 +752,13 @@ impl Window {
         };
         let Some(sibling) = sibling else { return };
         if !target.capabilities.link {
-            return self.toast("Stop and target not linked on this broker");
+            return self.refuse_on(target, "Stop and target not linked on this broker");
         }
         let baskets = vec![basket, sibling];
-        self.send(target, move |session, number| session.link(number, &baskets), |this, outcome| match outcome {
-            Ok(()) => this.toast("Linked: stop cancels target"),
-            Err(why) => this.toast(&format!("Not linked: {why}")),
+        let source = self.account_label(&key);
+        self.send(target, move |session, number| session.link(number, &baskets), move |this, outcome| match outcome {
+            Ok(()) => this.confirm(&source, "Linked: stop cancels target"),
+            Err(why) => this.refuse_as(&source, &format!("Not linked: {why}")),
         });
     }
 
@@ -721,31 +768,41 @@ impl Window {
     fn move_mark(self: &Rc<Self>, pane: &ChartPane, basket: &str, price: f64) {
         let target = match self.order_target(pane) {
             Ok(target) => target,
-            Err(why) => return self.toast(&format!("{why} · not moved")),
+            Err(why) => return self.refuse(&format!("{why} · not moved")),
         };
         if !target.capabilities.modify {
-            return self.toast(&format!("{} cannot move an order · not moved", target.login.name));
+            return self.refuse_on(&target, &format!("{} cannot move an order · not moved", target.login.name));
         }
         let key = target.account.key();
         let order = self.trading.borrow().book.order(basket).filter(|order| order.account == key).cloned();
         let Some(order) = order.filter(|order| order.status.working()) else {
-            return self.toast("Filled while moving");
+            return self.refuse_on(&target, "Filled while moving");
         };
         // The market may have crossed it while the hand was letting go.
         if let Some(last) = pane.view.last_price()
             && !trading::side_allowed(order.kind, order.side, price, last)
         {
-            return self.toast(&format!("{} · not moved", trading::refused_text(order.kind, price, last)));
+            return self.refuse_on(&target, &format!("{} · not moved", trading::refused_text(order.kind, price, last)));
         }
         if let Err(why) = self.trade.placing.begin(&key) {
-            return self.toast(&why);
+            return self.refuse_on(&target, &why);
         }
+        let source = self.account_label(&key);
+        let decimals = crate::ui::trading_panel::decimals_of(order.tick);
+        self.say(log_words::asked(
+            &source,
+            format!(
+                "Move {} to {}",
+                trading::order_words(order.side, order.kind),
+                omacharts_engine::grouped_decimals(price, decimals)
+            ),
+        ));
         let basket = basket.to_string();
         let request = Request::Move(basket.clone());
         self.ask(request.clone(), Pending::Move(price));
         self.send(&target, move |session, number| session.modify(number, &basket, price), move |this, outcome| {
             this.trade.placing.done(&key);
-            this.heard(&request, outcome, "Not moved");
+            this.heard(&request, outcome, "Not moved", &source);
         });
     }
 
@@ -754,11 +811,11 @@ impl Window {
     fn flatten_mark(self: &Rc<Self>, pane: &ChartPane) {
         let target = match self.order_target(pane) {
             Ok(target) => target,
-            Err(why) => return self.toast(&format!("{why} · not flattened")),
+            Err(why) => return self.refuse(&format!("{why} · not flattened")),
         };
         let key = target.account.key();
         let held = self.trading.borrow().book.position(&key, &target.contract).cloned();
-        let Some(held) = held else { return self.toast("Nothing held · not flattened") };
+        let Some(held) = held else { return self.refuse_on(&target, "Nothing held · not flattened") };
         // The exits working on it, to cancel once it is flat: a stop left
         // behind would open a position of its own.
         let exits: Vec<String> = {
@@ -770,6 +827,8 @@ impl Window {
                 .map(|order| order.basket_id.clone())
                 .collect()
         };
+        let source = self.account_label(&key);
+        self.say(log_words::asked(&source, format!("Flatten {}", target.contract)));
         let request = Request::Flatten(key.clone(), target.contract.clone());
         self.ask(request.clone(), Pending::Flatten);
         let (contract, exchange) = (target.contract.clone(), target.exchange.clone());
@@ -778,7 +837,7 @@ impl Window {
             &target,
             move |session, number| session.flatten(number, &contract, &exchange),
             move |this, outcome| {
-                if this.heard(&request, outcome, "Not flattened").is_none() {
+                if this.heard(&request, outcome, "Not flattened", &source).is_none() {
                     return;
                 }
                 // One the broker cancelled itself, or a link took with
@@ -806,15 +865,15 @@ impl Window {
         let pane = self.focused_pane();
         let target = match self.order_target(&pane) {
             Ok(target) => target,
-            Err(why) => return self.toast(&format!("{why} · not placed")),
+            Err(why) => return self.refuse(&format!("{why} · not placed")),
         };
         if !target.capabilities.kinds.contains(&OrderKind::Market) {
-            return self.toast(&format!("{} takes no market orders · not placed", target.login.name));
+            return self.refuse_on(&target, &format!("{} takes no market orders · not placed", target.login.name));
         }
         let size = self.size_of(&pane);
         match trading::OrderRequest::request(&target.account.id, &target.contract(), side, OrderKind::Market, size, None) {
             Ok(order) => self.place(target, order),
-            Err(why) => self.toast(&format!("{why} · not placed")),
+            Err(why) => self.refuse_on(&target, &format!("{why} · not placed")),
         }
     }
 
@@ -825,13 +884,15 @@ impl Window {
         let pane = self.focused_pane();
         let target = match self.order_target(&pane) {
             Ok(target) => target,
-            Err(why) => return self.toast(&format!("{why} · not flattened")),
+            Err(why) => return self.refuse(&format!("{why} · not flattened")),
         };
         let key = target.account.key();
         let flat = trading::flat_plan(&self.trading.borrow().book, &key, &target.contract);
         if flat.is_empty() {
-            return self.toast(&format!("Already flat in {}", target.contract));
+            return self.refuse_on(&target, &format!("Already flat in {}", target.contract));
         }
+        let source = self.account_label(&key);
+        self.say(log_words::asked(&source, format!("Flatten {} and cancel its orders", target.contract)));
         let flatten = Request::Flatten(key.clone(), target.contract.clone());
         {
             let mut pending = self.trade.pending.borrow_mut();
@@ -872,7 +933,7 @@ impl Window {
                         pending.remove(&Request::Cancel(basket.clone()));
                     }
                 }
-                this.heard(&flatten, outcome, "Not flattened");
+                this.heard(&flatten, outcome, "Not flattened", &source);
             },
         );
     }
@@ -1159,8 +1220,9 @@ impl Window {
         pane.view.set_marks(position, orders);
     }
 
-    /// Toast each step of an order placed or cancelled here, once, when
-    /// the broker has said so: working, filled, cancelled, rejected.
+    /// Say each step of an order placed or cancelled here, once, when the
+    /// broker has said so: working, filled and cancelled in a toast too,
+    /// rejected in the corner notice.
     fn report_orders(&self) {
         let mut said = Vec::new();
         {
@@ -1175,15 +1237,15 @@ impl Window {
                     .find(|account| account.key() == order.account)
                     .map(|account| view.account_name(account))
                     .unwrap_or_default();
-                if let Some(text) = trading::outcome_text(order, *before, decimals, &name) {
-                    said.push(text);
+                if let Some(entry) = log_words::order_moved_on(order, *before, decimals, &name) {
+                    said.push(entry);
                 }
                 *before = order.status.stage;
             }
             placed.retain(|_, stage| stage.working());
         }
-        for text in said {
-            self.toast(&text);
+        for entry in said {
+            self.say(entry);
         }
     }
 }
@@ -2194,6 +2256,48 @@ pub(super) mod tests {
             sign_in(&window, &store, &["951", "952"]);
             assert_eq!(picker(&window, &pane), vec!["Rithmic Test 951 ✓", "Rithmic Test 952"]);
             assert_eq!(part(&pane).as_deref(), Some("Rithmic Test 951"));
+        });
+    }
+
+    /// What is asked of a broker from the chart, what became of it, what
+    /// was refused, and a session ending by itself: each one entry, under
+    /// the account's or the login's name.
+    #[test]
+    fn orders_asked_their_outcomes_and_refusals_are_logged() {
+        crate::ui::on_gtk(|| {
+            let (window, _pane, session, key) = long_es(true, true);
+            let log = super::super::log::tests::private(&window);
+            let held = || session.book().position("951", "ESZ6").map(|held| held.net);
+            let free = |window: &Rc<Window>| !window.trade.placing.busy(&key);
+
+            assert!(window.on_trading_key(gtk::gdk::Key::b, 0));
+            settle(&window, || held() == Some(2) && free(&window));
+            window.catch_up_log();
+            assert!(window.on_trading_key(gtk::gdk::Key::f, 0));
+            settle(&window, || held().is_none() && free(&window));
+            assert!(window.on_trading_key(gtk::gdk::Key::f, 0));
+            window.catch_up_log();
+
+            let said: Vec<(omacharts_engine::log::Level, String, bool)> =
+                log.entries().into_iter().map(|e| (e.level, e.line(), e.confirms)).collect();
+            let account = window.account_label(&key);
+            let one = |level: omacharts_engine::log::Level, line: String, confirms: bool| {
+                let count = said.iter().filter(|said| **said == (level, line.clone(), confirms)).count();
+                assert_eq!(count, 1, "{line:?} said {count} times in {said:#?}");
+            };
+            one(omacharts_engine::log::Level::Info, format!("{account} · Buy Market 1 ESZ6"), false);
+            one(omacharts_engine::log::Level::Info, format!("{account} · Filled 1 ESZ6 at 7,612.25 · {account}"), true);
+            one(omacharts_engine::log::Level::Info, format!("{account} · Flatten ESZ6 and cancel its orders"), false);
+            one(omacharts_engine::log::Level::Error, format!("{account} · Already flat in ESZ6"), false);
+            assert!(window.notice_shown().is_some(), "the refusal is not in the notice");
+
+            // A session that ends by itself is said once, by the login's name.
+            session.sign_out();
+            window.desk.tell();
+            window.desk.tell();
+            let ended: Vec<String> =
+                log.entries().into_iter().filter(|e| e.text.starts_with("Signed out")).map(|e| e.line()).collect();
+            assert_eq!(ended, ["Rithmic Test · Signed out · signed out"]);
         });
     }
 }

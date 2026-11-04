@@ -22,6 +22,7 @@ use adw::prelude::*;
 use gtk::glib;
 use omacharts_engine::providers::{self, Secrets};
 
+use crate::log_words;
 use crate::store::Store;
 use crate::trading::{self, Account, Desk, Login, Standing};
 use crate::ui::sign_in_dialogs;
@@ -394,8 +395,12 @@ fn sign_out(panel: &Rc<Panel>, id: &str) {
     panel.desk.end(id);
     panel.notes.borrow_mut().remove(id);
     let Some(login) = trading::logins(&panel.store).into_iter().find(|login| login.id == id) else { return };
-    if let Err(error) = trading::sign_out_login(&panel.store, panel.secrets(&login.broker).as_ref(), id) {
-        eprintln!("omacharts: {error}");
+    match trading::sign_out_login(&panel.store, panel.secrets(&login.broker).as_ref(), id) {
+        Ok(_) => log_words::say(log_words::signed_out(&login.name)),
+        Err(error) => {
+            eprintln!("omacharts: {error}");
+            log_words::say(log_words::trouble(&login.name, "Password not forgotten", &error));
+        }
     }
     panel.changed();
 }
@@ -463,6 +468,7 @@ fn remove_login(panel: &Rc<Panel>, id: &str, feed_too: bool) {
     let Some(login) = trading::logins(&panel.store).into_iter().find(|login| login.id == id) else { return };
     if let Err(error) = trading::remove_login(&panel.store, panel.secrets(&login.broker).as_ref(), id, feed_too) {
         eprintln!("omacharts: {error}");
+        log_words::say(log_words::trouble(&login.name, "Login not removed completely", &error));
     }
     panel.changed();
 }
@@ -485,6 +491,7 @@ fn sign_in(panel: &Rc<Panel>, id: &str) {
     rebuild(panel);
 
     let waker = panel.desk.waker();
+    let name = login.name.clone();
     let feed = trading::data_feed_of(&login).map(|feed| feed.id);
     let (sender, receiver) = async_channel::bounded(1);
     std::thread::spawn(move || {
@@ -501,7 +508,12 @@ fn sign_in(panel: &Rc<Panel>, id: &str) {
     glib::spawn_future_local(async move {
         let Ok((session, fed)) = receiver.recv().await else { return };
         panel.notes.borrow_mut().remove(&id);
+        log_words::say(log_words::signed_in(
+            &name,
+            session.as_ref().map(|session| session.accounts().len()).map_err(String::as_str),
+        ));
         if let Some(Err(error)) = fed {
+            log_words::say(log_words::data_not_signed_in(&name, &error));
             panel.notes.borrow_mut().insert(id.clone(), format!("data not signed in · {error}"));
         }
         panel.desk.opened(&id, session);
@@ -695,6 +707,53 @@ mod tests {
             assert_eq!(book.position(&account, "ESZ6").map(|held| held.net), Some(1));
             let placed = book.order(&basket).expect("on the book");
             assert_eq!((placed.status.stage, placed.fills.len()), (trading::Stage::Filled, 1));
+            desk.sign_out_all(trading::SIGN_OUT_WAIT);
+        });
+    }
+
+    /// Signing in is in the Log under the login's name, and a user ID never
+    /// is: not from the login, and not from a broker repeating it back.
+    #[test]
+    fn the_log_names_a_login_and_never_its_user_id() {
+        crate::ui::on_gtk(|| {
+            const USER: &str = "trader-77421-planted";
+            let store = Rc::new(Store::memory().unwrap());
+            let desk = Rc::new(Desk::new(trading::registry()));
+            let panel = panel(&store, desk.clone());
+            let typed = Typed {
+                broker: "fake".into(),
+                name: "Practice".into(),
+                user: USER.into(),
+                password: "PLANTED-PASSWORD".into(),
+                values: Vec::new(),
+            };
+            let log = omacharts_engine::log::global();
+            let before = log.revision();
+            let id = trading::add_login(&store, &Kept::default(), &typed).unwrap();
+            sign_in(&panel, &id);
+            let context = glib::MainContext::default();
+            for _ in 0..500 {
+                if desk.live(&id) && !panel.notes.borrow().contains_key(&id) {
+                    break;
+                }
+                context.iteration(false);
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            assert!(desk.live(&id));
+            // A broker that says the user ID back in its refusal.
+            log_words::say(log_words::signed_in("Practice", Err(&format!("user {USER} is locked"))));
+            sign_out(&panel, &id);
+
+            let said: Vec<String> =
+                log.since(before).0.into_iter().filter(|e| e.source == "Practice").map(|e| e.text).collect();
+            assert!(said.iter().any(|text| text == "Signed in · 1 account"), "{said:?}");
+            assert!(said.iter().any(|text| text.starts_with("Not signed in · user …")), "{said:?}");
+            assert!(said.iter().any(|text| text == "Signed out"), "{said:?}");
+            for entry in log.entries() {
+                let all = format!("{entry:?}");
+                assert!(!all.contains(USER), "a user ID in the Log: {all}");
+                assert!(!all.contains("PLANTED-PASSWORD"), "a password in the Log: {all}");
+            }
             desk.sign_out_all(trading::SIGN_OUT_WAIT);
         });
     }
