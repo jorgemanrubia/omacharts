@@ -18,7 +18,7 @@ use crate::trading::{Login, Typed};
 
 /// A broker connection's login dialog: what Trading opens to add a login
 /// over the widget given, or to sign `known` in again, handing over what
-/// was typed when somebody presses Sign In.
+/// was typed when somebody presses Sign in.
 pub type LoginDialog = fn(&gtk::Widget, Option<&Login>, Box<dyn Fn(Typed)>);
 
 /// A dialog of a feed's own, for the Data page: built, not yet shown. It
@@ -74,7 +74,7 @@ pub(crate) mod fake {
         password.set_title("Password");
         list.append(&password);
         dialog.set_extra_child(Some(&list));
-        dialog.add_responses(&[("cancel", "Cancel"), (SIGN_IN, "Sign In")]);
+        dialog.add_responses(&[("cancel", "Cancel"), (SIGN_IN, "Sign in")]);
         dialog.connect_response(None, move |_, response| {
             if response != SIGN_IN {
                 return;
@@ -102,7 +102,7 @@ pub(crate) mod fake {
         token.set_title("Token");
         list.append(&token);
         dialog.set_extra_child(Some(&list));
-        dialog.add_responses(&[("cancel", "Cancel"), (SIGN_IN, "Sign In")]);
+        dialog.add_responses(&[("cancel", "Cancel"), (SIGN_IN, "Sign in")]);
         dialog.connect_response(None, move |_, response| {
             if response != SIGN_IN {
                 return;

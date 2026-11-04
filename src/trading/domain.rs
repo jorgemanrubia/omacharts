@@ -177,7 +177,7 @@ impl Standing {
     pub fn words(&self) -> String {
         match self {
             Standing::Live => "live".into(),
-            Standing::Ready => "signed in".into(),
+            Standing::Ready => "not signed in".into(),
             Standing::SignedOut => "not signed in".into(),
             Standing::Refused(why) => why.clone(),
         }

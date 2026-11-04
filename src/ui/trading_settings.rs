@@ -1,7 +1,7 @@
 //! Preferences → Trading: the broker logins, each with its accounts under
 //! it, edited the way the Data page edits its data feeds.
 //!
-//! With nothing configured it is a line and a button. "Add a broker…"
+//! With nothing configured it is a heading and a button. "Add a broker…"
 //! offers every broker in the registry, and opens that broker's own login
 //! dialog, with a Name field; the first login added whose broker has a data
 //! feed also adds that feed as the first data feed, through it.
@@ -20,7 +20,7 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::glib;
-use omacharts_engine::providers::{self, Secrets};
+use omacharts_engine::providers::Secrets;
 
 use crate::log_words;
 use crate::store::Store;
@@ -237,7 +237,6 @@ fn login_group(
     if several && !data && trading::data_feed_of(login).is_some() {
         let feed = gtk::Button::with_label("Use for data");
         feed.add_css_class("flat");
-        feed.set_tooltip_text(Some(&format!("Have charts' {} data come through this login", feed_label(login))));
         let panel_for_feed = panel.clone();
         let id = login.id.clone();
         feed.connect_clicked(move |_| {
@@ -261,12 +260,6 @@ fn login_group(
     actions.append(&remove);
     group.set_header_suffix(Some(&actions));
 
-    if accounts.is_empty() {
-        let row = adw::ActionRow::new();
-        row.set_title("No accounts listed yet");
-        row.add_css_class("dim-label");
-        group.add(&row);
-    }
     for account in accounts {
         group.add(&account_row(panel, account, default == Some(account.key().as_str())));
     }
@@ -338,7 +331,6 @@ fn account_row(panel: &Rc<Panel>, account: &Account, default: bool) -> adw::Acti
 /// button.
 fn sizes_group(edit: EditSizes) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
-    group.set_title("Trading sizes");
     let button = gtk::Button::with_label("Edit trading sizes…");
     button.set_halign(gtk::Align::Start);
     button.connect_clicked(move |button| edit(button.upcast_ref()));
@@ -350,11 +342,6 @@ fn add_group(panel: &Rc<Panel>, empty: bool) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     if empty {
         group.set_title("Accounts");
-        group.set_description(Some(&format!(
-            "Add the broker login a prop firm gave you to see its accounts here. The first one \
-             also becomes your {} data feed.",
-            providers::connections().next().map_or("broker", |feed| feed.label),
-        )));
     }
     let add = gtk::MenuButton::new();
     add.set_label("Add a broker…");
@@ -421,11 +408,11 @@ fn confirm_remove(panel: &Rc<Panel>, id: &str, anchor: &gtk::Widget) {
     let Some(login) = trading::logins(&panel.store).into_iter().find(|login| login.id == id) else { return };
     let removal = trading::removal(&panel.store, id);
     let (heading, body) = removal_words(&login.name, feed_label(&login), &removal);
-    let dialog = adw::AlertDialog::new(Some(&heading), Some(&body));
+    let dialog = adw::AlertDialog::new(Some(&heading), body.as_deref());
     dialog.add_response("cancel", "Cancel");
     match removal {
         trading::Removal::Ask => {
-            dialog.add_response("keep", "Keep data feed");
+            dialog.add_response("keep", "Keep the data feed");
             dialog.add_response("both", "Remove both");
             dialog.set_response_appearance("both", adw::ResponseAppearance::Destructive);
         }
@@ -446,22 +433,16 @@ fn confirm_remove(panel: &Rc<Panel>, id: &str, anchor: &gtk::Widget) {
     dialog.present(Some(anchor));
 }
 
-/// The dialog's heading and body for removing the login `name`.
-fn removal_words(name: &str, feed: &str, removal: &trading::Removal) -> (String, String) {
+/// The dialog's heading and body, if it has one, for removing the login
+/// `name`.
+fn removal_words(name: &str, feed: &str, removal: &trading::Removal) -> (String, Option<String>) {
     let body = match removal {
-        trading::Removal::Login => "Its password leaves the keyring and its accounts leave this page.".to_string(),
-        trading::Removal::HandOver { to } => format!(
-            "Its password leaves the keyring and its accounts leave this page. Charts' {feed} data will \
-             now come through {to}."
-        ),
-        trading::Removal::Ask => format!(
-            "Charts' {feed} data comes through this login. Remove the {feed} data feed too? Kept, it \
-             stays on the Data page, not signed in, ready to be signed in again."
-        ),
-        trading::Removal::KeepFeed => format!(
-            "Charts' {feed} data comes through this login. The {feed} data feed stays on the Data page, \
-             not signed in, because it is the last data feed."
-        ),
+        trading::Removal::Login => None,
+        trading::Removal::HandOver { to } => Some(format!("Charts' {feed} data will come through {to}.")),
+        trading::Removal::Ask => Some("Kept, it stays on the Data page, not signed in.".to_string()),
+        trading::Removal::KeepFeed => {
+            Some(format!("The {feed} data feed stays on the Data page, not signed in: it is the last one."))
+        }
     };
     let heading = match removal {
         trading::Removal::Ask => format!("Remove the {feed} data feed too?"),
@@ -570,9 +551,9 @@ mod tests {
         }
     }
 
-    /// Nothing configured: a line and the button, nothing else.
+    /// Nothing configured: a heading and the button, nothing else.
     #[test]
-    fn nothing_configured_is_a_line_and_a_button() {
+    fn nothing_configured_is_a_heading_and_a_button() {
         crate::ui::on_gtk(|| {
             let store = Rc::new(Store::memory().unwrap());
             let panel = panel(&store, Rc::new(Desk::new(Registry::of(vec![Arc::new(FakeBroker::default())]))));
@@ -616,7 +597,7 @@ mod tests {
             let groups = panel.groups.borrow().clone();
             assert_eq!(groups.len(), 4, "two logins, the button and the sizes");
             assert_eq!(groups[0].title(), "Lucid");
-            assert_eq!(groups[0].description().as_deref(), Some("Rithmic Test · signed in · data"));
+            assert_eq!(groups[0].description().as_deref(), Some("Rithmic Test · not signed in · data"));
             assert_eq!(groups[1].description().as_deref(), Some("Rithmic Test · not signed in"));
             let lucid_words = words_under(groups[0].upcast_ref());
             for word in ["1234", "USD · $50,210", "Default", "1235", "Make default", "Sign in", "Remove"] {
@@ -630,7 +611,7 @@ mod tests {
 
             // Removing the data login hands data to the other, and says so.
             let (_, body) = removal_words("Lucid", "Rithmic", &trading::removal(&store, &lucid));
-            assert!(body.ends_with("now come through Rithmic Test."), "{body}");
+            assert_eq!(body.as_deref(), Some("Charts' Rithmic data will come through Rithmic Test."));
             remove_login(&panel, &lucid, true);
             let groups = panel.groups.borrow().clone();
             assert_eq!(groups[0].description().as_deref(), Some("Rithmic Test · not signed in · data"));
@@ -743,11 +724,17 @@ mod tests {
     #[test]
     fn the_dialog_says_what_becomes_of_the_data_feed() {
         let words = |removal| removal_words("Lucid", "Rithmic", &removal);
-        assert_eq!(words(trading::Removal::Login).0, "Remove Lucid?");
-        assert!(!words(trading::Removal::Login).1.contains("data"));
-        assert!(words(trading::Removal::HandOver { to: "Tradeify".into() }).1.contains("through Tradeify"));
+        assert_eq!(words(trading::Removal::Login), ("Remove Lucid?".to_string(), None));
+        assert_eq!(
+            words(trading::Removal::HandOver { to: "Tradeify".into() }).1.as_deref(),
+            Some("Charts' Rithmic data will come through Tradeify.")
+        );
         assert_eq!(words(trading::Removal::Ask).0, "Remove the Rithmic data feed too?");
-        assert!(words(trading::Removal::KeepFeed).1.contains("last data feed"));
+        assert_eq!(words(trading::Removal::Ask).1.as_deref(), Some("Kept, it stays on the Data page, not signed in."));
+        assert_eq!(
+            words(trading::Removal::KeepFeed).1.as_deref(),
+            Some("The Rithmic data feed stays on the Data page, not signed in: it is the last one.")
+        );
     }
 
     use std::sync::Arc;

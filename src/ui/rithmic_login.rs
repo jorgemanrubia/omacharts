@@ -22,7 +22,7 @@ const SIGN_IN: &str = "sign-in";
 const CANCEL: &str = "cancel";
 
 /// Ask for a login over `parent` — a new one, or `known` again — and hand
-/// what was typed to `signed` when somebody presses Sign In. Cancelling
+/// what was typed to `signed` when somebody presses Sign in. Cancelling
 /// hands over nothing.
 pub fn ask(parent: &impl IsA<gtk::Widget>, known: Option<&Login>, signed: impl Fn(Typed) + 'static) {
     let dialog = adw::AlertDialog::new(Some("Sign in to Rithmic"), None);
@@ -63,7 +63,7 @@ pub fn ask(parent: &impl IsA<gtk::Widget>, known: Option<&Login>, signed: impl F
     list.append(&gateway);
 
     dialog.set_extra_child(Some(&list));
-    dialog.add_responses(&[(CANCEL, "Cancel"), (SIGN_IN, "Sign In")]);
+    dialog.add_responses(&[(CANCEL, "Cancel"), (SIGN_IN, "Sign in")]);
     dialog.set_response_appearance(SIGN_IN, adw::ResponseAppearance::Suggested);
     dialog.set_default_response(Some(SIGN_IN));
     dialog.set_close_response(CANCEL);
