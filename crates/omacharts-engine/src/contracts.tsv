@@ -1,4 +1,4 @@
-# root	exchange	hours	tick	point	currency	quoted
+# root	exchange	hours	tick	point	currency	quoted	months	expiry	roll
 # Which exchange each futures root trades on, on which of its hours, and the
 # size of one tick of its price: the step every price it trades at is a
 # whole number of, in the units it is quoted in (grains and livestock in
@@ -18,45 +18,45 @@
 # livestock closes at lunchtime while its equity index contracts trade all
 # night. A root not listed here is taken to be on Globex's equity index hours,
 # which is what most of what gets charted keeps.
-ES	CME	cme_equity_index	0.25	50	USD	index points
-MES	CME	cme_equity_index	0.25	5	USD	index points
-NQ	CME	cme_equity_index	0.25	20	USD	index points
-MNQ	CME	cme_equity_index	0.25	2	USD	index points
-RTY	CME	cme_equity_index	0.1	50	USD	index points
-M2K	CME	cme_equity_index	0.1	5	USD	index points
-YM	CBOT	cme_equity_index	1	5	USD	index points
-MYM	CBOT	cme_equity_index	1	0.5	USD	index points
-6E	CME	cme_rates_and_fx	0.00005	125000	USD	USD per EUR
-6J	CME	cme_rates_and_fx	0.0000005	12500000	USD	USD per JPY
-6B	CME	cme_rates_and_fx	0.0001	62500	USD	USD per GBP
-6A	CME	cme_rates_and_fx	0.00005	100000	USD	USD per AUD
-6C	CME	cme_rates_and_fx	0.00005	100000	USD	USD per CAD
-6S	CME	cme_rates_and_fx	0.00005	125000	USD	USD per CHF
-ZB	CBOT	cme_rates_and_fx	1/32	1000	USD	points and 32nds
-ZN	CBOT	cme_rates_and_fx	1/64	1000	USD	points and 32nds
-ZF	CBOT	cme_rates_and_fx	1/128	1000	USD	points and 32nds
-ZT	CBOT	cme_rates_and_fx	1/256	2000	USD	points and 32nds
-ZC	CBOT	cme_grains	0.25	50	USD	cents per bushel
-ZS	CBOT	cme_grains	0.25	50	USD	cents per bushel
-ZW	CBOT	cme_grains	0.25	50	USD	cents per bushel
-ZL	CBOT	cme_grains	0.01	600	USD	cents per pound
-ZM	CBOT	cme_grains	0.1	100	USD	USD per short ton
-LE	CME	cme_livestock	0.025	400	USD	cents per pound
-HE	CME	cme_livestock	0.025	400	USD	cents per pound
-CL	NYMEX	nymex_energy	0.01	1000	USD	USD per barrel
-MCL	NYMEX	nymex_energy	0.01	100	USD	USD per barrel
-BZ	NYMEX	nymex_energy	0.01	1000	USD	USD per barrel
-NG	NYMEX	nymex_energy	0.001	10000	USD	USD per MMBtu
-RB	NYMEX	nymex_energy	0.0001	42000	USD	USD per gallon
-HO	NYMEX	nymex_energy	0.0001	42000	USD	USD per gallon
-PL	NYMEX	nymex_platinum	0.1	50	USD	USD per troy ounce
-PA	NYMEX	nymex_platinum	0.5	100	USD	USD per troy ounce
-GC	COMEX	comex_metals	0.1	100	USD	USD per troy ounce
-MGC	COMEX	comex_metals	0.1	10	USD	USD per troy ounce
-SI	COMEX	comex_silver	0.005	5000	USD	USD per troy ounce
-SIL	COMEX	comex_silver	0.005	1000	USD	USD per troy ounce
-HG	COMEX	comex_copper	0.0005	25000	USD	USD per pound
-KC	ICEUS	ice_us_softs	0.05	375	USD	cents per pound
-SB	ICEUS	ice_us_sugar	0.01	1120	USD	cents per pound
-CC	ICEUS	ice_us_cocoa	1	10	USD	USD per metric ton
-CT	ICEUS	ice_us_cotton	0.01	500	USD	cents per pound
+ES	CME	cme_equity_index	0.25	50	USD	index points	HMUZ	3rd-fri	expiry-8d
+MES	CME	cme_equity_index	0.25	5	USD	index points	HMUZ	3rd-fri	expiry-8d
+NQ	CME	cme_equity_index	0.25	20	USD	index points	HMUZ	3rd-fri	expiry-8d
+MNQ	CME	cme_equity_index	0.25	2	USD	index points	HMUZ	3rd-fri	expiry-8d
+RTY	CME	cme_equity_index	0.1	50	USD	index points	HMUZ	3rd-fri	expiry-8d
+M2K	CME	cme_equity_index	0.1	5	USD	index points	HMUZ	3rd-fri	expiry-8d
+YM	CBOT	cme_equity_index	1	5	USD	index points	HMUZ	3rd-fri	expiry-8d
+MYM	CBOT	cme_equity_index	1	0.5	USD	index points	HMUZ	3rd-fri	expiry-8d
+6E	CME	cme_rates_and_fx	0.00005	125000	USD	USD per EUR	HMUZ	3rd-wed-2b	expiry-2b
+6J	CME	cme_rates_and_fx	0.0000005	12500000	USD	USD per JPY	HMUZ	3rd-wed-2b	expiry-2b
+6B	CME	cme_rates_and_fx	0.0001	62500	USD	USD per GBP	HMUZ	3rd-wed-2b	expiry-2b
+6A	CME	cme_rates_and_fx	0.00005	100000	USD	USD per AUD	HMUZ	3rd-wed-2b	expiry-2b
+6C	CME	cme_rates_and_fx	0.00005	100000	USD	USD per CAD	HMUZ	3rd-wed-2b	expiry-2b
+6S	CME	cme_rates_and_fx	0.00005	125000	USD	USD per CHF	HMUZ	3rd-wed-2b	expiry-2b
+ZB	CBOT	cme_rates_and_fx	1/32	1000	USD	points and 32nds	HMUZ	eom-7b	prior-eom-1b
+ZN	CBOT	cme_rates_and_fx	1/64	1000	USD	points and 32nds	HMUZ	eom-7b	prior-eom-1b
+ZF	CBOT	cme_rates_and_fx	1/128	1000	USD	points and 32nds	HMUZ	eom	prior-eom-1b
+ZT	CBOT	cme_rates_and_fx	1/256	2000	USD	points and 32nds	HMUZ	eom	prior-eom-1b
+ZC	CBOT	cme_grains	0.25	50	USD	cents per bushel	HKNUZ	15th-1b	prior-eom-1b
+ZS	CBOT	cme_grains	0.25	50	USD	cents per bushel	FHKNQUX	15th-1b	prior-eom-1b
+ZW	CBOT	cme_grains	0.25	50	USD	cents per bushel	HKNUZ	15th-1b	prior-eom-1b
+ZL	CBOT	cme_grains	0.01	600	USD	cents per pound	FHKNQUVZ	15th-1b	prior-eom-1b
+ZM	CBOT	cme_grains	0.1	100	USD	USD per short ton	FHKNQUVZ	15th-1b	prior-eom-1b
+LE	CME	cme_livestock	0.025	400	USD	cents per pound	GJMQVZ	eom	prior-eom-1b
+HE	CME	cme_livestock	0.025	400	USD	cents per pound	GJKMNQVZ	10th-bday	expiry-3b
+CL	NYMEX	nymex_energy	0.01	1000	USD	USD per barrel	all	prior-25th-3b	expiry-3b
+MCL	NYMEX	nymex_energy	0.01	100	USD	USD per barrel	all	prior-25th-3b	expiry-3b
+BZ	NYMEX	nymex_energy	0.01	1000	USD	USD per barrel	all	prior2-eom	expiry-3b
+NG	NYMEX	nymex_energy	0.001	10000	USD	USD per MMBtu	all	bom-3b	expiry-3b
+RB	NYMEX	nymex_energy	0.0001	42000	USD	USD per gallon	all	prior-eom	expiry-3b
+HO	NYMEX	nymex_energy	0.0001	42000	USD	USD per gallon	all	prior-eom	expiry-3b
+PL	NYMEX	nymex_platinum	0.1	50	USD	USD per troy ounce	FJNV	eom-3b	prior-eom-1b
+PA	NYMEX	nymex_platinum	0.5	100	USD	USD per troy ounce	HMUZ	eom-3b	prior-eom-1b
+GC	COMEX	comex_metals	0.1	100	USD	USD per troy ounce	GJMQVZ	eom-3b	prior-eom-1b
+MGC	COMEX	comex_metals	0.1	10	USD	USD per troy ounce	GJMQVZ	eom-3b	prior-eom-1b
+SI	COMEX	comex_silver	0.005	5000	USD	USD per troy ounce	HKNUZ	eom-3b	prior-eom-1b
+SIL	COMEX	comex_silver	0.005	1000	USD	USD per troy ounce	HKNUZ	eom-3b	prior-eom-1b
+HG	COMEX	comex_copper	0.0005	25000	USD	USD per pound	HKNUZ	eom-3b	prior-eom-1b
+KC	ICEUS	ice_us_softs	0.05	375	USD	cents per pound	HKNUZ	eom-8b	bom-7b-1b
+SB	ICEUS	ice_us_sugar	0.01	1120	USD	cents per pound	HKNV	prior-eom	expiry-1b
+CC	ICEUS	ice_us_cocoa	1	10	USD	USD per metric ton	HKNUZ	eom-11b	bom-10b-1b
+CT	ICEUS	ice_us_cotton	0.01	500	USD	cents per pound	HKNVZ	eom-17b	bom-5b-1b

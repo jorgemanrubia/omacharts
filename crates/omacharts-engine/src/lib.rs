@@ -7,6 +7,7 @@
 
 pub mod bars;
 pub mod clock;
+pub mod contracts;
 pub mod drawings;
 pub mod exchanges;
 pub mod frame;

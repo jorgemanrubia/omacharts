@@ -160,6 +160,12 @@ struct Contract {
     point: Option<f64>,
     currency: Option<String>,
     quoted: Option<String>,
+    /// The month codes it lists, `HMUZ`, when the table says.
+    months: Option<String>,
+    /// When a contract of it stops trading, and when the one after it
+    /// becomes the front month, in the words [`crate::contracts`] reads.
+    expiry: Option<String>,
+    roll: Option<String>,
 }
 
 /// The tables, read once.
@@ -301,6 +307,9 @@ impl Registry {
                     point: positive(1)?,
                     currency: text(2),
                     quoted: text(3),
+                    months: text(4),
+                    expiry: text(5),
+                    roll: text(6),
                 })
             })();
             match row {
@@ -358,6 +367,14 @@ impl Registry {
     /// "cents per bushel" for ZC.
     pub fn contract_quoted(&self, root: &str) -> Option<&str> {
         self.contract(root)?.quoted.as_deref()
+    }
+
+    /// A futures root's month cycle, and when a contract of it expires and
+    /// when the next becomes the front month, as `contracts.tsv` writes
+    /// them: `None` for a root it does not list, or lists without them.
+    pub fn contract_months(&self, root: &str) -> Option<(&str, &str, &str)> {
+        let contract = self.contract(root)?;
+        Some((contract.months.as_deref()?, contract.expiry.as_deref()?, contract.roll.as_deref()?))
     }
 
     /// Every futures root `contracts.tsv` lists.

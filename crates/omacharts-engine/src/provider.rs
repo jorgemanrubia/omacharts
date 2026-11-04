@@ -460,6 +460,16 @@ pub trait Provider: Send + Sync {
         since: Option<i64>,
     ) -> Result<Vec<Bar>, ProviderError>;
 
+    /// The dated contracts of the futures root `root` this provider lists,
+    /// each as its symbol in the exchange's spelling and the day it stops
+    /// trading, in no particular order. One request, made now, off the
+    /// thread that draws the window. `Err(Unsupported)` from a provider
+    /// that lists none, which is what the rule in [`crate::contracts`]
+    /// stands in for.
+    fn contracts(&self, root: &str) -> Result<Vec<(String, chrono::NaiveDate)>, ProviderError> {
+        Err(ProviderError::Unsupported(format!("{} lists no contracts of {root}", self.label())))
+    }
+
     /// How far apart this provider's requests must be kept.
     ///
     /// Rules only, and constant: the provider is never the one that holds a

@@ -324,6 +324,33 @@ impl Feeds {
     }
 }
 
+/// Ask the feed that serves `root` which contracts of it are listed, on a
+/// thread, and hand what it says to [`omacharts_engine::contracts`]; then
+/// `done` on the main loop, whether or not it said anything. A feed that
+/// lists none costs nothing: the rule's own listing stands, and `done` is
+/// called all the same.
+pub fn list_contracts(order: Vec<String>, root: &omacharts_engine::Instrument, done: impl Fn() + 'static) {
+    let (tell, heard) = async_channel::bounded::<()>(1);
+    let root = root.as_root();
+    std::thread::Builder::new()
+        .name("omacharts contracts".into())
+        .spawn(move || {
+            let feeds = Feeds::of(providers::ordered(&order));
+            if let Some((provider, _)) = feeds.route(&root)
+                && let Ok(listed) = provider.contracts(root.root())
+            {
+                omacharts_engine::contracts::supply(root.root(), listed);
+            }
+            let _ = tell.send_blocking(());
+        })
+        .ok();
+    gtk::glib::MainContext::default().spawn_local(async move {
+        if heard.recv().await.is_ok() {
+            done();
+        }
+    });
+}
+
 /// How the top feed is offered — its name, what it serves, whether it needs
 /// signing in to. The one a window is charting from first, otherwise the
 /// flag for this launch, otherwise the stored order, otherwise the default.
