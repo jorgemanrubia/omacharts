@@ -7237,15 +7237,15 @@ impl Window {
         }
     }
 
-    /// Re-route the charts when a Rithmic session says which exchanges its
-    /// login is entitled to, or that changes: a root on one it is not, GC on
-    /// Rithmic Test, goes to the next source. Where every chart is served
+    /// Re-route the charts when a feed's session says what its login may
+    /// chart, or that changes: a root on an exchange the login is not
+    /// entitled to goes to the next source. Where every chart is served
     /// from is noted before the new set is taken on, so only the charts
     /// whose source changes are shown again. Nothing listens until a
     /// session exists to say anything.
     fn wire_entitlements(self: &Rc<Self>) {
         let (said, heard) = async_channel::unbounded::<()>();
-        providers::rithmic::session::on_entitlements(move || {
+        providers::on_serving_changed(move || {
             let _ = said.try_send(());
         });
         let this = Rc::downgrade(self);
@@ -7253,7 +7253,7 @@ impl Window {
             while heard.recv().await.is_ok() {
                 let Some(this) = this.upgrade() else { return };
                 let before = this.routes_on_screen();
-                if providers::rithmic::session::adopt_entitlements() {
+                if providers::adopt_serving() {
                     this.reroute(&before);
                 }
             }

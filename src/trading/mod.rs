@@ -5,17 +5,18 @@
 //! chart is drawn from can be combined freely:
 //!
 //! - **A login** is a broker connection: a name the trader chooses, the
-//!   Rithmic user ID, system and gateway, and the password in the keyring
-//!   under the login's id. Any number of them, in [`LOGINS`], `Local`
-//!   because a login belongs to the machine it was typed on.
+//!   broker it is with, its user ID and whatever else the broker's dialog
+//!   asks, and the password in the broker's keyring under the login's id.
+//!   Any number of them, in [`LOGINS`], `Local` because a login belongs to
+//!   the machine it was typed on.
 //! - **An account** is one of the account numbers inside a login, listed by
 //!   the order plant once it signs in. They are cached in [`ACCOUNTS`] as
 //!   bookkeeping, never in a backup, so the settings page and the header
 //!   draw without connecting and account numbers stay on this machine.
 //! - **A data feed** is a source on the Data page. Exactly one login is the
-//!   data login, [`DATA_LOGIN`], the first added unless somebody picks
-//!   another: Rithmic's data source signs in through it, and the others sign
-//!   in for orders and P&L only. Several logins streaming quotes could count
+//!   data login, [`DATA_LOGIN`], the first added whose broker has a data
+//!   feed, unless somebody picks another: that feed signs in through it, and
+//!   the others sign in for orders and P&L only. Several logins streaming quotes could count
 //!   as several data sessions under CME's two-session rule.
 //!
 //! Each login has at most one trading session, because a second sign-in on
@@ -34,8 +35,10 @@
 //! - `logins`: what is stored about logins and their accounts.
 //! - `session`: the seam for brokers, [`Broker`] and [`Session`], and the
 //!   [`Desk`] that holds every login's session.
-//! - `adapters`: the brokers themselves, the one place that names them.
-//! - `fake`: a broker in memory, for the tests.
+//! - `adapters`: the brokers themselves, and [`registry`], the one place
+//!   that lists them.
+//! - `fake`: a broker in memory, for the tests, and in the registry of a
+//!   build with the `fakes` feature.
 //! - `sizes`: trading sizes and their templates.
 
 pub mod adapters;

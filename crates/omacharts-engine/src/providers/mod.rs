@@ -369,6 +369,20 @@ pub fn here() -> bool {
     HERE.load(Ordering::Acquire)
 }
 
+/// Call `listener`, on any thread, whenever a feed hears that what its
+/// login may chart has changed: Rithmic's entitlements, for one. Nothing
+/// moves until [`adopt_serving`] is called, so whoever listens can note
+/// where every chart is served from first.
+pub fn on_serving_changed(listener: impl Fn() + Send + Sync + 'static) {
+    rithmic::session::on_entitlements(listener);
+}
+
+/// Take on what the feeds last heard about what their logins may chart, so
+/// that routing follows it. True when it changed anything.
+pub fn adopt_serving() -> bool {
+    rithmic::session::adopt_entitlements()
+}
+
 /// Every feed, in the order they are offered.
 ///
 /// Order is the interface: the first is the default, the panel lists them

@@ -493,15 +493,8 @@ pub(crate) mod tests {
         let below = ["crates/omacharts-engine/src/providers/"];
         // The brokers, which are named in their adapters and nowhere else.
         let adapters = ["src/trading/adapters/"];
-        // Above it still, and why. Part B of the foundations work takes the
-        // last feed names out of the logins, the window and the pane, and
-        // these three go from the list with it.
+        // Above it, for good, and why.
         let allowed = [
-            // The Rithmic data session's keyring calls, the feed a first
-            // login puts on top, and keys stored under Rithmic's name.
-            ("src/trading/logins.rs", "part B: the logins' keyring, data feed and stored keys"),
-            ("src/ui/window.rs", "part B: entitlements and the data login"),
-            ("src/ui/pane.rs", "part B: the header's feed picker"),
             // For good: a provider's own sign-in dialog is the provider's,
             // and the registry is the one place that maps a feed to it.
             ("src/ui/rithmic_login.rs", "Rithmic's own login dialog"),
@@ -545,16 +538,26 @@ pub(crate) mod tests {
         out
     }
 
-    /// The file up to its tests module, every line comment blanked and each
-    /// line kept where it was, so that a line number is still the file's.
+    /// The file without its tests modules, wherever they are in it, every
+    /// line comment blanked and each line kept where it was, so that a line
+    /// number is still the file's. A tests module is known by its
+    /// `#[cfg(test)]` and ends at the brace that closes it: some files go on
+    /// after theirs, and what follows is as live as what comes before.
     fn live_code(text: &str) -> String {
-        let lines: Vec<&str> = text.lines().collect();
-        let tests = lines
-            .windows(2)
-            .position(|pair| pair[0].trim() == "#[cfg(test)]" && pair[1].contains("mod tests"))
-            .unwrap_or(lines.len());
         let mut out = String::new();
-        for line in &lines[..tests] {
+        let mut lines = text.lines().peekable();
+        // Inside a tests module, how deep in its braces.
+        let mut tests: Option<i32> = None;
+        while let Some(line) = lines.next() {
+            if tests.is_none()
+                && line.trim() == "#[cfg(test)]"
+                && lines.peek().is_some_and(|next| next.contains("mod tests") && next.contains('{'))
+            {
+                tests = Some(0);
+                out.push('\n');
+                continue;
+            }
+            let mut code = String::new();
             let mut in_string = false;
             let mut escaped = false;
             let mut chars = line.chars().peekable();
@@ -562,11 +565,41 @@ pub(crate) mod tests {
                 if !in_string && c == '/' && chars.peek() == Some(&'/') {
                     break;
                 }
+                // A character literal, '"' or '{' among them, is neither a
+                // string nor a brace; a lifetime has no closing quote.
+                if !in_string && c == '\'' {
+                    let ahead: String = chars.clone().take(3).collect();
+                    let literal = match ahead.as_bytes() {
+                        [b'\\', _, b'\'', ..] => 3,
+                        [_, b'\'', ..] => 2,
+                        _ => 0,
+                    };
+                    code.push(c);
+                    for _ in 0..literal {
+                        code.extend(chars.next());
+                    }
+                    continue;
+                }
                 if c == '"' && !escaped {
                     in_string = !in_string;
                 }
+                if !in_string && let Some(depth) = tests.as_mut() {
+                    match c {
+                        '{' => *depth += 1,
+                        '}' => *depth -= 1,
+                        _ => {}
+                    }
+                }
                 escaped = in_string && c == '\\' && !escaped;
-                out.push(c);
+                code.push(c);
+            }
+            match tests {
+                Some(depth) => {
+                    if depth <= 0 && code.contains('}') {
+                        tests = None;
+                    }
+                }
+                None => out.push_str(&code),
             }
             out.push('\n');
         }
@@ -583,13 +616,18 @@ pub(crate) mod tests {
                 apart(line[..at].chars().next_back()) && apart(line[at + name.len()..].chars().next())
             })
         };
-        line.contains("thinkorswim") || word("rithmic") || word("tos")
+        // The Rithmic Test defaults by name, as well as anything of the
+        // feed's: `rithmic::` and `providers::rithmic` are words already.
+        line.contains("thinkorswim") || line.contains("test_system") || line.contains("test_gateway") || word("rithmic") || word("tos")
     }
 
     #[test]
     fn a_feed_is_told_by_its_name_and_nothing_else_is() {
         assert!(names_a_feed(r#"const RITHMIC: &str = "rithmic";"#));
         assert!(names_a_feed("use omacharts_engine::providers::rithmic::session;"));
+        assert!(names_a_feed("rithmic::Trading::sign_in(app, &signing, changed)"));
+        assert!(names_a_feed("providers::rithmic::session::serve_from_here();"));
+        assert!(names_a_feed("known.map_or(trading::TEST_SYSTEM, |login| login.name())"));
         assert!(names_a_feed(r#"Ok(key) if key.starts_with("rithmic_") => {}"#));
         assert!(names_a_feed(r#""tos" => eprintln!("a browser"),"#));
         assert!(names_a_feed("tos_market::connected()"));
@@ -597,5 +635,7 @@ pub(crate) mod tests {
         assert!(!names_a_feed(r#"row.set_title("Logarithmic scale");"#));
         assert!(!names_a_feed("let photos = stops;"));
         assert_eq!(live_code("let a = 1; // rithmic\nlet b = \"//\"; // tos\n"), "let a = 1; \nlet b = \"//\"; \n");
+        let after = "fn a() {}\n#[cfg(test)]\nmod tests {\n    fn b() { \"}\" }\n}\nfn c() {}\n";
+        assert_eq!(live_code(after), "fn a() {}\n\n\n\n\nfn c() {}\n", "the code after a tests module is read");
     }
 }
