@@ -484,6 +484,20 @@ popover.pick-frame > contents { padding: 0; }
 .pick-list.navigation-sidebar > row:selected:focus-visible { outline: none; }
 .pick-ticker { font-family: monospace; font-weight: 700; font-size: 0.9em; }
 .pick-name { font-size: 0.9em; opacity: 0.55; }
+/* A futures root's fold, at the row's far edge: no padding of its own, so
+   the row keeps its height, and quiet until pointed at. Under an open root,
+   its contracts; Front, on the one trading now, sits where a kind would,
+   in the chip's grey rather than the kind's accent, being a date's doing
+   and not a category. */
+.pick-expander { min-height: 0; min-width: 0; padding: 0 2px; opacity: 0.45; -gtk-icon-size: 14px; }
+.pick-expander:hover { opacity: 1; }
+.pick-front {
+  font-size: 0.75em;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: alpha(@card_fg_color, 0.08);
+  opacity: 0.75;
+}
 /* Every chart while a picker is open, faded under it; the one it will
    change wears the wide ring. */
 .pick-shade { background-color: alpha(black, 0.4); }
