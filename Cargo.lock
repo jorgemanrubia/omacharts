@@ -1483,6 +1483,7 @@ dependencies = [
 name = "omacharts-engine"
 version = "0.1.0"
 dependencies = [
+ "async-channel",
  "chrono",
  "chrono-tz",
  "rithmic",

@@ -14,6 +14,7 @@ pub mod indicators;
 pub mod ladders;
 pub mod ink;
 pub mod link;
+pub mod log;
 pub mod measurement;
 pub mod omarchy;
 pub mod palette;
