@@ -543,22 +543,24 @@ impl Window {
         pane.view.tick().or(target.tick)
     }
 
-    /// The chart menu's orders, at height `y` of the focused chart, under
-    /// the account's name: buy and sell at the market, then a limit and a
-    /// stop each way at the price there. One that would be on the wrong
-    /// side of the market is greyed; a chart that cannot trade says why in
-    /// one greyed row, with no name over it. With no login, nothing at all.
-    pub(super) fn order_section(self: &Rc<Self>, y: f64) -> Option<(Option<String>, gio::Menu)> {
+    /// The chart menu's orders, at height `y` of the focused chart, in two
+    /// sections: buy and sell at the market, then a limit and a stop each
+    /// way at the price there, and cancelling the order under the pointer.
+    /// One that would be on the wrong side of the market is greyed; a chart
+    /// that cannot trade says why in one greyed row. No name over them: they
+    /// go to the account the header has chosen. With no login, nothing.
+    pub(super) fn order_sections(self: &Rc<Self>, y: f64) -> Vec<gio::Menu> {
         if !self.trading.borrow().trades() {
-            return None;
+            return Vec::new();
         }
+        let market = gio::Menu::new();
         let section = gio::Menu::new();
         let pane = self.focused_pane();
         let target = match self.order_target(&pane) {
             Ok(target) => target,
             Err(why) => {
                 section.append(Some(&why), Some(UNAVAILABLE));
-                return Some((None, section));
+                return vec![section];
             }
         };
         let key = target.account.key();
@@ -596,7 +598,10 @@ impl Window {
             } else {
                 item.set_action_and_target_value(Some(UNAVAILABLE), None);
             }
-            section.append_item(&item);
+            match kind {
+                OrderKind::Market => market.append_item(&item),
+                _ => section.append_item(&item),
+            }
         }
 
         // Cancelling the order whose line the pointer is on.
@@ -609,7 +614,7 @@ impl Window {
             item.set_action_and_target_value(Some("chart.cancel-order"), Some(&order.basket_id.to_variant()));
             section.append_item(&item);
         }
-        Some((Some(self.account_label(&key)), section))
+        [market, section].into_iter().filter(|menu| menu.n_items() > 0).collect()
     }
 
     /// `chart.order`: check again what the menu offered, and place it.
@@ -1433,8 +1438,14 @@ pub(super) mod tests {
             assert_eq!(rows.first(), Some(&("Buy 1 ESZ6 at market".to_string(), true)));
             assert_eq!(rows.get(1), Some(&("Sell 1 ESZ6 at market".to_string(), true)));
             assert_eq!(rows.len(), 6);
-            let (over, _) = window.order_section(100.0).expect("the orders");
-            assert_eq!(over.as_deref(), Some("Rithmic Test"), "the account over the orders");
+            let sections = window.order_sections(100.0);
+            assert_eq!(sections.len(), 2, "the market pair, then limits and stops");
+            assert_eq!(labels(sections[0].upcast_ref()).len(), 2);
+            let model = window.chart_menu_model(100.0);
+            for at in 0..model.n_items() {
+                let heading = model.item_attribute_value(at, "label", None);
+                assert!(heading.is_none(), "a heading over a section: {heading:?}");
+            }
 
             let value = order_target_value(Side::Buy, OrderKind::Market, &account.key(), None);
             let actions = window.trade.chart_actions.borrow().clone().unwrap();
@@ -2364,7 +2375,7 @@ pub(super) mod tests {
                 assert_eq!(count, 1, "{line:?} said {count} times in {said:#?}");
             };
             one(omacharts_engine::log::Level::Info, format!("{account} · Buy 1 ESZ6 at market"), false);
-            one(omacharts_engine::log::Level::Info, format!("{account} · Filled 1 ESZ6 at 7,612.25 · {account}"), true);
+            one(omacharts_engine::log::Level::Info, format!("{account} · Filled 1 ESZ6 at 7,612.25"), true);
             one(omacharts_engine::log::Level::Info, format!("{account} · Flatten ESZ6 and cancel its orders"), false);
             one(omacharts_engine::log::Level::Info, format!("{account} · Already flat in ESZ6"), false);
             assert!(window.notice_shown().is_none(), "nothing to do is not trouble");
