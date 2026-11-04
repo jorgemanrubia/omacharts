@@ -74,8 +74,15 @@ pub fn on_gtk(test: impl FnOnce() + Send + 'static) -> bool {
     let Some(gtk) = gtk else { return false };
     let (done, finished) = mpsc::channel();
     gtk.send((Box::new(test), done)).expect("the GTK thread");
+    // The GTK thread prints its panics into the output of whichever test
+    // started it, so the message is raised again here, in this test's own.
     if let Err(panic) = finished.recv().expect("the GTK thread") {
-        std::panic::resume_unwind(panic);
+        let message = panic
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| panic.downcast_ref::<&str>().copied())
+            .unwrap_or("a panic with no message");
+        panic!("on the GTK thread: {message}");
     }
     true
 }

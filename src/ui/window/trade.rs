@@ -1868,17 +1868,22 @@ pub(super) mod tests {
         });
     }
 
-    /// Run the main loop until `done`, or for a second at most.
-    fn settle(window: &Rc<Window>, done: impl Fn() -> bool) {
+    /// Run the main loop until `done`, or for a second at most, and say
+    /// which. A session moves on its own thread, so `done` can come true
+    /// just after the window last read the book: it reads it once more
+    /// then, and what the test does next sees what `done` saw.
+    fn settle(window: &Rc<Window>, done: impl Fn() -> bool) -> bool {
         let context = glib::MainContext::default();
         for _ in 0..200 {
-            window.desk.tell();
             if done() {
-                return;
+                window.desk.tell();
+                return true;
             }
+            window.desk.tell();
             context.iteration(false);
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
+        false
     }
 
     /// An order's × cancels it: faint at once, gone when the book says so;
@@ -2657,10 +2662,10 @@ pub(super) mod tests {
             let free = |window: &Rc<Window>| !window.trade.placing.busy(&key);
 
             assert!(window.on_trading_key(gtk::gdk::Key::b, 0));
-            settle(&window, || held() == Some(2) && free(&window));
+            assert!(settle(&window, || held() == Some(2) && free(&window)), "bought");
             window.catch_up_log();
             assert!(window.on_trading_key(gtk::gdk::Key::f, 0));
-            settle(&window, || held().is_none() && free(&window));
+            assert!(settle(&window, || held().is_none() && free(&window)), "flat");
             assert!(window.on_trading_key(gtk::gdk::Key::f, 0));
             window.catch_up_log();
 
