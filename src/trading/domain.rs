@@ -435,6 +435,19 @@ pub struct Order {
     pub tick: Option<f64>,
 }
 
+impl Order {
+    /// The average price it filled at so far: the broker's own figure, or
+    /// worked out from the fills when it tells only those. `None` before
+    /// anything has filled.
+    pub fn average_fill(&self) -> Option<f64> {
+        self.fill_price.or_else(|| {
+            let qty: u32 = self.fills.iter().map(|fill| fill.qty).sum();
+            let cost: f64 = self.fills.iter().map(|fill| fill.price * f64::from(fill.qty)).sum();
+            (qty > 0).then(|| cost / f64::from(qty))
+        })
+    }
+}
+
 /// Part or all of an order, filled.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Fill {
@@ -599,6 +612,27 @@ mod tests {
     /// What a trader asks for becomes an order the same way from a key, a
     /// menu or a drag: the account, the contract and its exchange, the side,
     /// the kind and the size, with a price only where the kind takes one.
+    /// A part-filled order says what its filled part cost, whether the
+    /// broker works the average out or tells only the fills.
+    #[test]
+    fn an_order_filled_in_part_has_an_average_fill() {
+        let book = crate::trading::fake::day_of_orders();
+        let part = book.orders.iter().find(|order| order.status == Stage::PartiallyFilled).unwrap();
+        assert_eq!(part.average_fill(), Some(7_636.50));
+
+        let mut told = part.clone();
+        told.fills = vec![
+            Fill { basket: "B4".into(), at: 0, qty: 1, price: 7_636.50 },
+            Fill { basket: "B4".into(), at: 0, qty: 3, price: 7_637.50 },
+        ];
+        assert_eq!(told.average_fill(), Some(7_637.25));
+        told.fill_price = Some(7_640.0);
+        assert_eq!(told.average_fill(), Some(7_640.0), "the broker's own figure stands");
+        told.fills.clear();
+        told.fill_price = None;
+        assert_eq!(told.average_fill(), None);
+    }
+
     #[test]
     fn an_order_request_is_built_from_what_was_asked() {
         let contract = Contract { symbol: "ESZ6".into(), exchange: "CME".into(), tick: Some(0.25) };

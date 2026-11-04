@@ -473,7 +473,7 @@ impl TradingPanel {
                     cell(order.kind.word(), false),
                     cell(&price, true),
                     status_cell,
-                    cell(&price_text(order.fill_price, order.tick), true),
+                    cell(&price_text(order.average_fill(), order.tick), true),
                 ];
                 // Pending is faint here as it is on the chart: asked, and
                 // not yet the broker's.

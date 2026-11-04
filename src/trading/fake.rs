@@ -101,7 +101,11 @@ pub fn day_of_orders() -> Book {
         orders: vec![
             order("B6", 2, Side::Buy, OrderKind::Limit, Some(7_598.25), Stage::Pending.into()),
             order("B5", 9, Side::Sell, OrderKind::Stop, Some(7_571.00), Stage::Working.into()),
-            Order { filled: 1, ..order("B4", 17, Side::Sell, OrderKind::Limit, Some(7_636.50), Stage::PartiallyFilled.into()) },
+            Order {
+                filled: 1,
+                fills: vec![Fill { basket: "B4".into(), at: now - 16 * 60, qty: 1, price: 7_636.50 }],
+                ..order("B4", 17, Side::Sell, OrderKind::Limit, Some(7_636.50), Stage::PartiallyFilled.into())
+            },
             order("B3", 31, Side::Buy, OrderKind::Limit, Some(7_540.00), Status::said(Stage::Cancelled, "by the trader")),
             order("B2", 48, Side::Buy, OrderKind::Limit, Some(7_000.00), Status::said(Stage::Rejected, "too far from the market")),
             filled("B1", 63, Side::Buy, 7_612.25),
