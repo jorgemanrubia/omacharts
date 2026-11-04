@@ -422,6 +422,9 @@ pub enum TradeEvent {
     Cancel(String),
     /// The position's ×.
     Flatten,
+    /// The × of a position held in another month of the chart's root:
+    /// flatten that contract.
+    FlattenHeld(String),
 }
 
 /// One row of the chart's vertical stack: the price plot, or one indicator's
@@ -4057,9 +4060,17 @@ impl ChartView {
     }
 
     /// Show this chart's account's position and working orders on it, or
-    /// nothing. Redrawn only when they change.
-    pub fn set_marks(&self, position: Option<PositionMark>, orders: Vec<OrderMark>, limits: (Option<f64>, Option<f64>)) {
-        let marks = Marks { position, orders, limits };
+    /// nothing; and `held`, positions in other months of the same root,
+    /// which the chart shows so that one held past a roll is not lost from
+    /// sight. Redrawn only when they change.
+    pub fn set_marks(
+        &self,
+        position: Option<PositionMark>,
+        held: Vec<PositionMark>,
+        orders: Vec<OrderMark>,
+        limits: (Option<f64>, Option<f64>),
+    ) {
+        let marks = Marks { position, held, orders, limits };
         {
             let mut state = self.state.borrow_mut();
             if state.marks == marks {
@@ -4094,6 +4105,13 @@ impl ChartView {
         let position = state.marks.position.as_ref().map(|held| (held.words.clone(), held.dim));
         let orders = state.marks.orders.iter().map(|order| (order.words.clone(), order.price, order.dim)).collect();
         (position, orders)
+    }
+
+    /// The positions held in other months of the root, as drawn: each one's
+    /// words and whether it is faint.
+    #[cfg(test)]
+    pub fn held_elsewhere(&self) -> Vec<(String, bool)> {
+        self.state.borrow().marks.held.iter().map(|held| (held.words.clone(), held.dim)).collect()
     }
 
     /// The exit tabs the position wears.
@@ -4525,7 +4543,7 @@ impl ChartView {
                 let mark = free
                     .then(|| s.mark_under(w, h, x, y))
                     .flatten()
-                    .filter(|mark| matches!(mark, MarkHit::Close(_) | MarkHit::Flatten));
+                    .filter(|mark| matches!(mark, MarkHit::Close(_) | MarkHit::Flatten | MarkHit::FlattenHeld(_)));
                 (hit, mark)
             };
             if let Some(mark) = mark {
@@ -4564,6 +4582,7 @@ impl ChartView {
             }
             let event = match mark {
                 MarkHit::Close(basket) => TradeEvent::Cancel(basket),
+                MarkHit::FlattenHeld(contract) => TradeEvent::FlattenHeld(contract),
                 _ => TradeEvent::Flatten,
             };
             if let Some(view) = view.upgrade() {
@@ -6587,6 +6606,8 @@ pub struct OrderMark {
 /// once the broker's P&L has come, outlined until then.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PositionMark {
+    /// The contract it is held in.
+    pub contract: String,
     pub price: f64,
     /// "▲ +1 · +$125.00", or "▲ +1 at 7,612.25" until the P&L has come.
     pub words: String,
@@ -6620,6 +6641,8 @@ pub enum MarkHit {
     Close(String),
     /// The position's ×: flatten it.
     Flatten,
+    /// The × of a position held in another month: flatten that contract.
+    FlattenHeld(String),
     /// One of the position's tabs: drag out an exit of this kind.
     Exit(OrderKind),
     /// An order's line or its pill: drag it to another price.
@@ -6694,6 +6717,12 @@ fn mark_at(plan: &Layout, marks: &Marks, x: f64, y: f64, to_y: &impl Fn(f64) -> 
             }
         }
     }
+    for held in marks.held.iter().filter(|held| !held.dim) {
+        let at = to_y(held.price).round();
+        if shown(at) && within(mark_row(&cr, plan.plot_x, plan.plot_w, &held.words, &[]).close_x, MARK_CLOSE, at) {
+            return Some(MarkHit::FlattenHeld(held.contract.clone()));
+        }
+    }
     let mut nearest: Option<(&OrderMark, f64)> = None;
     for order in marks.orders.iter().filter(|order| !order.dim) {
         let at = to_y(order.price).round();
@@ -6715,6 +6744,9 @@ fn mark_at(plan: &Layout, marks: &Marks, x: f64, y: f64, to_y: &impl Fn(f64) -> 
 #[derive(Clone, Debug, Default, PartialEq)]
 struct Marks {
     position: Option<PositionMark>,
+    /// Positions in other months of the chart's root: drawn as the
+    /// position is, named with their contract, with a × and no tabs.
+    held: Vec<PositionMark>,
     orders: Vec<OrderMark>,
     /// The day's lowest and highest prices the exchange takes an order at,
     /// as far as they are known: nothing is let go past them.
@@ -6723,7 +6755,7 @@ struct Marks {
 
 impl Marks {
     fn is_empty(&self) -> bool {
-        self.position.is_none() && self.orders.is_empty()
+        self.position.is_none() && self.held.is_empty() && self.orders.is_empty()
     }
 }
 
@@ -6960,6 +6992,23 @@ fn draw_marks(
             close(cr, row.close_x, y, over);
         });
         chips.push((y + 0.5, &order.price_text, Some(Boxed::Outlined(&order.colour)), order.dim));
+    }
+    for held in &state.marks.held {
+        let y = to_y(held.price).round();
+        if !shown(y) {
+            continue;
+        }
+        let look = match &held.pill {
+            Some(fill) => Boxed::Filled(Tag::on(fill)),
+            None => Boxed::Outlined(&held.colour),
+        };
+        faint(cr, held.dim, &|cr| {
+            line(cr, y, &held.colour, held.style, 2.0);
+            let row = mark_row(cr, plot_x, plot_w, &held.words, &[]);
+            boxed(cr, row.pill_x, y, row.pill_w, &held.words, &look, true);
+            close(cr, row.close_x, y, lit == Some(&MarkHit::FlattenHeld(held.contract.clone())));
+        });
+        chips.push((y + 0.5, &held.price_text, Some(look), held.dim));
     }
     if let Some(held) = &state.marks.position {
         let y = to_y(held.price).round();
@@ -9586,7 +9635,9 @@ mod tests {
         let (low, high) = scale.prices();
         let tab = |kind| ExitTab { kind, colour: "#ff0000".into(), style: LineStyle::Dashed };
         state.marks = Marks {
+            held: Vec::new(),
             position: Some(PositionMark {
+                contract: "ESZ6".into(),
                 price: low + (high - low) * 0.3,
                 words: "▲ +1 · +$125.00".into(),
                 price_text: "1".into(),

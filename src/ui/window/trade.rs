@@ -487,7 +487,7 @@ impl Window {
         self.trade.placed.borrow_mut().clear();
         self.trade.pending.borrow_mut().clear();
         for pane in self.panes.borrow().iter() {
-            pane.view.set_marks(None, Vec::new(), (None, None));
+            pane.view.set_marks(None, Vec::new(), Vec::new(), (None, None));
             self.write_size_of(pane);
         }
     }
@@ -897,7 +897,8 @@ impl Window {
         self.focus(id);
         match event {
             TradeEvent::Cancel(basket) => self.cancel_mark(&pane, &basket),
-            TradeEvent::Flatten => self.flatten_mark(&pane),
+            TradeEvent::Flatten => self.flatten_mark(&pane, None),
+            TradeEvent::FlattenHeld(contract) => self.flatten_mark(&pane, Some(contract)),
             TradeEvent::Move { basket, price } => self.move_mark(&pane, &basket, price),
             TradeEvent::ExitAt { kind, price } => self.exit_mark(&pane, kind, price),
         }
@@ -1066,9 +1067,14 @@ impl Window {
 
     /// The position's ×: flatten it, and cancel the exits working on it
     /// once it is flat. Faint at once, gone when the book says it is flat.
-    fn flatten_mark(self: &Rc<Self>, pane: &ChartPane) {
+    /// `held` names a position in another month of the chart's root; the
+    /// chart's own contract otherwise.
+    fn flatten_mark(self: &Rc<Self>, pane: &ChartPane, held: Option<String>) {
         let target = match self.order_target(pane) {
-            Ok(target) => target,
+            Ok(target) => match held {
+                Some(contract) => trading::Target { contract, ..target },
+                None => target,
+            },
             Err(why) => return self.refuse(&format!("Not flattened · {why}")),
         };
         let key = target.account.key();
@@ -1356,7 +1362,7 @@ impl Window {
         }
         self.write_size_of(pane);
         let Ok(target) = self.order_target(pane) else {
-            return pane.view.set_marks(None, Vec::new(), (None, None));
+            return pane.view.set_marks(None, Vec::new(), Vec::new(), (None, None));
         };
         let key = target.account.key();
         let theme = self.theming.borrow().theme();
@@ -1441,6 +1447,44 @@ impl Window {
             });
         }
         let currency = target.account.currency.clone();
+        // Positions in other months of the root, held past a roll or in
+        // a month this chart is not of: drawn with their contract's name,
+        // so that what is held is never out of sight.
+        let root = pane.instrument.borrow().as_ref().map(|i| i.root().to_string()).unwrap_or_default();
+        let held_elsewhere: Vec<crate::ui::chart::PositionMark> = view
+            .book
+            .positions
+            .iter()
+            .filter(|held| held.account == key && held.net != 0 && held.contract != target.contract)
+            .filter(|held| omacharts_engine::specs::root_of(&held.contract) == root)
+            .filter_map(|held| {
+                let at = held.avg?;
+                let (side, colour) = match held.net > 0 {
+                    true => (Side::Buy, look.long.clone()),
+                    false => (Side::Sell, look.short.clone()),
+                };
+                Some(crate::ui::chart::PositionMark {
+                    contract: held.contract.clone(),
+                    price: at,
+                    words: format!(
+                        "{} {} {}",
+                        side.glyph(),
+                        held.contract,
+                        trading::position_text(held, places, currency.as_deref())
+                    ),
+                    price_text: price(at),
+                    colour,
+                    style: look.position,
+                    pill: held.open_pnl.map(|pnl| match pnl < 0.0 {
+                        true => look.loss.clone(),
+                        false => look.profit.clone(),
+                    }),
+                    net: held.net,
+                    exits: Vec::new(),
+                    dim: pending.contains_key(&Request::Flatten(key.clone(), held.contract.clone())),
+                })
+            })
+            .collect();
         let position = view.book.position(&key, &target.contract).and_then(|held| {
             let at = held.avg?;
             let (side, colour) = match held.net > 0 {
@@ -1460,6 +1504,7 @@ impl Window {
                 .map(|(kind, style)| crate::ui::chart::ExitTab { kind, colour: exit_colour.clone(), style })
                 .collect();
             Some(crate::ui::chart::PositionMark {
+                contract: target.contract.clone(),
                 price: at,
                 words: format!("{} {}", side.glyph(), trading::position_text(held, places, currency.as_deref())),
                 price_text: price(at),
@@ -1475,7 +1520,7 @@ impl Window {
             })
         });
         drop(pending);
-        pane.view.set_marks(position, orders, self.limits_of(pane, &target));
+        pane.view.set_marks(position, held_elsewhere, orders, self.limits_of(pane, &target));
     }
 
     /// Say each step of an order placed or cancelled here, once, when the
@@ -2195,6 +2240,64 @@ pub(super) mod tests {
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
             assert!(pane.view.mark_states().0.is_some(), "the position waited for the book to move");
+        });
+    }
+
+    /// A position held in a contract the root has rolled off stays on the
+    /// root's chart, named with its contract and priced from it, with a ×
+    /// that flattens that contract; the chart's own position line is for
+    /// the contract trading now, which holds nothing.
+    #[test]
+    fn a_position_held_past_the_roll_stays_on_the_chart_named_with_its_contract() {
+        crate::ui::on_gtk(|| {
+            use crate::ui::chart::TradeEvent;
+            let (window, pane, session, _) = long_es(true);
+            assert!(pane.view.held_elsewhere().is_empty());
+            // The root rolls to March: the broker now trades ES as ESH7.
+            session.contracts.lock().unwrap().insert("ES".into(), "ESH7".into());
+            session.moved();
+            settle(&window, || pane.view.mark_states().0.is_none());
+            assert!(pane.view.mark_states().0.is_none(), "nothing is held in ESH7");
+            let held = pane.view.held_elsewhere();
+            assert_eq!(held.len(), 1, "{held:?}");
+            assert!(held[0].0.starts_with("▲ ESZ6 +1 at "), "named with its contract: {}", held[0].0);
+            assert!(!held[0].1);
+            // Its × flattens ESZ6, not the chart's contract.
+            pane.view.drop_mark(TradeEvent::FlattenHeld("ESZ6".into()));
+            assert_eq!(pane.view.held_elsewhere()[0].1, true, "faint until the book says it is flat");
+            settle(&window, || session.book().position("951", "ESZ6").is_none());
+            assert!(session.book().position("951", "ESZ6").is_none());
+            settle(&window, || pane.view.held_elsewhere().is_empty());
+            assert!(pane.view.held_elsewhere().is_empty());
+        });
+    }
+
+    /// An order from a chart of a dated contract goes to that contract,
+    /// whatever the root trades as now; and the position it opens is the
+    /// chart's own, while the root's chart shows it as held in another
+    /// month.
+    #[test]
+    fn trading_a_specific_contract_goes_to_that_contract() {
+        crate::ui::on_gtk(|| {
+            let (window, pane, session, _) = long_es(true);
+            let march = window.index.find("ESH7", None).expect("ESH7 resolves from ES");
+            window.show_in(&pane, march);
+            let target = window.order_target(&pane).expect("a target");
+            assert_eq!((target.contract.as_str(), target.exchange.as_str()), ("ESH7", "CME"));
+            window.market_from_keys(Side::Buy);
+            settle(&window, || session.book().position("951", "ESH7").is_some());
+            assert!(session.book().position("951", "ESH7").is_some(), "the order went to ESH7");
+            settle(&window, || pane.view.mark_states().0.is_some());
+            assert!(pane.view.mark_states().0.is_some(), "the chart's own position");
+            assert_eq!(pane.view.held_elsewhere().len(), 1, "December, held elsewhere");
+            // Back on the root, which trades as December: March is the one
+            // held elsewhere.
+            let es = window.index.find("ES", None).unwrap();
+            window.show_in(&pane, es);
+            settle(&window, || pane.view.held_elsewhere().iter().any(|(words, _)| words.contains("ESH7")));
+            assert!(pane.view.mark_states().0.is_some());
+            let held = pane.view.held_elsewhere();
+            assert!(held.iter().any(|(words, _)| words.starts_with("▲ ESH7 +1")), "{held:?}");
         });
     }
 
