@@ -18,7 +18,7 @@ use crate::ladders::Minute;
 use crate::provider::{
     Capability, LadderSink, Ladders, Provider, ProviderError, Stream, Subscription,
 };
-use crate::providers::{Access, How, Listed, Saved, Secrets, SignIn, Setup, Synthetic};
+use crate::providers::{Access, How, Listed, Saved, Secrets, SignIn, Synthetic};
 use crate::symbols::{Instrument, InstrumentKind};
 
 /// How the fake is listed.
@@ -30,12 +30,6 @@ pub const LISTED: Listed = Listed {
     build: || Box::new(Fake::new()),
     setup: Some(&Signing),
     experimental: false,
-};
-
-const SETUP: Setup = Setup {
-    explain: "Invented futures, for tests.",
-    requires: &["A member number and a token"],
-    scope: "Nothing real.",
 };
 
 pub struct Fake {
@@ -149,10 +143,6 @@ fn saved() -> Saved {
 pub struct Signing;
 
 impl SignIn for Signing {
-    fn about(&self) -> &'static Setup {
-        &SETUP
-    }
-
     fn how(&self) -> How {
         How::Dialog
     }

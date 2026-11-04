@@ -112,10 +112,6 @@ pub struct Capabilities {
     /// What is held and working now can be asked for, with
     /// [`Session::refresh`], rather than only heard of as it moves.
     pub snapshot: bool,
-    /// The broker says what its risk system holds an account to.
-    pub limits: bool,
-    /// The broker says an account's balance and P&L.
-    pub pnl: bool,
 }
 
 /// What an order on an instrument is sent as: the contract trading now,
@@ -332,8 +328,6 @@ pub struct Money {
     /// [`Account::key`] on the desk; the number inside a session.
     pub key: String,
     pub balance: Option<f64>,
-    /// Closed today.
-    pub realized_day: Option<f64>,
     /// Open now.
     pub unrealized: Option<f64>,
     /// Today's, closed and open, as the broker counts it: what a daily loss

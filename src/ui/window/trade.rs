@@ -678,7 +678,7 @@ impl Window {
         let order = self.trading.borrow().book.order(basket).cloned();
         let Some(order) = order else { return };
         let account = order.account.clone();
-        self.say(log_words::asked(&self.account_label(&account), cancel_words(&order)));
+        self.say(log_words::note(&self.account_label(&account), cancel_words(&order)));
         let basket = basket.to_string();
         self.on_session(&account, move |session, number| session.cancel(number, &basket));
     }
@@ -741,7 +741,7 @@ impl Window {
             return self.refuse_on(&target, &why);
         }
         let source = self.account_label(&key);
-        self.say(log_words::asked(&source, cancel_words(&order)));
+        self.say(log_words::note(&source, cancel_words(&order)));
         let basket = basket.to_string();
         let request = Request::Cancel(basket.clone());
         self.ask(request.clone(), Pending::Cancel);
@@ -833,7 +833,7 @@ impl Window {
         }
         let source = self.account_label(&key);
         let decimals = crate::ui::trading_panel::decimals_of(order.tick);
-        self.say(log_words::asked(
+        self.say(log_words::note(
             &source,
             format!(
                 "Move {} to {}",
@@ -872,7 +872,7 @@ impl Window {
                 .collect()
         };
         let source = self.account_label(&key);
-        self.say(log_words::asked(&source, format!("Flatten {}", target.contract)));
+        self.say(log_words::note(&source, format!("Flatten {}", target.contract)));
         let request = Request::Flatten(key.clone(), target.contract.clone());
         self.ask(request.clone(), Pending::Flatten);
         let (contract, exchange) = (target.contract.clone(), target.exchange.clone());
@@ -936,7 +936,7 @@ impl Window {
             return self.refuse_on(&target, &format!("Already flat in {}", target.contract));
         }
         let source = self.account_label(&key);
-        self.say(log_words::asked(&source, format!("Flatten {} and cancel its orders", target.contract)));
+        self.say(log_words::note(&source, format!("Flatten {} and cancel its orders", target.contract)));
         let flatten = Request::Flatten(key.clone(), target.contract.clone());
         {
             let mut pending = self.trade.pending.borrow_mut();
@@ -1499,9 +1499,9 @@ pub(super) mod tests {
     }
 
     /// A window on the synthetic feed with ES on its chart, signed in to
-    /// the tests' session on account 951, which trades ES as ESZ6 and is
-    /// simulated or not and links orders or not; long one at 7,612.25.
-    fn long_es(simulated: bool, links: bool) -> (Rc<Window>, Rc<ChartPane>, Arc<trading::fake::FakeSession>, String) {
+    /// the tests' session on account 951, which trades ES as ESZ6 and
+    /// links orders or not; long one at 7,612.25.
+    fn long_es(links: bool) -> (Rc<Window>, Rc<ChartPane>, Arc<trading::fake::FakeSession>, String) {
         let store = Rc::new(Store::memory().expect("a store"));
         let window = window(&store);
         let es = window.index.find("ES", None).expect("ES in the curated half");
@@ -1516,7 +1516,6 @@ pub(super) mod tests {
             balance: None,
         };
         let mut session = trading::fake::FakeSession::new(vec![account.clone()], Box::new(|| {}));
-        session.simulated = simulated;
         session.links_orders = links;
         session.contracts.lock().unwrap().insert("ES".into(), "ESZ6".into());
         let session = Arc::new(session);
@@ -1648,7 +1647,7 @@ pub(super) mod tests {
     fn the_marks_cross_cancels_an_order_and_flattens_the_position() {
         crate::ui::on_gtk(|| {
             use crate::ui::chart::TradeEvent;
-            let (window, pane, session, key) = long_es(true, true);
+            let (window, pane, session, key) = long_es(true);
             let basket = session.place(&resting(Side::Sell, OrderKind::Limit, Some(7_640.0))).unwrap();
             window.desk.tell();
             let orders = || pane.view.mark_states().1;
@@ -1690,7 +1689,7 @@ pub(super) mod tests {
     fn an_order_dragged_to_a_new_price_is_moved_there() {
         crate::ui::on_gtk(|| {
             use crate::ui::chart::TradeEvent;
-            let (window, pane, session, key) = long_es(true, true);
+            let (window, pane, session, key) = long_es(true);
             settle(&window, || pane.view.last_price().is_some());
             let last = pane.view.last_price().expect("a last price");
             let above = |ticks: f64| (last / 0.25).round() * 0.25 + ticks * 0.25;
@@ -1740,7 +1739,7 @@ pub(super) mod tests {
         crate::ui::on_gtk(|| {
             use crate::ui::chart::TradeEvent;
             for links in [true, false] {
-                let (window, pane, session, key) = long_es(true, links);
+                let (window, pane, session, key) = long_es(links);
                 settle(&window, || pane.view.last_price().is_some());
                 let last = pane.view.last_price().expect("a last price");
                 let off = |ticks: f64| (last / 0.25).round() * 0.25 + ticks * 0.25;
@@ -1783,7 +1782,7 @@ pub(super) mod tests {
     #[test]
     fn marks_appear_once_the_contract_is_known() {
         crate::ui::on_gtk(|| {
-            let (window, pane, session, _) = long_es(true, true);
+            let (window, pane, session, _) = long_es(true);
             session.contracts.lock().unwrap().clear();
             window.desk.tell();
             assert!(pane.view.mark_states().0.is_none(), "marked with no contract");
@@ -1815,7 +1814,7 @@ pub(super) mod tests {
         crate::ui::on_gtk(|| {
             use crate::ui::chart::TradeEvent;
             use std::sync::atomic::Ordering;
-            let (window, pane, session, key) = long_es(true, true);
+            let (window, pane, session, key) = long_es(true);
             settle(&window, || pane.view.last_price().is_some());
             let last = pane.view.last_price().expect("a last price");
             let off = |ticks: f64| (last / 0.25).round() * 0.25 + ticks * 0.25;
@@ -1877,44 +1876,6 @@ pub(super) mod tests {
         });
     }
 
-    /// Nothing asks first, on a live account any more than on a simulated
-    /// one: the ×, a drag, a menu order and the keys all go straight to the
-    /// broker. Confirmations are off for now.
-    #[test]
-    fn a_live_account_never_asks_first() {
-        crate::ui::on_gtk(|| {
-            use crate::ui::chart::TradeEvent;
-            let (window, pane, session, key) = long_es(false, true);
-            window.window.present();
-            let basket = session.place(&resting(Side::Sell, OrderKind::Limit, Some(7_640.0))).unwrap();
-            window.desk.tell();
-            pane.view.drop_mark(TradeEvent::Move { basket: basket.clone(), price: 7_650.0 });
-            assert!(window.window.visible_dialog().is_none(), "a move asked first");
-            let free = |window: &Rc<Window>| !window.trade.placing.busy(&key);
-            settle(&window, || {
-                session.book().order(&basket).is_some_and(|order| order.price == Some(7_650.0)) && free(&window)
-            });
-            assert_eq!(session.book().order(&basket).unwrap().price, Some(7_650.0), "not moved");
-            pane.view.drop_mark(TradeEvent::Cancel(basket.clone()));
-            assert!(window.window.visible_dialog().is_none(), "a cancel asked first");
-            settle(&window, || !session.book().order(&basket).unwrap().status.working() && free(&window));
-            assert!(!session.book().order(&basket).unwrap().status.working(), "not cancelled");
-
-            let value = order_target_value(Side::Buy, OrderKind::Market, &key, None);
-            let actions = window.trade.chart_actions.borrow().clone().unwrap();
-            actions.activate_action("order", Some(&value.to_variant()));
-            assert!(window.window.visible_dialog().is_none(), "a menu order asked first");
-            settle(&window, || session.book().position("951", "ESZ6").is_some_and(|held| held.net == 2) && free(&window));
-            actions.activate_action(BUY_MARKET, None);
-            assert!(window.window.visible_dialog().is_none(), "a key asked first");
-            settle(&window, || session.book().position("951", "ESZ6").is_some_and(|held| held.net == 3));
-            pane.view.drop_mark(TradeEvent::Flatten);
-            assert!(window.window.visible_dialog().is_none(), "a flatten asked first");
-            settle(&window, || session.book().position("951", "ESZ6").is_none());
-            assert!(session.book().position("951", "ESZ6").is_none(), "not flattened");
-        });
-    }
-
     /// Without a trading account the trading keys reach nothing: there is
     /// no action for Ctrl+B to buy with, and it does not show the
     /// watchlist either, which is Ctrl+Shift+B now.
@@ -1943,7 +1904,7 @@ pub(super) mod tests {
     #[test]
     fn the_trading_keys_buy_sell_size_and_go_flat() {
         crate::ui::on_gtk(|| {
-            let (window, pane, session, key) = long_es(true, true);
+            let (window, pane, session, key) = long_es(true);
             let held = || session.book().position("951", "ESZ6").map(|held| held.net);
             let free = |window: &Rc<Window>| !window.trade.placing.busy(&key);
             // A market order on its way is drawn beside the last price.
@@ -1996,7 +1957,7 @@ pub(super) mod tests {
     #[test]
     fn the_size_part_offers_the_templates_sizes() {
         crate::ui::on_gtk(|| {
-            let (window, pane, _session, _) = long_es(true, true);
+            let (window, pane, _session, _) = long_es(true);
             let popover = gtk::Popover::new();
             window.fill_size_menu(&popover, pane.id);
             let rows = popover.child().and_downcast::<gtk::Box>().expect("a list");
@@ -2394,7 +2355,7 @@ pub(super) mod tests {
     #[test]
     fn orders_asked_their_outcomes_and_refusals_are_logged() {
         crate::ui::on_gtk(|| {
-            let (window, _pane, session, key) = long_es(true, true);
+            let (window, _pane, session, key) = long_es(true);
             let log = super::super::log::tests::private(&window);
             let held = || session.book().position("951", "ESZ6").map(|held| held.net);
             let free = |window: &Rc<Window>| !window.trade.placing.busy(&key);

@@ -134,12 +134,6 @@ pub fn order_sent(account: &str, order: &OrderRequest, decimals: usize) -> Entry
     Entry::info(account, text)
 }
 
-/// Anything else asked of a broker: "Cancel Buy Limit 7,620.00", "Flatten
-/// ESZ6".
-pub fn asked(account: &str, text: impl Into<String>) -> Entry {
-    Entry::info(account, text)
-}
-
 /// Something asked for that was not done, in the words the window used to
 /// toast: "Nothing held · not flattened".
 pub fn refused(account: &str, text: impl Into<String>) -> Entry {
@@ -190,8 +184,8 @@ pub fn trouble(source: &str, what: &str, error: impl std::fmt::Display) -> Entry
     Entry::error(source, what).detail(error.to_string())
 }
 
-/// Something of the app's own worth knowing that went right or did not
-/// matter: the cache trimmed, ladders asked for.
+/// Something worth knowing that is not trouble: anything asked of a broker
+/// besides an order ("Flatten ESZ6"), the cache trimmed, ladders asked for.
 pub fn note(source: &str, what: impl Into<String>) -> Entry {
     Entry::info(source, what)
 }

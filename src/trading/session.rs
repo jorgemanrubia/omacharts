@@ -106,7 +106,6 @@ impl Registry {
 pub trait Session: Send + Sync {
     /// The accounts, as the broker listed them at sign-in.
     fn accounts(&self) -> Vec<Account>;
-    fn balance(&self, account: &str) -> Option<f64>;
     /// What its orders can be.
     fn capabilities(&self) -> Capabilities;
     /// Is this a simulated account, where an order costs nothing?
@@ -125,7 +124,9 @@ pub trait Session: Send + Sync {
     fn refresh(&self) -> Result<(), String>;
     /// The orders on the account numbered `account` from `from` to `to`,
     /// unix seconds, with their fills, oldest first. Only when
-    /// [`Capabilities::history`] says so.
+    /// [`Capabilities::history`] says so. Part of the seam so that every
+    /// broker serves past orders the same way; nothing in the window asks
+    /// for them yet.
     fn history(&self, account: &str, from: i64, to: i64) -> Result<Vec<Order>, Failure>;
     /// Place `order` and return the broker's id for it. Never retried.
     fn place(&self, order: &OrderRequest) -> Result<String, Failure>;
@@ -726,7 +727,6 @@ mod tests {
             accounts: vec![Money {
                 key: "FAKE-1".into(),
                 balance: Some(50_062.5),
-                realized_day: Some(0.0),
                 unrealized: Some(62.5),
                 day_pnl: Some(62.5),
                 limits: Some(Limits { loss_limit: Some(2_000.0), max_order_qty: Some(5), ..Limits::default() }),

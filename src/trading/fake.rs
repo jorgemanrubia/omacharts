@@ -256,9 +256,6 @@ impl Session for FakeSession {
     fn accounts(&self) -> Vec<Account> {
         self.accounts.clone()
     }
-    fn balance(&self, account: &str) -> Option<f64> {
-        self.accounts.iter().find(|a| a.id == account).and_then(|a| a.balance)
-    }
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             kinds: self.kinds.clone(),
@@ -268,8 +265,6 @@ impl Session for FakeSession {
             link: self.links_orders,
             history: true,
             snapshot: true,
-            limits: true,
-            pnl: true,
         }
     }
     fn is_simulated(&self) -> bool {

@@ -33,8 +33,6 @@ pub struct Target {
     pub exchange: String,
     /// The step the contract's price moves in, when the broker knows it.
     pub tick: Option<f64>,
-    /// The session says its account is simulated.
-    pub simulated: bool,
     pub capabilities: Capabilities,
 }
 
@@ -98,7 +96,6 @@ pub fn order_target(
         contract: contract.symbol,
         exchange: contract.exchange,
         tick: contract.tick,
-        simulated: session.is_simulated(),
         capabilities: session.capabilities(),
     })
 }
@@ -629,8 +626,6 @@ mod tests {
             link: true,
             history: true,
             snapshot: true,
-            limits: true,
-            pnl: true,
         };
         assert_eq!(menu_orders(&all).len(), 6);
         assert_eq!(menu_orders(&all)[..2], [(Side::Buy, OrderKind::Market), (Side::Sell, OrderKind::Market)]);
@@ -681,7 +676,6 @@ mod tests {
         };
         let found = target(true, &es).unwrap();
         assert_eq!((found.contract.as_str(), found.account.id.as_str()), ("ESZ6", "951"));
-        assert!(found.simulated, "as the session says");
         assert_eq!(target(true, &aapl).unwrap_err(), "AAPL is not tradable on Rithmic Test");
         assert_eq!(target(false, &es).unwrap_err(), "Rithmic Test not signed in");
         let nq = instrument("NQ", InstrumentKind::FutureRoot);

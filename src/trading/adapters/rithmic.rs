@@ -3,18 +3,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use omacharts_engine::providers::rithmic::session;
+use omacharts_engine::providers::rithmic::session::{self, GATEWAY, SYSTEM};
 
 use crate::trading::*;
 
 /// How long closing waits for the trading sessions to sign out: what the
 /// data session waits.
 pub const SIGN_OUT_WAIT: std::time::Duration = rithmic::SIGN_OUT_WAIT;
-
-/// What a login's system and gateway are kept under in its values, as its
-/// dialog types them and the data session reads them.
-const SYSTEM: &str = "system";
-const GATEWAY: &str = "gateway";
 
 fn system_of(login: &Login) -> &str {
     login.value(SYSTEM).filter(|system| !system.is_empty()).unwrap_or(rithmic::TEST_SYSTEM)
@@ -187,10 +182,6 @@ impl Session for RithmicSession {
             .collect()
     }
 
-    fn balance(&self, account: &str) -> Option<f64> {
-        self.trading.balance(account)
-    }
-
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             kinds: vec![OrderKind::Market, OrderKind::Limit, OrderKind::Stop],
@@ -200,8 +191,6 @@ impl Session for RithmicSession {
             link: true,
             history: true,
             snapshot: true,
-            limits: true,
-            pnl: true,
         }
     }
 
@@ -235,7 +224,6 @@ impl Session for RithmicSession {
                         (Some(closed), Some(open)) => Some(closed + open),
                         (closed, open) => closed.or(open),
                     }),
-                    realized_day: money.realized_day,
                     unrealized: money.unrealized,
                     limits: money.limits.map(|limits| Limits {
                         loss_limit: limits.loss_limit,

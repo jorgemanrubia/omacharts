@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, RwLock};
 
 pub use crate::providers::{Saved, Secrets};
-use crate::providers::{Access, How, Sessions, SignIn, Setup};
+use crate::providers::{Access, How, Sessions, SignIn};
 
 /// The app name Rithmic is told, the one place it is set.
 ///
@@ -44,34 +44,16 @@ pub fn app() -> Result<rithmic::App, rithmic::Error> {
     }
 }
 
-/// What signing in involves, in the words a settings page shows.
-pub const SETUP: Setup = Setup {
-    explain: "Charts of CME futures come from your own Rithmic login, the one a prop firm \
-              gives you. Omacharts signs in to Rithmic directly from this machine: the \
-              password stays in your desktop keyring and is sent to Rithmic's gateway and \
-              nowhere else.",
-    requires: &[
-        "A Rithmic user ID and password, and the system they are for",
-        "A desktop keyring (gnome-keyring) to keep the password in",
-    ],
-    scope: "Market data only: front-month futures on CME, CBOT, NYMEX and COMEX, live. \
-            Every chart shares one session, because CME counts sessions. Nothing here can \
-            place an order.",
-};
-
-/// What the system and gateway are kept under in what the app hands over.
-const SYSTEM: &str = "system";
-const GATEWAY: &str = "gateway";
+/// What a login's system and gateway are kept under in its values: what its
+/// dialog writes, and what the data session and the broker read.
+pub const SYSTEM: &str = "system";
+pub const GATEWAY: &str = "gateway";
 
 /// Signing in to Rithmic, as the boundary asks it of every feed.
 #[derive(Debug)]
 pub struct Signing;
 
 impl SignIn for Signing {
-    fn about(&self) -> &'static Setup {
-        &SETUP
-    }
-
     fn how(&self) -> How {
         How::Dialog
     }
@@ -455,17 +437,4 @@ pub fn places() -> Vec<(&'static str, String)> {
         places.push(("Development login", std::path::PathBuf::from(path).display().to_string()));
     }
     places
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_instructions_say_where_the_password_goes() {
-        assert!(SETUP.explain.contains("keyring"));
-        assert!(SETUP.explain.contains("nowhere else"));
-        assert!(SETUP.scope.contains("one session"));
-        assert!(SETUP.scope.contains("cannot") || SETUP.scope.contains("Nothing here can"));
-    }
 }

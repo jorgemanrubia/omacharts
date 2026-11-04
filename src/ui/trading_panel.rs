@@ -30,7 +30,6 @@ pub struct Hands {
 
 pub struct TradingPanel {
     pub root: gtk::Box,
-    stack: gtk::Stack,
     accounts: gtk::Box,
     positions: gtk::Box,
     orders: gtk::Box,
@@ -155,16 +154,7 @@ impl TradingPanel {
                 (pressed.cancel_all)(&key);
             }
         });
-        Rc::new(TradingPanel { root, stack, accounts, positions, orders, cancel_all, default, hands })
-    }
-
-    /// The tab showing, by name: "accounts", "positions", "orders".
-    pub fn tab(&self) -> Option<String> {
-        self.stack.visible_child_name().map(|name| name.to_string())
-    }
-
-    pub fn show_tab(&self, name: &str) {
-        self.stack.set_visible_child_name(name);
+        Rc::new(TradingPanel { root, accounts, positions, orders, cancel_all, default, hands })
     }
 
     /// Draw everything again from `view`.

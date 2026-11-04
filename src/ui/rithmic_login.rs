@@ -10,17 +10,13 @@ use std::rc::Rc;
 use adw::prelude::*;
 
 use crate::trading::{Login, Typed};
-use omacharts_engine::providers::rithmic::{self, session};
+use omacharts_engine::providers::rithmic::session::{self, GATEWAY, SYSTEM};
+use omacharts_engine::providers::rithmic;
 
 /// The system and gateway a new login starts on, and one typed with
 /// neither signs in to: Rithmic Test, where every developer kit login is.
 pub const TEST_SYSTEM: &str = ::rithmic::TEST_SYSTEM;
 pub const TEST_GATEWAY: &str = ::rithmic::TEST_URL;
-
-/// What the system and gateway are kept under in a login's values, as the
-/// Rithmic adapter and data session read them.
-const SYSTEM: &str = "system";
-const GATEWAY: &str = "gateway";
 
 const SIGN_IN: &str = "sign-in";
 const CANCEL: &str = "cancel";

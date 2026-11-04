@@ -175,8 +175,6 @@ pub trait Secrets {
 /// Nothing here may connect, except [`SignIn::sign_in`] and
 /// [`SignIn::connect`], which are for a thread of their own.
 pub trait SignIn: Sync + std::fmt::Debug {
-    /// What signing in involves, in the feed's own words.
-    fn about(&self) -> &'static Setup;
     /// A dialog, a browser, or something else entirely.
     fn how(&self) -> How;
     /// How many sessions a login may have at once.
@@ -225,26 +223,6 @@ pub trait SignIn: Sync + std::fmt::Debug {
     fn keyring(&self) -> Option<&'static dyn Secrets> {
         None
     }
-}
-
-/// What a feed that needs an account tells a settings panel about itself.
-///
-/// Prose, written in the feed's own folder, rendered by whoever is asking.
-/// The panel knows how to lay out three fields; it knows nothing about
-/// brokerages, browsers or gateways, which is what stops the next feed's
-/// instructions from landing in a UI file.
-#[derive(Debug)]
-pub struct Setup {
-    /// What happens when you sign in, and what the app does and does not
-    /// see while you do.
-    pub explain: &'static str,
-    /// What has to be true of the machine and the account first. Shown as a
-    /// list, because a prerequisite buried in a paragraph is a prerequisite
-    /// somebody discovers by failing.
-    pub requires: &'static [&'static str],
-    /// What the feed may do once it is signed in, and what happens when the
-    /// session ends. The honest small print.
-    pub scope: &'static str,
 }
 
 /// What is saved for a feed that needs signing in to.
