@@ -81,6 +81,17 @@ impl Provider for Fake {
     fn ladders(&self) -> Option<&dyn Ladders> {
         Some(self)
     }
+
+    /// The rule's next three contracts, each expiring a day later than the
+    /// rule says: enough for a test to tell a feed's listing from the rule's.
+    fn contracts(&self, root: &str) -> Result<Vec<(String, chrono::NaiveDate)>, ProviderError> {
+        let today = crate::contracts::today();
+        Ok(crate::contracts::listing(root, today)
+            .into_iter()
+            .take(3)
+            .map(|listed| (listed.symbol, listed.expires + chrono::Days::new(1)))
+            .collect())
+    }
 }
 
 impl Ladders for Fake {

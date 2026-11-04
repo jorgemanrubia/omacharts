@@ -25,7 +25,7 @@ use rithmic_rs::rti::messages::RithmicMessage;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
-use crate::client::{self, dropped, DataHalf, DataPlants, Fronts, Settled, Sink, Watched};
+use crate::client::{self, dropped, DataHalf, DataPlants, Fronts, Settled, Sink, Subject, Watched};
 use crate::trading::{self, Pulse, PulseSink, TradingHalf, TradingPlants};
 use crate::{App, Client, Error, Live, Login, Trading};
 
@@ -81,7 +81,7 @@ pub(crate) type Opened = Result<(), (Error, bool)>;
 pub(crate) enum Command {
     OpenData { generation: u64 },
     CloseData { done: oneshot::Sender<()> },
-    Watch { generation: u64, id: u64, root: String, exchange: String, sink: Sink },
+    Watch { generation: u64, id: u64, subject: Subject, exchange: String, sink: Sink },
     Unwatch { id: u64 },
     OpenTrading { pulse: PulseSink, reply: oneshot::Sender<Opened> },
     CloseTrading { done: oneshot::Sender<()> },
@@ -90,6 +90,10 @@ pub(crate) enum Command {
     /// What a forced logout on any plant does, for a test's fake plants.
     #[cfg(test)]
     ForcedOut,
+    /// What a front month update on the ticker plant does, for a test's
+    /// fake plants.
+    #[cfg(test)]
+    Rolled(rithmic_rs::rti::FrontMonthContractUpdate),
     Stop { done: oneshot::Sender<()> },
 }
 
@@ -593,6 +597,10 @@ impl Supervisor {
                             self.data.watches.trade(trade);
                         } else if let RithmicMessage::OrderPriceLimits(limits) = &update.message {
                             client::heard_limits(limits);
+                        } else if let RithmicMessage::FrontMonthContractUpdate(rolled) = &update.message
+                            && let Some((_, subscriptions)) = &mut self.data.live
+                        {
+                            self.data.watches.heard_roll(rolled, subscriptions);
                         }
                     }
                     // Trades were missed. Everything watching starts over,
@@ -647,7 +655,7 @@ impl Supervisor {
                 self.data.close().await;
                 let _ = done.send(());
             }
-            Command::Watch { generation, id, root, exchange, sink } => {
+            Command::Watch { generation, id, subject, exchange, sink } => {
                 if generation != self.data.watches.generation {
                     return sink(Live::Lost(Error::Closed));
                 }
@@ -662,8 +670,7 @@ impl Supervisor {
                             }
                             _ => false,
                         };
-                        let watched = Watched { root, exchange, sink, contract: None, told_lost };
-                        self.data.watches.watched.insert(id, watched);
+                        self.data.watches.watched.insert(id, Watched::new(subject, exchange, sink, told_lost));
                         if let Some((_, subscriptions)) = &mut self.data.live {
                             self.data.watches.begin(id, subscriptions);
                         }
@@ -701,6 +708,12 @@ impl Supervisor {
             }
             #[cfg(test)]
             Command::ForcedOut => self.evict(),
+            #[cfg(test)]
+            Command::Rolled(rolled) => {
+                if let Some((_, subscriptions)) = &mut self.data.live {
+                    self.data.watches.heard_roll(&rolled, subscriptions);
+                }
+            }
             Command::Sever => {
                 if let Some((plants, _)) = &self.data.live {
                     plants.abort();
@@ -1091,8 +1104,11 @@ mod tests {
 
         let (found, finding) = std::sync::mpsc::channel();
         let once = found.clone();
+        // Held up, so that the second ask comes before the first is answered.
+        gateway.plant.slow.lock().unwrap().insert("RTY".into());
         assert_eq!(trading.front_month("RTY", "CME", move || once.send(()).unwrap()), None, "never waits");
         assert_eq!(trading.front_month("RTY", "CME", move || found.send(()).unwrap()), None);
+        gateway.plant.gate.add_permits(1);
         next(&finding);
         assert!(finding.recv_timeout(Duration::from_millis(300)).is_err(), "asked once");
         assert_eq!(gateway.dialled(), ["trading", "data"], "the data half opened to ask");
@@ -1104,5 +1120,51 @@ mod tests {
         assert_eq!(kept, Some(("RTYZ6".into(), true)), "kept past the data half");
         assert_eq!(trading.front_month("RTY", "CME", || panic!("known")), Some("RTYZ6".into()));
         connection.close();
+    }
+
+    /// Rithmic pushes a roll to the ticker plant, and a chart on the root's
+    /// front month follows it to the new contract without asking, while a
+    /// chart on the contract itself stays; the trading half sees the new
+    /// one as found.
+    #[test]
+    fn a_pushed_roll_moves_a_chart_on_the_front_month_and_not_one_on_the_contract() {
+        let gateway = Arc::new(Gateway::default());
+        let (connection, _) = faked(&gateway);
+        let (heard, hearing) = std::sync::mpsc::channel();
+        let front = connection.data().watch("YM", "CBOT", move |live| heard.send(live).unwrap());
+        assert_eq!(next(&hearing), Live::Watching { contract: "YMZ6".into() });
+        let (heard, hearing_fixed) = std::sync::mpsc::channel();
+        let fixed = connection.data().watch_contract("YMZ6", "CBOT", move |live| heard.send(live).unwrap());
+        assert_eq!(next(&hearing_fixed), Live::Watching { contract: "YMZ6".into() });
+        assert_eq!(gateway.plant.asked.lock().unwrap().as_slice(), ["YM"], "the contract watch asked nothing");
+
+        let mut rolled = rithmic_rs::rti::FrontMonthContractUpdate::default();
+        rolled.symbol = Some("YM".into());
+        rolled.exchange = Some("CBOT".into());
+        rolled.trading_symbol = Some("YMH7".into());
+        rolled.trading_exchange = Some("CBOT".into());
+        connection.inner.commands.send(Command::Rolled(rolled)).unwrap();
+        assert_eq!(next(&hearing), Live::Watching { contract: "YMH7".into() });
+        assert!(hearing_fixed.recv_timeout(Duration::from_millis(300)).is_err(), "the contract watch stays");
+        assert_eq!(gateway.plant.subscribes.lock().unwrap().as_slice(), ["YMZ6", "YMH7"]);
+        assert!(gateway.plant.unsubscribes.lock().unwrap().is_empty(), "YMZ6 is still watched");
+        assert_eq!(client::found_front_month("YM", "CBOT"), Some(("YMH7".into(), true)));
+        assert_eq!(gateway.plant.asked.lock().unwrap().as_slice(), ["YM"], "nothing asked again");
+
+        drop(fixed);
+        eventually(|| gateway.plant.unsubscribes.lock().unwrap().as_slice() == ["YMZ6"]);
+        drop(front);
+        eventually(|| gateway.plant.unsubscribes.lock().unwrap().as_slice() == ["YMZ6", "YMH7"]);
+        connection.close();
+    }
+
+    /// Wait for what a task of the connection's does after the command
+    /// that asked for it has been taken.
+    fn eventually(check: impl Fn() -> bool) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !check() {
+            assert!(std::time::Instant::now() < deadline, "in time");
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 }

@@ -16,7 +16,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rithmic_rs::rti::messages::RithmicMessage;
 use rithmic_rs::rti::request_search_symbols::{InstrumentType, Pattern};
-use rithmic_rs::rti::{LastTrade, OrderPriceLimits, ResponseReferenceData};
+use rithmic_rs::rti::{FrontMonthContractUpdate, LastTrade, OrderPriceLimits, ResponseReferenceData};
 use rithmic_rs::{
     ConnectStrategy, RithmicConfig, RithmicEnv, RithmicError, RithmicHistoryPlant,
     RithmicHistoryPlantHandle, RithmicResponse, RithmicTickerPlant, RithmicTickerPlantHandle,
@@ -43,12 +43,16 @@ const REPLAY: Duration = Duration::from_secs(120);
 /// happens once a quarter; asking once an hour costs nothing.
 const FRONT_FRESH: Duration = Duration::from_secs(3_600);
 
-/// When Rithmic will not say which contract is the front month, the nearest
-/// to expire is, until this many days before it expires. Traders roll the
-/// quarterly index contracts about eight days early.
+/// When Rithmic will not say which contract is the front month and nobody
+/// above has said how to choose, the nearest to expire is, until this many
+/// days before it expires. Traders roll the quarterly index contracts about
+/// eight days early.
 const ROLL_DAYS: i64 = 8;
 
 pub(crate) type Sink = Arc<dyn Fn(Live) + Send + Sync>;
+
+/// When a contract expires: its year, month and day.
+pub type Expiry = (i32, u32, u32);
 
 /// The plants' handles, for requests from any thread. A handle's methods
 /// take `&self`, so one is shared rather than one made per call.
@@ -84,13 +88,18 @@ impl Fronts {
         (at.elapsed() < FRONT_FRESH).then(|| contract.clone())
     }
 
-    /// Remembered here, and in [`FOUND`] for the trading half.
+    /// Remembered here, and in [`FOUND`] for the trading half; and said to
+    /// whoever listens, when it is news.
     fn put(&self, root: &str, exchange: &str, contract: &str) {
         let key = (root.to_string(), exchange.to_string());
-        let mut fronts = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        fronts.insert(key.clone(), (contract.to_string(), Instant::now()));
-        let mut found = FOUND.lock().unwrap_or_else(|e| e.into_inner());
-        found.get_or_insert_with(HashMap::new).insert(key, (contract.to_string(), Instant::now()));
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).insert(key, (contract.to_string(), Instant::now()));
+        found(root, exchange, contract);
+    }
+
+    /// The roots asked about on `exchange` and still remembered.
+    fn roots(&self, exchange: &str) -> Vec<String> {
+        let fronts = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        fronts.keys().filter(|(_, on)| on == exchange).map(|(root, _)| root.clone()).collect()
     }
 
     fn forget(&self, root: &str, exchange: &str) {
@@ -118,6 +127,62 @@ pub(crate) fn found_front_month(root: &str, exchange: &str) -> Option<(String, b
     let found = FOUND.lock().unwrap_or_else(|e| e.into_inner());
     let (contract, at) = found.as_ref()?.get(&(root.to_string(), exchange.to_string()))?;
     Some((contract.clone(), at.elapsed() < FRONT_FRESH))
+}
+
+/// `contract` is `root`'s front month on `exchange`, found just now: asked,
+/// chosen from a listing, or pushed by Rithmic. Kept in [`FOUND`], fresh,
+/// and told to every [`on_front_month`] listener when it was not already
+/// what was known.
+fn found(root: &str, exchange: &str, contract: &str) {
+    let news = {
+        let mut found = FOUND.lock().unwrap_or_else(|e| e.into_inner());
+        let key = (root.to_string(), exchange.to_string());
+        let was = found.get_or_insert_with(HashMap::new).insert(key, (contract.to_string(), Instant::now()));
+        was.is_none_or(|(known, _)| known != contract)
+    };
+    if !news {
+        return;
+    }
+    let listeners = FRONT_MONTH_LISTENERS.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    for listener in listeners {
+        listener(root, exchange, contract);
+    }
+}
+
+type FrontMonthListener = Arc<dyn Fn(&str, &str, &str) + Send + Sync>;
+static FRONT_MONTH_LISTENERS: Mutex<Vec<FrontMonthListener>> = Mutex::new(Vec::new());
+
+/// Call `listener` with a root, its exchange and the contract that is its
+/// front month, whenever that becomes known or changes in this process:
+/// asked of Rithmic, chosen from its listing, or pushed by it on a roll.
+/// On whichever thread finds it. Every listener is kept and told.
+pub fn on_front_month(listener: impl Fn(&str, &str, &str) + Send + Sync + 'static) {
+    FRONT_MONTH_LISTENERS.lock().unwrap_or_else(|e| e.into_inner()).push(Arc::new(listener));
+}
+
+type Chooser = Arc<dyn Fn(&str, &str, &[(String, Expiry)]) -> Option<String> + Send + Sync>;
+static CHOOSER: Mutex<Option<Chooser>> = Mutex::new(None);
+
+/// When Rithmic will not say which contract is a root's front month, hand
+/// its listing of the root's contracts, each with its expiry, to `chooser`,
+/// and take the contract it names. Rithmic Test says "no data" for every
+/// root. A chooser that returns `None` leaves the choice to this crate: the
+/// nearest to expire, until eight days before it does. One chooser per
+/// process; a second replaces the first.
+pub fn choose_front_month_with(
+    chooser: impl Fn(&str, &str, &[(String, Expiry)]) -> Option<String> + Send + Sync + 'static,
+) {
+    *CHOOSER.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(chooser));
+}
+
+/// The front month among `listed`, by the chooser installed above, or
+/// failing that the nearest to expire.
+fn chosen(root: &str, exchange: &str, listed: &[(String, Expiry)]) -> Result<String, Error> {
+    let chooser = CHOOSER.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    chooser
+        .and_then(|choose| choose(root, exchange, listed))
+        .or_else(|| nearest(listed, now_seconds()))
+        .ok_or_else(|| Error::NotFound(format!("contract of {root} on {exchange} trading now")))
 }
 
 /// The exchange's price limits for the day on a contract: the lowest and
@@ -338,6 +403,14 @@ impl Client {
         self.inner.fronts.forget(root, exchange);
     }
 
+    /// The contracts listed for a futures root on `exchange`, each with the
+    /// day it expires, in no particular order: what a chooser installed with
+    /// [`choose_front_month_with`] is handed.
+    pub fn listed(&self, root: &str, exchange: &str) -> Result<Vec<(String, Expiry)>, Error> {
+        let handles = self.up()?;
+        self.inner.handle.block_on(listed(&handles.ticker, root, exchange))
+    }
+
     /// Bars of `contract` from `from` to `to`, in unix seconds, oldest first.
     ///
     /// The whole window in one request however long it is: the history
@@ -412,17 +485,29 @@ impl Client {
     /// Returns at once. The first thing `sink` hears is [`Live::Watching`]
     /// once the contract is subscribed, or [`Live::Lost`] saying why it could
     /// not be. A watch outlives a dropped connection: it hears `Lost`, and
-    /// `Watching` again once the data half is back.
+    /// `Watching` again once the data half is back. And it outlives a roll:
+    /// when Rithmic says the front month is now another contract, the watch
+    /// moves to it and hears `Watching` with the new one.
     pub fn watch(&self, root: &str, exchange: &str, sink: impl Fn(Live) + Send + Sync + 'static) -> Watch {
+        self.watch_subject(Subject::Front { root: root.to_string() }, exchange, Arc::new(sink))
+    }
+
+    /// Watch `contract` itself on `exchange`, whether or not it is anything's
+    /// front month: nothing is asked, and a roll leaves it where it is. As
+    /// [`Client::watch`] otherwise, `Watching` first.
+    pub fn watch_contract(&self, contract: &str, exchange: &str, sink: impl Fn(Live) + Send + Sync + 'static) -> Watch {
+        self.watch_subject(Subject::Contract { contract: contract.to_string() }, exchange, Arc::new(sink))
+    }
+
+    fn watch_subject(&self, subject: Subject, exchange: &str, sink: Sink) -> Watch {
         let id = self.inner.next_watch.fetch_add(1, Ordering::Relaxed);
-        let sink: Sink = Arc::new(sink);
         if !self.open() {
             sink(Live::Lost(Error::Closed));
         } else {
             let _ = self.inner.commands.send(Command::Watch {
                 generation: self.generation,
                 id,
-                root: root.to_string(),
+                subject,
                 exchange: exchange.to_string(),
                 sink,
             });
@@ -444,14 +529,33 @@ impl Drop for Watch {
     }
 }
 
+/// What a watch is on: a root's front month, whichever contract that is at
+/// the time, or one contract for good.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Subject {
+    Front { root: String },
+    Contract { contract: String },
+}
+
 pub(crate) struct Watched {
-    pub(crate) root: String,
+    pub(crate) subject: Subject,
     pub(crate) exchange: String,
     pub(crate) sink: Sink,
     /// The contract it is subscribed to, once it is.
     pub(crate) contract: Option<String>,
     /// Told of a loss it has not yet been told is over.
     pub(crate) told_lost: bool,
+}
+
+impl Watched {
+    pub(crate) fn new(subject: Subject, exchange: String, sink: Sink, told_lost: bool) -> Watched {
+        Watched { subject, exchange, sink, contract: None, told_lost }
+    }
+
+    /// Is this a watch on `root`'s front month on `exchange`?
+    fn follows(&self, root: &str, exchange: &str) -> bool {
+        self.exchange == exchange && matches!(&self.subject, Subject::Front { root: own } if own == root)
+    }
 }
 
 /// The data plants of a signed-in data half: what the supervisor hears
@@ -797,12 +901,17 @@ impl Watches {
         self.state.borrow().1.clone()
     }
 
-    /// Subscribe watch `id` to its root's front month, and tell it so once
-    /// it is. Returns at once: what the plant has to be asked is asked by a
-    /// task, and its answer [`Watches::settle`]d when it comes.
+    /// Subscribe watch `id` to its contract, or its root's front month, and
+    /// tell it so once it is. Returns at once: what the plant has to be
+    /// asked is asked by a task, and its answer [`Watches::settle`]d when it
+    /// comes.
     pub(crate) fn begin<P: Plant>(&mut self, id: u64, subscriptions: &mut Subscriptions<P>) {
-        let Some((root, exchange)) = self.watched.get(&id).map(|w| (w.root.clone(), w.exchange.clone())) else {
+        let Some((subject, exchange)) = self.watched.get(&id).map(|w| (w.subject.clone(), w.exchange.clone())) else {
             return;
+        };
+        let root = match subject {
+            Subject::Contract { contract } => return self.attach(id, contract, subscriptions),
+            Subject::Front { root } => root,
         };
         if let Some(contract) = self.fronts.get(&root, &exchange) {
             return self.attach(id, contract, subscriptions);
@@ -849,7 +958,9 @@ impl Watches {
     pub(crate) fn settle<P: Plant>(&mut self, settled: Settled, subscriptions: &mut Subscriptions<P>) {
         match settled {
             Settled::Resolved { root, exchange, outcome } => {
-                let waiting = subscriptions.resolving.remove(&(root.clone(), exchange.clone())).unwrap_or_default();
+                // Nobody asking any more: Rithmic pushed the answer while
+                // this was out, and the push is the later word.
+                let Some(waiting) = subscriptions.resolving.remove(&(root.clone(), exchange.clone())) else { return };
                 match outcome {
                     Ok(contract) => {
                         self.fronts.put(&root, &exchange, &contract);
@@ -904,14 +1015,78 @@ impl Watches {
     pub(crate) fn end<P: Plant>(&mut self, id: u64, subscriptions: &mut Subscriptions<P>) {
         let Some(watched) = self.watched.remove(&id) else { return };
         // Still waiting for its contract: the answer finds it gone.
-        let Some(contract) = watched.contract else { return };
-        let key = (contract, watched.exchange);
-        let Some(count) = subscriptions.subscribed.get_mut(&key) else { return };
-        *count -= 1;
-        if *count == 0 {
-            subscriptions.subscribed.remove(&key);
-            subscriptions.unsubscribe(key);
+        if let Some(contract) = watched.contract {
+            release((contract, watched.exchange), subscriptions);
         }
+    }
+
+    /// Rithmic says `root`'s front month on `exchange` is `contract` now,
+    /// pushed or answered: remember it, and move every watch on the root's
+    /// front month over, each hearing [`Live::Watching`] with the new
+    /// contract once it is subscribed. The old contract is let go when
+    /// nothing watches it any more; a watch on that very contract keeps it.
+    pub(crate) fn rolled<P: Plant>(
+        &mut self,
+        root: &str,
+        exchange: &str,
+        contract: &str,
+        subscriptions: &mut Subscriptions<P>,
+    ) {
+        self.fronts.put(root, exchange, contract);
+        let key = (root.to_string(), exchange.to_string());
+        // Still asking: this is the answer.
+        let mut moving = subscriptions.resolving.remove(&key).unwrap_or_default();
+        for (id, watched) in &mut self.watched {
+            if !watched.follows(root, exchange) || watched.contract.as_deref() == Some(contract) {
+                continue;
+            }
+            match watched.contract.take() {
+                Some(old) => {
+                    release((old, exchange.to_string()), subscriptions);
+                    moving.push(*id);
+                }
+                // Being subscribed to the old one, whose subscribe then
+                // answers to nobody and lets it go; or lost on it, and the
+                // new one is another chance.
+                None => {
+                    for (subscribing, waiting) in &mut subscriptions.subscribing {
+                        if subscribing.1 == exchange {
+                            waiting.retain(|waiting| waiting != id);
+                        }
+                    }
+                    moving.push(*id);
+                }
+            }
+        }
+        for id in moving {
+            self.attach(id, contract.to_string(), subscriptions);
+        }
+    }
+
+    /// Every root whose front month is watched on `exchange`, or was asked
+    /// about: the roots a pushed roll can be of.
+    fn roots(&self, exchange: &str) -> Vec<String> {
+        let mut roots: Vec<String> = self
+            .watched
+            .values()
+            .filter_map(|watched| match &watched.subject {
+                Subject::Front { root } if watched.exchange == exchange => Some(root.clone()),
+                _ => None,
+            })
+            .chain(self.fronts.roots(exchange))
+            .collect();
+        roots.sort();
+        roots.dedup();
+        roots
+    }
+
+    /// Rithmic pushed that a front month changed. Which root's it says in
+    /// `symbol`, when that is a root asked about here; otherwise the root is
+    /// the longest asked about that the contract spells.
+    pub(crate) fn heard_roll<P: Plant>(&mut self, update: &FrontMonthContractUpdate, subscriptions: &mut Subscriptions<P>) {
+        let Some(exchange) = update.exchange.as_deref().or(update.trading_exchange.as_deref()) else { return };
+        let Some((root, contract)) = roll_of(update, &self.roots(exchange)) else { return };
+        self.rolled(&root, exchange, &contract, subscriptions);
     }
 
     fn tell(&self, id: u64, live: Live) {
@@ -993,6 +1168,35 @@ impl Watches {
     }
 }
 
+/// One watch fewer on a subscribed contract, and unsubscribed when it was
+/// the last.
+fn release<P: Plant>(key: (String, String), subscriptions: &mut Subscriptions<P>) {
+    let Some(count) = subscriptions.subscribed.get_mut(&key) else { return };
+    *count -= 1;
+    if *count == 0 {
+        subscriptions.subscribed.remove(&key);
+        subscriptions.unsubscribe(key);
+    }
+}
+
+/// Which of `roots` a pushed roll is of, and the contract it names. The
+/// update carries what the request did in `symbol` and the contract in
+/// `trading_symbol`, as the answer to the request does; but Rithmic's
+/// own documentation is thin on it, so each of its names is read as the
+/// root when it is one asked about, and as the contract when it spells a
+/// contract of one, the longest root first.
+fn roll_of(update: &FrontMonthContractUpdate, roots: &[String]) -> Option<(String, String)> {
+    let names = [update.trading_symbol.as_deref(), update.symbol_name.as_deref(), update.symbol.as_deref()];
+    let named_root = names.into_iter().flatten().find(|name| roots.iter().any(|root| root == name));
+    let mut by_length: Vec<&String> = roots.iter().collect();
+    by_length.sort_by_key(|root| std::cmp::Reverse(root.len()));
+    let contract_of = |root: &str| names.into_iter().flatten().find(|name| is_contract(root, name)).map(str::to_string);
+    match named_root {
+        Some(root) => contract_of(root).map(|contract| (root.to_string(), contract)),
+        None => by_length.into_iter().find_map(|root| contract_of(root).map(|contract| (root.clone(), contract))),
+    }
+}
+
 pub(crate) async fn within<T>(
     patience: Duration,
     future: impl std::future::Future<Output = Result<T, RithmicError>>,
@@ -1067,11 +1271,12 @@ fn trade_of(trade: &LastTrade) -> Option<Trade> {
 }
 
 /// The front month of `root`: what Rithmic says it is, or, when it will not
-/// say, the listed contract nearest to expiring and not within
-/// [`ROLL_DAYS`] of it. Rithmic Test answers the question with "no data"
-/// for every root, and lists the contracts.
+/// say, the one [`chosen`] from the contracts it lists. Rithmic Test
+/// answers the question with "no data" for every root, and lists the
+/// contracts. Asked with updates: a roll then arrives on the ticker plant
+/// as a [`FrontMonthContractUpdate`], which the supervisor hears.
 async fn front_month(ticker: &RithmicTickerPlantHandle, root: &str, exchange: &str) -> Result<String, Error> {
-    let asked = within(REQUEST, ticker.get_front_month_contract(root, exchange, false)).await?;
+    let asked = within(REQUEST, ticker.get_front_month_contract(root, exchange, true)).await?;
     if let RithmicMessage::ResponseFrontMonthContract(front) = &asked.message
         && let Some(contract) = front
             .trading_symbol
@@ -1081,30 +1286,37 @@ async fn front_month(ticker: &RithmicTickerPlantHandle, root: &str, exchange: &s
     {
         return Ok(contract.to_string());
     }
+    let listed = listed(ticker, root, exchange).await?;
+    chosen(root, exchange, &listed)
+}
+
+/// The contracts of `root` listed on `exchange`, each with the day it
+/// expires. Whatever is listed that is not a contract of the root, such as
+/// a spread, is left out.
+async fn listed(ticker: &RithmicTickerPlantHandle, root: &str, exchange: &str) -> Result<Vec<(String, Expiry)>, Error> {
     let listed = within(
         REQUEST,
         ticker.search_symbols(root, Some(exchange), Some(root), Some(InstrumentType::Future), Some(Pattern::Equals)),
     )
     .await?;
-    let listed: Vec<(String, i64)> = listed
+    Ok(listed
         .iter()
         .filter_map(|response| match &response.message {
             RithmicMessage::ResponseSearchSymbols(found) => {
                 let symbol = found.symbol.as_deref().filter(|symbol| is_contract(root, symbol))?;
                 let expires = found.expiration_date.as_deref()?.parse::<i32>().ok()?;
-                Some((symbol.to_string(), date_start(expires)?))
+                Some((symbol.to_string(), expiry(expires)?))
             }
             _ => None,
         })
-        .collect();
-    nearest(&listed, now_seconds())
-        .ok_or_else(|| Error::NotFound(format!("contract of {root} on {exchange} trading now")))
+        .collect())
 }
 
 /// The contract expiring soonest, but not within [`ROLL_DAYS`] of `now`.
-fn nearest(listed: &[(String, i64)], now: i64) -> Option<String> {
+fn nearest(listed: &[(String, Expiry)], now: i64) -> Option<String> {
     listed
         .iter()
+        .map(|(symbol, expires)| (symbol, expiry_start(*expires)))
         .filter(|(_, expires)| *expires > now + ROLL_DAYS * 86_400)
         .min_by_key(|(_, expires)| *expires)
         .map(|(symbol, _)| symbol.clone())
@@ -1209,6 +1421,17 @@ fn wire_seconds(ts: i64) -> i32 {
 fn date_number(ts: i64) -> i32 {
     let (year, month, day) = civil(ts.div_euclid(86_400));
     i32::try_from(year * 10_000 + month * 100 + day).unwrap_or(i32::MAX)
+}
+
+/// A `YYYYMMDD` date as a year, month and day, when it is one.
+fn expiry(date: i32) -> Option<Expiry> {
+    let (year, month, day) = (date / 10_000, (date / 100 % 100) as u32, (date % 100) as u32);
+    ((1..=12).contains(&month) && (1..=31).contains(&day)).then_some((year, month, day))
+}
+
+/// Midnight UTC of the day a contract expires.
+fn expiry_start((year, month, day): Expiry) -> i64 {
+    days_from_civil(i64::from(year), i64::from(month), i64::from(day)) * 86_400
 }
 
 /// Midnight UTC of a `YYYYMMDD` date.
@@ -1349,14 +1572,201 @@ pub(crate) mod tests {
     #[test]
     fn the_front_month_rolls_a_week_before_it_expires() {
         let day = 86_400;
+        // Days 100, 10 and 190 of 1970.
         let listed = vec![
-            ("ESH7".to_string(), 100 * day),
-            ("ESZ6".to_string(), 10 * day),
-            ("ESM7".to_string(), 190 * day),
+            ("ESH7".to_string(), (1970, 4, 11)),
+            ("ESZ6".to_string(), (1970, 1, 11)),
+            ("ESM7".to_string(), (1970, 7, 10)),
         ];
+        assert_eq!(expiry_start((1970, 7, 10)), 190 * day);
         assert_eq!(nearest(&listed, 0).as_deref(), Some("ESZ6"));
         assert_eq!(nearest(&listed, 3 * day).as_deref(), Some("ESH7"));
         assert_eq!(nearest(&listed, 200 * day), None);
+        assert_eq!(expiry(20261218), Some((2026, 12, 18)));
+        assert_eq!(expiry(20261340), None);
+    }
+
+    /// A pushed roll names the root as the request did and the contract as
+    /// its trading symbol; read either way round, and against the roots
+    /// asked about, the longest first, when it names only the contract.
+    #[test]
+    fn a_pushed_roll_is_read_against_the_roots_asked_about() {
+        let roots = vec!["ES".to_string(), "MES".to_string()];
+        let update = |symbol: &str, trading: Option<&str>| {
+            let mut update = FrontMonthContractUpdate::default();
+            update.symbol = Some(symbol.into());
+            update.trading_symbol = trading.map(str::to_string);
+            update
+        };
+        let roll = |symbol, trading| roll_of(&update(symbol, trading), &roots);
+        assert_eq!(roll("ES", Some("ESH7")), Some(("ES".into(), "ESH7".into())));
+        assert_eq!(roll("ESH7", Some("ES")), Some(("ES".into(), "ESH7".into())), "either way round");
+        assert_eq!(roll("MESH7", None), Some(("MES".into(), "MESH7".into())), "the longest root it spells");
+        assert_eq!(roll("ESH7", None), Some(("ES".into(), "ESH7".into())));
+        assert_eq!(roll("ES", None), None, "no contract named");
+        assert_eq!(roll("NQ", Some("NQH7")), None, "not a root asked about");
+        assert_eq!(roll("ES", Some("ESH7 C5000")), None, "not a contract");
+    }
+
+    /// A roll pushed for a root moves every watch on its front month to the
+    /// new contract, which each hears, and lets the old contract go once
+    /// nothing watches it: a watch on that very contract stays on it, and
+    /// a watch on another root's front month is untouched.
+    #[tokio::test]
+    async fn a_pushed_roll_moves_the_watches_on_a_front_month_and_not_those_on_a_contract() {
+        let fake = Fake::default();
+        let mut subscriptions = Subscriptions::new(fake.clone());
+        let mut supervisor = supervisor();
+        let heard: Heard = Arc::default();
+
+        watch_root(&mut supervisor, &mut subscriptions, 1, "RLA", &heard);
+        settle_next(&mut supervisor, &mut subscriptions).await;
+        settle_next(&mut supervisor, &mut subscriptions).await;
+        watch_root(&mut supervisor, &mut subscriptions, 2, "RLA", &heard);
+        watch_contract(&mut supervisor, &mut subscriptions, 3, "RLAZ6", &heard);
+        watch_root(&mut supervisor, &mut subscriptions, 4, "RLB", &heard);
+        settle_next(&mut supervisor, &mut subscriptions).await;
+        settle_next(&mut supervisor, &mut subscriptions).await;
+        assert_eq!(fake.subscribes.lock().unwrap().as_slice(), &["RLAZ6", "RLBZ6"]);
+        assert_eq!(heard.lock().unwrap().len(), 4, "all four are watching");
+        heard.lock().unwrap().clear();
+
+        supervisor.rolled("RLA", "CME", "RLAH7", &mut subscriptions);
+        settle_next(&mut supervisor, &mut subscriptions).await;
+        assert_eq!(fake.subscribes.lock().unwrap().as_slice(), &["RLAZ6", "RLBZ6", "RLAH7"], "subscribed once");
+        assert!(fake.unsubscribes.lock().unwrap().is_empty(), "RLAZ6 is still watched by itself");
+        let mut moved: Vec<(u64, Live)> = heard.lock().unwrap().clone();
+        moved.sort_by_key(|(id, _)| *id);
+        let watching = |contract: &str| Live::Watching { contract: contract.into() };
+        assert_eq!(moved, vec![(1, watching("RLAH7")), (2, watching("RLAH7"))]);
+        assert_eq!(supervisor.fronts.get("RLA", "CME").as_deref(), Some("RLAH7"));
+        assert_eq!(found_front_month("RLA", "CME"), Some(("RLAH7".into(), true)), "fresh for the trading half");
+
+        // A trade on each goes to whoever is on it now.
+        heard.lock().unwrap().clear();
+        supervisor.deliver("RLAZ6", "CME", Live::Trade(print(1)));
+        supervisor.deliver("RLAH7", "CME", Live::Trade(print(2)));
+        let mut trades: Vec<(u64, i64)> =
+            heard.lock().unwrap().iter().map(|(id, live)| (*id, match live { Live::Trade(t) => t.at_nanos, _ => 0 })).collect();
+        trades.sort();
+        assert_eq!(trades, vec![(1, 2_000_000_000), (2, 2_000_000_000), (3, 1_000_000_000)]);
+
+        // The contract watch goes: nothing is on RLAZ6 any more.
+        supervisor.end(3, &mut subscriptions);
+        settle_next(&mut supervisor, &mut subscriptions).await;
+        assert_eq!(fake.unsubscribes.lock().unwrap().as_slice(), &["RLAZ6"]);
+
+        // And a roll nothing else holds lets the old contract go at once.
+        supervisor.rolled("RLA", "CME", "RLAM7", &mut subscriptions);
+        settle_next(&mut supervisor, &mut subscriptions).await;
+        settle_next(&mut supervisor, &mut subscriptions).await;
+        assert_eq!(fake.subscribes.lock().unwrap().as_slice(), &["RLAZ6", "RLBZ6", "RLAH7", "RLAM7"]);
+        assert_eq!(fake.unsubscribes.lock().unwrap().as_slice(), &["RLAZ6", "RLAH7"]);
+        supervisor.deliver("RLBZ6", "CME", Live::Trade(print(3)));
+        let nq = heard.lock().unwrap().iter().filter(|(id, _)| *id == 4).count();
+        assert_eq!(nq, 1, "RLB heard its trade and nothing of RLA's rolls");
+    }
+
+    /// A roll pushed while the old contract is still being subscribed moves
+    /// the watch before it is told anything, and the old subscribe, answered
+    /// to nobody, is let go.
+    #[tokio::test]
+    async fn a_roll_during_a_subscribe_moves_the_watch_before_it_hears() {
+        let fake = Fake::default();
+        fake.slow.lock().unwrap().insert("RSZ6".into());
+        let mut subscriptions = Subscriptions::new(fake.clone());
+        let mut supervisor = supervisor();
+        let heard: Heard = Arc::default();
+        watch_root(&mut supervisor, &mut subscriptions, 1, "RS", &heard);
+        settle_next(&mut supervisor, &mut subscriptions).await;
+        assert!(subscriptions.subscribing.contains_key(&("RSZ6".into(), "CME".into())), "the subscribe is out");
+
+        supervisor.rolled("RS", "CME", "RSH7", &mut subscriptions);
+        settle_next(&mut supervisor, &mut subscriptions).await;
+        assert_eq!(heard.lock().unwrap().as_slice(), &[(1, Live::Watching { contract: "RSH7".into() })]);
+        fake.gate.add_permits(1);
+        settle_next(&mut supervisor, &mut subscriptions).await;
+        settle_next(&mut supervisor, &mut subscriptions).await;
+        assert_eq!(fake.unsubscribes.lock().unwrap().as_slice(), &["RSZ6"], "let go once it answered");
+        assert_eq!(heard.lock().unwrap().len(), 1, "never told of the old one");
+    }
+
+    /// Whoever listens for front months hears one found, and the roll that
+    /// replaces it, and nothing when it is found again unchanged.
+    #[tokio::test]
+    async fn listeners_hear_a_front_month_found_and_rolled() {
+        let heard = Arc::new(Mutex::new(Vec::new()));
+        let into = heard.clone();
+        on_front_month(move |root, exchange, contract| {
+            if root == "LSN" {
+                into.lock().unwrap().push((exchange.to_string(), contract.to_string()));
+            }
+        });
+        let fake = Fake::default();
+        let mut subscriptions = Subscriptions::new(fake.clone());
+        let mut supervisor = supervisor();
+        let sinks: Heard = Arc::default();
+        watch_root(&mut supervisor, &mut subscriptions, 1, "LSN", &sinks);
+        settle_next(&mut supervisor, &mut subscriptions).await;
+        settle_next(&mut supervisor, &mut subscriptions).await;
+        assert_eq!(heard.lock().unwrap().as_slice(), &[("CME".to_string(), "LSNZ6".to_string())]);
+
+        supervisor.rolled("LSN", "CME", "LSNH7", &mut subscriptions);
+        settle_next(&mut supervisor, &mut subscriptions).await;
+        supervisor.rolled("LSN", "CME", "LSNH7", &mut subscriptions);
+        let told: Vec<String> = heard.lock().unwrap().iter().map(|(_, contract)| contract.clone()).collect();
+        assert_eq!(told, vec!["LSNZ6", "LSNH7"], "the roll once");
+    }
+
+    /// When the plant will not say which contract is the front month, the
+    /// chooser installed above names it from the listing; one that leaves
+    /// the choice open gets the nearest to expire.
+    #[tokio::test]
+    async fn the_chooser_names_the_front_month_when_the_plant_will_not() {
+        let listing = vec![("CHZ6".to_string(), (2099, 12, 18)), ("CHH7".to_string(), (2100, 3, 19))];
+        let handed = Arc::new(Mutex::new(Vec::new()));
+        let into = handed.clone();
+        choose_front_month_with(move |root, exchange, listed| {
+            into.lock().unwrap().push((root.to_string(), exchange.to_string(), listed.to_vec()));
+            (root == "CH").then(|| "CHH7".to_string())
+        });
+        let fake = Fake::default();
+        fake.unknown.lock().unwrap().insert("CH".into(), listing.clone());
+        fake.unknown.lock().unwrap().insert("NC".into(), listing.iter().map(|(s, e)| (s.replace("CH", "NC"), *e)).collect());
+        let mut subscriptions = Subscriptions::new(fake.clone());
+        let mut supervisor = supervisor();
+        let heard: Heard = Arc::default();
+
+        watch_root(&mut supervisor, &mut subscriptions, 1, "CH", &heard);
+        settle_next(&mut supervisor, &mut subscriptions).await;
+        settle_next(&mut supervisor, &mut subscriptions).await;
+        assert_eq!(heard.lock().unwrap().as_slice(), &[(1, Live::Watching { contract: "CHH7".into() })]);
+        assert_eq!(handed.lock().unwrap().as_slice(), &[("CH".to_string(), "CME".to_string(), listing)]);
+        assert_eq!(found_front_month("CH", "CME"), Some(("CHH7".into(), true)));
+
+        watch_root(&mut supervisor, &mut subscriptions, 2, "NC", &heard);
+        settle_next(&mut supervisor, &mut subscriptions).await;
+        settle_next(&mut supervisor, &mut subscriptions).await;
+        assert_eq!(heard.lock().unwrap()[1], (2, Live::Watching { contract: "NCZ6".into() }), "the nearest, left to the crate");
+    }
+
+    /// A watch on a contract subscribes to it and nothing else: no front
+    /// month is asked, and it hears `Watching` with the contract it named.
+    #[tokio::test]
+    async fn a_watch_on_a_contract_never_asks_the_front_month() {
+        let fake = Fake::default();
+        let mut subscriptions = Subscriptions::new(fake.clone());
+        let mut supervisor = supervisor();
+        let heard: Heard = Arc::default();
+        watch_contract(&mut supervisor, &mut subscriptions, 1, "ESM7", &heard);
+        settle_next(&mut supervisor, &mut subscriptions).await;
+        assert_eq!(heard.lock().unwrap().as_slice(), &[(1, Live::Watching { contract: "ESM7".into() })]);
+        assert_eq!(fake.subscribes.lock().unwrap().as_slice(), &["ESM7"]);
+        assert!(fake.asked.lock().unwrap().is_empty(), "nothing asked");
+        assert!(subscriptions.resolving.is_empty());
+        supervisor.end(1, &mut subscriptions);
+        settle_next(&mut supervisor, &mut subscriptions).await;
+        assert_eq!(fake.unsubscribes.lock().unwrap().as_slice(), &["ESM7"]);
     }
 
     #[test]
@@ -1368,19 +1778,34 @@ pub(crate) mod tests {
         assert_eq!(refused.to_string(), "Rithmic refused the login: permission denied");
     }
 
-    /// A ticker plant that answers a front month at once, and subscribes to
-    /// a contract named in `slow` only when the test lets it.
+    /// A ticker plant that answers a front month at once, the December
+    /// contract, except for a root in `unknown`, whose contracts it lists
+    /// instead as Rithmic Test does. A contract named in `slow` is
+    /// subscribed, and a root named there answered, only when the test
+    /// lets it through the gate.
     #[derive(Clone)]
     pub(crate) struct Fake {
-        slow: Arc<Mutex<HashSet<String>>>,
-        gate: Arc<tokio::sync::Semaphore>,
+        pub(crate) slow: Arc<Mutex<HashSet<String>>>,
+        pub(crate) gate: Arc<tokio::sync::Semaphore>,
+        unknown: Arc<Mutex<HashMap<String, Listing>>>,
+        /// The roots whose front month was asked, in order.
+        pub(crate) asked: Arc<Mutex<Vec<String>>>,
         pub(crate) subscribes: Arc<Mutex<Vec<String>>>,
-        unsubscribes: Arc<Mutex<Vec<String>>>,
+        pub(crate) unsubscribes: Arc<Mutex<Vec<String>>>,
     }
 
     impl Plant for Fake {
-        async fn front_month(&self, root: String, _exchange: String) -> Result<String, Error> {
-            Ok(format!("{root}Z6"))
+        async fn front_month(&self, root: String, exchange: String) -> Result<String, Error> {
+            self.asked.lock().unwrap().push(root.clone());
+            let slow = self.slow.lock().unwrap().contains(&root);
+            if slow {
+                self.gate.acquire().await.unwrap().forget();
+            }
+            let listed = self.unknown.lock().unwrap().get(&root).cloned();
+            match listed {
+                Some(listed) => chosen(&root, &exchange, &listed),
+                None => Ok(format!("{root}Z6")),
+            }
         }
 
         async fn subscribe(&self, contract: String, _exchange: String) -> Result<(), Error> {
@@ -1402,6 +1827,8 @@ pub(crate) mod tests {
             Fake {
                 slow: Arc::default(),
                 gate: Arc::new(tokio::sync::Semaphore::new(0)),
+                unknown: Arc::default(),
+                asked: Arc::default(),
                 subscribes: Arc::default(),
                 unsubscribes: Arc::default(),
             }
@@ -1409,16 +1836,36 @@ pub(crate) mod tests {
     }
 
     type Heard = Arc<Mutex<Vec<(u64, Live)>>>;
+    type Listing = Vec<(String, Expiry)>;
 
     fn supervisor() -> Watches {
         Watches::new(watch::channel((0, State::Connecting)).0, Arc::new(Fronts::default()))
     }
 
     fn watch_root(supervisor: &mut Watches, subscriptions: &mut Subscriptions<Fake>, id: u64, root: &str, heard: &Heard) {
+        watch_subject(supervisor, subscriptions, id, Subject::Front { root: root.into() }, heard);
+    }
+
+    fn watch_contract(
+        supervisor: &mut Watches,
+        subscriptions: &mut Subscriptions<Fake>,
+        id: u64,
+        contract: &str,
+        heard: &Heard,
+    ) {
+        watch_subject(supervisor, subscriptions, id, Subject::Contract { contract: contract.into() }, heard);
+    }
+
+    fn watch_subject(
+        supervisor: &mut Watches,
+        subscriptions: &mut Subscriptions<Fake>,
+        id: u64,
+        subject: Subject,
+        heard: &Heard,
+    ) {
         let heard = heard.clone();
         let sink: Sink = Arc::new(move |live| heard.lock().unwrap().push((id, live)));
-        let watched = Watched { root: root.into(), exchange: "CME".into(), sink, contract: None, told_lost: false };
-        supervisor.watched.insert(id, watched);
+        supervisor.watched.insert(id, Watched::new(subject, "CME".into(), sink, false));
         supervisor.begin(id, subscriptions);
     }
 

@@ -274,14 +274,27 @@ pub fn client() -> Result<rithmic::Client, rithmic::Error> {
     Ok(rithmic::connection(app()?, &login_id(), login)?.data())
 }
 
-/// Have what Rithmic says a contract is reach [`crate::specs`], from any
-/// connection in this process: once, before the first one opens.
+/// Have what Rithmic says a contract is reach [`crate::specs`], and what
+/// it says a root's front month is reach [`crate::contracts`], from any
+/// connection in this process: once, before the first one opens. And the
+/// other way: when Rithmic will not say which contract is the front month,
+/// the engine's roll rule chooses among the ones it lists.
 pub fn hear_specs() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         rithmic::on_reference(|contract, _exchange, said| {
             let heard = crate::specs::Heard { tick: said.tick, point: said.point, currency: said.currency.clone() };
             crate::specs::supply("Rithmic", crate::specs::root_of(contract), heard);
+        });
+        rithmic::on_front_month(|root, _exchange, contract| crate::contracts::supply_front(root, contract));
+        rithmic::choose_front_month_with(|root, _exchange, listed| {
+            let listed: Vec<(String, chrono::NaiveDate)> = listed
+                .iter()
+                .filter_map(|(symbol, (year, month, day))| {
+                    Some((symbol.clone(), chrono::NaiveDate::from_ymd_opt(*year, *month, *day)?))
+                })
+                .collect();
+            crate::contracts::choose(root, &listed, crate::contracts::today())
         });
     });
 }
