@@ -526,7 +526,7 @@ done. Part of an order filled reads "Sell Limit 1/2", and the position
 holds only what filled. Toasts say only what the broker has confirmed.
 
 Every order from a chart is for the chart's **trading size**, shown in
-its header ("Size: 2") and picked there, or with Ctrl and a digit,
+its header ("#2") and picked there, or with Ctrl and a digit,
 from the size template that applies to its instrument: a named list of
 sizes for stocks or futures, optionally narrowed to some roots, the
 narrowest winning (Preferences → Trading → Edit trading sizes…). Out of

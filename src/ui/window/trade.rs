@@ -1190,7 +1190,7 @@ impl Window {
         self.save_workspace();
     }
 
-    /// The Trading size part, "Size: 2", while the chart has an
+    /// The Trading size part, "#2", while the chart has an
     /// account and a template applies; nothing at all, and no room taken,
     /// otherwise.
     pub(super) fn write_size_of(&self, pane: &ChartPane) {
@@ -1203,7 +1203,7 @@ impl Window {
                 let templates = self.trade.sizes.borrow();
                 account.and(instrument.as_ref()).and_then(|instrument| {
                     let size = trading::sizes::size_for(&templates, instrument, pane.trading_size.borrow().as_ref())?;
-                    Some(format!("Size: {size}"))
+                    Some(format!("#{size}"))
                 })
             }
         };
@@ -2184,7 +2184,7 @@ pub(super) mod tests {
             settle(&window, || pane.view.last_price().is_some());
             assert_eq!(held(), Some(1));
             assert!(pane.size_menu.property::<bool>("visible"), "no size part with an account");
-            assert_eq!(pane.size_label_text(), "Size: 1");
+            assert_eq!(pane.size_label_text(), "#1");
 
             assert!(window.on_trading_key(gtk::gdk::Key::b, 0));
             settle(&window, || held() == Some(2) && free(&window));
@@ -2192,7 +2192,7 @@ pub(super) mod tests {
 
             // Ctrl+2, by the key's place on the number row.
             assert!(window.on_trading_key(gtk::gdk::Key::_2, 11));
-            assert_eq!(pane.size_label_text(), "Size: 2");
+            assert_eq!(pane.size_label_text(), "#2");
             assert_eq!(window.size_of(&pane).get(), 2);
             // Pending until the broker fills it: "Buying 2…" by the last price.
             session.holds.store(true, std::sync::atomic::Ordering::Release);
@@ -2249,7 +2249,7 @@ pub(super) mod tests {
             templates[1].sizes = trading::sizes::parse_sizes("3, 6").unwrap();
             trading::sizes::save(&window.store, &templates);
             window.adopt_sizes();
-            assert_eq!(pane.size_label_text(), "Size: 3", "the header kept the old template");
+            assert_eq!(pane.size_label_text(), "#3", "the header kept the old template");
         });
     }
 
