@@ -346,26 +346,22 @@ fn add_group(panel: &Rc<Panel>, empty: bool) -> adw::PreferencesGroup {
     let add = gtk::MenuButton::new();
     add.set_label("Add a broker…");
     add.set_halign(gtk::Align::Start);
-    let choices = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    let popover = gtk::Popover::new();
-    for broker in panel.desk.brokers().iter() {
-        let choice = gtk::Button::with_label(broker.label());
-        choice.add_css_class("flat");
-        if let Some(label) = choice.child().and_downcast::<gtk::Label>() {
-            label.set_xalign(0.0);
-        }
-        let shut = popover.clone();
-        let anchor = add.clone();
-        let panel = panel.clone();
-        let id = broker.id();
-        choice.connect_clicked(move |_| {
-            shut.popdown();
-            add_broker(&panel, id, anchor.upcast_ref());
-        });
-        choices.append(&choice);
-    }
-    popover.set_child(Some(&choices));
-    add.set_popover(Some(&popover));
+    let items = panel
+        .desk
+        .brokers()
+        .iter()
+        .map(|broker| {
+            let anchor = add.downgrade();
+            let panel = panel.clone();
+            let id = broker.id();
+            crate::ui::menus::Item::new(broker.label(), move || {
+                if let Some(anchor) = anchor.upgrade() {
+                    add_broker(&panel, id, anchor.upcast_ref());
+                }
+            })
+        })
+        .collect();
+    crate::ui::menus::actions(&add, "broker", items);
     group.add(&add);
     group
 }

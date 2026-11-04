@@ -14,6 +14,7 @@ pub mod feed_settings;
 pub mod pane;
 pub mod palette;
 pub mod part_list;
+pub mod menus;
 pub mod pick_frame;
 pub mod preferences;
 pub mod range_card;

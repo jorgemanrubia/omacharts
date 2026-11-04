@@ -655,9 +655,7 @@ entry.range-date > image:hover { opacity: 0.9; }
   border-radius: 5px;
 }
 
-/* One mode in the chain's popover. A menu row rather than a button: the icon
-   carries the colour, so the row itself should stay out of the way and let
-   the three read as a list. */
+/* A row of the header's hand-built lists. */
 .link-row {
   padding: 3px 10px;
   min-height: 0;
@@ -665,9 +663,6 @@ entry.range-date > image:hover { opacity: 0.9; }
   font-size: 0.9em;
 }
 .link-row:hover { background: alpha(currentColor, 0.09); }
-/* A mode's icon in that menu, for a mode other than the default: the accent,
-   as the chart's button wears it. */
-.link-mode-set { color: @accent_color; }
 
 /* The symbol over the chart is a button, because clicking the name of the
    thing you are looking at to change it is the shortest route there is — but

@@ -201,25 +201,23 @@ impl<P: Part> PartList<P> {
         // The + offers what is not there yet, and goes when nothing is left.
         let missing = self.offered();
         self.add.set_visible(!missing.is_empty());
-        let choices = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        let popover = gtk::Popover::new();
-        for part in missing {
-            let button = gtk::Button::with_label(part.label());
-            button.add_css_class("flat");
-            if let Some(label) = button.child().and_downcast::<gtk::Label>() {
-                label.set_xalign(0.0);
-            }
-            let this = self.clone();
-            let shut = popover.clone();
-            button.connect_clicked(move |_| {
-                shut.popdown();
-                let mut parts = this.parts.borrow().clone();
-                parts.push(part);
-                this.set(parts);
-            });
-            choices.append(&button);
-        }
-        popover.set_child(Some(&choices));
-        self.add.set_popover(Some(&popover));
+        let items = missing
+            .into_iter()
+            .map(|part| {
+                let this = Rc::downgrade(self);
+                crate::ui::menus::Item::new(part.label(), move || {
+                    // From an idle: the list this rebuilds holds the menu
+                    // whose row was just picked.
+                    let this = this.clone();
+                    glib::idle_add_local_once(move || {
+                        let Some(this) = this.upgrade() else { return };
+                        let mut parts = this.parts.borrow().clone();
+                        parts.push(part);
+                        this.set(parts);
+                    });
+                })
+            })
+            .collect();
+        crate::ui::menus::actions(&self.add, "part", items);
     }
 }

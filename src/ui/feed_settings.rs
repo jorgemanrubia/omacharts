@@ -360,25 +360,19 @@ fn add_button(panel: &Rc<Panel>, missing: Vec<&'static Listed>) -> gtk::MenuButt
     add.set_label("Add a data feed…");
     add.set_halign(gtk::Align::Start);
     add.set_margin_top(12);
-    let choices = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    let popover = gtk::Popover::new();
-    for feed in missing {
-        let button = gtk::Button::with_label(feed.label);
-        button.add_css_class("flat");
-        if let Some(label) = button.child().and_downcast::<gtk::Label>() {
-            label.set_xalign(0.0);
-        }
-        let panel = panel.clone();
-        let shut = popover.clone();
-        let anchor = add.clone();
-        button.connect_clicked(move |_| {
-            shut.popdown();
-            add_feed(&panel, feed, &anchor);
-        });
-        choices.append(&button);
-    }
-    popover.set_child(Some(&choices));
-    add.set_popover(Some(&popover));
+    let items = missing
+        .into_iter()
+        .map(|feed| {
+            let panel = panel.clone();
+            let anchor = add.downgrade();
+            crate::ui::menus::Item::new(feed.label, move || {
+                if let Some(anchor) = anchor.upgrade() {
+                    add_feed(&panel, feed, &anchor);
+                }
+            })
+        })
+        .collect();
+    crate::ui::menus::actions(&add, "feed", items);
     add
 }
 

@@ -2710,17 +2710,25 @@ impl Window {
 
         // The chain opens the three modes rather than toggling one: "off" is
         // two answers, taking the click when focused and never taking it.
-        let marked = self.clone();
-        pane.link.set_popover(Some(&self.mode_popover(
-            // By id rather than by holding the pane: the pane owns the button
-            // that owns this popover, and the icon it paints is the same mode
-            // this reads, so there is one answer rather than two.
-            move || marked.pane(id).map(|pane| pane.mode()).unwrap_or_default(),
-            move |window, mode| {
+        // The same three rows as the chart menu's Watchlist submenu. By id
+        // rather than by holding the pane: the pane owns the button that
+        // owns this menu.
+        let marked = Rc::downgrade(self);
+        let choosing = Rc::downgrade(self);
+        crate::ui::menus::choice(
+            &pane.link,
+            "link",
+            link::MODES.iter().map(|mode| (mode.label().to_string(), mode.key().to_string())).collect(),
+            move || {
+                let mode = marked.upgrade().and_then(|window| window.pane(id)).map(|pane| pane.mode()).unwrap_or_default();
+                mode.key().to_string()
+            },
+            move |key| {
+                let (Some(window), Some(mode)) = (choosing.upgrade(), LinkMode::from_key(key)) else { return };
                 window.focus(id);
                 window.set_pane_mode(id, mode);
             },
-        )));
+        );
         pane.set_mode(mode, mode.colour(&self.theming.borrow().theme()));
 
         // Right-clicking a strip offers to edit the list, rather than throwing
@@ -3568,82 +3576,6 @@ impl Window {
         self.sync_chart_actions(pane);
         self.show_in(pane, instrument);
         self.save_workspace();
-    }
-
-    /// The three modes, as a popover. `choose` is handed the mode the row
-    /// stands for; which chart it applies to is the caller's business.
-    ///
-    /// `current` is asked which mode is in force, and asked again every time
-    /// the popover opens rather than once when it is built: the popover is
-    /// attached to its button for the life of the chart, and the mode changes
-    /// underneath it — from the chart menu and commands. A mark
-    /// decided at build time would be a mark that was right once.
-    fn mode_popover(
-        self: &Rc<Self>,
-        current: impl Fn() -> LinkMode + 'static,
-        choose: impl Fn(&Rc<Self>, LinkMode) + 'static,
-    ) -> gtk::Popover {
-        let popover = gtk::Popover::new();
-        popover.set_has_arrow(false);
-        let menu = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        let choose = Rc::new(choose);
-        // The mark for each row, kept so opening the popover can move it.
-        let mut marks: Vec<(LinkMode, gtk::Image)> = Vec::new();
-        for mode in link::MODES {
-            let row = gtk::Button::new();
-            row.add_css_class("flat");
-            row.add_css_class("link-row");
-            let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-            // The icon the chart's button takes in this mode, so choosing one
-            // shows what the legend will say afterwards.
-            let icon = pane::menu_mode_icon(mode);
-            icon.set_valign(gtk::Align::Center);
-            line.append(&icon);
-            let words = gtk::Box::new(gtk::Orientation::Vertical, 0);
-            words.set_hexpand(true);
-            let label = gtk::Label::new(Some(mode.label()));
-            label.set_xalign(0.0);
-            words.append(&label);
-            let blurb = gtk::Label::new(Some(mode.blurb()));
-            blurb.set_xalign(0.0);
-            blurb.add_css_class("dim-label");
-            blurb.add_css_class("caption");
-            words.append(&blurb);
-            line.append(&words);
-            // The same icon GTK draws for a chosen item in a menu — the chart's
-            // own right-click menu gets one of these for free from a stateful
-            // action, and a hand-built list of buttons has to put it there
-            // itself rather than invent a different way of saying "this one".
-            //
-            // Always present, never hidden: hiding it would collapse the
-            // column and shuffle every label sideways as the choice moved.
-            // Opacity keeps the space and only stops it being drawn.
-            let mark = gtk::Image::from_icon_name("object-select-symbolic");
-            mark.set_opacity(0.0);
-            line.append(&mark);
-            marks.push((mode, mark));
-            row.set_child(Some(&line));
-
-            let this = self.clone();
-            let choose = choose.clone();
-            let popover_weak = popover.downgrade();
-            row.connect_clicked(move |_| {
-                if let Some(popover) = popover_weak.upgrade() {
-                    popover.popdown();
-                }
-                choose(&this, mode);
-            });
-            menu.append(&row);
-        }
-        // Every time it opens, not once when it is built.
-        popover.connect_show(move |_| {
-            let now = current();
-            for (mode, mark) in &marks {
-                mark.set_opacity(if *mode == now { 1.0 } else { 0.0 });
-            }
-        });
-        popover.set_child(Some(&menu));
-        popover
     }
 
     /// One row of the account's or the feed's list: `label`, with `state`
@@ -5351,26 +5283,28 @@ impl Window {
         // The same list behind the resolution beside the symbol, which stays
         // when the strip has no room — the way a narrow TradingView chart
         // folds its intervals into one dropdown.
-        let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        let popover = gtk::Popover::new();
-        popover.add_css_class("menu");
-        for timeframe in self.timeframes.borrow().iter().copied() {
-            let item = gtk::Button::with_label(&timeframe.description());
-            item.add_css_class("flat");
-            let this = self.clone();
-            let owner = pane.id;
-            let closing = popover.downgrade();
-            item.connect_clicked(move |_| {
-                if let Some(popover) = closing.upgrade() {
-                    popover.popdown();
-                }
-                this.focus(owner);
-                this.set_timeframe(timeframe);
-            });
-            list.append(&item);
-        }
-        popover.set_child(Some(&list));
-        pane.timeframe_menu.set_popover(Some(&popover));
+        let timeframes: Vec<Timeframe> = self.timeframes.borrow().clone();
+        let owner = pane.id;
+        let marked = Rc::downgrade(self);
+        let choosing = Rc::downgrade(self);
+        crate::ui::menus::choice(
+            &pane.timeframe_menu,
+            "resolution",
+            timeframes.iter().map(|timeframe| (timeframe.description(), timeframe.key())).collect(),
+            move || {
+                marked
+                    .upgrade()
+                    .and_then(|window| window.pane(owner))
+                    .map(|pane| pane.timeframe.get().key())
+                    .unwrap_or_default()
+            },
+            move |key| {
+                let Some(window) = choosing.upgrade() else { return };
+                let Some(timeframe) = timeframes.iter().copied().find(|timeframe| timeframe.key() == key) else { return };
+                window.focus(owner);
+                window.set_timeframe(timeframe);
+            },
+        );
     }
 
     /// Put a resolution on the strip, in the place its length earns it.

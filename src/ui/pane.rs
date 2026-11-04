@@ -1274,24 +1274,6 @@ fn expand_icon(maximized: Rc<Cell<bool>>) -> gtk::DrawingArea {
     area
 }
 
-/// A mode's icon for a row of the mode menu, in the colour the chart's button
-/// takes in that mode: the legend's own, dimmed, for the default, Focus, and
-/// the accent for the other two. So the menu shows what the button will look like.
-///
-/// Coloured from CSS rather than handed a hex, because the popover outlives
-/// any one theme and CSS is what follows a change of it.
-pub(crate) fn menu_mode_icon(mode: LinkMode) -> gtk::DrawingArea {
-    let area = mode_icon(
-        Rc::new(RefCell::new(None)),
-        Rc::new(Cell::new(mode)),
-    );
-    area.add_css_class(match mode {
-        LinkMode::Focus => "dim-label",
-        LinkMode::Follow | LinkMode::Pinned => "link-mode-set",
-    });
-    area
-}
-
 /// The chart's link button, which has to say which of three modes it is in
 /// without being opened, so each mode has a shape of its own: one link for
 /// Focus, the chain for Follow, a pin for Pinned. One link and two say how
