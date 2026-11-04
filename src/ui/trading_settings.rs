@@ -606,7 +606,7 @@ mod tests {
             trading::cache_accounts(&store, &test, vec![funded]);
             trading::sign_out_login(&store, &kept, &test).unwrap();
 
-            let panel = panel(&store, Rc::new(Desk::new(Registry::of(vec![Arc::new(FakeBroker::default())]))));
+            let panel = panel(&store, Rc::new(Desk::new(trading::registry())));
             rebuild(&panel);
             let groups = panel.groups.borrow().clone();
             assert_eq!(groups.len(), 4, "two logins, the button and the sizes");
@@ -629,6 +629,73 @@ mod tests {
             remove_login(&panel, &lucid, true);
             let groups = panel.groups.borrow().clone();
             assert_eq!(groups[0].description().as_deref(), Some("Rithmic Test · not signed in · data"));
+        });
+    }
+
+    /// A broker with no data feed, which nothing above the seam names, is
+    /// offered by "Add a broker…" because the registry lists it, signs in
+    /// from this page, lists its accounts here, and trades: a market order
+    /// fills, with its fill, and is held on the desk's book. Its login is
+    /// never the data login, and the data feeds are left as they were.
+    #[test]
+    fn a_second_broker_signs_in_and_trades_without_being_named() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().unwrap());
+            let desk = Rc::new(Desk::new(trading::registry()));
+            let fake = desk.brokers().get("fake").expect("the fake broker is in the registry");
+            let panel = panel(&store, desk.clone());
+            rebuild(&panel);
+            assert!(page_words(&panel).iter().any(|w| w == fake.label()), "not offered: {:?}", page_words(&panel));
+
+            let typed = Typed {
+                broker: fake.id().into(),
+                name: "Practice".into(),
+                user: "me".into(),
+                password: "PLANTED-PASSWORD".into(),
+                values: Vec::new(),
+            };
+            let id = trading::add_login(&store, &Kept::default(), &typed).unwrap();
+            assert_eq!(trading::data_login(&store), None, "no data feed to come through it");
+            assert_eq!(crate::feeds::stored_order(&store), vec!["yahoo"]);
+
+            sign_in(&panel, &id);
+            let context = glib::MainContext::default();
+            for _ in 0..500 {
+                if desk.live(&id) && !panel.notes.borrow().contains_key(&id) {
+                    break;
+                }
+                context.iteration(false);
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            assert!(desk.live(&id), "signed in through the registry");
+            let groups = panel.groups.borrow().clone();
+            assert_eq!(groups[0].title(), "Practice");
+            assert_eq!(groups[0].description().as_deref(), Some("live"));
+            let words = words_under(groups[0].upcast_ref());
+            for word in ["FAKE-1", "USD · $50,000", "Sign out"] {
+                assert!(words.iter().any(|w| w == word), "{word} missing: {words:?}");
+            }
+            assert!(!words.iter().any(|w| w == "Use for data"), "{words:?}");
+
+            let session = desk.session(&id).expect("a session");
+            let es = crate::trading::fake::tests::instrument("ES", omacharts_engine::InstrumentKind::FutureRoot);
+            let contract = session.contract_for(&es).expect("ES trades");
+            let order = trading::OrderRequest::request(
+                "FAKE-1",
+                &contract,
+                trading::Side::Buy,
+                trading::OrderKind::Market,
+                trading::Quantity::ONE,
+                None,
+            )
+            .unwrap();
+            let basket = session.place(&order).expect("placed");
+            let book = desk.book(&trading::logins(&store));
+            let account = format!("{id}/FAKE-1");
+            assert_eq!(book.position(&account, "ESZ6").map(|held| held.net), Some(1));
+            let placed = book.order(&basket).expect("on the book");
+            assert_eq!((placed.status.stage, placed.fills.len()), (trading::Stage::Filled, 1));
+            desk.sign_out_all(trading::SIGN_OUT_WAIT);
         });
     }
 
