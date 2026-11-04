@@ -753,10 +753,10 @@ impl Window {
     }
 
     /// The chart menu's orders, at height `y` of the focused chart, in one
-    /// section: buy and sell at the market, then a limit and a stop each
-    /// way at the price there, and cancelling the order under the pointer.
-    /// One that would be on the wrong side of the market is greyed; a chart
-    /// that cannot trade says why in one greyed row. No name over them: they
+    /// section: buy and sell at the market, then the limit and stop each
+    /// way that the price there allows, and cancelling the order under the
+    /// pointer. One that could not go is left out; a chart that cannot
+    /// trade says why in one greyed row. No name over them: they
     /// go to the account the header has chosen. With no login, nothing.
     pub(super) fn order_section(self: &Rc<Self>, y: f64) -> Option<gio::Menu> {
         if !self.trading.borrow().trades() {
@@ -784,18 +784,8 @@ impl Window {
         let size = self.size_of(&pane);
         for (side, kind) in trading::menu_orders(&target.capabilities) {
             let price = (kind != OrderKind::Market).then_some(at).flatten();
-            let text = match (kind, price) {
-                (OrderKind::Market, _) => trading::menu_text(side, kind, size, "", &target.contract),
-                (_, Some((price, places))) => trading::menu_text(
-                    side,
-                    kind,
-                    size,
-                    &omacharts_engine::grouped_decimals(price, places),
-                    &target.contract,
-                ),
-                (_, None) => trading::order_words(side, kind),
-            };
-            let item = gio::MenuItem::new(Some(&text), None);
+            // One that could not go is left out, not greyed: the wrong side
+            // of the market, past the day's limit, or with no price to judge.
             let allowed = match (kind, price, last) {
                 (OrderKind::Market, _, _) => true,
                 (_, Some((price, _)), Some(last)) => {
@@ -803,12 +793,22 @@ impl Window {
                 }
                 _ => false,
             };
-            if allowed {
-                let value = order_target_value(side, kind, &key, price.map(|(price, _)| price));
-                item.set_action_and_target_value(Some("chart.order"), Some(&value.to_variant()));
-            } else {
-                item.set_action_and_target_value(Some(UNAVAILABLE), None);
+            if !allowed {
+                continue;
             }
+            let text = match price {
+                None => trading::menu_text(side, kind, size, "", &target.contract),
+                Some((price, places)) => trading::menu_text(
+                    side,
+                    kind,
+                    size,
+                    &omacharts_engine::grouped_decimals(price, places),
+                    &target.contract,
+                ),
+            };
+            let item = gio::MenuItem::new(Some(&text), None);
+            let value = order_target_value(side, kind, &key, price.map(|(price, _)| price));
+            item.set_action_and_target_value(Some("chart.order"), Some(&value.to_variant()));
             section.append_item(&item);
         }
 
@@ -1726,7 +1726,7 @@ pub(super) mod tests {
     }
 
     /// The chart menu has no orders without a login, says why it cannot
-    /// trade with one that is not signed in, offers the six orders once it
+    /// trade with one that is not signed in, offers the orders once it
     /// is, places a market order through the session, and loses all of it
     /// with the login.
     #[test]
@@ -1765,9 +1765,10 @@ pub(super) mod tests {
             let rows = trading_rows(&window);
             assert_eq!(rows.first(), Some(&("Buy 1 ESZ6 at market".to_string(), true)));
             assert_eq!(rows.get(1), Some(&("Sell 1 ESZ6 at market".to_string(), true)));
-            assert_eq!(rows.len(), 6);
+            // No price under the pointer: only the market pair, nothing greyed.
+            assert_eq!(rows.len(), 2, "{rows:?}");
             let section = window.order_section(100.0).expect("the orders");
-            assert_eq!(labels(section.upcast_ref()).len(), 6, "market, limits and stops, one section");
+            assert_eq!(labels(section.upcast_ref()).len(), 2, "the orders, one section");
             let model = window.chart_menu_model(100.0);
             for at in 0..model.n_items() {
                 let heading = model.item_attribute_value(at, "label", None);
@@ -1903,7 +1904,7 @@ pub(super) mod tests {
             let y = pane.view.y_of(off(-40.0)).expect("the price on screen");
             let rows = labels(window.chart_menu_model(y).upcast_ref());
             let buy_limit = rows.iter().find(|(label, _)| label.starts_with("Buy Limit")).map(|(_, on)| *on);
-            assert_eq!(buy_limit, Some(false), "a buy limit past the low limit offered: {rows:?}");
+            assert_eq!(buy_limit, None, "a buy limit past the low limit offered: {rows:?}");
         });
     }
 
@@ -2063,15 +2064,27 @@ pub(super) mod tests {
             let last = pane.view.last_price().expect("a last price");
             let above = (last / 0.25).round() * 0.25 + 10.0;
             let y = pane.view.y_of(above).expect("the price on screen");
-            let offered = |words: &str| {
-                let rows = labels(window.chart_menu_model(y).upcast_ref());
-                rows.into_iter().find(|(label, _)| label.starts_with(words)).map(|(_, on)| on)
+            let rows_at = |y: f64| {
+                labels(window.chart_menu_model(y).upcast_ref())
+                    .into_iter()
+                    .filter(|(label, _)| label.starts_with("Buy ") || label.starts_with("Sell "))
+                    .collect::<Vec<_>>()
             };
-            assert_eq!(offered("Sell Limit"), Some(true), "above the chart's market");
-            assert_eq!(offered("Buy Limit"), Some(false));
+            let words = |rows: Vec<(String, bool)>| {
+                rows.into_iter()
+                    .map(|(label, on)| {
+                        assert!(on, "{label} greyed rather than left out");
+                        label.split(" 1 ").next().unwrap_or_default().to_string()
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let offered = |words: &str| rows_at(y).into_iter().find(|(label, _)| label.starts_with(words)).map(|(_, on)| on);
+            assert_eq!(words(rows_at(y)), ["Buy", "Sell", "Sell Limit", "Buy Stop"], "above the chart's market");
+            let below = pane.view.y_of(above - 20.0).expect("the price on screen");
+            assert_eq!(words(rows_at(below)), ["Buy", "Sell", "Buy Limit", "Sell Stop"], "below the chart's market");
 
             *session.market.lock().unwrap() = Some(above + 50.0);
-            assert_eq!(offered("Sell Limit"), Some(false), "below the account's market, though above the chart's");
+            assert_eq!(offered("Sell Limit"), None, "below the account's market, though above the chart's");
             assert_eq!(offered("Buy Limit"), Some(true));
             assert_eq!(offered("Sell Stop"), Some(true));
         });
