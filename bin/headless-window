@@ -280,6 +280,14 @@ app() {
 # and another between the modifier and what it modifies. They cost a third
 # of a second and they are the difference between a key that lands and one
 # that lands four times out of five.
+#
+# And a letter with Shift goes as the capital it would type. wtype's keymap
+# has one level per key, so `-M shift -k b` holds Shift and still delivers
+# `b` — and `-k B` is no better, since it looks names up ignoring case. A real
+# keyboard delivers `B` there, and GTK matches `<Ctrl><Shift>b` by
+# uppercasing its letter and comparing that with what arrived, so every
+# Ctrl+Shift accelerator went unanswered in here while working on a desk.
+# Typed as text, the capital is its own keysym, and arrives as one.
 keys() {
   local dir; dir="$(session)"
   local args=(-s 300) chord parts=() key mod
@@ -289,7 +297,11 @@ keys() {
     unset 'parts[-1]'
     for mod in "${parts[@]}"; do args+=(-M "$mod"); done
     [ ${#parts[@]} -gt 0 ] && args+=(-s 120)
-    args+=(-k "$key" -s 120)
+    if [[ " ${parts[*],,} " == *" shift "* && "$key" =~ ^[a-zA-Z]$ ]]; then
+      args+=("${key^^}" -s 120)
+    else
+      args+=(-k "$key" -s 120)
+    fi
     for mod in "${parts[@]}"; do args+=(-m "$mod"); done
   done
   load_env "$dir"
