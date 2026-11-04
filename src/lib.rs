@@ -16,6 +16,7 @@ pub mod header;
 pub mod inventory;
 pub mod live;
 pub mod loader;
+pub mod log_words;
 pub mod migrations;
 pub mod setting_keys;
 pub mod store;

@@ -42,10 +42,14 @@ pub struct Typed {
 
 /// The logins, in the order they were added.
 pub fn logins(store: &Store) -> Vec<Login> {
-    store
+    let logins = store
         .setting(LOGINS)
         .and_then(|json| serde_json::from_str::<Vec<Login>>(&json).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    // Whatever a broker or a feed repeats back, a user ID never reaches the
+    // Log.
+    crate::log_words::conceal_logins(&logins);
+    logins
 }
 
 fn save_logins(store: &Store, logins: &[Login]) {
@@ -218,6 +222,7 @@ pub fn add_login(store: &Store, secrets: &dyn Secrets, typed: &Typed) -> Result<
         signed_out: false,
     };
     typed_into(&mut login, typed);
+    crate::log_words::conceal_logins(std::slice::from_ref(&login));
     let first = data_login_id(store, &logins).is_none();
     let feed = data_feed_of(&login);
     let id = login.id.clone();

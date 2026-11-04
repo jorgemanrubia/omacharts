@@ -1,0 +1,238 @@
+//! What the Log says, and the one place anything is put in it from the app.
+//!
+//! A raw error is a feed's or a system's words: an HTTP status, an SQLite
+//! code, a broker's refusal. Each is turned here into a sentence a trader
+//! reads, with the raw words kept behind the entry's "Details". Nothing else
+//! writes words into the log, so the voice is one and the rules hold in one
+//! place:
+//!
+//! - who said it is a feed's or a login's **name**, never a user ID;
+//! - no password, token or user ID is ever written: every login's user ID is
+//!   concealed from the log as soon as it is known ([`conceal_logins`]);
+//! - a routine success — a bar fetched, a chart opened — is not news and is
+//!   not logged.
+
+use omacharts_engine::log::{self, Entry};
+use omacharts_engine::{FetchFailure, Timeframe};
+
+use crate::trading::{self, Login, Order, OrderKind, OrderRequest, Stage};
+
+/// Put `entry` in the log.
+pub fn say(entry: Entry) {
+    log::add(entry);
+}
+
+/// Keep every login's user ID out of the log from now on, whatever a feed or
+/// a broker repeats back.
+pub fn conceal_logins(logins: &[Login]) {
+    for login in logins {
+        log::global().conceal(&login.user);
+    }
+}
+
+/// The first sentence of something a provider said, for a line with room
+/// for one; the whole of it goes in the details.
+fn gist(said: &str) -> &str {
+    let said = said.trim();
+    let line = said.lines().next().unwrap_or(said);
+    match line.find(". ") {
+        Some(end) => &line[..end],
+        None => line.trim_end_matches('.'),
+    }
+}
+
+/// Which failures need somebody to look: a reply nobody can read, or a disk
+/// that will not open. The rest fix themselves or are on the chart already.
+fn serious(failure: FetchFailure) -> bool {
+    matches!(failure, FetchFailure::Garbled | FetchFailure::LocalCache)
+}
+
+/// A fetch for a chart failed: "AAPL 1D · The data feed is not answering.
+/// Prices fill in when it does."
+pub fn fetch_failed(feed: &str, symbol: &str, timeframe: Timeframe, failure: FetchFailure) -> Entry {
+    let text = format!("{symbol} {} · {}", timeframe.label(), failure.message());
+    match serious(failure) {
+        true => Entry::error(feed, text),
+        false => Entry::warning(feed, text),
+    }
+}
+
+/// A live chart's stream stopped.
+pub fn stream_lost(feed: &str, symbol: &str, timeframe: Timeframe, why: FetchFailure) -> Entry {
+    Entry::warning(feed, format!("Lost {symbol} {} · {}", timeframe.label(), why.message()))
+}
+
+/// The same stream, flowing again.
+pub fn stream_back(feed: &str, symbol: &str, timeframe: Timeframe) -> Entry {
+    Entry::info(feed, format!("Back: {symbol} {}", timeframe.label()))
+}
+
+/// One step of signing in to a feed, as the feed says it.
+pub fn feed_step(feed: &str, line: &str) -> Entry {
+    Entry::info(feed, capitalised(line))
+}
+
+/// How signing in to a feed ended.
+pub fn feed_signed_in(feed: &str, outcome: &Result<(), String>) -> Entry {
+    match outcome {
+        Ok(()) => Entry::info(feed, "Signed in"),
+        Err(why) => Entry::error(feed, format!("Not signed in · {}", gist(why))).detail(why.clone()),
+    }
+}
+
+/// The feeds took on what their logins may chart, and the charts moved.
+pub fn serving_changed() -> Entry {
+    Entry::info("Data feeds", "Entitlements changed · charts rerouted")
+}
+
+/// How a broker sign-in ended: "Signed in · 2 accounts", or the broker's
+/// refusal.
+pub fn signed_in(login: &str, outcome: Result<usize, &str>) -> Entry {
+    match outcome {
+        Ok(1) => Entry::info(login, "Signed in · 1 account"),
+        Ok(accounts) => Entry::info(login, format!("Signed in · {accounts} accounts")),
+        Err(why) => Entry::error(login, format!("Not signed in · {}", gist(why))).detail(why),
+    }
+}
+
+/// The data half of a login did not sign in, though trading did.
+pub fn data_not_signed_in(login: &str, why: &str) -> Entry {
+    Entry::error(login, format!("Data not signed in · {}", gist(why))).detail(why)
+}
+
+/// A session that ended by itself.
+pub fn session_ended(login: &str, why: &str) -> Entry {
+    Entry::error(login, format!("Signed out · {}", gist(why))).detail(why)
+}
+
+/// Signed out from Trading.
+pub fn signed_out(login: &str) -> Entry {
+    Entry::info(login, "Signed out")
+}
+
+/// An order sent: "Buy Limit 2 ESZ6 @ 7,620.00".
+pub fn order_sent(account: &str, order: &OrderRequest, decimals: usize) -> Entry {
+    let words = trading::order_words(order.side, order.kind);
+    let text = match (order.kind, order.price) {
+        (OrderKind::Market, _) | (_, None) => format!("{words} {} {}", order.qty, order.contract),
+        (_, Some(price)) => format!(
+            "{words} {} {} @ {}",
+            order.qty,
+            order.contract,
+            omacharts_engine::grouped_decimals(price, decimals)
+        ),
+    };
+    Entry::info(account, text)
+}
+
+/// Anything else asked of a broker: "Cancel Buy Limit 7,620.00", "Flatten
+/// ESZ6".
+pub fn asked(account: &str, text: impl Into<String>) -> Entry {
+    Entry::info(account, text)
+}
+
+/// Something asked for that was not done, in the words the window used to
+/// toast: "Nothing held · not flattened".
+pub fn refused(account: &str, text: impl Into<String>) -> Entry {
+    Entry::error(account, text)
+}
+
+/// Something asked for and done, said in a toast too.
+pub fn confirmed(account: &str, text: impl Into<String>) -> Entry {
+    Entry::info(account, text).confirming()
+}
+
+/// What became of an order placed or cancelled here, once the broker says
+/// so: a fill or a cancel in a toast and here, a rejection as an error.
+pub fn order_moved_on(order: &Order, before: Stage, decimals: usize, account: &str) -> Option<Entry> {
+    let text = trading::outcome_text(order, before, decimals, account)?;
+    let source = if account.is_empty() { "Trading" } else { account };
+    Some(match order.status.stage {
+        Stage::Rejected => Entry::error(source, text),
+        _ => Entry::info(source, text).confirming(),
+    })
+}
+
+/// Something of the app's own went wrong — a file, the database, the bar
+/// widget: `what` in plain words, `error` as the system put it.
+pub fn trouble(source: &str, what: &str, error: impl std::fmt::Display) -> Entry {
+    Entry::error(source, what).detail(error.to_string())
+}
+
+/// Something of the app's own worth knowing that went right or did not
+/// matter: the cache trimmed, ladders asked for.
+pub fn note(source: &str, what: impl Into<String>) -> Entry {
+    Entry::info(source, what)
+}
+
+fn capitalised(line: &str) -> String {
+    let mut chars = line.trim().chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use omacharts_engine::log::Level;
+
+    #[test]
+    fn a_fetch_failure_says_its_sentence_and_only_a_bad_reply_is_an_error() {
+        let entry = fetch_failed("Yahoo Finance", "AAPL", Timeframe::days(1), FetchFailure::Unreachable);
+        assert_eq!(entry.level, Level::Warning);
+        assert_eq!(entry.source, "Yahoo Finance");
+        assert_eq!(entry.text, "AAPL 1D · The data feed is not answering. Prices fill in when it does.");
+        assert_eq!(fetch_failed("Yahoo Finance", "AAPL", Timeframe::days(1), FetchFailure::Garbled).level, Level::Error);
+    }
+
+    #[test]
+    fn a_refusal_keeps_its_first_sentence_and_the_rest_behind_details() {
+        let entry = signed_in("Rithmic Test", Err("permission denied. Check the system name.\ncode 13"));
+        assert_eq!(entry.level, Level::Error);
+        assert_eq!(entry.text, "Not signed in · permission denied");
+        assert_eq!(entry.detail.as_deref(), Some("permission denied. Check the system name.\ncode 13"));
+        assert_eq!(signed_in("Rithmic Test", Ok(2)).text, "Signed in · 2 accounts");
+        assert_eq!(signed_in("Rithmic Test", Ok(1)).text, "Signed in · 1 account");
+        assert_eq!(feed_step("Rithmic Test", "connecting to the gateway").text, "Connecting to the gateway");
+    }
+
+    #[test]
+    fn an_order_sent_reads_as_it_was_asked() {
+        let mut order = OrderRequest {
+            account: "951".into(),
+            contract: "ESZ6".into(),
+            exchange: "CME".into(),
+            side: trading::Side::Buy,
+            qty: 2,
+            kind: OrderKind::Market,
+            price: None,
+            tag: "omacharts:1".into(),
+        };
+        assert_eq!(order_sent("Lucid", &order, 2).text, "Buy Market 2 ESZ6");
+        (order.kind, order.price, order.side) = (OrderKind::Limit, Some(7_620.0), trading::Side::Sell);
+        assert_eq!(order_sent("Lucid", &order, 2).text, "Sell Limit 2 ESZ6 @ 7,620.00");
+    }
+
+    #[test]
+    fn a_fill_is_confirmed_and_a_rejection_is_an_error() {
+        use crate::trading::fake::tests::order;
+        use crate::trading::{Side, Status};
+        let mut bought = order("a", Side::Buy, OrderKind::Market, None, Stage::Filled);
+        bought.fill_price = Some(7_612.25);
+        let filled = order_moved_on(&bought, Stage::Pending, 2, "951").expect("said");
+        assert!(filled.confirms);
+        assert_eq!(filled.level, Level::Info);
+        let refused = order("c", Side::Buy, OrderKind::Limit, Some(1.0), Status::said(Stage::Rejected, "price out of band"));
+        let rejected = order_moved_on(&refused, Stage::Pending, 2, "951").expect("said");
+        assert_eq!((rejected.level, rejected.confirms), (Level::Error, false));
+    }
+
+    #[test]
+    fn trouble_of_the_apps_own_is_a_plain_sentence_with_the_error_behind_it() {
+        let entry = trouble("Backups", "Settings not backed up", "disk I/O error (code 10)");
+        assert_eq!(entry.text, "Settings not backed up");
+        assert_eq!(entry.detail.as_deref(), Some("disk I/O error (code 10)"));
+    }
+}
