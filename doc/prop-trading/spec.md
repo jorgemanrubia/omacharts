@@ -1,6 +1,6 @@
 # Rithmic in Omacharts: spec
 
-Draft, 2026-11-03. Exploratory: it lives on the `rithmic` branch, nothing here
+Draft, 2026-11-04. Exploratory: it lives on the `rithmic` branch, nothing here
 is released, and every part of it can change. The background, with sources,
 is in [research.md](research.md).
 
@@ -62,6 +62,12 @@ second fake feed and a second fake broker, in tests, provide streaming,
 ladders, sign-in, accounts and orders without any change above the
 boundaries.
 
+Both are done. A test fails when a feed is named above the boundary
+(009a59d), and the fake broker, in the registry of a build with the
+`fakes` feature, signs in from the Trading page, lists its account and
+fills an order through the same code a Rithmic login goes through
+(3910107).
+
 ## What we know works
 
 Tried on 2026-11-03 with a developer kit login, against Rithmic Test at
@@ -112,16 +118,19 @@ Signing in, below.
   skipped without one, never fed one from the repo or CI. `Credentials`'
   `Debug` leaves the password out, and a test holds it to that. Account
   numbers stay out of the repo too: it is public.
-- **Exploratory until the author says otherwise.** No commands and no manual
-  pages for any of this yet; `AGENTS.md`'s rules for both apply from the
-  moment it is meant to ship.
+- **Exploratory until the author says otherwise.** The manual has what
+  anybody meets without trading: the Log, the header's two sections, and the
+  keys that moved to make room for trading's. Trading itself has no manual
+  pages and no commands yet: a chart's `account`, `trading_size` and `source`
+  are exempted in `src/cli/spec.rs` as exploratory, and `AGENTS.md`'s rules
+  for both apply from the moment it is meant to ship.
 
 ## Stages
 
 Each stage is usable on its own and is a commit series on `rithmic`, not a
 release.
 
-### 1. Rithmic as a data source
+### 1. Rithmic as a data feed
 
 **Done when:** with nothing configured the app behaves and measures as it
 does on `main`; adding Rithmic with a Test login puts ES and NQ charts on
@@ -148,56 +157,63 @@ Done in three steps, in this order:
 
 #### The Data page
 
-An ordered list of sources. With nothing configured it is one row, Yahoo,
-and a button to add another; no brokerage, no "Experimental", no sign-in
-rows.
+An ordered list of data feeds. With nothing configured it is one row,
+Yahoo, and a button to add another; no brokerage, no "Experimental", no
+sign-in rows.
 
 ```
-Sources                                  first match wins, top down
-  ⋮ Rithmic   CME futures, front month · live · 951        [Sign out]
-    Yahoo     Stocks, ETFs, indexes, futures, FX, crypto · delayed
-  [ Add a source… ]
+Data feeds
+Each chart comes from the first data feed in this list that has its symbol.
+  ⋮ Rithmic   CME futures, front month · live · through Lucid
+  ⋮ Yahoo     Stocks, ETFs, indexes, futures, FX, crypto · delayed   [Remove]
+  [ Add a data feed… ]
 ```
 
-- **Yahoo is the floor.** It cannot be removed or moved: it serves
-  everything, so a source under it would never be reached. The page refuses
-  the move rather than only hiding the handle.
-- **Add a source…** offers Rithmic and thinkorswim. Rithmic opens a dialog
-  for user ID, password, system and gateway, prefilled from what is stored;
-  "Sign in…" on its row opens the same dialog.
-- **A source's row** has a handle to drag it up or down, one action (sign
-  in, sign out, sign in again) and Remove. Its subtitle says what it serves
-  and how it stands: "live · 951", "not signed in", "session expired", or
-  Rithmic's own words for a refusal ("permission denied").
-- **thinkorswim** becomes a source added like Rithmic, still marked
+- **Only the last feed cannot be removed.** Yahoo is a feed like the others
+  since 5b1cb64: it has a handle and Remove, and comes back through the
+  button. The last feed left offers no Remove, because with none no chart
+  could draw.
+- **Add a data feed…** offers the feeds not on the list. Rithmic's login is
+  a broker's, so adding it adds a login in Preferences → Trading, through
+  the same dialog: name, user ID, password, system and gateway.
+- **A feed's row** has a handle to drag it up or down, one action (Sign in…
+  or Sign out) and Remove. Its subtitle says what it serves and how it
+  stands: "live", "not signed in", "session expired", or the feed's own
+  words for a refusal ("permission denied").
+- **Rithmic's row says "through Lucid"**, the login its data comes through,
+  and has no action and no Remove of its own: signing in and out, and
+  removing it, are the Trading page's.
+- **thinkorswim** is a feed added like the others, still marked
   Experimental on its row.
-- The page manages sources and nothing else. Accounts and balances come
-  back with trading (stage 4).
+- The page manages data feeds and nothing else. Accounts and balances are
+  on the Trading page.
 
-#### Which source serves a chart
+#### Which feed serves a chart
 
 - The single `provider` setting becomes `providers`: an ordered list of ids,
-  top first, with Yahoo implied last. It is shared: an order restored on a
-  machine with no Rithmic login is harmless, because a source that is not
-  signed in is passed over. `provider=tos` migrates to `providers=["tos"]`
-  (which gains its users FX and crypto, which thinkorswim does not serve);
-  `provider=yahoo`, or nothing, migrates to nothing stored.
-- A chart goes to the **first source that translates its instrument and is
+  top first. It is shared: an order restored on a machine with no Rithmic
+  login is harmless, because a feed that is not signed in is passed over.
+  `provider=tos` migrates to `providers=["tos"]` (which gains its users FX
+  and crypto, which thinkorswim does not serve); `provider=yahoo`, or
+  nothing, migrates to nothing stored. Yahoo is in the list where it is put
+  (migration 8 wrote it at the bottom of every stored order, where it had
+  been implied); nothing stored is Yahoo alone.
+- A chart goes to the **first feed that translates its instrument and is
   usable**. Usable is read from the stored sign-in state when the list is
   built and when a sign-in or sign-out finishes. It is a read from disk,
   never a connection.
-- **A source is passed over only for a reason known before asking**: not
-  signed in, or it does not serve the instrument. **A source that fails
+- **A feed is passed over only for a reason known before asking**: not
+  signed in, or it does not serve the instrument. **A feed that fails
   while running keeps the chart.** Somebody watching an ES footprint on
   Rithmic must not be moved to delayed Yahoo bars with the ladders gone
   without noticing. The chart keeps the trouble dot it shows today, and the
   provider owns reconnecting, as the `Stream` contract already says.
-- **Each source has its own loader**, because pacing and cooldowns are per
+- **Each feed has its own loader**, because pacing and cooldowns are per
   provider and Yahoo's rate limit must not pace Rithmic. With Yahoo alone
   there is one, as now.
-- **The chart's header names its source** only when more than one is
+- **The chart's header names its feed** only when more than one is
   configured. With Yahoo alone nothing is drawn and the window is what it is
-  today. A chart passed over a source says so: "Yahoo · Rithmic not signed
+  today. A chart passed over a feed says so: "Yahoo · Rithmic not signed
   in".
 
 #### Symbols stay the app's own
@@ -207,7 +223,7 @@ canonical identity ("`ES`, not `ES=F`"), and `Provider::symbol_for`
 returning an `Option` is already both the translation and the test of
 whether a provider serves an instrument. Nothing above the provider changes:
 charts, watchlists, search and stored chartbooks keep naming an instrument
-as they do, so switching sources, or losing one, never changes what a chart
+as they do, so switching feeds, or losing one, never changes what a chart
 is of.
 
 - **Rithmic serves futures roots** that `contracts.tsv` puts on a CME
@@ -236,7 +252,7 @@ is of.
   prices across rolls would be a chart option and never the default, because
   it moves prices a trader has drawn levels on.
 - **Not a special case for daily.** Sending daily `ES` to Yahoo because
-  Rithmic is not stitched would make the source depend on the resolution and
+  Rithmic is not stitched would make the feed depend on the resolution and
   break "the first that serves it". Routing stays by instrument alone.
 
 #### Dated contracts, later
@@ -252,17 +268,21 @@ rather than listing them, so the index and startup stay the size they are.
 
 #### The Rithmic session
 
-- **One session for the whole app.** CME bills a non-professional
-  subscriber as a professional after two concurrent data sessions, and
-  R | Trader Pro's plug-in mode, Rithmic's way around that, is Windows only.
-  So every chart shares one session, owned by the provider and closed by its
-  `retire()`, and the bar widget asks the app rather than signing in itself.
+- **One connection per login.** A second sign-in on the same login forces
+  the first one out, so each login has one `rithmic::Connection`, and it
+  lends a data half and a trading half. The data login's data half is the
+  one session every chart shares: CME bills a non-professional subscriber
+  as a professional after two concurrent data sessions, and R | Trader Pro's
+  plug-in mode, Rithmic's way around that, is Windows only. Any number of
+  logins have a trading half, and only the data login a data half. The bar
+  widget asks the app rather than signing in itself.
 - **Bars** come from Rithmic: minute bars from the same request as the
   minute ladders in stage 2, daily and weekly from its time bars.
 - **The password goes in the desktop's keyring** (Secret Service, which
-  gnome-keyring provides on Omarchy), never in the settings database: the
-  database is backed up and can be copied to another machine. User ID,
-  system and gateway are settings, and they are `Local` in
+  gnome-keyring provides on Omarchy), under the login's id, never in the
+  settings database: the database is backed up and can be copied to
+  another machine. The logins themselves, each with its name, broker, user
+  ID, system and gateway, are the `logins` setting, `Local` in
   `src/setting_keys.rs`, because a login belongs to the machine it was typed
   on.
 - **A refusal is shown in Rithmic's words**, such as "permission denied",
@@ -340,7 +360,7 @@ quota, so history is fetched once and cached, never asked for twice.
 ### 3. Providers say what they can do
 
 **Done when:** an indicator can declare that it needs volume at price and
-gets ladders exactly when its chart's source has them; the volume profile
+gets ladders exactly when its chart's feed has them; the volume profile
 uses them and keeps its estimate otherwise; and `bin/perf-compare` against
 `main` shows the same allocation counts for every scenario.
 
@@ -357,12 +377,12 @@ provider is asked about something it lacks.
 - **Indicators say what they need**: bars, or volume at price. The volume
   profile needs bars and keeps today's estimate from bar ranges, and is exact
   when the chart has ladders. An indicator that needs volume at price (none
-  yet; footprint and delta later) shows one line on a chart whose source has
-  none, "Needs a source with volume at price", rather than an invented
+  yet; footprint and delta later) shows one line on a chart whose feed has
+  none, "Needs a data feed with volume at price", rather than an invented
   estimate.
 
 **Yahoo must stay exactly as fast.** Somebody who never configures anything
-pays nothing for any of this. A chart holds ladders only when its source has
+pays nothing for any of this. A chart holds ladders only when its feed has
 them and one of its indicators needs them; otherwise there is no ladder
 allocated, no query made and no second request. The draw path asks whether
 there are ladders once per frame, outside the loop over bars. The perf
@@ -386,7 +406,7 @@ is drawn from can be combined freely:
   order plant after sign-in. A prop trader usually has several under one
   login. The list is cached on the machine (bookkeeping, never in a backup)
   so the page and the header draw without connecting.
-- **A data feed** is a source on the Data page. Only one Rithmic login
+- **A data feed** is a row on the Data page. Only one Rithmic login
   supplies market data, the first added unless the trader picks another;
   the others connect for orders, positions and P&L only. Several logins each
   streaming quotes could count as several data sessions under CME's
@@ -394,22 +414,32 @@ is drawn from can be combined freely:
   not known.
 
 **Preferences → Trading** lists the logins, each with its accounts under it,
-edited the way the Data page edits sources: "Add a broker…" (Rithmic for
+edited the way the Data page edits feeds: "Add a broker…" (Rithmic for
 now) opens the same login dialog. Adding the first login also adds Rithmic
-as the first data source, through that login. Removing a login removes its
+as the first data feed, through that login. Removing a login removes its
 accounts; if it was the data login, Rithmic data moves to another login, or
-the Rithmic source goes if none is left. Nothing else on the Data page is
+the Rithmic feed goes if none is left. Nothing else on the Data page is
 touched.
 
 ```
-Accounts
-  Lucid — LucidTrading · live                    [Sign out] [Remove]
-      1234   USD · $50,210 · Default
-      1235   USD · $48,900                        [Make default]
-  Rithmic Test — Rithmic Test · live · data      [Sign out] [Remove]
-      951    USD · $1,000,000
+Lucid                                              [Sign out] [Remove]
+LucidTrading · live · data
+      1234   USD · $50,210                                  Default
+      1235   USD · $48,900                             [Make default]
+Rithmic Test                        [Use for data] [Sign out] [Remove]
+Rithmic Test · live
+      951    USD · $1,000,000                          [Make default]
   [ Add a broker… ]
+  [ Edit trading sizes… ]
 ```
+
+Each login is a group titled with its name, its standing under it ("live",
+"not signed in", "signing in", or the broker's words), with "data" on the
+data login; another login can be made it with "Use for data". With no
+login the page is the heading Accounts and "Add a broker…". Removing the
+data login asks about the data feed: another login takes it over, or the
+trader chooses whether the Rithmic data feed goes too, or it stays, not
+signed in, when it is the last one.
 
 **The chart's account and feed.** Every chart has an account, whose money
 its orders spend: the default, or one chosen for it. A chart's default
@@ -510,8 +540,32 @@ Ctrl+B on ES filled 2, and Ctrl+F left the account flat.
 **No confirmations, for now.** Nothing asks first, on Rithmic Test or on a
 live account: an order from the menu, a key or a drag, a move, a cancel and
 a flatten go to the broker at once, and the pending look is the feedback.
-Whether a live account should ask, and how, is to be decided again before
-trading ships.
+Whether a live account should ask, and how, is an open decision, below.
+
+#### The Log
+
+The Log is what the data feeds, the brokers and the app have said since
+the window started, and the one place a refusal or a failure is said. It
+keeps the last 1000 lines in memory and nothing after the app quits, and
+opens beside the charts with Ctrl+Shift+J or the main menu's Log.
+
+- Each line is its time, who said it (a feed or a login, by name, never a
+  user ID) and what happened; a line with more to it has Details, the
+  feed's or the system's own words. The same line said again by the same
+  source is one line, counted.
+- **All**, **Warnings** and **Errors** filter it; **Copy** puts the lines
+  shown on the clipboard with their details; **Clear** empties it.
+- An error while the Log is closed waits in the window's corner, the newest
+  with "· N more" for the rest, until the Log is opened or the notice
+  dismissed; after a dismissed one, a dot on the main menu's button.
+- Toasts are only for confirmations, something asked for and done: an order
+  working, filled or cancelled, exits linked. A refusal is in the Log, and
+  so in the corner, and never a toast; something that needed nothing doing
+  ("Already flat in ESZ6", "Not cancelled · already done") is a note in the
+  Log and nothing else.
+- Nothing in it is a credential: every login's user ID is concealed from the
+  log as soon as it is known, whatever a broker repeats back, and no
+  password or token is ever written.
 
 #### Signing in, and what comes with it
 
@@ -524,14 +578,16 @@ limits, the positions, the working orders, and today's orders, filled,
 cancelled or rejected, with their fills. The refresh is over once the
 plants have been quiet for 300 ms after its last answer; then the book is
 marked refreshed and the panel, the headers and the chart lines show it,
-on the next frame. Signing in from the Trading page refreshes the same
-way, and so does a session coming back after a drop. After that
+on the next frame. Signing in from the Trading page goes through the same
+`Desk::sign_in` and refreshes the same way, and signs in the data login's
+data half too; so does a session coming back after a drop. Either way the
+desk says how it went in the Log once, as it takes the answer. After that
 everything follows Rithmic's pushes: no polling, no timers.
 
 After a refresh, an order sent from here before a drop that the refreshed
 book has never heard of, by its tag, did not reach the broker: it stops
-being drawn as pending, and a toast says "Buy Limit 1 ESZ6 never reached
-the broker". Moves, cancels and flattens are answered by the book as
+being drawn as pending, and the Log says "Not placed · Buy Limit 1 ESZ6
+never reached the broker". Moves, cancels and flattens are answered by the book as
 always, and nothing is held as on its way to that login's accounts.
 
 The Accounts tab shows the balance, the day's P&L, the open P&L, the loss
@@ -571,7 +627,8 @@ working feed is what conformance looks at.
 ## Open decisions
 
 Each has a recommendation, so work can go on until the author says
-otherwise.
+otherwise. Signing in at startup was one, and is decided: a saved login
+signs in by itself after the first frame, as Signing in says.
 
 1. **Personal tool or product for others?** Rithmic's terms, and possibly
    CME's vendor rules, depend on it. *Recommendation:* personal use until
@@ -584,14 +641,23 @@ otherwise.
 4. **Target a firm first?** *Recommendation:* Lucid, because the author has
    accounts there. Tradeify keeps an allow-list of platforms and has to be
    asked.
-6. **Does conformance open every firm's system?** Probably not. Rithmic's
+5. **Does conformance open every firm's system?** Probably not. Rithmic's
    own answer was that each funding evaluator or broker decides which
    applications its users may use, and Tradeify publishes an allow-list.
    *Recommendation:* ask Rithmic whether a conformed app is blocked on a
    firm's system until the firm enables it, ask Lucid whether it would, and
    use nothing but Rithmic Test until a firm says yes.
-5. **History depth for ladders.** *Recommendation:* decide after stage 1
+6. **History depth for ladders.** *Recommendation:* decide after stage 1
    shows how far back Rithmic goes on a prop system. Test is not a guide.
+7. **Confirmations before trading ships.** Nothing asks first now, on any
+   account. *Recommendation:* decide before trading ships whether a live
+   account asks before an order, a move, a cancel or a flatten, and how,
+   so that a mis-click on a funded account cannot cost money unseen.
+8. **Does a feed's setup text come back?** The sign-in pages once showed
+   each feed's own paragraph on what signing in involves, what it needs and
+   what it may do; nothing showed it, and Rithmic's said it could not place
+   an order, so it was removed. *Recommendation:* leave it out unless a
+   page turns out to need it, and then write it beside the feed again.
 
 ## Not in scope
 
