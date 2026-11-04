@@ -103,8 +103,6 @@ impl Session for RithmicSession {
                 id: account.id,
                 name: account.name,
                 currency: account.currency,
-                fcm: account.fcm,
-                ib: account.ib,
             })
             .collect()
     }
@@ -149,11 +147,16 @@ impl Session for RithmicSession {
             accounts: book
                 .accounts
                 .into_iter()
-                .map(|money| AccountPnl {
+                .map(|money| Money {
                     key: money.account,
                     balance: money.balance,
+                    day_pnl: match (money.realized_day, money.unrealized) {
+                        (Some(closed), Some(open)) => Some(closed + open),
+                        (closed, open) => closed.or(open),
+                    },
                     realized_day: money.realized_day,
                     unrealized: money.unrealized,
+                    limits: None,
                 })
                 .collect(),
             positions: book
@@ -172,8 +175,7 @@ impl Session for RithmicSession {
             orders: book
                 .orders
                 .into_iter()
-                .map(|order| WorkingOrder {
-                    said: order.said.clone(),
+                .map(|order| Order {
                     tick: rithmic_tick(&order.contract),
                     account: order.account,
                     basket_id: order.basket_id,
@@ -189,14 +191,15 @@ impl Session for RithmicSession {
                     },
                     price: order.price,
                     status: match order.status {
-                        rithmic::Status::Pending => Status::Pending,
-                        rithmic::Status::Working => Status::Working,
-                        rithmic::Status::PartiallyFilled => Status::PartiallyFilled,
-                        rithmic::Status::Filled => Status::Filled,
-                        rithmic::Status::Cancelled => Status::Cancelled,
-                        rithmic::Status::Rejected(why) => Status::Rejected(why),
+                        rithmic::Status::Pending => Status { stage: Stage::Pending, said: order.said },
+                        rithmic::Status::Working => Status { stage: Stage::Working, said: order.said },
+                        rithmic::Status::PartiallyFilled => Status { stage: Stage::PartiallyFilled, said: order.said },
+                        rithmic::Status::Filled => Status { stage: Stage::Filled, said: order.said },
+                        rithmic::Status::Cancelled => Status { stage: Stage::Cancelled, said: order.said },
+                        rithmic::Status::Rejected(why) => Status::said(Stage::Rejected, why),
                     },
                     fill_price: order.fill_price,
+                    fills: Vec::new(),
                     at: order.at,
                     tag: order.tag,
                 })
@@ -204,7 +207,7 @@ impl Session for RithmicSession {
         }
     }
 
-    fn place(&self, order: &Order) -> Result<String, Failure> {
+    fn place(&self, order: &OrderRequest) -> Result<String, Failure> {
         let placed = rithmic::Order {
             account: order.account.clone(),
             contract: order.contract.clone(),

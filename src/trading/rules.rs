@@ -152,7 +152,7 @@ pub fn exit_tab(kind: OrderKind) -> &'static str {
 
 /// Whether a position of `net` still has room for an exit of `kind`:
 /// not while the working ones of that kind already close all of it.
-pub fn exit_offered<'a>(orders: impl IntoIterator<Item = &'a WorkingOrder>, net: i32, kind: OrderKind) -> bool {
+pub fn exit_offered<'a>(orders: impl IntoIterator<Item = &'a Order>, net: i32, kind: OrderKind) -> bool {
     let side = exit_side(net);
     let covered: u32 = orders
         .into_iter()
@@ -173,11 +173,11 @@ pub fn ticks_between(from: f64, to: f64, tick: f64) -> i64 {
 /// The working exit a new one of `kind` on `side` pairs with: the stop for
 /// a target, the target for a stop, in the same contract.
 pub fn sibling_exit<'a>(
-    orders: impl IntoIterator<Item = &'a WorkingOrder>,
+    orders: impl IntoIterator<Item = &'a Order>,
     contract: &str,
     side: Side,
     kind: OrderKind,
-) -> Option<&'a WorkingOrder> {
+) -> Option<&'a Order> {
     let other = match kind {
         OrderKind::Limit => OrderKind::Stop,
         OrderKind::Stop => OrderKind::Limit,
@@ -195,10 +195,10 @@ pub const NEAR: f64 = 6.0;
 /// The working order whose line is nearest `y`, within [`NEAR`]: `to_y`
 /// puts a price on the chart.
 pub fn order_near<'a>(
-    orders: impl IntoIterator<Item = &'a WorkingOrder>,
+    orders: impl IntoIterator<Item = &'a Order>,
     y: f64,
     to_y: impl Fn(f64) -> f64,
-) -> Option<&'a WorkingOrder> {
+) -> Option<&'a Order> {
     orders
         .into_iter()
         .filter(|order| order.status.working())
@@ -221,7 +221,7 @@ pub fn answered(request: &Request, pending: &Pending, book: &Book) -> bool {
             match found {
                 None => false,
                 Some(known) if order.kind == OrderKind::Market => !known.status.working(),
-                Some(known) => known.status != Status::Pending,
+                Some(known) => known.status != Stage::Pending,
             }
         }
         (Request::Move(basket), Pending::Move(price)) => book
@@ -504,11 +504,11 @@ mod tests {
         assert!(!exit_allowed(OrderKind::Limit, 0, 7_640.0, last), "nothing held");
         assert_eq!((exit_tab(OrderKind::Limit), exit_tab(OrderKind::Stop)), ("TP", "SL"));
 
-        let target = order("T", Side::Sell, OrderKind::Limit, Some(7_640.0), Status::Working);
+        let target = order("T", Side::Sell, OrderKind::Limit, Some(7_640.0), Stage::Working);
         assert!(!exit_offered([&target], 1, OrderKind::Limit), "a one-lot already has its target");
         assert!(exit_offered([&target], 1, OrderKind::Stop));
         assert!(exit_offered([&target], 2, OrderKind::Limit), "one of two still open");
-        let gone = order("G", Side::Sell, OrderKind::Limit, Some(7_640.0), Status::Cancelled);
+        let gone = order("G", Side::Sell, OrderKind::Limit, Some(7_640.0), Stage::Cancelled);
         assert!(exit_offered([&gone], 1, OrderKind::Limit), "a cancelled one closes nothing");
     }
 
@@ -516,9 +516,9 @@ mod tests {
     /// of the same contract, and a new stop with the target.
     #[test]
     fn a_new_exit_pairs_with_the_other_kind_on_its_side() {
-        let stop = order("S", Side::Sell, OrderKind::Stop, Some(7_600.0), Status::Working);
-        let buy_stop = order("BS", Side::Buy, OrderKind::Stop, Some(7_650.0), Status::Working);
-        let target = order("T", Side::Sell, OrderKind::Limit, Some(7_640.0), Status::Working);
+        let stop = order("S", Side::Sell, OrderKind::Stop, Some(7_600.0), Stage::Working);
+        let buy_stop = order("BS", Side::Buy, OrderKind::Stop, Some(7_650.0), Stage::Working);
+        let target = order("T", Side::Sell, OrderKind::Limit, Some(7_640.0), Stage::Working);
         let orders = [buy_stop, stop];
         let found = sibling_exit(&orders, "ESZ6", Side::Sell, OrderKind::Limit).map(|o| o.basket_id.as_str());
         assert_eq!(found, Some("S"));
@@ -536,7 +536,7 @@ mod tests {
     #[test]
     fn a_request_is_answered_only_by_what_the_book_says() {
         let mut book = Book::default();
-        let sent = Order {
+        let sent = OrderRequest {
             account: "951".into(),
             contract: "ESZ6".into(),
             exchange: "CME".into(),
@@ -549,23 +549,23 @@ mod tests {
         let place = Request::Place("omacharts:1".into());
         let pending = Pending::Place { key: "t/951".into(), order: sent.clone() };
         assert!(!answered(&place, &pending, &book), "never heard of: still pending");
-        let mut known = order("B1", Side::Sell, OrderKind::Limit, Some(7_640.0), Status::Pending);
+        let mut known = order("B1", Side::Sell, OrderKind::Limit, Some(7_640.0), Stage::Pending);
         known.tag = Some("omacharts:1".into());
         book.orders.push(known);
         assert!(!answered(&place, &pending, &book), "received is not working");
-        book.orders[0].status = Status::Working;
+        book.orders[0].status = Stage::Working.into();
         assert!(answered(&place, &pending, &book));
-        book.orders[0].status = Status::Rejected("no".into());
+        book.orders[0].status = Status::said(Stage::Rejected, "no");
         assert!(answered(&place, &pending, &book), "a rejection is an answer");
 
-        let market = Pending::Place { key: "t/951".into(), order: Order { kind: OrderKind::Market, price: None, ..sent } };
+        let market = Pending::Place { key: "t/951".into(), order: OrderRequest { kind: OrderKind::Market, price: None, ..sent } };
         book.orders[0].kind = OrderKind::Market;
-        book.orders[0].status = Status::Working;
+        book.orders[0].status = Stage::Working.into();
         assert!(!answered(&place, &market, &book), "a market order is answered by its fill");
-        book.orders[0].status = Status::Filled;
+        book.orders[0].status = Stage::Filled.into();
         assert!(answered(&place, &market, &book));
 
-        book.orders[0] = order("B1", Side::Sell, OrderKind::Limit, Some(7_640.0), Status::Working);
+        book.orders[0] = order("B1", Side::Sell, OrderKind::Limit, Some(7_640.0), Stage::Working);
         let moved = Request::Move("B1".into());
         assert!(!answered(&moved, &Pending::Move(7_645.0), &book));
         book.orders[0].price = Some(7_645.0);
@@ -574,7 +574,7 @@ mod tests {
 
         let cancel = Request::Cancel("B1".into());
         assert!(!answered(&cancel, &Pending::Cancel, &book));
-        book.orders[0].status = Status::Cancelled;
+        book.orders[0].status = Stage::Cancelled.into();
         assert!(answered(&cancel, &Pending::Cancel, &book));
 
         let flatten = Request::Flatten("t/951".into(), "ESZ6".into());
@@ -591,10 +591,10 @@ mod tests {
         book.positions.clear();
         assert!(answered(&flatten, &Pending::Flatten, &book));
 
-        let mut part = order("P", Side::Sell, OrderKind::Limit, Some(7_640.0), Status::PartiallyFilled);
+        let mut part = order("P", Side::Sell, OrderKind::Limit, Some(7_640.0), Stage::PartiallyFilled);
         (part.qty, part.filled) = (2, 1);
         assert_eq!(order_pill_text(&part), "▼ Sell Limit 1/2");
-        part.status = Status::Working;
+        part.status = Stage::Working.into();
         assert_eq!(order_pill_text(&part), "▼ Sell Limit 2");
         assert_eq!(buying_text(Side::Buy, 1), "Buying 1…");
     }
@@ -641,10 +641,10 @@ mod tests {
     #[test]
     fn the_order_near_the_pointer_is_the_nearest_working_one() {
         let orders = vec![
-            order("a", Side::Sell, OrderKind::Limit, Some(7_620.0), Status::Working),
-            order("b", Side::Sell, OrderKind::Stop, Some(7_622.0), Status::Working),
-            order("c", Side::Buy, OrderKind::Limit, Some(7_600.0), Status::Cancelled),
-            order("d", Side::Buy, OrderKind::Market, None, Status::Pending),
+            order("a", Side::Sell, OrderKind::Limit, Some(7_620.0), Stage::Working),
+            order("b", Side::Sell, OrderKind::Stop, Some(7_622.0), Stage::Working),
+            order("c", Side::Buy, OrderKind::Limit, Some(7_600.0), Stage::Cancelled),
+            order("d", Side::Buy, OrderKind::Market, None, Stage::Pending),
         ];
         // A point a pixel.
         let to_y = |price: f64| 8_000.0 - price;
@@ -693,11 +693,11 @@ mod tests {
     fn going_flat_takes_every_working_order_in_the_contract_and_the_position() {
         let mut book = Book::default();
         assert!(flat_plan(&book, "t/951", "ESZ6").is_empty());
-        book.orders.push(order("a", Side::Buy, OrderKind::Limit, Some(7_600.0), Status::Working));
-        book.orders.push(order("b", Side::Sell, OrderKind::Stop, Some(7_590.0), Status::Pending));
-        book.orders.push(order("c", Side::Sell, OrderKind::Limit, Some(7_640.0), Status::Filled));
-        book.orders.push(WorkingOrder { contract: "NQZ6".into(), ..order("d", Side::Buy, OrderKind::Limit, Some(1.0), Status::Working) });
-        book.orders.push(WorkingOrder { account: "t/952".into(), ..order("e", Side::Buy, OrderKind::Limit, Some(1.0), Status::Working) });
+        book.orders.push(order("a", Side::Buy, OrderKind::Limit, Some(7_600.0), Stage::Working));
+        book.orders.push(order("b", Side::Sell, OrderKind::Stop, Some(7_590.0), Stage::Pending));
+        book.orders.push(order("c", Side::Sell, OrderKind::Limit, Some(7_640.0), Stage::Filled));
+        book.orders.push(Order { contract: "NQZ6".into(), ..order("d", Side::Buy, OrderKind::Limit, Some(1.0), Stage::Working) });
+        book.orders.push(Order { account: "t/952".into(), ..order("e", Side::Buy, OrderKind::Limit, Some(1.0), Stage::Working) });
         assert_eq!(flat_plan(&book, "t/951", "ESZ6"), Flat { cancel: vec!["a".into(), "b".into()], flatten: false });
         book.positions.push(Position {
             account: "t/951".into(),

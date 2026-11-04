@@ -104,8 +104,8 @@ impl FakeSession {
     /// The exchange has the order `basket`: it is working.
     pub fn open(&self, basket: &str) {
         let mut book = self.book.lock().unwrap();
-        if let Some(order) = book.orders.iter_mut().find(|o| o.basket_id == basket && o.status == Status::Pending) {
-            order.status = Status::Working;
+        if let Some(order) = book.orders.iter_mut().find(|o| o.basket_id == basket && o.status == Stage::Pending) {
+            order.status = Stage::Working.into();
         }
         drop(book);
         (self.changed)();
@@ -118,12 +118,14 @@ impl FakeSession {
         let Some(order) = book.orders.iter_mut().find(|o| o.basket_id == basket && o.status.working()) else {
             return;
         };
-        order.filled = (order.filled + qty).min(order.qty);
+        let qty = qty.min(order.qty - order.filled);
+        order.filled += qty;
         order.status = match order.filled == order.qty {
-            true => Status::Filled,
-            false => Status::PartiallyFilled,
+            true => Stage::Filled.into(),
+            false => Stage::PartiallyFilled.into(),
         };
         order.fill_price = order.price;
+        order.fills.push(Fill { basket: basket.into(), at: 0, qty, price: order.price.unwrap_or(0.0) });
         let order = order.clone();
         let bought = if order.side == Side::Buy { qty as i32 } else { -(qty as i32) };
         FakeSession::hold(&mut book, &order.account, &order.contract, &order.exchange, bought, order.price.unwrap_or(0.0));
@@ -138,7 +140,7 @@ impl FakeSession {
         for group in links.iter().filter(|group| group.iter().any(|b| b == basket)) {
             for other in group.iter().filter(|b| *b != basket) {
                 if let Some(order) = book.orders.iter_mut().find(|o| o.basket_id == *other && o.status.working()) {
-                    order.status = Status::Cancelled;
+                    order.status = Stage::Cancelled.into();
                 }
             }
         }
@@ -153,9 +155,10 @@ impl FakeSession {
             return;
         };
         let left = order.qty - order.filled;
-        order.status = Status::Filled;
+        order.status = Stage::Filled.into();
         order.filled = order.qty;
         order.fill_price = order.price.or(Some(last));
+        order.fills.push(Fill { basket: basket.into(), at: 0, qty: left, price: order.fill_price.unwrap_or(last) });
         let order = order.clone();
         let bought = if order.side == Side::Buy { left as i32 } else { -(left as i32) };
         FakeSession::hold(&mut book, &order.account, &order.contract, &order.exchange, bought, order.fill_price.unwrap_or(last));
@@ -213,7 +216,7 @@ impl Session for FakeSession {
     fn book(&self) -> Book {
         self.book.lock().unwrap().clone()
     }
-    fn place(&self, order: &Order) -> Result<String, Failure> {
+    fn place(&self, order: &OrderRequest) -> Result<String, Failure> {
         if self.gone.load(Ordering::Acquire) {
             return Err(Failure::Refused("the session was signed out".into()));
         }
@@ -225,8 +228,7 @@ impl Session for FakeSession {
         let mut book = self.book.lock().unwrap();
         book.orders.insert(
             0,
-            WorkingOrder {
-                said: None,
+            Order {
                 account: order.account.clone(),
                 basket_id: basket.clone(),
                 contract: order.contract.clone(),
@@ -237,11 +239,15 @@ impl Session for FakeSession {
                 kind: order.kind,
                 price: order.price,
                 status: match (filled, held) {
-                    (true, _) => Status::Filled,
-                    (false, true) => Status::Pending,
-                    (false, false) => Status::Working,
+                    (true, _) => Stage::Filled.into(),
+                    (false, true) => Stage::Pending.into(),
+                    (false, false) => Stage::Working.into(),
                 },
                 fill_price: filled.then_some(last),
+                fills: match filled {
+                    true => vec![Fill { basket: basket.clone(), at: 0, qty: order.qty, price: last }],
+                    false => Vec::new(),
+                },
                 at: 0,
                 tag: Some(order.tag.clone()),
                 tick: Some(0.25),
@@ -260,7 +266,7 @@ impl Session for FakeSession {
         let mut book = self.book.lock().unwrap();
         let order = book.orders.iter_mut().find(|order| order.basket_id == basket && order.status.working());
         let Some(order) = order else { return Err(Failure::Refused("not working".into())) };
-        order.status = Status::Cancelled;
+        order.status = Stage::Cancelled.into();
         self.end_linked(&mut book, basket);
         drop(book);
         (self.changed)();
@@ -285,7 +291,7 @@ impl Session for FakeSession {
         self.refused()?;
         let mut book = self.book.lock().unwrap();
         for order in book.orders.iter_mut().filter(|order| order.account == account && order.status.working()) {
-            order.status = Status::Cancelled;
+            order.status = Stage::Cancelled.into();
         }
         drop(book);
         (self.changed)();
@@ -345,8 +351,6 @@ pub(crate) mod tests {
             id: id.into(),
             name: None,
             currency: Some("USD".into()),
-            fcm: "FCM".into(),
-            ib: "IB".into(),
             balance: None,
         }
     }
@@ -384,9 +388,8 @@ pub(crate) mod tests {
         }
     }
 
-    pub(crate) fn order(basket: &str, side: Side, kind: OrderKind, price: Option<f64>, status: Status) -> WorkingOrder {
-        WorkingOrder {
-            said: None,
+    pub(crate) fn order(basket: &str, side: Side, kind: OrderKind, price: Option<f64>, status: impl Into<Status>) -> Order {
+        Order {
             account: "t/951".into(),
             basket_id: basket.into(),
             contract: "ESZ6".into(),
@@ -396,8 +399,9 @@ pub(crate) mod tests {
             filled: 0,
             kind,
             price,
-            status,
+            status: status.into(),
             fill_price: None,
+            fills: Vec::new(),
             at: 0,
             tag: None,
             tick: Some(0.25),
@@ -411,7 +415,7 @@ pub(crate) mod tests {
         let session = FakeSession::new(vec![account("1", "951")], Box::new(|| {}));
         let place = |side, kind, price| {
             session
-                .place(&Order {
+                .place(&OrderRequest {
                     account: "951".into(),
                     contract: "ESZ6".into(),
                     exchange: "CME".into(),
@@ -429,14 +433,14 @@ pub(crate) mod tests {
         assert_eq!(session.book().order(&target).and_then(|o| o.price), Some(7_645.0));
         session.link("951", &[target.clone(), stop.clone()]).unwrap();
         session.cancel("951", &target).unwrap();
-        assert_eq!(session.book().order(&stop).map(|o| o.status.clone()), Some(Status::Cancelled));
+        assert_eq!(session.book().order(&stop).map(|o| o.status.stage), Some(Stage::Cancelled));
         assert!(session.modify("951", &stop, 7_590.0).is_err(), "moved after it was cancelled");
 
         let target = place(Side::Sell, OrderKind::Limit, 7_640.0);
         let stop = place(Side::Sell, OrderKind::Stop, 7_600.0);
         session.link("951", &[target.clone(), stop.clone()]).unwrap();
         session.fill(&stop);
-        assert_eq!(session.book().order(&target).map(|o| o.status.clone()), Some(Status::Cancelled));
+        assert_eq!(session.book().order(&target).map(|o| o.status.stage), Some(Stage::Cancelled));
         *session.refuse.lock().unwrap() = Some("price out of band".into());
         assert_eq!(session.cancel("951", &target), Err(Failure::Refused("price out of band".into())));
     }

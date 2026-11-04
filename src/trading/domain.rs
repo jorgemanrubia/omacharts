@@ -47,10 +47,6 @@ pub struct Account {
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub currency: Option<String>,
-    #[serde(default)]
-    pub fcm: String,
-    #[serde(default)]
-    pub ib: String,
     /// What the PnL plant last said it holds; `None` until it has.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub balance: Option<f64>,
@@ -246,46 +242,97 @@ impl OrderKind {
     }
 }
 
-/// Where an order stands, whichever broker it is with: each session maps
-/// its own words into these.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Status {
+/// How far an order has got, whichever broker it is with: each session
+/// maps its own words into these.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stage {
     /// Sent, not yet working.
     Pending,
     Working,
     PartiallyFilled,
     Filled,
     Cancelled,
-    /// Refused, in the broker's own words.
-    Rejected(String),
+    Rejected,
+}
+
+impl Stage {
+    /// Still to fill or be cancelled, so it can be cancelled.
+    pub fn working(self) -> bool {
+        matches!(self, Stage::Pending | Stage::Working | Stage::PartiallyFilled)
+    }
+}
+
+/// Where an order stands: its [`Stage`], and what the broker last said of
+/// it in its own words, whatever the stage: why it was rejected, who
+/// cancelled it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Status {
+    pub stage: Stage,
+    pub said: Option<String>,
 }
 
 impl Status {
+    pub fn said(stage: Stage, said: impl Into<String>) -> Status {
+        Status { stage, said: Some(said.into()) }
+    }
+
     /// Still to fill or be cancelled, so it can be cancelled.
     pub fn working(&self) -> bool {
-        matches!(self, Status::Pending | Status::Working | Status::PartiallyFilled)
+        self.stage.working()
     }
 
     pub fn word(&self) -> &'static str {
-        match self {
-            Status::Pending => "Pending",
-            Status::Working => "Working",
-            Status::PartiallyFilled => "Part filled",
-            Status::Filled => "Filled",
-            Status::Cancelled => "Cancelled",
-            Status::Rejected(_) => "Rejected",
+        match self.stage {
+            Stage::Pending => "Pending",
+            Stage::Working => "Working",
+            Stage::PartiallyFilled => "Part filled",
+            Stage::Filled => "Filled",
+            Stage::Cancelled => "Cancelled",
+            Stage::Rejected => "Rejected",
         }
+    }
+}
+
+impl From<Stage> for Status {
+    fn from(stage: Stage) -> Status {
+        Status { stage, said: None }
+    }
+}
+
+impl PartialEq<Stage> for Status {
+    fn eq(&self, stage: &Stage) -> bool {
+        self.stage == *stage
     }
 }
 
 /// An account's money, as its broker pushed it.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct AccountPnl {
+pub struct Money {
     /// [`Account::key`] on the desk; the number inside a session.
     pub key: String,
     pub balance: Option<f64>,
+    /// Closed today.
     pub realized_day: Option<f64>,
+    /// Open now.
     pub unrealized: Option<f64>,
+    /// Today's, closed and open, as the broker counts it: what a daily loss
+    /// limit is held to.
+    pub day_pnl: Option<f64>,
+    /// What the broker's risk system holds the account to, once it has said.
+    pub limits: Option<Limits>,
+}
+
+/// What a broker's risk system holds an account to, each `None` where it
+/// sets no limit or does not say.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Limits {
+    /// How far today's P&L may fall before the account stops trading.
+    pub loss_limit: Option<f64>,
+    /// The most one order may be for.
+    pub max_order_qty: Option<u32>,
+    /// The most that may be held long, and short.
+    pub buy_limit: Option<u32>,
+    pub sell_limit: Option<u32>,
 }
 
 /// A position held in one contract.
@@ -304,9 +351,9 @@ pub struct Position {
     pub tick: Option<f64>,
 }
 
-/// An order the broker has told of, working or done.
+/// An order the broker has told of, at any stage.
 #[derive(Clone, Debug, PartialEq)]
-pub struct WorkingOrder {
+pub struct Order {
     /// The account's key on the desk; its number inside a session.
     pub account: String,
     pub basket_id: String,
@@ -314,28 +361,40 @@ pub struct WorkingOrder {
     pub exchange: String,
     pub side: Side,
     pub qty: u32,
-    /// How much of it has filled so far.
+    /// How much of it has filled so far, as the broker counts it.
     pub filled: u32,
     pub kind: OrderKind,
     pub price: Option<f64>,
     pub status: Status,
+    /// The average price it filled at, as the broker works it out.
     pub fill_price: Option<f64>,
+    /// Each fill, oldest first, when the broker tells them one by one.
+    pub fills: Vec<Fill>,
     /// Unix seconds.
     pub at: i64,
     pub tag: Option<String>,
     /// The step its price moves in, when the broker knows it.
     pub tick: Option<f64>,
-    /// What the broker last said of it in its own words, for display.
-    pub said: Option<String>,
+}
+
+/// Part or all of an order, filled.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Fill {
+    /// The order it is part of, by the broker's id.
+    pub basket: String,
+    /// Unix seconds.
+    pub at: i64,
+    pub qty: u32,
+    pub price: f64,
 }
 
 /// What every live session knows of orders, positions and money.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Book {
-    pub accounts: Vec<AccountPnl>,
+    pub accounts: Vec<Money>,
     pub positions: Vec<Position>,
     /// Newest first.
-    pub orders: Vec<WorkingOrder>,
+    pub orders: Vec<Order>,
     /// What each live login's session can do, by login id.
     pub capabilities: HashMap<String, Capabilities>,
 }
@@ -346,7 +405,7 @@ impl Book {
         self.capabilities.get(account.split_once('/').map_or(account, |(login, _)| login))
     }
 
-    pub fn money(&self, key: &str) -> Option<&AccountPnl> {
+    pub fn money(&self, key: &str) -> Option<&Money> {
         self.accounts.iter().find(|money| money.key == key)
     }
 
@@ -356,20 +415,20 @@ impl Book {
     }
 
     /// `account`'s working orders in `contract`.
-    pub fn working<'a>(&'a self, account: &'a str, contract: &'a str) -> impl Iterator<Item = &'a WorkingOrder> {
+    pub fn working<'a>(&'a self, account: &'a str, contract: &'a str) -> impl Iterator<Item = &'a Order> {
         self.orders
             .iter()
             .filter(move |order| order.account == account && order.contract == contract && order.status.working())
     }
 
-    pub fn order(&self, basket: &str) -> Option<&WorkingOrder> {
+    pub fn order(&self, basket: &str) -> Option<&Order> {
         self.orders.iter().find(|order| order.basket_id == basket)
     }
 }
 
 /// An order to place: one contract, good for the day, entered by hand.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Order {
+pub struct OrderRequest {
     /// The account's number, inside its login's session.
     pub account: String,
     pub contract: String,
@@ -382,7 +441,7 @@ pub struct Order {
     pub tag: String,
 }
 
-impl Order {
+impl OrderRequest {
     /// The order a trader asks for, before it goes to a broker: `quantity`
     /// of `contract` on the account numbered `account`, `side` and `kind`,
     /// at `price` for a limit or a stop and at the market for a market
@@ -395,13 +454,13 @@ impl Order {
         kind: OrderKind,
         quantity: Quantity,
         price: Option<f64>,
-    ) -> Result<Order, String> {
+    ) -> Result<OrderRequest, String> {
         let price = match (kind, price) {
             (OrderKind::Market, _) => None,
             (_, Some(price)) if price.is_finite() => Some(price),
             (_, _) => return Err(format!("A {} order needs a price", kind.word().to_lowercase())),
         };
-        Ok(Order {
+        Ok(OrderRequest {
             account: account.to_string(),
             contract: contract.symbol.clone(),
             exchange: contract.exchange.clone(),
@@ -447,19 +506,19 @@ mod tests {
     fn an_order_request_is_built_from_what_was_asked() {
         let contract = Contract { symbol: "ESZ6".into(), exchange: "CME".into(), tick: Some(0.25) };
         let two = Quantity::new(2).unwrap();
-        let market = Order::request("951", &contract, Side::Buy, OrderKind::Market, two, Some(7_600.0)).unwrap();
+        let market = OrderRequest::request("951", &contract, Side::Buy, OrderKind::Market, two, Some(7_600.0)).unwrap();
         assert_eq!(
             (market.account.as_str(), market.contract.as_str(), market.exchange.as_str()),
             ("951", "ESZ6", "CME")
         );
         assert_eq!((market.side, market.kind, market.qty, market.price), (Side::Buy, OrderKind::Market, 2, None));
         assert!(market.tag.starts_with("omacharts:"));
-        let limit = Order::request("951", &contract, Side::Sell, OrderKind::Limit, two, Some(7_620.0)).unwrap();
+        let limit = OrderRequest::request("951", &contract, Side::Sell, OrderKind::Limit, two, Some(7_620.0)).unwrap();
         assert_eq!((limit.kind, limit.price), (OrderKind::Limit, Some(7_620.0)));
         assert_eq!(
-            Order::request("951", &contract, Side::Sell, OrderKind::Stop, two, None),
+            OrderRequest::request("951", &contract, Side::Sell, OrderKind::Stop, two, None),
             Err("A stop order needs a price".to_string())
         );
-        assert!(Order::request("951", &contract, Side::Sell, OrderKind::Limit, two, Some(f64::NAN)).is_err());
+        assert!(OrderRequest::request("951", &contract, Side::Sell, OrderKind::Limit, two, Some(f64::NAN)).is_err());
     }
 }

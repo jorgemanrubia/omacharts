@@ -21,7 +21,7 @@ pub trait Broker: Send + Sync {
 /// **The seam for brokers.** [`Broker`] and this are everything the window,
 /// the panel, the chart menu, the marks and the theme know of a broker:
 /// what is above them deals only in the neutral types here ([`Book`],
-/// [`Order`], [`OrderKind`], [`Status`], [`Refusal`]), so Interactive
+/// [`OrderRequest`], [`OrderKind`], [`Status`], [`Refusal`]), so Interactive
 /// Brokers or Tradovate is a second implementation of the two traits and
 /// nothing else. Rithmic is the first, in [`super::adapters`]; the tests'
 /// session is another.
@@ -47,7 +47,7 @@ pub trait Session: Send + Sync {
     /// Every order, position and balance it has heard of.
     fn book(&self) -> Book;
     /// Place `order` and return the broker's id for it. Never retried.
-    fn place(&self, order: &Order) -> Result<String, Failure>;
+    fn place(&self, order: &OrderRequest) -> Result<String, Failure>;
     fn cancel(&self, account: &str, basket: &str) -> Result<(), Failure>;
     /// Move the working order `basket` to `price`, keeping everything else
     /// about it. Only when [`Capabilities::modify`] says so.
@@ -257,10 +257,10 @@ impl Desk {
             let theirs = session.book();
             book.capabilities.insert(login.id.clone(), session.capabilities());
             let key = |number: String| format!("{}/{number}", login.id);
-            book.accounts.extend(theirs.accounts.into_iter().map(|money| AccountPnl { key: key(money.key), ..money }));
+            book.accounts.extend(theirs.accounts.into_iter().map(|money| Money { key: key(money.key), ..money }));
             book.positions
                 .extend(theirs.positions.into_iter().map(|held| Position { account: key(held.account), ..held }));
-            book.orders.extend(theirs.orders.into_iter().map(|order| WorkingOrder { account: key(order.account), ..order }));
+            book.orders.extend(theirs.orders.into_iter().map(|order| Order { account: key(order.account), ..order }));
         }
         book.orders.sort_by_key(|order| std::cmp::Reverse(order.at));
         book
@@ -348,7 +348,7 @@ pub enum Request {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Pending {
     /// The order as sent, on the account with the key `key`.
-    Place { key: String, order: Order },
+    Place { key: String, order: OrderRequest },
     /// To this price.
     Move(f64),
     Cancel,
@@ -518,7 +518,7 @@ mod tests {
         assert!(empty.orders.is_empty() && empty.positions.is_empty() && empty.accounts.is_empty());
         assert!(empty.capabilities_of("t/951").is_some_and(|can| can.flatten));
 
-        let buy = Order {
+        let buy = OrderRequest {
             account: "951".into(),
             contract: "ESZ6".into(),
             exchange: "CME".into(),
@@ -532,9 +532,11 @@ mod tests {
         let book = desk.book(&logins);
         let held = book.position("t/951", "ESZ6").expect("held");
         assert_eq!((held.net, held.avg), (1, Some(7_612.25)));
-        assert_eq!(book.orders[0].status, Status::Filled);
+        assert_eq!(book.orders[0].status, Stage::Filled);
+        let basket = book.orders[0].basket_id.clone();
+        assert_eq!(book.orders[0].fills, vec![Fill { basket, at: 0, qty: 1, price: 7_612.25 }]);
 
-        let limit = Order { side: Side::Sell, kind: OrderKind::Limit, price: Some(7_620.0), ..buy };
+        let limit = OrderRequest { side: Side::Sell, kind: OrderKind::Limit, price: Some(7_620.0), ..buy };
         let basket = session.place(&limit).unwrap();
         assert_eq!(desk.book(&logins).working("t/951", "ESZ6").count(), 1);
         session.cancel("951", &basket).unwrap();

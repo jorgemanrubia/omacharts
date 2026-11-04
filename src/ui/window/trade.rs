@@ -16,7 +16,7 @@ use adw::prelude::*;
 use gtk::{gio, glib};
 
 use super::Window;
-use crate::trading::{self, Failure, OrderKind, Pending, Request, Side, Status};
+use crate::trading::{self, Failure, OrderKind, Pending, Request, Side, Stage};
 use crate::ui::pane::ChartPane;
 use crate::ui::trading_panel::{Hands, TradingPanel};
 
@@ -55,7 +55,7 @@ pub(super) struct Trade {
     pub cluster: RefCell<Option<gtk::Box>>,
     /// Orders placed from this window, by basket, and where each stood when
     /// it was last reported, so each step is toasted once.
-    pub placed: RefCell<HashMap<String, Status>>,
+    pub placed: RefCell<HashMap<String, Stage>>,
     /// The desk's call to read Trading again, kept alive with the window.
     pub listener: RefCell<Option<Rc<dyn Fn()>>>,
     /// The chart's actions, which `chart.order` and `chart.cancel-order`
@@ -549,7 +549,7 @@ impl Window {
             return self.toast(&trading::crossed_text(&price_text, kind, side));
         }
         let size = self.size_of(&pane);
-        match trading::Order::request(&target.account.id, &target.contract(), side, kind, size, price) {
+        match trading::OrderRequest::request(&target.account.id, &target.contract(), side, kind, size, price) {
             Ok(order) => self.place(target, order),
             Err(why) => self.toast(&format!("{why} · not placed")),
         }
@@ -557,7 +557,7 @@ impl Window {
 
     /// Send `order` off the main loop, one at a time per account. A failure
     /// is said and never retried.
-    fn place(self: &Rc<Self>, target: trading::Target, order: trading::Order) {
+    fn place(self: &Rc<Self>, target: trading::Target, order: trading::OrderRequest) {
         self.place_then(target, order, |_, _| {});
     }
 
@@ -566,7 +566,7 @@ impl Window {
     fn place_then(
         self: &Rc<Self>,
         target: trading::Target,
-        order: trading::Order,
+        order: trading::OrderRequest,
         then: impl FnOnce(&Rc<Self>, String) + 'static,
     ) {
         let key = target.account.key();
@@ -579,7 +579,7 @@ impl Window {
         self.send(&target, move |session, _| session.place(&order), move |this, outcome| {
             this.trade.placing.done(&key);
             if let Some(basket) = this.heard(&request, outcome, "Not placed") {
-                this.trade.placed.borrow_mut().insert(basket.clone(), Status::Pending);
+                this.trade.placed.borrow_mut().insert(basket.clone(), Stage::Pending);
                 this.desk.tell();
                 then(this, basket);
             }
@@ -656,7 +656,7 @@ impl Window {
         let request = Request::Cancel(basket.clone());
         self.ask(request.clone(), Pending::Cancel);
         // Said once the book has it cancelled.
-        self.trade.placed.borrow_mut().insert(basket.clone(), order.status.clone());
+        self.trade.placed.borrow_mut().insert(basket.clone(), order.status.stage);
         self.send(&target, move |session, number| session.cancel(number, &basket), move |this, outcome| {
             this.trade.placing.done(&key);
             this.heard(&request, outcome, "Not cancelled");
@@ -686,7 +686,7 @@ impl Window {
         // The whole of what is held, whatever the chart's size: an exit
         // closes the position.
         let Some(size) = trading::Quantity::new(held.net.unsigned_abs()) else { return };
-        let order = match trading::Order::request(&target.account.id, &target.contract(), side, kind, size, Some(price)) {
+        let order = match trading::OrderRequest::request(&target.account.id, &target.contract(), side, kind, size, Some(price)) {
             Ok(order) => order,
             Err(why) => return self.toast(&format!("{why} · not placed")),
         };
@@ -812,7 +812,7 @@ impl Window {
             return self.toast(&format!("{} takes no market orders · not placed", target.login.name));
         }
         let size = self.size_of(&pane);
-        match trading::Order::request(&target.account.id, &target.contract(), side, OrderKind::Market, size, None) {
+        match trading::OrderRequest::request(&target.account.id, &target.contract(), side, OrderKind::Market, size, None) {
             Ok(order) => self.place(target, order),
             Err(why) => self.toast(&format!("{why} · not placed")),
         }
@@ -1074,7 +1074,7 @@ impl Window {
                     kind: order.kind,
                     qty: order.qty,
                     // Not yet working at the exchange, or asked to move or go.
-                    dim: order.status == Status::Pending || moving.is_some() || cancelling,
+                    dim: order.status == Stage::Pending || moving.is_some() || cancelling,
                     price: at,
                     words: trading::order_pill_text(order),
                     price_text: price(at),
@@ -1175,12 +1175,12 @@ impl Window {
                     .find(|account| account.key() == order.account)
                     .map(|account| view.account_name(account))
                     .unwrap_or_default();
-                if let Some(text) = trading::outcome_text(order, before, decimals, &name) {
+                if let Some(text) = trading::outcome_text(order, *before, decimals, &name) {
                     said.push(text);
                 }
-                *before = order.status.clone();
+                *before = order.status.stage;
             }
-            placed.retain(|_, status| status.working());
+            placed.retain(|_, stage| stage.working());
         }
         for text in said {
             self.toast(&text);
@@ -1322,9 +1322,7 @@ pub(super) mod tests {
                 id: "951".into(),
                 name: None,
                 currency: Some("USD".into()),
-                fcm: String::new(),
-                ib: String::new(),
-                balance: None,
+                    balance: None,
             };
             let session = Arc::new(trading::fake::FakeSession::new(vec![account.clone()], Box::new(|| {})));
             assert!(window.desk.begin(&id));
@@ -1358,7 +1356,7 @@ pub(super) mod tests {
             assert_eq!(session.book().position("951", "ESZ6").map(|held| held.net), Some(1), "bought through the session");
             // The chart shows the position, and a working order once there is one.
             assert_eq!(pane.view.marks(), (Some("▲ +1 @ 7,612.25".to_string()), Vec::new()));
-            let limit = trading::Order {
+            let limit = trading::OrderRequest {
                 account: "951".into(),
                 contract: "ESZ6".into(),
                 exchange: "CME".into(),
@@ -1409,8 +1407,6 @@ pub(super) mod tests {
             id: "951".into(),
             name: None,
             currency: Some("USD".into()),
-            fcm: String::new(),
-            ib: String::new(),
             balance: None,
         };
         let mut session = trading::fake::FakeSession::new(vec![account.clone()], Box::new(|| {}));
@@ -1427,8 +1423,8 @@ pub(super) mod tests {
         (window, pane, session, account.key())
     }
 
-    fn resting(side: Side, kind: OrderKind, price: Option<f64>) -> trading::Order {
-        trading::Order {
+    fn resting(side: Side, kind: OrderKind, price: Option<f64>) -> trading::OrderRequest {
+        trading::OrderRequest {
             account: "951".into(),
             contract: "ESZ6".into(),
             exchange: "CME".into(),
@@ -1483,7 +1479,7 @@ pub(super) mod tests {
 
             pane.view.drop_mark(TradeEvent::Cancel(basket.clone()));
             settle(&window, || orders().is_empty());
-            assert_eq!(session.book().order(&basket).map(|order| order.status.clone()), Some(Status::Cancelled));
+            assert_eq!(session.book().order(&basket).map(|order| order.status.stage), Some(Stage::Cancelled));
             assert!(orders().is_empty(), "a cancelled order left on the chart");
             assert!(window.trade.pending.borrow().is_empty(), "still waiting on a cancel the book has answered");
 
@@ -1538,7 +1534,7 @@ pub(super) mod tests {
             session.fill(&basket);
             pane.view.drop_mark(moved(above(52.0)));
             settle(&window, || false);
-            assert_eq!(session.book().order(&basket).map(|o| o.status.clone()), Some(Status::Filled));
+            assert_eq!(session.book().order(&basket).map(|o| o.status.stage), Some(Stage::Filled));
             assert!(window.trade.pending.borrow().is_empty(), "a filled order waiting to move");
         });
     }
@@ -1670,11 +1666,11 @@ pub(super) mod tests {
             let actions = window.trade.chart_actions.borrow().clone().unwrap();
             actions.activate_action("order", Some(&value.to_variant()));
             assert!(orders().iter().any(|(words, _, dim)| words == "Buying 1…" && *dim), "no pending market order");
-            settle(&window, || session.book().orders.iter().any(|o| o.kind == OrderKind::Market && o.status == Status::Pending));
+            settle(&window, || session.book().orders.iter().any(|o| o.kind == OrderKind::Market && o.status == Stage::Pending));
             settle(&window, || false);
             assert!(orders().iter().any(|(words, ..)| words == "Buying 1…"), "acknowledged is not filled");
             assert_eq!(session.book().position("951", "ESZ6").map(|held| held.net), Some(1));
-            let bought = session.book().orders.iter().find(|o| o.kind == OrderKind::Market && o.status == Status::Pending).unwrap().basket_id.clone();
+            let bought = session.book().orders.iter().find(|o| o.kind == OrderKind::Market && o.status == Stage::Pending).unwrap().basket_id.clone();
             session.fill(&bought);
             window.desk.tell();
             assert!(!orders().iter().any(|(words, ..)| words == "Buying 1…"), "filled, still pending");
@@ -1682,7 +1678,7 @@ pub(super) mod tests {
 
             // Part of an order filled.
             session.holds.store(false, Ordering::Release);
-            let two = session.place(&trading::Order { qty: 2, ..resting(Side::Buy, OrderKind::Limit, Some(off(-60.0))) }).unwrap();
+            let two = session.place(&trading::OrderRequest { qty: 2, ..resting(Side::Buy, OrderKind::Limit, Some(off(-60.0))) }).unwrap();
             session.fill_part(&two, 1);
             window.desk.tell();
             assert!(orders().iter().any(|(words, ..)| words == "▲ Buy Limit 1/2"), "{:?}", orders());
@@ -1958,9 +1954,7 @@ pub(super) mod tests {
                 id: number.to_string(),
                 name: None,
                 currency: Some("USD".into()),
-                fcm: String::new(),
-                ib: String::new(),
-                balance: None,
+                    balance: None,
             })
             .collect();
         let session = Arc::new(trading::fake::FakeSession::new(accounts, Box::new(|| {})));

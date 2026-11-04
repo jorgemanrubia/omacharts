@@ -10,7 +10,7 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 
-use crate::trading::{self, OrderKind, Status, View};
+use crate::trading::{self, OrderKind, Stage, View};
 
 /// A call about an account and an order: the account's key, the basket.
 pub type OnOrder = Box<dyn Fn(&str, &str)>;
@@ -266,13 +266,9 @@ impl TradingPanel {
             .orders
             .iter()
             .map(|order| {
-                let status = match &order.status {
-                    Status::Rejected(why) => format!("Rejected: {why}"),
-                    Status::Cancelled => match &order.said {
-                        Some(said) => format!("Cancelled: {said}"),
-                        None => "Cancelled".to_string(),
-                    },
-                    status => status.word().to_string(),
+                let status = match (order.status.stage, &order.status.said) {
+                    (Stage::Rejected | Stage::Cancelled, Some(said)) => format!("{}: {said}", order.status.word()),
+                    _ => order.status.word().to_string(),
                 };
                 let price = match order.kind {
                     OrderKind::Market => "Market".to_string(),

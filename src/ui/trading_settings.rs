@@ -586,9 +586,7 @@ mod tests {
                 id: "1234".into(),
                 name: None,
                 currency: Some("USD".into()),
-                fcm: String::new(),
-                ib: String::new(),
-                balance: Some(50_210.0),
+                    balance: Some(50_210.0),
             };
             let other = crate::trading::Account { id: "1235".into(), balance: None, ..funded.clone() };
             trading::cache_accounts(&store, &lucid, vec![funded.clone(), other]);
