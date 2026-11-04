@@ -1449,7 +1449,7 @@ pub(super) mod tests {
             }
             assert_eq!(session.book().position("951", "ESZ6").map(|held| held.net), Some(1), "bought through the session");
             // The chart shows the position, and a working order once there is one.
-            assert_eq!(pane.view.marks(), (Some("▲ +1 @ 7,612.25".to_string()), Vec::new()));
+            assert_eq!(pane.view.marks(), (Some("▲ +1 at 7,612.25".to_string()), Vec::new()));
             let limit = trading::OrderRequest {
                 account: "951".into(),
                 contract: "ESZ6".into(),

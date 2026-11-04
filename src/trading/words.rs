@@ -133,7 +133,7 @@ pub fn net_text(net: i32) -> String {
 pub fn position_text(held: &Position, decimals: usize, currency: Option<&str>) -> String {
     match (held.open_pnl, held.avg) {
         (Some(pnl), _) => format!("{} · {}", net_text(held.net), pnl_text(pnl, currency)),
-        (None, Some(avg)) => format!("{} @ {}", net_text(held.net), omacharts_engine::grouped_decimals(avg, decimals)),
+        (None, Some(avg)) => format!("{} at {}", net_text(held.net), omacharts_engine::grouped_decimals(avg, decimals)),
         (None, None) => net_text(held.net),
     }
 }
@@ -217,7 +217,7 @@ mod tests {
             open_pnl: None,
             tick: Some(0.25),
         };
-        assert_eq!(position_text(&held, 2, Some("USD")), "+1 @ 7,612.25");
+        assert_eq!(position_text(&held, 2, Some("USD")), "+1 at 7,612.25");
         held.open_pnl = Some(125.0);
         assert_eq!(position_text(&held, 2, Some("USD")), "+1 · +$125.00");
         held.net = -2;

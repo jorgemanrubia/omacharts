@@ -6558,7 +6558,7 @@ pub struct OrderMark {
 #[derive(Clone, Debug, PartialEq)]
 pub struct PositionMark {
     pub price: f64,
-    /// "▲ +1 · +$125.00", or "▲ +1 @ 7,612.25" until the P&L has come.
+    /// "▲ +1 · +$125.00", or "▲ +1 at 7,612.25" until the P&L has come.
     pub words: String,
     pub price_text: String,
     pub colour: String,
