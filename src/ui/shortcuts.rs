@@ -352,6 +352,34 @@ mod tests {
             .any(|binding| binding.accels.iter().any(|a| ["<Ctrl>b", "<Ctrl>s", "<Ctrl>f", "<Ctrl>d"].contains(a))));
     }
 
+    /// The keys that moved to Ctrl+Shift reach their actions once installed,
+    /// and reach them as a keyboard delivers them. With Shift held a key types
+    /// its capital — `B`, Shift consumed — and GTK matches `<Ctrl><Shift>b` by
+    /// uppercasing the letter it was given and comparing. So each accelerator
+    /// has to be the lowercase letter with Shift as a modifier: GDK4 has no
+    /// public way to make a key event to prove the rest with, which is what a
+    /// run in `bin/headless-window` is for.
+    #[test]
+    fn the_keys_moved_to_shift_reach_their_actions() {
+        use gtk::gdk::{Key, ModifierType};
+        crate::ui::on_gtk(|| {
+            let _ = adw::init();
+            let app = adw::Application::new(None::<&str>, gio::ApplicationFlags::NON_UNIQUE);
+            install(&app);
+            for (accel, action, delivered) in [
+                ("<Ctrl><Shift>b", "win.watchlist", Key::B),
+                ("<Ctrl><Shift>d", "win.drawing-tools", Key::D),
+                ("<Ctrl><Shift>j", "win.log", Key::J),
+            ] {
+                let actions = app.actions_for_accel(accel);
+                assert!(actions.iter().any(|a| a == action), "{accel} reaches {actions:?}, not {action}");
+                let (key, mods) = gtk::accelerator_parse(accel).expect(accel);
+                assert_eq!(mods, ModifierType::CONTROL_MASK | ModifierType::SHIFT_MASK, "{accel}");
+                assert_eq!(key.to_upper(), delivered, "{accel}");
+            }
+        });
+    }
+
     /// Screenshots went on Ctrl+O, and link modes on Ctrl+L, so that Ctrl+P
     /// is free for a command palette.
     #[test]

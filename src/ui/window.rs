@@ -804,6 +804,27 @@ mod tests {
         assert_eq!(number_row(9), None, "escape");
     }
 
+    /// Ctrl+Shift and the number row, as each kind of keyboard delivers it.
+    #[test]
+    fn a_shifted_digit_is_read_by_where_it_is_then_by_what_it_types() {
+        use gtk::gdk::Key;
+        // A US desk keyboard: Shift turns the row into symbols, and the
+        // keycode is what says which.
+        assert_eq!(shifted_number(Key::exclam, 10), Some(1));
+        assert_eq!(shifted_number(Key::at, 11), Some(2));
+        assert_eq!(shifted_number(Key::parenleft, 18), Some(9));
+        // AZERTY, which types the digit only with Shift: both agree.
+        assert_eq!(shifted_number(Key::_1, 10), Some(1));
+        // Spanish, whose Shift+3 is a middle dot: the position still says 3.
+        assert_eq!(shifted_number(Key::periodcentered, 12), Some(3));
+        // A virtual keyboard puts every key at one code off the row; the
+        // digit it typed is all there is to go on.
+        assert_eq!(shifted_number(Key::_4, 9), Some(4));
+        // Neither: a letter off the row is no number at all.
+        assert_eq!(shifted_number(Key::B, 56), None);
+        assert_eq!(shifted_number(Key::exclam, 9), None);
+    }
+
     /// None and two templates: stepping goes round both ways.
     #[test]
     fn stepping_through_templates_wraps_at_either_end() {
@@ -1359,6 +1380,18 @@ fn number_row(keycode: u32) -> Option<usize> {
         19 => Some(0),
         _ => None,
     }
+}
+
+/// Which digit a key with Shift held means: by where it is, or, when the
+/// keycode is not on the number row, by the digit it typed.
+///
+/// Where it is comes first, because Shift makes the row type "!" and "@" on
+/// one layout and "!" and "\"" on another. The digit is for the keyboards
+/// whose keycodes say nothing about position — a virtual one builds its
+/// keymap per run and puts every key at the same code — and for a layout
+/// that types digits only with Shift held, where both agree anyway.
+fn shifted_number(key: gtk::gdk::Key, keycode: u32) -> Option<usize> {
+    number_row(keycode).or_else(|| key.to_unicode().and_then(|c| c.to_digit(10)).map(|n| n as usize))
 }
 
 /// The chart action a trading key reaches, and its target: Ctrl+B, Ctrl+S
@@ -5532,7 +5565,7 @@ impl Window {
             // and "@" on another and digits only on a third — the trap the
             // note on chart settings in `shortcuts` describes.
             if ctrl && alt && shift {
-                if let Some(n) = number_row(keycode) {
+                if let Some(n) = shifted_number(key, keycode) {
                     this.pick_template(n);
                     return glib::Propagation::Stop;
                 }
@@ -5558,7 +5591,7 @@ impl Window {
             if ctrl
                 && !alt
                 && shift
-                && let Some(n) = number_row(keycode).filter(|n| *n > 0)
+                && let Some(n) = shifted_number(key, keycode).filter(|n| *n > 0)
                 && let Some(rail) = this.watchlist.borrow().clone()
                 && rail.show_numbered(n)
             {
