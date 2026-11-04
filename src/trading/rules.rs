@@ -8,8 +8,8 @@ use super::logins::login_in;
 use super::*;
 
 /// Which account a chart is about: the one chosen for it while it is still
-/// listed, else the default. The header asks this, and the order ticket
-/// will, so they can never disagree.
+/// listed, else the default. The header and the orders both ask this, so
+/// they can never disagree.
 pub fn account_of<'a>(accounts: &'a [Account], default: Option<&str>, chosen: Option<&str>) -> Option<&'a Account> {
     chosen
         .and_then(|key| accounts.iter().find(|account| account.key() == key))

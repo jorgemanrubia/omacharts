@@ -168,12 +168,12 @@ pub enum Standing {
     Saved,
     /// Signed out, or never signed in: there is no password to sign in with.
     SignedOut,
-    /// Rithmic turned it down, or ended its session, in these words.
+    /// The broker turned it down, or ended its session, in these words.
     Refused(String),
 }
 
 impl Standing {
-    /// The words for its row: "live", "not signed in", Rithmic's own.
+    /// The words for its row: "live", "not signed in", the broker's own.
     pub fn words(&self) -> String {
         match self {
             Standing::Live => "live".into(),

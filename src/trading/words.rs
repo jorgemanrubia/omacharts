@@ -10,9 +10,9 @@ pub fn crossed_text(price: &str, kind: OrderKind, side: Side) -> String {
     format!("{price} is now {which} the market · not placed")
 }
 
-/// What an order dragged to a price says beside the hand, and what a
-/// live account is asked: "Sell Limit 1 · 7,640.00 · +11 ticks", the
-/// ticks from where it started when the chart knows its tick.
+/// What an order dragged to a price says beside the hand: "Sell Limit 1 ·
+/// 7,640.00 · +11 ticks", the ticks from where it started when the chart
+/// knows its tick.
 pub fn preview_text(side: Side, kind: OrderKind, qty: u32, price: &str, ticks: Option<i64>) -> String {
     let words = format!("{} {qty} · {price}", order_words(side, kind));
     match ticks {
@@ -112,7 +112,7 @@ pub fn net_text(net: i32) -> String {
     format!("{net:+}")
 }
 
-/// What a position's pill says: its size and Rithmic's open P&L, or its
+/// What a position's pill says: its size and the broker's open P&L, or its
 /// price until the P&L has arrived.
 pub fn position_text(held: &Position, decimals: usize, currency: Option<&str>) -> String {
     match (held.open_pnl, held.avg) {

@@ -24,8 +24,7 @@
 //! refuses to open a second.
 //!
 //! Which account a chart is about is decided in one place, [`account_of`],
-//! for the header now and for the order ticket later, so the two can never
-//! disagree.
+//! for the header and the orders alike, so the two can never disagree.
 //!
 //! The files, so that each kind of thing has one place:
 //!

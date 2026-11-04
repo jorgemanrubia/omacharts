@@ -1,6 +1,6 @@
 //! What trading puts in the window: the panel under the charts and its
-//! toggle in the corner, the toasts orders report in, and later the
-//! chart menu's orders and the marks on the charts.
+//! toggle in the corner, the toasts orders report in, the chart menu's
+//! orders and the marks on the charts.
 //!
 //! None of it exists without a broker login. The window of somebody who
 //! only charts from Yahoo is the window it always was: no divider under the
