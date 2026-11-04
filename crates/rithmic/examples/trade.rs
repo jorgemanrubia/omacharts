@@ -37,6 +37,9 @@ fn main() {
         Ok(trading) => trading,
         Err(error) => return eprintln!("{error}"),
     };
+    if let Err(error) = trading.refresh() {
+        eprintln!("refresh: {error}");
+    }
     let Some(account) = trading.accounts().first().map(|account| account.id.clone()) else {
         trading.sign_out();
         return eprintln!("the login lists no account");

@@ -308,14 +308,14 @@ impl Connection {
 
     /// The trading half: the order and PnL plants, signed in if they are
     /// not yet, which this blocks for, so it is for a thread of its own.
-    /// The accounts are listed, and their working orders, positions and
-    /// balances asked for, before it returns.
+    /// The accounts are listed, and what they push subscribed to, before it
+    /// returns; what they hold now is [`Trading::refresh`]'s to ask.
     ///
     /// `pulse` hears, on the connection's thread, whenever an order,
     /// position or balance moves ([`Pulse::Moved`]), the half drops or is
     /// signed out from elsewhere ([`Pulse::Lost`]), and it is back after a
-    /// drop ([`Pulse::Back`]), which is the cue to reconcile: the book was
-    /// asked for again. It replaces the pulse of whoever opened it before.
+    /// drop ([`Pulse::Back`]), which is the cue to refresh and then to
+    /// reconcile. It replaces the pulse of whoever opened it before.
     ///
     /// Signing in fails the first time and the half is closed again; once
     /// it has been up, a drop is reconnected, and orders are refused until

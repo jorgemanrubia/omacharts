@@ -16,22 +16,25 @@
 //! Signed in once and kept until [`Trading::sign_out`]. A drop is
 //! reconnected by the connection, as the data half's is, and orders are
 //! refused meanwhile: an order is never sent again behind a trader's back.
-//! Once back it says so ([`Pulse::Back`]), with the book asked for again.
+//! Once back it says so ([`Pulse::Back`]), the cue for [`Trading::refresh`],
+//! which asks for everything the accounts hold, are working and did today.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rithmic_rs::rti::messages::RithmicMessage;
 use rithmic_rs::rti::{
-    AccountPnLPositionUpdate, ExchangeOrderNotification, InstrumentPnLPositionUpdate, ResponseAccountList,
+    AccountPnLPositionUpdate, AccountRmsUpdates, ExchangeOrderNotification, InstrumentPnLPositionUpdate,
+    ResponseAccountList, ResponseAccountRmsInfo, ResponseShowFillHistory,
     RithmicOrderNotification,
 };
 use rithmic_rs::{
     ConnectStrategy, ManualOrAutoEntry, OrderSide, OrderStatus, OrderType, RithmicAccount, RithmicCancelAllOrders,
     RithmicCancelOrder, RithmicExitPosition, RithmicLinkOrders, RithmicModifyOrder, RithmicOrder, RithmicOrderPlant,
-    RithmicOrderPlantHandle, RithmicPnlPlant, RithmicPnlPlantHandle, RithmicResponse, TimeInForce,
+    RithmicOrderPlantHandle, RithmicPnlPlant, RithmicPnlPlantHandle, RithmicResponse, RmsUpdateBits, TimeInForce,
 };
+use rithmic_rs::FillHistoryRange;
 use tokio::sync::{broadcast, oneshot, watch};
 
 use crate::client::{config, error_of, signed_in, within};
@@ -134,6 +137,36 @@ pub struct WorkingOrder {
     pub tag: Option<String>,
     /// What Rithmic last said of it in words, when it said anything.
     pub said: Option<String>,
+    /// Each fill, oldest first, from the fill history and the exchange's
+    /// notifications.
+    pub fills: Vec<Fill>,
+}
+
+/// Part or all of an order, filled.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Fill {
+    /// The order it is part of.
+    pub basket_id: String,
+    /// Rithmic's id for the fill, by which the history and a notification
+    /// of the same fill are known to be one.
+    pub id: Option<String>,
+    /// Unix seconds.
+    pub at: i64,
+    pub qty: u32,
+    pub price: f64,
+}
+
+/// What Rithmic's risk system holds an account to, from its RMS info.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Limits {
+    /// How far the day may lose before the account stops trading.
+    pub loss_limit: Option<f64>,
+    pub max_order_qty: Option<u32>,
+    pub buy_limit: Option<u32>,
+    pub sell_limit: Option<u32>,
+    /// The balance below which the account is liquidated, as it stands now:
+    /// a trailing drawdown moves it.
+    pub liquidate_at: Option<f64>,
 }
 
 /// A position in one contract, as the PnL plant pushed it.
@@ -159,6 +192,10 @@ pub struct AccountPnl {
     pub realized_day: Option<f64>,
     /// Open now.
     pub unrealized: Option<f64>,
+    /// Today's, closed and open, as Rithmic counts it.
+    pub day_pnl: Option<f64>,
+    /// What the risk system holds it to, once asked.
+    pub limits: Option<Limits>,
 }
 
 /// Everything a session knows of its accounts' trading.
@@ -169,6 +206,10 @@ pub struct Book {
     pub positions: Vec<Position>,
     /// Newest first.
     pub orders: Vec<WorkingOrder>,
+    /// A [`Trading::refresh`] has settled since the half last signed in:
+    /// what is held, working and done today is all here, not only what was
+    /// pushed since.
+    pub refreshed: bool,
 }
 
 /// What the listener keeps from the plants' pushes, and [`Trading::book`]
@@ -178,6 +219,15 @@ pub struct State {
     accounts: Vec<AccountPnl>,
     positions: Vec<Position>,
     orders: Vec<WorkingOrder>,
+    /// Oldest first.
+    fills: Vec<Fill>,
+    refreshed: bool,
+    /// When the plants last pushed anything, which a refresh waits to go
+    /// quiet.
+    heard: Option<Instant>,
+    /// Positions were pushed since the last refresh began: the PnL plant's
+    /// snapshot said something, so they need not be worked out from fills.
+    positions_pushed: bool,
 }
 
 fn number(text: Option<&str>) -> Option<f64> {
@@ -218,17 +268,122 @@ impl State {
         Book {
             accounts: self.accounts.clone(),
             positions: self.positions.iter().filter(|position| position.net != 0).cloned().collect(),
-            orders: self.orders.iter().rev().cloned().collect(),
+            orders: self
+                .orders
+                .iter()
+                .rev()
+                .map(|order| WorkingOrder {
+                    fills: self.fills.iter().filter(|fill| fill.basket_id == order.basket_id).cloned().collect(),
+                    ..order.clone()
+                })
+                .collect(),
+            refreshed: self.refreshed,
         }
     }
 
     /// Signed in again after a drop: what is still working, and what is
-    /// held, is listed afresh by the requests that follow. An order that
+    /// held, is listed afresh by the refresh that follows. An order that
     /// finished meanwhile is not listed, and goes, rather than be shown
     /// working when it is not.
     fn signed_in_again(&mut self) {
         self.orders.retain(|order| !order.status.working());
         self.positions.clear();
+        self.refreshed = false;
+    }
+
+    /// A refresh begins: nothing it asks for has been heard yet.
+    fn refreshing(&mut self) {
+        self.positions_pushed = false;
+        self.heard = Some(Instant::now());
+    }
+
+    /// The refresh has settled.
+    fn refreshed(&mut self) {
+        self.positions_from_fills();
+        self.refreshed = true;
+    }
+
+    /// Note a fill, once however many times it is told. True when it is
+    /// new.
+    pub fn fill(&mut self, fill: Fill) -> bool {
+        let same = |known: &Fill| match (&known.id, &fill.id) {
+            (Some(a), Some(b)) => a == b && known.basket_id == fill.basket_id,
+            _ => {
+                known.basket_id == fill.basket_id
+                    && known.at == fill.at
+                    && known.qty == fill.qty
+                    && known.price == fill.price
+            }
+        };
+        if self.fills.iter().any(same) {
+            return false;
+        }
+        let at = self.fills.partition_point(|known| known.at <= fill.at);
+        self.fills.insert(at, fill);
+        true
+    }
+
+    /// What the risk system said of `account`. The liquidation level comes
+    /// from its own updates, and is kept.
+    pub fn limits(&mut self, account: &str, limits: Limits) -> bool {
+        let known = self.account_mut(account);
+        let liquidate_at = known.limits.as_ref().and_then(|known| known.liquidate_at);
+        let limits = Limits { liquidate_at: limits.liquidate_at.or(liquidate_at), ..limits };
+        let changed = known.limits.as_ref() != Some(&limits);
+        known.limits = Some(limits);
+        changed
+    }
+
+    /// When the PnL plant said nothing of positions since the refresh
+    /// began, work out what is held from today's fills, oldest first, the
+    /// average being what the open part cost. Nothing from before today is
+    /// known this way, so a position carried overnight is not seen.
+    fn positions_from_fills(&mut self) -> bool {
+        if self.positions_pushed {
+            return false;
+        }
+        let mut held: Vec<Position> = Vec::new();
+        for fill in &self.fills {
+            let Some(order) = self.orders.iter().find(|order| order.basket_id == fill.basket_id) else { continue };
+            let signed = match order.side {
+                Side::Buy => fill.qty as i32,
+                Side::Sell => -(fill.qty as i32),
+            };
+            let at = match held.iter().position(|p| p.account == order.account && p.contract == order.contract) {
+                Some(at) => at,
+                None => {
+                    held.push(Position {
+                        account: order.account.clone(),
+                        contract: order.contract.clone(),
+                        exchange: order.exchange.clone(),
+                        net: 0,
+                        avg: None,
+                        open_pnl: None,
+                    });
+                    held.len() - 1
+                }
+            };
+            let position = &mut held[at];
+            let net = position.net + signed;
+            position.avg = match (position.net, position.avg) {
+                (0, _) | (_, None) => Some(fill.price),
+                // Adding to it: the average of the two.
+                (before, Some(avg)) if before.signum() == signed.signum() => Some(
+                    (avg * f64::from(before.abs()) + fill.price * f64::from(signed.abs())) / f64::from(net.abs()),
+                ),
+                // Through flat to the other side: what the rest cost.
+                (before, Some(_)) if net != 0 && net.signum() != before.signum() => Some(fill.price),
+                // Taking some off: what is left cost what it did.
+                (_, avg) => avg,
+            };
+            position.net = net;
+        }
+        held.retain(|position| position.net != 0);
+        if held == self.positions {
+            return false;
+        }
+        self.positions = held;
+        true
     }
 
     fn order_mut(&mut self, basket: &str) -> Option<&mut WorkingOrder> {
@@ -266,18 +421,103 @@ impl State {
             at,
             tag: Some(order.tag.clone()),
             said: None,
+            fills: Vec::new(),
         });
     }
 
     /// Take one push from either plant. True when the book changed.
     pub fn apply(&mut self, message: &RithmicMessage) -> bool {
+        self.heard = Some(Instant::now());
         match message {
             RithmicMessage::RithmicOrderNotification(update) => self.rithmic_order(update),
             RithmicMessage::ExchangeOrderNotification(update) => self.exchange_order(update),
             RithmicMessage::InstrumentPnLPositionUpdate(update) => self.instrument(update),
             RithmicMessage::AccountPnLPositionUpdate(update) => self.account(update),
+            RithmicMessage::AccountRmsUpdates(update) => self.rms_update(update),
             _ => false,
         }
+    }
+
+    /// One fill from the fill history: noted, with the order it is part of
+    /// made from it when nothing else has told of that order.
+    fn history_fill(&mut self, fill: &ResponseShowFillHistory) {
+        let Some(basket) = fill.basket_id.as_deref().filter(|id| !id.is_empty()) else { return };
+        let (Some(price), Some(qty)) = (
+            fill.fill_price.filter(|price| *price != 0.0),
+            fill.fill_size.and_then(|qty| u32::try_from(qty).ok()).filter(|qty| *qty > 0),
+        ) else {
+            return;
+        };
+        let at = match (fill.fill_date.as_deref(), fill.fill_time.as_deref()) {
+            (Some(date), Some(time)) => moment_of(date, time),
+            _ => None,
+        }
+        .or(fill.source_ssboe.map(i64::from))
+        .or(fill.ssboe.map(i64::from))
+        .unwrap_or_else(now);
+        if self.order_mut(basket).is_none() {
+            let word = |text: &Option<String>| text.as_deref().unwrap_or("").trim().to_ascii_lowercase();
+            let side = match word(&fill.transaction_type).as_str() {
+                "1" | "buy" | "b" => Side::Buy,
+                _ => Side::Sell,
+            };
+            let kind = match word(&fill.price_type).as_str() {
+                "1" | "limit" => Kind::Limit,
+                "3" | "4" | "stop market" | "stop limit" | "stop_market" | "stop_limit" => Kind::Stop,
+                _ => Kind::Market,
+            };
+            // Oldest first, as the orders are kept.
+            let place = self.orders.partition_point(|order| order.at <= at);
+            self.orders.insert(place, WorkingOrder {
+                account: fill.account_id.clone().unwrap_or_default(),
+                basket_id: basket.to_string(),
+                contract: fill.symbol.clone().unwrap_or_default(),
+                exchange: fill.exchange.clone().unwrap_or_default(),
+                side,
+                qty: u32::try_from(fill.total_fill_size.unwrap_or(0) + fill.total_unfilled_size.unwrap_or(0))
+                    .ok()
+                    .filter(|qty| *qty > 0)
+                    .unwrap_or(qty),
+                filled: 0,
+                kind,
+                price: match kind {
+                    Kind::Market => None,
+                    Kind::Limit => fill.price,
+                    Kind::Stop => fill.trigger_price.or(fill.price),
+                },
+                status: Status::Filled,
+                fill_price: None,
+                at,
+                tag: None,
+                said: None,
+                fills: Vec::new(),
+            });
+        }
+        self.fill(Fill { basket_id: basket.to_string(), id: fill.fill_id.clone().filter(|id| !id.is_empty()), at, qty, price });
+        // An order made from its fills is as filled as they say.
+        let filled: u32 = self.fills.iter().filter(|known| known.basket_id == basket).map(|known| known.qty).sum();
+        let cost: f64 = self.fills.iter().filter(|known| known.basket_id == basket).map(|known| known.price * f64::from(known.qty)).sum();
+        if let Some(order) = self.order_mut(basket)
+            && order.filled < filled
+        {
+            order.filled = filled.min(order.qty.max(filled));
+            if order.fill_price.is_none() && filled > 0 {
+                order.fill_price = Some(cost / f64::from(filled));
+            }
+        }
+    }
+
+    fn rms_update(&mut self, update: &AccountRmsUpdates) -> bool {
+        let at = number(update.auto_liq_threshold_current_value.as_deref());
+        let (Some(account), Some(at)) = (update.account_id.as_deref(), at) else { return false };
+        let known = self.account_mut(account);
+        let mut limits = known.limits.clone().unwrap_or_default();
+        if limits.liquidate_at == Some(at) {
+            return false;
+        }
+        limits.liquidate_at = Some(at);
+        known.limits = Some(limits);
+        true
     }
 
     fn rithmic_order(&mut self, update: &RithmicOrderNotification) -> bool {
@@ -298,6 +538,7 @@ impl State {
             at: 0,
             tag: None,
             said: None,
+            fills: Vec::new(),
         });
         let given = |text: &Option<String>| text.as_ref().filter(|text| !text.is_empty()).cloned();
         if let Some(account) = given(&update.account_id) {
@@ -385,6 +626,7 @@ impl State {
         let Some(basket) = update.basket_id.as_deref().filter(|id| !id.is_empty()) else { return false };
         let Some(order) = self.order_mut(basket) else { return false };
         let before = order.clone();
+        let mut fill = None;
         if let Some(said) = reason([update.report_text.as_ref(), update.text.as_ref()]) {
             order.said = Some(said);
         }
@@ -392,6 +634,16 @@ impl State {
             Some("fill") => {
                 if let Some(price) = update.avg_fill_price.or(update.fill_price).filter(|price| *price != 0.0) {
                     order.fill_price = Some(price);
+                }
+                let size = update.fill_size.and_then(|qty| u32::try_from(qty).ok()).filter(|qty| *qty > 0);
+                if let (Some(price), Some(qty)) = (update.fill_price.filter(|price| *price != 0.0), size) {
+                    fill = Some(Fill {
+                        basket_id: basket.to_string(),
+                        id: update.fill_id.clone().filter(|id| !id.is_empty()),
+                        at: update.ssboe.map(i64::from).unwrap_or_else(now),
+                        qty,
+                        price,
+                    });
                 }
                 if let Some(left) = update.total_unfilled_size.and_then(|left| u32::try_from(left).ok()) {
                     order.filled = order.qty.saturating_sub(left);
@@ -410,13 +662,16 @@ impl State {
             Some("status") if order.status == Status::Pending => order.status = Status::Working,
             _ => {}
         }
-        *order != before
+        let changed = *order != before;
+        let filled = fill.is_some_and(|fill| self.fill(fill));
+        changed || filled
     }
 
     fn instrument(&mut self, update: &InstrumentPnLPositionUpdate) -> bool {
         let (Some(account), Some(symbol)) = (update.account_id.as_deref(), update.symbol.as_deref()) else {
             return false;
         };
+        self.positions_pushed = true;
         let net = update.net_quantity.or_else(|| Some(update.buy_qty? - update.sell_qty?)).unwrap_or(0);
         let fresh = Position {
             account: account.to_string(),
@@ -448,6 +703,9 @@ impl State {
         let Some(account) = update.account_id.as_deref() else { return false };
         let known = self.account_mut(account);
         let before = known.clone();
+        if let Some(day) = number(update.day_pnl.as_deref()) {
+            known.day_pnl = Some(day);
+        }
         if let Some(balance) = number(update.account_balance.as_deref()) {
             known.balance = Some(balance);
         }
@@ -472,10 +730,11 @@ pub enum Pulse {
     /// it cannot ([`Error::Refused`], [`Error::NoLogin`]). Orders are
     /// refused until it is back.
     Lost(Error),
-    /// Signed in again after a drop. The accounts were listed again, and
-    /// their working orders, positions and balances asked for afresh, so an
-    /// order that finished while it was down is gone from the book rather
-    /// than shown working: the cue to reconcile what was being waited for.
+    /// Signed in again after a drop. The accounts were listed again, and an
+    /// order that was working is gone from the book rather than shown
+    /// working when it may have finished meanwhile: the cue to
+    /// [`Trading::refresh`], and then to reconcile what was being waited
+    /// for.
     Back,
 }
 
@@ -488,6 +747,8 @@ pub(crate) struct Desks {
     /// One order handle per account, by number: an order names its account
     /// through the handle it is sent on.
     by_account: HashMap<String, RithmicOrderPlantHandle>,
+    /// And one PnL handle per account, for its snapshot.
+    pnl_by_account: HashMap<String, RithmicPnlPlantHandle>,
 }
 
 #[derive(Clone)]
@@ -684,6 +945,95 @@ impl Trading {
         }
     }
 
+    /// Ask for everything the accounts hold now, and wait for it: working
+    /// orders, today's orders whatever became of them, today's fills, the
+    /// risk system's limits and the PnL plant's positions and balances. What
+    /// is pushed back lands on the book as any push does; the fills and the
+    /// limits come back as answers and are put there here. Returns once the
+    /// plants have been quiet for [`SETTLE`] after the last answer, with
+    /// [`Book::refreshed`] set.
+    ///
+    /// When the PnL plant says nothing of positions, as Rithmic Test's
+    /// snapshot does not, what is held is worked out from today's fills,
+    /// and the balance stays unknown until the first push.
+    pub fn refresh(&self) -> Result<(), Error> {
+        let desks = self.desks()?;
+        let accounts = self.accounts();
+        self.inner.book.lock().unwrap_or_else(|e| e.into_inner()).refreshing();
+        let book = self.inner.book.clone();
+        let started = Instant::now();
+        self.inner.handle.block_on(async {
+            let dates = match within(REQUEST, desks.order.show_order_history_dates()).await {
+                Ok(replies) => today_of(&replies),
+                Err(_) => Vec::new(),
+            };
+            let (from, to) = today_window();
+            for account in &accounts {
+                let Some(desk) = desks.by_account.get(&account.id) else { continue };
+                within(REQUEST, desk.show_orders()).await?;
+                for date in &dates {
+                    let _ = within(REQUEST, desk.show_order_history_summary(date)).await;
+                }
+                if let Ok(replies) = within(REQUEST, desk.show_fill_history(FillHistoryRange::ssboe(from, to), None)).await {
+                    let mut state = book.lock().unwrap_or_else(|e| e.into_inner());
+                    for fill in replies.iter().filter_map(|reply| match &reply.message {
+                        RithmicMessage::ResponseShowFillHistory(fill) => Some(fill),
+                        _ => None,
+                    }) {
+                        state.history_fill(fill);
+                    }
+                }
+                if let Some(pnl) = desks.pnl_by_account.get(&account.id) {
+                    let _ = within(REQUEST, pnl.get_pnl_position_snapshot()).await;
+                }
+            }
+            if let Ok(replies) = within(REQUEST, desks.order.get_account_rms_info()).await {
+                let mut state = book.lock().unwrap_or_else(|e| e.into_inner());
+                for info in replies.iter().filter_map(|reply| match &reply.message {
+                    RithmicMessage::ResponseAccountRmsInfo(info) => Some(info),
+                    _ => None,
+                }) {
+                    if let Some(account) = info.account_id.as_deref().filter(|id| !id.is_empty()) {
+                        state.limits(account, limits_of(info));
+                    }
+                }
+            }
+            Ok::<(), Error>(())
+        })?;
+        // What the requests set off arrives after their answers: wait for
+        // the plants to go quiet, a little at most.
+        loop {
+            let heard = book.lock().unwrap_or_else(|e| e.into_inner()).heard.unwrap_or(started);
+            let quiet = heard.max(started) + SETTLE;
+            let now = Instant::now();
+            if now >= quiet || now >= started + SETTLE_AT_MOST {
+                break;
+            }
+            std::thread::sleep(quiet.min(started + SETTLE_AT_MOST) - now);
+        }
+        book.lock().unwrap_or_else(|e| e.into_inner()).refreshed();
+        Ok(())
+    }
+
+    /// The orders on `account` that filled between `from` and `to`, unix
+    /// seconds, each with its fills, oldest first: what Rithmic's fill
+    /// history says. Nothing of it goes into the book.
+    pub fn history(&self, account: &str, from: i64, to: i64) -> Result<Vec<WorkingOrder>, Error> {
+        let clamp = |at: i64| i32::try_from(at).unwrap_or(if at < 0 { 0 } else { i32::MAX });
+        let range = FillHistoryRange::ssboe(clamp(from), clamp(to));
+        let replies = self.on_desk(account, async |desk| within(REQUEST, desk.show_fill_history(range, None)).await)?;
+        let mut state = State::default();
+        for fill in replies.iter().filter_map(|reply| match &reply.message {
+            RithmicMessage::ResponseShowFillHistory(fill) => Some(fill),
+            _ => None,
+        }) {
+            state.history_fill(fill);
+        }
+        let mut orders = state.book().orders;
+        orders.reverse();
+        Ok(orders)
+    }
+
     /// Sign out of both plants, waiting a few seconds at most. The data
     /// half of the same login, if it is open, stays.
     pub fn sign_out(&self) {
@@ -756,8 +1106,8 @@ impl TradingPlants {
     }
 }
 
-/// Sign in to the order and PnL plants, list the login's accounts, and ask
-/// for their working orders, positions and balances.
+/// Sign in to the order and PnL plants, list the login's accounts, and
+/// subscribe to what they push.
 pub(crate) async fn connect(app: App, credentials: &Credentials) -> Result<TradingPlants, Error> {
     let config = config(app, credentials)?;
 
@@ -805,21 +1155,106 @@ pub(crate) async fn connect(app: App, credentials: &Credentials) -> Result<Tradi
         .iter()
         .map(|account| (account.id.clone(), order_plant.get_handle(&rithmic_account(account))))
         .collect();
+    let pnl_by_account: HashMap<String, RithmicPnlPlantHandle> = accounts
+        .iter()
+        .map(|account| (account.id.clone(), pnl_plant.get_handle(&rithmic_account(account))))
+        .collect();
+    // Subscribed here, again after every drop; what is held and working now
+    // is asked for by `Trading::refresh`.
     for account in &accounts {
         if let Some(desk) = by_account.get(&account.id) {
             let _ = within(REQUEST, desk.subscribe_order_updates()).await;
-            let _ = within(REQUEST, desk.show_orders()).await;
+            let _ = within(REQUEST, desk.subscribe_account_rms_updates(true, vec![RmsUpdateBits::AutoLiqThresholdCurrentValue])).await;
         }
-        let handle = pnl_plant.get_handle(&rithmic_account(account));
-        let _ = within(REQUEST, handle.subscribe_pnl_updates()).await;
-        let _ = within(REQUEST, handle.get_pnl_position_snapshot()).await;
+        if let Some(handle) = pnl_by_account.get(&account.id) {
+            let _ = within(REQUEST, handle.subscribe_pnl_updates()).await;
+        }
     }
     Ok(TradingPlants {
         order_updates,
         pnl_updates,
         accounts,
-        link: TradingLink::Rithmic { order_plant, pnl_plant, desks: Arc::new(Desks { order, pnl, by_account }) },
+        link: TradingLink::Rithmic {
+            order_plant,
+            pnl_plant,
+            desks: Arc::new(Desks { order, pnl, by_account, pnl_by_account }),
+        },
     })
+}
+
+/// How long the plants must be quiet after a refresh's last answer before
+/// it is taken as settled, and the longest it waits for that.
+const SETTLE: Duration = Duration::from_millis(300);
+const SETTLE_AT_MOST: Duration = Duration::from_secs(5);
+
+/// Today, as Rithmic dates its history: the dates it lists that are today's
+/// in UTC or later, the session that opened last evening being dated by the
+/// day it closes.
+fn today_of(replies: &[RithmicResponse]) -> Vec<String> {
+    let today = date_of(now());
+    let mut dates: Vec<String> = replies
+        .iter()
+        .filter_map(|reply| match &reply.message {
+            RithmicMessage::ResponseShowOrderHistoryDates(listed) => Some(listed.date.clone()),
+            _ => None,
+        })
+        .flatten()
+        .filter(|date| date.as_str() >= today.as_str())
+        .collect();
+    dates.sort();
+    dates.dedup();
+    dates
+}
+
+/// Since the start of today, in UTC, until an hour from now, in unix
+/// seconds.
+fn today_window() -> (i32, i32) {
+    let now = now();
+    let start = now - now.rem_euclid(86_400);
+    (i32::try_from(start).unwrap_or(0), i32::try_from(now + 3_600).unwrap_or(i32::MAX))
+}
+
+/// `at`, unix seconds, as the UTC date Rithmic writes: "20261104".
+fn date_of(at: i64) -> String {
+    // Howard Hinnant's days-to-civil.
+    let z = at.div_euclid(86_400) + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("{year:04}{month:02}{day:02}")
+}
+
+/// "20261104" and "14:03:07", in UTC, as unix seconds.
+fn moment_of(date: &str, time: &str) -> Option<i64> {
+    let (year, month, day) = (date.get(0..4)?.parse::<i64>().ok()?, date.get(4..6)?.parse::<i64>().ok()?, date.get(6..8)?.parse::<i64>().ok()?);
+    let mut clock = time.split(':').map(|part| part.trim().parse::<i64>().ok());
+    let (hours, minutes, seconds) = (clock.next()??, clock.next().flatten().unwrap_or(0), clock.next().flatten().unwrap_or(0));
+    // Howard Hinnant's days-from-civil.
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = (month + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some(days * 86_400 + hours * 3_600 + minutes * 60 + seconds)
+}
+
+/// What an RMS info answer says the account is held to.
+fn limits_of(info: &ResponseAccountRmsInfo) -> Limits {
+    let count = |limit: Option<i32>| limit.and_then(|limit| u32::try_from(limit).ok()).filter(|limit| *limit > 0);
+    Limits {
+        loss_limit: info.loss_limit.filter(|limit| *limit != 0.0),
+        max_order_qty: count(info.max_order_quantity),
+        buy_limit: count(info.buy_limit),
+        sell_limit: count(info.sell_limit),
+        liquidate_at: None,
+    }
 }
 
 /// The trading half, as the connection's supervisor keeps it.
@@ -1096,5 +1531,105 @@ mod tests {
         assert!(!state.apply(&RithmicMessage::AccountPnLPositionUpdate(money)));
         let account = &state.book().accounts[0];
         assert_eq!((account.balance, account.realized_day), (Some(1_000_125.0), Some(-3.94)));
+    }
+
+    fn history(basket: &str, id: &str, side: &str, qty: u64, price: f64, time: &str) -> ResponseShowFillHistory {
+        let mut fill = ResponseShowFillHistory::default();
+        fill.basket_id = Some(basket.into());
+        fill.fill_id = Some(id.into());
+        fill.account_id = Some("951".into());
+        fill.symbol = Some("ESZ6".into());
+        fill.exchange = Some("CME".into());
+        fill.transaction_type = Some(side.into());
+        fill.price_type = Some("MARKET".into());
+        fill.fill_size = Some(qty);
+        fill.total_fill_size = Some(qty);
+        fill.fill_price = Some(price);
+        fill.fill_date = Some("20261104".into());
+        fill.fill_time = Some(time.into());
+        fill
+    }
+
+    /// Today's fills, from the history and from the exchange's
+    /// notifications alike, each once, under their orders; an order heard
+    /// of only through its fills is there, filled. With the PnL plant
+    /// silent about positions, what is held is worked out from them: two
+    /// bought at 7600 and 7610 and one sold leaves one at 7605.
+    #[test]
+    fn a_refresh_reads_todays_fills_and_works_out_what_is_held() {
+        let mut state = State::default();
+        state.refreshing();
+        state.history_fill(&history("B1", "F1", "BUY", 1, 7_600.0, "14:00:00"));
+        state.history_fill(&history("B2", "F2", "BUY", 1, 7_610.0, "14:05:00"));
+        state.history_fill(&history("B3", "F3", "SELL", 1, 7_620.0, "14:10:00"));
+        state.history_fill(&history("B3", "F3", "SELL", 1, 7_620.0, "14:10:00"));
+        let mut told = ExchangeOrderNotification::default();
+        told.basket_id = Some("B3".into());
+        told.report_type = Some("fill".into());
+        told.fill_id = Some("F3".into());
+        told.fill_size = Some(1);
+        told.fill_price = Some(7_620.0);
+        assert!(!state.apply(&RithmicMessage::ExchangeOrderNotification(told)), "the same fill, told again");
+        assert!(!state.book().refreshed);
+        state.refreshed();
+        let book = state.book();
+        assert!(book.refreshed);
+        assert_eq!(book.orders.len(), 3);
+        assert_eq!(book.orders[0].basket_id, "B3", "newest first");
+        assert_eq!((book.orders[0].side, book.orders[0].status.clone()), (Side::Sell, Status::Filled));
+        assert_eq!(book.orders[0].fills.len(), 1);
+        assert_eq!(book.orders[0].fills[0].at, moment_of("20261104", "14:10:00").unwrap());
+        assert_eq!(book.positions.len(), 1);
+        assert_eq!((book.positions[0].net, book.positions[0].avg), (1, Some(7_605.0)));
+        assert!(book.accounts.iter().all(|money| money.balance.is_none()), "no balance until one is pushed");
+
+        // Pushed positions are the PnL plant's word, and stand.
+        let mut held = InstrumentPnLPositionUpdate::default();
+        held.account_id = Some("951".into());
+        held.symbol = Some("ESZ6".into());
+        held.net_quantity = Some(2);
+        held.avg_open_fill_price = Some(7_601.0);
+        state.refreshing();
+        state.apply(&RithmicMessage::InstrumentPnLPositionUpdate(held));
+        state.refreshed();
+        assert_eq!(state.book().positions[0].net, 2);
+    }
+
+    /// The risk system's limits and its liquidation level, which come in
+    /// two answers, are kept together.
+    #[test]
+    fn limits_and_the_liquidation_level_are_kept_together() {
+        let mut state = State::default();
+        let mut info = ResponseAccountRmsInfo::default();
+        info.loss_limit = Some(999_999.0);
+        info.max_order_quantity = Some(40);
+        info.buy_limit = Some(20);
+        info.sell_limit = Some(20);
+        assert!(state.limits("951", limits_of(&info)));
+        let mut update = AccountRmsUpdates::default();
+        update.account_id = Some("951".into());
+        update.auto_liq_threshold_current_value = Some("48000.00".into());
+        assert!(state.apply(&RithmicMessage::AccountRmsUpdates(update)));
+        assert!(!state.limits("951", limits_of(&info)), "the same limits again");
+        let limits = state.book().accounts[0].limits.clone().unwrap();
+        assert_eq!(
+            limits,
+            Limits {
+                loss_limit: Some(999_999.0),
+                max_order_qty: Some(40),
+                buy_limit: Some(20),
+                sell_limit: Some(20),
+                liquidate_at: Some(48_000.0)
+            }
+        );
+    }
+
+    #[test]
+    fn dates_are_rithmics_and_in_utc() {
+        assert_eq!(date_of(0), "19700101");
+        let at = moment_of("20261104", "14:03:07").unwrap();
+        assert_eq!(date_of(at), "20261104");
+        assert_eq!(at % 86_400, 14 * 3_600 + 3 * 60 + 7);
+        assert_eq!(moment_of("2026", "1"), None);
     }
 }
