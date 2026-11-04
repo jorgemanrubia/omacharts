@@ -292,6 +292,18 @@ const COLOURING: &[&str] = &["coloured", "red-up", "monochrome"];
 const BODIES: &[&str] = &["filled", "bordered", "hollow"];
 const BAR_COLOUR: &str = "a theme colour by name (green, rose, blue, amber, violet, teal, orange, cyan), \
      foreground (the text colour) for none, or #rrggbb";
+/// How bars are drawn: the same five flags for every chart's look, `config
+/// bars`, and one chart's own, `chart look`.
+const STYLE_FLAG: Flag = Flag::valued("style", "STYLE", "candles or OHLC bars").of(STYLES);
+const UP_FLAG: Flag = Flag::valued("up", "COLOUR", BAR_COLOUR);
+const DOWN_FLAG: Flag = Flag::valued("down", "COLOUR", BAR_COLOUR);
+const UP_BODY_FLAG: Flag = Flag::valued(
+    "up-body",
+    "BODY",
+    "a rising candle filled, filled with its wick and edge in the theme's text colour, or an outline",
+)
+.of(BODIES);
+const DOWN_BODY_FLAG: Flag = Flag::valued("down-body", "BODY", "the same for a falling candle").of(BODIES);
 const SORT_COLUMNS: &[&str] = &["symbol", "last", "change", "change_pct", "none"];
 /// The kinds a drawing comes in, plus the one alias.
 ///
@@ -893,6 +905,32 @@ pub const SURFACE: &[Noun] = &[
                 workspace: true,
             },
             Verb {
+                name: "look",
+                about: "Give a chart a look of its own, or put it back on every chart's: how its bars are drawn and coloured, its header, gridlines and last-price line. The first change copies every chart's look onto it; omit everything to read the look it wears",
+                args: &[],
+                flags: &[
+                    Flag::valued("book", "BOOK", "which chartbook (default: the open one)"),
+                    Flag::valued("chart", "CHART", CHART_SELECTOR),
+                    STYLE_FLAG,
+                    UP_FLAG,
+                    DOWN_FLAG,
+                    UP_BODY_FLAG,
+                    DOWN_BODY_FLAG,
+                    Flag::valued("grid", "BOOL", "draw gridlines").of(SWITCHES),
+                    Flag::valued("price-line", "BOOL", "draw a line across at the last price").of(SWITCHES),
+                    Flag::valued(
+                        "header",
+                        "PARTS",
+                        "what the header shows on the left, in order, as `config set chart_header` takes it: parts joined with commas, or none",
+                    ),
+                    Flag::switch("follow", "drop the chart's own look and wear every chart's again"),
+                ],
+                example: "omacharts chart look --style ohlc --up blue --grid off",
+                json: true,
+                writes: true,
+                workspace: true,
+            },
+            Verb {
                 name: "range",
                 about: "Go to a date and keep the window, or show a span or a custom range, on the focused chart, as Go to (Ctrl+G) does",
                 args: &[Arg::req("RANGE", "a date, which keeps the window (oct 22, 2026/10/22, yesterday, last fri, 3 weeks ago); a span back from today (6m, 3w, ytd, 2025, 2025/03, all); or a custom range, two ends joined by : or .. with either end optional (3 weeks ago:, oct 1:oct 22, 2025:, and -6m:-1m after --). One with a space in it goes in quotes")],
@@ -1262,18 +1300,7 @@ pub const SURFACE: &[Noun] = &[
                 name: "bars",
                 about: "How every chart draws its bars: candles or OHLC bars, a colour for up and for down, and how each body is drawn",
                 args: &[Arg::opt("STATE", "sets both colours: the theme's green and rose, swapped, or foreground; omit to read them").of(COLOURING)],
-                flags: &[
-                    Flag::valued("style", "STYLE", "candles or OHLC bars").of(STYLES),
-                    Flag::valued("up", "COLOUR", BAR_COLOUR),
-                    Flag::valued("down", "COLOUR", BAR_COLOUR),
-                    Flag::valued(
-                        "up-body",
-                        "BODY",
-                        "a rising candle filled, filled with its wick and edge in the theme's text colour, or an outline",
-                    )
-                    .of(BODIES),
-                    Flag::valued("down-body", "BODY", "the same for a falling candle").of(BODIES),
-                ],
+                flags: &[STYLE_FLAG, UP_FLAG, DOWN_FLAG, UP_BODY_FLAG, DOWN_BODY_FLAG],
                 example: "omacharts config bars monochrome --style candles --up-body hollow --down-body bordered",
                 json: true,
                 writes: true,
@@ -1534,12 +1561,13 @@ const STORED_FIELDS: &[(&str, &str, &str)] = &[
     ("suffix", "chart set", "--suffix"),
     ("timeframe", "chart set", "--resolution"),
     ("indicators", "chart indicator", ""),
-    ("bar_style", "", "never read: how bars are drawn is every chart's, `config bars --style`; written for older builds"),
+    ("bar_style", "", "never read: how bars are drawn is the chart's look, `chart look --style`; written for older builds"),
     ("bars_hidden", "chart set", "--bars"),
     ("ohlc_thickness", "chart set", "--thickness"),
     ("session", "chart set", "--session"),
     ("continuous", "chart set", "--continuous"),
-    ("show_grid", "config grid", ""),
+    ("show_grid", "", "never read: gridlines are the chart's look, `chart look --grid`; written for older builds"),
+    ("look", "chart look", ""),
     ("link", "chart set", "--link"),
     ("shows_drawings", "chart set", "--show-drawings"),
     ("sends_drawings", "chart set", "--send-drawings"),

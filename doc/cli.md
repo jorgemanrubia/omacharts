@@ -632,9 +632,10 @@ Besides what a chart shows, `chart set` carries how it shows it — `--title`,
 `--indicators`, `--legend` and `--drawings` — and those are stored with the
 chart, so a price axis held still with `--auto-scale off` is still held the
 next time the app opens. `--bars off` hides the chart's bars, for a chart that
-is all indicators. How bars are drawn, the gridlines and the last-price line
-are not one chart's: they are the same on every chart, and set with `config
-bars`, `config grid` and `config price-line` (see Preferences).
+is all indicators. How bars are drawn, the header, the gridlines and the
+last-price line are the chart's look: every chart's, set with `config bars`,
+`config grid`, `config price-line` and `config set chart_header` (see
+Preferences), or its own, set with `chart look` (below).
 
 `--log-scale on` makes the price axis logarithmic: equal heights are equal
 percentage moves, which is what a chart of twenty years wants. Indicators in
@@ -941,6 +942,156 @@ not a forecast of exchange opening times. The ruler is not saved or shared.
 In the window, Alt+M or Measure in the drawing tools picks up the ruler: click,
 move, click; Escape clears it.
 
+## A chart's own look
+
+A chart's look is how its bars are drawn and coloured, its header, its
+gridlines and its last-price line. Every chart wears every chart's look until
+it is given its own. `chart look` gives the chart one: the first change
+copies every chart's look onto it and changes the copy, so a later
+`config bars` or `config grid` leaves it as it is. With no flags it says the
+look the chart wears, and `--follow` drops its own.
+
+```
+$ omacharts chart look
+pos:0 NVDA 1D in Macro follows all charts
+  [exit 0]
+
+$ omacharts chart look --style ohlc --grid off
+pos:0 NVDA 1D in Macro now wears its own look: ohlc, up green filled, down rose filled, grid off, price line on, header symbol,resolution
+  [exit 0]
+
+$ omacharts chart look --follow
+pos:0 NVDA 1D in Macro now follows all charts
+  [exit 0]
+```
+
+`--style`, `--up`, `--down`, `--up-body` and `--down-body` take what
+`config bars` takes, `--header` what `config set chart_header` takes, and
+`--grid` and `--price-line` `on` or `off`. Colours are kept as the names
+given, so a chart's own look follows a change of theme as every chart's
+does. A split copies the chart's own look, and so does `chartbook duplicate`.
+The theme is never one chart's. In the window, choosing a style from a
+chart's Bar style menu gives that chart a look of its own.
+
+## Price alerts
+
+An alert is a price on a symbol that you want to hear about. `alert add`
+arms one on the side of the last price it is on: over it, it waits for price
+to rise to it, and under it, for a fall. It goes off once, as a desktop
+notification, and stays in the list as gone off until `alert arm` arms it
+again. Without `--symbol` it is on the chart's symbol, like every chart verb.
+
+```
+omacharts alert add 200 --symbol AAPL --note breakout
+omacharts alert add 180 --below
+omacharts alert add --drawing 412
+omacharts alert list
+omacharts alert arm 3
+omacharts alert remove 3
+omacharts alert remove --fired
+```
+
+`--drawing` follows a shared horizontal line, trend line or arrow, by the id
+`chart drawing list` gives it: the level is where the line is now, a trend
+line carried on past its end, and moving the line moves the alert. Deleting
+the line deletes its alerts.
+
+A cache with no price for the symbol cannot say which side a level is on;
+`--above` or `--below` says it instead, and overrides the side whenever
+given.
+
+Alerts are checked in the window, whenever prices for their symbol arrive.
+A chart on screen keeps its symbol current, and a symbol with an armed alert
+is kept current with the sidebar's symbols, every quarter of an hour while
+its market trades. With no window open nothing is checked, and a level
+reached meanwhile goes off at the first refresh once the window is open. A
+wick that reached the level counts, once the bar it is in started after the
+alert was armed.
+
+## Marks a program shows on a chart
+
+A drawing is what you drew. A **mark** is a fact from somewhere else — a fill
+from a ledger, a stop from a broker, the stretch a position was held — handed
+to the window by a program and shown read-only: it cannot be selected,
+dragged or deleted on the chart, and the pointer over it shows what it says.
+Marks live in the window only, so they need one open, and a restart starts
+without them. `chart set --marks off` hides every mark on a chart without
+clearing any.
+
+```
+omacharts chart mark set marks.json --source backtest
+omacharts chart mark set - --source backtest --symbol BTC < fills.json
+omacharts chart mark list
+omacharts chart mark clear --source backtest
+omacharts chart mark select --source backtest --key trade:1
+omacharts chart mark select
+```
+
+`set` replaces everything that source shows on the symbol — the focused
+chart's, or the one `--symbol` names — and leaves other sources' marks alone.
+The file is a JSON array, one object per mark:
+
+```json
+[
+  {"shape": "point", "ts": 1761523200, "price": 115350, "glyph": "pill_above",
+   "tone": "down", "label": "T1 SHORT 115,350", "detail": "trade entry", "key": "trade:1"},
+  {"shape": "point", "ts": 1772409600, "glyph": "arrow_down", "tone": "down",
+   "detail": "2026-03-02 SELL 0.001 @ 69,120"},
+  {"shape": "span", "from": 1761523200, "to": 1789948800, "tone": "down", "label": "T1 SHORT · 329d"},
+  {"shape": "steps", "points": [[1761523200, 115350], [1772409600, 98297]], "tone": "accent"},
+  {"shape": "steps", "points": [[1761523200, 115350, 0.1], [1772409600, 98297, 0.8]],
+   "tone": "down", "title": "T1 · BTC short", "label": "+0.42R", "key": "trade:1"},
+  {"shape": "point", "ts": 1772409600, "price": 98297, "glyph": "dot", "quiet": true, "key": "trade:1"},
+  {"shape": "level", "price": 93976, "tone": "down", "label": "stop", "fit": true}
+]
+```
+
+- `point`: something on one bar, at `ts` (UTC seconds). `glyph` is
+  `arrow_up` or `arrow_down` (outside the bar, under the low or over the
+  high), `hollow_up` or `hollow_down` (the same, outlined), `dot` (at
+  `price`), or `pill_above` / `pill_below` (a dot at `price` with its
+  `label` on a pill). Points of one source and glyph on the same bar are
+  drawn as one at the resolution on screen, and the hover lists them.
+- `span`: a stretch of time shaded under the candles; no `to` runs it to
+  the right edge.
+- `steps`: a value that holds between changes, such as an average entry,
+  drawn as a stepped dashed line. A third number in a point weighs that
+  step, from 0 (a hairline) to 1 (heavy), up to 1.5; a weighted line is
+  solid, so an average can show how much rides on it. With `"glide": true`
+  each change is reached in a straight line from the one before, for a
+  value that drifts between changes; two points at the same `ts` still
+  jump. With no `to` it runs to the last bar, not on into the room past
+  it, unless `"past": 2` says how many bars further, for a value still
+  held that a line stopping at today leaves easy to miss. Its `label` sits small over the line's end, muted, or in
+  `label_tone` (`up` and `down` are the watchlist's gain and loss), after
+  a muted `lead` while the pointer is on it, with its `title` before
+  them, in place of the `detail`. `"ring": true` circles where it begins,
+  so a line a few bars old still says where it started. `"axis": true`
+  runs it on past the last bar to the price axis, with its last price in a
+  chip there and its label beside the axis: an open position's average.
+- `level`: a price from `from` to `to`, either end open; `dashed` if asked.
+- `axis`: a `price` marked on the price axis only, with no line across the
+  bars: its number in the mark's colour, a chip while the pointer is on it
+  or on a mark with the same `key`, and held at the edge with an arrow when
+  the price is off the plot. The grid label it would cover makes way, and
+  it steps clear of the last-price chip. With a `name` it shows the name in
+  a chip, always, in place of its number: `{"shape":"axis","price":81580,
+  "name":"Re-entry"}` names the trade whose average sits there.
+
+`tone` is `up`, `down`, `accent`, `muted`, `violet`, `amber`, `teal` or
+`maroon`: the theme's own swatches, so a mark reads on every theme.
+`maroon` is `down` a step toward amber, for a short that must not read as
+the candles' red. `fit` widens the price scale
+to take a level or a priced point in. A click on a mark
+with a `key` picks it: everything with its source and key stays lit, on
+every chart that shows it, until a click on nothing, Escape, or another
+pick lets go, and the key is handed to whoever installed a handler.
+`select` picks one by `--source` and `--key` the same way; with neither, it
+lets go. A `quiet` point is drawn
+only while the pointer is on a mark with the same source and key, such as
+the fills behind an average, kept off the bars until that trade is asked
+about.
+
 ## Taking a picture of a chart
 
 ```
@@ -1009,8 +1160,8 @@ $ omacharts config bars red-up --up-body hollow
 bars are now candles, up rose hollow, down green filled
   [exit 0]
 
-$ omacharts config bars --style line
-bars are now line, up rose hollow, down green filled
+$ omacharts config bars --style ohlc
+bars are now ohlc, up rose hollow, down green filled
   [exit 0]
 ```
 
@@ -1028,7 +1179,8 @@ answer, and wins over `STATE`. Stored as `bar_up`, `bar_down`,
 `bar_up_hollow`, `bar_down_hollow`, `bar_up_border` and `bar_down_border`.
 
 Volume bars are always solid, in the candles' colours, drawn at
-`--opacity`, 0.2 to 1 and 0.85 unless set.
+`--opacity`, 0.2 to 1 and 0.85 unless set. The look is every chart's, except on a chart with a look of
+its own (`chart look`).
 
 What a new chart opens with is a handful of settings, the ones the preferences
 show under Charts › Settings: `ohlc_thickness`, `chart_session`,
@@ -1054,9 +1206,10 @@ the theme is Tokyo Night
 ```
 
 Gridlines and the dashed line across at the last price are the same on every
-chart, in every chartbook, so they are set here rather than with `chart set`.
-The price itself stays on the axis either way. In the window, Ctrl+Shift+G
-turns the gridlines on and off.
+chart, in every chartbook, except a chart with a look of its own (`chart
+look`), so they are set here rather than with `chart set`. The price itself
+stays on the axis either way. In the window, Ctrl+Shift+G turns the gridlines
+on and off on the look the focused chart wears: its own, or every chart's.
 
 ```
 $ omacharts config grid off

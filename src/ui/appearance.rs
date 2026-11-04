@@ -1,9 +1,9 @@
-//! How every chart looks: the theme and what candles look like on one page,
-//! and the lines every chart draws or does not on a second, Overlays.
+//! How every chart looks, on one page: the theme, and what candles look
+//! like.
 //!
-//! Both are built wherever they are wanted — in Preferences, and beside a
-//! chart's own settings, where you are when you notice the candles are the
-//! wrong colour. A theme is an Omarchy theme, and making one is how a
+//! Built wherever it is wanted — in Preferences, and beside a chart's own
+//! settings, where you are when you notice the candles are the wrong
+//! colour. A theme is an Omarchy theme, and making one is how a
 //! palette is made your own — Omarchy already has the tools for that, and a
 //! theme made there dresses the whole desktop rather than one app.
 //!
@@ -16,20 +16,26 @@ use std::rc::{Rc, Weak};
 use adw::prelude::*;
 use gtk::glib;
 use omacharts_engine::BarStyle;
-use omacharts_engine::theme::{bar_colour, foreground, BarLook, Body, ColorChoice, Direction, Swatch, FOREGROUND};
+use omacharts_engine::theme::{
+    foreground, pair_colours, BarLook, BarScheme, Body, ColorChoice, Direction, Swatch, Theme, FOREGROUND,
+};
 
+use crate::chart_look::{ChartLook, LookEdit};
 use crate::store::Store;
 use crate::theming::Theming;
-use crate::ui::{colors, palette, theme_picker};
+use crate::ui::window::Window;
+use crate::ui::{colors, palette, scope_rule, theme_picker};
 
 struct Context {
+    window: Rc<Window>,
     store: Rc<Store>,
     theming: Rc<RefCell<Theming>>,
     on_change: Rc<dyn Fn()>,
-    /// Puts a Thickness chosen here on every chart, and on new ones.
-    on_thickness: Rc<dyn Fn(u8)>,
     page: adw::PreferencesPage,
-    /// The groups [`rebuild`] owns.
+    /// The look the page shows, as the rule scopes it: read once per
+    /// rebuild and per change, not per picture drawn.
+    look: RefCell<ChartLook>,
+    /// The groups [`rebuild`] makes anew: the theme's colours are in them.
     groups: RefCell<Vec<adw::PreferencesGroup>>,
 }
 
@@ -40,19 +46,21 @@ thread_local! {
     static SHOWN: RefCell<Vec<Weak<Context>>> = const { RefCell::new(Vec::new()) };
 }
 
-/// The Appearance page. `on_change` repaints the charts after the theme or
-/// the bars have been stored.
+/// The Appearance page. `on_change` repaints the charts after the theme
+/// has been stored; the bars go through [`scope_rule::change`], which
+/// repaints what it changed.
 pub fn page(
+    window: Rc<Window>,
     store: Rc<Store>,
     theming: Rc<RefCell<Theming>>,
     on_change: Rc<dyn Fn()>,
-    on_thickness: Rc<dyn Fn(u8)>,
 ) -> adw::PreferencesPage {
     let context = Rc::new(Context {
+        look: RefCell::new(scope_rule::look(&window)),
+        window,
         store,
         theming,
         on_change,
-        on_thickness,
         page: adw::PreferencesPage::new(),
         groups: RefCell::new(Vec::new()),
     });
@@ -80,6 +88,7 @@ pub fn restyled() {
 /// Called whenever the theme changes, because the bar colours on offer are
 /// the theme's.
 fn rebuild(context: &Rc<Context>) {
+    *context.look.borrow_mut() = scope_rule::look(&context.window);
     let page = &context.page;
     for group in context.groups.borrow_mut().drain(..) {
         page.remove(&group);
@@ -128,134 +137,273 @@ fn choose_theme(context: &Rc<Context>, id: &str) {
     glib::idle_add_local_once(restyled);
 }
 
-/// A row for each direction: its colour, and its body as one of three
-/// candles drawn in that colour. The body is picked as a picture because
-/// "filled, bordered or hollow" is what the eye compares, where a hollow
-/// switch and a border switch left the combination to be imagined.
+/// The bars as a card: how they are drawn at its head, then Up and Down,
+/// each its colour and, beside it, what the style draws of that direction:
+/// a candle's body. What a style does not draw is not shown, rather than
+/// greyed: a body on OHLC bars, and their thickness on candles.
 fn bars_group(context: &Rc<Context>) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     group.set_title("Bars");
 
-    let theming = context.theming.borrow();
-    let theme = theming.theme();
-    let mut look = theming.bar_look().clone();
-    drop(theming);
-
-    let thickness = thickness_row(context);
-    group.add(&style_row(context, &thickness));
-    group.add(&thickness);
-
-    // The theme's swatches and Foreground: what a bar can be drawn in.
+    let theme = context.theming.borrow().theme();
+    // The theme's swatches, Foreground and the pairs' own colours: what a
+    // bar can be drawn in.
     let mut offered = theme.clone();
     offered.swatches.push(Swatch::new(FOREGROUND, &foreground(&theme)));
+    offered.swatches.extend(pair_colours(&theme));
 
+    let card = Card::default();
+    group.add(&style_head(context, &card));
+    group.add(&thickness_row(context, &card));
     for up in [true, false] {
-        let (choice, current) = side(&mut look, up);
-        let (choice, current) = (choice.clone(), *current);
-        let row = adw::ActionRow::new();
-        row.set_title(if up { "Up" } else { "Down" });
-
-        let strip = gtk::Box::new(gtk::Orientation::Horizontal, 2);
-        strip.add_css_class("segmented");
-        let mut first: Option<gtk::ToggleButton> = None;
-        let mut glyphs = Vec::new();
-        for body in Body::ALL {
-            let glyph = candle_glyph(context, up, body);
-            let tile = gtk::ToggleButton::new();
-            tile.add_css_class("body-tile");
-            tile.set_tooltip_text(Some(match body {
-                Body::Filled => "Filled",
-                Body::Bordered => "Bordered in the text colour",
-                Body::Hollow => "Hollow",
-            }));
-            tile.set_child(Some(&glyph));
-            tile.set_group(first.as_ref());
-            tile.set_active(current == body);
-            let ctx = context.clone();
-            tile.connect_toggled(move |tile| {
-                if tile.is_active() {
-                    change_bars(&ctx, |look| *side(look, up).1 = body);
-                }
-            });
-            first.get_or_insert(tile.clone());
-            strip.append(&tile);
-            glyphs.push(glyph);
-        }
-
-        let ctx = context.clone();
-        let picker = palette::picker(&offered, Some(choice.clone()), &bar_colour(&offered, &choice), move |choice| {
-            change_bars(&ctx, |look| *side(look, up).0 = choice);
-            // The candles are drawn in the colour just picked.
-            glyphs.iter().for_each(|glyph| glyph.queue_draw());
-        });
-        row.add_suffix(&picker);
-        row.add_suffix(&strip);
-        group.add(&row);
+        group.add(&direction_row(context, &offered, up, &card));
     }
+    card.show(context.look.borrow().style);
     group
 }
 
-/// How every chart draws its bars, as three pictures of them: a style is
-/// told apart by its shape, which a word only describes.
-/// How many pixels wide OHLC bars are drawn, offered only while they are
-/// what the bars are drawn as. Every chart's, like the rest of the page.
-fn thickness_row(context: &Rc<Context>) -> adw::ActionRow {
-    let current = crate::chart_defaults::ChartDefaults::load(&context.store).ohlc_thickness;
-    let on_thickness = context.on_thickness.clone();
+/// What the Bars group redraws and hides as its answers change.
+#[derive(Default, Clone)]
+struct Card {
+    /// Everything drawn in the bars' colours, redrawn after any change.
+    pictures: Rc<RefCell<Vec<gtk::DrawingArea>>>,
+    parts: Rc<RefCell<Vec<Part>>>,
+}
+
+/// A part only some styles draw, with the test for which. Weak: a part's
+/// own controls hold the card.
+type Part = (glib::WeakRef<gtk::Widget>, fn(BarStyle) -> bool);
+
+impl Card {
+    fn drawn(&self, picture: &gtk::DrawingArea) {
+        self.pictures.borrow_mut().push(picture.clone());
+    }
+
+    fn shown_under(&self, part: &impl IsA<gtk::Widget>, under: fn(BarStyle) -> bool) {
+        self.parts.borrow_mut().push((part.upcast_ref::<gtk::Widget>().downgrade(), under));
+    }
+
+    /// Show what `style` draws, and nothing it does not.
+    fn show(&self, style: BarStyle) {
+        for (part, under) in self.parts.borrow().iter() {
+            if let Some(part) = part.upgrade() {
+                part.set_visible(under(style));
+            }
+        }
+    }
+}
+
+/// How the bars are drawn, as the card's head: three tabs, each a picture
+/// and a word, the one in use underlined. A head rather than a row, and
+/// bigger than the rows, because what it picks decides which rows there
+/// are under it. Named at the left like a row, the tabs at the right,
+/// where the rows' controls are. A style is told apart by its shape, so the
+/// picture says it before the word does.
+fn style_head(context: &Rc<Context>, card: &Card) -> adw::PreferencesRow {
+    let head = adw::PreferencesRow::new();
+    head.set_title("Style");
+    head.set_activatable(false);
+    head.add_css_class("bars-head");
+    let tabs = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    // The last word's end over the colours' chevrons, which sit inside the
+    // chip's padding and the row's suffix spacing: measured on screen.
+    tabs.set_margin_end(EDGE + 7);
+    let name = gtk::Label::new(Some("Style"));
+    name.set_hexpand(true);
+    name.set_xalign(0.0);
+    tabs.append(&name);
+    let mut first: Option<gtk::ToggleButton> = None;
+    for each in BarStyle::ALL {
+        let button = gtk::ToggleButton::new();
+        let inside = gtk::Box::new(gtk::Orientation::Horizontal, 9);
+        let glyph = style_glyph(context, each);
+        card.drawn(&glyph);
+        inside.append(&glyph);
+        inside.append(&gtk::Label::new(Some(match each {
+            BarStyle::Candles => "Candles",
+            BarStyle::Ohlc => "OHLC",
+        })));
+        button.set_child(Some(&inside));
+        button.set_group(first.as_ref());
+        button.set_active(context.look.borrow().style == each);
+        let (ctx, card) = (context.clone(), card.clone());
+        button.connect_toggled(move |button| {
+            if !button.is_active() || ctx.look.borrow().style == each {
+                return;
+            }
+            change(&ctx, LookEdit::Style(each), &card);
+            card.show(each);
+        });
+        first.get_or_insert(button.clone());
+        tabs.append(&button);
+    }
+    head.set_child(Some(&tabs));
+    head
+}
+
+/// How many pixels wide OHLC bars are drawn, shown only while they are
+/// what the bars are drawn as. A chart's own setting rather than part of
+/// its look, changed where the rule says as the look is.
+fn thickness_row(context: &Rc<Context>, card: &Card) -> adw::ActionRow {
+    let window = context.window.clone();
     let row = crate::ui::controls::bounded_row(
         crate::ui::chart_settings::THICKNESS_LABEL,
         None,
-        f64::from(current),
+        f64::from(scope_rule::settings(&context.window).ohlc_thickness),
         f64::from(crate::chart_defaults::MIN_OHLC_THICKNESS),
         f64::from(crate::chart_defaults::MAX_OHLC_THICKNESS),
         1.0,
         0,
-        move |px| on_thickness(px.round() as u8),
+        move |px| scope_rule::change_setting(&window, crate::chart_defaults::ChartSetting::Thickness(px.round() as u8)),
     )
     .row;
-    row.set_visible(crate::chart_defaults::bar_style(&context.store) == BarStyle::Ohlc);
+    card.shown_under(&row, |style| style == BarStyle::Ohlc);
     row
 }
 
-fn style_row(context: &Rc<Context>, thickness: &adw::ActionRow) -> adw::ActionRow {
+/// One direction's row: its body for candles, then its colour. The colour
+/// last, at the edge, so it does not move with the style.
+fn direction_row(context: &Rc<Context>, offered: &Theme, up: bool, card: &Card) -> adw::ActionRow {
     let row = adw::ActionRow::new();
-    row.set_title("Drawn as");
-    let strip = gtk::Box::new(gtk::Orientation::Horizontal, 2);
-    strip.add_css_class("segmented");
-    let current = crate::chart_defaults::bar_style(&context.store);
-    let mut first: Option<gtk::ToggleButton> = None;
-    for style in BarStyle::ALL {
-        let tile = gtk::ToggleButton::new();
-        tile.add_css_class("body-tile");
-        let inside = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        inside.append(&style_glyph(context, style));
-        inside.append(&gtk::Label::new(Some(match style {
-            BarStyle::Candles => "Candles",
-            BarStyle::Ohlc => "OHLC",
-        })));
-        tile.set_child(Some(&inside));
-        tile.set_group(first.as_ref());
-        tile.set_active(current == style);
-        let (ctx, thickness) = (context.clone(), thickness.clone());
-        tile.connect_toggled(move |tile| {
-            if tile.is_active() {
-                thickness.set_visible(style == BarStyle::Ohlc);
+    row.set_title(if up { "Up" } else { "Down" });
+    let (colour, body) = {
+        let look = context.look.borrow();
+        let (colour, body) = side(&look.bars, up);
+        (colour.clone(), body)
+    };
+    let (drawn_by, picked_by) = (context.clone(), context.clone());
+    let repaint = card.clone();
+    let bodies = choice(
+        card,
+        Body::ALL.to_vec(),
+        body,
+        |body| body_word(body).to_string(),
+        move |cr, w, h, body| {
+            let mut bars = drawn_by.look.borrow().bars.clone();
+            match up {
+                true => bars.up_body = body,
+                false => bars.down_body = body,
             }
-            if tile.is_active() && crate::chart_defaults::bar_style(&ctx.store) != style {
-                ctx.store.set_setting(crate::chart_defaults::SETTING_BAR_STYLE, style.key());
-                (ctx.on_change)();
+            draw_bar(cr, w, h, &bars.scheme(&drawn_by.theming.borrow().theme()), up, BarStyle::Candles);
+        },
+        move |body| change(&picked_by, if up { LookEdit::UpBody(body) } else { LookEdit::DownBody(body) }, &repaint),
+    );
+    card.shown_under(&bodies, |style| style == BarStyle::Candles);
+    row.add_suffix(&bodies);
+
+    let (ctx, repaint) = (context.clone(), card.clone());
+    let chip = palette::chip(offered, colour, move |choice| {
+        change(&ctx, if up { LookEdit::Up(choice) } else { LookEdit::Down(choice) }, &repaint);
+    });
+    // Apart from the dropdown before it, so each chevron is read as its own
+    // control's.
+    chip.set_margin_start(12);
+    chip.set_margin_end(EDGE);
+    row.add_suffix(&chip);
+    row
+}
+
+/// Room at the card's right, past the last control of a row.
+const EDGE: i32 = 8;
+
+/// The box a dropdown's picture is drawn in, a body's and a thickness's
+/// alike.
+const GLYPH: (i32, i32) = (14, 16);
+
+fn body_word(body: Body) -> &'static str {
+    match body {
+        Body::Filled => "Filled",
+        Body::Bordered => "Bordered",
+        Body::Hollow => "Hollow",
+    }
+}
+
+/// A dropdown of a few answers, each told by a picture and a word, in the
+/// shape of the colour beside it: its face the answer picked, and its list
+/// the app's menu, the answer picked ticked. Every face is one picture's
+/// box and the longest body wide, so the row does not move as a word or the
+/// style changes; the picture at its
+/// left, the chevron after the word, and the room left over after that: a
+/// chevron out at the edge would sit against the colour's dot and read as
+/// the colour's. `draw` paints an answer's picture when it is drawn, so
+/// a change of colour elsewhere needs only the card's redraw.
+fn choice<T: Copy + PartialEq + 'static>(
+    card: &Card,
+    answers: Vec<T>,
+    current: T,
+    word: fn(T) -> String,
+    draw: impl Fn(&gtk::cairo::Context, f64, f64, T) + 'static,
+    picked: impl Fn(T) + 'static,
+) -> gtk::DropDown {
+    let words: Vec<String> = answers.iter().map(|answer| word(*answer)).collect();
+    let bodies: Vec<&str> = Body::ALL.iter().map(|body| body_word(*body)).collect();
+    let model = gtk::StringList::new(&words.iter().map(String::as_str).collect::<Vec<_>>());
+    let answers = Rc::new(answers);
+    let draw = Rc::new(draw);
+    let factory = |listed: bool| {
+        let factory = gtk::SignalListItemFactory::new();
+        let (card, bodies) = (card.clone(), bodies.clone());
+        factory.connect_setup(move |_, item| {
+            let Some(item) = item.downcast_ref::<gtk::ListItem>() else { return };
+            let glyph = gtk::DrawingArea::new();
+            glyph.set_content_width(GLYPH.0);
+            glyph.set_content_height(GLYPH.1);
+            glyph.set_valign(gtk::Align::Center);
+            card.drawn(&glyph);
+            let label = gtk::Label::new(None);
+            label.set_xalign(0.0);
+            let inside = gtk::Box::new(gtk::Orientation::Horizontal, 7);
+            inside.append(&glyph);
+            inside.append(&label);
+            match listed {
+                true => {
+                    label.set_hexpand(true);
+                    let tick = gtk::Image::from_icon_name("object-select-symbolic");
+                    tick.add_css_class("tick");
+                    inside.append(&tick);
+                }
+                false => {
+                    inside.append(&gtk::Image::from_icon_name("pan-down-symbolic"));
+                    palette::reserve(&inside, &label, &bodies, GLYPH.0 + 7 + 7 + 10);
+                }
+            }
+            item.set_child(Some(&inside));
+        });
+        let (answers, draw) = (answers.clone(), draw.clone());
+        factory.connect_bind(move |_, item| {
+            let Some(item) = item.downcast_ref::<gtk::ListItem>() else { return };
+            let Some(&answer) = answers.get(item.position() as usize) else { return };
+            let Some(inside) = item.child() else { return };
+            if let Some(glyph) = inside.first_child().and_downcast::<gtk::DrawingArea>() {
+                let draw = draw.clone();
+                glyph.set_draw_func(move |_, cr, w, h| draw(cr, f64::from(w), f64::from(h), answer));
+                if let Some(label) = glyph.next_sibling().and_downcast::<gtk::Label>() {
+                    label.set_text(&word(answer));
+                }
             }
         });
-        first.get_or_insert(tile.clone());
-        strip.append(&tile);
-    }
-    row.add_suffix(&strip);
-    row
+        factory
+    };
+    let dropdown = gtk::DropDown::new(Some(model), None::<gtk::Expression>);
+    dropdown.add_css_class("bar-choice");
+    dropdown.set_valign(gtk::Align::Center);
+    // The face draws its own chevron beside its word; GTK's sits out at the
+    // edge, by the next control.
+    dropdown.set_show_arrow(false);
+    dropdown.set_factory(Some(&factory(false)));
+    dropdown.set_list_factory(Some(&factory(true)));
+    dropdown.set_selected(answers.iter().position(|answer| *answer == current).unwrap_or(0) as u32);
+    dropdown.connect_selected_notify(move |dropdown| {
+        if let Some(&answer) = answers.get(dropdown.selected() as usize) {
+            picked(answer);
+        }
+    });
+    dropdown
 }
 
 /// A rise and a fall drawn in `style`, in the colours the charts use.
 fn style_glyph(context: &Rc<Context>, style: BarStyle) -> gtk::DrawingArea {
-    const W: i32 = 18;
+    const W: i32 = 24;
     const H: i32 = 22;
     let area = gtk::DrawingArea::new();
     area.set_content_width(W);
@@ -263,9 +411,10 @@ fn style_glyph(context: &Rc<Context>, style: BarStyle) -> gtk::DrawingArea {
     area.set_valign(gtk::Align::Center);
     let ctx = context.clone();
     area.set_draw_func(move |_, cr, _, _| {
-        let theming = ctx.theming.borrow();
-        let scheme = theming.bar_scheme();
-        drop(theming);
+        let theme = ctx.theming.borrow().theme();
+        let scheme = ctx.look.borrow().bars.scheme(&theme);
+        // Drawn on an 18 by 22 grid, centred.
+        cr.translate(f64::from(W - 18) / 2.0, f64::from(H - 22) / 2.0);
         cr.set_line_width(1.5);
         // (wick x, high, low, body top, body bottom, rising)
         let bars = [(5.0, 2.0, 18.0, 6.0, 14.0, true), (13.0, 4.0, 16.0, 8.0, 13.0, false)];
@@ -298,61 +447,66 @@ fn style_glyph(context: &Rc<Context>, style: BarStyle) -> gtk::DrawingArea {
 }
 
 /// One direction's half of the look: its colour and its body.
-fn side(look: &mut BarLook, up: bool) -> (&mut ColorChoice, &mut Body) {
+fn side(look: &BarLook, up: bool) -> (&ColorChoice, Body) {
     match up {
-        true => (&mut look.up, &mut look.up_body),
-        false => (&mut look.down, &mut look.down_body),
+        true => (&look.up, look.up_body),
+        false => (&look.down, look.down_body),
     }
 }
 
-/// A candle as `body` would draw this direction's, in the colours the charts
-/// would use, read when it is drawn so a new colour needs only a redraw.
-fn candle_glyph(context: &Rc<Context>, up: bool, body: Body) -> gtk::DrawingArea {
-    const W: i32 = 14;
-    const H: i32 = 26;
-    let area = gtk::DrawingArea::new();
-    area.set_content_width(W);
-    area.set_content_height(H);
-    let ctx = context.clone();
-    area.set_draw_func(move |_, cr, _, _| {
-        let theming = ctx.theming.borrow();
-        let mut look = theming.bar_look().clone();
-        *side(&mut look, up).1 = body;
-        let scheme = look.scheme(&theming.theme());
-        let direction = if up { Direction::Up } else { Direction::Down };
-        let (edge, fill) = (scheme.edge(direction), scheme.body(direction));
-
-        // A nine-pixel body round a wick down its middle pixel.
-        let (x, left, width, top, bottom) = (7.5, 3.0, 9.0, 8.0, 18.0);
-        cr.set_line_width(1.0);
-        colors::set_source(cr, edge);
-        if colors::is_transparent(fill) {
-            cr.move_to(x, 2.0);
-            cr.line_to(x, top);
-            cr.move_to(x, bottom);
-            cr.line_to(x, f64::from(H) - 2.0);
-            cr.rectangle(left + 0.5, top + 0.5, width - 1.0, bottom - top - 1.0);
+/// One bar of this direction as `style` draws it, in `scheme`, `w` by `h`.
+fn draw_bar(cr: &gtk::cairo::Context, w: f64, h: f64, scheme: &BarScheme, up: bool, style: BarStyle) {
+    let direction = if up { Direction::Up } else { Direction::Down };
+    let x = (w / 2.0).floor() + 0.5;
+    // A body of an odd number of pixels round a wick down its middle, and
+    // as wide for any box, so it stays a candle's shape.
+    let width = ((h * 0.45).round() as i32 | 1) as f64;
+    let (left, top, bottom) = (x - width / 2.0, (h * 0.25).round(), (h * 0.75).round());
+    cr.set_line_width(1.0);
+    match style {
+        BarStyle::Ohlc => {
+            // The open to the left, the close to the right.
+            let (open, close) = if up { (bottom, top) } else { (top, bottom) };
+            cr.set_line_width(1.5);
+            colors::set_source(cr, scheme.outline(direction));
+            cr.move_to(x, 1.0);
+            cr.line_to(x, h - 1.0);
+            cr.move_to(left, open);
+            cr.line_to(x, open);
+            cr.move_to(x, close);
+            cr.line_to(left + width, close);
             let _ = cr.stroke();
-            return;
         }
-        cr.move_to(x, 2.0);
-        cr.line_to(x, f64::from(H) - 2.0);
-        let _ = cr.stroke();
-        cr.rectangle(left, top, width, bottom - top);
-        let _ = cr.fill();
-        if edge != fill {
-            colors::set_source(cr, fill);
-            cr.rectangle(left + 1.0, top + 1.0, width - 2.0, bottom - top - 2.0);
+        BarStyle::Candles => {
+            let (edge, fill) = (scheme.edge(direction), scheme.body(direction));
+            colors::set_source(cr, edge);
+            if colors::is_transparent(fill) {
+                cr.move_to(x, 1.0);
+                cr.line_to(x, top);
+                cr.move_to(x, bottom);
+                cr.line_to(x, h - 1.0);
+                cr.rectangle(left + 0.5, top + 0.5, width - 1.0, bottom - top - 1.0);
+                let _ = cr.stroke();
+                return;
+            }
+            cr.move_to(x, 1.0);
+            cr.line_to(x, h - 1.0);
+            let _ = cr.stroke();
+            cr.rectangle(left, top, width, bottom - top);
             let _ = cr.fill();
+            if edge != fill {
+                colors::set_source(cr, fill);
+                cr.rectangle(left + 1.0, top + 1.0, width - 2.0, bottom - top - 2.0);
+                let _ = cr.fill();
+            }
         }
-    });
-    area
+    }
 }
 
-/// Change one of the bars' answers, store it, and repaint everything.
-fn change_bars(context: &Rc<Context>, edit: impl FnOnce(&mut BarLook)) {
-    let mut look = context.theming.borrow().bar_look().clone();
-    edit(&mut look);
-    context.theming.borrow_mut().set_bar_look(look, &context.store);
-    apply(context);
+/// Change one of the bars' answers where the rule says, then redraw the
+/// card's pictures in the look that leaves.
+fn change(context: &Rc<Context>, edit: LookEdit, card: &Card) {
+    scope_rule::change(&context.window, edit);
+    *context.look.borrow_mut() = scope_rule::look(&context.window);
+    card.pictures.borrow().iter().for_each(|p| p.queue_draw());
 }

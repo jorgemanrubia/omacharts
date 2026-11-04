@@ -2495,7 +2495,7 @@ pub(super) mod tests {
             let mut header = crate::header::load(&store);
             header.set(Section::Right, vec![Part::Maximize, Part::Link]);
             crate::header::save(&store, &header);
-            window.apply_header();
+            window.adopt_header();
             assert!(settings(&window));
         });
     }

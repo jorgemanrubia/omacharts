@@ -37,7 +37,7 @@ A theme of your own is made with Omarchy's tools, and then appears in the catalo
 
 ## Bars
 
-Preferences › Appearance › **Bars** sets how bars look on every chart. **Drawn as** picks **Candles** or **OHLC** ([Style](/manual/charts/#style)), and on OHLC bars **Thickness** under it sets how wide they are drawn. **Up** and **Down** each have a row: a colour, and three candles to pick the body from.
+Preferences › Appearance › **Bars** sets how bars look on every chart, or under **LOCAL** on the focused chart alone ([A chart's own look](/manual/charts/#a-charts-own-look)). Tabs at its head pick **Candles** or **OHLC**, and on OHLC bars the **Thickness** row under them sets how wide they are drawn ([Style](/manual/charts/#style)). Under them, the **Up** and **Down** rows each hold the direction's colour and, for candles, its body, each picked from a list showing a bar drawn as the charts draw it. OHLC bars have no body, so the bodies go with them.
 
 | Control | Does |
 |---|---|

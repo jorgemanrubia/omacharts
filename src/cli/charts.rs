@@ -372,7 +372,19 @@ pub fn new_pane(
     })
 }
 
-/// A chart copied from another, which is what splitting one means.
+/// The look a stored chart holds of its own, or `None` while it wears every
+/// chart's. See [`crate::chart_look`].
+pub fn own_look(pane: &Value) -> Option<crate::chart_look::ChartLook> {
+    serde_json::from_value(pane["look"].clone()).ok().flatten()
+}
+
+/// The look a stored chart wears: its own, or `every` chart's.
+pub fn worn_look(pane: &Value, every: &crate::chart_look::ChartLook) -> crate::chart_look::ChartLook {
+    own_look(pane).unwrap_or_else(|| every.clone())
+}
+
+/// A chart copied from another, which is what splitting one means. Its own
+/// look, if it has one, comes with it.
 pub fn copy_pane(from: &Value, id: u32) -> Value {
     let mut copy = from.clone();
     copy["id"] = json!(id);

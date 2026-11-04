@@ -265,6 +265,16 @@ impl Header {
         self.section(section).iter().copied().filter(|part| part.shown(trading)).collect()
     }
 
+    /// Every section as it is typed, named: `left=symbol,resolution
+    /// center=title right=settings,maximize,link`.
+    pub fn spell(&self) -> String {
+        Section::ALL
+            .into_iter()
+            .map(|section| format!("{}={}", section.title().to_lowercase(), spell(self.section(section))))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
     pub fn set(&mut self, section: Section, parts: Vec<Part>) {
         for other in Section::ALL.into_iter().filter(|other| *other != section) {
             self.section_mut(other).retain(|part| !parts.contains(part));

@@ -770,10 +770,10 @@ fn scales_group(window: &Rc<Window>) -> adw::PreferencesGroup {
     grid.set_title("Gridlines");
     let switch = gtk::Switch::new();
     switch.set_valign(gtk::Align::Center);
-    switch.set_active(window.show_grid());
+    switch.set_active(window.focused_pane().view.show_grid());
     let window_for_grid = window.clone();
     switch.connect_state_set(move |_, on| {
-        window_for_grid.set_show_grid(on);
+        window_for_grid.change_worn_look(crate::chart_look::LookEdit::Grid(on));
         glib::Propagation::Proceed
     });
     grid.add_suffix(&switch);
@@ -785,10 +785,10 @@ fn scales_group(window: &Rc<Window>) -> adw::PreferencesGroup {
     price_line.set_subtitle("The price stays on the axis either way");
     let switch = gtk::Switch::new();
     switch.set_valign(gtk::Align::Center);
-    switch.set_active(window.price_line());
+    switch.set_active(window.focused_pane().view.price_line());
     let window_for_line = window.clone();
     switch.connect_state_set(move |_, on| {
-        window_for_line.set_price_line(on);
+        window_for_line.change_worn_look(crate::chart_look::LookEdit::PriceLine(on));
         glib::Propagation::Proceed
     });
     price_line.add_suffix(&switch);
@@ -982,7 +982,7 @@ impl Owner {
     /// The focused chart's, for a template too: it is the chart in front of
     /// whoever is editing, and a template has no bars of its own.
     fn bar_scheme(&self) -> omacharts_engine::BarScheme {
-        self.app.bar_scheme()
+        self.app.focused_pane().view.scheme()
     }
 
     /// How many rows a profile is drawing. A template draws nothing of its

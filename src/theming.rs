@@ -193,11 +193,6 @@ impl Theming {
         store.set_setting(SETTING_THEME, id);
     }
 
-    pub fn set_bar_look(&mut self, look: BarLook, store: &Store) {
-        save_bar_look(store, &look);
-        self.bars = look;
-    }
-
     /// How orders and positions are drawn as somebody set it: what an edit
     /// starts from, since a slot left unset keeps following the theme.
     pub fn trading_look(&self) -> &TradingLook {
@@ -486,23 +481,48 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
 .form-window row button.action-word.destructive-action:hover {
   background: alpha(@destructive_color, 0.12);
 }
-/* A candle's body, as one slab of three candles with the chosen one lit and
-   the others faded, rather than a switch per property. */
-.form-window row box.segmented {
-  background: alpha(@window_fg_color, 0.08);
-  border-radius: 9px;
-  padding: 3px;
-}
-.form-window row box.segmented > button.body-tile {
+/* A colour is its dot, its name and a chevron, as quiet as a dropdown's
+   value until pointed at; a bar's body and thickness beside it, their
+   picture, their word and a chevron. */
+menubutton.colour-chip > button,
+dropdown.bar-choice > button {
   background: none;
-  border-radius: 7px;
-  padding: 5px 10px;
-  min-height: 0;
-  min-width: 0;
+  border-radius: 6px;
+  padding: 0 6px;
+  min-height: 26px;
+  font-weight: normal;
+  color: alpha(@window_fg_color, 0.60);
 }
-.form-window row box.segmented > button.body-tile:hover { background: alpha(@window_fg_color, 0.06); }
-.form-window row box.segmented > button.body-tile:checked { background: alpha(@window_fg_color, 0.16); }
-.form-window row box.segmented > button.body-tile:not(:checked) > * { opacity: 0.55; }
+menubutton.colour-chip > button:hover,
+menubutton.colour-chip > button:checked,
+dropdown.bar-choice > button:hover,
+dropdown.bar-choice > button:checked {
+  background: alpha(@window_fg_color, 0.08);
+  color: @window_fg_color;
+}
+menubutton.colour-chip image,
+dropdown.bar-choice > button image { -gtk-icon-size: 10px; min-width: 10px; min-height: 10px; }
+/* In the list, only the answer picked shows its tick. */
+popover.menu listview > row:not(:selected) image.tick { opacity: 0; }
+/* The Bars card's head: its styles as tabs, a size up from the rows they
+   decide, the one in use underlined in the accent and the others dimmed,
+   as every tab is. On the row's bottom edge, so the underline sits on the
+   hairline under it. */
+row.bars-head { padding: 6px 12px 0; }
+row.bars-head button {
+  min-height: 0;
+  padding: 8px 2px 9px;
+  margin-left: 22px;
+  border-radius: 0;
+  border-bottom: 2px solid transparent;
+  box-shadow: none;
+  background: none;
+  font-size: 15px;
+  font-weight: 600;
+  color: alpha(@window_fg_color, 0.60);
+}
+row.bars-head button:hover { color: @window_fg_color; }
+row.bars-head button:checked { color: @window_fg_color; border-bottom-color: @accent_color; }
 /* The sidebar sits on the charts' own ground, a step darker than the page. */
 .form-window .sidebar-pane { background-color: @view_bg_color; }
 /* The two theme cards, and the catalogue's tiles. */
@@ -549,6 +569,9 @@ pub fn stylesheet(theme: &Theme, scheme: &BarScheme) -> String {
 .preferences-window .scope-rule button:checked label { opacity: 1; color: @window_fg_color; }
 .preferences-window .scope-rule button.scope-local:checked label { color: @accent_color; }
 .preferences-window .scope-rule button:hover { background: alpha(@window_fg_color, 0.06); }
+/* The reset after LOCAL: as quiet as the words beside it until pointed at. */
+.preferences-window .scope-rule button.scope-reset { padding: 1px; color: alpha(@window_fg_color, 0.55); }
+.preferences-window .scope-rule button.scope-reset:hover { color: @accent_color; }
 
 /* Menus and popovers are one surface. A right-click menu and the link
    popover open beside each other often enough that two looks for one kind
@@ -1434,8 +1457,11 @@ paned.chart-split > separator:active {{ background-color: @omacharts_gutter_hove
 .chart-split .chart-pane.focused {{ border-color: @omacharts_focus; }}
 /* While a picker is open every chart fades, and the one it will change
    wears the ring twice as wide: a second ring inside the border, as an
-   outline, so nothing inside the pane moves. */
-.chart-split .chart-pane.picked {{
+   outline, so nothing inside the pane moves. Preferences under LOCAL rings
+   the chart its rows change the same way, without the fade. Two classes,
+   so a picker closing does not take LOCAL's ring with it. */
+.chart-split .chart-pane.picked,
+.chart-split .chart-pane.local-target {{
   border-color: @omacharts_focus;
   outline: {ring}px solid @omacharts_focus;
   outline-offset: -{double}px;

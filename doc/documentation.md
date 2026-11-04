@@ -80,7 +80,7 @@ out loud to a colleague, rewrite it.
   strip, chart template, link mode, Omarchy plugin: the words the UI uses, the same word
   every time. No synonyms for variety.
 - **British spelling** in prose: colour, licence, maximise, centre. Code is
-  spelled as the code spells it: `--color`, `config bars --up-body`.
+  spelled as the code spells it: `--color`, `chart look --up-body`.
 - **Contractions are fine** where they make a sentence sound like speech.
 
 Do not take the voice from the code comments or `AGENTS.md`: those argue a

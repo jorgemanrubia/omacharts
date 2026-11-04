@@ -185,6 +185,9 @@ pub struct ChartPane {
     /// one, `indicators` is a copy of the template's, kept current by the
     /// window; see [`crate::templates`].
     pub template: Cell<Option<u32>>,
+    /// The look of its own, if it has one; `None` while it wears every
+    /// chart's. See [`crate::chart_look`].
+    pub look: RefCell<Option<crate::chart_look::ChartLook>>,
     /// What the header shows, in order. See [`crate::header`].
     pub header: RefCell<crate::header::Header>,
     /// The line the header is written on, and the two parts of it only the
@@ -283,7 +286,7 @@ pub struct ChartPane {
     /// was, and nothing is traded meanwhile — never what the chart charts.
     pub trading_pending: RefCell<Option<(String, Option<String>)>>,
     /// Whether its bars are hidden. How they are drawn when they are not is
-    /// every chart's answer, not this one's.
+    /// its look's answer.
     pub bars_hidden: Cell<bool>,
     /// How many pixels wide its OHLC bars are drawn.
     pub ohlc_thickness: Cell<u8>,
@@ -782,6 +785,7 @@ impl ChartPane {
             timeframe: Cell::new(timeframe),
             indicators: RefCell::new(indicators),
             template: Cell::new(None),
+            look: RefCell::new(None),
             header: RefCell::new(crate::header::Header::standard()),
             header_row: bar,
             header_center: top,

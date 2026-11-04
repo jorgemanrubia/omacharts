@@ -204,8 +204,9 @@ impl Preferences {
         });
         build_general_page(&context);
         let rule = {
-            let context = context.clone();
+            let (context, window) = (context.clone(), context.window.clone());
             crate::ui::scope_rule::rule(
+                &window,
                 symbol,
                 vec![appearance_page.upcast(), overlays_page.upcast()],
                 move |local| {

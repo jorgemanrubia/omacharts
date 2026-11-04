@@ -113,14 +113,14 @@ Set it from the chart menu's **Session** submenu or the **Hours** row of [Chart 
 
 ### Style
 
-Every chart draws its bars the same way. Choose it in Preferences › Appearance › Bars › **Drawn as**, from any chart's **Bar style** submenu, or with `omacharts config bars --style`. Choosing one from a chart changes every chart, and shows that chart's bars if they were hidden.
+Charts draw their bars in the style picked at the head of Preferences › Appearance › **Bars**, which `omacharts config bars --style` sets too. A chart's **Bar style** submenu changes that chart alone, giving it [a look of its own](#a-charts-own-look), and shows its bars if they were hidden.
 
 | Style | Draws |
 |---|---|
 | **Candles** | A body from open to close and a wick from high to low. The default |
 | **OHLC bars** | A vertical bar from high to low, a tick to the left at the open and one to the right at the close |
 
-OHLC bars have a **Thickness**, from 1 to 4 pixels and 2 by default: the **Thickness** row under **Drawn as** in Preferences › Appearance › Bars, there while the bars are OHLC, for every chart and for new ones; `omacharts chart set --thickness` sets one chart's. Where the bars are packed too close for it, they are drawn thinner so neighbours never touch.
+OHLC bars have a **Thickness**, from 1 to 4 pixels and 2 by default: the **Thickness** row under **Style** in Preferences › Appearance › Bars, there while the bars are OHLC, for every chart and for new ones; `omacharts chart set --thickness` sets one chart's. Where the bars are packed too close for it, they are drawn thinner so neighbours never touch.
 
 <!-- regenerate:
 theme: tokyo-night
@@ -131,7 +131,7 @@ state:
 capture: bin/headless-window shot /tmp/thickness.png
 crop: the Bars group
 -->
-{% include figure.html src="/assets/manual/charts/ohlc-thickness.png" alt="Preferences › Appearance › Bars on OHLC bars, with the Thickness slider under Drawn as" caption="Thickness, under Drawn as on OHLC bars." %}
+{% include figure.html src="/assets/manual/charts/ohlc-thickness.png" alt="Preferences › Appearance › Bars on OHLC bars, with the Thickness slider under Style" caption="Thickness, under Style on OHLC bars." %}
 
 <!-- regenerate:
 theme: tokyo-night
@@ -146,11 +146,11 @@ crop: none (resized to 2000 wide)
 
 ### Colours
 
-The colour of a rise and of a fall, and whether a candle's body is filled, bordered or hollow, are every chart's too, set beside the style ([Bars](/manual/themes/#bars)).
+The colour of a rise and of a fall, and whether a candle's body is filled, bordered or hollow, are set beside the style ([Bars](/manual/themes/#bars)). They are every chart's, except on a chart with [a look of its own](#a-charts-own-look).
 
 ### Hiding the bars
 
-<kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>H</kbd> hides the focused chart's bars, and pressing it again shows them, drawn the way every chart draws them. Choosing **None** in the **Bar style** submenu does the same, and choosing a style shows them again. This is the one part of the bars that is the chart's own, for a chart that is all indicators.
+<kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>H</kbd> hides the focused chart's bars, and pressing it again shows them, drawn in the chart's style. Choosing **None** in the **Bar style** submenu does the same, and choosing a style shows them again. Hidden bars are always the chart's alone, for a chart that is all indicators, and are not part of its look.
 
 Only the bars go. The price scale still fits them, and the indicators, drawings, last price and crosshair stay. Hidden bars are kept with the chart, and a chart made by splitting it starts with its bars hidden too.
 
@@ -346,6 +346,8 @@ The chart keeps the window until you zoom or pan. A new symbol, new bars and a r
 
 Gridlines are the same on every chart, in every chartbook, and start off. <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>G</kbd> shows or hides them. The scales and their labels stay either way. The same switch is the chart menu's **Gridlines**, the **Gridlines** row of [Chart settings](/manual/chart-settings/), and Preferences › Overlays › **Gridlines**.
 
+The switch changes the look the chart wears. On a chart with [a look of its own](#a-charts-own-look) that is the chart's alone. On any other it is every chart's, so the gridlines go on or off on every chart that has no look of its own. The [last price line](#the-last-price-line) works the same way.
+
 ## The last price line
 
 A dashed line runs across every chart at the last price, in every chartbook. Preferences › Overlays › **Last price line**, the row of that name in [Chart settings](/manual/chart-settings/), and `omacharts config price-line off` take it off every chart. The price itself stays on the price axis either way.
@@ -415,7 +417,7 @@ Prices refresh as bars close. A chart does not refresh while its market is shut 
 
 ## The header
 
-The header is the line at a chart's top-left and the row centred across its top. It is the same on every chart in every chartbook. Each part goes in one of its two sections, **Left** or **Center**, in any order.
+The header is the line at a chart's top-left and the row centred across its top. It is the same on every chart in every chartbook, except a chart with [a look of its own](#a-charts-own-look). Each part goes in one of its two sections, **Left** or **Center**, in any order.
 
 | Part | Shows |
 |---|---|
@@ -467,6 +469,21 @@ crop: 940,460,680,520   (the whole dialog)
 
 A chart made by splitting another starts with no chart title.
 
+## A chart's own look
+
+A chart's look is how its bars are drawn and coloured, its header, its gridlines and its last-price line. Every chart wears the same look until you give one a look of its own. The theme is always every chart's.
+
+The first change you make to one chart alone copies every chart's look onto it, then makes the change. From then on, a change to every chart's look leaves that chart as it was. Colours are kept as the names you picked, such as **Blue** or **Foreground**, so a new theme recolours the chart the way it recolours every other. A hex colour stays that colour.
+
+To give one chart a look of its own, focus it, open Preferences and pick **LOCAL** on the **VISUAL** rule, then change Appearance or Overlays. The reset arrow after **LOCAL** puts it back on every chart's look. Choosing a style from a chart's **Bar style** submenu also gives that chart a look of its own. A chart's own look comes with it when you split it or duplicate its chartbook.
+
+`omacharts chart look` gives the focused chart a look of its own, reads the look it wears, and with `--follow` puts it back on every chart's ([`chart look`](/manual/cli/#chart-look)).
+
+```sh
+omacharts chart look --style ohlc --up blue --grid off
+omacharts chart look --follow
+```
+
 ## The chart menu
 
 Right-click a chart for its menu. The chart under the pointer is focused first. A right-click on a drawing opens the drawing's own menu instead ([Drawings](/manual/drawings/)), and one on the price axis the [price axis menu](#the-price-axis-menu).
@@ -486,7 +503,7 @@ crop: 560,262,640,986   (the whole menu, 20px layout margin)
 | Item | Does | Explained in |
 |---|---|---|
 | **Paste** | Puts down the drawings or the indicator last copied. Only there while something has been copied | [Drawings](/manual/drawings/), [Indicators](/manual/indicators/#selecting-an-indicator) |
-| **Bar style** › **Candles**, **OHLC bars**, **None** | How every chart draws its bars, or this chart's bars hidden, with its key | [Bars](#bars) |
+| **Bar style** › **Candles**, **OHLC bars**, **None** | How this chart draws its bars, in [a look of its own](#a-charts-own-look), or its bars hidden, with its key | [Bars](#bars) |
 | **Session** › **Extended hours**, **Regular hours only** | The chart's hours | [Sessions](#sessions) |
 | **Template** › **None**, then each chart template | Puts the chart on a template, with its key | [Chart templates](/manual/chart-templates/) |
 | **Template** › **Create new template from chart…** | Saves the chart's indicators as a new template and puts the chart on it. Greyed out on a chart with no indicators | [Chart templates](/manual/chart-templates/#creating-a-template) |

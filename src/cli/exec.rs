@@ -19,7 +19,7 @@ use omacharts_engine::indicators::{
 };
 use omacharts_engine::providers;
 use omacharts_engine::theme::{
-    spell_bar_colour, ColorChoice, PALETTE_NAMES, SWATCH_NAMES,
+    ColorChoice, PALETTE_NAMES, SWATCH_NAMES,
 };
 use omacharts_engine::{
     BarStyle, Indicator, IndicatorKind, LinkMode, Reset, Session, Timeframe,
@@ -28,6 +28,7 @@ use omacharts_engine::{
 use super::charts::{self, Workspace};
 use super::{parser, Caller, Fault, Live, Outcome, EXIT_USAGE};
 use crate::chart_defaults::ChartDefaults;
+use crate::chart_look::{ChartLook, LookEdit};
 use crate::store::{Entry, Section, Store, DEFAULT_WATCHLIST};
 use crate::trading::chart_pnl;
 
@@ -1152,7 +1153,8 @@ fn charts_verb(
         ("chartbook", "show") | ("chart", "list") => {
             let at = workspace.resolve(selector.map(String::as_str))?;
             let book = workspace.book(at)?;
-            let rows: Vec<String> = charts::panes(book).iter().map(|pane| pane_json(pane, crate::chart_defaults::bar_style(store))).collect();
+            let every = ChartLook::global(store);
+            let rows: Vec<String> = charts::panes(book).iter().map(|pane| pane_json(pane, &every)).collect();
             return Ok(match as_json {
                 true => format!(
                     "{{\"chartbook\":{},\"watchlist\":{},\"charts\":[{}]}}\n",
@@ -1190,7 +1192,7 @@ fn charts_verb(
                                     pane["suffix"].as_str()
                                 ),
                                 pane["timeframe"].as_str().unwrap_or(""),
-                                shown_style(pane, crate::chart_defaults::bar_style(store)),
+                                shown_style(pane, &every),
                                 stored_mode(pane).key(),
                                 title,
                             )
@@ -1515,6 +1517,7 @@ fn chart_verb(
         "set" => return chart_set(store, m, as_json, workspace, at, pane),
         "indicator" => return chart_indicator(store, m, as_json, workspace, at, pane),
         "drawing" => return chart_drawing(store, m, as_json, workspace, at, pane),
+        "look" => return chart_look(store, m, as_json, workspace, at, pane),
         _ => return Err(Fault::usage(format!("no such command: chart {verb}"))),
     };
 
@@ -1628,7 +1631,10 @@ fn chart_set(
     if let Some(shown) = bars {
         chart["bars_hidden"] = json!(!shown);
         changed.push(match shown {
-            true => format!("bars shown, as {}", crate::chart_defaults::bar_style(store).key()),
+            true => {
+                let style = charts::worn_look(chart, &ChartLook::global(store)).style;
+                format!("bars shown, as {}", style.key())
+            }
             false => "bars hidden".to_string(),
         });
     }
@@ -1710,7 +1716,7 @@ fn chart_set(
 
     if changed.is_empty() {
         return Err(Fault::usage(
-            "nothing to change; pass --title, --symbol, --resolution, --style, --thickness, --bars, --colouring, \
+            "nothing to change; pass --title, --symbol, --resolution, --thickness, --bars, \
              --session, --link, --auto-scale, --log-scale, --indicators, \
              --drawings, --show-drawings, --send-drawings or --template"
                 .into(),
@@ -4192,16 +4198,16 @@ fn parse_thickness(text: &str, what: &str) -> Result<u8, Fault> {
         })
 }
 
-/// The style a chart's bars are drawn in, every chart's `style`, or `none`
-/// while they are hidden.
-fn shown_style(pane: &Value, style: BarStyle) -> &'static str {
+/// The style a chart's bars are drawn in, its own look's or `every` chart's,
+/// or `none` while they are hidden.
+fn shown_style(pane: &Value, every: &ChartLook) -> &'static str {
     match pane["bars_hidden"].as_bool().unwrap_or(false) {
         true => "none",
-        false => style.key(),
+        false => charts::worn_look(pane, every).style.key(),
     }
 }
 
-fn pane_json(pane: &Value, style: BarStyle) -> String {
+fn pane_json(pane: &Value, every: &ChartLook) -> String {
     json!({
         "id": pane["id"],
         // Null for a chart nobody titled.
@@ -4210,7 +4216,8 @@ fn pane_json(pane: &Value, style: BarStyle) -> String {
         "suffix": pane["suffix"],
         "display": spell(pane["symbol"].as_str().unwrap_or(""), pane["suffix"].as_str()),
         "resolution": pane["timeframe"],
-        "style": shown_style(pane, style),
+        "style": shown_style(pane, every),
+        "own_look": charts::own_look(pane).is_some(),
         "bars": !pane["bars_hidden"].as_bool().unwrap_or(false),
         // Missing from a chart stored before OHLC bars could be thicker.
         "ohlc_thickness": pane["ohlc_thickness"].as_u64().unwrap_or(crate::chart_defaults::DEFAULT_OHLC_THICKNESS.into()),
@@ -4696,6 +4703,7 @@ fn status(store: &Store, window_open: bool, as_json: bool) -> Result<String, Fau
     let order = charts::leaves(&book["layout"]);
     let position = order.iter().position(|id| *id == focused);
 
+    let every = ChartLook::global(store);
     let charts_json: Vec<String> = order
         .iter()
         .enumerate()
@@ -4704,7 +4712,7 @@ fn status(store: &Store, window_open: bool, as_json: bool) -> Result<String, Fau
             Some(format!(
                 "{{\"position\":{i},\"target\":\"pos:{i}\",\"focused\":{},\"chart\":{}}}",
                 Some(*id) == Some(focused),
-                pane_json(pane, crate::chart_defaults::bar_style(store))
+                pane_json(pane, &every)
             ))
         })
         .collect();
@@ -5524,21 +5532,60 @@ fn config_bars(
     as_json: bool,
     live: Option<&dyn Live>,
 ) -> Result<String, Fault> {
-    use omacharts_engine::theme::{parse_bar_colour, BarLook, Body};
+    use omacharts_engine::theme::BarLook;
 
-    let current = crate::theming::bar_look(store);
-    let mut look = current.clone();
-    let was = crate::chart_defaults::bar_style(store);
-    // The parser has already held it to the styles there are.
-    let style = arg(m, "style").and_then(|key| BarStyle::from_key(key)).unwrap_or(was);
+    let mut edits = Vec::new();
     if let Some(preset) = arg(m, "STATE") {
         let colours = match preset.as_str() {
             "monochrome" => BarLook::monochrome(),
             "red-up" => BarLook::red_up(),
             _ => BarLook::default(),
         };
-        (look.up, look.down) = (colours.up, colours.down);
+        edits.extend([LookEdit::Up(colours.up), LookEdit::Down(colours.down)]);
     }
+    // After the preset, so a flag wins over it.
+    edits.extend(look_edits(m)?);
+
+    let was = ChartLook::global(store);
+    let mut look = was.clone();
+    for edit in &edits {
+        look.set(edit.clone());
+    }
+    let given = !edits.is_empty();
+    if given {
+        for edit in edits {
+            edit.save_global(store);
+        }
+        // A candle has no row to reload: an open window paints from the
+        // scheme it read, so it is told to read it again.
+        if let Some(live) = live {
+            live.adopt_theming();
+        }
+    }
+    let described = look.spell_bars();
+    // Said rather than silently done, because "it was already monochrome"
+    // and "it is monochrome now" are different answers to somebody checking
+    // their own work.
+    let text = match (given, look == was) {
+        (false, _) => described,
+        (true, true) => format!("bars were already {described}"),
+        (true, false) => format!("bars are now {described}"),
+    };
+    let mut answer = to_value(&look)?;
+    if let Some(fields) = answer.as_object_mut() {
+        fields.retain(|key, _| ["style", "up", "down", "up_body", "down_body"].contains(&key.as_str()));
+    }
+    said(as_json, answer, text)
+}
+
+/// The changes to a look a command was given, in the flags `config bars`
+/// and `chart look` share, any of which a verb may not have.
+///
+/// The parser has already held the style, the bodies and the switches to the
+/// values there are; a colour and a header are free text, and checked here.
+fn look_edits(m: &clap::ArgMatches) -> Result<Vec<LookEdit>, Fault> {
+    use omacharts_engine::theme::{parse_bar_colour, Body};
+
     let colour = |flag: &str| -> Result<Option<ColorChoice>, Fault> {
         let Some(text) = arg(m, flag) else { return Ok(None) };
         parse_bar_colour(text).map(Some).ok_or_else(|| {
@@ -5548,44 +5595,82 @@ fn config_bars(
             ))
         })
     };
-    if let Some(up) = colour("up")? {
-        look.up = up;
+    let switch = |flag: &str| arg(m, flag).map(|state| state == "on");
+    let mut edits = Vec::new();
+    edits.extend(arg(m, "style").and_then(|key| BarStyle::from_key(key)).map(LookEdit::Style));
+    edits.extend(colour("up")?.map(LookEdit::Up));
+    edits.extend(colour("down")?.map(LookEdit::Down));
+    edits.extend(arg(m, "up-body").and_then(|key| Body::from_key(key)).map(LookEdit::UpBody));
+    edits.extend(arg(m, "down-body").and_then(|key| Body::from_key(key)).map(LookEdit::DownBody));
+    if let Some(text) = arg(m, "header") {
+        let parts = crate::header::parse(text).map_err(Fault::usage)?;
+        edits.push(LookEdit::Header(crate::header::Section::Left, parts));
     }
-    if let Some(down) = colour("down")? {
-        look.down = down;
-    }
-    // The parser has already held both to the bodies there are.
-    if let Some(body) = arg(m, "up-body").and_then(|key| Body::from_key(key)) {
-        look.up_body = body;
-    }
-    if let Some(body) = arg(m, "down-body").and_then(|key| Body::from_key(key)) {
-        look.down_body = body;
-    }
+    edits.extend(switch("grid").map(LookEdit::Grid));
+    edits.extend(switch("price-line").map(LookEdit::PriceLine));
+    Ok(edits)
+}
 
-    let given = ["STATE", "style", "up", "down", "up-body", "down-body"].iter().any(|id| arg(m, id).is_some());
-    if given {
-        crate::theming::save_bar_look(store, &look);
-        store.set_setting(crate::chart_defaults::SETTING_BAR_STYLE, style.key());
-        // A candle has no row to reload: an open window paints from the
-        // scheme it read, so it is told to read it again.
-        if let Some(live) = live {
-            live.adopt_theming();
-        }
+/// A chart's own look: read, changed, or dropped for every chart's.
+///
+/// The first change copies every chart's look onto the chart and makes it
+/// there, so changes to every chart's from then on leave this one as it is.
+fn chart_look(
+    store: &Store,
+    m: &clap::ArgMatches,
+    as_json: bool,
+    workspace: &mut Workspace,
+    at: usize,
+    pane: u32,
+) -> Result<String, Fault> {
+    let edits = look_edits(m)?;
+    let follow = flag(m, "follow");
+    if follow && !edits.is_empty() {
+        return Err(Fault::usage("give --follow or changes to the look, not both".into()));
     }
-    let (up, down) = (spell_bar_colour(&look.up), spell_bar_colour(&look.down));
-    let (up_body, down_body) = (look.up_body.key(), look.down_body.key());
-    let described = format!("{}, up {up} {up_body}, down {down} {down_body}", style.key());
-    // Said rather than silently done, because "it was already monochrome"
-    // and "it is monochrome now" are different answers to somebody checking
-    // their own work.
-    let text = match (given, look == current && style == was) {
-        (false, _) => described,
-        (true, true) => format!("bars were already {described}"),
-        (true, false) => format!("bars are now {described}"),
+    let (label, book_name) = (chart_label(workspace.book(at)?, pane), workspace.name_of(at));
+    let named = format!("{label} in {book_name}");
+    let target = workspace.book_mut(at)?;
+    let Some(chart) = charts::pane_mut(target, pane) else {
+        return Err(Fault::not_found(format!("no chart {pane}")));
     };
+    let own = charts::own_look(chart);
+    let worn = own.clone().unwrap_or_else(|| ChartLook::global(store));
+
+    let (look, text) = if follow {
+        chart["look"] = Value::Null;
+        let text = match own {
+            Some(_) => format!("{named} now follows all charts"),
+            None => format!("{named} already follows all charts"),
+        };
+        (ChartLook::global(store), text)
+    } else if edits.is_empty() {
+        return Ok(match (as_json, own) {
+            (true, own) => format!(
+                "{}\n",
+                json!({
+                    "chart": label,
+                    "book": book_name,
+                    "own": own.is_some(),
+                    "look": to_value(&worn)?,
+                })
+            ),
+            (false, Some(own)) => format!("{named} wears its own look: {}\n", own.spell()),
+            (false, None) => format!("{named} follows all charts\n"),
+        });
+    } else {
+        let mut look = worn;
+        for edit in edits {
+            look.set(edit);
+        }
+        chart["look"] = to_value(&look)?;
+        let text = format!("{named} now wears its own look: {}", look.spell());
+        (look, text)
+    };
+    workspace.save(store);
     said(
         as_json,
-        json!({"style": style.key(), "up": up, "down": down, "up_body": up_body, "down_body": down_body}),
+        json!({"message": text, "chart": pane, "own": !follow, "look": to_value(&look)?}),
         text,
     )
 }
@@ -7005,6 +7090,72 @@ mod tests {
         ok("chartbook duplicate Last", &store);
         let workspace = Workspace::load(&store);
         assert_eq!(workspace.find("Last copy").unwrap(), workspace.find("Last").unwrap() + 1);
+    }
+
+    /// The first change to one chart's look copies every chart's onto it,
+    /// so a later change to every chart's leaves the copy as it was, until
+    /// `--follow` drops it.
+    #[test]
+    fn a_charts_own_look_is_a_copy_made_on_its_first_change() {
+        let store = bare();
+        ok("chartbook create Macro --symbol SPY", &store);
+        ok("chart split horizontal --book Macro --chart pos:0", &store);
+        ok("config bars --up blue", &store);
+        let read = ok("chart look --book Macro --chart pos:0", &store);
+        assert!(read.ends_with("follows all charts\n"), "{read}");
+
+        let said = ok("chart look --book Macro --chart pos:0 --style ohlc --grid off", &store);
+        assert!(said.starts_with("pos:0 SPY 1D in Macro now wears its own look: ohlc, up blue"), "{said}");
+        let own = |store: &Store| panes_of(store, "Macro")[0]["look"].clone();
+        assert_eq!((&own(&store)["style"], &own(&store)["up"], &own(&store)["grid"]), (&json!("ohlc"), &json!("blue"), &json!(false)));
+        assert!(panes_of(&store, "Macro")[1]["look"].is_null(), "the other chart was given a look too");
+
+        ok("config bars --up teal --style ohlc", &store);
+        ok("config grid on", &store);
+        assert_eq!((&own(&store)["style"], &own(&store)["up"], &own(&store)["grid"]), (&json!("ohlc"), &json!("blue"), &json!(false)));
+        let listed = json_of(&run("chart list --book Macro --json", &store));
+        assert_eq!((&listed["charts"][0]["style"], &listed["charts"][0]["own_look"]), (&json!("ohlc"), &json!(true)));
+        assert_eq!((&listed["charts"][1]["style"], &listed["charts"][1]["own_look"]), (&json!("ohlc"), &json!(false)));
+        let read = json_of(&run("chart look --book Macro --chart pos:0 --json", &store));
+        assert_eq!((&read["own"], &read["look"]["up"]), (&json!(true), &json!("blue")));
+
+        let said = ok("chart look --book Macro --chart pos:0 --follow", &store);
+        assert_eq!(said, "pos:0 SPY 1D in Macro now follows all charts\n");
+        assert!(own(&store).is_null());
+        let read = json_of(&run("chart look --book Macro --chart pos:0 --json", &store));
+        assert_eq!((&read["own"], &read["look"]["up"]), (&json!(false), &json!("teal")));
+    }
+
+    /// A split copies the chart it divides, and a duplicated chartbook its
+    /// charts, own looks and all.
+    #[test]
+    fn a_charts_own_look_comes_with_a_split_and_a_duplicate() {
+        let store = bare();
+        ok("chartbook create Macro --symbol SPY", &store);
+        ok("chart look --book Macro --chart pos:0 --up-body hollow --header symbol,change", &store);
+        ok("chart split horizontal --book Macro --chart pos:0", &store);
+        ok("chartbook duplicate Macro --name Copy", &store);
+        for book in ["Macro", "Copy"] {
+            for pane in panes_of(&store, book) {
+                assert_eq!(pane["look"]["up_body"], "hollow", "{book}");
+                assert_eq!(pane["look"]["header"]["left"], json!(["symbol", "change"]), "{book}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_look_is_refused_what_it_cannot_be() {
+        let store = bare();
+        ok("chartbook create Macro --symbol SPY", &store);
+        for line in [
+            "chart look --book Macro --follow --grid off",
+            "chart look --book Macro --up mauve",
+            "chart look --book Macro --header symbol,volume",
+        ] {
+            assert_eq!(run(line, &store).code, EXIT_USAGE, "{line}");
+        }
+        assert!(panes_of(&store, "Macro")[0]["look"].is_null(), "a refused change wrote a look");
+        assert_eq!(run("chart look --grid off", &store).code, super::super::EXIT_NO_WINDOW);
     }
 
     /// A chartbook made from a terminal starts the way one made in the window

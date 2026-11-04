@@ -359,9 +359,9 @@ omacharts: no instrument called ZZZQX; try `omacharts symbol search ZZZQX`
 
 ## Charts
 
-`chart set` changes one chart, and `chart range` the days it shows.
-`config bars`, `config grid`, `config price-line` and `config set` change every
-chart, or what new charts open with. What each setting looks like on screen
+`chart set` changes one chart, `chart range` the days it shows, and
+`chart look` gives it a look of its own. `config bars`, `config grid`,
+`config price-line` and `config set` change every chart, or what new charts open with. What each setting looks like on screen
 is in [Charts](/manual/charts/).
 
 ### `chart set`
@@ -412,10 +412,11 @@ omacharts: "3x" is not a resolution; try 5m, 1h, 1D, 1W, 1M or 1Y
 | `--chart CHART` | Which chart: `pos:N`, or a raw id from `chart list`; the focused one when not given | [Which chart a command acts on](#which-chart-a-command-acts-on) |
 | `--json` | The result as JSON | |
 
-Gridlines and the last-price line are every chart's, not one chart's:
-`config grid` and `config price-line` below. So is how bars are drawn, set
-with [`config bars`](#config-bars). In JSON, `style` is that style, or `none`
-while this chart's bars are hidden, and `bars` says whether they are shown.
+How bars are drawn is the chart's look: every chart's, set with
+[`config bars`](#config-bars), or its own, set with
+[`chart look`](#chart-look). In `chart list --json`, `style` is the style
+the chart draws, or `none` while its bars are hidden, `bars` says whether
+they are shown, and `own_look` whether it has a look of its own.
 
 ### `chart range`
 
@@ -464,9 +465,51 @@ window holds until the chart is zoomed or panned and is not stored, so a
 command that changes the arrangement, such as `chart set`, starts the view
 over. Run `chart range` last.
 
+### `chart look`
+
+Gives the focused chart a look of its own: how its bars are drawn and
+coloured, its header, its gridlines and its last-price line
+([A chart's own look](/manual/charts/#a-charts-own-look)). The first change
+copies every chart's look onto the chart and changes the copy, so later
+changes to every chart's leave it as it is. With no flags it says the look
+the chart wears. `--follow` drops the chart's own look.
+
+```
+$ omacharts chart look
+pos:0 NVDA 1D in Macro follows all charts
+  [exit 0]
+
+$ omacharts chart look --style ohlc --grid off
+pos:0 NVDA 1D in Macro now wears its own look: ohlc, up green filled, down rose filled, grid off, price line on, header symbol,resolution
+  [exit 0]
+
+$ omacharts chart look --follow
+pos:0 NVDA 1D in Macro now follows all charts
+  [exit 0]
+
+$ omacharts chart look --follow --grid on
+omacharts: give --follow or changes to the look, not both
+  [exit 2]
+```
+
+| Flag | Takes | Does |
+|---|---|---|
+| `--style STYLE` | `candles`, `ohlc` | How the chart draws its bars ([Style](/manual/charts/#style)) |
+| `--up COLOUR`, `--down COLOUR` | A theme colour by name, `foreground` for the theme's text colour, or `#rrggbb` | One direction's colour |
+| `--up-body BODY`, `--down-body BODY` | `filled`, `bordered`, `hollow` | One direction's body, as in [`config bars`](#config-bars) |
+| `--header PARTS` | `symbol`, `resolution`, `change`, `template`, joined with commas, or `none` | What the header shows, in order ([The header](/manual/charts/#the-header)) |
+| `--grid on` or `off` | | Draws the grid ([Gridlines](/manual/charts/#gridlines)) |
+| `--price-line on` or `off` | | Draws the dashed line at the last price |
+| `--follow` | | Drops the chart's own look, so it wears every chart's again |
+| `--book BOOK`, `--chart CHART` | | Which chart ([Which chart a command acts on](#which-chart-a-command-acts-on)) |
+| `--json` | | The result as JSON, with the look under `look` and whether it is the chart's own under `own` |
+
+It acts on the chart on screen, so with no window open and no `--book` it
+exits `6`.
+
 ### `config bars`
 
-Sets how bars look on every chart, as Preferences › Appearance › **Bars** does: how they are drawn, and for each direction a colour and a body, filled, bordered or hollow ([Bars](/manual/themes/#bars)).
+Sets how bars look on every chart that has no look of its own, as Preferences › Appearance › Bars does: how they are drawn, and for each direction a colour and a body, filled, bordered or hollow ([Bars](/manual/themes/#bars)).
 
 ```
 $ omacharts config bars
@@ -488,7 +531,7 @@ bars are now ohlc, up foreground filled, down foreground filled
 
 | Argument or flag | Takes | Does |
 |---|---|---|
-| `--style STYLE` | `candles`, `ohlc`, `line` | How every chart draws its bars ([Style](/manual/charts/#style)) |
+| `--style STYLE` | `candles`, `ohlc` | How every chart draws its bars ([Style](/manual/charts/#style)) |
 | `STATE` | `coloured`, `red-up`, `monochrome` | Sets both colours: the theme's green and rose, the two swapped, or Foreground. Omitted, the command prints the current look |
 | `--up COLOUR`, `--down COLOUR` | A theme colour by name, `foreground` for the theme's text colour, or `#rrggbb` | One direction's colour. Wins over `STATE` |
 | `--up-body BODY`, `--down-body BODY` | `filled`, `bordered`, `hollow` | One direction's body. `bordered` draws the wick and the body's edge in the theme's text colour |
@@ -1546,7 +1589,7 @@ same.
 | `theme` | `omarchy` (Follow system), or an Omarchy theme by its folder name, such as `tokyo-night` | `omarchy` on Omarchy, `tokyo-night` elsewhere | Appearance › Theme | [Themes](/manual/themes/) |
 | `bar_up`, `bar_down` | a theme colour by name, such as `green` or `rose`; `foreground`; or `#rrggbb` | `green`, `rose` | Appearance › Bars › Up, Down | [Themes](/manual/themes/#bars) |
 | `bar_up_hollow`, `bar_down_hollow`, `bar_up_border`, `bar_down_border` | on, off | off | Appearance › Bars › Up, Down: Hollow or Bordered | [Themes](/manual/themes/#bars) |
-| `bar_style` | `candles`, `ohlc` | `candles` | Appearance › Bars › Drawn as | [Bars](/manual/charts/#bars) |
+| `bar_style` | `candles`, `ohlc` | `candles` | Appearance › Bars › Style | [Bars](/manual/charts/#bars) |
 | `ohlc_thickness` | `1` to `4` | `2` | Appearance › Bars › Thickness | [Style](/manual/charts/#style) |
 | `chart_session` | `extended`, `regular` | `extended` | Charts › Settings › Hours | [Chart settings](/manual/chart-settings/) |
 | `show_grid` | on, off | off | Overlays › Gridlines | [Gridlines](/manual/charts/#gridlines) |

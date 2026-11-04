@@ -1073,7 +1073,7 @@ impl Live for Rc<crate::ui::Window> {
     }
 
     fn adopt_header(&self) {
-        crate::ui::Window::apply_header(self);
+        crate::ui::Window::adopt_header(self);
     }
 
     fn adopt_clock(&self) {

@@ -15,7 +15,7 @@
 
 use adw::prelude::*;
 use gtk::glib;
-use omacharts_engine::theme::{ColorChoice, Theme};
+use omacharts_engine::theme::{ColorChoice, Theme, FOREGROUND};
 
 use crate::ui::colors;
 
@@ -31,18 +31,75 @@ pub fn picker(
     resolved: &str,
     on_pick: impl Fn(ColorChoice) + Clone + 'static,
 ) -> gtk::MenuButton {
-    let button = gtk::MenuButton::new();
-    button.set_valign(gtk::Align::Center);
-    button.add_css_class("swatch-button");
-    button.set_tooltip_text(Some("Pick a colour from the theme's palette"));
-
     let shown = swatch_area(resolved, false);
     shown.set_size_request(30, 20);
-    button.set_child(Some(&shown));
+    let button = menu_button(theme, choice, resolved, &shown, shown.clone(), on_pick);
+    button.add_css_class("swatch-button");
+    button
+}
 
+/// [`picker`] with the colour's name beside its swatch, for a choice that
+/// is read as much as seen: "Green" still says what it is after a theme
+/// swap has made it a different green.
+pub fn chip(theme: &Theme, choice: ColorChoice, on_pick: impl Fn(ColorChoice) + Clone + 'static) -> gtk::MenuButton {
+    let resolved = choice.resolve(theme);
+    // At 12px the swatch's rounded corners meet: a dot.
+    let shown = swatch_area(&resolved, false);
+    shown.set_size_request(12, 12);
+    shown.set_valign(gtk::Align::Center);
+    let name = gtk::Label::new(Some(&chip_name(&choice)));
+    let inside = gtk::Box::new(gtk::Orientation::Horizontal, 7);
+    inside.append(&shown);
+    inside.append(&name);
+    inside.append(&gtk::Image::from_icon_name("pan-down-symbolic"));
+    // As wide as Foreground, the longest name a bar is offered, so what
+    // sits beside the chip does not move as the colour changes, and its dot
+    // and chevron stand where the chip's above and below them stand.
+    name.set_hexpand(true);
+    name.set_xalign(0.0);
+    reserve(&inside, &name, &[FOREGROUND], 12 + 7 + 7 + 10);
+    let button = menu_button(theme, Some(choice), &resolved, &shown, inside, move |choice: ColorChoice| {
+        name.set_text(&chip_name(&choice));
+        on_pick(choice);
+    });
+    button.add_css_class("colour-chip");
+    button
+}
+
+/// Hold `face` as wide as it is with the widest of `words` set in `word`'s
+/// font, plus `rest` pixels for what sits beside the word. Whichever child
+/// expands takes the room left over.
+pub(crate) fn reserve(face: &gtk::Box, word: &gtk::Label, words: &[&str], rest: i32) {
+    let widest = words.iter().map(|w| word.create_pango_layout(Some(w)).pixel_size().0).max().unwrap_or(0);
+    face.set_size_request(widest + rest, -1);
+}
+
+/// What a chip calls a colour: the swatch's name, or Custom for one picked
+/// on the wheel, whose hex nobody reads.
+fn chip_name(choice: &ColorChoice) -> String {
+    match choice {
+        ColorChoice::Swatch { name } => name.clone(),
+        ColorChoice::Fixed { .. } => "Custom".to_string(),
+    }
+}
+
+/// A menu button holding `child`, whose popover is the palette; a pick
+/// repaints `shown`.
+fn menu_button(
+    theme: &Theme,
+    choice: Option<ColorChoice>,
+    resolved: &str,
+    shown: &gtk::DrawingArea,
+    child: impl IsA<gtk::Widget>,
+    on_pick: impl Fn(ColorChoice) + Clone + 'static,
+) -> gtk::MenuButton {
+    let button = gtk::MenuButton::new();
+    button.set_valign(gtk::Align::Center);
+    button.set_tooltip_text(Some("Pick a colour from the theme's palette"));
+    button.set_child(Some(&child));
     let popover = gtk::Popover::new();
     popover.set_has_arrow(false);
-    popover.set_child(Some(&palette_box(theme, choice, resolved, &popover, &shown, on_pick)));
+    popover.set_child(Some(&palette_box(theme, choice, resolved, &popover, shown, on_pick)));
     button.set_popover(Some(&popover));
     button
 }
@@ -77,11 +134,12 @@ fn palette_box(
         _ => None,
     };
 
-    // Full rows: four across for eight, three for nine. A swatch alone on
-    // a row reads as a leftover.
+    // Full rows: four across for eight, three for nine, seven for the
+    // fourteen a bar is offered. A swatch alone on a row reads as a
+    // leftover.
     let palette = theme.palette();
     let count = palette.len() as i32;
-    let columns = [4, 3].into_iter().find(|c| count % c == 0).unwrap_or(4);
+    let columns = [4, 3, 7].into_iter().find(|c| count % c == 0).unwrap_or(4);
     let grid = gtk::Grid::new();
     grid.set_row_spacing(4);
     grid.set_column_spacing(4);

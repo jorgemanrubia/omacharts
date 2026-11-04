@@ -29,6 +29,8 @@ crop: 276,16,2008,1008   (the whole dialog, 12px layout margin)
 -->
 {% include figure.html src="/assets/manual/preferences/general.png" alt="The Preferences dialog on General, with the Desktop, Time, Chart, Preference backups and Updates groups" caption="Preferences on General." %}
 
+Appearance, Overlays and Charts sit under the **VISUAL** rule, which says which charts they change. **GLOBAL** changes every chart. **LOCAL** changes the focused chart alone; hover it to see the chart's symbol. In a split, that chart wears its focus ring twice as wide while **LOCAL** is picked, as it does under a picker. Once the focused chart has [a look of its own](/manual/charts/#a-charts-own-look) that differs from every chart's, a reset arrow appears after **LOCAL**, under either choice: click it, **Reset to global defaults**, to put the chart back on every chart's look. Preferences opens on GLOBAL.
+
 ### General
 
 | Group › row | Does | Chapter |
@@ -103,7 +105,7 @@ Everything on this page is the same on every chart, in every chartbook, and chan
 | Group › row | Does | Chapter |
 |---|---|---|
 | Theme › **Follow system**, **Catalogue** | The theme: the desktop's, or one picked from every Omarchy theme. | [Choosing a theme](/manual/themes/#choosing-a-theme) |
-| Bars › **Drawn as** | **Candles** or **OHLC**. | [Style](/manual/charts/#style) |
+| Bars › **Candles**, **OHLC** | The style, as tabs at the group's head. | [Style](/manual/charts/#style) |
 | Bars › **Thickness** | How many pixels wide OHLC bars are drawn, from 1 to 4. Only there while the bars are OHLC. | [Style](/manual/charts/#style) |
 | Bars › **Up**, **Down** | Each direction's colour, and its body: filled, bordered or hollow. | [Bars](/manual/themes/#bars) |
 
