@@ -487,6 +487,7 @@ fn a_day_of_orders() -> omacharts::trading::Book {
             avg: Some(7_611.0),
             open_pnl: Some(12.5),
             tick: Some(0.25),
+            point: Some(50.0),
         }],
         ..Book::default()
     }

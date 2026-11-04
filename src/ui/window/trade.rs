@@ -692,10 +692,10 @@ impl Window {
         Some(trading::past_limit_text(&omacharts_engine::grouped_decimals(limit, places)))
     }
 
-    /// The step `pane`'s prices move in: what its bars show, else what the
-    /// broker says of the contract.
+    /// The step an order's price moves in: the contract's, from its
+    /// specification, else the step `pane`'s prices are on.
     fn tick_of(pane: &ChartPane, target: &trading::Target) -> Option<f64> {
-        pane.view.tick().or(target.tick)
+        target.tick.or_else(|| pane.view.tick())
     }
 
     /// The chart menu's orders, at height `y` of the focused chart, in two

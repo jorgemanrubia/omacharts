@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use omacharts_engine::providers::rithmic::session::{self, GATEWAY, SYSTEM};
+use omacharts_engine::specs::{self, root_of};
 
 use crate::trading::*;
 
@@ -77,6 +78,7 @@ impl Broker for Rithmic {
         // is the data login. Any pulse is the window's cue to read the book
         // and how the session stands again; coming back after a drop is the
         // cue to refresh it too.
+        session::hear_specs();
         let connection = rithmic::connection(app, &login.id, source).map_err(said)?;
         let changed: Arc<dyn Fn(Change) + Send + Sync> = Arc::from(changed);
         let told = changed.clone();
@@ -99,23 +101,14 @@ impl Broker for Rithmic {
     }
 }
 
-/// The step a Rithmic contract's price moves in, from its root.
+/// The step a Rithmic contract's price moves in, from its root's spec.
 fn rithmic_tick(contract: &str) -> Option<f64> {
-    omacharts_engine::exchanges::registry().contract_tick(root_of(contract))
+    specs::tick(root_of(contract))
 }
 
-/// What a point of a Rithmic contract's price is worth, from its root.
+/// What a point of a Rithmic contract's price is worth, from its root's spec.
 fn rithmic_point(contract: &str) -> Option<f64> {
-    omacharts_engine::exchanges::registry().contract_point(root_of(contract))
-}
-
-/// A contract's root: "ES" for "ESZ6", "6E" for "6EZ26".
-fn root_of(contract: &str) -> &str {
-    let digits = contract.trim_end_matches(|c: char| c.is_ascii_digit());
-    match digits.len() < contract.len() && digits.len() > 1 {
-        true => &digits[..digits.len() - 1],
-        false => contract,
-    }
+    specs::point(root_of(contract))
 }
 
 /// Rithmic's words, without "Rithmic refused…" in front of a refusal.

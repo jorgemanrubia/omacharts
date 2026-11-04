@@ -21,6 +21,7 @@ pub mod palette;
 pub mod provider;
 pub mod refresh;
 pub mod session;
+pub mod specs;
 pub mod providers;
 pub mod range;
 pub mod stream;

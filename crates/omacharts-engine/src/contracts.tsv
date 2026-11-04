@@ -1,4 +1,4 @@
-# root	exchange	hours	tick	point
+# root	exchange	hours	tick	point	currency	quoted
 # Which exchange each futures root trades on, on which of its hours, and the
 # size of one tick of its price: the step every price it trades at is a
 # whole number of, in the units it is quoted in (grains and livestock in
@@ -7,50 +7,56 @@
 # one, volume at price among them, is offered for that root. A point is what
 # one whole unit of that price is worth on one contract, in the currency it
 # trades in: $50 for ES, so a tick of it is $12.50. Left as -, it is not
-# known, and an open position in it is not marked to the market here.
+# known, and an open position in it is not marked to the market here. The
+# currency is the one a point is worth in, which is what profit and loss
+# comes out in: dollars for 6E as for ES. Quoted says what the price is a
+# number of. Ticks and points are the exchanges' own specifications (CME
+# Group's contract specs pages, ICE Futures U.S. for the softs) for outright
+# trades; calendar spreads trade in finer steps on some roots, and are not
+# what a chart of the root shows.
 # One exchange keeps different hours for different products: the CME's
 # livestock closes at lunchtime while its equity index contracts trade all
 # night. A root not listed here is taken to be on Globex's equity index hours,
 # which is what most of what gets charted keeps.
-ES	CME	cme_equity_index	0.25	50
-MES	CME	cme_equity_index	0.25	5
-NQ	CME	cme_equity_index	0.25	20
-MNQ	CME	cme_equity_index	0.25	2
-RTY	CME	cme_equity_index	0.1	50
-M2K	CME	cme_equity_index	0.1	5
-YM	CBOT	cme_equity_index	1	5
-MYM	CBOT	cme_equity_index	1	0.5
-6E	CME	cme_rates_and_fx	0.00005	125000
-6J	CME	cme_rates_and_fx	0.0000005	12500000
-6B	CME	cme_rates_and_fx	0.0001	62500
-6A	CME	cme_rates_and_fx	0.00005	100000
-6C	CME	cme_rates_and_fx	0.00005	100000
-6S	CME	cme_rates_and_fx	0.00005	125000
-ZB	CBOT	cme_rates_and_fx	1/32	1000
-ZN	CBOT	cme_rates_and_fx	1/64	1000
-ZF	CBOT	cme_rates_and_fx	1/128	1000
-ZT	CBOT	cme_rates_and_fx	1/256	2000
-ZC	CBOT	cme_grains	0.25	50
-ZS	CBOT	cme_grains	0.25	50
-ZW	CBOT	cme_grains	0.25	50
-ZL	CBOT	cme_grains	0.01	600
-ZM	CBOT	cme_grains	0.1	100
-LE	CME	cme_livestock	0.025	400
-HE	CME	cme_livestock	0.025	400
-CL	NYMEX	nymex_energy	0.01	1000
-MCL	NYMEX	nymex_energy	0.01	100
-BZ	NYMEX	nymex_energy	0.01	1000
-NG	NYMEX	nymex_energy	0.001	10000
-RB	NYMEX	nymex_energy	0.0001	42000
-HO	NYMEX	nymex_energy	0.0001	42000
-PL	NYMEX	nymex_platinum	0.1	50
-PA	NYMEX	nymex_platinum	0.5	100
-GC	COMEX	comex_metals	0.1	100
-MGC	COMEX	comex_metals	0.1	10
-SI	COMEX	comex_silver	0.005	5000
-SIL	COMEX	comex_silver	0.005	1000
-HG	COMEX	comex_copper	0.0005	25000
-KC	ICEUS	ice_us_softs	0.05	375
-SB	ICEUS	ice_us_sugar	0.01	1120
-CC	ICEUS	ice_us_cocoa	1	10
-CT	ICEUS	ice_us_cotton	0.01	500
+ES	CME	cme_equity_index	0.25	50	USD	index points
+MES	CME	cme_equity_index	0.25	5	USD	index points
+NQ	CME	cme_equity_index	0.25	20	USD	index points
+MNQ	CME	cme_equity_index	0.25	2	USD	index points
+RTY	CME	cme_equity_index	0.1	50	USD	index points
+M2K	CME	cme_equity_index	0.1	5	USD	index points
+YM	CBOT	cme_equity_index	1	5	USD	index points
+MYM	CBOT	cme_equity_index	1	0.5	USD	index points
+6E	CME	cme_rates_and_fx	0.00005	125000	USD	USD per EUR
+6J	CME	cme_rates_and_fx	0.0000005	12500000	USD	USD per JPY
+6B	CME	cme_rates_and_fx	0.0001	62500	USD	USD per GBP
+6A	CME	cme_rates_and_fx	0.00005	100000	USD	USD per AUD
+6C	CME	cme_rates_and_fx	0.00005	100000	USD	USD per CAD
+6S	CME	cme_rates_and_fx	0.00005	125000	USD	USD per CHF
+ZB	CBOT	cme_rates_and_fx	1/32	1000	USD	points and 32nds
+ZN	CBOT	cme_rates_and_fx	1/64	1000	USD	points and 32nds
+ZF	CBOT	cme_rates_and_fx	1/128	1000	USD	points and 32nds
+ZT	CBOT	cme_rates_and_fx	1/256	2000	USD	points and 32nds
+ZC	CBOT	cme_grains	0.25	50	USD	cents per bushel
+ZS	CBOT	cme_grains	0.25	50	USD	cents per bushel
+ZW	CBOT	cme_grains	0.25	50	USD	cents per bushel
+ZL	CBOT	cme_grains	0.01	600	USD	cents per pound
+ZM	CBOT	cme_grains	0.1	100	USD	USD per short ton
+LE	CME	cme_livestock	0.025	400	USD	cents per pound
+HE	CME	cme_livestock	0.025	400	USD	cents per pound
+CL	NYMEX	nymex_energy	0.01	1000	USD	USD per barrel
+MCL	NYMEX	nymex_energy	0.01	100	USD	USD per barrel
+BZ	NYMEX	nymex_energy	0.01	1000	USD	USD per barrel
+NG	NYMEX	nymex_energy	0.001	10000	USD	USD per MMBtu
+RB	NYMEX	nymex_energy	0.0001	42000	USD	USD per gallon
+HO	NYMEX	nymex_energy	0.0001	42000	USD	USD per gallon
+PL	NYMEX	nymex_platinum	0.1	50	USD	USD per troy ounce
+PA	NYMEX	nymex_platinum	0.5	100	USD	USD per troy ounce
+GC	COMEX	comex_metals	0.1	100	USD	USD per troy ounce
+MGC	COMEX	comex_metals	0.1	10	USD	USD per troy ounce
+SI	COMEX	comex_silver	0.005	5000	USD	USD per troy ounce
+SIL	COMEX	comex_silver	0.005	1000	USD	USD per troy ounce
+HG	COMEX	comex_copper	0.0005	25000	USD	USD per pound
+KC	ICEUS	ice_us_softs	0.05	375	USD	cents per pound
+SB	ICEUS	ice_us_sugar	0.01	1120	USD	cents per pound
+CC	ICEUS	ice_us_cocoa	1	10	USD	USD per metric ton
+CT	ICEUS	ice_us_cotton	0.01	500	USD	cents per pound

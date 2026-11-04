@@ -158,6 +158,8 @@ struct Contract {
     hours: usize,
     tick: Option<f64>,
     point: Option<f64>,
+    currency: Option<String>,
+    quoted: Option<String>,
 }
 
 /// The tables, read once.
@@ -290,7 +292,16 @@ impl Registry {
                     Some(text) => tick(text).map(Some),
                     None => Some(None),
                 };
-                Some(Contract { root: root.to_string(), exchange, hours, tick: positive(0)?, point: positive(1)? })
+                let text = |at: usize| rest.get(at).and_then(|field| dash(field)).map(str::to_string);
+                Some(Contract {
+                    root: root.to_string(),
+                    exchange,
+                    hours,
+                    tick: positive(0)?,
+                    point: positive(1)?,
+                    currency: text(2),
+                    quoted: text(3),
+                })
             })();
             match row {
                 Some(row) => parsed_contracts.push(row),
@@ -335,6 +346,23 @@ impl Registry {
     /// 50 for ES. `None` for a root it does not list, or lists without one.
     pub fn contract_point(&self, root: &str) -> Option<f64> {
         self.contract(root)?.point
+    }
+
+    /// The currency a point of a futures root is worth in, as
+    /// `contracts.tsv` gives it: "USD" for 6E as for ES.
+    pub fn contract_currency(&self, root: &str) -> Option<&str> {
+        self.contract(root)?.currency.as_deref()
+    }
+
+    /// What a futures root's price is a number of, as `contracts.tsv` says:
+    /// "cents per bushel" for ZC.
+    pub fn contract_quoted(&self, root: &str) -> Option<&str> {
+        self.contract(root)?.quoted.as_deref()
+    }
+
+    /// Every futures root `contracts.tsv` lists.
+    pub fn contract_roots(&self) -> impl Iterator<Item = &str> {
+        self.contracts.iter().map(|contract| contract.root.as_str())
     }
 
     fn contract(&self, root: &str) -> Option<&Contract> {

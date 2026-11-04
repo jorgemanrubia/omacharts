@@ -1202,6 +1202,12 @@ fn region_at(x: f64, y: f64, width: f64, height: f64) -> Region {
 }
 
 impl State {
+    /// The step its prices are on: a futures contract's, from its
+    /// specification, and otherwise whatever step the bars show.
+    fn tick(&self) -> Option<f64> {
+        self.instrument.as_ref().and_then(Instrument::tick_size).or_else(|| omacharts_engine::tick_of(&self.bars))
+    }
+
     /// A chart with nothing on it yet.
     ///
     /// Named rather than written out where it is used, because the benchmark
@@ -4115,7 +4121,7 @@ impl ChartView {
 
     /// The step the series trades in, when it shows one.
     pub fn tick(&self) -> Option<f64> {
-        omacharts_engine::tick_of(&self.state.borrow().bars)
+        self.state.borrow().tick()
     }
 
     /// Whether a fetch is outstanding for what is on screen.
@@ -6748,7 +6754,7 @@ impl State {
         let plan = layout(self, width, height);
         let scale = price_range(self, &self.bars[first..first + visible], &plan)?;
         let price = scale.price_at(y.clamp(plan.price_y, plan.price_y + plan.price_h), plan.price_y, plan.price_h);
-        Some(match omacharts_engine::tick_of(&self.bars) {
+        Some(match self.tick() {
             Some(tick) => omacharts_engine::on_tick(price, tick),
             None => (price, 2),
         })
@@ -7009,7 +7015,7 @@ fn draw_mark_preview(
     if y < plan.price_y || y > plan.price_y + plan.price_h {
         return;
     }
-    let tick = omacharts_engine::tick_of(&state.bars);
+    let tick = state.tick();
     let places = tick.map_or(2, |tick| omacharts_engine::on_tick(at, tick).1);
     let price = grouped_decimals(at, places);
     let text = match allowed {
@@ -7225,7 +7231,7 @@ fn price_under_pointer(state: &State, scale: &PriceScale, py: f64, price_y: f64,
     let price = scale.price_at(py, price_y, price_h);
     let decimals =
         omacharts_engine::price_decimals(scale.step(price_h), price, state.instrument.as_ref().map(|i| i.kind));
-    match omacharts_engine::tick_of(&state.bars) {
+    match state.tick() {
         Some(tick) => {
             let (price, places) = omacharts_engine::on_tick(price, tick);
             grouped_decimals(price, decimals.max(places))

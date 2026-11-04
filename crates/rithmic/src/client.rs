@@ -16,7 +16,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rithmic_rs::rti::messages::RithmicMessage;
 use rithmic_rs::rti::request_search_symbols::{InstrumentType, Pattern};
-use rithmic_rs::rti::{LastTrade, OrderPriceLimits};
+use rithmic_rs::rti::{LastTrade, OrderPriceLimits, ResponseReferenceData};
 use rithmic_rs::{
     ConnectStrategy, RithmicConfig, RithmicEnv, RithmicError, RithmicHistoryPlant,
     RithmicHistoryPlantHandle, RithmicResponse, RithmicTickerPlant, RithmicTickerPlantHandle,
@@ -151,6 +151,55 @@ pub(crate) fn heard_limits(heard: &OrderPriceLimits) {
     };
     pick(HIGH, heard.high_price_limit, high);
     pick(LOW, heard.low_price_limit, low);
+}
+
+/// What Rithmic says a contract is: the step its price moves in, what a
+/// point of it is worth, and in which currency.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Reference {
+    pub tick: Option<f64>,
+    pub point: Option<f64>,
+    pub currency: Option<String>,
+}
+
+impl Reference {
+    fn of(data: &ResponseReferenceData) -> Reference {
+        let positive = |value: Option<f64>| value.filter(|value| value.is_finite() && *value > 0.0);
+        Reference {
+            tick: positive(data.min_qprice_change),
+            point: positive(data.single_point_value),
+            currency: data.currency.clone().filter(|currency| !currency.is_empty()),
+        }
+    }
+}
+
+type ReferenceListener = Arc<dyn Fn(&str, &str, &Reference) + Send + Sync>;
+static REFERENCES: Mutex<Option<HashMap<(String, String), Reference>>> = Mutex::new(None);
+static REFERENCE_LISTENER: Mutex<Option<ReferenceListener>> = Mutex::new(None);
+
+/// Call `listener` with a contract, its exchange and what Rithmic says it
+/// is, the first time the data half hears it. One listener per process.
+pub fn on_reference(listener: impl Fn(&str, &str, &Reference) + Send + Sync + 'static) {
+    *REFERENCE_LISTENER.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(listener));
+}
+
+/// Has the contract's reference data been heard in this process? It is
+/// asked once: a contract's specification does not change.
+fn referenced(contract: &str, exchange: &str) -> bool {
+    let all = REFERENCES.lock().unwrap_or_else(|e| e.into_inner());
+    all.as_ref().is_some_and(|all| all.contains_key(&(contract.to_string(), exchange.to_string())))
+}
+
+pub(crate) fn heard_reference(contract: &str, exchange: &str, reference: Reference) {
+    REFERENCES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(HashMap::new)
+        .insert((contract.to_string(), exchange.to_string()), reference.clone());
+    let listener = REFERENCE_LISTENER.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    if let Some(listener) = listener {
+        listener(contract, exchange, &reference);
+    }
 }
 
 /// The exchanges the signed-in login has level 1 market data for, once the
@@ -580,6 +629,13 @@ impl Plant for Arc<Handles> {
         // The day's price limits too, which say where an order would be
         // refused: nothing is lost without them.
         let _ = within(REQUEST, self.ticker.subscribe_order_price_limits(&contract, &exchange)).await;
+        // And what the contract is, once: its tick and what a point is worth.
+        if !referenced(&contract, &exchange)
+            && let Ok(asked) = within(REQUEST, self.ticker.get_reference_data(&contract, &exchange)).await
+            && let RithmicMessage::ResponseReferenceData(data) = &asked.message
+        {
+            heard_reference(&contract, &exchange, Reference::of(data));
+        }
         Ok(())
     }
 
@@ -1236,6 +1292,32 @@ pub(crate) mod tests {
         assert!(!is_contract("ES", "ESA6"));
         assert!(!is_contract("ES", "ESZ6 C5000"));
         assert!(!is_contract("M", "MESZ6"));
+    }
+
+    /// Reference data says a contract's tick, point value and currency, a
+    /// zero or an empty field being nothing said, and is passed on once heard.
+    #[test]
+    fn reference_data_is_read_and_passed_on() {
+        let mut data = ResponseReferenceData::default();
+        data.min_qprice_change = Some(0.25);
+        data.single_point_value = Some(50.0);
+        data.currency = Some("USD".into());
+        let said = Reference::of(&data);
+        assert_eq!(said, Reference { tick: Some(0.25), point: Some(50.0), currency: Some("USD".into()) });
+        data.single_point_value = Some(0.0);
+        data.currency = Some(String::new());
+        assert_eq!(Reference::of(&data), Reference { tick: Some(0.25), point: None, currency: None });
+
+        let heard = Arc::new(Mutex::new(Vec::new()));
+        let into = heard.clone();
+        on_reference(move |contract, exchange, said| {
+            into.lock().unwrap().push((contract.to_string(), exchange.to_string(), said.clone()));
+        });
+        assert!(!referenced("REFZ6", "CME"));
+        heard_reference("REFZ6", "CME", said.clone());
+        assert!(referenced("REFZ6", "CME"), "asked once");
+        assert!(!referenced("REFZ6", "CBOT"));
+        assert!(heard.lock().unwrap().contains(&("REFZ6".to_string(), "CME".to_string(), said)));
     }
 
     /// A contract's price limits as pushed: a snapshot sets both, an update

@@ -270,7 +270,20 @@ pub fn login() -> Result<rithmic::Login, rithmic::Error> {
 /// The data login's market data, started on first use: the data half of
 /// its one connection, which its trading shares.
 pub fn client() -> Result<rithmic::Client, rithmic::Error> {
+    hear_specs();
     Ok(rithmic::connection(app()?, &login_id(), login)?.data())
+}
+
+/// Have what Rithmic says a contract is reach [`crate::specs`], from any
+/// connection in this process: once, before the first one opens.
+pub fn hear_specs() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        rithmic::on_reference(|contract, _exchange, said| {
+            let heard = crate::specs::Heard { tick: said.tick, point: said.point, currency: said.currency.clone() };
+            crate::specs::supply("Rithmic", crate::specs::root_of(contract), heard);
+        });
+    });
 }
 
 /// Rithmic turned the login down: remembered, so that the settings and

@@ -172,13 +172,21 @@ impl Instrument {
     }
 
     /// The size of one tick of its price, which every price it trades at is
-    /// a whole number of: the contract's, from `contracts.tsv`, for a futures
-    /// root. `None` for anything else, and for a root whose tick is not
-    /// known — a stock's tick depends on its price and its venue, and is no
-    /// one number.
+    /// a whole number of: the contract's (see [`crate::specs`]), for a
+    /// futures root. `None` for anything else, and for a root whose tick is
+    /// not known — a stock's tick depends on its price and its venue, and is
+    /// no one number.
     pub fn tick_size(&self) -> Option<f64> {
         match self.kind {
-            InstrumentKind::FutureRoot => crate::exchanges::registry().contract_tick(&self.symbol),
+            InstrumentKind::FutureRoot => crate::specs::tick(&self.symbol),
+            _ => None,
+        }
+    }
+
+    /// Its contract specification, for a futures root whose tick is known.
+    pub fn spec(&self) -> Option<crate::specs::Spec> {
+        match self.kind {
+            InstrumentKind::FutureRoot => crate::specs::spec(&self.symbol),
             _ => None,
         }
     }
