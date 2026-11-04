@@ -2717,7 +2717,7 @@ pub(super) mod tests {
             assert_eq!(dot(&pane), Some(("Yahoo Finance · Connecting…".into(), "connecting", false, true)));
             assert_eq!(
                 feeds(&window, &pane),
-                vec!["Yahoo Finance (default) ✓", "Rithmic"]
+                vec!["Yahoo Finance ✓", "Rithmic"]
             );
 
             // Bars came, then did not.
@@ -2740,7 +2740,7 @@ pub(super) mod tests {
                 feeds(&window, &pane),
                 vec![
                     "Yahoo Finance · Can't connect: the data feed is not answering. Prices fill in when it does.",
-                    "Yahoo Finance (default) ✓",
+                    "Yahoo Finance ✓",
                     "Rithmic"
                 ]
             );
@@ -2749,7 +2749,7 @@ pub(super) mod tests {
             // the new feed's bars come.
             window.choose_feed(pane.id, Some("rithmic".into()));
             assert_eq!(dot(&pane), Some(("Rithmic · Connecting…".into(), "connecting", false, true)));
-            assert_eq!(feeds(&window, &pane), vec!["Yahoo Finance (default)", "Rithmic ✓"]);
+            assert_eq!(feeds(&window, &pane), vec!["Yahoo Finance", "Rithmic ✓"]);
             // Choosing the default stores nothing.
             window.choose_feed(pane.id, None);
             assert!(pane.feed.borrow().is_none());
@@ -2762,7 +2762,7 @@ pub(super) mod tests {
                 dot(&pane).map(|dot| dot.0),
                 Some("Rithmic · Connecting…\nYahoo Finance not signed in".into())
             );
-            assert_eq!(feeds(&window, &pane), ["Yahoo Finance (default)", "Rithmic ✓"]);
+            assert_eq!(feeds(&window, &pane), ["Yahoo Finance", "Rithmic ✓"]);
             window.feeds()[0].usable.set(true);
 
             // A stock: Rithmic does not serve it, so there is nothing to
@@ -2771,7 +2771,7 @@ pub(super) mod tests {
             let spy = window.index.find("SPY", None).expect("SPY");
             window.show_in(&pane, spy);
             assert_eq!(dot(&pane), Some(("Yahoo Finance · Connecting…".into(), "connecting", false, false)));
-            assert_eq!(feeds(&window, &pane), vec!["Yahoo Finance (default) ✓"]);
+            assert_eq!(feeds(&window, &pane), vec!["Yahoo Finance ✓"]);
         });
     }
 
@@ -2790,12 +2790,12 @@ pub(super) mod tests {
             let (_, session) = sign_in(&window, &store, &["951"]);
 
             assert_eq!(pane.account_text(), None, "one account: nothing to choose");
-            assert_eq!(feeds(&window, &pane), vec!["Rithmic (default) ✓", "Yahoo Finance"]);
+            assert_eq!(feeds(&window, &pane), vec!["Rithmic ✓", "Yahoo Finance"]);
             assert_eq!(dot(&pane), Some(("Rithmic · Connecting…".into(), "connecting", false, true)));
 
             // Picked from the menu, through its action, as a click does.
             pane.menu_actions.activate_action("feed", Some(&"yahoo".to_variant()));
-            assert_eq!(feeds(&window, &pane), vec!["Rithmic (default)", "Yahoo Finance ✓"]);
+            assert_eq!(feeds(&window, &pane), vec!["Rithmic", "Yahoo Finance ✓"]);
             // The default chosen again is no choice: nothing is kept.
             window.choose_feed(pane.id, None);
             assert_eq!(dot(&pane).map(|dot| dot.0), Some("Rithmic · Connecting…".into()));
@@ -2818,7 +2818,7 @@ pub(super) mod tests {
             // default moves to the order's pick.
             let spy = window.index.find("SPY", None).expect("SPY");
             window.show_in(&pane, spy);
-            assert_eq!(feeds(&window, &pane), vec!["Yahoo Finance (default) ✓"]);
+            assert_eq!(feeds(&window, &pane), vec!["Yahoo Finance ✓"]);
             assert!(!dot(&pane).expect("a dot").3);
         });
     }
@@ -2838,7 +2838,7 @@ pub(super) mod tests {
             let (id, session) = sign_in(&window, &store, &["951", "952"]);
             assert_eq!(pane.account_text().as_deref(), Some("Rithmic Test 951"));
             assert_eq!(accounts(&window, &pane), vec!["Rithmic Test 951 ✓", "Rithmic Test 952"]);
-            assert_eq!(feeds(&window, &pane), vec!["Rithmic (default) ✓", "Yahoo Finance"]);
+            assert_eq!(feeds(&window, &pane), vec!["Rithmic ✓", "Yahoo Finance"]);
 
             window.choose_feed(pane.id, Some("yahoo".into()));
             assert_eq!(pane.account_text().as_deref(), Some("Rithmic Test 951"), "the feed is the dot's, not the account's");

@@ -128,12 +128,22 @@ pub fn drop_choice(
     popover
 }
 
-/// The model on the button, the popover dressed as the app's other menus
-/// are, and the button's tooltip kept off the menu while it is open.
-fn attach(button: &gtk::MenuButton, menu: &gio::Menu, opening: Option<Rc<dyn Fn()>>) {
+/// Put `menu` on `button` the way every menu in the app is put there: no
+/// arrow, dropped below. For a button that builds its model as it opens,
+/// call it from there; a new model is a new popover, dressed afresh.
+pub fn set_model(button: &gtk::MenuButton, menu: &impl IsA<gio::MenuModel>) {
     button.set_menu_model(Some(menu));
+    if let Some(popover) = button.popover() {
+        popover.set_has_arrow(false);
+        popover.set_position(gtk::PositionType::Bottom);
+    }
+}
+
+/// The model on the button, dressed as the app's other menus are, and the
+/// button's tooltip kept off the menu while it is open.
+fn attach(button: &gtk::MenuButton, menu: &gio::Menu, opening: Option<Rc<dyn Fn()>>) {
+    set_model(button, menu);
     let Some(popover) = button.popover() else { return };
-    popover.set_has_arrow(false);
     let shut = button.downgrade();
     popover.connect_closed(move |_| {
         if let Some(button) = shut.upgrade() {
@@ -141,7 +151,7 @@ fn attach(button: &gtk::MenuButton, menu: &gio::Menu, opening: Option<Rc<dyn Fn(
         }
     });
     let open = button.downgrade();
-    popover.connect_show(move |_| {
+    let opened = move || {
         if let Some(button) = open.upgrade() {
             button.set_has_tooltip(false);
             button.trigger_tooltip_query();
@@ -149,7 +159,23 @@ fn attach(button: &gtk::MenuButton, menu: &gio::Menu, opening: Option<Rc<dyn Fn(
         if let Some(opening) = opening.as_ref() {
             opening();
         }
-    });
+    };
+    let opened: Rc<dyn Fn()> = Rc::new(opened);
+    // SAFETY: stored and read back as the same type, under a key only this
+    // module uses.
+    unsafe { button.set_data(OPENING, opened.clone()) };
+    popover.connect_show(move |_| opened());
+}
+
+const OPENING: &str = "omacharts-menu-opening";
+
+/// What opening the menu does, without opening it: showing a popover needs
+/// a mapped window around its button, which a test's bare button has not.
+#[cfg(test)]
+fn open(button: &gtk::MenuButton) {
+    // SAFETY: only `attach` writes this key, with this type.
+    let opened = unsafe { button.data::<Rc<dyn Fn()>>(OPENING).map(|opened| opened.as_ref().clone()) };
+    opened.expect("a menu")();
 }
 
 /// The labels a button's menu shows, in order, and whether each can be
@@ -238,7 +264,7 @@ mod tests {
             let state = || group_of(&button).and_then(|group| group.action_state("pick")).and_then(|state| state.get::<String>());
             assert_eq!(state().as_deref(), Some("a"));
             *now.borrow_mut() = "b".into();
-            button.popover().unwrap().emit_by_name::<()>("show", &[]);
+            open(&button);
             assert_eq!(state().as_deref(), Some("b"), "asked again when it opens");
             pick(&button, "A");
             assert_eq!(*chosen.borrow(), "a");

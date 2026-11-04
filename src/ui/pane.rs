@@ -927,7 +927,7 @@ impl ChartPane {
                 Some(model) => {
                     let model = model.clone();
                     self.feed_menu.set_create_popup_func(move |button| {
-                        button.set_menu_model(Some(&model()));
+                        crate::ui::menus::set_model(button, &model());
                     });
                     self.feed_menu.set_widget_name("offers");
                 }

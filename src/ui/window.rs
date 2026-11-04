@@ -2670,7 +2670,7 @@ impl Window {
         let builder = Rc::downgrade(self);
         pane.account_menu.set_create_popup_func(move |button| {
             if let Some(this) = builder.upgrade() {
-                button.set_menu_model(Some(&this.account_menu(id)));
+                crate::ui::menus::set_model(button, &this.account_menu(id));
             }
         });
         let builder = Rc::downgrade(self);
@@ -2683,7 +2683,7 @@ impl Window {
         let builder = Rc::downgrade(self);
         pane.size_menu.set_create_popup_func(move |button| {
             if let Some(this) = builder.upgrade() {
-                button.set_menu_model(Some(&this.size_menu(id)));
+                crate::ui::menus::set_model(button, &this.size_menu(id));
             }
         });
         let editor = self.clone();
@@ -3700,25 +3700,20 @@ impl Window {
     }
 
     /// The Data feed part's menu, for the chart `id` as it is now: the
-    /// feeds that serve the chart's instrument, a mark on the one in force
-    /// and "(default)" on the account's own — or the order's pick, with no
-    /// account — under how the feed stands, in the dot's own words, only
-    /// when the dot is red.
+    /// feeds that serve the chart's instrument, by name, the default first
+    /// and a mark on the one in force, under how the feed stands, in the
+    /// dot's own words, only when the dot is red.
     fn feed_menu(self: &Rc<Self>, id: u32) -> gio::Menu {
         let menu = gio::Menu::new();
         let Some(pane) = self.pane(id) else { return menu };
         let section = gio::Menu::new();
         let instrument = pane.instrument.borrow().clone();
         if let Some(instrument) = instrument {
-            let (serving, default, in_force) = self.feeds_serving(&pane, &instrument);
+            let (serving, _, in_force) = self.feeds_serving(&pane, &instrument);
             Self::mark_choice(&pane, "feed", in_force.unwrap_or_default().to_variant());
             for feed in &serving {
                 let own = feed.provider.id();
-                let label = match Some(own) == default {
-                    true => format!("{} (default)", feed.provider.label()),
-                    false => feed.provider.label().to_string(),
-                };
-                let item = gio::MenuItem::new(Some(&label), None);
+                let item = gio::MenuItem::new(Some(feed.provider.label()), None);
                 item.set_action_and_target_value(Some("pane.feed"), Some(&own.to_variant()));
                 section.append_item(&item);
             }
@@ -5182,10 +5177,7 @@ impl Window {
         shortcuts::append(&menu, "Keyboard Shortcuts", "win.shortcuts");
         let menu_button = gtk::MenuButton::new();
         menu_button.set_icon_name("open-menu-symbolic");
-        menu_button.set_menu_model(Some(&menu));
-        if let Some(popover) = menu_button.popover() {
-            popover.set_has_arrow(false);
-        }
+        crate::ui::menus::set_model(&menu_button, &menu);
         let tip = shortcuts::tooltip_with_key("Main Menu", shortcuts::MAIN_MENU);
         menu_button.set_tooltip_text(Some(&tip));
         // F10 opens the primary menu, and the header bar used to be the only

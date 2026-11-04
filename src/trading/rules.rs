@@ -256,7 +256,7 @@ pub fn account_name(account: &Account, logins: &[Login], accounts: &[Account]) -
 /// account's own login's feed while that login is the data login and the
 /// feed serves `instrument`, else the first feed in the order that serves
 /// it. Whether a feed can be used now does not move it: this is the one
-/// the popover marks "(default)", and a chart falls back from it only for
+/// the menu lists first, and a chart falls back from it only for
 /// as long as it cannot be used.
 pub fn default_feed<'a>(
     view: &View,
