@@ -100,6 +100,13 @@ impl<P: Part> PartList<P> {
         P::every().into_iter().filter(|p| !parts.contains(p) && !elsewhere.contains(p)).collect()
     }
 
+    /// Show `parts` without handing them on: for a change made elsewhere,
+    /// which has already been applied.
+    pub(crate) fn replace(self: &Rc<Self>, parts: Vec<P>) {
+        *self.parts.borrow_mut() = parts;
+        self.rebuild();
+    }
+
     pub(crate) fn set(self: &Rc<Self>, parts: Vec<P>) {
         *self.parts.borrow_mut() = parts.clone();
         (self.changed)(parts);

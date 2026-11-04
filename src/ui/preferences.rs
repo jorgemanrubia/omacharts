@@ -149,12 +149,19 @@ impl Preferences {
             true => Vec::new(),
             false => vec![crate::header::Part::Size],
         };
-        for section in header_sections(crate::header::load(&store), &hidden, move |header| {
+        let (sections, restore_header) = header_sections(crate::header::load(&store), &hidden, move |header| {
             crate::header::save(&store_for_header, header);
             window_for_header.apply_header();
-        }) {
+        });
+        for section in &sections {
             charts_header_page.add(&section.group);
         }
+        let restore_group = adw::PreferencesGroup::new();
+        let restore = gtk::Button::with_label("Restore defaults");
+        restore.set_halign(gtk::Align::Start);
+        restore.connect_clicked(move |_| restore_header());
+        restore_group.add(&restore);
+        charts_header_page.add(&restore_group);
         charts.add_titled(&charts_header_page, Some("header"), "Header");
         charts.add_titled(&charts_other_page, Some("other"), "Other");
         // Opened from something on a chart, at the tab that is about it;
@@ -229,11 +236,14 @@ impl Preferences {
 /// the other's +, and is offered again the moment it is taken out. The
 /// `hidden` parts are neither listed nor offered, and kept where they are,
 /// at the end of their section, whatever is changed around them.
+///
+/// Comes with the way back to the standard header, every section at once.
+#[allow(clippy::type_complexity)]
 fn header_sections(
     current: crate::header::Header,
     hidden: &[crate::header::Part],
     changed: impl Fn(&crate::header::Header) + 'static,
-) -> Vec<Rc<crate::ui::part_list::PartList<crate::header::Part>>> {
+) -> (Vec<Rc<crate::ui::part_list::PartList<crate::header::Part>>>, Rc<dyn Fn()>) {
     use crate::header::Section;
     use crate::ui::part_list::PartList;
     type Lists = Rc<RefCell<Vec<(Section, std::rc::Weak<PartList<crate::header::Part>>)>>>;
@@ -288,7 +298,20 @@ fn header_sections(
             let _ = &kept;
         });
     }
-    built
+    let shown: Vec<_> = built.iter().map(Rc::downgrade).collect();
+    let restore = Rc::new(move || {
+        let standard = crate::header::Header::standard();
+        *header.borrow_mut() = standard.clone();
+        for (section, list) in Section::ALL.into_iter().zip(&shown) {
+            if let Some(list) = list.upgrade() {
+                let parts = standard.section(section).iter().copied().filter(|part| !hidden.contains(part)).collect();
+                list.replace(parts);
+                list.set_elsewhere(elsewhere(&standard, section));
+            }
+        }
+        changed(&standard);
+    });
+    (built, restore)
 }
 
 /// The sections down a sidebar, the selected one beside it.
@@ -1902,10 +1925,10 @@ mod tests {
         crate::ui::on_gtk(|| {
             let saved: Rc<RefCell<Vec<Header>>> = Rc::default();
             let seen = saved.clone();
-            let sections =
+            let (sections, _) =
                 header_sections(Header::standard(), &[Part::Size], move |header| seen.borrow_mut().push(header.clone()));
             let [left, center, _] = sections.as_slice() else { panic!("three sections") };
-            assert_eq!(left.parts(), vec![Part::Symbol, Part::Resolution, Part::Account, Part::Feed]);
+            assert_eq!(left.parts(), vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Account]);
             assert!(!left.offered().contains(&Part::Size) && !center.offered().contains(&Part::Size));
             left.set(vec![Part::Resolution, Part::Symbol]);
             assert_eq!(
@@ -1923,12 +1946,13 @@ mod tests {
         crate::ui::on_gtk(|| {
             let saved: Rc<RefCell<Vec<Header>>> = Rc::default();
             let seen = saved.clone();
-            let sections = header_sections(Header::standard(), &[], move |header| seen.borrow_mut().push(header.clone()));
+            let (sections, _) =
+                header_sections(Header::standard(), &[], move |header| seen.borrow_mut().push(header.clone()));
             let [left, center, right] = sections.as_slice() else { panic!("three sections") };
             assert_eq!(left.group.title(), "Left");
             assert_eq!(center.group.title(), "Center");
             assert_eq!(right.group.title(), "Right");
-            assert_eq!(left.parts(), vec![Part::Symbol, Part::Resolution, Part::Account, Part::Feed, Part::Size]);
+            assert_eq!(left.parts(), vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Account, Part::Size]);
             assert_eq!(center.parts(), vec![Part::Stripe]);
             assert_eq!(right.parts(), vec![Part::Settings, Part::Maximize, Part::Link]);
             assert_eq!(left.offered(), vec![Part::Change, Part::Template]);
@@ -1966,6 +1990,36 @@ mod tests {
             assert_eq!(saved.borrow().last().map(|header| header.right.clone()), Some(vec![Part::Maximize, Part::Link]));
             left.set(vec![Part::Symbol]);
             assert!(right.offered().contains(&Part::Settings));
+        });
+    }
+
+    /// Restoring puts every section back as it ships, at once, lists and
+    /// offers included, and hands the whole header on once; a hidden part
+    /// goes back to where it ships too.
+    #[test]
+    fn restoring_the_header_puts_every_section_back() {
+        use crate::header::{Header, Part};
+        crate::ui::on_gtk(|| {
+            let saved: Rc<RefCell<Vec<Header>>> = Rc::default();
+            let seen = saved.clone();
+            let moved = Header {
+                left: vec![Part::Change, Part::Settings, Part::Size],
+                center: Vec::new(),
+                right: vec![Part::Symbol, Part::Stripe],
+            };
+            let (sections, restore) =
+                header_sections(moved, &[Part::Size], move |header| seen.borrow_mut().push(header.clone()));
+            let [left, center, right] = sections.as_slice() else { panic!("three sections") };
+            restore();
+            assert_eq!(left.parts(), vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Account]);
+            assert_eq!(center.parts(), vec![Part::Stripe]);
+            assert_eq!(right.parts(), vec![Part::Settings, Part::Maximize, Part::Link]);
+            assert_eq!(left.offered(), vec![Part::Change, Part::Template]);
+            assert_eq!(right.offered(), vec![Part::Change, Part::Template]);
+            assert_eq!(saved.borrow().as_slice(), &[Header::standard()]);
+            // And the lists go on from there.
+            center.set(Vec::new());
+            assert_eq!(saved.borrow().last().map(|header| header.left.clone()), Some(Header::standard().left));
         });
     }
 

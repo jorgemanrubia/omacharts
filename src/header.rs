@@ -203,9 +203,15 @@ impl Header {
 }
 
 /// What `section` shows when nobody has chosen: the parts at home in it, in
-/// the order [`Part::ALL`] lists them.
+/// the order [`Part::ALL`] lists them, except that the data feed leads the
+/// left, its dot standing over the legend's dots.
 pub fn standard(section: Section) -> Vec<Part> {
-    Part::ALL.into_iter().filter(|part| part.home() == Some(section)).collect()
+    let mut parts: Vec<Part> = Part::ALL.into_iter().filter(|part| part.home() == Some(section)).collect();
+    if let Some(at) = parts.iter().position(|part| *part == Part::Feed) {
+        let feed = parts.remove(at);
+        parts.insert(0, feed);
+    }
+    parts
 }
 
 /// The parts named in `keys`, in order, skipping any this build does not
@@ -328,13 +334,14 @@ mod tests {
         assert_eq!(load(&store), empty);
     }
 
-    /// Out of the box the left is the line every chart always had, the
-    /// center the stripe it always had across its top, and the right the
-    /// three controls that always stood in its corner, in their order.
+    /// Out of the box the left is the data feed's dot and then the line
+    /// every chart always had, the center the stripe it always had across its
+    /// top, and the right the three controls that always stood in its
+    /// corner, in their order.
     #[test]
     fn the_standard_header_is_the_line_the_stripe_and_the_corner() {
         let header = Header::standard();
-        assert_eq!(header.left, vec![Part::Symbol, Part::Resolution, Part::Account, Part::Feed, Part::Size]);
+        assert_eq!(header.left, vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Account, Part::Size]);
         assert_eq!(header.center, vec![Part::Stripe]);
         assert_eq!(header.right, vec![Part::Settings, Part::Maximize, Part::Link]);
     }

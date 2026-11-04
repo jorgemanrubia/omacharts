@@ -771,6 +771,13 @@ impl ChartPane {
                 }
             }
         }
+        // Leading the line, the dot steps out of its button's padding so it
+        // stands over the legend's dots, the button's hover reaching left
+        // past them instead.
+        match header.left.first() == Some(&Part::Feed) {
+            true => self.feed_menu.add_css_class("lead"),
+            false => self.feed_menu.remove_css_class("lead"),
+        }
         // Last, whatever the header shows: it says what is missing from this
         // chart, not what it is.
         for (_, button) in &self.hidden_glyphs {
@@ -1781,6 +1788,70 @@ mod tests {
             pane.write_size(Some("#2"));
             let shown = laid_out(vec![Part::Symbol, Part::Size, Part::Template]);
             assert!(shown.0 > without.0 && shown.1 > without.1, "{shown:?} against {without:?}");
+        });
+    }
+
+    /// The dot with one feed is the dot with two, colour and strength: an
+    /// insensitive button is drawn faded, and the stylesheet undoes that
+    /// for the dot. Read off the pixels, in a window, with the app's own
+    /// stylesheet.
+    #[test]
+    fn the_dot_with_nothing_to_open_is_not_faded() {
+        use gtk::gdk;
+        crate::ui::on_gtk(|| {
+            let Some(display) = gdk::Display::default() else { return };
+            // The fading is libadwaita's stylesheet, which the app runs under.
+            if adw::init().is_err() {
+                return;
+            }
+            let theme = omacharts_engine::theme::builtin_themes().into_iter().next().expect("a built-in theme");
+            let scheme = omacharts_engine::theme::theme_bars(&theme);
+            let provider = gtk::CssProvider::new();
+            provider.load_from_data(&crate::theming::stylesheet(&theme, &scheme));
+            gtk::style_context_add_provider_for_display(&display, &provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 1);
+
+            let pane = test_pane();
+            pane.set_feed_popover(gtk::Popover::new());
+            pane.set_feed_phase(FeedPhase::Connected);
+            let window = gtk::Window::new();
+            window.set_default_size(400, 200);
+            window.set_child(Some(&pane.root));
+            window.present();
+            let brightest = |clickable: bool| -> [u8; 3] {
+                pane.write_feed(Some(FeedPart { label: Some("Rithmic".into()), clickable, ..FeedPart::default() }));
+                let context = gtk::glib::MainContext::default();
+                for _ in 0..50 {
+                    while context.iteration(false) {}
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                // The button, whose fading is what is in question, and the
+                // middle of the dot inside it.
+                let paintable = gtk::WidgetPaintable::new(Some(&pane.feed_menu));
+                let (width, height) = (pane.feed_menu.width().max(1), pane.feed_menu.height().max(1));
+                let dot = pane.feed_dot.compute_bounds(&pane.feed_menu).expect("the dot is in its button");
+                let (x, y) = ((dot.x() + dot.width() / 2.0) as i32, (dot.y() + dot.height() / 2.0) as i32);
+                let snapshot = gtk::Snapshot::new();
+                paintable.snapshot(&snapshot, width as f64, height as f64);
+                let node = snapshot.to_node().expect("the dot draws");
+                let renderer = gtk::gsk::CairoRenderer::new();
+                renderer.realize(None::<&gdk::Surface>).expect("a renderer");
+                let texture = renderer.render_texture(
+                    &node,
+                    Some(&gtk::graphene::Rect::new(0.0, 0.0, width as f32, height as f32)),
+                );
+                renderer.unrealize();
+                let mut bytes = vec![0u8; (width * height * 4) as usize];
+                texture.download(&mut bytes, (width * 4) as usize);
+                // Cairo's order: blue, green, red, alpha.
+                let at = ((y * width + x) * 4) as usize;
+                [bytes[at + 2], bytes[at + 1], bytes[at]]
+            };
+            let offered = brightest(true);
+            let alone = brightest(false);
+            assert!(pane.feed_menu.has_css_class("inert"));
+            assert_ne!(offered, [0, 0, 0], "the dot drew nothing");
+            assert_eq!(alone, offered);
+            window.close();
         });
     }
 

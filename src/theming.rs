@@ -710,7 +710,15 @@ entry.range-date > image:hover { opacity: 0.9; }
 .feed-dot.connected { background: @omacharts_green; }
 .feed-warning { color: @omacharts_rose; }
 .feed-part > button { padding: 2px 6px; min-width: 0; }
+/* First on the line, the button reaches into the legend's margin so the
+   dot's left edge is the legend dots' left edge. */
+.feed-part.lead { margin-left: -3px; }
+/* With nothing to open, GTK makes the button insensitive, and an
+   insensitive button is drawn faded: the dot is the same light either way,
+   only without the hover. */
 .feed-part.inert > button:hover { background: none; }
+.feed-part.inert > button:disabled,
+.feed-part.inert > button:disabled > * { opacity: 1; filter: none; }
 /* The dot's list opens with its words, where the tooltip's were. */
 .feed-status { margin: 6px 12px; }
 
