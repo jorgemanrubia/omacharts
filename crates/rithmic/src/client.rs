@@ -129,7 +129,8 @@ pub fn price_limits(contract: &str, exchange: &str) -> (Option<f64>, Option<f64>
     limits.as_ref().and_then(|limits| limits.get(&(contract.to_string(), exchange.to_string())).copied()).unwrap_or_default()
 }
 
-static LIMITS: Mutex<Option<HashMap<(String, String), (Option<f64>, Option<f64>)>>> = Mutex::new(None);
+static LIMITS: Mutex<Option<Limits>> = Mutex::new(None);
+type Limits = HashMap<(String, String), (Option<f64>, Option<f64>)>;
 
 /// Price limits pushed for a contract: what is present replaces what was,
 /// what is cleared is no longer known.
