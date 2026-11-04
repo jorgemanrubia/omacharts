@@ -1593,6 +1593,40 @@ pub(super) mod tests {
         });
     }
 
+    /// A saved login signs in by itself once the window's first frame is on
+    /// screen, never before it, and its account's money and orders fill
+    /// the panel when it is back.
+    #[test]
+    fn a_saved_login_signs_in_after_the_first_frame() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let saved = trading::Typed { broker: "fake".into(), values: Vec::new(), ..typed() };
+            let id = trading::add_login(&store, &Kept::default(), &saved).expect("a login");
+            let window = window(&store);
+            assert!(!window.desk.opening(&id), "signing in before the window is even shown");
+
+            window.window.present();
+            let clock = window.window.frame_clock().expect("a frame clock once shown");
+            let first: Rc<Cell<Option<bool>>> = Rc::default();
+            let (seen, desk, login) = (first.clone(), window.desk.clone(), id.clone());
+            clock.connect_after_paint(move |_| {
+                if seen.get().is_none() {
+                    seen.set(Some(desk.opening(&login) || desk.live(&login)));
+                }
+            });
+            assert!(!window.desk.opening(&id), "signing in as the window maps");
+            settle(&window, || window.desk.live(&id));
+            assert_eq!(first.get(), Some(false), "signed in before the first frame was painted");
+            assert!(window.desk.live(&id));
+            assert_eq!(window.desk.refreshes(&id), 1, "refreshed as it signed in");
+            assert!(window.trading.borrow().book.refreshed);
+            let key = format!("{id}/FAKE-1");
+            assert_eq!(window.trading.borrow().book.money(&key).and_then(|money| money.balance), Some(50_000.0));
+            window.desk.sign_out_all(trading::SIGN_OUT_WAIT);
+            window.window.close();
+        });
+    }
+
     /// Run the main loop until `done`, or for a second at most.
     fn settle(window: &Rc<Window>, done: impl Fn() -> bool) {
         let context = glib::MainContext::default();

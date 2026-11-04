@@ -199,6 +199,8 @@ fn rebuild(panel: &Rc<Panel>) {
 fn subtitle(panel: &Panel, login: &Login, data: bool) -> String {
     let standing = match panel.notes.borrow().get(&login.id) {
         Some(note) => note.clone(),
+        // Signing in by itself, as a saved login does at startup.
+        None if panel.desk.opening(&login.id) => "signing in".into(),
         None => panel.desk.standing(login, data).words(),
     };
     let mut words: Vec<String> =

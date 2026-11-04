@@ -2377,6 +2377,7 @@ impl Window {
 
         this.watch_trading();
         this.watch_log();
+        this.sign_in_after_first_frame();
         let watchlist = this.build_watchlist();
         // Which list the rail is showing is part of the chartbook, so every
         // way of changing it has to write the book down. One hook, because a
@@ -7553,6 +7554,42 @@ impl Window {
                 this.desk.note(&this.store);
                 this.desk.tell();
             }
+        });
+    }
+
+    /// Sign the saved trading logins in, once, after the window's first
+    /// frame is on screen and behind whatever the charts asked for on the
+    /// way: an idle at low priority, registered when that frame has been
+    /// painted. Each login signs in and is refreshed on a thread of its own
+    /// ([`crate::trading::Desk::sign_in_saved`]), and the panel, the
+    /// headers and the chart lines fill in as each arrives. Nothing here
+    /// waits on a network or a keyring. A window that is never shown, as
+    /// in a test, signs nobody in.
+    fn sign_in_after_first_frame(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        let mapped = Rc::new(Cell::new(false));
+        self.window.connect_map(move |window| {
+            if mapped.replace(true) {
+                return;
+            }
+            let Some(clock) = window.frame_clock() else { return };
+            let painted: Rc<RefCell<Option<glib::SignalHandlerId>>> = Rc::default();
+            let (weak, once) = (weak.clone(), painted.clone());
+            let handler = clock.connect_after_paint(move |clock| {
+                if let Some(handler) = once.borrow_mut().take() {
+                    clock.disconnect(handler);
+                }
+                let weak = weak.clone();
+                glib::idle_add_local_full(glib::Priority::LOW, move || {
+                    if let Some(this) = weak.upgrade() {
+                        let logins = this.trading.borrow().logins.clone();
+                        this.desk.sign_in_saved(&logins);
+                        this.desk.tell();
+                    }
+                    glib::ControlFlow::Break
+                });
+            });
+            *painted.borrow_mut() = Some(handler);
         });
     }
 
