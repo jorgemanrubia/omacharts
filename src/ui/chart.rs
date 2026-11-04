@@ -1251,7 +1251,7 @@ impl State {
             covered_axis_start: 0.0,
             bar_style: BarStyle::default(),
             bars_hidden: false,
-            show_grid: true,
+            show_grid: false,
             clock: Clock::default(),
             drag: None,
             trouble: None,

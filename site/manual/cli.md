@@ -1494,8 +1494,8 @@ $ omacharts config get show_grid
 omacharts: "show_grid" has never been set
   [exit 3]
 
-$ omacharts config set show_grid off
-set show_grid to off
+$ omacharts config set show_grid on
+set show_grid to on
   [exit 0]
 
 $ omacharts config get cache_limit --json
@@ -1518,7 +1518,7 @@ same.
 | `bar_style` | `candles`, `ohlc` | `candles` | Charts › Defaults › Style | [Chart settings](/manual/chart-settings/) |
 | `bar_scheme` | `theme` (filled), `theme-hollow`, `theme-red-up`, `theme-mono` | `theme` | Charts › Defaults › Colouring | [Chart settings](/manual/chart-settings/) |
 | `chart_session` | `extended`, `regular` | `extended` | Charts › Defaults › Hours | [Chart settings](/manual/chart-settings/) |
-| `show_grid` | on, off | on | Charts › Defaults › Gridlines | [Chart settings](/manual/chart-settings/) |
+| `show_grid` | on, off | off | Charts › Defaults › Gridlines | [Chart settings](/manual/chart-settings/) |
 | `chart_log_scale` | on, off | off | Charts › Defaults › Logarithmic scale | [Chart settings](/manual/chart-settings/) |
 | `chart_shows_drawings` | on, off | on | Charts › Defaults › Show drawings from other charts | [Drawings](/manual/drawings/) |
 | `chart_sends_drawings` | on, off | on | Charts › Defaults › Send drawings to other charts | [Drawings](/manual/drawings/) |

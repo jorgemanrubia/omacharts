@@ -40,7 +40,7 @@ impl Default for ChartDefaults {
             bar_style: BarStyle::default(),
             colouring: BarColouring::default(),
             session: Session::default(),
-            show_grid: true,
+            show_grid: false,
             log_scale: false,
             shows_drawings: true,
             sends_drawings: true,
@@ -95,13 +95,13 @@ mod tests {
         let store = Store::memory().unwrap();
         let fresh = ChartDefaults::load(&store);
         assert_eq!(fresh.colouring, BarColouring::Filled);
-        assert!(fresh.show_grid && fresh.shows_drawings && fresh.sends_drawings);
+        assert!(!fresh.show_grid && fresh.shows_drawings && fresh.sends_drawings);
 
         let chosen = ChartDefaults {
             bar_style: BarStyle::Ohlc,
             colouring: BarColouring::Monochrome,
             session: Session::ALL[Session::ALL.len() - 1],
-            show_grid: false,
+            show_grid: true,
             log_scale: true,
             shows_drawings: false,
             sends_drawings: false,
