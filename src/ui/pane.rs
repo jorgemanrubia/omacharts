@@ -853,6 +853,13 @@ impl ChartPane {
         self.feed_phase.get()
     }
 
+    /// Is the dot red? Only then does its list say how the feed stands:
+    /// green and orange already say it.
+    pub fn feed_in_trouble(&self) -> bool {
+        let part = self.feed_part.borrow();
+        part.as_ref().is_some_and(|part| feed_status(part, self.feed_phase.get()).0 == "down")
+    }
+
     /// The list the dot opens. Attached only while there is more than one
     /// feed to choose, so with one the dot is nothing but its colour and
     /// its tooltip.

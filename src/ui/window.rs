@@ -3757,17 +3757,19 @@ impl Window {
     }
 
     /// The Data feed part's list, for the chart `id` as it is now: how the
-    /// feed stands, in the dot's own words, and the feeds that serve the
-    /// chart's instrument, a mark on the one in force and "(default)" on
+    /// feed stands, in the dot's own words, only when the dot is red, and
+    /// the feeds that serve the chart's instrument, a mark on the one in force and "(default)" on
     /// the account's own — or the order's pick, with no account. Choosing
     /// the default stores nothing, so the chart keeps following it.
     fn fill_feed_menu(self: &Rc<Self>, popover: &gtk::Popover, id: u32) {
         let Some(pane) = self.pane(id) else { return };
         let menu = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        let status = gtk::Label::new(pane.feed_menu.tooltip_text().as_deref());
-        status.set_xalign(0.0);
-        status.add_css_class("feed-status");
-        menu.append(&status);
+        if pane.feed_in_trouble() {
+            let status = gtk::Label::new(pane.feed_menu.tooltip_text().as_deref());
+            status.set_xalign(0.0);
+            status.add_css_class("feed-status");
+            menu.append(&status);
+        }
         let instrument = pane.instrument.borrow().clone();
         if let Some(instrument) = instrument {
             let (serving, default, in_force) = self.feeds_serving(&pane, &instrument);
