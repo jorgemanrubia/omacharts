@@ -70,7 +70,7 @@ crop: 440,721,1180,140
 
 ### Expired sessions
 
-Schwab ends a session after a while. Charts stop updating and say so, and Preferences offers **Sign in again**.
+Schwab ends a session after a while. Charts stop updating and say so, and Preferences offers **Sign in…** again.
 
 The session stays on this machine and is not in backups ([Where your data lives](/manual/your-data/#where-everything-is)).
 

@@ -195,7 +195,7 @@ fn fresh(id: &str) -> &'static str {
 
 fn subtitle(panel: &Panel, feed: &'static Listed) -> String {
     match through_trading(panel, feed) {
-        Some(login) => format!("{} · {} · signs in through {} in Trading", feed.covers, standing(panel, feed), login.name),
+        Some(login) => format!("{} · {} · through {}", feed.covers, standing(panel, feed), login.name),
         None => format!("{} · {}", feed.covers, standing(panel, feed)),
     }
 }
@@ -223,7 +223,6 @@ fn feed_row(panel: &Rc<Panel>, feed: &'static Listed, at: usize, others: bool) -
     if others {
         let handle = gtk::Image::from_icon_name("list-drag-handle-symbolic");
         handle.add_css_class("dim-label");
-        handle.set_tooltip_text(Some("Drag to reorder"));
         row.add_prefix(&handle);
     }
 
@@ -268,14 +267,13 @@ fn feed_row(panel: &Rc<Panel>, feed: &'static Listed, at: usize, others: bool) -
 }
 
 /// The one thing to do about a feed's sign-in, which says where it
-/// stands: Sign in… with nothing usable saved, Sign in again after a
-/// refusal or an expiry, Sign out while it works.
+/// stands: Sign in… with nothing usable saved, after a refusal or after an
+/// expiry, and Sign out while it works.
 fn action_button(panel: &Rc<Panel>, feed: &'static Listed, row: &adw::ActionRow) -> gtk::Button {
     let access = providers::access(feed.id).unwrap_or(Access::Missing);
     let label = match &access {
         Access::Signed(_) => "Sign out",
-        Access::Expired(_) => "Sign in again",
-        Access::Missing => "Sign in…",
+        Access::Expired(_) | Access::Missing => "Sign in…",
     };
     let button = gtk::Button::with_label(label);
     button.set_valign(gtk::Align::Center);
@@ -436,7 +434,7 @@ fn start_sign_in(panel: &Rc<Panel>, feed: &'static Listed) {
     }
     panel.signing_in.set(Some(feed.id));
     let opening = match feed.setup.map(|setup| setup.how()) {
-        Some(How::Browser) => "opening a browser; sign in there",
+        Some(How::Browser) => "opening a browser…",
         _ => "signing in",
     };
     panel.notes.borrow_mut().insert(feed.id, opening.into());
@@ -469,7 +467,7 @@ fn start_sign_in(panel: &Rc<Panel>, feed: &'static Listed) {
                     if let Err(error) = outcome
                         && !matches!(providers::access(feed.id), Some(Access::Expired(_)))
                     {
-                        notes.insert(feed.id, format!("sign-in failed · {error}"));
+                        notes.insert(feed.id, format!("not signed in · {error}"));
                     }
                     drop(notes);
                     panel.changed();
@@ -651,7 +649,7 @@ mod tests {
             assert_eq!(titles(&panel), vec!["Rithmic", "Yahoo Finance"]);
             let group = panel.group.borrow().clone().unwrap();
             let row = &action_rows(group.upcast_ref())[0];
-            assert!(row.subtitle().unwrap_or_default().ends_with("signs in through Lucid in Trading"), "{:?}", row.subtitle());
+            assert!(row.subtitle().unwrap_or_default().ends_with("· through Lucid"), "{:?}", row.subtitle());
             let words = words_under(row.upcast_ref());
             for absent in ["Remove", "Sign in…", "Sign out"] {
                 assert!(!words.iter().any(|w| w == absent), "{absent}: {words:?}");
