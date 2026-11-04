@@ -752,24 +752,23 @@ impl Window {
         target.tick.or_else(|| pane.view.tick())
     }
 
-    /// The chart menu's orders, at height `y` of the focused chart, in two
-    /// sections: buy and sell at the market, then a limit and a stop each
+    /// The chart menu's orders, at height `y` of the focused chart, in one
+    /// section: buy and sell at the market, then a limit and a stop each
     /// way at the price there, and cancelling the order under the pointer.
     /// One that would be on the wrong side of the market is greyed; a chart
     /// that cannot trade says why in one greyed row. No name over them: they
     /// go to the account the header has chosen. With no login, nothing.
-    pub(super) fn order_sections(self: &Rc<Self>, y: f64) -> Vec<gio::Menu> {
+    pub(super) fn order_section(self: &Rc<Self>, y: f64) -> Option<gio::Menu> {
         if !self.trading.borrow().trades() {
-            return Vec::new();
+            return None;
         }
-        let market = gio::Menu::new();
         let section = gio::Menu::new();
         let pane = self.focused_pane();
         let target = match self.order_target(&pane) {
             Ok(target) => target,
             Err(why) => {
                 section.append(Some(&why), Some(UNAVAILABLE));
-                return vec![section];
+                return Some(section);
             }
         };
         let key = target.account.key();
@@ -810,10 +809,7 @@ impl Window {
             } else {
                 item.set_action_and_target_value(Some(UNAVAILABLE), None);
             }
-            match kind {
-                OrderKind::Market => market.append_item(&item),
-                _ => section.append_item(&item),
-            }
+            section.append_item(&item);
         }
 
         // Cancelling the order whose line the pointer is on.
@@ -826,7 +822,7 @@ impl Window {
             item.set_action_and_target_value(Some("chart.cancel-order"), Some(&order.basket_id.to_variant()));
             section.append_item(&item);
         }
-        [market, section].into_iter().filter(|menu| menu.n_items() > 0).collect()
+        Some(section)
     }
 
     /// `chart.order`: check again what the menu offered, and place it.
@@ -1770,9 +1766,8 @@ pub(super) mod tests {
             assert_eq!(rows.first(), Some(&("Buy 1 ESZ6 at market".to_string(), true)));
             assert_eq!(rows.get(1), Some(&("Sell 1 ESZ6 at market".to_string(), true)));
             assert_eq!(rows.len(), 6);
-            let sections = window.order_sections(100.0);
-            assert_eq!(sections.len(), 2, "the market pair, then limits and stops");
-            assert_eq!(labels(sections[0].upcast_ref()).len(), 2);
+            let section = window.order_section(100.0).expect("the orders");
+            assert_eq!(labels(section.upcast_ref()).len(), 6, "market, limits and stops, one section");
             let model = window.chart_menu_model(100.0);
             for at in 0..model.n_items() {
                 let heading = model.item_attribute_value(at, "label", None);

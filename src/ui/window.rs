@@ -10121,14 +10121,14 @@ impl Window {
 
         // Orders at the price under the pointer, with a login to send them
         // through; with none, not a trace.
-        let orders = self.order_sections(y);
-        for section in &orders {
+        let orders = self.order_section(y);
+        if let Some(section) = &orders {
             menu.append_section(None, section);
         }
         // Under orders, how the chart is drawn is a section of its own, so
         // a line keeps it apart from them; with none, the menu is as it was.
         let outer = menu.clone();
-        let menu = if orders.is_empty() { outer.clone() } else { gio::Menu::new() };
+        let menu = if orders.is_none() { outer.clone() } else { gio::Menu::new() };
 
         // Not the tools. They were here when the only way to reach them was
         // a key, and there is a bar of them on the chart's own edge now —
@@ -10211,7 +10211,7 @@ impl Window {
         shortcuts::append(&menu, "Gridlines", "chart.grid");
         shortcuts::append(&menu, "Indicators", "chart.show-indicators");
         shortcuts::append(&menu, "Drawings", "chart.show-drawings");
-        if !orders.is_empty() {
+        if orders.is_some() {
             outer.append_section(None, &menu);
         }
         let menu = outer;
