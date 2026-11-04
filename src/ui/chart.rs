@@ -6649,11 +6649,17 @@ pub enum MarkHit {
     Line(String),
 }
 
+/// How tall a mark's pill and tabs are on the plot: larger than a chip on
+/// the axis, since they are read across the chart, not down a column.
+const MARK_H: f64 = 20.0;
 /// The side of the square × at the end of every mark's pill.
-const MARK_CLOSE: f64 = 12.0;
+const MARK_CLOSE: f64 = 16.0;
 /// The room between a mark's pieces, and after the last of them.
-const MARK_GAP: f64 = 4.0;
+const MARK_GAP: f64 = 5.0;
 const MARK_RIGHT: f64 = 8.0;
+/// The room either side of a pill's words, and of a tab's.
+const MARK_PAD: f64 = 9.0;
+const TAB_PAD: f64 = 7.0;
 
 /// Where a mark's pieces sit across the plot, at the right end of its
 /// line: the tabs, the pill, the ×. Worked out here for the drawing and
@@ -6668,18 +6674,29 @@ struct MarkRow {
 /// The font a mark's words are in.
 fn mark_font(cr: &cairo::Context) {
     cr.select_font_face("sans-serif", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
+    cr.set_font_size(13.0);
+}
+
+/// The font of a chip on the price axis, the last price's among them.
+fn axis_font(cr: &cairo::Context) {
+    cr.select_font_face("sans-serif", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
     cr.set_font_size(11.0);
+}
+
+/// Where the words in the current font sit to be centred on `y`.
+fn baseline(cr: &cairo::Context, y: f64) -> f64 {
+    cr.font_extents().map_or(y + 3.5, |font| (y + (font.ascent() - font.descent()) / 2.0).round())
 }
 
 fn mark_row(cr: &cairo::Context, plot_x: f64, plot_w: f64, words: &str, tabs: &[ExitTab]) -> MarkRow {
     let close_x = plot_x + plot_w - MARK_RIGHT - MARK_CLOSE;
-    let pill_w = cr.text_extents(words).map_or(0.0, |e| e.x_advance()) + 14.0;
+    let pill_w = cr.text_extents(words).map_or(0.0, |e| e.x_advance()) + 2.0 * MARK_PAD;
     let pill_x = close_x - MARK_GAP - pill_w;
     let mut left = pill_x;
     let mut placed = Vec::with_capacity(tabs.len());
     // The last tab nearest the pill: TP, SL, pill.
     for tab in tabs.iter().rev() {
-        let w = cr.text_extents(crate::trading::exit_tab(tab.kind)).map_or(14.0, |e| e.x_advance()) + 10.0;
+        let w = cr.text_extents(crate::trading::exit_tab(tab.kind)).map_or(14.0, |e| e.x_advance()) + 2.0 * TAB_PAD;
         left -= MARK_GAP + w;
         placed.push((tab.kind, left, w));
     }
@@ -6704,7 +6721,7 @@ fn mark_at(plan: &Layout, marks: &Marks, x: f64, y: f64, to_y: &impl Fn(f64) -> 
     }
     let shown = |at: f64| at >= plan.price_y && at <= plan.price_y + plan.price_h;
     let cr = measuring()?;
-    let within = |left: f64, w: f64, at: f64| x >= left - 1.0 && x <= left + w + 1.0 && (y - at).abs() <= AXIS_CHIP_H / 2.0;
+    let within = |left: f64, w: f64, at: f64| x >= left - 1.0 && x <= left + w + 1.0 && (y - at).abs() <= MARK_H / 2.0;
     if let Some(held) = marks.position.as_ref().filter(|held| !held.dim) {
         let at = to_y(held.price).round();
         if shown(at) {
@@ -6867,9 +6884,19 @@ enum Boxed<'a> {
     Outlined(&'a str),
 }
 
-/// The orders and the position, drawn under the last price: lines across
-/// the plot, words in pills at their right end with a × after each and
-/// the position's exit tabs before its pill, prices on the axis spread
+/// How a position's pill and price are boxed: filled, or outlined in its
+/// colour.
+fn held_look(held: &PositionMark) -> Boxed<'_> {
+    match &held.pill {
+        Some(fill) => Boxed::Filled(Tag::on(fill)),
+        None => Boxed::Outlined(&held.colour),
+    }
+}
+
+/// The orders and the position, drawn under the last price's tag: lines
+/// across the plot, the last price's with them, then over every line the
+/// words in pills at their right end with a × after each and the
+/// position's exit tabs before its pill, prices on the axis spread
 /// apart with the last price's where they would cover each other. Returns
 /// where the last price's chip goes, when it had to move.
 #[allow(clippy::too_many_arguments)]
@@ -6891,9 +6918,9 @@ fn draw_marks(
     mark_font(cr);
     let background = state.theme.ui.background.as_str();
     let ink = state.theme.ui.text.as_str();
-    // A box at `x`, `w` wide, centred on `y`, its text `text`.
-    let boxed = |cr: &cairo::Context, x: f64, y: f64, w: f64, text: &str, look: &Boxed, round: bool| {
-        let h = AXIS_CHIP_H;
+    // A box at `x`, `w` wide and `h` tall, centred on `y`, its text `text`
+    // in the font already chosen.
+    let boxed = |cr: &cairo::Context, x: f64, y: f64, w: f64, h: f64, text: &str, look: &Boxed, round: bool| {
         match round {
             true => pill_path(cr, x, y - h / 2.0, w, h),
             false => cr.rectangle(x + 0.5, y - h / 2.0 + 0.5, w - 1.0, h - 1.0),
@@ -6914,8 +6941,14 @@ fn draw_marks(
             }
         };
         colors::set_source(cr, text_colour);
-        cr.move_to(x + if round { 7.0 } else { 5.0 }, y + 3.5);
+        match round {
+            true => cr.move_to(x + MARK_PAD, baseline(cr, y)),
+            false => cr.move_to(x + 5.0, y + 3.5),
+        }
         let _ = cr.show_text(text);
+    };
+    let pill = |cr: &cairo::Context, row: &MarkRow, y: f64, text: &str, look: &Boxed| {
+        boxed(cr, row.pill_x, y, row.pill_w, MARK_H, text, look, true)
     };
     let line = |cr: &cairo::Context, y: f64, colour: &str, style: LineStyle, weight: f64| {
         cr.set_line_width(weight);
@@ -6930,7 +6963,7 @@ fn draw_marks(
     let halo = |cr: &cairo::Context, x: f64, y: f64, w: f64| {
         let pad = GRIP_HALO - MARK_CLOSE / 2.0;
         colors::set_source_alpha(cr, ink, 0.22);
-        cr.rectangle(x - pad, y - AXIS_CHIP_H / 2.0 - pad + 2.0, w + 2.0 * pad, AXIS_CHIP_H + 2.0 * pad - 4.0);
+        cr.rectangle(x - pad, y - MARK_H / 2.0 - pad + 2.0, w + 2.0 * pad, MARK_H + 2.0 * pad - 4.0);
         let _ = cr.fill();
     };
     // The ×: a square in the ink, a cross inside it.
@@ -6945,7 +6978,8 @@ fn draw_marks(
         cr.set_line_width(1.0);
         colors::set_source(cr, ink);
         let _ = cr.stroke();
-        let inset = 3.5;
+        let inset = 4.5;
+        cr.set_line_width(1.25);
         cr.move_to(x + inset, top + inset);
         cr.line_to(x + MARK_CLOSE - inset, top + MARK_CLOSE - inset);
         cr.move_to(x + MARK_CLOSE - inset, top + inset);
@@ -6962,89 +6996,106 @@ fn draw_marks(
         }
         false => paint(cr),
     };
+    // Under a faint mark's boxes, the ground at full strength, so no line
+    // shows through what it says.
+    let ground = |cr: &cairo::Context, dim: bool, shapes: &dyn Fn(&cairo::Context)| {
+        if dim {
+            shapes(cr);
+            colors::set_source(cr, background);
+            let _ = cr.fill();
+        }
+    };
     let lit = state.hover_mark.as_ref();
+    let ys = |price: f64| Some(to_y(price).round()).filter(|y| shown(*y));
+    let orders: Vec<(&OrderMark, f64)> =
+        state.marks.orders.iter().filter_map(|order| Some((order, ys(order.price)?))).collect();
+    let held: Vec<(&PositionMark, f64)> =
+        state.marks.held.iter().filter_map(|held| Some((held, ys(held.price)?))).collect();
+    let position = state.marks.position.as_ref().and_then(|held| Some((held, ys(held.price)?)));
 
-    // Each chip: its height, its text, its box and whether it is faint.
-    // The last price is among them, with no box, so that they are spread
-    // around it.
-    let mut chips: Vec<(f64, &str, Option<Boxed>, bool)> = Vec::with_capacity(state.marks.orders.len() + 2);
-    for order in &state.marks.orders {
-        let y = to_y(order.price).round();
-        if !shown(y) {
-            continue;
-        }
+    // Every line first, the last price's among them, and then every box on
+    // top, so that no line, the mark's own or another's at the same price,
+    // is drawn through words.
+    for (order, y) in &orders {
         // A market order on its way has no price of its own: its pill
-        // beside the last price, and nothing else, until it fills.
-        if order.kind == OrderKind::Market {
-            faint(cr, true, &|cr| {
-                let row = mark_row(cr, plot_x, plot_w, &order.words, &[]);
-                boxed(cr, row.pill_x, y, row.pill_w, &order.words, &Boxed::Outlined(&order.colour), true);
-            });
-            continue;
-        }
-        faint(cr, order.dim, &|cr| {
+        // beside the last price, and no line.
+        if order.kind != OrderKind::Market {
             // An order's line is 1.5 px, so a dashed one can never be taken
             // for the last price's thinner dashes.
-            line(cr, y, &order.colour, order.style, 1.5);
-            let row = mark_row(cr, plot_x, plot_w, &order.words, &[]);
-            boxed(cr, row.pill_x, y, row.pill_w, &order.words, &Boxed::Outlined(&order.colour), true);
-            let over = lit.is_some_and(|hit| *hit == MarkHit::Close(order.basket.clone()));
-            close(cr, row.close_x, y, over);
-        });
-        chips.push((y + 0.5, &order.price_text, Some(Boxed::Outlined(&order.colour)), order.dim));
+            faint(cr, order.dim, &|cr| line(cr, *y, &order.colour, order.style, 1.5));
+        }
     }
-    for held in &state.marks.held {
-        let y = to_y(held.price).round();
-        if !shown(y) {
+    for (held, y) in held.iter().chain(&position) {
+        faint(cr, held.dim, &|cr| line(cr, *y, &held.colour, held.style, 2.0));
+    }
+    draw_last_price_line(cr, state, plot_x, plot_w, price_y, to_y);
+
+    let mut chips: Vec<(f64, &str, Option<Boxed>, bool)> = Vec::with_capacity(state.marks.orders.len() + 2);
+    for (order, y) in &orders {
+        let row = mark_row(cr, plot_x, plot_w, &order.words, &[]);
+        let look = Boxed::Outlined(&order.colour);
+        if order.kind == OrderKind::Market {
+            ground(cr, true, &|cr| pill_path(cr, row.pill_x, y - MARK_H / 2.0, row.pill_w, MARK_H));
+            faint(cr, true, &|cr| pill(cr, &row, *y, &order.words, &look));
             continue;
         }
-        let look = match &held.pill {
-            Some(fill) => Boxed::Filled(Tag::on(fill)),
-            None => Boxed::Outlined(&held.colour),
-        };
-        faint(cr, held.dim, &|cr| {
-            line(cr, y, &held.colour, held.style, 2.0);
-            let row = mark_row(cr, plot_x, plot_w, &held.words, &[]);
-            boxed(cr, row.pill_x, y, row.pill_w, &held.words, &look, true);
-            close(cr, row.close_x, y, lit == Some(&MarkHit::FlattenHeld(held.contract.clone())));
+        ground(cr, order.dim, &|cr| {
+            pill_path(cr, row.pill_x, y - MARK_H / 2.0, row.pill_w, MARK_H);
+            cr.rectangle(row.close_x, y - MARK_CLOSE / 2.0, MARK_CLOSE, MARK_CLOSE);
         });
-        chips.push((y + 0.5, &held.price_text, Some(look), held.dim));
+        faint(cr, order.dim, &|cr| {
+            pill(cr, &row, *y, &order.words, &look);
+            let over = lit.is_some_and(|hit| *hit == MarkHit::Close(order.basket.clone()));
+            close(cr, row.close_x, *y, over);
+        });
+        chips.push((y + 0.5, &order.price_text, Some(look), order.dim));
     }
-    if let Some(held) = &state.marks.position {
-        let y = to_y(held.price).round();
-        if shown(y) {
-            let look = || match &held.pill {
-                Some(fill) => Boxed::Filled(Tag::on(fill)),
-                None => Boxed::Outlined(&held.colour),
-            };
-            faint(cr, held.dim, &|cr| {
-                line(cr, y, &held.colour, held.style, 2.0);
-                let row = mark_row(cr, plot_x, plot_w, &held.words, &held.exits);
-                boxed(cr, row.pill_x, y, row.pill_w, &held.words, &look(), true);
-                close(cr, row.close_x, y, lit == Some(&MarkHit::Flatten));
-                for (kind, x, w) in &row.tabs {
-                    let Some(tab) = held.exits.iter().find(|tab| tab.kind == *kind) else { continue };
-                    if lit == Some(&MarkHit::Exit(*kind)) {
-                        halo(cr, *x, y, *w);
-                    }
-                    let h = AXIS_CHIP_H - 2.0;
-                    cr.rectangle(x + 0.5, y - h / 2.0 + 0.5, w - 1.0, h - 1.0);
-                    colors::set_source(cr, background);
-                    let _ = cr.fill_preserve();
-                    // Its dashes are its kind's, so it is told by more
-                    // than its colour.
-                    cr.set_line_width(1.0);
-                    cr.set_dash(&tab.style.dashes(1.0), 0.0);
-                    colors::set_source(cr, &tab.colour);
-                    let _ = cr.stroke();
-                    cr.set_dash(&[], 0.0);
-                    colors::set_source(cr, ink);
-                    cr.move_to(x + 5.0, y + 3.5);
-                    let _ = cr.show_text(crate::trading::exit_tab(*kind));
+    for (held, y) in &held {
+        let row = mark_row(cr, plot_x, plot_w, &held.words, &[]);
+        ground(cr, held.dim, &|cr| {
+            pill_path(cr, row.pill_x, y - MARK_H / 2.0, row.pill_w, MARK_H);
+            cr.rectangle(row.close_x, y - MARK_CLOSE / 2.0, MARK_CLOSE, MARK_CLOSE);
+        });
+        faint(cr, held.dim, &|cr| {
+            pill(cr, &row, *y, &held.words, &held_look(held));
+            close(cr, row.close_x, *y, lit == Some(&MarkHit::FlattenHeld(held.contract.clone())));
+        });
+        chips.push((y + 0.5, &held.price_text, Some(held_look(held)), held.dim));
+    }
+    if let Some((held, y)) = position {
+        let row = mark_row(cr, plot_x, plot_w, &held.words, &held.exits);
+        let tab_h = MARK_H - 2.0;
+        ground(cr, held.dim, &|cr| {
+            pill_path(cr, row.pill_x, y - MARK_H / 2.0, row.pill_w, MARK_H);
+            cr.rectangle(row.close_x, y - MARK_CLOSE / 2.0, MARK_CLOSE, MARK_CLOSE);
+            for (_, x, w) in &row.tabs {
+                cr.rectangle(*x, y - tab_h / 2.0, *w, tab_h);
+            }
+        });
+        faint(cr, held.dim, &|cr| {
+            pill(cr, &row, y, &held.words, &held_look(held));
+            close(cr, row.close_x, y, lit == Some(&MarkHit::Flatten));
+            for (kind, x, w) in &row.tabs {
+                let Some(tab) = held.exits.iter().find(|tab| tab.kind == *kind) else { continue };
+                if lit == Some(&MarkHit::Exit(*kind)) {
+                    halo(cr, *x, y, *w);
                 }
-            });
-            chips.push((y + 0.5, &held.price_text, Some(look()), held.dim));
-        }
+                cr.rectangle(x + 0.5, y - tab_h / 2.0 + 0.5, w - 1.0, tab_h - 1.0);
+                colors::set_source(cr, background);
+                let _ = cr.fill_preserve();
+                // Its dashes are its kind's, so it is told by more
+                // than its colour.
+                cr.set_line_width(1.0);
+                cr.set_dash(&tab.style.dashes(1.0), 0.0);
+                colors::set_source(cr, &tab.colour);
+                let _ = cr.stroke();
+                cr.set_dash(&[], 0.0);
+                colors::set_source(cr, ink);
+                cr.move_to(x + TAB_PAD, baseline(cr, y));
+                let _ = cr.show_text(crate::trading::exit_tab(*kind));
+            }
+        });
+        chips.push((y + 0.5, &held.price_text, Some(held_look(held)), held.dim));
     }
     let last = state.bars.last().map(|bar| to_y(bar.close).round() + 0.5).filter(|y| shown(*y));
     if let Some(y) = last {
@@ -7055,6 +7106,8 @@ fn draw_marks(
     spread_chips(&mut ys, AXIS_CHIP_H, floor);
     let axis_x = plot_x + plot_w;
     let mut moved = None;
+    // The prices on the axis are chips like the last price's, in its font.
+    axis_font(cr);
     for ((_, text, look, dim), y) in chips.iter().zip(ys) {
         let y = y.round() + 0.5;
         let Some(look) = look else {
@@ -7063,7 +7116,8 @@ fn draw_marks(
         };
         let Ok(extents) = cr.text_extents(text) else { continue };
         let w = (extents.width() + 10.0).min(width - axis_x - 2.0);
-        faint(cr, *dim, &|cr| boxed(cr, axis_x + 1.0, y, w, text, look, false));
+        ground(cr, *dim, &|cr| cr.rectangle(axis_x + 1.0, y - AXIS_CHIP_H / 2.0, w, AXIS_CHIP_H));
+        faint(cr, *dim, &|cr| boxed(cr, axis_x + 1.0, y, w, AXIS_CHIP_H, text, look, false));
     }
     cr.restore().ok();
     moved
@@ -7122,8 +7176,8 @@ fn draw_mark_preview(
     let _ = cr.stroke();
     cr.set_dash(&[], 0.0);
     let row = mark_row(cr, plan.plot_x, plan.plot_w, &text, &[]);
-    let h = AXIS_CHIP_H;
     let box_at = |cr: &cairo::Context, x: f64, w: f64, round: bool| {
+        let h = if round { MARK_H } else { AXIS_CHIP_H };
         match round {
             true => pill_path(cr, x, line_y - h / 2.0, w, h),
             false => cr.rectangle(x + 0.5, line_y - h / 2.0 + 0.5, w - 1.0, h - 1.0),
@@ -7138,9 +7192,10 @@ fn draw_mark_preview(
     let pill_x = row.pill_x + MARK_GAP + MARK_CLOSE;
     box_at(cr, pill_x, row.pill_w, true);
     colors::set_source(cr, if allowed { &state.theme.ui.text } else { colour });
-    cr.move_to(pill_x + 7.0, line_y + 3.5);
+    cr.move_to(pill_x + MARK_PAD, baseline(cr, line_y));
     let _ = cr.show_text(&text);
     let axis_x = plan.plot_x + plan.plot_w;
+    axis_font(cr);
     if let Ok(extents) = cr.text_extents(&price) {
         let w = (extents.width() + 10.0).min(width - axis_x - 2.0);
         box_at(cr, axis_x + 1.0, w, false);
@@ -7170,17 +7225,11 @@ fn draw_last_price(
         return;
     }
     let rising = last.close >= last.open;
-    let colour = if rising { &state.scheme.up } else { &state.scheme.down };
     let tag = &state.price_tags[if rising { 0 } else { 1 }];
-
-    cr.save().ok();
-    cr.set_dash(&[3.0, 3.0], 0.0);
-    cr.set_line_width(1.0);
-    colors::set_source_alpha(cr, colour, 0.7);
-    cr.move_to(plot_x, y);
-    cr.line_to(plot_x + plot_w, y);
-    let _ = cr.stroke();
-    cr.restore().ok();
+    // With marks on the chart their boxes drew it already, under them.
+    if state.marks.is_empty() {
+        draw_last_price_line(cr, state, plot_x, plot_w, price_y, to_y);
+    }
 
     // The tag stops under the window's corner rather than slide beneath
     // it; the line stays at the price.
@@ -7192,6 +7241,31 @@ fn draw_last_price(
         width,
         tag,
     );
+}
+
+/// The last price's dashed line across the plot.
+fn draw_last_price_line(
+    cr: &cairo::Context,
+    state: &State,
+    plot_x: f64,
+    plot_w: f64,
+    price_y: f64,
+    to_y: &impl Fn(f64) -> f64,
+) {
+    let Some(last) = state.bars.last() else { return };
+    let y = to_y(last.close).round() + 0.5;
+    if y < price_y {
+        return;
+    }
+    let colour = if last.close >= last.open { &state.scheme.up } else { &state.scheme.down };
+    cr.save().ok();
+    cr.set_dash(&[3.0, 3.0], 0.0);
+    cr.set_line_width(1.0);
+    colors::set_source_alpha(cr, colour, 0.7);
+    cr.move_to(plot_x, y);
+    cr.line_to(plot_x + plot_w, y);
+    let _ = cr.stroke();
+    cr.restore().ok();
 }
 
 /// How far a label fades out under the edge of whatever covers the top of
@@ -9663,6 +9737,105 @@ mod tests {
             limits: (None, None),
         };
         state
+    }
+
+    /// A position at the last price, its exits working: the picture the
+    /// marks are judged in. In the theme `theme` of the built-in ones.
+    fn at_the_last_price(theme: usize) -> State {
+        let theme = omacharts_engine::theme::builtin_themes().into_iter().nth(theme).expect("a built-in theme");
+        let mut state = marked();
+        state.scheme = omacharts_engine::theme::theme_bars(&theme);
+        state.price_tags = price_tags(&state.scheme);
+        state.theme = theme;
+        let last = state.bars.last().unwrap().close;
+        let up = state.scheme.up.clone();
+        let down = state.scheme.down.clone();
+        let tab = |kind, colour: &str, style| ExitTab { kind, colour: colour.into(), style };
+        let position = state.marks.position.as_mut().unwrap();
+        position.price = last;
+        position.words = "▲ +1 · +$0.00".into();
+        position.price_text = grouped_decimals(last, 2);
+        position.colour = up.clone();
+        position.pill = Some(up.clone());
+        position.exits = vec![tab(OrderKind::Limit, &down, LineStyle::Solid), tab(OrderKind::Stop, &down, LineStyle::Dashed)];
+        let order = &mut state.marks.orders[0];
+        order.words = "▲ Buy Stop 2".into();
+        order.colour = up;
+        order.style = LineStyle::Dashed;
+        state
+    }
+
+    /// No line is drawn through what a mark says: not its own, not another
+    /// at the same price, not the last price's when the position sits on
+    /// it. Inside the pill, either side of its words, is the pill's fill.
+    #[test]
+    fn no_line_crosses_a_marks_words() {
+        let (w, h) = (600.0, 400.0);
+        for theme in [0, 3] {
+            let state = at_the_last_price(theme);
+            let (first, visible, _) = state.view();
+            let plan = layout(&state, w, h);
+            let scale = price_range(&state, &state.bars[first..first + visible], &plan).unwrap();
+            let held = state.marks.position.clone().unwrap();
+            let y = scale.to_y(held.price, plan.price_y, plan.price_h).round() as usize;
+            let cr = measuring().unwrap();
+            let row = mark_row(&cr, plan.plot_x, plan.plot_w, &held.words, &held.exits);
+            let pixels = frame(w, h, |cr| draw(cr, w, h, &state));
+            let at = |x: f64| {
+                let i = (y * w as usize + x as usize) * 4;
+                (pixels[i + 2], pixels[i + 1], pixels[i])
+            };
+            let (r, g, b, _) = colors::rgba(&Tag::on(&held.colour).fill);
+            let fill = ((r * 255.0).round() as u8, (g * 255.0).round() as u8, (b * 255.0).round() as u8);
+            for x in [row.pill_x + 4.0, row.pill_x + row.pill_w - 4.0] {
+                assert_eq!(at(x), fill, "theme {theme}: the pill at x {x} is its fill, not a line");
+            }
+            // Inside a tab, beside its word, is the chart's ground.
+            let (r, g, b, _) = colors::rgba(&state.theme.ui.background);
+            let ground = ((r * 255.0).round() as u8, (g * 255.0).round() as u8, (b * 255.0).round() as u8);
+            for (_, x, _) in &row.tabs {
+                assert_eq!(at(x + 3.0), ground, "theme {theme}: a tab at x {x} is clear of the line");
+            }
+        }
+    }
+
+    fn save_png(mut surface: cairo::ImageSurface, path: &str) {
+        let (w, h, stride) = (surface.width(), surface.height(), surface.stride() as usize);
+        let bytes = gtk::glib::Bytes::from(&surface.data().unwrap()[..]);
+        let texture = gtk::gdk::MemoryTexture::new(w, h, gtk::gdk::MemoryFormat::B8g8r8a8Premultiplied, &bytes, stride);
+        texture.save_to_png(path).unwrap();
+    }
+
+    /// The marks as pictures, for a person to look at: dark and light, at
+    /// one and two pixels to the point. Written only when asked for, to
+    /// the folder in `OMACHARTS_MARK_SHOTS`.
+    #[test]
+    fn the_marks_as_pictures() {
+        let Ok(folder) = std::env::var("OMACHARTS_MARK_SHOTS") else { return };
+        let (w, h) = (600.0, 400.0);
+        for (theme, name) in [(0, "dark"), (3, "light")] {
+            let mut state = at_the_last_price(theme);
+            state.hover_mark = None;
+            for scale in [1.0, 2.0] {
+                let surface =
+                    cairo::ImageSurface::create(cairo::Format::ARgb32, (w * scale) as i32, (h * scale) as i32).unwrap();
+                {
+                    let cr = cairo::Context::new(&surface).unwrap();
+                    cr.scale(scale, scale);
+                    draw(&cr, w, h, &state);
+                }
+                save_png(surface, &format!("{folder}/position-marks-{name}-{}x.png", scale as u32));
+            }
+            state.marks.orders[0].dim = true;
+            state.marks.position.as_mut().unwrap().dim = true;
+            let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, (w * 2.0) as i32, (h * 2.0) as i32).unwrap();
+            {
+                let cr = cairo::Context::new(&surface).unwrap();
+                cr.scale(2.0, 2.0);
+                draw(&cr, w, h, &state);
+            }
+            save_png(surface, &format!("{folder}/position-marks-{name}-pending-2x.png"));
+        }
     }
 
     /// The ×, the tabs and an order's line are found where they are drawn:
