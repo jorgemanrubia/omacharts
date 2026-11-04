@@ -200,6 +200,11 @@ pub enum Live {
     /// incomplete.
     Watching { contract: String },
     Trade(Trade),
+    /// The last trade before the watch began, which a subscription opens
+    /// with: the market's price until it trades again. A finished bar from
+    /// the history plant already counts it; the bar forming now, which the
+    /// plant does not give, does not.
+    Last(Trade),
     /// Nothing more until the next [`Live::Watching`], and this is why. The
     /// session is reconnecting by itself unless the error says it cannot
     /// ([`Error::Refused`], [`Error::NoLogin`], [`Error::Closed`]).

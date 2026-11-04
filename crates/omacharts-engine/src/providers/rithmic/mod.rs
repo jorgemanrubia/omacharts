@@ -556,7 +556,12 @@ fn serve(
                 say(Update::Lost(FetchFailure::from(&error)));
             }
             Event::Whole(whole) => say(Update::Bar(whole)),
-            Event::Live(rithmic::Live::Trade(trade)) => {
+            // The trade a subscription opens with is folded as any other:
+            // a finished bar the plant gave already has it and leaves it
+            // out, and the bar forming now, which the plant does not give,
+            // starts from it rather than from whenever the market next
+            // trades, so the last price is the market's at once.
+            Event::Live(rithmic::Live::Trade(trade) | rithmic::Live::Last(trade)) => {
                 if let Some(bar) = fold.trade(&trade) {
                     sent(&bar, &mut newest);
                     say(Update::Bar(bar));
@@ -884,6 +889,29 @@ mod tests {
         for i in 0..200 {
             assert_eq!(served.bar().close, 9.0 + f64::from(i) * 0.25, "trade {i}");
         }
+    }
+
+    /// The plant gives finished bars only: the trade a subscription opens
+    /// with starts the bar forming now, so the chart's last price is the
+    /// market's at once on a market that seldom trades, and is left out
+    /// when it is in a bar the plant gave.
+    #[test]
+    fn the_trade_a_watch_opens_with_starts_the_forming_bar() {
+        let last = |seconds, price| Event::Live(rithmic::Live::Last(trade(seconds, price, 1)));
+        let served = Served::start(Some(AT - 600), AT + 20, |_| Ok(vec![ohlc(AT - 60, 10.0, 11.0, 9.0, 10.5, 100.0)]));
+        served.watching();
+        served.send.send(last(AT + 10, 10.25)).unwrap();
+        assert_eq!(served.snapshot().len(), 1);
+        let forming = served.bar();
+        assert_eq!((forming.ts, forming.close, forming.volume), (AT, 10.25, 1.0));
+
+        let finished = Served::start(Some(AT - 600), AT + 20, |_| Ok(vec![ohlc(AT - 60, 10.0, 11.0, 9.0, 10.5, 100.0)]));
+        finished.watching();
+        finished.send.send(last(AT - 30, 10.5)).unwrap();
+        assert_eq!(finished.snapshot().len(), 1);
+        finished.trade(AT + 25, 12.0, 1);
+        let next = finished.bar();
+        assert_eq!((next.ts, next.open, next.volume), (AT, 12.0, 1.0), "the finished bar's trade is not counted again");
     }
 
     /// Asking the plant for a closed minute whole takes as long as it takes,

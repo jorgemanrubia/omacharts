@@ -250,7 +250,9 @@ impl RithmicSession {
             let (last, contract, ended) = (last.clone(), contract.clone(), ended.clone());
             let (held, told, changed, root) = (self.held.clone(), self.told.clone(), self.changed.clone(), root.to_string());
             move |live| match live {
-                rithmic::Live::Trade(trade) => {
+                // The last trade before the watch began is the market's
+                // price until it trades again.
+                rithmic::Live::Trade(trade) | rithmic::Live::Last(trade) => {
                     let before = last.lock().unwrap_or_else(|e| e.into_inner()).replace(trade.price);
                     let holding = held.lock().unwrap_or_else(|e| e.into_inner()).contains(&root);
                     if before != Some(trade.price) && holding && !told.swap(true, Ordering::AcqRel) {

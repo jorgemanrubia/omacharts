@@ -853,7 +853,7 @@ impl Trading {
                     match heard.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
                         Ok(Live::Watching { .. }) => break true,
                         // Reconnecting by itself: the answer may still come.
-                        Ok(Live::Lost(Error::Connection(_) | Error::Timeout) | Live::Trade(_)) => continue,
+                        Ok(Live::Lost(Error::Connection(_) | Error::Timeout) | Live::Trade(_) | Live::Last(_)) => continue,
                         Ok(Live::Lost(_)) | Err(_) => break false,
                     }
                 };

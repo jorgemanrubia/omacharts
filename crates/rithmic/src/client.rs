@@ -869,14 +869,18 @@ impl Watches {
         let (Some(symbol), Some(exchange)) = (trade.symbol.as_deref(), trade.exchange.as_deref()) else {
             return;
         };
-        self.deliver(symbol, exchange, found);
+        let live = match trade.is_snapshot {
+            Some(true) => Live::Last(found),
+            _ => Live::Trade(found),
+        };
+        self.deliver(symbol, exchange, live);
     }
 
     /// A trade on `symbol`, to everything watching it.
-    fn deliver(&self, symbol: &str, exchange: &str, found: Trade) {
+    fn deliver(&self, symbol: &str, exchange: &str, live: Live) {
         for watched in self.watched.values() {
             if watched.contract.as_deref() == Some(symbol) && watched.exchange == exchange {
-                (watched.sink)(Live::Trade(found));
+                (watched.sink)(live.clone());
             }
         }
     }
@@ -986,11 +990,6 @@ pub(crate) fn dropped(update: &RithmicResponse) -> Option<Error> {
 }
 
 fn trade_of(trade: &LastTrade) -> Option<Trade> {
-    // The trade a subscription opens with is the last one before it, which
-    // a snapshot already holds.
-    if trade.is_snapshot == Some(true) {
-        return None;
-    }
     let price = trade.trade_price.filter(|price| price.is_finite() && *price > 0.0)?;
     let size = u64::try_from(trade.trade_size?).ok().filter(|size| *size > 0)?;
     let seconds = i64::from(trade.source_ssboe.or(trade.ssboe)?);
@@ -1378,7 +1377,7 @@ pub(crate) mod tests {
         assert_eq!(fake.subscribes.lock().unwrap().as_slice(), &["ESZ6", "NQZ6"]);
 
         for second in 0..3 {
-            supervisor.deliver("ESZ6", "CME", print(second));
+            supervisor.deliver("ESZ6", "CME", Live::Trade(print(second)));
         }
         let trades = heard.lock().unwrap().iter().filter(|(id, live)| *id == 1 && matches!(live, Live::Trade(_))).count();
         assert_eq!(trades, 3, "ES trades arrive while NQ is being subscribed");
@@ -1386,9 +1385,39 @@ pub(crate) mod tests {
 
         fake.gate.add_permits(1);
         settle_next(&mut supervisor, &mut subscriptions).await;
-        supervisor.deliver("NQZ6", "CME", print(10));
+        supervisor.deliver("NQZ6", "CME", Live::Trade(print(10)));
         let nq: Vec<Live> = heard.lock().unwrap().iter().filter(|(id, _)| *id == 2).map(|(_, l)| l.clone()).collect();
         assert_eq!(nq, vec![Live::Watching { contract: "NQZ6".into() }, Live::Trade(print(10))]);
+    }
+
+    /// A subscription opens with the last trade before it, which is told
+    /// apart from the trades after it: the market's price until it trades
+    /// again, already in a finished bar the history plant gives.
+    #[tokio::test]
+    async fn the_trade_a_subscription_opens_with_is_the_last_one() {
+        let fake = Fake::default();
+        let mut subscriptions = Subscriptions::new(fake.clone());
+        let mut supervisor = supervisor();
+        let heard: Heard = Arc::default();
+        watch_root(&mut supervisor, &mut subscriptions, 1, "ES", &heard);
+        settle_next(&mut supervisor, &mut subscriptions).await;
+        settle_next(&mut supervisor, &mut subscriptions).await;
+
+        let mut opening = LastTrade::default();
+        opening.symbol = Some("ESZ6".into());
+        opening.exchange = Some("CME".into());
+        opening.trade_price = Some(7_653.25);
+        opening.trade_size = Some(1);
+        opening.ssboe = Some(1_793_818_562);
+        opening.is_snapshot = Some(true);
+        supervisor.trade(&opening);
+        opening.is_snapshot = None;
+        opening.trade_price = Some(7_653.5);
+        supervisor.trade(&opening);
+        let lives: Vec<Live> = heard.lock().unwrap().iter().skip(1).map(|(_, live)| live.clone()).collect();
+        let at_nanos = 1_793_818_562 * 1_000_000_000;
+        let trade = |price| Trade { price, size: 1, aggressor: None, at_nanos };
+        assert_eq!(lives, vec![Live::Last(trade(7_653.25)), Live::Trade(trade(7_653.5))]);
     }
 
     /// Two charts opened on one contract while it is being subscribed share

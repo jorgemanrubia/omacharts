@@ -122,6 +122,9 @@ fn fold(events: &mpsc::Receiver<Event>, mut tape: Tape, say: &dyn Fn(LadderUpdat
                     say(LadderUpdate::Resumed);
                 }
             }
+            // Volume at a price is counted from the prints heard: the one a
+            // subscription opens with may be in a minute the plant has.
+            Event::Live(rithmic::Live::Last(_)) => {}
             Event::Live(rithmic::Live::Lost(_)) => {
                 started = true;
                 if tape.forming.is_connected() || tape.forming.current().is_some() {

@@ -91,6 +91,7 @@ fn main() {
             live.trades.fetch_add(1, Ordering::Relaxed);
             *live.last.lock().unwrap() = Some(trade.price);
         }
+        Live::Last(trade) => *live.last.lock().unwrap() = Some(trade.price),
         Live::Watching { .. } => {
             live.watching.fetch_add(1, Ordering::Relaxed);
         }
