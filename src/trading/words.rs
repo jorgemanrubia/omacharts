@@ -123,8 +123,11 @@ pub fn never_placed_text(order: &OrderRequest) -> String {
 /// Money as a P&L reads: "+$125.00", "-$3.94", "+12.50 EUR".
 pub fn pnl_text(value: f64, currency: Option<&str>) -> String {
     let sign = if value < 0.0 { "-" } else { "+" };
-    let whole = grouped(value.abs().trunc() as u64);
-    let cents = ((value.abs().fract() * 100.0).round() as u64).min(99);
+    // To the cent first, then split: 15,349.999… is $15,350.00, not
+    // $15,349.99, and never 15,349 and a hundred cents.
+    let cents = (value.abs() * 100.0).round() as u64;
+    let whole = grouped(cents / 100);
+    let cents = cents % 100;
     match currency {
         None | Some("USD") => format!("{sign}${whole}.{cents:02}"),
         Some(currency) => format!("{sign}{whole}.{cents:02} {currency}"),
@@ -250,5 +253,15 @@ mod tests {
         assert_eq!(position_text(&held, 2, None), "-2 · -$3.94");
         assert_eq!(money_text(1_000_000.0, Some("USD")), "$1,000,000.00");
         assert_eq!(pnl_text(12.5, Some("EUR")), "+12.50 EUR");
+    }
+
+    /// Money is rounded to the cent before it is split into dollars and
+    /// cents, so a stop 102⅓ points under 3 ES at $50 says -$15,350.00,
+    /// not -$15,349.99.
+    #[test]
+    fn money_rounds_to_the_cent() {
+        assert_eq!(pnl_text((7_629.0 - (7_731.0 + 1.0 / 3.0)) * 3.0 * 50.0, Some("USD")), "-$15,350.00");
+        assert_eq!(pnl_text(0.995, Some("USD")), "+$1.00");
+        assert_eq!(pnl_text(0.994, Some("USD")), "+$0.99");
     }
 }
