@@ -34,7 +34,8 @@ crop: 2000,0,560,800
 ## The sidebar
 
 <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>B</kbd> shows or hides the sidebar and puts the
-keyboard in it ([The window](/manual/window/)). Drag its edge to make it
+keyboard in it ([The window](/manual/window/)), as does **Sidebars** › **Watchlist** in the
+chart menu. Drag its edge to make it
 wider or narrower. Whether it is open, and how wide, is saved with each
 chartbook.
 

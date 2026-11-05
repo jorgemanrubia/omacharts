@@ -464,6 +464,7 @@ crop: 560,262,640,780   (the whole menu, 20px layout margin)
 | **Indicators** | Ticked while the chart shows its indicators, with its key | [Hiding every indicator](/manual/indicators/#hiding-every-indicator) |
 | **Drawings** | Ticked while the chart shows its drawings, with its key | [Hiding the drawings](/manual/drawings/#hiding-the-drawings) |
 | **Split horizontally**, **Split vertically** | Divides the chart in two | [Splitting and arranging charts](/manual/layouts/) |
+| **Sidebars** › **Drawing tools**, **Watchlist** | Shows or hides each sidebar, ticked while it is open, with its key | [The tools](/manual/drawings/#the-tools), [The sidebar](/manual/watchlists/#the-sidebar) |
 | **Maximize** / **Restore** | Gives the chart the window, or puts it back. Only with two charts or more | [Splitting and arranging charts](/manual/layouts/#maximising-a-chart) |
 | **Close chart** | Closes it. Only with two charts or more | [Splitting and arranging charts](/manual/layouts/#closing-a-chart) |
 | **Watchlist** › **Focus**, **Follow**, **Pinned** | The chart's link mode | [Choosing a link mode](/manual/watchlists/#choosing-a-link-mode) |

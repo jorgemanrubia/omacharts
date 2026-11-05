@@ -1338,6 +1338,81 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+mod sidebar_tests {
+    use super::*;
+    use crate::ui::window::trade::tests::window;
+
+    /// The Sidebars submenu's rows, as (label, action).
+    fn sidebars(model: &gio::MenuModel) -> Option<Vec<(String, String)>> {
+        for at in 0..model.n_items() {
+            let label = model.item_attribute_value(at, "label", None).and_then(|v| v.str().map(str::to_string));
+            if label.as_deref() == Some("Sidebars")
+                && let Some(menu) = model.item_link(at, "submenu")
+            {
+                return Some(
+                    (0..menu.n_items())
+                        .map(|row| {
+                            let text = |name| {
+                                menu.item_attribute_value(row, name, None)
+                                    .and_then(|v| v.str().map(str::to_string))
+                                    .unwrap_or_default()
+                            };
+                            (text("label"), text("action"))
+                        })
+                        .collect(),
+                );
+            }
+            if let Some(found) = model.item_link(at, "section").and_then(|inner| sidebars(&inner)) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    fn state(window: &Window, action: &str) -> bool {
+        window.window.action_state(action).and_then(|v| v.get::<bool>()).expect("a stateful action")
+    }
+
+    /// Under the split options, a submenu ticks each sidebar while it is
+    /// open, however it was opened or closed: the menu, the key, the
+    /// corner button.
+    #[test]
+    fn the_chart_menu_ticks_each_sidebar_while_it_is_open() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = window(&store);
+            let rows = sidebars(window.chart_menu_model(100.0).upcast_ref()).expect("a Sidebars submenu");
+            assert_eq!(
+                rows,
+                vec![
+                    ("Drawing tools".to_string(), "win.drawing-tools".to_string()),
+                    ("Watchlist".to_string(), "win.watchlist".to_string()),
+                ]
+            );
+
+            let bar = window.drawing_bar.borrow().clone().expect("the bar");
+            let tools = bar.is_shown();
+            assert_eq!(state(&window, "drawing-tools"), tools);
+            gtk::prelude::ActionGroupExt::activate_action(&window.window, "drawing-tools", None);
+            assert_eq!(bar.is_shown(), !tools);
+            assert_eq!(state(&window, "drawing-tools"), !tools);
+            bar.toggle.set_active(tools);
+            assert_eq!(bar.is_shown(), tools, "the corner button");
+            assert_eq!(state(&window, "drawing-tools"), tools);
+
+            let list = window.shows_sidebar();
+            assert_eq!(state(&window, "watchlist"), list);
+            gtk::prelude::ActionGroupExt::activate_action(&window.window, "watchlist", None);
+            assert_eq!(window.shows_sidebar(), !list);
+            assert_eq!(state(&window, "watchlist"), !list);
+            window.watchlist_toggle.borrow().as_ref().expect("the toggle").set_active(list);
+            assert_eq!(window.shows_sidebar(), list, "the corner button");
+            assert_eq!(state(&window, "watchlist"), list);
+        });
+    }
+}
+
 /// Does this watchlist hold that symbol?
 ///
 /// Matched on the canonical ticker and the exchange suffix together, never on
@@ -5199,6 +5274,7 @@ impl Window {
             // Also the window's own, which is what seeds the next chartbook
             // and what a window with nothing written down opens with.
             store.set_setting_bool(SHOW_WATCHLIST, toggle.is_active());
+            this.mark_sidebar("watchlist", toggle.is_active());
             // Closing the rail drops these controls onto the top-right chart,
             // where its own corner is.
             this.sync_corner_clearance();
@@ -5208,7 +5284,10 @@ impl Window {
         *self.watchlist_toggle.borrow_mut() = Some(toggle.clone());
 
         // The drawing tools' toggle has a corner of its own, the top-left.
-        let action = gio::SimpleAction::new("drawing-tools", None);
+        // Stateful, so the chart menu's Sidebars rows are ticks that say
+        // whether each is open, however it was opened.
+        let shown = self.drawing_bar.borrow().as_ref().is_some_and(|bar| bar.is_shown());
+        let action = gio::SimpleAction::new_stateful("drawing-tools", None, &shown.to_variant());
         let this = self.clone();
         action.connect_activate(move |_, _| this.toggle_drawing_tools());
         self.window.add_action(&action);
@@ -5217,7 +5296,7 @@ impl Window {
         // keyboard back on the chart. A plain toggle: it used to focus a rail
         // that was open but not focused, so after a click on a chart it took
         // two presses to close what was plainly open.
-        let action = gio::SimpleAction::new("watchlist", None);
+        let action = gio::SimpleAction::new_stateful("watchlist", None, &toggle.is_active().to_variant());
         let this = self.clone();
         action.connect_activate(move |_, _| this.toggle_watchlist());
         self.window.add_action(&action);
@@ -9691,8 +9770,17 @@ impl Window {
         let shown = !bar.is_shown();
         bar.set_shown(shown);
         self.store.set_setting_bool(SHOW_DRAWING_TOOLS, shown);
+        self.mark_sidebar("drawing-tools", shown);
         // Putting the tools away drops their toggle onto the top-left chart.
         self.sync_corner_clearance();
+    }
+
+    /// Tick or clear a sidebar's row in the chart menu: the window's action
+    /// for it holds whether it is open.
+    fn mark_sidebar(&self, action: &str, shown: bool) {
+        if let Some(action) = self.window.lookup_action(action).and_downcast::<gio::SimpleAction>() {
+            action.set_state(&shown.to_variant());
+        }
     }
 
     /// Light the tool in hand on the bar, after the chart was told by a key
@@ -10218,6 +10306,11 @@ impl Window {
         let layout = gio::Menu::new();
         shortcuts::append(&layout, "Split horizontally", "chart.split-h");
         shortcuts::append(&layout, "Split vertically", "chart.split-v");
+        // The window's two sidebars, ticked while each is open, with their keys.
+        let sidebars = gio::Menu::new();
+        shortcuts::append(&sidebars, "Drawing tools", "win.drawing-tools");
+        shortcuts::append(&sidebars, "Watchlist", "win.watchlist");
+        layout.append_submenu(Some("Sidebars"), &sidebars);
         // Both only mean anything with something else on screen: there is
         // nothing to close down to, and nothing to grow over.
         if self.panes.borrow().len() > 1 {
