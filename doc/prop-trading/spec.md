@@ -560,8 +560,9 @@ end of its line, in one piece: a tag filled in the line's colour, a body,
 and a × as its end segment. The tag is a code with the size: `▲ L 1` and
 `▼ S 1` for a limit and a stop that open or add to a position, the side
 in the shape, `TP 1` and `SL 1` for the ones that close some of it
-(`STL` is kept for a stop-limit), whose side goes without saying, `+1`
-and `-2` for the position. The body is money, in the ink: an exit's P&L
+(`STL` is kept for a stop-limit), whose side goes without saying, and
+`▲ 5` and `▼ 2` for a long and a short position, the side in the same
+shape (`ESH7 ▲ 1` for one held in another month). The body is money, in the ink: an exit's P&L
 if it fills, the position's open P&L on a fill; an entry has none. The
 price is on the axis, in its own chip.
 

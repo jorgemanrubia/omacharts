@@ -146,6 +146,13 @@ pub fn net_text(net: i32) -> String {
     format!("{net:+}")
 }
 
+/// The tag on a position's label: its side in the shape an entry's has
+/// and its size, "▲ 5" long and "▼ 2" short.
+pub fn held_tag(net: i32) -> String {
+    let side = if net > 0 { Side::Buy } else { Side::Sell };
+    format!("{} {}", side.glyph(), net.unsigned_abs())
+}
+
 /// What a market order on its way says beside the last price, until it
 /// fills: "Buying 1…".
 pub fn buying_text(side: Side, qty: u32) -> String {
@@ -237,6 +244,8 @@ mod tests {
 
         assert_eq!(net_text(1), "+1");
         assert_eq!(net_text(-2), "-2");
+        assert_eq!(held_tag(5), "▲ 5");
+        assert_eq!(held_tag(-2), "▼ 2");
         assert_eq!(money_text(1_000_000.0, Some("USD")), "$1,000,000.00");
         assert_eq!(pnl_text(125.0, Some("USD")), "+$125.00");
         assert_eq!(pnl_text(-3.94, None), "-$3.94");

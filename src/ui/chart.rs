@@ -6646,8 +6646,8 @@ pub struct PositionMark {
     /// The contract it is held in.
     pub contract: String,
     pub price: f64,
-    /// "+1", or "ESZ6 +1" for one held in another month: its size, filled
-    /// in its colour.
+    /// "▲ 1", or "ESZ6 ▼ 2" for one held in another month: its side and
+    /// size, filled in its colour.
     pub tag: String,
     /// Its open P&L, "+$125.00", once it has come.
     pub body: Option<String>,
@@ -6672,7 +6672,7 @@ pub struct PositionMark {
 }
 
 impl PositionMark {
-    /// Its label in one line, for the tests: "+1 · +$125.00".
+    /// Its label in one line, for the tests: "▲ 1 · +$125.00".
     #[cfg(test)]
     fn words(&self) -> String {
         words(&self.tag, self.body.as_deref())
@@ -9980,7 +9980,7 @@ mod tests {
             position: Some(PositionMark {
                 contract: "ESZ6".into(),
                 price: low + (high - low) * 0.3,
-                tag: "+1".into(),
+                tag: "▲ 1".into(),
                 body: Some("+$125.00".into()),
                 price_text: "1".into(),
                 colour: "#00ff00".into(),

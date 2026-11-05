@@ -1494,7 +1494,7 @@ impl Window {
                 Some(crate::ui::chart::PositionMark {
                     contract: held.contract.clone(),
                     price: at,
-                    tag: format!("{} {}", held.contract, trading::net_text(held.net)),
+                    tag: format!("{} {}", held.contract, trading::held_tag(held.net)),
                     body: held.open_pnl.map(|pnl| trading::pnl_text(pnl, currency.as_deref())),
                     price_text: price(at),
                     colour: held_colour(held.net, held.open_pnl),
@@ -1523,7 +1523,7 @@ impl Window {
             Some(crate::ui::chart::PositionMark {
                 contract: target.contract.clone(),
                 price: at,
-                tag: trading::net_text(held.net),
+                tag: trading::held_tag(held.net),
                 body: held.open_pnl.map(|pnl| trading::pnl_text(pnl, currency.as_deref())),
                 price_text: price(at),
                 colour: held_colour(held.net, held.open_pnl),
@@ -1819,7 +1819,7 @@ pub(super) mod tests {
             }
             assert_eq!(session.book().position("951", "ESZ6").map(|held| held.net), Some(1), "bought through the session");
             // The chart shows the position, and a working order once there is one.
-            assert_eq!(pane.view.marks(), (Some("+1".to_string()), Vec::new()), "its size until the P&L has come");
+            assert_eq!(pane.view.marks(), (Some("▲ 1".to_string()), Vec::new()), "its size until the P&L has come");
             let limit = trading::OrderRequest {
                 account: "951".into(),
                 contract: "ESZ6".into(),
@@ -2167,7 +2167,7 @@ pub(super) mod tests {
             let (window, pane, session, key) = long_es(true);
             let pill = || pane.view.mark_states().0.map(|(words, _)| words).unwrap_or_default();
             let open = |window: &Window| window.trading.borrow().book.money(&key).and_then(|money| money.unrealized);
-            assert_eq!(pill(), "+1", "its size alone until the P&L has come");
+            assert_eq!(pill(), "▲ 1", "its size alone until the P&L has come");
 
             *session.market.lock().unwrap() = Some(7_622.25);
             window.mark_to_market();
@@ -2379,7 +2379,7 @@ pub(super) mod tests {
             assert!(pane.view.mark_states().0.is_none(), "nothing is held in ESH7");
             let held = pane.view.held_elsewhere();
             assert_eq!(held.len(), 1, "{held:?}");
-            assert!(held[0].0.starts_with("ESZ6 +1"), "named with its contract: {}", held[0].0);
+            assert!(held[0].0.starts_with("ESZ6 ▲ 1"), "named with its contract: {}", held[0].0);
             assert!(!held[0].1);
             // Its × flattens ESZ6, not the chart's contract.
             pane.view.drop_mark(TradeEvent::FlattenHeld("ESZ6".into()));
@@ -2416,7 +2416,7 @@ pub(super) mod tests {
             settle(&window, || pane.view.held_elsewhere().iter().any(|(words, _)| words.contains("ESH7")));
             assert!(pane.view.mark_states().0.is_some());
             let held = pane.view.held_elsewhere();
-            assert!(held.iter().any(|(words, _)| words.starts_with("ESH7 +1")), "{held:?}");
+            assert!(held.iter().any(|(words, _)| words.starts_with("ESH7 ▲ 1")), "{held:?}");
         });
     }
 
