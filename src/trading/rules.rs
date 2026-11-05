@@ -145,12 +145,12 @@ pub fn exit_allowed(kind: OrderKind, net: i32, price: f64, last: f64) -> bool {
     net != 0 && kind != OrderKind::Market && side_allowed(kind, exit_side(net), price, last)
 }
 
-/// What a position's tab for an exit of `kind` says: TP for the target,
-/// SL for the stop.
+/// What a position's tab for an exit of `kind` says, as the exit's own
+/// tag will: L for the target, a limit, STP for the stop.
 pub fn exit_tab(kind: OrderKind) -> &'static str {
     match kind {
-        OrderKind::Stop => "SL",
-        _ => "TP",
+        OrderKind::Stop => "STP",
+        _ => "L",
     }
 }
 
@@ -497,7 +497,7 @@ mod tests {
         assert!(exit_allowed(OrderKind::Stop, -1, 7_640.0, last), "a short's stop above");
         assert!(!exit_allowed(OrderKind::Stop, 1, last, last), "at the market itself");
         assert!(!exit_allowed(OrderKind::Limit, 0, 7_640.0, last), "nothing held");
-        assert_eq!((exit_tab(OrderKind::Limit), exit_tab(OrderKind::Stop)), ("TP", "SL"));
+        assert_eq!((exit_tab(OrderKind::Limit), exit_tab(OrderKind::Stop)), ("L", "STP"));
 
         let target = order("T", Side::Sell, OrderKind::Limit, Some(7_640.0), Stage::Working);
         assert!(!exit_offered([&target], 1, OrderKind::Limit), "a one-lot already has its target");

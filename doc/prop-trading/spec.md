@@ -576,7 +576,7 @@ entry, and under every label. Where the labels sit is the trader's
 choice (Preferences → Trading → Chart → Order labels):
 
 - **Left**, the default: at the chart's left edge, the tag at the edge
-  and the × towards the bars, the position's TP and SL tabs after its ×.
+  and the × towards the bars, the position's L and STP tabs after its ×.
   They never move with the bars; the oldest bars on screen are under
   them, and the axis chips say where each order is.
 - **Right**: by the price axis, the position's tabs before its label.
@@ -586,10 +586,11 @@ choice (Preferences → Trading → Chart → Order labels):
 
 What the pointer finds follows the labels: a ×, a tab, and an order's
 line, grabbed along its run or on its label, and the drag's preview is
-drawn on the same side. The tag is a code with the size: `▲ L 1` and
-`▼ S 1` for a limit and a stop that open or add to a position, the side
-in the shape, `TP 1` and `SL 1` for the ones that close some of it
-(`STL` is kept for a stop-limit), whose side goes without saying, and
+drawn on the same side. The tag names the order's type, L for a limit
+and STP for a stop, with the size: `▲ L 1` and `▼ STP 1` for a limit and
+a stop that open or add to a position, the side in the shape, `L 1` and
+`STP 1` for the ones that close some of it (`STL` is kept for a
+stop-limit), whose side goes without saying, and
 `▲ 5` and `▼ 2` for a long and a short position, the side in the same
 shape (`ESH7 ▲ 1` for one held in another month). The body is money, in the ink: an exit's P&L
 if it fills, the position's open P&L on a fill; an entry has none. An
@@ -597,11 +598,11 @@ order's price is on the axis, in its own chip; the position has none,
 the last price's chip beside it saying enough.
 
 Only the position's line is solid. Every order's is dashed — a limit and
-a stop that open, a target (TP) and a stop loss (SL) — and a stop's,
-entry or SL, is heavier than a limit's, so the two read apart with the
+a stop that open, a target (L) and a stop loss (STP) — and a stop's,
+entry or exit, is heavier than a limit's, so the two read apart with the
 same pattern: 1.5 points for a limit, 2 for a stop and for the
-position, each scaled with the display. The position's SL tab is
-outlined heavier than its TP tab for the same reason. A theme of one's
+position, each scaled with the display. The position's STP tab is
+outlined heavier than its L tab for the same reason. A theme of one's
 own can still set each kind's pattern (Preferences → Theme → Trading).
 
 A mark wears one colour, on its line, its outline, its tag, its × and its
@@ -616,7 +617,7 @@ has come. The header's Buy and Sell, and the panel's sides and sizes,
 are in the same Blue and Amber, and the position's tabs in the colour
 of the exit they would make. Every theme has the four, and each is set
 by hand on a theme of one's own (Preferences → Trading). A working order's line can be dragged to
-another price, and the position's label has a TP and an SL tab beside
+another price, and the position's label has an L and an STP tab beside
 it, dragged out to place a target or a stop for the whole position.
 While it is dragged it is a preview: its line in the order's look, its
 label without the ×, the body saying what an exit would realise there,
@@ -638,7 +639,7 @@ beside the last price until its fill, a move once the order is reported
 at its new price, a cancel once it is reported cancelled, a flatten once
 nothing is held. A refusal takes it away with the broker's reason; a
 request that is never answered stays pending rather than being taken as
-done. Part of an order filled reads "TP 1/2", and the position holds
+done. Part of an order filled reads "L 1/2", and the position holds
 only what filled. Toasts say only what the broker has confirmed.
 
 Every order from a chart is for the chart's **quantity**, shown in its

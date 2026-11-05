@@ -6616,7 +6616,7 @@ pub struct OrderMark {
     pub kind: OrderKind,
     pub qty: u32,
     pub price: f64,
-    /// "▲ L 1", "TP 2": its kind and size, filled in its colour. Empty
+    /// "▲ L 1", "L 2": its kind and size, filled in its colour. Empty
     /// for a market order on its way, which has only a body.
     pub tag: String,
     /// After the tag, in the ink: an exit's P&L if it fills, "Buying 1…"
@@ -6635,14 +6635,14 @@ pub struct OrderMark {
 }
 
 impl OrderMark {
-    /// Its label in one line, for the tests: "TP 1 · +$125.00".
+    /// Its label in one line, for the tests: "L 1 · +$125.00".
     #[cfg(test)]
     fn words(&self) -> String {
         words(&self.tag, self.body.as_deref())
     }
 }
 
-/// A label's tag and body as one line: "TP 1 · +$125.00", "▲ L 1".
+/// A label's tag and body as one line: "L 1 · +$125.00", "▲ L 1".
 #[cfg(test)]
 fn words(tag: &str, body: Option<&str>) -> String {
     match body {
@@ -6867,7 +6867,7 @@ fn baseline(cr: &cairo::Context, y: f64) -> f64 {
 /// Where the label of a mark saying `tag` and `body` sits, with a × when
 /// `capped`, and the position's `tabs` beside it. At the right, from the
 /// axis: the ×, the body, the tag, the tabs. At the left, from the edge:
-/// the tag, the body, the ×, the tabs — TP before SL either way.
+/// the tag, the body, the ×, the tabs — L before STP either way.
 fn mark_row(
     cr: &cairo::Context,
     lane: Lane,
@@ -6918,7 +6918,7 @@ fn mark_row(
     left -= tag_w;
     let tag_x = left;
     let mut placed = Vec::with_capacity(tabs.len());
-    // The last tab nearest the label: TP, SL, label.
+    // The last tab nearest the label: L, STP, label.
     for tab in tabs.iter().rev() {
         let w = advance(crate::trading::exit_tab(tab.kind)) + 2.0 * TAB_PAD;
         left -= MARK_GAP + w;
@@ -10145,7 +10145,7 @@ mod tests {
                 kind: OrderKind::Limit,
                 qty: 1,
                 price: low + (high - low) * 0.7,
-                tag: "TP 1".into(),
+                tag: "L 1".into(),
                 body: None,
                 price_text: "2".into(),
                 colour: "#ff0000".into(),
@@ -10176,7 +10176,7 @@ mod tests {
         position.colour = up.clone();
         position.exits = vec![tab(OrderKind::Limit, &up, LineStyle::Solid), tab(OrderKind::Stop, &down, LineStyle::Dashed)];
         let order = &mut state.marks.orders[0];
-        order.tag = "▲ S 2".into();
+        order.tag = "▲ STP 2".into();
         order.colour = up;
         order.style = LineStyle::Dashed;
         state
@@ -10306,8 +10306,8 @@ mod tests {
                 };
                 let (tp, sl) = (last + (high - last) * 0.6, avg - (high - low) * 0.2);
                 state.marks.orders = vec![
-                    order("TP", OrderKind::Limit, "TP 1", tp, &look.profit, look.limit, (tp - avg) * 50.0),
-                    order("SL", OrderKind::Stop, "SL 1", sl, &look.loss, look.stop, (sl - avg) * 50.0),
+                    order("TP", OrderKind::Limit, "L 1", tp, &look.profit, look.limit, (tp - avg) * 50.0),
+                    order("SL", OrderKind::Stop, "STP 1", sl, &look.loss, look.stop, (sl - avg) * 50.0),
                 ];
                 let shot = |state: &State, file: &str| {
                     let surface =
@@ -10453,7 +10453,7 @@ mod tests {
             order.colour = look.profit.clone();
             order.style = look.limit;
             order.price = avg + (high - low) * 0.25;
-            order.tag = "TP 1".into();
+            order.tag = "L 1".into();
             order.body = Some(crate::trading::pnl_text((order.price - avg) * 50.0, Some("USD")));
             let shot = |state: &State, file: &str| {
                 let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, (w * 2.0) as i32, (h * 2.0) as i32).unwrap();
@@ -10514,7 +10514,7 @@ mod tests {
             assert_eq!(at(tp + tw / 2.0, held_y), Some(MarkHit::Exit(OrderKind::Limit)), "{side:?}");
             let (_, sl, sw) = tab(OrderKind::Stop);
             assert_eq!(at(sl + sw / 2.0, held_y), Some(MarkHit::Exit(OrderKind::Stop)), "{side:?}");
-            assert!(tp < sl, "{side:?}: TP left of SL");
+            assert!(tp < sl, "{side:?}: L left of STP");
             assert_eq!(at(mid, held_y), None, "{side:?}: a position's line is not dragged");
 
             state.marks.orders[0].dim = true;
@@ -10532,7 +10532,7 @@ mod tests {
     }
 
     /// The labels' two places. At the left: tag at the plot's edge, the ×
-    /// towards the bars and the position's tabs after it, TP then SL. At
+    /// towards the bars and the position's tabs after it, L then STP. At
     /// the right: by the axis as ever, the tabs before the label. Either
     /// way the labels stay put as the bars scroll, and the lines stop at
     /// the last bar, or at the plot's edge with the last bar past it.
@@ -10553,7 +10553,7 @@ mod tests {
         let (body_x, body_w) = row.body.unwrap();
         assert!(row.tag_x < body_x && body_x + body_w <= row.cap_x, "tag, body, ×");
         assert!(row.tabs.iter().all(|(_, x, _)| *x > row.cap_x + MARK_CAP), "the tabs after the ×");
-        assert_eq!(row.tabs[0].0, OrderKind::Limit, "TP first");
+        assert_eq!(row.tabs[0].0, OrderKind::Limit, "L first");
 
         state.order_labels = LabelSide::Right;
         let lane = state.lane(&plan);
@@ -10662,7 +10662,7 @@ mod tests {
         let last = state.bars.last().unwrap().close;
         let stop = MarkDrag::Exit(OrderKind::Stop);
         let dragged = state.mark_dragged(&stop).unwrap();
-        assert_eq!((dragged.side, dragged.kind, dragged.tag.as_str()), (Side::Sell, OrderKind::Stop, "SL 1"));
+        assert_eq!((dragged.side, dragged.kind, dragged.tag.as_str()), (Side::Sell, OrderKind::Stop, "STP 1"));
         assert_eq!(dragged.from, state.marks.position.as_ref().unwrap().price);
         assert!(state.mark_allowed(&stop, last - 5.0), "a long's stop below the market");
         assert!(!state.mark_allowed(&stop, last + 5.0));

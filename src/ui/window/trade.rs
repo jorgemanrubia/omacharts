@@ -1912,7 +1912,7 @@ pub(super) mod tests {
             window.desk.tell();
             // An exit says what it would realise where it rests: 7.75
             // points on one ES.
-            assert_eq!(pane.view.marks().1, vec!["TP 1 · +$387.50".to_string()]);
+            assert_eq!(pane.view.marks().1, vec!["L 1 · +$387.50".to_string()]);
             // A stop under the average loses; one for 3 closes only the 1
             // held; a buy adds to the long and says nothing of money.
             let stop = trading::OrderRequest {
@@ -1935,7 +1935,7 @@ pub(super) mod tests {
             words.sort();
             assert_eq!(
                 words,
-                vec!["SL 3 · -$612.50".to_string(), "TP 1 · +$387.50".to_string(), "▲ L 1".to_string()]
+                vec!["L 1 · +$387.50".to_string(), "STP 3 · -$612.50".to_string(), "▲ L 1".to_string()]
             );
             for basket in [&basket, &stop, &more] {
                 session.cancel("951", basket).unwrap();
@@ -2168,14 +2168,14 @@ pub(super) mod tests {
                 }
                 orders
             };
-            assert_eq!(orders(), vec![("TP 1".to_string(), 7_640.0, false)]);
+            assert_eq!(orders(), vec![("L 1".to_string(), 7_640.0, false)]);
 
             // Refused: back as it was, and said.
             *session.refuse.lock().unwrap() = Some("too late".into());
             pane.view.drop_mark(TradeEvent::Cancel(basket.clone()));
             assert!(orders()[0].2, "not faint at once");
             settle(&window, || !orders().first().is_some_and(|order| order.2));
-            assert_eq!(orders(), vec![("TP 1".to_string(), 7_640.0, false)], "not back after a refusal");
+            assert_eq!(orders(), vec![("L 1".to_string(), 7_640.0, false)], "not back after a refusal");
 
             // Another request on its way: nothing sent.
             window.trade.placing.begin(&key).unwrap();
@@ -2312,7 +2312,7 @@ pub(super) mod tests {
         });
     }
 
-    /// TP and SL pulled out of the position place a target and a stop for
+    /// L and STP pulled out of the position place a target and a stop for
     /// all of it, each tab going once its exit is working; the second is
     /// linked to the first. One on the wrong side of the market is not
     /// placed. Without links, nothing is linked, and flattening cancels
@@ -2338,7 +2338,7 @@ pub(super) mod tests {
                 settle(&window, || pane.view.exit_tabs() == vec![OrderKind::Stop] && !window.trade.placing.busy(&key));
                 let target = session.book().orders[0].clone();
                 assert_eq!((target.side, target.kind, target.qty, target.price), (Side::Sell, OrderKind::Limit, 1, Some(off(40.0))));
-                assert_eq!(pane.view.exit_tabs(), vec![OrderKind::Stop], "the TP tab stayed");
+                assert_eq!(pane.view.exit_tabs(), vec![OrderKind::Stop], "the L tab stayed");
 
                 pane.view.drop_mark(TradeEvent::ExitAt { kind: OrderKind::Stop, price: off(-40.0) });
                 settle(&window, || pane.view.exit_tabs().is_empty() && (!links || !session.links.lock().unwrap().is_empty()));
@@ -2525,14 +2525,14 @@ pub(super) mod tests {
 
             // Pending, then working.
             pane.view.drop_mark(TradeEvent::ExitAt { kind: OrderKind::Limit, price: off(40.0) });
-            assert_eq!(orders(), vec![("TP 1".to_string(), off(40.0), true)], "not drawn at once, faint");
+            assert_eq!(orders(), vec![("L 1".to_string(), off(40.0), true)], "not drawn at once, faint");
             settle(&window, || session.book().orders.len() == 2);
             settle(&window, || false);
-            assert_eq!(orders(), vec![("TP 1".to_string(), off(40.0), true)], "received is not working");
+            assert_eq!(orders(), vec![("L 1".to_string(), off(40.0), true)], "received is not working");
             let target = session.book().orders[0].basket_id.clone();
             session.open(&target);
             window.desk.tell();
-            assert_eq!(orders(), vec![("TP 1".to_string(), off(40.0), false)], "working, yet faint");
+            assert_eq!(orders(), vec![("L 1".to_string(), off(40.0), false)], "working, yet faint");
             assert!(window.trade.pending.borrow().is_empty());
 
             // Refused: gone, and said.
@@ -2548,7 +2548,7 @@ pub(super) mod tests {
             pane.view.drop_mark(TradeEvent::ExitAt { kind: OrderKind::Stop, price: off(-40.0) });
             settle(&window, || false);
             assert_eq!(orders().len(), 2);
-            assert_eq!(orders()[1], ("SL 1".to_string(), off(-40.0), true), "taken as done without an answer");
+            assert_eq!(orders()[1], ("STP 1".to_string(), off(-40.0), true), "taken as done without an answer");
             assert_eq!(window.trade.pending.borrow().len(), 1);
             session.silent.store(false, Ordering::Release);
             window.trade.pending.borrow_mut().clear();
