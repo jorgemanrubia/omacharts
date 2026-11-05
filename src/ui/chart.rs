@@ -233,6 +233,8 @@ struct State {
     /// shows, pushed by the window; empty, which costs nothing, without a
     /// login.
     marks: Marks,
+    /// Which end of their lines the marks' labels sit at.
+    order_labels: LabelSide,
     /// The handle at the end of a mark the pointer is over, lit.
     hover_mark: Option<MarkHit>,
     loading: bool,
@@ -1255,6 +1257,7 @@ impl State {
             drag: None,
             trouble: None,
             marks: Marks::default(),
+            order_labels: LabelSide::default(),
             hover_mark: None,
             loading: false,
             price_zoom: 1.0,
@@ -4095,6 +4098,14 @@ impl ChartView {
         self.redraw();
     }
 
+    /// Put the marks' labels at `side` of the chart. Redrawn only when it
+    /// changes.
+    pub fn set_order_labels(&self, side: LabelSide) {
+        if std::mem::replace(&mut self.state.borrow_mut().order_labels, side) != side {
+            self.redraw();
+        }
+    }
+
     /// What the chart is marked with: the position's words, and each
     /// order's.
     #[cfg(test)]
@@ -5536,7 +5547,7 @@ fn draw(cr: &cairo::Context, width: f64, height: f64, state: &State) {
     }
 
     draw_axis_fade(cr, state, plot_x + plot_w, width);
-    let tag_at = draw_marks(cr, state, plot_x, plot_w, price_y, price_y + price_h, width, &to_y);
+    let tag_at = draw_marks(cr, state, state.lane(&plan), price_y, price_y + price_h, width, &to_y);
     draw_last_price(cr, state, plot_x, plot_w, price_y, width, decimals, &to_y, tag_at);
 
     if state.trouble.is_some() {
@@ -6715,14 +6726,88 @@ const MARK_H: f64 = 20.0;
 const MARK_CAP: f64 = 20.0;
 /// The room between a mark's pieces, and after the last of them.
 const MARK_GAP: f64 = 5.0;
-const MARK_RIGHT: f64 = 8.0;
+/// The room between a label and the edge of the plot it sits at.
+const MARK_EDGE: f64 = 8.0;
 /// The room either side of a label's body, of its tag, and of a tab's word.
 const MARK_PAD: f64 = 9.0;
 const TAG_PAD: f64 = 8.0;
 const TAB_PAD: f64 = 7.0;
 
-/// Where a mark's pieces sit across the plot, at the right end of its
-/// line: the tabs, then the label in one piece — the tag, the body, the ×.
+/// Which end of the chart the marks' labels sit at: the trader's choice
+/// in Preferences → Trading.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LabelSide {
+    /// At the plot's left edge, the tag at the edge and the × towards the
+    /// bars: they never move with the bars.
+    #[default]
+    Left,
+    /// By the price axis, in the room after the last bar.
+    Right,
+}
+
+impl LabelSide {
+    pub const ALL: [LabelSide; 2] = [LabelSide::Left, LabelSide::Right];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            LabelSide::Left => "left",
+            LabelSide::Right => "right",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<LabelSide> {
+        LabelSide::ALL.into_iter().find(|side| side.key() == key)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            LabelSide::Left => "Left",
+            LabelSide::Right => "Right",
+        }
+    }
+}
+
+/// Where the marks go across the plot: the side their labels sit at, and
+/// the line's run, from the plot's left edge to the last bar — or to the
+/// plot's right edge while the last bar is scrolled past it — so the room
+/// after the last bar holds the last price's line alone.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Lane {
+    side: LabelSide,
+    plot_x: f64,
+    plot_w: f64,
+    /// Where every mark's line stops.
+    end: f64,
+}
+
+impl Lane {
+    /// Where every mark's line starts: the plot's edge, or with the labels
+    /// at the left, under their left end, so no stub of it shows before
+    /// them.
+    fn start(&self) -> f64 {
+        match self.side {
+            LabelSide::Left => self.plot_x + MARK_EDGE,
+            LabelSide::Right => self.plot_x,
+        }
+    }
+}
+
+/// How heavy an order's line is: a stop heavier than a limit, so the two
+/// are told apart when they wear the same pattern, and both apart from the
+/// last price's hairline.
+fn order_weight(kind: OrderKind) -> f64 {
+    match kind {
+        OrderKind::Stop => 2.5,
+        _ => 1.5,
+    }
+}
+
+/// The position's line: solid by default, between a limit's and a stop's.
+const POSITION_WEIGHT: f64 = 2.0;
+
+/// Where a mark's pieces sit across the plot, at the end of its line the
+/// labels are put at: the label in one piece — the tag, the body, the × —
+/// and the position's tabs beside it, on the side towards the bars.
 /// Worked out here for the drawing and the pointer both, so a × is
 /// clicked exactly where it is drawn.
 struct MarkRow {
@@ -6780,19 +6865,46 @@ fn baseline(cr: &cairo::Context, y: f64) -> f64 {
 }
 
 /// Where the label of a mark saying `tag` and `body` sits, with a × when
-/// `capped`, and the position's `tabs` before it. From the right: the ×,
-/// the body, the tag, the tabs.
+/// `capped`, and the position's `tabs` beside it. At the right, from the
+/// axis: the ×, the body, the tag, the tabs. At the left, from the edge:
+/// the tag, the body, the ×, the tabs — TP before SL either way.
 fn mark_row(
     cr: &cairo::Context,
-    plot_x: f64,
-    plot_w: f64,
+    lane: Lane,
     tag: &str,
     body: Option<&str>,
     capped: bool,
     tabs: &[ExitTab],
 ) -> MarkRow {
     let advance = |text: &str| cr.text_extents(text).map_or(0.0, |e| e.x_advance());
-    let cap_x = plot_x + plot_w - MARK_RIGHT - MARK_CAP;
+    if lane.side == LabelSide::Left {
+        let tag_x = lane.plot_x + MARK_EDGE;
+        let tag_w = match tag.is_empty() {
+            true => 0.0,
+            false => advance(tag) + 2.0 * TAG_PAD,
+        };
+        let mut right = tag_x + tag_w;
+        let body = body.map(|body| {
+            let w = advance(body) + 2.0 * MARK_PAD;
+            right += w;
+            (right - w, w)
+        });
+        // Without a ×, where it would be, the label ending a gap short of it.
+        let cap_x = if capped { right } else { right + MARK_GAP };
+        let mut left = if capped { cap_x + MARK_CAP } else { right };
+        let placed = tabs
+            .iter()
+            .map(|tab| {
+                let w = advance(crate::trading::exit_tab(tab.kind)) + 2.0 * TAB_PAD;
+                left += MARK_GAP;
+                let at = left;
+                left += w;
+                (tab.kind, at, w)
+            })
+            .collect();
+        return MarkRow { tag_x, tag_w, body, cap_x, capped, tabs: placed };
+    }
+    let cap_x = lane.plot_x + lane.plot_w - MARK_EDGE - MARK_CAP;
     let mut left = if capped { cap_x } else { cap_x - MARK_GAP };
     let body = body.map(|body| {
         let w = advance(body) + 2.0 * MARK_PAD;
@@ -6816,14 +6928,14 @@ fn mark_row(
 }
 
 /// Where an order's label sits: its tag, its body and its ×.
-fn order_row(cr: &cairo::Context, plot_x: f64, plot_w: f64, order: &OrderMark) -> MarkRow {
+fn order_row(cr: &cairo::Context, lane: Lane, order: &OrderMark) -> MarkRow {
     let body = order.body.as_deref();
-    mark_row(cr, plot_x, plot_w, &order.tag, body, order.kind != OrderKind::Market, &[])
+    mark_row(cr, lane, &order.tag, body, order.kind != OrderKind::Market, &[])
 }
 
 /// Where a position's label sits: its tabs, its tag, its body and its ×.
-fn held_row(cr: &cairo::Context, plot_x: f64, plot_w: f64, held: &PositionMark) -> MarkRow {
-    mark_row(cr, plot_x, plot_w, &held.tag, held.body.as_deref(), true, &held.exits)
+fn held_row(cr: &cairo::Context, lane: Lane, held: &PositionMark) -> MarkRow {
+    mark_row(cr, lane, &held.tag, held.body.as_deref(), true, &held.exits)
 }
 
 /// A context to measure words in, off screen.
@@ -6835,10 +6947,17 @@ fn measuring() -> Option<cairo::Context> {
 }
 
 /// What of the marks is under `(x, y)`: a ×, a tab, or an order's line
-/// within [`crate::trading::NEAR`] of it, its label included and its ×
-/// not. The handles first, so a × over another order's line is the ×.
-/// An order asked to move or go is not to be taken hold of.
-fn mark_at(plan: &Layout, marks: &Marks, x: f64, y: f64, to_y: &impl Fn(f64) -> f64) -> Option<MarkHit> {
+/// within [`crate::trading::NEAR`] of it — where the line runs, and its
+/// label, its × not. The handles first, so a × over another order's line
+/// is the ×. An order asked to move or go is not to be taken hold of.
+fn mark_at(
+    plan: &Layout,
+    lane: Lane,
+    marks: &Marks,
+    x: f64,
+    y: f64,
+    to_y: &impl Fn(f64) -> f64,
+) -> Option<MarkHit> {
     if marks.is_empty() || x < plan.plot_x || x > plan.plot_x + plan.plot_w {
         return None;
     }
@@ -6848,7 +6967,7 @@ fn mark_at(plan: &Layout, marks: &Marks, x: f64, y: f64, to_y: &impl Fn(f64) -> 
     if let Some(held) = marks.position.as_ref().filter(|held| !held.dim) {
         let at = to_y(held.price).round();
         if shown(at) {
-            let row = held_row(&cr, plan.plot_x, plan.plot_w, held);
+            let row = held_row(&cr, lane, held);
             if within(row.cap_x, MARK_CAP, at) {
                 return Some(MarkHit::Flatten);
             }
@@ -6859,7 +6978,7 @@ fn mark_at(plan: &Layout, marks: &Marks, x: f64, y: f64, to_y: &impl Fn(f64) -> 
     }
     for held in marks.held.iter().filter(|held| !held.dim) {
         let at = to_y(held.price).round();
-        if shown(at) && within(held_row(&cr, plan.plot_x, plan.plot_w, held).cap_x, MARK_CAP, at) {
+        if shown(at) && within(held_row(&cr, lane, held).cap_x, MARK_CAP, at) {
             return Some(MarkHit::FlattenHeld(held.contract.clone()));
         }
     }
@@ -6869,12 +6988,15 @@ fn mark_at(plan: &Layout, marks: &Marks, x: f64, y: f64, to_y: &impl Fn(f64) -> 
         if !shown(at) {
             continue;
         }
-        let row = order_row(&cr, plan.plot_x, plan.plot_w, order);
+        let row = order_row(&cr, lane, order);
         if row.capped && within(row.cap_x, MARK_CAP, at) {
             return Some(MarkHit::Close(order.basket.clone()));
         }
         let off = (at - y).abs();
-        if off <= crate::trading::NEAR && x < row.cap_x - 1.0 && nearest.is_none_or(|(_, best)| off < best) {
+        let on_cap = row.capped && x >= row.cap_x - 1.0 && x <= row.cap_x + MARK_CAP + 1.0;
+        let on_label = x >= row.left() - 1.0 && x <= row.right() + 1.0;
+        let along = (x <= lane.end || on_label) && !on_cap;
+        if off <= crate::trading::NEAR && along && nearest.is_none_or(|(_, best)| off < best) {
             nearest = Some((order, off));
         }
     }
@@ -7037,7 +7159,22 @@ impl State {
         }
         let plan = layout(self, width, height);
         let scale = price_range(self, &self.bars[first..first + visible], &plan)?;
-        mark_at(&plan, &self.marks, x, y, &|price| scale.to_y(price, plan.price_y, plan.price_h))
+        mark_at(&plan, self.lane(&plan), &self.marks, x, y, &|price| scale.to_y(price, plan.price_y, plan.price_h))
+    }
+
+    /// Where the marks go on a chart laid out as `plan`: the side their
+    /// labels sit at, and the line's run to the last bar's column.
+    fn lane(&self, plan: &Layout) -> Lane {
+        let (first, visible, lead) = self.view();
+        let plot_end = plan.plot_x + plan.plot_w;
+        // Columns as the frame lays them: the bars after the room opened
+        // before the first, the last bar's column ending at `end`.
+        let column_w = plan.plot_w / self.columns().max(1) as f64;
+        let end = match first + visible >= self.bars.len() {
+            true => (plan.plot_x + (lead + visible) as f64 * column_w).min(plot_end),
+            false => plot_end,
+        };
+        Lane { side: self.order_labels, plot_x: plan.plot_x, plot_w: plan.plot_w, end }
     }
 }
 
@@ -7139,17 +7276,17 @@ fn draw_mark_label(cr: &cairo::Context, row: &MarkRow, y: f64, label: &Label, ba
 }
 
 /// The orders and the position, drawn under the last price's tag: lines
-/// across the plot, the last price's with them, then over every line its
-/// label at the right end — the tag, the body and the × in one piece —
-/// and the position's exit tabs before its label, prices on the axis
-/// spread apart with the last price's where they would cover each other.
+/// from the plot's left edge to the last bar, the last price's over them
+/// all, then over every line its label at the end of the chart the
+/// trader chose — the tag, the body and the × in one piece — and the
+/// position's exit tabs beside its label, prices on the axis spread
+/// apart with the last price's where they would cover each other.
 /// Returns where the last price's chip goes, when it had to move.
 #[allow(clippy::too_many_arguments)]
 fn draw_marks(
     cr: &cairo::Context,
     state: &State,
-    plot_x: f64,
-    plot_w: f64,
+    lane: Lane,
     price_y: f64,
     floor: f64,
     width: f64,
@@ -7159,6 +7296,7 @@ fn draw_marks(
         return None;
     }
     let shown = |y: f64| y >= price_y && y <= floor;
+    let (plot_x, plot_w) = (lane.plot_x, lane.plot_w);
     cr.save().ok();
     mark_font(cr);
     let background = state.theme.ui.background.as_str();
@@ -7190,8 +7328,8 @@ fn draw_marks(
         cr.set_line_width(weight);
         cr.set_dash(&style.dashes(weight), 0.0);
         colors::set_source(cr, colour);
-        cr.move_to(plot_x, y);
-        cr.line_to(plot_x + plot_w, y);
+        cr.move_to(lane.start(), y);
+        cr.line_to(lane.end, y);
         let _ = cr.stroke();
         cr.set_dash(&[], 0.0);
     };
@@ -7229,26 +7367,27 @@ fn draw_marks(
         state.marks.held.iter().filter_map(|held| Some((held, ys(held.price)?))).collect();
     let position = state.marks.position.as_ref().and_then(|held| Some((held, ys(held.price)?)));
 
-    // Every line first, the last price's among them, and then every label
-    // on top, so that no line, the mark's own or another's at the same
-    // price, is drawn through words.
+    // Every line first, the last price's last of them, over every mark's
+    // so it still reads with the price sitting on the entry; and then
+    // every label on top, so that no line, the mark's own or another's at
+    // the same price, is drawn through words.
     for (order, y) in &orders {
         // A market order on its way has no price of its own: its label
         // beside the last price, and no line.
         if order.kind != OrderKind::Market {
-            // An order's line is 1.5 px, so a dashed one can never be taken
-            // for the last price's thinner dashes.
-            faint(cr, order.dim, &|cr| line(cr, *y, &order.colour, order.style, 1.5));
+            // Heavier than the last price's hairline, so a dashed one can
+            // never be taken for its dashes; a stop heavier than a limit.
+            faint(cr, order.dim, &|cr| line(cr, *y, &order.colour, order.style, order_weight(order.kind)));
         }
     }
     for (held, y) in held.iter().chain(&position) {
-        faint(cr, held.dim, &|cr| line(cr, *y, &held.colour, held.style, 2.0));
+        faint(cr, held.dim, &|cr| line(cr, *y, &held.colour, held.style, POSITION_WEIGHT));
     }
     draw_last_price_line(cr, state, plot_x, plot_w, price_y, to_y);
 
     let mut chips: Vec<(f64, &str, Option<Boxed>, bool)> = Vec::with_capacity(state.marks.orders.len() + 2);
     for (order, y) in &orders {
-        let row = order_row(cr, plot_x, plot_w, order);
+        let row = order_row(cr, lane, order);
         let body = order.body.as_deref().map(|body| (body, None));
         // A market order is always on its way, and has no × and no price.
         let market = order.kind == OrderKind::Market;
@@ -7265,7 +7404,7 @@ fn draw_marks(
         }
     }
     for (held, y) in &held {
-        let row = held_row(cr, plot_x, plot_w, held);
+        let row = held_row(cr, lane, held);
         ground(cr, held.dim, &|cr| row.path(cr, *y));
         faint(cr, held.dim, &|cr| {
             let lit = lit == Some(&MarkHit::FlattenHeld(held.contract.clone()));
@@ -7276,7 +7415,7 @@ fn draw_marks(
         chips.push((y + 0.5, &held.price_text, Some(chip_look(&held.colour, held.body.is_some())), held.dim));
     }
     if let Some((held, y)) = position {
-        let row = held_row(cr, plot_x, plot_w, held);
+        let row = held_row(cr, lane, held);
         let tab_h = MARK_H - 2.0;
         ground(cr, held.dim, &|cr| {
             row.path(cr, y);
@@ -7297,10 +7436,12 @@ fn draw_marks(
                 pill_path(cr, x + 0.5, y - tab_h / 2.0 + 0.5, w - 1.0, tab_h - 1.0);
                 colors::set_source(cr, background);
                 let _ = cr.fill_preserve();
-                // Its dashes are its kind's, so it is told by more
+                // Its dashes are its kind's, and a stop's outline heavier
+                // than a target's as its line is, so it is told by more
                 // than its colour.
-                cr.set_line_width(1.0);
-                cr.set_dash(&tab.style.dashes(1.0), 0.0);
+                let weight = order_weight(tab.kind) / order_weight(OrderKind::Limit);
+                cr.set_line_width(weight);
+                cr.set_dash(&tab.style.dashes(weight), 0.0);
                 colors::set_source(cr, &tab.colour);
                 let _ = cr.stroke();
                 cr.set_dash(&[], 0.0);
@@ -7370,15 +7511,17 @@ fn draw_mark_preview(
     cr.save().ok();
     mark_font(cr);
     let line_y = y + 0.5;
-    cr.set_line_width(1.5);
-    cr.set_dash(&dragged.style.dashes(1.5), 0.0);
+    let lane = state.lane(plan);
+    let weight = order_weight(dragged.kind);
+    cr.set_line_width(weight);
+    cr.set_dash(&dragged.style.dashes(weight), 0.0);
     colors::set_source_alpha(cr, colour, 0.6);
-    cr.move_to(plan.plot_x, line_y);
-    cr.line_to(plan.plot_x + plan.plot_w, line_y);
+    cr.move_to(lane.start(), line_y);
+    cr.line_to(lane.end, line_y);
     let _ = cr.stroke();
     cr.set_dash(&[], 0.0);
     // The label where the order's own would be, the ×'s place left empty.
-    let row = mark_row(cr, plan.plot_x, plan.plot_w, &dragged.tag, Some(&text), false, &[]);
+    let row = mark_row(cr, lane, &dragged.tag, Some(&text), false, &[]);
     // The words in the ink, and in the muted colour with the rest where
     // the order may not go.
     let body_colour = (!allowed).then_some(colour);
@@ -10054,7 +10197,7 @@ mod tests {
             let held = state.marks.position.clone().unwrap();
             let y = scale.to_y(held.price, plan.price_y, plan.price_h).round() as usize;
             let cr = measuring().unwrap();
-            let row = held_row(&cr, plan.plot_x, plan.plot_w, &held);
+            let row = held_row(&cr, state.lane(&plan), &held);
             let pixels = frame(w, h, |cr| draw(cr, w, h, &state));
             let at = |x: f64| {
                 let i = (y * w as usize + x as usize) * 4;
@@ -10116,6 +10259,76 @@ mod tests {
                 draw(&cr, w, h, &state);
             }
             save_png(surface, &format!("{folder}/position-marks-{name}-pending-2x.png"));
+        }
+    }
+
+    /// The labels at either side, as pictures for a person to look at: a
+    /// long with its target and its stop working, the price a little off
+    /// the entry and then on it, and the stop in hand; dark and light, at
+    /// two pixels to the point. Written only when asked for, to the folder
+    /// in `OMACHARTS_MARK_SHOTS`.
+    #[test]
+    fn the_label_sides_as_pictures() {
+        let Ok(folder) = std::env::var("OMACHARTS_MARK_SHOTS") else { return };
+        let (w, h) = (600.0, 400.0);
+        for side in LabelSide::ALL {
+            for (theme, name) in [(0, "dark"), (3, "light")] {
+                let mut state = at_the_last_price(theme);
+                state.order_labels = side;
+                state.hover_mark = None;
+                let look = omacharts_engine::theme_trading(&state.theme, Default::default());
+                let (first, visible, _) = state.view();
+                let plan = layout(&state, w, h);
+                let scale = price_range(&state, &state.bars[first..first + visible], &plan).unwrap();
+                let (low, high) = scale.prices();
+                let last = state.bars.last().unwrap().close;
+                let held = state.marks.position.as_mut().unwrap();
+                held.price = last - (high - low) * 0.03;
+                held.body = Some("+$62.50".into());
+                held.colour = look.profit.clone();
+                held.style = look.position;
+                held.exits = Vec::new();
+                held.profit = look.profit.clone();
+                held.loss = look.loss.clone();
+                let avg = held.price;
+                let order = |basket: &str, kind, tag: &str, at: f64, colour: &str, style, money: f64| OrderMark {
+                    basket: basket.into(),
+                    side: Side::Sell,
+                    kind,
+                    qty: 1,
+                    price: at,
+                    tag: tag.into(),
+                    body: Some(crate::trading::pnl_text(money, Some("USD"))),
+                    price_text: grouped_decimals(at, 2),
+                    colour: colour.into(),
+                    style,
+                    dim: false,
+                };
+                let (tp, sl) = (last + (high - last) * 0.6, avg - (high - low) * 0.2);
+                state.marks.orders = vec![
+                    order("TP", OrderKind::Limit, "TP 1", tp, &look.profit, look.limit, (tp - avg) * 50.0),
+                    order("SL", OrderKind::Stop, "SL 1", sl, &look.loss, look.stop, (sl - avg) * 50.0),
+                ];
+                let shot = |state: &State, file: &str| {
+                    let surface =
+                        cairo::ImageSurface::create(cairo::Format::ARgb32, (w * 2.0) as i32, (h * 2.0) as i32).unwrap();
+                    {
+                        let cr = cairo::Context::new(&surface).unwrap();
+                        cr.scale(2.0, 2.0);
+                        draw(&cr, w, h, state);
+                        draw_pointer(&cr, w, h, state);
+                    }
+                    save_png(surface, &format!("{folder}/{file}"));
+                };
+                let side = side.key();
+                shot(&state, &format!("labels-{side}-{name}.png"));
+                state.marks.position.as_mut().unwrap().price = last;
+                shot(&state, &format!("labels-{side}-{name}-on-entry.png"));
+                let at = sl - (high - low) * 0.08;
+                let what = MarkDrag::Move("SL".into());
+                state.drag = Some(Drag::Mark { allowed: state.mark_allowed(&what, at), what, at });
+                shot(&state, &format!("labels-{side}-{name}-drag.png"));
+            }
         }
     }
 
@@ -10272,43 +10485,145 @@ mod tests {
     #[test]
     fn a_marks_handles_and_its_line_are_found_where_they_are_drawn() {
         let (w, h) = (600.0, 400.0);
+        for side in LabelSide::ALL {
+            let mut state = marked();
+            state.order_labels = side;
+            let (first, visible, _) = state.view();
+            let plan = layout(&state, w, h);
+            let scale = price_range(&state, &state.bars[first..first + visible], &plan).unwrap();
+            let to_y = |price: f64| scale.to_y(price, plan.price_y, plan.price_h);
+            let cr = measuring().unwrap();
+            let lane = state.lane(&plan);
+            let order = state.marks.orders[0].clone();
+            let held = state.marks.position.clone().unwrap();
+            let (order_y, held_y) = (to_y(order.price).round(), to_y(held.price).round());
+            let row = order_row(&cr, lane, &order);
+            let at = |x: f64, y: f64| mark_at(&plan, lane, &state.marks, x, y, &to_y);
+            // Somewhere along the line, clear of every label.
+            let mid = (plan.plot_x + lane.end) / 2.0;
+
+            assert_eq!(at(row.cap_x + MARK_CAP / 2.0, order_y), Some(MarkHit::Close("B1".into())), "{side:?}");
+            assert_eq!(at(mid, order_y + 4.0), Some(MarkHit::Line("B1".into())), "{side:?}: near the line");
+            assert_eq!(at(row.tag_x + 10.0, order_y), Some(MarkHit::Line("B1".into())), "{side:?}: the label is the line's");
+            assert_eq!(at(mid, order_y + 12.0), None, "{side:?}: too far from it");
+
+            let row = held_row(&cr, lane, &held);
+            assert_eq!(at(row.cap_x + 3.0, held_y), Some(MarkHit::Flatten), "{side:?}");
+            let tab = |kind: OrderKind| *row.tabs.iter().find(|(k, ..)| *k == kind).unwrap();
+            let (_, tp, tw) = tab(OrderKind::Limit);
+            assert_eq!(at(tp + tw / 2.0, held_y), Some(MarkHit::Exit(OrderKind::Limit)), "{side:?}");
+            let (_, sl, sw) = tab(OrderKind::Stop);
+            assert_eq!(at(sl + sw / 2.0, held_y), Some(MarkHit::Exit(OrderKind::Stop)), "{side:?}");
+            assert!(tp < sl, "{side:?}: TP left of SL");
+            assert_eq!(at(mid, held_y), None, "{side:?}: a position's line is not dragged");
+
+            state.marks.orders[0].dim = true;
+            let row = order_row(&cr, lane, &order);
+            assert_eq!(mark_at(&plan, lane, &state.marks, mid, order_y, &to_y), None, "an order on its way");
+            assert_eq!(mark_at(&plan, lane, &state.marks, row.cap_x + 3.0, order_y, &to_y), None);
+            state.marks.orders[0].dim = false;
+            assert!(state.mark_under(w, h, mid, order_y).is_some());
+            state.tool = Some(DrawingKind::Line);
+            assert_eq!(state.mark_under(w, h, mid, order_y), None, "a tool in hand takes the press");
+            state.tool = None;
+            state.ruler_armed = true;
+            assert_eq!(state.mark_under(w, h, mid, order_y), None, "so does the ruler");
+        }
+    }
+
+    /// The labels' two places. At the left: tag at the plot's edge, the ×
+    /// towards the bars and the position's tabs after it, TP then SL. At
+    /// the right: by the axis as ever, the tabs before the label. Either
+    /// way the labels stay put as the bars scroll, and the lines stop at
+    /// the last bar, or at the plot's edge with the last bar past it.
+    #[test]
+    fn the_labels_sit_at_either_side_and_the_lines_stop_at_the_last_bar() {
+        let (w, h) = (600.0, 400.0);
         let mut state = marked();
-        let (first, visible, _) = state.view();
+        assert_eq!(state.order_labels, LabelSide::Left, "left unless chosen");
         let plan = layout(&state, w, h);
-        let scale = price_range(&state, &state.bars[first..first + visible], &plan).unwrap();
-        let to_y = |price: f64| scale.to_y(price, plan.price_y, plan.price_h);
         let cr = measuring().unwrap();
-        let order = state.marks.orders[0].clone();
         let held = state.marks.position.clone().unwrap();
-        let (order_y, held_y) = (to_y(order.price).round(), to_y(held.price).round());
-        let row = order_row(&cr, plan.plot_x, plan.plot_w, &order);
-        let at = |x: f64, y: f64| mark_at(&plan, &state.marks, x, y, &to_y);
+        let plot_end = plan.plot_x + plan.plot_w;
 
-        assert_eq!(at(row.cap_x + MARK_CAP / 2.0, order_y), Some(MarkHit::Close("B1".into())));
-        assert_eq!(at(200.0, order_y + 4.0), Some(MarkHit::Line("B1".into())), "near the line");
-        assert_eq!(at(row.tag_x + 10.0, order_y), Some(MarkHit::Line("B1".into())), "the label is the line's");
-        assert_eq!(at(200.0, order_y + 12.0), None, "too far from it");
+        let lane = state.lane(&plan);
+        assert!(lane.end > plan.plot_x + plan.plot_w / 2.0 && lane.end < plot_end - 10.0, "room after the bars: {lane:?}");
+        let row = held_row(&cr, lane, &held);
+        assert_eq!(row.tag_x, plan.plot_x + MARK_EDGE, "the tag at the edge");
+        let (body_x, body_w) = row.body.unwrap();
+        assert!(row.tag_x < body_x && body_x + body_w <= row.cap_x, "tag, body, ×");
+        assert!(row.tabs.iter().all(|(_, x, _)| *x > row.cap_x + MARK_CAP), "the tabs after the ×");
+        assert_eq!(row.tabs[0].0, OrderKind::Limit, "TP first");
 
-        let row = held_row(&cr, plan.plot_x, plan.plot_w, &held);
-        assert_eq!(at(row.cap_x + 3.0, held_y), Some(MarkHit::Flatten));
-        let (kind, x, tw) = row.tabs[0];
-        assert_eq!((kind, at(x + tw / 2.0, held_y)), (OrderKind::Stop, Some(MarkHit::Exit(OrderKind::Stop))));
-        let (_, x, tw) = row.tabs[1];
-        assert_eq!(at(x + tw / 2.0, held_y), Some(MarkHit::Exit(OrderKind::Limit)), "TP left of SL");
-        assert!(row.tabs[1].1 < row.tabs[0].1 && row.tabs[0].1 < row.tag_x);
-        assert_eq!(at(200.0, held_y), None, "a position's line is not dragged");
+        state.order_labels = LabelSide::Right;
+        let lane = state.lane(&plan);
+        let row = held_row(&cr, lane, &held);
+        assert_eq!(row.right(), plot_end - MARK_EDGE, "the × by the axis");
+        assert!(row.tabs.iter().all(|(_, x, _)| *x < row.tag_x), "the tabs before the label");
 
-        state.marks.orders[0].dim = true;
-        let row = order_row(&cr, plan.plot_x, plan.plot_w, &order);
-        assert_eq!(mark_at(&plan, &state.marks, 200.0, order_y, &to_y), None, "an order on its way");
-        assert_eq!(mark_at(&plan, &state.marks, row.cap_x + 3.0, order_y, &to_y), None);
-        state.marks.orders[0].dim = false;
-        assert!(state.mark_under(w, h, 200.0, order_y).is_some());
-        state.tool = Some(DrawingKind::Line);
-        assert_eq!(state.mark_under(w, h, 200.0, order_y), None, "a tool in hand takes the press");
-        state.tool = None;
-        state.ruler_armed = true;
-        assert_eq!(state.mark_under(w, h, 200.0, order_y), None, "so does the ruler");
+        // Scrolled back so the last bar is past the right edge: the lines
+        // run across the plot, and the labels are where they were.
+        for side in LabelSide::ALL {
+            let mut back = marked();
+            back.order_labels = side;
+            let before = held_row(&cr, back.lane(&plan), &held).tag_x;
+            let (first, ..) = back.view();
+            back.anchored = false;
+            back.first = first.saturating_sub(100);
+            back.lead = 0;
+            assert_eq!(back.lane(&plan).end, plot_end, "{side:?}: the last bar is past the edge");
+            assert_eq!(held_row(&cr, back.lane(&plan), &held).tag_x, before, "{side:?}: the label stays put");
+        }
+    }
+
+    /// With the price on the entry, the last price's dashes are drawn over
+    /// the position's line, and alone past the last bar.
+    #[test]
+    fn the_last_prices_line_is_over_the_positions() {
+        let (w, h) = (600.0, 400.0);
+        for side in LabelSide::ALL {
+            let mut state = marked();
+            state.order_labels = side;
+            let last = state.bars.last().unwrap().close;
+            state.marks.position.as_mut().unwrap().price = last;
+            let (first, visible, _) = state.view();
+            let plan = layout(&state, w, h);
+            let scale = price_range(&state, &state.bars[first..first + visible], &plan).unwrap();
+            let y = (scale.to_y(last, plan.price_y, plan.price_h).round() + 0.5) as usize;
+            let lane = state.lane(&plan);
+            let pixels = frame(w, h, |cr| draw(cr, w, h, &state));
+            let green = |x: usize| {
+                let i = (y * w as usize + x) * 4;
+                (pixels[i + 2], pixels[i + 1], pixels[i]) == (0, 255, 0)
+            };
+            let row = held_row(&measuring().unwrap(), lane, state.marks.position.as_ref().unwrap());
+            // Clear of the label and its tabs, along the bars.
+            let from = row.tabs.iter().map(|(_, x, w)| x + w).fold(row.right(), f64::max) as usize + 4;
+            let to = match side {
+                LabelSide::Left => lane.end as usize - 4,
+                LabelSide::Right => row.tabs.iter().map(|(_, x, _)| *x).fold(row.left(), f64::min) as usize - 4,
+            };
+            let (from, to) = match side {
+                LabelSide::Left => (from, to),
+                LabelSide::Right => (plan.plot_x as usize + 4, to),
+            };
+            let over = (from..to).filter(|x| !green(*x)).count();
+            assert!(over > (to - from) / 4, "{side:?}: the last price's dashes over the position's line: {over}");
+        }
+    }
+
+    /// Only the position's line is solid: a limit, a stop, a target and a
+    /// stop loss are dashed, and a stop heavier than a limit.
+    #[test]
+    fn only_the_positions_line_is_solid() {
+        for theme in omacharts_engine::theme::builtin_themes() {
+            let look = omacharts_engine::theme_trading(&theme, Default::default());
+            assert_eq!(look.limit, LineStyle::Dashed, "{}: a limit, a target among them", theme.name);
+            assert_eq!(look.stop, LineStyle::Dashed, "{}: a stop, a stop loss among them", theme.name);
+            assert_eq!(look.position, LineStyle::Solid, "{}", theme.name);
+        }
+        assert!(order_weight(OrderKind::Stop) > order_weight(OrderKind::Limit));
+        assert!(order_weight(OrderKind::Limit) > 1.0, "heavier than the last price's hairline");
     }
 
     /// What an order in hand is and where it may go: an exit is the side
