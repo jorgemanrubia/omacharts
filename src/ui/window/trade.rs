@@ -1762,6 +1762,66 @@ pub(super) mod tests {
         });
     }
 
+    /// Every trading setting is in Preferences with no login, ready for
+    /// the first: the Theme page's Trading colours and lines on a theme of
+    /// one's own, the header's P&L, Buy Sell and Quantity in its Right, and
+    /// the Trading page's own groups.
+    #[test]
+    fn preferences_show_every_trading_setting_without_a_login() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = window(&store);
+            assert!(!window.trading.borrow().trades());
+            {
+                let mut theming = window.theming.borrow_mut();
+                let mine = theming.theme().duplicate("custom-mine", "Mine");
+                store.save_theme(&mine);
+                theming.reload_custom(&store);
+                theming.select_theme("custom-mine", &store);
+            }
+            window.open_preferences_at(None);
+            let dialog = window.window.visible_dialog().expect("the preferences");
+            let widgets = |root: gtk::Widget| {
+                let (mut found, mut stack) = (Vec::new(), vec![root]);
+                while let Some(widget) = stack.pop() {
+                    let mut child = widget.first_child();
+                    while let Some(next) = child {
+                        child = next.next_sibling();
+                        stack.push(next);
+                    }
+                    found.push(widget);
+                }
+                found
+            };
+            let sidebar = widgets(dialog.clone().upcast())
+                .into_iter()
+                .find_map(|widget| widget.downcast::<gtk::ListBox>().ok().filter(|list| list.has_css_class("navigation-sidebar")))
+                .expect("the sidebar");
+            // Each section is put in the dialog when it is picked.
+            let (mut groups, mut rows) = (Vec::new(), Vec::new());
+            let mut index = 0;
+            while let Some(section) = sidebar.row_at_index(index) {
+                sidebar.select_row(Some(&section));
+                for widget in widgets(dialog.clone().upcast()) {
+                    if let Some(group) = widget.downcast_ref::<adw::PreferencesGroup>() {
+                        groups.push(group.title().to_string());
+                    }
+                    if let Some(row) = widget.downcast_ref::<adw::PreferencesRow>() {
+                        rows.push(row.title().to_string());
+                    }
+                }
+                index += 1;
+            }
+            for group in ["Trading", "Right", "Order entry", "Chart"] {
+                assert!(groups.iter().any(|title| title == group), "no {group} group in {groups:?}");
+            }
+            for row in ["Buy", "Sell", "Long", "Short", "Profit", "Loss", "P&L", "Buy Sell", "Quantity", "Order labels"] {
+                assert!(rows.iter().any(|title| title == row), "no {row} row in {rows:?}");
+            }
+            dialog.force_close();
+        });
+    }
+
     /// The panel is the window's, not a chartbook's: open, it stays open
     /// across a switch to another book and back; shut, it stays shut. The
     /// one toggle goes where the strip says: in the bottom-right chart's
@@ -2849,11 +2909,10 @@ pub(super) mod tests {
         found
     }
 
-    /// The Theme page of a theme of one's own has a Trading group only
-    /// while there is a login, and the open dialog follows a login added
-    /// and removed.
+    /// The Theme page of a theme of one's own has its Trading group with
+    /// or without a login, and keeps it while one is added and removed.
     #[test]
-    fn the_theme_page_speaks_of_trading_only_with_a_login() {
+    fn the_theme_page_has_its_trading_group_with_or_without_a_login() {
         crate::ui::on_gtk(|| {
             let store = Rc::new(Store::memory().expect("a store"));
             let mut mine = omacharts_engine::theme::builtin_themes().remove(0);
@@ -2868,7 +2927,7 @@ pub(super) mod tests {
             let dialog = window.window.visible_dialog().expect("the preferences");
             let titles = || group_titles(dialog.upcast_ref());
             assert!(titles().iter().any(|title| title == "Bars"), "an editable theme: {:?}", titles());
-            assert!(!titles().iter().any(|title| title == "Trading"), "Trading with no login");
+            assert!(titles().iter().any(|title| title == "Trading"), "no Trading group with no login");
 
             let kept = Kept::default();
             let id = trading::add_login(&store, &kept, &typed()).expect("a login");
@@ -2877,7 +2936,7 @@ pub(super) mod tests {
 
             trading::remove_login(&store, &kept, &id, true).expect("removed");
             window.desk.tell();
-            assert!(!titles().iter().any(|title| title == "Trading"), "Trading left behind by the last login");
+            assert!(titles().iter().any(|title| title == "Trading"), "Trading gone with the last login");
         });
     }
 

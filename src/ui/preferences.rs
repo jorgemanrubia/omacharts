@@ -9,7 +9,7 @@
 //! makes a copy you own, which is both simpler to reason about and means a
 //! fiddled palette can always be abandoned by switching back.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use adw::prelude::*;
@@ -78,11 +78,6 @@ struct Context {
     data_page: adw::PreferencesPage,
     trading_page: adw::PreferencesPage,
     groups: RefCell<Vec<adw::PreferencesGroup>>,
-    /// Whether the Theme page was last drawn with a login, and so with its
-    /// Trading group; and the desk's call to draw it again when that
-    /// changes, kept alive with the dialog.
-    trading_shown: Cell<bool>,
-    trading_listener: RefCell<Option<Rc<dyn Fn()>>>,
     /// The window, for the chart templates: they are shown on its charts,
     /// and only it knows which of its charts are using one.
     window: Rc<Window>,
@@ -143,14 +138,10 @@ impl Preferences {
         let charts_header_page = adw::PreferencesPage::new();
         let store_for_header = store.clone();
         let window_for_header = window.clone();
-        // Buy and Sell, the quantity and the day's P&L are parts only for
-        // somebody who trades: without a login they are neither listed nor
-        // offered, and stay where they are.
-        let hidden = match crate::trading::View::load(&store).trades() {
-            true => Vec::new(),
-            false => crate::header::TRADING_PARTS.to_vec(),
-        };
-        let (sections, restore_header) = header_sections(crate::header::load(&store), &hidden, move |header| {
+        // Buy and Sell, the quantity and the day's P&L are listed and
+        // offered with or without a login, like every trading setting: they
+        // draw nothing on a chart until there is an account to trade on.
+        let (sections, restore_header) = header_sections(crate::header::load(&store), move |header| {
             crate::header::save(&store_for_header, header);
             window_for_header.apply_header();
         });
@@ -204,26 +195,11 @@ impl Preferences {
             data_page,
             trading_page,
             groups: RefCell::new(Vec::new()),
-            trading_shown: Cell::new(false),
-            trading_listener: RefCell::new(None),
             window,
             templates_group: RefCell::new(None),
             refill_default_template: RefCell::new(None),
         });
         rebuild(&context);
-        // A login added or removed on the Trading page puts the Trading
-        // group on the Theme page or takes it off; nothing else the desk
-        // is told of redraws it.
-        let weak = Rc::downgrade(&context);
-        let listener: Rc<dyn Fn()> = Rc::new(move || {
-            if let Some(context) = weak.upgrade()
-                && context.trading_shown.get() != has_logins(&context)
-            {
-                rebuild(&context);
-            }
-        });
-        context.window.desk().listen(&listener);
-        *context.trading_listener.borrow_mut() = Some(listener);
         build_general_page(&context);
 
         dialog.present(Some(parent));
@@ -234,15 +210,12 @@ impl Preferences {
 /// the whole header.
 ///
 /// A part is in the header once, so a part in one section is not offered by
-/// the other's +, and is offered again the moment it is taken out. The
-/// `hidden` parts are neither listed nor offered, and kept where they are,
-/// at the end of their section, whatever is changed around them.
+/// the other's +, and is offered again the moment it is taken out.
 ///
 /// Comes with the way back to the standard header, every section at once.
 #[allow(clippy::type_complexity)]
 fn header_sections(
     current: crate::header::Header,
-    hidden: &[crate::header::Part],
     changed: impl Fn(&crate::header::Header) + 'static,
 ) -> (Vec<Rc<crate::ui::part_list::PartList<crate::header::Part>>>, Rc<dyn Fn()>) {
     use crate::header::Section;
@@ -251,31 +224,24 @@ fn header_sections(
     let header = Rc::new(RefCell::new(current));
     let changed = Rc::new(changed);
     let lists: Lists = Rc::new(RefCell::new(Vec::new()));
-    let hidden: Rc<Vec<crate::header::Part>> = Rc::new(hidden.to_vec());
-    let concealed = hidden.clone();
     let elsewhere = Rc::new(move |header: &crate::header::Header, section: Section| -> Vec<crate::header::Part> {
         Section::ALL
             .into_iter()
             .filter(|other| *other != section)
             .flat_map(|other| header.section(other).to_vec())
-            .chain(concealed.iter().copied())
             .collect()
     });
     let built: Vec<_> = Section::ALL
         .into_iter()
         .map(|section| {
             let (edited, changed, others) = (header.clone(), changed.clone(), lists.clone());
-            let (hidden, elsewhere_now) = (hidden.clone(), elsewhere.clone());
-            let current: Vec<_> =
-                header.borrow().section(section).iter().copied().filter(|part| !hidden.contains(part)).collect();
+            let elsewhere_now = elsewhere.clone();
+            let current = header.borrow().section(section).to_vec();
             let list = PartList::new(
                 section.title(),
                 &format!("Add to the {}", section.title().to_lowercase()),
                 current,
-                move |mut parts: Vec<crate::header::Part>| {
-                    let kept: Vec<_> =
-                        edited.borrow().section(section).iter().copied().filter(|part| hidden.contains(part)).collect();
-                    parts.extend(kept);
+                move |parts: Vec<crate::header::Part>| {
                     edited.borrow_mut().set(section, parts);
                     let now = edited.borrow().clone();
                     for (other, list) in others.borrow().iter().filter(|(other, _)| *other != section) {
@@ -305,8 +271,7 @@ fn header_sections(
         *header.borrow_mut() = standard.clone();
         for (section, list) in Section::ALL.into_iter().zip(&shown) {
             if let Some(list) = list.upgrade() {
-                let parts = standard.section(section).iter().copied().filter(|part| !hidden.contains(part)).collect();
-                list.replace(parts);
+                list.replace(standard.section(section).to_vec());
                 list.set_elsewhere(elsewhere(&standard, section));
             }
         }
@@ -402,13 +367,10 @@ fn rebuild(context: &Rc<Context>) {
 
     groups.push(theme_group(context));
     let theme = context.theming.borrow().theme();
-    context.trading_shown.set(has_logins(context));
     if theme.source.is_editable() {
         let [backgrounds, text, other] = UiSlot::GROUPS;
         groups.push(bar_colors_group(context));
-        if has_logins(context) {
-            groups.push(trading_look_group(context));
-        }
+        groups.push(trading_look_group(context));
         groups.push(theme_colors_group(context, backgrounds));
         groups.push(theme_colors_group(context, text));
         groups.push(palette_group(context));
@@ -966,15 +928,12 @@ fn bar_colors_group(context: &Rc<Context>) -> adw::PreferencesGroup {
     group
 }
 
-/// Is there a broker login? Only then does anything here speak of trading.
-fn has_logins(context: &Context) -> bool {
-    !crate::trading::logins(&context.store).is_empty()
-}
-
 /// How orders and positions are drawn on a chart: a colour for each of buy,
 /// sell, long, short, profit and loss, and a pattern for each kind of line.
 /// Only on a theme of somebody's own, like the bars, and each row saves
-/// only itself: what nobody set keeps following the theme.
+/// only itself: what nobody set keeps following the theme. There with or
+/// without a login, as every trading setting is: without one nothing draws
+/// in it.
 fn trading_look_group(context: &Rc<Context>) -> adw::PreferencesGroup {
     use omacharts_engine::indicators::LineStyle;
     use omacharts_engine::{TradingColour, TradingLine, TradingLook};
@@ -1920,31 +1879,6 @@ fn describe_count(series: i64) -> String {
 mod tests {
     use super::*;
 
-    /// Without a trading login the trading size is neither listed nor
-    /// offered, and a change around it keeps it where it was.
-    #[test]
-    fn a_hidden_part_is_neither_listed_nor_offered_and_stays_put() {
-        use crate::header::{Header, Part};
-        crate::ui::on_gtk(|| {
-            let saved: Rc<RefCell<Vec<Header>>> = Rc::default();
-            let seen = saved.clone();
-            let (sections, _) =
-                header_sections(Header::standard(), &crate::header::TRADING_PARTS, move |header| {
-                    seen.borrow_mut().push(header.clone())
-                });
-            let [left, center, right] = sections.as_slice() else { panic!("three sections") };
-            assert_eq!(right.parts(), vec![Part::Settings, Part::Maximize, Part::Link]);
-            for part in crate::header::TRADING_PARTS {
-                assert!(!left.offered().contains(&part) && !center.offered().contains(&part));
-            }
-            right.set(vec![Part::Link, Part::Settings]);
-            assert_eq!(
-                saved.borrow().last().map(|header| header.right.clone()),
-                Some(vec![Part::Link, Part::Settings, Part::DayPnl, Part::Trade, Part::Size])
-            );
-        });
-    }
-
     /// A part in one section is not offered by the others, and is offered
     /// again once it is taken out; every change is the whole header.
     #[test]
@@ -1954,7 +1888,7 @@ mod tests {
             let saved: Rc<RefCell<Vec<Header>>> = Rc::default();
             let seen = saved.clone();
             let (sections, _) =
-                header_sections(Header::standard(), &[], move |header| seen.borrow_mut().push(header.clone()));
+                header_sections(Header::standard(), move |header| seen.borrow_mut().push(header.clone()));
             let [left, center, right] = sections.as_slice() else { panic!("three sections") };
             assert_eq!(left.group.title(), "Left");
             assert_eq!(center.group.title(), "Center");
@@ -2001,8 +1935,7 @@ mod tests {
     }
 
     /// Restoring puts every section back as it ships, at once, lists and
-    /// offers included, and hands the whole header on once; a hidden part
-    /// goes back to where it ships too.
+    /// offers included, and hands the whole header on once.
     #[test]
     fn restoring_the_header_puts_every_section_back() {
         use crate::header::{Header, Part};
@@ -2015,12 +1948,12 @@ mod tests {
                 right: vec![Part::Symbol, Part::Stripe],
             };
             let (sections, restore) =
-                header_sections(moved, &crate::header::TRADING_PARTS, move |header| seen.borrow_mut().push(header.clone()));
+                header_sections(moved, move |header| seen.borrow_mut().push(header.clone()));
             let [left, center, right] = sections.as_slice() else { panic!("three sections") };
             restore();
             assert_eq!(left.parts(), vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Account]);
             assert_eq!(center.parts(), vec![Part::Stripe]);
-            assert_eq!(right.parts(), vec![Part::Settings, Part::Maximize, Part::Link]);
+            assert_eq!(right.parts(), vec![Part::DayPnl, Part::Trade, Part::Size, Part::Settings, Part::Maximize, Part::Link]);
             assert_eq!(left.offered(), vec![Part::Change, Part::Template]);
             assert_eq!(right.offered(), vec![Part::Change, Part::Template]);
             assert_eq!(saved.borrow().as_slice(), &[Header::standard()]);

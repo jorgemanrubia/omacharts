@@ -86,10 +86,6 @@ pub enum Part {
     Link,
 }
 
-/// The parts only somebody who trades has: without a login they are
-/// neither drawn nor offered.
-pub const TRADING_PARTS: [Part; 3] = [Part::DayPnl, Part::Trade, Part::Size];
-
 impl Part {
     pub const ALL: [Part; 13] = [
         Part::Symbol,
