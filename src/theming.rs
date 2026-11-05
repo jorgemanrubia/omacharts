@@ -820,9 +820,16 @@ entry.range-date > image:hover { opacity: 0.9; }
 }
 /* Beside a chart's name it is one more glyph in the row, and the name is
    what that corner is for: so it stays well under the name until the
-   pointer comes to it. */
-.window-corner.start.over-chart button { opacity: 0.25; }
-.window-corner.start.over-chart:hover button { opacity: 1; }
+   pointer comes to it. The trading panel's toggle, down the same edge,
+   keeps the same quiet over a chart while its panel is shut: the tools'
+   toggle is over the bar once the bar is out, and the panel's is still
+   over the chart once the panel is open under it, so for that one it is
+   the toggle's own state that says which. Open, both stand at the
+   corners' usual strength. One rule, so the two cannot drift apart. */
+.window-corner.start.over-chart button,
+.window-corner.foot.over-chart button:not(:checked) { opacity: 0.25; }
+.window-corner.start.over-chart:hover button,
+.window-corner.foot.over-chart:hover button { opacity: 1; }
 /* The trading panel's toggle, in the window's bottom-left corner: the
    drawing tools' corner's mirror down the same edge, in the same column,
    so the left edge reads as one column of two — tools at the top, trading
@@ -1335,6 +1342,11 @@ mod tests {
         assert!(css.contains(".symbol-row:drop(active)"));
         assert!(css.contains(".section-row:drop(active)"));
         assert!(css.contains(".dragging row:hover"));
+        // The two toggles down the left edge are quiet over a chart while
+        // what they open is shut, by one rule.
+        assert!(css.contains(
+            ".window-corner.start.over-chart button,\n.window-corner.foot.over-chart button:not(:checked) { opacity: 0.25; }"
+        ));
     }
 
     #[test]
