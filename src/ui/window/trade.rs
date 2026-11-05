@@ -509,33 +509,67 @@ impl Window {
         }
     }
 
-    /// Where the panel's toggle stands, the one place that says so: in the
-    /// square where the bottom-right chart's prices meet its dates, the
-    /// window's fourth corner, with the drawing tools' top-left and the
-    /// watchlist's top-right. Over the charts rather than in the window's
-    /// bottom row, so it is there with one chartbook or several, and stays
-    /// above the panel's right end when the panel opens under the charts.
-    /// Laid over the charts, inside the charts' ring, and centred in the
-    /// square: only the button takes the pointer, not the square round it.
-    fn place_trading_toggle(self: &Rc<Self>, toggle: &gtk::ToggleButton) {
-        let ring = omacharts_engine::frame::RING_WIDTH as i32;
-        let square = (crate::ui::chart::PRICE_AXIS_W as i32, crate::ui::chart::TIME_AXIS_H as i32);
-        toggle.set_halign(gtk::Align::End);
-        toggle.set_valign(gtk::Align::End);
-        toggle.set_margin_end(ring + (square.0 - TOGGLE_SIZE) / 2);
-        toggle.set_margin_bottom(ring + (square.1 - TOGGLE_SIZE) / 2);
-        if let Some(charts) = self.trade.charts.borrow().as_ref() {
-            charts.add_overlay(toggle);
+    /// Where the panel's toggle stands, the one place that says so. With
+    /// one chartbook, in the square where the bottom-right chart's prices
+    /// meet its dates, the window's fourth corner, with the drawing tools'
+    /// top-left and the watchlist's top-right: laid over the charts, inside
+    /// their ring, and centred in the square, so only the button takes the
+    /// pointer. With several, at the right end of the chartbook strip, the
+    /// row under the charts once there is one, and the chart has its corner
+    /// back. Called again whenever the strip is rebuilt; the toggle moves
+    /// from one home to the other, the same button.
+    pub(super) fn place_trading_toggle(self: &Rc<Self>, toggle: &gtk::ToggleButton) {
+        self.unplace_trading_toggle(toggle);
+        if self.books.borrow().len() > 1 {
+            toggle.set_halign(gtk::Align::End);
+            toggle.set_valign(gtk::Align::Center);
+            toggle.set_margin_end(0);
+            toggle.set_margin_bottom(0);
+            let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+            spacer.set_hexpand(true);
+            spacer.add_css_class("trading-toggle-spacer");
+            self.book_strip.append(&spacer);
+            self.book_strip.append(toggle);
+        } else {
+            let ring = omacharts_engine::frame::RING_WIDTH as i32;
+            let square = (crate::ui::chart::PRICE_AXIS_W as i32, crate::ui::chart::TIME_AXIS_H as i32);
+            toggle.set_halign(gtk::Align::End);
+            toggle.set_valign(gtk::Align::End);
+            toggle.set_margin_end(ring + (square.0 - TOGGLE_SIZE) / 2);
+            toggle.set_margin_bottom(ring + (square.1 - TOGGLE_SIZE) / 2);
+            if let Some(charts) = self.trade.charts.borrow().as_ref() {
+                charts.add_overlay(toggle);
+            }
         }
         self.sync_corner_clearance();
     }
 
-    /// Take the toggle out of where `place_trading_toggle` put it.
+    /// Take the toggle out of whichever home `place_trading_toggle` put it
+    /// in, and the spacer before it in the strip with it.
     fn unplace_trading_toggle(self: &Rc<Self>, toggle: &gtk::ToggleButton) {
-        if let Some(charts) = self.trade.charts.borrow().as_ref() {
+        if let Some(charts) = self.trade.charts.borrow().as_ref()
+            && toggle.parent().as_ref() == Some(charts.upcast_ref())
+        {
             charts.remove_overlay(toggle);
         }
+        if toggle.parent().as_ref() == Some(self.book_strip.upcast_ref()) {
+            if let Some(spacer) = toggle.prev_sibling().filter(|w| w.has_css_class("trading-toggle-spacer")) {
+                self.book_strip.remove(&spacer);
+            }
+            self.book_strip.remove(toggle);
+        }
         self.sync_corner_clearance();
+    }
+
+    /// Is the toggle in the bottom-right chart's corner, rather than in the
+    /// strip or nowhere?
+    pub(super) fn trading_toggle_over_charts(&self) -> bool {
+        let charts = self.trade.charts.borrow().clone();
+        let toggle = self.trade.toggle.borrow().clone();
+        match (charts, toggle) {
+            (Some(charts), Some(toggle)) => toggle.parent().as_ref() == Some(charts.upcast_ref()),
+            _ => false,
+        }
     }
 
     /// Open or close the panel, building it the first time.
@@ -585,8 +619,10 @@ impl Window {
         if !self.trading_panel_shown() {
             return 0;
         }
-        let paned = self.trade.paned.borrow().as_ref().map_or(0, |paned| paned.height());
-        (paned - self.split.height()).max(0)
+        // Below what is above the divider, the charts and their strip.
+        let Some(paned) = self.trade.paned.borrow().clone() else { return 0 };
+        let above = paned.start_child().map_or(0, |books| books.height());
+        (paned.height() - above).max(0)
     }
 
     /// Is the panel on screen?
@@ -634,10 +670,17 @@ impl Window {
         paned.set_hexpand(true);
         // Across the whole window, rail included: the panel is the
         // account's, and the rail is as much the account's as the charts
-        // are. Above the chartbook strip, which is the window's status line.
+        // are. Under the chartbook strip, at the very bottom: the tabs are
+        // the charts', and go with them above the divider, while the panel
+        // is the window's whichever book is in front.
         if let Some(root) = self.trade.root.borrow().as_ref() {
             root.remove(&self.split);
-            paned.set_start_child(Some(&self.split));
+            root.remove(&self.book_strip);
+            let books = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            books.set_vexpand(true);
+            books.append(&self.split);
+            books.append(&self.book_strip);
+            paned.set_start_child(Some(&books));
             paned.set_end_child(Some(&panel.root));
             root.prepend(&paned);
         }
@@ -651,10 +694,15 @@ impl Window {
         self.trade.panel.borrow_mut().take();
         let Some(paned) = self.trade.paned.borrow_mut().take() else { return };
         if let Some(root) = self.trade.root.borrow().as_ref() {
+            if let Some(books) = paned.start_child().and_downcast::<gtk::Box>() {
+                books.remove(&self.split);
+                books.remove(&self.book_strip);
+            }
             paned.set_start_child(None::<&gtk::Widget>);
             paned.set_end_child(None::<&gtk::Widget>);
             root.remove(&paned);
-            root.prepend(&self.split);
+            root.append(&self.split);
+            root.append(&self.book_strip);
         }
     }
 
@@ -1667,6 +1715,8 @@ pub(super) mod tests {
                     && window.trade.paned.borrow().is_none()
                     && window.trade.toasts.borrow().is_none()
                     && window.split.parent() == window.trade.root.borrow().clone().map(|b| b.upcast())
+                    && window.split.next_sibling() == Some(window.book_strip.clone().upcast())
+                    && window.book_strip.next_sibling().is_none()
                     && !window.book_strip.property::<bool>("visible")
                     && window.panes.borrow().iter().all(|pane| !pane.view.axis_corner_taken())
             };
@@ -1693,9 +1743,15 @@ pub(super) mod tests {
             assert!(window.trading_panel_shown());
             assert!(toggle.is_active(), "the toggle says the panel is open");
             let paned = window.trade.paned.borrow().clone().expect("a divider");
-            assert_eq!(window.split.parent(), Some(paned.clone().upcast()), "the charts and rail above it");
+            let above = paned.start_child().expect("the charts' side of the divider");
+            assert_eq!(window.split.parent(), Some(above.clone()), "the charts and rail above it");
+            assert_eq!(window.split.next_sibling(), Some(window.book_strip.clone().upcast()), "the tabs under the charts");
+            assert_eq!(window.book_strip.parent(), Some(above), "the tabs above the divider too");
+            assert_eq!(paned.end_child(), window.trade.panel.borrow().as_ref().map(|panel| panel.root.clone().upcast()),
+                "the panel under the divider"
+            );
             assert_eq!(paned.parent(), window.trade.root.borrow().clone().map(|b| b.upcast()), "across the window");
-            assert_eq!(paned.next_sibling(), Some(window.book_strip.clone().upcast()), "above the strip");
+            assert_eq!(paned.next_sibling(), None, "the panel at the very bottom");
             assert!(store.setting_bool(SHOW_TRADING_PANEL, false), "remembered");
 
             trading::remove_login(&store, &kept, &id, true).expect("removed");
@@ -1707,8 +1763,11 @@ pub(super) mod tests {
     }
 
     /// The panel is the window's, not a chartbook's: open, it stays open
-    /// across a switch to another book and back, with the one toggle where
-    /// it was; shut, it stays shut.
+    /// across a switch to another book and back; shut, it stays shut. The
+    /// one toggle goes where the strip says: in the bottom-right chart's
+    /// corner with one book, at the strip's right end with several, the
+    /// chart's corner its own again, and back when the strip goes. The
+    /// strip runs under the charts, and the panel under the strip.
     #[test]
     fn the_panel_is_the_window_s_across_chartbooks() {
         crate::ui::on_gtk(|| {
@@ -1718,23 +1777,43 @@ pub(super) mod tests {
             trading::add_login(&store, &kept, &typed()).expect("a login");
             window.desk.tell();
             let toggle = window.trade.toggle.borrow().clone().expect("a toggle");
+            let charts = window.trade.charts.borrow().clone().expect("the charts' overlay");
+            assert_eq!(toggle.parent(), Some(charts.clone().upcast()), "one book: over the charts");
             gio::prelude::ActionGroupExt::activate_action(&window.window, "trading-panel", None);
             assert!(window.trading_panel_shown());
 
             window.duplicate_chartbook();
             assert_eq!(window.active.get(), 1);
             assert!(window.trading_panel_shown() && toggle.is_active(), "another book shut the panel");
-            let charts = window.trade.charts.borrow().clone().expect("the charts' overlay");
-            assert_eq!(toggle.parent(), Some(charts.clone().upcast()), "the same toggle, where it was");
-            assert!(window.panes.borrow().iter().any(|pane| pane.view.axis_corner_taken()), "the new book's chart");
+            // Two books: the tabs show, under the charts and over the panel,
+            // and the toggle stands at their right end.
+            assert!(window.book_strip.property::<bool>("visible"), "a strip with two chartbooks");
+            let paned = window.trade.paned.borrow().clone().expect("a divider");
+            assert_eq!(window.book_strip.parent(), paned.start_child(), "the tabs above the divider");
+            assert_eq!(window.book_strip.prev_sibling(), Some(window.split.clone().upcast()), "under the charts");
+            let in_strip = |window: &Window| {
+                toggle.parent() == Some(window.book_strip.clone().upcast())
+                    && window.book_strip.last_child() == Some(toggle.clone().upcast())
+                    && window.panes.borrow().iter().all(|pane| !pane.view.axis_corner_taken())
+            };
+            assert!(in_strip(&window), "two books: the toggle at the strip's end, the corner the chart's");
+            assert!(window.book_tab(1).is_some_and(|tab| tab.has_css_class("chartbook-tab")), "the tabs first");
             window.activate_book(0);
             assert!(window.trading_panel_shown() && toggle.is_active(), "switching back shut the panel");
+            assert!(in_strip(&window), "a rebuilt strip lost the toggle");
 
             gio::prelude::ActionGroupExt::activate_action(&window.window, "trading-panel", None);
             assert!(!window.trading_panel_shown());
             window.activate_book(1);
             assert!(!window.trading_panel_shown() && !toggle.is_active(), "switching opened the panel");
-            assert_eq!(toggle.parent(), Some(charts.upcast()));
+            assert!(in_strip(&window));
+
+            // Back to one book: the strip goes, and the toggle to the corner.
+            window.remove_chartbook(1);
+            assert!(!window.book_strip.property::<bool>("visible"));
+            assert_eq!(toggle.parent(), Some(charts.upcast()), "one book again: over the charts");
+            assert_eq!(window.book_strip.first_child(), None, "the strip left empty");
+            assert!(window.panes.borrow().iter().any(|pane| pane.view.axis_corner_taken()), "the corner left to it");
         });
     }
 

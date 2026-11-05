@@ -3424,9 +3424,9 @@ impl Window {
         }
 
         // And the trading panel's toggle, in the bottom-right chart's
-        // corner under its prices, there only with a login: that chart
-        // leaves the corner empty for it.
-        let toggled = self.trade.toggle.borrow().is_some();
+        // corner under its prices, there only with a login and one
+        // chartbook: that chart leaves the corner empty for it.
+        let toggled = self.trading_toggle_over_charts();
         let bottom = self.chart_host.height().max(1) as f64;
         let lowest = self.filled().or_else(|| {
             self.layout.borrow().leaves().into_iter().find(|id| {
@@ -4826,7 +4826,7 @@ impl Window {
     }
 
     /// Draw the row of chartbook tabs, or no row at all.
-    fn rebuild_book_strip(self: &Rc<Self>) {
+    fn refill_book_strip(self: &Rc<Self>) {
         while let Some(child) = self.book_strip.first_child() {
             self.book_strip.remove(&child);
         }
@@ -4840,6 +4840,17 @@ impl Window {
         }
         for index in 0..count {
             self.book_strip.append(&self.build_book_tab(index));
+        }
+    }
+
+    /// The strip anew, and the trading toggle in the home it now calls for:
+    /// at the strip's right end while there is one, in the charts' corner
+    /// while there is not.
+    fn rebuild_book_strip(self: &Rc<Self>) {
+        self.refill_book_strip();
+        let toggle = self.trade.toggle.borrow().clone();
+        if let Some(toggle) = toggle {
+            self.place_trading_toggle(&toggle);
         }
     }
 
