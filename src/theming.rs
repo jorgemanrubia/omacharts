@@ -825,13 +825,13 @@ entry.range-date > image:hover { opacity: 0.9; }
 }
 /* Beside a chart's name it is one more glyph in the row, and the name is
    what that corner is for: so it stays well under the name until the
-   pointer comes to it. The trading panel's toggle, at the start of the
-   window's bottom row as this one starts the top, keeps the same quiet
-   while its panel is shut: the tools' toggle leaves the chart for the bar
-   once the bar is out, and the panel's stays where it is once the panel is
-   open, so for that one it is the toggle's own state that says which.
-   Open, both stand at the corners' usual strength. One rule, so the two
-   cannot drift apart. */
+   pointer comes to it. The trading panel's toggle, in the bottom-right
+   chart's corner under its prices, keeps the same quiet while its panel
+   is shut: the tools' toggle leaves the chart for the bar once the bar is
+   out, and the panel's stays where it is once the panel is open, so for
+   that one it is the toggle's own state that says which. Open, both stand
+   at the corners' usual strength. One rule, so the two cannot drift
+   apart. */
 .window-corner.start.over-chart button,
 button.trading-toggle:not(:checked) { opacity: 0.25; }
 .window-corner.start.over-chart:hover button,
@@ -1124,8 +1124,8 @@ button.list-row-action { min-height: 0; min-width: 0; padding: 3px; }
   min-height: 22px;
 }
 .chartbook-strip {
-  /* No padding on the left: the trading panel's toggle, when there is
-     one, keeps its own step in from the window's edge. */
+  /* No padding on the left: the drawing tools' tab sits flush with the
+     window's edge, the way a tab on a drawer does. */
   padding: 1px 4px 1px 0;
   border-top: 1px solid alpha(currentColor, 0.08);
 }
@@ -1201,11 +1201,10 @@ button.rail-switcher.open:hover { background: alpha(currentColor, 0.2); }
    The outer keeps the size and the wash; the inner fills all of it. */
 .legend-link { padding: 0; }
 .legend-link > button { min-width: 22px; min-height: 22px; padding: 2px; }
-/* In the bottom row the trading panel's toggle stands no taller than the
-   row's tabs: no padding above or below it, and a step in from the
-   window's edge, where the drawing tools' toggle stands in from it at the
-   top. */
-button.trading-toggle { padding-top: 0; padding-bottom: 0; margin: 0 4px 0 2px; }
+/* In the square under the price axis the trading panel's toggle has the
+   time axis's 24 pixels to stand in: no padding above or below it, so it
+   is the glyph's 22 tall and clear of the axis's rule above. */
+button.trading-toggle { padding-top: 0; padding-bottom: 0; }
 ",
     );
 

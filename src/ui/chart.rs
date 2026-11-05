@@ -46,7 +46,7 @@ use crate::ui::colors;
 use gtk::glib;
 
 pub(crate) const PRICE_AXIS_W: f64 = 64.0;
-const TIME_AXIS_H: f64 = 24.0;
+pub(crate) const TIME_AXIS_H: f64 = 24.0;
 const PAD: f64 = 10.0;
 /// How far past either end of the series the chart can be panned: empty
 /// columns before the first bar or after the last, so there is room to move
@@ -213,6 +213,9 @@ struct State {
     /// fade out under its edge, and the last price and the crosshair's
     /// price stop below it rather than slide under.
     covered_axis_top: f64,
+    /// The square under the price axis holds the window's trading toggle,
+    /// so the range the view holds to is not written there.
+    axis_corner_taken: bool,
     bar_style: BarStyle,
     bars_hidden: bool,
     show_grid: bool,
@@ -1244,6 +1247,7 @@ impl State {
             indicators: Vec::new(),
             show_indicators: true,
             covered_axis_top: 0.0,
+            axis_corner_taken: false,
             bar_style: BarStyle::default(),
             bars_hidden: false,
             show_grid: false,
@@ -3815,6 +3819,25 @@ impl ChartView {
         }
     }
 
+    /// Say whether the window's trading toggle stands in the square under
+    /// the price axis.
+    pub fn set_axis_corner_taken(&self, taken: bool) {
+        let changed = {
+            let mut state = self.state.borrow_mut();
+            let changed = state.axis_corner_taken != taken;
+            state.axis_corner_taken = taken;
+            changed
+        };
+        if changed {
+            self.redraw();
+        }
+    }
+
+    #[cfg(test)]
+    pub fn axis_corner_taken(&self) -> bool {
+        self.state.borrow().axis_corner_taken
+    }
+
     /// Put live bars into the series in place: each replaces the bar with
     /// its timestamp or joins the end, and nothing else about the chart
     /// moves. A view anchored to the right edge follows a new bar on its
@@ -5569,6 +5592,10 @@ fn draw_goto_day(cr: &cairo::Context, state: &State, columns: &Columns, plan: &L
 /// goes when a hand moves the view, which is when it stops being true.
 fn draw_range(cr: &cairo::Context, state: &State, width: f64, height: f64) {
     let Some(range) = state.range else { return };
+    // The trading toggle's corner, on the chart it stands over.
+    if state.axis_corner_taken {
+        return;
+    }
     let year = state.bars.last().and_then(|bar| state.clock.read(bar.ts, state.timeframe.is_calendar()));
     let text = match year {
         Some(at) => range.short_key(chrono::Datelike::year(&at)),
