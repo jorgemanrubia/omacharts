@@ -140,12 +140,15 @@ fn a_short_takes_a_stop_and_then_a_target() {
             eprintln!("    {:?} {:?} {} @ {:?} {:?} tag {:?} basket {}", o.side, o.kind, o.qty, o.price, o.status, o.tag, o.basket_id);
         }
     };
-    // Flat to begin with.
-    trading.cancel_all(&account).expect("cancelled");
-    if trading.book().positions.iter().any(|p| p.contract == contract && p.net != 0) {
-        trading.flatten(&account, &contract, "CME").expect("flattened");
+    // The account is the author's: never cancel or close what they hold.
+    // Anything open or working means it is in use, and the test stands down.
+    std::thread::sleep(Duration::from_secs(3));
+    let book = trading.book();
+    if book.positions.iter().any(|p| p.net != 0) || book.orders.iter().any(|o| o.status == rithmic::Status::Working) {
+        eprintln!("skipped: the account holds a position or a working order, and they are not the test's to touch");
+        rithmic::shutdown();
+        return;
     }
-    wait("flat", &|book| !book.positions.iter().any(|p| p.contract == contract && p.net != 0));
 
     let sold = trading.place(&order(rithmic::Side::Sell, rithmic::Kind::Market, 1, None)).expect("sold");
     // Rithmic Test's risk desk refuses with a cancel that says why; the
@@ -182,7 +185,10 @@ fn a_short_takes_a_stop_and_then_a_target() {
     std::thread::sleep(Duration::from_secs(2));
     show("after the link");
 
-    trading.cancel_all(&account).expect("cancelled");
+    // Only the test's own orders, and only the position it opened.
+    for basket in [&stop, &target] {
+        let _ = trading.cancel(&account, basket);
+    }
     trading.flatten(&account, &contract, "CME").expect("flattened");
     wait("flat again", &|book| !book.positions.iter().any(|p| p.contract == contract && p.net != 0));
     show("flat again");
