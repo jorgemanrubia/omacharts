@@ -89,6 +89,9 @@ pub(super) struct Trade {
     /// second, and its last price never left out.
     pub marked_at: Cell<Option<std::time::Instant>>,
     pub marking: Cell<bool>,
+    /// Which side of the chart the marks' labels sit at, read when trading
+    /// comes in and again whenever Preferences changes it.
+    pub order_labels: Cell<crate::ui::chart::LabelSide>,
 }
 
 /// How often at most the positions are marked to a moving market.
@@ -409,6 +412,7 @@ impl Window {
         self.window.add_action(&edit);
 
         *self.trade.sizes.borrow_mut() = trading::sizes::load(&self.store);
+        self.trade.order_labels.set(crate::ui::trading_settings::order_labels(&self.store));
 
         // The chart menu's orders, and what the trading keys reach: buy and
         // sell the chart's size at the market, go flat, and pick the size.
@@ -1324,6 +1328,16 @@ impl Window {
         }
     }
 
+    /// Every chart's labels to the side Preferences now says, at once.
+    pub fn adopt_order_labels(self: &Rc<Self>) {
+        let side = crate::ui::trading_settings::order_labels(&self.store);
+        self.trade.order_labels.set(side);
+        let panes = self.panes.borrow().clone();
+        for pane in &panes {
+            pane.view.set_order_labels(side);
+        }
+    }
+
     /// The Trading sizes dialog over `parent`, every chart saying its size
     /// from what it saves as it is changed.
     pub fn edit_trading_sizes(self: &Rc<Self>, parent: &impl IsA<gtk::Widget>) {
@@ -1388,6 +1402,7 @@ impl Window {
             return;
         }
         self.write_size_of(pane);
+        pane.view.set_order_labels(self.trade.order_labels.get());
         let Ok(target) = self.order_target(pane) else {
             return pane.view.set_marks(None, Vec::new(), Vec::new(), (None, None));
         };

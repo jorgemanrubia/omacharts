@@ -68,6 +68,9 @@ const SHARED: &[&str] = &[
     // The lists of trading sizes a chart picks from: a trader's choice, the
     // same on every machine they trade from.
     "trading_size_templates",
+    // Which side of a chart the orders' labels sit at: how somebody reads
+    // their charts, wherever they trade from.
+    "order_labels",
     "sync_crosshair",
     "drawing_configurations",
     "screenshot_save_file",

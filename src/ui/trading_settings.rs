@@ -1,10 +1,11 @@
-//! Preferences → Trading: two sections. "Trading accounts" lists the broker
-//! logins, each a row with its accounts under it, edited the way the Data
-//! page edits its data feeds; "Order entry" holds what every chart's orders
-//! follow, once there is a login to place them through.
+//! Preferences → Trading: three sections. "Trading accounts" lists the
+//! broker logins, each a row with its accounts under it, edited the way the
+//! Data page edits its data feeds; "Order entry" holds what every chart's
+//! orders follow; "Chart" how the orders are drawn on a chart. The last two
+//! are there with no login too, to be set before the first one.
 //!
-//! With nothing configured it is the heading and a button. "Add a trading
-//! account…" offers every broker in the registry, and opens that broker's own login
+//! With no login, the accounts' section is its heading and a button. "Add a
+//! trading account…" offers every broker in the registry, and opens that broker's own login
 //! dialog, with a Name field; the first login added whose broker has a data
 //! feed also adds that feed as the first data feed, through it.
 //! Each login says how it stands — live, not signed in, or the broker's own
@@ -27,6 +28,7 @@ use omacharts_engine::providers::Secrets;
 use crate::log_words;
 use crate::store::Store;
 use crate::trading::{self, Account, Desk, Login, Standing};
+use crate::ui::chart::LabelSide;
 use crate::ui::sign_in_dialogs;
 
 /// What a login's data feed is called, in a sentence about it.
@@ -61,6 +63,14 @@ fn ask(anchor: &gtk::Widget, broker: &str, known: Option<&Login>, signed: impl F
 /// Opens the Trading sizes dialog over the widget it is given.
 type EditSizes = Rc<dyn Fn(&gtk::Widget)>;
 
+/// Which side of a chart its orders' and position's labels sit at.
+pub const ORDER_LABELS: &str = "order_labels";
+
+/// The side the labels sit at: the left unless somebody chose the right.
+pub fn order_labels(store: &Store) -> LabelSide {
+    store.setting(ORDER_LABELS).and_then(|key| LabelSide::from_key(&key)).unwrap_or_default()
+}
+
 pub struct Panel {
     store: Rc<Store>,
     desk: Rc<Desk>,
@@ -75,6 +85,8 @@ pub struct Panel {
     data_page: RefCell<Option<Rc<dyn Fn()>>>,
     page: adw::PreferencesPage,
     edit_sizes: RefCell<Option<EditSizes>>,
+    /// Puts every chart's labels where the setting now says.
+    labels_moved: RefCell<Option<Rc<dyn Fn()>>>,
     groups: RefCell<Vec<adw::PreferencesGroup>>,
     /// The latest word from a sign-in, by login, until the next one.
     notes: RefCell<HashMap<String, String>>,
@@ -105,6 +117,7 @@ impl Panel {
             data_page: RefCell::new(None),
             page,
             edit_sizes: RefCell::new(None),
+            labels_moved: RefCell::new(None),
             groups: RefCell::new(Vec::new()),
             notes: RefCell::new(HashMap::new()),
             redraw: RefCell::new(None),
@@ -130,6 +143,11 @@ impl Panel {
     pub fn set_edit_sizes(self: &Rc<Self>, edit: EditSizes) {
         *self.edit_sizes.borrow_mut() = Some(edit);
         rebuild(self);
+    }
+
+    /// What moving the labels does to the charts.
+    pub fn set_labels_moved(&self, moved: Rc<dyn Fn()>) {
+        *self.labels_moved.borrow_mut() = Some(moved);
     }
 
     /// The Data page's redraw, for when a login changes what it says.
@@ -192,10 +210,10 @@ fn rebuild(panel: &Rc<Panel>) {
     }
     accounts_group.add(&add_button(panel));
     let mut groups = vec![accounts_group];
-    // Quantities are for somebody who trades: only once there is a login.
-    if let Some(edit) = panel.edit_sizes.borrow().clone().filter(|_| !logins.is_empty()) {
+    if let Some(edit) = panel.edit_sizes.borrow().clone() {
         groups.push(order_entry_group(edit));
     }
+    groups.push(chart_group(panel));
     for group in &groups {
         panel.page.add(group);
     }
@@ -342,6 +360,31 @@ fn order_entry_group(edit: EditSizes) -> adw::PreferencesGroup {
     button.set_halign(gtk::Align::Start);
     button.connect_clicked(move |button| edit(button.upcast_ref()));
     group.add(&button);
+    group
+}
+
+/// How the orders are drawn on a chart: which side their labels sit at.
+fn chart_group(panel: &Rc<Panel>) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::new();
+    group.set_title("Chart");
+    let row = adw::ComboRow::new();
+    row.set_title("Order labels");
+    let names: Vec<&str> = LabelSide::ALL.iter().map(|side| side.label()).collect();
+    row.set_model(Some(&gtk::StringList::new(&names)));
+    let current = order_labels(&panel.store);
+    row.set_selected(LabelSide::ALL.iter().position(|side| *side == current).unwrap_or(0) as u32);
+    let weak = Rc::downgrade(panel);
+    row.connect_selected_notify(move |row| {
+        let (Some(panel), Some(side)) = (weak.upgrade(), LabelSide::ALL.get(row.selected() as usize)) else { return };
+        if *side == order_labels(&panel.store) {
+            return;
+        }
+        panel.store.set_setting(ORDER_LABELS, side.key());
+        if let Some(moved) = panel.labels_moved.borrow().clone() {
+            moved();
+        }
+    });
+    group.add(&row);
     group
 }
 
@@ -571,10 +614,10 @@ mod tests {
         }
     }
 
-    /// Nothing configured: the accounts' heading and the button, nothing
-    /// else.
+    /// Nothing configured: the accounts' heading and the button, and the
+    /// settings, which are there to be set before the first login.
     #[test]
-    fn nothing_configured_is_a_heading_and_a_button() {
+    fn nothing_configured_is_a_heading_a_button_and_the_settings() {
         crate::ui::on_gtk(|| {
             let store = Rc::new(Store::memory().unwrap());
             let panel = panel(&store, Rc::new(Desk::new(Registry::of(vec![Arc::new(FakeBroker::default())]))));
@@ -583,8 +626,50 @@ mod tests {
             assert!(words.iter().any(|w| w == "Trading accounts"), "{words:?}");
             assert!(words.iter().any(|w| w == "Add a trading account…"), "{words:?}");
             assert!(!words.iter().any(|w| w == "Remove" || w == "Sign in…"), "{words:?}");
-            assert!(!words.iter().any(|w| w == "Order entry"), "{words:?}");
-            assert!(!words.iter().any(|w| w == "Edit quantities…"), "sizes with nothing to trade: {words:?}");
+            let titles: Vec<String> = panel.groups.borrow().iter().map(|group| group.title().to_string()).collect();
+            assert_eq!(titles, ["Trading accounts", "Order entry", "Chart"]);
+            assert!(words.iter().any(|w| w == "Edit quantities…"), "{words:?}");
+        });
+    }
+
+    /// "Order labels" is Left until somebody picks Right, which is kept,
+    /// and the charts are told at once; picking what it is tells nobody.
+    #[test]
+    fn the_order_labels_are_left_until_moved_and_moving_them_is_kept() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().unwrap());
+            let panel = panel(&store, Rc::new(Desk::new(Registry::of(vec![Arc::new(FakeBroker::default())]))));
+            let told = Rc::new(std::cell::Cell::new(0));
+            let counted = told.clone();
+            panel.set_labels_moved(Rc::new(move || counted.set(counted.get() + 1)));
+            assert_eq!(order_labels(&store), LabelSide::Left);
+            let combo = |panel: &Panel| {
+                let group = panel.groups.borrow().iter().find(|group| group.title() == "Chart").cloned().unwrap();
+                fn find(widget: &gtk::Widget) -> Option<adw::ComboRow> {
+                    let mut next = widget.first_child();
+                    while let Some(child) = next {
+                        if let Ok(row) = child.clone().downcast::<adw::ComboRow>() {
+                            return Some(row);
+                        }
+                        if let Some(row) = find(&child) {
+                            return Some(row);
+                        }
+                        next = child.next_sibling();
+                    }
+                    None
+                }
+                find(group.upcast_ref()).expect("the Order labels row")
+            };
+            let row = combo(&panel);
+            assert_eq!(row.title(), "Order labels");
+            assert!(row.subtitle().is_none_or(|s| s.is_empty()), "no hint under it");
+            assert_eq!(row.selected(), 0, "Left");
+            row.set_selected(1);
+            assert_eq!(order_labels(&store), LabelSide::Right);
+            assert_eq!(told.get(), 1, "the charts are told");
+            rebuild(&panel);
+            assert_eq!(combo(&panel).selected(), 1, "kept");
+            assert_eq!(told.get(), 1, "drawing the page again moves nothing");
         });
     }
 
@@ -619,7 +704,7 @@ mod tests {
             rebuild(&panel);
             let groups = panel.groups.borrow().clone();
             let titles: Vec<String> = groups.iter().map(|group| group.title().to_string()).collect();
-            assert_eq!(titles, ["Trading accounts", "Order entry"]);
+            assert_eq!(titles, ["Trading accounts", "Order entry", "Chart"]);
             assert!(words_under(groups[0].upcast_ref()).iter().any(|w| w == "Add a trading account…"));
             assert!(words_under(groups[1].upcast_ref()).iter().any(|w| w == "Edit quantities…"));
             let rows = login_rows(&panel);

@@ -1482,6 +1482,8 @@ fn build_data_page(context: &Rc<Context>) {
     );
     let window = context.window.clone();
     trading.set_edit_sizes(Rc::new(move |anchor: &gtk::Widget| window.edit_trading_sizes(anchor)));
+    let window = context.window.clone();
+    trading.set_labels_moved(Rc::new(move || window.adopt_order_labels()));
     let adding = trading.clone();
     let redraw = crate::ui::feed_settings::build(
         &context.data_page,

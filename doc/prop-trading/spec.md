@@ -484,13 +484,21 @@ Trading accounts
 
 Order entry
   [ Edit quantities… ]
+
+Chart
+  Order labels                                              Left ▾
 ```
 
 Each login is a row under Trading accounts, titled with its name, its
 standing under it ("live", "not signed in", "signing in", or the broker's
 words), with "data" on the data login; another login can be made it with
-"Use for data". With no login the page is the heading Trading accounts and
-"Add a trading account…"; Order entry appears once there is a login.
+"Use for data". With no login, Trading accounts is its heading and "Add a
+trading account…"; Order entry and Chart are there whether or not there
+is a login, so they can be set before the first one. Chart's one row,
+"Order labels", Left or Right, says which side of every chart the marks'
+labels sit at, Left until changed; it is kept with the other settings,
+and every chart redraws with it the moment it changes. The chart itself
+is as it was with no login: no marks without an account.
 Removing the data login asks about the data feed: another login takes it
 over, or the trader chooses whether the Rithmic data feed goes too, or it
 stays, not signed in, when it is the last one.
@@ -557,22 +565,50 @@ The first version of order entry:
 - the account's balance and Rithmic's loss limits (RMS), shown but not
   enforced.
 
-On the chart, every order and the position wears one label at the right
-end of its line, in one piece: a tag filled in the line's colour, a body,
-and a × as its end segment. The tag is a code with the size: `▲ L 1` and
+On the chart, every order and the position has a line at its price and
+one label on it, in one piece: a tag filled in the line's colour, a body,
+and a × as its end segment. The lines run from the chart's left edge to
+the last bar and stop there, so the room after the last bar holds the
+last price's line alone; scrolled back so the last bar is past the axis,
+they run across the whole chart. The last price's line is drawn over
+every mark's line, so it still reads with the price sitting on the
+entry, and under every label. Where the labels sit is the trader's
+choice (Preferences → Trading → Chart → Order labels):
+
+- **Left**, the default: at the chart's left edge, the tag at the edge
+  and the × towards the bars, the position's TP and SL tabs after its ×.
+  They never move with the bars; the oldest bars on screen are under
+  them, and the axis chips say where each order is.
+- **Right**: by the price axis, the position's tabs before its label.
+  The labels float in the room after the last bar at their line's
+  height, so with the chart scrolled until the last bar reaches the axis
+  they sit at the lines' ends.
+
+What the pointer finds follows the labels: a ×, a tab, and an order's
+line, grabbed along its run or on its label, and the drag's preview is
+drawn on the same side. The tag is a code with the size: `▲ L 1` and
 `▼ S 1` for a limit and a stop that open or add to a position, the side
 in the shape, `TP 1` and `SL 1` for the ones that close some of it
 (`STL` is kept for a stop-limit), whose side goes without saying, and
 `▲ 5` and `▼ 2` for a long and a short position, the side in the same
 shape (`ESH7 ▲ 1` for one held in another month). The body is money, in the ink: an exit's P&L
-if it fills, the position's open P&L on a fill; an entry has none. The
-price is on the axis, in its own chip.
+if it fills, the position's open P&L on a fill; an entry has none. An
+order's price is on the axis, in its own chip; the position has none,
+the last price's chip beside it saying enough.
+
+Only the position's line is solid. Every order's is dashed — a limit and
+a stop that open, a target (TP) and a stop loss (SL) — and a stop's,
+entry or SL, is heavier than a limit's, so the two read apart with the
+same pattern: 1.5 points for a limit, 2.5 for a stop, 2 for the
+position, each scaled with the display. The position's SL tab is
+outlined heavier than its TP tab for the same reason. A theme of one's
+own can still set each kind's pattern (Preferences → Theme → Trading).
 
 A mark wears one colour, on its line, its outline, its tag, its × and its
 chip, and the colour says one thing. Green and red are money's: a mark
 with money to say, an exit or the position, wears the sign of it, so a
 target is green, a stop red, and the position green or red as it stands,
-the chip filled. A mark with no money, a limit or a stop that opens or
+an exit's chip filled. A mark with no money, a limit or a stop that opens or
 adds, wears its side instead, in two colours the candles never use: the
 theme's Blue for a buy and a long, its Amber for a sell and a short, the
 chip outlined. The position wears its side too until the broker's P&L
@@ -580,7 +616,7 @@ has come. The header's Buy and Sell, and the panel's sides and sizes,
 are in the same Blue and Amber, and the position's tabs in the colour
 of the exit they would make. Every theme has the four, and each is set
 by hand on a theme of one's own (Preferences → Trading). A working order's line can be dragged to
-another price, and the position's label has a TP and an SL tab before
+another price, and the position's label has a TP and an SL tab beside
 it, dragged out to place a target or a stop for the whole position.
 While it is dragged it is a preview: its line in the order's look, its
 label without the ×, the body saying what an exit would realise there,
