@@ -260,6 +260,12 @@ fn reason(texts: [Option<&String>; 2]) -> Option<String> {
     texts.into_iter().flatten().map(|text| text.trim()).find(|text| !text.is_empty()).map(str::to_string)
 }
 
+/// Does what Rithmic said of an order say it was refused? Its risk desk
+/// cancels what it refuses and says so only here: "Rejected at RMS - …".
+fn refusal(said: &str) -> bool {
+    said.trim_start().get(..6).is_some_and(|word| word.eq_ignore_ascii_case("reject"))
+}
+
 fn now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -589,24 +595,33 @@ impl State {
         let filled = update.total_fill_size.unwrap_or(0) > 0;
         // The exchange's notification carries the reason and comes first;
         // Rithmic's completion after it says only "R". The reason stands.
-        let refused = |known: &Status| match (known, reason([update.report_text.as_ref(), update.text.as_ref()])) {
+        let said = reason([update.report_text.as_ref(), update.text.as_ref()]);
+        let refused = |known: &Status| match (known, said.clone()) {
             (Status::Rejected(said), None) => Status::Rejected(said.clone()),
             (_, said) => Status::Rejected(said.unwrap_or_else(|| "no reason given".into())),
+        };
+        // Rithmic's own risk desk refuses an order by cancelling it, the
+        // refusal only in the text: "Rejected at RMS - Loss limit for
+        // product code exceeded". A cancel that says it was rejected is a
+        // rejection, so the reason is not lost with the order.
+        let cancelled = |known: &Status| match said.as_deref().filter(|said| refusal(said)) {
+            Some(_) => refused(known),
+            None => Status::Cancelled,
         };
         if let Some(status) = update.status.as_deref() {
             let status: OrderStatus = status.parse().unwrap_or_default();
             let completion = update.completion_reason.as_deref().unwrap_or("").trim();
             order.status = match status {
                 OrderStatus::Rejected => refused(&order.status),
-                OrderStatus::Cancelled => Status::Cancelled,
+                OrderStatus::Cancelled => cancelled(&order.status),
                 OrderStatus::Complete | OrderStatus::Expired => match completion {
                     "F" | "Fill" | "Filled" => Status::Filled,
-                    "C" | "Cancel" | "Canceled" | "Cancelled" => Status::Cancelled,
+                    "C" | "Cancel" | "Canceled" | "Cancelled" => cancelled(&order.status),
                     _ if filled => Status::Filled,
                     "R" | "Reject" | "Rejected" => refused(&order.status),
                     _ => match order.status {
                         Status::Rejected(_) => order.status.clone(),
-                        _ => Status::Cancelled,
+                        _ => cancelled(&order.status),
                     },
                 },
                 OrderStatus::Unknown => order.status.clone(),
@@ -674,7 +689,13 @@ impl State {
                 let said = reason([update.report_text.as_ref(), update.text.as_ref()]);
                 order.status = Status::Rejected(said.unwrap_or_else(|| "no reason given".into()));
             }
-            Some("cancel") => order.status = Status::Cancelled,
+            Some("cancel") => {
+                let said = reason([update.report_text.as_ref(), update.text.as_ref()]);
+                order.status = match said.filter(|said| refusal(said)) {
+                    Some(said) => Status::Rejected(said),
+                    None => Status::Cancelled,
+                };
+            }
             Some("status") if order.status == Status::Pending => order.status = Status::Working,
             _ => {}
         }
@@ -1594,6 +1615,39 @@ mod tests {
         let stop = &state.book().orders[0];
         assert_eq!((stop.kind, stop.price, stop.status.clone()), (Kind::Stop, Some(7600.0), Status::Working));
         assert_eq!(state.book().orders.len(), 2, "newest first, both kept");
+    }
+
+    /// Rithmic's risk desk refuses an order by cancelling it, the refusal
+    /// only in the text; the order is rejected, with that reason, however
+    /// the cancel came: as a status, as a completion, or from the
+    /// exchange. A cancel that says nothing of the kind is a cancel.
+    #[test]
+    fn a_cancel_that_says_it_was_rejected_is_a_rejection() {
+        let rms = "Rejected at RMS - Loss limit for product code exceeded";
+        let mut state = State::default();
+        state.apply(&step("S1", "open pending", |_| {}));
+        state.apply(&step("S1", "cancelled", |n| n.report_text = Some(rms.into())));
+        assert_eq!(state.book().orders[0].status, Status::Rejected(rms.into()));
+
+        state.apply(&step("S2", "open pending", |_| {}));
+        state.apply(&step("S2", "complete", |n| {
+            n.completion_reason = Some("C".into());
+            n.text = Some(rms.into());
+        }));
+        assert_eq!(state.book().orders[0].status, Status::Rejected(rms.into()));
+
+        state.apply(&step("S3", "open pending", |_| {}));
+        let mut exchange = ExchangeOrderNotification::default();
+        exchange.basket_id = Some("S3".into());
+        exchange.report_type = Some("cancel".into());
+        exchange.text = Some(rms.into());
+        state.apply(&RithmicMessage::ExchangeOrderNotification(exchange));
+        assert_eq!(state.book().orders[0].status, Status::Rejected(rms.into()));
+
+        state.apply(&step("S4", "open", |_| {}));
+        state.apply(&step("S4", "cancelled", |n| n.text = Some("Cancelled by user".into())));
+        assert_eq!(state.book().orders[0].status, Status::Cancelled);
+        assert!(refusal("rejected: no route") && !refusal("Cancel requested"));
     }
 
     #[test]
