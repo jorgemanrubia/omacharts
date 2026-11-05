@@ -174,7 +174,7 @@ pub struct Theme {
 /// How a theme draws orders and positions, as somebody set it. Every slot
 /// left unset follows the theme: a buy and a long its Blue swatch, a sell
 /// and a short its Amber, a profit its up colour and a loss its down; a
-/// limit and a position solid and a stop dashed. Setting one leaves the
+/// limit and a stop dashed, only a position solid. Setting one leaves the
 /// others following.
 #[derive(Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 pub struct TradingLook {
@@ -341,7 +341,7 @@ pub fn theme_trading(theme: &Theme, colouring: BarColouring) -> TradingColours {
         short: pick(&look.short, &sell),
         profit: pick(&look.profit, gain),
         loss: pick(&look.loss, lose),
-        limit: look.limit.unwrap_or(LineStyle::Solid),
+        limit: look.limit.unwrap_or(LineStyle::Dashed),
         stop: look.stop.unwrap_or(LineStyle::Dashed),
         position: look.position.unwrap_or(LineStyle::Solid),
     }
@@ -1476,7 +1476,7 @@ mod tests {
                 assert!(delta_e(side, money) >= 0.08, "a side {side} could be taken for money {money}");
             }
         }
-        assert_eq!((filled.limit, filled.stop, filled.position), (LineStyle::Solid, LineStyle::Dashed, LineStyle::Solid));
+        assert_eq!((filled.limit, filled.stop, filled.position), (LineStyle::Dashed, LineStyle::Dashed, LineStyle::Solid));
 
         for colouring in [BarColouring::Monochrome, BarColouring::Hollow] {
             assert_eq!(theme_trading(&theme, colouring), filled, "{colouring:?} changed the trading colours");
@@ -1523,7 +1523,7 @@ mod tests {
         assert_eq!(set.stop, LineStyle::Dotted);
         assert_eq!(set.sell, theme.swatch("Amber").unwrap().hex);
         assert_eq!(set.loss, theme_bars(&theme).down);
-        assert_eq!(set.limit, LineStyle::Solid);
+        assert_eq!(set.limit, LineStyle::Dashed);
         // The palette moves; what was left unset moves with it.
         theme.bars = Some(BarScheme { down: "#ff00ff".into(), ..theme_bars(&theme) });
         let moved = theme_trading(&theme, BarColouring::Filled);
