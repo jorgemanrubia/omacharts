@@ -133,14 +133,16 @@ pub trait Session: Send + Sync {
     fn price_limits(&self, _instrument: &omacharts_engine::Instrument) -> (Option<f64>, Option<f64>) {
         (None, None)
     }
-    /// The last trade the broker's own market data has heard in
-    /// `contract`, one of the book's positions, for marking it to the
+    /// The last trade the broker's market data has heard in `contract` on
+    /// `exchange`, one of the book's positions, for marking it to the
     /// market: [`Desk::book`] asks for every position held each time it is
-    /// read. Never waits: asking starts listening where the broker can, and
-    /// a new price is told with [`Change::Priced`] while the contract is
-    /// held. `None` until a trade has been heard, and for a broker with no
-    /// data, whose positions keep the figure it gives.
-    fn price_of(&self, _contract: &str) -> Option<f64> {
+    /// read. Never waits: asking starts listening on a market-data session
+    /// the app already has, never a new one, and a new price is told with
+    /// [`Change::Priced`] while the contract is held. `None` until a trade
+    /// has been heard, while there is no such session, and for a broker
+    /// with no data; then a chart of that very contract is marked to
+    /// instead, else the position keeps the broker's figure.
+    fn price_of(&self, _contract: &str, _exchange: &str) -> Option<f64> {
         None
     }
     /// Every order, position and balance it has heard of.
@@ -467,13 +469,23 @@ impl Desk {
     }
 
     /// Every live session's book, one, its accounts named by key: the
-    /// login's id before the number. Logins in the order given.
+    /// login's id before the number. Logins in the order given. Positions
+    /// are marked to the broker's market data alone: see [`Desk::marked`].
     pub fn book(&self, logins: &[Login]) -> Book {
+        self.marked(logins, |_| None)
+    }
+
+    /// [`Desk::book`], each position marked to the last trade the broker's
+    /// market data has heard in its contract, else, until one is heard, to
+    /// `charted`: the last price of a chart showing that very contract,
+    /// [`charted_price`]. With neither, it keeps the broker's figure, and
+    /// its account's open P&L is the broker's too.
+    pub fn marked(&self, logins: &[Login], charted: impl Fn(&Position) -> Option<f64>) -> Book {
         let mut book = Book { refreshed: true, ..Book::default() };
         for login in logins {
             let Some(session) = self.session(&login.id) else { continue };
             let mut theirs = session.book();
-            theirs.mark(|held| session.price_of(&held.contract));
+            theirs.mark(|held| session.price_of(&held.contract, &held.exchange).or_else(|| charted(held)));
             book.refreshed &= theirs.refreshed;
             book.capabilities.insert(login.id.clone(), session.capabilities());
             let key = |number: String| format!("{}/{number}", login.id);
@@ -878,5 +890,48 @@ mod tests {
         assert_eq!(book.order("B3").map(|order| order.status.stage), Some(Stage::Filled));
         assert!(book.position("l/FAKE-1", "ESZ6").is_none());
         desk.sign_out_all(SIGN_OUT_WAIT);
+    }
+
+    /// A position is marked to the broker's market data; while that has
+    /// heard nothing, to a chart of that very contract, never a continuous
+    /// series; with neither, the broker's figure stands and so does its
+    /// account's.
+    #[test]
+    fn a_position_is_marked_to_its_contract_s_chart_until_the_market_data_has_a_trade() {
+        use omacharts_engine::InstrumentKind::FutureRoot;
+        let desk = Desk::new(Registry::of(vec![Arc::new(FakeBroker::default())]));
+        let login = test_login("t", "Rithmic Test", TEST_SYSTEM);
+        let session = Arc::new(FakeSession::new(vec![account("t", "951")], Box::new(|| {})));
+        assert!(desk.begin("t"));
+        desk.opened("t", Ok(session.clone()));
+        let buy = OrderRequest {
+            account: "951".into(),
+            contract: "ESZ6".into(),
+            exchange: "CME".into(),
+            side: Side::Buy,
+            qty: 1,
+            kind: OrderKind::Market,
+            price: None,
+            tag: new_tag(),
+        };
+        session.place(&buy).unwrap();
+        let logins = vec![login];
+        let (continuous, december) = (instrument("ES", FutureRoot), instrument("ESZ6", FutureRoot));
+        let marked = |charts: &[(&omacharts_engine::Instrument, Option<f64>)]| {
+            let book = desk.marked(&logins, |held| charted_price(held, charts.iter().copied()));
+            let open = book.position("t/951", "ESZ6").and_then(|held| held.open_pnl);
+            (open, book.money("t/951").and_then(|money| money.unrealized))
+        };
+
+        let broker = desk.book(&logins).position("t/951", "ESZ6").and_then(|held| held.open_pnl);
+        assert_eq!(marked(&[(&continuous, Some(7_622.25))]), (broker, None), "a continuous chart is not the contract");
+        assert_eq!(marked(&[(&continuous, Some(7_000.0)), (&december, Some(7_622.25))]), (Some(500.0), Some(500.0)));
+
+        *session.market.lock().unwrap() = Some(7_602.25);
+        assert_eq!(
+            marked(&[(&december, Some(7_622.25))]),
+            (Some(-500.0), Some(-500.0)),
+            "the market data's trade wins over the chart once it has one"
+        );
     }
 }

@@ -322,7 +322,9 @@ contract that expired lately is still what it was.
   one session every chart shares: CME bills a non-professional subscriber
   as a professional after two concurrent data sessions, and R | Trader Pro's
   plug-in mode, Rithmic's way around that, is Windows only. Any number of
-  logins have a trading half, and only the data login a data half. The bar
+  logins have a trading half, and only the data login a data half: a
+  trading login hears the prices it marks and judges orders by on that
+  one, borrowed, and opens none of its own for them. The bar
   widget asks the app rather than signing in itself.
 - **Bars** come from Rithmic: minute bars from the same request as the
   minute ladders in stage 2, daily and weekly from its time bars.
@@ -681,6 +683,31 @@ The Accounts tab shows the balance, the day's P&L, the open P&L, the loss
 limit and the balance the account is liquidated at, as Rithmic says them;
 shown, not enforced. The Orders tab shows the day's orders, not only this
 session's.
+
+**Open P&L is marked to the market, not taken from the PnL plant**, which
+on Rithmic Test reports a held position's open P&L as zero however the
+market moves. A position is worth (last − average) × size × what a point
+is worth, and its last is, in order:
+
+1. the last trade in that contract on its exchange, `MNQZ6` on CME, heard
+   on the one Rithmic data session the app already has: the data login's
+   data half, which the charts share, borrowed while a chart has it open.
+   A trading login never opens a data session of its own for this, so no
+   login has a second one beside the charts' (with one Rithmic login, it
+   is that login's one session). The opening trade a watch hears can be
+   the trader's own fill, so it marks zero, but only until the market
+   trades again; every trade replaces it.
+2. while that has heard nothing, or there is no such session open, the
+   last price of a chart on screen showing that very contract, from any
+   feed: an `MNQZ6` chart, never a continuous `MNQ`, whose price may be
+   another month's or back-adjusted. A chart moving marks the position
+   again, at most five times a second.
+3. with neither, the broker's own figure.
+
+The Positions tab, the chart's pill, the header's Day P&L and the
+Accounts tab's Open P&L are all the one mark. An account's open and day
+P&L are re-marked only when every position it holds has a price from 1
+or 2; otherwise they are the broker's.
 
 What Rithmic Test returned for each request, tried on 2026-11-04 with a
 position of one ESZ6 and a sell limit far above the market, from a fresh

@@ -218,6 +218,20 @@ pub fn running() -> bool {
     !feeding().is_empty()
 }
 
+/// The data half of the login `login`'s connection, when it is open now:
+/// the session the charts share, borrowed. Never opens one, nor starts a
+/// connection, so whatever asks here adds no market-data session that was
+/// not there already. `None` while it is closed.
+pub fn open_data(login: &str) -> Option<Client> {
+    let registry = registry();
+    let connection = registry.as_ref()?.get(login)?;
+    if connection.inner.ended.load(Ordering::Acquire) {
+        return None;
+    }
+    let generation = connection.inner.halves.lock().unwrap_or_else(|e| e.into_inner()).data?;
+    Some(Client::of(connection.inner.clone(), generation))
+}
+
 /// Close the data half of every connection, waiting a few seconds at most
 /// for Rithmic to acknowledge: what charting is done with. Whatever is
 /// watching hears [`Error::Closed`], and the next [`Connection::data`]
@@ -921,6 +935,31 @@ mod tests {
         assert!(connection.inner.halves.lock().unwrap().data.is_some());
         connection.close();
         assert!(matches!(data.sign_in(), Err(Error::Closed)));
+    }
+
+    /// Borrowing a login's data half never opens it: with its trading half
+    /// alone signed in, there is none to borrow and nothing is dialled; once
+    /// a chart has opened it, it is that one, and closed it is gone again.
+    #[test]
+    fn borrowing_data_never_opens_a_session() {
+        let gateway = Arc::new(Gateway::default());
+        let (connection, _) = faked(&gateway);
+        registry().get_or_insert_with(HashMap::new).insert("fake-borrow".into(), connection.clone());
+        let _trading = connection.trading(|_| {}).expect("signed in");
+        assert!(open_data("fake-borrow").is_none(), "trading alone lends no data half");
+        assert!(open_data("nobody-at-all").is_none(), "nor does a login with no connection");
+        assert!(registry().as_ref().unwrap().get("nobody-at-all").is_none(), "and none is started for it");
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(gateway.dialled(), ["trading"], "no data plant was dialled");
+
+        let charts = connection.data();
+        let borrowed = open_data("fake-borrow").expect("the charts' data half");
+        assert!(Arc::ptr_eq(&charts.inner, &borrowed.inner));
+        assert_eq!(charts.generation, borrowed.generation, "the same session, not a second");
+        connection.close_data();
+        assert!(open_data("fake-borrow").is_none(), "closed, there is none to borrow");
+        connection.close();
+        registry().as_mut().unwrap().remove("fake-borrow");
     }
 
     /// Closing the data half leaves the connection to the trading half, and

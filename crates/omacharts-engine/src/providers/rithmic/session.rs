@@ -274,6 +274,15 @@ pub fn client() -> Result<rithmic::Client, rithmic::Error> {
     Ok(rithmic::connection(app()?, &login_id(), login)?.data())
 }
 
+/// The data login's market data as the charts have it open now, borrowed:
+/// `None` while no chart has opened it, and never opened here. What a
+/// trading login hears prices on, so that no login has a second data
+/// session beside the charts' (CME bills a third concurrent one as a
+/// professional's).
+pub fn shared_client() -> Option<rithmic::Client> {
+    rithmic::open_data(&login_id())
+}
+
 /// Have what Rithmic says a contract is reach [`crate::specs`], and what
 /// it says a root's front month is reach [`crate::contracts`], from any
 /// connection in this process: once, before the first one opens. And the

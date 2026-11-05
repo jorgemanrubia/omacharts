@@ -48,7 +48,7 @@ pub use client::{
     choose_front_month_with, entitled_exchanges, on_entitlements, on_front_month, on_reference, price_limits, Client,
     Expiry, Reference, Watch,
 };
-pub use connection::{close, connection, running, shutdown, Connection, SIGN_OUT_WAIT};
+pub use connection::{close, connection, open_data, running, shutdown, Connection, SIGN_OUT_WAIT};
 pub use login::{Login, DEV_LOGIN};
 pub use trading::{Account, AccountPnl, Book, Fill, Kind, Limits, Order, Position, Pulse, Status, Trading, WorkingOrder};
 

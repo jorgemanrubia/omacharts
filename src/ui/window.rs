@@ -7141,6 +7141,7 @@ impl Window {
         // from, which is what an order on the chart goes to: the marks can
         // be drawn from here, without waiting for the book to move.
         self.apply_marks_to(pane);
+        self.chart_moved(pane);
     }
 
     /// Run the indicators over the bars now on screen and hand them to the
@@ -7544,7 +7545,7 @@ impl Window {
         // account's feed changed with the default is shown again.
         let before = self.routes_on_screen();
         let mut view = crate::trading::View::load(&self.store);
-        view.book = self.desk.book(&view.logins);
+        view.book = self.marked_book(&view.logins);
         *self.trading.borrow_mut() = view;
         self.reroute(&before);
         self.sync_trading();
@@ -8022,6 +8023,7 @@ impl Window {
                             .with_bars(|bars| self.drawn_indicators(&pane, &instrument, timeframe, bars)),
                     };
                     pane.view.set_indicators(drawn);
+                    self.chart_moved(&pane);
                 }
             }
             // The bars stay; the corner says why nothing newer is coming.

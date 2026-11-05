@@ -320,6 +320,31 @@ pub fn feed_of<'a>(
     chosen.or_else(|| own_feed(view, account, feeds, instrument))
 }
 
+/// The last price a chart on screen shows for `held`'s contract, to mark
+/// it to while the broker's market data has heard nothing: only a chart of
+/// that very contract, MNQZ6 for MNQZ6, on the exchange it is held on.
+/// Never a continuous series, MNQ, whose price may be another month's or
+/// back-adjusted. `charts` is every chart's instrument and last price.
+pub fn charted_price<'a>(
+    held: &Position,
+    charts: impl IntoIterator<Item = (&'a omacharts_engine::Instrument, Option<f64>)>,
+) -> Option<f64> {
+    let exchange_of = |instrument: &'a omacharts_engine::Instrument| {
+        instrument
+            .exchange
+            .clone()
+            .or_else(|| omacharts_engine::exchanges::registry().contract_exchange(instrument.root()).map(str::to_string))
+    };
+    charts
+        .into_iter()
+        .filter(|(instrument, _)| instrument.is_contract() && instrument.symbol.eq_ignore_ascii_case(&held.contract))
+        .filter(|(instrument, _)| {
+            held.exchange.trim().is_empty()
+                || exchange_of(instrument).is_none_or(|exchange| exchange.eq_ignore_ascii_case(held.exchange.trim()))
+        })
+        .find_map(|(_, last)| last)
+}
+
 /// What the Account part says: the account's name, with its trouble
 /// after it when its login is in trouble, "Lucid 1234 signed out".
 pub fn account_text(name: &str, trouble: Option<&str>) -> String {
@@ -678,5 +703,36 @@ mod tests {
         });
         assert!(flat_plan(&book, "t/951", "ESZ6").flatten);
         assert!(!flat_plan(&book, "t/951", "NQZ6").flatten);
+    }
+
+    /// A position is marked to a chart only while it shows that very
+    /// contract on its exchange: MNQZ6 by an MNQZ6 chart, from any feed,
+    /// never by a continuous MNQ, whose price may be another month's or
+    /// back-adjusted, nor by another month or another market.
+    #[test]
+    fn a_chart_marks_a_position_only_when_it_shows_that_very_contract() {
+        use omacharts_engine::InstrumentKind::FutureRoot;
+        let held = Position {
+            account: "t/951".into(),
+            contract: "MNQZ6".into(),
+            exchange: "CME".into(),
+            net: 1,
+            avg: Some(25_000.0),
+            open_pnl: Some(0.0),
+            tick: Some(0.25),
+            point: Some(2.0),
+        };
+        let continuous = instrument("MNQ", FutureRoot);
+        let march = instrument("MNQH7", FutureRoot);
+        let december = instrument("MNQZ6", FutureRoot);
+        let elsewhere = omacharts_engine::Instrument { exchange: Some("CBOT".into()), ..december.clone() };
+        assert_eq!(charted_price(&held, [(&continuous, Some(24_990.0)), (&march, Some(25_210.0))]), None);
+        assert_eq!(charted_price(&held, [(&elsewhere, Some(25_005.0))]), None, "another exchange's");
+        assert_eq!(
+            charted_price(&held, [(&continuous, Some(24_990.0)), (&december, None), (&december, Some(25_012.5))]),
+            Some(25_012.5),
+            "the chart of the contract with a price"
+        );
+        assert_eq!(charted_price(&held, std::iter::empty()), None);
     }
 }

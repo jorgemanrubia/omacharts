@@ -246,13 +246,49 @@ impl Window {
             return;
         }
         self.trade.marked_at.set(Some(std::time::Instant::now()));
-        let book = self.desk.book(&self.trading.borrow().logins);
+        let book = self.marked_book(&self.trading.borrow().logins);
         self.trading.borrow_mut().book = book;
         let panel = self.trade.panel.borrow().clone();
         if let Some(panel) = panel {
             panel.redraw(&self.trading.borrow());
         }
         self.apply_marks();
+    }
+
+    /// Every live session's book, its positions marked to the broker's
+    /// market data, else, until that has heard a trade, to a chart on
+    /// screen showing that very contract.
+    pub(super) fn marked_book(&self, logins: &[trading::Login]) -> trading::Book {
+        let charts: Vec<(omacharts_engine::Instrument, Option<f64>)> = self
+            .panes
+            .borrow()
+            .iter()
+            .filter_map(|pane| {
+                let instrument = pane.instrument.borrow().clone().filter(|instrument| instrument.is_contract())?;
+                Some((instrument, pane.view.last_price()))
+            })
+            .collect();
+        self.desk.marked(logins, |held| {
+            trading::charted_price(held, charts.iter().map(|(instrument, last)| (instrument, *last)))
+        })
+    }
+
+    /// `pane`'s chart moved: a position held in what it charts is marked
+    /// again, to the chart itself while the broker's market data has heard
+    /// nothing, as often as [`Window::mark_to_market`] allows.
+    pub(super) fn chart_moved(self: &Rc<Self>, pane: &ChartPane) {
+        if !self.trade.shown.get() {
+            return;
+        }
+        let Some(root) = pane.instrument.borrow().as_ref().map(|instrument| instrument.root().to_string()) else {
+            return;
+        };
+        let holds = self.trading.borrow().book.positions.iter().any(|held| {
+            held.net != 0 && omacharts_engine::specs::root_of(&held.contract).eq_ignore_ascii_case(&root)
+        });
+        if holds {
+            self.mark_to_market();
+        }
     }
 
     /// Forget what was asked of a broker once its book has answered, and

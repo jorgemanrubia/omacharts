@@ -361,7 +361,7 @@ impl Session for FakeSession {
     fn price_limits(&self, _instrument: &omacharts_engine::Instrument) -> (Option<f64>, Option<f64>) {
         *self.limits.lock().unwrap()
     }
-    fn price_of(&self, _contract: &str) -> Option<f64> {
+    fn price_of(&self, _contract: &str, _exchange: &str) -> Option<f64> {
         *self.market.lock().unwrap()
     }
     fn book(&self) -> Book {

@@ -79,6 +79,8 @@ impl Broker for Rithmic {
         // and how the session stands again; coming back after a drop is the
         // cue to refresh it too.
         session::hear_specs();
+        // Only its trading half is opened here: its prices are heard on the
+        // data session the charts share, never on one of its own.
         let connection = rithmic::connection(app, &login.id, source).map_err(said)?;
         let changed: Arc<dyn Fn(Change) + Send + Sync> = Arc::from(changed);
         let told = changed.clone();
@@ -104,11 +106,8 @@ impl Broker for Rithmic {
             login: login.id.clone(),
             simulated: system_of(login) == rithmic::TEST_SYSTEM,
             trading,
-            changed,
-            connection,
-            prices: Mutex::default(),
-            held: Arc::default(),
-            told: Arc::default(),
+            changed: changed.clone(),
+            prices: Prices::new(Box::new(Shared), changed),
             alive,
         }))
     }
@@ -219,64 +218,151 @@ struct RithmicSession {
     /// What the window is told when the book moves, or when a contract
     /// asked for is known.
     changed: Arc<dyn Fn(Change) + Send + Sync>,
-    connection: rithmic::Connection,
     /// The last trade on each contract an order was asked about or a
-    /// position is held in, by contract, heard on the login's own data
-    /// half.
-    prices: Mutex<HashMap<String, Priced>>,
-    /// The contracts a position is held in, as the book last said: a new
-    /// price on one of them is told, so the position is marked to it.
-    held: Arc<Mutex<HashSet<String>>>,
-    /// A new price was told and the book not read since: told once until
-    /// it is, however busy the market.
-    told: Arc<AtomicBool>,
+    /// position is held in, heard on the data session the charts share.
+    prices: Prices,
     /// Cleared when the session signs out, so that a front month heard
     /// after is nobody's news.
     alive: Arc<AtomicBool>,
 }
 
-/// A contract's trades being watched for their price.
+/// What a contract's trades say, in the words marking needs.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Heard {
+    /// It traded at this price, or this was its last trade before the
+    /// watch began, which is the market's price until it trades again.
+    Price(f64),
+    /// The watch is over for good: its session closed, or it was refused.
+    Ended,
+}
+
+/// What hears a watched contract's trades, on the session's thread.
+type Hearing = Box<dyn Fn(Heard) + Send + Sync>;
+
+/// Where a session hears prices.
+trait Feed: Send + Sync {
+    /// Hear `contract`'s trades on `exchange` until what comes back is
+    /// dropped; `None`, with nothing opened, when there is no session to
+    /// hear them on.
+    fn watch(&self, contract: &str, exchange: &str, heard: Hearing) -> Option<Box<dyn Send>>;
+}
+
+/// The one Rithmic market-data session the app already has, the data
+/// login's that the charts share, borrowed while it is open. A trading
+/// login never opens one of its own for its prices: a second concurrent
+/// data session on a login is what CME bills a non-professional as a
+/// professional for. With the trading login the only Rithmic login, it is
+/// the data login, and this is its one session.
+struct Shared;
+
+impl Feed for Shared {
+    fn watch(&self, contract: &str, exchange: &str, heard: Hearing) -> Option<Box<dyn Send>> {
+        let client = session::shared_client()?;
+        let watch = client.watch_contract(contract, exchange, move |live| match live {
+            rithmic::Live::Trade(trade) | rithmic::Live::Last(trade) => heard(Heard::Price(trade.price)),
+            // Reconnecting by itself.
+            rithmic::Live::Lost(rithmic::Error::Connection(_) | rithmic::Error::Timeout) => {}
+            rithmic::Live::Lost(_) => heard(Heard::Ended),
+            rithmic::Live::Watching { .. } => {}
+        });
+        Some(Box::new(watch))
+    }
+}
+
+/// A contract's trades being heard for their price.
 struct Priced {
-    _watch: rithmic::Watch,
+    _watch: Box<dyn Send>,
     last: Arc<Mutex<Option<f64>>>,
-    /// The watch ended for good: closed, or refused. Watched afresh when
-    /// asked again.
+    /// The watch ended for good. Let go, and watched afresh when asked
+    /// again.
     ended: Arc<AtomicBool>,
 }
 
-impl RithmicSession {
-    /// Start hearing `contract`'s trades, unless they are heard already.
-    /// The contract itself, never a root's front month: a position in a
-    /// month that has rolled off is marked to that month's price.
-    fn watch_price(&self, contract: &str, exchange: &str) {
-        let mut prices = self.prices.lock().unwrap_or_else(|e| e.into_inner());
-        if prices.get(contract).is_some_and(|priced| !priced.ended.load(Ordering::Acquire)) {
-            return;
+/// The last trade of each contract watched, by contract and exchange.
+struct Prices {
+    feed: Box<dyn Feed>,
+    watched: Mutex<HashMap<(String, String), Priced>>,
+    /// The contracts a position is held in, as the book last said: a new
+    /// price on one of them is told, so the position is marked to it.
+    held: Arc<Mutex<HashSet<(String, String)>>>,
+    /// A new price was told and the book not read since: told once until
+    /// it is, however busy the market.
+    told: Arc<AtomicBool>,
+    changed: Arc<dyn Fn(Change) + Send + Sync>,
+}
+
+impl Prices {
+    fn new(feed: Box<dyn Feed>, changed: Arc<dyn Fn(Change) + Send + Sync>) -> Prices {
+        Prices { feed, watched: Mutex::default(), held: Arc::default(), told: Arc::default(), changed }
+    }
+
+    /// Start hearing `contract`'s trades on `exchange`, unless they are
+    /// heard already or there is no session to hear them on. The contract
+    /// itself, never a root's front month: a position in a month that has
+    /// rolled off is marked to that month's price.
+    fn watch(&self, contract: &str, exchange: &str) {
+        let key = (contract.to_string(), exchange.to_string());
+        let mut watched = self.watched.lock().unwrap_or_else(|e| e.into_inner());
+        match watched.get(&key) {
+            Some(priced) if !priced.ended.load(Ordering::Acquire) => return,
+            // What an ended watch last heard is no longer the market.
+            Some(_) => {
+                watched.remove(&key);
+            }
+            None => {}
         }
         let last = Arc::new(Mutex::new(None));
         let ended = Arc::new(AtomicBool::new(false));
-        let watch = self.connection.data().watch_contract(contract, exchange, {
+        let heard: Hearing = {
             let (last, ended) = (last.clone(), ended.clone());
-            let (held, told, changed, contract) =
-                (self.held.clone(), self.told.clone(), self.changed.clone(), contract.to_string());
-            move |live| match live {
-                // The last trade before the watch began is the market's
-                // price until it trades again.
-                rithmic::Live::Trade(trade) | rithmic::Live::Last(trade) => {
-                    let before = last.lock().unwrap_or_else(|e| e.into_inner()).replace(trade.price);
-                    let holding = held.lock().unwrap_or_else(|e| e.into_inner()).contains(&contract);
-                    if before != Some(trade.price) && holding && !told.swap(true, Ordering::AcqRel) {
+            let (held, told, changed, key) = (self.held.clone(), self.told.clone(), self.changed.clone(), key.clone());
+            Box::new(move |heard| match heard {
+                // Every trade replaces the one before, so the opening one,
+                // which may be the trader's own fill, is the mark only
+                // until the market trades again.
+                Heard::Price(price) => {
+                    let before = last.lock().unwrap_or_else(|e| e.into_inner()).replace(price);
+                    let holding = held.lock().unwrap_or_else(|e| e.into_inner()).contains(&key);
+                    if before != Some(price) && holding && !told.swap(true, Ordering::AcqRel) {
                         changed(Change::Priced);
                     }
                 }
-                rithmic::Live::Lost(rithmic::Error::Connection(_) | rithmic::Error::Timeout) => {}
-                rithmic::Live::Lost(_) => ended.store(true, Ordering::Release),
-                rithmic::Live::Watching { .. } => {}
-            }
-        });
-        prices.insert(contract.to_string(), Priced { _watch: watch, last, ended });
+                Heard::Ended => ended.store(true, Ordering::Release),
+            })
+        };
+        if let Some(watch) = self.feed.watch(contract, exchange, heard) {
+            watched.insert(key, Priced { _watch: watch, last, ended });
+        }
     }
 
+    /// The last trade heard in `contract` on `exchange`, if one has been.
+    fn last(&self, contract: &str, exchange: &str) -> Option<f64> {
+        let watched = self.watched.lock().unwrap_or_else(|e| e.into_inner());
+        let priced = watched.get(&(contract.to_string(), exchange.to_string()))?;
+        if priced.ended.load(Ordering::Acquire) {
+            return None;
+        }
+        *priced.last.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// What the book holds now: a new price on one of these is told once,
+    /// and the next is told again.
+    fn hold(&self, held: HashSet<(String, String)>) {
+        self.told.store(false, Ordering::Release);
+        *self.held.lock().unwrap_or_else(|e| e.into_inner()) = held;
+    }
+}
+
+/// The exchange a position's contract is priced on: the one the broker
+/// says it is held on, else its root's.
+fn exchange_or_root(contract: &str, exchange: &str) -> String {
+    match exchange.trim() {
+        "" => omacharts_engine::providers::rithmic::exchange_of(contract).to_string(),
+        exchange => exchange.to_string(),
+    }
+}
+
+impl RithmicSession {
     /// The contract `instrument` trades as: a dated contract itself, a root
     /// its front month, when a data session has found it; `None` until one
     /// has, with `found` called once it is known.
@@ -336,15 +422,13 @@ impl Session for RithmicSession {
         let symbol = self.contract_of(instrument, move || changed(Change::Moved)).ok_or(Refusal::NotKnownYet)?;
         // Its price from here on, for judging an order on a chart fed from
         // elsewhere: only contracts somebody charts, as only they are asked.
-        self.watch_price(&symbol, exchange);
+        self.prices.watch(&symbol, exchange);
         Ok(Contract { tick: rithmic_tick(&symbol), symbol, exchange: exchange.to_string() })
     }
 
     fn last_price(&self, instrument: &omacharts_engine::Instrument) -> Option<f64> {
         let contract = self.contract_of(instrument, || {})?;
-        let prices = self.prices.lock().unwrap_or_else(|e| e.into_inner());
-        let priced = prices.get(&contract)?;
-        *priced.last.lock().unwrap_or_else(|e| e.into_inner())
+        self.prices.last(&contract, exchange_of(instrument))
     }
 
     fn price_limits(&self, instrument: &omacharts_engine::Instrument) -> (Option<f64>, Option<f64>) {
@@ -354,20 +438,25 @@ impl Session for RithmicSession {
         }
     }
 
-    /// The contract's own last trade, heard on the login's own data half:
-    /// a position in a month that has rolled off is marked to that month.
-    fn price_of(&self, contract: &str) -> Option<f64> {
-        self.watch_price(contract, omacharts_engine::providers::rithmic::exchange_of(contract));
-        let prices = self.prices.lock().unwrap_or_else(|e| e.into_inner());
-        *prices.get(contract)?.last.lock().unwrap_or_else(|e| e.into_inner())
+    /// The contract's own last trade on its exchange, heard on the data
+    /// session the charts share: a position in a month that has rolled off
+    /// is marked to that month. `None` while no chart has that session open.
+    fn price_of(&self, contract: &str, exchange: &str) -> Option<f64> {
+        let exchange = exchange_or_root(contract, exchange);
+        self.prices.watch(contract, &exchange);
+        self.prices.last(contract, &exchange)
     }
 
     fn book(&self) -> Book {
         let book = self.trading.book();
         // Read from here on: the next new price is told again.
-        self.told.store(false, Ordering::Release);
-        *self.held.lock().unwrap_or_else(|e| e.into_inner()) =
-            book.positions.iter().filter(|held| held.net != 0).map(|held| held.contract.clone()).collect();
+        self.prices.hold(
+            book.positions
+                .iter()
+                .filter(|held| held.net != 0)
+                .map(|held| (held.contract.clone(), exchange_or_root(&held.contract, &held.exchange)))
+                .collect(),
+        );
         Book {
             capabilities: HashMap::new(),
             refreshed: book.refreshed,
@@ -475,6 +564,99 @@ impl Session for RithmicSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The data session the charts share, in memory: open or not, what is
+    /// watched on it, and a way to trade.
+    #[derive(Clone, Default)]
+    struct Charts {
+        open: Arc<AtomicBool>,
+        watched: Arc<Mutex<Vec<(String, String)>>>,
+        heard: Arc<Mutex<HashMap<String, Hearing>>>,
+    }
+
+    impl Feed for Charts {
+        fn watch(&self, contract: &str, exchange: &str, heard: Hearing) -> Option<Box<dyn Send>> {
+            if !self.open.load(Ordering::Acquire) {
+                return None;
+            }
+            self.watched.lock().unwrap().push((contract.into(), exchange.into()));
+            self.heard.lock().unwrap().insert(contract.into(), heard);
+            Some(Box::new(()))
+        }
+    }
+
+    impl Charts {
+        fn trade(&self, contract: &str, heard: Heard) {
+            (self.heard.lock().unwrap()[contract])(heard);
+        }
+    }
+
+    fn priced(charts: &Charts) -> (Prices, Arc<Mutex<Vec<Change>>>) {
+        let told = Arc::new(Mutex::new(Vec::new()));
+        let telling = told.clone();
+        (Prices::new(Box::new(charts.clone()), Arc::new(move |change| telling.lock().unwrap().push(change))), told)
+    }
+
+    fn held(contract: &str) -> HashSet<(String, String)> {
+        HashSet::from([(contract.to_string(), "CME".to_string())])
+    }
+
+    /// A position is marked from the data session the charts share: the
+    /// opening trade, which may be the trader's own fill, then every trade
+    /// after it, each new one told once until the book is read again.
+    #[test]
+    fn a_position_is_marked_from_the_charts_data_session() {
+        let charts = Charts::default();
+        charts.open.store(true, Ordering::Release);
+        let (prices, told) = priced(&charts);
+        prices.hold(held("MNQZ6"));
+        prices.watch("MNQZ6", "CME");
+        assert_eq!(prices.last("MNQZ6", "CME"), None, "nothing heard yet");
+
+        charts.trade("MNQZ6", Heard::Price(25_000.0));
+        assert_eq!(prices.last("MNQZ6", "CME"), Some(25_000.0), "the opening trade, the fill itself");
+        charts.trade("MNQZ6", Heard::Price(25_012.5));
+        assert_eq!(prices.last("MNQZ6", "CME"), Some(25_012.5), "a fill does not pin it once the market trades");
+        assert_eq!(*told.lock().unwrap(), [Change::Priced], "told once until the book is read");
+
+        prices.hold(held("MNQZ6"));
+        charts.trade("MNQZ6", Heard::Price(25_010.0));
+        assert_eq!(*told.lock().unwrap(), [Change::Priced, Change::Priced], "and again once it is");
+        assert_eq!(prices.last("MNQZ6", "CBOT"), None, "by its exchange as well as its contract");
+        prices.watch("MNQZ6", "CME");
+        assert_eq!(charts.watched.lock().unwrap().len(), 1, "watched once");
+    }
+
+    /// With no data session open, none is opened for a trading login: the
+    /// position has no price from it, and is watched once the charts open
+    /// one. A session that ends takes its price with it.
+    #[test]
+    fn no_data_session_is_opened_for_a_trading_login() {
+        let charts = Charts::default();
+        let (prices, _) = priced(&charts);
+        prices.watch("MNQZ6", "CME");
+        assert_eq!(prices.last("MNQZ6", "CME"), None);
+        assert!(charts.watched.lock().unwrap().is_empty(), "nothing watched, nothing opened");
+
+        charts.open.store(true, Ordering::Release);
+        prices.watch("MNQZ6", "CME");
+        charts.trade("MNQZ6", Heard::Price(25_000.0));
+        assert_eq!(prices.last("MNQZ6", "CME"), Some(25_000.0));
+
+        charts.trade("MNQZ6", Heard::Ended);
+        assert_eq!(prices.last("MNQZ6", "CME"), None, "an ended session's price is no longer the market");
+        charts.open.store(false, Ordering::Release);
+        prices.watch("MNQZ6", "CME");
+        assert_eq!(charts.watched.lock().unwrap().len(), 1, "and none is opened to replace it");
+    }
+
+    /// The trading login's own sign-in borrows the shared session and
+    /// opens none: with no Rithmic chart open in this process there is
+    /// nothing to watch on.
+    #[test]
+    fn the_shared_feed_borrows_and_never_opens() {
+        assert!(Shared.watch("MNQZ6", "CME", Box::new(|_| {})).is_none());
+    }
 
     /// A contract is known by its root for its tick and what a point of it
     /// is worth, which is what marks a position to the market.
