@@ -7279,9 +7279,10 @@ fn draw_mark_label(cr: &cairo::Context, row: &MarkRow, y: f64, label: &Label, ba
 /// from the plot's left edge to the last bar, the last price's over them
 /// all, then over every line its label at the end of the chart the
 /// trader chose — the tag, the body and the × in one piece — and the
-/// position's exit tabs beside its label, prices on the axis spread
-/// apart with the last price's where they would cover each other.
-/// Returns where the last price's chip goes, when it had to move.
+/// position's exit tabs beside its label, the orders' prices on the axis
+/// spread apart with the last price's where they would cover each other.
+/// The position has no chip there: the last price's beside it says
+/// enough. Returns where the last price's chip goes, when it had to move.
 #[allow(clippy::too_many_arguments)]
 fn draw_marks(
     cr: &cairo::Context,
@@ -7450,7 +7451,6 @@ fn draw_marks(
                 let _ = cr.show_text(crate::trading::exit_tab(*kind));
             }
         });
-        chips.push((y + 0.5, &held.price_text, Some(chip_look(&held.colour, held.body.is_some())), held.dim));
     }
     let last = state.bars.last().map(|bar| to_y(bar.close).round() + 0.5).filter(|y| shown(*y));
     if let Some(y) = last {
@@ -10624,6 +10624,31 @@ mod tests {
         }
         assert!(order_weight(OrderKind::Stop) > order_weight(OrderKind::Limit));
         assert!(order_weight(OrderKind::Limit) > 1.0, "heavier than the last price's hairline");
+    }
+
+    /// The axis carries every order's price and the last price's, and not
+    /// the position's, which the last price's beside it makes redundant.
+    #[test]
+    fn the_axis_has_no_chip_for_the_position() {
+        let (w, h) = (600.0, 400.0);
+        let state = marked();
+        let mut bare = marked();
+        bare.marks = Marks::default();
+        let (first, visible, _) = state.view();
+        let plan = layout(&state, w, h);
+        let scale = price_range(&state, &state.bars[first..first + visible], &plan).unwrap();
+        let axis = (plan.plot_x + plan.plot_w) as usize + 4;
+        let pixels = frame(w, h, |cr| draw(cr, w, h, &state));
+        let unmarked = frame(w, h, |cr| draw(cr, w, h, &bare));
+        let ink = |price: f64| {
+            let y = scale.to_y(price, plan.price_y, plan.price_h).round() as usize;
+            (axis..w as usize - 2).any(|x| {
+                let i = (y * w as usize + x) * 4;
+                pixels[i..i + 3] != unmarked[i..i + 3]
+            })
+        };
+        assert!(ink(state.marks.orders[0].price), "the order's chip");
+        assert!(!ink(state.marks.position.as_ref().unwrap().price), "no chip for the position");
     }
 
     /// What an order in hand is and where it may go: an exit is the side
