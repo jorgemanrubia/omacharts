@@ -1946,11 +1946,35 @@ pub(super) mod tests {
         labels(model.upcast_ref())
             .into_iter()
             .filter(|(label, _)| {
-                ["Buy ", "Sell ", "Cancel ", "not signed in", "not tradable", "Finding "]
+                ["Buy ", "Sell ", "Cancel ", "not signed in", "no accounts", "not tradable", "Finding "]
                     .iter()
                     .any(|word| label.contains(word))
             })
             .collect()
+    }
+
+    /// A login that signed in and was listed no accounts is not said to be
+    /// signed out: the menu says it has no accounts, and so does an order
+    /// asked for anyway.
+    #[test]
+    fn a_login_signed_in_with_no_accounts_says_so() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = window(&store);
+            let kept = Kept::default();
+            let id = trading::add_login(&store, &kept, &typed()).expect("a login");
+            let session = Arc::new(trading::fake::FakeSession::new(Vec::new(), Box::new(|| {})));
+            assert!(window.desk.begin(&id));
+            window.desk.opened(&id, Ok(session.clone()));
+            window.desk.note(&store);
+            window.desk.tell();
+            let es = window.index.find("ES", None).expect("ES in the curated half");
+            let pane = window.focused_pane();
+            window.show_in(&pane, es);
+            session.contracts.lock().unwrap().insert("ES".into(), "ESZ6".into());
+            assert_eq!(trading_rows(&window), vec![("Rithmic Test has no accounts".to_string(), false)]);
+            assert_eq!(window.order_target(&pane).unwrap_err(), "Rithmic Test has no accounts");
+        });
     }
 
     /// The gear is a header part, and a header without it still has a way

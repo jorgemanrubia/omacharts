@@ -77,8 +77,10 @@ pub fn order_target(
     chosen: Option<&str>,
     instrument: Option<&omacharts_engine::Instrument>,
 ) -> Result<Target, String> {
-    // A login whose accounts were never listed has not signed in yet.
+    // A login whose accounts were never listed has not signed in yet, or
+    // signed in and was listed none: the broker gives it nothing to trade.
     let account = view.account_of(chosen).ok_or_else(|| match view.logins.first() {
+        Some(login) if session(&login.id).is_some() => format!("{} has no accounts", login.name),
         Some(login) => format!("{} not signed in", login.name),
         None => "No trading account".to_string(),
     })?;
@@ -675,6 +677,11 @@ mod tests {
         assert_eq!(target(true, &nq).unwrap_err(), "Finding NQ's contract…");
         let unlisted = View { accounts: Vec::new(), ..view.clone() };
         assert_eq!(order_target(&unlisted, |_| None, None, Some(&es)).unwrap_err(), "Rithmic Test not signed in");
+        assert_eq!(
+            order_target(&unlisted, |_| Some(session.clone()), None, Some(&es)).unwrap_err(),
+            "Rithmic Test has no accounts",
+            "signed in, and the broker listed none"
+        );
         assert_eq!(order_target(&View::default(), |_| None, None, Some(&es)).unwrap_err(), "No trading account");
     }
 

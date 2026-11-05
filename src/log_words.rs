@@ -95,9 +95,10 @@ pub fn serving_changed() -> Entry {
 }
 
 /// How a broker sign-in ended: "Signed in · 2 accounts", or the broker's
-/// refusal.
+/// refusal. Signed in with none listed is a warning: nothing can be traded.
 pub fn signed_in(login: &str, outcome: Result<usize, &str>) -> Entry {
     match outcome {
+        Ok(0) => Entry::warning(login, "Signed in · the broker lists no accounts"),
         Ok(1) => Entry::info(login, "Signed in · 1 account"),
         Ok(accounts) => Entry::info(login, format!("Signed in · {accounts} accounts")),
         Err(why) => Entry::error(login, format!("Not signed in · {}", gist(why))).detail(why),
@@ -214,6 +215,8 @@ mod tests {
         assert_eq!(entry.detail.as_deref(), Some("permission denied. Check the system name.\ncode 13"));
         assert_eq!(signed_in("Rithmic Test", Ok(2)).text, "Signed in · 2 accounts");
         assert_eq!(signed_in("Rithmic Test", Ok(1)).text, "Signed in · 1 account");
+        let none = signed_in("Rithmic Test", Ok(0));
+        assert_eq!((none.level, none.text.as_str()), (Level::Warning, "Signed in · the broker lists no accounts"));
         assert_eq!(feed_step("Rithmic Test", "connecting to the gateway").text, "Connecting to the gateway");
     }
 
