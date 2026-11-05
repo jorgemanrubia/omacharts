@@ -201,12 +201,17 @@ So both, every time:
 
 ```sh
 XDG_DATA_HOME=$(mktemp -d) DBUS_SESSION_BUS_ADDRESS= omacharts chart list
-dbus-run-session -- env XDG_DATA_HOME=$(mktemp -d) ./target/debug/omacharts
+bin/private-bus env XDG_DATA_HOME=$(mktemp -d) ./target/debug/omacharts
 ```
 
 The first keeps a command in its own process; the second is for when the run
 needs a window of its own. Two separate sessions have changed a live chart by
 getting this half right.
+
+`bin/private-bus` rather than a bare `dbus-run-session`: a bare one
+starts the desktop portal with the desktop's own backend, and under
+Hyprland that backend crashes on its way out when the run ends. Its header
+has the reasoning.
 
 ### And its own compositor, when the run needs to be driven
 

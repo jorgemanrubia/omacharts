@@ -169,12 +169,7 @@ EOF
   # owns the application id on the session bus, so a test run that keeps the
   # owner's bus reaches the window he is looking at however disposable its
   # data directory is.
-  # Through two files rather than a pipe: the daemon closes each descriptor
-  # as soon as it has written to it, so the address and the pid cannot share
-  # one, and anything of this process's that it keeps open is something
-  # `$(headless-window start)` then waits on for ever.
-  dbus-daemon --session --print-address=3 --print-pid=4 --fork \
-    3>"$dir/bus-address" 4>"$dir/bus-pid" >/dev/null 2>&1 </dev/null
+  "$here/private-bus" --fork "$dir"
 
   cat > "$dir/env" <<EOF
 XDG_RUNTIME_DIR=$dir

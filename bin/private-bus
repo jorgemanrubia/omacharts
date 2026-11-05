@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# A session bus of its own, for a test run.
+#
+#   bin/private-bus CMD [ARG...]   run CMD on one; it goes when CMD does
+#   bin/private-bus --fork DIR     start one that outlives this, its address
+#                                  in DIR/bus-address and pid in DIR/bus-pid
+#
+#   bin/private-bus env XDG_DATA_HOME=$(mktemp -d) ./target/debug/omacharts
+#
+# Its own bus so a command reaches the test window rather than the owner's
+# (AGENTS.md, "a test run needs its own bus").
+#
+# On it, the desktop portal answers through its GTK backend alone. GTK reads
+# the desktop's icon theme, cursor and font rendering from the portal, so
+# the portal has to run for a test window to look like the owner's. But
+# under Hyprland the portal also starts Hyprland's backend, which segfaults
+# on its way out when the run ends and the bus goes: a crash report on the
+# desktop for every run. A desktop of "gtk", for what the bus starts and not
+# for CMD, picks the GTK backend, which serves the same settings and exits
+# cleanly.
+set -euo pipefail
+
+usage() { sed -n '4,6s/^#  //p' "$0" >&2; exit 2; }
+[ $# -gt 0 ] || usage
+
+if [ "$1" = --fork ]; then
+  [ $# -eq 2 ] || usage
+  dir=$2
+  # Through two files rather than a pipe: the daemon closes each descriptor
+  # as soon as it has written to it, so the address and the pid cannot share
+  # one, and anything of this process's that it keeps open is something a
+  # caller's `$(...)` then waits on for ever.
+  dbus-daemon --session --print-address=3 --print-pid=4 --fork \
+    3>"$dir/bus-address" 4>"$dir/bus-pid" >/dev/null 2>&1 </dev/null
+  DBUS_SESSION_BUS_ADDRESS=$(cat "$dir/bus-address") \
+    dbus-update-activation-environment XDG_CURRENT_DESKTOP=gtk
+  exit
+fi
+
+exec dbus-run-session -- sh -c \
+  'dbus-update-activation-environment XDG_CURRENT_DESKTOP=gtk && exec "$@"' \
+  private-bus "$@"
