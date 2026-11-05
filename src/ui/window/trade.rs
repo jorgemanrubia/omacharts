@@ -1,5 +1,5 @@
 //! What trading puts in the window: the panel across the bottom, under
-//! the charts and the rail alike, its toggle in the bottom-left corner,
+//! the charts and the rail alike, its toggle in the bottom-right corner,
 //! the toasts orders report in, the chart menu's orders and the marks on
 //! the charts.
 //!
@@ -511,8 +511,8 @@ impl Window {
 
     /// Where the panel's toggle stands, the one place that says so. With
     /// one chartbook, in the square where the bottom-right chart's prices
-    /// meet its dates, the window's fourth corner, with the drawing tools'
-    /// top-left and the watchlist's top-right: laid over the charts, inside
+    /// meet its dates, the mirror of the drawing tools' toggle in the
+    /// bottom-left beside the first date: laid over the charts, inside
     /// their ring, and centred in the square, so only the button takes the
     /// pointer. With several, at the right end of the chartbook strip, the
     /// row under the charts once there is one, and the chart has its corner

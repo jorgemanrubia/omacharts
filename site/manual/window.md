@@ -62,11 +62,11 @@ crop: 1060,0,1500,170
 | Link button | When the chartbook has two charts or more, or always on a Pinned chart | Opens the chart's link modes. One link on a Focus chart, only under the pointer; a chain on a Follow chart and a pin on a Pinned chart, always shown and in the accent colour. See [Linking charts to the watchlist](/manual/watchlists/#linking-charts-to-the-watchlist). |
 | Watchlist toggle | Always, in the window's corner | Shows or hides the sidebar, like <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>B</kbd>. The key also puts the keyboard in the sidebar, and gives it back to the chart when hiding it. Lit while the sidebar is out. |
 | Main menu | Always, in the window's corner | Opens the [main menu](#the-main-menu). <kbd>F10</kbd> opens it too. |
-| Drawing tools' toggle | Always, in the window's top-left corner | Shows or hides the tools, like <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>D</kbd>. |
+| Drawing tools' toggle | Always, in the window's bottom-left corner, level with the dates: over the bottom-left chart, left of its first date, while the tools are hidden, and at the foot of the tools while they are out | Shows or hides the tools, like <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>D</kbd>. Faint while the tools are hidden. |
 
 Clicking another chart's gear or corner focuses that chart first. A chart's buttons hide when the keyboard moves the focus to another chart, and come back when the pointer moves. With the sidebar closed, the window's corner sits over the top-right chart, whose buttons move left.
 
-The blank space in both window corners is the window's handle. Drag it to move the window, double-click it to maximise the window, and right-click it for the desktop's window menu, where the desktop has one.
+The blank space in the window's corner is the window's handle. Drag it to move the window, double-click it to maximise the window, and right-click it for the desktop's window menu, where the desktop has one.
 
 ## The focused chart
 

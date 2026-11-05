@@ -1339,6 +1339,74 @@ mod tests {
 }
 
 #[cfg(test)]
+mod tools_toggle_tests {
+    use super::*;
+    use crate::ui::window::trade::tests::window;
+
+    /// How far in each chart's header starts.
+    fn header_starts(window: &Window) -> Vec<i32> {
+        window
+            .panes
+            .borrow()
+            .iter()
+            .map(|pane| pane.header_row.parent().expect("the legend").margin_start())
+            .collect()
+    }
+
+    /// The charts that leave the start of their time axis to the toggle.
+    fn taken(window: &Window) -> Vec<u32> {
+        window.panes.borrow().iter().filter(|pane| pane.view.axis_start_taken() > 0.0).map(|pane| pane.id).collect()
+    }
+
+    /// The drawing tools' toggle stands in the bottom-left corner, level
+    /// with the dates. Put away, it is over the bottom-left chart with its
+    /// glyph at the header's own inset, and that chart alone leaves the
+    /// start of its dates to it; out, it is at the foot of the bar and no
+    /// chart leaves anything. Every chart's header starts at the same inset
+    /// either way, with one chart or four.
+    #[test]
+    fn the_tools_toggle_stands_bottom_left_and_the_headers_start_at_the_edge() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = window(&store);
+            let bar = window.drawing_bar.borrow().clone().expect("the bar");
+            let ring = omacharts_engine::frame::RING_WIDTH as i32;
+            let inset = crate::ui::pane::LEGEND_MARGIN;
+            assert!(!bar.is_shown());
+            assert_eq!((bar.toggle.halign(), bar.toggle.valign()), (gtk::Align::Start, gtk::Align::End));
+            let overlay = bar.toggle.parent().and_downcast::<gtk::Overlay>().expect("over the bar and the charts");
+            assert!(bar.root.is_ancestor(&overlay) && window.chart_host.is_ancestor(&overlay));
+            assert_eq!(bar.toggle.margin_start() + TOOLS_TOGGLE_INK, ring + inset, "the glyph at the header's inset");
+            assert_eq!(header_starts(&window), vec![inset]);
+            assert_eq!(taken(&window), vec![window.focused.get()]);
+            assert!(bar.toggle.has_css_class("tools-toggle") && !bar.toggle.is_active());
+
+            window.toggle_drawing_tools();
+            assert!(bar.toggle.is_active(), "lit while the tools are out");
+            assert_ne!(bar.toggle.margin_start() + TOOLS_TOGGLE_INK, ring + inset, "over the bar now");
+            assert_eq!(header_starts(&window), vec![inset]);
+            assert!(taken(&window).is_empty(), "nothing to leave while it is over the bar");
+            window.toggle_drawing_tools();
+
+            // Four charts, two by two.
+            let first = window.focused.get();
+            window.split_focused(true);
+            window.focus(first);
+            window.split_focused(false);
+            let right = window.layout.borrow().leaves()[2];
+            window.focus(right);
+            window.split_focused(false);
+            assert_eq!(header_starts(&window), vec![inset; 4]);
+            let leaves = window.layout.borrow().leaves();
+            assert_eq!(taken(&window), vec![leaves[1]], "the bottom-left chart alone: {leaves:?}");
+            window.toggle_drawing_tools();
+            assert_eq!(header_starts(&window), vec![inset; 4]);
+            assert!(taken(&window).is_empty());
+        });
+    }
+}
+
+#[cfg(test)]
 mod sidebar_tests {
     use super::*;
     use crate::ui::window::trade::tests::window;
@@ -2163,12 +2231,16 @@ const CORNER_HEIGHT: i32 = crate::theming::CORNER_BUTTON_TOP + 26 + 7;
 /// toggle, the way the toggle stands against the menu.
 pub(crate) const RAIL_ADD_END: i32 = CORNER_WIDTH - crate::theming::CORNER_PAD_START;
 
-/// How far a chart down the window's left edge steps its name in, past the
-/// drawing tools' corner: one button, as wide as the bar it stands over, 44
-/// pixels with its margin, less the 8 the name tucks back under the
-/// corner's empty right edge, so it reads as the toggle's neighbour rather
-/// than a column of its own.
-const START_CLEARANCE: i32 = 36;
+/// How much further in the drawing tools' toggle's ink starts in its button
+/// than a legend dot's does in its box: the glyph's frame is four pixels
+/// in, the button's padding and the icon's own margin, and the dot two.
+/// Taken off the header's inset, so the glyph in the bottom-left corner and
+/// the dots down the header's left — the data feed's and the legend's —
+/// start at one x, at any scale.
+const TOOLS_TOGGLE_INK: i32 = 2;
+
+/// The drawing tools' toggle's 22-pixel glyph button, until it is laid out.
+const TOOLS_TOGGLE_SIZE: i32 = 22;
 
 /// Bars already folded to a resolution, keyed by cache key and that
 /// resolution, and shared with every pane drawing them.
@@ -2250,9 +2322,6 @@ pub struct Window {
     clipboard: RefCell<Clipboard>,
     /// The drawing tools, on the left.
     drawing_bar: RefCell<Option<Rc<crate::ui::drawing_bar::DrawingBar>>>,
-    /// The drawing tools' toggle, floating over the top-left corner the way
-    /// `corner` floats over the top-right, and stepped around the same way.
-    start_corner: RefCell<Option<gtk::WindowHandle>>,
     /// Where the tree of charts is mounted, rebuilt whenever it changes.
     chart_host: gtk::Box,
     /// The row of chartbook tabs under the charts, empty and hidden until
@@ -2433,7 +2502,6 @@ impl Window {
             drawing_settings_action: RefCell::new(None),
             clipboard: RefCell::new(Clipboard::Empty),
             drawing_bar: RefCell::new(None),
-            start_corner: RefCell::new(None),
             chart_host: chart_host.clone(),
             book_strip: book_strip.clone(),
             corner: RefCell::new(None),
@@ -2537,9 +2605,21 @@ impl Window {
         charts.set_child(Some(&chart_host));
         with_tools.append(&charts);
         *this.trade.charts.borrow_mut() = Some(charts);
+        // The tools' toggle, in the bottom-left corner at the time axis's
+        // height, the trading toggle's mirror: over the bottom-left chart,
+        // left of its first date, while the tools are put away, and over
+        // the foot of the bar while it is out. Laid over the bar and the
+        // charts together, so it is the same button in the same overlay
+        // either way and only its margin moves.
+        let tools = gtk::Overlay::new();
+        tools.set_child(Some(&with_tools));
+        bar.toggle.add_css_class("tools-toggle");
+        bar.toggle.set_halign(gtk::Align::Start);
+        bar.toggle.set_valign(gtk::Align::End);
+        tools.add_overlay(&bar.toggle);
         bar.set_shown(store.setting_bool(SHOW_DRAWING_TOOLS, false));
         *this.drawing_bar.borrow_mut() = Some(bar);
-        split.set_start_child(Some(&with_tools));
+        split.set_start_child(Some(&tools));
 
         // No header bar: the window's controls float over its top-right
         // corner, and the chart gets the row the bar used to take.
@@ -2559,20 +2639,6 @@ impl Window {
         overlay.add_overlay(&corner);
         *this.trade.overlay.borrow_mut() = Some(overlay.clone());
         *this.trade.root.borrow_mut() = Some(root.clone());
-        // The drawing tools' toggle, in the top-left corner: the mirror of
-        // the rail's in the top-right, so both edges open the same way.
-        if let Some(bar) = this.drawing_bar.borrow().as_ref() {
-            let cluster = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-            cluster.add_css_class("window-corner");
-            cluster.add_css_class("start");
-            cluster.append(&bar.toggle);
-            let start = gtk::WindowHandle::new();
-            start.set_child(Some(&cluster));
-            start.set_halign(gtk::Align::Start);
-            start.set_valign(gtk::Align::Start);
-            overlay.add_overlay(&start);
-            *this.start_corner.borrow_mut() = Some(start);
-        }
         this.watch_sidebar_width();
         window.set_content(Some(&overlay));
 
@@ -3474,35 +3540,52 @@ impl Window {
             pane.view.set_covered_axis_top(if under { cover } else { 0.0 });
         }
 
-        // The same on the left, for the drawing tools' toggle, which drops
-        // onto the charts while the bar is put away and stands over the bar
-        // while it is out. Every chart down the window's left edge steps its
-        // name over by the same amount, not only the one under the toggle,
-        // so the names stand in one column. A chart further right, or any
-        // chart while the bar is out, has nothing to clear.
-        let tooled = self.drawing_bar.borrow().as_ref().is_some_and(|bar| bar.is_shown());
-        let start = self.start_corner.borrow().as_ref().and_then(|corner| corner.child());
-        let clearance = if start.is_some() && !tooled { START_CLEARANCE } else { 0 };
-        if let Some(cluster) = &start {
-            match tooled {
-                true => cluster.remove_css_class("over-chart"),
-                false => cluster.add_css_class("over-chart"),
+        // The drawing tools' toggle, in the bottom-left corner at the time
+        // axis's height. Put away, it stands over the bottom-left chart with
+        // its glyph where the header's first mark starts, at one inset with
+        // it, and that chart leaves the start of its time axis to it. Out,
+        // it is centred over the foot of the bar, and no chart has anything
+        // to clear. The headers start at the charts' own left edge either
+        // way: nothing up there is in their way any more.
+        let ring = omacharts_engine::frame::RING_WIDTH as i32;
+        let bar = self.drawing_bar.borrow().clone();
+        let mut taken = 0.0;
+        if let Some(bar) = &bar {
+            let tooled = bar.is_shown();
+            let natural = |widget: &gtk::Widget, fallback: i32| match widget.measure(gtk::Orientation::Horizontal, -1).1 {
+                width if width > 0 => width,
+                _ => fallback,
+            };
+            let toggle = natural(bar.toggle.upcast_ref(), TOOLS_TOGGLE_SIZE);
+            let start = match tooled {
+                // Centred over the column of tools, which stands the ring's
+                // width in from the bar's left edge.
+                true => ring + (natural(bar.root.upcast_ref(), toggle) - ring - toggle) / 2,
+                false => ring + crate::ui::pane::LEGEND_MARGIN - TOOLS_TOGGLE_INK,
+            };
+            let height = crate::ui::chart::TIME_AXIS_H as i32;
+            bar.toggle.set_margin_start(start.max(0));
+            bar.toggle.set_margin_bottom(ring + (height - TOOLS_TOGGLE_SIZE) / 2);
+            if !tooled {
+                // Its right edge in the chart's own pixels, and a few more
+                // of air before a date may start.
+                taken = (start - ring + toggle + 4) as f64;
             }
         }
-        // From what is mounted, not the whole tree: a maximized chart from
-        // the right of a split fills the window and sits under the toggle,
-        // and asking the tree where it stands left its name under the
-        // corner's ground.
-        let edge = self.mounted().start_edge();
+        let bottom = self.chart_host.height().max(1) as f64;
+        let lowest_left = self.filled().or_else(|| {
+            self.layout.borrow().leaves().into_iter().find(|id| {
+                rects.get(id).is_some_and(|(x, y, _, h)| at(*x, 0.0) && at(y + h, bottom))
+            })
+        });
         for pane in self.panes.borrow().iter() {
-            pane.set_start_clearance(if edge.contains(&pane.id) { clearance } else { 0 });
+            pane.view.set_axis_start_taken(if Some(pane.id) == lowest_left { taken } else { 0.0 });
         }
 
         // And the trading panel's toggle, in the bottom-right chart's
         // corner under its prices, there only with a login and one
         // chartbook: that chart leaves the corner empty for it.
         let toggled = self.trading_toggle_over_charts();
-        let bottom = self.chart_host.height().max(1) as f64;
         let lowest = self.filled().or_else(|| {
             self.layout.borrow().leaves().into_iter().find(|id| {
                 rects.get(id).is_some_and(|(x, y, w, h)| at(x + w, right) && at(y + h, bottom))
@@ -5283,7 +5366,7 @@ impl Window {
 
         *self.watchlist_toggle.borrow_mut() = Some(toggle.clone());
 
-        // The drawing tools' toggle has a corner of its own, the top-left.
+        // The drawing tools' toggle has a corner of its own, the bottom-left.
         // Stateful, so the chart menu's Sidebars rows are ticks that say
         // whether each is open, however it was opened.
         let shown = self.drawing_bar.borrow().as_ref().is_some_and(|bar| bar.is_shown());
@@ -9764,14 +9847,16 @@ impl Window {
         }
     }
 
-    /// Show or hide the drawing tools. Ctrl+Shift+D, and the toggle top-left.
+    /// Show or hide the drawing tools. Ctrl+Shift+D, and the toggle
+    /// bottom-left.
     pub fn toggle_drawing_tools(self: &Rc<Self>) {
         let Some(bar) = self.drawing_bar.borrow().clone() else { return };
         let shown = !bar.is_shown();
         bar.set_shown(shown);
         self.store.set_setting_bool(SHOW_DRAWING_TOOLS, shown);
         self.mark_sidebar("drawing-tools", shown);
-        // Putting the tools away drops their toggle onto the top-left chart.
+        // Putting the tools away drops their toggle onto the bottom-left
+        // chart, beside its first date.
         self.sync_corner_clearance();
     }
 

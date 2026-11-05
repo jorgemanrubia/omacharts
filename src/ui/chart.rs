@@ -216,6 +216,12 @@ struct State {
     /// The square under the price axis holds the window's trading toggle,
     /// so the range the view holds to is not written there.
     axis_corner_taken: bool,
+    /// How far in from the chart's left edge the window's drawing tools'
+    /// toggle stands over the time axis, on the bottom-left chart while the
+    /// tools are put away: a date that would be written under it is left
+    /// out, and the crosshair's is pushed in past it. Zero on every other
+    /// chart.
+    axis_start_taken: f64,
     bar_style: BarStyle,
     bars_hidden: bool,
     show_grid: bool,
@@ -1250,6 +1256,7 @@ impl State {
             show_indicators: true,
             covered_axis_top: 0.0,
             axis_corner_taken: false,
+            axis_start_taken: 0.0,
             bar_style: BarStyle::default(),
             bars_hidden: false,
             show_grid: false,
@@ -3841,6 +3848,25 @@ impl ChartView {
         self.state.borrow().axis_corner_taken
     }
 
+    /// Say how far in from the left edge the window's drawing tools'
+    /// toggle stands over the time axis, zero where it does not.
+    pub fn set_axis_start_taken(&self, taken: f64) {
+        let changed = {
+            let mut state = self.state.borrow_mut();
+            let changed = state.axis_start_taken != taken;
+            state.axis_start_taken = taken;
+            changed
+        };
+        if changed {
+            self.redraw();
+        }
+    }
+
+    #[cfg(test)]
+    pub fn axis_start_taken(&self) -> f64 {
+        self.state.borrow().axis_start_taken
+    }
+
     /// Put live bars into the series in place: each replaces the bar with
     /// its timestamp or joins the end, and nothing else about the chart
     /// moves. A view anchored to the right edge follows a new bar on its
@@ -5884,6 +5910,12 @@ fn draw_time_axis(
         // was cut in half.
         let w = extents.width();
         let left = inside_plot(x, w, plot_x, plot_w);
+        // Under the drawing tools' toggle, on the chart it stands over: the
+        // date is left out rather than moved off its tick, and only when it
+        // would touch the toggle.
+        if left < state.axis_start_taken {
+            continue;
+        }
         let pushed = left != x - w / 2.0;
         if let Some((_, right, held_pushed, _)) = held
             && left < right + 8.0
@@ -7702,7 +7734,10 @@ fn draw_crosshair(
     // where it is the time that column would be.
     if let Some(ts) = time_at_column(state, first + index_in_view.max(0.0) as i64) {
         let label = format_time_full(ts, state.timeframe, state.clock);
-        label_on_time_axis(cr, &label, snapped_x, plot_x, plot_w, height, tint);
+        // The pointer's own date is always written, in past the drawing
+        // tools' toggle where it stands at the axis's start.
+        let start = state.axis_start_taken.max(plot_x);
+        label_on_time_axis(cr, &label, snapped_x, start, plot_w - (start - plot_x), height, tint);
     }
 }
 

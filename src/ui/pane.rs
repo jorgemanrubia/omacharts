@@ -743,17 +743,6 @@ impl ChartPane {
         self.corner.set_margin_end(corner_margin(clearance));
     }
 
-    /// The same for the legend and the window's top-left corner, which
-    /// holds the drawing tools' toggle and drops onto the top-left chart
-    /// while the tools are put away. Every chart down the left edge takes
-    /// the same step, so their names line up rather than only the top-left
-    /// one moving.
-    pub fn set_start_clearance(&self, clearance: i32) {
-        if let Some(legend) = self.header_row.parent() {
-            legend.set_margin_start(LEGEND_MARGIN + clearance);
-        }
-    }
-
     /// Offer the maximize corner at all, which is a question of whether
     /// there is anything else on screen to maximize away from. The link
     /// button goes with it: with one chart, Focus and Follow do the same
@@ -1269,8 +1258,9 @@ fn struck_icon(what: Hideable) -> gtk::DrawingArea {
 
 /// How far the legend sits in from the chart's left edge. The corner on the
 /// right keeps the same gap past the window's controls, so the two corners
-/// are a pair.
-const LEGEND_MARGIN: i32 = 12;
+/// are a pair. The drawing tools' toggle in the bottom-left corner stands
+/// its glyph at the same inset, so the header and the toggle start at one x.
+pub(crate) const LEGEND_MARGIN: i32 = 12;
 /// The side of a legend row's dot's box: the 8 px dot and room round it for
 /// the ring a selected indicator's dot wears.
 pub const LEGEND_DOT: i32 = 12;
@@ -1764,22 +1754,6 @@ impl Node {
             Node::Split { first, second, .. } => {
                 let mut out = first.leaves();
                 out.extend(second.leaves());
-                out
-            }
-        }
-    }
-
-    /// The leaves that stand against the tree's left edge: the first half
-    /// of a side-by-side split, and both halves of a stacked one. Read off
-    /// the shape rather than off measured rects, so it holds before
-    /// anything has a size.
-    pub fn start_edge(&self) -> Vec<u32> {
-        match self {
-            Node::Leaf(id) => vec![*id],
-            Node::Split { horizontal: true, first, .. } => first.start_edge(),
-            Node::Split { horizontal: false, first, second, .. } => {
-                let mut out = first.start_edge();
-                out.extend(second.start_edge());
                 out
             }
         }
@@ -2302,16 +2276,6 @@ mod tests {
     fn leaves_come_back_in_layout_order() {
         let layout = Node::leaf(1).split(1, 2, true).split(1, 3, false).split(2, 4, false);
         assert_eq!(layout.leaves(), vec![1, 3, 2, 4]);
-    }
-
-    #[test]
-    fn the_start_edge_is_every_chart_down_the_left_and_no_other() {
-        // 1 over 3 on the left, 2 over 4 on the right.
-        let layout = Node::leaf(1).split(1, 2, true).split(1, 3, false).split(2, 4, false);
-        assert_eq!(layout.start_edge(), vec![1, 3]);
-        // A maximized chart is mounted as a tree of its own, and is the
-        // left edge wherever it sat in the whole one.
-        assert_eq!(Node::leaf(4).start_edge(), vec![4]);
     }
 
     /// The key moves the boundary, so it moves the same way whichever side of
