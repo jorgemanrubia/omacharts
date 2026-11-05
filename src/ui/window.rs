@@ -1417,10 +1417,6 @@ enum Clipboard {
     Indicator(Indicator),
 }
 
-/// The side of a legend row's dot's box: the 8 px dot and room round it for
-/// the ring a selected indicator's dot wears.
-const LEGEND_DOT: i32 = 12;
-
 /// What a legend row is named by, so the one for a selected indicator can be
 /// found among them.
 fn legend_row_name(id: u32) -> String {
@@ -8590,7 +8586,7 @@ impl Window {
             // is selected on the chart. Drawn in room the ring already has,
             // so selecting one moves nothing in the row.
             let dot = gtk::DrawingArea::new();
-            dot.set_size_request(LEGEND_DOT, LEGEND_DOT);
+            dot.set_size_request(crate::ui::pane::LEGEND_DOT, crate::ui::pane::LEGEND_DOT);
             dot.set_valign(gtk::Align::Center);
             let dot_colour = colour.clone();
             let dot_pane = Rc::downgrade(pane);
@@ -8670,14 +8666,11 @@ impl Window {
                 this.change_indicators_of(&owner, kept);
             });
 
-            let row = gtk::Box::new(gtk::Orientation::Horizontal, 5);
-            row.add_css_class("legend-row");
+            let row = crate::ui::pane::legend_row(&dot, &label);
             row.set_widget_name(&legend_row_name(id));
             if pane.view.picked() == Some(id) {
                 row.add_css_class("selected");
             }
-            row.append(&dot);
-            row.append(&label);
             row.append(&toggle);
             row.append(&settings);
             row.append(&remove);

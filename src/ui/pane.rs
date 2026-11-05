@@ -1271,6 +1271,25 @@ fn struck_icon(what: Hideable) -> gtk::DrawingArea {
 /// right keeps the same gap past the window's controls, so the two corners
 /// are a pair.
 const LEGEND_MARGIN: i32 = 12;
+/// The side of a legend row's dot's box: the 8 px dot and room round it for
+/// the ring a selected indicator's dot wears.
+pub const LEGEND_DOT: i32 = 12;
+/// From a legend row's dot's box to its name. The header's line keeps the
+/// same column when the data feed's dot leads it (the stylesheet's
+/// `.feed-part.lead`), so the symbol's first letter is the first letter of
+/// every name under it, and its dot stands over theirs.
+const LEGEND_GAP: i32 = 5;
+
+/// A row of the legend under the header: an indicator's dot and its name,
+/// the buttons that act on it appended after.
+pub fn legend_row(dot: &impl IsA<gtk::Widget>, name: &gtk::Label) -> gtk::Box {
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, LEGEND_GAP);
+    row.add_css_class("legend-row");
+    row.append(dot);
+    row.append(name);
+    row
+}
+
 /// The strip's height: its buttons plus the padding around them.
 const SYMBOL_ROW_HEIGHT: i32 = 32;
 
@@ -2002,6 +2021,64 @@ mod tests {
             assert!(pane.feed_menu.has_css_class("inert"));
             assert_ne!(offered, [0, 0, 0], "the dot drew nothing");
             assert_eq!(alone, offered);
+            window.close();
+        });
+    }
+
+    /// The symbol's first letter is the first letter of the legend's names
+    /// under it, and the feed's dot is centred over their dots, at any size
+    /// of type. Measured as laid out, in a window, with the app's own
+    /// stylesheet.
+    #[test]
+    fn the_symbol_and_the_legend_s_names_start_in_one_column() {
+        use gtk::gdk;
+        crate::ui::on_gtk(|| {
+            let Some(display) = gdk::Display::default() else { return };
+            if adw::init().is_err() {
+                return;
+            }
+            let theme = omacharts_engine::theme::builtin_themes().into_iter().next().expect("a built-in theme");
+            let scheme = omacharts_engine::theme::theme_bars(&theme);
+            let provider = gtk::CssProvider::new();
+            provider.load_from_data(&crate::theming::stylesheet(&theme, &scheme));
+            gtk::style_context_add_provider_for_display(&display, &provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 1);
+
+            let pane = test_pane();
+            pane.symbol_button.set_label("MNQ");
+            pane.set_feed_menu(Rc::new(gtk::gio::Menu::new));
+            pane.set_feed_phase(FeedPhase::Connected);
+            pane.write_feed(Some(FeedPart { label: Some("Rithmic".into()), clickable: true, ..FeedPart::default() }));
+            let dot = gtk::DrawingArea::new();
+            dot.set_size_request(LEGEND_DOT, LEGEND_DOT);
+            let name = gtk::Label::new(Some("VWAP · Year"));
+            name.add_css_class("legend-indicator");
+            pane.indicator_legend.append(&legend_row(&dot, &name));
+            pane.indicator_legend.set_visible(true);
+            let window = gtk::Window::new();
+            window.set_default_size(500, 200);
+            window.set_child(Some(&pane.root));
+            window.present();
+            let settings = gtk::Settings::default().expect("settings");
+            let font = settings.gtk_font_name();
+            for size in ["Sans 8", "Sans 11", "Sans 16"] {
+                settings.set_gtk_font_name(Some(size));
+                let context = gtk::glib::MainContext::default();
+                for _ in 0..30 {
+                    while context.iteration(false) {}
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                let symbol = pane.symbol_button.child().expect("the symbol's label");
+                let bounds = |widget: &gtk::Widget| widget.compute_bounds(&pane.root).expect("laid out");
+                let (symbol, name) = (bounds(&symbol), bounds(name.upcast_ref()));
+                assert_eq!(symbol.x(), name.x(), "the symbol and the names, in {size}");
+                let (feed, legend) = (bounds(pane.feed_dot.upcast_ref()), bounds(dot.upcast_ref()));
+                assert_eq!(
+                    feed.x() + feed.width() / 2.0,
+                    legend.x() + legend.width() / 2.0,
+                    "the feed's dot and the legend's, in {size}"
+                );
+            }
+            settings.set_gtk_font_name(font.as_deref());
             window.close();
         });
     }

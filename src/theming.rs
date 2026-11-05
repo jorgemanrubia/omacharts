@@ -714,8 +714,13 @@ entry.range-date > image:hover { opacity: 0.9; }
 .trade-button { padding: 2px 6px; min-width: 0; min-height: 0; font-weight: bold; }
 .feed-part > button { padding: 2px 6px; min-width: 0; }
 /* First on the line, the button reaches into the legend's margin so the
-   dot's left edge is the legend dots' left edge. */
+   dot's centre is the legend dots' centre, and keeps only a pixel past the
+   dot on its right so the symbol starts where the legend's names do: the
+   dot's box, the row's gap and the name's edge of every legend row (see
+   pane::legend_row), here the dot, this pixel, the line's spacing and the
+   symbol button's own padding. */
 .feed-part.lead { margin-left: -3px; }
+.feed-part.lead > button { padding-right: 1px; }
 /* With nothing to open, GTK makes the button insensitive, and an
    insensitive button is drawn faded: the dot is the same light either way,
    only without the hover. */
