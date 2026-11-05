@@ -599,7 +599,7 @@ the last price's chip beside it saying enough.
 Only the position's line is solid. Every order's is dashed — a limit and
 a stop that open, a target (TP) and a stop loss (SL) — and a stop's,
 entry or SL, is heavier than a limit's, so the two read apart with the
-same pattern: 1.5 points for a limit, 2.5 for a stop, 2 for the
+same pattern: 1.5 points for a limit, 2 for a stop and for the
 position, each scaled with the display. The position's SL tab is
 outlined heavier than its TP tab for the same reason. A theme of one's
 own can still set each kind's pattern (Preferences → Theme → Trading).

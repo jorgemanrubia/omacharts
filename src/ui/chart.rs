@@ -6797,12 +6797,12 @@ impl Lane {
 /// last price's hairline.
 fn order_weight(kind: OrderKind) -> f64 {
     match kind {
-        OrderKind::Stop => 2.5,
+        OrderKind::Stop => 2.0,
         _ => 1.5,
     }
 }
 
-/// The position's line: solid by default, between a limit's and a stop's.
+/// The position's line: solid by default, as heavy as a stop's.
 const POSITION_WEIGHT: f64 = 2.0;
 
 /// Where a mark's pieces sit across the plot, at the end of its line the
