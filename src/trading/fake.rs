@@ -518,6 +518,12 @@ impl Broker for FakeBroker {
         "Fake Broker"
     }
 
+    /// Who signed in, as Rithmic's does: what the Log is shown to keep
+    /// concealed.
+    fn heard_at_sign_in(&self, login: &Login) -> Option<Heard> {
+        Some(Heard { warning: None, detail: format!("User: {}", login.user) })
+    }
+
     fn sign_in(&self, login: &Login, changed: Box<dyn Fn(Change) + Send + Sync>) -> Result<Arc<dyn Session>, String> {
         if !self.takes.is_zero() {
             std::thread::sleep(self.takes);

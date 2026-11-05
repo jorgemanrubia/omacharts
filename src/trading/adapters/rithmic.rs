@@ -67,6 +67,14 @@ impl Broker for Rithmic {
         }
     }
 
+    /// Who signed in, on which system and gateway, and every reply the
+    /// order plant sent to the account list: what tells a login with no
+    /// accounts from one asked for them with other credentials, or one
+    /// whose list was refused.
+    fn heard_at_sign_in(&self, login: &Login) -> Option<crate::trading::Heard> {
+        rithmic::listing(&login.id).map(|listing| heard_of(&listing, &login.user))
+    }
+
     fn sign_in(&self, login: &Login, changed: Box<dyn Fn(Change) + Send + Sync>) -> Result<Arc<dyn Session>, String> {
         let app = session::app().map_err(|error| error.to_string())?;
         // A developer's login file wins over the keyring, which it never
@@ -111,6 +119,12 @@ impl Broker for Rithmic {
             alive,
         }))
     }
+}
+
+/// A sign-in's account listing as the Log says it: a refusal any reply
+/// carried is warned of, and the rest is the detail.
+fn heard_of(listing: &rithmic::Listing, own: &str) -> crate::trading::Heard {
+    crate::trading::Heard { warning: listing.refused().map(str::to_string), detail: listing.words(own) }
 }
 
 /// The step a Rithmic contract's price moves in, from its root's spec.

@@ -38,6 +38,21 @@ pub trait Broker: Send + Sync {
     /// on any thread, whenever an order, a position or a balance moves or
     /// the session ends by itself, and when it is back after a drop.
     fn sign_in(&self, login: &Login, changed: Box<dyn Fn(Change) + Send + Sync>) -> Result<Arc<dyn Session>, String>;
+    /// What `login`'s last sign-in heard from the broker, for its entry in
+    /// the Log, whether it signed in or not: `None` for a broker that says
+    /// nothing more.
+    fn heard_at_sign_in(&self, _login: &Login) -> Option<Heard> {
+        None
+    }
+}
+
+/// What a sign-in heard, beyond whether it signed in: something to warn of
+/// though it did, and every word of it for the entry's detail. Never a
+/// password.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Heard {
+    pub warning: Option<String>,
+    pub detail: String,
 }
 
 /// What a session tells its desk, from its own thread.
@@ -67,7 +82,8 @@ pub enum Wake {
     /// A sign-in the desk started for the login came back, refreshed when
     /// it signed in; with how its data half went, when it was asked to sign
     /// that in too.
-    Opened(Login, Result<Arc<dyn Session>, String>, Option<Result<(), String>>),
+    /// With what the sign-in heard, for the Log.
+    Opened(Login, Result<Arc<dyn Session>, String>, Option<Result<(), String>>, Option<Heard>),
 }
 
 /// The brokers a desk signs logins in through, each found by the id its
@@ -247,9 +263,9 @@ impl Desk {
             Wake::Moved | Wake::Priced => {}
             Wake::Back(login) => self.refresh(&login),
             Wake::Refreshed(login) => *self.refreshes.borrow_mut().entry(login).or_default() += 1,
-            Wake::Opened(login, outcome, data) => {
+            Wake::Opened(login, outcome, data, heard) => {
                 let accounts = outcome.as_ref().map(|session| session.accounts().len()).map_err(String::as_str);
-                crate::log_words::say(crate::log_words::signed_in(&login.name, accounts));
+                crate::log_words::say(crate::log_words::signed_in_heard(&login.name, accounts, heard.as_ref()));
                 if let Some(Err(why)) = data {
                     crate::log_words::say(crate::log_words::data_not_signed_in(&login.name, &why));
                     self.data_refused.borrow_mut().insert(login.id.clone(), why);
@@ -301,7 +317,8 @@ impl Desk {
                 (Ok(_), Some(feed)) => Some(crate::feeds::sign_in_now(feed, |_| {})),
                 _ => None,
             };
-            let _ = wake.try_send(Wake::Opened(login, session, fed));
+            let heard = broker.heard_at_sign_in(&login);
+            let _ = wake.try_send(Wake::Opened(login, session, fed, heard));
         });
         true
     }

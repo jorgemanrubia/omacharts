@@ -819,6 +819,8 @@ mod tests {
             let said: Vec<String> =
                 log.since(before).0.into_iter().filter(|e| e.source == "Practice").map(|e| e.text).collect();
             assert!(said.iter().any(|text| text == "Signed in · 1 account"), "{said:?}");
+            let detail = log.since(before).0.into_iter().find(|e| e.text == "Signed in · 1 account").and_then(|e| e.detail);
+            assert_eq!(detail.as_deref(), Some("User: …"), "who signed in, concealed, in the entry's detail");
             assert!(said.iter().any(|text| text.starts_with("Not signed in · user …")), "{said:?}");
             assert!(said.iter().any(|text| text == "Signed out"), "{said:?}");
             for entry in log.entries() {

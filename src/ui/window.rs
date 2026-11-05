@@ -7752,9 +7752,9 @@ impl Window {
                 }
                 // A data feed signed in with its login changes which feeds
                 // can be used.
-                let fed = matches!(&wake, crate::trading::Wake::Opened(_, _, Some(_)));
+                let fed = matches!(&wake, crate::trading::Wake::Opened(_, _, Some(_), _));
                 let opened = match &wake {
-                    crate::trading::Wake::Opened(login, Ok(_), _) => Some(login.id.clone()),
+                    crate::trading::Wake::Opened(login, Ok(_), ..) => Some(login.id.clone()),
                     _ => None,
                 };
                 this.desk.take(wake);

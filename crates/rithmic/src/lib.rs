@@ -50,7 +50,10 @@ pub use client::{
 };
 pub use connection::{close, connection, open_data, running, shutdown, Connection, SIGN_OUT_WAIT};
 pub use login::{Login, DEV_LOGIN};
-pub use trading::{Account, AccountPnl, Book, Fill, Kind, Limits, Order, Position, Pulse, Status, Trading, WorkingOrder};
+pub use trading::{
+    listing, Account, AccountPnl, Book, Fill, Kind, Limits, ListReply, Listing, Order, Position, Pulse, Status, Trading,
+    WorkingOrder,
+};
 
 /// The app signing in, as Rithmic is told it: its name and its version.
 ///

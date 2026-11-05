@@ -1204,7 +1204,23 @@ impl TradingPlants {
 
 /// Sign in to the order and PnL plants, list the login's accounts, and
 /// subscribe to what they push.
-pub(crate) async fn connect(app: App, credentials: &Credentials) -> Result<TradingPlants, Error> {
+pub(crate) async fn connect(app: App, login: &str, credentials: &Credentials) -> Result<TradingPlants, Error> {
+    let heard = Listing::of(credentials);
+    LISTINGS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(login.to_string(), heard);
+    let outcome = sign_in_trading(app, credentials, login).await;
+    if let Err(error) = &outcome {
+        note_listing(login, |listing| {
+            listing.failed.get_or_insert_with(|| error.to_string());
+        });
+    }
+    outcome
+}
+
+async fn sign_in_trading(
+    app: App,
+    credentials: &Credentials,
+    login: &str,
+) -> Result<TradingPlants, Error> {
     let config = config(app, credentials)?;
 
     // No account is known before the list, and the login and the list are
@@ -1219,10 +1235,12 @@ pub(crate) async fn connect(app: App, credentials: &Credentials) -> Result<Tradi
     let listed = match within(REQUEST, order.get_account_list()).await {
         Ok(listed) => listed,
         Err(error) => {
+            note_listing(login, |listing| listing.failed = Some(format!("the account list was not answered: {error}")));
             let _ = within(REQUEST, order.disconnect()).await;
             return Err(error);
         }
     };
+    note_listing(login, |listing| listing.hear(&listed));
     let accounts = match accounts_of(&listed) {
         Ok(accounts) => accounts,
         Err(error) => {
@@ -1495,16 +1513,162 @@ impl TradingHalf {
 
 /// The accounts in an account list reply, in the order listed.
 fn accounts_of(responses: &[RithmicResponse]) -> Result<Vec<Account>, Error> {
-    let accounts = listed(responses.iter().filter_map(|response| match &response.message {
-        RithmicMessage::ResponseAccountList(found) => Some(found),
-        _ => None,
-    }));
+    accounts_in(&replies_of(responses))
+}
+
+/// One account list reply: the account it lists, if it is one, and what
+/// it refused, if anything.
+type Reply<'a> = (Option<&'a ResponseAccountList>, Option<Error>);
+
+fn replies_of(responses: &[RithmicResponse]) -> Vec<Reply<'_>> {
+    responses
+        .iter()
+        .map(|response| {
+            let found = match &response.message {
+                RithmicMessage::ResponseAccountList(found) => Some(found),
+                _ => None,
+            };
+            (found, response.error.clone().map(error_of))
+        })
+        .collect()
+}
+
+fn accounts_in(replies: &[Reply<'_>]) -> Result<Vec<Account>, Error> {
+    let accounts = listed(replies.iter().filter_map(|(found, _)| *found));
+    // Any reply's refusal, not only the last's: with no account listed it
+    // is why.
     if accounts.is_empty()
-        && let Some(error) = responses.last().and_then(|end| end.error.as_ref())
+        && let Some(error) = replies.iter().rev().find_map(|(_, error)| error.clone())
     {
-        return Err(error_of(error.clone()));
+        return Err(error);
     }
     Ok(accounts)
+}
+
+/// What the order plant said when it was last asked for a login's
+/// accounts, and who asked, for the Log: the user, the system and the
+/// gateway, never the password, and each reply's codes and account.
+#[derive(Clone, Default, PartialEq)]
+pub struct Listing {
+    pub user: String,
+    pub system: String,
+    pub url: String,
+    pub replies: Vec<ListReply>,
+    /// Why signing in to trading went no further, when it did not.
+    pub failed: Option<String>,
+}
+
+/// One account list reply, as Rithmic sent it.
+#[derive(Clone, Default, PartialEq)]
+pub struct ListReply {
+    pub rp_code: Vec<String>,
+    pub rq_handler_rp_code: Vec<String>,
+    pub account_id: Option<String>,
+    pub fcm_id: Option<String>,
+    pub ib_id: Option<String>,
+    /// What the reply refused, when it carried an error.
+    pub error: Option<String>,
+}
+
+/// Without the account numbers, as [`Account`]'s is.
+impl std::fmt::Debug for Listing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Listing")
+            .field("system", &self.system)
+            .field("replies", &self.replies.len())
+            .field("failed", &self.failed)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Listing {
+    fn of(credentials: &Credentials) -> Listing {
+        Listing {
+            user: credentials.user.clone(),
+            system: credentials.system.clone(),
+            url: credentials.url.clone(),
+            ..Listing::default()
+        }
+    }
+
+    /// The account list's replies, every one of them.
+    pub(crate) fn hear(&mut self, responses: &[RithmicResponse]) {
+        self.hear_replies(&replies_of(responses));
+    }
+
+    fn hear_replies(&mut self, replies: &[Reply<'_>]) {
+        let given = |value: &Option<String>| value.clone().filter(|value| !value.is_empty());
+        self.replies = replies
+            .iter()
+            .map(|(found, error)| {
+                let error = error.as_ref().map(Error::to_string);
+                match found {
+                    Some(found) => ListReply {
+                        rp_code: found.rp_code.clone(),
+                        rq_handler_rp_code: found.rq_handler_rp_code.clone(),
+                        account_id: given(&found.account_id),
+                        fcm_id: given(&found.fcm_id),
+                        ib_id: given(&found.ib_id),
+                        error,
+                    },
+                    None => ListReply { error, ..ListReply::default() },
+                }
+            })
+            .collect();
+    }
+
+    /// The first refusal any reply carried, listed accounts or not.
+    pub fn refused(&self) -> Option<&str> {
+        self.replies.iter().find_map(|reply| reply.error.as_deref())
+    }
+
+    /// Every line of it, for the Log's detail. `own` is the user the login
+    /// is saved with, to say whether this is it.
+    pub fn words(&self, own: &str) -> String {
+        let whose = match self.user.trim() == own.trim() {
+            true => "the login's own",
+            false => "not the login's",
+        };
+        let mut lines = vec![
+            format!("User: {} ({whose})", self.user),
+            format!("System: {}", self.system),
+            format!("Gateway: {}", self.url),
+            format!("Account list replies: {}", self.replies.len()),
+        ];
+        for (at, reply) in self.replies.iter().enumerate() {
+            let mut parts = vec![
+                format!("rp_code [{}]", reply.rp_code.join(", ")),
+                format!("rq_handler_rp_code [{}]", reply.rq_handler_rp_code.join(", ")),
+            ];
+            let fields = [("account", &reply.account_id), ("FCM", &reply.fcm_id), ("IB", &reply.ib_id)];
+            parts.extend(fields.iter().filter_map(|(name, value)| value.as_ref().map(|value| format!("{name} {value}"))));
+            if let Some(error) = &reply.error {
+                parts.push(format!("refused: {error}"));
+            }
+            lines.push(format!("{}. {}", at + 1, parts.join(" · ")));
+        }
+        if let Some(failed) = &self.failed {
+            lines.push(format!("Went no further: {failed}"));
+        }
+        lines.join("\n")
+    }
+}
+
+/// The last account listing of each login, by its id, kept after the
+/// connection is gone so that a sign-in that failed can still say it.
+static LISTINGS: Mutex<Option<HashMap<String, Listing>>> = Mutex::new(None);
+
+fn note_listing(login: &str, change: impl FnOnce(&mut Listing)) {
+    let mut listings = LISTINGS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(listing) = listings.get_or_insert_with(HashMap::new).get_mut(login) {
+        change(listing);
+    }
+}
+
+/// What the order plant said when `login` last signed in to trading, if it
+/// has this run.
+pub fn listing(login: &str) -> Option<Listing> {
+    LISTINGS.lock().unwrap_or_else(|e| e.into_inner()).as_ref()?.get(login).cloned()
 }
 
 fn listed<'a>(found: impl Iterator<Item = &'a ResponseAccountList>) -> Vec<Account> {
@@ -1547,6 +1711,68 @@ mod tests {
         assert_eq!(accounts[0].fcm, "Rithmic-FCM");
         assert_eq!(accounts[0].currency.as_deref(), Some("USD"));
         assert!(!format!("{:?}", accounts[0]).contains("1234"), "an account number in a log");
+    }
+
+    fn coded(mut found: ResponseAccountList, rp_code: &[&str], handler: &[&str]) -> ResponseAccountList {
+        found.rp_code = rp_code.iter().map(|code| code.to_string()).collect();
+        found.rq_handler_rp_code = handler.iter().map(|code| code.to_string()).collect();
+        found
+    }
+
+    fn refused(why: &str) -> Error {
+        Error::Rejected(why.into())
+    }
+
+    /// A refusal on any account list reply counts, not only on the last:
+    /// with nothing listed it is why the sign-in failed; with accounts
+    /// listed they stand, and the listing says what was refused.
+    #[test]
+    fn a_refusal_on_any_account_list_reply_is_heard() {
+        let end = coded(ResponseAccountList::default(), &["0"], &[]);
+        let refused_first = coded(ResponseAccountList::default(), &["1", "permission denied"], &["1"]);
+        let replies: Vec<Reply> = vec![(Some(&refused_first), Some(refused("permission denied"))), (Some(&end), None)];
+        assert!(matches!(accounts_in(&replies), Err(Error::Rejected(why)) if why == "permission denied"));
+
+        let one = coded(found("951", "USD"), &[], &["0"]);
+        let replies: Vec<Reply> = vec![(Some(&one), None), (Some(&refused_first), Some(refused("permission denied"))), (Some(&end), None)];
+        let accounts = accounts_in(&replies).expect("the account listed stands");
+        assert_eq!(accounts.len(), 1);
+        let mut listing = Listing { user: "trader".into(), system: "Rithmic Test".into(), url: "wss://g".into(), ..Listing::default() };
+        listing.hear_replies(&replies);
+        assert_eq!(listing.refused(), Some("Rithmic refused the request: permission denied"));
+
+        let replies: Vec<Reply> = vec![(Some(&end), None)];
+        assert!(accounts_in(&replies).unwrap().is_empty(), "nothing listed and nothing refused");
+    }
+
+    /// The listing says who signed in where and every reply, in lines for
+    /// the Log's detail, and never the password.
+    #[test]
+    fn a_listing_says_every_reply_and_no_password() {
+        let credentials = Credentials {
+            user: "trader".into(),
+            password: "secret".into(),
+            system: "Rithmic Test".into(),
+            url: "wss://rituz00100.rithmic.com:443".into(),
+        };
+        let mut listing = Listing::of(&credentials);
+        let one = coded(found("951", "USD"), &[], &["0"]);
+        let end = coded(ResponseAccountList::default(), &["0"], &[]);
+        listing.hear_replies(&[(Some(&one), None), (Some(&end), None)]);
+        assert_eq!(
+            listing.words("trader"),
+            "User: trader (the login's own)\nSystem: Rithmic Test\nGateway: wss://rituz00100.rithmic.com:443\n\
+             Account list replies: 2\n\
+             1. rp_code [] · rq_handler_rp_code [0] · account 951 · FCM Rithmic-FCM · IB Prospects\n\
+             2. rp_code [0] · rq_handler_rp_code []"
+        );
+        assert!(listing.words("someone-else").starts_with("User: trader (not the login's)"));
+        assert!(!listing.words("trader").contains("secret"));
+        assert!(!format!("{listing:?}").contains("951"), "an account number in a log");
+
+        let mut empty = Listing::of(&credentials);
+        empty.failed = Some("timed out".into());
+        assert!(empty.words("trader").ends_with("Account list replies: 0\nWent no further: timed out"));
     }
 
     fn step(basket: &str, status: &str, fields: impl FnOnce(&mut RithmicOrderNotification)) -> RithmicMessage {

@@ -265,6 +265,7 @@ impl Connection {
         let (rounds, opened) = mpsc::unbounded_channel();
         let supervisor = Supervisor {
             app,
+            login: login.to_string(),
             dial,
             source: source.clone(),
             inbox,
@@ -485,7 +486,7 @@ impl Round {
 }
 
 /// Sign in to the halves asked for, with the login read once for both.
-async fn open(app: App, dial: Dial, source: Source, data: bool, trading: bool) -> Round {
+async fn open(app: App, login: &str, dial: Dial, source: Source, data: bool, trading: bool) -> Round {
     let credentials = match source() {
         Ok(login) => login.credentials().await,
         Err(error) => Err(error),
@@ -503,7 +504,7 @@ async fn open(app: App, dial: Dial, source: Source, data: bool, trading: bool) -
                 false => None,
             },
             match trading {
-                true => Some(trading::connect(app, &credentials).await),
+                true => Some(trading::connect(app, login, &credentials).await),
                 false => None,
             },
         ),
@@ -549,6 +550,8 @@ async fn until(at: Option<tokio::time::Instant>) {
 
 pub(crate) struct Supervisor {
     app: App,
+    /// The login this is the connection of.
+    login: String,
     dial: Dial,
     source: Arc<Mutex<Source>>,
     inbox: mpsc::UnboundedReceiver<Command>,
@@ -750,9 +753,9 @@ impl Supervisor {
     /// own, so that what is already up goes on being served meanwhile.
     fn sign_in(&self, data: bool, trading: bool) {
         let source = self.source.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        let (app, dial, rounds) = (self.app, self.dial.clone(), self.rounds.clone());
+        let (app, dial, rounds, login) = (self.app, self.dial.clone(), self.rounds.clone(), self.login.clone());
         tokio::spawn(async move {
-            let round = open(app, dial, source, data, trading).await;
+            let round = open(app, &login, dial, source, data, trading).await;
             if let Err(mpsc::error::SendError(round)) = rounds.send(round) {
                 round.discard().await;
             }

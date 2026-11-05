@@ -97,11 +97,36 @@ pub fn serving_changed() -> Entry {
 /// How a broker sign-in ended: "Signed in · 2 accounts", or the broker's
 /// refusal. Signed in with none listed is a warning: nothing can be traded.
 pub fn signed_in(login: &str, outcome: Result<usize, &str>) -> Entry {
-    match outcome {
-        Ok(0) => Entry::warning(login, "Signed in · the broker lists no accounts"),
-        Ok(1) => Entry::info(login, "Signed in · 1 account"),
-        Ok(accounts) => Entry::info(login, format!("Signed in · {accounts} accounts")),
-        Err(why) => Entry::error(login, format!("Not signed in · {}", gist(why))).detail(why),
+    signed_in_heard(login, outcome, None)
+}
+
+/// [`signed_in`], with what the sign-in heard from the broker as the
+/// entry's detail: for Rithmic, who signed in where and every account list
+/// reply. A refusal one of those replies carried, though accounts were
+/// listed, is a warning that says it.
+pub fn signed_in_heard(login: &str, outcome: Result<usize, &str>, heard: Option<&trading::Heard>) -> Entry {
+    let detail = heard.map(|heard| heard.detail.as_str()).unwrap_or_default();
+    let warning = heard.and_then(|heard| heard.warning.as_deref());
+    let counted = |accounts: usize| match accounts {
+        1 => "Signed in · 1 account".to_string(),
+        accounts => format!("Signed in · {accounts} accounts"),
+    };
+    match (outcome, warning) {
+        (Err(why), _) => {
+            let detail = [why, detail].iter().filter(|part| !part.is_empty()).copied().collect::<Vec<_>>().join("\n\n");
+            Entry::error(login, format!("Not signed in · {}", gist(why))).detail(detail)
+        }
+        (Ok(0), None) => Entry::warning(login, "Signed in · the broker lists no accounts").detail(detail),
+        (Ok(0), Some(refused)) => {
+            Entry::warning(login, format!("Signed in · no accounts · the account list was refused: {}", gist(refused)))
+                .detail(detail)
+        }
+        (Ok(accounts), Some(refused)) => Entry::warning(
+            login,
+            format!("{} · the account list was partly refused: {}", counted(accounts), gist(refused)),
+        )
+        .detail(detail),
+        (Ok(accounts), None) => Entry::info(login, counted(accounts)).detail(detail),
     }
 }
 
@@ -218,6 +243,29 @@ mod tests {
         let none = signed_in("Rithmic Test", Ok(0));
         assert_eq!((none.level, none.text.as_str()), (Level::Warning, "Signed in · the broker lists no accounts"));
         assert_eq!(feed_step("Rithmic Test", "connecting to the gateway").text, "Connecting to the gateway");
+    }
+
+    /// A sign-in's entry carries what the broker said as its detail, and
+    /// warns of a refusal on the account list though accounts were listed.
+    #[test]
+    fn a_sign_in_says_what_the_broker_heard_in_its_detail() {
+        let heard = trading::Heard { warning: None, detail: "User: ••• (the login's own)\nAccount list replies: 1".into() };
+        let none = signed_in_heard("Rithmic Test", Ok(0), Some(&heard));
+        assert_eq!((none.level, none.text.as_str()), (Level::Warning, "Signed in · the broker lists no accounts"));
+        assert_eq!(none.detail.as_deref(), Some(heard.detail.as_str()));
+        let one = signed_in_heard("Rithmic Test", Ok(1), Some(&heard));
+        assert_eq!((one.level, one.detail.as_deref()), (Level::Info, Some(heard.detail.as_str())));
+
+        let refused = trading::Heard { warning: Some("Rithmic refused the request: permission denied".into()), ..heard.clone() };
+        let partly = signed_in_heard("Rithmic Test", Ok(1), Some(&refused));
+        assert_eq!(partly.level, Level::Warning);
+        assert_eq!(
+            partly.text,
+            "Signed in · 1 account · the account list was partly refused: Rithmic refused the request: permission denied"
+        );
+        let failed = signed_in_heard("Rithmic Test", Err("permission denied"), Some(&heard));
+        assert_eq!(failed.text, "Not signed in · permission denied");
+        assert_eq!(failed.detail.as_deref(), Some(format!("permission denied\n\n{}", heard.detail).as_str()));
     }
 
     #[test]
