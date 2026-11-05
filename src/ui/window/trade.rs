@@ -2282,8 +2282,8 @@ pub(super) mod tests {
     }
 
     /// Either exit may come first, on a long and on a short alike: the
-    /// stop pulled out before the target leaves the TP tab to be pulled
-    /// out after it, and placing it links the two.
+    /// first one pulled out leaves the other's tab to be pulled out after
+    /// it, and placing that one links the two.
     #[test]
     fn either_exit_may_come_first_on_a_long_or_a_short() {
         crate::ui::on_gtk(|| {
@@ -2293,38 +2293,43 @@ pub(super) mod tests {
             let last = pane.view.last_price().expect("a last price");
             let off = |ticks: f64| (last / 0.25).round() * 0.25 + ticks * 0.25;
             let working = || session.book().orders.iter().filter(|o| o.status.working()).cloned().collect::<Vec<_>>();
-            // Short 1 at the market: the long closed and one more sold.
-            session.place(&trading::OrderRequest { qty: 2, ..resting(Side::Sell, OrderKind::Market, None) }).unwrap();
-            window.desk.tell();
-            assert_eq!(session.book().position("951", "ESZ6").map(|held| held.net), Some(-1));
-            for (net, stop_at, target_at) in [(-1, off(40.0), off(-40.0)), (1, off(-40.0), off(40.0))] {
+            let hold = |net: i32| {
+                let now = session.book().position("951", "ESZ6").map_or(0, |held| held.net);
+                let side = if net > now { Side::Buy } else { Side::Sell };
+                let qty = (net - now).unsigned_abs();
+                session.place(&trading::OrderRequest { qty, ..resting(side, OrderKind::Market, None) }).unwrap();
+                window.desk.tell();
+                assert_eq!(session.book().position("951", "ESZ6").map(|held| held.net), Some(net));
+            };
+            for (net, first) in [(-1, OrderKind::Stop), (-1, OrderKind::Limit), (1, OrderKind::Stop), (1, OrderKind::Limit)] {
+                hold(net);
+                let round = format!("net {net}, {} first", first.key());
                 settle(&window, || pane.view.exit_tabs() == vec![OrderKind::Limit, OrderKind::Stop]);
-                let exit = if net > 0 { Side::Sell } else { Side::Buy };
-                // The stop first.
-                pane.view.drop_mark(TradeEvent::ExitAt { kind: OrderKind::Stop, price: stop_at });
-                settle(&window, || pane.view.exit_tabs() == vec![OrderKind::Limit] && !window.trade.placing.busy(&key));
-                let stop = working();
-                assert_eq!(stop.len(), 1, "net {net}: {stop:?}");
-                assert_eq!((stop[0].side, stop[0].kind, stop[0].price), (exit, OrderKind::Stop, Some(stop_at)), "net {net}");
-                assert_eq!(pane.view.exit_tabs(), vec![OrderKind::Limit], "net {net}: the TP tab went with the stop");
-                // Then the target, which still has its tab to be pulled from.
-                pane.view.drop_mark(TradeEvent::ExitAt { kind: OrderKind::Limit, price: target_at });
+                let exit = trading::exit_side(net);
+                // A short's stop above and target below; a long's the other way.
+                let at = |kind| match (kind, net > 0) {
+                    (OrderKind::Stop, false) | (OrderKind::Limit, true) => off(40.0),
+                    _ => off(-40.0),
+                };
+                let second = if first == OrderKind::Stop { OrderKind::Limit } else { OrderKind::Stop };
+                pane.view.drop_mark(TradeEvent::ExitAt { kind: first, price: at(first) });
+                settle(&window, || pane.view.exit_tabs() == vec![second] && !window.trade.placing.busy(&key));
+                let one = working();
+                assert_eq!(one.len(), 1, "{round}: {one:?}");
+                assert_eq!((one[0].side, one[0].kind, one[0].price), (exit, first, Some(at(first))), "{round}");
+                // Then the other, which still has its tab to be pulled from.
+                pane.view.drop_mark(TradeEvent::ExitAt { kind: second, price: at(second) });
                 settle(&window, || pane.view.exit_tabs().is_empty() && !window.trade.placing.busy(&key));
                 let both = working();
-                assert_eq!(both.len(), 2, "net {net}: the target was not placed after the stop: {both:?}");
-                let target = both.iter().find(|o| o.kind == OrderKind::Limit).expect("the target");
-                assert_eq!((target.side, target.price), (exit, Some(target_at)), "net {net}");
-                settle(&window, || session.links.lock().unwrap().iter().any(|pair| pair.contains(&target.basket_id)));
+                assert_eq!(both.len(), 2, "{round}: the second exit was not placed: {both:?}");
+                let other = both.iter().find(|o| o.kind == second).expect("the second exit");
+                assert_eq!((other.side, other.price), (exit, Some(at(second))), "{round}");
+                settle(&window, || session.links.lock().unwrap().iter().any(|pair| pair.contains(&other.basket_id)));
                 let linked = session.links.lock().unwrap().clone();
-                assert!(linked.contains(&vec![target.basket_id.clone(), stop[0].basket_id.clone()]), "net {net}: {linked:?}");
-                // Flat, and long 1 for the second round.
+                assert!(linked.contains(&vec![other.basket_id.clone(), one[0].basket_id.clone()]), "{round}: {linked:?}");
+                // Flat for the next round.
                 pane.view.drop_mark(TradeEvent::Flatten);
                 settle(&window, || pane.view.mark_states().0.is_none() && working().is_empty());
-                if net < 0 {
-                    session.place(&resting(Side::Buy, OrderKind::Market, None)).unwrap();
-                    window.desk.tell();
-                    assert_eq!(session.book().position("951", "ESZ6").map(|held| held.net), Some(1));
-                }
             }
         });
     }
