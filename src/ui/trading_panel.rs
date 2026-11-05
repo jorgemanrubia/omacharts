@@ -17,7 +17,7 @@ use std::rc::Rc;
 use adw::prelude::*;
 
 use crate::store::Store;
-use crate::trading::{self, Order, OrderKind, Stage, Status, View};
+use crate::trading::{self, Order, OrderKind, Side, Stage, Status, View};
 
 /// Where the Orders tab was left: `open` or `all`.
 pub const ORDERS_FILTER: &str = "orders_filter";
@@ -130,6 +130,15 @@ fn cell(text: &str, numeric: bool) -> gtk::Label {
     if numeric {
         label.add_css_class("numeric");
     }
+    label
+}
+
+/// A side or a position's size, in the theme's colour for it: the one the
+/// chart's marks and the header's Buy and Sell wear, so the panel agrees
+/// with them. Numeric for a size, which is read down a column.
+fn side_cell(text: &str, class: &str) -> gtk::Label {
+    let label = cell(text, text.starts_with(['+', '-']));
+    label.add_css_class(class);
     label
 }
 
@@ -437,7 +446,7 @@ impl TradingPanel {
                 vec![
                     cell(&view.name_of(&held.account), false).upcast(),
                     cell(&held.contract, false).upcast(),
-                    cell(&trading::net_text(held.net), true).upcast(),
+                    side_cell(&trading::net_text(held.net), if held.net > 0 { "trade-long" } else { "trade-short" }).upcast(),
                     cell(&price_text(held.avg, held.tick), true).upcast(),
                     pnl_cell(held.open_pnl, Self::currency_of(view, &held.account)).upcast(),
                     flatten.upcast(),
@@ -481,7 +490,10 @@ impl TradingPanel {
                     cell(&time_text(order.at), true),
                     cell(name, false),
                     cell(&order.contract, false),
-                    cell(&format!("{} {}", order.side.glyph(), order.side.word()), false),
+                    side_cell(&format!("{} {}", order.side.glyph(), order.side.word()), match order.side {
+                        Side::Buy => "trade-buy",
+                        Side::Sell => "trade-sell",
+                    }),
                     cell(&order.qty.to_string(), true),
                     cell(order.kind.word(), false),
                     cell(&price, true),

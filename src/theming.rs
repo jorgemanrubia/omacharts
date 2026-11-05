@@ -264,16 +264,19 @@ pub(crate) const CORNER_PAD_START: i32 = 8;
 /// at the same height, beside the toggle. The two change together.
 pub(crate) const CORNER_BUTTON_TOP: i32 = 10;
 
-/// The trading look's profit and loss as named colours, and the classes a
-/// signed P&L is written in with them.
+/// The trading look's colours as named colours, and the classes a signed
+/// P&L, a side and a position are written in with them: the one pair for
+/// money, the other for a side, as the chart's marks wear them.
 pub fn trading_css(theme: &Theme, colouring: omacharts_engine::BarColouring) -> String {
     let look = omacharts_engine::theme_trading(theme, colouring);
     format!(
         "@define-color omacharts_profit {};\n@define-color omacharts_loss {};\n\
          @define-color omacharts_buy {};\n@define-color omacharts_sell {};\n\
+         @define-color omacharts_long {};\n@define-color omacharts_short {};\n\
          .pnl-gain {{ color: @omacharts_profit; }}\n.pnl-loss {{ color: @omacharts_loss; }}\n\
-         .trade-buy {{ color: @omacharts_buy; }}\n.trade-sell {{ color: @omacharts_sell; }}\n",
-        look.profit, look.loss, look.buy, look.sell
+         .trade-buy {{ color: @omacharts_buy; }}\n.trade-sell {{ color: @omacharts_sell; }}\n\
+         .trade-long {{ color: @omacharts_long; }}\n.trade-short {{ color: @omacharts_short; }}\n",
+        look.profit, look.loss, look.buy, look.sell, look.long, look.short
     )
 }
 
@@ -1295,6 +1298,14 @@ mod tests {
         assert!(css.contains(".pnl-gain { color: @omacharts_profit; }"));
         let red_up = trading_css(theme, omacharts_engine::BarColouring::RedUp);
         assert!(red_up.contains(&format!("@define-color omacharts_profit {};", bars.down)), "{red_up}");
+        // A side and a position are the theme's Blue and Amber, never money's
+        // colours, so the header's Buy and Sell match the chart's entries.
+        let (blue, amber) = (&theme.swatch("Blue").unwrap().hex, &theme.swatch("Amber").unwrap().hex);
+        assert!(css.contains(&format!("@define-color omacharts_buy {blue};")), "{css}");
+        assert!(css.contains(&format!("@define-color omacharts_sell {amber};")), "{css}");
+        assert!(css.contains(&format!("@define-color omacharts_long {blue};")), "{css}");
+        assert!(css.contains(&format!("@define-color omacharts_short {amber};")), "{css}");
+        assert!(css.contains(".trade-buy { color: @omacharts_buy; }") && css.contains(".trade-short { color: @omacharts_short; }"));
     }
 
     #[test]
