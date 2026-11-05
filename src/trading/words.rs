@@ -11,16 +11,14 @@ pub fn crossed_text(price: &str, kind: OrderKind, side: Side) -> String {
     format!("Not placed · {price} is {which} the market now")
 }
 
-/// What an order dragged to a price says beside the hand: "Sell Limit 1 ·
-/// 7,640.00 · +11 ticks", the ticks from where it started when the chart
-/// knows its tick.
-pub fn preview_text(side: Side, kind: OrderKind, qty: u32, price: &str, ticks: Option<i64>) -> String {
-    let words = format!("{} {qty} · {price}", order_words(side, kind));
+/// What an order dragged to a price says after its tag: "7,640.00 · +11
+/// ticks", the ticks from where it started when the chart knows its tick.
+pub fn preview_text(price: &str, ticks: Option<i64>) -> String {
     match ticks {
-        Some(0) => format!("{words} · 0 ticks"),
-        Some(ticks) if ticks.abs() == 1 => format!("{words} · {ticks:+} tick"),
-        Some(ticks) => format!("{words} · {ticks:+} ticks"),
-        None => words,
+        Some(0) => format!("{price} · 0 ticks"),
+        Some(ticks) if ticks.abs() == 1 => format!("{price} · {ticks:+} tick"),
+        Some(ticks) => format!("{price} · {ticks:+} ticks"),
+        None => price.to_string(),
     }
 }
 
@@ -148,16 +146,6 @@ pub fn net_text(net: i32) -> String {
     format!("{net:+}")
 }
 
-/// What a position's pill says: its size and its open P&L, or its price
-/// until the P&L is known.
-pub fn position_text(held: &Position, decimals: usize, currency: Option<&str>) -> String {
-    match (held.open_pnl, held.avg) {
-        (Some(pnl), _) => format!("{} · {}", net_text(held.net), pnl_text(pnl, currency)),
-        (None, Some(avg)) => format!("{} at {}", net_text(held.net), omacharts_engine::grouped_decimals(avg, decimals)),
-        (None, None) => net_text(held.net),
-    }
-}
-
 /// What a market order on its way says beside the last price, until it
 /// fills: "Buying 1…".
 pub fn buying_text(side: Side, qty: u32) -> String {
@@ -167,14 +155,28 @@ pub fn buying_text(side: Side, qty: u32) -> String {
     }
 }
 
-/// What a working order's pill says: "▼ Sell Limit 1", and once some of it
-/// has filled, how much of how much: "▼ Sell Limit 1/2".
-pub fn order_pill_text(order: &Order) -> String {
+/// The tag on an order's label: its kind and size in a code, "L 1" for a
+/// limit and "S 1" for a stop that open or add to a position, "TP 1" and
+/// "SL 1" for the ones that close some of it. The side is in the colour.
+pub fn mark_tag(kind: OrderKind, exit: bool, size: &str) -> String {
+    let code = match (kind, exit) {
+        (OrderKind::Limit, true) => "TP",
+        (OrderKind::Stop, true) => "SL",
+        (OrderKind::Limit, false) => "L",
+        (OrderKind::Stop, false) => "S",
+        (OrderKind::Market, _) => "M",
+    };
+    format!("{code} {size}")
+}
+
+/// A working order's tag, closing some of a position of `net` or not:
+/// "TP 1", and once some of it has filled, how much of how much: "TP 1/2".
+pub fn order_tag(order: &Order, net: i32) -> String {
     let size = match order.status.stage {
         Stage::PartiallyFilled => format!("{}/{}", order.filled, order.qty),
         _ => order.qty.to_string(),
     };
-    format!("{} {} {size}", order.side.glyph(), order_words(order.side, order.kind))
+    mark_tag(order.kind, is_exit(order.side, order.kind, net), &size)
 }
 
 #[cfg(test)]
@@ -187,13 +189,10 @@ mod tests {
     fn what_a_dragged_order_says() {
         assert_eq!(ticks_between(7_612.25, 7_615.0, 0.25), 11);
         assert_eq!(ticks_between(7_612.25, 7_612.0, 0.25), -1);
-        assert_eq!(
-            preview_text(Side::Sell, OrderKind::Limit, 1, "7,640.00", Some(11)),
-            "Sell Limit 1 · 7,640.00 · +11 ticks"
-        );
-        assert_eq!(preview_text(Side::Buy, OrderKind::Stop, 2, "7,600.00", Some(-1)), "Buy Stop 2 · 7,600.00 · -1 tick");
-        assert_eq!(preview_text(Side::Buy, OrderKind::Stop, 1, "7,600.00", Some(0)), "Buy Stop 1 · 7,600.00 · 0 ticks");
-        assert_eq!(preview_text(Side::Buy, OrderKind::Limit, 1, "7,600.00", None), "Buy Limit 1 · 7,600.00");
+        assert_eq!(preview_text("7,640.00", Some(11)), "7,640.00 · +11 ticks");
+        assert_eq!(preview_text("7,600.00", Some(-1)), "7,600.00 · -1 tick");
+        assert_eq!(preview_text("7,600.00", Some(0)), "7,600.00 · 0 ticks");
+        assert_eq!(preview_text("7,600.00", None), "7,600.00");
         assert_eq!(refused_text(OrderKind::Stop, 7_640.0, 7_612.25), "Stop above market · not allowed");
         assert_eq!(refused_text(OrderKind::Limit, 7_600.0, 7_612.25), "Limit below market · not allowed");
         assert_eq!(refused_text(OrderKind::Limit, 7_612.25, 7_612.25), "Limit at market · not allowed");
@@ -235,23 +234,11 @@ mod tests {
         (part.qty, part.filled) = (2, 1);
         assert_eq!(outcome_text(&part, Stage::Working, 2).as_deref(), Some("Filled 1 of 2 ESZ6"));
 
-        let mut held = Position {
-            account: "t/951".into(),
-            contract: "ESZ6".into(),
-            exchange: "CME".into(),
-            net: 1,
-            avg: Some(7_612.25),
-            open_pnl: None,
-            tick: Some(0.25),
-            point: Some(50.0),
-        };
-        assert_eq!(position_text(&held, 2, Some("USD")), "+1 at 7,612.25");
-        held.open_pnl = Some(125.0);
-        assert_eq!(position_text(&held, 2, Some("USD")), "+1 · +$125.00");
-        held.net = -2;
-        held.open_pnl = Some(-3.94);
-        assert_eq!(position_text(&held, 2, None), "-2 · -$3.94");
+        assert_eq!(net_text(1), "+1");
+        assert_eq!(net_text(-2), "-2");
         assert_eq!(money_text(1_000_000.0, Some("USD")), "$1,000,000.00");
+        assert_eq!(pnl_text(125.0, Some("USD")), "+$125.00");
+        assert_eq!(pnl_text(-3.94, None), "-$3.94");
         assert_eq!(pnl_text(12.5, Some("EUR")), "+12.50 EUR");
     }
 
@@ -263,5 +250,24 @@ mod tests {
         assert_eq!(pnl_text((7_629.0 - (7_731.0 + 1.0 / 3.0)) * 3.0 * 50.0, Some("USD")), "-$15,350.00");
         assert_eq!(pnl_text(0.995, Some("USD")), "+$1.00");
         assert_eq!(pnl_text(0.994, Some("USD")), "+$0.99");
+    }
+
+    /// An order's tag: its kind and size in a code, the kind's telling
+    /// whether it closes some of the position or not.
+    #[test]
+    fn what_an_orders_tag_says() {
+        assert_eq!(mark_tag(OrderKind::Limit, true, "1"), "TP 1");
+        assert_eq!(mark_tag(OrderKind::Stop, true, "3"), "SL 3");
+        assert_eq!(mark_tag(OrderKind::Limit, false, "2"), "L 2");
+        assert_eq!(mark_tag(OrderKind::Stop, false, "1"), "S 1");
+        // A sell limit closes a long and opens or adds to a short.
+        let sell = order("a", Side::Sell, OrderKind::Limit, Some(7_640.0), Stage::Working);
+        assert_eq!(order_tag(&sell, 1), "TP 1");
+        assert_eq!(order_tag(&sell, 0), "L 1");
+        assert_eq!(order_tag(&sell, -1), "L 1");
+        let mut part = order("b", Side::Buy, OrderKind::Stop, Some(7_640.0), Stage::PartiallyFilled);
+        (part.qty, part.filled) = (2, 1);
+        assert_eq!(order_tag(&part, -2), "SL 1/2");
+        assert_eq!(order_tag(&part, 2), "S 1/2");
     }
 }

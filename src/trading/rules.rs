@@ -562,11 +562,6 @@ mod tests {
         book.positions.clear();
         assert!(answered(&flatten, &Pending::Flatten, &book));
 
-        let mut part = order("P", Side::Sell, OrderKind::Limit, Some(7_640.0), Stage::PartiallyFilled);
-        (part.qty, part.filled) = (2, 1);
-        assert_eq!(order_pill_text(&part), "▼ Sell Limit 1/2");
-        part.status = Stage::Working.into();
-        assert_eq!(order_pill_text(&part), "▼ Sell Limit 2");
         assert_eq!(buying_text(Side::Buy, 1), "Buying 1…");
     }
 

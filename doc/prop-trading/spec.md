@@ -555,13 +555,24 @@ The first version of order entry:
 - the account's balance and Rithmic's loss limits (RMS), shown but not
   enforced.
 
-On the chart, a working order's line can be dragged to another price,
-and the position's pill has a TP and an SL tab beside it, dragged out to
-place a target or a stop for the whole position. While it is dragged it
-is a preview: its line in the order's look, what it would be, and how
-many ticks it has come; where it may not go with the market where it is,
-it says why and letting go does nothing. Every pill ends in a ×, which
-cancels an order or flattens the position. A new exit is linked to the
+On the chart, every order and the position wears one label at the right
+end of its line, in one piece: a tag filled in the line's colour, a body,
+and a × as its end segment. The tag is a code with the size, the colour
+carrying the side: `L 1` and `S 1` for a limit and a stop that open or
+add to a position, `TP 1` and `SL 1` for the ones that close some of it
+(`STL` is kept for a stop-limit), `+1` and `-2` for the position. The
+body is money: an exit's P&L if it fills, the position's open P&L on a
+fill in the profit or loss colour; an entry has none. The price is on
+the axis, in its own chip. A working order's line can be dragged to
+another price, and the position's label has a TP and an SL tab before
+it, dragged out to place a target or a stop for the whole position.
+While it is dragged it is a preview: its line in the order's look, its
+label without the ×, the body saying what an exit would realise there or
+where any other order would be and how many ticks it has come; where it
+may not go with the market where it is, it says why and letting go does
+nothing. The × cancels an order or flattens the position, on a press and
+release without moving; a press on it that moves on drags the line as
+the line does. A new exit is linked to the
 other one working on the position when the broker links orders (Rithmic
 does, on its servers), so whichever fills first cancels the other; a
 broker that does not is said to, and flattening cancels the exits left
@@ -574,8 +585,8 @@ beside the last price until its fill, a move once the order is reported
 at its new price, a cancel once it is reported cancelled, a flatten once
 nothing is held. A refusal takes it away with the broker's reason; a
 request that is never answered stays pending rather than being taken as
-done. Part of an order filled reads "Sell Limit 1/2", and the position
-holds only what filled. Toasts say only what the broker has confirmed.
+done. Part of an order filled reads "TP 1/2", and the position holds
+only what filled. Toasts say only what the broker has confirmed.
 
 Every order from a chart is for the chart's **quantity**, shown in its
 header ("Qty 2") and picked there, or with Ctrl and a digit, from the

@@ -1379,23 +1379,14 @@ impl Window {
         // position held here, at what a point of it is worth.
         let spec_point = pane.instrument.borrow().as_ref().and_then(|i| i.spec()).and_then(|spec| spec.point);
         let holding = view.book.position(&key, &target.contract).filter(|held| held.net != 0);
-        let exit_words = |side: Side, kind: OrderKind, qty: u32, at: f64, words: String| {
-            let money = holding.and_then(|held| {
-                let avg = held.avg?;
-                let point = held.point.or(spec_point)?;
-                trading::is_exit(side, kind, held.net).then(|| trading::exit_pnl(avg, held.net, qty, point, at))
-            });
-            match money {
-                Some(pnl) => {
-                    let mut words = words;
-                    words.push_str(" · ");
-                    let from = words.len();
-                    words.push_str(&trading::pnl_text(pnl, currency.as_deref()));
-                    let colour = if pnl < 0.0 { look.loss.clone() } else { look.profit.clone() };
-                    (words, Some(crate::ui::chart::MarkPnl { from, colour }))
-                }
-                None => (words, None),
-            }
+        let net = holding.map_or(0, |held| held.net);
+        let exit_body = |side: Side, kind: OrderKind, qty: u32, at: f64| {
+            let held = holding?;
+            let avg = held.avg?;
+            let point = held.point.or(spec_point)?;
+            let pnl = trading::is_exit(side, kind, held.net).then(|| trading::exit_pnl(avg, held.net, qty, point, at))?;
+            let colour = if pnl < 0.0 { look.loss.clone() } else { look.profit.clone() };
+            Some(crate::ui::chart::MarkBody { text: trading::pnl_text(pnl, currency.as_deref()), colour: Some(colour) })
         };
         let mut orders: Vec<crate::ui::chart::OrderMark> = view
             .book
@@ -1419,7 +1410,6 @@ impl Window {
                 };
                 // What is left of it to fill is what it would still close.
                 let left = order.qty.saturating_sub(order.filled);
-                let (words, pnl) = exit_words(order.side, order.kind, left, at, trading::order_pill_text(order));
                 Some(crate::ui::chart::OrderMark {
                     basket: order.basket_id.clone(),
                     side: order.side,
@@ -1428,11 +1418,11 @@ impl Window {
                     // Not yet working at the exchange, or asked to move or go.
                     dim: order.status == Stage::Pending || moving.is_some() || cancelling,
                     price: at,
-                    words,
+                    tag: trading::order_tag(order, net),
+                    body: exit_body(order.side, order.kind, left, at),
                     price_text: price(at),
                     colour,
                     style,
-                    pnl,
                 })
             })
             .collect();
@@ -1445,20 +1435,24 @@ impl Window {
                 continue;
             }
             let known = view.book.orders.iter().any(|known| known.tag.as_deref() == Some(tag.as_str()));
-            let (at, words, style) = match (order.kind, order.price) {
+            // A market order has no tag, only its body beside the last price.
+            let (at, tag, body, style) = match (order.kind, order.price) {
                 (OrderKind::Market, _) => match last {
-                    Some(last) => (last, trading::buying_text(order.side, order.qty), look.position),
+                    Some(last) => {
+                        let body = crate::ui::chart::MarkBody { text: trading::buying_text(order.side, order.qty), colour: None };
+                        (last, String::new(), Some(body), look.position)
+                    }
                     None => continue,
                 },
                 (_, Some(_)) if known => continue,
                 (kind, Some(at)) => (
                     at,
-                    format!("{} {} {}", order.side.glyph(), trading::order_words(order.side, kind), order.qty),
+                    trading::mark_tag(kind, trading::is_exit(order.side, kind, net), &order.qty.to_string()),
+                    exit_body(order.side, kind, order.qty, at),
                     if kind == OrderKind::Stop { look.stop } else { look.limit },
                 ),
                 (_, None) => continue,
             };
-            let (words, pnl) = exit_words(order.side, order.kind, order.qty, at, words);
             orders.push(crate::ui::chart::OrderMark {
                 basket: String::new(),
                 side: order.side,
@@ -1466,14 +1460,14 @@ impl Window {
                 qty: order.qty,
                 dim: true,
                 price: at,
-                words,
+                tag,
+                body,
                 price_text: price(at),
                 colour: match order.side {
                     Side::Buy => look.buy.clone(),
                     Side::Sell => look.sell.clone(),
                 },
                 style,
-                pnl,
             });
         }
         // Positions in other months of the root, held past a roll or in
@@ -1488,23 +1482,19 @@ impl Window {
             .filter(|held| omacharts_engine::specs::root_of(&held.contract) == root)
             .filter_map(|held| {
                 let at = held.avg?;
-                let (side, colour) = match held.net > 0 {
-                    true => (Side::Buy, look.long.clone()),
-                    false => (Side::Sell, look.short.clone()),
+                let colour = match held.net > 0 {
+                    true => look.long.clone(),
+                    false => look.short.clone(),
                 };
                 Some(crate::ui::chart::PositionMark {
                     contract: held.contract.clone(),
                     price: at,
-                    words: format!(
-                        "{} {} {}",
-                        side.glyph(),
-                        held.contract,
-                        trading::position_text(held, places, currency.as_deref())
-                    ),
+                    tag: format!("{} {}", held.contract, trading::net_text(held.net)),
+                    body: held.open_pnl.map(|pnl| trading::pnl_text(pnl, currency.as_deref())),
                     price_text: price(at),
                     colour,
                     style: look.position,
-                    pill: held.open_pnl.map(|pnl| match pnl < 0.0 {
+                    fill: held.open_pnl.map(|pnl| match pnl < 0.0 {
                         true => look.loss.clone(),
                         false => look.profit.clone(),
                     }),
@@ -1520,9 +1510,9 @@ impl Window {
             .collect();
         let position = view.book.position(&key, &target.contract).and_then(|held| {
             let at = held.avg?;
-            let (side, colour) = match held.net > 0 {
-                true => (Side::Buy, look.long.clone()),
-                false => (Side::Sell, look.short.clone()),
+            let colour = match held.net > 0 {
+                true => look.long.clone(),
+                false => look.short.clone(),
             };
             // A tab for each exit the broker takes and the position still
             // has room for, in the look of the order it would make.
@@ -1539,11 +1529,12 @@ impl Window {
             Some(crate::ui::chart::PositionMark {
                 contract: target.contract.clone(),
                 price: at,
-                words: format!("{} {}", side.glyph(), trading::position_text(held, places, currency.as_deref())),
+                tag: trading::net_text(held.net),
+                body: held.open_pnl.map(|pnl| trading::pnl_text(pnl, currency.as_deref())),
                 price_text: price(at),
                 colour,
                 style: look.position,
-                pill: held.open_pnl.map(|pnl| match pnl < 0.0 {
+                fill: held.open_pnl.map(|pnl| match pnl < 0.0 {
                     true => look.loss.clone(),
                     false => look.profit.clone(),
                 }),
@@ -1838,7 +1829,7 @@ pub(super) mod tests {
             }
             assert_eq!(session.book().position("951", "ESZ6").map(|held| held.net), Some(1), "bought through the session");
             // The chart shows the position, and a working order once there is one.
-            assert_eq!(pane.view.marks(), (Some("▲ +1 at 7,612.25".to_string()), Vec::new()));
+            assert_eq!(pane.view.marks(), (Some("+1".to_string()), Vec::new()), "its size until the P&L has come");
             let limit = trading::OrderRequest {
                 account: "951".into(),
                 contract: "ESZ6".into(),
@@ -1853,7 +1844,7 @@ pub(super) mod tests {
             window.desk.tell();
             // An exit says what it would realise where it rests: 7.75
             // points on one ES.
-            assert_eq!(pane.view.marks().1, vec!["▼ Sell Limit 1 · +$387.50".to_string()]);
+            assert_eq!(pane.view.marks().1, vec!["TP 1 · +$387.50".to_string()]);
             // A stop under the average loses; one for 3 closes only the 1
             // held; a buy adds to the long and says nothing of money.
             let stop = trading::OrderRequest {
@@ -1876,11 +1867,7 @@ pub(super) mod tests {
             words.sort();
             assert_eq!(
                 words,
-                vec![
-                    "▲ Buy Limit 1".to_string(),
-                    "▼ Sell Limit 1 · +$387.50".to_string(),
-                    "▼ Sell Stop 3 · -$612.50".to_string(),
-                ]
+                vec!["L 1".to_string(), "SL 3 · -$612.50".to_string(), "TP 1 · +$387.50".to_string()]
             );
             for basket in [&basket, &stop, &more] {
                 session.cancel("951", basket).unwrap();
@@ -2113,14 +2100,14 @@ pub(super) mod tests {
                 }
                 orders
             };
-            assert_eq!(orders(), vec![("▼ Sell Limit 1".to_string(), 7_640.0, false)]);
+            assert_eq!(orders(), vec![("TP 1".to_string(), 7_640.0, false)]);
 
             // Refused: back as it was, and said.
             *session.refuse.lock().unwrap() = Some("too late".into());
             pane.view.drop_mark(TradeEvent::Cancel(basket.clone()));
             assert!(orders()[0].2, "not faint at once");
             settle(&window, || !orders().first().is_some_and(|order| order.2));
-            assert_eq!(orders(), vec![("▼ Sell Limit 1".to_string(), 7_640.0, false)], "not back after a refusal");
+            assert_eq!(orders(), vec![("TP 1".to_string(), 7_640.0, false)], "not back after a refusal");
 
             // Another request on its way: nothing sent.
             window.trade.placing.begin(&key).unwrap();
@@ -2190,7 +2177,7 @@ pub(super) mod tests {
             let (window, pane, session, key) = long_es(true);
             let pill = || pane.view.mark_states().0.map(|(words, _)| words).unwrap_or_default();
             let open = |window: &Window| window.trading.borrow().book.money(&key).and_then(|money| money.unrealized);
-            assert!(pill().contains("at 7,612.25"), "{}", pill());
+            assert_eq!(pill(), "+1", "its size alone until the P&L has come");
 
             *session.market.lock().unwrap() = Some(7_622.25);
             window.mark_to_market();
@@ -2349,7 +2336,7 @@ pub(super) mod tests {
             assert!(pane.view.mark_states().0.is_none(), "nothing is held in ESH7");
             let held = pane.view.held_elsewhere();
             assert_eq!(held.len(), 1, "{held:?}");
-            assert!(held[0].0.starts_with("▲ ESZ6 +1 at "), "named with its contract: {}", held[0].0);
+            assert!(held[0].0.starts_with("ESZ6 +1"), "named with its contract: {}", held[0].0);
             assert!(!held[0].1);
             // Its × flattens ESZ6, not the chart's contract.
             pane.view.drop_mark(TradeEvent::FlattenHeld("ESZ6".into()));
@@ -2386,7 +2373,7 @@ pub(super) mod tests {
             settle(&window, || pane.view.held_elsewhere().iter().any(|(words, _)| words.contains("ESH7")));
             assert!(pane.view.mark_states().0.is_some());
             let held = pane.view.held_elsewhere();
-            assert!(held.iter().any(|(words, _)| words.starts_with("▲ ESH7 +1")), "{held:?}");
+            assert!(held.iter().any(|(words, _)| words.starts_with("ESH7 +1")), "{held:?}");
         });
     }
 
@@ -2417,14 +2404,14 @@ pub(super) mod tests {
 
             // Pending, then working.
             pane.view.drop_mark(TradeEvent::ExitAt { kind: OrderKind::Limit, price: off(40.0) });
-            assert_eq!(orders(), vec![("▼ Sell Limit 1".to_string(), off(40.0), true)], "not drawn at once, faint");
+            assert_eq!(orders(), vec![("TP 1".to_string(), off(40.0), true)], "not drawn at once, faint");
             settle(&window, || session.book().orders.len() == 2);
             settle(&window, || false);
-            assert_eq!(orders(), vec![("▼ Sell Limit 1".to_string(), off(40.0), true)], "received is not working");
+            assert_eq!(orders(), vec![("TP 1".to_string(), off(40.0), true)], "received is not working");
             let target = session.book().orders[0].basket_id.clone();
             session.open(&target);
             window.desk.tell();
-            assert_eq!(orders(), vec![("▼ Sell Limit 1".to_string(), off(40.0), false)], "working, yet faint");
+            assert_eq!(orders(), vec![("TP 1".to_string(), off(40.0), false)], "working, yet faint");
             assert!(window.trade.pending.borrow().is_empty());
 
             // Refused: gone, and said.
@@ -2440,7 +2427,7 @@ pub(super) mod tests {
             pane.view.drop_mark(TradeEvent::ExitAt { kind: OrderKind::Stop, price: off(-40.0) });
             settle(&window, || false);
             assert_eq!(orders().len(), 2);
-            assert_eq!(orders()[1], ("▼ Sell Stop 1".to_string(), off(-40.0), true), "taken as done without an answer");
+            assert_eq!(orders()[1], ("SL 1".to_string(), off(-40.0), true), "taken as done without an answer");
             assert_eq!(window.trade.pending.borrow().len(), 1);
             session.silent.store(false, Ordering::Release);
             window.trade.pending.borrow_mut().clear();
@@ -2465,7 +2452,7 @@ pub(super) mod tests {
             let two = session.place(&trading::OrderRequest { qty: 2, ..resting(Side::Buy, OrderKind::Limit, Some(off(-60.0))) }).unwrap();
             session.fill_part(&two, 1);
             window.desk.tell();
-            assert!(orders().iter().any(|(words, ..)| words == "▲ Buy Limit 1/2"), "{:?}", orders());
+            assert!(orders().iter().any(|(words, ..)| words == "L 1/2"), "{:?}", orders());
             assert_eq!(session.book().position("951", "ESZ6").map(|held| held.net), Some(3), "only what filled is held");
         });
     }
