@@ -557,20 +557,34 @@ The first version of order entry:
 
 On the chart, every order and the position wears one label at the right
 end of its line, in one piece: a tag filled in the line's colour, a body,
-and a × as its end segment. The tag is a code with the size, the colour
-carrying the side: `L 1` and `S 1` for a limit and a stop that open or
-add to a position, `TP 1` and `SL 1` for the ones that close some of it
-(`STL` is kept for a stop-limit), `+1` and `-2` for the position. The
-body is money: an exit's P&L if it fills, the position's open P&L on a
-fill in the profit or loss colour; an entry has none. The price is on
-the axis, in its own chip. A working order's line can be dragged to
+and a × as its end segment. The tag is a code with the size: `▲ L 1` and
+`▼ S 1` for a limit and a stop that open or add to a position, the side
+in the shape, `TP 1` and `SL 1` for the ones that close some of it
+(`STL` is kept for a stop-limit), whose side goes without saying, `+1`
+and `-2` for the position. The body is money, in the ink: an exit's P&L
+if it fills, the position's open P&L on a fill; an entry has none. The
+price is on the axis, in its own chip.
+
+A mark wears one colour, on its line, its outline, its tag, its × and its
+chip, and the colour says one thing. Green and red are money's: a mark
+with money to say, an exit or the position, wears the sign of it, so a
+target is green, a stop red, and the position green or red as it stands,
+the chip filled. A mark with no money, a limit or a stop that opens or
+adds, wears its side instead, in two colours the candles never use: the
+theme's Blue for a buy and a long, its Amber for a sell and a short, the
+chip outlined. The position wears its side too until the broker's P&L
+has come. The header's Buy and Sell, and the panel's sides and sizes,
+are in the same Blue and Amber, and the position's tabs in the colour
+of the exit they would make. Every theme has the four, and each is set
+by hand on a theme of one's own (Preferences → Trading). A working order's line can be dragged to
 another price, and the position's label has a TP and an SL tab before
 it, dragged out to place a target or a stop for the whole position.
 While it is dragged it is a preview: its line in the order's look, its
-label without the ×, the body saying what an exit would realise there or
-where any other order would be and how many ticks it has come; where it
-may not go with the market where it is, it says why and letting go does
-nothing. The × cancels an order or flattens the position, on a press and
+label without the ×, the body saying what an exit would realise there,
+the mark in the colour of that, so a target dragged under the entry
+turns red, or where any other order would be and how many ticks it has
+come; where it may not go with the market where it is, it says why and
+letting go does nothing. The × cancels an order or flattens the position, on a press and
 release without moving; a press on it that moves on drags the line as
 the line does. A new exit is linked to the
 other one working on the position when the broker links orders (Rithmic
@@ -595,7 +609,8 @@ quantities for stocks or futures, optionally narrowed to some roots, the
 narrowest winning (Preferences → Trading → Edit quantities…, or a right
 click on the header's quantity). Out of the box stocks go 100 to 900 and
 futures 1 to 9. Beside it, the header's **Buy** and **Sell** buy or sell
-the quantity at market, in the theme's Buy and Sell colours, and say why
+the quantity at market, in the theme's Buy and Sell colours (its Blue and
+Amber, the chart's entries' own), and say why
 not, greyed, when the chart cannot trade. The two, and the quantity, lead
 the header's right, and are there only while the chart has an account to
 trade on. So is the header's **Day P&L**, at the end of its left: the

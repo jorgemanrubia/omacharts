@@ -155,18 +155,19 @@ pub fn buying_text(side: Side, qty: u32) -> String {
     }
 }
 
-/// The tag on an order's label: its kind and size in a code, "L 1" for a
-/// limit and "S 1" for a stop that open or add to a position, "TP 1" and
-/// "SL 1" for the ones that close some of it. The side is in the colour.
-pub fn mark_tag(kind: OrderKind, exit: bool, size: &str) -> String {
-    let code = match (kind, exit) {
-        (OrderKind::Limit, true) => "TP",
-        (OrderKind::Stop, true) => "SL",
-        (OrderKind::Limit, false) => "L",
-        (OrderKind::Stop, false) => "S",
-        (OrderKind::Market, _) => "M",
-    };
-    format!("{code} {size}")
+/// The tag on an order's label: its kind and size in a code, "TP 1" and
+/// "SL 1" for the orders that close some of the position, whose side is
+/// the position's other one and goes without saying; "▲ L 1" for a limit
+/// and "▼ S 1" for a stop that open or add to one, the side in the shape,
+/// as the Orders tab tells it.
+pub fn mark_tag(kind: OrderKind, side: Side, exit: bool, size: &str) -> String {
+    match (kind, exit) {
+        (OrderKind::Limit, true) => format!("TP {size}"),
+        (OrderKind::Stop, true) => format!("SL {size}"),
+        (OrderKind::Limit, false) => format!("{} L {size}", side.glyph()),
+        (OrderKind::Stop, false) => format!("{} S {size}", side.glyph()),
+        (OrderKind::Market, _) => format!("{} M {size}", side.glyph()),
+    }
 }
 
 /// A working order's tag, closing some of a position of `net` or not:
@@ -176,7 +177,7 @@ pub fn order_tag(order: &Order, net: i32) -> String {
         Stage::PartiallyFilled => format!("{}/{}", order.filled, order.qty),
         _ => order.qty.to_string(),
     };
-    mark_tag(order.kind, is_exit(order.side, order.kind, net), &size)
+    mark_tag(order.kind, order.side, is_exit(order.side, order.kind, net), &size)
 }
 
 #[cfg(test)]
@@ -253,21 +254,22 @@ mod tests {
     }
 
     /// An order's tag: its kind and size in a code, the kind's telling
-    /// whether it closes some of the position or not.
+    /// whether it closes some of the position or not, and the side as a
+    /// shape only on one that opens or adds, an exit's going without saying.
     #[test]
     fn what_an_orders_tag_says() {
-        assert_eq!(mark_tag(OrderKind::Limit, true, "1"), "TP 1");
-        assert_eq!(mark_tag(OrderKind::Stop, true, "3"), "SL 3");
-        assert_eq!(mark_tag(OrderKind::Limit, false, "2"), "L 2");
-        assert_eq!(mark_tag(OrderKind::Stop, false, "1"), "S 1");
+        assert_eq!(mark_tag(OrderKind::Limit, Side::Sell, true, "1"), "TP 1");
+        assert_eq!(mark_tag(OrderKind::Stop, Side::Sell, true, "3"), "SL 3");
+        assert_eq!(mark_tag(OrderKind::Limit, Side::Buy, false, "2"), "▲ L 2");
+        assert_eq!(mark_tag(OrderKind::Stop, Side::Sell, false, "1"), "▼ S 1");
         // A sell limit closes a long and opens or adds to a short.
         let sell = order("a", Side::Sell, OrderKind::Limit, Some(7_640.0), Stage::Working);
         assert_eq!(order_tag(&sell, 1), "TP 1");
-        assert_eq!(order_tag(&sell, 0), "L 1");
-        assert_eq!(order_tag(&sell, -1), "L 1");
+        assert_eq!(order_tag(&sell, 0), "▼ L 1");
+        assert_eq!(order_tag(&sell, -1), "▼ L 1");
         let mut part = order("b", Side::Buy, OrderKind::Stop, Some(7_640.0), Stage::PartiallyFilled);
         (part.qty, part.filled) = (2, 1);
         assert_eq!(order_tag(&part, -2), "SL 1/2");
-        assert_eq!(order_tag(&part, 2), "S 1/2");
+        assert_eq!(order_tag(&part, 2), "▲ S 1/2");
     }
 }

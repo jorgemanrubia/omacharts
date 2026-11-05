@@ -6590,8 +6590,10 @@ fn stroke_pane_line(
 }
 
 /// A working order on the chart: its line at its price, its price on the
-/// axis and its label inside the plot, in its side's colour and its kind's
-/// pattern.
+/// axis and its label inside the plot, in its colour and its kind's
+/// pattern. The colour is its money's, profit or loss, for an exit, and
+/// its side's for an order that opens or adds, which has no money to
+/// speak of.
 #[derive(Clone, Debug, PartialEq)]
 pub struct OrderMark {
     /// The broker's id for it, which a drag or its × hands back.
@@ -6600,13 +6602,15 @@ pub struct OrderMark {
     pub kind: OrderKind,
     pub qty: u32,
     pub price: f64,
-    /// "L 1", "TP 2": its kind and size, filled in its colour. Empty for
-    /// a market order on its way, which has only a body.
+    /// "▲ L 1", "TP 2": its kind and size, filled in its colour. Empty
+    /// for a market order on its way, which has only a body.
     pub tag: String,
-    /// After the tag: an exit's P&L if it fills, in the profit or loss
-    /// colour; "Buying 1…" for a market order.
-    pub body: Option<MarkBody>,
+    /// After the tag, in the ink: an exit's P&L if it fills, "Buying 1…"
+    /// for a market order.
+    pub body: Option<String>,
     pub price_text: String,
+    /// The whole mark's: its line, its label's outline, its tag's fill,
+    /// its × and its chip. An exit's money's, an entry's side's.
     pub colour: String,
     pub style: LineStyle,
     /// Pending: not yet working at the exchange, or asked to move or go
@@ -6616,23 +6620,15 @@ pub struct OrderMark {
     pub dim: bool,
 }
 
-/// The body of a mark's label: its words, and the colour they are in when
-/// it is not the theme's ink — the profit's or the loss's for money.
-#[derive(Clone, Debug, PartialEq)]
-pub struct MarkBody {
-    pub text: String,
-    pub colour: Option<String>,
-}
-
 impl OrderMark {
     /// Its label in one line, for the tests: "TP 1 · +$125.00".
     #[cfg(test)]
     fn words(&self) -> String {
-        words(&self.tag, self.body.as_ref().map(|body| body.text.as_str()))
+        words(&self.tag, self.body.as_deref())
     }
 }
 
-/// A label's tag and body as one line: "TP 1 · +$125.00", "L 1".
+/// A label's tag and body as one line: "TP 1 · +$125.00", "▲ L 1".
 #[cfg(test)]
 fn words(tag: &str, body: Option<&str>) -> String {
     match body {
@@ -6642,9 +6638,9 @@ fn words(tag: &str, body: Option<&str>) -> String {
     }
 }
 
-/// The position held, at its average price: a heavier line in the long or
-/// short colour, and its label's body and its chip filled in the profit or
-/// loss colour once the broker's P&L has come, outlined until then.
+/// The position held, at its average price: a heavier line, in the profit
+/// or loss colour once the broker's P&L has come and in the long or short
+/// colour until then, its chip filled once there is money to say.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PositionMark {
     /// The contract it is held in.
@@ -6656,11 +6652,10 @@ pub struct PositionMark {
     /// Its open P&L, "+$125.00", once it has come.
     pub body: Option<String>,
     pub price_text: String,
+    /// The whole mark's: its money's sign once the P&L has come, its
+    /// side's until then.
     pub colour: String,
     pub style: LineStyle,
-    /// The profit or loss colour its body and chip are filled in, once
-    /// there is a P&L to colour.
-    pub fill: Option<String>,
     /// Contracts held: positive long, negative short.
     pub net: i32,
     /// The exits it can still be given, a tab each beside its pill.
@@ -6686,7 +6681,8 @@ impl PositionMark {
 
 /// A tab beside the position's label, dragged out to place an exit: the
 /// target (a limit) or the stop, outlined in the look of the order it
-/// would make.
+/// would make, the profit colour for the one and the loss colour for the
+/// other.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ExitTab {
     pub kind: OrderKind,
@@ -6818,7 +6814,7 @@ fn mark_row(
 
 /// Where an order's label sits: its tag, its body and its ×.
 fn order_row(cr: &cairo::Context, plot_x: f64, plot_w: f64, order: &OrderMark) -> MarkRow {
-    let body = order.body.as_ref().map(|body| body.text.as_str());
+    let body = order.body.as_deref();
     mark_row(cr, plot_x, plot_w, &order.tag, body, order.kind != OrderKind::Market, &[])
 }
 
@@ -6918,10 +6914,11 @@ impl State {
             MarkDrag::Exit(kind) => {
                 let held = self.marks.position.as_ref().filter(|held| !held.dim)?;
                 let tab = held.exits.iter().find(|tab| tab.kind == *kind)?;
+                let side = crate::trading::exit_side(held.net);
                 Some(Dragged {
-                    side: crate::trading::exit_side(held.net),
+                    side,
                     kind: *kind,
-                    tag: crate::trading::mark_tag(*kind, true, &held.net.unsigned_abs().to_string()),
+                    tag: crate::trading::mark_tag(*kind, side, true, &held.net.unsigned_abs().to_string()),
                     from: held.price,
                     colour: &tab.colour,
                     style: tab.style,
@@ -6961,9 +6958,10 @@ impl State {
     }
 
     /// What the body of `dragged`'s label, in hand at `at`, says, and the
-    /// colour of the money when that is what it says: an exit only what it
-    /// would realise there, any other order where it would be and how far
-    /// it has come, and where it may not go, why.
+    /// colour the mark wears when that is money: an exit only what it
+    /// would realise there, in the profit or loss colour of that, any
+    /// other order where it would be and how far it has come, and where
+    /// it may not go, why.
     fn preview_label(
         &self,
         what: &MarkDrag,
@@ -7057,12 +7055,12 @@ enum Boxed<'a> {
     Outlined(&'a str),
 }
 
-/// How a position's chip is boxed: filled in its P&L colour, or outlined
-/// in its own.
-fn held_look(held: &PositionMark) -> Boxed<'_> {
-    match &held.fill {
-        Some(fill) => Boxed::Filled(Tag::on(fill)),
-        None => Boxed::Outlined(&held.colour),
+/// How a mark's chip is boxed: filled in the mark's colour once that is
+/// its money's, outlined in it while it is only its side's.
+fn chip_look(colour: &str, money: bool) -> Boxed<'_> {
+    match money {
+        true => Boxed::Filled(Tag::on(colour)),
+        false => Boxed::Outlined(colour),
     }
 }
 
@@ -7073,9 +7071,6 @@ struct Label<'a> {
     tag: &'a str,
     /// The body's words and the colour they are in, the ink when none.
     body: Option<(&'a str, Option<&'a str>)>,
-    /// The colour the body is filled in, its words then in the label
-    /// colour that fill takes: the position's P&L.
-    fill: Option<&'a str>,
     /// The × is under the pointer: filled solid.
     lit: bool,
 }
@@ -7096,12 +7091,6 @@ fn draw_mark_label(cr: &cairo::Context, row: &MarkRow, y: f64, label: &Label, ba
     if row.tag_w > 0.0 {
         cr.rectangle(row.tag_x, top, row.tag_w, MARK_H);
         colors::set_source(cr, &side.fill);
-        let _ = cr.fill();
-    }
-    let fill = label.fill.map(Tag::on);
-    if let (Some((x, w)), Some(fill)) = (row.body, &fill) {
-        cr.rectangle(x, top, w, MARK_H);
-        colors::set_source(cr, &fill.fill);
         let _ = cr.fill();
     }
     if row.capped {
@@ -7129,10 +7118,7 @@ fn draw_mark_label(cr: &cairo::Context, row: &MarkRow, y: f64, label: &Label, ba
         let _ = cr.show_text(label.tag);
     }
     if let (Some((x, _)), Some((text, colour))) = (row.body, label.body) {
-        colors::set_source(cr, match &fill {
-            Some(fill) => fill.label.as_str(),
-            None => colour.unwrap_or(ink),
-        });
+        colors::set_source(cr, colour.unwrap_or(ink));
         cr.move_to(x + MARK_PAD, baseline(cr, y));
         let _ = cr.show_text(text);
     }
@@ -7260,17 +7246,19 @@ fn draw_marks(
     let mut chips: Vec<(f64, &str, Option<Boxed>, bool)> = Vec::with_capacity(state.marks.orders.len() + 2);
     for (order, y) in &orders {
         let row = order_row(cr, plot_x, plot_w, order);
-        let body = order.body.as_ref().map(|body| (body.text.as_str(), body.colour.as_deref()));
+        let body = order.body.as_deref().map(|body| (body, None));
         // A market order is always on its way, and has no × and no price.
         let market = order.kind == OrderKind::Market;
         ground(cr, order.dim || market, &|cr| row.path(cr, *y));
         faint(cr, order.dim || market, &|cr| {
             let lit = lit.is_some_and(|hit| *hit == MarkHit::Close(order.basket.clone()));
-            let label = Label { colour: &order.colour, tag: &order.tag, body, fill: None, lit };
+            let label = Label { colour: &order.colour, tag: &order.tag, body, lit };
             draw_mark_label(cr, &row, *y, &label, background, ink);
         });
         if !market {
-            chips.push((y + 0.5, &order.price_text, Some(Boxed::Outlined(&order.colour)), order.dim));
+            // An exit's chip is filled in its money's colour, an entry's
+            // outlined in its side's.
+            chips.push((y + 0.5, &order.price_text, Some(chip_look(&order.colour, order.body.is_some())), order.dim));
         }
     }
     for (held, y) in &held {
@@ -7279,10 +7267,10 @@ fn draw_marks(
         faint(cr, held.dim, &|cr| {
             let lit = lit == Some(&MarkHit::FlattenHeld(held.contract.clone()));
             let body = held.body.as_deref().map(|body| (body, None));
-            let label = Label { colour: &held.colour, tag: &held.tag, body, fill: held.fill.as_deref(), lit };
+            let label = Label { colour: &held.colour, tag: &held.tag, body, lit };
             draw_mark_label(cr, &row, *y, &label, background, ink);
         });
-        chips.push((y + 0.5, &held.price_text, Some(held_look(held)), held.dim));
+        chips.push((y + 0.5, &held.price_text, Some(chip_look(&held.colour, held.body.is_some())), held.dim));
     }
     if let Some((held, y)) = position {
         let row = held_row(cr, plot_x, plot_w, held);
@@ -7296,7 +7284,7 @@ fn draw_marks(
         faint(cr, held.dim, &|cr| {
             let lit_cap = lit == Some(&MarkHit::Flatten);
             let body = held.body.as_deref().map(|body| (body, None));
-            let label = Label { colour: &held.colour, tag: &held.tag, body, fill: held.fill.as_deref(), lit: lit_cap };
+            let label = Label { colour: &held.colour, tag: &held.tag, body, lit: lit_cap };
             draw_mark_label(cr, &row, y, &label, background, ink);
             for (kind, x, w) in &row.tabs {
                 let Some(tab) = held.exits.iter().find(|tab| tab.kind == *kind) else { continue };
@@ -7318,7 +7306,7 @@ fn draw_marks(
                 let _ = cr.show_text(crate::trading::exit_tab(*kind));
             }
         });
-        chips.push((y + 0.5, &held.price_text, Some(held_look(held)), held.dim));
+        chips.push((y + 0.5, &held.price_text, Some(chip_look(&held.colour, held.body.is_some())), held.dim));
     }
     let last = state.bars.last().map(|bar| to_y(bar.close).round() + 0.5).filter(|y| shown(*y));
     if let Some(y) = last {
@@ -7346,10 +7334,11 @@ fn draw_marks(
     moved
 }
 
-/// An order being dragged: a ghost of its line in its own look where the
-/// hand has it, its label without a × saying what it would be and how far
-/// it has come, and its price on the axis. Muted, saying why, where it
-/// may not go.
+/// An order being dragged: a ghost of its line where the hand has it, in
+/// the colour of the money an exit would realise there and in its own
+/// look otherwise, its label without a × saying what it would be and how
+/// far it has come, and its price on the axis. Muted, saying why, where
+/// it may not go.
 #[allow(clippy::too_many_arguments)]
 fn draw_mark_preview(
     cr: &cairo::Context,
@@ -7370,9 +7359,10 @@ fn draw_mark_preview(
     let places = tick.map_or(2, |tick| omacharts_engine::on_tick(at, tick).1);
     let price = grouped_decimals(at, places);
     let (text, money) = state.preview_label(what, &dragged, at, allowed, places);
-    let colour = match allowed {
-        true => dragged.colour,
-        false => state.theme.ui.text_muted.as_str(),
+    let colour = match (allowed, money) {
+        (true, Some(money)) => money,
+        (true, None) => dragged.colour,
+        (false, _) => state.theme.ui.text_muted.as_str(),
     };
     cr.save().ok();
     mark_font(cr);
@@ -7386,12 +7376,10 @@ fn draw_mark_preview(
     cr.set_dash(&[], 0.0);
     // The label where the order's own would be, the ×'s place left empty.
     let row = mark_row(cr, plan.plot_x, plan.plot_w, &dragged.tag, Some(&text), false, &[]);
-    let body_colour = match (money, allowed) {
-        (Some(money), _) => Some(money),
-        (None, true) => None,
-        (None, false) => Some(colour),
-    };
-    let label = Label { colour, tag: &dragged.tag, body: Some((&text, body_colour)), fill: None, lit: false };
+    // The words in the ink, and in the muted colour with the rest where
+    // the order may not go.
+    let body_colour = (!allowed).then_some(colour);
+    let label = Label { colour, tag: &dragged.tag, body: Some((&text, body_colour)), lit: false };
     draw_mark_label(cr, &row, line_y, &label, &state.theme.ui.background, &state.theme.ui.text);
     let axis_x = plan.plot_x + plan.plot_w;
     axis_font(cr);
@@ -9997,7 +9985,6 @@ mod tests {
                 price_text: "1".into(),
                 colour: "#00ff00".into(),
                 style: LineStyle::Solid,
-                fill: None,
                 net: 1,
                 exits: vec![tab(OrderKind::Limit), tab(OrderKind::Stop)],
                 dim: false,
@@ -10041,10 +10028,9 @@ mod tests {
         position.body = Some("+$0.00".into());
         position.price_text = grouped_decimals(last, 2);
         position.colour = up.clone();
-        position.fill = Some(up.clone());
-        position.exits = vec![tab(OrderKind::Limit, &down, LineStyle::Solid), tab(OrderKind::Stop, &down, LineStyle::Dashed)];
+        position.exits = vec![tab(OrderKind::Limit, &up, LineStyle::Solid), tab(OrderKind::Stop, &down, LineStyle::Dashed)];
         let order = &mut state.marks.orders[0];
-        order.tag = "S 2".into();
+        order.tag = "▲ S 2".into();
         order.colour = up;
         order.style = LineStyle::Dashed;
         state
@@ -10052,8 +10038,8 @@ mod tests {
 
     /// No line is drawn through what a mark says: not its own, not another
     /// at the same price, not the last price's when the position sits on
-    /// it. Inside the label, beside its tag and beside its body, is each
-    /// one's fill.
+    /// it. Inside the label, beside its tag is its fill, and beside its
+    /// body the chart's ground.
     #[test]
     fn no_line_crosses_a_marks_words() {
         let (w, h) = (600.0, 400.0);
@@ -10077,13 +10063,14 @@ mod tests {
             };
             let x = row.tag_x + 4.0;
             assert_eq!(at(x), fill(&held.colour), "theme {theme}: the tag at x {x} is its fill, not a line");
-            let (body_x, body_w) = row.body.expect("a body");
-            for x in [body_x + 3.0, body_x + body_w - 3.0] {
-                assert_eq!(at(x), fill(held.fill.as_ref().unwrap()), "theme {theme}: the body at x {x} is its fill");
-            }
-            // Inside a tab, beside its word, is the chart's ground.
+            // Inside the body, and inside a tab beside its word, is the
+            // chart's ground.
             let (r, g, b, _) = colors::rgba(&state.theme.ui.background);
             let ground = ((r * 255.0).round() as u8, (g * 255.0).round() as u8, (b * 255.0).round() as u8);
+            let (body_x, body_w) = row.body.expect("a body");
+            for x in [body_x + 3.0, body_x + body_w - 3.0] {
+                assert_eq!(at(x), ground, "theme {theme}: the body at x {x} is clear of the line");
+            }
             for (_, x, _) in &row.tabs {
                 assert_eq!(at(x + 3.0), ground, "theme {theme}: a tab at x {x} is clear of the line");
             }
@@ -10183,8 +10170,9 @@ mod tests {
         assert_eq!(colour, None);
     }
 
-    /// While an exit is in hand its pill is drawn over the chart, its money
-    /// in the profit colour, where the hand has it.
+    /// While an exit is in hand its pill is drawn over the chart, in the
+    /// colour of its money, the profit colour for a target over the
+    /// market, where the hand has it.
     #[test]
     fn a_dragged_exit_is_drawn_with_its_money() {
         let (w, h) = (600.0, 400.0);
@@ -10215,8 +10203,11 @@ mod tests {
         let scale = price_range(&state, &state.bars[first..first + visible], &plan).unwrap();
         let y = scale.to_y(at, plan.price_y, plan.price_h).round() as usize;
         // The hand's layer, over the chart: what moves with the pointer.
+        // The pill's outline is the colour, so its rows are a pill's
+        // height about the hand.
         let rows = green(&frame(w, h, |cr| draw_pointer(cr, w, h, &state)));
-        assert!(!rows.is_empty() && rows.iter().all(|row| row.abs_diff(y) <= 8), "the money where the hand is: {rows:?} at {y}");
+        let reach = (MARK_H / 2.0) as usize + 1;
+        assert!(!rows.is_empty() && rows.iter().all(|row| row.abs_diff(y) <= reach), "the money where the hand is: {rows:?} at {y}");
     }
 
     /// An exit's money as pictures, for a person to look at: resting, and
@@ -10239,16 +10230,15 @@ mod tests {
             held.profit = look.profit.clone();
             held.loss = look.loss.clone();
             let avg = held.price;
-            // A resting target, saying what it would realise.
+            // A resting target, saying what it would realise, in its colour.
             let order = &mut state.marks.orders[0];
             order.side = Side::Sell;
             order.kind = OrderKind::Limit;
-            order.colour = look.sell.clone();
+            order.colour = look.profit.clone();
             order.style = look.limit;
             order.price = avg + (high - low) * 0.25;
-            let money = crate::trading::pnl_text((order.price - avg) * 50.0, Some("USD"));
             order.tag = "TP 1".into();
-            order.body = Some(MarkBody { text: money, colour: Some(look.profit.clone()) });
+            order.body = Some(crate::trading::pnl_text((order.price - avg) * 50.0, Some("USD")));
             let shot = |state: &State, file: &str| {
                 let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, (w * 2.0) as i32, (h * 2.0) as i32).unwrap();
                 {
