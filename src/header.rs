@@ -64,7 +64,7 @@ pub enum Part {
     /// other feeds when there are any. Nothing at all with Yahoo alone:
     /// nothing to choose, and nothing to connect to.
     Feed,
-    /// The account's P&L for the day, closed and open: "Day +$1,250.00".
+    /// The account's P&L for the day, closed and open: "P&L +$1,250.00".
     /// Nothing at all unless the chart has an account to trade on, or
     /// while its broker has not said.
     DayPnl,
@@ -110,11 +110,10 @@ impl Part {
     /// The section it is in until somebody places it, or `None` for a part
     /// that is only there once somebody adds it. The account and the feed
     /// are at home on the left because they cost nothing: with one account
-    /// or one feed each draws nothing and takes no room, and the day's P&L
-    /// after them draws nothing without an account. Buy, Sell and the
-    /// quantity lead the corner, ahead of the three controls that always
-    /// stood in it, in the order they stood; without an account to trade
-    /// on, they draw nothing either.
+    /// or one feed each draws nothing and takes no room. The day's P&L,
+    /// Buy, Sell and the quantity lead the corner, ahead of the three
+    /// controls that always stood in it, in the order they stood; without
+    /// an account to trade on, they draw nothing either.
     pub fn home(self) -> Option<Section> {
         match self {
             Part::Symbol => Some(Section::Left),
@@ -123,7 +122,7 @@ impl Part {
             Part::Template => None,
             Part::Account => Some(Section::Left),
             Part::Feed => Some(Section::Left),
-            Part::DayPnl => Some(Section::Left),
+            Part::DayPnl => Some(Section::Right),
             Part::Trade => Some(Section::Right),
             Part::Size => Some(Section::Right),
             Part::Stripe => Some(Section::Center),
@@ -165,7 +164,7 @@ impl Part {
             Part::Template => "Chart template",
             Part::Account => "Account",
             Part::Feed => "Data feed",
-            Part::DayPnl => "Day P&L",
+            Part::DayPnl => "P&L",
             Part::Trade => "Buy Sell",
             Part::Size => "Quantity",
             Part::Stripe => "Resolutions stripe",
@@ -287,6 +286,16 @@ pub fn spell(parts: &[Part]) -> String {
     }
 }
 
+/// The header that shipped while the day's P&L ended the left, as
+/// Preferences wrote it out once anybody touched it or restored it: read as
+/// [`Header::standard`], so a header that was only ever the standard one
+/// follows the standard to the P&L's place on the right.
+const BEFORE_PNL_MOVED: [(&str, &str); 3] = [
+    (SETTING, "feed,symbol,resolution,account,day_pnl"),
+    (CENTER_SETTING, "stripe"),
+    (RIGHT_SETTING, "trade,size,settings,maximize,link"),
+];
+
 /// The header every chart shows.
 ///
 /// Read leniently, where [`parse`] is strict: a part only a newer build knows
@@ -297,6 +306,11 @@ pub fn spell(parts: &[Part]) -> String {
 /// stay in the corner. A part stored in two sections is in the first of
 /// them, the left being the section that was always there.
 pub fn load(store: &Store) -> Header {
+    if BEFORE_PNL_MOVED.iter().all(|(key, value)| store.setting(key).is_none_or(|text| text == *value))
+        && store.setting(SETTING).is_some()
+    {
+        return Header::standard();
+    }
     let mut header = Header { left: Vec::new(), center: Vec::new(), right: Vec::new() };
     let mut placed: Vec<Part> = Vec::new();
     for section in Section::ALL {
@@ -356,16 +370,37 @@ mod tests {
         assert_eq!(load(&store), empty);
     }
 
-    /// Out of the box the left is the data feed's dot, then the line every
-    /// chart always had, then the day's P&L; the center the stripe it always had across its
-    /// top, and the right Buy, Sell and the quantity ahead of the three
-    /// controls that always stood in its corner, in their order.
+    /// Out of the box the left is the data feed's dot and then the line
+    /// every chart always had; the center the stripe it always had across
+    /// its top, and the right the day's P&L, Buy, Sell and the quantity
+    /// ahead of the three controls that always stood in its corner, in
+    /// their order.
     #[test]
     fn the_standard_header_is_the_line_the_stripe_and_the_corner() {
         let header = Header::standard();
-        assert_eq!(header.left, vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Account, Part::DayPnl]);
+        assert_eq!(header.left, vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Account]);
         assert_eq!(header.center, vec![Part::Stripe]);
-        assert_eq!(header.right, vec![Part::Trade, Part::Size, Part::Settings, Part::Maximize, Part::Link]);
+        assert_eq!(
+            header.right,
+            vec![Part::DayPnl, Part::Trade, Part::Size, Part::Settings, Part::Maximize, Part::Link]
+        );
+    }
+
+    /// A header saved as the one that shipped with the P&L at the end of
+    /// the left is the standard one now, P&L on the right; one that differs
+    /// from it in anything is kept as it was saved.
+    #[test]
+    fn the_old_standard_header_follows_the_p_l_to_the_right() {
+        let store = Store::memory().unwrap();
+        for (key, value) in BEFORE_PNL_MOVED {
+            store.set_setting(key, value);
+        }
+        assert_eq!(load(&store), Header::standard());
+        store.remove_setting(CENTER_SETTING);
+        assert_eq!(load(&store), Header::standard());
+        store.set_setting(CENTER_SETTING, "none");
+        assert_eq!(load(&store).left, vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Account, Part::DayPnl]);
+        assert_eq!(load(&store).center, Vec::new());
     }
 
     /// A header stored before there were sections keeps its line on the
@@ -380,7 +415,7 @@ mod tests {
             Header {
                 left: vec![Part::Change, Part::Symbol, Part::Account],
                 center: vec![Part::Stripe],
-                right: vec![Part::Trade, Part::Size, Part::Settings, Part::Maximize, Part::Link],
+                right: vec![Part::DayPnl, Part::Trade, Part::Size, Part::Settings, Part::Maximize, Part::Link],
             }
         );
         store.set_setting(SETTING, "none");
@@ -393,7 +428,7 @@ mod tests {
     /// shown once, in the first of them.
     #[test]
     fn a_part_is_in_the_header_once() {
-        let corner = vec![Part::Trade, Part::Size, Part::Settings, Part::Maximize, Part::Link];
+        let corner = vec![Part::DayPnl, Part::Trade, Part::Size, Part::Settings, Part::Maximize, Part::Link];
         let mut header = Header::standard();
         header.set(Section::Left, vec![Part::Symbol, Part::Stripe]);
         assert_eq!(header, Header { left: vec![Part::Symbol, Part::Stripe], center: Vec::new(), right: corner.clone() });

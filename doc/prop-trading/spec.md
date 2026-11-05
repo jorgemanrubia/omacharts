@@ -612,12 +612,12 @@ click on the header's quantity). Out of the box stocks go 100 to 900 and
 futures 1 to 9. Beside it, the header's **Buy** and **Sell** buy or sell
 the quantity at market, in the theme's Buy and Sell colours (its Blue and
 Amber, the chart's entries' own), and say why
-not, greyed, when the chart cannot trade. The two, and the quantity, lead
-the header's right, and are there only while the chart has an account to
-trade on. So is the header's **Day P&L**, at the end of its left: the
-account's P&L for the day, closed and open, marked to every trade
-("Day +$1,250.00" in the profit colour, "Day -$340.50" in the loss
-colour), and nothing until the broker has said. With a trading account, Ctrl+B buys the quantity at market,
+not, greyed, when the chart cannot trade. Ahead of them, first on the
+header's right, the header's **P&L**: the account's P&L for the day,
+closed and open, marked to every trade ("P&L +$1,250.00" in the profit
+colour, "P&L -$340.50" in the loss colour), and nothing until the broker
+has said. The P&L, the two and the quantity lead the header's right, and
+are there only while the chart has an account to trade on. With a trading account, Ctrl+B buys the quantity at market,
 Ctrl+S sells it, and Ctrl+F cancels every
 order working in the chart's contract and flattens it; the sidebars moved
 to Ctrl+Shift+B and Ctrl+Shift+D, and watchlist N to Ctrl+Shift and a

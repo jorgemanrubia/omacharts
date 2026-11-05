@@ -5567,7 +5567,7 @@ mod tests {
     fn the_header_is_one_setting_and_a_typo_is_refused() {
         let store = bare();
         use crate::header::{Header, Part};
-        let corner = vec![Part::Trade, Part::Size, Part::Settings, Part::Maximize, Part::Link];
+        let corner = vec![Part::DayPnl, Part::Trade, Part::Size, Part::Settings, Part::Maximize, Part::Link];
         assert_eq!(crate::header::load(&store), Header::standard());
         let out = run("config set chart_header change,symbol,template", &store);
         assert_eq!(out.code, 0, "{}", out.err);

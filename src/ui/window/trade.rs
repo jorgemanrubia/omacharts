@@ -2562,7 +2562,7 @@ pub(super) mod tests {
         });
     }
 
-    /// The header's Day P&L is the account's P&L for the day, the same
+    /// The header's P&L is the account's P&L for the day, the same
     /// figure the Accounts tab shows, in the profit colour up and the loss
     /// colour down, plain at nothing; nothing at all until the broker has
     /// said, and nothing without an account.
@@ -2570,13 +2570,13 @@ pub(super) mod tests {
     fn the_headers_day_pnl_is_the_accounts_day() {
         crate::ui::on_gtk(|| {
             let store = Rc::new(Store::memory().expect("a store"));
-            assert_eq!(window(&store).focused_pane().day_pnl_text(), None, "a Day P&L with no account");
+            assert_eq!(window(&store).focused_pane().day_pnl_text(), None, "a P&L with no account");
 
             let (window, pane, session, key) = long_es(true);
             let day = |window: &Rc<Window>| window.trading.borrow().book.money(&key).and_then(|money| money.day_pnl);
             settle(&window, || pane.view.last_price().is_some());
             assert_eq!(day(&window), None);
-            assert_eq!(pane.day_pnl_text(), None, "a Day P&L before the broker said one");
+            assert_eq!(pane.day_pnl_text(), None, "a P&L before the broker said one");
 
             for (said, class) in [(250.0, Some("pnl-gain")), (-340.5, Some("pnl-loss")), (0.0, None)] {
                 session.book.lock().unwrap().accounts = vec![trading::Money {

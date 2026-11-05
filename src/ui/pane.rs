@@ -239,7 +239,7 @@ pub struct ChartPane {
     /// taking no room, unless the chart has an account to trade on.
     pub size_menu: gtk::MenuButton,
     size_label: gtk::Label,
-    /// "Day" and the account's P&L for the day after it.
+    /// "P&L" and the account's P&L for the day after it.
     pub day_part: gtk::Box,
     day_amount: gtk::Label,
     /// The size somebody picked for this chart, and from which template;
@@ -442,7 +442,7 @@ impl ChartPane {
         size_menu.set_visible(false);
         // Read like the quantity: the word quiet, the money in the profit
         // or loss colour, or plain at nothing either way.
-        let day_word = gtk::Label::new(Some("Day"));
+        let day_word = gtk::Label::new(Some("P&L"));
         day_word.add_css_class("dim-label");
         let day_amount = gtk::Label::new(None);
         let day_part = gtk::Box::new(gtk::Orientation::Horizontal, 5);
@@ -1019,7 +1019,7 @@ impl ChartPane {
         }
     }
 
-    /// What the Day P&L part says and in which colour, for the tests.
+    /// What the P&L part says and in which colour, for the tests.
     #[cfg(test)]
     pub fn day_pnl_text(&self) -> Option<(String, Option<&'static str>)> {
         self.day_part.get_visible().then(|| {
@@ -1891,7 +1891,8 @@ mod tests {
             assert_eq!(
                 corner(&pane),
                 vec![
-                    pane.trade_part.clone().upcast::<gtk::Widget>(),
+                    pane.day_part.clone().upcast::<gtk::Widget>(),
+                    pane.trade_part.clone().upcast(),
                     pane.size_menu.clone().upcast(),
                     pane.gear.clone().upcast(),
                     pane.expand.clone().upcast(),
@@ -1909,8 +1910,8 @@ mod tests {
             assert!(corner(&pane).is_empty());
             assert!(pane.gear.parent().is_none());
             header(Header::standard().left, Header::standard().right);
-            // Buy and Sell and the quantity, then the three controls.
-            assert_eq!(corner(&pane).len(), 5);
+            // The P&L, Buy and Sell and the quantity, then the three controls.
+            assert_eq!(corner(&pane).len(), 6);
         });
     }
 

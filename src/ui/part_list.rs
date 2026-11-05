@@ -123,6 +123,8 @@ impl<P: Part> PartList<P> {
         let parts = self.parts.borrow().clone();
         for part in &parts {
             let row = adw::ActionRow::new();
+            // A name, not markup: "P&L" would be a broken entity.
+            row.set_use_markup(false);
             row.set_title(part.label());
             if part.fixed() {
                 // Where the handle would be, so its name lines up with the

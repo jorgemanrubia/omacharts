@@ -1927,18 +1927,18 @@ mod tests {
             let saved: Rc<RefCell<Vec<Header>>> = Rc::default();
             let seen = saved.clone();
             let (sections, _) =
-                header_sections(Header::standard(), &[Part::Trade, Part::Size], move |header| {
+                header_sections(Header::standard(), &crate::header::TRADING_PARTS, move |header| {
                     seen.borrow_mut().push(header.clone())
                 });
             let [left, center, right] = sections.as_slice() else { panic!("three sections") };
             assert_eq!(right.parts(), vec![Part::Settings, Part::Maximize, Part::Link]);
-            for part in [Part::Trade, Part::Size] {
+            for part in crate::header::TRADING_PARTS {
                 assert!(!left.offered().contains(&part) && !center.offered().contains(&part));
             }
             right.set(vec![Part::Link, Part::Settings]);
             assert_eq!(
                 saved.borrow().last().map(|header| header.right.clone()),
-                Some(vec![Part::Link, Part::Settings, Part::Trade, Part::Size])
+                Some(vec![Part::Link, Part::Settings, Part::DayPnl, Part::Trade, Part::Size])
             );
         });
     }
@@ -1957,9 +1957,9 @@ mod tests {
             assert_eq!(left.group.title(), "Left");
             assert_eq!(center.group.title(), "Center");
             assert_eq!(right.group.title(), "Right");
-            assert_eq!(left.parts(), vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Account, Part::DayPnl]);
+            assert_eq!(left.parts(), vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Account]);
             assert_eq!(center.parts(), vec![Part::Stripe]);
-            assert_eq!(right.parts(), vec![Part::Trade, Part::Size, Part::Settings, Part::Maximize, Part::Link]);
+            assert_eq!(right.parts(), vec![Part::DayPnl, Part::Trade, Part::Size, Part::Settings, Part::Maximize, Part::Link]);
             assert_eq!(left.offered(), vec![Part::Change, Part::Template]);
             assert_eq!(center.offered(), vec![Part::Change, Part::Template]);
             assert_eq!(right.offered(), vec![Part::Change, Part::Template]);
@@ -1973,7 +1973,7 @@ mod tests {
             left.set(vec![Part::Symbol, Part::Stripe]);
             assert_eq!(
                 center.offered(),
-                vec![Part::Resolution, Part::Change, Part::Template, Part::Account, Part::Feed, Part::DayPnl]
+                vec![Part::Resolution, Part::Change, Part::Template, Part::Account, Part::Feed]
             );
             assert!(!left.offered().contains(&Part::Stripe));
             assert!(!right.offered().contains(&Part::Stripe));
@@ -1982,7 +1982,7 @@ mod tests {
                 Some(&Header {
                     left: vec![Part::Symbol, Part::Stripe],
                     center: Vec::new(),
-                    right: vec![Part::Trade, Part::Size, Part::Settings, Part::Maximize, Part::Link]
+                    right: vec![Part::DayPnl, Part::Trade, Part::Size, Part::Settings, Part::Maximize, Part::Link]
                 })
             );
             // The corner's controls move like any other part: the gear out
@@ -2013,10 +2013,10 @@ mod tests {
                 right: vec![Part::Symbol, Part::Stripe],
             };
             let (sections, restore) =
-                header_sections(moved, &[Part::Trade, Part::Size], move |header| seen.borrow_mut().push(header.clone()));
+                header_sections(moved, &crate::header::TRADING_PARTS, move |header| seen.borrow_mut().push(header.clone()));
             let [left, center, right] = sections.as_slice() else { panic!("three sections") };
             restore();
-            assert_eq!(left.parts(), vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Account, Part::DayPnl]);
+            assert_eq!(left.parts(), vec![Part::Feed, Part::Symbol, Part::Resolution, Part::Account]);
             assert_eq!(center.parts(), vec![Part::Stripe]);
             assert_eq!(right.parts(), vec![Part::Settings, Part::Maximize, Part::Link]);
             assert_eq!(left.offered(), vec![Part::Change, Part::Template]);
