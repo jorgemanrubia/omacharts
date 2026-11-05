@@ -2092,10 +2092,6 @@ const CORNER_HEIGHT: i32 = crate::theming::CORNER_BUTTON_TOP + 26 + 7;
 /// toggle, the way the toggle stands against the menu.
 pub(crate) const RAIL_ADD_END: i32 = CORNER_WIDTH - crate::theming::CORNER_PAD_START;
 
-/// How wide the trading panel's toggle's corner is before it has been laid
-/// out: the button and the padding either side of it in `.window-corner.foot`.
-const FOOT_WIDTH: i32 = 7 + 22 + 9;
-
 /// How far a chart down the window's left edge steps its name in, past the
 /// drawing tools' corner: one button, as wide as the bar it stands over, 44
 /// pixels with its margin, less the 8 the name tucks back under the
@@ -2188,9 +2184,12 @@ pub struct Window {
     start_corner: RefCell<Option<gtk::WindowHandle>>,
     /// Where the tree of charts is mounted, rebuilt whenever it changes.
     chart_host: gtk::Box,
-    /// The row of chartbook tabs under the charts, empty and hidden until
-    /// there is a second book to switch to.
+    /// The window's bottom row: the trading panel's toggle while there is
+    /// a login, and the chartbook tabs once there is a second book. Hidden
+    /// while it would have neither.
     book_strip: gtk::Box,
+    /// The chartbook tabs, in the strip.
+    book_tabs: gtk::Box,
     /// The window's own controls, floating over the top-right corner. Held on
     /// to because a chart's maximize button is in that corner too, and has to
     /// step aside when the rail is closed and the two would be in one place.
@@ -2335,6 +2334,8 @@ impl Window {
         let book_strip = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         book_strip.add_css_class("chartbook-strip");
         book_strip.set_visible(false);
+        let book_tabs = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        book_strip.append(&book_tabs);
 
         let this = Rc::new(Window {
             window: window.clone(),
@@ -2369,6 +2370,7 @@ impl Window {
             start_corner: RefCell::new(None),
             chart_host: chart_host.clone(),
             book_strip: book_strip.clone(),
+            book_tabs,
             corner: RefCell::new(None),
             watchlist_toggle: RefCell::new(None),
             sidebar_width: Cell::new(DEFAULT_SIDEBAR_WIDTH),
@@ -3423,31 +3425,6 @@ impl Window {
         let edge = self.mounted().start_edge();
         for pane in self.panes.borrow().iter() {
             pane.set_start_clearance(if edge.contains(&pane.id) { clearance } else { 0 });
-        }
-
-        // And the trading panel's toggle in the bottom-left corner, there
-        // only with a login: over the foot of the drawing tools' bar while
-        // the bar is out, and onto the bottom-left chart while it is put
-        // away, where the chart keeps its first date out from under it.
-        let foot = self.trade.foot.borrow().clone();
-        if let Some(foot) = &foot {
-            match tooled {
-                true => foot.remove_css_class("over-chart"),
-                false => foot.add_css_class("over-chart"),
-            }
-        }
-        let covered = match (&foot, tooled) {
-            (Some(foot), false) => foot.width().max(FOOT_WIDTH) as f64,
-            _ => 0.0,
-        };
-        let bottom = self.chart_host.height().max(1) as f64;
-        let lowest = self.filled().or_else(|| {
-            self.layout.borrow().leaves().into_iter().find(|id| {
-                rects.get(id).is_some_and(|(x, y, _, h)| at(*x, 0.0) && at(y + h, bottom))
-            })
-        });
-        for pane in self.panes.borrow().iter() {
-            pane.view.set_covered_axis_start(if Some(pane.id) == lowest { covered } else { 0.0 });
         }
     }
 
@@ -4840,19 +4817,22 @@ impl Window {
 
     /// Draw the row of chartbook tabs, or no row at all.
     fn rebuild_book_strip(self: &Rc<Self>) {
-        while let Some(child) = self.book_strip.first_child() {
-            self.book_strip.remove(&child);
+        while let Some(child) = self.book_tabs.first_child() {
+            self.book_tabs.remove(&child);
         }
         let count = self.books.borrow().len();
         // One chartbook is how the window has always looked, and a strip
         // naming the only thing there is would be a row of furniture saying
-        // nothing. It arrives with the second book and leaves with it.
-        self.book_strip.set_visible(count > 1);
+        // nothing. The tabs arrive with the second book and leave with it;
+        // the strip stays for the trading panel's toggle while there is a
+        // login, which is the window's and has to stand somewhere.
+        let toggled = self.trade.toggle.borrow().is_some();
+        self.book_strip.set_visible(count > 1 || toggled);
         if count < 2 {
             return;
         }
         for index in 0..count {
-            self.book_strip.append(&self.build_book_tab(index));
+            self.book_tabs.append(&self.build_book_tab(index));
         }
     }
 
@@ -4994,7 +4974,7 @@ impl Window {
 
     /// The tab sitting at `index` in the strip right now.
     fn book_tab(&self, index: usize) -> Option<gtk::Box> {
-        let mut child = self.book_strip.first_child()?;
+        let mut child = self.book_tabs.first_child()?;
         for _ in 0..index {
             child = child.next_sibling()?;
         }

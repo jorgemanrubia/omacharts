@@ -25,10 +25,6 @@ use crate::ui::trading_panel::{Hands, TradingPanel};
 /// Whether the panel is open, remembered for the next launch.
 pub const SHOW_TRADING_PANEL: &str = "show_trading_panel";
 
-/// How tall the toggle's corner is before it has been laid out: the button
-/// and `.window-corner.foot`'s margin under it.
-const FOOT_HEIGHT: i32 = 22 + 2;
-
 /// The panel's tabs that have a key each, as `win.trading-<tab>`.
 const PANEL_TABS: [&str; 3] = ["accounts", "positions", "orders"];
 
@@ -60,14 +56,6 @@ pub(super) struct Trade {
     /// them and take them out again.
     pub overlay: RefCell<Option<gtk::Overlay>>,
     pub root: RefCell<Option<gtk::Box>>,
-    /// The charts and the rail with the toggle laid over them, in the
-    /// split's place while there is a login: the toggle stands in the
-    /// bottom-left corner of the pair whether or not the panel is open
-    /// under them, and the panel's divider goes under all of it.
-    pub docked: RefCell<Option<gtk::Overlay>>,
-    /// The toggle's corner, the window's third: the mirror of the drawing
-    /// tools' corner down the same edge.
-    pub foot: RefCell<Option<gtk::Box>>,
     /// Orders placed from this window, by basket, and where each stood when
     /// it was last reported, so each step is toasted once.
     pub placed: RefCell<HashMap<String, Stage>>,
@@ -109,6 +97,18 @@ const MARK_EVERY: std::time::Duration = std::time::Duration::from_millis(200);
 /// a third of the ink — so beside the watchlist's toggle it is one family.
 /// In the widget's own colour, which follows the theme, as the maximize
 /// glyph does.
+/// The panel's toggle, built in this one place: its look, its glyph and
+/// its tooltip. Where it stands is `place_trading_toggle`'s business, and
+/// what it does the window's.
+fn trading_toggle() -> gtk::ToggleButton {
+    let toggle = gtk::ToggleButton::new();
+    toggle.set_child(Some(&panel_icon()));
+    toggle.set_tooltip_text(Some(&crate::ui::shortcuts::tooltip("Trading", "win.trading-accounts")));
+    toggle.add_css_class("flat");
+    toggle.add_css_class("trading-toggle");
+    toggle
+}
+
 fn panel_icon() -> gtk::DrawingArea {
     let area = gtk::DrawingArea::new();
     area.set_content_width(18);
@@ -334,38 +334,13 @@ impl Window {
     fn install_trading(self: &Rc<Self>) {
         self.trade.shown.set(true);
 
-        // The panel's toggle, in the bottom-left corner: the drawing
-        // tools' corner's mirror down the left edge, on the row the
-        // bottom-left chart writes its dates on — at the foot of the
-        // tools' bar while the bar is out, and over the chart's first
-        // date, which the chart leaves out, while it is put away. Laid
-        // over the split of charts and rail rather than the window, so
-        // that it keeps its place above the panel when the panel opens
-        // under them, and so the chartbook strip has nothing to clear.
-        let toggle = gtk::ToggleButton::new();
-        toggle.set_child(Some(&panel_icon()));
-        toggle.set_tooltip_text(Some(&crate::ui::shortcuts::tooltip("Trading", "win.trading-accounts")));
-        toggle.add_css_class("flat");
+        // The panel's toggle: one for the window, as the panel is, so it
+        // stands with the window's own furniture rather than over a chart.
+        let toggle = trading_toggle();
         let this = self.clone();
         toggle.connect_toggled(move |toggle| this.show_trading_panel(toggle.is_active()));
         *self.trade.toggle.borrow_mut() = Some(toggle.clone());
-        let foot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        foot.add_css_class("window-corner");
-        foot.add_css_class("foot");
-        foot.set_halign(gtk::Align::Start);
-        foot.set_valign(gtk::Align::End);
-        foot.append(&toggle);
-        if let Some(root) = self.trade.root.borrow().as_ref() {
-            let docked = gtk::Overlay::new();
-            root.remove(&self.split);
-            docked.set_child(Some(&self.split));
-            docked.add_overlay(&foot);
-            root.prepend(&docked);
-            *self.trade.docked.borrow_mut() = Some(docked);
-        }
-        *self.trade.foot.borrow_mut() = Some(foot);
-        // The bottom-left chart keeps its first date out from under it.
-        self.sync_corner_clearance();
+        self.place_trading_toggle(&toggle);
 
         let action = gio::SimpleAction::new("trading-panel", None);
         let this = self.clone();
@@ -455,19 +430,11 @@ impl Window {
     fn remove_trading(self: &Rc<Self>) {
         self.trade.shown.set(false);
         self.unmount_panel();
-        // The split back in its own place, with nothing over it: the tree
-        // a window with no login has.
-        self.trade.toggle.borrow_mut().take();
-        let foot = self.trade.foot.borrow_mut().take();
-        if let Some(docked) = self.trade.docked.borrow_mut().take()
-            && let Some(root) = self.trade.root.borrow().as_ref()
-        {
-            if let Some(foot) = foot {
-                docked.remove_overlay(&foot);
-            }
-            docked.set_child(None::<&gtk::Widget>);
-            root.remove(&docked);
-            root.prepend(&self.split);
+        // The toggle out of the strip, and the strip back to what a
+        // window with no login has.
+        let toggle = self.trade.toggle.borrow_mut().take();
+        if let Some(toggle) = toggle {
+            self.unplace_trading_toggle(&toggle);
         }
         self.window.remove_action("trading-panel");
         for tab in PANEL_TABS {
@@ -496,13 +463,19 @@ impl Window {
         }
     }
 
-    /// The split of charts and rail as it stands in the window: under the
-    /// toggle while there is a login, bare when there is none.
-    fn docked(&self) -> gtk::Widget {
-        match self.trade.docked.borrow().as_ref() {
-            Some(docked) => docked.clone().upcast(),
-            None => self.split.clone().upcast(),
-        }
+    /// Where the panel's toggle stands, the one place that says so: at the
+    /// start of the chartbook strip, the window's bottom row, the way the
+    /// drawing tools' toggle starts the top one. The strip is shown for it
+    /// even with one chartbook, the toggle alone in it.
+    fn place_trading_toggle(self: &Rc<Self>, toggle: &gtk::ToggleButton) {
+        self.book_strip.prepend(toggle);
+        self.rebuild_book_strip();
+    }
+
+    /// Take the toggle out of where `place_trading_toggle` put it.
+    fn unplace_trading_toggle(self: &Rc<Self>, toggle: &gtk::ToggleButton) {
+        self.book_strip.remove(toggle);
+        self.rebuild_book_strip();
     }
 
     /// Open or close the panel, building it the first time.
@@ -545,17 +518,15 @@ impl Window {
         }
     }
 
-    /// How much of the window's bottom trading takes: the panel and its
-    /// divider while the panel is open, and the toggle's corner, which
-    /// anything laid over the charts from the bottom-left has to clear.
+    /// How much of the window's bottom the panel takes, with its divider,
+    /// while it is open: what anything laid over the charts from the
+    /// bottom has to clear.
     pub(super) fn trading_clearance(&self) -> i32 {
-        let foot = self.trade.foot.borrow().as_ref().map_or(0, |foot| foot.height().max(FOOT_HEIGHT));
         if !self.trading_panel_shown() {
-            return foot;
+            return 0;
         }
         let paned = self.trade.paned.borrow().as_ref().map_or(0, |paned| paned.height());
-        let docked = self.trade.docked.borrow().as_ref().map_or(0, |docked| docked.height());
-        (paned - docked).max(0) + foot
+        (paned - self.split.height()).max(0)
     }
 
     /// Is the panel on screen?
@@ -605,9 +576,8 @@ impl Window {
         // account's, and the rail is as much the account's as the charts
         // are. Above the chartbook strip, which is the window's status line.
         if let Some(root) = self.trade.root.borrow().as_ref() {
-            let docked = self.docked();
-            root.remove(&docked);
-            paned.set_start_child(Some(&docked));
+            root.remove(&self.split);
+            paned.set_start_child(Some(&self.split));
             paned.set_end_child(Some(&panel.root));
             root.prepend(&paned);
         }
@@ -624,7 +594,7 @@ impl Window {
             paned.set_start_child(None::<&gtk::Widget>);
             paned.set_end_child(None::<&gtk::Widget>);
             root.remove(&paned);
-            root.prepend(&self.docked());
+            root.prepend(&self.split);
         }
     }
 
@@ -1607,12 +1577,12 @@ pub(super) mod tests {
         count
     }
 
-    /// Without a login there is no trace of trading: no toggle over the
-    /// charts, no action, no divider under the charts and no toast
-    /// overlay. Adding one puts them in, and removing it takes them out,
-    /// with the window open. The window's top-right corner is the same
-    /// throughout: the toggle stands at the foot of the price axis, over
-    /// the charts, and the panel opens under it.
+    /// Without a login there is no trace of trading: no toggle, no strip
+    /// for it with one chartbook, no action, no divider under the charts
+    /// and no toast overlay. Adding one puts them in, and removing it takes
+    /// them out, with the window open. The window's top-right corner is the
+    /// same throughout: the toggle starts the window's bottom row, shown
+    /// for it with one chartbook, and the panel opens above that row.
     #[test]
     fn trading_is_nowhere_without_a_login_and_comes_and_goes_with_one() {
         crate::ui::on_gtk(|| {
@@ -1625,6 +1595,7 @@ pub(super) mod tests {
                     && window.trade.paned.borrow().is_none()
                     && window.trade.toasts.borrow().is_none()
                     && window.split.parent() == window.trade.root.borrow().clone().map(|b| b.upcast())
+                    && !window.book_strip.property::<bool>("visible")
             };
             assert!(nothing(&window), "trading in a window with no login");
 
@@ -1633,21 +1604,18 @@ pub(super) mod tests {
             window.desk.tell();
             let toggle = window.trade.toggle.borrow().clone().expect("a toggle");
             assert_eq!(corner_buttons(&window), bare, "the top-right corner is not where it goes");
-            let foot = window.trade.foot.borrow().clone().expect("its corner");
-            let docked = window.trade.docked.borrow().clone().expect("the charts and rail under it");
-            assert_eq!(toggle.parent(), Some(foot.clone().upcast()));
-            assert_eq!(foot.parent(), Some(docked.clone().upcast()));
-            assert_eq!(foot.halign(), gtk::Align::Start, "the bottom-left corner");
-            assert_eq!(foot.valign(), gtk::Align::End);
-            assert_eq!(window.split.parent(), Some(docked.clone().upcast()));
-            assert_eq!(docked.parent(), window.trade.root.borrow().clone().map(|b| b.upcast()));
+            assert_eq!(toggle.parent(), Some(window.book_strip.clone().upcast()), "in the bottom row");
+            assert_eq!(window.book_strip.first_child(), Some(toggle.clone().upcast()), "at its start");
+            assert!(window.book_strip.property::<bool>("visible"), "shown for it with one chartbook");
+            assert!(window.book_tabs.first_child().is_none(), "and no tab naming the only book");
+            assert_eq!(window.split.parent(), window.trade.root.borrow().clone().map(|b| b.upcast()));
             assert!(window.window.lookup_action("trading-panel").is_some());
             assert!(window.trade.toasts.borrow().is_some());
             gio::prelude::ActionGroupExt::activate_action(&window.window, "trading-panel", None);
             assert!(window.trading_panel_shown());
             assert!(toggle.is_active(), "the toggle says the panel is open");
             let paned = window.trade.paned.borrow().clone().expect("a divider");
-            assert_eq!(docked.parent(), Some(paned.clone().upcast()), "the toggle stays over the charts and rail");
+            assert_eq!(window.split.parent(), Some(paned.clone().upcast()), "the charts and rail above it");
             assert_eq!(paned.parent(), window.trade.root.borrow().clone().map(|b| b.upcast()), "across the window");
             assert_eq!(paned.next_sibling(), Some(window.book_strip.clone().upcast()), "above the strip");
             assert!(store.setting_bool(SHOW_TRADING_PANEL, false), "remembered");
@@ -1657,6 +1625,38 @@ pub(super) mod tests {
             assert!(nothing(&window), "trading left behind by the last login");
             assert_eq!(corner_buttons(&window), bare);
             assert!(!window.trading_panel_shown());
+        });
+    }
+
+    /// The panel is the window's, not a chartbook's: open, it stays open
+    /// across a switch to another book and back, with the one toggle at the
+    /// start of the bottom row ahead of the books' tabs; shut, it stays
+    /// shut.
+    #[test]
+    fn the_panel_is_the_window_s_across_chartbooks() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = window(&store);
+            let kept = Kept::default();
+            trading::add_login(&store, &kept, &typed()).expect("a login");
+            window.desk.tell();
+            let toggle = window.trade.toggle.borrow().clone().expect("a toggle");
+            gio::prelude::ActionGroupExt::activate_action(&window.window, "trading-panel", None);
+            assert!(window.trading_panel_shown());
+
+            window.duplicate_chartbook();
+            assert_eq!(window.active.get(), 1);
+            assert!(window.trading_panel_shown() && toggle.is_active(), "another book shut the panel");
+            assert_eq!(window.book_strip.first_child(), Some(toggle.clone().upcast()), "ahead of the tabs");
+            assert!(window.book_tabs.first_child().is_some(), "the tabs, with two books");
+            window.activate_book(0);
+            assert!(window.trading_panel_shown() && toggle.is_active(), "switching back shut the panel");
+
+            gio::prelude::ActionGroupExt::activate_action(&window.window, "trading-panel", None);
+            assert!(!window.trading_panel_shown());
+            window.activate_book(1);
+            assert!(!window.trading_panel_shown() && !toggle.is_active(), "switching opened the panel");
+            assert_eq!(toggle.parent(), Some(window.book_strip.clone().upcast()));
         });
     }
 

@@ -820,43 +820,21 @@ entry.range-date > image:hover { opacity: 0.9; }
 }
 /* Beside a chart's name it is one more glyph in the row, and the name is
    what that corner is for: so it stays well under the name until the
-   pointer comes to it. The trading panel's toggle, down the same edge,
-   keeps the same quiet over a chart while its panel is shut: the tools'
-   toggle is over the bar once the bar is out, and the panel's is still
-   over the chart once the panel is open under it, so for that one it is
-   the toggle's own state that says which. Open, both stand at the
-   corners' usual strength. One rule, so the two cannot drift apart. */
+   pointer comes to it. The trading panel's toggle, at the start of the
+   window's bottom row as this one starts the top, keeps the same quiet
+   while its panel is shut: the tools' toggle leaves the chart for the bar
+   once the bar is out, and the panel's stays where it is once the panel is
+   open, so for that one it is the toggle's own state that says which.
+   Open, both stand at the corners' usual strength. One rule, so the two
+   cannot drift apart. */
 .window-corner.start.over-chart button,
-.window-corner.foot.over-chart button:not(:checked) { opacity: 0.25; }
+button.trading-toggle:not(:checked) { opacity: 0.25; }
 .window-corner.start.over-chart:hover button,
-.window-corner.foot.over-chart:hover button { opacity: 1; }
-/* The trading panel's toggle, in the window's bottom-left corner: the
-   drawing tools' corner's mirror down the same edge, in the same column,
-   so the left edge reads as one column of two — tools at the top, trading
-   at the bottom. It stands on the row the bottom-left chart writes its
-   dates on: the time axis is the bottom 24px of a chart and the chart
-   stands the focus ring's 2px off the window's edge, so the band under the
-   axis's rule is 25px to the window's edge. The box ends 2px up and is the
-   button's 22px tall (its padding is taken off, at the end of the sheet),
-   a pixel and a half short of centring the glyph in that band: the glyph
-   makes up the half itself, where a pixel has halves. While the drawing
-   tools are out it stands at the foot of their bar instead, and the bar is
-   what it is over. */
-.window-corner.foot {
-  margin: 0 0 2px 2px;
-  padding: 0 9px 0 7px;
-}
-/* Over the chart it has the ground the other corners have, rounded away
-   from the axis the way the tools' corner is rounded away from the name:
-   the chart keeps its first date out from under it, and the ground is for
-   the crosshair's date chip, which can still reach in. */
-.window-corner.foot.over-chart {
-  border-top-right-radius: 12px;
-  box-shadow: none;
-}
+button.trading-toggle:hover { opacity: 1; }
 /* Quiet until the pointer is near: on the buttons rather than the box, which
    is what leaves the ground at its own strength. */
-.window-corner button {
+.window-corner button,
+button.trading-toggle {
   opacity: 0.75;
   transition: opacity 120ms ease-out;
 }
@@ -1141,8 +1119,8 @@ button.list-row-action { min-height: 0; min-width: 0; padding: 3px; }
   min-height: 22px;
 }
 .chartbook-strip {
-  /* No padding on the left: the drawing tools' tab sits flush with the
-     window's edge, the way a tab on a drawer does. */
+  /* No padding on the left: the trading panel's toggle, when there is
+     one, keeps its own step in from the window's edge. */
   padding: 1px 4px 1px 0;
   border-top: 1px solid alpha(currentColor, 0.08);
 }
@@ -1189,6 +1167,7 @@ button.list-row-action { min-height: 0; min-width: 0; padding: 3px; }
    firmer one for the one that is on. Last in the sheet, so it settles each
    one's size whatever its own rule says. */
 .window-corner button,
+button.trading-toggle,
 .legend-link,
 .legend-gear,
 .pane-expand,
@@ -1200,25 +1179,28 @@ button.rail-add {
   border-radius: 6px;
 }
 .window-corner button:hover,
+button.trading-toggle:hover,
 .legend-link:hover,
 .legend-gear:hover,
 .chart-pane:hover .pane-expand:hover,
 button.rail-switcher:hover,
 button.rail-add:hover { background: alpha(currentColor, 0.12); }
 .window-corner button:checked,
+button.trading-toggle:checked,
 button.rail-switcher.open { background: alpha(currentColor, 0.15); }
 .window-corner button:checked:hover,
+button.trading-toggle:checked:hover,
 button.rail-switcher.open:hover { background: alpha(currentColor, 0.2); }
 /* The link is a menu button, and only the button inside it opens the menu:
    padding on the outer one drew a box whose rim did nothing when clicked.
    The outer keeps the size and the wash; the inner fills all of it. */
 .legend-link { padding: 0; }
 .legend-link > button { min-width: 22px; min-height: 22px; padding: 2px; }
-/* In the bottom-left corner the toggle has the time axis's rows to stand
-   in, under the axis's rule: no padding above or below it, so its box ends
-   a pixel under the rule rather than over it, and its glyph is centred on
-   the row the dates are written on. */
-.window-corner.foot button { padding-top: 0; padding-bottom: 0; }
+/* In the bottom row the trading panel's toggle stands no taller than the
+   row's tabs: no padding above or below it, and a step in from the
+   window's edge, where the drawing tools' toggle stands in from it at the
+   top. */
+button.trading-toggle { padding-top: 0; padding-bottom: 0; margin: 0 4px 0 2px; }
 ",
     );
 
@@ -1342,10 +1324,10 @@ mod tests {
         assert!(css.contains(".symbol-row:drop(active)"));
         assert!(css.contains(".section-row:drop(active)"));
         assert!(css.contains(".dragging row:hover"));
-        // The two toggles down the left edge are quiet over a chart while
-        // what they open is shut, by one rule.
+        // The drawing tools' toggle and the trading panel's are quiet
+        // while what they open is shut, by one rule.
         assert!(css.contains(
-            ".window-corner.start.over-chart button,\n.window-corner.foot.over-chart button:not(:checked) { opacity: 0.25; }"
+            ".window-corner.start.over-chart button,\nbutton.trading-toggle:not(:checked) { opacity: 0.25; }"
         ));
     }
 

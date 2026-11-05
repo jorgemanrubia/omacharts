@@ -213,10 +213,6 @@ struct State {
     /// fade out under its edge, and the last price and the crosshair's
     /// price stop below it rather than slide under.
     covered_axis_top: f64,
-    /// How far along the start of the time axis the window's bottom-left
-    /// corner stands, or 0 on a chart it is not over: no date is written
-    /// under it.
-    covered_axis_start: f64,
     bar_style: BarStyle,
     bars_hidden: bool,
     show_grid: bool,
@@ -1248,7 +1244,6 @@ impl State {
             indicators: Vec::new(),
             show_indicators: true,
             covered_axis_top: 0.0,
-            covered_axis_start: 0.0,
             bar_style: BarStyle::default(),
             bars_hidden: false,
             show_grid: false,
@@ -3820,20 +3815,6 @@ impl ChartView {
         }
     }
 
-    /// Say how far along the start of the time axis the window's
-    /// bottom-left corner stands, or 0 on a chart it is not over.
-    pub fn set_covered_axis_start(&self, px: f64) {
-        let changed = {
-            let mut state = self.state.borrow_mut();
-            let changed = state.covered_axis_start != px;
-            state.covered_axis_start = px;
-            changed
-        };
-        if changed {
-            self.redraw();
-        }
-    }
-
     /// Put live bars into the series in place: each replaces the bar with
     /// its timestamp or joins the end, and nothing else about the chart
     /// moves. A view anchored to the right edge follows a new bar on its
@@ -5865,11 +5846,6 @@ fn draw_time_axis(
         // was cut in half.
         let w = extents.width();
         let left = inside_plot(x, w, plot_x, plot_w);
-        // Not under the window's bottom-left corner, when it is over this
-        // chart: the next tick's date is the first.
-        if left < state.covered_axis_start {
-            continue;
-        }
         let pushed = left != x - w / 2.0;
         if let Some((_, right, held_pushed, _)) = held
             && left < right + 8.0
