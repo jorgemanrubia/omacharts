@@ -19,14 +19,32 @@ one.
 ## Charting first
 
 Omacharts has to keep appealing to people who never trade from it. Trading is
-strictly opt-in: until somebody adds a trading account in Preferences →
-Trading, the app is the one it was before any of this, with no new button,
-menu item, panel, tab, theme group, shortcut, empty state or message, and no
-cost in startup, memory or frame time. Preferences → Trading itself is the
-one exception, because it is where an account is added. Adding one brings
-the trading pieces in; removing the last one takes them all away again,
-without a restart. Data feeds are not trading: a richer feed is for anyone
-who charts.
+strictly opt-in, by one rule: **trading's settings are always visible in
+Preferences; everything else is unchanged until there is an account.**
+
+Every trading setting is in Preferences whether or not there is a login, so
+it can be set before the first one: Preferences → Trading (its accounts,
+Order entry and Chart), the Trading colours and lines on the Theme page of a
+theme of one's own, and the header's P&L, Buy Sell and Quantity in
+Preferences → Charts → Header, listed and offered like any other part. A
+setting changed with no account changes nothing anybody sees until there is
+one.
+
+Everywhere else, until somebody adds a trading account the app is the one it
+was before any of this: the same chart, header, corners, menus, panels and
+shortcuts sheet, with no new button, menu item, panel, tab, shortcut, empty
+state or message, and no cost in startup, memory or frame time. The header's
+trading parts draw nothing and take no room, so a header that has them looks
+as one without them; the range a chart holds to ("YTD") stays in the corner
+under its prices; the chart's menu has no orders and no line for them; and
+Ctrl+B, Ctrl+S, Ctrl+F and Ctrl and a digit do nothing. Adding an account
+brings the trading pieces in; removing the last one takes them all away
+again, without a restart. Data feeds are not trading: a richer feed is for
+anyone who charts. Neither are the general changes made on this branch for
+everyone, such as the header's sections and the symbol starting where the
+legend's names do; the keys that moved to make room for trading's (the
+sidebars to Ctrl+Shift+B and Ctrl+Shift+D, finding a symbol to Ctrl+K and /
+alone, the chartbook's screenshot to Ctrl+Alt+O) moved for everyone too.
 
 ## A generic foundation
 
