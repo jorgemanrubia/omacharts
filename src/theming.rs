@@ -1249,8 +1249,8 @@ paned.chart-split > separator:active {{ background-color: @omacharts_gutter_hove
   outline-offset: -{double}px;
 }}
 /* The drawing tools stand beside the charts on the window's own ground,
-   with the ring's width of it before the tools, so the toggle at their
-   foot stands centred under them. Their edge against the charts is the rail's against
+   with the ring's width of it before the tools, which the toggle at their
+   foot centres under, open or shut. Their edge against the charts is the rail's against
    them: Adwaita's paned separator, a sixth of the text colour over the
    window's ground. */
 .drawing-tools {{

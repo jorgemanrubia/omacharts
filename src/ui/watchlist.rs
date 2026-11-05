@@ -966,6 +966,22 @@ impl Watchlist {
         self.store.watchlists()
     }
 
+    /// Leave this much of the rail's foot empty, under its rows, for what
+    /// the window stands in its bottom-right corner over it: the trading
+    /// panel's toggle, at the time axis's height. Zero gives it back.
+    pub fn leave_foot(&self, height: i32) {
+        if let Some(pages) = self.widget.last_child()
+            && pages.margin_bottom() != height
+        {
+            pages.set_margin_bottom(height);
+        }
+    }
+
+    #[cfg(test)]
+    pub fn foot(&self) -> i32 {
+        self.widget.last_child().map_or(0, |pages| pages.margin_bottom())
+    }
+
     /// Put the keyboard on the rail, landing on something selected so the
     /// arrows have somewhere to go from.
     pub fn grab_focus(self: &Rc<Self>) {

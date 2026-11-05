@@ -4,9 +4,10 @@
 //! same way: a key, or a toggle brings them in, and they take no room when
 //! they are out. The toggle is the left-panel glyph in the window's
 //! bottom-left corner at the time axis's height, the mirror of the trading
-//! panel's in the bottom-right. It stands at the foot of the bar while the
-//! bar is out, and over the bottom-left chart, left of its first date, when
-//! it is not.
+//! panel's in the bottom-right. It stands at one place in the window
+//! whether the bar is out or not, centred under the column of tools: at the
+//! foot of the bar while the bar is out, and over the bottom-left chart,
+//! left of its first date, when it is not.
 //!
 //! One column of buttons, which is the shape a handful of tools wants and
 //! stays the shape as they are added. Each button is a sign the app drew
@@ -71,6 +72,12 @@ const TOOLS_TOP: i32 = 8;
 /// What the column leaves free at the bar's foot for the toggle there: the
 /// time axis's height, and some air.
 const TOOLS_FOOT: i32 = crate::ui::chart::TIME_AXIS_H as i32 + 8;
+/// The column's margin either side.
+const COLUMN_SIDE: i32 = 4;
+/// Where the middle of the column of tools stands, from the bar's left
+/// edge and so from the window's: the bar's ring of padding, the column's
+/// margin and half a tool. The toggle centres on it, open or shut.
+pub(crate) const COLUMN_CENTRE: i32 = omacharts_engine::frame::RING_WIDTH as i32 + COLUMN_SIDE + TOOL / 2;
 
 pub struct DrawingBar {
     /// What goes in the layout: the bar with its ground, shown and hidden.
@@ -126,8 +133,8 @@ impl DrawingBar {
         // The same either side. It was six and two, which put the column a
         // visible two pixels left of centre in its own bar — the kind of
         // thing you cannot name but can see.
-        column.set_margin_start(4);
-        column.set_margin_end(4);
+        column.set_margin_start(COLUMN_SIDE);
+        column.set_margin_end(COLUMN_SIDE);
 
         let mut buttons: Vec<(Option<Kind>, gtk::ToggleButton, gtk::DrawingArea)> = Vec::new();
         let mut badges = Vec::new();
