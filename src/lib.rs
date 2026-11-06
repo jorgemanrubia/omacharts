@@ -11,6 +11,7 @@ pub mod cache;
 pub mod chart_defaults;
 pub mod clock;
 pub mod cli;
+pub mod features;
 pub mod feeds;
 pub mod header;
 pub mod inventory;

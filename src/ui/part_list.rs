@@ -29,7 +29,7 @@ pub trait Part: Copy + PartialEq + 'static {
 
 impl Part for crate::header::Part {
     fn every() -> Vec<Self> {
-        Self::ALL.to_vec()
+        Self::every_shown(crate::features::trading())
     }
     fn key(self) -> &'static str {
         crate::header::Part::key(self)

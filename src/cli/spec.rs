@@ -177,6 +177,49 @@ pub struct Noun {
 /// of the exceptions with the reason written on it.
 pub const IN_THE_CALLER: &[(&str, &str)] = &[("provider", "login"), ("provider", "logout")];
 
+/// The groups the parser accepts and no listing shows: not `--help`, not
+/// `surface --json`, not the completions, the man page or the skill, all of
+/// which are built from [`SURFACE`] alone. For what is switched on to try
+/// before it is offered to everybody, and so must not be advertised; see
+/// [`crate::features`].
+pub const HIDDEN: &[Noun] = &[Noun {
+    name: "features",
+    about: "Experimental parts of the app, switched on or off",
+    local: false,
+    verbs: &[
+        Verb {
+            name: "list",
+            about: "Every feature flag, and whether it is on",
+            args: &[],
+            flags: &[],
+            example: "omacharts features list",
+            json: true,
+            writes: false,
+            workspace: false,
+        },
+        Verb {
+            name: "enable",
+            about: "Switch a feature on, in an open window at once",
+            args: &[Arg::req("FEATURE", "a feature's name, from `features list`")],
+            flags: &[],
+            example: "omacharts features enable trading",
+            json: true,
+            writes: false,
+            workspace: false,
+        },
+        Verb {
+            name: "disable",
+            about: "Switch a feature off, in an open window at once",
+            args: &[Arg::req("FEATURE", "a feature's name, from `features list`")],
+            flags: &[],
+            example: "omacharts features disable trading",
+            json: true,
+            writes: false,
+            workspace: false,
+        },
+    ],
+}];
+
 /// How a watchlist, section or chartbook is named on the command line.
 pub const SELECTOR: &str =
     "a name, case-insensitive, or `id:N` when two of them share one";
@@ -1347,6 +1390,7 @@ pub const SURFACE: &[Noun] = &[
 pub fn verb(noun: &str, verb: &str) -> Option<&'static Verb> {
     SURFACE
         .iter()
+        .chain(HIDDEN)
         .find(|n| n.name == noun)?
         .verbs
         .iter()

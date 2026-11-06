@@ -66,6 +66,9 @@ pub fn on_gtk(test: impl FnOnce() + Send + 'static) -> bool {
                     return;
                 }
                 for (test, done) in queue {
+                    // Each test starts with the flags as they ship, whatever
+                    // the one before switched on.
+                    crate::features::reset();
                     let _ = done.send(std::panic::catch_unwind(std::panic::AssertUnwindSafe(test)));
                 }
             })

@@ -2465,6 +2465,7 @@ impl Window {
             crate::feeds::note_running(top.id());
         }
         crate::zoom::adopt(&store);
+        crate::features::adopt(&store);
 
         let index = crate::inventory::Inventory::curated();
         let theming = Rc::new(RefCell::new(Theming::load(&store)));
@@ -7719,6 +7720,11 @@ impl Window {
     /// login was removed: it is on the default again, and on that
     /// account's default feed. True when it did.
     fn settle_account(&self, pane: &ChartPane) -> bool {
+        // Trading switched off knows of no account, which does not make the
+        // one a chart is on stale: it is there again when trading is.
+        if !crate::features::trading() {
+            return false;
+        }
         let stale = crate::trading::stale(&self.trading.borrow().accounts, pane.account.borrow().as_deref());
         if stale {
             pane.account.replace(None);
@@ -7844,6 +7850,26 @@ impl Window {
     /// The feed whose cache key this is.
     fn feed_of(&self, key: &str) -> Option<Rc<Feed>> {
         self.feeds.borrow().iter().find(|feed| feed.owns(key)).cloned()
+    }
+
+    /// Put trading in or take it out, in place, as the flag now says: the
+    /// same as the first login arriving or the last going. Switched off,
+    /// every session on an order plant signs out; switched on, the saved
+    /// logins sign in as they do at startup. The charts, the arrangement
+    /// and the focus stay as they are.
+    pub fn adopt_features(self: &Rc<Self>) {
+        let on = crate::features::trading();
+        if !on {
+            for login in crate::trading::logins(&self.store) {
+                self.desk.end(&login.id);
+            }
+        }
+        self.adopt_trading();
+        if on {
+            let logins = self.trading.borrow().logins.clone();
+            self.desk.sign_in_saved(&logins);
+        }
+        self.desk.tell();
     }
 
     /// Zoom every chart at the sensitivity the settings now name. Read by the

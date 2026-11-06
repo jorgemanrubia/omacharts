@@ -76,6 +76,14 @@ pub fn dispatch(
         return surface(rest);
     }
 
+    // Bare, the feature flags are listed, as `features list` lists them.
+    if noun == "features" && rest.subcommand().is_none() {
+        return match features_list(store, false) {
+            Ok(out) => Outcome::ok(out),
+            Err(fault) => Outcome::failed(fault),
+        };
+    }
+
     let Some((verb, m)) = rest.subcommand() else {
         return Outcome::ok(parser::command().render_help().to_string());
     };
@@ -214,6 +222,10 @@ pub fn dispatch(
         ("cache", "status") => cache_status(store, json),
         ("cache", "clear") => cache_clear(store, json),
         ("cache", "limit") => cache_limit(store, m, json),
+
+        ("features", "list") => features_list(store, json),
+        ("features", "enable") => features_set(store, m, json, true, live),
+        ("features", "disable") => features_set(store, m, json, false, live),
 
         ("backup", "list") => backup_list(store, json),
         ("backup", "create") => backup_create(store, json),
@@ -4788,8 +4800,64 @@ fn feed_names() -> String {
     providers::LISTED.iter().map(|feed| feed.id).collect::<Vec<_>>().join(", ")
 }
 
+/// Every feature flag and whether it is on, as the settings say: what a
+/// window open on them has switched on too.
+fn features_list(store: &Store, as_json: bool) -> Result<String, Fault> {
+    let flags = crate::features::FLAGS;
+    if as_json {
+        let rows = flags
+            .iter()
+            .map(|flag| {
+                json!({
+                    "name": flag.name,
+                    "on": crate::features::stored(store, flag.feature),
+                    "default": flag.default,
+                    "description": flag.about,
+                })
+                .to_string()
+            })
+            .collect();
+        return Ok(wrap_list("features", rows));
+    }
+    Ok(flags
+        .iter()
+        .map(|flag| {
+            let state = if crate::features::stored(store, flag.feature) { "on" } else { "off" };
+            format!("{:<12} {state:<4} {}\n", flag.name, flag.about)
+        })
+        .collect())
+}
+
+/// Switch a feature flag, and have an open window put in or take out what
+/// it switches, at once.
+fn features_set(
+    store: &Store,
+    m: &clap::ArgMatches,
+    as_json: bool,
+    on: bool,
+    live: Option<&dyn Live>,
+) -> Result<String, Fault> {
+    let name = required(m, "FEATURE")?;
+    let Some(flag) = crate::features::named(name) else {
+        let known: Vec<&str> = crate::features::FLAGS.iter().map(|flag| flag.name).collect();
+        return Err(Fault::not_found(format!("no feature called {name:?}; the features are {}", known.join(", "))));
+    };
+    let changed = crate::features::set(store, flag.feature, on);
+    if changed && let Some(live) = live {
+        live.adopt_features();
+    }
+    let state = if on { "on" } else { "off" };
+    let text = match changed {
+        true => format!("{} is {state}", flag.name),
+        false => format!("{} was already {state}", flag.name),
+    };
+    said(as_json, json!({"name": flag.name, "on": on, "changed": changed}), text)
+}
+
 fn config_list(store: &Store, as_json: bool) -> Result<String, Fault> {
-    let settings = store.settings();
+    // The feature flags are not listed: they are `features`' to show.
+    let settings: Vec<(String, String)> =
+        store.settings().into_iter().filter(|(key, _)| !key.starts_with(crate::features::PREFIX)).collect();
     if as_json {
         let rows = settings
             .iter()
@@ -4830,10 +4898,11 @@ fn config_set(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<Stri
     // as a header missing a part. Either section, and a part placed in one
     // leaves the other, as it does in the preferences.
     if let Some(section) = crate::header::Section::ALL.into_iter().find(|section| section.setting() == key) {
-        let parts = crate::header::parse(value).map_err(Fault::usage)?;
+        let trading = crate::features::stored(store, crate::features::Feature::Trading);
+        let parts = crate::header::parse_for(value, trading).map_err(Fault::usage)?;
         let value = crate::header::spell(&parts);
         let mut header = crate::header::load(store);
-        header.set(section, parts);
+        header.set_shown(section, parts, trading);
         crate::header::save(store, &header);
         let text = match section {
             crate::header::Section::Left => format!("every chart's header shows {value}"),
@@ -5566,6 +5635,7 @@ mod tests {
     #[test]
     fn the_header_is_one_setting_and_a_typo_is_refused() {
         let store = bare();
+        crate::features::set(&store, crate::features::Feature::Trading, true);
         use crate::header::{Header, Part};
         let corner = vec![Part::DayPnl, Part::Trade, Part::Size, Part::Settings, Part::Maximize, Part::Link];
         assert_eq!(crate::header::load(&store), Header::standard());
@@ -8092,6 +8162,9 @@ mod tests {
         fn adopt_feed(&self) {
             self.0.borrow_mut().push("feed");
         }
+        fn adopt_features(&self) {
+            self.0.borrow_mut().push("features");
+        }
         fn warm(&self, _instruments: &[omacharts_engine::Instrument]) {}
         fn warm_closes(&self, _batches: Vec<Vec<crate::loader::Listing>>) {}
         fn symbols(&self) -> Option<std::rc::Rc<omacharts_engine::SearchIndex>> {
@@ -8142,5 +8215,92 @@ mod tests {
         assert_eq!(unknown.code, crate::cli::EXIT_ERROR);
         assert!(unknown.err.contains("backup list"), "{}", unknown.err);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `features` lists the flags, every one off on a fresh profile, and
+    /// switches one by name; a name nobody knows is not found.
+    #[test]
+    fn features_are_listed_and_switched_by_name() {
+        let store = bare();
+        for line in ["features", "features list"] {
+            let out = run(line, &store);
+            assert_eq!(out.code, 0, "{}", out.err);
+            assert!(out.out.starts_with("trading"), "{}", out.out);
+            assert!(out.out.lines().next().unwrap().contains(" off "), "{}", out.out);
+        }
+        let listed = json_of(&run("features list --json", &store));
+        assert_eq!(listed["features"][0]["name"], "trading");
+        assert_eq!(listed["features"][0]["on"], false);
+        assert_eq!(listed["features"][0]["default"], false);
+
+        let out = run("features enable trading", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert_eq!(out.out, "trading is on\n");
+        assert!(crate::features::stored(&store, crate::features::Feature::Trading));
+        assert_eq!(run("features enable trading", &store).out, "trading was already on\n");
+        assert_eq!(json_of(&run("features list --json", &store))["features"][0]["on"], true);
+        let out = json_of(&run("features disable trading --json", &store));
+        assert_eq!(out, json!({"name": "trading", "on": false, "changed": true}));
+        assert!(!crate::features::stored(&store, crate::features::Feature::Trading));
+
+        for line in ["features enable bananas", "features disable bananas"] {
+            let out = run(line, &store);
+            assert_eq!(out.code, crate::cli::EXIT_NOT_FOUND, "{line}: {}", out.err);
+            assert!(out.err.contains("trading"), "{}", out.err);
+        }
+        // Kept out of `config list`, which is not where they are shown.
+        run("features enable trading", &store);
+        assert!(!run("config list", &store).out.contains("feature."));
+    }
+
+    /// Switched with a window open, the window is told, so trading comes
+    /// and goes in it at once; switched to what it already was, nothing.
+    #[test]
+    fn switching_a_feature_reaches_the_window_that_is_open() {
+        let store = bare();
+        let window = Watching::default();
+        let args = |verb: &str| ["omacharts", "features", verb, "trading"].map(String::from).to_vec();
+        assert_eq!(dispatch(&args("enable"), &store, Some(&window), &super::super::Here).code, 0);
+        assert_eq!(dispatch(&args("enable"), &store, Some(&window), &super::super::Here).code, 0);
+        assert_eq!(dispatch(&args("disable"), &store, Some(&window), &super::super::Here).code, 0);
+        assert_eq!(*window.0.borrow(), vec!["features", "features"]);
+    }
+
+    /// The flags are not advertised: no `--help`, no `surface --json`, no
+    /// completions and no man page name them, though the parser takes them.
+    #[test]
+    fn features_are_accepted_and_listed_nowhere() {
+        let store = bare();
+        let help = run("--help", &store).out;
+        assert!(!help.contains("features"), "{help}");
+        let surface = run("surface --json", &store).out;
+        assert!(!surface.contains("features") && !surface.contains("\"trading"), "{surface}");
+        for shell in ["bash", "zsh", "fish"] {
+            let script = run(&format!("surface --completions {shell}"), &store).out;
+            assert!(!script.contains("features"), "{shell}");
+        }
+        assert!(!run("surface --man", &store).out.contains("features"));
+        assert!(crate::cli::is_command(&["omacharts".into(), "features".into()]));
+        assert_eq!(run("features list", &store).code, 0);
+    }
+
+    /// With trading off, the header knows none of trading's parts: they are
+    /// neither typed nor suggested, and the ones a header already holds stay
+    /// where they were for when it is switched on.
+    #[test]
+    fn with_trading_off_the_header_has_no_trading_parts() {
+        use crate::header::Part;
+        let store = bare();
+        let out = run("config set chart_header_right trade,settings", &store);
+        assert_eq!(out.code, EXIT_USAGE);
+        assert!(!out.err.contains("day_pnl") && !out.err.contains("account"), "{}", out.err);
+        let out = run("config set chart_header_right link,settings", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert_eq!(out.out, "every chart's header shows link,settings on the right\n");
+        assert_eq!(
+            crate::header::load(&store).right,
+            vec![Part::DayPnl, Part::Trade, Part::Size, Part::Link, Part::Settings],
+            "trading's parts kept where they were"
+        );
     }
 }

@@ -116,6 +116,17 @@ fn build(only: Option<&str>) -> Command {
         }
         app = app.subcommand(group);
     }
+    // Accepted, never listed: see [`spec::HIDDEN`]. Bare, a hidden group
+    // lists what it holds rather than asking for a verb.
+    for noun in spec::HIDDEN {
+        let mut group = Command::new(noun.name).about(noun.about).hide(true);
+        if only.is_none_or(|named| named == noun.name) {
+            for verb in noun.verbs {
+                group = group.subcommand(build_verb(verb));
+            }
+        }
+        app = app.subcommand(group);
+    }
     app
 }
 

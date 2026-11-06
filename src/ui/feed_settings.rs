@@ -12,7 +12,10 @@
 //! connection signs in through a login in Preferences → Trading, the data
 //! login, so while there is one its row says so and leaves signing in, out
 //! and removing to that page; adding it with no login is adding a broker
-//! there. A feed with a dialog of its own is signed in to here, in that
+//! there. With trading switched off ([`crate::features`]) there is no
+//! Trading page, and the broker's feed is a feed like the others: its
+//! login is typed in the broker's own dialog from its row, kept as the data
+//! login, and signs in its data alone, never an order plant. A feed with a dialog of its own is signed in to here, in that
 //! dialog, found in `sign_in_dialogs`; one that signs in in a browser opens
 //! one.
 //!
@@ -203,6 +206,9 @@ fn subtitle(panel: &Panel, feed: &'static Listed) -> String {
 /// The login a feed signs in through, when that is Trading's business: a
 /// broker connection's feed, while there is a login in Trading.
 fn through_trading(panel: &Panel, feed: &'static Listed) -> Option<crate::trading::Login> {
+    if !crate::features::trading() {
+        return None;
+    }
     crate::trading::data_login(&panel.store).filter(|login| trades(feed) && login.broker.eq_ignore_ascii_case(feed.id))
 }
 
@@ -294,6 +300,7 @@ fn action_button(panel: &Rc<Panel>, feed: &'static Listed, row: &adw::ActionRow)
     }
     let anchor = row.clone();
     button.connect_clicked(move |_| match (feed.asks_in_a_dialog(), trades(feed)) {
+        (true, true) if !crate::features::trading() => ask_login(&panel, feed, &anchor),
         (true, true) => ask_broker(&panel, feed, &anchor),
         (true, false) => ask_dialog(&panel, feed, &anchor),
         (false, _) => start_sign_in(&panel, feed),
@@ -381,6 +388,7 @@ fn add_button(panel: &Rc<Panel>, missing: Vec<&'static Listed>) -> gtk::MenuButt
 /// added at once, and signed in to from its row.
 fn add_feed(panel: &Rc<Panel>, feed: &'static Listed, anchor: &impl IsA<gtk::Widget>) {
     match trades(feed) && through_trading(panel, feed).is_none() {
+        true if !crate::features::trading() => ask_login(panel, feed, anchor),
         true => ask_broker(panel, feed, anchor),
         false => {
             feeds::add_feed(&panel.store, feed.id);
@@ -410,6 +418,37 @@ fn ask_broker(panel: &Rc<Panel>, feed: &'static Listed, anchor: &impl IsA<gtk::W
     if let Some(add_broker) = &panel.add_broker {
         add_broker(feed.id, anchor.upcast_ref());
     }
+}
+
+/// A broker connection's feed with trading switched off: its login typed
+/// in the broker's own dialog — the data login again, prefilled, when
+/// there is one — kept, and its data signed in from this row, as any other
+/// feed's. Nothing signs in to the broker's order plant.
+fn ask_login(panel: &Rc<Panel>, feed: &'static Listed, anchor: &impl IsA<gtk::Widget>) {
+    let Some(dialog) = sign_in_dialogs::login_dialog(feed.id) else { return };
+    let known = crate::trading::data_login(&panel.store).filter(|login| login.broker.eq_ignore_ascii_case(feed.id));
+    let panel = panel.clone();
+    let id = known.as_ref().map(|login| login.id.clone());
+    dialog(
+        anchor.upcast_ref(),
+        known.as_ref(),
+        Box::new(move |typed| {
+            let secrets = crate::ui::trading_settings::keyring(&typed.broker);
+            let kept = match &id {
+                Some(id) => crate::trading::retype_login(&panel.store, &secrets, id, &typed),
+                None => crate::trading::add_login(&panel.store, &secrets, &typed).map(|_| ()),
+            };
+            if let Err(error) = kept {
+                panel.notes.borrow_mut().insert(feed.id, format!("not saved · {error}"));
+                panel.changed();
+                return;
+            }
+            feeds::add_feed(&panel.store, feed.id);
+            feeds::remember_logins(&panel.store);
+            panel.changed();
+            start_sign_in(&panel, feed);
+        }),
+    );
 }
 
 /// A feed with a dialog of its own: the dialog keeps what is typed, and the
@@ -619,6 +658,7 @@ mod tests {
             return;
         }
         crate::ui::on_gtk(|| {
+            crate::features::force(crate::features::Feature::Trading, true);
             let store = Rc::new(Store::memory().expect("an empty database"));
             let panel = panel(&store);
             feeds::add_feed(&store, RITHMIC);
@@ -648,6 +688,38 @@ mod tests {
             for absent in ["Remove", "Sign in…", "Sign out"] {
                 assert!(!words.iter().any(|w| w == absent), "{absent}: {words:?}");
             }
+        });
+    }
+
+    /// With trading switched off there is no Trading page to leave Rithmic's
+    /// row to: a login kept for its data is signed in, out and removed from
+    /// the row, like any other feed's, and nothing says "through" it.
+    #[test]
+    fn with_trading_off_rithmic_is_a_feed_like_the_others() {
+        if session::development() {
+            return;
+        }
+        crate::ui::on_gtk(|| {
+            assert!(!crate::features::trading(), "off unless switched on");
+            let store = Rc::new(Store::memory().expect("an empty database"));
+            let panel = panel(&store);
+            let kept = crate::trading::fake::Kept::default();
+            let typed = crate::trading::Typed {
+                broker: "rithmic".into(),
+                name: "Lucid".into(),
+                user: "trader".into(),
+                password: "PLANTED-PASSWORD".into(),
+                values: vec![("system".into(), "Rithmic Test".into())],
+            };
+            crate::trading::add_login(&store, &kept, &typed).unwrap();
+            rebuild(&panel);
+            assert_eq!(titles(&panel), vec!["Rithmic", "Yahoo Finance"]);
+            let group = panel.group.borrow().clone().unwrap();
+            let row = &action_rows(group.upcast_ref())[0];
+            assert!(!row.subtitle().unwrap_or_default().contains("through"), "{:?}", row.subtitle());
+            let words = words_under(row.upcast_ref());
+            assert!(words.iter().any(|w| w == "Remove"), "{words:?}");
+            assert!(words.iter().any(|w| w == "Sign in…" || w == "Sign out"), "{words:?}");
         });
     }
 

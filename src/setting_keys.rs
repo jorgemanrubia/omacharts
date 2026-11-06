@@ -39,6 +39,9 @@ const KEYS: &[(&str, Kind)] = &[
     // Each login's accounts as last listed, with their balances: rewritten
     // at every sign-in, and account numbers stay on this machine.
     ("trading_accounts", Kind::Bookkeeping),
+    // Which experiments are switched on: a machine's, switched on there
+    // from its command line, never carried to another by a restore.
+    (crate::features::PREFIX, Kind::Local),
     ("cache_swept_at", Kind::Bookkeeping),
     ("cooldown.", Kind::Bookkeeping),
     ("last_symbol", Kind::Bookkeeping),
@@ -126,6 +129,7 @@ mod tests {
         assert_eq!(kind("chart_header_center"), Kind::Shared);
         assert_eq!(kind("chart_header_right"), Kind::Shared);
         assert_eq!(kind("chartbook_templates"), Kind::Shared);
+        assert_eq!(kind("feature.trading"), Kind::Local);
     }
 
     /// Every key the app writes has been given a kind on purpose.

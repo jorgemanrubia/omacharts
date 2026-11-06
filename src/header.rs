@@ -128,6 +128,22 @@ impl Part {
         }
     }
 
+    /// Is it one of trading's: shown, offered and typed only while
+    /// trading is switched on ([`crate::features`]).
+    pub fn trades(self) -> bool {
+        matches!(self, Part::Account | Part::DayPnl | Part::Trade | Part::Size)
+    }
+
+    /// Can it be shown, offered and typed, with trading switched on or not?
+    pub fn shown(self, trading: bool) -> bool {
+        trading || !self.trades()
+    }
+
+    /// Every part that can be, in [`Part::ALL`]'s order.
+    pub fn every_shown(trading: bool) -> Vec<Part> {
+        Part::ALL.into_iter().filter(|part| part.shown(trading)).collect()
+    }
+
     /// How it is written down and typed.
     pub fn key(self) -> &'static str {
         match self {
@@ -211,6 +227,24 @@ impl Header {
 
     /// Put `parts` in `section`, taking each out of the others: a part is
     /// in the header once, wherever it was put last.
+    /// [`Header::set`] for somebody who sees only the parts that can be
+    /// shown: the ones they cannot see stay in `section` where they were,
+    /// so switching trading on finds its parts where they were left.
+    pub fn set_shown(&mut self, section: Section, parts: Vec<Part>, trading: bool) {
+        let mut kept = parts;
+        for (at, part) in self.section(section).to_vec().into_iter().enumerate() {
+            if !part.shown(trading) && !kept.contains(&part) {
+                kept.insert(at.min(kept.len()), part);
+            }
+        }
+        self.set(section, kept);
+    }
+
+    /// What `section` shows of the parts that can be.
+    pub fn shown(&self, section: Section, trading: bool) -> Vec<Part> {
+        self.section(section).iter().copied().filter(|part| part.shown(trading)).collect()
+    }
+
     pub fn set(&mut self, section: Section, parts: Vec<Part>) {
         for other in Section::ALL.into_iter().filter(|other| *other != section) {
             self.section_mut(other).retain(|part| !parts.contains(part));
@@ -254,16 +288,22 @@ pub fn keys(parts: &[Part]) -> Vec<String> {
 /// dropping either: a header that came out different from the one typed would
 /// look as though the command worked.
 pub fn parse(text: &str) -> Result<Vec<Part>, String> {
+    parse_for(text, crate::features::trading())
+}
+
+/// [`parse`], knowing only the parts that can be shown with trading on or
+/// off: switched off, trading's are not parts of a header at all.
+pub fn parse_for(text: &str, trading: bool) -> Result<Vec<Part>, String> {
     let text = text.trim();
     if text.is_empty() || text.eq_ignore_ascii_case("none") {
         return Ok(Vec::new());
     }
     let mut parts = Vec::new();
     for key in text.split(',').map(|key| key.trim().to_lowercase()) {
-        let Some(part) = Part::from_key(&key) else {
+        let Some(part) = Part::from_key(&key).filter(|part| part.shown(trading)) else {
             return Err(format!(
                 "{key:?} is not part of a header; try {}",
-                Part::ALL.map(Part::key).join(", ")
+                Part::every_shown(trading).into_iter().map(Part::key).collect::<Vec<_>>().join(", ")
             ));
         };
         if parts.contains(&part) {
@@ -446,10 +486,31 @@ mod tests {
         );
     }
 
+    /// With trading off its parts are no header's: not typed, not
+    /// suggested, and those a header holds are kept where they were by a
+    /// change to the parts that are shown.
+    #[test]
+    fn trading_s_parts_are_kept_out_of_sight_while_it_is_off() {
+        assert!(parse_for("symbol,trade", false).is_err());
+        let refused = parse_for("banana", false).unwrap_err();
+        assert!(!refused.contains("day_pnl") && refused.contains("symbol"), "{refused}");
+        assert!(parse_for("symbol,trade", true).is_ok());
+        assert!(Part::every_shown(false).iter().all(|part| !part.trades()));
+        assert_eq!(Part::every_shown(true), Part::ALL.to_vec());
+
+        let mut header = Header::standard();
+        assert_eq!(header.shown(Section::Left, false), vec![Part::Feed, Part::Symbol, Part::Resolution]);
+        header.set_shown(Section::Left, vec![Part::Symbol, Part::Feed], false);
+        assert_eq!(header.left, vec![Part::Symbol, Part::Feed, Part::Account]);
+        header.set_shown(Section::Right, vec![Part::Link], false);
+        assert_eq!(header.right, vec![Part::DayPnl, Part::Trade, Part::Size, Part::Link]);
+    }
+
     /// The corner's controls are parts like the others: typed by name,
     /// placed in any section, and taken out.
     #[test]
     fn the_corner_s_controls_are_parts() {
+        crate::features::force(crate::features::Feature::Trading, true);
         assert_eq!(parse("settings,maximize,link").unwrap(), vec![Part::Settings, Part::Maximize, Part::Link]);
         assert_eq!(parse("feed,account").unwrap(), vec![Part::Feed, Part::Account]);
         let store = Store::memory().unwrap();

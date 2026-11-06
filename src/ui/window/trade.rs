@@ -1670,8 +1670,15 @@ pub(super) mod tests {
     use crate::trading::Session as _;
 
     /// A real window on a store in memory, charting from the synthetic
-    /// feed: nothing reaches a network, a keyring or the session bus.
+    /// feed: nothing reaches a network, a keyring or the session bus. With
+    /// trading switched on, which is what these tests are about.
     pub(crate) fn window(store: &Rc<Store>) -> Rc<Window> {
+        crate::features::set(store, crate::features::Feature::Trading, true);
+        bare_window(store)
+    }
+
+    /// [`window`] with the feature flags as `store` has them.
+    pub(crate) fn bare_window(store: &Rc<Store>) -> Rc<Window> {
         let _ = adw::init();
         let app = adw::Application::new(None::<&str>, gio::ApplicationFlags::NON_UNIQUE);
         let feed: Arc<dyn omacharts_engine::Provider> = Arc::new(omacharts_engine::providers::Synthetic::new(None));
@@ -1838,6 +1845,114 @@ pub(super) mod tests {
                 assert!(rows.iter().any(|title| title == row), "no {row} row in {rows:?}");
             }
             dialog.force_close();
+        });
+    }
+
+    /// The sidebar's sections, every group's title and every row's title in
+    /// the Preferences `window` opens.
+    fn preferences_words(window: &Rc<Window>) -> (Vec<String>, Vec<String>, Vec<String>) {
+        window.open_preferences_at(None);
+        let dialog = window.window.visible_dialog().expect("the preferences");
+        let widgets = |root: gtk::Widget| {
+            let (mut found, mut stack) = (Vec::new(), vec![root]);
+            while let Some(widget) = stack.pop() {
+                let mut child = widget.first_child();
+                while let Some(next) = child {
+                    child = next.next_sibling();
+                    stack.push(next);
+                }
+                found.push(widget);
+            }
+            found
+        };
+        let sidebar = widgets(dialog.clone().upcast())
+            .into_iter()
+            .find_map(|widget| widget.downcast::<gtk::ListBox>().ok().filter(|list| list.has_css_class("navigation-sidebar")))
+            .expect("the sidebar");
+        let (mut sections, mut groups, mut rows) = (Vec::new(), Vec::new(), Vec::new());
+        let mut index = 0;
+        while let Some(section) = sidebar.row_at_index(index) {
+            for widget in widgets(section.clone().upcast()) {
+                if let Some(label) = widget.downcast_ref::<gtk::Label>() {
+                    sections.push(label.label().to_string());
+                }
+            }
+            sidebar.select_row(Some(&section));
+            for widget in widgets(dialog.clone().upcast()) {
+                if let Some(group) = widget.downcast_ref::<adw::PreferencesGroup>() {
+                    groups.push(group.title().to_string());
+                }
+                if let Some(row) = widget.downcast_ref::<adw::PreferencesRow>() {
+                    rows.push(row.title().to_string());
+                }
+            }
+            index += 1;
+        }
+        dialog.force_close();
+        (sections, groups, rows)
+    }
+
+    /// Trading switched off, as it ships, is the app before trading even
+    /// with a login saved: no toggle, no panel, no keys, no orders, no
+    /// sign-in, and no Trading page, colours or header parts in
+    /// Preferences. Switched on with the window open, it comes in place
+    /// and the saved login signs in; switched off again, it goes, and the
+    /// charts are as they were throughout.
+    #[test]
+    fn trading_switched_off_is_nowhere_and_comes_and_goes_in_place() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let kept = Kept::default();
+            let id = trading::add_login(&store, &kept, &typed()).expect("a login");
+            let window = bare_window(&store);
+            {
+                let mut theming = window.theming.borrow_mut();
+                let mine = theming.theme().duplicate("custom-mine", "Mine");
+                store.save_theme(&mine);
+                theming.reload_custom(&store);
+                theming.select_theme("custom-mine", &store);
+            }
+            let off = |window: &Rc<Window>| {
+                !window.trading.borrow().trades()
+                    && window.trade.toggle.borrow().is_none()
+                    && window.trade.panel.borrow().is_none()
+                    && window.window.lookup_action("trading-panel").is_none()
+                    && window.trade.toasts.borrow().is_none()
+                    && window.desk.sessions_open() == 0
+                    && !window.desk.opening(&id)
+            };
+            assert!(off(&window), "trading built with the flag off");
+            assert!(window.order_section(10.0).is_none(), "orders in the chart menu");
+            let (sections, groups, rows) = preferences_words(&window);
+            assert_eq!(sections, ["General", "Charts", "Theme", "Data"]);
+            for group in ["Trading", "Trading accounts", "Order entry"] {
+                assert!(!groups.iter().any(|title| title == group), "a {group} group in {groups:?}");
+            }
+            for row in ["Profit", "Loss", "P&L", "Buy Sell", "Quantity", "Account", "Order labels"] {
+                assert!(!rows.iter().any(|title| title == row), "a {row} row in {rows:?}");
+            }
+
+            let charts = |window: &Rc<Window>| {
+                window.panes.borrow().iter().map(|pane| (pane.id, pane.instrument.borrow().clone())).collect::<Vec<_>>()
+            };
+            let before = charts(&window);
+            let focused = window.focused_pane().id;
+            crate::features::set(&store, crate::features::Feature::Trading, true);
+            window.adopt_features();
+            assert!(window.trading.borrow().trades());
+            assert!(window.trade.toggle.borrow().is_some(), "no toggle switched on");
+            assert!(window.window.lookup_action("trading-panel").is_some());
+            assert!(window.desk.opening(&id) || window.desk.live(&id), "the saved login is not signing in");
+            assert_eq!(charts(&window), before, "the charts were rebuilt");
+            assert_eq!(window.focused_pane().id, focused);
+            let (sections, _, _) = preferences_words(&window);
+            assert_eq!(sections.last().map(String::as_str), Some("Trading"));
+
+            crate::features::set(&store, crate::features::Feature::Trading, false);
+            window.adopt_features();
+            assert!(off(&window), "trading left behind switched off");
+            assert_eq!(charts(&window), before, "the charts were rebuilt");
+            assert_eq!(window.focused_pane().id, focused);
         });
     }
 
@@ -3042,6 +3157,7 @@ pub(super) mod tests {
     /// A window charting from Yahoo then Rithmic, both usable whatever
     /// this machine has saved, or from Yahoo alone.
     fn window_on(store: &Rc<Store>, both: bool) -> Rc<Window> {
+        crate::features::set(store, crate::features::Feature::Trading, true);
         let _ = adw::init();
         let app = adw::Application::new(None::<&str>, gio::ApplicationFlags::NON_UNIQUE);
         let mut feeds = vec![Posing::feed("yahoo", "Yahoo Finance", false)];

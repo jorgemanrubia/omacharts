@@ -167,15 +167,19 @@ impl Preferences {
             LAST_SEEN.with(|seen| seen.borrow_mut().charts_tab = tab);
         });
 
-        let sections: [(&str, &str, gtk::Widget); 5] = [
+        let mut sections: Vec<(&str, &str, gtk::Widget)> = vec![
             ("General", "preferences-system-symbolic", general_page.clone().upcast()),
             ("Charts", "utilities-system-monitor-symbolic", charts.upcast()),
             ("Theme", "applications-graphics-symbolic", page.clone().upcast()),
             ("Data", "network-server-symbolic", data_page.clone().upcast()),
-            ("Trading", "view-list-bullet-symbolic", trading_page.clone().upcast()),
         ];
-        let start = match (charts_tab, at_trading) {
-            (_, true) => 4,
+        // Trading's page only while trading is switched on.
+        let trading = crate::features::trading();
+        if trading {
+            sections.push(("Trading", "view-list-bullet-symbolic", trading_page.clone().upcast()));
+        }
+        let start = match (charts_tab, at_trading && trading) {
+            (_, true) => sections.len() - 1,
             (Some(_), _) => 1,
             (None, _) => last.section.min(sections.len() - 1),
         };
@@ -236,13 +240,15 @@ fn header_sections(
         .map(|section| {
             let (edited, changed, others) = (header.clone(), changed.clone(), lists.clone());
             let elsewhere_now = elsewhere.clone();
-            let current = header.borrow().section(section).to_vec();
+            // Trading's parts while it is switched off are neither listed
+            // nor lost: they stay where they were for when it is on.
+            let current = header.borrow().shown(section, crate::features::trading());
             let list = PartList::new(
                 section.title(),
                 &format!("Add to the {}", section.title().to_lowercase()),
                 current,
                 move |parts: Vec<crate::header::Part>| {
-                    edited.borrow_mut().set(section, parts);
+                    edited.borrow_mut().set_shown(section, parts, crate::features::trading());
                     let now = edited.borrow().clone();
                     for (other, list) in others.borrow().iter().filter(|(other, _)| *other != section) {
                         if let Some(list) = list.upgrade() {
@@ -271,7 +277,7 @@ fn header_sections(
         *header.borrow_mut() = standard.clone();
         for (section, list) in Section::ALL.into_iter().zip(&shown) {
             if let Some(list) = list.upgrade() {
-                list.replace(standard.section(section).to_vec());
+                list.replace(standard.shown(section, crate::features::trading()));
                 list.set_elsewhere(elsewhere(&standard, section));
             }
         }
@@ -370,7 +376,9 @@ fn rebuild(context: &Rc<Context>) {
     if theme.source.is_editable() {
         let [backgrounds, text, other] = UiSlot::GROUPS;
         groups.push(bar_colors_group(context));
-        groups.push(trading_look_group(context));
+        if crate::features::trading() {
+            groups.push(trading_look_group(context));
+        }
         groups.push(theme_colors_group(context, backgrounds));
         groups.push(theme_colors_group(context, text));
         groups.push(palette_group(context));
@@ -1433,6 +1441,18 @@ fn build_data_page(context: &Rc<Context>) {
     });
     group.add(&limit);
 
+    // Trading switched off has no Trading page, and the Data page adds a
+    // broker's data feed through the broker's own dialog itself.
+    if !crate::features::trading() {
+        crate::ui::feed_settings::build(
+            &context.data_page,
+            context.store.clone(),
+            context.on_change.clone(),
+            vec![group, backups_group(context)],
+            Rc::new(|_: &str, _: &gtk::Widget| {}),
+        );
+        return;
+    }
     let trading = crate::ui::trading_settings::build(
         &context.trading_page,
         context.store.clone(),
@@ -1885,6 +1905,7 @@ mod tests {
     fn a_part_in_one_section_is_not_offered_in_the_others() {
         use crate::header::{Header, Part};
         crate::ui::on_gtk(|| {
+            crate::features::force(crate::features::Feature::Trading, true);
             let saved: Rc<RefCell<Vec<Header>>> = Rc::default();
             let seen = saved.clone();
             let (sections, _) =
@@ -1940,6 +1961,7 @@ mod tests {
     fn restoring_the_header_puts_every_section_back() {
         use crate::header::{Header, Part};
         crate::ui::on_gtk(|| {
+            crate::features::force(crate::features::Feature::Trading, true);
             let saved: Rc<RefCell<Vec<Header>>> = Rc::default();
             let seen = saved.clone();
             let moved = Header {

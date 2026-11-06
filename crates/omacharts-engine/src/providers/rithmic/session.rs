@@ -347,7 +347,7 @@ pub fn can_sign_in() -> Result<String, String> {
     }
     match user() {
         Some(_) => Ok("the password in the desktop keyring".into()),
-        None => Err("No Rithmic login is signed in. Add one, or sign one in, in Preferences → Trading.".into()),
+        None => Err("No Rithmic login is signed in. Add one, or sign one in, in Preferences.".into()),
     }
 }
 
@@ -370,7 +370,7 @@ pub fn sign_in(log: impl Fn(&str)) -> Result<(), String> {
         if !held {
             return Err(format!(
                 "the keyring holds no Rithmic password for {system}. Sign the login in again in \
-                 Preferences → Trading, or save it with: secret-tool store --label='Omacharts: \
+                 Preferences, or save it with: secret-tool store --label='Omacharts: \
                  Rithmic login' application omacharts service rithmic login '{login}' system \
                  '{system}' user <your user ID>"
             ));

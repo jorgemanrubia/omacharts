@@ -52,6 +52,12 @@ impl Secrets for Keyring {
     }
 }
 
+/// The keyring `broker`'s passwords go in: what the Data page keeps a
+/// broker's data login in while trading is switched off.
+pub(crate) fn keyring(broker: &str) -> impl Secrets {
+    Keyring(trading::broker_for(broker).and_then(|broker| broker.keyring()))
+}
+
 /// Ask for a login of the broker `broker` over `anchor` — a new one, or
 /// `known` again — in the broker's own dialog.
 fn ask(anchor: &gtk::Widget, broker: &str, known: Option<&Login>, signed: impl Fn(trading::Typed) + 'static) {
@@ -738,6 +744,7 @@ mod tests {
     #[test]
     fn a_second_broker_signs_in_and_trades_without_being_named() {
         crate::ui::on_gtk(|| {
+            crate::features::force(crate::features::Feature::Trading, true);
             let store = Rc::new(Store::memory().unwrap());
             let desk = Rc::new(Desk::new(trading::registry()));
             let fake = desk.brokers().get("fake").expect("the fake broker is in the registry");
@@ -795,6 +802,7 @@ mod tests {
     #[test]
     fn the_log_names_a_login_and_never_its_user_id() {
         crate::ui::on_gtk(|| {
+            crate::features::force(crate::features::Feature::Trading, true);
             const USER: &str = "trader-77421-planted";
             let store = Rc::new(Store::memory().unwrap());
             let desk = Rc::new(Desk::new(trading::registry()));

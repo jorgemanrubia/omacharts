@@ -274,6 +274,9 @@ pub trait Live {
     /// Zoom every chart at the sensitivity the settings now name. Nothing to
     /// do without a window.
     fn adopt_zoom(&self) {}
+    /// Put in or take out what the feature flags now switch, in place.
+    /// Nothing to do without a window.
+    fn adopt_features(&self) {}
 
     /// Save a picture of the focused chart, or of the whole open chartbook.
     ///
@@ -432,7 +435,7 @@ fn feed_named(name: &str) -> Result<&'static omacharts_engine::providers::Listed
 /// way and mean entirely different things.
 pub fn is_command(args: &[String]) -> bool {
     let Some(first) = args.get(1).map(String::as_str) else { return false };
-    matches!(first, "help" | "surface") || spec::SURFACE.iter().any(|n| n.name == first)
+    matches!(first, "help" | "surface") || spec::SURFACE.iter().chain(spec::HIDDEN).any(|n| n.name == first)
 }
 
 /// Does this command have to run in the process it was typed in?
@@ -1037,6 +1040,10 @@ impl Live for Rc<crate::ui::Window> {
 
     fn adopt_zoom(&self) {
         crate::ui::Window::adopt_zoom(self);
+    }
+
+    fn adopt_features(&self) {
+        crate::ui::Window::adopt_features(self);
     }
 
     fn screenshot(
