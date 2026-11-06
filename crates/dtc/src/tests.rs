@@ -569,3 +569,28 @@ fn the_session_sierra_sent_folds_into_a_book_of_its_accounts_balance_and_fills()
     let reject = messages.iter().find(|message| message.kind() == wire::MARKET_DATA_REJECT).unwrap();
     assert_eq!(reject.text("RejectText").as_deref(), Some("Market data request not allowed"));
 }
+
+/// The same session, recorded after CME closed for the weekend.
+const SIERRA_CLOSED: &str = include_str!("../tests/fixtures/sierra-session-closed.jsonl");
+
+#[test]
+fn a_closed_market_is_heartbeats_and_the_same_answers_with_no_status_to_handle() {
+    let open = sierra_messages(SIERRA_OPEN);
+    let closed = sierra_messages(SIERRA_CLOSED);
+    // No feed or trading status messages arrive on either side of the close.
+    for status in [100, 116, 138] {
+        assert!(!closed.iter().chain(&open).any(|message| message.kind() == status));
+    }
+    assert!(closed.iter().any(|message| message.kind() == wire::HEARTBEAT));
+    let kinds = |messages: &[wire::Message]| {
+        let mut kinds: Vec<u16> = messages.iter().map(wire::Message::kind).filter(|kind| *kind != wire::HEARTBEAT).collect();
+        kinds.dedup();
+        kinds
+    };
+    assert_eq!(kinds(&open), kinds(&closed));
+    let mut state = State::default();
+    for message in &closed {
+        state.fold_for_test(message);
+    }
+    assert_eq!(state.book().accounts.len(), 3);
+}

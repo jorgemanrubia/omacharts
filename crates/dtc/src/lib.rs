@@ -31,7 +31,10 @@
 //! matters: it leaves out zero fields in a definition, writes an unset
 //! price as `null`, and sends heartbeat fields the shipped header does not
 //! have — all harmless in JSON. And a captured session reads as text: the
-//! fixtures under `tests/fixtures` are one.
+//! fixtures under `tests/fixtures` are two, recorded on this machine with
+//! the market open and closed. One rule JSON does impose: Sierra reads
+//! `Type` and then the fields after it, so a field written before `Type` is
+//! dropped without a word, and every message here is written `Type` first.
 //!
 //! **One connection, one thread.** A [`Trading`] session holds one
 //! connection, read by one thread that also sends the heartbeat when it is
@@ -71,7 +74,11 @@
 //! - Fills history needs an account (it refuses "TradeAccount is not set").
 //! - The server ignores `Exchange` and names a contract in full,
 //!   "ESZ26_FUT_CME"; it answers nothing at all for a symbol it does not
-//!   know, so such a request ends in [`Error::Timeout`].
+//!   know, so such a request ends in [`Error::Timeout`]. Listing a root's
+//!   contracts needs a security type, and leaves out their expiries.
+//! - Market data, and a closed market, push no feed or trading status
+//!   messages: a quiet session is heartbeats and nothing else, which is not
+//!   a drop.
 //!
 //! **Nobody's password leaves here except to the server.** [`Endpoint`]'s
 //! `Debug` leaves it out, and no [`Error`] is built from it.

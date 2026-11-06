@@ -595,11 +595,17 @@ impl State {
         if let Some(filled) = message.number("FilledQuantity") {
             order.filled = quantity(Some(filled));
         }
-        if message.0.contains_key("Price1") {
-            order.price1 = message.number("Price1").or(order.price1.filter(|_| order.kind == OrderKind::Market));
+        // A market order has no price; a stop-limit is the only one with a
+        // second. An unset price says nothing of one that is set.
+        match message.number("Price1") {
+            _ if order.kind == OrderKind::Market => order.price1 = None,
+            Some(price) => order.price1 = Some(price),
+            None => {}
         }
-        if message.0.contains_key("Price2") {
-            order.price2 = message.number("Price2").filter(|_| order.kind == OrderKind::StopLimit);
+        match message.number("Price2") {
+            _ if order.kind != OrderKind::StopLimit => order.price2 = None,
+            Some(price) => order.price2 = Some(price),
+            None => {}
         }
         order.time_in_force = TimeInForce::of(message.int_or_zero("TimeInForce")).or(order.time_in_force);
         order.avg_fill_price = message.nonzero("AverageFillPrice").or(order.avg_fill_price);
