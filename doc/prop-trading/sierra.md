@@ -89,3 +89,58 @@ contract is open there.
 `provider setup` is accepted and listed nowhere — not in `--help`, `surface
 --json` or the completions — because Sierra Chart is the only feed that has
 a use for it; with the flag off it knows no such feed.
+
+## The broker
+
+With both `sierra` and `trading` on, Preferences → Trading → Add a trading
+account offers Sierra Chart. Its dialog asks a name, the DTC server's host
+and port (this machine, 11099), and says as it is typed whether the server
+answers and allows trading; Sign in waits for one that does, and the steps
+that turn *Allow Trading* on are shown while it does not. There is no
+password: Sierra Chart is signed in to its broker itself, and its server,
+set to *Local Computer Only*, answers this machine alone. *Require
+Authentication* is not supported yet.
+
+The login is a `Broker` and its `Session` in `src/trading/adapters/sierra.rs`,
+over the `dtc` crate's `Trading`, and the trading UI knows no more of it
+than of Rithmic. What it maps:
+
+- **Accounts.** Whatever Sierra Chart trades: its simulator's `Sim1`, `Sim2`,
+  and the broker's own accounts. Only a broker account has a balance (cash,
+  open and daily P&L, its daily loss limit); the simulated ones have none.
+- **Contracts.** The exchange's spelling above the adapter, `ESZ6`, and
+  Sierra Chart's on the wire, `ESZ26_FUT_CME`. A root trades as the contract
+  its Sierra Chart charts are drawn from.
+- **Orders.** Market, limit and stop, placed, cancelled and moved, each
+  waiting for the server's answer; a rejection comes back in its words.
+  Cancel all and flatten.
+- **Prices.** The server sends no CME market data, so positions are marked
+  to the charts of their contracts, as for any broker that cannot price
+  them.
+
+### What DTC through Sierra Chart cannot do
+
+- **No market data for CME group exchanges**, streaming or historical: the
+  charts are the files' (see above).
+- **No linking orders after they are placed.** DTC makes two orders
+  one-cancels-other only as they are submitted together, so `link` is off
+  for this broker.
+- **A stop-limit is moved by its stop.** Cancel-replace changes Price1, and
+  Sierra Chart moves the limit with it.
+- **Prices on the wire are Sierra Chart's**, scaled by the contract's
+  `DisplayPriceMultiplier` (ES at a hundred times): fills read that way, and
+  the adapter divides an order's price the same way going out. That second
+  half is not yet confirmed by an order: it needs one, on a simulated
+  account, with the author's say-so.
+- **Simulated or not is per account**, not per login: Sierra Chart lists its
+  simulator's accounts beside the broker's.
+
+### What was verified, and how
+
+Every order path is tested against `dtc::fake`, a DTC server in memory.
+Against the author's Sierra Chart (build 2933, `sc_futures_direct`), only
+reads: the encoding handshake, logon, accounts, balances, positions, open
+orders, fills, and the contracts of ES with their expiries
+(`cargo run -p dtc --example look -- ES`, which sends no order message).
+Sierra Chart's JSON parser drops every field written before `"Type"`, so the
+client writes it first.

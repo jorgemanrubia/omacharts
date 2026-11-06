@@ -40,8 +40,19 @@ pub struct Typed {
     pub values: Vec<(String, String)>,
 }
 
-/// The logins, in the order they were added.
+/// The logins, in the order they were added, less those of a broker that
+/// is closed now — behind a flag that is off — which are kept as they are
+/// and are nobody's business until it is on.
 pub fn logins(store: &Store) -> Vec<Login> {
+    let mut logins = kept(store);
+    let brokers = super::registry();
+    logins.retain(|login| !brokers.closed(&login.broker));
+    logins
+}
+
+/// Every login kept, open or closed: what a change is made to and written
+/// back, so that a closed broker's logins survive it.
+fn kept(store: &Store) -> Vec<Login> {
     let logins = store
         .setting(LOGINS)
         .and_then(|json| serde_json::from_str::<Vec<Login>>(&json).ok())
@@ -212,7 +223,7 @@ fn hand_over(login: &Login) {
 /// the data login, and puts its feed on top of the data feeds. Returns
 /// its id.
 pub fn add_login(store: &Store, secrets: &dyn Secrets, typed: &Typed) -> Result<String, String> {
-    let mut logins = logins(store);
+    let mut logins = kept(store);
     let mut login = Login {
         id: new_id(&logins),
         name: String::new(),
@@ -240,7 +251,7 @@ pub fn add_login(store: &Store, secrets: &dyn Secrets, typed: &Typed) -> Result<
 /// Retype a login: what the dialog had when somebody signed it in again. An
 /// empty password keeps the one the keyring holds.
 pub fn retype_login(store: &Store, secrets: &dyn Secrets, id: &str, typed: &Typed) -> Result<(), String> {
-    let mut logins = logins(store);
+    let mut logins = kept(store);
     let Some(login) = logins.iter_mut().find(|login| login.id == id) else {
         return Err("that login has been removed".into());
     };
@@ -254,7 +265,7 @@ pub fn retype_login(store: &Store, secrets: &dyn Secrets, id: &str, typed: &Type
 /// Sign a login out: its password leaves the keyring, and it stays listed,
 /// signed out, with its accounts. The data login's data session ends too.
 pub fn sign_out_login(store: &Store, secrets: &dyn Secrets, id: &str) -> Result<(), String> {
-    let mut logins = logins(store);
+    let mut logins = kept(store);
     let data = data_login_id(store, &logins);
     let Some(login) = logins.iter_mut().find(|login| login.id == id) else { return Ok(()) };
     // The login is named rather than read back from what the engine was
@@ -269,7 +280,7 @@ pub fn sign_out_login(store: &Store, secrets: &dyn Secrets, id: &str) -> Result<
 /// Mark a login signed out, its password already forgotten by whoever
 /// signed it out.
 pub fn mark_signed_out(store: &Store, id: &str) {
-    let mut logins = logins(store);
+    let mut logins = kept(store);
     if let Some(login) = logins.iter_mut().find(|login| login.id == id)
         && !login.signed_out
     {
@@ -331,7 +342,7 @@ pub fn removal(store: &Store, id: &str) -> Removal {
 /// and otherwise stays, not signed in, to be signed in again.
 pub fn remove_login(store: &Store, secrets: &dyn Secrets, id: &str, feed_too: bool) -> Result<(), String> {
     let decided = removal(store, id);
-    let mut logins = logins(store);
+    let mut logins = kept(store);
     let Some(at) = logins.iter().position(|login| login.id == id) else { return Ok(()) };
     let was_data = decided != Removal::Login;
     let login = logins.remove(at);

@@ -12,6 +12,8 @@ members = [".", "crates/omacharts-engine", "crates/tos-market", "crates/rithmic"
 omacharts-engine = { path = "crates/omacharts-engine" }
 # A broker login's trading session, which the app keeps one of per login.
 rithmic = { path = "crates/rithmic" }
+# Sierra Chart's DTC server, a broker login's trading session too.
+dtc = { path = "crates/dtc" }
 adw = { version = "0.9.2", package = "libadwaita", features = ["v1_5"] }
 async-channel = "2.5.0"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "serde"] }
@@ -39,6 +41,8 @@ fakes = []
 [dev-dependencies]
 # The fake feeds the tests prove the boundary with, never in a release.
 omacharts-engine = { path = "crates/omacharts-engine", features = ["fakes"] }
+# A DTC server in memory, for the Sierra Chart broker's tests.
+dtc = { path = "crates/dtc", features = ["fake"] }
 
 [profile.release]
 opt-level = 3

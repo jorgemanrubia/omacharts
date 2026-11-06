@@ -25,6 +25,12 @@ pub const NOT_SET_UP: &str = "Sierra Chart is not set up. Open Preferences → D
 pub const FOLDER: &str = "folder";
 /// The key the DTC server's port is kept under.
 pub const PORT: &str = "port";
+/// The key a broker login keeps the DTC server's host under; its port is
+/// under [`PORT`], as the feed's is.
+pub const HOST: &str = "host";
+/// Where Sierra Chart's DTC server is, unless a login says otherwise: on
+/// this machine, which is all "Local Computer Only" allows.
+pub const DEFAULT_HOST: &str = "127.0.0.1";
 /// Sierra Chart's own default for its DTC server's "Listening Port".
 pub const DEFAULT_PORT: u16 = 11099;
 

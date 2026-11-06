@@ -11,6 +11,8 @@
 // Beside this file rather than under it, where the dialogs have always been.
 #[path = "rithmic_login.rs"]
 mod rithmic_login;
+#[path = "sierra_login.rs"]
+mod sierra_login;
 #[path = "sierra_setup.rs"]
 mod sierra_setup;
 
@@ -33,6 +35,7 @@ pub type FeedDialog = fn(Saved, Box<dyn Fn(Saved)>) -> adw::AlertDialog;
 pub fn login_dialog(broker: &str) -> Option<LoginDialog> {
     match broker {
         id if id == omacharts_engine::providers::rithmic::LISTED.id => Some(rithmic_login::ask),
+        id if id == omacharts_engine::providers::sierra::LISTED.id => Some(sierra_login::ask),
         #[cfg(any(test, feature = "fakes"))]
         "fake" => Some(fake::login),
         _ => None,

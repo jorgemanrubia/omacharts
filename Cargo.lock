@@ -1484,6 +1484,7 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "clap",
+ "dtc",
  "gio",
  "gtk4",
  "libadwaita",

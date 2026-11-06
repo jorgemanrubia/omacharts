@@ -175,6 +175,33 @@ pub(crate) fn stem_for(opened: &Opened, symbol: &str) -> Option<String> {
     }
 }
 
+/// What Sierra Chart calls the contract `symbol` trades as, for an order:
+/// a dated contract, `ESZ6`, as `ESZ26_FUT_CME`, and a root as its front
+/// month — the one its charts here are drawn from when the folder has it,
+/// else the rule's. `None` for a root the rule knows no month of.
+pub fn sierra_contract(symbol: &str) -> Option<String> {
+    if let Some(stem) = opened().and_then(|opened| stem_for(&opened, symbol)) {
+        return Some(stem);
+    }
+    let today = crate::contracts::today();
+    let dated = match root_of(symbol) == symbol {
+        true => crate::contracts::front(symbol, today)?.symbol,
+        false => symbol.to_string(),
+    };
+    let (root, month) = crate::contracts::parse(&dated, today)?;
+    Some(format!("{root}{}{:02}_FUT_CME", month.code(), month.year.rem_euclid(100)))
+}
+
+/// A contract of Sierra Chart's, `ESZ26_FUT_CME`, as the exchange spells
+/// it, `ESZ6`; a name that is not a dated future as it is.
+pub fn exchange_contract(sierra: &str) -> String {
+    let Some(file) = sierra::symbols::parse(sierra) else { return sierra.to_string() };
+    match file.contract.and_then(|contract| crate::contracts::Month::of(contract.month, contract.year)) {
+        Some(month) => crate::contracts::symbol(&file.root, month),
+        None => sierra.to_string(),
+    }
+}
+
 /// Does Sierra Chart have anything of this root on disk?
 fn has_root(opened: &Opened, root: &str) -> bool {
     opened.has_root(root)

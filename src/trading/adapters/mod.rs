@@ -8,6 +8,7 @@ use std::sync::Arc;
 use super::{Broker, Registry};
 
 mod rithmic;
+mod sierra;
 
 pub use rithmic::SIGN_OUT_WAIT;
 
@@ -17,7 +18,7 @@ pub use rithmic::SIGN_OUT_WAIT;
 /// like any other.
 pub fn registry() -> Registry {
     #[allow(unused_mut)]
-    let mut brokers: Vec<Arc<dyn Broker>> = vec![Arc::new(rithmic::Rithmic)];
+    let mut brokers: Vec<Arc<dyn Broker>> = vec![Arc::new(rithmic::Rithmic), Arc::new(sierra::Sierra)];
     #[cfg(any(test, feature = "fakes"))]
     {
         let fake = super::fake::FakeBroker::listed();

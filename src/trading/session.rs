@@ -44,6 +44,17 @@ pub trait Broker: Send + Sync {
     fn heard_at_sign_in(&self, _login: &Login) -> Option<Heard> {
         None
     }
+    /// Is it there now? Not while a feature flag it is behind is off: then
+    /// it is offered nowhere, its logins are shown nowhere and none signs
+    /// in. Open by default.
+    fn open(&self) -> bool {
+        true
+    }
+    /// Can `login`, as saved, sign in again at startup with nothing typed?
+    /// By default when it has a user, whose password is kept.
+    fn signs_in_saved(&self, login: &Login) -> bool {
+        !login.user.is_empty()
+    }
 }
 
 /// What a sign-in heard, beyond whether it signed in: something to warn of
@@ -96,14 +107,20 @@ impl Registry {
         Registry(brokers)
     }
 
-    /// The broker logins call `id`.
+    /// The broker logins call `id`, while it is open.
     pub fn get(&self, id: &str) -> Option<Arc<dyn Broker>> {
-        self.0.iter().find(|broker| broker.id() == id).cloned()
+        self.iter().find(|broker| broker.id() == id).cloned()
     }
 
-    /// Every broker, in the order they are offered.
+    /// Every broker that is open, in the order they are offered.
     pub fn iter(&self) -> impl Iterator<Item = &Arc<dyn Broker>> {
-        self.0.iter()
+        self.0.iter().filter(|broker| broker.open())
+    }
+
+    /// Is `id` a broker of this build's that is closed now: behind a flag
+    /// that is off? Its logins are kept and shown nowhere.
+    pub fn closed(&self, id: &str) -> bool {
+        self.0.iter().any(|broker| broker.id() == id && !broker.open())
     }
 }
 
@@ -332,8 +349,10 @@ impl Desk {
     /// session, its trading half alone: the data half signs in by itself as
     /// the charts ask for it. What startup calls, after the first frame.
     pub fn sign_in_saved(&self, logins: &[Login]) {
-        for login in logins.iter().filter(|login| !login.signed_out && !login.user.is_empty()) {
-            self.sign_in(login, false);
+        for login in logins.iter().filter(|login| !login.signed_out) {
+            if self.broker_for(login).is_some_and(|broker| broker.signs_in_saved(login)) {
+                self.sign_in(login, false);
+            }
         }
     }
 

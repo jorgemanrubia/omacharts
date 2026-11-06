@@ -634,6 +634,7 @@ pub(crate) mod tests {
             // and the registry is the one place that maps a feed to it.
             ("src/ui/rithmic_login.rs", "Rithmic's own login dialog"),
             ("src/ui/sierra_setup.rs", "Sierra Chart's own setup dialog"),
+            ("src/ui/sierra_login.rs", "Sierra Chart's own trading login dialog"),
             // The flag table names what each flag switches on.
             ("src/features.rs", "the flag a feed is behind"),
             // A hidden verb's example has to name the one feed it is for.
