@@ -1,0 +1,15 @@
+[package]
+name = "sierra"
+version = "0.1.0"
+edition = "2024"
+description = "Sierra Chart's own files, read as it writes them: intraday ticks, daily bars, symbol settings."
+license = "MIT"
+
+[dependencies]
+# An intraday file is mapped rather than read: a 3 GB contract is then a
+# slice of records the moment it opens, and only the pages a chart touches
+# are ever read from disk.
+memmap2 = "0.9"
+# inotify, poll and eventfd, for following a file as Sierra Chart appends to
+# it. std has none of the three.
+libc = "0.2"
