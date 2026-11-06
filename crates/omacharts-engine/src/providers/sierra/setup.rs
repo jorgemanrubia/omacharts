@@ -170,7 +170,8 @@ pub fn probe(port: u16, timeout: Duration) -> dtc::Probe {
 /// Connects, signs on and off: for a thread of its own.
 pub fn listening(port: u16) -> Result<String, String> {
     match probe(port, Duration::from_millis(800)) {
-        ready @ dtc::Probe::Ready(_) => Ok(ready.to_string()),
+        // Said of the server alone: whether it trades is the broker's.
+        dtc::Probe::Ready(_) => Ok(format!("DTC server listening on port {port}")),
         other => Err(other.to_string()),
     }
 }
