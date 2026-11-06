@@ -138,9 +138,11 @@ impl Preferences {
         let charts_header_page = adw::PreferencesPage::new();
         let store_for_header = store.clone();
         let window_for_header = window.clone();
-        // Buy and Sell, the quantity and the day's P&L are listed and
-        // offered with or without a login, like every trading setting: they
-        // draw nothing on a chart until there is an account to trade on.
+        // The account, Buy and Sell, the quantity and the day's P&L are
+        // listed and offered while trading is switched on, with or without
+        // a login, like every trading setting: they draw nothing on a chart
+        // until there is an account to trade on. Switched off, they are
+        // neither listed nor offered, and stay where they were.
         let (sections, restore_header) = header_sections(crate::header::load(&store), move |header| {
             crate::header::save(&store_for_header, header);
             window_for_header.apply_header();
@@ -939,9 +941,9 @@ fn bar_colors_group(context: &Rc<Context>) -> adw::PreferencesGroup {
 /// How orders and positions are drawn on a chart: a colour for each of buy,
 /// sell, long, short, profit and loss, and a pattern for each kind of line.
 /// Only on a theme of somebody's own, like the bars, and each row saves
-/// only itself: what nobody set keeps following the theme. There with or
-/// without a login, as every trading setting is: without one nothing draws
-/// in it.
+/// only itself: what nobody set keeps following the theme. There while
+/// trading is switched on, with or without a login, as every trading
+/// setting is: without one nothing draws in it.
 fn trading_look_group(context: &Rc<Context>) -> adw::PreferencesGroup {
     use omacharts_engine::indicators::LineStyle;
     use omacharts_engine::{TradingColour, TradingLine, TradingLook};
