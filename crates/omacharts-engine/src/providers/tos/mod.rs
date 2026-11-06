@@ -80,6 +80,7 @@ pub const LISTED: crate::providers::Listed = crate::providers::Listed {
     build: || Box::new(Tos::new()),
     setup: Some(&session::Signing),
     experimental: true,
+    gate: None,
 };
 
 pub struct Tos;

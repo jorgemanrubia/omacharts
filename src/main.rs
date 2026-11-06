@@ -65,7 +65,11 @@ fn main() -> glib::ExitCode {
         return report(refused);
     }
     if cli::is_command(&args) && !app_is_running() {
-        return report(cli::run(&args, &open_store(), None, &cli::Here));
+        let store = open_store();
+        // What the flags switch, as a window would read them: a feed behind
+        // one is there for the command only while it is on.
+        omacharts::features::adopt(&store);
+        return report(cli::run(&args, &store, None, &cli::Here));
     }
     if let Some(code) = peel_off(&args).filter(|_| !cli::is_command(&args)) {
         return code;

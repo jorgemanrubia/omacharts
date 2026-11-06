@@ -30,7 +30,7 @@ use std::rc::Rc;
 use adw::prelude::*;
 use gtk::glib;
 use omacharts_engine::provider::Delivery;
-use omacharts_engine::providers::{self, Access, How, Listed};
+use omacharts_engine::providers::{self, Access, How, Listed, Verbs};
 
 use crate::feeds;
 use crate::store::Store;
@@ -162,7 +162,7 @@ fn feeds_group(panel: &Rc<Panel>) -> adw::PreferencesGroup {
     }
 
     let missing: Vec<&'static Listed> =
-        providers::LISTED.iter().filter(|feed| !added.iter().any(|known| known.id == feed.id)).collect();
+        providers::offered().filter(|feed| !added.iter().any(|known| known.id == feed.id)).collect();
     if !missing.is_empty() {
         group.add(&add_button(panel, missing));
     }
@@ -177,7 +177,7 @@ fn standing(panel: &Panel, feed: &'static Listed) -> String {
     }
     match providers::access(feed.id) {
         None | Some(Access::Signed(_)) => fresh(feed.id).into(),
-        Some(Access::Missing) => "not signed in".into(),
+        Some(Access::Missing) => verbs(feed).missing.into(),
         Some(Access::Expired(_)) => {
             feed.setup.and_then(|setup| setup.refusal()).unwrap_or_else(|| "session expired".into())
         }
@@ -255,7 +255,9 @@ fn feed_row(panel: &Rc<Panel>, feed: &'static Listed, at: usize, others: bool) -
             spinner.start();
             row.add_suffix(&spinner);
         } else {
-            row.add_suffix(&action_button(panel, feed, &row));
+            if let Some(button) = action_button(panel, feed, &row) {
+                row.add_suffix(&button);
+            }
         }
     }
 
@@ -275,18 +277,23 @@ fn feed_row(panel: &Rc<Panel>, feed: &'static Listed, at: usize, others: bool) -
 /// The one thing to do about a feed's sign-in, which says where it
 /// stands: Sign in… with nothing usable saved, after a refusal or after an
 /// expiry, and Sign out while it works.
-fn action_button(panel: &Rc<Panel>, feed: &'static Listed, row: &adw::ActionRow) -> gtk::Button {
+fn action_button(panel: &Rc<Panel>, feed: &'static Listed, row: &adw::ActionRow) -> Option<gtk::Button> {
     let access = providers::access(feed.id).unwrap_or(Access::Missing);
+    let verbs = verbs(feed);
     let label = match &access {
-        Access::Signed(_) => "Sign out",
-        Access::Expired(_) | Access::Missing => "Sign in…",
+        Access::Signed(_) => verbs.change.or(verbs.end)?,
+        Access::Expired(_) | Access::Missing => verbs.start,
     };
     let button = gtk::Button::with_label(label);
     button.set_valign(gtk::Align::Center);
     let panel = panel.clone();
     if access.ready() {
-        button.connect_clicked(move |_| sign_out(&panel, feed));
-        return button;
+        let anchor = row.clone();
+        match verbs.change {
+            Some(_) => button.connect_clicked(move |_| ask_dialog(&panel, feed, &anchor)),
+            None => button.connect_clicked(move |_| sign_out(&panel, feed)),
+        };
+        return Some(button);
     }
     button.add_css_class("suggested-action");
     // A sign-in that cannot start says why on the row, rather than being a
@@ -296,7 +303,7 @@ fn action_button(panel: &Rc<Panel>, feed: &'static Listed, row: &adw::ActionRow)
     {
         button.set_sensitive(false);
         row.set_subtitle(&format!("{} · {why}", feed.covers));
-        return button;
+        return Some(button);
     }
     let anchor = row.clone();
     button.connect_clicked(move |_| match (feed.asks_in_a_dialog(), trades(feed)) {
@@ -305,7 +312,12 @@ fn action_button(panel: &Rc<Panel>, feed: &'static Listed, row: &adw::ActionRow)
         (true, false) => ask_dialog(&panel, feed, &anchor),
         (false, _) => start_sign_in(&panel, feed),
     });
-    button
+    Some(button)
+}
+
+/// What `feed`'s row offers and says, in the feed's words.
+fn verbs(feed: &'static Listed) -> Verbs {
+    feed.setup.map_or(Verbs::SIGN_IN, |setup| setup.verbs())
 }
 
 /// Dragged by id, because the rows are rebuilt under the drag. A drop is
@@ -393,6 +405,10 @@ fn add_feed(panel: &Rc<Panel>, feed: &'static Listed, anchor: &impl IsA<gtk::Wid
         false => {
             feeds::add_feed(&panel.store, feed.id);
             panel.changed();
+            // A feed set up in a dialog of its own is set up as it is added.
+            if feed.asks_in_a_dialog() && !trades(feed) && !providers::usable(feed.id) {
+                ask_dialog(panel, feed, anchor);
+            }
         }
     }
 }
@@ -453,10 +469,18 @@ fn ask_login(panel: &Rc<Panel>, feed: &'static Listed, anchor: &impl IsA<gtk::Wi
 
 /// A feed with a dialog of its own: the dialog keeps what is typed, and the
 /// feed is signed in with it.
+///
+/// It is handed what the feed was last set up with, and hands back what it
+/// is set up with now, which is kept before the sign-in starts.
 fn ask_dialog(panel: &Rc<Panel>, feed: &'static Listed, anchor: &impl IsA<gtk::Widget>) {
     let Some(dialog) = sign_in_dialogs::feed_dialog(feed) else { return };
+    let saved = feeds::setup_of(&panel.store, feed.id);
     let panel = panel.clone();
-    dialog(Box::new(move || start_sign_in(&panel, feed))).present(Some(anchor));
+    let kept = move |saved: providers::Saved| {
+        feeds::set_up(&panel.store, feed, saved);
+        start_sign_in(&panel, feed);
+    };
+    dialog(saved, Box::new(kept)).present(Some(anchor));
 }
 
 /// Run a sign-in off the main loop, showing on the row how it goes, then
@@ -766,13 +790,22 @@ mod tests {
             // Its dialog is its own, found by what it declares; what it keeps
             // signs it in, and the row says it is live.
             assert!(feed_settings_opens_a_dialog(fake));
-            let done = Rc::new(Cell::new(false));
+            let done = Rc::new(RefCell::new(None));
             let signed = done.clone();
-            let dialog = sign_in_dialogs::feed_dialog(fake).expect("a dialog")(Box::new(move || signed.set(true)));
+            let known = providers::Saved::default().with("desk", "North");
+            let dialog = sign_in_dialogs::feed_dialog(fake).expect("a dialog")(
+                known,
+                Box::new(move |saved| *signed.borrow_mut() = Some(saved)),
+            );
             let list = dialog.extra_child().and_downcast::<gtk::ListBox>().expect("its rows");
             list.first_child().and_downcast::<adw::EntryRow>().expect("a member number").set_text("member");
             dialog.emit_by_name::<()>("response", &[&sign_in_dialogs::fake::SIGN_IN]);
-            assert!(done.get(), "the page is told to sign it in");
+            let saved = done.borrow_mut().take().expect("the page is handed what it was set up with");
+            assert_eq!((saved.user.as_deref(), saved.value("desk")), (Some("member"), Some("North")));
+            // Kept by the app, and handed back to the feed from there.
+            feeds::set_up(&store, fake, saved);
+            assert_eq!(feeds::setup_of(&store, fake.id).user.as_deref(), Some("member"));
+            feeds::remember_logins(&store);
             let log = omacharts_engine::log::global();
             let before = log.revision();
             assert!(feeds::sign_in_now(fake.id, |_| {}).is_ok());

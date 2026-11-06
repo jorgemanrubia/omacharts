@@ -192,6 +192,7 @@ pub const LISTED: crate::providers::Listed = crate::providers::Listed {
     build: || Box::new(Yahoo::new()),
     setup: None,
     experimental: false,
+    gate: None,
 };
 
 pub struct Yahoo {

@@ -11,8 +11,10 @@
 // Beside this file rather than under it, where the dialogs have always been.
 #[path = "rithmic_login.rs"]
 mod rithmic_login;
+#[path = "sierra_setup.rs"]
+mod sierra_setup;
 
-use omacharts_engine::providers::Listed;
+use omacharts_engine::providers::{Listed, Saved};
 
 use crate::trading::{Login, Typed};
 
@@ -21,10 +23,11 @@ use crate::trading::{Login, Typed};
 /// was typed when somebody presses Sign in.
 pub type LoginDialog = fn(&gtk::Widget, Option<&Login>, Box<dyn Fn(Typed)>);
 
-/// A dialog of a feed's own, for the Data page: built, not yet shown. It
-/// keeps what is typed itself, and calls `done` once it has, for the page to
-/// sign the feed in.
-pub type FeedDialog = fn(Box<dyn Fn()>) -> adw::AlertDialog;
+/// A dialog of a feed's own, for the Data page: built, not yet shown,
+/// filled in from what the feed was last set up with. It hands what it is
+/// set up with now to `done`, for the page to keep and sign the feed in
+/// with; a secret it asks for goes to the feed's keyring, never into that.
+pub type FeedDialog = fn(Saved, Box<dyn Fn(Saved)>) -> adw::AlertDialog;
 
 /// The login dialog of the broker logins call `broker`.
 pub fn login_dialog(broker: &str) -> Option<LoginDialog> {
@@ -39,6 +42,7 @@ pub fn login_dialog(broker: &str) -> Option<LoginDialog> {
 /// The dialog of a feed signed in to on the Data page.
 pub fn feed_dialog(feed: &Listed) -> Option<FeedDialog> {
     match feed.id {
+        id if id == omacharts_engine::providers::sierra::LISTED.id => Some(sierra_setup::dialog),
         #[cfg(test)]
         id if id == omacharts_engine::providers::fake::LISTED.id => Some(fake::dialog),
         _ => None,
@@ -92,11 +96,12 @@ pub(crate) mod fake {
     }
 
     #[cfg(test)]
-    pub fn dialog(done: Box<dyn Fn()>) -> adw::AlertDialog {
+    pub fn dialog(known: Saved, done: Box<dyn Fn(Saved)>) -> adw::AlertDialog {
         let dialog = adw::AlertDialog::new(Some(&format!("Sign in to {}", fake::LISTED.label)), None);
         let list = gtk::ListBox::new();
         let member = adw::EntryRow::new();
         member.set_title("Member number");
+        member.set_text(known.user.as_deref().unwrap_or(""));
         list.append(&member);
         let token = adw::PasswordEntryRow::new();
         token.set_title("Token");
@@ -113,9 +118,8 @@ pub(crate) mod fake {
             if let Some(keyring) = setup.keyring() {
                 let _ = keyring.save(login, &user, "", &token.text());
             }
-            setup.remember(Saved { login: Some(login.into()), user: Some(user), values: Vec::new() });
             token.set_text("");
-            done();
+            done(Saved { login: Some(login.into()), user: Some(user), values: known.values.clone() });
         });
         dialog
     }

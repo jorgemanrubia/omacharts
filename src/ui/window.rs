@@ -7870,6 +7870,8 @@ impl Window {
             self.desk.sign_in_saved(&logins);
         }
         self.desk.tell();
+        // A feed behind a flag comes or goes with it, and its charts with it.
+        self.adopt_feed();
     }
 
     /// Zoom every chart at the sensitivity the settings now name. Read by the

@@ -116,7 +116,7 @@ pub const LAUNCH: &[Launch] = &[
 /// Everything `--long` accepts, including the sets this table defers on.
 pub fn launch_values(long: &str) -> Vec<&'static str> {
     match long {
-        "provider" => omacharts_engine::providers::LISTED.iter().map(|feed| feed.id).collect(),
+        "provider" => omacharts_engine::providers::offered().map(|feed| feed.id).collect(),
         _ => LAUNCH
             .iter()
             .find(|option| option.long == long)
@@ -219,6 +219,28 @@ pub const HIDDEN: &[Noun] = &[Noun {
         },
     ],
 }];
+
+/// Verbs of listed groups that the parser accepts and no listing shows, as
+/// [`HIDDEN`] does for whole groups: for a verb only an experimental part
+/// of the app has a use for. `provider setup` sets up a feed that reads
+/// something on this machine, and the only one is Sierra Chart's, behind
+/// its feature flag; with the flag off it knows no such feed.
+pub const HIDDEN_VERBS: &[(&str, Verb)] = &[(
+    "provider",
+    Verb {
+        name: "setup",
+        about: "Set up a feed that reads something on this machine and add it; with no values, it is looked for",
+        args: &[
+            Arg::req("NAME", "the feed to set up"),
+            Arg::any("VALUE", "what it is set up with, as KEY=VALUE"),
+        ],
+        flags: &[],
+        example: "omacharts provider setup sierra folder=~/SierraChart port=11099",
+        json: true,
+        writes: true,
+        workspace: false,
+    },
+)];
 
 /// How a watchlist, section or chartbook is named on the command line.
 pub const SELECTOR: &str =
@@ -1388,13 +1410,8 @@ pub const SURFACE: &[Noun] = &[
 /// only ever fail.
 /// Find a verb by the pair of names the parser matched.
 pub fn verb(noun: &str, verb: &str) -> Option<&'static Verb> {
-    SURFACE
-        .iter()
-        .chain(HIDDEN)
-        .find(|n| n.name == noun)?
-        .verbs
-        .iter()
-        .find(|v| v.name == verb)
+    let listed = SURFACE.iter().chain(HIDDEN).find(|n| n.name == noun).and_then(|n| n.verbs.iter().find(|v| v.name == verb));
+    listed.or_else(|| HIDDEN_VERBS.iter().find(|(n, v)| *n == noun && v.name == verb).map(|(_, v)| v))
 }
 
 /// What a chart and a chartbook are stored with, and what reaches each one.

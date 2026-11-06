@@ -26,6 +26,11 @@ pub enum Feature {
     /// Theme page's Trading colours, and every sign-in to an order plant.
     /// A broker's data feed is not trading and stays without it.
     Trading,
+    /// Sierra Chart: its data feed, read from its files, on the Data page
+    /// and in `provider` commands, with `provider setup`; and, with trading
+    /// on too, its broker. Off, nothing looks for its folder, watches a
+    /// file or connects to its DTC server.
+    Sierra,
 }
 
 /// What a flag is called on the command line, whether it is on when
@@ -38,12 +43,20 @@ pub struct Flag {
 }
 
 /// Every flag, in the order `omacharts features` lists them.
-pub const FLAGS: &[Flag] = &[Flag {
-    feature: Feature::Trading,
-    name: "trading",
-    default: false,
-    about: "trading on a broker account: orders, positions, P&L and the trading panel",
-}];
+pub const FLAGS: &[Flag] = &[
+    Flag {
+        feature: Feature::Trading,
+        name: "trading",
+        default: false,
+        about: "trading on a broker account: orders, positions, P&L and the trading panel",
+    },
+    Flag {
+        feature: Feature::Sierra,
+        name: "sierra",
+        default: false,
+        about: "Sierra Chart as a data feed, from its own files; with trading on, as a broker too",
+    },
+];
 
 /// What every flag's setting starts with.
 pub const PREFIX: &str = "feature.";
@@ -135,10 +148,24 @@ pub fn trading() -> bool {
     on(Feature::Trading)
 }
 
+/// Is Sierra Chart on?
+#[inline]
+pub fn sierra() -> bool {
+    on(Feature::Sierra)
+}
+
+/// Have the engine ask these flags whether a feed behind one is open: see
+/// `omacharts_engine::providers::gate_with`. Every way of reading the
+/// flags in calls it, so no feed is asked about before.
+fn gate_feeds() {
+    omacharts_engine::providers::gate_with(|name| named(name).is_some_and(|flag| on(flag.feature)));
+}
+
 /// Switch `feature` for this thread alone, as a test needs it, with nothing
 /// written down.
 #[cfg(test)]
 pub fn force(feature: Feature, on: bool) {
+    gate_feeds();
     current::put(&[(feature.index(), on)]);
 }
 
@@ -157,6 +184,7 @@ pub fn stored(store: &Store, feature: Feature) -> bool {
 /// Read every flag from the settings into what [`on`] answers: at start,
 /// and before a command runs in a process with no window.
 pub fn adopt(store: &Store) {
+    gate_feeds();
     let values: Vec<(usize, bool)> =
         FLAGS.iter().enumerate().map(|(at, flag)| (at, stored(store, flag.feature))).collect();
     current::put(&values);
@@ -171,6 +199,7 @@ pub fn set(store: &Store, feature: Feature, on: bool) -> bool {
         true => store.remove_setting(&key),
         false => store.set_setting_bool(&key, on),
     }
+    gate_feeds();
     current::put(&[(feature.index(), on)]);
     was != on
 }

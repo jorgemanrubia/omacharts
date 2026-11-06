@@ -36,6 +36,9 @@ const KEYS: &[(&str, Kind)] = &[
     // on. Their passwords are in the keyring, never a setting.
     (crate::trading::LOGINS, Kind::Local),
     (crate::trading::DATA_LOGIN, Kind::Local),
+    // What a feed is set up with, a folder on this disk and a port on
+    // this machine: another machine's would point at nothing.
+    (crate::feeds::SETUPS, Kind::Local),
     // Each login's accounts as last listed, with their balances: rewritten
     // at every sign-in, and account numbers stay on this machine.
     ("trading_accounts", Kind::Bookkeeping),

@@ -36,6 +36,7 @@
 #[cfg(any(test, feature = "fakes"))]
 pub mod fake;
 pub mod rithmic;
+pub mod sierra;
 pub mod synthetic;
 pub mod tos;
 pub mod yahoo;
@@ -90,6 +91,10 @@ pub struct Listed {
     /// client, and then it stops, through no fault of anybody here.
     /// Somebody choosing it is owed that word before they do.
     pub experimental: bool,
+    /// The feature flag the feed is behind, for one still being tried:
+    /// until the app says that flag is on ([`gate_with`]), the feed is in
+    /// no listing, no order and no route, and nothing of it is built.
+    pub gate: Option<&'static str>,
 }
 
 impl Listed {
@@ -140,13 +145,16 @@ pub enum Sessions {
 /// A login as the app keeps it, without its secrets, for a feed signed in
 /// to through a dialog. The engine has no database of its own, so it is
 /// told, with [`SignIn::remember`].
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Saved {
     /// The login's id, which its secrets are kept under.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub login: Option<String>,
     /// Who signs in: `None` while it is signed out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user: Option<String>,
     /// The rest of what was typed and is not secret, by name.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub values: Vec<(String, String)>,
 }
 
@@ -155,6 +163,50 @@ impl Saved {
     pub fn value(&self, key: &str) -> Option<&str> {
         self.values.iter().find(|(known, _)| known == key).map(|(_, value)| value.as_str())
     }
+
+    /// The same, with `key` now `value`: replaced where it was, added where
+    /// it was not, and taken out when `value` is empty.
+    pub fn with(mut self, key: &str, value: &str) -> Saved {
+        self.values.retain(|(known, _)| known != key);
+        if !value.trim().is_empty() {
+            self.values.push((key.to_string(), value.trim().to_string()));
+        }
+        self
+    }
+}
+
+/// One thing a feed's setup asks for, under the key it is kept by: what a
+/// dialog draws a row for and `provider setup` takes as `key=value`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Field {
+    pub key: &'static str,
+    /// What a dialog calls it.
+    pub label: &'static str,
+}
+
+/// What a feed's row offers about its setup, in the feed's own words: an
+/// account is signed in to and out of, a folder on this machine is set up
+/// and changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Verbs {
+    /// The button while it cannot be used.
+    pub start: &'static str,
+    /// The button once it works, which opens its dialog again; `None` for a
+    /// feed whose button then ends it instead.
+    pub change: Option<&'static str>,
+    /// The button that ends it once it works; `None` for a feed that has
+    /// nothing to end short of being removed.
+    pub end: Option<&'static str>,
+    /// How it stands while it cannot be used, in a row's few words.
+    pub missing: &'static str,
+    /// How it stands once it works, before what the feed says of it.
+    pub ready: &'static str,
+}
+
+impl Verbs {
+    /// An account behind a password.
+    pub const SIGN_IN: Verbs =
+        Verbs { start: "Sign in…", change: None, end: Some("Sign out"), missing: "not signed in", ready: "Signed in" };
 }
 
 /// Where a dialog's secret is kept: the desktop keyring, or a store of a
@@ -223,6 +275,37 @@ pub trait SignIn: Sync + std::fmt::Debug {
     fn keyring(&self) -> Option<&'static dyn Secrets> {
         None
     }
+    /// What the app keeps for a feed that is not a broker connection: what
+    /// its dialog asks and `provider setup` sets, by key, handed back with
+    /// [`SignIn::remember`] whenever the settings are read. Empty for a feed
+    /// that keeps what it needs itself.
+    fn fields(&self) -> &'static [Field] {
+        &[]
+    }
+    /// What its row offers and says about it.
+    fn verbs(&self) -> Verbs {
+        Verbs::SIGN_IN
+    }
+    /// What it would be set up with, found on this machine, for a feed
+    /// kept by the app that can look for itself. Never a connection.
+    fn found(&self) -> Option<Saved> {
+        None
+    }
+}
+
+/// How `id` stands, in a line and in its own words, or `None` for a feed
+/// that needs nothing saved.
+pub fn standing_line(id: &str) -> Option<String> {
+    let setup = listed(id)?.setup?;
+    let verbs = setup.verbs();
+    Some(match setup.access() {
+        Access::Missing => {
+            let mut words = verbs.missing.chars();
+            words.next().map(|first| first.to_uppercase().chain(words).collect()).unwrap_or_default()
+        }
+        Access::Signed(detail) => format!("{} · {detail}", verbs.ready),
+        access => access.line(),
+    })
 }
 
 /// What is saved for a feed that needs signing in to.
@@ -310,7 +393,7 @@ pub fn places(id: &str) -> Vec<(&'static str, String)> {
 /// The feeds whose login is a broker connection too, kept in Preferences →
 /// Trading: what "Add a trading account…" offers, in the order of [`LISTED`].
 pub fn connections() -> impl Iterator<Item = &'static Listed> {
-    LISTED.iter().filter(|feed| feed.setup.is_some_and(|setup| setup.trades()))
+    offered().filter(|feed| feed.setup.is_some_and(|setup| setup.trades()))
 }
 
 /// The app's version, as a feed that asks tells its vendor: handed over by
@@ -366,7 +449,7 @@ pub fn adopt_serving() -> bool {
 /// Order is the interface: the first is the default, the panel lists them
 /// like this, and a feed added at the end cannot change what an existing
 /// install is using.
-pub const LISTED: &[Listed] = &[yahoo::LISTED, tos::LISTED, rithmic::LISTED];
+pub const LISTED: &[Listed] = &[yahoo::LISTED, tos::LISTED, rithmic::LISTED, sierra::LISTED];
 
 /// Feeds that exist only to prove the boundary holds: found by [`listed`],
 /// and so routed to and drawn on the Data page once an order names one, but
@@ -380,7 +463,28 @@ const FAKES: &[Listed] = &[];
 /// For handing each its saved login, where one that is never offered still
 /// has to be told.
 pub fn every() -> impl Iterator<Item = &'static Listed> {
-    LISTED.iter().chain(FAKES)
+    offered().chain(FAKES)
+}
+
+/// What says whether a feature flag is on: the app's, which keeps the
+/// flags. Unset, every gated feed is closed.
+static GATE: OnceLock<fn(&str) -> bool> = OnceLock::new();
+
+/// Have `open` say whether the flag a gated feed is behind is on. The app
+/// calls it once, before anything asks for a feed; a later call is ignored.
+pub fn gate_with(open: fn(&str) -> bool) {
+    let _ = GATE.set(open);
+}
+
+/// Is `feed` open: behind no flag, or behind one that is on?
+pub fn open(feed: &Listed) -> bool {
+    feed.gate.is_none_or(|flag| GATE.get().is_some_and(|open| open(flag)))
+}
+
+/// [`LISTED`], less the feeds behind a flag that is off: what is offered,
+/// listed and routed to. The table itself is every feed this build has.
+pub fn offered() -> impl Iterator<Item = &'static Listed> {
+    LISTED.iter().filter(|feed| open(feed))
 }
 
 /// What runs when nothing has been chosen.
@@ -658,7 +762,7 @@ mod tests {
     /// assert that nothing has been connected to.
     #[test]
     fn choosing_a_feed_connects_to_nothing() {
-        for feed in LISTED {
+        for feed in offered() {
             assert_eq!(built(feed.id).map(|p| p.id()), Some(feed.id));
         }
         assert!(!tos_market::connected(), "a chosen feed must not have connected");
@@ -711,7 +815,7 @@ mod tests {
         let polled = freshness(DEFAULT);
         assert!(!polled.contains("live"), "{polled}");
 
-        for feed in LISTED {
+        for feed in offered() {
             assert!(!described(feed).is_empty());
         }
     }
@@ -835,6 +939,21 @@ mod tests {
         assert!(!choosable(feeds.iter().map(|p| p.as_ref()), "tos", &madrid));
     }
 
+    /// A feed behind a flag is in the table and nowhere else until the app
+    /// says the flag is on: not offered, not found by its id, not routed to
+    /// from an order that names it. Nothing in the engine's tests opens it.
+    #[test]
+    fn a_feed_behind_a_flag_is_closed_until_the_app_opens_it() {
+        let sierra = LISTED.iter().find(|feed| feed.id == "sierra").expect("in the table");
+        assert_eq!(sierra.gate, Some("sierra"));
+        assert!(!open(sierra));
+        assert!(!offered().any(|feed| feed.id == sierra.id));
+        assert!(listed("sierra").is_none());
+        let ids: Vec<&str> = ordered(&["sierra".to_string()]).iter().map(|p| p.id()).collect();
+        assert_eq!(ids, vec![DEFAULT]);
+        assert_eq!((sierra.build)().label(), sierra.label);
+    }
+
     /// Two feeds sharing an id would share a cache namespace, and the stored
     /// setting would stop naming one thing.
     #[test]
@@ -844,7 +963,7 @@ mod tests {
         ids.sort_unstable();
         ids.dedup();
         assert_eq!(ids.len(), total, "duplicate feed id");
-        for feed in LISTED.iter().chain(FAKES) {
+        for feed in every() {
             let built = built_or_default(feed.id);
             assert_eq!(built.id(), feed.id);
             assert_eq!(built.label(), feed.label);

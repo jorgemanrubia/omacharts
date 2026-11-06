@@ -136,10 +136,40 @@ pub fn order(store: &Store) -> Vec<String> {
 /// `omacharts_engine::providers`.
 pub fn ordered(store: &Store) -> Vec<Box<dyn Provider>> {
     let order = order(store);
-    if order.iter().any(|id| providers::listed(id).is_some_and(trades)) {
+    if order.iter().any(|id| providers::listed(id).is_some_and(|feed| trades(feed) || kept_here(feed))) {
         remember_logins(store);
     }
     providers::ordered(&order)
+}
+
+/// The setting what feeds are set up with lives in: a JSON object of what
+/// each feed's dialog, or `provider setup`, handed over, by feed id. Only
+/// for a feed that declares [`providers::Field`]s and is not a broker
+/// connection, whose login is Trading's. Secrets are never here.
+pub const SETUPS: &str = "feed_setups";
+
+/// Does the app keep `feed`'s setup, in [`SETUPS`]?
+pub fn kept_here(feed: &Listed) -> bool {
+    feed.setup.is_some_and(|setup| !setup.trades() && !setup.fields().is_empty())
+}
+
+fn setups(store: &Store) -> std::collections::BTreeMap<String, providers::Saved> {
+    store.setting(SETUPS).and_then(|json| serde_json::from_str(&json).ok()).unwrap_or_default()
+}
+
+/// What `id` was last set up with, or nothing.
+pub fn setup_of(store: &Store, id: &str) -> providers::Saved {
+    setups(store).remove(id).unwrap_or_default()
+}
+
+/// Keep `saved` as what `feed` is set up with, and tell the feed.
+pub fn set_up(store: &Store, feed: &'static Listed, saved: providers::Saved) {
+    let mut all = setups(store);
+    all.insert(feed.id.to_string(), saved.clone());
+    store.set_setting(SETUPS, &serde_json::to_string(&all).unwrap_or_default());
+    if let Some(setup) = feed.setup {
+        setup.remember(saved);
+    }
 }
 
 /// Is a feed's standing worth a dot in the header? With Yahoo alone there
@@ -179,11 +209,19 @@ pub fn identify() {
 /// Two settings reads, and only for an order that names such a feed or a
 /// command about feeds: with nothing configured nothing is read, built or
 /// started.
+///
+/// A feed whose setup the app keeps itself, in [`SETUPS`], is handed that
+/// the same way, so that every feed learns what was saved for it from here.
 pub fn remember_logins(store: &Store) {
     let data = crate::trading::data_login(store);
-    for feed in providers::every().filter(|feed| trades(feed)) {
-        if let Some(setup) = feed.setup {
+    let mut setups = None;
+    for feed in providers::every() {
+        let Some(setup) = feed.setup else { continue };
+        if trades(feed) {
             setup.remember(saved_for(data.as_ref(), feed));
+        } else if kept_here(feed) {
+            let all = setups.get_or_insert_with(|| self::setups(store));
+            setup.remember(all.get(feed.id).cloned().unwrap_or_default());
         }
     }
 }
@@ -212,14 +250,29 @@ fn saved_for(login: Option<&crate::trading::Login>, feed: &Listed) -> providers:
 /// The settings a feed's sign-in is read from: the window charts again when
 /// one changes, since which charts a login can serve may have too.
 pub fn signs_in_from(key: &str) -> bool {
-    [crate::trading::LOGINS, crate::trading::DATA_LOGIN].contains(&key)
+    [crate::trading::LOGINS, crate::trading::DATA_LOGIN, SETUPS].contains(&key)
 }
 
 /// What a feed keeps in the settings beyond its session, forgotten when it
 /// is signed out of. For a broker connection's feed, the data login is
 /// marked signed out: its password went with the session, and it stays in
 /// Trading, with its accounts, for the next sign-in.
+///
+/// A feed whose setup the app keeps forgets it.
 pub fn forget_login(store: &Store, id: &str) {
+    if let Some(feed) = providers::listed(id).filter(|feed| kept_here(feed)) {
+        let mut all = setups(store);
+        if all.remove(feed.id).is_some() {
+            match all.is_empty() {
+                true => store.remove_setting(SETUPS),
+                false => store.set_setting(SETUPS, &serde_json::to_string(&all).unwrap_or_default()),
+            }
+        }
+        if let Some(setup) = feed.setup {
+            setup.remember(providers::Saved::default());
+        }
+        return;
+    }
     if !providers::listed(id).is_some_and(trades) {
         return;
     }
@@ -482,6 +535,25 @@ pub(crate) mod tests {
         assert_eq!(trading::logins(&store).len(), 1);
     }
 
+    /// What a feed is set up with is kept by the app, handed to the feed
+    /// whenever the settings are read, and forgotten with it.
+    #[test]
+    fn a_feed_set_up_here_is_kept_handed_back_and_forgotten() {
+        use omacharts_engine::providers::{fake, Saved};
+        let store = store();
+        let feed = providers::listed(fake::LISTED.id).expect("in a test build");
+        assert!(kept_here(feed));
+        assert!(!kept_here(providers::listed("rithmic").unwrap()), "a broker's login is Trading's");
+        assert!(!kept_here(providers::listed("yahoo").unwrap()));
+        set_up(&store, feed, Saved { user: Some("member".into()), ..Saved::default() }.with("desk", "North"));
+        assert_eq!(setup_of(&store, feed.id).value("desk"), Some("North"));
+        assert!(store.setting(SETUPS).is_some_and(|json| !json.contains("PLANTED")));
+        assert!(signs_in_from(SETUPS));
+        forget_login(&store, feed.id);
+        assert_eq!(store.setting(SETUPS), None);
+        assert_eq!(setup_of(&store, feed.id), Saved::default());
+    }
+
     /// A feed added goes after the others, above Yahoo, and only once.
     #[test]
     fn an_added_feed_goes_last_above_yahoo() {
@@ -561,6 +633,11 @@ pub(crate) mod tests {
             // For good: a provider's own sign-in dialog is the provider's,
             // and the registry is the one place that maps a feed to it.
             ("src/ui/rithmic_login.rs", "Rithmic's own login dialog"),
+            ("src/ui/sierra_setup.rs", "Sierra Chart's own setup dialog"),
+            // The flag table names what each flag switches on.
+            ("src/features.rs", "the flag a feed is behind"),
+            // A hidden verb's example has to name the one feed it is for.
+            ("src/cli/spec.rs", "the example of `provider setup`, which only a flagged feed has a use for"),
             ("src/ui/sign_in_dialogs.rs", "which dialog each provider signs in through"),
             // History, for good: a migration says what was stored, under the
             // names it was stored with.
@@ -681,7 +758,7 @@ pub(crate) mod tests {
         };
         // The Rithmic Test defaults by name, as well as anything of the
         // feed's: `rithmic::` and `providers::rithmic` are words already.
-        line.contains("thinkorswim") || line.contains("test_system") || line.contains("test_gateway") || word("rithmic") || word("tos")
+        line.contains("thinkorswim") || line.contains("test_system") || line.contains("test_gateway") || word("rithmic") || word("tos") || word("sierra")
     }
 
     #[test]

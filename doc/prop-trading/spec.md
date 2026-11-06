@@ -58,6 +58,10 @@ name, a default and what it switches. Checking one is a load of a bool,
 read once at startup and written when it is switched; nothing asks the
 database, and with trading off its pieces are never built.
 
+The second flag is `sierra`: Sierra Chart as a data feed, read from its
+files, and with `trading` on as well, as a broker through its DTC server.
+See [sierra.md](sierra.md).
+
 **With the flag on, trading's settings are always visible in Preferences;
 everything else is unchanged until there is an account.** Every trading
 setting is in Preferences whether or not there is a login, so it can be set

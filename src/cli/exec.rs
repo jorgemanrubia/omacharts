@@ -183,6 +183,15 @@ pub fn dispatch(
         ("provider", "status") => provider_status(store, live, json),
         ("provider", "login") => provider_login(store, m, json),
         ("provider", "logout") => provider_logout(store, m, json),
+        ("provider", "setup") => {
+            let outcome = provider_setup(store, m, json);
+            if outcome.is_ok()
+                && let Some(live) = live
+            {
+                live.adopt_feed();
+            }
+            outcome
+        }
 
         ("config", "list") => config_list(store, json),
         ("config", "get") => config_get(store, m, json),
@@ -4483,8 +4492,7 @@ fn provider_list(store: &Store, as_json: bool) -> Result<String, Fault> {
     let stored = crate::feeds::stored(store).id;
     let in_use = crate::feeds::in_use(store).id;
     if as_json {
-        let rows = providers::LISTED
-            .iter()
+        let rows = providers::offered()
             .map(|feed| {
                 json!({
                     "id": feed.id,
@@ -4496,15 +4504,14 @@ fn provider_list(store: &Store, as_json: bool) -> Result<String, Fault> {
                     "inUse": feed.id == in_use,
                     "needsSignIn": feed.needs_sign_in(),
                     "experimental": feed.experimental,
-                    "session": providers::access(feed.id).map(|access| access.line()),
+                    "session": providers::standing_line(feed.id),
                 })
                 .to_string()
             })
             .collect();
         return Ok(wrap_list("providers", rows));
     }
-    Ok(providers::LISTED
-        .iter()
+    Ok(providers::offered()
         .map(|feed| {
             let mut note = match (feed.id == stored, feed.id == in_use) {
                 (true, true) => "in use".to_string(),
@@ -4512,11 +4519,11 @@ fn provider_list(store: &Store, as_json: bool) -> Result<String, Fault> {
                 (false, true) => "in use, not stored".to_string(),
                 (false, false) => String::new(),
             };
-            if let Some(access) = providers::access(feed.id) {
+            if let Some(standing) = providers::standing_line(feed.id) {
                 if !note.is_empty() {
                     note.push_str(" · ");
                 }
-                note.push_str(&access.line().to_lowercase());
+                note.push_str(&lowered(&standing));
             }
             // The word rides with what the feed serves rather than with
             // the note beside it: it is a fact about the feed, true whether
@@ -4530,6 +4537,13 @@ fn provider_list(store: &Store, as_json: bool) -> Result<String, Fault> {
         .collect::<Vec<_>>()
         .join("\n")
         + "\n")
+}
+
+/// A line with its first letter lowered, to sit inside another: what it
+/// names keeps its own spelling.
+fn lowered(line: &str) -> String {
+    let mut chars = line.chars();
+    chars.next().map(|first| first.to_lowercase().chain(chars).collect()).unwrap_or_default()
 }
 
 fn suffixed(note: &str) -> String {
@@ -4572,7 +4586,7 @@ fn provider_status(store: &Store, live: Option<&dyn Live>, as_json: bool) -> Res
                 "forThisLaunch": crate::feeds::for_this_launch().map(|feed| feed.id),
                 "needsSignIn": in_use.needs_sign_in(),
                 "ready": access.as_ref().map(|access| access.ready()).unwrap_or(true),
-                "session": access.as_ref().map(|access| access.line()),
+                "session": providers::standing_line(in_use.id),
                 "browser": browser.as_ref().ok(),
                 "cannotSignIn": browser.as_ref().err(),
                 "files": places
@@ -4593,7 +4607,7 @@ fn provider_status(store: &Store, live: Option<&dyn Live>, as_json: bool) -> Res
     match &access {
         None => out.push_str("nothing to sign in to; it works as it is\n"),
         Some(access) => {
-            out.push_str(&format!("{}\n", access.line()));
+            out.push_str(&format!("{}\n", providers::standing_line(in_use.id).unwrap_or_else(|| access.line())));
             if !access.ready() {
                 out.push_str("charts will be empty until you sign in: omacharts provider login\n");
             }
@@ -4748,7 +4762,7 @@ fn provider_login(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<
     providers::sign_in(feed.id, |line| eprintln!("{line}"))
         .map_err(|error| Fault::new(super::EXIT_ERROR, error))?;
 
-    let access = providers::access(feed.id).map(|access| access.line());
+    let access = providers::standing_line(feed.id);
     said(
         as_json,
         json!({"id": feed.id, "session": access}),
@@ -4780,6 +4794,61 @@ fn provider_logout(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result
     )
 }
 
+/// Set up a feed the app keeps the setup of — a folder on this disk, say —
+/// with `KEY=VALUE`s on top of what it had, or with what it finds on this
+/// machine when given none, and add it to the feeds. A value that makes it
+/// unusable is refused and nothing is kept; one that leaves it only half
+/// set up is kept, and said so.
+fn provider_setup(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<String, Fault> {
+    let name = required(m, "NAME")?;
+    let feed = providers::listed(name)
+        .ok_or_else(|| Fault::not_found(format!("no such data feed: {name:?}; the feeds are {}", feed_names())))?;
+    let Some(setup) = feed.setup.filter(|_| crate::feeds::kept_here(feed)) else {
+        return Err(Fault::refused(format!(
+            "{} is not set up here: {}",
+            feed.label,
+            match feed.needs_sign_in() {
+                true => "sign in to it with `omacharts provider login`",
+                false => "it works as it is",
+            }
+        )));
+    };
+    let given: Vec<String> = m.get_many::<String>("VALUE").map(|values| values.cloned().collect()).unwrap_or_default();
+    let before = crate::feeds::setup_of(store, feed.id);
+    let mut saved = before.clone();
+    for value in &given {
+        let Some((key, value)) = value.split_once('=') else {
+            return Err(Fault::usage(format!("{value:?} is not KEY=VALUE")));
+        };
+        let Some(field) = setup.fields().iter().find(|field| field.key.eq_ignore_ascii_case(key.trim())) else {
+            let keys: Vec<&str> = setup.fields().iter().map(|field| field.key).collect();
+            return Err(Fault::usage(format!("{} has no {key:?}; it takes {}", feed.label, keys.join(", "))));
+        };
+        saved = saved.with(field.key, value);
+    }
+    if given.is_empty() {
+        saved = setup.found().ok_or_else(|| {
+            Fault::new(super::EXIT_ERROR, format!("{} was not found on this machine; say where it is", feed.label))
+        })?;
+    }
+    // Tried before it is kept: a value that cannot work goes back to what
+    // was there.
+    setup.remember(saved.clone());
+    if let providers::Access::Expired(problem) = setup.access() {
+        setup.remember(before);
+        return Err(Fault::new(super::EXIT_ERROR, format!("{}: {problem}", feed.label)));
+    }
+    crate::feeds::set_up(store, feed, saved.clone());
+    crate::feeds::add_feed(store, feed.id);
+    let standing = providers::standing_line(feed.id).unwrap_or_default();
+    let values: Vec<String> = saved.values.iter().map(|(key, value)| format!("{key}={value}")).collect();
+    said(
+        as_json,
+        json!({"id": feed.id, "values": saved.values, "ready": setup.access().ready(), "session": standing}),
+        format!("set up {}: {} · {}", feed.label, values.join(" "), lowered(&standing)),
+    )
+}
+
 /// The feed a command named, or the one in use.
 fn named_or_chosen(
     store: &Store,
@@ -4797,7 +4866,7 @@ fn named_or_chosen(
 }
 
 fn feed_names() -> String {
-    providers::LISTED.iter().map(|feed| feed.id).collect::<Vec<_>>().join(", ")
+    providers::offered().map(|feed| feed.id).collect::<Vec<_>>().join(", ")
 }
 
 /// Every feature flag and whether it is on, as the settings say: what a
@@ -4964,7 +5033,7 @@ fn config_set(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<Stri
     // where it goes, and left out to chart without it.
     if key == crate::feeds::SETTING {
         let order: Vec<String> = serde_json::from_str(value).map_err(|_| {
-            let example = providers::LISTED.iter().map(|feed| feed.id).find(|id| *id != providers::DEFAULT);
+            let example = providers::offered().map(|feed| feed.id).find(|id| *id != providers::DEFAULT);
             let example = example.unwrap_or(providers::DEFAULT);
             Fault::usage(format!("{key} is a JSON list of feeds, such as [\"{example}\"]"))
         })?;
@@ -5630,6 +5699,34 @@ mod tests {
         assert_eq!(pane["template"], Value::Null);
         assert_eq!(pane["indicators"].as_array().unwrap().len(), 3);
         assert_eq!(ChartDefaults::load(&store).template, None);
+    }
+
+    /// `provider setup` knows no Sierra Chart while its flag is off. On, a
+    /// folder that is not Sierra Chart's is refused and nothing is kept; one
+    /// that is is kept, added to the feeds, and listed as set up.
+    #[test]
+    fn a_feed_set_up_from_a_terminal_is_kept_and_added() {
+        let store = Store::memory().unwrap();
+        assert_eq!(run("provider setup sierra port=11099", &store).code, crate::cli::EXIT_NOT_FOUND, "behind its flag");
+        crate::features::force(crate::features::Feature::Sierra, true);
+        let root = std::env::temp_dir().join(format!("omacharts-cli-sierra-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("Data")).unwrap();
+        let refused = run(&format!("provider setup sierra folder={}", root.display()), &store);
+        assert_eq!(refused.code, crate::cli::EXIT_ERROR, "{}", refused.out);
+        assert!(refused.err.contains("Sierra Chart"), "{}", refused.err);
+        assert_eq!(store.setting(crate::feeds::SETUPS), None, "nothing kept");
+        std::fs::write(root.join("Sierra4.config"), b"").unwrap();
+        let kept = run(&format!("provider setup sierra folder={} port=11100", root.display()), &store);
+        assert_eq!(kept.code, 0, "{}", kept.err);
+        assert!(kept.out.starts_with("set up Sierra Chart: "), "{}", kept.out);
+        let saved = crate::feeds::setup_of(&store, "sierra");
+        assert_eq!(saved.value("port"), Some("11100"));
+        assert_eq!(crate::feeds::stored_order(&store), vec!["sierra", "yahoo"]);
+        assert_eq!(run("provider setup sierra colour=blue", &store).code, EXIT_USAGE);
+        assert_eq!(run("provider setup yahoo", &store).code, crate::cli::EXIT_REFUSED);
+        crate::features::force(crate::features::Feature::Sierra, false);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

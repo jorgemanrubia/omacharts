@@ -114,6 +114,10 @@ fn build(only: Option<&str>) -> Command {
         for verb in noun.verbs {
             group = group.subcommand(build_verb(verb));
         }
+        // Accepted, never listed: see [`spec::HIDDEN_VERBS`].
+        for (_, verb) in spec::HIDDEN_VERBS.iter().filter(|(named, _)| *named == noun.name) {
+            group = group.subcommand(build_verb(verb).hide(true));
+        }
         app = app.subcommand(group);
     }
     // Accepted, never listed: see [`spec::HIDDEN`]. Bare, a hidden group

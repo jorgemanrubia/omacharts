@@ -59,6 +59,7 @@ pub const LISTED: crate::providers::Listed = crate::providers::Listed {
     build: || Box::new(Rithmic::new()),
     setup: Some(&session::Signing),
     experimental: false,
+    gate: None,
 };
 
 /// What a chart says when Rithmic has nobody signed in.

@@ -18,7 +18,7 @@ use crate::ladders::Minute;
 use crate::provider::{
     Capability, LadderSink, Ladders, Provider, ProviderError, Stream, Subscription,
 };
-use crate::providers::{Access, How, Listed, Saved, Secrets, SignIn, Synthetic};
+use crate::providers::{Access, Field, How, Listed, Saved, Secrets, SignIn, Synthetic};
 use crate::symbols::{Instrument, InstrumentKind};
 
 /// How the fake is listed.
@@ -30,6 +30,7 @@ pub const LISTED: Listed = Listed {
     build: || Box::new(Fake::new()),
     setup: Some(&Signing),
     experimental: false,
+    gate: None,
 };
 
 pub struct Fake {
@@ -201,5 +202,10 @@ impl SignIn for Signing {
 
     fn keyring(&self) -> Option<&'static dyn Secrets> {
         Some(&KEPT)
+    }
+
+    /// Kept by the app, as a feed set up in a dialog of its own is.
+    fn fields(&self) -> &'static [Field] {
+        &[Field { key: "desk", label: "Desk" }]
     }
 }
