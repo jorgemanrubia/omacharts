@@ -609,7 +609,9 @@ impl State {
         }
         order.time_in_force = TimeInForce::of(message.int_or_zero("TimeInForce")).or(order.time_in_force);
         order.avg_fill_price = message.nonzero("AverageFillPrice").or(order.avg_fill_price);
-        order.tag = message.text("FreeFormText").or(order.tag.take());
+        // A tag given here stands: the two of a pair share one
+        // `FreeFormText` on the wire, and each keeps its own.
+        order.tag = order.tag.take().or(message.text("FreeFormText"));
         order.oco_linked = message.text("OCOLinkedOrderServerOrderID").or(order.oco_linked.take());
         order.parent = message.text("ParentServerOrderID").or(order.parent.take());
         if said.is_some() {
@@ -964,6 +966,11 @@ impl Shared {
     }
 }
 
+/// A tag as `FreeFormText` carries it: at most 47 characters.
+fn clipped(tag: Option<&str>) -> Option<String> {
+    tag.map(|tag| tag.chars().take(47).collect())
+}
+
 fn radix36(mut n: u64) -> String {
     const DIGITS: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
     let mut out = Vec::new();
@@ -1089,6 +1096,98 @@ impl Trading {
     /// [`Error::Timeout`] the order may yet be working: it stays in the book
     /// as pending, and what the server says of it later lands there.
     pub fn place(&self, order: &NewOrder) -> Result<String, Error> {
+        let priced = self.priced(order)?;
+        let id = self.shared.next_client_id();
+        let tag = clipped(order.tag.as_deref());
+        let message = Message::new(
+            wire::SUBMIT_NEW_SINGLE_ORDER,
+            json!({
+                "Symbol": order.symbol,
+                "Exchange": order.exchange.clone().unwrap_or_default(),
+                "TradeAccount": order.account,
+                "ClientOrderID": id,
+                "OrderType": order.kind.code(),
+                "BuySell": order.side.code(),
+                "Price1": priced.1.unwrap_or(0.0),
+                "Price2": priced.2.unwrap_or(0.0),
+                "Quantity": order.qty,
+                "TimeInForce": order.time_in_force.code(),
+                "FreeFormText": tag.clone().unwrap_or_default(),
+                "IsAutomatedOrder": 0,
+            }),
+        );
+        self.expect(&[(order, &id, priced, tag)]);
+        self.submit(&message, &[&id])?;
+        match self.taken(&id)? {
+            Status::Rejected(why) => Err(Error::Rejected(why)),
+            _ => Ok(id),
+        }
+    }
+
+    /// Place `orders` as one one-cancels-other pair, SUBMIT_NEW_OCO_ORDER:
+    /// whichever fills or is cancelled first cancels the other, and a part
+    /// of one filled takes as much off the other
+    /// (`PARTIAL_FILL_HANDLING_REDUCE_QUANTITY`), so the two never close
+    /// more than one of them would. No parent: the pair stands on its own,
+    /// for a position already held. Both are on one account and one
+    /// contract, good for one time in force; the message carries one
+    /// `FreeFormText`, the first's tag, and each order keeps its own tag
+    /// here.
+    ///
+    /// Waits until the server has taken or refused both, as
+    /// [`Trading::place`] does one, and returns their ClientOrderIDs in
+    /// order. DTC rejects a pair whole; a server that took one and
+    /// refused the other is [`Error::Rejected`] too, saying so, and the one
+    /// it took stays working in the book.
+    pub fn place_pair(&self, orders: &[NewOrder; 2]) -> Result<[String; 2], Error> {
+        let [first, second] = orders;
+        if first.account != second.account || first.symbol != second.symbol || first.time_in_force != second.time_in_force {
+            return Err(Error::Rejected("a pair is on one account and one contract, for one time in force".into()));
+        }
+        let priced = [self.priced(first)?, self.priced(second)?];
+        let ids = [self.shared.next_client_id(), self.shared.next_client_id()];
+        let tags = [clipped(first.tag.as_deref()), clipped(second.tag.as_deref())];
+        let message = Message::new(
+            wire::SUBMIT_NEW_OCO_ORDER,
+            json!({
+                "Symbol": first.symbol,
+                "Exchange": first.exchange.clone().unwrap_or_default(),
+                "ClientOrderID_1": ids[0],
+                "OrderType_1": first.kind.code(),
+                "BuySell_1": first.side.code(),
+                "Price1_1": priced[0].1.unwrap_or(0.0),
+                "Price2_1": priced[0].2.unwrap_or(0.0),
+                "Quantity_1": first.qty,
+                "ClientOrderID_2": ids[1],
+                "OrderType_2": second.kind.code(),
+                "BuySell_2": second.side.code(),
+                "Price1_2": priced[1].1.unwrap_or(0.0),
+                "Price2_2": priced[1].2.unwrap_or(0.0),
+                "Quantity_2": second.qty,
+                "TimeInForce": first.time_in_force.code(),
+                "TradeAccount": first.account,
+                "IsAutomatedOrder": 0,
+                "ParentTriggerClientOrderID": "",
+                "FreeFormText": tags[0].clone().unwrap_or_default(),
+                "PartialFillHandling": wire::PARTIAL_FILL_HANDLING_REDUCE_QUANTITY,
+            }),
+        );
+        let [tag_1, tag_2] = tags;
+        self.expect(&[(first, &ids[0], priced[0], tag_1), (second, &ids[1], priced[1], tag_2)]);
+        self.submit(&message, &[&ids[0], &ids[1]])?;
+        let taken = [self.taken(&ids[0])?, self.taken(&ids[1])?];
+        match taken {
+            [Status::Rejected(why), Status::Rejected(_)] => Err(Error::Rejected(why)),
+            [Status::Rejected(why), _] | [_, Status::Rejected(why)] => {
+                Err(Error::Rejected(format!("Sierra Chart took only one of the pair: {why}")))
+            }
+            _ => Ok(ids),
+        }
+    }
+
+    /// `order`'s prices checked against its kind and put in the server's
+    /// units: the contract's multiplier, Price1 and Price2 on the wire.
+    fn priced(&self, order: &NewOrder) -> Result<(f64, Option<f64>, Option<f64>), Error> {
         if order.qty == 0 {
             return Err(Error::Rejected("an order needs a quantity".into()));
         }
@@ -1108,46 +1207,32 @@ impl Trading {
                 Error::Rejected(format!("Sierra Chart did not say how {} is priced, so the order was not sent", order.symbol))
             })?,
         };
-        let id = self.shared.next_client_id();
-        let tag: Option<String> = order.tag.as_ref().map(|tag| tag.chars().take(47).collect());
-        let wire1 = price1.map(|price| wire_price(price, multiplier));
-        let wire2 = price2.map(|price| wire_price(price, multiplier));
-        let message = Message::new(
-            wire::SUBMIT_NEW_SINGLE_ORDER,
-            json!({
-                "Symbol": order.symbol,
-                "Exchange": order.exchange.clone().unwrap_or_default(),
-                "TradeAccount": order.account,
-                "ClientOrderID": id,
-                "OrderType": order.kind.code(),
-                "BuySell": order.side.code(),
-                "Price1": wire1.unwrap_or(0.0),
-                "Price2": wire2.unwrap_or(0.0),
-                "Quantity": order.qty,
-                "TimeInForce": order.time_in_force.code(),
-                "FreeFormText": tag.clone().unwrap_or_default(),
-                "IsAutomatedOrder": 0,
-            }),
-        );
-        {
-            let mut state = lock(&self.shared.state);
-            state.multipliers.entry(order.symbol.clone()).or_insert(multiplier);
+        Ok((multiplier, price1.map(|price| wire_price(price, multiplier)), price2.map(|price| wire_price(price, multiplier))))
+    }
+
+    /// Put each order about to be sent in the book as pending, under its
+    /// ClientOrderID, so that what the server says of it lands on it.
+    #[allow(clippy::type_complexity)]
+    fn expect(&self, orders: &[(&NewOrder, &String, (f64, Option<f64>, Option<f64>), Option<String>)]) {
+        let mut state = lock(&self.shared.state);
+        for (order, id, (multiplier, wire1, wire2), tag) in orders {
+            state.multipliers.entry(order.symbol.clone()).or_insert(*multiplier);
             state.orders.push(Order {
                 account: order.account.clone(),
                 server_id: None,
-                client_id: Some(id.clone()),
+                client_id: Some((*id).clone()),
                 symbol: order.symbol.clone(),
                 exchange: order.exchange.clone(),
                 side: order.side,
                 kind: order.kind,
                 qty: order.qty,
                 filled: 0,
-                price1: wire1,
-                price2: wire2,
+                price1: *wire1,
+                price2: *wire2,
                 time_in_force: Some(order.time_in_force),
                 status: Status::Pending,
                 avg_fill_price: None,
-                tag,
+                tag: tag.clone(),
                 said: None,
                 oco_linked: None,
                 parent: None,
@@ -1155,26 +1240,35 @@ impl Trading {
             });
             state.told.push((0, 0));
         }
-        if let Err(error) = self.shared.send(&message) {
+    }
+
+    /// Send `message`; when it cannot go, the orders `ids` it carried are
+    /// taken out of the book again.
+    fn submit(&self, message: &Message, ids: &[&String]) -> Result<(), Error> {
+        if let Err(error) = self.shared.send(message) {
             let mut state = lock(&self.shared.state);
-            if let Some(at) = state.order_at(&id) {
-                state.orders.remove(at);
-                state.told.remove(at);
+            for id in ids {
+                if let Some(at) = state.order_at(id) {
+                    state.orders.remove(at);
+                    state.told.remove(at);
+                }
             }
             return Err(error);
         }
         self.shared.told();
-        let status = self.shared.wait_for(self.shared.timing.request, |state| {
-            let at = state.order_at(&id)?;
+        Ok(())
+    }
+
+    /// Wait until the server has taken the order `id` or refused it: past
+    /// order sent and pending open, to whatever status it gives.
+    fn taken(&self, id: &str) -> Result<Status, Error> {
+        self.shared.wait_for(self.shared.timing.request, |state| {
+            let at = state.order_at(id)?;
             match &state.orders[at].status {
                 Status::Pending if state.told[at].0 == 0 || state.told[at].1 != wire::NEW_ORDER_ACCEPTED => None,
                 status => Some(status.clone()),
             }
-        })?;
-        match status {
-            Status::Rejected(why) => Err(Error::Rejected(why)),
-            _ => Ok(id),
-        }
+        })
     }
 
     /// The order `id` names, by the server's id or the client's.

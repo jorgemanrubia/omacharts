@@ -59,6 +59,9 @@ pub struct FakeOrder {
     pub status: i64,
     pub tag: String,
     pub avg_fill_price: Option<f64>,
+    /// The other of its OCO pair, by server id: whichever ends first ends
+    /// the other, and a part of one filled comes off the other.
+    pub oco: Option<String>,
 }
 
 impl FakeOrder {
@@ -110,6 +113,8 @@ struct World {
     define_anything: bool,
     refuse: Option<String>,
     trading: bool,
+    /// Say OCO orders are supported, and take a pair.
+    oco: bool,
     reject: Option<String>,
     filling: Fills,
     market_price: f64,
@@ -133,6 +138,7 @@ impl Default for World {
             define_anything: true,
             refuse: None,
             trading: true,
+            oco: true,
             reject: None,
             filling: Fills::Never,
             market_price: 100.0,
@@ -209,6 +215,7 @@ impl Builder {
             status: wire::ORDER_STATUS_OPEN,
             tag: String::new(),
             avg_fill_price: None,
+            oco: None,
         });
         self
     }
@@ -270,6 +277,12 @@ impl Builder {
     /// Reject every order placed, with `text`.
     pub fn reject_orders(mut self, text: &str) -> Builder {
         self.world.reject = Some(text.into());
+        self
+    }
+
+    /// Say OCO orders are not supported, and reject a pair submitted.
+    pub fn oco_unsupported(mut self) -> Builder {
+        self.world.oco = false;
         self
     }
 
@@ -389,6 +402,11 @@ impl Fake {
     /// Stop answering anything, heartbeats included, or start again.
     pub fn set_silent(&self, silent: bool) {
         lock(&self.shared.world).silent = silent;
+    }
+
+    /// Reject every order placed from now on with `text`, or none.
+    pub fn set_reject_orders(&self, text: Option<&str>) {
+        lock(&self.shared.world).reject = text.map(str::to_string);
     }
 
     /// How orders placed from now on fill.
@@ -542,9 +560,9 @@ fn serve(shared: &Arc<Shared>, mut stream: TcpStream) -> io::Result<()> {
             match message.kind() {
                 wire::LOGON_REQUEST => {
                     shared.logons.fetch_add(1, Ordering::SeqCst);
-                    let (refuse, trading, name) = {
+                    let (refuse, trading, oco, name) = {
                         let world = lock(&shared.world);
-                        (world.refuse.clone(), world.trading, world.server_name.clone())
+                        (world.refuse.clone(), world.trading, world.oco, world.server_name.clone())
                     };
                     if let Some(text) = refuse {
                         send(&writer, &[Message::new(wire::LOGON_RESPONSE, json!({ "ProtocolVersion": 8, "Result": 2, "ResultText": text }))])?;
@@ -560,7 +578,7 @@ fn serve(shared: &Arc<Shared>, mut stream: TcpStream) -> io::Result<()> {
                             wire::LOGON_RESPONSE,
                             json!({
                                 "ProtocolVersion": 8, "Result": 1, "ResultText": "Connected to the fake. Service=fake",
-                                "ServerName": name, "TradingIsSupported": u8::from(trading), "OCOOrdersSupported": 1,
+                                "ServerName": name, "TradingIsSupported": u8::from(trading), "OCOOrdersSupported": u8::from(oco),
                                 "BracketOrdersSupported": 1, "OrderCancelReplaceSupported": 1, "SecurityDefinitionsSupported": 1,
                                 "HistoricalPriceDataSupported": 1, "MarketDataSupported": 1,
                             }),
@@ -750,6 +768,7 @@ fn answer(world: &mut World, message: &Message) -> (Vec<Message>, Vec<Message>) 
             }
         }
         wire::SUBMIT_NEW_SINGLE_ORDER => pushes = place(world, message),
+        wire::SUBMIT_NEW_OCO_ORDER => pushes = place_pair(world, message),
         wire::CANCEL_ORDER => pushes = cancel(world, message),
         wire::CANCEL_REPLACE_ORDER => pushes = replace(world, message),
         wire::SUBMIT_FLATTEN_POSITION_ORDER => pushes = flatten(world, message),
@@ -809,33 +828,70 @@ fn order_message(order: &FakeOrder, reason: i64, said: &str) -> Message {
             "TimeInForce": 1, "OrderQuantity": order.qty, "FilledQuantity": order.filled,
             "RemainingQuantity": order.qty - order.filled.min(order.qty), "AverageFillPrice": order.avg_fill_price,
             "TradeAccount": order.account, "InfoText": said, "FreeFormText": order.tag, "NoOrders": 0,
+            "OCOLinkedOrderServerOrderID": order.oco.clone().unwrap_or_default(),
         }),
     )
 }
 
-fn place(world: &mut World, message: &Message) -> Vec<Message> {
+/// The order `message` submits, its fields named with `leg` after them:
+/// "" for a single order, "_1" and "_2" for the two of an OCO pair.
+fn submitted(world: &mut World, message: &Message, leg: &str) -> FakeOrder {
     let server_id = world.next_id.to_string();
     world.next_id += 1;
-    let mut order = FakeOrder {
+    let field = |name: &str| format!("{name}{leg}");
+    FakeOrder {
         server_id,
-        client_id: message.text_or_empty("ClientOrderID"),
+        client_id: message.text_or_empty(&field("ClientOrderID")),
         account: message.text_or_empty("TradeAccount"),
         symbol: message.text_or_empty("Symbol"),
-        side: if message.int("BuySell") == Some(wire::SELL) { Side::Sell } else { Side::Buy },
-        kind: match message.int_or_zero("OrderType") {
+        side: if message.int(&field("BuySell")) == Some(wire::SELL) { Side::Sell } else { Side::Buy },
+        kind: match message.int_or_zero(&field("OrderType")) {
             wire::ORDER_TYPE_LIMIT => OrderKind::Limit,
             wire::ORDER_TYPE_STOP => OrderKind::Stop,
             wire::ORDER_TYPE_STOP_LIMIT => OrderKind::StopLimit,
             _ => OrderKind::Market,
         },
-        qty: message.number("Quantity").unwrap_or(0.0) as u32,
+        qty: message.number(&field("Quantity")).unwrap_or(0.0) as u32,
         filled: 0,
-        price1: message.number("Price1").unwrap_or(0.0),
-        price2: message.number("Price2").unwrap_or(0.0),
+        price1: message.number(&field("Price1")).unwrap_or(0.0),
+        price2: message.number(&field("Price2")).unwrap_or(0.0),
         status: wire::ORDER_STATUS_PENDING_OPEN,
         tag: message.text_or_empty("FreeFormText"),
         avg_fill_price: None,
+        oco: None,
+    }
+}
+
+/// An OCO pair, SUBMIT_NEW_OCO_ORDER: both taken, each knowing the other,
+/// or both rejected, each with its own update, as DTC asks. They rest
+/// until [`Fake::fill`], however orders are set to fill.
+fn place_pair(world: &mut World, message: &Message) -> Vec<Message> {
+    let mut pair = [submitted(world, message, "_1"), submitted(world, message, "_2")];
+    let mut pushes: Vec<Message> = pair.iter().map(|order| order_message(order, 3, "")).collect();
+    let refused = match (&world.reject, world.oco) {
+        (Some(text), _) => Some(text.clone()),
+        (None, false) => Some("OCO orders are not supported".to_string()),
+        (None, true) if !world.accounts.contains(&pair[0].account) => Some("Trade account not found".to_string()),
+        (None, true) => None,
     };
+    let (status, reason, said) = match &refused {
+        Some(text) => (wire::ORDER_STATUS_REJECTED, wire::NEW_ORDER_REJECTED, text.as_str()),
+        None => (wire::ORDER_STATUS_OPEN, wire::NEW_ORDER_ACCEPTED, ""),
+    };
+    let ids = [pair[0].server_id.clone(), pair[1].server_id.clone()];
+    for (at, order) in pair.iter_mut().enumerate() {
+        order.status = status;
+        if refused.is_none() {
+            order.oco = Some(ids[1 - at].clone());
+        }
+        pushes.push(order_message(order, reason, said));
+    }
+    world.orders.extend(pair);
+    pushes
+}
+
+fn place(world: &mut World, message: &Message) -> Vec<Message> {
+    let mut order = submitted(world, message, "");
     let mut pushes = vec![order_message(&order, 3, "")];
     if let Some(text) = world.reject.clone() {
         order.status = wire::ORDER_STATUS_REJECTED;
@@ -889,6 +945,7 @@ fn fill(world: &mut World, at: usize, qty: u32, price: f64) -> Vec<Message> {
     update.0.insert("LastFillExecutionID".into(), json!(execution));
     update.0.insert("LastFillDateTime".into(), json!(crate::now() * 1000));
     let (account, symbol, side, server_id) = (order.account.clone(), order.symbol.clone(), order.side, order.server_id.clone());
+    let sibling = order.oco.clone();
     world.fills.push(FakeFill { account: account.clone(), symbol: symbol.clone(), side, qty, price, at: crate::now(), execution_id: execution, server_id });
 
     let signed = match side {
@@ -915,7 +972,22 @@ fn fill(world: &mut World, at: usize, qty: u32, price: f64) -> Vec<Message> {
     if held == 0 {
         position.avg = 0.0;
     }
-    vec![update, position_message(position, 0, 1, 1)]
+    let mut pushes = vec![update, position_message(position, 0, 1, 1)];
+    // The other of its pair: cancelled once this one is whole, and as much
+    // taken off it as this one filled until then.
+    if let Some(other) = sibling.and_then(|id| world.orders.iter_mut().find(|order| order.server_id == id && order.working())) {
+        match whole || other.qty.saturating_sub(qty) <= other.filled {
+            true => {
+                other.status = wire::ORDER_STATUS_CANCELED;
+                pushes.push(order_message(other, wire::ORDER_CANCELED, "OCO"));
+            }
+            false => {
+                other.qty -= qty;
+                pushes.push(order_message(other, wire::ORDER_CANCEL_REPLACE_COMPLETE, "OCO quantity reduced"));
+            }
+        }
+    }
+    pushes
 }
 
 fn named<'a>(world: &'a mut World, message: &Message) -> Option<&'a mut FakeOrder> {
@@ -930,7 +1002,15 @@ fn cancel(world: &mut World, message: &Message) -> Vec<Message> {
     match named(world, message) {
         Some(order) if order.working() => {
             order.status = wire::ORDER_STATUS_CANCELED;
-            vec![order_message(order, wire::ORDER_CANCELED, "")]
+            let mut pushes = vec![order_message(order, wire::ORDER_CANCELED, "")];
+            // The other of a pair with no parent goes with it.
+            if let Some(id) = order.oco.clone()
+                && let Some(other) = world.orders.iter_mut().find(|order| order.server_id == id && order.working())
+            {
+                other.status = wire::ORDER_STATUS_CANCELED;
+                pushes.push(order_message(other, wire::ORDER_CANCELED, "OCO"));
+            }
+            pushes
         }
         Some(order) => vec![order_message(order, wire::ORDER_CANCEL_REJECTED, "Order is not working")],
         None => vec![Message::new(
@@ -984,6 +1064,7 @@ fn flatten(world: &mut World, message: &Message) -> Vec<Message> {
         status: wire::ORDER_STATUS_OPEN,
         tag: message.text_or_empty("FreeFormText"),
         avg_fill_price: None,
+        oco: None,
     };
     if !world.flatten || held == 0 {
         order.status = wire::ORDER_STATUS_REJECTED;

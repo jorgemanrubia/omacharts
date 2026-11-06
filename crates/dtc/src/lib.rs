@@ -59,9 +59,15 @@
 //!   and limit-if-touched in the header besides); time in force day, good
 //!   till cancelled, good till a date, IOC, all-or-none, fill-or-kill.
 //! - OCO pairs and brackets exist only as placed together
-//!   (SUBMIT_NEW_OCO_ORDER, with a parent for a bracket). There is no
-//!   message that links orders already working, so "make these two OCO"
-//!   after the fact cannot be done.
+//!   (SUBMIT_NEW_OCO_ORDER, with a parent for a bracket), which
+//!   [`Trading::place_pair`] sends for a pair with no parent. There is no
+//!   message that links orders already working — CANCEL_REPLACE_ORDER
+//!   changes prices, quantity and time in force, never a link — so "make
+//!   these two OCO" after the fact cannot be done. A pair's partial fills
+//!   come off the other (`PartialFillHandling`); there is no reduce-only,
+//!   and `OpenOrClose` "is not used for futures". The logon says whether
+//!   OCO is supported (`OCOOrdersSupported`, [`Server::oco`]); this
+//!   machine's Sierra says it is.
 //! - CANCEL_REPLACE_ORDER moves `Price1` of a stop-limit only: Sierra moves
 //!   `Price2`, the limit, by the same amount, keeping the distance.
 //! - Every price on a trading message is in the service's own units: for

@@ -27,6 +27,7 @@ pub const ENCODING_RESPONSE: u16 = 7;
 pub const MARKET_DATA_REQUEST: u16 = 101;
 pub const MARKET_DATA_REJECT: u16 = 103;
 pub const MARKET_DATA_SNAPSHOT: u16 = 104;
+pub const SUBMIT_NEW_OCO_ORDER: u16 = 201;
 pub const SUBMIT_NEW_SINGLE_ORDER: u16 = 208;
 pub const SUBMIT_FLATTEN_POSITION_ORDER: u16 = 209;
 pub const CANCEL_ORDER: u16 = 203;
@@ -90,6 +91,10 @@ pub const ORDER_TYPE_STOP: i64 = 3;
 pub const ORDER_TYPE_STOP_LIMIT: i64 = 4;
 
 // TimeInForceEnum.
+/// `PartialFillHandlingEnum`: a part of one of an OCO pair filled takes
+/// as much off the other.
+pub const PARTIAL_FILL_HANDLING_REDUCE_QUANTITY: i64 = 1;
+
 pub const TIF_DAY: i64 = 1;
 pub const TIF_GOOD_TILL_CANCELED: i64 = 2;
 

@@ -276,6 +276,96 @@ fn a_market_order_has_no_price_to_move() {
     trading.sign_out();
 }
 
+/// A long's stop and target, as one pair.
+fn exits(qty: u32) -> [NewOrder; 2] {
+    let mut stop = order("Sim1", ES, Side::Sell, qty, OrderKind::Stop, Some(7600.0));
+    stop.tag = Some("omacharts:1".into());
+    let mut target = order("Sim1", ES, Side::Sell, qty, OrderKind::Limit, Some(7700.0));
+    target.tag = Some("omacharts:2".into());
+    [stop, target]
+}
+
+#[test]
+fn a_pair_goes_out_as_one_oco_submission_and_each_keeps_its_own_tag() {
+    let fake = Fake::builder().account("Sim1").position("Sim1", ES, 2, 7650.0).start();
+    let (trading, _) = sign_in(&fake);
+    let [stop, target] = trading.place_pair(&exits(2)).unwrap();
+    assert!(fake.received_of(wire::SUBMIT_NEW_SINGLE_ORDER).is_empty(), "sent one by one");
+    let sent = fake.received_of(wire::SUBMIT_NEW_OCO_ORDER);
+    assert_eq!(sent.len(), 1);
+    let sent = &sent[0];
+    assert_eq!((sent.text("ClientOrderID_1"), sent.text("ClientOrderID_2")), (Some(stop.clone()), Some(target.clone())));
+    assert_eq!((sent.int("OrderType_1"), sent.int("OrderType_2")), (Some(3), Some(2)));
+    assert_eq!((sent.int("BuySell_1"), sent.int("BuySell_2")), (Some(2), Some(2)));
+    assert_eq!((sent.number("Price1_1"), sent.number("Price1_2")), (Some(7600.0), Some(7700.0)));
+    assert_eq!((sent.int("Quantity_1"), sent.int("Quantity_2")), (Some(2), Some(2)));
+    assert_eq!(sent.int("PartialFillHandling"), Some(wire::PARTIAL_FILL_HANDLING_REDUCE_QUANTITY));
+    assert_eq!(sent.text("ParentTriggerClientOrderID"), None, "no parent: the position is already held");
+    assert_eq!(sent.text("TradeAccount").as_deref(), Some("Sim1"));
+    let book = trading.book();
+    let of = |id: &str| book.orders.iter().find(|order| order.is(id)).unwrap().clone();
+    let (stop, target) = (of(&stop), of(&target));
+    assert_eq!((stop.status.clone(), target.status.clone()), (Status::Working, Status::Working));
+    assert_eq!((stop.tag.as_deref(), target.tag.as_deref()), (Some("omacharts:1"), Some("omacharts:2")));
+    assert_eq!(stop.oco_linked, target.server_id, "each knows the other");
+    assert_eq!(target.oco_linked, stop.server_id);
+    trading.sign_out();
+}
+
+#[test]
+fn a_part_of_one_of_a_pair_filled_comes_off_the_other_and_the_rest_cancels_it() {
+    let fake = Fake::builder().account("Sim1").position("Sim1", ES, 3, 7650.0).start();
+    let (trading, _) = sign_in(&fake);
+    let [stop, target] = trading.place_pair(&exits(3)).unwrap();
+    fake.fill(&target, 1, 7700.0);
+    let qty = |id: &str| trading.book().orders.iter().find(|order| order.is(id)).map(|order| (order.qty, order.status.clone()));
+    eventually(Duration::from_secs(2), "the stop is for two", || qty(&stop) == Some((2, Status::Working)));
+    fake.fill(&target, 2, 7700.0);
+    eventually(Duration::from_secs(2), "the stop is cancelled", || qty(&stop).is_some_and(|(_, status)| status == Status::Cancelled));
+    assert!(trading.book().positions.iter().all(|held| held.qty == 0), "never more closed than was held");
+    trading.sign_out();
+}
+
+#[test]
+fn cancelling_one_of_a_pair_cancels_the_other() {
+    let fake = Fake::builder().account("Sim1").position("Sim1", ES, 1, 7650.0).start();
+    let (trading, _) = sign_in(&fake);
+    let [stop, target] = trading.place_pair(&exits(1)).unwrap();
+    trading.cancel(&target).unwrap();
+    let status = |id: &str| trading.book().orders.iter().find(|order| order.is(id)).map(|order| order.status.clone());
+    eventually(Duration::from_secs(2), "the stop goes too", || status(&stop) == Some(Status::Cancelled));
+    trading.sign_out();
+}
+
+#[test]
+fn a_pair_is_rejected_whole_in_the_server_s_words() {
+    let fake = Fake::builder().account("Sim1").oco_unsupported().start();
+    let (trading, _) = sign_in(&fake);
+    assert!(!trading.server().oco, "the logon says no OCO");
+    assert_eq!(trading.place_pair(&exits(1)), Err(Error::Rejected("OCO orders are not supported".into())));
+    let book = trading.book();
+    assert_eq!(book.orders.len(), 2);
+    assert!(book.orders.iter().all(|order| !order.status.working()));
+    trading.sign_out();
+
+    let fake = Fake::builder().account("Sim1").reject_orders("Loss limit exceeded").start();
+    let (trading, _) = sign_in(&fake);
+    assert!(trading.server().oco);
+    assert_eq!(trading.place_pair(&exits(1)), Err(Error::Rejected("Loss limit exceeded".into())));
+    trading.sign_out();
+}
+
+#[test]
+fn a_pair_on_two_contracts_is_not_sent() {
+    let fake = Fake::builder().account("Sim1").start();
+    let (trading, _) = sign_in(&fake);
+    let mut pair = exits(1);
+    pair[1].symbol = "NQZ26_FUT_CME".into();
+    assert!(matches!(trading.place_pair(&pair), Err(Error::Rejected(_))));
+    assert!(fake.received_of(wire::SUBMIT_NEW_OCO_ORDER).is_empty());
+    trading.sign_out();
+}
+
 #[test]
 fn cancel_all_cancels_each_order_working_on_the_account_and_no_other() {
     let fake = Fake::builder()
