@@ -1274,10 +1274,11 @@ def anchor_cues(script, plan, events, raw, offset):
     changed = np.zeros(len(video))
     for i in range(1, len(video)):
         changed[i] = (np.abs(video[i].astype(np.int16) - video[i - 1]).max(axis=2) > 8).mean()
-    cues = {}
+    cues, lasts = {}, {}
     for event in events:
         if event.get("scene") is not None and str(event.get("cue", "")).startswith("@") and event["verb"] in SHOWN_VERBS:
             cues.setdefault(event["cue"], event)
+            lasts[event["cue"]] = event
     order = sorted(cues.values(), key=lambda e: e["t"])
     anchors, report = [], []
     for i, first in enumerate(order):
@@ -1315,6 +1316,15 @@ def anchor_cues(script, plan, events, raw, offset):
                 report.append(f"  {cue:>8}: nothing changed on screen; left where it fell")
                 continue
             starts = settles = (start + hit[0]) / FPS
+            last = lasts[cue]
+            if last is not first and last["verb"] in ("key", "cli"):
+                # A cue of several steps — a chartbook switched to, then its
+                # window set — is seen finished: what showed between its
+                # first step and its last is cut, the way an edit would.
+                after = int((last["t"] - 0.02) * FPS)
+                more = np.nonzero(changed[after:stop] > 0.0012)[0]
+                if len(more):
+                    settles = max(starts, (after + more[0]) / FPS)
         anchors.append((planned, starts, settles))
         report.append(f"  {cue:>8}: {1000 * (settles - planned):+6.0f}ms" + (f"  (began {1000 * (settles - starts):.0f}ms before)" if settles > starts else ""))
     anchors.sort()
