@@ -206,7 +206,7 @@ def find_script(name):
 
 
 ACTION_ARITY = {"key": 1, "type": None, "cli": None, "move": 2, "click": 2, "rclick": 2, "drag": 4, "scroll": 3, "wait": 1, "zoom": (3, 4),
-                "drift": 4, "terminal": None, "focus": 1, "theme": 1, "pulse": (0, 1), "flash": (0, 1)}
+                "drift": 4, "terminal": None, "focus": 1, "theme": 1, "pulse": (0, 1), "flash": (0, 1), "early": 1}
 
 # The terminal a video opens beside the app, as a share of the width: enough
 # for a command and its answer to be read at 1080p, the chart still the
@@ -358,6 +358,7 @@ class Studio:
         self.runtime = Path(f"/run/user/{os.getuid()}/ocv-{os.getpid()}")
         self.pids = []
         self.build = (script.meta.get("build") if script else None) or os.environ.get("VIDEO_BUILD") or "main"
+        self.music_driven = bool(script and script.music_driven)
 
     # Bringing it up
 
@@ -425,6 +426,10 @@ class Studio:
         self.pids.append(app.pid)
         self._wait(lambda: self.window(), "the omacharts window", timeout=30)
         time.sleep(2.5)  # charts drawn, data in
+        if self.music_driven:
+            # Off the charts, in the gap round the window: a pointer over a
+            # chart shows its corner buttons.
+            self.hand.move(*self.at(-0.4, 50))
         # The first chord a fresh window is sent goes nowhere.
         self.key("Escape")
         time.sleep(0.3)
@@ -482,6 +487,9 @@ class Studio:
 
     def _hyprland_config(self):
         hexa = lambda name, fallback: self.colors.get(name, fallback).lstrip("#")
+        # Cut to music, only charts are seen: the pointer hides once it has
+        # rested a moment, and shows again when a hand moves it.
+        idle = 1 if getattr(self, "music_driven", False) else 0
         return f"""hl.monitor({{ output = "REC", mode = "{SIZE[0]}x{SIZE[1]}@{FPS}", position = "0x0", scale = 2 }})
 hl.config({{
   general = {{ gaps_in = 5, gaps_out = 10, border_size = 2,
@@ -490,7 +498,7 @@ hl.config({{
   misc = {{ force_default_wallpaper = 0, disable_hyprland_logo = true, disable_splash_rendering = true,
     disable_watchdog_warning = true,
     background_color = "rgb({hexa('background', '#1a1b26')})" }},
-  cursor = {{ inactive_timeout = 0 }},
+  cursor = {{ inactive_timeout = {idle} }},
   -- No fades: the sync marker has to switch on a single frame.
   animations = {{ enabled = false }},
 }})
@@ -1208,8 +1216,11 @@ def render(script):
                 lead = studio.hand.duration(*studio.at(*first[1:3])) if first[0] in ("click", "rclick", "move", "drag", "scroll") else 0
                 if script.music_driven:
                     # Timed to a beat, a key or a command is sent early by
-                    # what it takes to arrive and be drawn, too.
-                    lead += action_lead(first)
+                    # what it takes to arrive and be drawn, too — and a cue
+                    # that takes a while to finish painting (a chartbook
+                    # rebuilt) as early as it says, its picture held until
+                    # its beat.
+                    lead += action_lead(first) + sum(float(a[1]) for a in v["scene"].actions[cue] if a[0] == "early")
                 themes = [a for a in v["scene"].actions[cue] if a[0] == "theme"]
                 for action in themes:
                     began = time.monotonic() - zero
@@ -1220,6 +1231,7 @@ def render(script):
                 if themes and rest:
                     first = rest[0]
                     lead = (studio.hand.duration(*studio.at(*first[1:3])) if first[0] in ("click", "rclick", "move", "drag", "scroll") else 0) + action_lead(first)
+                    lead += sum(float(a[1]) for a in rest if a[0] == "early")
                 pause(zero + at - lead - time.monotonic())
                 for action in rest:
                     studio.perform(action, events, now=time.monotonic() - zero, scene=v["scene"].number, cue=cue)
@@ -1318,13 +1330,15 @@ def anchor_cues(script, plan, events, raw, offset):
             starts = settles = (start + hit[0]) / FPS
             last = lasts[cue]
             if last is not first and last["verb"] in ("key", "cli"):
-                # A cue of several steps — a chartbook switched to, then its
-                # window set — is seen finished: what showed between its
-                # first step and its last is cut, the way an edit would.
+                # A cue of several steps — a chartbook rebuilt, its windows
+                # set — is seen finished: from the last frame that still
+                # changed after its last step, so what showed while it was
+                # being built is cut, the way an edit would.
                 after = int((last["t"] - 0.02) * FPS)
-                more = np.nonzero(changed[after:stop] > 0.0012)[0]
+                until = min(stop, int((last["done"] + 4.0) * FPS))
+                more = np.nonzero(changed[after:until] > 0.0012)[0]
                 if len(more):
-                    settles = max(starts, (after + more[0]) / FPS)
+                    settles = max(starts, (after + more[-1]) / FPS)
         anchors.append((planned, starts, settles))
         report.append(f"  {cue:>8}: {1000 * (settles - planned):+6.0f}ms" + (f"  (began {1000 * (settles - starts):.0f}ms before)" if settles > starts else ""))
     anchors.sort()
