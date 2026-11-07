@@ -291,21 +291,38 @@ fn bars_group(window: &Rc<Window>) -> adw::PreferencesGroup {
     fill_colourings(&colouring, window.bar_style(), window.bar_colouring());
     colouring.set_sensitive(!window.bars_hidden());
 
+    // Up and down the other way round, over whatever colouring is chosen.
+    // Greyed with the colouring while the bars are hidden, and on a
+    // colouring that would paint the same either way.
+    let inverted = adw::SwitchRow::new();
+    inverted.set_title(INVERT_LABEL);
+    inverted.set_active(window.bars_inverted());
+    let theme = window.theme();
+    inverted.set_sensitive(
+        !window.bars_hidden() && two_toned(&theme, window.bar_colouring(), window.bar_style()),
+    );
+
     let window_for_style = window.clone();
     let colouring_for_style = colouring.clone();
+    let inverted_for_style = inverted.clone();
     row.connect_selected_notify(move |row| {
         if row.selected() == hidden_at {
             window_for_style.set_bars_hidden(true);
             colouring_for_style.set_sensitive(false);
+            inverted_for_style.set_sensitive(false);
         } else if let Some(style) = BarStyle::ALL.get(row.selected() as usize).copied() {
             window_for_style.set_bar_style(style);
             fill_colourings(&colouring_for_style, style, window_for_style.bar_colouring());
             colouring_for_style.set_sensitive(true);
+            let theme = window_for_style.theme();
+            inverted_for_style
+                .set_sensitive(two_toned(&theme, window_for_style.bar_colouring(), style));
         }
     });
     group.add(&row);
 
     let window_for_colouring = window.clone();
+    let inverted_for_colouring = inverted.clone();
     colouring.connect_selected_notify(move |row| {
         if filling_colourings(row) {
             return;
@@ -318,11 +335,31 @@ fn bars_group(window: &Rc<Window>) -> adw::PreferencesGroup {
         if chosen != window_for_colouring.bar_colouring().for_style(style) {
             window_for_colouring.set_bar_colouring(chosen);
         }
+        let theme = window_for_colouring.theme();
+        inverted_for_colouring.set_sensitive(two_toned(&theme, chosen, style));
     });
     group.add(&colouring);
 
+    let window_for_inverted = window.clone();
+    inverted.connect_active_notify(move |row| {
+        if row.is_active() != window_for_inverted.bars_inverted() {
+            window_for_inverted.set_bars_inverted(row.is_active());
+        }
+    });
+    group.add(&inverted);
 
     group
+}
+
+/// What the switch that turns up and down round is called, in a chart's
+/// settings and in the preferences alike.
+pub const INVERT_LABEL: &str = "Swap up and down";
+
+/// Whether turning `colouring` round on a bar of `style` would change what
+/// it paints, which is when the switch for it is offered. Monochrome paints
+/// a rise and a fall alike, so there is nothing to turn round.
+pub fn two_toned(theme: &omacharts_engine::Theme, colouring: BarColouring, style: BarStyle) -> bool {
+    colouring.for_style(style).scheme(theme).is_two_toned()
 }
 
 /// Offer the colourings a bar of `style` can be painted in, with `current`

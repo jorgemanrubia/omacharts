@@ -135,10 +135,11 @@ The colouring is how a chart uses the theme's colours ([Themes and colours](/man
 |---|---|
 | **Filled** (**Coloured** for OHLC bars) | Rises in the theme's up colour, falls in its down colour, bodies filled. The default |
 | **Hollow** | The same, with rising candles drawn as outlines. Candles only. An OHLC bar is drawn coloured |
-| **Red up** | Red for a rise and green for a fall |
-| **Muted** | No colour at all: a rise is an outline in the further of two greys made from the theme's text, a fall a stone filled in the nearer one, so direction is told by fill and by lightness and the price sits back behind the chart's drawings and indicators, which keep their colour |
-| **Muted red up** | The same two greys the other way round: a filled rise, an outlined fall |
+| **Muted** | Two quiet colours from the theme's palette, a slate for a rise and a sand for a fall, instead of its green and red, so the price sits back behind the chart's drawings and indicators, which keep their colour |
+| **Colorless** | Two tones of the theme's own quiet tint, a rise outlined and a fall filled |
 | **Monochrome** | Every bar in the theme's monochrome colour. An OHLC bar still shows its direction by its ticks; a candle does not |
+
+**Swap up and down**, under the colouring, paints whatever colouring is chosen the other way round: a rise in the down colour and a fall in the up colour, so a coloured chart reads red for a rise, the way charts are read in Taiwan, mainland China, Japan and Korea. It turns the volume strip and a trade's profit and loss round with the bars. It is greyed out on Monochrome, which paints a rise and a fall alike. Earlier versions offered this as a colouring of its own, **Red up**; that is **Filled** with the switch on, and a chart that was red up still is.
 
 <!-- regenerate:
 theme: tokyo-night
@@ -152,13 +153,13 @@ state:
   omacharts chart set --chart pos:N --link pinned        # N = 0..3
   omacharts chart set --chart pos:0 --colouring theme
   omacharts chart set --chart pos:1 --colouring theme-hollow
-  omacharts chart set --chart pos:2 --colouring theme-red-up
+  omacharts chart set --chart pos:2 --colouring theme --invert-bars on
   omacharts chart set --chart pos:3 --colouring theme-mono
   then, with pos:2 focused: key alt+Left, key plus x5, key alt+Down, key plus x5, key alt+Right, key plus x5, key alt+Up, key plus x5
 capture: bin/headless-window cli chartbook screenshot --output /tmp/colourings.png
 crop: none (resized to 2000 wide)
 -->
-{% include figure.html src="/assets/manual/charts/colourings.jpg" alt="Four NVDA daily charts of the same two months, one in each colouring" caption="Filled, Red up (top); Hollow, Monochrome (bottom)." %}
+{% include figure.html src="/assets/manual/charts/colourings.jpg" alt="Four NVDA daily charts of the same two months, one in each colouring" caption="Filled, Filled with up and down swapped (top); Hollow, Monochrome (bottom)." %}
 
 ### Hiding the bars
 

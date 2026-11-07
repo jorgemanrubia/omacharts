@@ -959,28 +959,35 @@ bars carry their direction again, in the "theme-hollow" scheme
   [exit 0]
 ```
 
-`config bars red-up` is the third answer: the theme's colours the other way
-round, red for a rise and green for a fall, the way charts are read in Taiwan,
-mainland China, Japan and Korea. It remembers the palette in use as well.
-`config bars muted` and `config bars muted-red-up` are the fourth and fifth:
-no colour at all, two greys made from the theme's text instead of its green
-and red, a rise an outline and a fall a filled stone, so the price sits back
-on the chart.
+`config bars muted` and `config bars colorless` are the third and fourth
+answers: a slate and a sand from the theme's palette instead of its green and
+red, and two tones of the theme's own quiet tint, a rise outlined and a fall
+filled, so the price sits back on the chart.
+
+Up and down the other way round, red for a rise and green for a fall, the way
+charts are read in Taiwan, mainland China, Japan and Korea, is a switch over
+whichever colouring is chosen rather than a colouring: `chart set
+--invert-bars on` for one chart, `config set invert_bars on` for the charts
+made next. `config bars` says `coloured, inverted` when it is on. `config bars
+red-up`, from when it was a colouring of its own, still works: coloured bars
+with the switch on, on every chart.
 
 Bar colours belong to each chart, so `config bars` answers for every chart at
 once — the charts in every chartbook and the ones made next — the way Apply to
 all charts does in the preferences. One chart on its own is
-`chart set --colouring theme|theme-hollow|theme-red-up|theme-muted|theme-muted-red-up|theme-mono`.
-A volume pane follows the chart's colouring unless given one of its own:
-`chart indicator set volume --colouring theme-muted`, and `--colouring chart`
-to follow the chart again.
+`chart set --colouring theme|theme-hollow|theme-muted|theme-colorless|theme-mono`.
+A volume pane follows the chart's colouring, swapped or not, unless given one
+of its own: `chart indicator set volume --colouring theme-muted`, which is
+painted its own way round whatever the chart's switch says, and `--colouring
+chart` to follow the chart again.
 
 `config set bar_scheme theme-mono` changes only what new charts open with, and
 does not remember the scheme that was in use.
 
 What a new chart opens with is a handful of settings, the ones the preferences
-show under Charts: `bar_style`, `bar_scheme`, `chart_session`, `show_grid`,
-`chart_log_scale`, `chart_shows_drawings` and `chart_sends_drawings`. Changing
+show under Charts: `bar_style`, `bar_scheme`, `invert_bars`, `chart_session`,
+`show_grid`, `chart_log_scale`, `chart_shows_drawings` and
+`chart_sends_drawings`. Changing
 one chart never changes them.
 
 ## Which data feed the charts come from

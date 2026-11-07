@@ -607,19 +607,31 @@ fn build_charts_page(context: &Rc<Context>) {
     colouring.set_title("Colouring");
     crate::ui::chart_settings::fill_colourings(&colouring, current.bar_style, current.colouring);
 
+    // Up and down the other way round, over whatever colouring is chosen;
+    // greyed on one that paints the same either way.
+    let inverted = adw::SwitchRow::new();
+    inverted.set_title(crate::ui::chart_settings::INVERT_LABEL);
+    inverted.set_active(current.inverted);
+    let theme = context.theming.borrow().theme();
+    inverted.set_sensitive(crate::ui::chart_settings::two_toned(&theme, current.colouring, current.bar_style));
+
     {
         let changed = changed.clone();
         let colouring = colouring.clone();
+        let inverted = inverted.clone();
         let defaults = defaults.clone();
+        let theme = theme.clone();
         style.connect_selected_notify(move |row| {
             let Some(chosen) = BarStyle::ALL.get(row.selected() as usize).copied() else { return };
             changed(&|d| d.bar_style = chosen);
             crate::ui::chart_settings::fill_colourings(&colouring, chosen, defaults.get().colouring);
+            inverted.set_sensitive(crate::ui::chart_settings::two_toned(&theme, defaults.get().colouring, chosen));
         });
     }
     {
         let changed = changed.clone();
         let defaults = defaults.clone();
+        let inverted = inverted.clone();
         colouring.connect_selected_notify(move |row| {
             if crate::ui::chart_settings::filling_colourings(row) {
                 return;
@@ -632,10 +644,19 @@ fn build_charts_page(context: &Rc<Context>) {
             if chosen != defaults.get().colouring.for_style(style) {
                 changed(&|d| d.colouring = chosen);
             }
+            inverted.set_sensitive(crate::ui::chart_settings::two_toned(&theme, chosen, style));
+        });
+    }
+    {
+        let changed = changed.clone();
+        inverted.connect_active_notify(move |row| {
+            let on = row.is_active();
+            changed(&|d| d.inverted = on);
         });
     }
     bars.add(&style);
     bars.add(&colouring);
+    bars.add(&inverted);
 
     let session = adw::ComboRow::new();
     session.set_title("Hours");

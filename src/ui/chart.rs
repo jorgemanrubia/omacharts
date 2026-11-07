@@ -8038,8 +8038,8 @@ fn draw_ruler(
     let (w, h) = ((b.0 - a.0).abs(), (b.1 - a.1).abs());
     let kind = state.instrument.as_ref().map(|i| i.kind);
     let measured = omacharts_engine::measurement::Measurement::between(from, to, &state.bars, kind);
-    // The candles' own up and down, so a "Red up" scheme measures a rise in
-    // red; the label is the last-price tag of that direction, whose figure is
+    // The candles' own up and down, so a chart with them turned round
+    // measures a rise in red; the label is the last-price tag of that direction, whose figure is
     // already chosen to read on its fill.
     let flat;
     let (colour, tag) = match RulerDirection::of(from, to) {

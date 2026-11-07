@@ -285,7 +285,10 @@ const PROFILE_ALIGNS: &[&str] = &["left", "right"];
 const VWAP_SOURCES: &[&str] = &["hlc3", "hl2", "ohlc4", "close"];
 const SWITCHES: &[&str] = &["on", "off"];
 const LINKS: &[&str] = &["focus", "follow", "pinned"];
-const COLOURING: &[&str] = &["coloured", "red-up", "muted", "muted-red-up", "monochrome"];
+/// The answers `config bars` gives and takes. `red-up` is kept for a script
+/// written when it was a colouring of its own: it is `coloured` with the bars
+/// turned round on every chart.
+const COLOURING: &[&str] = &["coloured", "muted", "colorless", "monochrome", "red-up"];
 /// What a volume pane's bars may be painted as: the chart's own colouring,
 /// or one of the ones a bar with no body can wear.
 const VOLUME_COLOURINGS: &[&str] =
@@ -913,6 +916,8 @@ pub const SURFACE: &[Noun] = &[
                     )
                     .of(SWITCHES),
                     Flag::valued("colouring", "COLOURING", "how the theme's candle colours are painted").of(COLOURINGS),
+                    Flag::valued("invert-bars", "BOOL", "swap the colouring's up and down, red for a rise")
+                        .of(SWITCHES),
                     Flag::valued("session", "SESSION", "which hours to include").of(SESSIONS),
                     Flag::valued(
                         "link",
@@ -1234,7 +1239,7 @@ pub const SURFACE: &[Noun] = &[
             },
             Verb {
                 name: "bars",
-                about: "Whether bars carry their direction in colour, red for up, muted, or no colour at all",
+                about: "Whether bars carry their direction in colour, muted, in two tones of one tint, or not at all, on every chart; and whether up and down are swapped",
                 args: &[Arg::opt("STATE", "omit to read it").of(COLOURING)],
                 flags: &[],
                 example: "omacharts config bars monochrome",
@@ -1437,6 +1442,7 @@ const STORED_FIELDS: &[(&str, &str, &str)] = &[
     ("bar_style", "chart set", "--style"),
     ("bars_hidden", "chart set", "--bars"),
     ("colouring", "chart set", "--colouring"),
+    ("inverted", "chart set", "--invert-bars"),
     ("session", "chart set", "--session"),
     ("show_grid", "chart set", "--grid"),
     ("link", "chart set", "--link"),

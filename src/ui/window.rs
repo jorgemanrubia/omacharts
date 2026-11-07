@@ -666,6 +666,7 @@ mod tests {
                 bar_style: "candle".to_string(),
                 bars_hidden: false,
                 colouring: None,
+                inverted: None,
                 session: "extended".to_string(),
                 show_grid: true,
                 link: LinkMode::Focus,
@@ -745,7 +746,8 @@ mod tests {
             template: None,
             bar_style: "candle".to_string(),
             bars_hidden: false,
-                colouring: None,
+            colouring: None,
+            inverted: None,
             session: "extended".to_string(),
             show_grid: true,
             link,
@@ -1887,6 +1889,12 @@ struct StoredPane {
     /// written before charts were painted one by one.
     #[serde(default)]
     colouring: Option<String>,
+    /// Whether the colouring is worn the other way round, up and down
+    /// exchanged. Missing from a chart written before it was a switch: one
+    /// whose `colouring` is a turned-round scheme an older version wrote
+    /// was, and any other chart with a colouring of its own was not.
+    #[serde(default)]
+    inverted: Option<bool>,
     session: String,
     show_grid: bool,
     /// What the rail does to this chart. Missing from a chart written with
@@ -2022,7 +2030,25 @@ fn hundredths(change_pct: f64) -> i64 {
 /// What a chart's bars are painted in: the theme's candle colours, the way
 /// this chart paints them.
 fn pane_scheme(pane: &ChartPane, theme: &omacharts_engine::Theme) -> omacharts_engine::BarScheme {
-    pane.colouring.get().for_style(pane.bar_style.get()).scheme(theme)
+    let scheme = pane.colouring.get().for_style(pane.bar_style.get()).scheme(theme);
+    match pane.inverted.get() {
+        true => scheme.inverted(),
+        false => scheme,
+    }
+}
+
+/// How a stored chart paints its bars, and whether the other way round.
+///
+/// A chart written before it had a colouring of its own was wearing the one
+/// every chart wore, which is the default's, switch and all. One written
+/// before turning round was a switch says so by its colouring: a turned-round
+/// scheme an older version wrote is the plain colouring with the switch on,
+/// and any other colouring of its own was worn the right way round.
+fn stored_colouring(stored: &StoredPane, defaults: &ChartDefaults) -> (BarColouring, bool) {
+    match stored.colouring.as_deref().and_then(BarColouring::from_stored) {
+        Some((colouring, turned_round)) => (colouring, stored.inverted.unwrap_or(turned_round)),
+        None => (defaults.colouring, stored.inverted.unwrap_or(defaults.inverted)),
+    }
 }
 
 /// A chart's local drawings get negative ids, below everything the store
@@ -2753,6 +2779,7 @@ impl Window {
             template.as_ref().map(|t| t.indicators.clone()).unwrap_or(indicators),
             defaults.bar_style,
             defaults.colouring,
+            defaults.inverted,
             defaults.session,
             defaults.show_grid,
             LinkMode::default(),
@@ -2775,6 +2802,7 @@ impl Window {
         indicators: Vec<Indicator>,
         bar_style: BarStyle,
         colouring: BarColouring,
+        inverted: bool,
         session: Session,
         show_grid: bool,
         mode: LinkMode,
@@ -2784,10 +2812,12 @@ impl Window {
 
         let theme = self.theming.borrow().theme();
         let scheme = colouring.for_style(bar_style).scheme(&theme);
+        let scheme = if inverted { scheme.inverted() } else { scheme };
         let pane = ChartPane::new(
             id, theme, scheme, timeframe, indicators, bar_style, session, show_grid, mode,
         );
         pane.colouring.set(colouring);
+        pane.inverted.set(inverted);
         pane.view.set_bar_style(bar_style);
         pane.view.set_show_grid(show_grid);
 
@@ -3246,6 +3276,7 @@ impl Window {
             from.indicators.borrow().clone(),
             from.bar_style.get(),
             from.colouring.get(),
+            from.inverted.get(),
             from.session.get(),
             from.show_grid.get(),
             from.mode(),
@@ -3996,6 +4027,7 @@ impl Window {
                     bar_style: pane.bar_style.get().key().to_string(),
                     bars_hidden: pane.bars_hidden.get(),
                     colouring: Some(pane.colouring.get().key().to_string()),
+                    inverted: Some(pane.inverted.get()),
                     session: pane.session.get().key().to_string(),
                     show_grid: pane.show_grid.get(),
                     link: pane.mode(),
@@ -4180,17 +4212,13 @@ impl Window {
             // changed while this book was not on screen has left behind. A
             // template that has gone leaves the chart the copy, as its own.
             let template = stored.template.and_then(|id| templates.iter().find(|t| t.id == id));
+            let (colouring, inverted) = stored_colouring(&stored, &defaults);
             let pane = self.new_pane(
                 Timeframe::parse(&stored.timeframe).unwrap_or(Timeframe::days(1)),
                 template.map(|t| t.indicators.clone()).unwrap_or_else(|| stored.indicators.clone()),
                 BarStyle::from_key(&stored.bar_style).unwrap_or_default(),
-                // A chart written before it had a colouring of its own was
-                // wearing the one every chart wore, which is the default's.
-                stored
-                    .colouring
-                    .as_deref()
-                    .and_then(BarColouring::from_key)
-                    .unwrap_or(defaults.colouring),
+                colouring,
+                inverted,
                 Session::from_key(&stored.session).unwrap_or_default(),
                 stored.show_grid,
                 stored.link,
@@ -9285,6 +9313,21 @@ impl Window {
         self.save_workspace();
     }
 
+    /// Whether the focused chart wears its colouring the other way round.
+    pub fn bars_inverted(&self) -> bool {
+        self.focused_pane().inverted.get()
+    }
+
+    pub fn set_bars_inverted(self: &Rc<Self>, inverted: bool) {
+        let pane = self.focused_pane();
+        pane.inverted.set(inverted);
+        let theme = self.theme();
+        pane.view.restyle(theme.clone(), pane_scheme(&pane, &theme));
+        // Profit and loss turn round with the candles.
+        self.apply_marks_to(&pane);
+        self.save_workspace();
+    }
+
     /// Put the focused chart back to what a new chart opens with.
     /// The template is chosen the way any other choice of it is, asking first
     /// when that would drop indicators of the chart's own; `done` runs once
@@ -9385,6 +9428,7 @@ impl Window {
                 stored.bar_style = defaults.bar_style.key().to_string();
                 stored.bars_hidden = false;
                 stored.colouring = Some(defaults.colouring.key().to_string());
+                stored.inverted = Some(defaults.inverted);
                 stored.session = defaults.session.key().to_string();
                 stored.show_grid = defaults.show_grid;
                 stored.log_scale = defaults.log_scale;
@@ -9414,8 +9458,10 @@ impl Window {
         pane.bars_hidden.set(false);
         pane.view.set_bars_hidden(false);
         pane.colouring.set(defaults.colouring);
+        pane.inverted.set(defaults.inverted);
         let theme = self.theme();
         pane.view.restyle(theme.clone(), pane_scheme(pane, &theme));
+        self.apply_marks_to(pane);
         pane.session.set(defaults.session);
         pane.show_grid.set(defaults.show_grid);
         pane.view.set_show_grid(defaults.show_grid);

@@ -19,7 +19,7 @@ use omacharts_engine::indicators::{
 };
 use omacharts_engine::providers;
 use omacharts_engine::theme::{
-    ColorChoice, SWATCH_NAMES, THEME_MONO_ID, THEME_MUTED_ID, THEME_MUTED_RED_UP_ID, THEME_RED_UP_ID,
+    ColorChoice, SWATCH_NAMES, THEME_COLORLESS_ID, THEME_MONO_ID, THEME_MUTED_ID,
 };
 use omacharts_engine::{
     BarStyle, Indicator, IndicatorKind, LinkMode, Reset, Session, Timeframe,
@@ -1584,6 +1584,7 @@ fn chart_set(
     if let (Some(None), Some(true)) = (style, bars) {
         return Err(Fault::usage("--style none hides the bars, and --bars on shows them; pass one".into()));
     }
+    let inverted = switch("invert-bars")?;
     let shows_drawings = switch("show-drawings")?;
     let sends_drawings = switch("send-drawings")?;
     let template = match arg(m, "template") {
@@ -1633,6 +1634,10 @@ fn chart_set(
     if let Some(colouring) = colouring {
         chart["colouring"] = json!(colouring.key());
         changed.push(format!("colouring {}", colouring.key()));
+    }
+    if let Some(inverted) = inverted {
+        chart["inverted"] = json!(inverted);
+        changed.push(format!("up and down {}", if inverted { "swapped" } else { "as the colouring has them" }));
     }
     if let Some(session) = session {
         chart["session"] = json!(session.key());
@@ -1698,9 +1703,9 @@ fn chart_set(
 
     if changed.is_empty() {
         return Err(Fault::usage(
-            "nothing to change; pass --symbol, --resolution, --style, --bars, --session, --link, --grid, \
-             --auto-scale, --log-scale, --indicators, --drawings, --show-drawings, \
-             --send-drawings or --template"
+            "nothing to change; pass --symbol, --resolution, --style, --bars, --colouring, --invert-bars, \
+             --session, --link, --grid, --auto-scale, --log-scale, --indicators, --drawings, \
+             --show-drawings, --send-drawings or --template"
                 .into(),
         ));
     }
@@ -3938,6 +3943,7 @@ fn pane_json(pane: &Value) -> String {
         "bar_style": pane["bar_style"],
         "bars": !pane["bars_hidden"].as_bool().unwrap_or(false),
         "colouring": pane["colouring"],
+        "inverted": stored_inverted(pane),
         "session": pane["session"],
         "grid": pane["show_grid"],
         // Missing from a chart stored before it was remembered, and every one
@@ -5077,12 +5083,17 @@ fn config_set(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<Stri
 /// them on the default when they changed their mind.
 const COLOURED_BARS: &str = "coloured_bar_scheme";
 
-/// Colour or no colour, and which way round, asked the way people arrive at
-/// it.
+/// Colour, muted, colorless or none, asked the way people arrive at it, and
+/// whether up and down are the other way round.
 ///
 /// `config set bar_scheme theme-mono` reaches the same scheme, and is not the
 /// same command: it does not remember what to go back to, so putting the
 /// colour back lands on the default rather than on the scheme that was in use.
+///
+/// `red-up` was a state of its own when the colours the other way round were
+/// a scheme of their own; a script written then still works. It is `coloured`
+/// with the bars turned round on every chart, which `chart set --invert-bars`
+/// and `config set invert_bars` do one at a time.
 fn config_bars(
     store: &Store,
     m: &clap::ArgMatches,
@@ -5098,24 +5109,29 @@ fn config_bars(
             .to_string()
     };
     let current = colouring(store.setting(crate::theming::SETTING_BARS));
+    let inverted = crate::chart_defaults::stored_colouring(store).1;
     let Some(state) = arg(m, "STATE") else {
         return match as_json {
-            true => Ok(format!("{}\n", json!({"bars": spell_bars(&current), "scheme": current}))),
-            false => Ok(format!("{}\n", spell_bars(&current))),
+            true => Ok(format!(
+                "{}\n",
+                json!({"bars": spell_bars(&current), "scheme": current, "inverted": inverted})
+            )),
+            false => Ok(format!("{}{}\n", spell_bars(&current), if inverted { ", inverted" } else { "" })),
         };
     };
     let state = state.as_str();
 
     let scheme = match state {
         "monochrome" => THEME_MONO_ID.to_string(),
-        "red-up" => THEME_RED_UP_ID.to_string(),
         "muted" => THEME_MUTED_ID.to_string(),
-        "muted-red-up" => THEME_MUTED_RED_UP_ID.to_string(),
+        "colorless" => THEME_COLORLESS_ID.to_string(),
         // "coloured": stay on the palette in use if it already carries the
         // direction, and otherwise go back to the one it was left from.
         _ if spell_bars(&current) == "coloured" => current.clone(),
         _ => colouring(store.setting(COLOURED_BARS)),
     };
+    let turn_round = state == "red-up";
+    let was = scheme == current && (!turn_round || inverted);
     // Leaving a palette somebody picked: remember it to come back to.
     if scheme != current && spell_bars(&current) == "coloured" {
         store.set_setting(COLOURED_BARS, &current);
@@ -5126,33 +5142,49 @@ fn config_bars(
     // "Apply to all charts" does with the same choice in the preferences.
     let mut workspace = charts::Workspace::load(store);
     workspace.set_on_every_pane("colouring", json!(scheme));
+    if turn_round {
+        store.set_setting_bool(crate::chart_defaults::SETTING_INVERT_BARS, true);
+        workspace.set_on_every_pane("inverted", json!(true));
+    }
     workspace.save(store);
     if let Some(live) = live {
         live.adopt_theming();
     }
-    let text = match (state, scheme == current) {
+    let text = match (state, was) {
         // Said rather than silently done, because "it was already monochrome"
         // and "it is monochrome now" are different answers to somebody
         // checking their own work.
         (_, true) => format!("bars were already {state}"),
         ("monochrome", _) => "bars are monochrome; the colours are remembered".to_string(),
-        ("red-up", _) => "rising bars are red and falling bars green".to_string(),
         ("muted", _) => "bars carry their direction in muted colour".to_string(),
-        ("muted-red-up", _) => "bars carry their direction in muted colour, red for up".to_string(),
+        ("colorless", _) => "bars carry their direction in two tones of one tint".to_string(),
+        ("red-up", _) => format!("rising bars are red and falling bars green, in the {scheme:?} scheme"),
         _ => format!("bars carry their direction again, in the {scheme:?} scheme"),
     };
-    said(as_json, json!({"bars": state, "scheme": scheme}), text)
+    let inverted = inverted || turn_round;
+    said(as_json, json!({"bars": state, "scheme": scheme, "inverted": inverted}), text)
 }
 
-/// Which of the three answers a scheme is.
+/// Which of the four answers a scheme is.
 fn spell_bars(scheme: &str) -> &'static str {
     match scheme {
         THEME_MONO_ID => "monochrome",
-        THEME_RED_UP_ID => "red-up",
         THEME_MUTED_ID => "muted",
-        THEME_MUTED_RED_UP_ID => "muted-red-up",
+        THEME_COLORLESS_ID => "colorless",
         _ => "coloured",
     }
+}
+
+/// Whether a stored chart wears its colouring the other way round: what it
+/// says, or, from before that was a switch, whether its colouring was one of
+/// the turned-round schemes an older version wrote.
+fn stored_inverted(pane: &Value) -> bool {
+    pane["inverted"].as_bool().unwrap_or_else(|| {
+        pane["colouring"]
+            .as_str()
+            .and_then(omacharts_engine::BarColouring::from_stored)
+            .is_some_and(|(_, turned_round)| turned_round)
+    })
 }
 
 /// The widget in the Omarchy bar.
@@ -7200,17 +7232,66 @@ mod tests {
         assert_eq!(parse_bytes("0"), None, "a cache of nothing is not a limit");
     }
 
+    /// `red-up` is what a script wrote when the colours the other way round
+    /// were a scheme of their own: it still turns every chart round, as
+    /// coloured bars with the switch on, and the answer says so.
     #[test]
-    fn bars_can_turn_red_up_and_get_the_same_scheme_back() {
+    fn red_up_is_still_answered_as_coloured_bars_turned_round_on_every_chart() {
+        let store = bare();
+        run("chartbook create Macro --symbol AAPL --switch", &store);
+        run("chart split horizontal --book Macro", &store);
+        run("config set bar_scheme hollow", &store);
+        let out = run("config bars red-up", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert_eq!(run("config bars", &store).out.trim(), "coloured, inverted");
+        assert_eq!(run("config get bar_scheme", &store).out.trim(), "theme-hollow");
+        assert_eq!(run("config get invert_bars", &store).out.trim(), "1");
+        let read: serde_json::Value = serde_json::from_str(&run("config bars --json", &store).out).unwrap();
+        assert_eq!((&read["bars"], &read["inverted"]), (&json!("coloured"), &json!(true)));
+        let listed: serde_json::Value = serde_json::from_str(&run("chart list --book Macro --json", &store).out).unwrap();
+        for chart in listed["charts"].as_array().unwrap() {
+            assert_eq!((&chart["colouring"], &chart["inverted"]), (&json!("theme-hollow"), &json!(true)));
+        }
+        assert_eq!(run("config bars red-up", &store).out.trim(), "bars were already red-up");
+
+        // The switch stays on through the other answers: it is a switch over
+        // the colouring, not a colouring; and the palette remembered is
+        // still the one somebody picked.
+        assert_eq!(run("config bars monochrome", &store).code, 0);
+        assert_eq!(run("config bars", &store).out.trim(), "monochrome, inverted");
+        assert_eq!(run("config bars coloured", &store).code, 0);
+        assert_eq!(run("config get bar_scheme", &store).out.trim(), "theme-hollow");
+        assert_eq!(run("config set invert_bars off", &store).code, 0);
+        assert_eq!(run("config bars", &store).out.trim(), "coloured");
+        // An older version's setting reads the same way.
+        store.set_setting(crate::theming::SETTING_BARS, omacharts_engine::theme::THEME_RED_UP_ID);
+        assert_eq!(run("config bars", &store).out.trim(), "coloured, inverted");
+    }
+
+    #[test]
+    fn a_chart_turns_its_up_and_down_round_on_its_own() {
+        let store = bare();
+        run("chartbook create Macro --symbol AAPL --switch", &store);
+        run("chart split horizontal --book Macro", &store);
+        let out = run("chart set --book Macro --chart pos:1 --invert-bars on", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert!(out.out.contains("swapped"), "{}", out.out);
+        let listed: serde_json::Value = serde_json::from_str(&run("chart list --book Macro --json", &store).out).unwrap();
+        assert_eq!(listed["charts"][0]["inverted"], false);
+        assert_eq!(listed["charts"][1]["inverted"], true);
+        assert_eq!(run("chart set --book Macro --chart pos:1 --invert-bars off", &store).code, 0);
+        let listed: serde_json::Value = serde_json::from_str(&run("chart list --book Macro --json", &store).out).unwrap();
+        assert_eq!(listed["charts"][1]["inverted"], false);
+        assert_ne!(run("chart set --book Macro --chart pos:1 --invert-bars sideways", &store).code, 0);
+    }
+
+    #[test]
+    fn bars_can_be_colorless_on_every_chart_and_get_the_colour_back() {
         let store = bare();
         run("config set bar_scheme hollow", &store);
-        assert_eq!(run("config bars red-up", &store).code, 0);
-        assert_eq!(run("config bars", &store).out.trim(), "red-up");
-        assert_eq!(run("config get bar_scheme", &store).out.trim(), "theme-red-up");
-
-        // From one of the two answers to the other, and back: the palette
-        // remembered is still the one somebody picked.
-        assert_eq!(run("config bars monochrome", &store).code, 0);
+        assert_eq!(run("config bars colorless", &store).code, 0);
+        assert_eq!(run("config bars", &store).out.trim(), "colorless");
+        assert_eq!(run("config get bar_scheme", &store).out.trim(), "theme-colorless");
         assert_eq!(run("config bars coloured", &store).code, 0);
         assert_eq!(run("config get bar_scheme", &store).out.trim(), "theme-hollow");
     }

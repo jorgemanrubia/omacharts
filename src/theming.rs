@@ -39,6 +39,11 @@ pub struct Theming {
     custom_themes: Vec<Theme>,
     theme_id: String,
     scheme_id: String,
+    /// Whether new charts wear the scheme the other way round, red for a
+    /// rise: the default the preferences hold, which the watchlist, the
+    /// stylesheet and the bar widget follow, since they have no chart of
+    /// their own to follow.
+    inverted: bool,
     provider: Option<gtk::CssProvider>,
 }
 
@@ -55,6 +60,7 @@ impl Theming {
         let theming = Theming {
             theme_id: store.setting(SETTING_THEME).unwrap_or_else(|| default_theme.to_string()),
             scheme_id: store.setting(SETTING_BARS).unwrap_or_else(|| THEME_BARS_ID.to_string()),
+            inverted: crate::chart_defaults::stored_colouring(store).1,
             omarchy,
             omarchy_fingerprint,
             builtin_themes: builtin_themes(),
@@ -131,9 +137,10 @@ impl Theming {
         omacharts_engine::BarColouring::from_key(&self.scheme_id).unwrap_or_default()
     }
 
-    /// Whether the colouring an older version stored was a turned-round one.
+    /// Whether new charts wear their colouring the other way round, up and
+    /// down exchanged.
     pub fn inverted(&self) -> bool {
-        omacharts_engine::BarColouring::from_stored(&self.scheme_id).is_some_and(|(_, inverted)| inverted)
+        self.inverted
     }
 
     pub fn bar_scheme(&self) -> BarScheme {
@@ -141,7 +148,11 @@ impl Theming {
     }
 
     fn bar_scheme_for(&self, theme: &Theme) -> BarScheme {
-        BarColouring::from_key(&self.scheme_id).unwrap_or_default().scheme(theme)
+        let scheme = BarColouring::from_key(&self.scheme_id).unwrap_or_default().scheme(theme);
+        match self.inverted {
+            true => scheme.inverted(),
+            false => scheme,
+        }
     }
 
     /// The ink the bar widget writes in.
@@ -191,6 +202,7 @@ impl Theming {
         self.theme_id = store.setting(SETTING_THEME).unwrap_or_else(|| default_theme.to_string());
         self.scheme_id =
             store.setting(SETTING_BARS).unwrap_or_else(|| THEME_BARS_ID.to_string());
+        self.inverted = crate::chart_defaults::stored_colouring(store).1;
         self.reload_custom(store);
     }
 
@@ -1276,7 +1288,7 @@ mod tests {
     use super::*;
 
     /// A signed P&L is written in the trading look's profit and loss, which
-    /// Red up turns round and Monochrome does not.
+    /// the switch turns round and the colouring does not.
     #[test]
     fn profit_and_loss_are_named_colours_from_the_trading_look() {
         let theme = &builtin_themes()[0];
@@ -1411,11 +1423,36 @@ mod tests {
         for (stored, read) in [
             ("hollow", omacharts_engine::theme::THEME_HOLLOW_ID),
             ("monochrome", omacharts_engine::theme::THEME_MONO_ID),
-            ("theme-red-up", omacharts_engine::theme::THEME_RED_UP_ID),
             ("no-such-scheme", THEME_BARS_ID),
         ] {
             store.set_setting(SETTING_BARS, stored);
             assert_eq!(Theming::load(&store).bar_scheme().id, read, "{stored}");
         }
+    }
+
+    /// The turned-round scheme an older version wrote, and the switch that
+    /// replaced it, both paint the theme's colours the other way round.
+    #[test]
+    fn the_switch_turns_the_default_scheme_round() {
+        let store = Store::memory().unwrap();
+        let plain = Theming::load(&store);
+        assert!(!plain.inverted());
+        let (up, down) = (plain.bar_scheme().up, plain.bar_scheme().down);
+
+        store.set_setting(SETTING_BARS, omacharts_engine::theme::THEME_RED_UP_ID);
+        let older = Theming::load(&store);
+        assert!(older.inverted());
+        assert_eq!(older.colouring(), BarColouring::Filled);
+        assert_eq!((&older.bar_scheme().id, &older.bar_scheme().up, &older.bar_scheme().down), (&THEME_BARS_ID.to_string(), &down, &up));
+
+        store.set_setting(SETTING_BARS, THEME_BARS_ID);
+        store.set_setting_bool(crate::chart_defaults::SETTING_INVERT_BARS, true);
+        let mut switched = Theming::load(&store);
+        assert_eq!((&switched.bar_scheme().up, &switched.bar_scheme().down), (&down, &up));
+        // And read again when a command changes it under a window.
+        store.set_setting_bool(crate::chart_defaults::SETTING_INVERT_BARS, false);
+        switched.reload_selection(&store);
+        assert!(!switched.inverted());
+        assert_eq!(switched.bar_scheme().up, up);
     }
 }
