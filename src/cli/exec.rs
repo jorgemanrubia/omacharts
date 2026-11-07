@@ -19,7 +19,7 @@ use omacharts_engine::indicators::{
 };
 use omacharts_engine::providers;
 use omacharts_engine::theme::{
-    ColorChoice, SWATCH_NAMES, THEME_COLORLESS_ID, THEME_MONO_ID, THEME_MUTED_ID,
+    ColorChoice, SWATCH_NAMES, THEME_QUIET_ID, THEME_MONO_ID, THEME_SOFT_ID,
 };
 use omacharts_engine::{
     BarStyle, Indicator, IndicatorKind, LinkMode, Reset, Session, Timeframe,
@@ -5083,7 +5083,7 @@ fn config_set(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<Stri
 /// them on the default when they changed their mind.
 const COLOURED_BARS: &str = "coloured_bar_scheme";
 
-/// Colour, muted, colorless or none, asked the way people arrive at it, and
+/// Colour, soft, quiet or none, asked the way people arrive at it, and
 /// whether up and down are the other way round.
 ///
 /// `config set bar_scheme theme-mono` reaches the same scheme, and is not the
@@ -5123,8 +5123,8 @@ fn config_bars(
 
     let scheme = match state {
         "monochrome" => THEME_MONO_ID.to_string(),
-        "muted" => THEME_MUTED_ID.to_string(),
-        "colorless" => THEME_COLORLESS_ID.to_string(),
+        "soft" => THEME_SOFT_ID.to_string(),
+        "quiet" => THEME_QUIET_ID.to_string(),
         // "coloured": stay on the palette in use if it already carries the
         // direction, and otherwise go back to the one it was left from.
         _ if spell_bars(&current) == "coloured" => current.clone(),
@@ -5156,8 +5156,8 @@ fn config_bars(
         // checking their own work.
         (_, true) => format!("bars were already {state}"),
         ("monochrome", _) => "bars are monochrome; the colours are remembered".to_string(),
-        ("muted", _) => "bars carry their direction in muted colour".to_string(),
-        ("colorless", _) => "bars carry their direction in two tones of one tint".to_string(),
+        ("soft", _) => "bars carry their direction in two soft colours, a slate and a sand".to_string(),
+        ("quiet", _) => "bars carry their direction in two greys".to_string(),
         ("red-up", _) => format!("rising bars are red and falling bars green, in the {scheme:?} scheme"),
         _ => format!("bars carry their direction again, in the {scheme:?} scheme"),
     };
@@ -5169,8 +5169,8 @@ fn config_bars(
 fn spell_bars(scheme: &str) -> &'static str {
     match scheme {
         THEME_MONO_ID => "monochrome",
-        THEME_MUTED_ID => "muted",
-        THEME_COLORLESS_ID => "colorless",
+        THEME_SOFT_ID => "soft",
+        THEME_QUIET_ID => "quiet",
         _ => "coloured",
     }
 }
@@ -7286,12 +7286,12 @@ mod tests {
     }
 
     #[test]
-    fn bars_can_be_colorless_on_every_chart_and_get_the_colour_back() {
+    fn bars_can_be_quiet_on_every_chart_and_get_the_colour_back() {
         let store = bare();
         run("config set bar_scheme hollow", &store);
-        assert_eq!(run("config bars colorless", &store).code, 0);
-        assert_eq!(run("config bars", &store).out.trim(), "colorless");
-        assert_eq!(run("config get bar_scheme", &store).out.trim(), "theme-colorless");
+        assert_eq!(run("config bars quiet", &store).code, 0);
+        assert_eq!(run("config bars", &store).out.trim(), "quiet");
+        assert_eq!(run("config get bar_scheme", &store).out.trim(), "theme-quiet");
         assert_eq!(run("config bars coloured", &store).code, 0);
         assert_eq!(run("config get bar_scheme", &store).out.trim(), "theme-hollow");
     }

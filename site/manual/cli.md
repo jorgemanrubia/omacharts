@@ -390,7 +390,7 @@ omacharts: "3x" is not a resolution; try 5m, 1h, 1D, 1W, 1M or 1Y
 | `--resolution TF` | A resolution as typed on the chart | [Resolutions](/manual/charts/#resolutions) |
 | `--style STYLE` | `candles`, `ohlc`, or `none` to hide the bars | [Bars](/manual/charts/#bars) |
 | `--bars on` or `off` | Shows the bars in the style they had, or hides them | [Hiding the bars](/manual/charts/#hiding-the-bars) |
-| `--colouring C` | `theme`, `theme-hollow`, `theme-muted`, `theme-colorless`, `theme-mono` | [Colouring](/manual/charts/#colouring) |
+| `--colouring C` | `theme`, `theme-hollow`, `theme-soft`, `theme-quiet`, `theme-mono` | [Colouring](/manual/charts/#colouring) |
 | `--invert-bars on` or `off` | Paints the colouring the other way round, red for a rise | [Colouring](/manual/charts/#colouring) |
 | `--session S` | `regular`, `extended` | [Sessions](/manual/charts/#sessions) |
 | `--grid on` or `off` | Draws the grid | [Gridlines](/manual/charts/#gridlines) |
@@ -491,10 +491,10 @@ bars carry their direction again, in the "theme" scheme
 
 | `STATE` | Does |
 |---|---|
-| (none) | Prints the current state: `coloured`, `muted`, `colorless` or `monochrome`, followed by `, inverted` when up and down are swapped. With `--json`, the `inverted` field |
+| (none) | Prints the current state: `coloured`, `soft`, `quiet` or `monochrome`, followed by `, inverted` when up and down are swapped. With `--json`, the `inverted` field |
 | `monochrome` | Every chart monochrome, remembering the colouring in use |
-| `muted` | Every chart muted: a slate and a sand from the theme's palette instead of its green and red ([Colouring](/manual/charts/#colouring)) |
-| `colorless` | Every chart colorless: two tones of the theme's own quiet tint, a rise outlined and a fall filled |
+| `soft` | Every chart soft: a slate and a sand from the theme's palette instead of its green and red ([Colouring](/manual/charts/#colouring)) |
+| `quiet` | Every chart quiet: two greys made from the theme's text, a rise the lighter and a fall the darker ([Colouring](/manual/charts/#colouring)) |
 | `coloured` | Every chart back to the remembered colouring, or to `theme` when nothing is remembered |
 | `red-up` | `coloured`, with up and down swapped on every chart and for new ones. Kept for scripts written when Red up was a colouring; `chart set --invert-bars` and `config set invert_bars` are the switch itself |
 
@@ -544,7 +544,7 @@ are in [Indicators](/manual/indicators/) and the page of its family.
 | `--outline-color C` | A colour | Volume profile |
 | `--outline-width F`, `--poc-width F` | 0.5 to 6 | Volume profile |
 | `--up-color C`, `--down-color C` | A colour | Volume |
-| `--colouring C` | `chart` to follow the chart's colouring, or `theme`, `theme-muted`, `theme-colorless`, `theme-mono` for one of its own | Volume ([Volume](/manual/indicators/volume/)) |
+| `--colouring C` | `chart` to follow the chart's colouring, or `theme`, `theme-soft`, `theme-quiet`, `theme-mono` for one of its own | Volume ([Volume](/manual/indicators/volume/)) |
 | `--overbought F`, `--oversold F` | 0 to 100 | RSI, stochastic |
 | `--height F` | 0.05 to 0.95; Volume defaults to 0.18, the other strips to 0.16 | Volume, RSI, MACD, ATR, stochastic |
 | `--bands LIST` | `1,2,3` or any of them; `none` | VWAP; `1` or `none` for Bollinger |
@@ -1528,8 +1528,8 @@ same.
 |---|---|---|---|---|
 | `theme` | `omarchy` (System), `midnight`, `carbon`, `paper`, `daylight`, `omarchy:SLUG` for one installed Omarchy theme, or the id of a theme of your own | `omarchy` on Omarchy, `midnight` elsewhere | Theme › Theme | [Themes](/manual/themes/) |
 | `bar_style` | `candles`, `ohlc` | `candles` | Charts › Defaults › Style | [Chart settings](/manual/chart-settings/) |
-| `bar_scheme` | `theme` (filled), `theme-hollow`, `theme-muted`, `theme-colorless`, `theme-mono` | `theme` | Charts › Defaults › Colouring | [Chart settings](/manual/chart-settings/) |
-| `invert_bars` | on, off | off | Charts › Defaults › Swap up and down | [Chart settings](/manual/chart-settings/) |
+| `bar_scheme` | `theme` (filled), `theme-hollow`, `theme-soft`, `theme-quiet`, `theme-mono` | `theme` | Charts › Defaults › Colouring | [Chart settings](/manual/chart-settings/) |
+| `invert_bars` | on, off | off | Charts › Defaults › Swap up and down colours | [Chart settings](/manual/chart-settings/) |
 | `chart_session` | `extended`, `regular` | `extended` | Charts › Defaults › Hours | [Chart settings](/manual/chart-settings/) |
 | `show_grid` | on, off | off | Charts › Defaults › Gridlines | [Chart settings](/manual/chart-settings/) |
 | `chart_log_scale` | on, off | off | Charts › Defaults › Logarithmic scale | [Chart settings](/manual/chart-settings/) |
@@ -1800,5 +1800,5 @@ Each entry carries `symbol`, `suffix`, `display`, `name`, `kind`, `spark`
 (the last 30 daily closes), `last`, `change`, `changePct` and `asOf`
 (seconds since the epoch). A symbol with no quote yet has `null` for the
 numbers. Beside the sections come `colors`, the theme's colours (`text`,
-`muted`, `up`, `down`, `flat`, `hover` and the `tags` pills), and
+`soft`, `up`, `down`, `flat`, `hover` and the `tags` pills), and
 `updatedAt`.

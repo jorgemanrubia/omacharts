@@ -353,7 +353,7 @@ fn bars_group(window: &Rc<Window>) -> adw::PreferencesGroup {
 
 /// What the switch that turns up and down round is called, in a chart's
 /// settings and in the preferences alike.
-pub const INVERT_LABEL: &str = "Swap up and down";
+pub const INVERT_LABEL: &str = "Swap up and down colours";
 
 /// Whether turning `colouring` round on a bar of `style` would change what
 /// it paints, which is when the switch for it is offered. Monochrome paints

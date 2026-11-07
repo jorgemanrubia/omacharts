@@ -135,11 +135,11 @@ The colouring is how a chart uses the theme's colours ([Themes and colours](/man
 |---|---|
 | **Filled** (**Coloured** for OHLC bars) | Rises in the theme's up colour, falls in its down colour, bodies filled. The default |
 | **Hollow** | The same, with rising candles drawn as outlines. Candles only. An OHLC bar is drawn coloured |
-| **Muted** | Two quiet colours from the theme's palette, a slate for a rise and a sand for a fall, instead of its green and red, so the price sits back behind the chart's drawings and indicators, which keep their colour |
-| **Colorless** | Two tones of the theme's own quiet tint, a rise outlined and a fall filled |
+| **Soft** | Two quiet colours from the theme's palette, a slate for a rise and a sand for a fall, instead of its green and red, so the price sits back behind the chart's drawings and indicators, which keep their colour |
+| **Quiet** | Two greys made from the theme's text, a rise the lighter and a fall the darker, so the price sits back and says nothing about good or bad |
 | **Monochrome** | Every bar in the theme's monochrome colour. An OHLC bar still shows its direction by its ticks; a candle does not |
 
-**Swap up and down**, under the colouring, paints whatever colouring is chosen the other way round: a rise in the down colour and a fall in the up colour, so a coloured chart reads red for a rise, the way charts are read in Taiwan, mainland China, Japan and Korea. It turns the volume strip and a trade's profit and loss round with the bars. It is greyed out on Monochrome, which paints a rise and a fall alike. Earlier versions offered this as a colouring of its own, **Red up**; that is **Filled** with the switch on, and a chart that was red up still is.
+**Swap up and down colours**, under the colouring, paints whatever colouring is chosen the other way round: a rise in the down colour and a fall in the up colour, so a coloured chart reads red for a rise, the way charts are read in Taiwan, mainland China, Japan and Korea. It turns the volume strip and a trade's profit and loss round with the bars. It is greyed out on Monochrome, which paints a rise and a fall alike. Earlier versions offered this as a colouring of its own, **Red up**; that is **Filled** with the switch on, and a chart that was red up still is.
 
 <!-- regenerate:
 theme: tokyo-night

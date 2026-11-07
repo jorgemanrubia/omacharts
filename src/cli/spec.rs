@@ -268,7 +268,7 @@ pub const CHART_SELECTOR: &str =
 /// How a chart paints the theme's candle colours, spelled as the scheme ids
 /// the settings store.
 const COLOURINGS: &[&str] =
-    &["theme", "theme-hollow", "theme-muted", "theme-colorless", "theme-mono"];
+    &["theme", "theme-hollow", "theme-soft", "theme-quiet", "theme-mono"];
 const STYLES: &[&str] = &["candles", "ohlc", "none"];
 const SESSIONS: &[&str] = &["regular", "extended"];
 const SPLITS: &[&str] = &["horizontal", "vertical"];
@@ -288,11 +288,11 @@ const LINKS: &[&str] = &["focus", "follow", "pinned"];
 /// The answers `config bars` gives and takes. `red-up` is kept for a script
 /// written when it was a colouring of its own: it is `coloured` with the bars
 /// turned round on every chart.
-const COLOURING: &[&str] = &["coloured", "muted", "colorless", "monochrome", "red-up"];
+const COLOURING: &[&str] = &["coloured", "soft", "quiet", "monochrome", "red-up"];
 /// What a volume pane's bars may be painted as: the chart's own colouring,
 /// or one of the ones a bar with no body can wear.
 const VOLUME_COLOURINGS: &[&str] =
-    &["chart", "theme", "theme-muted", "theme-colorless", "theme-mono"];
+    &["chart", "theme", "theme-soft", "theme-quiet", "theme-mono"];
 const SORT_COLUMNS: &[&str] = &["symbol", "last", "change", "change_pct", "none"];
 /// The kinds a drawing comes in, plus the one alias.
 ///

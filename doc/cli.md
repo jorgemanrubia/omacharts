@@ -959,7 +959,7 @@ bars carry their direction again, in the "theme-hollow" scheme
   [exit 0]
 ```
 
-`config bars muted` and `config bars colorless` are the third and fourth
+`config bars soft` and `config bars quiet` are the third and fourth
 answers: a slate and a sand from the theme's palette instead of its green and
 red, and two tones of the theme's own quiet tint, a rise outlined and a fall
 filled, so the price sits back on the chart.
@@ -975,9 +975,9 @@ with the switch on, on every chart.
 Bar colours belong to each chart, so `config bars` answers for every chart at
 once — the charts in every chartbook and the ones made next — the way Apply to
 all charts does in the preferences. One chart on its own is
-`chart set --colouring theme|theme-hollow|theme-muted|theme-colorless|theme-mono`.
+`chart set --colouring theme|theme-hollow|theme-soft|theme-quiet|theme-mono`.
 A volume pane follows the chart's colouring, swapped or not, unless given one
-of its own: `chart indicator set volume --colouring theme-muted`, which is
+of its own: `chart indicator set volume --colouring theme-soft`, which is
 painted its own way round whatever the chart's switch says, and `--colouring
 chart` to follow the chart again.
 

@@ -155,8 +155,8 @@ mod tests {
         // over any colouring.
         store.set_setting_bool(SETTING_INVERT_BARS, false);
         assert!(!ChartDefaults::load(&store).inverted);
-        store.set_setting(crate::theming::SETTING_BARS, omacharts_engine::theme::THEME_MUTED_ID);
+        store.set_setting(crate::theming::SETTING_BARS, omacharts_engine::theme::THEME_SOFT_ID);
         store.set_setting_bool(SETTING_INVERT_BARS, true);
-        assert_eq!(stored_colouring(&store), (BarColouring::Muted, true));
+        assert_eq!(stored_colouring(&store), (BarColouring::Soft, true));
     }
 }

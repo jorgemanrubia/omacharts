@@ -17,7 +17,6 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::bars::BarStyle;
 use crate::indicators::LineStyle;
 
 /// Which way the platform stylesheet should lean.
@@ -694,23 +693,24 @@ impl BarSlot {
 /// The theme that follows the desktop. Default wherever Omarchy is present.
 pub const OMARCHY_ID: &str = "omarchy";
 /// The bar scheme that paints the theme's candle colours as they are.
-/// Default, so candles match the desktop too.
+/// Default, so candles match the desktop too: Vivid, the theme's green and
+/// red. The id is the one the setting has held since colours lived in
+/// schemes of their own, which is why it is not spelled "vivid".
 pub const THEME_BARS_ID: &str = "theme";
-/// The same, with a rise drawn as an outline.
-pub const THEME_HOLLOW_ID: &str = "theme-hollow";
 /// The same, with the direction colours spent: one neutral for every bar.
 pub const THEME_MONO_ID: &str = "theme-mono";
+/// What an older version wrote for Vivid with a rise drawn as an outline;
+/// read back as [`BarColouring::Vivid`] with hollow rises switched on.
+pub const THEME_HOLLOW_ID: &str = "theme-hollow";
 /// Two quiet colours from the palette, a slate and a sand, instead of its
 /// green and red.
-pub const THEME_MUTED_ID: &str = "theme-muted";
+pub const THEME_SOFT_ID: &str = "theme-soft";
 /// Two greys made from the theme's text: no colour at all.
-pub const THEME_COLORLESS_ID: &str = "theme-colorless";
+pub const THEME_QUIET_ID: &str = "theme-quiet";
 /// What an older version wrote for the theme's colours the other way round,
-/// red for a rise; read back as [`BarColouring::Filled`] inverted.
+/// red for a rise; read back as [`BarColouring::Vivid`] with up and down
+/// swapped.
 pub const THEME_RED_UP_ID: &str = "theme-red-up";
-/// What the prototype wrote for Muted the other way round; read back as
-/// [`BarColouring::Muted`] inverted.
-pub const THEME_MUTED_RED_UP_ID: &str = "theme-muted-red-up";
 /// Fallback theme when Omarchy is not installed.
 pub const FALLBACK_THEME_ID: &str = "midnight";
 
@@ -724,9 +724,8 @@ pub fn builtin_themes() -> Vec<Theme> {
 pub fn bar_schemes(theme: &Theme) -> Vec<BarScheme> {
     vec![
         theme_bars(theme),
-        theme_hollow_bars(theme),
-        theme_muted_bars(theme),
-        theme_colorless_bars(theme),
+        theme_soft_bars(theme),
+        theme_quiet_bars(theme),
         theme_mono_bars(theme),
     ]
 }
@@ -869,7 +868,7 @@ pub fn theme_bars(theme: &Theme) -> BarScheme {
         // these, dimmed.
         Some(bars) => BarScheme {
             id: THEME_BARS_ID.to_string(),
-            name: "Filled".to_string(),
+            name: "Vivid".to_string(),
             source: Source::BuiltIn,
             volume_up: mix(&bars.up, &theme.ui.background, 0.45),
             volume_down: mix(&bars.down, &theme.ui.background, 0.45),
@@ -903,7 +902,7 @@ fn palette_bars(theme: &Theme) -> BarScheme {
         .unwrap_or_else(|| "#f85149".to_string());
     BarScheme {
         id: THEME_BARS_ID.to_string(),
-        name: "Filled".to_string(),
+        name: "Vivid".to_string(),
         source: Source::BuiltIn,
         volume_up: mix(&up, &theme.ui.background, 0.45),
         volume_down: mix(&down, &theme.ui.background, 0.45),
@@ -991,19 +990,6 @@ fn set_apart(
     colour.to_string()
 }
 
-/// The theme's own bar colours with up and down exchanged.
-///
-/// The theme's candles with a rise drawn as an outline — the convention that
-/// keeps a chart airy, and tells direction apart without colour too.
-pub fn theme_hollow_bars(theme: &Theme) -> BarScheme {
-    BarScheme {
-        id: THEME_HOLLOW_ID.to_string(),
-        name: "Hollow".to_string(),
-        up_fill: "#00000000".to_string(),
-        ..theme_bars(theme)
-    }
-}
-
 impl BarScheme {
     /// This scheme with up and down exchanged.
     ///
@@ -1011,7 +997,7 @@ impl BarScheme {
     /// China, Japan and Korea read a chart the other way round — red is up,
     /// green is down — and a chart that disagrees with every other screen
     /// somebody trades from is one they misread. A switch laid over every
-    /// scheme rather than a scheme of its own, so a muted or a colorless
+    /// scheme rather than a scheme of its own, so a muted or a quiet
     /// pair can be turned round the same way the coloured one is; the id
     /// and the name stay, since it is the same scheme worn the other way.
     pub fn inverted(&self) -> BarScheme {
@@ -1027,11 +1013,38 @@ impl BarScheme {
     }
 
     /// Whether turning it round would change anything: a rise and a fall
-    /// differ in colour or in fill. Monochrome's do not.
+    /// differ in colour. Monochrome's do not, however they are filled.
     pub fn is_two_toned(&self) -> bool {
-        self.up != self.down || self.up_fill != self.down_fill
+        self.up != self.down
+    }
+
+    /// This scheme with a rise drawn as an outline — the convention that
+    /// keeps a chart airy, and tells direction apart without colour, which
+    /// is what gives Monochrome a direction. A switch over every palette
+    /// rather than a scheme of its own.
+    pub fn hollow_up(&self) -> BarScheme {
+        BarScheme { up_fill: HOLLOW.to_string(), ..self.clone() }
+    }
+
+    /// Whether a rise is drawn as an outline.
+    pub fn is_hollow_up(&self) -> bool {
+        self.up_fill == HOLLOW
+    }
+
+    /// This scheme as a chart wears it: up and down swapped first, so that
+    /// a hollow rise is the rise however the colours are turned.
+    pub fn worn(&self, swapped: bool, hollow_up: bool) -> BarScheme {
+        let mut bars = if swapped { self.inverted() } else { self.clone() };
+        if hollow_up {
+            bars = bars.hollow_up();
+        }
+        bars
     }
 }
+
+/// A body that is not painted: the outline is drawn and the chart shows
+/// through.
+pub const HOLLOW: &str = "#00000000";
 
 /// Candles in a pair of quiet colours drawn from the theme's palette, for a
 /// chart in which price is not the protagonist.
@@ -1046,12 +1059,12 @@ impl BarScheme {
 /// difference from each other to be told apart at a glance. Derived from
 /// the theme like every other scheme, so a theme never asked about muted
 /// candles has them from its own palette.
-pub fn theme_muted_bars(theme: &Theme) -> BarScheme {
+pub fn theme_soft_bars(theme: &Theme) -> BarScheme {
     let coloured = theme_bars(theme);
     let (up, down) = slate_and_sand(theme);
     BarScheme {
-        id: THEME_MUTED_ID.to_string(),
-        name: "Muted".to_string(),
+        id: THEME_SOFT_ID.to_string(),
+        name: "Soft".to_string(),
         source: Source::BuiltIn,
         volume_up: mix(&up, &theme.ui.background, 0.45),
         volume_down: mix(&down, &theme.ui.background, 0.45),
@@ -1064,29 +1077,29 @@ pub fn theme_muted_bars(theme: &Theme) -> BarScheme {
     }
 }
 
-/// What a muted bar is held to against the chart behind it.
+/// What a soft bar is held to against the chart behind it.
 ///
 /// Well below the coloured pair, which sits at 5:1 to 9:1 on most themes,
-/// and below the monochrome floor too: a muted chart is one in which the
-/// bars sit back, and a muted bar has a second colour beside it to be read
+/// and below the monochrome floor too: a soft chart is one in which the
+/// bars sit back, and a soft bar has a second colour beside it to be read
 /// against. Still at WCAG's 3:1 for a graphic that carries meaning, since
 /// a wick is a hairline of the same colour. The ceiling is where it stops
 /// sitting back.
-pub const MUTED_CONTRAST: ContrastBand = ContrastBand::new(3.0, 3.8);
+pub const SOFT_CONTRAST: ContrastBand = ContrastBand::new(3.0, 3.8);
 
-/// The least a muted rise may be from a muted fall, as `delta_e` sees it.
+/// The least a soft rise may be from a soft fall, as `delta_e` sees it.
 ///
 /// Above the 0.02 the eye can only just separate, with room for the bars
 /// being read at a glance and under a less than perfect screen; below the
 /// 0.08 the palette holds overlays to, since two overlays must never be
 /// mistaken for each other and a rise and a fall may be allowed a second
 /// look. That is what "subtly distinct" is in numbers.
-pub const MUTED_APART: f64 = 0.05;
+pub const SOFT_APART: f64 = 0.05;
 
-/// How much colour a muted bar carries: enough to be a slate rather than a
+/// How much colour a soft bar carries: enough to be a slate rather than a
 /// grey, not enough to be a blue. Raised a little at a time, only for a
-/// pair whose hues are nearer each other than [`MUTED_APART`] allows.
-const MUTED_CHROMA: f64 = 0.055;
+/// pair whose hues are nearer each other than [`SOFT_APART`] allows.
+const SOFT_CHROMA: f64 = 0.055;
 
 /// Below this a colour has no hue worth keeping.
 const GREY: f64 = 0.01;
@@ -1096,27 +1109,27 @@ const GREY: f64 = 0.01;
 const SLATE: f64 = 255.0;
 const SAND: f64 = 75.0;
 
-/// The muted pair, up first: the theme's slate and its sand, both painted
-/// at the one lightness every muted bar shares, and made sure they can be
+/// The soft pair, up first: the theme's slate and its sand, both painted
+/// at the one lightness every soft bar shares, and made sure they can be
 /// told apart.
 ///
-/// The lightness is the theme's text brought into [`MUTED_CONTRAST`] with
+/// The lightness is the theme's text brought into [`SOFT_CONTRAST`] with
 /// its chroma taken out, so the pair is as far from the chart as a quiet
 /// grey would be and no further; both are painted at it, so they differ by
 /// hue alone. A theme whose blue and amber lie near each other gets a
-/// little more chroma until the pair clears [`MUTED_APART`].
+/// little more chroma until the pair clears [`SOFT_APART`].
 fn slate_and_sand(theme: &Theme) -> (String, String) {
     let slate = nearest_hue(theme, &["Blue", "Cyan", "Teal"], SLATE);
     let sand = nearest_hue(theme, &["Amber", "Orange"], SAND);
-    let grey = held_to(&theme.ui.text, &theme.ui.background, MUTED_CONTRAST, Some(0.0));
+    let grey = held_to(&theme.ui.text, &theme.ui.background, SOFT_CONTRAST, Some(0.0));
     let Some(grey) = Oklch::of(&grey) else {
         return (theme.ui.text.clone(), theme.ui.text_muted.clone());
     };
     let mut more = 0.0;
     loop {
-        let paint = |h: f64| Oklch { l: grey.l, c: MUTED_CHROMA + more, h }.hex();
+        let paint = |h: f64| Oklch { l: grey.l, c: SOFT_CHROMA + more, h }.hex();
         let pair = (paint(slate), paint(sand));
-        if delta_e(&pair.0, &pair.1) >= MUTED_APART || more >= 0.08 {
+        if delta_e(&pair.0, &pair.1) >= SOFT_APART || more >= 0.08 {
             return pair;
         }
         more += 0.005;
@@ -1153,16 +1166,16 @@ fn nearest_hue(theme: &Theme, names: &[&str], ideal: f64) -> f64 {
 /// but a decent contrast still; between the two that is about 1.65:1, or
 /// 0.12 of lightness, six times what the eye can just separate. Derived
 /// from the theme like every other scheme, so a theme never asked about
-/// colorless candles has them from its own text.
-pub fn theme_colorless_bars(theme: &Theme) -> BarScheme {
+/// quiet candles has them from its own text.
+pub fn theme_quiet_bars(theme: &Theme) -> BarScheme {
     let coloured = theme_bars(theme);
-    let near = colorless_grey(theme, COLORLESS_NEAR);
-    let far = colorless_grey(theme, COLORLESS_FAR);
+    let near = quiet_grey(theme, QUIET_NEAR);
+    let far = quiet_grey(theme, QUIET_FAR);
     let lightness = |hex: &str| Oklch::of(hex).map_or(0.0, |c| c.l);
     let (up, down) = if lightness(&far) > lightness(&near) { (far, near) } else { (near, far) };
     BarScheme {
-        id: THEME_COLORLESS_ID.to_string(),
-        name: "Colorless".to_string(),
+        id: THEME_QUIET_ID.to_string(),
+        name: "Quiet".to_string(),
         source: Source::BuiltIn,
         volume_up: mix(&up, &theme.ui.background, 0.45),
         volume_down: mix(&down, &theme.ui.background, 0.45),
@@ -1178,7 +1191,7 @@ pub fn theme_colorless_bars(theme: &Theme) -> BarScheme {
 /// Where the nearer of the two greys sits against the chart: WCAG's 3:1
 /// for a graphic that carries meaning, since a wick is a hairline of it,
 /// and no further, so a body of it is a stone rather than a block.
-pub const COLORLESS_NEAR: ContrastBand = ContrastBand::new(3.0, 3.15);
+pub const QUIET_NEAR: ContrastBand = ContrastBand::new(3.0, 3.15);
 
 /// Where the further grey sits: under the coloured pair, which runs 5:1 to
 /// 9:1 on most themes, and under Monochrome's ceiling, but a decent
@@ -1186,17 +1199,17 @@ pub const COLORLESS_NEAR: ContrastBand = ContrastBand::new(3.0, 3.15);
 /// The two bands set the pair's own contrast: 5.1 over 3.1 is about 1.65:1
 /// between a rise and a fall on every theme, because both are derived from
 /// the same ground.
-pub const COLORLESS_FAR: ContrastBand = ContrastBand::new(5.0, 5.2);
+pub const QUIET_FAR: ContrastBand = ContrastBand::new(5.0, 5.2);
 
-/// The most colour a colorless grey keeps: a trace of the theme's text,
+/// The most colour a quiet grey keeps: a trace of the theme's text,
 /// below what the eye separates from a dead grey side by side, so a warm
 /// theme's greys lean warm without being a colour.
-pub const COLORLESS_GREY: f64 = 0.012;
+pub const QUIET_GREY: f64 = 0.012;
 
 /// The theme's text as a grey held to `band` against the chart, its chroma
-/// capped at [`COLORLESS_GREY`].
-fn colorless_grey(theme: &Theme, band: ContrastBand) -> String {
-    held_to(&theme.ui.text, &theme.ui.background, band, Some(COLORLESS_GREY))
+/// capped at [`QUIET_GREY`].
+fn quiet_grey(theme: &Theme, band: ContrastBand) -> String {
+    held_to(&theme.ui.text, &theme.ui.background, band, Some(QUIET_GREY))
 }
 
 /// Written down as its key, the id the settings have always stored, so an
@@ -1247,96 +1260,84 @@ pub fn theme_mono_bars(theme: &Theme) -> BarScheme {
     }
 }
 
-/// How a chart paints the theme's candle colours. The colours are the
-/// theme's; this is only what is done with them, and it belongs to the chart.
+/// The palette a chart paints its bars from. The colours are the theme's;
+/// this is only which of them, and it belongs to the chart, as do the two
+/// switches worn over it: a rise drawn hollow, and up and down swapped.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum BarColouring {
+    /// The theme's green and red.
     #[default]
-    Filled,
-    Hollow,
-    Muted,
-    Colorless,
+    Vivid,
+    /// A slate against a sand, from the theme's palette.
+    Soft,
+    /// Two greys made from the theme's text.
+    Quiet,
+    /// One neutral for every bar.
     Monochrome,
+}
+
+/// A colouring as it was written down, with the switches worn over it: an
+/// older version stored a hollow rise and a swapped pair as schemes of
+/// their own, and those come back as Vivid with the switch on.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct StoredColouring {
+    pub colouring: BarColouring,
+    pub swapped: bool,
+    pub hollow_up: bool,
 }
 
 impl BarColouring {
     /// From the most colour to the least.
-    pub const ALL: [BarColouring; 5] = [
-        BarColouring::Filled,
-        BarColouring::Hollow,
-        BarColouring::Muted,
-        BarColouring::Colorless,
-        BarColouring::Monochrome,
-    ];
+    pub const ALL: [BarColouring; 4] =
+        [BarColouring::Vivid, BarColouring::Soft, BarColouring::Quiet, BarColouring::Monochrome];
 
     /// The scheme id it is stored under, the same ids the settings have
     /// always held.
     pub fn key(self) -> &'static str {
         match self {
-            BarColouring::Filled => THEME_BARS_ID,
-            BarColouring::Hollow => THEME_HOLLOW_ID,
-            BarColouring::Muted => THEME_MUTED_ID,
-            BarColouring::Colorless => THEME_COLORLESS_ID,
+            BarColouring::Vivid => THEME_BARS_ID,
+            BarColouring::Soft => THEME_SOFT_ID,
+            BarColouring::Quiet => THEME_QUIET_ID,
             BarColouring::Monochrome => THEME_MONO_ID,
         }
     }
 
-    /// Schemes that used to carry colours of their own come back as the
-    /// theme's colours painted the same way; anything else unknown is not a
-    /// colouring.
+    /// The colouring a stored key names, the switches it carried left
+    /// aside; anything unknown is not a colouring.
     pub fn from_key(key: &str) -> Option<BarColouring> {
-        BarColouring::from_stored(key).map(|(colouring, _)| colouring)
+        BarColouring::from_stored(key).map(|stored| stored.colouring)
     }
 
-    /// A stored key as the colouring it names and whether it is worn the
-    /// other way round: the turned-round schemes an older version wrote
-    /// (`theme-red-up`, `theme-muted-red-up`) are the plain colouring with
-    /// its up and down exchanged, which is now a switch of the chart's.
-    pub fn from_stored(key: &str) -> Option<(BarColouring, bool)> {
+    /// A stored key as the colouring it names and the switches worn over
+    /// it: the schemes an older version wrote for a hollow rise
+    /// (`theme-hollow`, `hollow`) and for red up (`theme-red-up`) are Vivid
+    /// with that switch on, so a chart keeps the look it was saved with.
+    pub fn from_stored(key: &str) -> Option<StoredColouring> {
+        let plain = |colouring| StoredColouring { colouring, ..Default::default() };
         match key {
-            "hollow" => Some((BarColouring::Hollow, false)),
-            "monochrome" => Some((BarColouring::Monochrome, false)),
-            THEME_RED_UP_ID => Some((BarColouring::Filled, true)),
-            THEME_MUTED_RED_UP_ID => Some((BarColouring::Muted, true)),
-            key => BarColouring::ALL.into_iter().find(|c| c.key() == key).map(|c| (c, false)),
+            "hollow" | THEME_HOLLOW_ID => {
+                Some(StoredColouring { colouring: BarColouring::Vivid, hollow_up: true, swapped: false })
+            }
+            THEME_RED_UP_ID => Some(StoredColouring { colouring: BarColouring::Vivid, swapped: true, hollow_up: false }),
+            "monochrome" => Some(plain(BarColouring::Monochrome)),
+            key => BarColouring::ALL.into_iter().find(|c| c.key() == key).map(plain),
         }
     }
 
-    /// An OHLC bar has no body to fill or leave hollow, so filled is simply
-    /// "coloured" there.
-    pub fn label(self, style: BarStyle) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
-            BarColouring::Filled if style == BarStyle::Ohlc => "Coloured",
-            BarColouring::Filled => "Filled",
-            BarColouring::Hollow => "Hollow",
-            BarColouring::Muted => "Muted",
-            BarColouring::Colorless => "Colorless",
+            BarColouring::Vivid => "Vivid",
+            BarColouring::Soft => "Soft",
+            BarColouring::Quiet => "Quiet",
             BarColouring::Monochrome => "Monochrome",
         }
     }
 
-    /// What a bar of this style can be painted as.
-    pub fn offered(style: BarStyle) -> &'static [BarColouring] {
-        match style {
-            BarStyle::Candles => &BarColouring::ALL,
-            BarStyle::Ohlc => {
-                &[BarColouring::Filled, BarColouring::Muted, BarColouring::Colorless, BarColouring::Monochrome]
-            }
-        }
-    }
-
-    /// What a bar of this style is actually painted as: hollow means nothing
-    /// to an OHLC bar, which draws it coloured.
-    pub fn for_style(self, style: BarStyle) -> BarColouring {
-        if BarColouring::offered(style).contains(&self) { self } else { BarColouring::Filled }
-    }
-
     pub fn scheme(self, theme: &Theme) -> BarScheme {
         match self {
-            BarColouring::Filled => theme_bars(theme),
-            BarColouring::Hollow => theme_hollow_bars(theme),
-            BarColouring::Muted => theme_muted_bars(theme),
-            BarColouring::Colorless => theme_colorless_bars(theme),
+            BarColouring::Vivid => theme_bars(theme),
+            BarColouring::Soft => theme_soft_bars(theme),
+            BarColouring::Quiet => theme_quiet_bars(theme),
             BarColouring::Monochrome => theme_mono_bars(theme),
         }
     }
@@ -1993,27 +1994,43 @@ mod tests {
     }
 
     #[test]
-    fn colorless_bars_are_two_greys_apart_in_lightness_and_clear_of_the_chart() {
+    fn quiet_bars_are_two_greys_apart_in_lightness_and_clear_of_the_chart() {
         for theme in builtin_themes() {
-            let bars = theme_colorless_bars(&theme);
+            let bars = theme_quiet_bars(&theme);
             let (up, down) = (Oklch::of(&bars.up).unwrap(), Oklch::of(&bars.down).unwrap());
-            assert!(up.c <= COLORLESS_GREY + 0.002 && down.c <= COLORLESS_GREY + 0.002, "{}: a colour", theme.name);
+            assert!(up.c <= QUIET_GREY + 0.002 && down.c <= QUIET_GREY + 0.002, "{}: a colour", theme.name);
             assert!(up.l > down.l + 0.1, "{}: {} over {} is not a lighter rise", theme.name, bars.up, bars.down);
             for grey in [&bars.up, &bars.down] {
                 let ratio = contrast_ratio(grey, &theme.ui.background);
-                assert!((COLORLESS_NEAR.floor..=COLORLESS_FAR.ceiling).contains(&ratio), "{}: {ratio:.2}", theme.name);
+                assert!((QUIET_NEAR.floor..=QUIET_FAR.ceiling).contains(&ratio), "{}: {ratio:.2}", theme.name);
             }
             assert!(bars.is_two_toned());
         }
     }
 
     #[test]
-    fn a_turned_round_scheme_written_by_an_older_version_is_read_as_a_switch() {
-        assert_eq!(BarColouring::from_stored("theme-red-up"), Some((BarColouring::Filled, true)));
-        assert_eq!(BarColouring::from_stored("theme-muted-red-up"), Some((BarColouring::Muted, true)));
-        assert_eq!(BarColouring::from_stored("theme-colorless"), Some((BarColouring::Colorless, false)));
-        assert_eq!(BarColouring::from_key("theme-red-up"), Some(BarColouring::Filled));
+    fn a_scheme_written_by_an_older_version_is_read_as_a_palette_and_its_switches() {
+        let stored = |key| BarColouring::from_stored(key).unwrap();
+        assert_eq!(stored("theme-red-up"), StoredColouring { colouring: BarColouring::Vivid, swapped: true, hollow_up: false });
+        assert_eq!(stored("theme-hollow"), StoredColouring { colouring: BarColouring::Vivid, swapped: false, hollow_up: true });
+        assert_eq!(stored("hollow"), stored("theme-hollow"));
+        assert_eq!(stored("monochrome"), stored("theme-mono"));
+        for colouring in BarColouring::ALL {
+            assert_eq!(stored(colouring.key()), StoredColouring { colouring, ..Default::default() });
+        }
+        assert_eq!(BarColouring::from_key("theme-red-up"), Some(BarColouring::Vivid));
         assert_eq!(BarColouring::from_key("nonsense"), None);
+    }
+
+    #[test]
+    fn a_scheme_is_worn_swapped_first_so_the_hollow_rise_is_the_rise() {
+        let bars = theme_bars(&midnight());
+        let worn = bars.worn(true, true);
+        assert_eq!((&worn.up, &worn.down), (&bars.down, &bars.up));
+        assert!(worn.is_hollow_up() && !worn.inverted().is_hollow_up());
+        assert_eq!(worn.down_fill, bars.up_fill, "the fall keeps its body");
+        assert_eq!(bars.worn(false, false), bars);
+        assert!(theme_mono_bars(&midnight()).hollow_up().is_hollow_up());
     }
 
     #[test]

@@ -1386,7 +1386,7 @@ mod tests {
         assert_eq!(chosen["hover"], theme["hover"]);
     }
 
-    /// Every scheme on offer — filled, hollow, muted, colorless and
+    /// Every scheme on offer — filled, hollow, soft, quiet and
     /// monochrome — reaches the widget whole: the change text, the sparklines (which
     /// are drawn in the same up and down) and the pill all come from the
     /// chosen scheme's colours, by the same rules the chart applies to them.
