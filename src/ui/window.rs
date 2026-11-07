@@ -1513,6 +1513,49 @@ mod sidebar_tests {
     }
 }
 
+#[cfg(test)]
+mod outside_change_tests {
+    use super::*;
+    use crate::ui::window::trade::tests::bare_window;
+    use omacharts_engine::Range;
+
+    /// Run a command against the window, as a terminal would.
+    fn command(window: &Rc<Window>, words: &[&str]) -> String {
+        let args: Vec<String> = std::iter::once("omacharts").chain(words.iter().copied()).map(String::from).collect();
+        let live: &dyn crate::cli::Live = window;
+        let outcome = crate::cli::run(&args, &window.store, Some(live), &crate::cli::Here);
+        assert_eq!(outcome.code, 0, "{words:?}: {}", outcome.err);
+        outcome.out
+    }
+
+    fn at(window: &Window, position: usize) -> Rc<ChartPane> {
+        let id = window.layout.borrow().leaves()[position];
+        window.pane(id).expect("a chart there")
+    }
+
+    /// A range set on one chart by a command stays on it when another
+    /// command moves the focus, which rebuilds every chart from what was
+    /// written down, and when the focus comes back.
+    #[test]
+    fn a_range_set_by_a_command_survives_the_focus_moving() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            command(&window, &["chart", "split", "horizontal"]);
+            command(&window, &["chart", "focus", "pos:0"]);
+            command(&window, &["chart", "range", "2025"]);
+            let held = at(&window, 0).view.held_range();
+            assert!(matches!(held, Some(Range::Year(2025))), "{held:?}");
+
+            command(&window, &["chart", "focus", "pos:1"]);
+            assert_eq!(at(&window, 0).view.held_range(), held, "moving the focus away let the range go");
+            assert_eq!(at(&window, 1).view.held_range(), None, "the other chart took it on");
+            command(&window, &["chart", "focus", "pos:0"]);
+            assert_eq!(at(&window, 0).view.held_range(), held, "moving the focus back let the range go");
+        });
+    }
+}
+
 /// Does this watchlist hold that symbol?
 ///
 /// Matched on the canonical ticker and the exchange suffix together, never on
@@ -4138,6 +4181,19 @@ impl Window {
     pub fn reload_workspace(self: &Rc<Self>) {
         let books = self.books.borrow().clone();
         let active = self.active.get();
+        // The one thing on screen that is not written down and still has to
+        // survive a rebuild: a range a chart was told to keep showing, by
+        // `chart range` among others. Without it, the next command that
+        // rebuilds the arrangement — focusing another chart is one — puts
+        // every chart back at rest. Matched by the chart's own name, which a
+        // rebuild keeps and a copy is given afresh, rather than by its id,
+        // which a rebuild hands out again.
+        let held: HashMap<String, omacharts_engine::Range> = self
+            .panes
+            .borrow()
+            .iter()
+            .filter_map(|pane| Some((pane.uid.borrow().clone(), pane.view.held_range()?)))
+            .collect();
 
         if !self.restore_workspace() {
             // An arrangement that cannot be rebuilt leaves the charts alone:
@@ -4147,6 +4203,14 @@ impl Window {
             *self.books.borrow_mut() = books;
             self.active.set(active);
             return;
+        }
+
+        if !held.is_empty() {
+            for pane in self.panes.borrow().iter() {
+                if let Some(range) = held.get(pane.uid.borrow().as_str()) {
+                    pane.view.show_range(*range);
+                }
+            }
         }
 
         // A command can add or remove a whole chartbook, which is the one

@@ -4279,7 +4279,12 @@ impl ChartView {
         self.redraw();
     }
 
-    /// The first and last day on screen, on the clock the time axis reads.
+    /// The range the chart is holding to, until a hand moves the view.
+    pub fn held_range(&self) -> Option<Range> {
+        self.state.borrow().range
+    }
+
+        /// The first and last day on screen, on the clock the time axis reads.
     pub fn days_shown(&self) -> Option<(chrono::NaiveDate, chrono::NaiveDate)> {
         let state = self.state.borrow();
         let (first, visible, _) = state.view();
