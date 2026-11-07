@@ -130,7 +130,10 @@ fn order_of(order: &dtc::Order) -> Order {
     Order {
         tick: specs::tick(root_of(&contract)),
         account: order.account.clone(),
-        basket_id: order.server_id.clone().or_else(|| order.client_id.clone()).unwrap_or_default(),
+        // The id it was placed under here, which is what placing it
+        // returned and what a link names it by; the server's for one placed
+        // elsewhere. Either reaches it to cancel or move.
+        basket_id: order.client_id.clone().or_else(|| order.server_id.clone()).unwrap_or_default(),
         exchange: exchange_of(&contract, order.exchange.as_deref()),
         contract,
         side: side_of(order.side),
@@ -197,14 +200,20 @@ impl Session for SierraSession {
     }
 
     /// No linking after the fact: DTC makes two orders one-cancels-other
-    /// only as they are placed together.
+    /// only as they are submitted together, as one OCO pair, when the
+    /// server says it takes them (`OCOOrdersSupported`, as this machine's
+    /// Sierra Chart does); with a server that does not, the app holds the
+    /// link.
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             kinds: vec![OrderKind::Market, OrderKind::Limit, OrderKind::Stop],
             flatten: true,
             cancel_all: true,
             modify: true,
-            link: false,
+            link: match self.trading.server().oco {
+                true => Linking::AtSubmission,
+                false => Linking::None,
+            },
             history: true,
             snapshot: true,
         }
@@ -280,29 +289,13 @@ impl Session for SierraSession {
     }
 
     fn place(&self, order: &OrderRequest) -> Result<String, Failure> {
-        let symbol = feed::sierra_contract(&order.contract).ok_or_else(|| {
-            Failure::Refused(format!("Sierra Chart has no name for {}", order.contract))
-        })?;
-        let placed = dtc::NewOrder {
-            account: order.account.clone(),
-            symbol,
-            exchange: None,
-            side: match order.side {
-                Side::Buy => dtc::Side::Buy,
-                Side::Sell => dtc::Side::Sell,
-            },
-            qty: order.qty,
-            kind: match order.kind {
-                OrderKind::Market => dtc::OrderKind::Market,
-                OrderKind::Limit => dtc::OrderKind::Limit,
-                OrderKind::Stop => dtc::OrderKind::Stop,
-            },
-            price1: order.price,
-            price2: None,
-            time_in_force: dtc::TimeInForce::Day,
-            tag: Some(order.tag.clone()),
-        };
-        self.trading.place(&placed).map_err(failed)
+        self.trading.place(&new_order(order)?).map_err(failed)
+    }
+
+    /// One SUBMIT_NEW_OCO_ORDER, with no parent: see
+    /// [`dtc::Trading::place_pair`].
+    fn place_pair(&self, orders: &[OrderRequest; 2]) -> Result<[String; 2], Failure> {
+        self.trading.place_pair(&[new_order(&orders[0])?, new_order(&orders[1])?]).map_err(failed)
     }
 
     fn cancel(&self, _account: &str, basket: &str) -> Result<(), Failure> {
@@ -313,6 +306,7 @@ impl Session for SierraSession {
         self.trading.modify(basket, Some(price), None).map_err(failed)
     }
 
+    /// Never asked: [`Plan`] links Sierra Chart's orders as a pair.
     fn link(&self, _account: &str, _baskets: &[String]) -> Result<(), Failure> {
         Err(Failure::Refused("Sierra Chart links orders only as they are placed together".into()))
     }
@@ -334,6 +328,31 @@ impl Session for SierraSession {
     fn sign_out(&self) {
         self.trading.sign_out();
     }
+}
+
+/// An order as the server takes it, in Sierra Chart's spelling.
+fn new_order(order: &OrderRequest) -> Result<dtc::NewOrder, Failure> {
+    let symbol = feed::sierra_contract(&order.contract)
+        .ok_or_else(|| Failure::Refused(format!("Sierra Chart has no name for {}", order.contract)))?;
+    Ok(dtc::NewOrder {
+        account: order.account.clone(),
+        symbol,
+        exchange: None,
+        side: match order.side {
+            Side::Buy => dtc::Side::Buy,
+            Side::Sell => dtc::Side::Sell,
+        },
+        qty: order.qty,
+        kind: match order.kind {
+            OrderKind::Market => dtc::OrderKind::Market,
+            OrderKind::Limit => dtc::OrderKind::Limit,
+            OrderKind::Stop => dtc::OrderKind::Stop,
+        },
+        price1: order.price,
+        price2: None,
+        time_in_force: dtc::TimeInForce::Day,
+        tag: Some(order.tag.clone()),
+    })
 }
 
 #[cfg(test)]
@@ -374,7 +393,7 @@ mod tests {
         let working: Vec<&Order> = book.working("Sim1", "ESZ6").collect();
         assert_eq!(working.len(), 1);
         assert_eq!((working[0].kind, working[0].price, working[0].side), (OrderKind::Limit, Some(7_550.0), Side::Buy));
-        assert!(!session.capabilities().link, "no linking after the fact");
+        assert_eq!(session.capabilities().link, Linking::AtSubmission, "linked only as submitted together");
         session.sign_out();
     }
 
@@ -399,6 +418,48 @@ mod tests {
         let sent = fake.received_of(208);
         assert_eq!(sent.len(), 1, "one SUBMIT_NEW_SINGLE_ORDER");
         assert_eq!(sent[0].0.get("Symbol").and_then(|symbol| symbol.as_str()), Some("ESZ26_FUT_CME"));
+        session.sign_out();
+    }
+
+    /// A stop added to a target working on Sierra Chart: the target is
+    /// cancelled first and the two go back as one OCO submission, each
+    /// known by its own tag, the pair for the whole position. A server that
+    /// takes no OCO leaves the link to the app.
+    #[test]
+    fn a_second_exit_reforms_the_pair_as_one_oco_submission() {
+        let fake = dtc::fake::Fake::builder().account("Sim1").position("Sim1", "ESZ26_FUT_CME", 2, 7_600.0).start();
+        let session = Sierra.sign_in(&login(fake.port()), Box::new(|_| {})).expect("signed in");
+        session.refresh().expect("refreshed");
+        let exit = |kind, price| OrderRequest {
+            account: "Sim1".into(),
+            contract: "ESZ6".into(),
+            exchange: "CME".into(),
+            side: Side::Sell,
+            qty: 2,
+            kind,
+            price: Some(price),
+            tag: new_tag(),
+        };
+        let target = session.place(&exit(OrderKind::Limit, 7_650.0)).expect("the target");
+        let working = session.book().order(&target).cloned();
+        let plan = Plan::exit(session.capabilities().link, exit(OrderKind::Stop, 7_580.0), working.as_ref());
+        let ran = plan.run(session.as_ref(), "Sim1");
+        let link = ran.link.expect("linked").expect("linked");
+        assert_eq!(link.holder, Holder::Broker);
+        assert_eq!(fake.received_of(dtc::wire::CANCEL_ORDER).len(), 1, "the target cancelled first");
+        let pairs = fake.received_of(dtc::wire::SUBMIT_NEW_OCO_ORDER);
+        assert_eq!(pairs.len(), 1, "one OCO submission");
+        assert_eq!((pairs[0].int("Quantity_1"), pairs[0].int("Quantity_2")), (Some(2), Some(2)));
+        assert_eq!((pairs[0].int("OrderType_1"), pairs[0].int("OrderType_2")), (Some(3), Some(2)));
+        let book = session.book();
+        let tags: Vec<Option<String>> = link.baskets.iter().map(|basket| book.order(basket).and_then(|o| o.tag.clone())).collect();
+        let asked: Vec<Option<String>> = plan.placing().iter().map(|order| Some(order.tag.clone())).collect();
+        assert_eq!(tags, asked, "each of the pair known by its own tag");
+        session.sign_out();
+
+        let fake = dtc::fake::Fake::builder().account("Sim1").oco_unsupported().start();
+        let session = Sierra.sign_in(&login(fake.port()), Box::new(|_| {})).expect("signed in");
+        assert_eq!(session.capabilities().link, Linking::None, "the app holds the link");
         session.sign_out();
     }
 

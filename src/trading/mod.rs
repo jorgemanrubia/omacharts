@@ -30,6 +30,8 @@
 //!
 //! - `domain`: the neutral types every broker is mapped into.
 //! - `rules`: what follows from them, with no store and no broker.
+//! - `linking`: a stop and a target linked with whatever the broker has,
+//!   and the order of the steps that keeps the position safe meanwhile.
 //! - `words`: what the menu, the toasts and the pills say.
 //! - `logins`: what is stored about logins and their accounts.
 //! - `session`: the seam for brokers, [`Broker`] and [`Session`], and the
@@ -44,6 +46,7 @@ pub mod adapters;
 mod domain;
 #[cfg(any(test, feature = "fakes"))]
 pub mod fake;
+mod linking;
 mod logins;
 mod rules;
 mod session;
@@ -52,6 +55,7 @@ mod words;
 
 pub use adapters::*;
 pub use domain::*;
+pub use linking::*;
 pub use logins::*;
 pub use rules::*;
 pub use session::*;

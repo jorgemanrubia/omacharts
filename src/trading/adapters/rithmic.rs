@@ -414,7 +414,7 @@ impl Session for RithmicSession {
             flatten: true,
             cancel_all: true,
             modify: true,
-            link: true,
+            link: Linking::AfterTheFact,
             history: true,
             snapshot: true,
         }

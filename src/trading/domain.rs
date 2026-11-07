@@ -103,10 +103,12 @@ pub struct Capabilities {
     pub cancel_all: bool,
     /// A working order's price can be changed where it stands.
     pub modify: bool,
-    /// Working orders can be linked on the broker's side, so that one
-    /// filling or cancelled cancels the others: a stop and a target that
-    /// do not both outlive the position.
-    pub link: bool,
+    /// How a stop and a target are linked, so that they do not both
+    /// outlive the position: by the broker after the fact, by the broker
+    /// only as they are submitted together, or by the app. Asked of
+    /// [`super::Plan`], never of the window: it links with the best there
+    /// is.
+    pub link: super::Linking,
     /// Past orders can be asked for, with [`Session::history`].
     pub history: bool,
     /// What is held and working now can be asked for, with

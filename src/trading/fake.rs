@@ -162,9 +162,21 @@ pub struct FakeSession {
     pub kinds: Vec<OrderKind>,
     /// What it says it can do beyond placing and cancelling.
     pub modifies: bool,
-    pub links_orders: bool,
-    /// The groups linked, each cancelled whole when one of it ends.
+    /// How it links a stop and a target: every way a broker can is one
+    /// of these, so each is tested here.
+    pub linking: Linking,
+    /// The groups linked, each cancelled whole when one of it ends: after
+    /// the fact, by [`Session::link`], or as a pair placed together.
     pub links: Mutex<Vec<Vec<String>>>,
+    /// How many pairs were placed together, [`Session::place_pair`]; a part
+    /// of one of a pair filled comes off the other, as DTC's do.
+    pub pairs: AtomicUsize,
+    /// What it was asked, in order: "place", "pair", "cancel", "modify",
+    /// "link".
+    pub heard: Mutex<Vec<&'static str>>,
+    /// Refuse the next pair, or the next link, in these words.
+    pub refuse_pairs: Mutex<Option<String>>,
+    pub refuse_links: Mutex<Option<String>>,
     /// Refuse whatever is asked next, in these words.
     pub refuse: Mutex<Option<String>>,
     /// Answer nothing at all from now on: every request is lost on the
@@ -199,8 +211,12 @@ impl FakeSession {
             simulated: true,
             kinds: vec![OrderKind::Market, OrderKind::Limit, OrderKind::Stop],
             modifies: true,
-            links_orders: true,
+            linking: Linking::AfterTheFact,
             links: Mutex::default(),
+            pairs: AtomicUsize::new(0),
+            heard: Mutex::default(),
+            refuse_pairs: Mutex::default(),
+            refuse_links: Mutex::default(),
             refuse: Mutex::default(),
             silent: Default::default(),
             holds: Default::default(),
@@ -256,16 +272,32 @@ impl FakeSession {
             return;
         };
         let qty = qty.min(order.qty - order.filled);
+        let basket = basket.to_string();
         order.filled += qty;
         order.status = match order.filled == order.qty {
             true => Stage::Filled.into(),
             false => Stage::PartiallyFilled.into(),
         };
         order.fill_price = order.price;
-        order.fills.push(Fill { basket: basket.into(), at: 0, qty, price: order.price.unwrap_or(0.0) });
+        order.fills.push(Fill { basket: basket.clone(), at: 0, qty, price: order.price.unwrap_or(0.0) });
         let order = order.clone();
         let bought = if order.side == Side::Buy { qty as i32 } else { -(qty as i32) };
         FakeSession::hold(&mut book, &order.account, &order.contract, &order.exchange, bought, order.price.unwrap_or(0.0));
+        match order.status.working() {
+            false => self.end_linked(&mut book, &basket),
+            // The other of a pair placed together is for as much less.
+            true if self.linking == Linking::AtSubmission => {
+                let links = self.links.lock().unwrap();
+                for group in links.iter().filter(|group| group.contains(&basket)) {
+                    for other in group.iter().filter(|b| **b != basket) {
+                        if let Some(other) = book.orders.iter_mut().find(|o| o.basket_id == *other && o.status.working()) {
+                            other.qty = other.qty.saturating_sub(qty).max(other.filled);
+                        }
+                    }
+                }
+            }
+            true => {}
+        }
         drop(book);
         self.moved();
     }
@@ -335,7 +367,7 @@ impl Session for FakeSession {
             flatten: true,
             cancel_all: true,
             modify: self.modifies,
-            link: self.links_orders,
+            link: self.linking,
             history: true,
             snapshot: true,
         }
@@ -414,6 +446,7 @@ impl Session for FakeSession {
             return Err(Failure::Refused("the session was signed out".into()));
         }
         self.refused()?;
+        self.heard.lock().unwrap().push("place");
         let basket = format!("B{}", self.baskets.fetch_add(1, Ordering::AcqRel));
         let last = *self.last.lock().unwrap();
         let held = self.holds.load(Ordering::Acquire);
@@ -456,6 +489,7 @@ impl Session for FakeSession {
     }
     fn cancel(&self, _: &str, basket: &str) -> Result<(), Failure> {
         self.refused()?;
+        self.heard.lock().unwrap().push("cancel");
         let mut book = self.book.lock().unwrap();
         let order = book.orders.iter_mut().find(|order| order.basket_id == basket && order.status.working());
         let Some(order) = order else { return Err(Failure::Refused("not working".into())) };
@@ -467,6 +501,7 @@ impl Session for FakeSession {
     }
     fn modify(&self, _: &str, basket: &str, price: f64) -> Result<(), Failure> {
         self.refused()?;
+        self.heard.lock().unwrap().push("modify");
         let mut book = self.book.lock().unwrap();
         let order = book.orders.iter_mut().find(|order| order.basket_id == basket && order.status.working());
         let Some(order) = order else { return Err(Failure::Refused("not working".into())) };
@@ -477,8 +512,36 @@ impl Session for FakeSession {
     }
     fn link(&self, _: &str, baskets: &[String]) -> Result<(), Failure> {
         self.refused()?;
+        self.heard.lock().unwrap().push("link");
+        if self.linking != Linking::AfterTheFact {
+            return Err(Failure::Refused("this broker does not link working orders".into()));
+        }
+        if let Some(why) = self.refuse_links.lock().unwrap().take() {
+            return Err(Failure::Refused(why));
+        }
         self.links.lock().unwrap().push(baskets.to_vec());
         Ok(())
+    }
+    fn place_pair(&self, orders: &[OrderRequest; 2]) -> Result<[String; 2], Failure> {
+        self.refused()?;
+        self.heard.lock().unwrap().push("pair");
+        if self.linking != Linking::AtSubmission {
+            return Err(Failure::Refused("this broker does not place orders as a pair".into()));
+        }
+        if let Some(why) = self.refuse_pairs.lock().unwrap().take() {
+            return Err(Failure::Refused(why));
+        }
+        // Each as a single order would be, then linked whole.
+        let mut heard = self.heard.lock().unwrap();
+        let before = heard.len();
+        drop(heard);
+        let placed = [self.place(&orders[0])?, self.place(&orders[1])?];
+        heard = self.heard.lock().unwrap();
+        heard.truncate(before);
+        drop(heard);
+        self.links.lock().unwrap().push(placed.to_vec());
+        self.pairs.fetch_add(1, Ordering::AcqRel);
+        Ok(placed)
     }
     fn cancel_all(&self, account: &str) -> Result<(), Failure> {
         self.refused()?;

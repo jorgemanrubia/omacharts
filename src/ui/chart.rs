@@ -4141,6 +4141,12 @@ impl ChartView {
         (position, state.marks.orders.iter().map(OrderMark::words).collect())
     }
 
+    /// How each order drawn is linked, if it is.
+    #[cfg(test)]
+    pub fn mark_links(&self) -> Vec<Option<LinkMark>> {
+        self.state.borrow().marks.orders.iter().map(|order| order.link).collect()
+    }
+
     /// Each mark as it is drawn: the position's words and whether it is
     /// faint, then each order's words, price and whether it is faint.
     #[cfg(test)]
@@ -6664,6 +6670,17 @@ pub struct OrderMark {
     /// until it is. A market order is always this, beside the last price,
     /// until it fills.
     pub dim: bool,
+    /// Linked with the position's other exit: drawn joined to it.
+    pub link: Option<LinkMark>,
+}
+
+/// How an exit is linked with the other, which the line joining them says:
+/// solid where the broker holds it, dashed where the app does, which lasts
+/// only while it runs, and faint until the broker has confirmed either.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LinkMark {
+    pub holder: crate::trading::Holder,
+    pub pending: bool,
 }
 
 impl OrderMark {
@@ -7447,6 +7464,7 @@ fn draw_marks(
         });
         chips.push((y + 0.5, &held.price_text, Some(chip_look(&held.colour, held.body.is_some())), held.dim));
     }
+    draw_link(cr, lane, &orders, ink, &faint);
     if let Some((held, y)) = position {
         let row = held_row(cr, lane, held);
         let tab_h = MARK_H - 2.0;
@@ -7509,6 +7527,60 @@ fn draw_marks(
     cr.restore().ok();
     moved
 }
+
+/// The line joining linked exits, on the side of their labels that faces
+/// the plot: from the top one to the bottom one, with a short stroke into
+/// each. Solid where the broker holds the link, dashed where the app does,
+/// faint while either is pending.
+fn draw_link(
+    cr: &cairo::Context,
+    lane: Lane,
+    orders: &[(&OrderMark, f64)],
+    ink: &str,
+    faint: Faint,
+) {
+    let linked: Vec<(MarkRow, f64, LinkMark)> = orders
+        .iter()
+        .filter_map(|(order, y)| Some((order_row(cr, lane, order), *y, order.link?)))
+        .collect();
+    if linked.len() < 2 {
+        return;
+    }
+    let (x, into): (f64, Vec<f64>) = match lane.side {
+        LabelSide::Left => {
+            let x = linked.iter().map(|(row, ..)| row.right()).fold(f64::MIN, f64::max) + LINK_GAP;
+            (x, linked.iter().map(|(row, ..)| row.right()).collect())
+        }
+        _ => {
+            let x = linked.iter().map(|(row, ..)| row.left()).fold(f64::MAX, f64::min) - LINK_GAP;
+            (x, linked.iter().map(|(row, ..)| row.left()).collect())
+        }
+    };
+    let x = x.round() + 0.5;
+    let top = linked.iter().map(|(_, y, _)| *y).fold(f64::MAX, f64::min);
+    let bottom = linked.iter().map(|(_, y, _)| *y).fold(f64::MIN, f64::max);
+    let pending = linked.iter().any(|(.., link)| link.pending);
+    let app = linked.iter().any(|(.., link)| link.holder == crate::trading::Holder::App);
+    faint(cr, pending, &|cr| {
+        cr.set_line_width(1.0);
+        cr.set_dash(if app { &[3.0, 2.0] } else { &[] }, 0.0);
+        colors::set_source_alpha(cr, ink, 0.7);
+        cr.move_to(x, top + 0.5);
+        cr.line_to(x, bottom + 0.5);
+        for ((_, y, _), edge) in linked.iter().zip(&into) {
+            cr.move_to(x, y + 0.5);
+            cr.line_to(*edge, y + 0.5);
+        }
+        let _ = cr.stroke();
+        cr.set_dash(&[], 0.0);
+    });
+}
+
+/// Paint what is given, faint or not.
+type Faint<'a> = &'a dyn Fn(&cairo::Context, bool, &dyn Fn(&cairo::Context));
+
+/// How far the line joining linked exits stands off their labels.
+const LINK_GAP: f64 = 4.0;
 
 /// An order being dragged: a ghost of its line where the hand has it, in
 /// the colour of the money an exit would realise there and in its own
@@ -10186,6 +10258,7 @@ mod tests {
                 colour: "#ff0000".into(),
                 style: LineStyle::Dotted,
                 dim: false,
+                link: None,
             }],
             limits: (None, None),
         };
@@ -10338,6 +10411,7 @@ mod tests {
                     colour: colour.into(),
                     style,
                     dim: false,
+                    link: None,
                 };
                 let (tp, sl) = (last + (high - last) * 0.6, avg - (high - low) * 0.2);
                 state.marks.orders = vec![

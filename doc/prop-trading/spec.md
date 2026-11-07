@@ -688,10 +688,17 @@ come; where it may not go with the market where it is, it says why and
 letting go does nothing. The × cancels an order or flattens the position, on a press and
 release without moving; a press on it that moves on drags the line as
 the line does. A new exit is linked to the
-other one working on the position when the broker links orders (Rithmic
-does, on its servers), so whichever fills first cancels the other; a
-broker that does not is said to, and flattening cancels the exits left
-behind. Tried on Rithmic Test on 2026-11-03.
+other one working on the position, so whichever fills first cancels the
+other, with whatever the broker has (`src/trading/linking.rs`): Rithmic
+links working orders on its servers; Sierra Chart over DTC links two only
+as they are submitted together, as one OCO pair, so a stop added to a
+working target cancels the target and submits both as one pair; where no
+safe order of steps exists (a target added to a working stop on Sierra
+Chart) or the broker cannot link at all, the app holds the link while it
+runs. The line joining the two exits says which: solid for the broker's,
+dashed for the app's, faint until confirmed. Flattening cancels the exits
+left behind. Tried on Rithmic Test on 2026-11-03. See *Linking exits* in
+`sierra.md` for the reasoning.
 
 Whatever is asked shows at once, faint, and at full strength only once the
 broker's book confirms it: a new order once the exchange has it working

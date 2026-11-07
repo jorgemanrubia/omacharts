@@ -123,8 +123,9 @@ than of Rithmic. What it maps:
 - **No market data for CME group exchanges**, streaming or historical: the
   charts are the files' (see above).
 - **No linking orders after they are placed.** DTC makes two orders
-  one-cancels-other only as they are submitted together, so `link` is off
-  for this broker.
+  one-cancels-other only as they are submitted together
+  (SUBMIT_NEW_OCO_ORDER), so this broker links at submission: see *Linking
+  exits* below.
 - **A stop-limit is moved by its stop.** Cancel-replace changes Price1, and
   Sierra Chart moves the limit with it.
 - **Prices on the wire are Sierra Chart's**, scaled by the contract's
@@ -134,6 +135,76 @@ than of Rithmic. What it maps:
   account, with the author's say-so.
 - **Simulated or not is per account**, not per login: Sierra Chart lists its
   simulator's accounts beside the broker's.
+
+### Linking exits
+
+Linking is the foundation's (`src/trading/linking.rs`), the same feature on
+every broker: the window asks for a plan and draws it, and never knows how
+it is done. `Capabilities::link` says how a broker can:
+
+| Broker | `Linking` | How a stop and a target are linked |
+| --- | --- | --- |
+| Rithmic | `AfterTheFact` | The new exit is placed, then linked with the working one on Rithmic's servers. Unchanged. |
+| Sierra Chart, OCO supported (`OCOOrdersSupported`, as this machine's says) | `AtSubmission` | Both at once: one SUBMIT_NEW_OCO_ORDER. A second exit: see below. |
+| Sierra Chart without OCO, or a broker that cannot link | `None` | Placed alone; the app holds the link while it runs. |
+
+A pair is sent with no parent (`ParentTriggerClientOrderID` empty: the
+position is already held) and `PartialFillHandling` = reduce quantity, so a
+part of one filled comes off the other and the two never close more than is
+held. DTC sends one `FreeFormText` for both; the client keeps each order's
+own tag.
+
+**A second exit, on Sierra Chart.** One exit is working and the trader adds
+the other. The only way to a pair is to submit both anew, so the working one
+must be replaced, under two rules: the position is never unprotected, and
+never doubly protected in a way that could overfill — two exits of one kind
+for the whole position, which the same tick fills both of, turning a long
+into a short.
+
+- *A target working, a stop added*: cancel the target, wait for the
+  server's word that it is cancelled, then submit the stop and the target
+  again as one pair, sized to what is still held then (the target may have
+  filled in part). Between the two the position has no target — and it had
+  no stop before, so it is exposed to nothing it was not, and at most misses
+  a fill at the target for one round trip. Never two targets. If the pair
+  is refused, the target goes back in alone, as it was, and the refusal is
+  said; if the cancel goes unanswered, nothing is placed, since the target
+  may still be working.
+- *A stop working, a target added*: **there is no safe order of steps.**
+  Cancelling the stop first leaves the position unprotected for a round
+  trip, and with nothing at all if the pair is then refused (Rithmic's risk
+  desk refused exactly such a second exit on 2026-11-05). Submitting the
+  pair first has two stops at one price working until the old one is
+  cancelled: a touch fills both. So the app does neither. The target is
+  placed alone, the stop is left alone, and the app holds the link, which
+  the chart draws dashed and the Log says lasts "while Omacharts runs".
+  Pulling the target out first, or both together, gets a pair Sierra Chart
+  holds.
+
+Nothing else in DTC or Sierra Chart's server helps: there is no reduce-only
+(`OpenOrClose` "is not used for futures"), and a position-sized quantity
+does not make an overlap safe, since each of two overlapping stops has to be
+for the whole position to protect it. CANCEL_REPLACE_ORDER changes prices,
+quantity and time in force, never a link. A bracket's parent is an entry
+that opens the position, held until it fills; it cannot be an exit already
+working. Sierra Chart's "attached orders by position" is its Trade Window's,
+not something its DTC server offers a client.
+
+**The app's own link** is in the foundation (`Desk::keep_links`, on every
+change of the book), for brokers that cannot link and for the case above,
+because two exits left unlinked are worse: the one left behind opens a
+position of its own when it is touched. Its limits, shown by the dashed line
+and the words: it holds only while the app runs and the session is signed
+in; it acts a round trip after the fill is heard, so a market running from
+one exit to the other within that time fills both; and a part of one filled
+is not taken off the other, which is cancelled only once the first is done.
+
+What a test order would still have to confirm, on a simulated account:
+that Sierra Chart answers SUBMIT_NEW_OCO_ORDER with an update per order
+carrying each one's ClientOrderID and `OCOLinkedOrderServerOrderID`, that a
+pair with no parent stands on its own, and that a fill of one cancels the
+other (and a part fill reduces it) as the protocol says. Everything here is
+tested against `dtc::fake` only.
 
 ### What was verified, and how
 

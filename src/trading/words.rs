@@ -57,6 +57,15 @@ pub fn order_words(side: Side, kind: OrderKind) -> String {
     format!("{} {}", side.word(), kind.word())
 }
 
+/// What a link made says: who holds it, and, for the app's own, that it
+/// lasts only while the app runs.
+pub fn linked_text(holder: Holder) -> &'static str {
+    match holder {
+        Holder::Broker => "Linked · whichever fills first cancels the other",
+        Holder::App => "Linked by Omacharts while it runs · whichever fills first cancels the other",
+    }
+}
+
 /// A row of the chart menu, for `size` of the contract: "Buy 2 ESZ6 at
 /// market", "Sell Limit 2 ESZ6 at 7,620.00".
 pub fn menu_text(side: Side, kind: OrderKind, size: Quantity, price: &str, contract: &str) -> String {

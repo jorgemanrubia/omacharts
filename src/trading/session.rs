@@ -200,8 +200,16 @@ pub trait Session: Send + Sync {
     /// about it. Only when [`Capabilities::modify`] says so.
     fn modify(&self, account: &str, basket: &str, price: f64) -> Result<(), Failure>;
     /// Link working orders so that one filling or cancelled cancels the
-    /// rest, held by the broker. Only when [`Capabilities::link`] says so.
+    /// rest, held by the broker. Only when [`Capabilities::link`] is
+    /// [`Linking::AfterTheFact`]; [`Plan`] is what asks.
     fn link(&self, account: &str, baskets: &[String]) -> Result<(), Failure>;
+    /// Place two orders as one one-cancels-other pair, held by the broker,
+    /// a part of one filled taken off the other, and return their ids in
+    /// order. Only when [`Capabilities::link`] is [`Linking::AtSubmission`];
+    /// [`Plan`] is what asks.
+    fn place_pair(&self, _orders: &[OrderRequest; 2]) -> Result<[String; 2], Failure> {
+        Err(Failure::Refused("this broker does not place orders as a pair".into()))
+    }
     fn cancel_all(&self, account: &str) -> Result<(), Failure>;
     fn flatten(&self, account: &str, contract: &str, exchange: &str) -> Result<(), Failure>;
     /// Why it is no longer signed in, if it ended by itself.
@@ -234,6 +242,10 @@ pub struct Desk {
     /// Told on the main loop when anything here changed: the window's
     /// headers, and the Trading page while it is open.
     listeners: RefCell<Vec<std::rc::Weak<dyn Fn()>>>,
+    /// The links made this run, each with its login and the account's name
+    /// for the Log: the broker's, to draw while they stand, and the app's
+    /// own, to keep — see [`Desk::keep_links`].
+    links: RefCell<Vec<(String, String, Link)>>,
 }
 
 impl Desk {
@@ -249,6 +261,59 @@ impl Desk {
             wake,
             woken,
             listeners: RefCell::new(Vec::new()),
+            links: RefCell::new(Vec::new()),
+        }
+    }
+
+    /// Remember `link`, made on `login`'s session for the account called
+    /// `name`: one the broker holds is drawn while it stands, and one the
+    /// app holds is kept by [`Desk::keep_links`].
+    pub fn linked(&self, login: &str, name: &str, link: Link) {
+        self.links.borrow_mut().push((login.to_string(), name.to_string(), link));
+    }
+
+    /// Every link standing, as of the last change, its account by key.
+    pub fn links(&self) -> Vec<Link> {
+        self.links.borrow().iter().map(|(_, _, link)| link.clone()).collect()
+    }
+
+    /// Keep each link as the books now stand, on the main loop after every
+    /// change. One the broker holds is forgotten once one of it is done:
+    /// the broker has dealt with the rest. One the app holds is the app's
+    /// to keep ([`due`]): once one of it filled or went, the rest are
+    /// cancelled, off the main loop, and said in the Log. A login signed
+    /// out takes its links with it: nothing holds the app's any more. Not
+    /// at all while trading is switched off.
+    pub fn keep_links(&self) {
+        if !crate::features::trading() || self.links.borrow().is_empty() {
+            return;
+        }
+        let mut cancels = Vec::new();
+        self.links.borrow_mut().retain(|(login, name, link)| {
+            let Some(session) = self.session(login).filter(|_| self.live(login)) else { return false };
+            let book = session.book();
+            match link.holder {
+                Holder::Broker => standing(link, &book),
+                Holder::App => match due(link, &book) {
+                    Due::Keep => true,
+                    Due::Drop => false,
+                    Due::Cancel(rest) => {
+                        cancels.push((session, name.clone(), link.account.clone(), rest));
+                        false
+                    }
+                },
+            }
+        });
+        for (session, name, key, rest) in cancels {
+            let number = key.split_once('/').map_or(key.as_str(), |(_, number)| number).to_string();
+            std::thread::spawn(move || {
+                for basket in rest {
+                    crate::log_words::say(match session.cancel(&number, &basket) {
+                        Ok(()) => crate::log_words::confirmed(&name, "Cancelled the other exit · its link was held by Omacharts"),
+                        Err(why) => crate::log_words::refused(&name, format!("The other exit is still working · {why}")),
+                    });
+                }
+            });
         }
     }
 
@@ -277,7 +342,8 @@ impl Desk {
     /// book again.
     pub fn take(&self, wake: Wake) {
         match wake {
-            Wake::Moved | Wake::Priced => {}
+            Wake::Moved => self.keep_links(),
+            Wake::Priced => {}
             Wake::Back(login) => self.refresh(&login),
             Wake::Refreshed(login) => *self.refreshes.borrow_mut().entry(login).or_default() += 1,
             Wake::Opened(login, outcome, data, heard) => {
@@ -423,6 +489,7 @@ impl Desk {
 
     /// End `login`'s session, if it has one, and forget any refusal.
     pub fn end(&self, login: &str) {
+        self.links.borrow_mut().retain(|(of, _, _)| of != login);
         self.opening.borrow_mut().remove(login);
         self.refused.borrow_mut().remove(login);
         self.data_refused.borrow_mut().remove(login);
