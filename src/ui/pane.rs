@@ -255,6 +255,8 @@ pub struct ChartPane {
     /// exchanged, red for a rise, and a rising body drawn as an outline.
     pub swapped: Cell<bool>,
     pub hollow_up: Cell<bool>,
+    /// How many pixels wide its OHLC bars are drawn.
+    pub ohlc_thickness: Cell<u8>,
     pub session: Cell<Session>,
     pub show_grid: Cell<bool>,
     /// What the rail does to this chart.
@@ -651,6 +653,7 @@ impl ChartPane {
             colouring: Cell::new(Default::default()),
             swapped: Cell::new(false),
             hollow_up: Cell::new(false),
+            ohlc_thickness: Cell::new(crate::chart_defaults::DEFAULT_OHLC_THICKNESS),
             session: Cell::new(session),
             show_grid: Cell::new(show_grid),
             mode: Cell::new(mode),
@@ -698,6 +701,13 @@ impl ChartPane {
     /// A ring rather than anything louder: with four charts on screen the
     /// focused one has to be obvious at a glance and invisible the moment you
     /// stop looking for it.
+    /// Draw its OHLC bars this many pixels wide.
+    pub fn set_ohlc_thickness(&self, thickness: u8) {
+        let thickness = crate::chart_defaults::clamp_thickness(thickness);
+        self.ohlc_thickness.set(thickness);
+        self.view.set_ohlc_thickness(thickness);
+    }
+
     pub fn set_focused(&self, focused: bool) {
         if focused {
             self.root.add_css_class("focused");

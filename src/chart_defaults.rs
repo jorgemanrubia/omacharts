@@ -17,6 +17,16 @@ pub const SETTING_SHOW_GRID: &str = "show_grid";
 /// each applies to any palette and the palette stays what it is.
 pub const SETTING_SWAP_COLOURS: &str = "swap_colours";
 pub const SETTING_HOLLOW_UP: &str = "hollow_up";
+/// How many pixels wide an OHLC bar's line and ticks are drawn.
+pub const SETTING_OHLC_THICKNESS: &str = "ohlc_thickness";
+pub const MIN_OHLC_THICKNESS: u8 = 1;
+pub const MAX_OHLC_THICKNESS: u8 = 4;
+pub const DEFAULT_OHLC_THICKNESS: u8 = 2;
+
+/// A thickness the setting allows: from one pixel to four.
+pub fn clamp_thickness(thickness: u8) -> u8 {
+    thickness.clamp(MIN_OHLC_THICKNESS, MAX_OHLC_THICKNESS)
+}
 const SETTING_LOG_SCALE: &str = "chart_log_scale";
 const SETTING_SHOWS_DRAWINGS: &str = "chart_shows_drawings";
 const SETTING_SENDS_DRAWINGS: &str = "chart_sends_drawings";
@@ -34,6 +44,8 @@ pub struct ChartDefaults {
     pub swapped: bool,
     /// Whether a rising body is drawn as an outline.
     pub hollow_up: bool,
+    /// How many pixels wide an OHLC bar is drawn.
+    pub ohlc_thickness: u8,
     pub session: Session,
     pub show_grid: bool,
     pub log_scale: bool,
@@ -51,6 +63,7 @@ impl Default for ChartDefaults {
             colouring: BarColouring::default(),
             swapped: false,
             hollow_up: false,
+            ohlc_thickness: DEFAULT_OHLC_THICKNESS,
             session: Session::default(),
             show_grid: false,
             log_scale: false,
@@ -94,6 +107,10 @@ impl ChartDefaults {
             colouring: look.colouring,
             swapped: look.swapped,
             hollow_up: look.hollow_up,
+            ohlc_thickness: store
+                .setting(SETTING_OHLC_THICKNESS)
+                .and_then(|n| n.trim().parse::<u8>().ok())
+                .map_or(fallback.ohlc_thickness, clamp_thickness),
             session: store
                 .setting(SETTING_SESSION)
                 .and_then(|key| Session::from_key(&key))
@@ -111,6 +128,7 @@ impl ChartDefaults {
         store.set_setting(crate::theming::SETTING_BARS, self.colouring.key());
         store.set_setting_bool(SETTING_SWAP_COLOURS, self.swapped);
         store.set_setting_bool(SETTING_HOLLOW_UP, self.hollow_up);
+        store.set_setting(SETTING_OHLC_THICKNESS, &self.ohlc_thickness.to_string());
         store.set_setting(SETTING_SESSION, self.session.key());
         store.set_setting_bool(SETTING_SHOW_GRID, self.show_grid);
         store.set_setting_bool(SETTING_LOG_SCALE, self.log_scale);
@@ -136,6 +154,7 @@ mod tests {
         let fresh = ChartDefaults::load(&store);
         assert_eq!(fresh.colouring, BarColouring::Vivid);
         assert!(!fresh.swapped && !fresh.hollow_up && !fresh.show_grid);
+        assert_eq!(fresh.ohlc_thickness, DEFAULT_OHLC_THICKNESS);
         assert!(fresh.shows_drawings && fresh.sends_drawings);
 
         let chosen = ChartDefaults {
@@ -143,6 +162,7 @@ mod tests {
             colouring: BarColouring::Monochrome,
             swapped: true,
             hollow_up: true,
+            ohlc_thickness: 3,
             session: Session::ALL[Session::ALL.len() - 1],
             show_grid: true,
             log_scale: true,

@@ -116,6 +116,19 @@ Set it from the chart menu's **Session** submenu or the **Hours** row of [Chart 
 | **OHLC bars** | A vertical bar from high to low, a tick to the left at the open and one to the right at the close |
 | **None** | Nothing. The bars are hidden |
 
+OHLC bars have a **Thickness** row under **Style**, from 1 to 4 pixels and 2 by default. Where the bars are packed too close for it, they are drawn thinner so neighbours never touch.
+
+<!-- regenerate:
+theme: tokyo-night
+window: 2560x1440 @2, bin/headless-window (HOME sandboxed, theme seeded)
+state:
+  (one NVDA 1D chart drawn as OHLC bars)
+  key ctrl+shift+s
+capture: bin/headless-window shot /tmp/thickness.png
+crop: 755,243,1050,640 (the Bars group)
+-->
+{% include figure.html src="/assets/manual/charts/ohlc-thickness.png" alt="The Bars group of Chart settings on OHLC bars, with the Thickness slider under Style" caption="Thickness, under Style on OHLC bars." %}
+
 <!-- regenerate:
 theme: tokyo-night
 window: 2560x1440 @2, bin/headless-window (HOME sandboxed, theme seeded)

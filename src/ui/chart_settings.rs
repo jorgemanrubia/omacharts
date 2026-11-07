@@ -327,15 +327,40 @@ fn bars_group(window: &Rc<Window>) -> adw::PreferencesGroup {
     // from elsewhere, so that reading the change is not taken for making it.
     let syncing = Rc::new(std::cell::Cell::new(false));
 
+    // How thick OHLC bars are drawn, offered only while they are.
+    let thickness = {
+        let window = window.clone();
+        let syncing = syncing.clone();
+        controls::bounded_row(
+            THICKNESS_LABEL,
+            None,
+            f64::from(window.ohlc_thickness()),
+            f64::from(crate::chart_defaults::MIN_OHLC_THICKNESS),
+            f64::from(crate::chart_defaults::MAX_OHLC_THICKNESS),
+            1.0,
+            0,
+            move |px| {
+                let px = px.round() as u8;
+                if !syncing.get() && px != window.ohlc_thickness() {
+                    window.set_ohlc_thickness(px);
+                }
+            },
+        )
+    };
+    thickness.row.set_visible(!window.bars_hidden() && window.bar_style() == BarStyle::Ohlc);
+
     let window_for_style = window.clone();
     let colouring_for_style = colouring.clone();
     let hollow_for_style = hollow.clone();
     let swapped_for_style = swapped.clone();
     let syncing_for_style = syncing.clone();
+    let thickness_for_style = thickness.row.clone();
     row.connect_selected_notify(move |row| {
         if syncing_for_style.get() {
             return;
         }
+        let ohlc = BarStyle::ALL.get(row.selected() as usize) == Some(&BarStyle::Ohlc);
+        thickness_for_style.set_visible(ohlc);
         if row.selected() == hidden_at {
             window_for_style.set_bars_hidden(true);
             colouring_for_style.set_sensitive(false);
@@ -350,6 +375,7 @@ fn bars_group(window: &Rc<Window>) -> adw::PreferencesGroup {
         }
     });
     group.add(&row);
+    group.add(&thickness.row);
 
     let window_for_colouring = window.clone();
     let swapped_for_colouring = swapped.clone();
@@ -392,6 +418,7 @@ fn bars_group(window: &Rc<Window>) -> adw::PreferencesGroup {
     // so the window does not keep a closed dialog's rows alive.
     let weak = Rc::downgrade(window);
     let rows = (row.downgrade(), colouring.downgrade(), hollow.downgrade(), swapped.downgrade());
+    let thickness = (thickness.row.downgrade(), thickness.adjustment.clone());
     window.watch_chart(move || {
         let (Some(window), Some(row), Some(colouring), Some(hollow), Some(swapped)) =
             (weak.upgrade(), rows.0.upgrade(), rows.1.upgrade(), rows.2.upgrade(), rows.3.upgrade())
@@ -403,6 +430,10 @@ fn bars_group(window: &Rc<Window>) -> adw::PreferencesGroup {
         }
         syncing.set(true);
         sync_bars(&window, &row, &colouring, &hollow, &swapped, hidden_at);
+        if let Some(shown) = thickness.0.upgrade() {
+            shown.set_visible(!window.bars_hidden() && window.bar_style() == BarStyle::Ohlc);
+            thickness.1.set_value(f64::from(window.ohlc_thickness()));
+        }
         syncing.set(false);
         true
     });
@@ -437,6 +468,8 @@ fn sync_bars(
 /// settings and in the preferences alike.
 pub const HOLLOW_LABEL: &str = "Hollow up bars";
 pub const SWAP_LABEL: &str = "Swap up and down colours";
+/// The row for how many pixels wide OHLC bars are drawn.
+pub const THICKNESS_LABEL: &str = "Thickness";
 
 /// Whether turning `colouring` round would change what it paints, which is
 /// when the switch for it is offered. Monochrome paints a rise and a fall

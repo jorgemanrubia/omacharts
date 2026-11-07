@@ -910,6 +910,7 @@ pub const SURFACE: &[Noun] = &[
                     Flag::valued("suffix", "S", "its venue suffix, for a listing abroad"),
                     Flag::valued("resolution", "TF", "such as 5m, 1h, 1D, 1W, 1M, 1Y"),
                     Flag::valued("style", "STYLE", "how bars are drawn, or `none` to hide them").of(STYLES),
+                    Flag::valued("thickness", "PX", "how many pixels wide OHLC bars are drawn, from 1 to 4"),
                     Flag::valued(
                         "bars",
                         "BOOL",
@@ -1446,6 +1447,7 @@ const STORED_FIELDS: &[(&str, &str, &str)] = &[
     ("colouring", "chart set", "--colouring"),
     ("swapped", "chart set", "--swap-colours"),
     ("hollow_up", "chart set", "--hollow-up"),
+    ("ohlc_thickness", "chart set", "--thickness"),
     ("session", "chart set", "--session"),
     ("show_grid", "chart set", "--grid"),
     ("link", "chart set", "--link"),

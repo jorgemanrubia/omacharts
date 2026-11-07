@@ -67,6 +67,7 @@ const SHARED: &[&str] = &[
     "bar_scheme",
     "swap_colours",
     "hollow_up",
+    "ohlc_thickness",
     "coloured_bar_scheme",
     "workspace",
     "timeframes",

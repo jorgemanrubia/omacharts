@@ -36,6 +36,7 @@ crop: 700,84,1160,1276
 | Group › row | Does |
 |---|---|
 | **Bars** › **Style** | **Candles**, **OHLC bars**, or **None** to hide the bars ([Bars](/manual/charts/#bars)). The three rows under it are greyed out while they are hidden |
+| **Bars** › **Thickness** | How many pixels wide OHLC bars are drawn, from 1 to 4. Only there on OHLC bars |
 | **Bars** › **Colouring** | **Vivid**, **Soft**, **Quiet** or **Monochrome** ([Colouring](/manual/charts/#colouring)) |
 | **Bars** › **Hollow up bars** | Draws a rising candle as an outline. Greyed out on OHLC bars, which have no body |
 | **Bars** › **Swap up and down colours** | Paints the colouring the other way round, red for a rise. Greyed out on Monochrome |
@@ -70,6 +71,7 @@ crop: 292,76,1976,1288   (the whole dialog; the Defaults page scrolls inside it)
 | Group › row | Choices | Default |
 |---|---|---|
 | **Bars** › **Style** | **Candles**, **OHLC bars** | **Candles** |
+| **Bars** › **Thickness** | 1 to 4 pixels. Only there on OHLC bars | 2 |
 | **Bars** › **Colouring** | **Vivid**, **Soft**, **Quiet**, **Monochrome** | **Vivid** |
 | **Bars** › **Hollow up bars** | On or off. Greyed out on OHLC bars | Off |
 | **Bars** › **Swap up and down colours** | On or off. Greyed out on Monochrome | Off |

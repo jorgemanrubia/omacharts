@@ -620,13 +620,34 @@ fn build_charts_page(context: &Rc<Context>) {
     let theme = context.theming.borrow().theme();
     swapped.set_sensitive(crate::ui::chart_settings::two_toned(&theme, current.colouring));
 
+    // How thick OHLC bars are drawn, offered only while they are the style.
+    let thickness = {
+        let changed = changed.clone();
+        crate::ui::controls::bounded_row(
+            crate::ui::chart_settings::THICKNESS_LABEL,
+            None,
+            f64::from(current.ohlc_thickness),
+            f64::from(crate::chart_defaults::MIN_OHLC_THICKNESS),
+            f64::from(crate::chart_defaults::MAX_OHLC_THICKNESS),
+            1.0,
+            0,
+            move |px| {
+                let px = px.round() as u8;
+                changed(&|d| d.ohlc_thickness = px);
+            },
+        )
+        .row
+    };
+    thickness.set_visible(current.bar_style == BarStyle::Ohlc);
     {
         let changed = changed.clone();
         let hollow = hollow.clone();
+        let thickness = thickness.clone();
         style.connect_selected_notify(move |row| {
             let Some(chosen) = BarStyle::ALL.get(row.selected() as usize).copied() else { return };
             changed(&|d| d.bar_style = chosen);
             hollow.set_sensitive(crate::ui::chart_settings::hollow_applies(chosen));
+            thickness.set_visible(chosen == BarStyle::Ohlc);
         });
     }
     {
@@ -661,6 +682,7 @@ fn build_charts_page(context: &Rc<Context>) {
         });
     }
     bars.add(&style);
+    bars.add(&thickness);
     bars.add(&colouring);
     bars.add(&hollow);
     bars.add(&swapped);

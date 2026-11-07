@@ -1588,6 +1588,7 @@ fn chart_set(
     }
     let hollow_up = switch("hollow-up")?;
     let swapped = switch("swap-colours")?;
+    let thickness = arg(m, "thickness").map(|text| parse_thickness(text, "--thickness")).transpose()?;
     let shows_drawings = switch("show-drawings")?;
     let sends_drawings = switch("send-drawings")?;
     let template = match arg(m, "template") {
@@ -1645,6 +1646,10 @@ fn chart_set(
             chart["swapped"] = json!(true);
             changed.push("up and down swapped".to_string());
         }
+    }
+    if let Some(thickness) = thickness {
+        chart["ohlc_thickness"] = json!(thickness);
+        changed.push(format!("OHLC bars {thickness}px"));
     }
     if let Some(hollow_up) = hollow_up {
         chart["hollow_up"] = json!(hollow_up);
@@ -1718,7 +1723,7 @@ fn chart_set(
 
     if changed.is_empty() {
         return Err(Fault::usage(
-            "nothing to change; pass --symbol, --resolution, --style, --bars, --colouring, --hollow-up, \
+            "nothing to change; pass --symbol, --resolution, --style, --thickness, --bars, --colouring, --hollow-up, \
              --swap-colours, --session, --link, --grid, --auto-scale, --log-scale, --indicators, \
              --drawings, --show-drawings, --send-drawings or --template"
                 .into(),
@@ -3938,6 +3943,20 @@ fn colour(m: &clap::ArgMatches, id: &str) -> Result<Option<ColorChoice>, Fault> 
         })
 }
 
+/// A thickness for OHLC bars, in whole pixels from 1 to 4.
+fn parse_thickness(text: &str, what: &str) -> Result<u8, Fault> {
+    use crate::chart_defaults::{MAX_OHLC_THICKNESS, MIN_OHLC_THICKNESS};
+    text.trim()
+        .parse::<u8>()
+        .ok()
+        .filter(|n| (MIN_OHLC_THICKNESS..=MAX_OHLC_THICKNESS).contains(n))
+        .ok_or_else(|| {
+            Fault::usage(format!(
+                "{what} is a whole number of pixels from {MIN_OHLC_THICKNESS} to {MAX_OHLC_THICKNESS}, not {text:?}"
+            ))
+        })
+}
+
 /// The style a chart's bars are drawn in, or `none` while they are hidden.
 fn shown_style(pane: &Value) -> &str {
     match pane["bars_hidden"].as_bool().unwrap_or(false) {
@@ -3959,6 +3978,8 @@ fn pane_json(pane: &Value) -> String {
         "bars": !pane["bars_hidden"].as_bool().unwrap_or(false),
         "colouring": pane["colouring"],
         "hollow_up": stored_look(pane).hollow_up,
+        // Missing from a chart stored before OHLC bars could be thicker.
+        "ohlc_thickness": pane["ohlc_thickness"].as_u64().unwrap_or(crate::chart_defaults::DEFAULT_OHLC_THICKNESS.into()),
         "swapped": stored_look(pane).swapped,
         "session": pane["session"],
         "grid": pane["show_grid"],
@@ -5046,6 +5067,14 @@ fn config_set(store: &Store, m: &clap::ArgMatches, as_json: bool) -> Result<Stri
         crate::zoom::save(store, percent);
         let text = format!("charts zoom at {percent}% sensitivity");
         return said(as_json, json!({"key": key, "value": percent.to_string()}), text);
+    }
+    // Read back clamped, so a figure out of range is refused rather than
+    // stored as something else.
+    if key == crate::chart_defaults::SETTING_OHLC_THICKNESS {
+        let thickness = parse_thickness(value, key)?;
+        store.set_setting(key, &thickness.to_string());
+        let text = format!("new charts draw OHLC bars {thickness}px wide");
+        return said(as_json, json!({"key": key, "value": thickness.to_string()}), text);
     }
     if key == crate::templates::SETTING {
         return Err(Fault::usage(
@@ -7269,6 +7298,31 @@ mod tests {
         assert_eq!(parse_bytes("512 MB"), Some(512 * 1024 * 1024));
         assert_eq!(parse_bytes("nonsense"), None);
         assert_eq!(parse_bytes("0"), None, "a cache of nothing is not a limit");
+    }
+
+    /// How thick OHLC bars are drawn is a chart's own, from one pixel to
+    /// four, and a default for new charts; a chart written before it could
+    /// be reads as two. A figure out of range is refused, not clamped.
+    #[test]
+    fn ohlc_thickness_is_set_on_a_chart_and_as_a_default_within_its_range() {
+        let store = bare();
+        run("chartbook create Macro --symbol AAPL --switch", &store);
+        let listed = |store: &Store| -> serde_json::Value {
+            serde_json::from_str(&run("chart list --book Macro --json", store).out).unwrap()
+        };
+        assert_eq!(listed(&store)["charts"][0]["ohlc_thickness"], json!(2));
+        let out = run("chart set --book Macro --style ohlc --thickness 3", &store);
+        assert_eq!(out.code, 0, "{}", out.err);
+        assert!(out.out.contains("OHLC bars 3px"), "{}", out.out);
+        assert_eq!(listed(&store)["charts"][0]["ohlc_thickness"], json!(3));
+        for wrong in ["0", "5", "1.5", "thick"] {
+            let out = run(&format!("chart set --book Macro --thickness {wrong}"), &store);
+            assert_eq!(out.code, crate::cli::EXIT_USAGE, "{wrong}");
+            assert_eq!(run(&format!("config set ohlc_thickness {wrong}"), &store).code, crate::cli::EXIT_USAGE, "{wrong}");
+        }
+        assert_eq!(listed(&store)["charts"][0]["ohlc_thickness"], json!(3));
+        assert_eq!(run("config set ohlc_thickness 4", &store).code, 0);
+        assert_eq!(crate::chart_defaults::ChartDefaults::load(&store).ohlc_thickness, 4);
     }
 
     /// `red-up` and `hollow` are what a script wrote when those looks were

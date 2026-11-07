@@ -615,7 +615,7 @@ A `chart set` with one bad value changes nothing at all — everything is
 checked before anything is written, so you never get a half-applied chart.
 
 Besides what a chart shows, `chart set` carries how it shows it — `--style`,
-`--bars`, `--session`, `--grid`, `--auto-scale`, `--log-scale`,
+`--thickness`, `--bars`, `--session`, `--grid`, `--auto-scale`, `--log-scale`,
 `--indicators` and `--drawings` — and those are stored with the chart,
 so a price axis held still with `--auto-scale off` is still held the next
 time the app opens.
@@ -990,7 +990,7 @@ reaches the volume: its bars are solid and dimmed, with no body to leave open.
 does not remember the scheme that was in use.
 
 What a new chart opens with is a handful of settings, the ones the preferences
-show under Charts: `bar_style`, `bar_scheme`, `hollow_up`, `swap_colours`,
+show under Charts: `bar_style`, `ohlc_thickness`, `bar_scheme`, `hollow_up`, `swap_colours`,
 `chart_session`, `show_grid`, `chart_log_scale`, `chart_shows_drawings` and
 `chart_sends_drawings`. Changing
 one chart never changes them.

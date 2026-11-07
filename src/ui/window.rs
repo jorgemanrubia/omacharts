@@ -669,6 +669,7 @@ mod tests {
                 colouring: None,
                 swapped: None,
                 hollow_up: None,
+                ohlc_thickness: None,
                 session: "extended".to_string(),
                 show_grid: true,
                 link: LinkMode::Focus,
@@ -751,6 +752,7 @@ mod tests {
             colouring: None,
             swapped: None,
             hollow_up: None,
+            ohlc_thickness: None,
             session: "extended".to_string(),
             show_grid: true,
             link,
@@ -1573,6 +1575,34 @@ mod outside_change_tests {
         });
     }
 
+    /// The Thickness row is offered under Style only while the bars are
+    /// OHLC bars, follows a command that changes them, and moves them as it
+    /// is moved.
+    #[test]
+    fn the_thickness_row_is_there_for_ohlc_bars_only_and_follows_a_command() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            crate::ui::chart_settings::ChartSettings::present(&window);
+            let row = titled::<adw::ActionRow>(&window, crate::ui::chart_settings::THICKNESS_LABEL)
+                .into_iter()
+                .next()
+                .expect("a Thickness row");
+            assert!(!row.get_visible(), "offered for candles");
+            let slider = rows::<gtk::Scale>(row.upcast_ref()).into_iter().next().expect("a slider");
+
+            command(&window, &["chart", "set", "--style", "ohlc", "--thickness", "3"]);
+            assert!(row.get_visible(), "not offered for OHLC bars");
+            assert_eq!(slider.value(), 3.0);
+            assert_eq!(window.ohlc_thickness(), 3);
+
+            slider.set_value(1.0);
+            assert_eq!(window.ohlc_thickness(), 1, "the slider did not reach the chart");
+            command(&window, &["chart", "set", "--style", "candles"]);
+            assert!(!row.get_visible());
+        });
+    }
+
     /// A chart's settings, open while a command changes its colouring, its
     /// switches and its volume pane's palette, show what the command did —
     /// and showing it changes nothing more.
@@ -2011,6 +2041,10 @@ struct StoredPane {
     swapped: Option<bool>,
     #[serde(default)]
     hollow_up: Option<bool>,
+    /// How many pixels wide its OHLC bars are drawn. Missing from a chart
+    /// written before they could be thicker, which takes the default.
+    #[serde(default)]
+    ohlc_thickness: Option<u8>,
     session: String,
     show_grid: bool,
     /// What the rail does to this chart. Missing from a chart written with
@@ -2920,6 +2954,7 @@ impl Window {
         pane.template.set(template.map(|t| t.id));
         self.show_header_on(&pane);
         pane.view.set_price_log(defaults.log_scale);
+        pane.set_ohlc_thickness(defaults.ohlc_thickness);
         pane.shows_drawings.set(defaults.shows_drawings);
         pane.sends_drawings.set(defaults.sends_drawings);
         pane.view.set_sends(defaults.sends_drawings);
@@ -3418,6 +3453,7 @@ impl Window {
         added.view.set_price_log(from.view.price_log());
         added.bars_hidden.set(from.bars_hidden.get());
         added.view.set_bars_hidden(from.bars_hidden.get());
+        added.set_ohlc_thickness(from.ohlc_thickness.get());
         added.view.set_show_indicators(from.view.show_indicators());
         added.view.set_show_drawings(from.view.show_drawings());
         let next = self.layout.borrow().split(from.id, added.id, horizontal);
@@ -4160,6 +4196,7 @@ impl Window {
                     colouring: Some(pane.colouring.get().key().to_string()),
                     swapped: Some(pane.swapped.get()),
                     hollow_up: Some(pane.hollow_up.get()),
+                    ohlc_thickness: Some(pane.ohlc_thickness.get()),
                     session: pane.session.get().key().to_string(),
                     show_grid: pane.show_grid.get(),
                     link: pane.mode(),
@@ -4413,6 +4450,7 @@ impl Window {
             pane.view.set_price_log(stored.log_scale);
             pane.bars_hidden.set(stored.bars_hidden);
             pane.view.set_bars_hidden(stored.bars_hidden);
+            pane.set_ohlc_thickness(stored.ohlc_thickness.unwrap_or(defaults.ohlc_thickness));
             pane.view.set_show_indicators(stored.indicators_shown);
             pane.view.set_show_drawings(stored.drawings_shown);
             restored.push((pane, stored));
@@ -9498,6 +9536,16 @@ impl Window {
         self.save_workspace();
     }
 
+    /// How many pixels wide the focused chart draws its OHLC bars.
+    pub fn ohlc_thickness(&self) -> u8 {
+        self.focused_pane().ohlc_thickness.get()
+    }
+
+    pub fn set_ohlc_thickness(self: &Rc<Self>, thickness: u8) {
+        self.focused_pane().set_ohlc_thickness(thickness);
+        self.save_workspace();
+    }
+
     /// Whether the focused chart draws a rising body as an outline.
     pub fn bars_hollow_up(&self) -> bool {
         self.focused_pane().hollow_up.get()
@@ -9613,6 +9661,7 @@ impl Window {
                 stored.colouring = Some(defaults.colouring.key().to_string());
                 stored.swapped = Some(defaults.swapped);
                 stored.hollow_up = Some(defaults.hollow_up);
+                stored.ohlc_thickness = Some(defaults.ohlc_thickness);
                 stored.session = defaults.session.key().to_string();
                 stored.show_grid = defaults.show_grid;
                 stored.log_scale = defaults.log_scale;
@@ -9644,6 +9693,7 @@ impl Window {
         pane.colouring.set(defaults.colouring);
         pane.swapped.set(defaults.swapped);
         pane.hollow_up.set(defaults.hollow_up);
+        pane.set_ohlc_thickness(defaults.ohlc_thickness);
         let theme = self.theme();
         pane.view.restyle(theme.clone(), pane_scheme(pane, &theme));
         self.apply_marks_to(pane);
