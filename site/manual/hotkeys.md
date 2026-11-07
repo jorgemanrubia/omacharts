@@ -44,7 +44,7 @@ Omarchy plugin's panel has keys of its own, in
 | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>I</kbd> | The list of indicators to add | [Indicators](/manual/indicators/) |
 | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>S</kbd> | The focused chart's settings | [Chart settings](/manual/chart-settings/) |
 | <kbd>Ctrl</kbd> + <kbd>,</kbd> | Preferences | [Preferences](/manual/preferences/) |
-| <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>J</kbd> | The Log | [The window](/manual/window/#the-log) |
+| <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>M</kbd> | The Log | [The window](/manual/window/#the-log) |
 | <kbd>F10</kbd> | The main menu | [The window](/manual/window/) |
 | <kbd>?</kbd> / <kbd>Ctrl</kbd> + <kbd>?</kbd> | The Keyboard shortcuts sheet | [The window](/manual/window/) |
 
@@ -56,7 +56,7 @@ Omarchy plugin's panel has keys of its own, in
 | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>R</kbd> | Renames the open chartbook, in its tab | [Chartbooks](/manual/chartbooks/) |
 | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>Alt</kbd> + <kbd>X</kbd> | Removes the open chartbook, after asking. The last one cannot be removed | [Chartbooks](/manual/chartbooks/) |
 | <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>←</kbd> <kbd>→</kbd> | The previous or next chartbook | [Chartbooks](/manual/chartbooks/) |
-| <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>O</kbd> | A screenshot of the open chartbook, to the clipboard | [Screenshots](/manual/screenshots/) |
+| <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>O</kbd> | A screenshot of the open chartbook, to the clipboard | [Screenshots](/manual/screenshots/) |
 
 ## Watchlist
 

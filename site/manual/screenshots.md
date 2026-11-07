@@ -12,7 +12,7 @@ A screenshot is a picture of a chart or chartbook, without the buttons. It goes 
 | Key or menu | Takes |
 |---|---|
 | <kbd>Ctrl</kbd> + <kbd>O</kbd> | The focused chart |
-| <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>O</kbd> | The open chartbook: every chart, as laid out, with the dividers between them |
+| <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>O</kbd> | The open chartbook: every chart, as laid out, with the dividers between them |
 | The chart menu's **Take screenshot** | The chart right-clicked |
 | A chartbook tab's menu, **Take screenshot** | That chartbook, which the right-click has already opened |
 

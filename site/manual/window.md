@@ -91,7 +91,7 @@ crop: 1052,0,1508,290   (from the focused chart's border; the menu sits against 
 |---|---|---|
 | **New chartbook** | <kbd>Ctrl</kbd> + <kbd>N</kbd> | Opens the **New chartbook** dialog. See [Chartbooks](/manual/chartbooks/). |
 | **Preferences** | <kbd>Ctrl</kbd> + <kbd>,</kbd> | Opens Preferences. See [Preferences](/manual/preferences/). |
-| **Log** | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>J</kbd> | Opens the [Log](#the-log). |
+| **Log** | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>M</kbd> | Opens the [Log](#the-log). |
 | **Keyboard Shortcuts** | <kbd>?</kbd> | Opens the Keyboard shortcuts sheet. |
 
 ## The Log
