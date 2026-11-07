@@ -36,6 +36,17 @@ crop: 0,812,1592,380 (then -quality 88 to site/assets/manual/indicators/volume.j
 -->
 {% include figure.html src="/assets/manual/indicators/volume.jpg" alt="The volume strip under a SPY daily chart, bars in dimmed green and red" caption="The Volume strip under SPY daily." %}
 
+<!-- regenerate:
+theme: tokyo-night
+window: 2560x1440 @2, bin/headless-window (HOME sandboxed, theme seeded)
+state:
+  (one NVDA 1D chart on the Default template, sidebar hidden)
+  key ctrl+shift+s; click 700 72 (Indicators); click 600 282 (Volume); click 800 383 (the Colouring row)
+capture: bin/headless-window shot /tmp/volume-colouring.png
+crop: 700,84,1160,1276
+-->
+{% include figure.html src="/assets/manual/indicators/volume-colouring.png" alt="The Volume indicator's settings with its Colouring list open: Same as the chart, Vivid, Soft, Quiet, Monochrome" caption="A volume strip's own Colouring." %}
+
 ## Volume Profile
 
 Drawn over the price. For each reset period, how much volume traded at each price, as a histogram against the left or the right edge of the period, at most 40% of its width. The rows in the **value area**, the band around the busiest price that holds the given share of the period's volume, are drawn stronger. The **point of control**, the busiest row, is a line across the profile.

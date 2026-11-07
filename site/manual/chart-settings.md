@@ -18,14 +18,20 @@ theme: tokyo-night
 window: 2560x1440 @2, bin/headless-window (HOME sandboxed, theme seeded)
 state:
   (one NVDA 1D chart, sidebar hidden)
-  click 1183 24           # the gear
+  key ctrl+shift+s
 capture: bin/headless-window shot /tmp/chartsettings.png; then scroll 640 500 10 and shot /tmp/chartsettings2.png
-crop: 490,95,1580,1250 (both)
+crop: 700,84,1160,1276 (both)
 -->
-{% include figure.html src="/assets/manual/charts/chart-settings.png" alt="The Chart page of the Chart settings dialog, showing the Bars and Scales groups" caption="The Chart page, top." %}
+{% include figure.html src="/assets/manual/charts/chart-settings.png" alt="The Chart page of the Chart settings dialog, showing the Bars group with its Colouring, Hollow up bars and Swap up and down colours rows, and the Scales group" caption="The Chart page, top." %}
 
 <!-- regenerate: as the figure above; this is its second capture, /tmp/chartsettings2.png, after scroll 640 500 10 -->
 {% include figure.html src="/assets/manual/charts/chart-settings-lower.png" alt="The Chart page scrolled down, showing the Session, Drawings and Reset to defaults groups" caption="The Chart page, bottom." %}
+
+<!-- regenerate:
+as above, with Monochrome chosen in the Colouring row (click 840 242, then 855 394)
+crop: 700,84,1160,1276
+-->
+{% include figure.html src="/assets/manual/charts/chart-settings-monochrome.png" alt="The Chart page with Monochrome chosen, the Swap up and down colours row greyed out" caption="Monochrome paints a rise and a fall alike, so the swap is greyed out; Hollow up bars is how it shows direction." %}
 
 | Group › row | Does |
 |---|---|
@@ -56,9 +62,8 @@ window: 2560x1440 @2, bin/headless-window (HOME sandboxed, theme seeded)
 state:
   key ctrl+comma
   click 214 147           # Charts
-  move 1270 710
 capture: bin/headless-window shot /tmp/prefs-charts.png
-crop: 276,56,2008,1328   (the whole dialog, 12px layout margin; the Defaults page scrolls inside it)
+crop: 292,76,1976,1288   (the whole dialog; the Defaults page scrolls inside it)
 -->
 {% include figure.html src="/assets/manual/charts/preferences-defaults.png" alt="Preferences open on the Charts Defaults tab" caption="Preferences › Charts › Defaults." %}
 

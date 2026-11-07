@@ -41,13 +41,13 @@ crop: 276,16,2008,1008   (the whole dialog, 12px layout margin)
 
 <!-- regenerate:
 theme: tokyo-night
-window: 2560x1600 @2, $SP/kit/hw
+window: 2560x1440 @2, bin/headless-window (HOME sandboxed, theme seeded)
 state:
   omacharts chart set --symbol NVDA --resolution 1D
   key ctrl+comma
-  click 214 168          # Charts in the sidebar
+  click 214 147          # Charts in the sidebar
 capture: bin/headless-window shot /tmp/charts.png
-crop: 301,122,1958,1356
+crop: 292,76,1976,1288
 -->
 {% include figure.html src="/assets/manual/preferences/charts.png" alt="Preferences on Charts, Defaults tab" caption="Preferences on Charts, Defaults tab." %}
 
