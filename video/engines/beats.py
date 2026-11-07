@@ -18,6 +18,23 @@ import librosa
 import numpy as np
 
 
+def fit_grid(onset, sr, hop, tempo, duration):
+    env = onset / (onset.max() or 1)
+    rate = sr / hop
+    best = (-1, 60 / tempo, 0.0)
+    centres = {60 / tempo, 60 / round(tempo)}
+    for centre in centres:
+        for period in np.linspace(centre * 0.99, centre * 1.01, 201):
+            count = int(duration / period)
+            for phase in np.arange(0, period, 0.004):
+                idx = np.round((phase + np.arange(count) * period) * rate).astype(int)
+                idx = idx[idx < len(env) - 1]
+                score = np.maximum(env[idx], env[idx + 1]).sum()
+                if score > best[0]:
+                    best = (score, period, phase)
+    return float(best[1]), float(best[2])
+
+
 def main():
     track, out = sys.argv[1], sys.argv[2]
     y, sr = librosa.load(track, sr=22050, mono=True)
@@ -28,14 +45,14 @@ def main():
     beats = librosa.frames_to_time(frames, sr=sr, hop_length=hop)
     tempo = float(np.atleast_1d(tempo)[0])
 
-    # A straight line through the tracked beats: period and phase.
+    # A straight grid laid where it catches the most onset energy: the
+    # tracker's own beats wander by tens of milliseconds, and a track
+    # composed to a tempo keeps it, so its period and phase are searched for
+    # directly, around the tracker's tempo and the round tempo nearest it.
+    period, first = fit_grid(onset, sr, hop, tempo, duration)
     n = np.arange(len(beats))
-    period, first = np.polyfit(n, beats, 1)
-    grid = first + n * period
-    drift = beats - grid
-    # The first grid beat at or after zero.
-    while first - period >= -0.02:
-        first -= period
+    nearest = np.round((beats - first) / period)
+    drift = beats - (first + nearest * period)
 
     # Low-end onsets, for the downbeat: the kick drum.
     low = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop, fmax=200, n_mels=32)
