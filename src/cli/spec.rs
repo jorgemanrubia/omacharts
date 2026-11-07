@@ -268,7 +268,7 @@ pub const CHART_SELECTOR: &str =
 /// How a chart paints the theme's candle colours, spelled as the scheme ids
 /// the settings store.
 const COLOURINGS: &[&str] =
-    &["theme", "theme-hollow", "theme-red-up", "theme-muted", "theme-muted-red-up", "theme-mono"];
+    &["theme", "theme-hollow", "theme-muted", "theme-colorless", "theme-mono"];
 const STYLES: &[&str] = &["candles", "ohlc", "none"];
 const SESSIONS: &[&str] = &["regular", "extended"];
 const SPLITS: &[&str] = &["horizontal", "vertical"];
@@ -289,7 +289,7 @@ const COLOURING: &[&str] = &["coloured", "red-up", "muted", "muted-red-up", "mon
 /// What a volume pane's bars may be painted as: the chart's own colouring,
 /// or one of the ones a bar with no body can wear.
 const VOLUME_COLOURINGS: &[&str] =
-    &["chart", "theme", "theme-red-up", "theme-muted", "theme-muted-red-up", "theme-mono"];
+    &["chart", "theme", "theme-muted", "theme-colorless", "theme-mono"];
 const SORT_COLUMNS: &[&str] = &["symbol", "last", "change", "change_pct", "none"];
 /// The kinds a drawing comes in, plus the one alias.
 ///
