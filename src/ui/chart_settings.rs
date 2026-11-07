@@ -116,6 +116,23 @@ impl ChartSettings {
         });
         rebuild_indicators(&owner, &dialog, &list);
         template_rows(window, &dialog, &templates, &Refresh::rebuilding(&owner, &dialog, &list));
+        {
+            // A command can add, change or take away an indicator while the
+            // list is open, and the list reads it again.
+            let owner = Rc::downgrade(&owner);
+            let dialog_weak = dialog.downgrade();
+            let list = list.clone();
+            window.watch_chart(move || {
+                let (Some(owner), Some(dialog)) = (owner.upgrade(), dialog_weak.upgrade()) else {
+                    return false;
+                };
+                if dialog.root().is_none() {
+                    return false;
+                }
+                rebuild_indicators(&owner, &dialog, &list);
+                true
+            });
+        }
 
         dialog.present(Some(&window.window));
         match focus {
@@ -306,11 +323,19 @@ fn bars_group(window: &Rc<Window>) -> adw::PreferencesGroup {
     hollow.set_sensitive(shown && hollow_applies(window.bar_style()));
     swapped.set_sensitive(shown && two_toned(&theme, window.bar_colouring()));
 
+    // Set while the rows are being brought up to date with a chart changed
+    // from elsewhere, so that reading the change is not taken for making it.
+    let syncing = Rc::new(std::cell::Cell::new(false));
+
     let window_for_style = window.clone();
     let colouring_for_style = colouring.clone();
     let hollow_for_style = hollow.clone();
     let swapped_for_style = swapped.clone();
+    let syncing_for_style = syncing.clone();
     row.connect_selected_notify(move |row| {
+        if syncing_for_style.get() {
+            return;
+        }
         if row.selected() == hidden_at {
             window_for_style.set_bars_hidden(true);
             colouring_for_style.set_sensitive(false);
@@ -328,8 +353,9 @@ fn bars_group(window: &Rc<Window>) -> adw::PreferencesGroup {
 
     let window_for_colouring = window.clone();
     let swapped_for_colouring = swapped.clone();
+    let syncing_for_colouring = syncing.clone();
     colouring.connect_selected_notify(move |row| {
-        if filling_colourings(row) {
+        if filling_colourings(row) || syncing_for_colouring.get() {
             return;
         }
         let Some(chosen) = BarColouring::ALL.get(row.selected() as usize).copied() else {
@@ -344,22 +370,67 @@ fn bars_group(window: &Rc<Window>) -> adw::PreferencesGroup {
     group.add(&colouring);
 
     let window_for_hollow = window.clone();
+    let syncing_for_hollow = syncing.clone();
     hollow.connect_active_notify(move |row| {
-        if row.is_active() != window_for_hollow.bars_hollow_up() {
+        if !syncing_for_hollow.get() && row.is_active() != window_for_hollow.bars_hollow_up() {
             window_for_hollow.set_bars_hollow_up(row.is_active());
         }
     });
     group.add(&hollow);
 
     let window_for_swapped = window.clone();
+    let syncing_for_swapped = syncing.clone();
     swapped.connect_active_notify(move |row| {
-        if row.is_active() != window_for_swapped.bars_swapped() {
+        if !syncing_for_swapped.get() && row.is_active() != window_for_swapped.bars_swapped() {
             window_for_swapped.set_bars_swapped(row.is_active());
         }
     });
     group.add(&swapped);
 
+    // A command, or a theme, can change the chart while this is open; the
+    // rows read it again rather than go on describing what it was. Weakly,
+    // so the window does not keep a closed dialog's rows alive.
+    let weak = Rc::downgrade(window);
+    let rows = (row.downgrade(), colouring.downgrade(), hollow.downgrade(), swapped.downgrade());
+    window.watch_chart(move || {
+        let (Some(window), Some(row), Some(colouring), Some(hollow), Some(swapped)) =
+            (weak.upgrade(), rows.0.upgrade(), rows.1.upgrade(), rows.2.upgrade(), rows.3.upgrade())
+        else {
+            return false;
+        };
+        if row.root().is_none() {
+            return false;
+        }
+        syncing.set(true);
+        sync_bars(&window, &row, &colouring, &hollow, &swapped, hidden_at);
+        syncing.set(false);
+        true
+    });
+
     group
+}
+
+/// Bring the Bars rows to what the focused chart is wearing now.
+fn sync_bars(
+    window: &Rc<Window>,
+    row: &adw::ComboRow,
+    colouring: &adw::ComboRow,
+    hollow: &adw::SwitchRow,
+    swapped: &adw::SwitchRow,
+    hidden_at: u32,
+) {
+    let hidden = window.bars_hidden();
+    row.set_selected(match hidden {
+        true => hidden_at,
+        false => BarStyle::ALL.iter().position(|s| *s == window.bar_style()).unwrap_or(0) as u32,
+    });
+    let current = window.bar_colouring();
+    colouring.set_selected(BarColouring::ALL.iter().position(|c| *c == current).unwrap_or(0) as u32);
+    colouring.set_sensitive(!hidden);
+    hollow.set_active(window.bars_hollow_up());
+    swapped.set_active(window.bars_swapped());
+    hollow.set_sensitive(!hidden && hollow_applies(window.bar_style()));
+    swapped.set_sensitive(!hidden && two_toned(&window.theme(), current));
 }
 
 /// What the two switches over the colouring are called, in a chart's
@@ -1632,14 +1703,45 @@ fn volume_colours(
     refresh: &Refresh,
     indicator: &Indicator,
 ) -> adw::PreferencesGroup {
-    let id = indicator.id;
     let group = adw::PreferencesGroup::new();
     group.set_title("Colours");
+    let rows = Rc::new(RefCell::new(volume_rows(owner, refresh, indicator)));
+    for row in rows.borrow().iter() {
+        group.add(row);
+    }
+    // The palette, and the colours following the chart's, can be changed by
+    // a command while this is open. The rows are built again rather than set,
+    // because building one sets nothing: no choice is made by reading one.
+    let id = indicator.id;
+    let weak = group.downgrade();
+    let owner_for_watch = owner.clone();
+    let refresh = refresh.clone();
+    owner.app.watch_chart(move || {
+        let Some(group) = weak.upgrade().filter(|group| group.root().is_some()) else {
+            return false;
+        };
+        let indicators = owner_for_watch.indicators();
+        let Some(indicator) = indicators.iter().find(|i| i.id == id) else { return true };
+        for row in rows.borrow_mut().drain(..) {
+            group.remove(&row);
+        }
+        let fresh = volume_rows(&owner_for_watch, &refresh, indicator);
+        for row in &fresh {
+            group.add(row);
+        }
+        *rows.borrow_mut() = fresh;
+        true
+    });
+    group
+}
 
+/// The volume pane's palette and its two colours, as it is painted now.
+fn volume_rows(owner: &Rc<Owner>, refresh: &Refresh, indicator: &Indicator) -> Vec<gtk::Widget> {
+    let id = indicator.id;
     let (up, down) =
         crate::ui::chart::volume_colours(indicator, &owner.theme(), &owner.bar_scheme());
     let Params::Volume { colouring, up_color, down_color, .. } = &indicator.params else {
-        return group;
+        return Vec::new();
     };
     // The chart's own colouring first, then the four palettes. A volume
     // bar is a dimmed solid bar with no body to leave open, so the chart's
@@ -1648,14 +1750,14 @@ fn volume_colours(
     let mut names = vec![VOLUME_FOLLOWS_CHART];
     names.extend(offered.iter().map(|c| c.label()));
     let current = colouring.and_then(|c| offered.iter().position(|o| *o == c)).map(|at| at + 1);
-    group.add(&choice_row(owner, refresh, id, "Colouring", &names, current, move |indicator, at| {
+    let choice = choice_row(owner, refresh, id, "Colouring", &names, current, move |indicator, at| {
         if let Params::Volume { colouring, .. } = &mut indicator.params {
             *colouring = at.checked_sub(1).and_then(|at| offered.get(at).copied());
         }
-    }));
+    });
     // Bars have no line to repaint as a sample.
     let unused = Ink::new(String::new);
-    group.add(&colour_row(
+    let up_row = colour_row(
         owner,
         refresh,
         &unused,
@@ -1668,8 +1770,8 @@ fn volume_colours(
             }
         },
         id,
-    ));
-    group.add(&colour_row(
+    );
+    let down_row = colour_row(
         owner,
         refresh,
         &unused,
@@ -1682,8 +1784,8 @@ fn volume_colours(
             }
         },
         id,
-    ));
-    group
+    );
+    vec![choice.upcast(), up_row.upcast(), down_row.upcast()]
 }
 
 /// What a volume pane's colouring row offers first: the way the chart

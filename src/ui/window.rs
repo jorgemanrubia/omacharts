@@ -1533,6 +1533,24 @@ mod outside_change_tests {
         window.pane(id).expect("a chart there")
     }
 
+    /// Every row of a kind under `widget`, in the order they are read.
+    fn rows<T: IsA<gtk::Widget>>(widget: &gtk::Widget) -> Vec<T> {
+        let mut found = Vec::new();
+        let mut next = widget.first_child();
+        while let Some(child) = next {
+            if let Ok(row) = child.clone().downcast::<T>() {
+                found.push(row);
+            }
+            found.extend(rows::<T>(&child));
+            next = child.next_sibling();
+        }
+        found
+    }
+
+    fn titled<T: IsA<gtk::Widget> + IsA<adw::PreferencesRow>>(window: &Window, title: &str) -> Vec<T> {
+        rows::<T>(window.window.upcast_ref()).into_iter().filter(|row| row.title() == title).collect()
+    }
+
     /// A range set on one chart by a command stays on it when another
     /// command moves the focus, which rebuilds every chart from what was
     /// written down, and when the focus comes back.
@@ -1552,6 +1570,55 @@ mod outside_change_tests {
             assert_eq!(at(&window, 1).view.held_range(), None, "the other chart took it on");
             command(&window, &["chart", "focus", "pos:0"]);
             assert_eq!(at(&window, 0).view.held_range(), held, "moving the focus back let the range go");
+        });
+    }
+
+    /// A chart's settings, open while a command changes its colouring, its
+    /// switches and its volume pane's palette, show what the command did —
+    /// and showing it changes nothing more.
+    #[test]
+    fn open_chart_settings_follow_a_command() {
+        crate::ui::on_gtk(|| {
+            let store = Rc::new(Store::memory().expect("a store"));
+            let window = bare_window(&store);
+            let volume = window
+                .indicators()
+                .iter()
+                .find(|i| i.kind == omacharts_engine::indicators::Kind::Volume)
+                .map(|i| i.id)
+                .expect("a volume pane on a new chart");
+            crate::ui::chart_settings::ChartSettings::present_indicator(&window, volume);
+            let colourings = titled::<adw::ComboRow>(&window, "Colouring");
+            assert_eq!(colourings.len(), 2, "the chart's and the volume pane's");
+            let (bars, strip) = (&colourings[0], &colourings[1]);
+            let hollow = titled::<adw::SwitchRow>(&window, crate::ui::chart_settings::HOLLOW_LABEL);
+            let swapped = titled::<adw::SwitchRow>(&window, crate::ui::chart_settings::SWAP_LABEL);
+            assert_eq!(bars.selected(), 0);
+            assert!(!hollow[0].is_active() && !swapped[0].is_active());
+
+            command(&window, &["chart", "set", "--colouring", "theme-quiet", "--hollow-up", "on", "--swap-colours", "on"]);
+            assert_eq!(window.bar_colouring(), BarColouring::Quiet);
+            let quiet = BarColouring::ALL.iter().position(|c| *c == BarColouring::Quiet).unwrap() as u32;
+            assert_eq!(bars.selected(), quiet, "the Colouring row kept the old palette");
+            assert!(hollow[0].is_active(), "the hollow switch stayed off");
+            assert!(swapped[0].is_active(), "the swap switch stayed off");
+
+            command(&window, &["chart", "set", "--colouring", "theme-mono"]);
+            assert!(!swapped[0].is_sensitive(), "nothing to swap on Monochrome");
+            assert!(swapped[0].is_active(), "greyed, not turned off");
+            assert_eq!(window.bar_colouring(), BarColouring::Monochrome);
+            assert!(window.bars_swapped() && window.bars_hollow_up(), "reading the change made another");
+
+            command(&window, &["chart", "indicator", "set", "volume", "--colouring", "theme-soft"]);
+            let strip = titled::<adw::ComboRow>(&window, "Colouring").into_iter().nth(1).unwrap_or(strip.clone());
+            let soft = BarColouring::ALL.iter().position(|c| *c == BarColouring::Soft).unwrap() as u32;
+            assert_eq!(strip.selected(), soft + 1, "the volume pane's Colouring row kept the old palette");
+            let shown = window.indicators();
+            let params = &shown.iter().find(|i| i.id == volume).expect("the volume pane").params;
+            assert!(
+                matches!(params, omacharts_engine::indicators::Params::Volume { colouring: Some(BarColouring::Soft), .. }),
+                "{params:?}"
+            );
         });
     }
 }
@@ -2407,6 +2474,10 @@ pub struct Window {
     /// them, in layout order, so a change can be carried to the other books
     /// on it the way it was made. Empty for a book on none.
     template_leaves: RefCell<Vec<u32>>,
+    /// What an open chart settings dialog reads off the focused chart, asked
+    /// to read it again when something else changed it. Each says whether
+    /// it is still on screen, and goes once it is not.
+    chart_watchers: RefCell<Vec<Box<dyn Fn() -> bool>>>,
     /// A save is already queued, so a drag does not queue one per pixel.
     save_pending: Cell<bool>,
     /// The chart menu's stateful actions, so they can be re-pointed at
@@ -2603,6 +2674,7 @@ impl Window {
             active: Cell::new(0),
             next_pane: Cell::new(1),
             template_leaves: RefCell::new(Vec::new()),
+            chart_watchers: RefCell::new(Vec::new()),
             save_pending: Cell::new(false),
             linked_action: RefCell::new(None),
             bar_style_action: RefCell::new(None),
@@ -4216,6 +4288,25 @@ impl Window {
         // A command can add or remove a whole chartbook, which is the one
         // change that shows outside the charts themselves.
         self.rebuild_book_strip();
+        self.chart_changed_elsewhere();
+    }
+
+    /// Have `watch` run whenever the focused chart may have been changed by
+    /// something other than the dialog showing it: a command, a theme.
+    /// It answers whether it is still wanted.
+    pub fn watch_chart(&self, watch: impl Fn() -> bool + 'static) {
+        self.chart_watchers.borrow_mut().push(Box::new(watch));
+    }
+
+    /// Tell whatever shows the focused chart's settings to read them again.
+    /// Taken out while they run, because one may rebuild rows that register
+    /// a watcher of their own.
+    pub fn chart_changed_elsewhere(&self) {
+        let mut watchers = std::mem::take(&mut *self.chart_watchers.borrow_mut());
+        watchers.retain(|watch| watch());
+        let mut kept = self.chart_watchers.borrow_mut();
+        watchers.append(&mut kept);
+        *kept = watchers;
     }
 
     /// Draw the rail again, after something outside the window changed a
@@ -6318,6 +6409,8 @@ impl Window {
         if let Some(watchlist) = self.watchlist.borrow().as_ref() {
             watchlist.rebuild();
         }
+        // Whether a colouring has two tones to swap is the theme's answer.
+        self.chart_changed_elsewhere();
     }
 
     fn open_search(self: &Rc<Self>) {
