@@ -1587,7 +1587,20 @@ fn volume_colours(
 
     let (up, down) =
         crate::ui::chart::volume_colours(indicator, &owner.theme(), &owner.bar_scheme());
-    let Params::Volume { up_color, down_color, .. } = &indicator.params else { return group };
+    let Params::Volume { colouring, up_color, down_color, .. } = &indicator.params else {
+        return group;
+    };
+    // The chart's own colouring first, then the ones a bar with no body can
+    // be painted in — hollow volume is no different from filled.
+    let offered = BarColouring::offered(BarStyle::Ohlc);
+    let mut names = vec![VOLUME_FOLLOWS_CHART];
+    names.extend(offered.iter().map(|c| c.label(BarStyle::Ohlc)));
+    let current = colouring.and_then(|c| offered.iter().position(|o| *o == c)).map(|at| at + 1);
+    group.add(&choice_row(owner, refresh, id, "Colouring", &names, current, move |indicator, at| {
+        if let Params::Volume { colouring, .. } = &mut indicator.params {
+            *colouring = at.checked_sub(1).and_then(|at| offered.get(at).copied());
+        }
+    }));
     // Bars have no line to repaint as a sample.
     let unused = Ink::new(String::new);
     group.add(&colour_row(
@@ -1620,6 +1633,10 @@ fn volume_colours(
     ));
     group
 }
+
+/// What a volume pane's colouring row offers first: the way the chart
+/// paints its candles, whatever that is.
+const VOLUME_FOLLOWS_CHART: &str = "Same as the chart";
 
 /// How a volume profile is drawn: its outline, its rows, its point of
 /// control, and its shape and side.

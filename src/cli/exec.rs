@@ -19,7 +19,7 @@ use omacharts_engine::indicators::{
 };
 use omacharts_engine::providers;
 use omacharts_engine::theme::{
-    ColorChoice, SWATCH_NAMES, THEME_MONO_ID, THEME_RED_UP_ID,
+    ColorChoice, SWATCH_NAMES, THEME_MONO_ID, THEME_MUTED_ID, THEME_MUTED_RED_UP_ID, THEME_RED_UP_ID,
 };
 use omacharts_engine::{
     BarStyle, Indicator, IndicatorKind, LinkMode, Reset, Session, Timeframe,
@@ -3243,6 +3243,8 @@ struct Edits {
     poc_width: Option<f64>,
     up_color: Option<ColorChoice>,
     down_color: Option<ColorChoice>,
+    /// `Some(None)` puts volume back on the chart's own colouring.
+    colouring: Option<Option<omacharts_engine::BarColouring>>,
     color: Option<ColorChoice>,
     width: Option<f64>,
     style: Option<LineStyle>,
@@ -3344,6 +3346,13 @@ impl Edits {
             },
             up_color: colour(m, "up-color")?,
             down_color: colour(m, "down-color")?,
+            colouring: match arg(m, "colouring").map(String::as_str) {
+                None => None,
+                Some("chart") => Some(None),
+                Some(text) => Some(Some(omacharts_engine::BarColouring::from_key(text).ok_or_else(
+                    || Fault::usage(format!("{text:?} is not a bar colouring")),
+                )?)),
+            },
             color: colour(m, "color")?,
             width: number(m, "width")?,
             style: match arg(m, "style") {
@@ -3434,6 +3443,7 @@ impl Edits {
             && self.poc_width.is_none()
             && self.up_color.is_none()
             && self.down_color.is_none()
+            && self.colouring.is_none()
             && self.color.is_none()
             && self.width.is_none()
             && self.style.is_none()
@@ -3597,6 +3607,12 @@ impl Edits {
                     true => params[key] = to_value(colour)?,
                     false => return Err(refuse(what)),
                 }
+            }
+        }
+        if let Some(colouring) = &self.colouring {
+            match kind == IndicatorKind::Volume {
+                true => params["colouring"] = to_value(colouring)?,
+                false => return Err(refuse("colouring")),
             }
         }
         // The pair may not cross: a band whose floor is above its ceiling is
@@ -5093,6 +5109,8 @@ fn config_bars(
     let scheme = match state {
         "monochrome" => THEME_MONO_ID.to_string(),
         "red-up" => THEME_RED_UP_ID.to_string(),
+        "muted" => THEME_MUTED_ID.to_string(),
+        "muted-red-up" => THEME_MUTED_RED_UP_ID.to_string(),
         // "coloured": stay on the palette in use if it already carries the
         // direction, and otherwise go back to the one it was left from.
         _ if spell_bars(&current) == "coloured" => current.clone(),
@@ -5119,6 +5137,8 @@ fn config_bars(
         (_, true) => format!("bars were already {state}"),
         ("monochrome", _) => "bars are monochrome; the colours are remembered".to_string(),
         ("red-up", _) => "rising bars are red and falling bars green".to_string(),
+        ("muted", _) => "bars carry their direction in muted colour".to_string(),
+        ("muted-red-up", _) => "bars carry their direction in muted colour, red for up".to_string(),
         _ => format!("bars carry their direction again, in the {scheme:?} scheme"),
     };
     said(as_json, json!({"bars": state, "scheme": scheme}), text)
@@ -5129,6 +5149,8 @@ fn spell_bars(scheme: &str) -> &'static str {
     match scheme {
         THEME_MONO_ID => "monochrome",
         THEME_RED_UP_ID => "red-up",
+        THEME_MUTED_ID => "muted",
+        THEME_MUTED_RED_UP_ID => "muted-red-up",
         _ => "coloured",
     }
 }

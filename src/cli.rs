@@ -1384,8 +1384,8 @@ mod tests {
         assert_eq!(chosen["hover"], theme["hover"]);
     }
 
-    /// Every scheme on offer — filled, hollow, red up and monochrome — reaches
-    /// the widget whole: the change text, the sparklines (which
+    /// Every scheme on offer — filled, hollow, red up, the two muted ones and
+    /// monochrome — reaches the widget whole: the change text, the sparklines (which
     /// are drawn in the same up and down) and the pill all come from the
     /// chosen scheme's colours, by the same rules the chart applies to them.
     #[test]
@@ -1394,7 +1394,7 @@ mod tests {
         let store = Store::memory().unwrap();
         let theming = crate::theming::Theming::load(&store);
         let schemes = omacharts_engine::theme::bar_schemes(&theming.theme());
-        assert_eq!(schemes.len(), 4);
+        assert_eq!(schemes.len(), omacharts_engine::BarColouring::ALL.len());
         for scheme in schemes {
             store.set_setting(crate::theming::SETTING_BARS, &scheme.id);
             let sent: serde_json::Value = serde_json::from_str(&colors_json(&store)).unwrap();

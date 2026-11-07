@@ -267,7 +267,8 @@ pub const CHART_SELECTOR: &str =
 
 /// How a chart paints the theme's candle colours, spelled as the scheme ids
 /// the settings store.
-const COLOURINGS: &[&str] = &["theme", "theme-hollow", "theme-red-up", "theme-mono"];
+const COLOURINGS: &[&str] =
+    &["theme", "theme-hollow", "theme-red-up", "theme-muted", "theme-muted-red-up", "theme-mono"];
 const STYLES: &[&str] = &["candles", "ohlc", "none"];
 const SESSIONS: &[&str] = &["regular", "extended"];
 const SPLITS: &[&str] = &["horizontal", "vertical"];
@@ -284,7 +285,11 @@ const PROFILE_ALIGNS: &[&str] = &["left", "right"];
 const VWAP_SOURCES: &[&str] = &["hlc3", "hl2", "ohlc4", "close"];
 const SWITCHES: &[&str] = &["on", "off"];
 const LINKS: &[&str] = &["focus", "follow", "pinned"];
-const COLOURING: &[&str] = &["coloured", "red-up", "monochrome"];
+const COLOURING: &[&str] = &["coloured", "red-up", "muted", "muted-red-up", "monochrome"];
+/// What a volume pane's bars may be painted as: the chart's own colouring,
+/// or one of the ones a bar with no body can wear.
+const VOLUME_COLOURINGS: &[&str] =
+    &["chart", "theme", "theme-red-up", "theme-muted", "theme-muted-red-up", "theme-mono"];
 const SORT_COLUMNS: &[&str] = &["symbol", "last", "change", "change_pct", "none"];
 /// The kinds a drawing comes in, plus the one alias.
 ///
@@ -379,6 +384,7 @@ const INDICATOR_FLAGS: &[Flag] = &[
     Flag::valued("poc-width", "F", "a volume profile's point of control thickness in pixels"),
     Flag::valued("up-color", "COLOUR", "volume bars of a rising session"),
     Flag::valued("down-color", "COLOUR", "volume bars of a falling session"),
+    Flag::valued("colouring", "COLOURING", "how volume bars are painted: as the chart paints its candles, or a colouring of their own").of(VOLUME_COLOURINGS),
     Flag::valued("d-color", "COLOUR", "the stochastic's %D line"),
     Flag::valued("color", "COLOUR", "the line, the volume profile's background, or a Session Times range's shading"),
     Flag::valued("width", "F", "line thickness; 0 draws no line at all"),
@@ -1228,7 +1234,7 @@ pub const SURFACE: &[Noun] = &[
             },
             Verb {
                 name: "bars",
-                about: "Whether bars carry their direction in colour, red for up, or no colour at all",
+                about: "Whether bars carry their direction in colour, red for up, muted, or no colour at all",
                 args: &[Arg::opt("STATE", "omit to read it").of(COLOURING)],
                 flags: &[],
                 example: "omacharts config bars monochrome",

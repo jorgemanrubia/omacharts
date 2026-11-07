@@ -331,7 +331,7 @@ pub fn theme_trading(theme: &Theme, colouring: BarColouring) -> TradingColours {
         |name: &str, otherwise: &str| theme.swatch(name).map_or(otherwise.to_string(), |s| s.hex.clone());
     let (buy, sell) = (swatch("Blue", &bars.up), swatch("Amber", &bars.down));
     let (gain, lose) = match colouring {
-        BarColouring::RedUp => (&bars.down, &bars.up),
+        BarColouring::RedUp | BarColouring::MutedRedUp => (&bars.down, &bars.up),
         _ => (&bars.up, &bars.down),
     };
     TradingColours {
@@ -705,6 +705,10 @@ pub const THEME_HOLLOW_ID: &str = "theme-hollow";
 pub const THEME_MONO_ID: &str = "theme-mono";
 /// The same, the other way round: red for a rise, green for a fall.
 pub const THEME_RED_UP_ID: &str = "theme-red-up";
+/// The same, with most of the colour taken out.
+pub const THEME_MUTED_ID: &str = "theme-muted";
+/// Muted, the other way round.
+pub const THEME_MUTED_RED_UP_ID: &str = "theme-muted-red-up";
 /// Fallback theme when Omarchy is not installed.
 pub const FALLBACK_THEME_ID: &str = "midnight";
 
@@ -716,7 +720,14 @@ pub fn builtin_themes() -> Vec<Theme> {
 /// candle colours rather than a set of colours of its own, so the theme is
 /// the one place colours are chosen.
 pub fn bar_schemes(theme: &Theme) -> Vec<BarScheme> {
-    vec![theme_bars(theme), theme_hollow_bars(theme), theme_red_up_bars(theme), theme_mono_bars(theme)]
+    vec![
+        theme_bars(theme),
+        theme_hollow_bars(theme),
+        theme_red_up_bars(theme),
+        theme_muted_bars(theme),
+        theme_muted_red_up_bars(theme),
+        theme_mono_bars(theme),
+    ]
 }
 
 fn swatches(hexes: [&str; 8]) -> Vec<Swatch> {
@@ -1014,6 +1025,243 @@ pub fn theme_red_up_bars(theme: &Theme) -> BarScheme {
     }
 }
 
+/// The theme's own direction colours with most of the colour taken out:
+/// a rise and a fall still told apart, quietly, by a chart that no longer
+/// signals.
+///
+/// Between the coloured chart and the monochrome one. Each direction keeps
+/// the theme's hue for it — the green stays that theme's green, the rose
+/// that theme's rose — so the candles still follow the desktop; what goes
+/// is the loudness. Derived from the theme rather than stored, like every
+/// other scheme, so a theme that was never asked about muted candles has
+/// them anyway.
+///
+/// PROTOTYPE: three derivations are carried while one is chosen, picked
+/// by `OMACHARTS_MUTED_APPROACH` — see [`MutedApproach`]. Two go once the
+/// choice is made, and the variable with them.
+pub fn theme_muted_bars(theme: &Theme) -> BarScheme {
+    let coloured = theme_bars(theme);
+    let (up, down) = match MutedApproach::chosen() {
+        MutedApproach::TintedGrey => tinted_grey(theme, &coloured.up, &coloured.down),
+        MutedApproach::Faded => faded(theme, &coloured),
+        MutedApproach::Shaded => shaded(theme, &coloured.up, &coloured.down),
+    };
+    BarScheme {
+        id: THEME_MUTED_ID.to_string(),
+        name: "Muted".to_string(),
+        source: Source::BuiltIn,
+        volume_up: mix(&up, &theme.ui.background, 0.45),
+        volume_down: mix(&down, &theme.ui.background, 0.45),
+        up_fill: up.clone(),
+        down_fill: down.clone(),
+        up,
+        down,
+        neutral: coloured.neutral.clone(),
+        mono: coloured.mono,
+    }
+}
+
+/// [`theme_muted_bars`] the other way round, for the trader who reads red
+/// as up — see [`theme_red_up_bars`].
+pub fn theme_muted_red_up_bars(theme: &Theme) -> BarScheme {
+    let bars = theme_muted_bars(theme);
+    BarScheme {
+        id: THEME_MUTED_RED_UP_ID.to_string(),
+        name: "Muted red up".to_string(),
+        up: bars.down.clone(),
+        up_fill: bars.down_fill.clone(),
+        down: bars.up.clone(),
+        down_fill: bars.up_fill.clone(),
+        volume_up: bars.volume_down.clone(),
+        volume_down: bars.volume_up.clone(),
+        ..bars
+    }
+}
+
+/// PROTOTYPE: the three ways of muting under comparison.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum MutedApproach {
+    /// One quiet grey, tinted with each direction's hue.
+    #[default]
+    TintedGrey,
+    /// The theme's own up and down, faded most of the way into the
+    /// monochrome ink.
+    Faded,
+    /// Two shades of one quiet tint: a rise stands out, a fall recedes.
+    Shaded,
+}
+
+impl MutedApproach {
+    pub const ALL: [MutedApproach; 3] =
+        [MutedApproach::TintedGrey, MutedApproach::Faded, MutedApproach::Shaded];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            MutedApproach::TintedGrey => "tinted-grey",
+            MutedApproach::Faded => "faded",
+            MutedApproach::Shaded => "shaded",
+        }
+    }
+
+    pub fn chosen() -> MutedApproach {
+        let key = std::env::var("OMACHARTS_MUTED_APPROACH").unwrap_or_default();
+        MutedApproach::ALL.into_iter().find(|a| a.key() == key).unwrap_or_default()
+    }
+
+    /// The muted pair this approach derives for `theme`, for the report.
+    pub fn pair(self, theme: &Theme) -> (String, String) {
+        let coloured = theme_bars(theme);
+        match self {
+            MutedApproach::TintedGrey => tinted_grey(theme, &coloured.up, &coloured.down),
+            MutedApproach::Faded => faded(theme, &coloured),
+            MutedApproach::Shaded => shaded(theme, &coloured.up, &coloured.down),
+        }
+    }
+}
+
+/// What a muted bar is held to against the chart behind it.
+///
+/// Below the monochrome floor on purpose: a muted chart is one that sits
+/// back, and a muted bar has a second colour beside it to be read against.
+/// Still at WCAG's 3:1 for a graphic that carries meaning, because a wick
+/// is a hairline of the same colour. The ceiling is where it stops being
+/// quiet.
+pub const MUTED_CONTRAST: ContrastBand = ContrastBand::new(3.0, 4.5);
+
+/// The least a muted rise may be from a muted fall, as `delta_e` sees it.
+///
+/// Above the 0.02 the eye can only just separate, with room for the bars
+/// being read at a glance and under a less than perfect screen; below the
+/// 0.08 the palette holds overlays to, since two overlays must never be
+/// mistaken for each other and a rise and a fall may be allowed a second
+/// look. That is what "subtly distinct" is in numbers.
+pub const MUTED_APART: f64 = 0.05;
+
+/// The most muted a direction colour's chroma may be and still clear
+/// [`MUTED_APART`] at the hues most themes use: raised from here, a little
+/// at a time, only for a theme whose green and rose are nearer each other
+/// than that.
+const MUTED_CHROMA: f64 = 0.045;
+
+/// Below this a colour has no hue worth keeping.
+const GREY: f64 = 0.01;
+
+/// How far toward the monochrome ink a faded direction colour goes.
+const MUTED_FADE: f64 = 0.7;
+
+/// Where a faded bar may end up: [`MUTED_CONTRAST`]'s floor, since what it
+/// fades toward already sits inside the band, and a ceiling that lets a
+/// theme's brightest direction colour keep a little of its brightness.
+const FADED_CONTRAST: ContrastBand = ContrastBand::new(3.0, 5.5);
+
+/// The two shades a shaded chart is built from, and the trace of hue each
+/// keeps. A rise at the loud shade, a fall at the quiet one.
+const SHADE_LOUD: ContrastBand = ContrastBand::new(4.3, 4.7);
+const SHADE_QUIET: ContrastBand = ContrastBand::new(3.0, 3.3);
+const SHADE_CHROMA: f64 = 0.025;
+
+/// A: one quiet grey, tinted.
+///
+/// The theme's text, brought into [`MUTED_CONTRAST`] and stripped of
+/// chroma, is the grey; a rise and a fall are that grey with the chroma
+/// put back at [`MUTED_CHROMA`] in the direction colour's own hue. The
+/// same lightness, so the two differ by hue alone, the way the coloured
+/// pair does; a theme whose two hues are near each other gets a little
+/// more chroma until they clear [`MUTED_APART`].
+fn tinted_grey(theme: &Theme, up: &str, down: &str) -> (String, String) {
+    let grey = held_to(&theme.ui.text, &theme.ui.background, MUTED_CONTRAST, Some(0.0));
+    let (Some(grey), Some(up), Some(down)) = (Oklch::of(&grey), Oklch::of(up), Oklch::of(down)) else {
+        return (up.to_string(), down.to_string());
+    };
+    // A direction colour that is itself a grey — Vantablack and White have
+    // no green — stays a grey, rather than being tinted at a hue it has not
+    // got, which for a grey is nought: red.
+    let tint = |colour: Oklch, c: f64| {
+        Oklch { l: grey.l, c: if colour.c < GREY { 0.0 } else { c }, h: colour.h }.hex()
+    };
+    let mut c = MUTED_CHROMA;
+    loop {
+        let pair = (tint(up, c), tint(down, c));
+        if delta_e(&pair.0, &pair.1) >= MUTED_APART || c >= 0.12 {
+            return pair;
+        }
+        c += 0.005;
+    }
+}
+
+/// B: the theme's own colours, faded.
+///
+/// Each direction colour is blended [`MUTED_FADE`] of the way toward the
+/// quiet grey of [`tinted_grey`] in OKLab, so what is left is the same
+/// colour seen through the same grey — its hue, and whatever lightness
+/// difference the theme gave its green and its rose, both at a third of
+/// their strength — then held into [`FADED_CONTRAST`] in case the theme's
+/// colour was dark enough to drag it under the floor. A pair that fades too
+/// close is faded less, a step at a time.
+fn faded(theme: &Theme, coloured: &BarScheme) -> (String, String) {
+    let ground = &theme.ui.background;
+    let grey = held_to(&theme.ui.text, ground, MUTED_CONTRAST, Some(0.0));
+    let mut t = MUTED_FADE;
+    loop {
+        let pair = (
+            held_to(&blend(&coloured.up, &grey, t), ground, FADED_CONTRAST, None),
+            held_to(&blend(&coloured.down, &grey, t), ground, FADED_CONTRAST, None),
+        );
+        if delta_e(&pair.0, &pair.1) >= MUTED_APART || t <= 0.3 {
+            return pair;
+        }
+        t -= 0.05;
+    }
+}
+
+/// C: two shades of one quiet tint.
+///
+/// Direction is told by lightness, which every eye reads: a rise is the
+/// theme's text brought to [`SHADE_LOUD`] against the chart, a fall the
+/// same brought to [`SHADE_QUIET`], so a rise stands forward and a fall
+/// sits back on a dark theme and a light one alike. Each keeps a trace of
+/// its direction colour's hue, [`SHADE_CHROMA`], which is enough to read
+/// as that theme's green and rose without being either.
+fn shaded(theme: &Theme, up: &str, down: &str) -> (String, String) {
+    let ground = &theme.ui.background;
+    let shade = |hex: &str, band: ContrastBand| {
+        let (Some(ink), Some(colour)) = (Oklch::of(&theme.ui.text), Oklch::of(hex)) else {
+            return hex.to_string();
+        };
+        let start = Oklch { l: ink.l, c: SHADE_CHROMA.min(colour.c), h: colour.h }.hex();
+        held_to(&start, ground, band, Some(SHADE_CHROMA))
+    };
+    (shade(up, SHADE_LOUD), shade(down, SHADE_QUIET))
+}
+
+/// Written down as its key, the id the settings have always stored, so an
+/// indicator that chose a colouring is read back by the same name a chart's
+/// is.
+impl Serialize for BarColouring {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.key())
+    }
+}
+
+impl<'de> Deserialize<'de> for BarColouring {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let key = String::deserialize(deserializer)?;
+        BarColouring::from_key(&key)
+            .ok_or_else(|| serde::de::Error::custom(format!("{key:?} is not a bar colouring")))
+    }
+}
+
+/// Blend `a` toward `b` in OKLab, so halfway looks halfway. `t` of 0 is
+/// all `a`, 1 is all `b`.
+pub fn blend(a: &str, b: &str, t: f64) -> String {
+    let (Some(a_lab), Some(b_lab)) = (oklab(a), oklab(b)) else { return a.to_string() };
+    let lerp = |x: f64, y: f64| x + (y - x) * t;
+    let (l, la, lb) = (lerp(a_lab.0, b_lab.0), lerp(a_lab.1, b_lab.1), lerp(a_lab.2, b_lab.2));
+    let c = (la * la + lb * lb).sqrt();
+    let h = if c < 0.0005 { 0.0 } else { lb.atan2(la).to_degrees().rem_euclid(360.0) };
+    Oklch { l, c, h }.hex()
+}
+
 /// Candles in one neutral colour, for people who would rather read a chart
 /// than be signalled at by one.
 ///
@@ -1052,12 +1300,22 @@ pub enum BarColouring {
     Filled,
     Hollow,
     RedUp,
+    Muted,
+    MutedRedUp,
     Monochrome,
 }
 
 impl BarColouring {
-    pub const ALL: [BarColouring; 4] =
-        [BarColouring::Filled, BarColouring::Hollow, BarColouring::RedUp, BarColouring::Monochrome];
+    /// From the most colour to the least, the two turned-round ones each
+    /// beside what they turn round.
+    pub const ALL: [BarColouring; 6] = [
+        BarColouring::Filled,
+        BarColouring::Hollow,
+        BarColouring::RedUp,
+        BarColouring::Muted,
+        BarColouring::MutedRedUp,
+        BarColouring::Monochrome,
+    ];
 
     /// The scheme id it is stored under, the same ids the settings have
     /// always held.
@@ -1066,6 +1324,8 @@ impl BarColouring {
             BarColouring::Filled => THEME_BARS_ID,
             BarColouring::Hollow => THEME_HOLLOW_ID,
             BarColouring::RedUp => THEME_RED_UP_ID,
+            BarColouring::Muted => THEME_MUTED_ID,
+            BarColouring::MutedRedUp => THEME_MUTED_RED_UP_ID,
             BarColouring::Monochrome => THEME_MONO_ID,
         }
     }
@@ -1089,6 +1349,8 @@ impl BarColouring {
             BarColouring::Filled => "Filled",
             BarColouring::Hollow => "Hollow",
             BarColouring::RedUp => "Red up",
+            BarColouring::Muted => "Muted",
+            BarColouring::MutedRedUp => "Muted red up",
             BarColouring::Monochrome => "Monochrome",
         }
     }
@@ -1097,9 +1359,13 @@ impl BarColouring {
     pub fn offered(style: BarStyle) -> &'static [BarColouring] {
         match style {
             BarStyle::Candles => &BarColouring::ALL,
-            BarStyle::Ohlc => {
-                &[BarColouring::Filled, BarColouring::RedUp, BarColouring::Monochrome]
-            }
+            BarStyle::Ohlc => &[
+                BarColouring::Filled,
+                BarColouring::RedUp,
+                BarColouring::Muted,
+                BarColouring::MutedRedUp,
+                BarColouring::Monochrome,
+            ],
         }
     }
 
@@ -1114,6 +1380,8 @@ impl BarColouring {
             BarColouring::Filled => theme_bars(theme),
             BarColouring::Hollow => theme_hollow_bars(theme),
             BarColouring::RedUp => theme_red_up_bars(theme),
+            BarColouring::Muted => theme_muted_bars(theme),
+            BarColouring::MutedRedUp => theme_muted_red_up_bars(theme),
             BarColouring::Monochrome => theme_mono_bars(theme),
         }
     }
