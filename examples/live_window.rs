@@ -1,6 +1,6 @@
 //! The real window on a feed that streams invented prices.
 //!
-//!     dbus-run-session -- env XDG_DATA_HOME=$(mktemp -d) \
+//!     bin/private-bus env XDG_DATA_HOME=$(mktemp -d) \
 //!         cargo run --release --example live_window -- [tick-ms] [charts]
 //!
 //! Opens Omacharts on the synthetic provider: every symbol charts, every
