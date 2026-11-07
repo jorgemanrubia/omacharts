@@ -58,11 +58,16 @@ impl Theming {
         // install already matches everything else on screen.
         let default_theme = if omarchy.is_some() { OMARCHY_ID } else { FALLBACK_THEME_ID };
 
+        // The scheme id is kept as written, since an id from before colours
+        // lived in themes names a custom scheme to carry over; the switches
+        // it implies are read off the same read, not three more.
+        let scheme_id = store.setting(SETTING_BARS);
+        let look = crate::chart_defaults::stored_colouring_of(store, scheme_id.as_deref());
         let theming = Theming {
             theme_id: store.setting(SETTING_THEME).unwrap_or_else(|| default_theme.to_string()),
-            scheme_id: store.setting(SETTING_BARS).unwrap_or_else(|| THEME_BARS_ID.to_string()),
-            swapped: crate::chart_defaults::stored_colouring(store).swapped,
-            hollow_up: crate::chart_defaults::stored_colouring(store).hollow_up,
+            scheme_id: scheme_id.unwrap_or_else(|| THEME_BARS_ID.to_string()),
+            swapped: look.swapped,
+            hollow_up: look.hollow_up,
             omarchy,
             omarchy_fingerprint,
             builtin_themes: builtin_themes(),

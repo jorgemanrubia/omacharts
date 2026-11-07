@@ -68,10 +68,13 @@ impl Default for ChartDefaults {
 /// switch on, so nobody opens the app to candles other than the ones they
 /// chose.
 pub fn stored_colouring(store: &Store) -> StoredColouring {
-    let written = store
-        .setting(crate::theming::SETTING_BARS)
-        .and_then(|key| BarColouring::from_stored(&key))
-        .unwrap_or_default();
+    stored_colouring_of(store, store.setting(crate::theming::SETTING_BARS).as_deref())
+}
+
+/// [`stored_colouring`] for a `bar_scheme` setting already read, so a
+/// caller that keeps the stored id as written reads it once.
+pub fn stored_colouring_of(store: &Store, key: Option<&str>) -> StoredColouring {
+    let written = key.and_then(BarColouring::from_stored).unwrap_or_default();
     StoredColouring {
         colouring: written.colouring,
         swapped: written.swapped || store.setting_bool(SETTING_SWAP_COLOURS, false),
