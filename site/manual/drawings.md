@@ -220,7 +220,7 @@ crop: 840,220,880,1160
 
 A configuration is a saved look (colour, thickness, arrowheads, fill, font) for one kind of drawing. Each kind has nine, numbered 1 to 9. Every drawing follows one (configuration 1 unless you chose another) and changes when that configuration changes. Changing a property by hand takes the drawing off its configuration. Its look is then **Custom**, and changes to the configuration no longer reach it. Choosing a configuration puts it back on one. Changing a label does not take it off.
 
-As shipped, the nine configurations are the nine [colours](#colours) in order, 1 Up, 2 Down, 3 Blue, 4 Amber, 5 Violet, 6 Teal, 7 Orange, 8 Cyan, 9 Ink, each on the kind's starting look.
+As shipped, the nine configurations are the nine [colours](#colours) in order, 1 Up, 2 Down, 3 Blue, 4 Amber, 5 Violet, 6 Teal, 7 Orange, 8 Cyan, 9 Ink, each on the kind's starting look. A volume profile's nine are its own ([Volume profiles](#volume-profiles)).
 
 | Kind | Starting look |
 |---|---|
@@ -270,12 +270,11 @@ It is drawn under the bars, as the study's profiles are, so the candles stay on 
 
 | Configuration | Colour | Style | Alignment |
 |---|---|---|---|
-| 1, 2, 9 | Up, Down, Ink | Filled | Left |
-| 3, 8 | Blue, Cyan | Outline | Left |
-| 4, 5, 7 | Amber, Violet, Orange | Filled | Right |
-| 6 | Teal | Outline | Right |
+| 1, 2, 3, 4 | Violet, Amber, Cyan, Blue | Filled | Left |
+| 5, 6, 7, 8 | Violet, Amber, Cyan, Blue | Outline | Left |
+| 9 | Ink | Outline | Right |
 
-Every configuration's point of control is Ink, and its outline and background are the same colour.
+A volume profile's configurations leave out the candles' Up and Down, and Teal and Orange, which look close to green and red on some themes, because a profile shows where volume traded, not which way the price went. Every configuration's point of control is Ink, and its outline and background are the same colour.
 
 <!-- regenerate:
 theme: tokyo-night
@@ -284,13 +283,13 @@ state:
   key ctrl+shift+b
   omacharts chart set --symbol SPY --resolution 1h
   omacharts chart indicator add volume_profile
-  omacharts chart drawing add profile --from 2026-10-14,700 --to 2026-10-21,700 --config 9
-  omacharts chart drawing add profile --from 2026-10-26,700 --to 2026-10-30,700 --config 4
+  omacharts chart drawing add profile --from 2026-10-14,700 --to 2026-10-21,700 --config 1
+  omacharts chart drawing add profile --from 2026-10-26,700 --to 2026-10-30,700 --config 9
   move 1270 1000
 capture: bin/headless-window cli chart screenshot --output /tmp/vp.png; magick /tmp/vp.png -quality 88 site/assets/manual/drawings/volume-profiles.jpg
 crop: none
 -->
-{% include figure.html src="/assets/manual/drawings/volume-profiles.jpg" alt="SPY 1h with session volume profiles, an Ink profile drawn over a week of them from the left and an Amber one over the last days from the right" caption="Two volume profile drawings over the session study: configuration 9 over one week, configuration 4 over the next." %}
+{% include figure.html src="/assets/manual/drawings/volume-profiles.jpg" alt="SPY 1h with session volume profiles, a Violet profile filled over a week of them from the left and an Ink outline over the last days from the right" caption="Two volume profile drawings over the session study: configuration 1 over one week, configuration 9 over the next." %}
 
 ## Anchored VWAP
 

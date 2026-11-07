@@ -1428,9 +1428,10 @@ impl Style {
     /// out, and Teal and Orange with them, which sit next to green and red
     /// on enough themes to be taken for them. What is left is four colours,
     /// filled from 1 to 4 and as outlines in the same order from 5 to 8,
-    /// all growing from the left as the study does. Violet is first and
-    /// Blue last because a drawing is so often laid over the study, whose
-    /// rows are Blue. The ninth is Ink, the theme's text as a grey, as an
+    /// all growing from the left as the study does. Cool and warm take
+    /// turns, so neighbours stand apart, and Blue, the colour a chart's
+    /// first indicators take, comes last. The ninth is Ink, the theme's text
+    /// as a grey, as an
     /// outline growing from the right: the one neutral, and the one on the
     /// other side.
     pub fn profile_configuration(n: u8) -> Style {
