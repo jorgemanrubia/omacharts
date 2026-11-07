@@ -489,8 +489,8 @@ bars carry their direction again, in the "theme" scheme
 | (none) | Prints the current state: `coloured`, `red-up`, `muted`, `muted-red-up` or `monochrome` |
 | `monochrome` | Every chart monochrome, remembering the colouring in use |
 | `red-up` | Every chart red up |
-| `muted` | Every chart muted: two quiet colours from the theme's palette instead of its green and red ([Colouring](/manual/charts/#colouring)) |
-| `muted-red-up` | Every chart muted, the two colours the other way round |
+| `muted` | Every chart muted: two greys made from the theme's text instead of its green and red, a rise outlined and a fall filled ([Colouring](/manual/charts/#colouring)) |
+| `muted-red-up` | Every chart muted, the two greys the other way round |
 | `coloured` | Every chart back to the remembered colouring, or to `theme` when nothing is remembered |
 
 `config set bar_scheme theme-mono` is different. It changes only what new

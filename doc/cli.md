@@ -963,8 +963,9 @@ bars carry their direction again, in the "theme-hollow" scheme
 round, red for a rise and green for a fall, the way charts are read in Taiwan,
 mainland China, Japan and Korea. It remembers the palette in use as well.
 `config bars muted` and `config bars muted-red-up` are the fourth and fifth:
-two quiet colours from the theme's palette, a slate and a sand, instead of
-its green and red, so the price sits back on the chart.
+no colour at all, two greys made from the theme's text instead of its green
+and red, a rise an outline and a fall a filled stone, so the price sits back
+on the chart.
 
 Bar colours belong to each chart, so `config bars` answers for every chart at
 once — the charts in every chartbook and the ones made next — the way Apply to

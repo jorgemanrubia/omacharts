@@ -1540,7 +1540,7 @@ impl Window {
         let theme = self.theming.borrow().theme();
         // The theme's trading colours, with only the chart's Red up turning
         // profit and loss round; never its candles' colours.
-        let look = omacharts_engine::theme_trading(&theme, pane.colouring.get());
+        let look = omacharts_engine::theme_trading(&theme, self.theming.borrow().inverted());
         let places = crate::ui::trading_panel::decimals_of(Self::tick_of(pane, &target));
         let price = |price: f64| omacharts_engine::grouped_decimals(price, places);
         let view = self.trading.borrow();

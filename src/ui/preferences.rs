@@ -951,8 +951,8 @@ fn trading_look_group(context: &Rc<Context>) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     group.set_title("Trading");
     let theme = context.theming.borrow().theme();
-    let colouring = context.theming.borrow().colouring();
-    let shown = omacharts_engine::theme_trading(&theme, colouring);
+    let inverted = context.theming.borrow().inverted();
+    let shown = omacharts_engine::theme_trading(&theme, inverted);
     // Change the theme's own look by `edit`, and nothing else in it.
     let save = |ctx: &Rc<Context>, edit: &dyn Fn(&mut TradingLook)| {
         let mut theme = ctx.theming.borrow().theme();

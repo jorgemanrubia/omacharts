@@ -131,6 +131,11 @@ impl Theming {
         omacharts_engine::BarColouring::from_key(&self.scheme_id).unwrap_or_default()
     }
 
+    /// Whether the colouring an older version stored was a turned-round one.
+    pub fn inverted(&self) -> bool {
+        omacharts_engine::BarColouring::from_stored(&self.scheme_id).is_some_and(|(_, inverted)| inverted)
+    }
+
     pub fn bar_scheme(&self) -> BarScheme {
         self.bar_scheme_for(&self.theme())
     }
@@ -214,7 +219,7 @@ impl Theming {
         });
 
         let mut css = stylesheet(&theme, &self.bar_scheme());
-        css.push_str(&trading_css(&theme, self.colouring()));
+        css.push_str(&trading_css(&theme, self.inverted()));
         let provider = self.provider.get_or_insert_with(|| {
             let provider = gtk::CssProvider::new();
             if let Some(display) = gtk::gdk::Display::default() {
@@ -267,8 +272,8 @@ pub(crate) const CORNER_BUTTON_TOP: i32 = 10;
 /// The trading look's colours as named colours, and the classes a signed
 /// P&L, a side and a position are written in with them: the one pair for
 /// money, the other for a side, as the chart's marks wear them.
-pub fn trading_css(theme: &Theme, colouring: omacharts_engine::BarColouring) -> String {
-    let look = omacharts_engine::theme_trading(theme, colouring);
+pub fn trading_css(theme: &Theme, inverted: bool) -> String {
+    let look = omacharts_engine::theme_trading(theme, inverted);
     format!(
         "@define-color omacharts_profit {};\n@define-color omacharts_loss {};\n\
          @define-color omacharts_buy {};\n@define-color omacharts_sell {};\n\
@@ -1276,11 +1281,11 @@ mod tests {
     fn profit_and_loss_are_named_colours_from_the_trading_look() {
         let theme = &builtin_themes()[0];
         let bars = omacharts_engine::theme::theme_bars(theme);
-        let css = trading_css(theme, omacharts_engine::BarColouring::Monochrome);
+        let css = trading_css(theme, false);
         assert!(css.contains(&format!("@define-color omacharts_profit {};", bars.up)), "{css}");
         assert!(css.contains(&format!("@define-color omacharts_loss {};", bars.down)), "{css}");
         assert!(css.contains(".pnl-gain { color: @omacharts_profit; }"));
-        let red_up = trading_css(theme, omacharts_engine::BarColouring::RedUp);
+        let red_up = trading_css(theme, true);
         assert!(red_up.contains(&format!("@define-color omacharts_profit {};", bars.down)), "{red_up}");
         // A side and a position are the theme's Blue and Amber, never money's
         // colours, so the header's Buy and Sell match the chart's entries.
